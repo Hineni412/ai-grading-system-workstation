@@ -45,6 +45,10 @@ class ActiveScanAnalysisError(ScanGradingWorkspaceError):
     """当前上传批次仍有预检任务在运行。"""
 
 
+class ScanReplacementCleanupIncompleteError(ScanGradingWorkspaceError):
+    """新答卷已生效，但旧文件清理仍需安全重试。"""
+
+
 class ScanGradingWorkspace:
     """隐藏上传文件、manifest 与后续扫描状态的会话级模块。"""
 
@@ -72,6 +76,7 @@ class ScanGradingWorkspace:
         grading_db_path: Path | None = None,
         job_manager: Any | None = None,
         data_root: Path | None = None,
+        replacement_storage_paths: Callable[[int], list[str]] | None = None,
         replacement_reset: Callable[[int], list[str]] | None = None,
         config_fingerprint_resolver: Callable[[int, str], str] | None = None,
         max_file_bytes: int = 100 * 1024 * 1024,
@@ -81,6 +86,7 @@ class ScanGradingWorkspace:
         self.grading_db_path = Path(grading_db_path) if grading_db_path is not None else None
         self.job_manager = job_manager
         self.data_root = Path(data_root).resolve() if data_root is not None else None
+        self.replacement_storage_paths = replacement_storage_paths
         self.replacement_reset = replacement_reset
         self.config_fingerprint_resolver = config_fingerprint_resolver
         self.max_file_bytes = int(max_file_bytes)
@@ -940,16 +946,28 @@ class ScanGradingWorkspace:
             if self.replacement_reset is None:
                 raise ScanGradingWorkspaceError("replacement reset is unavailable")
             old = self._load_or_create_manifest(session_id)
-            candidate["state"] = "frozen"
-            candidate["frozen_at"] = self._now()
-            candidate["revision"] += 1
-            self._write_target_manifest(session_id, candidate, replacement=True)
+            pending_storage_paths = (
+                self._normalize_cleanup_paths(
+                    self.replacement_storage_paths(session_id)
+                )
+                if self.replacement_storage_paths is not None
+                else None
+            )
+            candidate = {
+                **candidate,
+                "state": "frozen",
+                "frozen_at": self._now(),
+                "revision": int(candidate["revision"]) + 1,
+            }
             journal = {
                 "version": 1,
                 "old_batch_id": str(old["batch_id"]),
                 "candidate": candidate,
             }
+            if pending_storage_paths is not None:
+                journal["pending_storage_paths"] = pending_storage_paths
             self._atomic_write_json(self._replacement_commit_path(session_id), journal)
+            self._write_target_manifest(session_id, candidate, replacement=True)
             return self._finish_replacement_commit(session_id, journal)
 
     def _require_no_active_scan_work(self, session_id: int) -> None:
@@ -986,39 +1004,102 @@ class ScanGradingWorkspace:
         candidate = journal.get("candidate")
         if not isinstance(candidate, dict):
             raise ScanGradingWorkspaceError("replacement commit is invalid")
-        stored_paths = self.replacement_reset(session_id) if self.replacement_reset else []
+        stored_paths = journal.get("pending_storage_paths")
+        reset_completed = False
+        if stored_paths is None:
+            if self.replacement_storage_paths is not None:
+                stored_paths = self.replacement_storage_paths(session_id)
+            else:
+                stored_paths = (
+                    self.replacement_reset(session_id)
+                    if self.replacement_reset
+                    else []
+                )
+                reset_completed = True
+            stored_paths = self._normalize_cleanup_paths(stored_paths)
+            journal = {
+                **journal,
+                "pending_storage_paths": stored_paths,
+            }
+            self._atomic_write_json(
+                self._replacement_commit_path(session_id),
+                journal,
+            )
+        else:
+            stored_paths = self._normalize_cleanup_paths(stored_paths)
+        if not reset_completed and self.replacement_reset is not None:
+            self.replacement_reset(session_id)
         self._write_manifest(session_id, candidate)
-        self._replacement_manifest_path(session_id).unlink(missing_ok=True)
         session_dir = self._session_dir(session_id)
-        for name in (
-            "scan_analysis_latest.json",
-            "scan_decisions_state.json",
-            "scan_manual_decisions_latest.json",
-            "grading_control_state.json",
-        ):
-            (session_dir / name).unlink(missing_ok=True)
-        shutil.rmtree(session_dir / "scan_history", ignore_errors=True)
-        old_batch_id = str(journal.get("old_batch_id") or "")
-        if re.fullmatch(r"[0-9a-f]{32}", old_batch_id):
-            shutil.rmtree(self._batch_dir(session_id, old_batch_id), ignore_errors=True)
-        for raw_path in stored_paths:
-            self._unlink_owned_data_file(raw_path)
-        self._replacement_commit_path(session_id).unlink(missing_ok=True)
+        try:
+            self._replacement_manifest_path(session_id).unlink(missing_ok=True)
+            for name in (
+                "scan_analysis_latest.json",
+                "scan_decisions_state.json",
+                "scan_manual_decisions_latest.json",
+                "grading_control_state.json",
+            ):
+                (session_dir / name).unlink(missing_ok=True)
+            self._remove_tree(session_dir / "scan_history")
+            old_batch_id = str(journal.get("old_batch_id") or "")
+            if re.fullmatch(r"[0-9a-f]{32}", old_batch_id):
+                self._remove_tree(
+                    self._batch_dir(session_id, old_batch_id)
+                )
+            for raw_path in stored_paths:
+                self._unlink_owned_data_file(raw_path)
+        except OSError as exc:
+            raise ScanReplacementCleanupIncompleteError(
+                "replacement cleanup is incomplete"
+            ) from exc
+        try:
+            self._replacement_commit_path(session_id).unlink(missing_ok=True)
+        except OSError as exc:
+            raise ScanReplacementCleanupIncompleteError(
+                "replacement cleanup is incomplete"
+            ) from exc
         return self._public_batch(candidate)
+
+    @staticmethod
+    def _normalize_cleanup_paths(paths: object) -> list[str]:
+        if not isinstance(paths, list):
+            raise ScanGradingWorkspaceError(
+                "replacement cleanup plan is invalid"
+            )
+        return [str(path) for path in paths if str(path)]
+
+    @staticmethod
+    def _remove_tree(path: Path) -> None:
+        try:
+            shutil.rmtree(path)
+        except FileNotFoundError:
+            return
 
     def _unlink_owned_data_file(self, raw_path: str) -> None:
         if self.data_root is None or not raw_path:
             return
         path = Path(str(raw_path))
         candidates = [path] if path.is_absolute() else [self.data_root.parent / path, self.data_root / path]
+        delete_error: OSError | None = None
         for candidate in candidates:
             try:
                 resolved = candidate.resolve()
-                if resolved.is_relative_to(self.data_root) and resolved.is_file():
-                    resolved.unlink(missing_ok=True)
-                    return
-            except OSError:
+            except OSError as exc:
+                delete_error = exc
                 continue
+            if not resolved.is_relative_to(self.data_root):
+                continue
+            try:
+                if not resolved.exists():
+                    continue
+                if not resolved.is_file():
+                    raise OSError("replacement cleanup target is not a file")
+                resolved.unlink()
+                return
+            except OSError as exc:
+                delete_error = exc
+        if delete_error is not None:
+            raise delete_error
 
     def frozen_scan_dir(self, session_id: int) -> Path:
         with self._lock(session_id):

@@ -10,6 +10,7 @@ import { isRecord } from './validation'
 export type AssemblyLayoutMode = 'sequential' | 'grouped_by_type' | 'sections'
 export type AssemblyPreviewMode = 'student' | 'teacher'
 export type AssemblyExportFormat = 'docx' | 'markdown'
+export type AssemblyExportSubmitFormat = 'docx'
 
 export interface AssemblySection {
   id: string
@@ -359,7 +360,7 @@ export const assemblyApi = {
 
   submitExport(
     draftRevision: string,
-    format: AssemblyExportFormat,
+    format: AssemblyExportSubmitFormat,
     signal?: AbortSignal,
   ): Promise<JobResponse> {
     if (!isRevision(draftRevision) || !isExportFormat(format)) {

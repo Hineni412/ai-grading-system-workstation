@@ -383,10 +383,9 @@ def get_scan_grading_workspace(
             raise SessionDerivedTrainingDataExists(
                 list(impact["blocking_training_tasks"])
             )
-        paths = db.collect_session_reupload_storage_paths(session_id)
         db.reset_session_for_scan_replacement(session_id)
         clear_question_bank_session_references(question_bank_db_path, session_id)
-        return paths
+        return []
 
     return ScanGradingWorkspace(
         exams_root=exams_dir,
@@ -394,6 +393,7 @@ def get_scan_grading_workspace(
         grading_db_path=db.db_path,
         job_manager=manager,
         data_root=data_root,
+        replacement_storage_paths=db.collect_session_reupload_storage_paths,
         replacement_reset=reset_replaced_scan_data,
         config_fingerprint_resolver=lambda session_id, grading_mode: (
             session_grading_config_fingerprint(

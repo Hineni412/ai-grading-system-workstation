@@ -34,6 +34,7 @@ from backend.scan_grading.workspace import (
     InvalidScanUploadError,
     ScanGradingWorkspace,
     ScanGradingWorkspaceError,
+    ScanReplacementCleanupIncompleteError,
     ScanUploadTooLargeError,
     UploadBatchRevisionError,
 )
@@ -353,6 +354,13 @@ def commit_session_scan_replacement(
         ) from exc
     except SessionDeletionActiveWork as exc:
         raise ApiError(409, "scan_replacement_active_work", "Exam work is still active") from exc
+    except ScanReplacementCleanupIncompleteError as exc:
+        raise ApiError(
+            409,
+            "scan_replacement_cleanup_pending",
+            "最新答卷已经替换，但部分旧文件尚未清理；"
+            "请关闭正在查看的答卷或报告后刷新页面重试。",
+        ) from exc
     except ScanGradingWorkspaceError as exc:
         raise ApiError(409, "scan_replacement_rejected", "Scan replacement was rejected") from exc
     return ScanUploadBatchResponse.model_validate(batch)

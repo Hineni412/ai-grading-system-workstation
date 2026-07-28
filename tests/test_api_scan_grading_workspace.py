@@ -488,6 +488,53 @@ def test_preflight_submission_and_new_batch_share_one_session_lock(
         manager.shutdown()
 
 
+def test_scan_replacement_cleanup_pending_is_reported_as_partial_success(
+    tmp_path,
+) -> None:
+    from backend.api.dependencies import get_scan_grading_workspace
+    from backend.scan_grading.workspace import (
+        ScanReplacementCleanupIncompleteError,
+    )
+
+    client, db, manager = _client(tmp_path)
+    session_id = db.create_grading_session(
+        "答卷替换清理",
+        "rubric.json",
+        "answer.json",
+    )
+
+    class CleanupPendingWorkspace:
+        def commit_replacement_upload(
+            self,
+            _session_id: int,
+            *,
+            expected_revision: int,
+        ) -> dict[str, object]:
+            del expected_revision
+            raise ScanReplacementCleanupIncompleteError(
+                "replacement cleanup is incomplete"
+            )
+
+    client.app.dependency_overrides[get_scan_grading_workspace] = (
+        CleanupPendingWorkspace
+    )
+    try:
+        response = client.post(
+            f"/api/sessions/{session_id}/scan-uploads/replacement/commit",
+            json={"expected_revision": 1},
+        )
+
+        assert response.status_code == 409
+        assert (
+            response.json()["error"]["code"]
+            == "scan_replacement_cleanup_pending"
+        )
+        assert "已经替换" in response.json()["error"]["message"]
+        assert "旧文件" in response.json()["error"]["message"]
+    finally:
+        manager.shutdown()
+
+
 def test_failed_preflight_after_restart_is_projected_and_can_be_retried(tmp_path) -> None:
     client, db, manager = _client(tmp_path)
     session_id = db.create_grading_session("预检重启恢复", "rubric.json", "answer.json")
