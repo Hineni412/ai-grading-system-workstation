@@ -544,3 +544,92 @@ def test_prepare_adjustments_returns_normalized_ownership_and_review_metadata(
             "error_summary": "manual_review_confirmed",
         }
     ]
+
+
+def test_source_region_id_normalizes_part_aliases_without_crossing_siblings() -> None:
+    assert review_service_module._source_region_id(
+        [{"id": 11, "mapped_question_id": "Q1(1)"}],
+        "Q1(P1)",
+    ) == 11
+    assert review_service_module._source_region_id(
+        [{"id": 12, "mapped_question_id": "Q1(P1)"}],
+        "Q1(1)",
+    ) == 12
+    assert review_service_module._source_region_id(
+        [{"id": 13, "mapped_question_id": "Q1(P2)"}],
+        "Q1(P1)",
+    ) == 0
+
+
+def test_source_region_id_uses_parent_only_for_one_unambiguous_child() -> None:
+    assert review_service_module._source_region_id(
+        [{"id": 21, "mapped_question_id": "Q1(P1)"}],
+        "Q1",
+    ) == 21
+    assert review_service_module._source_region_id(
+        [
+            {"id": 21, "mapped_question_id": "Q1(P1)"},
+            {"id": 22, "mapped_question_id": "Q1(P2)"},
+        ],
+        "Q1",
+    ) == 0
+
+
+def test_scoring_item_types_come_from_rubric_and_parts_inherit_parent_type(
+    tmp_path: Path,
+) -> None:
+    db = DBManager(tmp_path / "grading.db")
+    db.initialize()
+    rubric_path = tmp_path / "rubric.json"
+    rubric_path.write_text(
+        json.dumps(
+            {
+                "questions": [
+                    {
+                        "question_id": "Q1",
+                        "question_type": "choice",
+                        "max_score": 5,
+                    },
+                    {
+                        "question_id": "Q2",
+                        "question_type": "fill_blank",
+                        "max_score": 6,
+                        "parts": [
+                            {"part_id": "Q2(P1)", "part_score": 2},
+                            {"part_id": "Q2(P2)", "part_score": 4},
+                        ],
+                    },
+                    {
+                        "question_id": "Q3",
+                        "max_score": 8,
+                    },
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    session_id = db.create_grading_session(
+        "Question type contract",
+        str(rubric_path),
+        "answer.json",
+    )
+    session = db.get_grading_session(session_id)
+    assert session is not None
+
+    score_map, _catalog, _resolved_ids, question_types = (
+        review_service_module._load_scoring_item_map(session, db)
+    )
+
+    assert score_map == {
+        "Q1": 5,
+        "Q2(P1)": 2,
+        "Q2(P2)": 4,
+        "Q3": 8,
+    }
+    assert question_types == {
+        "Q1": "choice",
+        "Q2(P1)": "fill_blank",
+        "Q2(P2)": "fill_blank",
+        "Q3": None,
+    }

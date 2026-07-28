@@ -1,14 +1,14 @@
 <template>
-  <aside class="review-shortcut-guide" aria-label="人工评分快捷键">
+  <aside class="review-shortcut-guide" aria-label="人工干预快捷键">
     <span class="review-shortcut-guide__label">快捷键</span>
     <dl class="review-shortcut-guide__list">
       <div>
-        <dt><kbd>/</kbd></dt>
-        <dd>搜索学生</dd>
+        <dt><kbd>Tab / Shift+Tab</kbd></dt>
+        <dd>下一位 / 上一位</dd>
       </div>
       <div>
-        <dt><kbd>J / K</kbd></dt>
-        <dd>下一份 / 上一份</dd>
+        <dt><kbd>Enter</kbd></dt>
+        <dd>下一位；最后一位保存本题</dd>
       </div>
     </dl>
   </aside>

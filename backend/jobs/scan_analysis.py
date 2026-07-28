@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import json
 import os
 import tempfile
@@ -37,9 +38,17 @@ def run_scan_analysis(
     config_revision: str | None = None,
     scan_batch_id: str | None = None,
     raise_if_cancelled: Callable[[], None] | None = None,
+    report: Callable[[float, str, str], None] | None = None,
 ) -> dict[str, object]:
     session_id = int(session_id)
     _check_cancelled(raise_if_cancelled)
+    _report_scan_progress(
+        report,
+        raise_if_cancelled,
+        0.06,
+        "准备文件",
+        "正在核对考试、模板和答卷文件",
+    )
     if db.get_grading_session(session_id) is None:
         raise ValueError(f"session not found: {session_id}")
     if not db.is_template_ready(session_id):
@@ -114,8 +123,29 @@ def run_scan_analysis(
         name_region=student_name_region_from_regions(regions),
         front_page_parity=front_page_parity,
     )
-    analysis = scanner.analyze(students)
+    analyze = scanner.analyze
+    if _accepts_keyword(analyze, "report"):
+        analysis = analyze(
+            students,
+            report=lambda progress, stage, detail="": _report_scan_progress(
+                report,
+                raise_if_cancelled,
+                progress,
+                stage,
+                detail,
+            ),
+        )
+    else:
+        # Existing test and extension scanners only accept the student list.
+        analysis = analyze(students)
     _check_cancelled(raise_if_cancelled)
+    _report_scan_progress(
+        report,
+        raise_if_cancelled,
+        0.97,
+        "生成结果",
+        "正在整理匹配结果和异常答卷",
+    )
     payload = analysis.to_dict() if isinstance(analysis, ScanAnalysis) else dict(analysis)
     payload["enhance_images"] = bool(enhance_images)
     payload["front_page_parity"] = front_page_parity
@@ -171,6 +201,15 @@ def run_scan_analysis(
             _require_current_scan_batch(session_work_dir, scan_batch_id)
             os.replace(temporary_path, output_path)
             temporary_path = None
+            if report is not None:
+                # Publishing is the atomic commit point. A cancellation that arrives
+                # after this replace must not turn the committed snapshot into a
+                # cancelled job.
+                report(
+                    0.98,
+                    "生成结果",
+                    f"预检结果已生成，共处理 {int(payload.get('total_pages') or 0)} 页",
+                )
     finally:
         if temporary_path is not None:
             temporary_path.unlink(missing_ok=True)
@@ -180,6 +219,30 @@ def run_scan_analysis(
         "scan_analysis_path": str(output_path),
         "summary": scan_analysis_summary(payload),
     }
+
+
+def _accepts_keyword(callable_value: Callable[..., Any], keyword: str) -> bool:
+    try:
+        parameters = inspect.signature(callable_value).parameters.values()
+    except (TypeError, ValueError):
+        return False
+    return any(
+        parameter.name == keyword
+        or parameter.kind is inspect.Parameter.VAR_KEYWORD
+        for parameter in parameters
+    )
+
+
+def _report_scan_progress(
+    report: Callable[[float, str, str], None] | None,
+    raise_if_cancelled: Callable[[], None] | None,
+    progress: float,
+    stage: str,
+    detail: str,
+) -> None:
+    _check_cancelled(raise_if_cancelled)
+    if report is not None:
+        report(progress, stage, detail)
 
 
 def scan_analysis_summary(payload: dict[str, Any]) -> dict[str, int]:

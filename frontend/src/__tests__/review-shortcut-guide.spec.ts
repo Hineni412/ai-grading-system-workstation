@@ -8,16 +8,16 @@ describe('ReviewShortcutGuide', () => {
     const host = document.createElement('div')
     const app = createApp(ReviewShortcutGuide)
     app.mount(host)
-    const guide = host.querySelector<HTMLElement>('[aria-label="人工评分快捷键"]')
+    const guide = host.querySelector<HTMLElement>('[aria-label="人工干预快捷键"]')
 
     expect(guide).not.toBeNull()
-    expect(guide?.querySelectorAll('dt')).toHaveLength(2)
-    expect(guide?.textContent).toContain('/')
-    expect(guide?.textContent).toContain('搜索学生')
-    expect(guide?.textContent).toContain('J / K')
-    expect(guide?.textContent).toContain('下一份 / 上一份')
-    expect(guide?.textContent).not.toContain('Enter')
-    expect(guide?.textContent).not.toContain('确认')
+    expect(
+      [...(guide?.querySelectorAll('dt') ?? [])].map((entry) => entry.textContent),
+    ).toEqual(['Tab / Shift+Tab', 'Enter'])
+    expect(guide?.textContent).toContain('Tab / Shift+Tab')
+    expect(guide?.textContent).toContain('下一位 / 上一位')
+    expect(guide?.textContent).toContain('Enter')
+    expect(guide?.textContent).toContain('最后一位保存本题')
 
     app.unmount()
   })

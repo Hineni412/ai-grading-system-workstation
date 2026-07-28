@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import type { RecentSessionSummary } from '../../api/workbench'
+import QuickArchiveButton from '../sessions/QuickArchiveButton.vue'
 
 defineProps<{
   sessions: RecentSessionSummary[]
@@ -8,6 +9,7 @@ defineProps<{
 
 defineEmits<{
   select: [sessionId: number]
+  archived: [sessionId: number]
 }>()
 
 function sessionStatus(status: string): string {
@@ -38,20 +40,26 @@ function displayTime(value: string | null): string {
     <p v-if="sessions.length === 0" class="workbench-empty-copy">暂无最近考试</p>
     <ul v-else class="recent-session-list">
       <li v-for="item in sessions" :key="item.session.id">
-        <button
-          type="button"
+        <div
           class="recent-session"
           :data-session-id="item.session.id"
           :aria-current="item.session.id === currentSessionId ? 'true' : undefined"
-          @click="$emit('select', item.session.id)"
         >
-          <span class="recent-session__name">{{ item.session.name }}</span>
-          <span class="recent-session__meta">
-            {{ sessionStatus(item.session.status) }} · 已批改
-            {{ item.progress.graded_papers }} / {{ item.progress.total_papers }} 份
-          </span>
-          <span class="recent-session__time">{{ displayTime(item.session.updated_at) }}</span>
-        </button>
+          <button type="button" class="recent-session__select" @click="$emit('select', item.session.id)">
+            <span class="recent-session__name">{{ item.session.name }}</span>
+            <span class="recent-session__meta">
+              {{ sessionStatus(item.session.status) }} · 已批改
+              {{ item.progress.graded_papers }} / {{ item.progress.total_papers }} 份
+            </span>
+            <span class="recent-session__time">{{ displayTime(item.session.updated_at) }}</span>
+          </button>
+          <QuickArchiveButton
+            compact
+            :session-id="item.session.id"
+            :session-name="item.session.name"
+            @archived="$emit('archived', $event)"
+          />
+        </div>
       </li>
     </ul>
   </section>

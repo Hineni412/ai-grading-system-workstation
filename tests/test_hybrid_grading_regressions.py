@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 from PIL import Image
 
+import hybrid_batch_grading_service as hybrid
 from ai_grader import AIGrader
 from hybrid_batch_grading_service import (
     MajorQuestionAtlasBuilder,
@@ -184,6 +185,36 @@ def test_atlas_uses_shared_groups_and_cross_page_parent_fallback(tmp_path: Path)
     assert by_part["12-1"]["tile_label"] != by_part["12-2"]["tile_label"]
 
 
+def test_atlas_labels_use_a_font_that_can_render_chinese(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    drawn_fonts: list[object | None] = []
+    original_text = hybrid.ImageDraw.ImageDraw.text
+
+    def capture_text(self, xy, text, *args, **kwargs):
+        drawn_fonts.append(kwargs.get("font"))
+        return original_text(self, xy, text, *args, **kwargs)
+
+    monkeypatch.setattr(hybrid.ImageDraw.ImageDraw, "text", capture_text)
+    tile = Image.new("RGB", (120, 80), "white")
+    try:
+        hybrid._save_atlas_with_labels(
+            ["01. 姓名=样卷A · Q10(1)"],
+            [tile],
+            tmp_path / "atlas.jpg",
+            max_width=400,
+            jpeg_quality=90,
+        )
+    finally:
+        tile.close()
+
+    assert len(drawn_fonts) == 1
+    font = drawn_fonts[0]
+    assert font is not None
+    assert bytes(font.getmask("样卷A")) != bytes(font.getmask("□□A"))
+
+
 def test_hybrid_prompt_describes_shared_tile_scoring_rules() -> None:
     spec = MajorQuestionSpec(
         question_id="Q12",
@@ -226,9 +257,39 @@ def test_hybrid_prompt_describes_shared_tile_scoring_rules() -> None:
     prompts = build_hybrid_major_prompt(spec, manifest)
     joined = "\n".join(prompts)
 
-    assert "Shared tiles may contain vertically, horizontally, or continuously written answers." in joined
-    assert "Score each targeted part exactly once and do not duplicate evidence across parts." in joined
-    assert "If boundaries are unclear, return all implicated targeted parts with low confidence and needs_human_review=true." in joined
+    assert "同一切片中可能存在纵向、横向或连续书写的多个答案。" in joined
+    assert "每个目标题只能评分一次，不得在不同小问之间重复使用同一份作答证据。" in joined
+    assert "若小问边界不清，必须返回所有可能受影响的目标题" in joined
+    assert "needs_human_review=true" in joined
+
+
+def test_hybrid_prompt_keeps_unique_grading_constraints_in_consistent_chinese() -> None:
+    system_prompt, _static_prompt, _dynamic_prompt = build_hybrid_major_prompt(
+        _multipart_spec(),
+        _manifest(),
+    )
+
+    for required_rule in (
+        "只返回该学生的目标题",
+        "不得因解题路径不同而扣分",
+        "按 deduction_policy 或 presentation_rules 扣分",
+        "prompt_injection_detected=true",
+        "observed_answer 只能填写未被涂抹/作废区域中的有效答案",
+        "不要输出知识点或技能字段",
+        "proof_obligations 是必须完成的证明责任",
+        "必须判 0 分或受 answer_only_max_score 限制",
+    ):
+        assert required_rule in system_prompt
+
+    for mixed_fragment in (
+        "and 学生试卷",
+        "of strings",
+        "of students' work",
+        "Shared tiles may contain",
+        "Score each targeted part",
+        "If boundaries are unclear",
+    ):
+        assert mixed_fragment not in system_prompt
 
 
 def test_subjective_failure_uses_one_request_slot_without_hidden_retry(

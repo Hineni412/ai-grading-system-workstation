@@ -637,6 +637,7 @@ def list_question_facets(
     exam_types: Annotated[list[str] | None, Query()] = None,
     grades: Annotated[list[str] | None, Query()] = None,
     exam_scopes: Annotated[list[str] | None, Query()] = None,
+    curriculum_sections: Annotated[list[str] | None, Query()] = None,
     tag_status: Literal["all", "tagged", "untagged"] = "all",
     service: QuestionBankReadService = Depends(get_question_bank_read_service),
 ) -> QuestionFacetsResponse:
@@ -662,6 +663,7 @@ def list_question_facets(
                 exam_types=tuple(exam_types or ()),
                 grades=tuple(grades or ()),
                 exam_scopes=tuple(exam_scopes or ()),
+                curriculum_sections=tuple(curriculum_sections or ()),
                 tag_status=tag_status,
             )
         )
@@ -696,6 +698,7 @@ def list_questions(
     exam_types: Annotated[list[str] | None, Query()] = None,
     grades: Annotated[list[str] | None, Query()] = None,
     exam_scopes: Annotated[list[str] | None, Query()] = None,
+    curriculum_sections: Annotated[list[str] | None, Query()] = None,
     tag_status: Literal["all", "tagged", "untagged"] = "all",
     sort: Literal[
         "newest",
@@ -732,6 +735,7 @@ def list_questions(
                 exam_types=tuple(exam_types or ()),
                 grades=tuple(grades or ()),
                 exam_scopes=tuple(exam_scopes or ()),
+                curriculum_sections=tuple(curriculum_sections or ()),
                 tag_status=tag_status,
                 sort=sort,
             )

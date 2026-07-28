@@ -10,6 +10,11 @@
   width: 100%;
 }
 
+.assembly.is-workspace-wide {
+  max-width: none;
+  padding-inline: 10px;
+}
+
 .assembly__hero {
   align-items: flex-end;
   display: flex;
@@ -426,11 +431,17 @@
   padding: 5px 6px;
   text-align: left;
   width: 100%;
+  cursor: pointer;
 }
 
-.assembly-curriculum-sections button:disabled {
-  cursor: not-allowed;
-  opacity: .76;
+.assembly-curriculum-sections button:hover {
+  background: #f4f6f6;
+}
+
+.assembly-curriculum-sections button.is-active {
+  background: rgb(19 94 107 / 10%);
+  color: var(--color-accent, #135e6b);
+  font-weight: 650;
 }
 
 .assembly-curriculum-sections button span {
@@ -438,7 +449,7 @@
 }
 
 .assembly-curriculum-sections button small {
-  color: #9a7540;
+  color: var(--color-text-tertiary, #6b7684);
   font-size: 8px;
   white-space: nowrap;
 }
@@ -1201,7 +1212,7 @@
   align-items: start;
   display: grid;
   gap: 14px;
-  grid-template-columns: 300px minmax(520px, 1fr) 270px;
+  grid-template-columns: 280px minmax(600px, 1fr) 250px;
   min-width: 0;
 }
 
@@ -1394,7 +1405,7 @@
   border: 1px solid #dfe2e4;
   box-shadow: 0 8px 28px rgb(28 39 51 / 7%);
   min-height: 800px;
-  padding: clamp(28px, 5vw, 60px);
+  padding: clamp(24px, 3.4vw, 44px);
 }
 
 .assembly-sheet > header {
@@ -1406,7 +1417,7 @@
 
 .assembly-sheet > header h2 {
   font-family: "Songti SC", "SimSun", serif;
-  font-size: 24px;
+  font-size: 21px;
   margin: 0 0 12px;
 }
 
@@ -1424,14 +1435,14 @@
 .assembly-sheet > section > h3 {
   border-bottom: 1px solid #dfe2e4;
   font-family: "Songti SC", "SimSun", serif;
-  font-size: 17px;
+  font-size: 15px;
   margin: 0 0 18px;
   padding-bottom: 8px;
 }
 
 .assembly-sheet ol {
   display: grid;
-  gap: 24px;
+  gap: 18px;
   margin: 0;
   padding-left: 28px;
 }
@@ -1645,7 +1656,8 @@
 }
 
 @media (max-width: 760px) {
-  .assembly {
+  .assembly,
+  .assembly.is-workspace-wide {
     padding: var(--space-4, 16px);
   }
 

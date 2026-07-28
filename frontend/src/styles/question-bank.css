@@ -224,7 +224,8 @@
 .qb-field input,
 .qb-field select,
 .qb-tag-row input,
-.qb-tag-row select {
+.qb-tag-row select,
+.qb-section-picker select {
   background: #fff;
   border: 1px solid var(--color-border-strong, #d8dbdf);
   border-radius: 8px;
@@ -239,7 +240,8 @@
 .qb-field input:focus,
 .qb-field select:focus,
 .qb-tag-row input:focus,
-.qb-tag-row select:focus {
+.qb-tag-row select:focus,
+.qb-section-picker select:focus {
   border-color: var(--color-accent, #135e6b);
   box-shadow: 0 0 0 3px rgb(19 94 107 / 10%);
   outline: none;
@@ -750,6 +752,21 @@
   display: grid;
   gap: 7px;
   margin: 12px 0;
+}
+
+.qb-section-picker {
+  display: grid;
+  gap: 6px;
+  margin: 12px 0;
+  color: var(--color-text-secondary, #5c6672);
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.qb-section-picker small {
+  color: var(--color-text-tertiary, #6b7684);
+  font-weight: 400;
+  line-height: 1.5;
 }
 
 .qb-tag-row {

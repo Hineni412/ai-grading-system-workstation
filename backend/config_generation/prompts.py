@@ -69,7 +69,7 @@ def build_manual_structure_refinement_prompt(
         "您正在对教师编辑过的评分标准进行精修/对齐。请仅返回严格的 JSON 数据。\n"
         "硬性要求：\n"
         "1) 必须保留每一个已有的 rubric.questions[].question_id。\n"
-        "2) 必须保留每一个已有的 parts[].part_id；绝对不能合并、删除或修改教师创建 the parts 部分。\n"
+        "2) 必须保留每一个已有的 parts[].part_id；绝对不能合并、删除或修改教师创建的 parts[] 小问结构。\n"
         "3) answer_key.questions[].parts 必须通过 part_id 与 rubric 中的 parts 保持一致对齐。\n"
         "4) 补全缺失的答案、accepted_forms、解析、步骤分、证明扣分项和证据链规则。\n"
         "5) 保持整张试卷总分 total_score 和各题 max_score 的总和精确等于 100。\n"

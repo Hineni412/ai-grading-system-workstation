@@ -76,6 +76,12 @@ describe('question assembly view', () => {
           total_pages: 1,
         })
       }
+      if (
+        url === '/api/question-bank/curriculum'
+        || url.startsWith('/api/question-bank/facets?')
+      ) {
+        return json({}, 400)
+      }
       if (url.startsWith('/api/question-assembly/questions?')) {
         return json({
           items: [
@@ -119,6 +125,7 @@ describe('question assembly view', () => {
     mounted.push(app)
     await settle()
 
+    expect(host.querySelector('.assembly')?.classList.contains('is-workspace-wide')).toBe(true)
     await vi.waitFor(() => expect(host.textContent).toContain('一次函数图像题'))
     await vi.waitFor(() => expect(useAssemblyStore(pinia).loadState).not.toBe('loading'))
     const add = [...host.querySelectorAll<HTMLButtonElement>('button')]

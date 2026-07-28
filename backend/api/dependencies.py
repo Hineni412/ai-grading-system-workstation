@@ -26,6 +26,7 @@ from backend.model_profiles import ModelProfileService
 from backend.ops.service import OpsSelfCheckService
 from backend.ops.plan_store import OpsPlanStore
 from backend.ops.write_service import OpsWriteService
+from backend.results_center.service import ResultsCenterService
 from backend.review.service import ReviewApplicationService
 from backend.students import StudentRosterModule
 from backend.repositories.sessions import SessionRepositoryGateway
@@ -302,6 +303,14 @@ def get_review_application_service(
     return ReviewApplicationService(db, manual_review_service)
 
 
+def get_results_center_service(
+    review_service: ReviewApplicationService = Depends(
+        get_review_application_service
+    ),
+) -> ResultsCenterService:
+    return ResultsCenterService(review_service)
+
+
 def create_job_manager(path_manager: PathManager | None = None) -> JobManager:
     paths = path_manager or get_path_manager()
     upload_config_dir = getattr(
@@ -356,12 +365,36 @@ def get_scan_grading_workspace(
     exams_dir: Path = Depends(get_exams_dir),
     templates_dir: Path = Depends(get_templates_dir),
     data_root: Path = Depends(get_data_root),
+    question_bank_db_path: Path = Depends(get_question_bank_db_path),
 ) -> ScanGradingWorkspace:
+    def reset_replaced_scan_data(session_id: int) -> list[str]:
+        from session_cleanup import (
+            clear_question_bank_session_references,
+            question_bank_session_reference_impact,
+        )
+
+        impact = question_bank_session_reference_impact(
+            question_bank_db_path,
+            session_id,
+        )
+        if impact["blocking_training_tasks"]:
+            from session_cleanup import SessionDerivedTrainingDataExists
+
+            raise SessionDerivedTrainingDataExists(
+                list(impact["blocking_training_tasks"])
+            )
+        paths = db.collect_session_reupload_storage_paths(session_id)
+        db.reset_session_for_scan_replacement(session_id)
+        clear_question_bank_session_references(question_bank_db_path, session_id)
+        return paths
+
     return ScanGradingWorkspace(
         exams_root=exams_dir,
         templates_root=templates_dir,
         grading_db_path=db.db_path,
         job_manager=manager,
+        data_root=data_root,
+        replacement_reset=reset_replaced_scan_data,
         config_fingerprint_resolver=lambda session_id, grading_mode: (
             session_grading_config_fingerprint(
                 db=db,

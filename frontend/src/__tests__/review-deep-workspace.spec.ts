@@ -1,4 +1,4 @@
-import { createApp, defineComponent, h, type App } from 'vue'
+import { createApp, defineComponent, h, nextTick, reactive, type App } from 'vue'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { ReviewItem } from '../api/review'
@@ -6,7 +6,13 @@ import type { ReviewItem } from '../api/review'
 vi.mock('../components/review/ReviewEvidenceViewer.vue', () => ({
   default: defineComponent({
     name: 'EvidenceStub',
-    setup: () => () => h('div', { 'data-testid': 'evidence-stub' }, '五类证据'),
+    props: {
+      source: { type: String, required: true },
+    },
+    setup: (props) => () => h('div', {
+      'data-testid': 'evidence-stub',
+      'data-source': props.source,
+    }, '五类证据'),
   }),
 }))
 
@@ -56,12 +62,12 @@ afterEach(() => {
 })
 
 describe('review deep workspace', () => {
-  it('is an in-flow replacement with explicit return and confirmation events', () => {
+  it('keeps evidence source controls beside the student and forwards the selected source', async () => {
     const back = vi.fn()
     const confirmed = vi.fn()
     const registerAnnotationRetry = vi.fn()
     const host = document.createElement('div')
-    const app = createApp(ReviewDeepWorkspace, {
+    const props = reactive({
       item,
       previousItem: null,
       nextItem: null,
@@ -69,6 +75,10 @@ describe('review deep workspace', () => {
       onBack: back,
       onConfirmed: confirmed,
     })
+    const Root = defineComponent({
+      setup: () => () => h(ReviewDeepWorkspace, props),
+    })
+    const app = createApp(Root)
     app.mount(host)
     mountedApps.push(app)
 
@@ -79,6 +89,30 @@ describe('review deep workspace', () => {
     expect(workspace.textContent).toContain('返回后保留批次、筛选和未确认草稿')
     expect(host.querySelector('[data-testid="evidence-stub"]')).not.toBeNull()
     expect(host.querySelector('[data-testid="scoring-stub"]')).not.toBeNull()
+    const sourceGroup = host.querySelector<HTMLElement>('[aria-label="证据来源"]')!
+    expect(sourceGroup.closest('.review-deep-workspace__header')).not.toBeNull()
+    expect(sourceGroup.textContent).toContain('裁剪证据')
+    expect(sourceGroup.textContent).toContain('原卷正面')
+    expect(host.querySelector('[data-testid="evidence-stub"]')?.getAttribute('data-source'))
+      .toBe('crop')
+
+    const originalFront = [...sourceGroup.querySelectorAll<HTMLButtonElement>('button')]
+      .find((button) => button.textContent?.trim() === '原卷正面')!
+    originalFront.click()
+    await nextTick()
+    expect(originalFront.getAttribute('aria-pressed')).toBe('true')
+    expect(host.querySelector('[data-testid="evidence-stub"]')?.getAttribute('data-source'))
+      .toBe('original_front')
+
+    props.item = {
+      ...item,
+      result_id: 12,
+      detail_id: 22,
+      student_name: '下一位学生',
+    }
+    await nextTick()
+    expect(host.querySelector('[data-testid="evidence-stub"]')?.getAttribute('data-source'))
+      .toBe('crop')
 
     host.querySelector<HTMLButtonElement>('[data-testid="back-to-batch"]')!.click()
     host.querySelector<HTMLButtonElement>('[data-testid="scoring-stub"]')!.click()

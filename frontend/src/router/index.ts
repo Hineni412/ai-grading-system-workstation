@@ -8,6 +8,7 @@ import {
   questionAssemblyRouteDefinition,
   trainingRouteDefinition,
   filesRouteDefinition,
+  resultsRouteDefinition,
   templateRegionRouteDefinition,
   gradingRunRouteDefinition,
   knowledgeGraphRouteDefinition,
@@ -118,13 +119,25 @@ const routes: RouteRecordRaw[] = [
     },
   },
   {
-    path: filesRouteDefinition.path,
-    name: filesRouteDefinition.id,
-    component: () => import('../views/FileCenterView.vue'),
+    path: resultsRouteDefinition.path,
+    name: resultsRouteDefinition.id,
+    component: () => import('../views/ResultsCenterView.vue'),
     meta: {
-      title: filesRouteDefinition.title,
-      description: filesRouteDefinition.description,
-      breadcrumb: filesRouteDefinition.breadcrumb,
+      title: resultsRouteDefinition.title,
+      description: resultsRouteDefinition.description,
+      breadcrumb: resultsRouteDefinition.breadcrumb,
+    },
+  },
+  {
+    path: filesRouteDefinition.path,
+    redirect: (to) => ({
+      path: resultsRouteDefinition.path,
+      query: { ...to.query, tab: 'exports' },
+    }),
+    meta: {
+      title: resultsRouteDefinition.title,
+      description: resultsRouteDefinition.description,
+      breadcrumb: `${resultsRouteDefinition.breadcrumb} / 导出文件`,
     },
   },
   {

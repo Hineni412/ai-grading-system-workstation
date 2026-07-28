@@ -8,15 +8,12 @@ const props = defineProps<{
   reviewStatus: string
   anomalyValue: string | null
   anomalyStatus: string
-  jobValue: string | null
-  jobStatus: string
 }>()
 
 const emit = defineEmits<{
   openGrading: []
   openReview: []
   openAnomalies: []
-  openJobs: []
 }>()
 
 const nodes = computed(() => [{
@@ -37,12 +34,6 @@ const nodes = computed(() => [{
   status: props.anomalyStatus,
   action: '查看异常',
   open: () => emit('openAnomalies'),
-}, {
-  label: '最近任务',
-  value: props.jobValue,
-  status: props.jobStatus,
-  action: '查看任务',
-  open: () => emit('openJobs'),
 }])
 </script>
 
