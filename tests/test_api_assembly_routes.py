@@ -147,7 +147,7 @@ def _exercise_assembly_draft_and_bulk_questions_use_safe_public_contract(
 
     submit = client.post(
         "/api/question-assembly/export",
-        json={"draft_revision": export_ready.json()["revision"], "format": "markdown"},
+        json={"draft_revision": export_ready.json()["revision"], "format": "docx"},
     )
     assert submit.status_code == 202
     manager.wait(submit.json()["id"], timeout=5)
@@ -158,7 +158,7 @@ def _exercise_assembly_draft_and_bulk_questions_use_safe_public_contract(
     assert body["status"] == "succeeded"
     assert body["payload"] == {
         "draft_revision": export_ready.json()["revision"],
-        "format": "markdown",
+        "format": "docx",
         "question_count": 2,
     }
     assert body["result"]["question_count"] == 2
@@ -171,7 +171,7 @@ def _exercise_assembly_draft_and_bulk_questions_use_safe_public_contract(
     download = client.get(body["result"]["download_url"])
     assert download.status_code == 200
     assert download.headers["cache-control"] == "no-store"
-    assert "匿名练习" in download.text
+    assert download.content.startswith(b"PK")
 
     after_export = client.get("/api/question-assembly/draft").json()
     records = client.get("/api/question-assembly/records").json()
@@ -202,7 +202,7 @@ def test_assembly_export_rejects_stale_revision_and_generic_submit(tmp_path: Pat
         ).json()
         stale = client.post(
             "/api/question-assembly/export",
-            json={"draft_revision": initial["revision"], "format": "markdown"},
+            json={"draft_revision": initial["revision"], "format": "docx"},
         )
         assert stale.status_code == 409
         assert stale.json()["error"]["code"] == "assembly_draft_conflict"
@@ -213,7 +213,7 @@ def test_assembly_export_rejects_stale_revision_and_generic_submit(tmp_path: Pat
                 "payload": {
                     "draft_revision": saved["revision"],
                     "draft": saved,
-                    "format": "markdown",
+                    "format": "docx",
                 }
             },
         )
@@ -242,7 +242,7 @@ def test_assembly_export_retry_reuses_private_payload_without_exposing_draft(
         ).json()
         submit = client.post(
             "/api/question-assembly/export",
-            json={"draft_revision": failed_draft["revision"], "format": "markdown"},
+            json={"draft_revision": failed_draft["revision"], "format": "docx"},
         )
         manager.wait(submit.json()["id"], timeout=5)
         failed_job = client.get(f"/api/jobs/{submit.json()['id']}").json()
@@ -255,7 +255,7 @@ def test_assembly_export_retry_reuses_private_payload_without_exposing_draft(
         assert retry.status_code == 202
         assert retry.json()["payload"] == {
             "draft_revision": failed_draft["revision"],
-            "format": "markdown",
+            "format": "docx",
             "question_count": 1,
             "retry_of_job_id": submit.json()["id"],
         }
@@ -275,7 +275,7 @@ def test_assembly_export_retry_reuses_private_payload_without_exposing_draft(
         ).json()
         good = client.post(
             "/api/question-assembly/export",
-            json={"draft_revision": good_draft["revision"], "format": "markdown"},
+            json={"draft_revision": good_draft["revision"], "format": "docx"},
         )
         manager.wait(good.json()["id"], timeout=5)
         rejected = client.post(

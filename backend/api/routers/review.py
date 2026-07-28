@@ -21,7 +21,13 @@ from backend.api.schemas.review import (
     ReviewQuestionListResponse,
     ReviewQuestionSummary,
 )
+from backend.api.schemas.review_rubric import ReviewRubricSectionResponse
 from backend.api.schemas.media import ReviewMediaLinksResponse
+from backend.review.rubric import (
+    ReviewRubricConfigError,
+    ReviewRubricQuestionConflictError,
+    load_review_rubric_section,
+)
 from backend.review.service import (
     ReviewApplicationService,
     ReviewConfirmationInput,
@@ -108,6 +114,43 @@ def list_review_question_items(
         for item in review_items
     ]
     return ReviewItemListResponse(items=items, total=len(items))
+
+
+@router.get(
+    "/sessions/{session_id}/review/questions/{question_id}/rubric",
+    response_model=ReviewRubricSectionResponse | None,
+)
+def get_review_question_rubric(
+    session_id: int,
+    question_id: str,
+    db: GradingRepositoryAccess = Depends(get_grading_db),
+) -> ReviewRubricSectionResponse | None:
+    _require_session(db, session_id)
+    try:
+        section = load_review_rubric_section(
+            db,
+            session_id,
+            question_id,
+        )
+    except ReviewRubricQuestionConflictError as exc:
+        raise ApiError(
+            409,
+            "review_rubric_question_conflict",
+            "The scoring configuration contains ambiguous question identifiers",
+            {"session_id": int(session_id), "question_id": question_id},
+        ) from exc
+    except ReviewRubricConfigError as exc:
+        raise ApiError(
+            500,
+            "review_rubric_unavailable",
+            "The scoring standard is unavailable",
+            {"session_id": int(session_id), "question_id": question_id},
+        ) from exc
+    if section is None:
+        return None
+    return ReviewRubricSectionResponse.model_validate(
+        asdict(section),
+    )
 
 
 @router.post(
@@ -199,11 +242,20 @@ def _review_item_response(item: object) -> ReviewItemResponse:
             if result_id is not None
             else None
         )
+        try:
+            source_region_id = int(metadata.get("source_region_id") or 0)
+        except (TypeError, ValueError):
+            source_region_id = 0
+        crop_url = (
+            f"/api/sessions/{session_id}/review/preflight/"
+            f"{target_type}/{target_id}/{question_id}/crop"
+        )
+        if source_region_id > 0:
+            crop_url = (
+                f"{crop_url}?source_region_id={source_region_id}"
+            )
         values["media"] = ReviewMediaLinksResponse(
-            crop_url=(
-                f"/api/sessions/{session_id}/review/preflight/"
-                f"{target_type}/{target_id}/{question_id}/crop"
-            ),
+            crop_url=crop_url,
             original_front_url=str(
                 metadata.get("preflight_front_media_url") or ""
             ),

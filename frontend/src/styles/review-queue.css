@@ -200,7 +200,7 @@
 .review-contact-sheet {
   display: grid;
   min-width: 0;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: minmax(0, 1fr);
   border-block-end: var(--border-width) solid var(--color-border-default);
   background: var(--color-bg-surface);
 }
@@ -213,6 +213,20 @@
   padding: var(--space-4);
   border-inline-end: var(--border-width) solid var(--color-border-default);
   border-block-end: var(--border-width) solid var(--color-border-default);
+}
+
+.review-answer-sheet[data-score-status="ungraded"] {
+  border-inline-start: var(--border-selected-width) solid var(--color-info);
+}
+
+.review-answer-sheet[data-score-status="ai_review"] {
+  border-inline-start: var(--border-selected-width) solid var(--color-warning);
+  background: var(--color-warning-subtle);
+}
+
+.review-answer-sheet[data-score-status="failed"] {
+  border-inline-start: var(--border-selected-width) solid var(--color-danger);
+  background: var(--color-danger-subtle);
 }
 
 .review-answer-sheet__identity {
@@ -416,15 +430,19 @@
   opacity: var(--opacity-disabled);
 }
 
-@media (min-width: 1366px) {
+@media (min-width: 720px) {
   .review-contact-sheet {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 
-@media (min-width: 1760px) {
-  .review-contact-sheet {
-    grid-template-columns: repeat(4, minmax(0, 1fr));
+@media (min-width: 1366px) {
+  .review-contact-sheet[data-question-layout="compact"] {
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+  }
+
+  .review-contact-sheet[data-question-layout="expanded"] {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 

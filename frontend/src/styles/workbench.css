@@ -68,7 +68,7 @@
 .workbench-progress-rail {
   position: relative;
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   margin: 0;
   padding: var(--space-4) 0;
   border-block: var(--border-width) solid var(--color-border-default);
@@ -168,7 +168,7 @@
 .workbench-primary-button,
 .workbench-secondary-button,
 .workbench-link-button,
-.recent-session,
+.recent-session__select,
 .question-rate,
 .tag-node {
   font: inherit;
@@ -224,7 +224,7 @@
 .workbench-secondary-button:focus-visible,
 .workbench-link-button:focus-visible,
 .workbench-field select:focus-visible,
-.recent-session:focus-visible,
+.recent-session__select:focus-visible,
 .question-rate:focus-visible,
 .tag-node:focus-visible,
 .student-table__actions a:focus-visible,
@@ -387,13 +387,24 @@
 
 .recent-session {
   display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
   width: 100%;
-  gap: var(--space-1);
-  padding: var(--space-3);
+  gap: var(--space-2);
   border: var(--border-width) solid transparent;
   border-inline-start: var(--border-selected-width) solid transparent;
   background: transparent;
   color: var(--color-text-primary);
+  text-align: start;
+}
+
+.recent-session__select {
+  display: grid;
+  min-width: 0;
+  gap: var(--space-1);
+  padding: var(--space-3);
+  border: 0;
+  background: transparent;
+  color: inherit;
   text-align: start;
 }
 

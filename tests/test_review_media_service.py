@@ -830,3 +830,234 @@ def test_review_media_rejects_disallowed_source_extension(tmp_path: Path) -> Non
 
     with pytest.raises(ControlledFileTypeError):
         seed.service.render_detail_crop(seed.session_id, seed.result_id, seed.detail_id)
+
+
+@pytest.mark.parametrize(
+    ("stored_question_id", "requested_question_id"),
+    [
+        ("Q1(1)", "Q1(P1)"),
+        ("Q1(P1)", "Q1(1)"),
+    ],
+)
+def test_preflight_crop_resolves_historical_and_current_part_aliases(
+    tmp_path: Path,
+    stored_question_id: str,
+    requested_question_id: str,
+) -> None:
+    seed = _seed_media(tmp_path)
+    with sqlite3.connect(seed.db.db_path) as conn:
+        conn.execute(
+            """
+            UPDATE answer_regions
+            SET mapped_question_id = ?
+            WHERE session_id = ?
+            """,
+            (stored_question_id, seed.session_id),
+        )
+        conn.commit()
+
+    payload = seed.service.render_preflight_crop(
+        seed.session_id,
+        requested_question_id,
+        front_source=seed.front_path,
+        back_source=seed.back_path,
+    )
+
+    assert payload.startswith(b"\xff\xd8")
+
+
+def test_preflight_crop_uses_only_an_owned_compatible_source_region(
+    tmp_path: Path,
+) -> None:
+    from backend.media.service import ReviewMediaNotFound
+
+    seed = _seed_media(tmp_path)
+    with sqlite3.connect(seed.db.db_path) as conn:
+        conn.execute(
+            """
+            UPDATE answer_regions
+            SET mapped_question_id = 'Q1(P1)'
+            WHERE session_id = ?
+            """,
+            (seed.session_id,),
+        )
+        owned_region_id = int(
+            conn.execute(
+                "SELECT id FROM answer_regions WHERE session_id = ?",
+                (seed.session_id,),
+            ).fetchone()[0]
+        )
+        conn.commit()
+
+    payload = seed.service.render_preflight_crop(
+        seed.session_id,
+        "Q1(1)",
+        source_region_id=owned_region_id,
+        front_source=seed.front_path,
+        back_source=seed.back_path,
+    )
+    assert payload.startswith(b"\xff\xd8")
+
+    with pytest.raises(ReviewMediaNotFound):
+        seed.service.render_preflight_crop(
+            seed.session_id,
+            "Q1(P2)",
+            source_region_id=owned_region_id,
+            front_source=seed.front_path,
+            back_source=seed.back_path,
+        )
+
+    foreign_session_id = seed.db.create_grading_session(
+        "Foreign region",
+        "foreign-rubric.json",
+        "foreign-answer.json",
+    )
+    foreign_template_id = seed.db.upsert_session_template(
+        foreign_session_id,
+        str(seed.front_path),
+        str(seed.back_path),
+    )
+    seed.db.add_answer_region(
+        foreign_session_id,
+        foreign_template_id,
+        {
+            "region_uuid": "foreign-region-q1-p1",
+            "page": "front",
+            "region_order": 1,
+            "x": 80,
+            "y": 60,
+            "w": 160,
+            "h": 100,
+            "mapped_question_id": "Q1(P1)",
+            "mapping_status": "manual",
+            "is_confirmed": True,
+        },
+    )
+    foreign_region_id = int(
+        seed.db.list_answer_regions(foreign_session_id)[0]["id"]
+    )
+
+    with pytest.raises(ReviewMediaNotFound):
+        seed.service.render_preflight_crop(
+            seed.session_id,
+            "Q1(P1)",
+            source_region_id=foreign_region_id,
+            front_source=seed.front_path,
+            back_source=seed.back_path,
+        )
+
+
+def test_preflight_crop_preserves_the_owned_region_page(
+    tmp_path: Path,
+) -> None:
+    from backend.media.service import ReviewMediaNotFound
+
+    seed = _seed_media(tmp_path)
+    with sqlite3.connect(seed.db.db_path) as conn:
+        conn.execute(
+            """
+            UPDATE answer_regions
+            SET page = 'back', mapped_question_id = 'Q1(P1)'
+            WHERE session_id = ?
+            """,
+            (seed.session_id,),
+        )
+        region_id = int(
+            conn.execute(
+                "SELECT id FROM answer_regions WHERE session_id = ?",
+                (seed.session_id,),
+            ).fetchone()[0]
+        )
+        conn.commit()
+
+    with pytest.raises(ReviewMediaNotFound):
+        seed.service.render_preflight_crop(
+            seed.session_id,
+            "Q1(P1)",
+            source_region_id=region_id,
+            front_source=seed.front_path,
+            back_source=None,
+        )
+
+    payload = seed.service.render_preflight_crop(
+        seed.session_id,
+        "Q1(P1)",
+        source_region_id=region_id,
+        front_source=seed.front_path,
+        back_source=seed.back_path,
+    )
+    assert payload.startswith(b"\xff\xd8")
+
+
+def test_preflight_crop_uses_a_parent_id_only_for_one_unambiguous_child(
+    tmp_path: Path,
+) -> None:
+    from backend.media.service import ReviewMediaNotFound
+
+    seed = _seed_media(tmp_path)
+    with sqlite3.connect(seed.db.db_path) as conn:
+        conn.execute(
+            """
+            UPDATE answer_regions
+            SET mapped_question_id = 'Q1(P1)'
+            WHERE session_id = ?
+            """,
+            (seed.session_id,),
+        )
+        first_region_id = int(
+            conn.execute(
+                "SELECT id FROM answer_regions WHERE session_id = ?",
+                (seed.session_id,),
+            ).fetchone()[0]
+        )
+        conn.commit()
+
+    by_question = seed.service.render_preflight_crop(
+        seed.session_id,
+        "Q1",
+        front_source=seed.front_path,
+        back_source=seed.back_path,
+    )
+    by_owned_region = seed.service.render_preflight_crop(
+        seed.session_id,
+        "Q1",
+        source_region_id=first_region_id,
+        front_source=seed.front_path,
+        back_source=seed.back_path,
+    )
+    assert by_question.startswith(b"\xff\xd8")
+    assert by_owned_region.startswith(b"\xff\xd8")
+
+    template_id = int(seed.db.get_session_template(seed.session_id)["id"])
+    seed.db.add_answer_region(
+        seed.session_id,
+        template_id,
+        {
+            "region_uuid": "region-q1-p2",
+            "page": "front",
+            "region_order": 2,
+            "x": 250,
+            "y": 60,
+            "w": 100,
+            "h": 100,
+            "mapped_question_id": "Q1(P2)",
+            "mapping_status": "manual",
+            "is_confirmed": True,
+        },
+    )
+
+    with pytest.raises(ReviewMediaNotFound):
+        seed.service.render_preflight_crop(
+            seed.session_id,
+            "Q1",
+            front_source=seed.front_path,
+            back_source=seed.back_path,
+        )
+    with pytest.raises(ReviewMediaNotFound):
+        seed.service.render_preflight_crop(
+            seed.session_id,
+            "Q1",
+            source_region_id=first_region_id,
+            front_source=seed.front_path,
+            back_source=seed.back_path,
+        )

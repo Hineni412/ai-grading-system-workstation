@@ -82,7 +82,7 @@ async function mountView(selectedSessionId: number | null = 7) {
     loadState: 'ready',
   })
   const router = createAppRouter(createMemoryHistory())
-  await router.push('/files')
+  await router.push('/results?tab=exports')
   await router.isReady()
   const host = document.createElement('div')
   document.body.append(host)
@@ -216,10 +216,19 @@ beforeEach(() => {
     blob: new Blob(['report']),
     filename: '七年级成绩.xlsx',
   })
-  vi.stubGlobal('URL', {
-    createObjectURL: vi.fn(() => 'blob:download'),
-    revokeObjectURL: vi.fn(),
+  const NativeURL = globalThis.URL
+  class TestURL extends NativeURL {}
+  Object.defineProperties(TestURL, {
+    createObjectURL: {
+      configurable: true,
+      value: vi.fn(() => 'blob:download'),
+    },
+    revokeObjectURL: {
+      configurable: true,
+      value: vi.fn(),
+    },
   })
+  vi.stubGlobal('URL', TestURL)
   vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {})
 })
 

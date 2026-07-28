@@ -23,6 +23,7 @@ EXCLUDED_DIR_NAMES = {
     ".mypy_cache",
     ".pytest_cache",
     ".ruff_cache",
+    ".test-runs",
     ".worktrees",
     "__pycache__",
     "runtime",

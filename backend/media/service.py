@@ -24,6 +24,12 @@ from backend.repositories.access import GradingRepositoryAccess, as_grading_repo
 IMAGE_SUFFIXES = frozenset({".bmp", ".jpeg", ".jpg", ".png", ".webp"})
 _CROP_RENDER_VERSION = "review-crop-v1"
 _DEFAULT_CROP_CACHE_BYTES = 256 * 1024 * 1024
+_QUESTION_REGION_ID = re.compile(
+    r"^Q?\s*(\d+)\s*"
+    r"(?:[\(\uFF08]\s*P?\s*(\d+)\s*[\)\uFF09]|[-_.]\s*P?\s*(\d+))?"
+    r"\s*$",
+    re.IGNORECASE,
+)
 _CACHE_LOCKS_GUARD = threading.Lock()
 _CACHE_LOCKS: dict[Path, threading.RLock] = {}
 _MAINTAINED_CACHE_DIRS: set[Path] = set()
@@ -157,6 +163,7 @@ class ReviewMediaService:
         session_id: int,
         question_id: str,
         *,
+        source_region_id: int | None = None,
         front_source: Path,
         back_source: Path | None,
     ) -> bytes:
@@ -165,6 +172,7 @@ class ReviewMediaService:
         region = self._find_region(
             int(session_id),
             str(question_id or "").strip(),
+            source_region_id=source_region_id,
         )
         if region is None:
             raise ReviewMediaNotFound("Review media resource was not found.")
@@ -253,20 +261,75 @@ class ReviewMediaService:
         self,
         session_id: int,
         question_id: str,
+        *,
+        source_region_id: int | None = None,
     ) -> dict[str, Any] | None:
         regions = self._regions_with_template_sizes(session_id)
-        exact_values = {question_id, f"Q{question_id}"}
+
+        if source_region_id is not None:
+            try:
+                requested_region_id = int(source_region_id)
+            except (TypeError, ValueError):
+                return None
+            if requested_region_id <= 0:
+                return None
+            for region in regions:
+                if int(region.get("id") or 0) != requested_region_id:
+                    continue
+                if _region_matches_question(region, question_id):
+                    return region
+                if _is_unique_child_for_parent(
+                    regions,
+                    region,
+                    question_id,
+                ):
+                    return region
+            return None
+
+        requested_identity = _question_region_identity(question_id)
+        if requested_identity is not None:
+            for region in regions:
+                if _question_region_identity(
+                    _region_question_id(region)
+                ) == requested_identity:
+                    return region
+
+            requested_parent, requested_part = requested_identity
+            if requested_part is not None:
+                for region in regions:
+                    if _question_region_identity(
+                        _region_question_id(region)
+                    ) == (requested_parent, None):
+                        return region
+            else:
+                child_regions = [
+                    region
+                    for region in regions
+                    if (
+                        (identity := _question_region_identity(
+                            _region_question_id(region)
+                        ))
+                        is not None
+                        and identity[0] == requested_parent
+                        and identity[1] is not None
+                    )
+                ]
+                if len(child_regions) == 1:
+                    return child_regions[0]
+            return None
+
+        normalized_question_id = str(question_id or "").strip()
+        exact_values = {
+            normalized_question_id,
+            (
+                normalized_question_id[1:]
+                if normalized_question_id.upper().startswith("Q")
+                else f"Q{normalized_question_id}"
+            ),
+        }
         for region in regions:
             if _region_question_id(region) in exact_values:
                 return region
-
-        match = re.match(r"^(?:Q)?(\d+)", question_id)
-        if match:
-            base_number = match.group(1)
-            fallback_values = {base_number, f"Q{base_number}"}
-            for region in regions:
-                if _region_question_id(region) in fallback_values:
-                    return region
         return None
 
     def _regions_with_template_sizes(self, session_id: int) -> list[dict[str, Any]]:
@@ -296,6 +359,81 @@ def _region_question_id(region: dict[str, Any]) -> str:
         region.get("mapped_question_id")
         or region.get("detected_question_id")
         or ""
+    ).strip()
+
+
+def _question_region_identity(
+    question_id: object,
+) -> tuple[int, int | None] | None:
+    match = _QUESTION_REGION_ID.fullmatch(str(question_id or "").strip())
+    if match is None:
+        return None
+    part = match.group(2) or match.group(3)
+    return int(match.group(1)), int(part) if part is not None else None
+
+
+def _region_matches_question(
+    region: dict[str, Any],
+    question_id: str,
+) -> bool:
+    requested = _question_region_identity(question_id)
+    mapped = _question_region_identity(_region_question_id(region))
+    if requested is not None and mapped is not None:
+        if requested == mapped:
+            return True
+        requested_parent, requested_part = requested
+        mapped_parent, mapped_part = mapped
+        return (
+            requested_parent == mapped_parent
+            and requested_part is not None
+            and mapped_part is None
+        )
+
+    normalized_question_id = str(question_id or "").strip()
+    exact_values = {
+        normalized_question_id,
+        (
+            normalized_question_id[1:]
+            if normalized_question_id.upper().startswith("Q")
+            else f"Q{normalized_question_id}"
+        ),
+    }
+    return _region_question_id(region) in exact_values
+
+
+def _is_unique_child_for_parent(
+    regions: list[dict[str, Any]],
+    selected_region: dict[str, Any],
+    question_id: str,
+) -> bool:
+    requested = _question_region_identity(question_id)
+    selected = _question_region_identity(
+        _region_question_id(selected_region)
+    )
+    if (
+        requested is None
+        or selected is None
+        or requested[1] is not None
+        or selected[0] != requested[0]
+        or selected[1] is None
+    ):
+        return False
+    child_regions = [
+        region
+        for region in regions
+        if (
+            (identity := _question_region_identity(
+                _region_question_id(region)
+            ))
+            is not None
+            and identity[0] == requested[0]
+            and identity[1] is not None
+        )
+    ]
+    return (
+        len(child_regions) == 1
+        and int(child_regions[0].get("id") or 0)
+        == int(selected_region.get("id") or 0)
     )
 
 

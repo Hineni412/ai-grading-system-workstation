@@ -27,7 +27,7 @@ function scoreLabel(value: number | null): string {
 function statusLabel(item: ReviewItemLike): string {
   const resolved = resolveReviewItem(item)
   return {
-    ungraded: '未批',
+    ungraded: '待人工评分',
     ai_ready: 'AI 已完成',
     ai_review: 'AI 待复核',
     teacher_final: '教师已确认',

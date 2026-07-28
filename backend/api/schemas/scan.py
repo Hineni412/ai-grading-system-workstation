@@ -44,6 +44,7 @@ class ScanUploadFreezeRequest(BaseModel):
 class ScanGradingWorkspaceResponse(BaseModel):
     session_id: int = Field(gt=0)
     upload_batch: ScanUploadBatchResponse
+    replacement_batch: ScanUploadBatchResponse | None = None
     grading_run: "GradingRunSummaryResponse | None" = None
     grading_job: "GradingJobSummaryResponse | None" = None
     scan_analysis_job: "ScanAnalysisJobSummaryResponse | None" = None

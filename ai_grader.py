@@ -472,20 +472,20 @@ class AIGrader:
         atlas_manifest: dict[str, Any],
         reference_question_ids: list[str] | None = None,
     ) -> str:
-        prompt = f"Recognized student name: {student_name}\n\n"
+        prompt = f"已识别学生姓名：{student_name}\n\n"
         if reference_question_ids:
             prompt += (
-                f"The first {len(reference_question_ids)} images are perfect standard-answer crops for "
-                f"these questions in order: {reference_question_ids}. The final image is the student evidence atlas.\n\n"
+                f"前 {len(reference_question_ids)} 张图片依次是以下题目的标准答案原图："
+                f"{reference_question_ids}。最后一张图片是该学生的作答证据拼图。\n\n"
             )
         prompt += (
-            "The image provided is an evidence atlas, not the full paper. "
-            "Each tile is a cropped answer region selected from the paper template. "
-            "Grade only the target questions represented in this evidence atlas and return complete grading_details.\n\n"
+            "当前提供的学生图片是作答证据拼图，而不是完整试卷。"
+            "拼图中的每个图块都是依据试卷模板裁切出的作答区域。"
+            "只批改这张证据拼图中呈现的目标题目，并返回完整的 grading_details。\n\n"
         )
-        prompt += "Evidence atlas manifest:\n"
+        prompt += "作答证据拼图 manifest：\n"
         prompt += json.dumps(atlas_manifest, ensure_ascii=False)
-        prompt += "\n\nReturn strict JSON only, following the system requirements exactly."
+        prompt += "\n\n请严格遵循系统要求，只返回格式正确的 JSON。"
         return prompt
 
     def _validate_and_convert(self, data: dict[str, Any], expected_student_name: str) -> GradingResult:

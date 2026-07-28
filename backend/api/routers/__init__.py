@@ -11,6 +11,7 @@ from .model_profiles import router as model_profiles_router
 from .ops import router as ops_router
 from .question_bank import router as question_bank_router
 from .reports import router as reports_router
+from .results_center import router as results_center_router
 from .review import router as review_router
 from .scan import router as scan_router
 from .sessions import router as sessions_router
@@ -33,6 +34,7 @@ __all__ = [
     "ops_router",
     "question_bank_router",
     "reports_router",
+    "results_center_router",
     "review_router",
     "scan_router",
     "sessions_router",

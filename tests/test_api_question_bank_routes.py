@@ -118,6 +118,107 @@ def test_question_read_payload_exposes_stable_state_revision(
     assert changed["revision"] != before_revision
 
 
+def test_question_facets_include_curriculum_sections(
+    question_bank_fixture,
+) -> None:
+    service, db_path, _ = question_bank_fixture
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO question_tags (question_id, tag_type, tag_value)
+            VALUES (1, 'curriculum_section', 'section-linear-functions')
+            """
+        )
+        conn.commit()
+
+    response = _question_bank_client(service).get("/api/question-bank/facets")
+
+    assert response.status_code == 200
+    assert response.json()["curriculum_sections"] == [
+        {"value": "section-linear-functions", "count": 1}
+    ]
+
+
+def test_question_facets_exclude_their_own_dimension_but_keep_other_filters(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "question_bank.db"
+    initialize_database(db_path)
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO papers (id, title, import_status)
+            VALUES (1, 'Facet paper', 'success')
+            """
+        )
+        conn.executemany(
+            """
+            INSERT INTO questions (
+                id, paper_id, question_number, question_type, question_text
+            ) VALUES (?, 1, ?, ?, ?)
+            """,
+            [
+                (1, "1", "选择题", "目标知识点"),
+                (2, "2", "选择题", "同章节可选知识点"),
+                (3, "3", "选择题", "不同能力"),
+                (4, "4", "选择题", "不同章节"),
+                (5, "5", "填空题", "不同题型和知识点"),
+                (6, "6", "填空题", "同知识点的另一题型"),
+            ],
+        )
+        tags_by_question = {
+            1: ("知识点甲", "能力甲", "章节甲", "小节甲"),
+            2: ("知识点乙", "能力甲", "章节甲", "小节甲"),
+            3: ("知识点丙", "能力乙", "章节甲", "小节甲"),
+            4: ("知识点丁", "能力甲", "章节乙", "小节乙"),
+            5: ("知识点戊", "能力甲", "章节甲", "小节甲"),
+            6: ("知识点甲", "能力甲", "章节甲", "小节甲"),
+        }
+        conn.executemany(
+            """
+            INSERT INTO question_tags (question_id, tag_type, tag_value)
+            VALUES (?, ?, ?)
+            """,
+            [
+                (question_id, tag_type, value)
+                for question_id, values in tags_by_question.items()
+                for tag_type, value in zip(
+                    (
+                        "knowledge_point",
+                        "ability",
+                        "exam_scope",
+                        "curriculum_section",
+                    ),
+                    values,
+                    strict=True,
+                )
+            ],
+        )
+        conn.commit()
+
+    response = _question_bank_client(QuestionBankReadService(db_path)).get(
+        "/api/question-bank/facets",
+        params=[
+            ("knowledge_points", "知识点甲"),
+            ("abilities", "能力甲"),
+            ("exam_scopes", "章节甲"),
+            ("curriculum_sections", "小节甲"),
+            ("question_types", "选择题"),
+        ],
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["knowledge_points"] == [
+        {"value": "知识点乙", "count": 1},
+        {"value": "知识点甲", "count": 1},
+    ]
+    assert payload["question_types"] == [
+        {"value": "填空题", "count": 1},
+        {"value": "选择题", "count": 1},
+    ]
+
+
 def _question_bank_client(
     service: QuestionBankReadService,
     *,

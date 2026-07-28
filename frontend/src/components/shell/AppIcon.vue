@@ -23,7 +23,11 @@ withDefaults(defineProps<{
     aria-hidden="true"
     focusable="false"
   >
-    <g v-if="name === 'workbench'">
+    <g v-if="name === 'archive'">
+      <path d="M4 7.5h16v12H4z" />
+      <path d="M3 4.5h18v3H3zM9.5 11.5h5" />
+    </g>
+    <g v-else-if="name === 'workbench'">
       <rect x="3" y="3" width="7" height="7" rx="1.5" />
       <rect x="14" y="3" width="7" height="7" rx="1.5" />
       <rect x="3" y="14" width="7" height="7" rx="1.5" />
@@ -36,6 +40,10 @@ withDefaults(defineProps<{
     <g v-else-if="name === 'review'">
       <circle cx="12" cy="12" r="8.5" />
       <path d="m8.5 12 2.2 2.2 4.8-5" />
+    </g>
+    <g v-else-if="name === 'results'">
+      <path d="M4 19.5h16" />
+      <path d="M6.5 16V11h3v5zM10.5 16V7h3v9zM14.5 16V4h3v12z" />
     </g>
     <g v-else-if="name === 'files'">
       <path d="M3.5 6.5h6l2 2h9v10a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z" />

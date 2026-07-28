@@ -42,7 +42,7 @@ class AssemblyDraftWriteRequest(_AssemblyModel):
 
 class AssemblyExportSubmitRequest(_AssemblyModel):
     draft_revision: str = Field(pattern=r"^[0-9a-f]{64}$")
-    format: Literal["docx", "markdown"] = "docx"
+    format: Literal["docx"] = "docx"
 
 
 class AssemblyRecordRestoreRequest(_AssemblyModel):

@@ -641,6 +641,17 @@ def _delete_question_bank_session_references_committed(
         )
 
 
+def clear_question_bank_session_references(
+    question_bank_db_path: Path,
+    session_id: int,
+) -> dict[str, int]:
+    """Remove derived exam links while preserving source questions and tags."""
+    return _delete_question_bank_session_references_committed(
+        Path(question_bank_db_path),
+        int(session_id),
+    )
+
+
 def _storage_counts_from_manifest(payload: dict[str, Any]) -> dict[str, int]:
     raw = payload.get("storage_counts")
     if not isinstance(raw, dict):

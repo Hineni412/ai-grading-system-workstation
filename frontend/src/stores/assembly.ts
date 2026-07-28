@@ -4,7 +4,7 @@ import { defineStore } from 'pinia'
 import {
   assemblyApi,
   type AssemblyDraft,
-  type AssemblyExportFormat,
+  type AssemblyExportSubmitFormat,
   type AssemblyLayoutMode,
   type AssemblyPreviewMode,
   type AssemblyQuestion,
@@ -259,7 +259,7 @@ export const useAssemblyStore = defineStore('assembly', () => {
     return save({ ...draft.value, sections, layout_mode: 'sections' })
   }
 
-  async function submitExport(format: AssemblyExportFormat): Promise<JobResponse | null> {
+  async function submitExport(format: AssemblyExportSubmitFormat): Promise<JobResponse | null> {
     if (!canExport.value || submitting.value) return null
     submitting.value = true
     message.value = ''

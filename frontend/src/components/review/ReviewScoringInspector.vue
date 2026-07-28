@@ -33,6 +33,7 @@ const currentDraft = ref<ReviewDraft | null>(null)
 const submitting = ref(false)
 const feedback = ref('')
 const feedbackTone = ref<'success' | 'warning' | 'error'>('success')
+const rubricCache = new Map<string, ReviewRubricSection | null>()
 let rubricController: AbortController | null = null
 let rubricGeneration = 0
 
@@ -44,6 +45,12 @@ const emit = defineEmits<{
 }>()
 
 const item = computed(() => reviewStore.currentItem)
+const rubricTargetKey = computed(() => {
+  const current = item.value
+  return current
+    ? rubricCacheKey(current.session_id, current.question_id)
+    : null
+})
 const issue = computed(() => {
   if (!item.value || !currentDraft.value) return null
   return scoreIssue(currentDraft.value.scoreText, item.value.max_score)
@@ -67,7 +74,7 @@ const statusLabel = computed(() => {
   const status = item.value?.score_status
   if (!status) return ''
   return {
-    ungraded: '未批',
+    ungraded: '待人工评分',
     ai_ready: 'AI 已完成',
     ai_review: 'AI 待复核',
     teacher_final: '教师已确认',
@@ -104,14 +111,13 @@ function formatConfidence(value: number | null): string {
   return value <= 1 ? `${Math.round(value * 100)}%` : `${Math.round(value)}%`
 }
 
+function rubricCacheKey(sessionId: number, questionId: string): string {
+  return `${sessionId}\u0000${questionId.trim()}`
+}
+
 function updateScore(event: Event): void {
   if (!currentDraft.value) return
   draftStore.updateScore(currentDraft.value.key, (event.target as HTMLInputElement).value)
-}
-
-function updateNote(event: Event): void {
-  if (!currentDraft.value) return
-  draftStore.updateNote(currentDraft.value.key, (event.target as HTMLTextAreaElement).value)
 }
 
 function selectScore(event: FocusEvent): void {
@@ -170,14 +176,23 @@ async function submitCurrent(): Promise<void> {
 
 async function loadRubric(sessionId: number, questionId: string): Promise<void> {
   rubricController?.abort()
+  const generation = ++rubricGeneration
+  const cacheKey = rubricCacheKey(sessionId, questionId)
+  rubric.value = null
+  if (rubricCache.has(cacheKey)) {
+    rubric.value = rubricCache.get(cacheKey) ?? null
+    rubricState.value = 'ready'
+    rubricController = null
+    return
+  }
+
   const controller = new AbortController()
   rubricController = controller
-  const generation = ++rubricGeneration
-  rubric.value = null
   rubricState.value = 'loading'
   try {
     const loaded = await fetchReviewRubric(sessionId, questionId, controller.signal)
-    if (generation !== rubricGeneration) return
+    if (generation !== rubricGeneration || controller.signal.aborted) return
+    rubricCache.set(cacheKey, loaded)
     rubric.value = loaded
     rubricState.value = 'ready'
   } catch {
@@ -193,13 +208,26 @@ watch(
   (next) => {
     if (!next) {
       currentDraft.value = null
-      rubric.value = null
-      rubricState.value = 'idle'
-      rubricController?.abort()
       return
     }
     currentDraft.value = draftStore.ensureDraft(next)
-    void loadRubric(next.session_id, next.question_id)
+  },
+  { immediate: true },
+)
+
+watch(
+  rubricTargetKey,
+  (next) => {
+    const current = item.value
+    if (!next || !current) {
+      rubricGeneration += 1
+      rubricController?.abort()
+      rubricController = null
+      rubric.value = null
+      rubricState.value = 'idle'
+      return
+    }
+    void loadRubric(current.session_id, current.question_id)
   },
   { immediate: true },
 )
@@ -207,6 +235,7 @@ watch(
 onBeforeUnmount(() => {
   rubricGeneration += 1
   rubricController?.abort()
+  rubricCache.clear()
 })
 </script>
 
@@ -256,18 +285,62 @@ onBeforeUnmount(() => {
           </p>
           <template v-else-if="rubric">
             <p class="review-scoring-section__meta">
-              {{ rubric.title }} · {{ formatScore(rubric.maxScore) }} 分
-              <span v-if="rubric.questionType"> · {{ rubric.questionType }}</span>
+              {{ rubric.question_id }} · {{ formatScore(rubric.max_score) }} 分
+              <span v-if="rubric.question_type"> · {{ rubric.question_type }}</span>
             </p>
-            <ul v-if="rubric.knowledgeLabels.length" class="review-scoring-tags" aria-label="知识点">
-              <li v-for="label in rubric.knowledgeLabels" :key="label">{{ label }}</li>
+            <ul v-if="rubric.knowledge_labels.length" class="review-scoring-tags" aria-label="知识点">
+              <li v-for="label in rubric.knowledge_labels" :key="label">{{ label }}</li>
             </ul>
-            <ol v-if="rubric.lines.length" class="review-rubric-lines">
-              <li v-for="line in rubric.lines" :key="line.label">
-                <span>{{ line.label }}</span>
-                <strong v-if="line.score !== null">{{ formatScore(line.score) }} 分</strong>
-              </li>
-            </ol>
+            <div
+              v-if="rubric.points.length"
+              class="review-rubric-points"
+              data-testid="review-rubric-points"
+            >
+              <article
+                v-for="point in rubric.points"
+                :key="`${point.part_id}:${point.step_id}`"
+                class="review-rubric-point"
+              >
+                <header class="review-rubric-point__header">
+                  <strong>{{ point.core_goal || point.part_label }}</strong>
+                  <span>{{ formatScore(point.score) }} 分</span>
+                </header>
+                <dl class="review-rubric-point__details">
+                  <template v-if="point.standard_answer">
+                    <dt>标准答案</dt>
+                    <dd>{{ point.standard_answer }}</dd>
+                  </template>
+                  <template v-if="point.accepted_answers.length">
+                    <dt>等价答案</dt>
+                    <dd>{{ point.accepted_answers.join('；') }}</dd>
+                  </template>
+                  <template v-if="point.match_rule">
+                    <dt>匹配规则</dt>
+                    <dd>{{ point.match_rule }}</dd>
+                  </template>
+                  <template v-if="point.required_elements.length">
+                    <dt>证据要求</dt>
+                    <dd>{{ point.required_elements.join('；') }}</dd>
+                  </template>
+                  <template v-if="point.deduction_rules.length">
+                    <dt>扣分规则</dt>
+                    <dd>{{ point.deduction_rules.join('；') }}</dd>
+                  </template>
+                  <template v-if="point.answer_only_max_score !== null">
+                    <dt>仅有答案</dt>
+                    <dd>最高 {{ formatScore(point.answer_only_max_score) }} 分</dd>
+                  </template>
+                  <template v-if="point.require_final_answer !== null">
+                    <dt>最终答案</dt>
+                    <dd>{{ point.require_final_answer ? '必须明确写出' : '不要求单独写出' }}</dd>
+                  </template>
+                  <template v-if="point.final_answer_rule">
+                    <dt>结论规则</dt>
+                    <dd>{{ point.final_answer_rule }}</dd>
+                  </template>
+                </dl>
+              </article>
+            </div>
             <p v-else class="review-scoring-section__muted">评分配置只提供了本题满分，暂无更细步骤。</p>
           </template>
         </section>
@@ -305,7 +378,7 @@ onBeforeUnmount(() => {
           class="review-scoring-section review-scoring-section--manual"
           aria-labelledby="review-manual-title"
         >
-          <h3 id="review-manual-title">人工评分项</h3>
+          <h3 id="review-manual-title">教师干预</h3>
           <p>这份答卷没有 AI 初评分数或 AI 标注，请直接参考左侧原卷与裁图评分。</p>
         </section>
 
@@ -328,41 +401,37 @@ onBeforeUnmount(() => {
           </dl>
         </section>
 
-        <section class="review-scoring-section review-scoring-section--teacher" aria-labelledby="review-teacher-title">
-          <h3 id="review-teacher-title">教师最终分</h3>
-          <label for="teacher-score">最终得分</label>
-          <div class="review-teacher-score-field">
-            <input
-              id="teacher-score"
-              data-testid="teacher-score"
-              type="number"
-              inputmode="decimal"
-              min="0"
-              :max="item.max_score"
-              step="any"
-              :value="currentDraft.scoreText"
-              :aria-invalid="issue ? 'true' : 'false'"
-              aria-describedby="teacher-score-help teacher-score-error"
-              @input="updateScore"
-              @focus="selectScore"
-            >
-            <span>/ {{ formatScore(item.max_score) }} 分</span>
-          </div>
-          <p id="teacher-score-help" class="review-scoring-section__muted">
-            {{ hasAiAssessment ? '教师确认结果将覆盖 AI 初评。' : '未批答卷必须填写分数后才能确认。' }}
-          </p>
-          <p v-if="issue" id="teacher-score-error" class="review-field-error">{{ issue }}</p>
-          <label for="teacher-note">教师备注</label>
-          <textarea
-            id="teacher-note"
-            rows="3"
-            :value="currentDraft.note"
-            placeholder="可填写评分依据或修改说明"
-            @input="updateNote"
-          />
-        </section>
-
       </div>
+
+      <section
+        class="review-scoring-section review-scoring-section--teacher"
+        aria-labelledby="review-teacher-title"
+        data-testid="teacher-score-panel"
+      >
+        <h3 id="review-teacher-title">教师最终分</h3>
+        <label for="teacher-score">最终得分</label>
+        <div class="review-teacher-score-field">
+          <input
+            id="teacher-score"
+            data-testid="teacher-score"
+            type="number"
+            inputmode="decimal"
+            min="0"
+            :max="item.max_score"
+            step="any"
+            :value="currentDraft.scoreText"
+            :aria-invalid="issue ? 'true' : 'false'"
+            aria-describedby="teacher-score-help teacher-score-error"
+            @input="updateScore"
+            @focus="selectScore"
+          >
+          <span>/ {{ formatScore(item.max_score) }} 分</span>
+        </div>
+        <p id="teacher-score-help" class="review-scoring-section__muted">
+          {{ hasAiAssessment ? '教师确认结果将覆盖 AI 初评。' : '待人工评分答卷必须填写分数后才能确认。' }}
+        </p>
+        <p v-if="issue" id="teacher-score-error" class="review-field-error">{{ issue }}</p>
+      </section>
 
       <footer class="review-scoring-inspector__footer" data-testid="scoring-footer">
         <p v-if="draftStore.dirtyCount > 0">本机内存中有 {{ draftStore.dirtyCount }} 条未确认草稿。</p>

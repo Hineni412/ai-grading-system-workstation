@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Literal, NoReturn
 
-from fastapi import APIRouter, Depends, Response
+from fastapi import APIRouter, Depends, Query, Response
 from fastapi.responses import FileResponse
 
 from backend.api.app import ApiError
@@ -137,6 +137,7 @@ def get_preflight_review_crop(
     target_type: Literal["group", "issue"],
     target_id: str,
     question_id: str,
+    source_region_id: int | None = Query(default=None, gt=0),
     media_service: ReviewMediaService = Depends(get_media_service),
     workspace: ScanGradingWorkspace = Depends(get_scan_grading_workspace),
 ) -> Response:
@@ -145,6 +146,7 @@ def get_preflight_review_crop(
         "target_type": target_type,
         "target_id": target_id,
         "question_id": question_id,
+        "source_region_id": source_region_id,
     }
     try:
         front_source = workspace.resolve_preflight_media(
@@ -161,6 +163,7 @@ def get_preflight_review_crop(
         payload = media_service.render_preflight_crop(
             session_id,
             question_id,
+            source_region_id=source_region_id,
             front_source=front_source,
             back_source=back_source,
         )

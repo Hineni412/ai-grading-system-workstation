@@ -12,6 +12,12 @@ import { useFileCenterStore } from '../stores/file-center'
 import { useJobStore } from '../stores/jobs'
 import { useSessionStore } from '../stores/session'
 
+const props = withDefaults(defineProps<{
+  embedded?: boolean
+}>(), {
+  embedded: false,
+})
+
 const sessionStore = useSessionStore()
 const fileCenter = useFileCenterStore()
 const jobStore = useJobStore()
@@ -249,8 +255,13 @@ function isTrainingDownloadable(job: JobResponse): boolean {
 </script>
 
 <template>
-  <section class="file-center" aria-labelledby="file-center-title">
-    <header class="file-center__hero">
+  <section
+    class="file-center"
+    :class="{ 'file-center--embedded': props.embedded }"
+    :aria-labelledby="props.embedded ? undefined : 'file-center-title'"
+    :aria-label="props.embedded ? '导出文件' : undefined"
+  >
+    <header v-if="!props.embedded" class="file-center__hero">
       <div>
         <p class="file-center__eyebrow">安全出件登记簿</p>
         <h1 id="file-center-title" tabindex="-1">文件中心</h1>

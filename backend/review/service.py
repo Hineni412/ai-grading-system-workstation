@@ -11,11 +11,24 @@ from backend.repositories.access import GradingRepositoryAccess, as_grading_repo
 from backend.repositories.review import ReviewAdjustmentOwnershipError
 from backend.public_data import sanitize_public_mapping
 from path_manager import resolve_stored_file_path
+from question_id_contract import (
+    QuestionIdCatalog,
+    QuestionIdContractError,
+    canonicalize_question_document,
+)
 
 
 REVIEW_CONFIRMED_REASON = "人工复核已确认"
 REVIEW_CONFIRMED_CATEGORY = "已复核"
 REVIEW_CONFIRMED_SUMMARY = "manual_review_confirmed"
+AI_RESULT_CONFLICT_REASON = "同一题存在多份 AI 评分结果，请人工确认。"
+AI_RESULT_CONFLICT_CATEGORY = "AI 评分结果冲突"
+AI_RESULT_CONFLICT_SUMMARY = "duplicate_ai_results_for_scoring_item"
+_QUESTION_PARENT_ID = re.compile(r"^Q?\s*(\d+)\s*$", re.IGNORECASE)
+_QUESTION_PART_ID = re.compile(
+    r"^Q?\s*(\d+)\s*(?:[\(（]\s*P?\s*(\d+)\s*[\)）]|[-_.]\s*P?\s*(\d+))\s*$",
+    re.IGNORECASE,
+)
 
 
 class ReviewDetailNotFoundError(LookupError):
@@ -68,6 +81,7 @@ class ReviewItem:
     teacher_locked: bool
     candidate_scores: list[dict[str, Any]] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
+    question_type: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,8 +90,11 @@ class ReviewQuestion:
     total_count: int
     needs_review_count: int
     ungraded_count: int
+    failed_count: int
+    ai_ready_count: int
     teacher_confirmed_count: int
     max_score: float
+    question_type: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -126,7 +143,14 @@ class ReviewApplicationService:
         scope: str | None = None,
         manual_context: dict[str, Any] | None = None,
     ) -> list[ReviewItem]:
-        score_map = _load_scoring_item_map(session, self.db)
+        (
+            score_map,
+            question_catalog,
+            current_id_by_resolved,
+            question_type_by_id,
+        ) = (
+            _load_scoring_item_map(session, self.db)
+        )
         raw_rows = self.db.get_session_review_rows(int(session_id))
         if manual_context is not None:
             items = self._list_unified_items(
@@ -134,6 +158,9 @@ class ReviewApplicationService:
                 score_map,
                 raw_rows,
                 manual_context,
+                question_catalog,
+                current_id_by_resolved,
+                question_type_by_id,
             )
         else:
             items = [
@@ -144,6 +171,7 @@ class ReviewApplicationService:
                         int(session_id),
                         score_map,
                         row,
+                        question_type_by_id,
                     )
                 )
                 is not None
@@ -188,6 +216,7 @@ class ReviewApplicationService:
         session_id: int,
         score_map: dict[str, float],
         row: dict[str, Any],
+        question_type_by_id: dict[str, str | None],
     ) -> ReviewItem | None:
         question_id = str(row.get("question_id") or "").strip()
         if not question_id:
@@ -242,6 +271,7 @@ class ReviewApplicationService:
                 else []
             ),
             metadata=metadata,
+            question_type=question_type_by_id.get(question_id),
         )
 
     def _list_unified_items(
@@ -250,6 +280,9 @@ class ReviewApplicationService:
         score_map: dict[str, float],
         raw_rows: list[dict[str, Any]],
         manual_context: dict[str, Any],
+        question_catalog: QuestionIdCatalog | None,
+        current_id_by_resolved: dict[str, str],
+        question_type_by_id: dict[str, str | None],
     ) -> list[ReviewItem]:
         scan_batch_id = str(manual_context.get("scan_batch_id") or "").strip()
         papers = [
@@ -265,15 +298,23 @@ class ReviewApplicationService:
             (int(item["student_id"]), str(item["question_id"])): item
             for item in locks
         }
-        ai_by_key = {
-            (
-                int(row.get("student_id") or 0),
-                str(row.get("question_id") or "").strip(),
-            ): row
-            for row in raw_rows
-            if int(row.get("student_id") or 0) > 0
-            and str(row.get("question_id") or "").strip()
-        }
+        ai_rows_by_key: dict[
+            tuple[int, str],
+            list[dict[str, Any]],
+        ] = {}
+        for row in raw_rows:
+            student_id = int(row.get("student_id") or 0)
+            current_question_id = _current_scoring_item_id(
+                row.get("question_id"),
+                score_map,
+                question_catalog,
+                current_id_by_resolved,
+            )
+            if student_id > 0 and current_question_id is not None:
+                ai_rows_by_key.setdefault(
+                    (student_id, current_question_id),
+                    [],
+                ).append(row)
         students = {
             int(item["id"]): item
             for item in self.db.list_students()
@@ -289,13 +330,19 @@ class ReviewApplicationService:
             student_id = int(paper["student_id"])
             student = students.get(student_id, {})
             for question_id, max_score in score_map.items():
-                row = ai_by_key.get((student_id, question_id))
+                matching_rows = ai_rows_by_key.get(
+                    (student_id, question_id),
+                    [],
+                )
+                ai_result_conflict = len(matching_rows) > 1
+                row = matching_rows[0] if len(matching_rows) == 1 else None
                 lock = lock_by_key.get((student_id, question_id))
                 ai_item = (
                     self._review_item_from_ai_row(
                         session_id,
                         score_map,
                         row,
+                        question_type_by_id,
                     )
                     if row is not None
                     else None
@@ -348,6 +395,11 @@ class ReviewApplicationService:
                         lock["score_awarded"]
                     )
                     needs_review = lock_scale_changed
+                elif ai_result_conflict:
+                    score_status = "failed"
+                    score_source = "none"
+                    score_awarded = None
+                    needs_review = True
                 elif ai_item is not None:
                     score_status = ai_item.score_status
                     score_source = "ai"
@@ -388,9 +440,13 @@ class ReviewApplicationService:
                             _clean_optional_text(lock.get("deduction_reason"))
                             if lock
                             else (
-                                ai_item.deduction_reason
-                                if ai_item
-                                else None
+                                AI_RESULT_CONFLICT_REASON
+                                if ai_result_conflict
+                                else (
+                                    ai_item.deduction_reason
+                                    if ai_item
+                                    else None
+                                )
                             )
                         ),
                         error_category=(
@@ -401,9 +457,13 @@ class ReviewApplicationService:
                             )
                             if teacher_locked
                             else (
-                                ai_item.error_category
-                                if ai_item
-                                else None
+                                AI_RESULT_CONFLICT_CATEGORY
+                                if ai_result_conflict
+                                else (
+                                    ai_item.error_category
+                                    if ai_item
+                                    else None
+                                )
                             )
                         ),
                         error_summary=(
@@ -414,9 +474,13 @@ class ReviewApplicationService:
                             )
                             if teacher_locked
                             else (
-                                ai_item.error_summary
-                                if ai_item
-                                else None
+                                AI_RESULT_CONFLICT_SUMMARY
+                                if ai_result_conflict
+                                else (
+                                    ai_item.error_summary
+                                    if ai_item
+                                    else None
+                                )
                             )
                         ),
                         confidence_score=(
@@ -432,6 +496,7 @@ class ReviewApplicationService:
                             else []
                         ),
                         metadata=metadata,
+                        question_type=question_type_by_id.get(question_id),
                     )
                 )
         return items
@@ -458,22 +523,37 @@ class ReviewApplicationService:
                     total_count=0,
                     needs_review_count=0,
                     ungraded_count=0,
+                    failed_count=0,
+                    ai_ready_count=0,
                     teacher_confirmed_count=0,
                     max_score=item.max_score,
+                    question_type=item.question_type,
                 )
             by_question[item.question_id] = ReviewQuestion(
                 question_id=item.question_id,
                 total_count=current.total_count + 1,
-                needs_review_count=current.needs_review_count + int(item.needs_review),
+                needs_review_count=(
+                    current.needs_review_count
+                    + int(item.score_status == "ai_review")
+                ),
                 ungraded_count=(
                     current.ungraded_count
                     + int(item.score_status == "ungraded")
+                ),
+                failed_count=(
+                    current.failed_count
+                    + int(item.score_status == "failed")
+                ),
+                ai_ready_count=(
+                    current.ai_ready_count
+                    + int(item.score_status == "ai_ready")
                 ),
                 teacher_confirmed_count=(
                     current.teacher_confirmed_count
                     + int(item.teacher_locked)
                 ),
                 max_score=max(current.max_score, item.max_score),
+                question_type=current.question_type or item.question_type,
             )
         return sorted(
             by_question.values(),
@@ -787,6 +867,42 @@ def _source_region_id(
     question_id: str,
 ) -> int:
     requested = str(question_id or "").strip()
+    requested_coordinates = _question_coordinates(requested)
+    if requested_coordinates is not None:
+        coordinate_rows = [
+            (
+                region,
+                _question_coordinates(
+                    region.get("mapped_question_id")
+                    or region.get("detected_question_id")
+                ),
+            )
+            for region in regions
+        ]
+        for region, coordinates in coordinate_rows:
+            if coordinates == requested_coordinates:
+                return int(region.get("id") or 0)
+
+        requested_parent, requested_part = requested_coordinates
+        if requested_part is not None:
+            for region, coordinates in coordinate_rows:
+                if coordinates == (requested_parent, None):
+                    return int(region.get("id") or 0)
+            return 0
+
+        child_regions = [
+            region
+            for region, coordinates in coordinate_rows
+            if (
+                coordinates is not None
+                and coordinates[0] == requested_parent
+                and coordinates[1] is not None
+            )
+        ]
+        if len(child_regions) == 1:
+            return int(child_regions[0].get("id") or 0)
+        return 0
+
     exact = {requested}
     if requested.startswith("Q"):
         exact.add(requested[1:])
@@ -801,17 +917,6 @@ def _source_region_id(
         if mapped in exact:
             return int(region.get("id") or 0)
 
-    match = re.match(r"^(?:Q)?(\d+)", requested)
-    if match:
-        base = match.group(1)
-        for region in regions:
-            mapped = str(
-                region.get("mapped_question_id")
-                or region.get("detected_question_id")
-                or ""
-            ).strip()
-            if mapped in {base, f"Q{base}"}:
-                return int(region.get("id") or 0)
     return 0
 
 
@@ -848,6 +953,12 @@ def _load_score_map(
         rubric = json.loads(rubric_path.read_text(encoding="utf-8"))
     except Exception:
         return {}
+    try:
+        rubric = canonicalize_question_document(rubric)
+    except QuestionIdContractError:
+        # Match AIGrader's compatibility behavior: malformed historical
+        # question IDs remain readable without guessing a new identity.
+        pass
     questions = rubric.get("questions") if isinstance(rubric, dict) else []
     if not isinstance(questions, list):
         return {}
@@ -881,7 +992,12 @@ def _load_score_map(
 def _load_scoring_item_map(
     session: dict[str, Any],
     db: GradingRepositoryAccess,
-) -> dict[str, float]:
+) -> tuple[
+    dict[str, float],
+    QuestionIdCatalog | None,
+    dict[str, str],
+    dict[str, str | None],
+]:
     """Return rubric leaves only, so an ungraded item is never double-counted."""
 
     rubric_path = resolve_stored_file_path(
@@ -889,19 +1005,33 @@ def _load_scoring_item_map(
         data_root=_data_root(db),
     )
     if not rubric_path.exists():
-        return {}
+        return {}, None, {}, {}
     try:
         rubric = json.loads(rubric_path.read_text(encoding="utf-8"))
     except Exception:
-        return {}
+        return {}, None, {}, {}
+    try:
+        rubric = canonicalize_question_document(rubric)
+    except QuestionIdContractError:
+        # AIGrader keeps the original document when canonicalization is
+        # ambiguous; Review must make the same choice.
+        pass
     questions = rubric.get("questions") if isinstance(rubric, dict) else []
     if not isinstance(questions, list):
-        return {}
+        return {}, None, {}, {}
+    try:
+        question_catalog = QuestionIdCatalog.from_document(rubric)
+    except QuestionIdContractError:
+        question_catalog = None
 
     scores: dict[str, float] = {}
+    question_type_by_id: dict[str, str | None] = {}
     for question in questions:
         if not isinstance(question, dict):
             continue
+        question_type = _clean_optional_text(question.get("question_type"))
+        if question_type is not None:
+            question_type = question_type.lower()
         parts = [
             part
             for part in question.get("parts", [])
@@ -913,6 +1043,7 @@ def _load_scoring_item_map(
                 part_id = str(part["part_id"]).strip()
                 try:
                     scores[part_id] = float(part.get("part_score", 0))
+                    question_type_by_id[part_id] = question_type
                 except (TypeError, ValueError):
                     continue
             continue
@@ -921,9 +1052,67 @@ def _load_scoring_item_map(
             continue
         try:
             scores[question_id] = float(question.get("max_score", 0))
+            question_type_by_id[question_id] = question_type
         except (TypeError, ValueError):
             continue
-    return scores
+    current_id_by_resolved: dict[str, str] = {}
+    if question_catalog is not None:
+        for question_id in scores:
+            resolved = question_catalog.resolve(question_id)
+            if resolved is not None:
+                current_id_by_resolved[resolved] = question_id
+    return (
+        scores,
+        question_catalog,
+        current_id_by_resolved,
+        question_type_by_id,
+    )
+
+
+def _current_scoring_item_id(
+    raw_question_id: object,
+    score_map: dict[str, float],
+    question_catalog: QuestionIdCatalog | None,
+    current_id_by_resolved: dict[str, str],
+) -> str | None:
+    question_id = str(raw_question_id or "").strip()
+    if not question_id:
+        return None
+    if question_id in score_map:
+        return question_id
+    if question_catalog is None:
+        return None
+    resolved = question_catalog.resolve(question_id)
+    if resolved is None:
+        return None
+    current_question_id = current_id_by_resolved.get(resolved)
+    if current_question_id is None:
+        return None
+    raw_coordinates = _question_coordinates(question_id)
+    current_coordinates = _question_coordinates(current_question_id)
+    if raw_coordinates is None or current_coordinates is None:
+        return None
+    raw_parent, raw_part = raw_coordinates
+    current_parent, current_part = current_coordinates
+    if raw_parent != current_parent:
+        return None
+    if raw_part is None:
+        return current_question_id if current_part is None else None
+    if current_part is None:
+        return current_question_id if raw_part == 1 else None
+    return current_question_id if raw_part == current_part else None
+
+
+def _question_coordinates(question_id: object) -> tuple[int, int | None] | None:
+    text = str(question_id or "").strip()
+    part_match = _QUESTION_PART_ID.fullmatch(text)
+    if part_match is not None:
+        part = part_match.group(2) or part_match.group(3)
+        return int(part_match.group(1)), int(part)
+    parent_match = _QUESTION_PARENT_ID.fullmatch(text)
+    if parent_match is None:
+        return None
+    return int(parent_match.group(1)), None
 
 
 def _item_matches_scope(

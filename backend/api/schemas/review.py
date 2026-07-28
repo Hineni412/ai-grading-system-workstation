@@ -13,8 +13,11 @@ class ReviewQuestionSummary(BaseModel):
     total_count: int
     needs_review_count: int
     ungraded_count: int = 0
+    failed_count: int = 0
+    ai_ready_count: int = 0
     teacher_confirmed_count: int = 0
     max_score: float
+    question_type: str | None = None
 
 
 class ReviewQuestionListResponse(BaseModel):

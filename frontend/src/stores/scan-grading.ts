@@ -2,8 +2,11 @@ import { computed, ref, watch } from 'vue'
 import { defineStore } from 'pinia'
 
 import {
+  beginScanReplacement,
   cancelGrading,
+  cancelScanReplacement,
   clearScans,
+  commitScanReplacement,
   controlGrading,
   fetchGradingPlan,
   fetchGradingWorkspace,
@@ -26,7 +29,7 @@ import {
   type ScanStudentMatchOption,
 } from '../api/scan-grading'
 import { TERMINAL_JOB_STATUSES, type JobResponse } from '../api/jobs'
-import { ApiError } from '../api/errors'
+import { ApiError, isAmbiguousWriteError } from '../api/errors'
 import { useJobStore } from './jobs'
 
 export const useScanGradingStore = defineStore('scan-grading', () => {
@@ -51,7 +54,14 @@ export const useScanGradingStore = defineStore('scan-grading', () => {
   let workspaceRefreshQueued = false
 
   const uploadBatch = computed(() => workspace.value?.upload_batch ?? null)
+  const replacementBatch = computed(() => workspace.value?.replacement_batch ?? null)
   const gradingRun = computed(() => workspace.value?.grading_run ?? null)
+  const preflightJob = computed(() => (
+    preflightJobId.value === null ? null : jobStore.jobs[preflightJobId.value] ?? null
+  ))
+  const gradingJob = computed(() => (
+    activeJobId.value === null ? null : jobStore.jobs[activeJobId.value] ?? null
+  ))
   const planRevisionMarker = computed(() => [
     sessionId.value ?? '',
     uploadBatch.value?.batch_id ?? '',
@@ -62,6 +72,16 @@ export const useScanGradingStore = defineStore('scan-grading', () => {
   function safeMessage(error: unknown): string {
     if (error instanceof ApiError && error.code === 'grading_preflight_stale') {
       return '评分依据或样卷题框已经更新，请重新运行扫描预检后再预览批改计划。'
+    }
+    if (error instanceof ApiError && error.code === 'scan_replacement_training_snapshot_exists') {
+      return '这场考试已经生成了独立训练任务。为避免训练材料失去来源，当前不能清空旧答卷；请先处理对应训练任务。'
+    }
+    if (error instanceof ApiError && (
+      error.code === 'scan_replacement_active_work'
+      || error.code === 'scan_analysis_still_active'
+      || error.code === 'grading_run_still_active'
+    )) {
+      return '这场考试仍有预检、批改或报告任务正在运行，请先完成或取消任务后再重新上传。'
     }
     return error instanceof Error && error.message ? error.message : '操作没有完成，请稍后重试。'
   }
@@ -271,9 +291,22 @@ export const useScanGradingStore = defineStore('scan-grading', () => {
     busyAction.value = 'upload'
     errorMessage.value = ''
     let failed = 0
+    let replacement = replacementBatch.value !== null
+    if (uploadBatch.value?.state === 'frozen' && !replacement) {
+      try {
+        const batch = await beginScanReplacement(id)
+        if (!isCurrent(id, current) || !workspace.value) return
+        workspace.value.replacement_batch = batch
+        replacement = true
+      } catch (error) {
+        if (isCurrent(id, current)) errorMessage.value = safeMessage(error)
+        busyAction.value = ''
+        return
+      }
+    }
     for (const file of files) {
       if (!isCurrent(id, current)) return
-      try { await uploadScan(id, file) } catch { failed += 1 }
+      try { await uploadScan(id, file, replacement) } catch { failed += 1 }
     }
     if (!isCurrent(id, current)) return
     await load(id)
@@ -283,20 +316,32 @@ export const useScanGradingStore = defineStore('scan-grading', () => {
   }
 
   async function remove(uploadId: string): Promise<void> {
-    const id = sessionId.value; const batch = uploadBatch.value; const current = generation
+    const id = sessionId.value
+    const replacement = replacementBatch.value !== null
+    const batch = replacementBatch.value ?? uploadBatch.value
+    const current = generation
     if (!id || !batch) return
     await runAction('remove', id, current, async () => {
-      const next = await removeScan(id, uploadId, batch.revision)
-      if (isCurrent(id, current) && workspace.value) workspace.value.upload_batch = next
+      const next = await removeScan(id, uploadId, batch.revision, replacement)
+      if (isCurrent(id, current) && workspace.value) {
+        if (replacement) workspace.value.replacement_batch = next
+        else workspace.value.upload_batch = next
+      }
     })
   }
 
   async function clear(): Promise<void> {
-    const id = sessionId.value; const batch = uploadBatch.value; const current = generation
+    const id = sessionId.value
+    const replacement = replacementBatch.value !== null
+    const batch = replacementBatch.value ?? uploadBatch.value
+    const current = generation
     if (!id || !batch) return
     await runAction('clear', id, current, async () => {
-      const next = await clearScans(id, batch.revision)
-      if (isCurrent(id, current) && workspace.value) workspace.value.upload_batch = next
+      const next = await clearScans(id, batch.revision, replacement)
+      if (isCurrent(id, current) && workspace.value) {
+        if (replacement) workspace.value.replacement_batch = next
+        else workspace.value.upload_batch = next
+      }
     })
   }
 
@@ -457,8 +502,57 @@ export const useScanGradingStore = defineStore('scan-grading', () => {
     })
   }
 
+  async function cancelReplacement(): Promise<void> {
+    const id = sessionId.value; const current = generation
+    if (!id || !replacementBatch.value) return
+    await runAction('cancel-replacement', id, current, async () => {
+      await cancelScanReplacement(id)
+      if (isCurrent(id, current) && workspace.value) workspace.value.replacement_batch = null
+    })
+  }
+
+  async function commitReplacement(): Promise<void> {
+    const id = sessionId.value; const candidate = replacementBatch.value; const current = generation
+    if (!id || !candidate || !candidate.file_count) return
+    await runAction('commit-replacement', id, current, async () => {
+      let batch
+      try {
+        batch = await commitScanReplacement(id, candidate.revision)
+      } catch (error) {
+        if (!isAmbiguousWriteError(error)) throw error
+        const reconciled = await fetchGradingWorkspace(id)
+        if (
+          reconciled.upload_batch.batch_id !== candidate.batch_id
+          || reconciled.replacement_batch
+        ) throw error
+        applyWorkspaceSnapshot(reconciled)
+        batch = reconciled.upload_batch
+      }
+      if (!isCurrent(id, current) || !workspace.value) return
+      workspace.value.upload_batch = batch
+      workspace.value.replacement_batch = null
+      workspace.value.grading_run = null
+      workspace.value.grading_job = null
+      preflight.value = null
+      activeJobId.value = null
+      preflightJobId.value = null
+      resetPlanSelection()
+      let job: JobResponse
+      try {
+        job = await startPreflight(id)
+      } catch {
+        throw new Error('最新答卷已经替换成功，但预检没有启动。旧数据已按确认永久清除；请点击“运行或重新运行预检”。')
+      }
+      if (!isCurrent(id, current)) return
+      jobStore.track(job)
+      preflightJobId.value = job.id
+    })
+  }
+
   return { sessionId, workspace, preflight, students, loadState, busyAction, errorMessage,
     activeJobId, preflightJobId, selectedMode, gradingPlan, planState, planErrorMessage,
-    uploadBatch, gradingRun, load, addFiles, remove, clear, analyze, refreshPreflight,
-    saveDecisions, previewPlan, begin, control, cancel, supplement, newBatch }
+    uploadBatch, replacementBatch, gradingRun, preflightJob, gradingJob,
+    load, addFiles, remove, clear, analyze, refreshPreflight,
+    saveDecisions, previewPlan, begin, control, cancel, supplement, newBatch,
+    cancelReplacement, commitReplacement }
 })
