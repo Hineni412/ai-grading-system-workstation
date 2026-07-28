@@ -319,7 +319,7 @@
   display: grid;
   grid-area: session;
   min-width: 0;
-  grid-template-columns: auto minmax(180px, 1fr);
+  grid-template-columns: auto minmax(180px, 1fr) auto;
   align-items: center;
   justify-content: end;
   gap: var(--space-2);
@@ -349,6 +349,19 @@
 .app-topbar__session select:disabled {
   cursor: not-allowed;
   opacity: var(--opacity-disabled);
+}
+
+.quick-archive-button {
+  color: var(--color-text-secondary);
+}
+
+.quick-archive-button:hover:not(:disabled) {
+  color: var(--color-accent);
+}
+
+.quick-archive-button--compact {
+  align-self: start;
+  margin: var(--space-2);
 }
 
 .app-topbar__status {

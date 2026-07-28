@@ -118,6 +118,27 @@ def test_question_read_payload_exposes_stable_state_revision(
     assert changed["revision"] != before_revision
 
 
+def test_question_facets_include_curriculum_sections(
+    question_bank_fixture,
+) -> None:
+    service, db_path, _ = question_bank_fixture
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO question_tags (question_id, tag_type, tag_value)
+            VALUES (1, 'curriculum_section', 'section-linear-functions')
+            """
+        )
+        conn.commit()
+
+    response = _question_bank_client(service).get("/api/question-bank/facets")
+
+    assert response.status_code == 200
+    assert response.json()["curriculum_sections"] == [
+        {"value": "section-linear-functions", "count": 1}
+    ]
+
+
 def _question_bank_client(
     service: QuestionBankReadService,
     *,

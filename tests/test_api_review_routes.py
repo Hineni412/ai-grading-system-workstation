@@ -36,8 +36,16 @@ def _seed_review_db(tmp_path: Path, *, result_count: int = 1):
         json.dumps(
             {
                 "questions": [
-                    {"question_id": "Q1", "max_score": 10},
-                    {"question_id": "Q2", "max_score": 5},
+                    {
+                        "question_id": "Q1",
+                        "question_type": "choice",
+                        "max_score": 10,
+                    },
+                    {
+                        "question_id": "Q2",
+                        "question_type": "proof",
+                        "max_score": 5,
+                    },
                 ]
             },
             ensure_ascii=False,
@@ -166,7 +174,9 @@ def test_review_question_summary_and_items(tmp_path: Path) -> None:
     assert q1["total_count"] == 1
     assert q1["needs_review_count"] == 1
     assert q1["max_score"] == 10
+    assert q1["question_type"] == "choice"
     assert q2["needs_review_count"] == 0
+    assert q2["question_type"] == "proof"
 
     items_response = client.get(f"/api/sessions/{session_id}/review/questions/Q1/items")
 
@@ -215,6 +225,48 @@ def test_review_question_summary_and_items(tmp_path: Path) -> None:
     }
     assert "front_image" not in row
     assert "back_image" not in row
+
+
+def test_unified_review_crop_url_prefers_the_source_region_id() -> None:
+    from backend.api.routers.review import _review_item_response
+    from backend.review.service import ReviewItem
+
+    response = _review_item_response(
+        ReviewItem(
+            review_item_id="batch-1:11:Q1(P1)",
+            revision=0,
+            session_id=7,
+            student_id=11,
+            result_id=21,
+            detail_id=31,
+            question_id="Q1(P1)",
+            student_code="S001",
+            student_name="Student A",
+            class_name="Class 1",
+            score_awarded=4,
+            max_score=5,
+            deduction_reason=None,
+            error_category=None,
+            error_summary=None,
+            confidence_score=95,
+            needs_review=False,
+            score_status="ai_ready",
+            score_source="ai",
+            teacher_locked=False,
+            metadata={
+                "preflight_target_type": "group",
+                "preflight_target_id": "group-1",
+                "preflight_front_media_url": "/front",
+                "preflight_back_media_url": "/back",
+                "source_region_id": 42,
+            },
+        )
+    )
+
+    assert response.media.crop_url == (
+        "/api/sessions/7/review/preflight/group/group-1/"
+        "Q1%28P1%29/crop?source_region_id=42"
+    )
 
 
 def test_review_confirm_question_keeps_request_and_response_compatibility(tmp_path: Path) -> None:

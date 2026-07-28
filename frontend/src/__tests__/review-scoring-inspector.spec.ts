@@ -2,7 +2,11 @@ import { createApp, nextTick } from 'vue'
 import { createPinia, setActivePinia } from 'pinia'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import type { ReviewConfirmResponse, ReviewItem } from '../api/review'
+import type {
+  ReviewConfirmResponse,
+  ReviewItem,
+  ReviewRubricSection,
+} from '../api/review'
 import { confirmReviewItem, fetchReviewItems, fetchReviewRubric } from '../api/review'
 import ReviewScoringInspector from '../components/review/ReviewScoringInspector.vue'
 import { useReviewDraftStore } from '../stores/review-drafts'
@@ -43,6 +47,39 @@ const item: ReviewItem = {
   media,
 }
 
+const rubricSection: ReviewRubricSection = {
+  question_id: 'Q1',
+  parent_question_id: 'Q1',
+  question_type: 'comprehensive',
+  max_score: 5,
+  knowledge_labels: ['一次函数'],
+  points: [{
+    part_id: 'Q1',
+    part_label: '整题',
+    step_id: 'S1',
+    core_goal: '列出正确关系式',
+    score: 3,
+    standard_answer: 'y = 2x + 1',
+    accepted_answers: ['y=2x+1'],
+    match_rule: '按关键步骤评分',
+    required_elements: ['定义变量', '列出等量关系'],
+    deduction_rules: ['漏写结论扣 1 分'],
+    answer_only_max_score: 1,
+    require_final_answer: true,
+    final_answer_rule: '必须写出最终解析式',
+  }],
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  let reject!: (error: unknown) => void
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise
+    reject = rejectPromise
+  })
+  return { promise, resolve, reject }
+}
+
 async function mountInspector(items: ReviewItem[] = [item]) {
   const pinia = createPinia()
   setActivePinia(pinia)
@@ -53,6 +90,7 @@ async function mountInspector(items: ReviewItem[] = [item]) {
   queue.$patch({
     questions: [{
       question_id: 'Q1',
+      question_type: 'comprehensive',
       total_count: items.length,
       needs_review_count: items.filter((candidate) => candidate.needs_review).length,
       max_score: 5,
@@ -78,15 +116,7 @@ describe('review scoring inspector', () => {
   beforeEach(() => {
     document.body.innerHTML = ''
     vi.clearAllMocks()
-    vi.mocked(fetchReviewRubric).mockResolvedValue({
-      questionId: 'Q1',
-      parentQuestionId: null,
-      title: 'Q1',
-      maxScore: 5,
-      questionType: 'comprehensive',
-      knowledgeLabels: ['一次函数'],
-      lines: [{ label: '列出正确关系式'.repeat(20), score: 3 }],
-    })
+    vi.mocked(fetchReviewRubric).mockResolvedValue(rubricSection)
     vi.mocked(fetchReviewItems).mockResolvedValue([item])
     vi.mocked(confirmReviewItem).mockResolvedValue({
       updated_details: 1,
@@ -103,10 +133,123 @@ describe('review scoring inspector', () => {
     expect(inspector.textContent).toContain('AI 初评')
     expect(inspector.textContent).toContain('教师最终分')
     expect(inspector.textContent).toContain('一次函数')
+    expect(inspector.textContent).toContain('列出正确关系式')
+    expect(inspector.textContent).toContain('y = 2x + 1')
+    expect(inspector.textContent).toContain('y=2x+1')
+    expect(inspector.textContent).toContain('按关键步骤评分')
+    expect(inspector.textContent).toContain('定义变量；列出等量关系')
+    expect(inspector.textContent).toContain('漏写结论扣 1 分')
+    expect(inspector.textContent).toContain('仅有答案')
+    expect(inspector.textContent).toContain('最高 1 分')
+    expect(inspector.textContent).toContain('必须明确写出')
+    expect(inspector.textContent).toContain('必须写出最终解析式')
+    expect(host.querySelectorAll('.review-rubric-point')).toHaveLength(1)
     expect(inspector.textContent).not.toContain('活动记录')
     expect(inspector.textContent).not.toContain('AI 最终分')
-    expect(host.querySelector('[data-testid="scoring-scroll-region"]')).not.toBeNull()
+    const scrollRegion = host.querySelector('[data-testid="scoring-scroll-region"]')!
+    const scorePanel = host.querySelector('[data-testid="teacher-score-panel"]')!
+    expect(scrollRegion).not.toBeNull()
+    expect(scorePanel).not.toBeNull()
+    expect(scrollRegion.contains(scorePanel)).toBe(false)
+    expect(host.querySelector('#teacher-note')).toBeNull()
     expect(host.querySelector('[data-testid="scoring-footer"]')).not.toBeNull()
+    app.unmount()
+  })
+
+  it('reuses the loaded rubric while moving between students on the same question', async () => {
+    const second = {
+      ...item,
+      result_id: 12,
+      detail_id: 22,
+      student_code: 'S002',
+      student_name: '第二位学生',
+    }
+    const { app, pinia } = await mountInspector([item, second])
+    const queue = useReviewQueueStore(pinia)
+
+    await vi.waitFor(() => expect(fetchReviewRubric).toHaveBeenCalledTimes(1))
+    queue.selectDetail(22)
+    await nextTick()
+
+    expect(queue.selectedDetailId).toBe(22)
+    expect(fetchReviewRubric).toHaveBeenCalledTimes(1)
+    app.unmount()
+  })
+
+  it('aborts a previous question request and ignores its late response', async () => {
+    const firstRequest = deferred<ReviewRubricSection | null>()
+    const secondRequest = deferred<ReviewRubricSection | null>()
+    vi.mocked(fetchReviewRubric).mockImplementation((_sessionId, questionId) =>
+      questionId === 'Q1' ? firstRequest.promise : secondRequest.promise,
+    )
+    const { app, host, pinia } = await mountInspector()
+    const firstSignal = vi.mocked(fetchReviewRubric).mock.calls[0]?.[2]
+    const queue = useReviewQueueStore(pinia)
+    const secondItem = {
+      ...item,
+      result_id: 12,
+      detail_id: 22,
+      question_id: 'Q2',
+      student_code: 'S002',
+      student_name: '第二位学生',
+    }
+    const secondRubric: ReviewRubricSection = {
+      ...rubricSection,
+      question_id: 'Q2',
+      parent_question_id: 'Q2',
+      points: [{
+        ...rubricSection.points[0]!,
+        part_id: 'Q2',
+        core_goal: 'Q2 当前评分标准',
+      }],
+    }
+
+    queue.selectQuestion('Q2')
+    queue.replaceItems([secondItem], secondItem.detail_id)
+    await vi.waitFor(() => expect(fetchReviewRubric).toHaveBeenCalledTimes(2))
+    expect(firstSignal?.aborted).toBe(true)
+
+    secondRequest.resolve(secondRubric)
+    await vi.waitFor(() => expect(host.textContent).toContain('Q2 当前评分标准'))
+
+    firstRequest.resolve({
+      ...rubricSection,
+      points: [{
+        ...rubricSection.points[0]!,
+        core_goal: 'Q1 过期评分标准',
+      }],
+    })
+    await firstRequest.promise
+    await nextTick()
+
+    expect(host.textContent).toContain('Q2 当前评分标准')
+    expect(host.textContent).not.toContain('Q1 过期评分标准')
+    app.unmount()
+  })
+
+  it('does not show labels for rubric details that are absent', async () => {
+    vi.mocked(fetchReviewRubric).mockResolvedValue({
+      ...rubricSection,
+      knowledge_labels: [],
+      points: [{
+        ...rubricSection.points[0]!,
+        standard_answer: '',
+        accepted_answers: [],
+        match_rule: '',
+        required_elements: [],
+        deduction_rules: [],
+        answer_only_max_score: null,
+        require_final_answer: null,
+        final_answer_rule: '',
+      }],
+    })
+    const { app, host } = await mountInspector()
+
+    await vi.waitFor(() => expect(host.querySelector('.review-rubric-point')).not.toBeNull())
+    const details = host.querySelector('.review-rubric-point__details')!
+    expect(details.querySelectorAll('dt')).toHaveLength(0)
+    expect(details.textContent?.trim()).toBe('')
+    expect(host.querySelector('[aria-label="知识点"]')).toBeNull()
     app.unmount()
   })
 
@@ -215,7 +358,15 @@ describe('review scoring inspector', () => {
   })
 
   it('does not decrement pending count when reconfirming an already reviewed item', async () => {
-    const confirmedItem = { ...item, needs_review: false, error_category: '已复核' }
+    const confirmedItem = {
+      ...item,
+      needs_review: false,
+      score_status: 'teacher_final' as const,
+      score_source: 'teacher' as const,
+      teacher_locked: true,
+      deduction_reason: '教师既有说明',
+      error_category: '已复核',
+    }
     const pendingItem = { ...item, result_id: 12, detail_id: 22, student_name: '待复核学生' }
     vi.mocked(fetchReviewItems).mockResolvedValue([confirmedItem, pendingItem])
     const { app, host, pinia } = await mountInspector([confirmedItem, pendingItem])
@@ -223,11 +374,14 @@ describe('review scoring inspector', () => {
     host.querySelector<HTMLButtonElement>('[data-testid="confirm-single"]')!.click()
     await vi.waitFor(() => expect(confirmReviewItem).toHaveBeenCalledTimes(1))
 
+    expect(confirmReviewItem).toHaveBeenCalledWith(7, 'Q1', expect.objectContaining({
+      deduction_reason: '教师既有说明',
+    }))
     expect(useReviewQueueStore(pinia).questions[0]?.needs_review_count).toBe(1)
     app.unmount()
   })
 
-  it('never confirms from score-field or note Enter', async () => {
+  it('never confirms from score-field Enter', async () => {
     const second = {
       ...item,
       result_id: 12,
@@ -255,12 +409,6 @@ describe('review scoring inspector', () => {
     input.dispatchEvent(new KeyboardEvent('keydown', {
       key: 'Enter',
       shiftKey: true,
-      bubbles: true,
-      cancelable: true,
-    }))
-    const note = host.querySelector<HTMLTextAreaElement>('#teacher-note')!
-    note.dispatchEvent(new KeyboardEvent('keydown', {
-      key: 'Enter',
       bubbles: true,
       cancelable: true,
     }))

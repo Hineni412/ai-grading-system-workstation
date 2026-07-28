@@ -2,7 +2,6 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
 import { resolveReviewItem, type ReviewItemLike } from '../../api/review'
-import { reviewShortcutBus } from '../../composables/review-shortcuts'
 import {
   useEvidenceViewer,
   type EvidenceSource,
@@ -13,15 +12,16 @@ const props = defineProps<{
   item: ReviewItemLike
   previousItem: ReviewItemLike | null
   nextItem: ReviewItemLike | null
+  source: EvidenceSource
 }>()
 
-const allSourceOptions: readonly { value: EvidenceSource; label: string }[] = [
-  { value: 'crop', label: '裁剪证据' },
-  { value: 'original_front', label: '原卷正面' },
-  { value: 'original_back', label: '原卷反面' },
-  { value: 'annotated_front', label: '标注正面' },
-  { value: 'annotated_back', label: '标注反面' },
-]
+const sourceLabels: Record<EvidenceSource, string> = {
+  crop: '裁剪证据',
+  original_front: '原卷正面',
+  original_back: '原卷反面',
+  annotated_front: '标注正面',
+  annotated_back: '标注反面',
+}
 
 const viewer = useEvidenceViewer()
 const canvasElement = ref<HTMLElement | null>(null)
@@ -34,17 +34,14 @@ const mediaUrls = computed<Record<EvidenceSource, string | null>>(() => ({
   annotated_front: reviewItem.value.media.annotated_front_url,
   annotated_back: reviewItem.value.media.annotated_back_url,
 }))
-const sourceOptions = computed(() =>
-  allSourceOptions.filter((option) => mediaUrls.value[option.value] !== null),
+const effectiveSource = computed<EvidenceSource>(() =>
+  mediaUrls.value[props.source] !== null ? props.source : 'crop',
 )
 const sourceUrl = computed(() =>
   mediaUrls.value[viewer.source.value] ?? reviewItem.value.media.crop_url,
 )
 const recordKey = computed(() => reviewItem.value.review_item_id)
-const sourceLabel = computed(() =>
-  sourceOptions.value.find((option) => option.value === viewer.source.value)?.label
-  ?? '裁剪证据',
-)
+const sourceLabel = computed(() => sourceLabels[viewer.source.value])
 const imageRenderKey = computed(() =>
   `${recordKey.value}:${viewer.source.value}:${viewer.imageKey.value}`,
 )
@@ -56,7 +53,6 @@ const errorMessage = computed(() => {
 })
 
 let resizeObserver: ResizeObserver | null = null
-let stopShortcuts: () => void = () => undefined
 let activeLoad = { key: '', generation: 0 }
 let activePointerId: number | null = null
 let lastPointer: ViewerPoint = { x: 0, y: 0 }
@@ -84,11 +80,6 @@ function refreshPreloads(): void {
     image.src = url
     preloadImages.push(image)
   }
-}
-
-function selectSource(source: EvidenceSource): void {
-  releaseDragging()
-  viewer.selectSource(source)
 }
 
 function onImageLoad(event: Event): void {
@@ -148,35 +139,10 @@ function releaseDragging(): void {
   isDragging.value = false
 }
 
-function onWheel(event: WheelEvent): void {
-  const canvas = canvasElement.value
-  if (!canvas) return
-  const rect = canvas.getBoundingClientRect()
-  const previousScale = viewer.scale.value
-  viewer.zoomBy(event.deltaY < 0 ? 0.25 : -0.25, {
-    x: event.clientX - (rect.left + rect.width / 2),
-    y: event.clientY - (rect.top + rect.height / 2),
-  })
-  if (viewer.scale.value !== previousScale) event.preventDefault()
-}
-
 function onCanvasKeydown(event: KeyboardEvent): void {
   if (event.target !== event.currentTarget) return
   let handled = true
   switch (event.key.toLocaleLowerCase()) {
-    case '+':
-    case '=':
-      viewer.zoomBy(0.25)
-      break
-    case '-':
-      viewer.zoomBy(-0.25)
-      break
-    case '0':
-      viewer.setActualSize()
-      break
-    case 'z':
-      viewer.fitWidth()
-      break
     case 'arrowleft':
       viewer.panBy({ x: -32, y: 0 })
       break
@@ -198,11 +164,11 @@ function onCanvasKeydown(event: KeyboardEvent): void {
 watch(recordKey, (key) => {
   releaseDragging()
   viewer.resetForRecord(key)
+  viewer.selectSource(effectiveSource.value)
 }, { immediate: true, flush: 'sync' })
-watch(sourceOptions, (options) => {
-  if (!options.some((option) => option.value === viewer.source.value)) {
-    viewer.selectSource('crop')
-  }
+watch(effectiveSource, (source) => {
+  releaseDragging()
+  viewer.selectSource(source)
 }, { immediate: true, flush: 'sync' })
 watch(imageRenderKey, (key) => {
   activeLoad = { key, generation: viewer.beginImageLoad() }
@@ -218,11 +184,6 @@ watch(
 )
 
 onMounted(() => {
-  stopShortcuts = reviewShortcutBus.subscribe((command) => {
-    if (command === 'fit-width') viewer.fitWidth()
-    else if (command === 'zoom-in') viewer.zoomBy(0.25)
-    else if (command === 'zoom-out') viewer.zoomBy(-0.25)
-  })
   const canvas = canvasElement.value
   if (!canvas) return
   const updateSize = (width: number, height: number) => {
@@ -240,7 +201,6 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
-  stopShortcuts()
   releaseDragging()
   resizeObserver?.disconnect()
   clearPreloads()
@@ -249,18 +209,6 @@ onBeforeUnmount(() => {
 
 <template>
   <section class="review-evidence-viewer" aria-label="答卷证据查看器">
-    <div class="review-evidence-source" role="group" aria-label="证据来源">
-      <button
-        v-for="option in sourceOptions"
-        :key="option.value"
-        type="button"
-        :aria-pressed="viewer.source.value === option.value"
-        @click="selectSource(option.value)"
-      >
-        {{ option.label }}
-      </button>
-    </div>
-
     <div class="review-evidence-toolbar" role="toolbar" aria-label="图片查看工具">
       <button type="button" @click="viewer.fitWidth">适应宽度</button>
       <button type="button" @click="viewer.setActualSize">原比例</button>
@@ -278,7 +226,6 @@ onBeforeUnmount(() => {
       tabindex="0"
       aria-label="答卷图片画布"
       @keydown="onCanvasKeydown"
-      @wheel="onWheel"
       @pointerdown="onPointerDown"
       @pointermove="onPointerMove"
       @pointerup="stopDragging"
@@ -306,6 +253,6 @@ onBeforeUnmount(() => {
       </div>
     </div>
 
-    <p class="review-evidence-help">画布聚焦后可用 Z、0、+、− 和方向键。</p>
+    <p class="review-evidence-help">可拖动图片或用方向键移动；图片大小只由上方按钮调整。</p>
   </section>
 </template>

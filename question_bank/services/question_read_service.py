@@ -183,6 +183,7 @@ class QuestionReadFilters:
     exam_types: tuple[str, ...] = ()
     grades: tuple[str, ...] = ()
     exam_scopes: tuple[str, ...] = ()
+    curriculum_sections: tuple[str, ...] = ()
     tag_status: str = "all"
     sort: str = "newest"
 
@@ -725,6 +726,12 @@ class QuestionBankReadService:
                     params,
                     tag_type="exam_scope",
                 ),
+                "curriculum_sections": _tag_facet(
+                    conn,
+                    filtered_sql,
+                    params,
+                    tag_type="curriculum_section",
+                ),
                 "knowledge_points": _tag_facet(
                     conn,
                     filtered_sql,
@@ -1186,6 +1193,7 @@ def _question_filter_parts(
                         "curriculum", filters.exam_scopes
                     ),
                 ),
+                ("curriculum_section", filters.curriculum_sections),
                 (
                     "knowledge_point",
                     governance.expand_filter_values(
@@ -1231,6 +1239,7 @@ def _tag_facet(
 ) -> list[dict[str, Any]]:
     if tag_type not in {
         "ability",
+        "curriculum_section",
         "exam_scope",
         "knowledge_point",
         "method",

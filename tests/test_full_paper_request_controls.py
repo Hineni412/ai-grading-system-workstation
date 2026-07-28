@@ -97,6 +97,53 @@ def test_full_paper_grading_uses_one_model_request_and_local_json_repair_path(
     assert client.repairing_calls == 0
 
 
+def test_evidence_atlas_user_prompt_uses_clear_chinese_without_changing_protocol(
+    tmp_path: Path,
+) -> None:
+    rubric = tmp_path / "rubric.json"
+    rubric.write_text(
+        json.dumps(
+            {
+                "total_score": 5,
+                "questions": [
+                    {
+                        "question_id": "Q1",
+                        "question_type": "calculation",
+                        "response_mode": "process_required",
+                        "max_score": 5,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    manifest = {
+        "tiles": [
+            {
+                "question_id": "Q1",
+                "page_index": 0,
+                "bbox": [10, 20, 30, 40],
+            }
+        ]
+    }
+
+    prompt = AIGrader(rubric, _SingleRequestClient())._build_atlas_user_prompt(
+        "学生甲",
+        manifest,
+        reference_question_ids=["Q1"],
+    )
+
+    assert "已识别学生姓名：学生甲" in prompt
+    assert "前 1 张图片依次是以下题目的标准答案原图：['Q1']" in prompt
+    assert "最后一张图片是该学生的作答证据拼图" in prompt
+    assert "只批改这张证据拼图中呈现的目标题目" in prompt
+    assert "grading_details" in prompt
+    assert json.dumps(manifest, ensure_ascii=False) in prompt
+    assert "Recognized student name" not in prompt
+    assert "The image provided is an evidence atlas" not in prompt
+    assert "Return strict JSON only" not in prompt
+
+
 def test_full_paper_timeout_reaches_sdk_without_changing_shared_grading_default(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

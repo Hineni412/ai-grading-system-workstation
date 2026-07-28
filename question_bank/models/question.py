@@ -10,6 +10,7 @@ ALLOWED_TAG_TYPES = {
     "error_type",
     "model",
     "exam_scope",
+    "curriculum_section",
     "canonical_knowledge_id",
     "prerequisite",
     "teaching_stage",

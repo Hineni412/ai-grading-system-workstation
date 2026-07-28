@@ -102,6 +102,33 @@ def _tagging_env() -> dict[str, str]:
     }
 
 
+def test_optional_reasoning_instruction_matches_english_prompt_language(
+    monkeypatch,
+) -> None:
+    context = TaggingContext(
+        question_text="计算 a^2 · a^3。",
+        answer_text="a^5",
+        question_number="1",
+        question_type="选择题",
+    )
+    batch_items = [(1, context)]
+
+    monkeypatch.delenv("QUESTION_BANK_TAGGING_THINKING", raising=False)
+    disabled_payload = json.loads(_prompt_input(context)[1]["content"])
+    assert "reasoning_instruction" not in disabled_payload
+
+    monkeypatch.setenv("QUESTION_BANK_TAGGING_THINKING", "1")
+    expected = ai_tagging_module._TAGGING_REASONING_INSTRUCTION
+    assert not any("\u4e00" <= character <= "\u9fff" for character in expected)
+    assert expected in ai_tagging_module._prompt_text(context)
+    assert json.loads(_prompt_input(context)[1]["content"])[
+        "reasoning_instruction"
+    ] == expected
+    assert json.loads(_batch_prompt_input(batch_items)[1]["content"])[
+        "reasoning_instruction"
+    ] == expected
+
+
 def test_dedicated_llm_client_uses_only_dedicated_or_default_base_url(
     monkeypatch,
 ) -> None:

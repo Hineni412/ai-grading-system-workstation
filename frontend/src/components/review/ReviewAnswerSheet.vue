@@ -7,11 +7,12 @@ import { reviewDraftKey, scoreIssue, useReviewDraftStore } from '../../stores/re
 const props = defineProps<{
   item: ReviewItemLike
   position: number
+  submitting: boolean
 }>()
 
 const emit = defineEmits<{
   openItem: [reviewItemId: string]
-  focusNextScore: [position: number]
+  scoreKeydown: [event: KeyboardEvent, reviewItemId: string]
 }>()
 
 const draftStore = useReviewDraftStore()
@@ -20,18 +21,21 @@ const imageKey = ref(0)
 const reviewItem = computed(() => resolveReviewItem(props.item))
 const draft = computed(() => draftStore.drafts[reviewDraftKey(props.item)]!)
 const issue = computed(() => scoreIssue(draft.value.scoreText, reviewItem.value.max_score))
-const riskReason = computed(() =>
-  reviewItem.value.score_status === 'ungraded'
-    ? '等待教师评分'
-    :
-  reviewItem.value.error_summary?.trim() ||
-  reviewItem.value.error_category?.trim() ||
-  reviewItem.value.deduction_reason?.trim() ||
-  '等待教师确认'
-)
+const riskReason = computed(() => {
+  const item = reviewItem.value
+  if (item.score_status === 'ungraded') return '等待教师评分'
+  if (item.score_status === 'failed') return '自动处理失败，请教师直接评分'
+  const reason = item.error_summary?.trim()
+    || item.error_category?.trim()
+    || item.deduction_reason?.trim()
+  if (reason) return reason
+  if (item.score_status === 'ai_review') return 'AI 结果需要教师复核'
+  if (item.score_status === 'ai_ready') return '高置信 AI 结果'
+  return '教师已确认'
+})
 
 const statusLabel = computed(() => ({
-  ungraded: '未批',
+  ungraded: '待人工评分',
   ai_ready: 'AI 已完成',
   ai_review: '待复核',
   teacher_final: '教师已确认',
@@ -57,16 +61,19 @@ function selectScore(event: FocusEvent): void {
 }
 
 function onScoreKeydown(event: KeyboardEvent): void {
-  if (
-    event.key !== 'Enter' ||
-    event.shiftKey ||
-    event.altKey ||
-    event.ctrlKey ||
-    event.metaKey ||
-    event.repeat
-  ) return
-  event.preventDefault()
-  emit('focusNextScore', props.position + 1)
+  const isForwardEnter =
+    event.key === 'Enter'
+    && !event.shiftKey
+    && !event.altKey
+    && !event.ctrlKey
+    && !event.metaKey
+  const isScoreTab =
+    event.key === 'Tab'
+    && !event.altKey
+    && !event.ctrlKey
+    && !event.metaKey
+  if ((!isForwardEnter && !isScoreTab) || event.isComposing) return
+  emit('scoreKeydown', event, reviewItem.value.review_item_id)
 }
 
 function retryImage(): void {
@@ -91,6 +98,7 @@ watch(
     data-testid="review-answer-sheet"
     :data-review-item-id="reviewItem.review_item_id"
     :data-detail-id="reviewItem.detail_id ?? undefined"
+    :data-score-status="reviewItem.score_status"
     :aria-labelledby="`review-answer-name-${position}`"
   >
     <header class="review-answer-sheet__identity">
@@ -127,13 +135,15 @@ watch(
     </div>
 
     <div class="review-answer-sheet__decision">
-      <label :for="`batch-score-${position}`">教师最终分</label>
+      <label :for="`batch-score-${position}`">
+        {{ reviewItem.score_source === 'ai' ? '当前 AI 得分（可修改）' : '教师最终分' }}
+      </label>
       <div class="review-answer-sheet__score">
         <input
           :id="`batch-score-${position}`"
           :value="draft.scoreText"
           inputmode="decimal"
-          :disabled="reviewItem.teacher_locked"
+          :disabled="reviewItem.teacher_locked || submitting"
           :aria-invalid="issue !== null"
           :aria-describedby="issue ? `batch-score-error-${position}` : undefined"
           :data-testid="`teacher-score-${position}`"

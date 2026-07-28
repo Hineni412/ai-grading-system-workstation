@@ -23,6 +23,16 @@ class SolutionAnswerGuardTests(unittest.TestCase):
         self.assertIn("short_answer_points", SHARED_GRADING_RULES)
         self.assertIn("visual_construction", SHARED_GRADING_RULES)
         self.assertIn("process_required", SHARED_GRADING_RULES)
+        self.assertIn("不得读取或评分学生自己作废的内容", SHARED_GRADING_RULES)
+        self.assertIn("红笔教师批注", SHARED_GRADING_RULES)
+        self.assertIn("逐空、逐步独立评分", SHARED_GRADING_RULES)
+        for mixed_fragment in (
+            "Shared grading rules",
+            "Objective items",
+            "Student-discarded content",
+            "Only process_required parts require",
+        ):
+            self.assertNotIn(mixed_fragment, SHARED_GRADING_RULES)
 
     def test_answer_images_are_sent_as_images_not_embedded_prompt_text(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

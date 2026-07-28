@@ -130,11 +130,14 @@ function scopeQuery(value: unknown): ReviewScope {
     || value === 'teacher_final'
     || value === 'all'
     ? value
-    : 'teacher_pending'
+    : 'all'
 }
 
-function manualEntryQuery(): boolean {
-  return stringQuery(route.query.entry) === 'manual'
+function entryQuery(): string | null {
+  const entry = stringQuery(route.query.entry)
+  return entry === 'manual' || entry === 'intervention' || entry === 'results'
+    ? entry
+    : null
 }
 
 function openGradingRun(): void {
@@ -154,7 +157,8 @@ function syncValidatedQuery(): void {
   )
 
   if (sessionId !== null) query.session = String(sessionId)
-  if (manualEntryQuery()) query.entry = 'manual'
+  const entry = entryQuery()
+  if (entry !== null) query.entry = entry
   if (questionIsValid && questionId !== null) query.question = questionId
   if (
     mode.value === 'deep'
@@ -281,49 +285,11 @@ async function selectQuestion(questionId: string): Promise<void> {
   )
 }
 
-async function updateScope(scope: ReviewScope): Promise<void> {
+function updateScope(scope: ReviewScope): void {
   if (scope === reviewStore.scope) return
-  const previousScope = reviewStore.scope
-  const previousQuestionId = reviewStore.selectedQuestionId
-  const sessionId = sessionStore.selectedSessionId
   reviewStore.setScope(scope)
   mode.value = 'batch'
-  if (sessionId === null) {
-    syncValidatedQuery()
-    return
-  }
-
-  const generation = contextGeneration
-  await reviewStore.loadQuestions(sessionId)
-  if (
-    unmounting
-    || generation !== contextGeneration
-    || sessionStore.selectedSessionId !== sessionId
-  ) return
-  if (reviewStore.questionLoadState === 'error') {
-    reviewStore.setScope(previousScope)
-    return
-  }
-
-  const questionId = reviewStore.questions.some(
-    (question) => question.question_id === previousQuestionId,
-  )
-    ? previousQuestionId
-    : (reviewStore.questions[0]?.question_id ?? null)
-  if (questionId === null) {
-    reviewStore.replaceItems([])
-    reviewStore.selectQuestion(null)
-    syncValidatedQuery()
-    return
-  }
-  await loadQuestion(sessionId, questionId, null, null, false, generation)
-  if (reviewStore.itemLoadState === 'error') {
-    reviewStore.setScope(previousScope)
-    await reviewStore.loadQuestions(sessionId)
-    feedbackTone.value = 'warning'
-    feedback.value = '显示范围切换失败，已恢复原来的评分范围。'
-    syncValidatedQuery()
-  }
+  syncValidatedQuery()
 }
 
 async function refreshServerState(
@@ -610,6 +576,12 @@ function focusSelectedBatchScore(): void {
   card?.querySelector<HTMLInputElement>('input:not(:disabled)')?.focus()
 }
 
+async function focusBatchScore(reviewItemId: string): Promise<void> {
+  reviewStore.selectItem(reviewItemId)
+  await nextTick()
+  focusSelectedBatchScore()
+}
+
 function onKeydown(event: KeyboardEvent): void {
   if (
     !event.defaultPrevented
@@ -692,11 +664,16 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <section ref="reviewPage" class="review-page" aria-labelledby="review-page-title">
+  <section
+    ref="reviewPage"
+    class="review-page"
+    :class="{ 'review-page--deep': mode === 'deep' }"
+    aria-labelledby="review-page-title"
+  >
     <header class="review-page__header">
       <div class="review-page__header-copy">
-        <h1 id="review-page-title" tabindex="-1">人工评分工作台</h1>
-        <p>按题集中查看全部考生答题区域；既可直接人工评分，也可复核 AI 结果。</p>
+        <h1 id="review-page-title" tabindex="-1">人工干预工作台</h1>
+        <p>需要教师处理的答卷优先显示；高置信 AI 结果保留在队列中，也可以随时修改。</p>
       </div>
       <button
         type="button"
@@ -738,8 +715,8 @@ onBeforeUnmount(() => {
     <StatePanel
       v-else-if="initialLoading"
       kind="loading"
-      title="正在读取评分题目"
-      description="正在核对题号、未批数量和教师确认数量。"
+      title="正在读取人工干预队列"
+      description="正在核对每道题的未评分、AI 结果和教师确认状态。"
     />
     <StatePanel
       v-else-if="firstLoadError"
@@ -752,8 +729,8 @@ onBeforeUnmount(() => {
     <StatePanel
       v-else-if="noQuestions"
       kind="empty"
-      title="当前范围没有评分题目"
-      description="可以切换显示范围，查看未批、AI 待复核或教师已确认记录。"
+      title="当前考试还没有可干预的评分题目"
+      description="完成答卷预检后，可以直接人工评分；AI 批改后也会在这里显示复核结果。"
     />
 
     <ReviewDeepWorkspace
@@ -771,6 +748,7 @@ onBeforeUnmount(() => {
       :questions="reviewStore.questions"
       :selected-question-id="selectedQuestionIdForView"
       :items="reviewStore.pageItems"
+      :queue-items="reviewStore.filteredItems"
       :search="reviewStore.search"
       :scope="reviewStore.scope"
       :sort="reviewStore.sort"
@@ -785,6 +763,7 @@ onBeforeUnmount(() => {
       @update-sort="(value: ReviewSort) => reviewStore.setSort(value)"
       @update-page="reviewStore.setPage"
       @open-item="openItem"
+      @focus-score="focusBatchScore"
       @confirm-batch="confirmBatch"
     />
 

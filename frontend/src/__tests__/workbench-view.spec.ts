@@ -522,11 +522,10 @@ describe('workbench view', () => {
     expect(host.textContent).toContain('知识标签覆盖')
     expect(host.querySelectorAll('[data-metric-card]')).toHaveLength(0)
     expect(host.querySelector('[data-testid="progress-action-rail"]')?.tagName).toBe('OL')
-    expect(host.querySelectorAll('.workbench-progress-rail > li')).toHaveLength(4)
-    expect(host.querySelector('[data-testid="progress-action-rail"]')?.textContent).toContain('58%')
-    expect(host.querySelector('[data-testid="progress-action-rail"]')?.textContent).not.toContain('0.58%')
-    expect(host.querySelectorAll('.workbench-progress-rail > li')[3]?.querySelector('strong')?.getAttribute('aria-label'))
-      .toBe('最近任务：58%')
+    expect(host.querySelectorAll('.workbench-progress-rail > li')).toHaveLength(3)
+    expect(host.querySelector('[data-testid="progress-action-rail"]')?.textContent).not.toContain('最近任务')
+    expect(host.textContent).not.toContain('查看任务')
+    expect(host.textContent).not.toContain('评分中')
   })
 
   it('keeps all actions read-only and routes only to the existing grading page', async () => {
@@ -553,7 +552,7 @@ describe('workbench view', () => {
     expect(loadAnomalies).toHaveBeenCalledWith(7)
     expect(host.textContent).toContain('异常记录')
 
-    const recent = host.querySelector<HTMLButtonElement>('[data-session-id="8"]')
+    const recent = host.querySelector<HTMLButtonElement>('[data-session-id="8"] .recent-session__select')
     expect(recent).not.toBeNull()
     recent!.click()
     expect(sessionStore.selectedSessionId).toBe(8)

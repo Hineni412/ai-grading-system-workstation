@@ -84,6 +84,7 @@ class QuestionTagResponse(_QuestionBankModel):
     tag_type: Literal[
         "ability",
         "canonical_knowledge_id",
+        "curriculum_section",
         "error_type",
         "exam_scope",
         "knowledge_point",
@@ -205,6 +206,7 @@ class QuestionFacetItem(_QuestionBankModel):
 
 class QuestionFacetsResponse(_QuestionBankModel):
     exam_scopes: list[QuestionFacetItem]
+    curriculum_sections: list[QuestionFacetItem]
     knowledge_points: list[QuestionFacetItem]
     curriculum_chapters: list[QuestionFacetItem]
     abilities: list[QuestionFacetItem]

@@ -118,7 +118,7 @@ beforeEach(() => {
 })
 
 describe('scan grading workspace', () => {
-  it('shows one four-stage run rail and keeps both grading modes equally available', async () => {
+  it('shows one five-stage run rail and keeps all grading modes equally available', async () => {
     const { app, host } = await mountView()
 
     for (const label of ['上传答卷', '扫描预检', '开始批改', '运行与补批']) {
@@ -238,8 +238,26 @@ describe('scan grading workspace', () => {
     expect([...host.querySelectorAll<HTMLButtonElement>('[data-grading-mode]')]
       .every((button) => button.disabled)).toBe(true)
     expect(host.querySelector('[data-open-grading-results]')).not.toBeNull()
-    expect(host.querySelector('[data-open-workbench]')).not.toBeNull()
+    expect(host.querySelector('#run-title')?.closest('section')?.textContent)
+      .not.toContain('进入人工干预')
     expect(api.startGrading).not.toHaveBeenCalled()
+    app.unmount()
+  })
+
+  it('does not let a completed job from an older scan batch lock the replacement batch', async () => {
+    const replacementWorkspace = workspace()
+    replacementWorkspace.upload_batch.batch_id = 'batch-2'
+    replacementWorkspace.grading_job = {
+      id: 93, status: 'succeeded', progress: 1, updated_at: '2026-07-17T00:00:03Z',
+      cancel_requested: false, scan_batch_id: 'batch-1',
+    }
+    vi.mocked(api.fetchGradingWorkspace).mockResolvedValue(replacementWorkspace)
+
+    const { app, host } = await mountView()
+
+    expect(host.textContent).not.toContain('批改处理已结束，但本次运行进度记录没有生成')
+    expect([...host.querySelectorAll<HTMLButtonElement>('[data-grading-mode]')]
+      .every((button) => !button.disabled)).toBe(true)
     app.unmount()
   })
 
@@ -256,6 +274,10 @@ describe('scan grading workspace', () => {
     expect(host.querySelector('[data-action="pause"]')).not.toBeNull()
     expect(host.querySelector('[data-action="cancel"]')).not.toBeNull()
     expect(host.textContent).toContain('已完成 12')
+    expect(host.querySelector('#run-title')?.closest('section')?.textContent)
+      .not.toContain('进入人工干预')
+    expect(host.querySelector('#intervention-title')?.closest('section')?.textContent)
+      .toContain('进入人工干预工作台')
     app.unmount()
   })
 

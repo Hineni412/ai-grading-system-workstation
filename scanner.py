@@ -7,12 +7,13 @@ import json
 import math
 import os
 import re
+import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from difflib import SequenceMatcher
 from pathlib import Path
-from typing import Any, List
+from typing import Any, Callable, List
 
 from PIL import Image
 
@@ -88,6 +89,78 @@ class ScanAnalysis:
 PDF_RENDER_SCALE = 1.6
 STANDARD_PAGE_QUALITY = 88
 STANDARD_PAGE_MANIFEST = "source_manifest.json"
+ScanProgressCallback = Callable[[float, str, str], None]
+
+
+class _ScanProgressReporter:
+    """Translate completed page work into monotonic, user-facing scan progress."""
+
+    def __init__(
+        self,
+        report: ScanProgressCallback | None,
+        *,
+        total_pages: int,
+        recognition_pages: int,
+    ) -> None:
+        self._report = report
+        self._total_pages = max(0, int(total_pages))
+        self._recognition_pages = max(0, int(recognition_pages))
+        self._recognition_done = 0
+        self._paired_pages = 0
+        self._lock = threading.Lock()
+
+    def prepared(self, prepared_pages: int) -> None:
+        total = self._total_pages
+        done = min(total, max(0, int(prepared_pages)))
+        ratio = done / total if total else 1.0
+        self._emit(
+            0.08 + 0.07 * ratio,
+            "转换页面",
+            f"页面准备已处理 {done}/{total} 页",
+        )
+
+    def recognition_page_done(self) -> None:
+        with self._lock:
+            self._recognition_done += 1
+            completed_work = min(self._recognition_done, self._recognition_pages)
+            total_work = self._recognition_pages
+            ratio = completed_work / total_work if total_work else 1.0
+            self._emit(
+                0.15 + 0.75 * ratio,
+                "识别姓名",
+                f"姓名识别已处理 {completed_work}/{total_work} 个候选正面页",
+            )
+
+    def recognition_complete(self) -> None:
+        with self._lock:
+            detail = (
+                f"姓名识别阶段已完成，共处理 {self._recognition_done} 个候选正面页"
+                if self._recognition_done
+                else "没有需要识别姓名的页面"
+            )
+            self._emit(0.90, "识别姓名", detail)
+
+    def pairing_pages_done(self, page_count: int) -> None:
+        with self._lock:
+            self._paired_pages = min(
+                self._total_pages,
+                self._paired_pages + max(0, int(page_count)),
+            )
+            total = self._total_pages
+            done = self._paired_pages
+            ratio = done / total if total else 1.0
+            self._emit(
+                0.90 + 0.06 * ratio,
+                "整理答卷",
+                f"答卷配对已处理 {done}/{total} 页",
+            )
+
+    def finalizing(self) -> None:
+        self._emit(0.97, "生成结果", "正在核对匹配结果并生成预检清单")
+
+    def _emit(self, progress: float, stage: str, detail: str) -> None:
+        if self._report is not None:
+            self._report(progress, stage, detail)
 
 
 def _sha1_file(path: Path) -> str:
@@ -113,12 +186,26 @@ def _read_standard_page_manifest(page_dir: Path) -> dict[str, Any]:
     return payload if isinstance(payload, dict) else {}
 
 
+def _pdf_page_count(pdf_path: Path) -> int:
+    try:
+        import fitz  # type: ignore
+    except ImportError as exc:
+        raise RuntimeError("缺少 PyMuPDF，无法读取 PDF。请先安装 pymupdf。") from exc
+
+    doc = fitz.open(Path(pdf_path))
+    try:
+        return int(doc.page_count)
+    finally:
+        doc.close()
+
+
 def render_pdf_to_standard_pages(
     pdf_path: Path,
     render_root: Path,
     *,
     enhance_images: bool,
     delete_source_pdf: bool = False,
+    page_prepared: Callable[[int, int], None] | None = None,
 ) -> list[PageRecord]:
     try:
         import fitz  # type: ignore
@@ -161,6 +248,8 @@ def render_pdf_to_standard_pages(
                     enhanced_image_path=image_path if enhance_images else None,
                 )
             )
+            if page_prepared is not None:
+                page_prepared(page_index + 1, doc.page_count)
         page_count = doc.page_count
     finally:
         doc.close()
@@ -217,7 +306,11 @@ class Scanner:
     def scan(self) -> List[ExamPaperGroup]:
         return self.analyze().groups
 
-    def analyze(self, students: list[dict[str, Any]] | None = None, report: Any = None) -> ScanAnalysis:
+    def analyze(
+        self,
+        students: list[dict[str, Any]] | None = None,
+        report: ScanProgressCallback | None = None,
+    ) -> ScanAnalysis:
         student_lookup = _build_student_lookup(students or [])
         pdf_files = self._collect_pdfs()
         image_files = self._collect_images()
@@ -225,35 +318,102 @@ class Scanner:
         if not image_files and not pdf_files and not rendered_page_sets:
             raise FileNotFoundError(f"试卷目录为空: {self.exams_dir}")
 
+        pdf_page_counts = {
+            pdf_path: _pdf_page_count(pdf_path)
+            for pdf_path in pdf_files
+        }
+        total_pages = (
+            len(image_files)
+            + sum(pdf_page_counts.values())
+            + sum(len(pages) for _source_name, pages in rendered_page_sets)
+        )
+        recognition_pages = len(image_files) // 2
+        source_page_counts = list(pdf_page_counts.values()) + [
+            len(pages)
+            for _source_name, pages in rendered_page_sets
+        ]
+        for page_count in source_page_counts:
+            if self.front_page_parity in {"odd", "even"}:
+                recognition_pages += len(
+                    _front_page_indices(page_count, self.front_page_parity)
+                )
+            else:
+                # Without a fixed template side, the even pages may also need OCR.
+                recognition_pages += page_count
+
+        progress = _ScanProgressReporter(
+            report,
+            total_pages=total_pages,
+            recognition_pages=recognition_pages,
+        )
+        prepared_pages = len(image_files) + sum(
+            len(pages)
+            for _source_name, pages in rendered_page_sets
+        )
+        progress.prepared(prepared_pages)
+
+        pdf_page_sets: list[tuple[str, list[PageRecord]]] = []
+        for pdf_path in pdf_files:
+            def page_prepared(
+                _file_page: int,
+                _file_total: int,
+            ) -> None:
+                nonlocal prepared_pages
+                prepared_pages += 1
+                progress.prepared(prepared_pages)
+
+            pages = self._render_pdf_pages(
+                pdf_path,
+                page_prepared=page_prepared,
+            )
+            pdf_page_sets.append((pdf_path.name, pages))
+
         analysis = ScanAnalysis()
         if students is not None and not students:
             analysis.warnings.append("当前未导入学生库，无法把 OCR 姓名匹配到班级学生；请先导入学生名单。")
         matched_student_ids: set[int] = set()
 
+        legacy_detected_names: dict[int, str | None] = {}
         if image_files:
-            image_analysis = self._analyze_legacy_images(image_files, student_lookup)
+            paired_page_count = len(image_files) - (len(image_files) % 2)
+            for index in range(0, paired_page_count, 2):
+                legacy_detected_names[index] = self._extract_student_name(
+                    image_files[index],
+                    student_lookup,
+                )
+                progress.recognition_page_done()
+
+        all_pdf_page_sets = pdf_page_sets + rendered_page_sets
+        for _source_name, pages in all_pdf_page_sets:
+            self._extract_pdf_page_names(
+                pages,
+                student_lookup,
+                on_page_processed=progress.recognition_page_done,
+            )
+
+        progress.recognition_complete()
+
+        if image_files:
+            image_analysis = self._analyze_legacy_images(
+                image_files,
+                student_lookup,
+                detected_names=legacy_detected_names,
+            )
             analysis.groups.extend(image_analysis.groups)
             analysis.issues.extend(image_analysis.issues)
             analysis.warnings.extend(image_analysis.warnings)
             analysis.total_pages += image_analysis.total_pages
+            progress.pairing_pages_done(len(image_files))
 
-        for pdf_path in pdf_files:
-            pages = self._render_pdf_pages(pdf_path)
-            self._extract_pdf_page_names(pages, student_lookup, report=report)
-            pdf_analysis = self._pair_pdf_pages(pdf_path.name, pages, student_lookup)
-            analysis.groups.extend(pdf_analysis.groups)
-            analysis.issues.extend(pdf_analysis.issues)
-            analysis.warnings.extend(pdf_analysis.warnings)
-            analysis.total_pages += len(pages)
-
-        for source_name, pages in rendered_page_sets:
-            self._extract_pdf_page_names(pages, student_lookup, report=report)
+        for source_name, pages in all_pdf_page_sets:
             pdf_analysis = self._pair_pdf_pages(source_name, pages, student_lookup)
             analysis.groups.extend(pdf_analysis.groups)
             analysis.issues.extend(pdf_analysis.issues)
             analysis.warnings.extend(pdf_analysis.warnings)
             analysis.total_pages += len(pages)
+            progress.pairing_pages_done(len(pages))
 
+        progress.finalizing()
         refine_scan_analysis_matches(analysis, students or [])
 
         for group in analysis.groups:
@@ -314,7 +474,13 @@ class Scanner:
             result.append((source_name, pages))
         return result
 
-    def _analyze_legacy_images(self, image_files: list[Path], student_lookup: dict[str, dict[str, Any]]) -> ScanAnalysis:
+    def _analyze_legacy_images(
+        self,
+        image_files: list[Path],
+        student_lookup: dict[str, dict[str, Any]],
+        *,
+        detected_names: dict[int, str | None] | None = None,
+    ) -> ScanAnalysis:
         analysis = ScanAnalysis(total_pages=len(image_files))
         if len(image_files) % 2 != 0:
             analysis.warnings.append(f"图片总数为奇数，最后一张已进入异常队列: {image_files[-1].name}")
@@ -332,7 +498,11 @@ class Scanner:
 
         for index in range(0, len(image_files), 2):
             front_image, back_image = image_files[index], image_files[index + 1]
-            detected_name = self._extract_student_name(front_image, student_lookup)
+            detected_name = (
+                detected_names[index]
+                if detected_names is not None and index in detected_names
+                else self._extract_student_name(front_image, student_lookup)
+            )
             match = _match_student(detected_name, student_lookup)
             student = match.student if match else None
             if student:
@@ -371,12 +541,18 @@ class Scanner:
                 )
         return analysis
 
-    def _render_pdf_pages(self, pdf_path: Path) -> list[PageRecord]:
+    def _render_pdf_pages(
+        self,
+        pdf_path: Path,
+        *,
+        page_prepared: Callable[[int, int], None] | None = None,
+    ) -> list[PageRecord]:
         return render_pdf_to_standard_pages(
             pdf_path,
             self.render_dir,
             enhance_images=self.enhance_images,
             delete_source_pdf=self.delete_source_pdfs,
+            page_prepared=page_prepared,
         )
 
     def _pair_pdf_pages(
@@ -496,23 +672,51 @@ class Scanner:
             analysis.warnings.append(f"{source_name} 页数为奇数，请检查是否漏扫。")
         return analysis
 
-    def _extract_pdf_page_names(self, pages: list[PageRecord], student_lookup: dict[str, dict[str, Any]], report: Any = None) -> None:
+    def _extract_pdf_page_names(
+        self,
+        pages: list[PageRecord],
+        student_lookup: dict[str, dict[str, Any]],
+        *,
+        on_page_processed: Callable[[], None] | None = None,
+    ) -> None:
         if not pages:
             return
 
         if self.front_page_parity in {"odd", "even"}:
-            self._extract_pdf_page_names_for_indices(pages, _front_page_indices(len(pages), self.front_page_parity), student_lookup, report=report)
+            self._extract_pdf_page_names_for_indices(
+                pages,
+                _front_page_indices(len(pages), self.front_page_parity),
+                student_lookup,
+                on_page_processed=on_page_processed,
+            )
             return
 
         odd_indices = [idx for idx in range(0, len(pages), 2)]
-        self._extract_pdf_page_names_for_indices(pages, odd_indices, student_lookup, report=report)
+        self._extract_pdf_page_names_for_indices(
+            pages,
+            odd_indices,
+            student_lookup,
+            on_page_processed=on_page_processed,
+        )
         if _front_side_confident(pages, odd_indices, student_lookup):
             return
 
         even_indices = [idx for idx in range(1, len(pages), 2)]
-        self._extract_pdf_page_names_for_indices(pages, even_indices, student_lookup, report=report)
+        self._extract_pdf_page_names_for_indices(
+            pages,
+            even_indices,
+            student_lookup,
+            on_page_processed=on_page_processed,
+        )
 
-    def _extract_pdf_page_names_for_indices(self, pages: list[PageRecord], indices: list[int], student_lookup: dict[str, dict[str, Any]] | None = None, report: Any = None) -> None:
+    def _extract_pdf_page_names_for_indices(
+        self,
+        pages: list[PageRecord],
+        indices: list[int],
+        student_lookup: dict[str, dict[str, Any]] | None = None,
+        *,
+        on_page_processed: Callable[[], None] | None = None,
+    ) -> None:
         pending = [idx for idx in indices if 0 <= idx < len(pages) and pages[idx].detected_name is None]
         if not pending:
             return
@@ -524,8 +728,9 @@ class Scanner:
                 page.detected_name = self._call_extract_student_name(
                     page.enhanced_image_path or page.image_path,
                     student_lookup,
-                    report,
                 )
+                if on_page_processed is not None:
+                    on_page_processed()
             return
 
         with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="scan-ocr") as executor:
@@ -534,7 +739,6 @@ class Scanner:
                     self._call_extract_student_name,
                     page.enhanced_image_path or page.image_path,
                     student_lookup,
-                    report,
                 ): page
                 for page in (pages[idx] for idx in pending)
             }
@@ -545,6 +749,8 @@ class Scanner:
                 except Exception as exc:  # noqa: BLE001
                     print(f"[WARNING] PDF第 {page.page_number} 页姓名识别失败: {exc}")
                     page.detected_name = None
+                if on_page_processed is not None:
+                    on_page_processed()
 
     def _call_extract_student_name(
         self,

@@ -452,7 +452,7 @@ def _build_scan_analysis_handler(
             str(context.payload.get("exams_dir") or exams_dir / f"session_{session_id}" / "uploaded_scans")
         )
         ocr_workers = context.payload.get("ocr_workers")
-        context.report(0.05, "scan_analysis", "starting")
+        context.report(0.05, "准备文件", "正在启动扫描预检")
         scan_kwargs: dict[str, Any] = {
             "db": open_grading_repositories(db_path),
             "session_id": session_id,
@@ -468,6 +468,7 @@ def _build_scan_analysis_handler(
                 else None
             ),
             "raise_if_cancelled": context.raise_if_cancelled,
+            "report": context.report,
         }
         for key in (
             "template_id",
@@ -485,13 +486,13 @@ def _build_scan_analysis_handler(
         summary = result.get("summary") if isinstance(result, dict) else {}
         if isinstance(summary, dict):
             detail = (
-                f"matched={summary.get('auto_matched', 0)} "
-                f"issues={summary.get('issues', 0)} "
-                f"pages={summary.get('total_pages', 0)}"
+                f"预检完成：自动匹配 {summary.get('auto_matched', 0)} 份，"
+                f"待处理 {summary.get('issues', 0)} 份，"
+                f"共 {summary.get('total_pages', 0)} 页"
             )
         else:
-            detail = "scan analysis complete"
-        context.report(0.95, "scan_analysis", detail)
+            detail = "扫描预检已完成"
+        context.report(0.98, "生成结果", detail)
         return result
 
     return handler
