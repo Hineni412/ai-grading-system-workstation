@@ -39,6 +39,7 @@ const permanentDeleteImpact = ref<QuestionBankPaperPermanentDeleteImpact | null>
 const permanentDeleteConfirmation = ref('')
 const permanentDeleteState = ref<'idle' | 'loading' | 'working' | 'error'>('idle')
 const permanentDeleteMessage = ref('')
+const permanentDeleteRequestToken = ref('')
 const formError = ref('')
 const paperDraft = ref({
   title: '',
@@ -277,6 +278,7 @@ async function reviewPermanentDelete(): Promise<void> {
   permanentDeleteState.value = 'loading'
   permanentDeleteMessage.value = ''
   permanentDeleteConfirmation.value = ''
+  permanentDeleteRequestToken.value = ''
   try {
     permanentDeleteImpact.value = await questionBankApi.previewPaperPermanentDelete(
       selectedTrashPapers.value.map((paper) => ({
@@ -296,6 +298,7 @@ function cancelPermanentDelete(): void {
   permanentDeleteImpact.value = null
   permanentDeleteConfirmation.value = ''
   permanentDeleteMessage.value = ''
+  permanentDeleteRequestToken.value = ''
   permanentDeleteState.value = 'idle'
 }
 
@@ -311,6 +314,9 @@ async function confirmPermanentDelete(): Promise<void> {
   if (!impact || !targets.length || !canConfirmPermanentDelete.value) return
   permanentDeleteState.value = 'working'
   permanentDeleteMessage.value = ''
+  if (!permanentDeleteRequestToken.value) {
+    permanentDeleteRequestToken.value = requestToken()
+  }
   try {
     const result = await questionBankApi.permanentlyDeletePapers(
       targets.map((paper) => ({
@@ -318,17 +324,18 @@ async function confirmPermanentDelete(): Promise<void> {
         expected_updated_at: paper.updated_at,
       })),
       permanentDeleteConfirmation.value,
-      requestToken(),
+      permanentDeleteRequestToken.value,
     )
     await store.loadTrashedPapers()
     selectedTrashIds.value = []
     permanentDeleteImpact.value = null
     permanentDeleteConfirmation.value = ''
+    permanentDeleteRequestToken.value = ''
     permanentDeleteState.value = 'idle'
     store.paperTrashMessage = `已彻底删除 ${result.deleted_paper_ids.length} 份试卷、${result.deleted_question_count} 道题、${result.deleted_tag_count} 个标签；已移除 ${result.removed_training_link_count} 条训练关联和 ${result.removed_knowledge_graph_link_count} 条知识图谱计数来源。`
   } catch {
     permanentDeleteState.value = 'error'
-    permanentDeleteMessage.value = '彻底删除没有完成。若文件正被 Word 占用，请关闭文件并刷新后重试。'
+    permanentDeleteMessage.value = '未收到服务器确认，删除结果尚不确定。请保留此窗口并点击重试；系统会使用同一请求编号核对，不会重复删除。'
   }
 }
 </script>

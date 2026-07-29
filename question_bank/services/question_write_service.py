@@ -485,12 +485,34 @@ class QuestionBankWriteService:
         token = str(request_token or "").strip().lower()
         if not re.fullmatch(r"[0-9a-f]{32}", token):
             raise ValueError("Permanent paper deletion request token is invalid")
+        request_fingerprint = _paper_delete_request_fingerprint(
+            normalized,
+            confirmation_phrase=confirmation_phrase,
+        )
         staging_root = (
             self.data_root / "question_bank" / ".paper-delete-staging" / token
         )
         with _shared_request_lock(staging_root):
             with connect(self.db_path) as conn:
                 conn.execute("BEGIN IMMEDIATE")
+                receipt = _load_paper_delete_receipt(
+                    conn,
+                    token,
+                    request_fingerprint=request_fingerprint,
+                )
+                if receipt is not None:
+                    if receipt.storage_cleanup_pending and not staging_root.exists():
+                        receipt = _paper_delete_result_with_cleanup(
+                            receipt,
+                            pending=False,
+                        )
+                        _store_paper_delete_receipt_result(
+                            conn,
+                            token,
+                            receipt,
+                        )
+                    conn.commit()
+                    return receipt
                 paper_rows, question_ids = _validate_permanent_paper_selection(
                     conn, normalized
                 )
@@ -515,6 +537,22 @@ class QuestionBankWriteService:
                         f"DELETE FROM papers WHERE id IN ({placeholders})",
                         paper_ids,
                     )
+                    result = PaperPermanentDeleteResult(
+                        deleted_paper_ids=paper_ids,
+                        deleted_question_count=len(question_ids),
+                        deleted_tag_count=counts["tags"],
+                        removed_training_link_count=counts["training"],
+                        removed_knowledge_graph_link_count=counts["graph"],
+                        deleted_file_count=len(owned),
+                        skipped_shared_file_count=len(shared),
+                        storage_cleanup_pending=True,
+                    )
+                    _insert_paper_delete_receipt(
+                        conn,
+                        token,
+                        request_fingerprint=request_fingerprint,
+                        result=result,
+                    )
                     conn.commit()
                 except Exception:
                     _restore_staged_paper_files(staged)
@@ -527,16 +565,22 @@ class QuestionBankWriteService:
             pass
         except OSError:
             cleanup_pending = True
-        return PaperPermanentDeleteResult(
-            deleted_paper_ids=tuple(selection.id for selection in normalized),
-            deleted_question_count=len(question_ids),
-            deleted_tag_count=counts["tags"],
-            removed_training_link_count=counts["training"],
-            removed_knowledge_graph_link_count=counts["graph"],
-            deleted_file_count=len(owned),
-            skipped_shared_file_count=len(shared),
-            storage_cleanup_pending=cleanup_pending,
+        result = _paper_delete_result_with_cleanup(
+            result,
+            pending=cleanup_pending,
         )
+        if not cleanup_pending:
+            try:
+                with connect(self.db_path) as conn:
+                    _store_paper_delete_receipt_result(conn, token, result)
+            except sqlite3.Error:
+                # The deletion is already committed. Keep the response
+                # conservative; a same-token retry reconciles the receipt.
+                result = _paper_delete_result_with_cleanup(
+                    result,
+                    pending=True,
+                )
+        return result
 
     def replace_tags(
         self,
@@ -1242,6 +1286,174 @@ def _normalize_paper_delete_selections(
     if len({selection.id for selection in normalized}) != len(normalized):
         raise ValueError("Permanent paper deletion selection contains duplicates")
     return normalized
+
+
+def _paper_delete_request_fingerprint(
+    selections: tuple[PaperPermanentDeleteSelection, ...],
+    *,
+    confirmation_phrase: str,
+) -> str:
+    payload = {
+        "confirmation_phrase": str(confirmation_phrase or ""),
+        "selections": [
+            {
+                "id": selection.id,
+                "expected_updated_at": selection.expected_updated_at,
+            }
+            for selection in sorted(selections, key=lambda item: item.id)
+        ],
+    }
+    return hashlib.sha256(
+        json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def _paper_delete_result_payload(
+    result: PaperPermanentDeleteResult,
+) -> dict[str, object]:
+    return {
+        "deleted_paper_ids": list(result.deleted_paper_ids),
+        "deleted_question_count": result.deleted_question_count,
+        "deleted_tag_count": result.deleted_tag_count,
+        "removed_training_link_count": result.removed_training_link_count,
+        "removed_knowledge_graph_link_count": (
+            result.removed_knowledge_graph_link_count
+        ),
+        "deleted_file_count": result.deleted_file_count,
+        "skipped_shared_file_count": result.skipped_shared_file_count,
+        "storage_cleanup_pending": result.storage_cleanup_pending,
+    }
+
+
+def _paper_delete_result_from_payload(
+    payload: object,
+) -> PaperPermanentDeleteResult:
+    if not isinstance(payload, dict):
+        raise PaperPermanentDeleteConflict(
+            "Permanent deletion receipt is invalid"
+        )
+    try:
+        return PaperPermanentDeleteResult(
+            deleted_paper_ids=tuple(
+                int(value) for value in payload["deleted_paper_ids"]
+            ),
+            deleted_question_count=int(payload["deleted_question_count"]),
+            deleted_tag_count=int(payload["deleted_tag_count"]),
+            removed_training_link_count=int(
+                payload["removed_training_link_count"]
+            ),
+            removed_knowledge_graph_link_count=int(
+                payload["removed_knowledge_graph_link_count"]
+            ),
+            deleted_file_count=int(payload["deleted_file_count"]),
+            skipped_shared_file_count=int(
+                payload["skipped_shared_file_count"]
+            ),
+            storage_cleanup_pending=bool(
+                payload["storage_cleanup_pending"]
+            ),
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        raise PaperPermanentDeleteConflict(
+            "Permanent deletion receipt is invalid"
+        ) from exc
+
+
+def _paper_delete_result_with_cleanup(
+    result: PaperPermanentDeleteResult,
+    *,
+    pending: bool,
+) -> PaperPermanentDeleteResult:
+    payload = _paper_delete_result_payload(result)
+    payload["storage_cleanup_pending"] = bool(pending)
+    return _paper_delete_result_from_payload(payload)
+
+
+def _load_paper_delete_receipt(
+    conn: sqlite3.Connection,
+    request_token: str,
+    *,
+    request_fingerprint: str,
+) -> PaperPermanentDeleteResult | None:
+    row = conn.execute(
+        """
+        SELECT request_fingerprint, result_json
+        FROM paper_permanent_delete_receipts
+        WHERE request_token = ?
+        """,
+        (request_token,),
+    ).fetchone()
+    if row is None:
+        return None
+    if str(row["request_fingerprint"]) != request_fingerprint:
+        raise PaperPermanentDeleteConflict(
+            "Permanent deletion request token was already used"
+        )
+    try:
+        payload = json.loads(str(row["result_json"]))
+    except json.JSONDecodeError as exc:
+        raise PaperPermanentDeleteConflict(
+            "Permanent deletion receipt is invalid"
+        ) from exc
+    return _paper_delete_result_from_payload(payload)
+
+
+def _insert_paper_delete_receipt(
+    conn: sqlite3.Connection,
+    request_token: str,
+    *,
+    request_fingerprint: str,
+    result: PaperPermanentDeleteResult,
+) -> None:
+    conn.execute(
+        """
+        INSERT INTO paper_permanent_delete_receipts (
+            request_token, request_fingerprint, result_json
+        ) VALUES (?, ?, ?)
+        """,
+        (
+            request_token,
+            request_fingerprint,
+            json.dumps(
+                _paper_delete_result_payload(result),
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
+        ),
+    )
+
+
+def _store_paper_delete_receipt_result(
+    conn: sqlite3.Connection,
+    request_token: str,
+    result: PaperPermanentDeleteResult,
+) -> None:
+    updated = conn.execute(
+        """
+        UPDATE paper_permanent_delete_receipts
+        SET result_json = ?
+        WHERE request_token = ?
+        """,
+        (
+            json.dumps(
+                _paper_delete_result_payload(result),
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
+            request_token,
+        ),
+    )
+    if updated.rowcount != 1:
+        raise PaperPermanentDeleteConflict(
+            "Permanent deletion receipt is missing"
+        )
 
 
 def _validate_permanent_paper_selection(

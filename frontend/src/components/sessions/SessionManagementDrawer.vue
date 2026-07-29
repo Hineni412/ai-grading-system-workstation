@@ -60,7 +60,7 @@ function close(): void {
 
 <style scoped>
 .session-management-layer {
-  background: rgb(28 39 51 / 38%);
+  background: var(--color-overlay-mask);
   display: flex;
   inset: 0;
   justify-content: flex-end;
@@ -71,7 +71,7 @@ function close(): void {
 .session-management-drawer {
   background: var(--color-bg-surface);
   border-inline-start: var(--border-width) solid var(--color-border-default);
-  box-shadow: -12px 0 32px rgb(28 39 51 / 12%);
+  box-shadow: var(--shadow-overlay);
   display: flex;
   flex-direction: column;
   max-width: 100%;

@@ -78,6 +78,7 @@ def _valid_config_payload() -> dict[str, object]:
                     {
                         "part_id": part_id,
                         "part_score": score,
+                        "response_mode": "short_answer_points",
                         "steps": [
                             {
                                 "step_id": f"{part_id}-S1",
@@ -155,7 +156,7 @@ def _controlled_source(
     record = asyncio.run(
         service.stage_and_parse(
             session_id=session_id,
-            filename=f"controlled{suffix}",
+            filename=f"七年级下册测试卷{suffix}",
             chunks=_chunks(content),
         )
     )
@@ -304,6 +305,7 @@ def test_automatic_question_bank_sync_uses_published_revision_and_is_idempotent(
         lambda _db, _session_id: SimpleNamespace(
             configured=True,
             revision="a" * 64,
+            session={},
         ),
     )
     summary: dict[str, object] = {}
@@ -314,6 +316,7 @@ def test_automatic_question_bank_sync_uses_published_revision_and_is_idempotent(
         session_id=7,
         source_paper_sha256="b" * 64,
         summary=summary,
+        source_safe_filename="七年级下册测试卷.docx",
     )
 
     assert len(submitted) == 1

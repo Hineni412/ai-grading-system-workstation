@@ -125,13 +125,18 @@ def test_paper_permanent_delete_api_requires_impact_and_exact_phrase(
             "request_token": "b" * 32,
         },
     )
+    delete_body = {
+        "selections": selections,
+        "confirmation_phrase": "彻底删除 1 份试卷",
+        "request_token": "c" * 32,
+    }
     deleted = client.post(
         "/api/question-bank/papers/permanent-delete",
-        json={
-            "selections": selections,
-            "confirmation_phrase": "彻底删除 1 份试卷",
-            "request_token": "c" * 32,
-        },
+        json=delete_body,
+    )
+    repeated = client.post(
+        "/api/question-bank/papers/permanent-delete",
+        json=delete_body,
     )
 
     assert impact.status_code == 200
@@ -140,6 +145,8 @@ def test_paper_permanent_delete_api_requires_impact_and_exact_phrase(
     assert rejected.status_code == 422
     assert deleted.status_code == 200
     assert deleted.json()["deleted_paper_ids"] == [paper_id]
+    assert repeated.status_code == 200
+    assert repeated.json() == deleted.json()
     assert client.get(
         "/api/question-bank/papers",
         params={"deleted": "true"},

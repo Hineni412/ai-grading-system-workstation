@@ -16,18 +16,25 @@ import llm_client
 import usage_logger
 
 
-def _scored_question(question_id: str, question_type: str, score: int) -> dict:
+def _scored_question(
+    question_id: str,
+    question_type: str,
+    score: int,
+    *,
+    response_mode: str | None = None,
+) -> dict:
+    part = {
+        "part_id": question_id,
+        "part_score": score,
+        "steps": [{"step_id": "S1", "step_score": score}],
+    }
+    if response_mode is not None:
+        part["response_mode"] = response_mode
     return {
         "question_id": question_id,
         "question_type": question_type,
         "max_score": score,
-        "parts": [
-            {
-                "part_id": question_id,
-                "part_score": score,
-                "steps": [{"step_id": "S1", "step_score": score}],
-            }
-        ],
+        "parts": [part],
     }
 
 
@@ -1560,11 +1567,17 @@ def test_retry_selected_failed_question_preserves_unselected_failure(
 def test_word_whole_generation_is_one_request_and_uses_shared_postprocessing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    scores = [17, 17, 17, 17, 17, 15]
     payload = {
         "rubric": {
             "questions": [
-                _scored_question(f"Q{i}", "comprehensive", 1)
-                for i in range(1, 7)
+                _scored_question(
+                    f"Q{i}",
+                    "comprehensive",
+                    score,
+                    response_mode="short_answer_points",
+                )
+                for i, score in enumerate(scores, start=1)
             ]
         },
         "answer_key": {
@@ -1602,11 +1615,17 @@ def test_word_whole_generation_is_one_request_and_uses_shared_postprocessing(
 def test_pdf_whole_generation_is_one_visual_request_without_extracted_text(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    scores = [17, 17, 17, 17, 17, 15]
     payload = {
         "rubric": {
             "questions": [
-                _scored_question(f"Q{i}", "comprehensive", 1)
-                for i in range(1, 7)
+                _scored_question(
+                    f"Q{i}",
+                    "comprehensive",
+                    score,
+                    response_mode="short_answer_points",
+                )
+                for i, score in enumerate(scores, start=1)
             ]
         },
         "answer_key": {

@@ -457,7 +457,9 @@ def test_009_drops_exact_legacy_tables_and_backup_restores_rows(
 
     assert report.error is None, report.error
     assert [(item.name, item.status) for item in report.results] == [
-        ("009_drop_legacy_skill_semantics", "applied")
+        ("009_drop_legacy_skill_semantics", "applied"),
+        ("010_add_paper_trash_state", "applied"),
+        ("011_add_paper_permanent_delete_receipts", "applied"),
     ]
     backup = Path(report.results[0].backup_path or "")
     assert backup.is_file()
@@ -592,7 +594,7 @@ def test_009_accepts_the_supported_untracked_legacy_column_order(
     )
 
     assert report.error is None, report.error
-    assert report.results[-1].name == "009_drop_legacy_skill_semantics"
+    assert report.results[-1].name == "011_add_paper_permanent_delete_receipts"
 
 
 @pytest.mark.parametrize("mode", ["partial", "extra"])

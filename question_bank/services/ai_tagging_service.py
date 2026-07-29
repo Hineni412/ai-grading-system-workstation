@@ -323,7 +323,7 @@ class AITaggingService:
             prompt = "\n\n".join(
                 item["content"] for item in prompt_input
             )
-            payload = _json_from_text_compat(
+            payload = _json_from_text_once_compat(
                 self.llm_client,
                 prompt,
                 model=_model_for_llm_client(self.llm_client, self.model),
@@ -332,6 +332,7 @@ class AITaggingService:
             response = self._protocol_adapter().responses(
                 request_kind=LLMRequestKind.TAGGING,
                 model=self.model,
+                allow_retry=False,
                 kwargs={
                     "text": {
                         "format": _taxonomy_suggestion_response_format()
@@ -1024,6 +1025,30 @@ def _json_from_text_compat(
             raise
         call_kwargs.pop("extra_kwargs", None)
         return llm_client.json_from_text(prompt, **call_kwargs)
+
+
+def _json_from_text_once_compat(
+    llm_client: Any,
+    prompt: str,
+    *,
+    model: str | None = None,
+) -> Any:
+    """Use the strict one-request interface; never fall back to AI repair."""
+
+    method = getattr(llm_client, "json_from_text_once", None)
+    if not callable(method):
+        raise RuntimeError("AI 归并建议需要单次请求 JSON 接口")
+    call_kwargs: dict[str, Any] = {
+        "model": model,
+        "request_kind": LLMRequestKind.TAGGING,
+    }
+    try:
+        return method(prompt, **call_kwargs)
+    except TypeError as exc:
+        if "request_kind" not in str(exc):
+            raise
+        call_kwargs.pop("request_kind", None)
+        return method(prompt, **call_kwargs)
 
 
 def _analyze_one_question(service: AITaggingService, context: TaggingContext, rate_limiter: "_RateLimiter") -> AITaggingResult:

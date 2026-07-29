@@ -346,7 +346,7 @@ def test_question_bank_initializer_uses_current_migrations(
             LIMIT 1
             """
         ).fetchone()
-    assert current == ("010_add_paper_trash_state",)
+    assert current == ("011_add_paper_permanent_delete_receipts",)
 
 
 @pytest.mark.parametrize("source_path", RUNTIME_SCHEMA_OWNERS)
@@ -371,7 +371,7 @@ def test_application_schema_gate_checks_both_databases(tmp_path: Path) -> None:
     assert results["grading"].current_version == "009_add_teacher_score_locks"
     assert (
         results["question_bank"].current_version
-        == "010_add_paper_trash_state"
+        == "011_add_paper_permanent_delete_receipts"
     )
 
 
@@ -445,7 +445,7 @@ def test_fastapi_lifespan_checks_both_schema_versions(tmp_path: Path) -> None:
             "SELECT migration_name FROM schema_migrations "
             "WHERE success = 1 ORDER BY id DESC LIMIT 1"
         ).fetchone()
-    assert current == ("010_add_paper_trash_state",)
+    assert current == ("011_add_paper_permanent_delete_receipts",)
 
 
 def test_fastapi_lifespan_schema_failure_does_not_expose_local_path(
