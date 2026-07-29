@@ -182,7 +182,7 @@ def _fake_single_question_payload(question_id: str) -> dict[str, Any]:
                         {
                             "part_id": part_id,
                             "part_score": 1,
-                            "response_mode": "process_required",
+                            "response_mode": "short_answer_points",
                             "visual_requirements": [],
                             "steps": [
                                 {

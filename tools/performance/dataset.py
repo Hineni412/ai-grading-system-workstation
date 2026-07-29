@@ -554,7 +554,7 @@ def _populate_question_bank_database(
                     f"generated-answer-{question_index:05d}",
                     f"generated-source-{question_index:05d}",
                     json.dumps([asset_path]) if question_index == 1 else "[]",
-                    "generated-difficulty",
+                    f"{1 + ((question_index - 1) % 10):.1f}",
                     "generated-typicality",
                     "generated-reason",
                     0,
