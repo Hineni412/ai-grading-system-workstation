@@ -57,6 +57,7 @@ def test_page_specific_color_exceptions_are_confined_to_p3_5_question_work() -> 
         "frontend/src/components/config/SessionDeletionPanel.vue",
         "frontend/src/components/question-bank/PaperLibrary.vue",
         "frontend/src/components/question-bank/QuestionContentRenderer.vue",
+        "frontend/src/views/ResultsCenterView.vue",
         "frontend/src/styles/question-assembly.css",
         "frontend/src/styles/question-bank.css",
     }

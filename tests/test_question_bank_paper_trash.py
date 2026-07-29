@@ -7,6 +7,7 @@ import pytest
 from question_bank.database.schema import connect, initialize_database
 from question_bank.services.question_read_service import QuestionBankReadService
 from question_bank.services.question_write_service import (
+    PaperPermanentDeleteConflict,
     PaperPermanentDeleteSelection,
     PaperStateConflict,
     QuestionBankWriteService,
@@ -147,11 +148,17 @@ def test_permanent_delete_removes_owned_file_tags_and_statistic_links(
         confirmation_phrase="彻底删除 1 份试卷",
         request_token="a" * 32,
     )
+    repeated = writer.permanently_delete_papers(
+        [PaperPermanentDeleteSelection(paper_id, trashed.updated_at)],
+        confirmation_phrase="彻底删除 1 份试卷",
+        request_token="a" * 32,
+    )
 
     assert impact.tag_count == 1
     assert impact.training_link_count == 1
     assert impact.knowledge_graph_link_count == 1
     assert result.deleted_paper_ids == (paper_id,)
+    assert repeated == result
     assert not source_path.exists()
     with connect(writer.db_path) as conn:
         assert conn.execute(
@@ -163,6 +170,20 @@ def test_permanent_delete_removes_owned_file_tags_and_statistic_links(
         assert conn.execute(
             "SELECT COUNT(*) FROM training_set_items"
         ).fetchone()[0] == 0
+
+    with pytest.raises(PaperPermanentDeleteConflict):
+        writer.permanently_delete_papers(
+            [
+                PaperPermanentDeleteSelection(
+                    paper_id,
+                    trashed.updated_at + "-changed",
+                )
+            ],
+            confirmation_phrase="彻底删除 1 份试卷",
+            request_token="a" * 32,
+        )
+
+
 def test_paper_state_change_rejects_the_opposite_action_from_a_stale_card(
     tmp_path: Path,
 ) -> None:

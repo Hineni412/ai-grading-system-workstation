@@ -610,6 +610,7 @@ def test_taxonomy_review_suggestions_use_tagging_gateway_and_safe_payload(
         {
             "request_kind": backend_llm.LLMRequestKind.TAGGING,
             "model": "fake-tagging-model",
+            "allow_retry": False,
             "kwargs": {
                 "text": {
                     "format": _taxonomy_suggestion_response_format()
@@ -623,6 +624,42 @@ def test_taxonomy_review_suggestions_use_tagging_gateway_and_safe_payload(
     )
     assert "private" not in serialized
     assert "aliases" not in serialized
+
+
+def test_taxonomy_review_suggestions_use_one_request_without_ai_repair() -> None:
+    calls = []
+    expected = {
+        "results": [
+            {
+                "proposal_id": "proposal-1",
+                "decision": "keep_new",
+                "target_term_ids": [],
+                "reason": "需要保留独立术语。",
+                "confidence": 0.88,
+            }
+        ]
+    }
+
+    class SingleRequestClient:
+        settings = SimpleNamespace(config_model="single-request-model")
+
+        def json_from_text_once(self, prompt, **kwargs):
+            calls.append((prompt, kwargs))
+            return expected
+
+        def json_from_text(self, *_args, **_kwargs):
+            raise AssertionError("taxonomy suggestions must not use AI repair")
+
+    service = AITaggingService(
+        env={"QUESTION_BANK_TAGGING_MODEL": "single-request-model"},
+        llm_client=SingleRequestClient(),
+    )
+
+    result = service.suggest_taxonomy_reviews([])
+
+    assert result == expected["results"]
+    assert len(calls) == 1
+    assert calls[0][1]["request_kind"] is backend_llm.LLMRequestKind.TAGGING
 
 
 def test_taxonomy_review_suggestions_do_not_fake_ai_in_mock_mode(

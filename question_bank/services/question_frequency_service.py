@@ -543,16 +543,24 @@ class QuestionFrequencyService:
             exam_type = normalize_exam_type(target.get("exam_type"))
             if not exam_type:
                 # 阶段练习、小测和无法确认类型的试卷不是正式考频样本。
-                # 只清理本题，不能用空类型匹配并连带清空所有正式缓存。
-                conn.execute(
-                    "DELETE FROM question_frequency_cache WHERE question_id = ?",
-                    (question_id,),
-                )
-                conn.commit()
+                # 只重算本题，不能用空类型匹配并连带清空所有正式缓存。
+                # 本题仍需要一条零分/低分缓存，否则按考频排序时会从结果中掉队。
+                self._update_frequency_cache_internal(conn, [question_id])
                 return
             paper_ids = _eligible_paper_ids(conn, target, exam_type=exam_type)
+            affected_question_ids = {int(question_id)}
             if paper_ids:
                 placeholders = ", ".join("?" for _ in paper_ids)
+                affected_question_ids.update(
+                    int(row["id"])
+                    for row in conn.execute(
+                        f"""
+                        SELECT id FROM questions
+                        WHERE paper_id IN ({placeholders}) AND is_deleted = 0
+                        """,
+                        paper_ids,
+                    ).fetchall()
+                )
                 conn.execute(
                     f"""
                     DELETE FROM question_frequency_cache
@@ -563,7 +571,10 @@ class QuestionFrequencyService:
                     paper_ids
                 )
             conn.execute("DELETE FROM question_frequency_cache WHERE question_id = ?", (question_id,))
-            conn.commit()
+            self._update_frequency_cache_internal(
+                conn,
+                sorted(affected_question_ids),
+            )
 
 
 def _matching_count_by_similarity(conn, target: Mapping[str, Any], paper_ids: list[int], cache: dict | None = None) -> int:

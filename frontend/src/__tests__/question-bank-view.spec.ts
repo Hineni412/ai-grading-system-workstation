@@ -506,6 +506,97 @@ describe('question bank workspace', () => {
       String(request) === '/api/question-bank/papers/4/restore'
     ))).toBe(true)
   })
+
+  it('reuses the permanent-delete request token when the first response is lost', async () => {
+    const host = document.createElement('div')
+    document.body.append(host)
+    const pinia = createPinia()
+    const app = createApp(PaperLibrary)
+    app.use(pinia)
+    const store = useQuestionBankStore(pinia)
+    store.papers = []
+    store.papersState = 'ready'
+    app.mount(host)
+    mounted.push(app)
+    const trashedPaper = {
+      ...paper,
+      import_status: 'deleted',
+      updated_at: '2026-07-29 12:00:00.000001',
+    }
+    let deleteAttempts = 0
+    let deletionConfirmed = false
+    const deleteBodies: Array<Record<string, unknown>> = []
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input)
+      if (url === '/api/question-bank/papers?deleted=true') {
+        return response({
+          items: deletionConfirmed ? [] : [trashedPaper],
+          total: deletionConfirmed ? 0 : 1,
+        })
+      }
+      if (url.endsWith('/permanent-deletion-impact')) {
+        return response({
+          paper_count: 1,
+          question_count: 2,
+          tag_count: 3,
+          training_link_count: 0,
+          knowledge_graph_link_count: 0,
+          owned_file_count: 1,
+          shared_file_count: 0,
+          permanent_delete_phrase: '彻底删除 1 份试卷',
+        })
+      }
+      if (url.endsWith('/permanent-delete')) {
+        deleteAttempts += 1
+        deleteBodies.push(JSON.parse(String(init?.body)))
+        if (deleteAttempts === 1) {
+          return response({ error: { message: 'response lost' } }, 503)
+        }
+        deletionConfirmed = true
+        return response({
+          deleted_paper_ids: [trashedPaper.id],
+          deleted_question_count: 2,
+          deleted_tag_count: 3,
+          removed_training_link_count: 0,
+          removed_knowledge_graph_link_count: 0,
+          deleted_file_count: 1,
+          skipped_shared_file_count: 0,
+          storage_cleanup_pending: false,
+        })
+      }
+      throw new Error(`unexpected request: ${url}`)
+    })
+
+    const openTrash = [...host.querySelectorAll<HTMLButtonElement>('button')]
+      .find((button) => button.textContent?.includes('回收站'))!
+    openTrash.click()
+    await vi.waitFor(() => expect(store.trashedPapers).toHaveLength(1))
+    const select = document.body.querySelector<HTMLInputElement>(
+      `input[aria-label="选择 ${trashedPaper.title}"]`,
+    )!
+    select.checked = true
+    select.dispatchEvent(new Event('change', { bubbles: true }))
+    await nextTick()
+    const reviewDelete = [...document.body.querySelectorAll<HTMLButtonElement>('button')]
+      .find((button) => button.textContent?.includes('彻底删除所选'))!
+    reviewDelete.click()
+    await vi.waitFor(() => expect(document.body.textContent).toContain('确认彻底删除？'))
+    const confirmation = document.body.querySelector<HTMLInputElement>(
+      '.paper-permanent-confirmation input',
+    )!
+    confirmation.value = '彻底删除 1 份试卷'
+    confirmation.dispatchEvent(new Event('input', { bubbles: true }))
+    await nextTick()
+    const confirm = [...document.body.querySelectorAll<HTMLButtonElement>('button')]
+      .find((button) => button.textContent?.includes('确认彻底删除'))!
+    confirm.click()
+    await vi.waitFor(() => expect(document.body.textContent).toContain('结果尚不确定'))
+    confirm.click()
+    await vi.waitFor(() => expect(deleteAttempts).toBe(2))
+    await vi.waitFor(() => expect(document.body.textContent).not.toContain('确认彻底删除？'))
+
+    expect(deleteBodies[0]?.request_token).toBe(deleteBodies[1]?.request_token)
+  })
 })
 
 function response(body: unknown, status = 200): Promise<Response> {

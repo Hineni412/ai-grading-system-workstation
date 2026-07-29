@@ -126,9 +126,27 @@ def test_practice_invalidation_does_not_clear_formal_exam_cache(tmp_path: Path) 
 
     with connect(db_path) as conn:
         remaining = conn.execute(
-            "SELECT question_id FROM question_frequency_cache ORDER BY question_id"
+            """
+            SELECT question_id, score_midterm, score_final, score_zhongkao
+            FROM question_frequency_cache
+            ORDER BY question_id
+            """
         ).fetchall()
-    assert [int(row["question_id"]) for row in remaining] == [formal_question]
+    assert [int(row["question_id"]) for row in remaining] == [
+        formal_question,
+        practice_question,
+    ]
+    formal = remaining[0]
+    practice = remaining[1]
+    assert (
+        float(formal["score_midterm"]),
+        float(formal["score_final"]),
+        float(formal["score_zhongkao"]),
+    ) == (0.1, 0.8, 0.2)
+    assert all(
+        0.0 <= float(practice[column]) <= 1.0
+        for column in ("score_midterm", "score_final", "score_zhongkao")
+    )
 
 
 def test_frequency_excludes_practice_and_other_semesters(tmp_path: Path) -> None:
