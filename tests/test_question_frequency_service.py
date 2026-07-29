@@ -83,7 +83,7 @@ def test_only_formal_exams_have_frequency() -> None:
     assert not is_frequency_exam_type("期末同步练习")
 
 
-def test_frequency_counts_all_matching_questions_in_same_paper(tmp_path: Path) -> None:
+def test_frequency_counts_at_most_one_best_match_per_paper(tmp_path: Path) -> None:
     db_path = tmp_path / "question_bank.db"
     service = QuestionFrequencyService(db_path)
     service.initialize_database()
@@ -96,9 +96,39 @@ def test_frequency_counts_all_matching_questions_in_same_paper(tmp_path: Path) -
     metrics = service.metrics_for_question(target_id)
 
     assert metrics.available
-    assert metrics.matched_question_count == 3
+    assert metrics.matched_question_count == 2
     assert metrics.eligible_paper_count == 2
-    assert metrics.questions_per_paper == 1.5
+    assert metrics.questions_per_paper == 1.0
+
+
+def test_practice_invalidation_does_not_clear_formal_exam_cache(tmp_path: Path) -> None:
+    db_path = tmp_path / "question_bank.db"
+    service = QuestionFrequencyService(db_path)
+    service.initialize_database()
+    formal_paper = _insert_paper(db_path, title="期末卷", exam_type="期末")
+    practice_paper = _insert_paper(db_path, title="阶段小测", exam_type="阶段练习")
+    formal_question = _insert_question(db_path, formal_paper, number="1")
+    practice_question = _insert_question(db_path, practice_paper, number="1")
+    with connect(db_path) as conn:
+        conn.executemany(
+            """
+            INSERT INTO question_frequency_cache (
+                question_id, score_midterm, score_final, score_zhongkao
+            ) VALUES (?, ?, ?, ?)
+            """,
+            [
+                (formal_question, 0.1, 0.8, 0.2),
+                (practice_question, 0.0, 0.0, 0.0),
+            ],
+        )
+
+    service.invalidate_frequency_cache_for_question(practice_question)
+
+    with connect(db_path) as conn:
+        remaining = conn.execute(
+            "SELECT question_id FROM question_frequency_cache ORDER BY question_id"
+        ).fetchall()
+    assert [int(row["question_id"]) for row in remaining] == [formal_question]
 
 
 def test_frequency_excludes_practice_and_other_semesters(tmp_path: Path) -> None:

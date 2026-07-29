@@ -18,6 +18,11 @@ from docx import Document
 from docx.table import Table
 from docx.text.paragraph import Paragraph
 
+from backend.config_generation.contract import (
+    GENERATED_ID_CONTRACT_PROMPT,
+    TEACHER_TYPE_CONTRACT_PROMPT,
+)
+from backend.llm.execution import execution_snapshot_from_profile
 from equivalence_engine import merge_equivalent_forms
 from llm_client import LLMClient
 
@@ -182,6 +187,8 @@ def _aligned_whole_generation_rules() -> str:
         "5. 主观题评分点必须写出可核验的必要条件、式子或结论，不得只写通用描述。\n"
         "6. 作图题应输出 visual_requirements 和必要踩分点，不得把答案图臆造为唯一文字答案。\n"
         "7. 总分严格为100；单题不超过18分；相同类型客观题必须同分，其他题型不要求同分。\n"
+        f"8. {GENERATED_ID_CONTRACT_PROMPT}\n"
+        f"9. {TEACHER_TYPE_CONTRACT_PROMPT}\n"
     )
 
 
@@ -223,12 +230,34 @@ def _build_whole_image_generation_prompt() -> str:
     )
 
 
+def _whole_generation_retry_prompt(
+    original_prompt: str,
+    error: BaseException,
+) -> str:
+    feedback = re.sub(r"\s+", " ", str(error or "")).strip()[:1200]
+    return (
+        original_prompt
+        + "\n\n上一次整卷结果未通过本地校验。请丢弃上一次结果，重新返回完整整卷评分标准，"
+        "不得只返回修补片段。必须逐条修正以下已经由本地程序定位的问题：\n"
+        + (feedback or "评分标准结构或分值分配不符合本地规则。")
+    )
+
+
 def _finalize_whole_generation_payload(
     payload: dict[str, Any],
     generation_mode: str,
 ) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise ValueError("AI 整卷生成未返回有效 JSON 对象。")
+    score_issues = collect_score_consistency_issues(
+        payload,
+        expected_total=100.0,
+    )
+    if score_issues:
+        raise ValueError(
+            "整卷评分标准未通过分值分配校验："
+            + "；".join(score_issues)
+        )
     normalize_new_generated_config_payload(payload)
     force_payload_total_score(payload, target_total=100.0)
     meta = payload.setdefault("meta", {})
@@ -287,10 +316,37 @@ def generate_grading_config_from_docx_text(
             model=model_name,
             extra_kwargs=_config_generation_extra_kwargs(),
         )
-    finalized = _finalize_whole_generation_payload(
-        payload,
-        "whole_word_text_single_request",
-    )
+    try:
+        finalized = _finalize_whole_generation_payload(
+            payload,
+            "whole_word_text_single_request",
+        )
+    except ValueError as error:
+        if report:
+            report(
+                0.70,
+                "本地校验未通过",
+                "已定位评分标准问题，正在把具体原因交给模型重新生成整卷。",
+            )
+        retry_prompt = _whole_generation_retry_prompt(prompt, error)
+        if image_blobs:
+            payload = llm_client.json_from_images_once(
+                retry_prompt,
+                image_blobs,
+                model=model_name,
+                extra_kwargs=_config_generation_extra_kwargs(),
+                use_config_client=True,
+            )
+        else:
+            payload = llm_client.json_from_text_once(
+                retry_prompt,
+                model=model_name,
+                extra_kwargs=_config_generation_extra_kwargs(),
+            )
+        finalized = _finalize_whole_generation_payload(
+            payload,
+            "whole_word_text_local_validation_retry",
+        )
     meta = finalized.setdefault("meta", {})
     if isinstance(meta, dict):
         meta["word_source_image_count"] = len(image_blobs)
@@ -555,13 +611,19 @@ def _generate_question_block_results(
     report: Any = None,
     q_images: dict[str, Any] | None = None,
 ) -> tuple[list[dict[str, Any] | None], list[dict[str, Any]], dict[str, int], int, bool]:
-    max_workers = _bounded_int(
-        os.getenv("AI_GRADING_CONFIG_WORKERS") or os.getenv("AI_GRADING_MAX_WORKERS"),
-        8,
-        1,
-        1000,
+    execution_profile = getattr(
+        getattr(llm_client, "settings", None),
+        "policy_profile",
+        None,
     )
-    worker_count = min(max_workers, len(question_blocks))
+    execution_snapshot = execution_snapshot_from_profile(execution_profile)
+    worker_count = max(
+        1,
+        min(
+            execution_snapshot.max_in_flight,
+            len(question_blocks),
+        ),
+    )
     results: list[dict[str, Any] | None] = [None] * len(question_blocks)
     failures: list[dict[str, Any]] = []
     attempt_counts: dict[str, int] = {}
@@ -3758,14 +3820,37 @@ def generate_grading_config_from_images(
         raise ValueError("PDF 整卷视觉模式未获得任何页面图片。")
     if report:
         report(0.20, "PDF 整卷视觉单次请求", f"发送 {len(image_blobs)} 张整页图片，一次完成解析与赋分。")
+    prompt = _build_whole_image_generation_prompt()
     payload = llm_client.json_from_images_once(
-        _build_whole_image_generation_prompt(),
+        prompt,
         image_blobs,
         model=model_name,
         extra_kwargs=_config_generation_extra_kwargs(),
         use_config_client=True,
     )
-    return _finalize_whole_generation_payload(payload, "whole_pdf_visual_single_request")
+    try:
+        return _finalize_whole_generation_payload(
+            payload,
+            "whole_pdf_visual_single_request",
+        )
+    except ValueError as error:
+        if report:
+            report(
+                0.70,
+                "本地校验未通过",
+                "已定位评分标准问题，正在把具体原因交给模型重新生成整卷。",
+            )
+        payload = llm_client.json_from_images_once(
+            _whole_generation_retry_prompt(prompt, error),
+            image_blobs,
+            model=model_name,
+            extra_kwargs=_config_generation_extra_kwargs(),
+            use_config_client=True,
+        )
+        return _finalize_whole_generation_payload(
+            payload,
+            "whole_pdf_visual_local_validation_retry",
+        )
 
 
 # P3-10 compatibility exports. The implementation lives in focused policy

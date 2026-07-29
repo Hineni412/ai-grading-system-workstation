@@ -29,6 +29,9 @@ def test_run_bat_has_no_retired_streamlit_fallback() -> None:
 def test_run_bat_applies_pending_ops_before_starting_any_server() -> None:
     content = Path("运行.bat").read_text(encoding="utf-8")
 
+    storage_preflight = content.index(
+        '"%PROJECT_RUNNER%" backend.startup_storage_preflight'
+    )
     frontend_check = content.index(
         '"%PROJECT_RUNNER%" backend.api.launcher --check-frontend'
     )
@@ -36,7 +39,10 @@ def test_run_bat_applies_pending_ops_before_starting_any_server() -> None:
     default_api = content.index(
         '"%PROJECT_RUNNER%" backend.api.launcher --host 127.0.0.1'
     )
-    assert frontend_check < gate < default_api
+    assert storage_preflight < frontend_check < gate < default_api
+    assert "if errorlevel 1 goto taxonomy_storage_error" in content[
+        storage_preflight:frontend_check
+    ]
     assert "if errorlevel 1 goto frontend_error" in content[frontend_check:gate]
     assert "if errorlevel 1 goto offline_error" in content[gate:default_api]
 

@@ -6,6 +6,7 @@ from pathlib import Path
 from question_bank.database.schema import connect
 from question_bank.importers.batch_importer import (
     BatchImportResult,
+    PaperMetadata,
     ScannedPaper,
     infer_metadata_from_filename,
     import_scanned_papers,
@@ -66,13 +67,18 @@ def _run_question_import_job_locked(
 
     context.raise_if_cancelled()
     context.report(0.15, "question_import", "importing")
+    metadata = _metadata_with_defaults(
+        infer_metadata_from_filename(resource.filename),
+        context.payload.get("paper_defaults"),
+    )
     try:
         result = importer(
             [
                 ScannedPaper(
                     source_file=str(resource.source_path),
                     file_type=resource.suffix.lstrip("."),
-                    metadata=infer_metadata_from_filename(resource.filename),
+                    metadata=metadata,
+                    title=Path(resource.filename).stem,
                 )
             ],
             Path(question_bank_db_path),
@@ -123,3 +129,27 @@ def _active_question_ids(db_path: Path, source_files: list[str]) -> list[int]:
             clean_sources,
         ).fetchall()
     return [int(row["id"]) for row in rows]
+
+
+def _metadata_with_defaults(
+    inferred: PaperMetadata,
+    raw_defaults: object,
+) -> PaperMetadata:
+    defaults = raw_defaults if isinstance(raw_defaults, dict) else {}
+
+    def fallback(field: str) -> str | None:
+        value = str(defaults.get(field) or "").strip()
+        return value or None
+
+    return PaperMetadata(
+        year=inferred.year or fallback("year"),
+        province=inferred.province or fallback("province"),
+        city=inferred.city or fallback("city"),
+        district=inferred.district or fallback("district"),
+        exam_type=inferred.exam_type or fallback("exam_type"),
+        grade=inferred.grade or fallback("grade"),
+        semester=inferred.semester or fallback("semester"),
+        textbook_version=(
+            inferred.textbook_version or fallback("textbook_version")
+        ),
+    )

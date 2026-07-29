@@ -39,7 +39,11 @@ def test_frontend_manifest_locks_dependencies_and_quality_commands() -> None:
 def test_frontend_full_gate_typechecks_once_and_reuses_prepared_build() -> None:
     scripts = _package()["scripts"]
 
-    assert scripts["verify"] == "npm run lint && npm run test && npm run build"
+    assert scripts["test:editor"] == (
+        "node --test ../components/answer_region_editor/editor_core.test.mjs"
+    )
+    assert scripts["test:all"] == "npm run test && npm run test:editor"
+    assert scripts["verify"] == "npm run lint && npm run test:all && npm run build"
     assert scripts["build"] == "npm run typecheck && npm run build-only"
     assert scripts["e2e:p2-08:prepared"] == (
         "playwright test --config playwright.p2-08.config.ts"

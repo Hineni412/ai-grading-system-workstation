@@ -11,8 +11,8 @@ class GradingRunRequest(BaseModel):
     grading_mode: Literal["full_paper", "hybrid_batch"] = "full_paper"
     failed_only: bool = False
     enhance_images: bool = True
-    max_workers: int | None = Field(default=None, ge=1, le=32)
-    requests_per_minute: int | None = Field(default=None, ge=1, le=1000)
+    max_workers: int | None = Field(default=None, ge=1, le=100)
+    requests_per_minute: int | None = Field(default=None, ge=1, le=10_000)
     resume_run_id: int | None = Field(default=None, ge=1)
     upload_revision: int | None = Field(default=None, ge=0)
     decision_revision: int | None = Field(default=None, ge=0)

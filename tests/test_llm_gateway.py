@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from backend.llm.gateway import LLMGateway
+from backend.llm.execution import LLMExecutionGovernorRegistry
 from backend.llm.policy import LLMRequestKind
 
 
@@ -127,6 +128,7 @@ def _gateway(
         profile=profile,
         config_key="profile-a",
         pacers=pacer or RecordingPacer(),
+        governors=LLMExecutionGovernorRegistry(),
         usage_sink=sink or RecordingSink(),
         trace_sink=trace_sink or RecordingTraceSink(),
         clock=StepClock(),
@@ -662,14 +664,14 @@ def test_allow_retry_false_makes_exactly_one_physical_request():
 @pytest.mark.parametrize(
     ("header", "expected"),
     [
-        ("0.2", 0.2),
-        ("10", 0.5),
+        ("0.2", 0.5),
+        ("10", 10.0),
         ("-1", 0.5),
         ("nan", 0.5),
         ("invalid", 0.5),
     ],
 )
-def test_retry_after_is_finite_non_negative_and_capped_to_policy_delay(
+def test_retry_after_is_finite_non_negative_and_never_shorter_than_provider(
     header: str,
     expected: float,
 ):
@@ -714,6 +716,7 @@ def test_default_pacer_registry_is_shared_across_gateway_instances():
     second = LLMGateway(config_key="profile-a")
 
     assert first.pacers is second.pacers
+    assert first.governors is second.governors
 
 
 def test_generated_request_id_is_a_uuid_shared_by_all_attempts():

@@ -5,11 +5,17 @@ import type {
   ReportFileStatus,
   ReportHistoryJob,
   ReportType,
+  ScoreExcelOptions,
   TrainingExportRequest,
 } from '../api/exports'
-import type { JobResponse, JobStatus } from '../api/jobs'
+import {
+  TERMINAL_JOB_STATUSES,
+  type JobResponse,
+  type JobStatus,
+} from '../api/jobs'
 import { useFileCenterStore } from '../stores/file-center'
 import { useJobStore } from '../stores/jobs'
+import { useResultsCenterStore } from '../stores/results-center'
 import { useSessionStore } from '../stores/session'
 
 const props = withDefaults(defineProps<{
@@ -21,14 +27,77 @@ const props = withDefaults(defineProps<{
 const sessionStore = useSessionStore()
 const fileCenter = useFileCenterStore()
 const jobStore = useJobStore()
+const resultsStore = useResultsCenterStore()
 const actionMessage = ref('')
 const actionError = ref('')
+const excelSettingsOpen = ref(false)
+const excelForceRegenerate = ref(false)
+const hideBottomEnabled = ref(true)
+const hideBottomN = ref(8)
+const manualHideEnabled = ref(false)
+const manualHiddenStudentIds = ref<number[]>([])
+const manualStudentSearch = ref('')
 const trainingPanelOpen = ref(false)
 const trainingMode = ref<'bundle' | 'variant'>('bundle')
 const trainingVariantId = ref('')
 const trainingFormat = ref<'docx' | 'markdown'>('docx')
 const trainingAudience = ref<'student' | 'teacher'>('student')
 type ReportDisplayStatus = ReportFileStatus | 'stale'
+
+const eligibleExcelStudents = computed(() => (
+  resultsStore.results?.students ?? []
+).filter((student) => (
+  student.ungraded_count === 0
+  && student.failed_count === 0
+)))
+
+const filteredManualStudents = computed(() => {
+  const query = manualStudentSearch.value.trim().toLocaleLowerCase()
+  if (!query) return eligibleExcelStudents.value
+  return eligibleExcelStudents.value.filter((student) => [
+    student.student_name,
+    student.student_code,
+    student.class_name,
+  ].some((value) => value?.toLocaleLowerCase().includes(query)))
+})
+
+const automaticHiddenStudentIds = computed(() => {
+  if (!hideBottomEnabled.value) return new Set<number>()
+  const safeN = Math.max(0, Math.min(100, Math.trunc(hideBottomN.value || 0)))
+  if (safeN === 0) return new Set<number>()
+  const byClass = new Map<string, typeof eligibleExcelStudents.value>()
+  for (const student of eligibleExcelStudents.value) {
+    const className = student.class_name?.trim() || '未分班'
+    const group = byClass.get(className) ?? []
+    group.push(student)
+    byClass.set(className, group)
+  }
+  const hidden = new Set<number>()
+  for (const group of byClass.values()) {
+    if (group.length <= safeN) continue
+    const ordered = [...group].sort((left, right) => (
+      left.current_score - right.current_score
+      || (left.student_code ?? '').localeCompare(right.student_code ?? '', 'zh-CN')
+      || left.student_name.localeCompare(right.student_name, 'zh-CN')
+      || left.student_id - right.student_id
+    ))
+    for (const student of ordered.slice(0, safeN)) hidden.add(student.student_id)
+  }
+  return hidden
+})
+
+const previewHiddenStudentIds = computed(() => {
+  const hidden = new Set(automaticHiddenStudentIds.value)
+  if (manualHideEnabled.value) {
+    for (const studentId of manualHiddenStudentIds.value) hidden.add(studentId)
+  }
+  return hidden
+})
+
+const previewVisibleStudentCount = computed(() => Math.max(
+  0,
+  eligibleExcelStudents.value.length - previewHiddenStudentIds.value.size,
+))
 
 const reportDefinitions: Array<{
   type: ReportType
@@ -53,12 +122,26 @@ const reportDefinitions: Array<{
 const liveJobs = computed(() => Object.values(jobStore.jobs)
   .filter((job) => job.job_type === 'report_export' || job.job_type === 'training_export')
   .sort((left, right) => right.id - left.id))
+const pendingReportStatusSignal = computed(() => (
+  fileCenter.reportContext?.jobs ?? []
+)
+  .filter((job) => !TERMINAL_JOB_STATUSES.has(job.status))
+  .map((job) => {
+    const live = jobStore.jobs[job.id]
+    return `${job.id}:${live?.status ?? job.status}:${live?.updated_at ?? job.updated_at}`
+  })
+  .join('|'))
+const refreshedTerminalReportIds = new Set<number>()
 
 watch(
   () => sessionStore.selectedSessionId,
   (sessionId) => {
     actionMessage.value = ''
     actionError.value = ''
+    excelSettingsOpen.value = false
+    manualHiddenStudentIds.value = []
+    manualStudentSearch.value = ''
+    refreshedTerminalReportIds.clear()
     if (sessionId === null) {
       fileCenter.reset()
       return
@@ -67,6 +150,21 @@ watch(
   },
   { immediate: true },
 )
+
+watch(pendingReportStatusSignal, () => {
+  const sessionId = sessionStore.selectedSessionId
+  if (sessionId === null) return
+  const newlyCompleted = (fileCenter.reportContext?.jobs ?? [])
+    .filter((snapshot) => {
+      if (TERMINAL_JOB_STATUSES.has(snapshot.status)
+        || refreshedTerminalReportIds.has(snapshot.id)) return false
+      const live = jobStore.jobs[snapshot.id]
+      return live !== undefined && TERMINAL_JOB_STATUSES.has(live.status)
+    })
+  if (newlyCompleted.length === 0) return
+  for (const job of newlyCompleted) refreshedTerminalReportIds.add(job.id)
+  void fileCenter.load(sessionId)
+})
 
 function reportJobs(type: ReportType): ReportHistoryJob[] {
   return (fileCenter.reportContext?.jobs ?? [])
@@ -135,17 +233,82 @@ function formatTime(value: string | null): string {
 }
 
 async function generateReport(type: ReportType, forceRegenerate = false): Promise<void> {
+  if (type === 'score_excel') {
+    openExcelSettings(forceRegenerate)
+    return
+  }
   const sessionId = sessionStore.selectedSessionId
   if (sessionId === null) return
   actionError.value = ''
   actionMessage.value = ''
   try {
-    const job = await fileCenter.submitReport(sessionId, type, forceRegenerate)
+    const job = await fileCenter.submitReport(
+      sessionId,
+      type,
+      forceRegenerate,
+    )
+    if (sessionStore.selectedSessionId !== sessionId) return
+    await fileCenter.load(sessionId)
+    if (sessionStore.selectedSessionId !== sessionId) return
     actionMessage.value = job.status === 'succeeded'
       ? '已有可用文件，已保留原文件。'
       : `${reportTypeLabel(type)}已加入生成队列。`
   } catch {
+    if (sessionStore.selectedSessionId !== sessionId) return
     actionError.value = '文件生成请求未能提交，请刷新登记簿后重试。'
+  }
+}
+
+function openExcelSettings(forceRegenerate = false): void {
+  excelForceRegenerate.value = forceRegenerate
+  excelSettingsOpen.value = true
+  actionError.value = ''
+}
+
+function closeExcelSettings(): void {
+  excelSettingsOpen.value = false
+  manualStudentSearch.value = ''
+}
+
+async function submitConfiguredScoreExcel(): Promise<void> {
+  const sessionId = sessionStore.selectedSessionId
+  if (sessionId === null) return
+  const safeBottomN = Math.max(
+    0,
+    Math.min(100, Math.trunc(hideBottomN.value || 0)),
+  )
+  hideBottomN.value = safeBottomN
+  const eligibleIds = new Set(
+    eligibleExcelStudents.value.map((student) => student.student_id),
+  )
+  const options: ScoreExcelOptions = {
+    hide_bottom_enabled: hideBottomEnabled.value,
+    hide_bottom_n: hideBottomEnabled.value ? safeBottomN : 0,
+    manual_hidden_student_ids: manualHideEnabled.value
+      ? [...new Set(manualHiddenStudentIds.value)]
+        .filter((studentId) => eligibleIds.has(studentId))
+        .sort((left, right) => left - right)
+      : [],
+  }
+  actionError.value = ''
+  actionMessage.value = ''
+  try {
+    const job = await fileCenter.submitReport(
+      sessionId,
+      'score_excel',
+      excelForceRegenerate.value,
+      options,
+    )
+    if (sessionStore.selectedSessionId !== sessionId) return
+    await fileCenter.load(sessionId)
+    if (sessionStore.selectedSessionId !== sessionId) return
+    closeExcelSettings()
+    actionMessage.value = job.status === 'succeeded'
+      ? '已有相同设置的成绩表，已保留原文件。'
+      : '成绩表已按当前设置加入生成队列。'
+  } catch {
+    if (sessionStore.selectedSessionId !== sessionId) return
+    actionError.value = '成绩表生成请求未能提交，请核对设置后重试。'
   }
 }
 
@@ -328,6 +491,16 @@ function isTrainingDownloadable(job: JobResponse): boolean {
             </p>
             <div class="file-product__actions">
               <button
+                v-if="definition.type === 'score_excel'"
+                type="button"
+                class="file-button file-button--secondary"
+                data-testid="configure-score-excel"
+                :disabled="fileCenter.reportContext?.has_results === false"
+                @click="openExcelSettings(false)"
+              >
+                导出设置
+              </button>
+              <button
                 v-if="latestReport(definition.type) && reportDisplayStatus(latestReport(definition.type)!) === 'available'"
                 type="button"
                 class="file-button file-button--primary"
@@ -361,6 +534,154 @@ function isTrainingDownloadable(job: JobResponse): boolean {
             </div>
           </article>
         </div>
+
+        <div
+          v-if="excelSettingsOpen"
+          class="excel-settings-backdrop"
+          data-testid="excel-settings-backdrop"
+          @click.self="closeExcelSettings"
+        >
+          <form
+            class="excel-settings-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="excel-settings-title"
+            data-testid="excel-settings-dialog"
+            @submit.prevent="submitConfiguredScoreExcel"
+          >
+            <div class="excel-settings-dialog__heading">
+              <div>
+                <p class="file-center__eyebrow">Excel 导出设置</p>
+                <h3 id="excel-settings-title">精简打印姓名，不改变成绩统计</h3>
+              </div>
+              <button
+                type="button"
+                class="file-link-button"
+                @click="closeExcelSettings"
+              >
+                关闭
+              </button>
+            </div>
+
+            <p class="excel-settings-dialog__explanation">
+              均分、得分率、失分人数和排名始终统计全部正常参考且已完整批改的学生。下面的选择只影响每道题打印哪些失分学生姓名。
+            </p>
+
+            <div class="excel-settings-preview" aria-label="导出设置预览">
+              <div>
+                <span>正式统计</span>
+                <strong data-testid="excel-preview-statistical">
+                  {{ eligibleExcelStudents.length }} 人
+                </strong>
+              </div>
+              <div>
+                <span>最多隐藏姓名</span>
+                <strong data-testid="excel-preview-hidden">
+                  {{ previewHiddenStudentIds.size }} 人
+                </strong>
+              </div>
+              <div>
+                <span>仍可显示姓名</span>
+                <strong data-testid="excel-preview-visible">
+                  {{ previewVisibleStudentCount }} 人
+                </strong>
+              </div>
+            </div>
+
+            <fieldset class="excel-settings-group">
+              <legend>自动精简</legend>
+              <label class="excel-settings-checkline">
+                <input
+                  v-model="hideBottomEnabled"
+                  type="checkbox"
+                  data-testid="excel-hide-bottom-enabled"
+                >
+                <span>每班隐藏总分最后</span>
+                <input
+                  v-model.number="hideBottomN"
+                  type="number"
+                  min="0"
+                  max="100"
+                  step="1"
+                  data-testid="excel-hide-bottom-n"
+                  :disabled="!hideBottomEnabled"
+                  aria-label="每班隐藏最后人数"
+                >
+                <span>名</span>
+              </label>
+              <small>班级人数不超过填写人数时不会自动隐藏全班；同分时按学号和姓名稳定选取准确人数。</small>
+            </fieldset>
+
+            <fieldset class="excel-settings-group">
+              <legend>手动补充</legend>
+              <label class="excel-settings-checkline">
+                <input
+                  v-model="manualHideEnabled"
+                  type="checkbox"
+                  data-testid="excel-manual-enabled"
+                >
+                <span>另外手动隐藏指定学生姓名</span>
+              </label>
+              <template v-if="manualHideEnabled">
+                <label class="excel-settings-search">
+                  <span>查找学生</span>
+                  <input
+                    v-model="manualStudentSearch"
+                    type="search"
+                    placeholder="输入姓名、学号或班级"
+                    data-testid="excel-student-search"
+                  >
+                </label>
+                <div
+                  v-if="filteredManualStudents.length"
+                  class="excel-settings-students"
+                  data-testid="excel-student-options"
+                >
+                  <label
+                    v-for="student in filteredManualStudents"
+                    :key="student.student_id"
+                  >
+                    <input
+                      v-model="manualHiddenStudentIds"
+                      type="checkbox"
+                      :value="student.student_id"
+                      :data-testid="`excel-student-${student.student_id}`"
+                    >
+                    <span>
+                      <strong>{{ student.student_name }}</strong>
+                      {{ student.student_code || '无学号' }} · {{ student.class_name || '未分班' }} · {{ student.current_score }} 分
+                    </span>
+                  </label>
+                </div>
+                <p v-else class="excel-settings-empty">
+                  {{ eligibleExcelStudents.length ? '没有匹配的完整成绩学生。' : '完整成绩读取完成后，可在这里手动选择学生。' }}
+                </p>
+              </template>
+            </fieldset>
+
+            <div class="excel-settings-dialog__actions">
+              <span>这些设置只用于本次导出的 Excel，不会修改成绩中心数据。</span>
+              <div>
+                <button
+                  type="button"
+                  class="file-button file-button--secondary"
+                  @click="closeExcelSettings"
+                >
+                  取消
+                </button>
+                <button
+                  type="submit"
+                  class="file-button file-button--primary"
+                  data-testid="submit-score-excel"
+                  :disabled="fileCenter.submittingKey === 'report:score_excel'"
+                >
+                  生成成绩表
+                </button>
+              </div>
+            </div>
+          </form>
+        </div>
+
         <p
           v-if="fileCenter.reportContext?.has_results === false"
           class="file-center__warning"

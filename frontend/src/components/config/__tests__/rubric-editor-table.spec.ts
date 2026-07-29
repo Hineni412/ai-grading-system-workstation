@@ -10,7 +10,8 @@ function row(overrides: Partial<ConfigEditorRow> = {}): ConfigEditorRow {
     part_label: '第 1 问', question_type: 'proof', core_goal: '完整证明'.repeat(40), score: 3,
     standard_answer: '标准答案'.repeat(80), accepted_answers: ['等价答案 A'], match_rule: '按关键要素匹配',
     answer_only_max_score: null, require_final_answer: true,
-    required_elements: [], deduction_rules: [], final_answer_rule: '', ...overrides,
+    required_elements: [], deduction_rules: [], part_deduction_rules: [],
+    final_answer_rule: '', ...overrides,
   }
 }
 
@@ -110,6 +111,41 @@ describe('RubricEditorTable', () => {
     secondPart.click()
     expect(mounted.emitted).toContainEqual({
       row_id: 'row-q12-p2-s1', require_final_answer: true,
+    })
+  })
+
+  it('shows the part answer and shared deduction policy only on the first scoring card', async () => {
+    const mounted = await mountTable({ rows: [
+      row({
+        part_deduction_rules: ['缺少关键证明义务时扣对应步骤分'],
+      }),
+      row({
+        row_id: 'row-q12-p1-s2',
+        step_id: 'S2',
+        standard_answer: '',
+        accepted_answers: [],
+        part_deduction_rules: [],
+      }),
+    ] })
+    const first = mounted.host.querySelector<HTMLElement>('[data-row-id="row-q12-p1-s1"]')!
+    const second = mounted.host.querySelector<HTMLElement>('[data-row-id="row-q12-p1-s2"]')!
+
+    expect(first.textContent).toContain('标准答案')
+    expect(first.textContent).toContain('小问统一扣分规则')
+    expect(first.querySelector('[data-edit-field="part_deduction_rules"]')).not.toBeNull()
+    expect(second.textContent).not.toContain('标准答案')
+    expect(second.textContent).not.toContain('小问统一扣分规则')
+    expect(second.querySelector('[data-edit-field="standard_answer"]')).toBeNull()
+    expect(second.querySelector('[data-edit-field="accepted_answers"]')).toBeNull()
+
+    const policy = first.querySelector<HTMLTextAreaElement>(
+      '[data-edit-field="part_deduction_rules"]',
+    )!
+    policy.value = '缺少最终结论扣 1 分'
+    policy.dispatchEvent(new Event('change', { bubbles: true }))
+    expect(mounted.emitted).toContainEqual({
+      row_id: 'row-q12-p1-s1',
+      part_deduction_rules: ['缺少最终结论扣 1 分'],
     })
   })
 

@@ -68,6 +68,9 @@ def run_tagging_sync_job(
             taxonomy_governance=taxonomy_governance,
             batch_size=batch_size,
             question_ids=question_ids,
+            curriculum_volume_id=str(
+                context.payload.get("curriculum_volume_id") or ""
+            ).strip(),
         )
 
 
@@ -79,13 +82,16 @@ def _run_tagging_sync_job_locked(
     taxonomy_governance: Any | None,
     batch_size: int,
     question_ids: list[int],
+    curriculum_volume_id: str,
 ) -> dict[str, object]:
     size = max(1, min(int(batch_size), 50))
     db_path = Path(question_bank_db_path)
     context.raise_if_cancelled()
     try:
         contexts, complete_ids, unavailable_ids = _load_tagging_candidates(
-            db_path, question_ids
+            db_path,
+            question_ids,
+            curriculum_volume_id=curriculum_volume_id,
         )
     except Exception:
         raise RuntimeError("tagging sync setup failed") from None
@@ -103,10 +109,11 @@ def _run_tagging_sync_job_locked(
     service = QuestionService(db_path)
     governance = taxonomy_governance
     taxonomy_revision = 0
+    taxonomy_contracts: dict[int, dict[str, Any]] = {}
     if ai_service is not None:
         if governance is None and isinstance(ai_service, AITaggingService):
             governance = ai_service.taxonomy_governance
-        taxonomy_revision = _freeze_taxonomy(
+        taxonomy_contracts, taxonomy_revision = _plan_taxonomy(
             ai_service,
             governance,
             contexts=contexts,
@@ -114,6 +121,8 @@ def _run_tagging_sync_job_locked(
     proposal_ids: list[str] = []
     proposal_keys: set[str] = set()
     review_question_ids: list[int] = []
+    retrieval_miss_count = 0
+    retrieval_miss_question_ids: list[int] = []
 
     context.report(0.05, "tagging_sync", "loading")
     for batch_index, start in enumerate(range(0, len(pending_ids), size)):
@@ -128,6 +137,11 @@ def _run_tagging_sync_job_locked(
             assert ai_service is not None
             results = ai_service.analyze_questions(
                 {question_id: contexts[question_id] for question_id in batch_ids},
+                taxonomy_contracts={
+                    question_id: taxonomy_contracts[question_id]
+                    for question_id in batch_ids
+                    if question_id in taxonomy_contracts
+                },
                 progress_callback=None,
                 request_callback=None,
                 allow_batch_fallback=False,
@@ -141,10 +155,16 @@ def _run_tagging_sync_job_locked(
             continue
         context.raise_if_cancelled()
         for question_id in batch_ids:
+            context.raise_if_cancelled()
             result = results.get(question_id)
             if result is None:
                 failures.append(_failure(question_id, "validation"))
                 continue
+            retrieval_misses = getattr(result, "retrieval_misses", [])
+            if isinstance(retrieval_misses, list) and retrieval_misses:
+                retrieval_miss_count += len(retrieval_misses)
+                if question_id not in retrieval_miss_question_ids:
+                    retrieval_miss_question_ids.append(question_id)
             if not is_auto_saveable_result(result):
                 failures.append(_result_failure(question_id, result))
                 continue
@@ -160,8 +180,7 @@ def _run_tagging_sync_job_locked(
                         result,
                         question_id=question_id,
                         job_id=context.job_id,
-                        expected_revision=taxonomy_revision
-                        or int(result.taxonomy_revision or 0),
+                        expected_revision=int(result.taxonomy_revision or 0),
                     )
                 except Exception:  # noqa: BLE001
                     failures.append(_failure(question_id, "save"))
@@ -209,6 +228,8 @@ def _run_tagging_sync_job_locked(
         "failed_question_ids": failed_ids,
         "failures": failures,
         "taxonomy_revision": taxonomy_revision,
+        "retrieval_miss_count": retrieval_miss_count,
+        "retrieval_miss_question_ids": retrieval_miss_question_ids,
         "review_count": len(proposal_keys),
         "review_question_ids": review_question_ids,
         "proposal_ids": proposal_ids,
@@ -243,6 +264,8 @@ def _normalize_question_ids(value: object) -> list[int]:
 def _load_tagging_candidates(
     db_path: Path,
     question_ids: list[int],
+    *,
+    curriculum_volume_id: str = "",
 ) -> tuple[dict[int, TaggingContext], list[int], list[int]]:
     placeholders = ",".join("?" for _ in question_ids)
     with connect(db_path) as conn:
@@ -250,7 +273,8 @@ def _load_tagging_candidates(
             f"""
             SELECT q.id, q.question_text, q.answer_text, q.question_number,
                    q.question_type, q.has_images, q.is_deleted,
-                   p.grade, p.semester, p.exam_type, p.district
+                   p.grade, p.semester, p.textbook_version,
+                   p.exam_type, p.district
             FROM questions q
             LEFT JOIN papers p ON p.id = q.paper_id
             WHERE q.id IN ({placeholders})
@@ -268,21 +292,9 @@ def _load_tagging_candidates(
         ).fetchall()
     rows_by_id = {int(row["id"]): row for row in rows}
     tag_types: dict[int, set[str]] = {}
-    tag_values: dict[int, list[str]] = {}
-    tag_values_by_type: dict[int, dict[str, list[str]]] = {}
     for row in tag_rows:
         question_id = int(row["question_id"])
         tag_types.setdefault(question_id, set()).add(str(row["tag_type"]))
-        value = str(row["tag_value"] or "").strip()
-        values = tag_values.setdefault(question_id, [])
-        if value and value not in values:
-            values.append(value)
-        type_values = tag_values_by_type.setdefault(question_id, {}).setdefault(
-            str(row["tag_type"]),
-            [],
-        )
-        if value and value not in type_values:
-            type_values.append(value)
     required = set(CORE_ANALYSIS_TAG_TYPES)
     contexts: dict[int, TaggingContext] = {}
     complete: list[int] = []
@@ -301,48 +313,56 @@ def _load_tagging_candidates(
                 question_type=str(row["question_type"] or ""),
                 grade=str(row["grade"] or ""),
                 semester=str(row["semester"] or ""),
+                textbook_version=str(row["textbook_version"] or ""),
+                curriculum_volume_id=curriculum_volume_id,
                 exam_type=str(row["exam_type"] or ""),
                 district=str(row["district"] or ""),
                 has_images=bool(row["has_images"]),
-                existing_tags=tag_values.get(question_id, []),
-                existing_tags_by_dimension=_existing_tags_by_dimension(
-                    tag_values_by_type.get(question_id, {})
-                ),
             )
     return contexts, complete, unavailable
 
 
-def _freeze_taxonomy(
+def _plan_taxonomy(
     ai_service: Any,
     governance: Any | None,
     *,
     contexts: Mapping[int, TaggingContext],
-) -> int:
+) -> tuple[dict[int, dict[str, Any]], int]:
     if governance is None:
         freeze = getattr(ai_service, "freeze_taxonomy", None)
         if callable(freeze):
-            return max(0, int(freeze()))
-        return max(0, int(getattr(ai_service, "taxonomy_revision", 0) or 0))
-    search_text = "\n".join(
-        " ".join(
-            part
-            for part in (
-                str(item.question_text or "").strip(),
-                str(item.answer_text or "").strip(),
-                str(item.question_type or "").strip(),
-                str(item.grade or "").strip(),
-                str(item.semester or "").strip(),
+            revision = max(0, int(freeze()))
+        else:
+            revision = max(
+                0,
+                int(getattr(ai_service, "taxonomy_revision", 0) or 0),
             )
-            if part
-        )
-        for item in contexts.values()
-    )
-    contract = governance.prompt_contract({"text": search_text})
-    revision = _taxonomy_revision(contract)
-    freeze = getattr(ai_service, "freeze_taxonomy", None)
-    if callable(freeze):
-        return max(0, int(freeze(contract)))
-    return revision
+        return {}, revision
+    prompt_contexts = {
+        question_id: context.to_dict()
+        for question_id, context in contexts.items()
+    }
+    planner = getattr(governance, "prompt_contracts", None)
+    if callable(planner):
+        planned = planner(prompt_contexts)
+        contracts = {
+            int(question_id): dict(contract)
+            for question_id, contract in planned.items()
+            if question_id in contexts and isinstance(contract, Mapping)
+        }
+    else:
+        contracts = {
+            question_id: dict(
+                governance.prompt_contract(context.to_dict())
+            )
+            for question_id, context in contexts.items()
+        }
+    revisions = {
+        _taxonomy_revision(contract) for contract in contracts.values()
+    }
+    if len(revisions) > 1:
+        raise ValueError("per-question taxonomy plans do not share one revision")
+    return contracts, next(iter(revisions), 0)
 
 
 def _persist_proposals(
@@ -404,25 +424,6 @@ def _taxonomy_revision(contract: object) -> int:
         return max(0, int(raw))
     except (TypeError, ValueError):
         return 0
-
-
-def _existing_tags_by_dimension(
-    values_by_type: Mapping[str, list[str]],
-) -> dict[str, list[str]]:
-    type_to_dimension = {
-        "knowledge_point": "knowledge",
-        "method": "method",
-        "ability": "ability",
-        "model": "model",
-        "exam_scope": "curriculum",
-        "prerequisite": "prerequisite",
-    }
-    result: dict[str, list[str]] = {}
-    for tag_type, dimension in type_to_dimension.items():
-        values = values_by_type.get(tag_type, [])
-        if values:
-            result[dimension] = list(values)
-    return result
 
 
 def _result_failure(question_id: int, result: AITaggingResult) -> dict[str, object]:

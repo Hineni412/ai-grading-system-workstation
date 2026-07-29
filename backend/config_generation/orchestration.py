@@ -4,16 +4,26 @@ import base64
 import copy
 import hashlib
 import json
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from typing import Any, Callable, Sequence
 
 from backend.document_parsing.question_blocks import rich_text_for_model
+from question_id_contract import QuestionIdContractError
 
+from .contract import (
+    GeneratedOutputContractError,
+    align_generated_question_ids,
+    align_score_allocation_ids,
+    attach_structure_repairs,
+)
 from .gateway import ConfigGenerationGateway
+from .quality import blocking_quality_question_ids
 from .prompts import (
     build_batch_generation_prompt,
     build_score_allocation_prompt,
 )
+from .score_allocation import collect_score_consistency_issues
 
 
 DEFAULT_CONFIG_GENERATION_BATCH_SIZE = 3
@@ -68,7 +78,7 @@ class _BatchSchemaMismatch(ValueError):
 
 
 class ConfigGenerationOrchestrator:
-    """Sequential batches, retry selection, merge, score and checkpoints."""
+    """Bounded parallel batches, deterministic merge, score and checkpoints."""
 
     def __init__(
         self,
@@ -192,6 +202,161 @@ class ConfigGenerationOrchestrator:
             checkpoint=checkpoint,
         )
 
+    def regenerate_questions(
+        self,
+        existing_payload: dict[str, Any],
+        question_blocks: list[dict[str, Any]],
+        doc_text: str,
+        *,
+        regenerate_question_ids: Sequence[str],
+        q_images: dict[str, Any] | None = None,
+        checkpoint: CheckpointWriter | None = None,
+    ) -> dict[str, Any]:
+        """Replace selected question structures, then rerun whole-paper scoring."""
+        locked_blocks = [copy.deepcopy(block) for block in question_blocks]
+        _validate_unique_question_ids(locked_blocks)
+        selected_ids = list(
+            dict.fromkeys(
+                str(question_id).strip()
+                for question_id in regenerate_question_ids
+                if str(question_id).strip()
+            )
+        )
+        if not selected_ids:
+            raise ValueError("至少需要一道待重新生成的题目。")
+        block_map = {
+            str(block.get("question_id") or "").strip(): block
+            for block in locked_blocks
+        }
+        unknown_ids = [
+            question_id
+            for question_id in selected_ids
+            if question_id not in block_map
+        ]
+        if unknown_ids:
+            raise ValueError(
+                "待重新生成题目不在当前拆题结果中："
+                + ", ".join(unknown_ids)
+            )
+        selected_blocks = [block_map[question_id] for question_id in selected_ids]
+        self._policy.validate_image_inputs(selected_blocks, q_images)
+        batches = _build_batches(selected_blocks, self._batch_size)
+        merged = copy.deepcopy(existing_payload)
+        states: dict[str, dict[str, Any]] = {}
+        max_workers = min(
+            len(batches),
+            _gateway_parallel_limit(self._gateway),
+        )
+        if self._report:
+            self._report(
+                0.10,
+                "局部重新生成评分标准",
+                (
+                    f"仅重新生成 {', '.join(selected_ids)}；"
+                    "全部题目通过校验后，将再进行一次整卷统一配分。"
+                ),
+            )
+        with ThreadPoolExecutor(
+            max_workers=max(1, max_workers),
+            thread_name_prefix="config-question-regeneration",
+        ) as executor:
+            futures = {
+                executor.submit(
+                    self._execute_batch,
+                    batch,
+                    doc_text,
+                    q_images,
+                    validation_feedback=_validation_feedback_for_questions(
+                        existing_payload,
+                        list(batch["question_ids"]),
+                    ),
+                ): batch
+                for batch in batches
+            }
+            for completed, future in enumerate(as_completed(futures), start=1):
+                batch = futures[future]
+                batch_id = str(batch["batch_id"])
+                question_ids = list(batch["question_ids"])
+                try:
+                    state, batch_payload = future.result()
+                except Exception as exc:
+                    state = _failed_batch_state(
+                        batch_id,
+                        question_ids,
+                        exc,
+                        self._policy,
+                    )
+                    batch_payload = None
+                states[batch_id] = state
+                if (
+                    state.get("status") == "succeeded"
+                    and isinstance(batch_payload, dict)
+                ):
+                    _replace_question_payloads(
+                        merged,
+                        batch_payload,
+                        set(question_ids),
+                        locked_blocks,
+                    )
+                _attach_batch_meta(
+                    merged,
+                    batches,
+                    states,
+                    self._batch_size,
+                )
+                if checkpoint:
+                    checkpoint(copy.deepcopy(merged))
+                if self._report:
+                    self._report(
+                        0.10 + 0.75 * (completed / max(1, len(batches))),
+                        "局部重新生成评分标准",
+                        (
+                            f"已完成 {completed}/{len(batches)} 个局部批次；"
+                            f"刚完成 {batch_id}（{', '.join(question_ids)}）。"
+                        ),
+                    )
+
+        self._policy.apply_local_question_facts(merged, selected_blocks)
+        self._policy.normalize_payload(merged)
+        self._policy.apply_local_question_facts(merged, locked_blocks)
+        self._policy.refresh_quality_warnings(merged)
+        _mark_quality_failed_batches(merged, batches, states)
+        _attach_batch_meta(merged, batches, states, self._batch_size)
+        meta = merged.setdefault("meta", {})
+        if failed_grading_config_batches(merged):
+            meta["score_allocation_mode"] = "pending_failed_batches"
+            meta["score_allocation_ai_success"] = False
+            meta["score_allocation_pending"] = False
+            meta["score_allocation_failed"] = False
+            meta.pop("score_allocation_error", None)
+            meta.pop("score_allocation_failure_category", None)
+            self._policy.attach_reference_answer_images(merged, q_images)
+            if checkpoint:
+                checkpoint(copy.deepcopy(merged))
+            return merged
+
+        meta["score_allocation_ai_success"] = False
+        meta["score_allocation_pending"] = False
+        meta["score_allocation_failed"] = False
+        self._policy.attach_reference_answer_images(merged, q_images)
+        merged = self._score_completed_draft_once(
+            merged,
+            locked_blocks,
+            doc_text,
+            q_images=q_images,
+            checkpoint=checkpoint,
+        )
+        if self._report:
+            self._report(
+                0.92,
+                "局部重新生成完成",
+                (
+                    f"{', '.join(selected_ids)} 已采用最新评分结构；"
+                    "整卷统一配分已完成。"
+                ),
+            )
+        return merged
+
     def _run_batches(
         self,
         *,
@@ -237,100 +402,89 @@ class ConfigGenerationOrchestrator:
                 )
 
         total_targets = len(targets)
-        for completed, batch in enumerate(targets, start=1):
-            batch_id = str(batch["batch_id"])
-            question_ids = list(batch["question_ids"])
-            if self._report:
-                progress = 0.10 + 0.75 * (
-                    (completed - 1) / max(1, total_targets)
-                )
-                self._report(
-                    progress,
-                    "分批生成评分标准",
-                    (
-                        f"正在生成第 {completed}/{total_targets} 个批次"
-                        f"（本批 {len(question_ids)} 道题：{', '.join(question_ids)}）"
-                    ),
-                )
-            try:
-                prompt, image_blobs = self._build_batch_request(
-                    list(batch["blocks"]),
+        max_workers = min(
+            total_targets,
+            _gateway_parallel_limit(self._gateway),
+        )
+        if self._report and total_targets:
+            self._report(
+                0.10,
+                "并行生成评分标准",
+                (
+                    f"已准备 {total_targets} 个批次，"
+                    f"最多同时处理 {max_workers} 个；模型配置仍统一控制实际放行数量。"
+                ),
+            )
+        with ThreadPoolExecutor(
+            max_workers=max(1, max_workers),
+            thread_name_prefix="config-generation",
+        ) as executor:
+            futures = {
+                executor.submit(
+                    self._execute_batch,
+                    batch,
                     doc_text,
                     q_images,
-                )
-                batch_payload = (
-                    self._gateway.request_images(prompt, image_blobs)
-                    if image_blobs
-                    else self._gateway.request_text(prompt)
-                )
-                _validate_exact_batch_payload(
-                    batch_payload,
-                    question_ids,
-                    require_canonical_answer=False,
-                )
-                self._policy.normalize_payload(batch_payload)
-                _validate_exact_batch_payload(batch_payload, question_ids)
-                _replace_question_payloads(
-                    merged,
-                    batch_payload,
-                    set(question_ids),
-                    question_blocks,
-                )
-                batch_meta = (
-                    batch_payload.get("meta")
-                    if isinstance(batch_payload, dict)
-                    else None
-                )
-                repair = (
-                    batch_meta.get("local_json_repair")
-                    if isinstance(batch_meta, dict)
-                    else None
-                )
-                state: dict[str, Any] = {
-                    "batch_id": batch_id,
-                    "question_ids": question_ids,
-                    "status": "succeeded",
-                }
-                if isinstance(repair, dict):
-                    state["local_json_repair"] = {
-                        "repaired": bool(repair.get("repaired")),
-                        "operations": [
-                            str(item)
-                            for item in repair.get("operations") or []
-                        ],
-                        "response_chars": int(
-                            repair.get("response_chars") or 0
-                        ),
-                        "response_sha256": str(
-                            repair.get("response_sha256") or ""
-                        ),
-                    }
+                    validation_feedback=_batch_validation_feedback(
+                        states.get(str(batch["batch_id"])),
+                    ),
+                ): batch
+                for batch in targets
+            }
+            for completed, future in enumerate(as_completed(futures), start=1):
+                batch = futures[future]
+                batch_id = str(batch["batch_id"])
+                question_ids = list(batch["question_ids"])
+                try:
+                    state, batch_payload = future.result()
+                except Exception as exc:
+                    state = _failed_batch_state(
+                        batch_id,
+                        question_ids,
+                        exc,
+                        self._policy,
+                    )
+                    batch_payload = None
                 states[batch_id] = state
-            except Exception as exc:
-                if isinstance(exc, _BatchSchemaMismatch):
-                    category = "schema_mismatch"
-                elif (
-                    "响应字符数" in str(exc)
-                    and "响应摘要" in str(exc)
+                if (
+                    state.get("status") == "succeeded"
+                    and isinstance(batch_payload, dict)
                 ):
-                    category = "invalid_json"
-                elif self._policy.is_transient_error(exc):
-                    category = "transient_network"
-                else:
-                    category = "model_request"
-                states[batch_id] = {
-                    "batch_id": batch_id,
-                    "question_ids": question_ids,
-                    "status": "failed",
-                    "category": category,
-                    "error": _safe_batch_failure_message(exc),
-                }
-            _attach_batch_meta(merged, batches, states, batch_size)
-            if checkpoint:
-                checkpoint(copy.deepcopy(merged))
+                    _replace_question_payloads(
+                        merged,
+                        batch_payload,
+                        set(question_ids),
+                        question_blocks,
+                    )
+                _attach_batch_meta(merged, batches, states, batch_size)
+                if checkpoint:
+                    checkpoint(copy.deepcopy(merged))
+                if self._report:
+                    progress = 0.10 + 0.75 * (
+                        completed / max(1, total_targets)
+                    )
+                    succeeded = sum(
+                        1
+                        for target in targets
+                        if states.get(str(target["batch_id"]), {}).get("status")
+                        == "succeeded"
+                    )
+                    failed_count = completed - succeeded
+                    self._report(
+                        progress,
+                        "并行生成评分标准",
+                        (
+                            f"已完成 {completed}/{total_targets} 个批次："
+                            f"成功 {succeeded}，失败 {failed_count}；"
+                            f"刚完成 {batch_id}（{', '.join(question_ids)}）。"
+                        ),
+                    )
 
         self._policy.apply_local_question_facts(merged, question_blocks)
         self._policy.normalize_payload(merged)
+        self._policy.apply_local_question_facts(merged, question_blocks)
+        self._policy.refresh_quality_warnings(merged)
+        _mark_quality_failed_batches(merged, batches, states)
         _attach_batch_meta(merged, batches, states, batch_size)
         failed = failed_grading_config_batches(merged)
         meta = merged.setdefault("meta", {})
@@ -352,6 +506,11 @@ class ConfigGenerationOrchestrator:
             q_images=q_images,
             checkpoint=checkpoint,
         )
+        merged_meta = merged.get("meta") if isinstance(merged, dict) else None
+        if isinstance(merged_meta, dict) and bool(
+            merged_meta.get("score_allocation_pending")
+        ):
+            return merged
         if self._report:
             self._report(
                 0.92,
@@ -362,6 +521,86 @@ class ConfigGenerationOrchestrator:
                 ),
             )
         return merged
+
+    def _execute_batch(
+        self,
+        batch: dict[str, Any],
+        doc_text: str,
+        q_images: dict[str, Any] | None,
+        *,
+        validation_feedback: Sequence[str] = (),
+    ) -> tuple[dict[str, Any], dict[str, Any] | None]:
+        batch_id = str(batch["batch_id"])
+        question_ids = list(batch["question_ids"])
+        try:
+            prompt, image_blobs = self._build_batch_request(
+                list(batch["blocks"]),
+                doc_text,
+                q_images,
+                validation_feedback=validation_feedback,
+            )
+            batch_payload = (
+                self._gateway.request_images(prompt, image_blobs)
+                if image_blobs
+                else self._gateway.request_text(prompt)
+            )
+            attach_structure_repairs(
+                batch_payload,
+                align_generated_question_ids(batch_payload, question_ids),
+            )
+            _validate_exact_batch_payload(
+                batch_payload,
+                question_ids,
+                require_canonical_answer=False,
+            )
+            self._policy.normalize_payload(batch_payload)
+            _validate_exact_batch_payload(batch_payload, question_ids)
+            batch_meta = (
+                batch_payload.get("meta")
+                if isinstance(batch_payload, dict)
+                else None
+            )
+            repair = (
+                batch_meta.get("local_json_repair")
+                if isinstance(batch_meta, dict)
+                else None
+            )
+            state: dict[str, Any] = {
+                "batch_id": batch_id,
+                "question_ids": question_ids,
+                "status": "succeeded",
+            }
+            if isinstance(repair, dict):
+                state["local_json_repair"] = {
+                    "repaired": bool(repair.get("repaired")),
+                    "operations": [
+                        str(item) for item in repair.get("operations") or []
+                    ],
+                    "response_chars": int(repair.get("response_chars") or 0),
+                    "response_sha256": str(
+                        repair.get("response_sha256") or ""
+                    ),
+                }
+            structure_repairs = (
+                batch_meta.get("local_structure_repairs")
+                if isinstance(batch_meta, dict)
+                else None
+            )
+            if isinstance(structure_repairs, list) and structure_repairs:
+                state["local_structure_repairs"] = [
+                    str(item)[:200] for item in structure_repairs[:100]
+                ]
+            return state, batch_payload
+        except Exception as exc:
+            return (
+                _failed_batch_state(
+                    batch_id,
+                    question_ids,
+                    exc,
+                    self._policy,
+                ),
+                None,
+            )
 
     def _score_completed_draft_once(
         self,
@@ -384,12 +623,20 @@ class ConfigGenerationOrchestrator:
             return payload
         if not isinstance(meta, dict):
             payload["meta"] = meta = {}
+        previous_score_feedback = (
+            [str(meta.get("score_allocation_error") or "").strip()]
+            if str(meta.get("score_allocation_failure_category") or "")
+            == "local_validation"
+            and str(meta.get("score_allocation_error") or "").strip()
+            else []
+        )
         meta["score_allocation_mode"] = "dedicated_ai_scoring"
         meta["score_allocation_ai_success"] = False
         meta["score_allocation_pending"] = True
         meta["score_allocation_failed"] = False
         meta.pop("score_allocation_error", None)
         meta.pop("score_allocation_failure_category", None)
+        meta.pop("score_allocation_local_structure_repairs", None)
         if checkpoint:
             checkpoint(copy.deepcopy(payload))
 
@@ -409,6 +656,7 @@ class ConfigGenerationOrchestrator:
                     for block in question_blocks
                 )
             ),
+            validation_feedback=previous_score_feedback,
         )
         prompt = (
             "SCORE_QUESTION_IDS_JSON="
@@ -422,6 +670,7 @@ class ConfigGenerationOrchestrator:
                 f"正在根据 {len(question_ids)} 道题的完整评分步骤统一配置 100 分。",
             )
         score_repair: dict[str, Any] | None = None
+        score_structure_repairs: list[str] = []
         try:
             score_data = self._gateway.request_text(prompt)
             score_meta = (
@@ -448,21 +697,44 @@ class ConfigGenerationOrchestrator:
                         raw_score_repair.get("response_sha256") or ""
                     ),
                 }
+            score_structure_repairs = align_score_allocation_ids(
+                score_data,
+                structure_summary,
+            )
             self._policy.validate_score_payload(
                 score_data,
                 structure_summary,
             )
             self._policy.apply_score_allocation(payload, score_data)
+            score_issues = collect_score_consistency_issues(
+                payload,
+                expected_total=100.0,
+            )
+            if score_issues:
+                raise ValueError("；".join(score_issues))
         except Exception as exc:
             meta["score_allocation_failed"] = True
-            meta["score_allocation_failure_category"] = (
-                "transient_network"
-                if self._policy.is_transient_error(exc)
-                else "model_request"
-            )
+            if "响应字符数" in str(exc) and "响应摘要" in str(exc):
+                failure_category = "model_response_parse"
+            elif isinstance(
+                exc,
+                (GeneratedOutputContractError, QuestionIdContractError),
+            ):
+                failure_category = "model_output_contract"
+            elif self._policy.is_transient_error(exc):
+                failure_category = "model_transport"
+            elif isinstance(exc, ValueError):
+                failure_category = "local_validation"
+            else:
+                failure_category = "model_request"
+            meta["score_allocation_failure_category"] = failure_category
             meta["score_allocation_error"] = (
                 _safe_score_allocation_failure_message(exc)
             )
+            if score_structure_repairs:
+                meta["score_allocation_local_structure_repairs"] = list(
+                    dict.fromkeys(score_structure_repairs)
+                )
             if self._report:
                 self._report(
                     0.91,
@@ -489,6 +761,12 @@ class ConfigGenerationOrchestrator:
             meta["score_allocation_local_json_repair"] = score_repair
         else:
             meta.pop("score_allocation_local_json_repair", None)
+        if score_structure_repairs:
+            meta["score_allocation_local_structure_repairs"] = list(
+                dict.fromkeys(score_structure_repairs)
+            )
+        else:
+            meta.pop("score_allocation_local_structure_repairs", None)
         if checkpoint:
             checkpoint(copy.deepcopy(payload))
         return payload
@@ -506,6 +784,7 @@ class ConfigGenerationOrchestrator:
         _validate_unique_question_ids(question_blocks)
         self._policy.apply_local_question_facts(payload, question_blocks)
         self._policy.normalize_payload(payload)
+        self._policy.apply_local_question_facts(payload, question_blocks)
         expected_ids = [
             str(block.get("question_id") or "").strip()
             for block in question_blocks
@@ -526,6 +805,8 @@ class ConfigGenerationOrchestrator:
         blocks: list[dict[str, Any]],
         doc_text: str,
         q_images: dict[str, Any] | None,
+        *,
+        validation_feedback: Sequence[str] = (),
     ) -> tuple[str, list[bytes]]:
         question_ids = [
             str(block.get("question_id") or "").strip()
@@ -709,6 +990,7 @@ class ConfigGenerationOrchestrator:
             contexts,
             image_map,
             fallback,
+            validation_feedback=validation_feedback,
         )
         if word_digest_to_index or word_omitted_count:
             prompt += (
@@ -758,6 +1040,204 @@ def failed_grading_config_question_ids(
             and str(failure.get("question_id") or "").strip()
         )
     )
+
+
+def _mark_quality_failed_batches(
+    payload: dict[str, Any],
+    batches: list[dict[str, Any]],
+    states: dict[str, dict[str, Any]],
+) -> None:
+    blocked = set(blocking_quality_question_ids(payload))
+    if not blocked:
+        return
+    meta = payload.get("meta")
+    warnings = meta.get("warnings", []) if isinstance(meta, dict) else []
+    for batch in batches:
+        question_ids = [
+            str(value)
+            for value in batch.get("question_ids") or []
+            if str(value)
+        ]
+        affected = [question_id for question_id in question_ids if question_id in blocked]
+        if not affected:
+            continue
+        related = [
+            str(warning)
+            for warning in warnings
+            if any(question_id in str(warning) for question_id in affected)
+        ]
+        states[str(batch["batch_id"])] = {
+            "batch_id": str(batch["batch_id"]),
+            "question_ids": question_ids,
+            "status": "failed",
+            "category": "local_validation",
+            "error": (
+                "；".join(related[:3])
+                if related
+                else f"{'、'.join(affected)} 未通过本地评分标准校验"
+            )[:600],
+        }
+
+
+def _batch_validation_feedback(
+    state: dict[str, Any] | None,
+) -> list[str]:
+    if not isinstance(state, dict):
+        return []
+    if str(state.get("category") or "") != "local_validation":
+        return []
+    message = str(state.get("error") or "").strip()
+    return [message] if message else []
+
+
+def _validation_feedback_for_questions(
+    payload: dict[str, Any] | None,
+    question_ids: Sequence[str],
+) -> list[str]:
+    if not isinstance(payload, dict):
+        return []
+    wanted = {
+        str(question_id).strip()
+        for question_id in question_ids
+        if str(question_id).strip()
+    }
+    meta = payload.get("meta")
+    warnings = meta.get("warnings") if isinstance(meta, dict) else None
+    if not isinstance(warnings, list):
+        return []
+    return [
+        str(warning)
+        for warning in warnings
+        if str(warning).startswith("[质量检查-阻断]")
+        and any(question_id in str(warning) for question_id in wanted)
+    ][:12]
+
+
+def _inherit_question_scores(
+    existing_payload: dict[str, Any],
+    regenerated_payload: dict[str, Any],
+    question_ids: set[str],
+) -> None:
+    existing_rubric = existing_payload.get("rubric")
+    regenerated_rubric = regenerated_payload.get("rubric")
+    if not isinstance(existing_rubric, dict) or not isinstance(regenerated_rubric, dict):
+        raise ValueError("当前评分依据缺少可继承的分值结构。")
+    existing_questions = existing_rubric.get("questions")
+    regenerated_questions = regenerated_rubric.get("questions")
+    if not isinstance(existing_questions, list) or not isinstance(regenerated_questions, list):
+        raise ValueError("当前评分依据缺少可继承的题目分值。")
+    existing_map = {
+        str(question.get("question_id") or "").strip(): question
+        for question in existing_questions
+        if isinstance(question, dict)
+    }
+    regenerated_map = {
+        str(question.get("question_id") or "").strip(): question
+        for question in regenerated_questions
+        if isinstance(question, dict)
+    }
+    for question_id in question_ids:
+        old_question = existing_map.get(question_id)
+        new_question = regenerated_map.get(question_id)
+        if old_question is None or new_question is None:
+            raise ValueError(f"{question_id} 缺少可继承的旧分值或新结构。")
+        _inherit_score_field(old_question, new_question, "max_score")
+        _inherit_optional_score_field(
+            old_question,
+            new_question,
+            "answer_only_max_score",
+        )
+        old_parts = _dict_items(old_question.get("parts"))
+        new_parts = _dict_items(new_question.get("parts"))
+        part_pairs = _score_identity_pairs(
+            old_parts,
+            new_parts,
+            "part_id",
+            f"{question_id} 的小问",
+        )
+        for old_part, new_part in part_pairs:
+            _inherit_score_field(old_part, new_part, "part_score")
+            _inherit_optional_score_field(
+                old_part,
+                new_part,
+                "answer_only_max_score",
+            )
+            old_steps = _dict_items(old_part.get("steps"))
+            new_steps = _dict_items(new_part.get("steps"))
+            step_pairs = _score_identity_pairs(
+                old_steps,
+                new_steps,
+                "step_id",
+                (
+                    f"{question_id}/"
+                    f"{str(new_part.get('part_id') or '').strip()} 的评分步骤"
+                ),
+            )
+            for old_step, new_step in step_pairs:
+                _inherit_score_field(old_step, new_step, "step_score")
+    regenerated_rubric["total_score"] = existing_rubric.get(
+        "total_score",
+        regenerated_rubric.get("total_score"),
+    )
+
+
+def _score_identity_pairs(
+    old_items: list[dict[str, Any]],
+    new_items: list[dict[str, Any]],
+    identity_field: str,
+    label: str,
+) -> list[tuple[dict[str, Any], dict[str, Any]]]:
+    old_by_id = {
+        str(item.get(identity_field) or "").strip(): item
+        for item in old_items
+    }
+    new_by_id = {
+        str(item.get(identity_field) or "").strip(): item
+        for item in new_items
+    }
+    if (
+        len(old_by_id) == len(old_items)
+        and len(new_by_id) == len(new_items)
+        and old_by_id.keys() == new_by_id.keys()
+    ):
+        return [
+            (old_by_id[identity], new_by_id[identity])
+            for identity in new_by_id
+        ]
+    if len(old_items) == len(new_items) == 1:
+        return [(old_items[0], new_items[0])]
+    raise ValueError(
+        f"{label}层级发生变化，无法安全继承现有分值；旧评分依据继续保留。"
+    )
+
+
+def _inherit_score_field(
+    old_item: dict[str, Any],
+    new_item: dict[str, Any],
+    field: str,
+) -> None:
+    value = old_item.get(field)
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        raise ValueError(f"当前评分依据的 {field} 不是有效分值。")
+    new_item[field] = value
+
+
+def _inherit_optional_score_field(
+    old_item: dict[str, Any],
+    new_item: dict[str, Any],
+    field: str,
+) -> None:
+    value = old_item.get(field)
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        new_item[field] = value
+
+
+def _dict_items(value: Any) -> list[dict[str, Any]]:
+    return [
+        item
+        for item in value
+        if isinstance(item, dict)
+    ] if isinstance(value, list) else []
 
 
 def _build_batches(
@@ -1017,7 +1497,14 @@ def _replace_question_payloads(
 
 def _safe_batch_failure_message(exc: Exception) -> str:
     message = str(exc or "").strip()
-    if isinstance(exc, _BatchSchemaMismatch):
+    if isinstance(
+        exc,
+        (
+            _BatchSchemaMismatch,
+            GeneratedOutputContractError,
+            QuestionIdContractError,
+        ),
+    ):
         return message[:300]
     if "响应字符数" in message and "响应摘要" in message:
         return message[:500]
@@ -1027,8 +1514,54 @@ def _safe_batch_failure_message(exc: Exception) -> str:
     return "模型请求或本地解析失败，未自动重试。"
 
 
+def _gateway_parallel_limit(gateway: ConfigGenerationGateway) -> int:
+    value = getattr(gateway, "max_parallel_requests", 1)
+    try:
+        return max(1, min(100, int(value)))
+    except (TypeError, ValueError):
+        return 1
+
+
+def _failed_batch_state(
+    batch_id: str,
+    question_ids: list[str],
+    exc: Exception,
+    policy: ConfigGenerationPolicy,
+) -> dict[str, Any]:
+    if isinstance(
+        exc,
+        (
+            _BatchSchemaMismatch,
+            GeneratedOutputContractError,
+            QuestionIdContractError,
+        ),
+    ):
+        category = "model_output_contract"
+    elif "响应字符数" in str(exc) and "响应摘要" in str(exc):
+        category = "model_response_parse"
+    elif policy.is_transient_error(exc):
+        category = "model_transport"
+    elif isinstance(exc, ValueError):
+        category = "local_validation"
+    else:
+        category = "model_request"
+    return {
+        "batch_id": batch_id,
+        "question_ids": question_ids,
+        "status": "failed",
+        "category": category,
+        "error": _safe_batch_failure_message(exc),
+    }
+
+
 def _safe_score_allocation_failure_message(exc: Exception) -> str:
+    message = str(exc or "").strip()
+    if "响应字符数" in message and "响应摘要" in message:
+        return f"模型已返回，但配分 JSON 无法解析：{message[:240]}"
     status_code = getattr(exc, "status_code", None)
     if isinstance(status_code, int):
         return f"AI 统一配分失败（HTTP {status_code}），未自动重试。"
+    if isinstance(exc, ValueError):
+        if message:
+            return f"模型已返回，但本地配分校验未通过：{message[:240]}"
     return "AI 统一配分或本地校验失败，未自动重试。"

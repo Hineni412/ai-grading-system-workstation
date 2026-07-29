@@ -12,6 +12,10 @@ from backend.repositories.access import GradingRepositoryAccess
 
 
 _submit_lock = threading.RLock()
+_REPORT_RENDITION_VERSIONS = {
+    "score_excel": "score_excel_print_v3",
+    "annotated_original_pdf": "annotated_original_pdf_score_boxes_v3",
+}
 
 
 def score_revision(db: GradingRepositoryAccess, session_id: int) -> str:
@@ -45,12 +49,25 @@ def submit_report_export(
     report_type: str,
     revision: str,
     force_regenerate: bool,
+    score_excel_options: dict[str, object] | None = None,
 ) -> JobRecord:
+    normalized_options = (
+        _normalize_score_excel_options(score_excel_options)
+        if report_type == "score_excel"
+        else None
+    )
+    options_fingerprint = _report_options_fingerprint(
+        report_type,
+        normalized_options,
+    )
     payload = {
         "session_id": int(session_id),
         "report_type": str(report_type),
         "score_revision": str(revision),
+        "report_options_fingerprint": options_fingerprint,
     }
+    if normalized_options is not None:
+        payload["score_excel_options"] = normalized_options
     with _submit_lock:
         if not force_regenerate:
             offset = 0
@@ -66,6 +83,8 @@ def submit_report_export(
                     if (
                         job.payload.get("report_type") != report_type
                         or job.payload.get("score_revision") != revision
+                        or job.payload.get("report_options_fingerprint")
+                        != options_fingerprint
                     ):
                         continue
                     if job.status in {"queued", "running"}:
@@ -79,3 +98,55 @@ def submit_report_export(
                 if not jobs or offset >= total:
                     break
         return manager.submit("report_export", payload)
+
+
+def _normalize_score_excel_options(
+    options: dict[str, object] | None,
+) -> dict[str, object]:
+    source = dict(options or {})
+    hide_bottom_enabled = bool(source.get("hide_bottom_enabled", True))
+    raw_bottom_n = source.get("hide_bottom_n", 8)
+    try:
+        hide_bottom_n = max(0, min(100, int(raw_bottom_n)))
+    except (TypeError, ValueError):
+        hide_bottom_n = 8
+    if not hide_bottom_enabled:
+        hide_bottom_n = 0
+
+    raw_student_ids = source.get("manual_hidden_student_ids")
+    student_ids: list[int] = []
+    if isinstance(raw_student_ids, list):
+        student_ids = sorted(
+            {
+                int(student_id)
+                for student_id in raw_student_ids
+                if isinstance(student_id, int)
+                and not isinstance(student_id, bool)
+                and student_id > 0
+            }
+        )
+    return {
+        "hide_bottom_enabled": hide_bottom_enabled,
+        "hide_bottom_n": hide_bottom_n,
+        "manual_hidden_student_ids": student_ids,
+    }
+
+
+def _report_options_fingerprint(
+    report_type: str,
+    score_excel_options: dict[str, object] | None,
+) -> str:
+    payload = {
+        "rendition_version": _REPORT_RENDITION_VERSIONS.get(
+            report_type,
+            "unknown",
+        ),
+        "score_excel_options": score_excel_options,
+    }
+    serialized = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(serialized).hexdigest()

@@ -4,6 +4,7 @@ import { decodeJobResponse, type JobResponse } from './jobs'
 export interface SessionQuestionBankSyncRequest {
   config_revision: string
   client_request_token: string
+  curriculum_volume_id?: string
 }
 
 function sessionPath(sessionId: number): string {

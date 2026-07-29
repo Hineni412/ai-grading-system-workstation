@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { JobResponse } from '../api/jobs'
 import { createAppRouter } from '../router'
 import { useJobStore } from '../stores/jobs'
+import { useResultsCenterStore } from '../stores/results-center'
 import { useSessionStore } from '../stores/session'
 import FileCenterView from '../views/FileCenterView.vue'
 
@@ -58,6 +59,16 @@ function makeJob(overrides: Partial<JobResponse> = {}): JobResponse {
 
 const mounted: App[] = []
 
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  let reject!: (reason?: unknown) => void
+  const promise = new Promise<T>((done, fail) => {
+    resolve = done
+    reject = fail
+  })
+  return { promise, resolve, reject }
+}
+
 async function settle() {
   await nextTick()
   await Promise.resolve()
@@ -80,6 +91,45 @@ async function mountView(selectedSessionId: number | null = 7) {
     }],
     selectedSessionId,
     loadState: 'ready',
+  })
+  const resultsStore = useResultsCenterStore(pinia)
+  resultsStore.$patch({
+    sessionId: selectedSessionId,
+    state: selectedSessionId === null ? 'idle' : 'ready',
+    results: selectedSessionId === null
+      ? null
+      : {
+        session_id: 7,
+        session_name: '七年级期末',
+        summary: {
+          student_count: 10,
+          complete_student_count: 10,
+          average_sample_count: 10,
+          average_score: 84.5,
+          highest_score: 89,
+          lowest_score: 80,
+          max_score: 100,
+          ungraded_item_count: 0,
+          failed_item_count: 0,
+          needs_review_item_count: 0,
+          ai_ready_item_count: 10,
+          teacher_final_item_count: 0,
+        },
+        questions: [],
+        students: Array.from({ length: 10 }, (_, index) => ({
+          student_id: index + 1,
+          student_code: `S${String(index + 1).padStart(3, '0')}`,
+          student_name: `学生${String(index + 1).padStart(2, '0')}`,
+          class_name: '一班',
+          current_score: 89 - index,
+          max_score: 100,
+          ungraded_count: 0,
+          failed_count: 0,
+          needs_review_count: 0,
+          status: 'complete' as const,
+          items: [],
+        })),
+      },
   })
   const router = createAppRouter(createMemoryHistory())
   await router.push('/results?tab=exports')
@@ -273,6 +323,161 @@ describe('file center view', () => {
     host.querySelector<HTMLButtonElement>('[data-testid="download-report-41"]')!.click()
     await vi.waitFor(() => expect(apiMock.downloadJobFile).toHaveBeenCalledWith(41))
     await vi.waitFor(() => expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:download'))
+  })
+
+  it('shows a report download as soon as its tracked job completes without a manual refresh', async () => {
+    const queuedPdf = makeJob({
+      id: 61,
+      payload: {
+        session_id: 7,
+        report_type: 'annotated_original_pdf',
+        score_revision: 'a'.repeat(64),
+      },
+      result: {},
+      status: 'queued',
+      progress: 0,
+      updated_at: '2026-07-17T10:01:00Z',
+      finished_at: null,
+    })
+    const pendingContext = {
+      score_revision: 'a'.repeat(64),
+      has_results: true,
+      jobs: [{
+        ...queuedPdf,
+        is_current_revision: true,
+        file_status: 'pending' as const,
+      }],
+      total: 1,
+      page: 1,
+      page_size: 100,
+      total_pages: 1,
+    }
+    const availablePdf = makeJob({
+      ...queuedPdf,
+      status: 'succeeded',
+      progress: 1,
+      result: {
+        session_id: 7,
+        report_type: 'annotated_original_pdf',
+        score_revision: 'a'.repeat(64),
+        filename: '七年级批注原卷.pdf',
+        download_url: '/api/jobs/61/download',
+      },
+      updated_at: '2026-07-17T10:01:02Z',
+      finished_at: '2026-07-17T10:01:02Z',
+    })
+    apiMock.submitReport.mockResolvedValue(queuedPdf)
+
+    const { host } = await mountView()
+    await vi.waitFor(() => expect(host.textContent).toContain('七年级成绩.xlsx'))
+
+    apiMock.getReportContext.mockResolvedValue(pendingContext)
+    host.querySelector<HTMLButtonElement>(
+      '[data-testid="generate-annotated_original_pdf"]',
+    )!.click()
+    await vi.waitFor(() => expect(apiMock.getReportContext).toHaveBeenCalledTimes(2))
+
+    apiMock.getReportContext.mockResolvedValue({
+      ...pendingContext,
+      jobs: [{
+        ...availablePdf,
+        is_current_revision: true,
+        file_status: 'available' as const,
+      }],
+    })
+    useJobStore().track(availablePdf)
+
+    await vi.waitFor(() => expect(
+      host.querySelector('[data-testid="download-report-61"]'),
+    ).not.toBeNull())
+    expect(apiMock.getReportContext).toHaveBeenCalledTimes(3)
+  })
+
+  it('does not let an old report submission refresh a session the user has left', async () => {
+    const pending = deferred<JobResponse>()
+    apiMock.submitReport.mockImplementation(() => pending.promise)
+    const { host } = await mountView()
+    await vi.waitFor(() => expect(host.textContent).toContain('七年级成绩.xlsx'))
+
+    host.querySelector<HTMLButtonElement>(
+      '[data-testid="generate-annotated_original_pdf"]',
+    )!.click()
+    useSessionStore().selectedSessionId = null
+    await settle()
+    pending.resolve(makeJob({
+      id: 61,
+      payload: {
+        session_id: 7,
+        report_type: 'annotated_original_pdf',
+        score_revision: 'a'.repeat(64),
+      },
+      result: {},
+      status: 'queued',
+      progress: 0,
+    }))
+    await settle()
+
+    expect(apiMock.getReportContext).toHaveBeenCalledOnce()
+    expect(host.textContent).toContain('请先在顶部选择考试')
+  })
+
+  it('does not show an old report submission error after the user changes sessions', async () => {
+    const pending = deferred<JobResponse>()
+    apiMock.submitReport.mockImplementation(() => pending.promise)
+    const { host } = await mountView()
+    await vi.waitFor(() => expect(host.textContent).toContain('七年级成绩.xlsx'))
+
+    host.querySelector<HTMLButtonElement>(
+      '[data-testid="generate-annotated_original_pdf"]',
+    )!.click()
+    useSessionStore().selectedSessionId = 8
+    await settle()
+    pending.reject(new Error('old request failed'))
+    await settle()
+
+    expect(host.textContent).not.toContain('文件生成请求未能提交')
+  })
+
+  it('opens visible Excel settings beside export actions and previews hidden names', async () => {
+    const { host } = await mountView()
+    await vi.waitFor(() => expect(host.textContent).toContain('七年级成绩.xlsx'))
+
+    host.querySelector<HTMLButtonElement>('[data-testid="configure-score-excel"]')!.click()
+    await settle()
+
+    expect(host.querySelector('[data-testid="excel-settings-dialog"]')).not.toBeNull()
+    expect(
+      host.querySelector<HTMLInputElement>('[data-testid="excel-hide-bottom-n"]')?.value,
+    ).toBe('8')
+    expect(
+      host.querySelector('[data-testid="excel-preview-statistical"]')?.textContent,
+    ).toContain('10')
+    expect(
+      host.querySelector('[data-testid="excel-preview-hidden"]')?.textContent,
+    ).toContain('8')
+
+    host.querySelector<HTMLInputElement>('[data-testid="excel-manual-enabled"]')!.click()
+    await settle()
+    host.querySelector<HTMLInputElement>('[data-testid="excel-student-1"]')!.click()
+    await settle()
+    expect(
+      host.querySelector('[data-testid="excel-preview-hidden"]')?.textContent,
+    ).toContain('9')
+    expect(
+      host.querySelector('[data-testid="excel-preview-visible"]')?.textContent,
+    ).toContain('1')
+
+    host.querySelector<HTMLButtonElement>('[data-testid="submit-score-excel"]')!.click()
+    await vi.waitFor(() => expect(apiMock.submitReport).toHaveBeenCalledWith(
+      7,
+      'score_excel',
+      false,
+      {
+        hide_bottom_enabled: true,
+        hide_bottom_n: 8,
+        manual_hidden_student_ids: [1],
+      },
+    ))
   })
 
   it('exports a selected training variant and cancels a queued job', async () => {

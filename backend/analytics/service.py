@@ -9,6 +9,12 @@ from typing import Any, Literal
 from backend.review.service import ReviewApplicationService
 from backend.repositories.access import GradingRepositoryAccess, as_grading_repositories
 from path_manager import resolve_stored_file_path
+from question_id_contract import (
+    QuestionIdContractError,
+    canonicalize_question_document,
+    question_id_coordinates,
+    resolve_known_question_id,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -84,14 +90,18 @@ class SessionAnalysisService:
         class_name: str | None = None,
     ) -> list[StudentAnalysisRow]:
         """Return direct details plus legacy inferred child full-score rows."""
-        requested_question_id = str(question_id or "").strip()
-        if not requested_question_id:
+        raw_requested_question_id = str(question_id or "").strip()
+        if not raw_requested_question_id:
             return []
 
         session = self.db.get_grading_session(int(session_id))
         score_map, _type_map = load_session_score_type_maps(
             session,
             data_root=_data_root(self.db),
+        )
+        requested_question_id = (
+            resolve_known_question_id(raw_requested_question_id, score_map)
+            or raw_requested_question_id
         )
         review_by_detail_id = {
             item.detail_id: item.needs_review
@@ -145,7 +155,7 @@ class SessionAnalysisService:
             parent_detail = next(
                 (
                     detail
-                    for detail in details
+                    for detail in normalized_details
                     if str(detail.get("question_id") or "").strip() == selected_parent_id
                 ),
                 None,
@@ -310,7 +320,10 @@ def load_session_score_type_maps(
     )
     try:
         rubric = json.loads(rubric_path.read_text(encoding="utf-8")) if rubric_path.exists() else {}
-    except Exception:
+        if not isinstance(rubric, dict):
+            return {}, {}
+        rubric = canonicalize_question_document(rubric)
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, QuestionIdContractError):
         rubric = {}
     score_map: dict[str, float] = {}
     type_map: dict[str, str] = {}
@@ -333,8 +346,11 @@ def load_session_score_type_maps(
                 continue
             part_id = str(part.get("part_id") or "").strip()
             if part_id:
-                score_map[part_id] = _to_float(part.get("part_score"), 0.0)
-                type_map[part_id] = question_type
+                # A one-part question has the parent as its sole formal detail;
+                # do not let a missing part_score replace the parent maximum.
+                if part_id != question_id:
+                    score_map[part_id] = _to_float(part.get("part_score"), 0.0)
+                    type_map[part_id] = question_type
     return score_map, type_map
 
 
@@ -437,10 +453,16 @@ def normalize_question_analysis_details(
             merged[question_id] = item
             order.append(question_id)
         item = merged[question_id]
+        source_question_ids = item["_source_question_ids"]
+        if source_question_ids and raw_question_id not in source_question_ids:
+            raise QuestionIdContractError(
+                f"多个历史题号同时对应当前题号 {question_id}: "
+                f"{source_question_ids[0]!r}, {raw_question_id!r}"
+            )
         item["score_awarded"] = float(item.get("score_awarded") or 0) + float(
             detail.get("score_awarded") or 0
         )
-        item["_source_question_ids"].append(raw_question_id)
+        source_question_ids.append(raw_question_id)
         item["_source_detail_ids"].append(int(detail.get("detail_id") or 0))
         reason = str(detail.get("deduction_reason") or "").strip()
         if reason:
@@ -466,17 +488,14 @@ def normalize_question_analysis_details(
 
 def canonical_question_id_for_score(question_id: str, score_map: dict[str, float]) -> str:
     normalized = question_id.strip()
-    if normalized in score_map:
-        return normalized
-    parent_id = question_parent_id(normalized)
-    if parent_id and parent_id in score_map:
-        return parent_id
-    return normalized
+    return resolve_known_question_id(normalized, score_map) or normalized
 
 
 def question_parent_id(question_id: str) -> str | None:
-    match = re.match(r"^(Q\d+)(?:\(|（|-)", question_id.strip())
-    return match.group(1) if match else None
+    coordinates = question_id_coordinates(question_id)
+    if coordinates is None or coordinates[1] is None:
+        return None
+    return f"Q{coordinates[0]}"
 
 
 def question_sort_key(question_id: str) -> tuple[int, str]:

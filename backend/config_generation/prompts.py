@@ -3,24 +3,59 @@ from __future__ import annotations
 import json
 from typing import Any, Sequence
 
+from .contract import (
+    GENERATED_ID_CONTRACT_PROMPT,
+    TEACHER_TYPE_CONTRACT_PROMPT,
+)
+
 
 def build_batch_generation_prompt(
     question_ids: Sequence[str],
     contexts: Sequence[dict[str, Any]],
     image_map: Sequence[str],
     fallback: str,
+    *,
+    validation_feedback: Sequence[str] = (),
 ) -> str:
     """Build the active small-batch prompt without reading ambient state."""
+    feedback = [
+        str(item).strip()
+        for item in validation_feedback
+        if str(item).strip()
+    ]
+    repair_context = (
+        "\n\n上一次结果未通过本地校验。请只修正下列明确问题，"
+        "保留题号、正确答案含义和已经符合要求的评分内容；"
+        "修正后仍须返回完整题目结构：\n- "
+        + "\n- ".join(feedback[:12])
+        if feedback
+        else ""
+    )
     return (
         "你正在为一个小批次的中学数学题生成可执行评分标准。仅返回一个完整、严格的 JSON 对象。\n"
         f"BATCH_QUESTION_IDS_JSON={json.dumps(list(question_ids), ensure_ascii=False)}\n"
         "必须完整且仅返回上述题号，并在 rubric.questions 与 answer_key.questions 中按同一顺序各出现一次；"
         "不得遗漏、重复或增加题号。所有 max_score、part_score、step_score 暂设为1，最终总分由本地程序分配。\n"
-        "question_type_confirmed=true 才表示教师明确确认，必须保留该题型；false 表示本地初判，"
-        "应结合题干、答案和图片重新判断。question_rich_text、answer_rich_text、analysis_rich_text "
+        f"{GENERATED_ID_CONTRACT_PROMPT}\n"
+        f"{TEACHER_TYPE_CONTRACT_PROMPT}\n"
+        "每道题都必须返回 question_type，且只允许 choice、fill_blank、calculation、proof、comprehensive。"
+        "每个 part 的 response_mode 只允许 exact_objective、short_answer_points、"
+        "process_required、visual_construction。"
+        "选择题统一返回 question_type=choice、response_mode=exact_objective；"
+        "single_choice、multiple_choice 不是 response_mode 允许值，不得写入 response_mode。\n"
+        "question_rich_text、answer_rich_text、analysis_rich_text "
         "保留了表格行列、上下标、下划线和图片占位，遇到与普通文本差异时以这些结构化可读文本为准。"
         "输出完整的 parts、steps；知识点与题目标签不属于评分依据，不要输出任何 knowledge 字段。"
         "每个 part 必须有 response_mode，每个 step 必须有可核验的 core_goal 和 required_elements。"
+        "统一答案与规则字段契约：选择、判断和普通填空必须把非空文本答案同时写入 "
+        "answer_key.questions[].canonical_answer 与 answer_key.questions[].parts[].answer；"
+        "解答题每个小问的完整参考答案写入 answer_key.questions[].parts[].answer，"
+        "逐步参考过程写入 answer_key.questions[].parts[].step_milestones。"
+        "证明义务只能写入 rubric.questions[].parts[].proof_obligations（字符串数组）；"
+        "小问通用扣分依据写入 rubric.questions[].parts[].deduction_policy（字符串数组）；"
+        "仅属于某一步的扣分依据写入 "
+        "rubric.questions[].parts[].steps[].deduction_rules（字符串数组）。"
+        "不要用 correct_value、answer_value、final_answer 或 step_content 代替上述字段。\n"
         "选择/普通填空只核对最终答案；过程题保留必要过程；作图题输出 visual_requirements。\n"
         "证明题、计算题和综合题的过程部分必须拆成可独立评分的逻辑步骤，不能把整段解答压成一个笼统步骤。"
         "证明题必须输出具体 proof_obligations（证明义务）；步骤应明确区分题设或目标、使用的定理或判定条件、"
@@ -34,6 +69,7 @@ def build_batch_generation_prompt(
         f"图片顺序：{'; '.join(image_map) if image_map else '无'}\n"
         f"本批次结构化内容：{json.dumps(list(contexts), ensure_ascii=False)}\n"
         f"必要时参考的有限原文：{fallback}"
+        + repair_context
     )
 
 
@@ -42,6 +78,7 @@ def build_score_allocation_prompt(
     doc_text: str,
     *,
     include_document_text: bool,
+    validation_feedback: Sequence[str] = (),
 ) -> str:
     """Build the active whole-paper score prompt without side effects."""
     source_context = (
@@ -49,12 +86,27 @@ def build_score_allocation_prompt(
         if include_document_text and str(doc_text or "").strip()
         else "\n本次为图片语义来源，不提供也不得推测 PDF 抽取文字或原卷分值。\n"
     )
+    feedback = [
+        str(item).strip()
+        for item in validation_feedback
+        if str(item).strip()
+    ]
+    repair_context = (
+        "\n上一次统一配分未通过本地校验。请保持评分标准文字和结构不变，"
+        "只修正以下分值问题：\n- "
+        + "\n- ".join(feedback[:12])
+        + "\n"
+        if feedback
+        else ""
+    )
     return (
         "请仅为下列已确认题目结构分配分值，总分必须精确等于100。\n"
         "不同题型之间不限制分值高低；相同类型客观题必须同分；所有分值均为正整数；单题不超过18分。\n"
-        "保持所有 question_id、part_id、step_id 和小问结构不变。"
+        f"{GENERATED_ID_CONTRACT_PROMPT}"
+        "保持所有给定的 question_id、part_id、step_id 和小问结构不变。"
         "分值可以不采用原卷分值，但不得改变小问作答要求或 response_mode。\n"
         f"{source_context}"
+        f"{repair_context}"
         "仅返回 JSON：{\"question_scores\":[{\"question_id\":\"Q1\",\"max_score\":1,"
         "\"parts\":[{\"part_id\":\"Q1\",\"part_score\":1,\"steps\":[{\"step_id\":\"S1\",\"step_score\":1}]}]}]}\n"
         f"待分值结构：\n{json.dumps(structure_summary, ensure_ascii=False)}"

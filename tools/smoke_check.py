@@ -18,6 +18,11 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from tools.test_suite_manifest import (
+    PROCESS_ISOLATED_TEST_PATHS,
+    SERIAL_TEST_PATHS,
+)
+
 EXCLUDED_DIR_NAMES = {
     ".git",
     ".mypy_cache",
@@ -30,25 +35,7 @@ EXCLUDED_DIR_NAMES = {
     "user_data",
 }
 
-DEFAULT_SERIAL_TEST_PATHS = (
-    Path("tests/api_e2e/test_failure_recovery.py"),
-    Path("tests/api_e2e/test_five_flow.py"),
-    Path("tests/api_e2e/test_harness.py"),
-    Path("tests/api_e2e/test_restart_recovery.py"),
-    Path("tests/test_answer_region_commit_service.py"),
-    Path("tests/test_answer_region_draft_service.py"),
-    Path("tests/test_answer_region_session_lock.py"),
-    Path("tests/test_config_source_service.py"),
-    Path("tests/test_job_manager.py"),
-    Path("tests/test_ops_lock.py"),
-    Path("tests/test_p1_29_acceptance.py"),
-    Path("tests/test_performance_benchmark.py"),
-    Path("tests/test_question_bank_local_file_dialog.py"),
-    Path("tests/test_request_connection_benchmark.py"),
-    Path("tests/test_review_media_service.py"),
-    Path("tests/test_secure_config_filesystem.py"),
-    Path("tests/test_storage_maintenance.py"),
-)
+DEFAULT_SERIAL_TEST_PATHS = SERIAL_TEST_PATHS
 
 
 @dataclass(frozen=True)
@@ -185,9 +172,33 @@ def run_pytest(
             *(f"--ignore={path}" for path in normalized_serial_paths),
         ]
         commands.append((f"并行车道（{workers}进程）", parallel_command))
-        commands.append(
-            ("串行车道", [*base_command, *duration_args, *normalized_serial_paths])
+        process_isolated_keys = {
+            path.as_posix() for path in PROCESS_ISOLATED_TEST_PATHS
+        }
+        shared_process_paths = tuple(
+            path
+            for path in normalized_serial_paths
+            if path not in process_isolated_keys
         )
+        isolated_paths = tuple(
+            path
+            for path in normalized_serial_paths
+            if path in process_isolated_keys
+        )
+        if shared_process_paths:
+            commands.append(
+                (
+                    "串行车道",
+                    [*base_command, *duration_args, *shared_process_paths],
+                )
+            )
+        for path in isolated_paths:
+            commands.append(
+                (
+                    f"独立进程（{Path(path).name}）",
+                    [*base_command, *duration_args, path],
+                )
+            )
 
     messages: list[str] = []
     return_code = 0

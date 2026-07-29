@@ -141,7 +141,28 @@ const runProgress = computed(() => {
 const runProgressText = computed(() => {
   const total = store.gradingRun?.counts.total ?? 0
   if (total > 0) return `已处理 ${runProcessed.value} / ${total} 份`
-  return store.gradingJob?.detail.trim() || '正在建立批改队列'
+  return runProgressDetail.value
+})
+const runProgressDetail = computed(() => {
+  const job = store.gradingJob
+  const detail = job?.detail.trim() ?? ''
+  const legacyTotal = detail.match(/^total=(\d+)$/i)
+  if (legacyTotal) return `批改队列已建立，共 ${legacyTotal[1]} 份答卷`
+  const stage = job?.stage ?? ''
+  const stageLabels: Record<string, string> = {
+    grading_starting: '正在建立本次批改队列',
+    grading_queue_ready: '批改队列已建立，正在准备识别作答',
+    grading_objective: '正在识别客观题作答',
+    grading_subjective: '正在批改主观题',
+    grading_saving: '正在保存批改成绩',
+    grading_paused: '本次批改已安全暂停',
+    grading_completed: '本次批改已完成',
+    grading_cancelled: '本次批改已取消',
+    grading_finished: '本次批改处理已结束',
+  }
+  if (stageLabels[stage]) return stageLabels[stage]
+  if (/[\u3400-\u9fff]/u.test(detail)) return detail
+  return '正在处理本次批改任务'
 })
 const interventionSummary = computed(() => interventionQuestions.value.reduce(
   (summary, question) => ({
@@ -781,7 +802,7 @@ watch(
             <div class="scan-progress__copy">
               <div>
                 <strong>{{ runProgressText }}（{{ runProgress }}%）</strong>
-                <span>{{ store.gradingJob?.detail || runStateLabel }}</span>
+                <span>{{ runProgressDetail }}</span>
               </div>
               <span v-if="store.gradingRun.counts.conflict">
                 冲突 {{ store.gradingRun.counts.conflict }}

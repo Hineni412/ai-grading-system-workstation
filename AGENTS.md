@@ -90,4 +90,12 @@ P3.5 不因通用 skill 建议而自动引入 TDD、代码复审、执行包或 
 
 - 日常启动：双击 `运行.bat`。
 - 开发查看：按需启动 FastAPI/Vue 或构建前端，具体命令以当前项目脚本为准。
+- Codex 需要在后台重启 P3.5 时，只调用
+  `runtime\python\python.exe tools\start_p3_5_service.py`；它会在有限时间内返回启动或失败结果。
+- 该后台入口必须在用户对本次重启明确授权后，以能够访问本机 LocalAppData 标签状态的非受限方式运行。
+  若返回 `taxonomy_storage_unwritable`，不得把标签状态路径临时改到工作树来绕过；这会让页面加载一套空白状态，
+  与教师现有待审词和审核记录分叉。
+- 禁止再用 `Start-Process` 配合 `RedirectStandardOutput` / `RedirectStandardError` 启动长期运行的 API，
+  也禁止为此套一层新的 `pwsh -Command`。这种写法会让命令通道继续等待服务进程，界面表现为卡死。
+  后台启动后的健康状态使用单独、短时限的 `/api/healthz` 请求检查。
 - P3.5 不把任何测试或构建命令设为默认门槛。

@@ -1,7 +1,9 @@
 .settings-ops {
-  max-width: var(--content-max-width);
+  box-sizing: border-box;
+  max-width: none;
   margin: 0 auto;
-  padding: var(--space-6);
+  padding: 16px;
+  width: 100%;
 }
 
 .settings-ops__header,

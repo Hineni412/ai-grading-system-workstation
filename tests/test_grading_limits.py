@@ -13,6 +13,7 @@ from PIL import Image
 
 import api_profiles
 import grading_service
+import session_manager
 from objective_batch_recognition_service import ObjectiveQuestionSpec, build_objective_batch_prompt
 from scanner import ExamPaperGroup, ScanAnalysis, Scanner
 
@@ -34,7 +35,7 @@ def test_shared_grading_limit_constants_match_task_brief() -> None:
     assert limits.SUBJECTIVE_MAJOR_BATCH_SIZE_MIN == 1
     assert limits.SUBJECTIVE_MAJOR_BATCH_SIZE_MAX == 20
     assert limits.PRECHECK_WORKERS_MIN == 1
-    assert limits.PRECHECK_WORKERS_MAX == 32
+    assert limits.PRECHECK_WORKERS_MAX == 100
     assert limits.FULL_PAPER_WORKERS_MIN == 1
     assert limits.FULL_PAPER_WORKERS_MAX == 200
     assert limits.HYBRID_INFLIGHT_WORKERS_MIN == 1
@@ -106,6 +107,7 @@ def test_runtime_objective_config_ignores_legacy_fields_and_projects_safe_policy
 
     config = api_profiles.get_objective_api_config()
 
+    scope_key = config["policy_profile"].pop("_llm_execution_scope_key")
     assert config == {
         "base_url": "https://example.test/v1",
         "api_key": "key",
@@ -118,6 +120,8 @@ def test_runtime_objective_config_ignores_legacy_fields_and_projects_safe_policy
             "llm_tagging_max_retries": 1,
         },
     }
+    assert isinstance(scope_key, str)
+    assert "legacy" not in scope_key
 
 
 def test_backend_reuses_shared_limit_constants() -> None:
@@ -133,10 +137,60 @@ def test_backend_reuses_shared_limit_constants() -> None:
     assert "PRECHECK_WORKERS_MAX" in scanner_source
 
 
-def test_scanner_precheck_workers_are_bounded_to_shared_maximum() -> None:
+def test_scanner_precheck_workers_are_bounded_to_automatic_profile_plan() -> None:
     scanner = Scanner(exams_dir=Path("."), llm_client=object(), ocr_workers=999)
 
-    assert scanner.ocr_workers == 32
+    assert scanner.ocr_workers == 20
+
+
+def test_scanner_can_use_one_hundred_workers_with_a_custom_profile() -> None:
+    llm_client = SimpleNamespace(
+        settings=SimpleNamespace(
+            policy_profile={
+                "request_speed_mode": "custom",
+                "max_concurrent_requests": 100,
+                "requests_per_minute": 10_000,
+            }
+        )
+    )
+
+    scanner = Scanner(
+        exams_dir=Path("."),
+        llm_client=llm_client,
+        ocr_workers=100,
+    )
+
+    assert scanner.ocr_workers == 100
+
+
+def test_config_generation_workers_use_the_shared_profile_plan(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeClient:
+        settings = SimpleNamespace(
+            policy_profile={
+                "request_speed_mode": "custom",
+                "max_concurrent_requests": 2,
+                "requests_per_minute": 600,
+            }
+        )
+
+        def json_from_text(self, *_args: Any, **_kwargs: Any) -> dict[str, Any]:
+            return {}
+
+    monkeypatch.setenv("AI_GRADING_CONFIG_WORKERS", "99")
+    blocks = [
+        {"question_id": f"Q{index}", "question_text": "题目"}
+        for index in range(1, 4)
+    ]
+
+    *_, worker_count, _ = session_manager._generate_question_block_results(
+        blocks,
+        "试卷正文",
+        FakeClient(),
+    )
+
+    assert worker_count == 2
 
 
 class _FakeDB:

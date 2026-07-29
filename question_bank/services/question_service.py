@@ -16,14 +16,15 @@ TAG_ANALYSIS_MAP = {
     "method_tags": "method",
     "ability_tags": "ability",
     "math_model_tags": "model",
+    "special_type_tags": "special_type",
     "error_prone_points": "error_type",
     "prerequisite_points": "prerequisite",
-    "textbook_chapter": "exam_scope",
-    "suitable_student_level": "student_level",
+    "textbook_chapters": "exam_scope",
+    "curriculum_sections": "curriculum_section",
 }
 ANSWERED_AI_CONFIDENCE = 0.8
 ANSWERLESS_AI_CONFIDENCE = 0.55
-CORE_ANALYSIS_TAG_TYPES = ("knowledge_point", "ability", "exam_scope", "student_level")
+CORE_ANALYSIS_TAG_TYPES = ("knowledge_point", "ability", "exam_scope")
 
 
 def build_question_filter_query(
@@ -130,7 +131,7 @@ def build_question_filter_query(
                 EXISTS (SELECT 1 FROM question_tags kt2 WHERE kt2.question_id = q.id AND kt2.tag_type = 'knowledge_point' AND COALESCE(kt2.tag_value, '') <> '')
                 AND EXISTS (SELECT 1 FROM question_tags kt2 WHERE kt2.question_id = q.id AND kt2.tag_type = 'ability' AND COALESCE(kt2.tag_value, '') <> '')
                 AND EXISTS (SELECT 1 FROM question_tags kt2 WHERE kt2.question_id = q.id AND kt2.tag_type = 'exam_scope' AND COALESCE(kt2.tag_value, '') <> '')
-                AND EXISTS (SELECT 1 FROM question_tags kt2 WHERE kt2.question_id = q.id AND kt2.tag_type = 'student_level' AND COALESCE(kt2.tag_value, '') <> '')
+                AND CAST(q.difficulty AS REAL) BETWEEN 1 AND 10
             """)
         elif tag_status == "未打标签":
             where.append("""
@@ -138,7 +139,7 @@ def build_question_filter_query(
                     EXISTS (SELECT 1 FROM question_tags kt2 WHERE kt2.question_id = q.id AND kt2.tag_type = 'knowledge_point' AND COALESCE(kt2.tag_value, '') <> '')
                     AND EXISTS (SELECT 1 FROM question_tags kt2 WHERE kt2.question_id = q.id AND kt2.tag_type = 'ability' AND COALESCE(kt2.tag_value, '') <> '')
                     AND EXISTS (SELECT 1 FROM question_tags kt2 WHERE kt2.question_id = q.id AND kt2.tag_type = 'exam_scope' AND COALESCE(kt2.tag_value, '') <> '')
-                    AND EXISTS (SELECT 1 FROM question_tags kt2 WHERE kt2.question_id = q.id AND kt2.tag_type = 'student_level' AND COALESCE(kt2.tag_value, '') <> '')
+                    AND CAST(q.difficulty AS REAL) BETWEEN 1 AND 10
                 )
             """)
 
@@ -460,7 +461,7 @@ class QuestionService:
                   AND EXISTS (SELECT 1 FROM question_tags kt WHERE kt.question_id = q.id AND kt.tag_type = 'knowledge_point' AND COALESCE(kt.tag_value, '') <> '')
                   AND EXISTS (SELECT 1 FROM question_tags kt WHERE kt.question_id = q.id AND kt.tag_type = 'ability' AND COALESCE(kt.tag_value, '') <> '')
                   AND EXISTS (SELECT 1 FROM question_tags kt WHERE kt.question_id = q.id AND kt.tag_type = 'exam_scope' AND COALESCE(kt.tag_value, '') <> '')
-                  AND EXISTS (SELECT 1 FROM question_tags kt WHERE kt.question_id = q.id AND kt.tag_type = 'student_level' AND COALESCE(kt.tag_value, '') <> '')
+                  AND CAST(q.difficulty AS REAL) BETWEEN 1 AND 10
                 """
             ).fetchone()[0]
             paper_count = conn.execute(
@@ -935,7 +936,7 @@ class QuestionService:
                 WHERE id = ? AND is_deleted = 0
                 """,
                 (
-                    str(analysis.difficulty),
+                    str(analysis.difficulty) if analysis.difficulty is not None else None,
                     _clean_optional(analysis.reason),
                     int(question_id),
                 ),
@@ -1081,10 +1082,12 @@ def _analysis_from_tagged_question(question: Mapping[str, Any]) -> tuple[TagAnal
             "method_tags": grouped.get("method", []),
             "ability_tags": grouped.get("ability", []),
             "math_model_tags": grouped.get("model", []),
+            "special_type_tags": grouped.get("special_type", []),
             "difficulty": question.get("difficulty") or 1,
             "error_prone_points": grouped.get("error_type", []),
             "prerequisite_points": grouped.get("prerequisite", []),
-            "textbook_chapter": _first_value(grouped.get("exam_scope", [])),
+            "textbook_chapters": grouped.get("exam_scope", []),
+            "curriculum_sections": grouped.get("curriculum_section", []),
             "teaching_stage": _first_value(grouped.get("teaching_stage", [])),
             "suitable_student_level": _first_value(grouped.get("student_level", [])),
             "reason": question.get("reason") or "",
@@ -1105,7 +1108,14 @@ def has_complete_analysis_tags(question: Mapping[str, Any]) -> bool:
         tag_value = _clean_optional(tag.get("tag_value")) if isinstance(tag, Mapping) else None
         if tag_type in CORE_ANALYSIS_TAG_TYPES and tag_value:
             seen.add(tag_type)
-    return all(tag_type in seen for tag_type in CORE_ANALYSIS_TAG_TYPES)
+    try:
+        difficulty = float(_mapping_value(question, "difficulty"))
+    except (TypeError, ValueError):
+        difficulty = 0
+    return (
+        all(tag_type in seen for tag_type in CORE_ANALYSIS_TAG_TYPES)
+        and 1 <= difficulty <= 10
+    )
 
 
 def _duplicate_key(question: Mapping[str, Any]) -> str:

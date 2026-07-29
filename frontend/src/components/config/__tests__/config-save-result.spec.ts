@@ -22,7 +22,7 @@ function editor(answer = '旧答案', revision = 'a'): ConfigEditorResponse {
       part_label: '第 1 问', question_type: 'proof', core_goal: '证明', score: 100,
       standard_answer: answer, accepted_answers: [], match_rule: '按要素',
       answer_only_max_score: null, require_final_answer: true, required_elements: [],
-      deduction_rules: [], final_answer_rule: '',
+      deduction_rules: [], part_deduction_rules: [], final_answer_rule: '',
     }],
   }
 }

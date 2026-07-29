@@ -108,6 +108,27 @@ def test_plain_parser_preserves_inline_split_and_answer_mapping() -> None:
     assert blocks[2]["canonical_answer"] == "C"
 
 
+def test_plain_parser_trusts_an_explicitly_mapped_bare_single_blank_answer() -> None:
+    from backend.document_parsing import parse_plain_question_blocks
+
+    blocks = parse_plain_question_blocks(
+        "\n".join(
+            [
+                "二、填空题",
+                "5. 求这个角的度数：____。",
+                "参考答案",
+                "5. 70°",
+            ]
+        )
+    )
+
+    assert len(blocks) == 1
+    assert blocks[0]["question_id"] == "Q5"
+    assert blocks[0]["canonical_answer"] == "70"
+    assert blocks[0]["local_answer_trusted"] is True
+    assert blocks[0]["needs_review"] is False
+
+
 def test_broken_rich_docx_falls_back_without_model_or_files(tmp_path: Path) -> None:
     from backend.document_parsing import parse_docx_question_blocks
 

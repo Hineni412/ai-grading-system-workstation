@@ -101,7 +101,7 @@ test('deep review replaces the batch body, exposes all evidence, and restores ex
   await openBatch(page)
   await page.getByTestId('review-search').fill('一号')
   await page.getByTestId('teacher-score-1').fill('4.25')
-  await page.getByRole('button', { name: '深查此份答卷' }).click()
+  await page.getByRole('button', { name: '深查答卷' }).click()
 
   await expect(page.getByTestId('review-deep-workspace')).toBeVisible()
   await expect(page.getByTestId('review-batch-workspace')).toHaveCount(0)
@@ -126,7 +126,7 @@ test('deep review replaces the batch body, exposes all evidence, and restores ex
 test('single deep confirmation decrements the question count and keeps annotation retry explicit', async ({ page }) => {
   await openBatch(page)
   await setMode(page, { confirm: 'retry' })
-  await page.locator('[data-detail-id="1"]').getByRole('button', { name: '深查此份答卷' }).click()
+  await page.locator('[data-detail-id="1"]').getByRole('button', { name: '深查答卷' }).click()
   await expect(page.getByTestId('review-deep-workspace')).toBeVisible()
   await page.getByTestId('confirm-single').click()
 
@@ -222,7 +222,7 @@ for (const viewport of viewports) {
     await page.setViewportSize(viewport)
     await openBatch(page)
     await expect(page.getByTestId('confirm-batch')).toBeVisible()
-    await page.getByRole('button', { name: '深查此份答卷' }).first().click()
+    await page.getByRole('button', { name: '深查答卷' }).first().click()
     await expect(page.getByTestId('review-deep-workspace')).toBeVisible()
 
     const geometry = await page.evaluate(() => {

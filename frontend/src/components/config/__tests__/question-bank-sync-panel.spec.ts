@@ -5,6 +5,23 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { JobResponse } from '../../../api/jobs'
 import { useJobStore } from '../../../stores/jobs'
 import QuestionBankSyncPanel from '../QuestionBankSyncPanel.vue'
+import type { CurriculumCatalog } from '../../../api/question-bank'
+
+const curriculum: CurriculumCatalog = {
+  schema_version: 1,
+  catalog_id: 'test',
+  publisher: '北师大',
+  subject: '数学',
+  edition: '2024',
+  volumes: [{
+    id: 'bnu24-math-g7-upper',
+    label: '七年级上册',
+    grade: '七年级',
+    semester: '上学期',
+    textbook_version: '北师大版（2024）',
+    chapters: [],
+  }],
+}
 
 function job(overrides: Partial<JobResponse> = {}): JobResponse {
   return {
@@ -55,9 +72,11 @@ describe('QuestionBankSyncPanel', () => {
     const consumed = vi.fn()
     const app = createApp(QuestionBankSyncPanel, {
       sessionId: 7,
+      sessionName: '七年级上册阶段练习',
       configRevision: 'd'.repeat(64),
       autoStart: true,
       submitter,
+      curriculumLoader: vi.fn(async () => curriculum),
       onAutoStartConsumed: consumed,
     })
 
@@ -67,6 +86,7 @@ describe('QuestionBankSyncPanel', () => {
     expect(submitter).toHaveBeenCalledExactlyOnceWith(7, {
       config_revision: 'd'.repeat(64),
       client_request_token: expect.stringMatching(/^[0-9a-f]{32}$/),
+      curriculum_volume_id: 'bnu24-math-g7-upper',
     })
     expect(consumed).toHaveBeenCalledOnce()
     expect(useJobStore().jobs[81]?.job_type).toBe('question_bank_sync')
@@ -101,8 +121,10 @@ describe('QuestionBankSyncPanel', () => {
     document.body.append(host)
     const app = createApp(QuestionBankSyncPanel, {
       sessionId: 7,
+      sessionName: '七年级上册阶段练习',
       configRevision: 'e'.repeat(64),
       retryer,
+      curriculumLoader: vi.fn(async () => curriculum),
     })
 
     app.mount(host)
@@ -117,6 +139,7 @@ describe('QuestionBankSyncPanel', () => {
       {
         config_revision: 'e'.repeat(64),
         client_request_token: expect.stringMatching(/^[0-9a-f]{32}$/),
+        curriculum_volume_id: 'bnu24-math-g7-upper',
       },
     )
     expect(useJobStore().jobs[82]?.payload.mode).toBe('tag_retry')
@@ -148,8 +171,10 @@ describe('QuestionBankSyncPanel', () => {
     document.body.append(host)
     const app = createApp(QuestionBankSyncPanel, {
       sessionId: 7,
+      sessionName: '七年级上册阶段练习',
       configRevision: 'f'.repeat(64),
       retryer,
+      curriculumLoader: vi.fn(async () => curriculum),
     })
 
     app.mount(host)
@@ -167,6 +192,7 @@ describe('QuestionBankSyncPanel', () => {
       {
         config_revision: 'f'.repeat(64),
         client_request_token: expect.stringMatching(/^[0-9a-f]{32}$/),
+        curriculum_volume_id: 'bnu24-math-g7-upper',
       },
     )
     app.unmount()

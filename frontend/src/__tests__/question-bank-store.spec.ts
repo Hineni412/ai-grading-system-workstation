@@ -5,6 +5,7 @@ import type {
   QuestionBankDetail,
   QuestionBankFilters,
   QuestionBankListResponse,
+  QuestionBankPaper,
 } from '../api/question-bank'
 import { ApiError } from '../api/errors'
 
@@ -71,6 +72,29 @@ function detail(id: number, text: string): QuestionBankDetail {
       answer_blocks: [],
     },
     previews: [],
+  }
+}
+
+function paper(overrides: Partial<QuestionBankPaper> = {}): QuestionBankPaper {
+  return {
+    id: 4,
+    title: 'source',
+    year: '2026',
+    province: null,
+    city: null,
+    district: null,
+    exam_type: '阶段练习',
+    grade: null,
+    semester: null,
+    textbook_version: null,
+    import_status: 'imported',
+    created_at: '2026-07-29 10:00:00',
+    updated_at: '2026-07-29 10:00:00',
+    question_count: 12,
+    tagged_question_count: 10,
+    tagged_any_question_count: 12,
+    source_type: 'docx',
+    ...overrides,
   }
 }
 
@@ -221,5 +245,193 @@ describe('question bank store', () => {
     expect(store.lastDeleted?.question.question_text).toBe('可恢复题目题干')
     expect(store.lastDeleted?.revision).toBe(deletedRevision)
     expect(store.selectedQuestionId).toBeNull()
+  })
+
+  it('updates only paper metadata while preserving the card counters', async () => {
+    const { useQuestionBankStore } = await import('../stores/question-bank')
+    const store = useQuestionBankStore()
+    await store.loadPapers(async () => ({ items: [paper()], total: 1 }))
+    let receivedVersion = ''
+
+    const saved = await store.updatePaperMetadata(4, {
+      title: '0526test2',
+      year: '2026',
+      province: null,
+      city: null,
+      district: null,
+      exam_type: '阶段练习',
+      grade: '七年级',
+      semester: '下学期',
+      textbook_version: null,
+    }, {
+      async updatePaperMetadata(_paperId, expectedUpdatedAt) {
+        receivedVersion = expectedUpdatedAt
+        return {
+          id: 4,
+          title: '0526test2',
+          year: '2026',
+          province: null,
+          city: null,
+          district: null,
+          exam_type: '阶段练习',
+          grade: '七年级',
+          semester: '下学期',
+          textbook_version: null,
+          updated_at: '2026-07-29 10:01:00.123456',
+        }
+      },
+    })
+
+    expect(saved).toBe(true)
+    expect(receivedVersion).toBe('2026-07-29 10:00:00')
+    expect(store.papers[0]).toMatchObject({
+      title: '0526test2',
+      grade: '七年级',
+      updated_at: '2026-07-29 10:01:00.123456',
+      question_count: 12,
+      tagged_question_count: 10,
+    })
+  })
+
+  it('refreshes a conflicting paper card without replacing the teacher draft', async () => {
+    const { useQuestionBankStore } = await import('../stores/question-bank')
+    const store = useQuestionBankStore()
+    await store.loadPapers(async () => ({ items: [paper()], total: 1 }))
+    const draft = {
+      title: '老师正在输入的名称',
+      year: '2026',
+      province: null,
+      city: null,
+      district: null,
+      exam_type: '阶段练习',
+      grade: null,
+      semester: null,
+      textbook_version: null,
+    }
+
+    const saved = await store.updatePaperMetadata(4, draft, {
+      async updatePaperMetadata() {
+        throw new ApiError({
+          kind: 'conflict',
+          status: 409,
+          code: 'paper_metadata_conflict',
+          message: 'conflict',
+          details: { current_updated_at: '2026-07-29 10:02:00' },
+          requestId: 'req-paper-conflict',
+          retryable: false,
+        })
+      },
+    }, async () => ({
+      items: [paper({
+        title: '另一处刚保存的名称',
+        updated_at: '2026-07-29 10:02:00',
+      })],
+      total: 1,
+    }))
+
+    expect(saved).toBe(false)
+    expect(store.paperWriteState).toBe('conflict')
+    expect(store.papers[0]?.title).toBe('另一处刚保存的名称')
+    expect(draft.title).toBe('老师正在输入的名称')
+  })
+
+  it('re-reads both paper lists when a trash response is unknown', async () => {
+    const { useQuestionBankStore } = await import('../stores/question-bank')
+    const store = useQuestionBankStore()
+    await store.loadPapers(async () => ({ items: [paper()], total: 1 }))
+    const deletedPaper = paper({
+      import_status: 'deleted',
+      updated_at: '2026-07-29 10:03:00',
+    })
+
+    const completed = await store.movePaperToTrash(4, {
+      async trashPaper() {
+        throw new Error('connection closed after commit')
+      },
+      async restorePaper() {
+        throw new Error('unused')
+      },
+      async listPapers(deleted) {
+        return deleted
+          ? { items: [deletedPaper], total: 1 }
+          : { items: [], total: 0 }
+      },
+    })
+
+    expect(completed).toBe(true)
+    expect(store.papers).toEqual([])
+    expect(store.trashedPapers.map(({ id }) => id)).toEqual([4])
+    expect(store.paperTrashState).toBe('idle')
+    expect(store.paperTrashMessage).toContain('已经移入回收站')
+  })
+
+  it('re-reads a 409 conflict and exposes the current server card version', async () => {
+    const { useQuestionBankStore } = await import('../stores/question-bank')
+    const store = useQuestionBankStore()
+    await store.loadPapers(async () => ({ items: [paper()], total: 1 }))
+    const currentPaper = paper({
+      updated_at: '2026-07-29 10:04:00',
+      import_status: 'completed',
+    })
+
+    const completed = await store.movePaperToTrash(4, {
+      async trashPaper() {
+        throw new ApiError({
+          kind: 'conflict',
+          status: 409,
+          code: 'paper_state_conflict',
+          message: 'conflict',
+          details: {
+            current_updated_at: currentPaper.updated_at,
+            deleted: false,
+          },
+          requestId: 'req-paper-state-conflict',
+          retryable: false,
+        })
+      },
+      async restorePaper() {
+        throw new Error('unused')
+      },
+      async listPapers(deleted) {
+        return deleted
+          ? { items: [], total: 0 }
+          : { items: [currentPaper], total: 1 }
+      },
+    })
+
+    expect(completed).toBe(false)
+    expect(store.paperTrashState).toBe('conflict')
+    expect(store.papers[0]?.updated_at).toBe(currentPaper.updated_at)
+    expect(store.paperTrashMessage).toContain('列表已刷新')
+  })
+
+  it('keeps the server-confirmed import status after restoring a paper', async () => {
+    const { useQuestionBankStore } = await import('../stores/question-bank')
+    const store = useQuestionBankStore()
+    store.trashedPapers = [paper({
+      import_status: 'deleted',
+      updated_at: '2026-07-29 10:05:00',
+    })]
+
+    const completed = await store.restorePaperFromTrash(4, {
+      async trashPaper() {
+        throw new Error('unused')
+      },
+      async restorePaper() {
+        return {
+          id: 4,
+          deleted: false,
+          import_status: 'needs_review',
+          updated_at: '2026-07-29 10:06:00',
+          affected_question_count: 12,
+        }
+      },
+      async listPapers() {
+        throw new Error('unused')
+      },
+    })
+
+    expect(completed).toBe(true)
+    expect(store.papers[0]?.import_status).toBe('needs_review')
   })
 })

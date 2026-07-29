@@ -10,6 +10,12 @@ import { useAssemblyStore } from '../../stores/assembly'
 import { useQuestionBankStore } from '../../stores/question-bank'
 import QuestionContentRenderer from './QuestionContentRenderer.vue'
 
+withDefaults(defineProps<{
+  paperMode?: boolean
+}>(), {
+  paperMode: false,
+})
+
 const store = useQuestionBankStore()
 const assembly = useAssemblyStore()
 const similarItems = ref<SimilarQuestionItem[]>([])
@@ -160,7 +166,9 @@ function closeSimilar(): void {
             :blocks="question.rich_content?.question_blocks"
             :fallback="question.question_text"
             image-alt="题目配图"
+            media-mode="list"
             dense
+            paper-media-flow
           />
         </div>
 
@@ -168,6 +176,9 @@ function closeSimilar(): void {
           <span>{{ question.question_type || '未分类' }}</span>
           <span>难度 {{ question.difficulty || '待定' }}</span>
           <span v-for="tag in tagsFor(question, 'knowledge_point').slice(0, 3)" :key="`knowledge:${tag}`">
+            {{ tag }}
+          </span>
+          <span v-for="tag in tagsFor(question, 'special_type').slice(0, 2)" :key="`special:${tag}`">
             {{ tag }}
           </span>
           <span v-for="tag in tagsFor(question, 'exam_scope').slice(0, 2)" :key="`scope:${tag}`">
@@ -236,6 +247,7 @@ function closeSimilar(): void {
               :blocks="item.rich_content?.question_blocks"
               :fallback="item.question_text"
               image-alt="相似题配图"
+              media-mode="list"
               compact
             />
             <footer>

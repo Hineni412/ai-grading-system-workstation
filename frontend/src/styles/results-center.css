@@ -1,9 +1,9 @@
 .results-center {
   display: grid;
   width: 100%;
-  max-width: 1560px;
+  max-width: none;
   margin-inline: auto;
-  padding: var(--space-5);
+  padding: 16px;
   gap: var(--space-5);
 }
 
@@ -603,9 +603,9 @@
   position: sticky;
   z-index: 3;
   inset-inline-start: 0;
-  width: 220px;
-  min-width: 220px;
-  max-width: 220px;
+  width: 180px;
+  min-width: 180px;
+  max-width: 180px;
   background: var(--color-bg-surface);
   box-shadow: 1px 0 0 var(--color-border-subtle);
   text-align: start;
@@ -620,16 +620,51 @@
 .results-matrix .results-matrix__total {
   position: sticky;
   z-index: 3;
-  inset-inline-start: 220px;
-  width: 170px;
-  min-width: 170px;
-  max-width: 170px;
+  inset-inline-start: 180px;
+  width: 140px;
+  min-width: 140px;
+  max-width: 140px;
   background: var(--color-bg-surface);
   box-shadow: 1px 0 0 var(--color-border-default);
   text-align: start;
 }
 
-.results-matrix__identity button {
+.results-matrix__sort {
+  display: inline-flex;
+  min-height: 28px;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-1);
+  padding: 0 var(--space-1);
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-weight: var(--font-weight-semibold);
+  cursor: pointer;
+}
+
+.results-matrix__identity .results-matrix__sort,
+.results-matrix__total .results-matrix__sort {
+  justify-content: flex-start;
+}
+
+.results-matrix__sort:hover {
+  color: var(--color-accent);
+}
+
+.results-matrix__sort:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+
+.results-matrix__sort > i {
+  color: var(--color-text-muted);
+  font-size: 11px;
+  font-style: normal;
+}
+
+.results-matrix tbody .results-matrix__identity > button {
   display: grid;
   width: 100%;
   min-height: 0;
@@ -642,20 +677,20 @@
   text-align: start;
 }
 
-.results-matrix__identity button:hover {
+.results-matrix tbody .results-matrix__identity > button:hover {
   background: transparent;
   color: var(--color-accent);
 }
 
-.results-matrix__identity button > strong,
-.results-matrix__identity button > span {
+.results-matrix tbody .results-matrix__identity > button > strong,
+.results-matrix tbody .results-matrix__identity > button > span {
   width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.results-matrix__identity button > span,
+.results-matrix tbody .results-matrix__identity > button > span,
 .results-matrix__total > span {
   display: block;
   margin-top: 2px;

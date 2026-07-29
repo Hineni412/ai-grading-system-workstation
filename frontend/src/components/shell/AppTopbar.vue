@@ -4,7 +4,7 @@ import { useRoute } from 'vue-router'
 
 import AppButton from '../design-system/AppButton.vue'
 import AppIconButton from '../design-system/AppIconButton.vue'
-import QuickArchiveButton from '../sessions/QuickArchiveButton.vue'
+import SessionManagementDrawer from '../sessions/SessionManagementDrawer.vue'
 import { useConfigWorkspaceStore } from '../../stores/config-workspace'
 import { useSessionStore } from '../../stores/session'
 
@@ -87,11 +87,7 @@ function retrySessions(): void {
           {{ session.name }}
         </option>
       </select>
-      <QuickArchiveButton
-        v-if="sessionStore.currentSession"
-        :session-id="sessionStore.currentSession.id"
-        :session-name="sessionStore.currentSession.name"
-      />
+      <SessionManagementDrawer />
     </div>
 
     <div v-if="sessionStore.loadState === 'loading'" class="app-topbar__status" role="status">

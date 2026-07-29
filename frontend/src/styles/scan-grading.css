@@ -1,4 +1,4 @@
-.scan-grading { max-width: var(--content-max-width); margin: 0 auto; padding: var(--space-6); color: var(--color-text-primary); }
+.scan-grading { box-sizing: border-box; width: 100%; max-width: none; margin: 0 auto; padding: 16px; color: var(--color-text-primary); }
 .scan-grading__header { display: flex; justify-content: space-between; gap: var(--space-6); align-items: start; border-bottom: var(--border-width) solid var(--color-border-default); padding-bottom: var(--space-5); }
 .scan-grading__header h1 { margin: var(--space-1) 0; font-size: var(--font-size-h1); line-height: var(--line-height-tight); }
 .scan-grading__header p { margin: 0; color: var(--color-text-secondary); }

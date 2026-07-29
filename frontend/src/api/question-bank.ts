@@ -12,6 +12,7 @@ export const QUESTION_BANK_TAG_TYPES = [
   'measured_skill_name',
   'method',
   'model',
+  'special_type',
   'prerequisite',
   'student_level',
   'sub_skill',
@@ -92,6 +93,59 @@ export interface QuestionBankPaper {
 export interface QuestionBankPaperListResponse {
   items: QuestionBankPaper[]
   total: number
+}
+
+export interface QuestionBankPaperMetadataInput {
+  title: string
+  year: string | null
+  province: string | null
+  city: string | null
+  district: string | null
+  exam_type: string | null
+  grade: string | null
+  semester: string | null
+  textbook_version: string | null
+}
+
+export interface QuestionBankPaperMetadataResult
+  extends QuestionBankPaperMetadataInput {
+  id: number
+  updated_at: string
+}
+
+export interface QuestionBankPaperStateResult {
+  id: number
+  deleted: boolean
+  import_status: string
+  updated_at: string
+  affected_question_count: number
+}
+
+export interface QuestionBankPaperPermanentDeleteSelection {
+  id: number
+  expected_updated_at: string
+}
+
+export interface QuestionBankPaperPermanentDeleteImpact {
+  paper_count: number
+  question_count: number
+  tag_count: number
+  training_link_count: number
+  knowledge_graph_link_count: number
+  owned_file_count: number
+  shared_file_count: number
+  permanent_delete_phrase: string
+}
+
+export interface QuestionBankPaperPermanentDeleteResult {
+  deleted_paper_ids: number[]
+  deleted_question_count: number
+  deleted_tag_count: number
+  removed_training_link_count: number
+  removed_knowledge_graph_link_count: number
+  deleted_file_count: number
+  skipped_shared_file_count: number
+  storage_cleanup_pending: boolean
 }
 
 export type CurriculumSectionKind =
@@ -220,6 +274,7 @@ export interface QuestionBankFacets {
   abilities: QuestionBankFacet[]
   methods: QuestionBankFacet[]
   models: QuestionBankFacet[]
+  special_types: QuestionBankFacet[]
   student_levels: QuestionBankFacet[]
   teaching_stages: QuestionBankFacet[]
   sub_skills: QuestionBankFacet[]
@@ -268,12 +323,11 @@ export interface QuestionBankDetail extends QuestionBankListItem {
 
 export type QuestionBankTagStatus = 'all' | 'tagged' | 'untagged'
 export type QuestionBankSort =
-  | 'newest'
-  | 'difficulty'
-  | 'frequency_midterm'
-  | 'frequency_final'
-  | 'frequency_zhongkao'
-  | 'frequency_contextual'
+  | 'paper_order'
+  | 'difficulty_desc'
+  | 'difficulty_asc'
+  | 'frequency_desc'
+  | 'frequency_asc'
 
 export interface QuestionBankFilters {
   page?: number
@@ -285,6 +339,7 @@ export interface QuestionBankFilters {
   abilities?: string[]
   methods?: string[]
   models?: string[]
+  specialTypes?: string[]
   studentLevels?: string[]
   teachingStages?: string[]
   subSkills?: string[]
@@ -616,6 +671,86 @@ function isQuestionBankPaper(value: unknown): value is QuestionBankPaper {
   )
 }
 
+function isQuestionBankPaperMetadataResult(
+  value: unknown,
+): value is QuestionBankPaperMetadataResult {
+  return (
+    isRecord(value) &&
+    hasExactKeys(value, [
+      'id',
+      'title',
+      'year',
+      'province',
+      'city',
+      'district',
+      'exam_type',
+      'grade',
+      'semester',
+      'textbook_version',
+      'updated_at',
+    ]) &&
+    isPositiveInteger(value.id) &&
+    typeof value.title === 'string' &&
+    value.title.trim().length > 0 &&
+    isNullableString(value.year) &&
+    isNullableString(value.province) &&
+    isNullableString(value.city) &&
+    isNullableString(value.district) &&
+    isNullableString(value.exam_type) &&
+    isNullableString(value.grade) &&
+    isNullableString(value.semester) &&
+    isNullableString(value.textbook_version) &&
+    typeof value.updated_at === 'string' &&
+    value.updated_at.trim().length > 0
+  )
+}
+
+function normalizePaperMetadata(
+  metadata: QuestionBankPaperMetadataInput,
+): QuestionBankPaperMetadataInput {
+  const title = String(metadata.title ?? '').trim()
+  if (!title || title.length > 255) {
+    throw new Error('Invalid paper metadata')
+  }
+  const optional = (value: string | null, maxLength: number): string | null => {
+    const clean = String(value ?? '').trim()
+    if (clean.length > maxLength) throw new Error('Invalid paper metadata')
+    return clean || null
+  }
+  return {
+    title,
+    year: optional(metadata.year, 24),
+    province: optional(metadata.province, 48),
+    city: optional(metadata.city, 48),
+    district: optional(metadata.district, 48),
+    exam_type: optional(metadata.exam_type, 48),
+    grade: optional(metadata.grade, 48),
+    semester: optional(metadata.semester, 48),
+    textbook_version: optional(metadata.textbook_version, 100),
+  }
+}
+
+function paperStateRequest(
+  paperId: number,
+  expectedUpdatedAt: string,
+  action: 'trash' | 'restore',
+  signal?: AbortSignal,
+): Promise<QuestionBankPaperStateResult> {
+  const expected = String(expectedUpdatedAt ?? '').trim()
+  if (!isPositiveInteger(paperId) || !expected) {
+    throw new Error('Invalid paper state write')
+  }
+  return apiClient.request(
+    `/api/question-bank/papers/${paperId}/${action}`,
+    {
+      method: 'POST',
+      body: { expected_updated_at: expected },
+      decode: decodeQuestionBankPaperStateResult,
+      signal,
+    },
+  )
+}
+
 function isFacet(value: unknown): value is QuestionBankFacet {
   return (
     isRecord(value) &&
@@ -748,6 +883,7 @@ export function decodeQuestionBankFacets(value: unknown): QuestionBankFacets {
     'abilities',
     'methods',
     'models',
+    'special_types',
     'student_levels',
     'teaching_stages',
     'sub_skills',
@@ -813,6 +949,85 @@ export function decodeQuestionPaperListResponse(
     throw new Error('Invalid question bank papers')
   }
   return value as unknown as QuestionBankPaperListResponse
+}
+
+export function decodeQuestionBankPaperMetadataResult(
+  value: unknown,
+): QuestionBankPaperMetadataResult {
+  if (!isQuestionBankPaperMetadataResult(value)) {
+    throw new Error('Invalid paper metadata result')
+  }
+  return value
+}
+
+export function decodeQuestionBankPaperStateResult(
+  value: unknown,
+): QuestionBankPaperStateResult {
+  if (
+    !isRecord(value)
+    || !hasExactKeys(value, [
+      'id',
+      'deleted',
+      'import_status',
+      'updated_at',
+      'affected_question_count',
+    ])
+    || !isPositiveInteger(value.id)
+    || typeof value.deleted !== 'boolean'
+    || typeof value.import_status !== 'string'
+    || value.import_status.trim().length === 0
+    || typeof value.updated_at !== 'string'
+    || value.updated_at.trim().length === 0
+    || !isNonnegativeInteger(value.affected_question_count)
+  ) {
+    throw new Error('Invalid paper state result')
+  }
+  return value as unknown as QuestionBankPaperStateResult
+}
+
+export function decodeQuestionBankPaperPermanentDeleteImpact(
+  value: unknown,
+): QuestionBankPaperPermanentDeleteImpact {
+  const countKeys = [
+    'question_count', 'tag_count', 'training_link_count',
+    'knowledge_graph_link_count', 'owned_file_count', 'shared_file_count',
+  ]
+  if (
+    !isRecord(value)
+    || !hasExactKeys(value, [
+      'paper_count', ...countKeys, 'permanent_delete_phrase',
+    ])
+    || !isPositiveInteger(value.paper_count)
+    || !countKeys.every((key) => isNonnegativeInteger(value[key]))
+    || typeof value.permanent_delete_phrase !== 'string'
+    || !value.permanent_delete_phrase.trim()
+  ) {
+    throw new Error('Invalid paper permanent deletion impact')
+  }
+  return value as unknown as QuestionBankPaperPermanentDeleteImpact
+}
+
+export function decodeQuestionBankPaperPermanentDeleteResult(
+  value: unknown,
+): QuestionBankPaperPermanentDeleteResult {
+  const countKeys = [
+    'deleted_question_count', 'deleted_tag_count',
+    'removed_training_link_count', 'removed_knowledge_graph_link_count',
+    'deleted_file_count', 'skipped_shared_file_count',
+  ]
+  if (
+    !isRecord(value)
+    || !hasExactKeys(value, [
+      'deleted_paper_ids', ...countKeys, 'storage_cleanup_pending',
+    ])
+    || !Array.isArray(value.deleted_paper_ids)
+    || !value.deleted_paper_ids.every(isPositiveInteger)
+    || !countKeys.every((key) => isNonnegativeInteger(value[key]))
+    || typeof value.storage_cleanup_pending !== 'boolean'
+  ) {
+    throw new Error('Invalid paper permanent deletion result')
+  }
+  return value as unknown as QuestionBankPaperPermanentDeleteResult
 }
 
 export function decodeQuestionDetailResponse(value: unknown): QuestionBankDetail {
@@ -964,6 +1179,7 @@ function questionListPath(filters: QuestionBankFilters): string {
   appendTexts(parameters, 'abilities', filters.abilities)
   appendTexts(parameters, 'methods', filters.methods)
   appendTexts(parameters, 'models', filters.models)
+  appendTexts(parameters, 'special_types', filters.specialTypes)
   appendTexts(parameters, 'student_levels', filters.studentLevels)
   appendTexts(parameters, 'teaching_stages', filters.teachingStages)
   appendTexts(parameters, 'sub_skills', filters.subSkills)
@@ -1070,9 +1286,103 @@ export const questionBankApi = {
     })
   },
 
-  listPapers(signal?: AbortSignal): Promise<QuestionBankPaperListResponse> {
-    return apiClient.request('/api/question-bank/papers', {
+  listPapers(
+    deletedOrSignal: boolean | AbortSignal = false,
+    signal?: AbortSignal,
+  ): Promise<QuestionBankPaperListResponse> {
+    const deleted = typeof deletedOrSignal === 'boolean'
+      ? deletedOrSignal
+      : false
+    const requestSignal = typeof deletedOrSignal === 'boolean'
+      ? signal
+      : deletedOrSignal
+    return apiClient.request(
+      deleted
+        ? '/api/question-bank/papers?deleted=true'
+        : '/api/question-bank/papers',
+      {
       decode: decodeQuestionPaperListResponse,
+      signal: requestSignal,
+      },
+    )
+  },
+
+  updatePaperMetadata(
+    paperId: number,
+    expectedUpdatedAt: string,
+    metadata: QuestionBankPaperMetadataInput,
+    signal?: AbortSignal,
+  ): Promise<QuestionBankPaperMetadataResult> {
+    const expected = String(expectedUpdatedAt ?? '').trim()
+    if (!isPositiveInteger(paperId) || !expected) {
+      throw new Error('Invalid paper metadata write')
+    }
+    return apiClient.request(`/api/question-bank/papers/${paperId}`, {
+      method: 'PATCH',
+      body: {
+        expected_updated_at: expected,
+        metadata: normalizePaperMetadata(metadata),
+      },
+      decode: decodeQuestionBankPaperMetadataResult,
+      signal,
+    })
+  },
+
+  trashPaper(
+    paperId: number,
+    expectedUpdatedAt: string,
+    signal?: AbortSignal,
+  ): Promise<QuestionBankPaperStateResult> {
+    return paperStateRequest(
+      paperId,
+      expectedUpdatedAt,
+      'trash',
+      signal,
+    )
+  },
+
+  restorePaper(
+    paperId: number,
+    expectedUpdatedAt: string,
+    signal?: AbortSignal,
+  ): Promise<QuestionBankPaperStateResult> {
+    return paperStateRequest(
+      paperId,
+      expectedUpdatedAt,
+      'restore',
+      signal,
+    )
+  },
+
+  previewPaperPermanentDelete(
+    selections: QuestionBankPaperPermanentDeleteSelection[],
+    signal?: AbortSignal,
+  ): Promise<QuestionBankPaperPermanentDeleteImpact> {
+    return apiClient.request(
+      '/api/question-bank/papers/permanent-deletion-impact',
+      {
+        method: 'POST',
+        body: { selections },
+        decode: decodeQuestionBankPaperPermanentDeleteImpact,
+        signal,
+      },
+    )
+  },
+
+  permanentlyDeletePapers(
+    selections: QuestionBankPaperPermanentDeleteSelection[],
+    confirmationPhrase: string,
+    requestToken: string,
+    signal?: AbortSignal,
+  ): Promise<QuestionBankPaperPermanentDeleteResult> {
+    return apiClient.request('/api/question-bank/papers/permanent-delete', {
+      method: 'POST',
+      body: {
+        selections,
+        confirmation_phrase: confirmationPhrase,
+        request_token: requestToken,
+      },
+      decode: decodeQuestionBankPaperPermanentDeleteResult,
       signal,
     })
   },

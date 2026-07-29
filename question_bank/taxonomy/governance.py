@@ -25,14 +25,24 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from path_manager import get_path_manager
+from question_bank.taxonomy.curriculum_catalog import curriculum_volume_contract
 
 
-ALLOWED_DIMENSIONS = ("curriculum", "knowledge", "ability", "method", "model")
+ALLOWED_DIMENSIONS = (
+    "curriculum",
+    "knowledge",
+    "ability",
+    "method",
+    "model",
+    "special_type",
+)
 _DIMENSION_SET = frozenset(ALLOWED_DIMENSIONS)
 _ACTIVE_TERM_STATUS = "approved"
 _TERM_STATUSES = frozenset({"approved", "retired"})
 _PROPOSAL_STATUSES = frozenset({"pending", "approved", "merged", "rejected"})
-_REVIEW_ACTIONS = frozenset({"approve", "edit", "merge", "reject", "retire"})
+_REVIEW_ACTIONS = frozenset(
+    {"approve", "edit", "merge", "map_many", "reject", "retire"}
+)
 _CATALOG_PATH = (
     Path(__file__).resolve().parent / "catalogs" / "tag_vocabulary_v2.json"
 )
@@ -45,6 +55,7 @@ _RAW_FIELD_DIMENSIONS: dict[str, str] = {
     "curriculum": "curriculum",
     "curriculum_chapter": "curriculum",
     "textbook_chapter": "curriculum",
+    "textbook_chapters": "curriculum",
     "knowledge": "knowledge",
     "knowledge_point": "knowledge",
     "knowledge_points": "knowledge",
@@ -60,6 +71,9 @@ _RAW_FIELD_DIMENSIONS: dict[str, str] = {
     "math_model": "model",
     "math_models": "model",
     "math_model_tags": "model",
+    "special_type": "special_type",
+    "special_type_tag": "special_type",
+    "special_type_tags": "special_type",
 }
 _LEGACY_UNCONTROLLED_FIELDS = frozenset(
     {
@@ -199,7 +213,7 @@ def _validate_term(
     if not isinstance(raw, Mapping):
         raise TaxonomyValidationError(f"{label} must be an object")
     optional = (
-        frozenset({"origin", "source_paths"})
+        frozenset({"origin", "source_paths", "retrieval_hints"})
         if allow_metadata
         else frozenset({"origin", "created_at", "updated_at"})
     )
@@ -251,6 +265,19 @@ def _validate_term(
                 _string_list(path, label=f"{label}.source_paths[{index}]")
             )
         result["source_paths"] = validated_paths
+    if allow_metadata and "retrieval_hints" in raw:
+        retrieval_hints = _string_list(
+            raw.get("retrieval_hints"),
+            label=f"{label}.retrieval_hints",
+        )
+        if any(
+            len(hint) > _MAX_TERM_NAME_LENGTH for hint in retrieval_hints
+        ):
+            raise TaxonomyValidationError(
+                f"{label}.retrieval_hints must not exceed "
+                f"{_MAX_TERM_NAME_LENGTH} characters"
+            )
+        result["retrieval_hints"] = retrieval_hints
     if not allow_metadata:
         for field in ("created_at", "updated_at"):
             if field in raw:
@@ -386,6 +413,7 @@ def _validate_proposal(raw: object, *, index: int) -> dict[str, Any]:
                 "reviewed_at",
             }
         ),
+        optional=frozenset({"resolved_term_ids"}),
         label=label,
     )
     dimension = _required_string(
@@ -425,6 +453,15 @@ def _validate_proposal(raw: object, *, index: int) -> dict[str, Any]:
         resolved_term_id = _required_string(
             resolved_term_id, label=f"{label}.resolved_term_id"
         )
+    resolved_term_ids = _string_list(
+        raw.get(
+            "resolved_term_ids",
+            [resolved_term_id] if resolved_term_id is not None else [],
+        ),
+        label=f"{label}.resolved_term_ids",
+    )
+    if resolved_term_id and resolved_term_id not in resolved_term_ids:
+        resolved_term_ids.insert(0, resolved_term_id)
     reviewed_at = raw.get("reviewed_at")
     if reviewed_at is not None:
         reviewed_at = _required_string(
@@ -455,6 +492,7 @@ def _validate_proposal(raw: object, *, index: int) -> dict[str, Any]:
         "occurrences": occurrences,
         "status": status,
         "resolved_term_id": resolved_term_id,
+        "resolved_term_ids": resolved_term_ids,
         "created_at": _required_string(
             raw.get("created_at"), label=f"{label}.created_at"
         ),
@@ -683,7 +721,7 @@ def _flatten_values(value: object) -> list[tuple[str, str]]:
         name = next(
             (
                 _text(value.get(key))
-                for key in ("id", "name", "value", "proposed_name")
+                for key in ("name", "proposed_name", "value", "id")
                 if _text(value.get(key))
             ),
             "",
@@ -702,9 +740,14 @@ def _flatten_values(value: object) -> list[tuple[str, str]]:
 def _context_mapping(context: object) -> dict[str, Any]:
     if context is None:
         return {}
-    if not isinstance(context, Mapping):
-        return {"text": _text(context)}
-    return dict(context)
+    if isinstance(context, Mapping):
+        return dict(context)
+    to_dict = getattr(context, "to_dict", None)
+    if callable(to_dict):
+        values = to_dict()
+        if isinstance(values, Mapping):
+            return dict(values)
+    return {"text": _text(context)}
 
 
 def _search_text(value: object, *, depth: int = 0) -> str:
@@ -717,6 +760,13 @@ def _search_text(value: object, *, depth: int = 0) -> str:
     if isinstance(value, Iterable) and not isinstance(value, (bytes, bytearray)):
         return " ".join(_search_text(item, depth=depth + 1) for item in value)
     return _text(value)
+
+
+def _bigrams(value: object) -> set[str]:
+    text = _normalized_name(value)
+    if len(text) < 2:
+        return {text} if text else set()
+    return {text[index : index + 2] for index in range(len(text) - 1)}
 
 
 def _term_public(term: Mapping[str, Any]) -> dict[str, Any]:
@@ -757,6 +807,19 @@ def _proposal_public(proposal: Mapping[str, Any]) -> dict[str, Any]:
         "created_at": proposal.get("created_at"),
         "updated_at": proposal.get("updated_at"),
     }
+
+
+def _proposal_public_extended(proposal: Mapping[str, Any]) -> dict[str, Any]:
+    result = _proposal_public(proposal)
+    result["resolved_term_ids"] = _unique_text(
+        proposal.get("resolved_term_ids")
+        or (
+            [proposal.get("resolved_term_id")]
+            if proposal.get("resolved_term_id")
+            else []
+        )
+    )
+    return result
 
 
 class TaxonomyGovernance:
@@ -813,7 +876,11 @@ class TaxonomyGovernance:
             for term in self._catalog["terms"]
         }
         for term in state["approved_terms"]:
-            by_id[term["id"]] = copy.deepcopy(term)
+            # Keep catalog-only retrieval metadata when a teacher overlay changes
+            # aliases/status for an existing base term.
+            combined = copy.deepcopy(by_id.get(term["id"], {}))
+            combined.update(copy.deepcopy(term))
+            by_id[term["id"]] = combined
         terms = sorted(
             by_id.values(),
             key=lambda item: (
@@ -822,12 +889,24 @@ class TaxonomyGovernance:
                 item["id"],
             ),
         )
+        canonical_owners = {
+            (term["dimension"], _normalized_name(term["name"])): term["id"]
+            for term in terms
+            if term["status"] == _ACTIVE_TERM_STATUS
+        }
         alias_index: dict[tuple[str, str], dict[str, Any]] = {}
         for term in terms:
             if term["status"] != _ACTIVE_TERM_STATUS:
                 continue
-            for value in (term["id"], term["name"], *term["aliases"]):
+            for position, value in enumerate(
+                (term["id"], term["name"], *term["aliases"])
+            ):
                 key = (term["dimension"], _normalized_name(value))
+                # A newer catalog canonical name wins over an alias retained in
+                # an older machine-local overlay. The state file stays untouched.
+                canonical_owner = canonical_owners.get(key)
+                if position >= 2 and canonical_owner not in (None, term["id"]):
+                    continue
                 owner = alias_index.get(key)
                 if owner is not None and owner["id"] != term["id"]:
                     raise TaxonomyStorageError(
@@ -871,7 +950,7 @@ class TaxonomyGovernance:
         }
 
     def catalog(self) -> dict[str, Any]:
-        """Return the public five-dimension catalog used by the review UI."""
+        """Return the public controlled catalog used by the review UI."""
 
         snapshot = self.snapshot()
         return {
@@ -911,85 +990,202 @@ class TaxonomyGovernance:
             expanded.extend([term["name"], *term["aliases"]])
         return tuple(_unique_text(expanded))
 
-    def prompt_contract(self, context: object = None) -> dict[str, Any]:
+    def prompt_contracts(
+        self,
+        contexts: Mapping[object, object],
+    ) -> dict[object, dict[str, Any]]:
+        """Build isolated per-question candidate contracts from one snapshot."""
+
         state = self._read_state()
-        terms, _ = self._combined_terms(state)
-        query = _normalized_name(_search_text(context))
-        limits = {
-            "curriculum": 40,
-            "knowledge": 120,
-            "ability": 20,
-            "method": 50,
-            "model": 100,
-        }
-
-        def score(term: Mapping[str, Any]) -> tuple[int, int, str]:
-            values = [_normalized_name(term["name"])]
-            values.extend(_normalized_name(alias) for alias in term["aliases"])
-            if not query:
-                return (0, 0, term["name"])
-            exact = max((100 if value and value in query else 0) for value in values)
-            query_pairs = {
-                query[index : index + 2]
-                for index in range(max(0, len(query) - 1))
-            }
-            overlap = max(
-                (
-                    len(
-                        query_pairs
-                        & {
-                            value[index : index + 2]
-                            for index in range(max(0, len(value) - 1))
-                        }
-                    )
-                    for value in values
-                ),
-                default=0,
-            )
-            return (exact, overlap, term["name"])
-
-        candidates: dict[str, list[dict[str, Any]]] = {}
-        truncated: dict[str, bool] = {}
-        for dimension in ALLOWED_DIMENSIONS:
-            dimension_terms = [
+        terms, _alias_index = self._combined_terms(state)
+        active_by_dimension = {
+            dimension: [
                 term
                 for term in terms
                 if term["dimension"] == dimension
                 and term["status"] == _ACTIVE_TERM_STATUS
             ]
-            ranked = sorted(
-                dimension_terms,
-                key=lambda term: (
-                    -score(term)[0],
-                    -score(term)[1],
-                    score(term)[2],
+            for dimension in ALLOWED_DIMENSIONS
+        }
+        return {
+            key: self._prompt_contract_from_snapshot(
+                context,
+                revision=state["revision"],
+                active_by_dimension=active_by_dimension,
+            )
+            for key, context in contexts.items()
+        }
+
+    def prompt_contract(self, context: object = None) -> dict[str, Any]:
+        return self.prompt_contracts({"single": context})["single"]
+
+    def _prompt_contract_from_snapshot(
+        self,
+        context: object,
+        *,
+        revision: int,
+        active_by_dimension: Mapping[str, list[dict[str, Any]]],
+    ) -> dict[str, Any]:
+        values = _context_mapping(context)
+        volume_contract = curriculum_volume_contract(
+            values.get("curriculum_volume_id")
+        )
+        question_text = _text(values.get("question_text") or values.get("text"))
+        answer_text = _text(values.get("answer_text"))
+        question_type = _text(values.get("question_type"))
+        grade_text = " ".join(
+            filter(
+                None,
+                (
+                    _text(values.get("grade")),
+                    _text(values.get("semester")),
+                    _text(values.get("exam_type")),
                 ),
             )
-            limit = limits[dimension]
-            selected = ranked[:limit]
-            truncated[dimension] = len(ranked) > len(selected)
-            candidates[dimension] = [
-                {
-                    "id": term["id"],
-                    "name": term["name"],
+        )
+        weighted_queries = tuple(
+            (query, weight, _bigrams(query))
+            for query, weight in (
+                (_normalized_name(question_text), 5),
+                (_normalized_name(answer_text), 3),
+                (_normalized_name(question_type), 2),
+                (_normalized_name(grade_text), 2),
+            )
+        )
+        has_query = any(query for query, _weight, _pairs in weighted_queries)
+        limits = {
+            "curriculum": 8,
+            "knowledge": 32,
+            "ability": 10,
+            "method": 12,
+            "model": 16,
+            "special_type": 8,
+        }
+
+        def phrase_score(
+            phrase: object,
+            *,
+            exact_weight: int,
+            overlap_weight: int,
+        ) -> int:
+            normalized = _normalized_name(phrase)
+            if not normalized:
+                return 0
+            pairs = _bigrams(normalized)
+            score_value = 0
+            for query, field_weight, query_pairs in weighted_queries:
+                if not query:
+                    continue
+                if normalized in query:
+                    score_value = max(
+                        score_value,
+                        exact_weight * field_weight,
+                    )
+                overlap = len(pairs & query_pairs)
+                score_value = max(
+                    score_value,
+                    overlap * overlap_weight * field_weight,
+                )
+            return score_value
+
+        def term_score(term: Mapping[str, Any]) -> int:
+            score_value = phrase_score(
+                term["name"],
+                exact_weight=1000,
+                overlap_weight=20,
+            )
+            for alias in term.get("aliases", []):
+                score_value = max(
+                    score_value,
+                    phrase_score(
+                        alias,
+                        exact_weight=850,
+                        overlap_weight=16,
+                    ),
+                )
+            for hint in term.get("retrieval_hints", []):
+                score_value = max(
+                    score_value,
+                    phrase_score(
+                        hint,
+                        exact_weight=550,
+                        overlap_weight=10,
+                    ),
+                )
+            for path in term.get("source_paths", []):
+                score_value = max(
+                    score_value,
+                    phrase_score(
+                        " ".join(path),
+                        exact_weight=240,
+                        overlap_weight=4,
+                    ),
+                )
+            return score_value
+
+        candidates: dict[str, list[dict[str, Any]]] = {}
+        allowed_term_ids: dict[str, list[str]] = {}
+        truncated: dict[str, bool] = {}
+        for dimension in ALLOWED_DIMENSIONS:
+            ranked = sorted(
+                (
+                    (term_score(term), term)
+                    for term in active_by_dimension[dimension]
+                ),
+                key=lambda item: (-item[0], item[1]["name"], item[1]["id"]),
+            )
+            if dimension == "curriculum" and volume_contract is not None:
+                allowed_chapter_ids = {
+                    str(item["id"])
+                    for item in volume_contract["chapters"]
                 }
+                eligible = [
+                    item for item in ranked if item[1]["id"] in allowed_chapter_ids
+                ]
+            elif dimension == "ability":
+                eligible = ranked
+            elif not has_query:
+                eligible = []
+            else:
+                eligible = [item for item in ranked if item[0] > 0]
+            selected = [term for _score, term in eligible[: limits[dimension]]]
+            truncated[dimension] = len(eligible) > len(selected)
+            candidates[dimension] = [
+                {"id": term["id"], "name": term["name"]}
                 for term in selected
             ]
-        return {
+            allowed_term_ids[dimension] = [term["id"] for term in selected]
+
+        fingerprint = _fingerprint(
+            {
+                "revision": revision,
+                "allowed_term_ids": allowed_term_ids,
+            }
+        )
+        retrieval_status = (
+            "ok" if candidates["knowledge"] else "insufficient"
+        )
+        result = {
             "schema_version": 1,
-            "taxonomy_revision": state["revision"],
+            "taxonomy_revision": revision,
+            "candidate_fingerprint": fingerprint,
+            "retrieval_status": retrieval_status,
             "allowed_dimensions": list(ALLOWED_DIMENSIONS),
             "candidates": candidates,
+            "allowed_term_ids": allowed_term_ids,
             "truncated": truncated,
             "rules": {
                 "selection": (
-                    "每个标签只能从对应维度候选词的 id/name 中选择；"
-                    "不得把知识点、能力、方法和模型互相混放。"
+                    "每道题只能从它自己的对应维度候选词中选择；"
+                    "不得跨维度混放。"
                 ),
                 "curriculum": "教材归属只选择年级上下册及章，不自由描述教学阶段。",
+                "special_type": (
+                    "特殊题型/考法描述可复用的呈现方式，不等同于选择、填空等基本题型。"
+                ),
                 "unknown": (
-                    "确无匹配时单独返回 proposed_tags，包含 dimension、name、reason；"
-                    "新词未经教师批准不得作为正式标签保存。"
+                    "候选中确无匹配时可返回 proposed_tags；每题最多2个。"
+                    "本地会先与完整正式词表匹配，仍未知才进入教师审核。"
                 ),
                 "forbidden_dimensions": [
                     "sub_skill",
@@ -1003,23 +1199,136 @@ class TaxonomyGovernance:
                 "ability": ["term-id"],
                 "method": ["term-id"],
                 "model": ["term-id"],
+                "special_type": ["term-id"],
                 "proposed_tags": [
                     {"dimension": "knowledge", "name": "新词", "reason": "原因"}
                 ],
             },
         }
+        if volume_contract is not None:
+            result["curriculum_volume"] = volume_contract
+            result["rules"]["curriculum"] = (
+                "教材归属只能从当前册别的小节稳定 ID 中选择；"
+                "模型返回 curriculum_sections，本地程序据此派生所属章节。"
+            )
+            result["output_shape"]["curriculum_sections"] = ["section-id"]
+        return result
 
     def _classify(
         self,
         raw_analysis: Mapping[str, Any],
         *,
         state: Mapping[str, Any],
+        allowed_term_ids: Mapping[str, object] | None = None,
     ) -> dict[str, Any]:
-        _, alias_index = self._combined_terms(state)
+        terms, alias_index = self._combined_terms(state)
         accepted_terms = {dimension: [] for dimension in ALLOWED_DIMENSIONS}
         accepted_fields: dict[str, list[str]] = {}
         unknown_by_key: dict[tuple[str, str], dict[str, str]] = {}
+        retrieval_misses: list[dict[str, str]] = []
+        proposal_overflow: list[dict[str, str]] = []
+        free_keys: set[tuple[str, str]] = set()
         ignored_fields: list[str] = []
+        restricted = isinstance(allowed_term_ids, Mapping)
+        allowed_ids: dict[str, set[str]] = {
+            dimension: {
+                _text(value)
+                for value in (
+                    allowed_term_ids.get(dimension, [])
+                    if restricted
+                    else []
+                )
+                if _text(value)
+            }
+            for dimension in ALLOWED_DIMENSIONS
+        }
+
+        def nearest_term(dimension: str, name: str) -> dict[str, Any] | None:
+            wanted = _bigrams(name)
+            if not wanted:
+                return None
+            ranked: list[tuple[float, str, dict[str, Any]]] = []
+            for candidate in terms:
+                if (
+                    candidate["dimension"] != dimension
+                    or candidate["status"] != _ACTIVE_TERM_STATUS
+                ):
+                    continue
+                candidate_pairs = _bigrams(candidate["name"])
+                union = wanted | candidate_pairs
+                similarity = (
+                    len(wanted & candidate_pairs) / len(union)
+                    if union
+                    else 0.0
+                )
+                ranked.append(
+                    (similarity, candidate["name"], candidate)
+                )
+            if not ranked:
+                return None
+            similarity, _name, candidate = max(
+                ranked,
+                key=lambda item: (item[0], item[1]),
+            )
+            return candidate if similarity >= 0.2 else None
+
+        def reserve_free_slot(
+            key: tuple[str, str],
+            *,
+            dimension: str,
+            name: str,
+            source_field: str,
+        ) -> bool:
+            if key in free_keys:
+                return True
+            if len(free_keys) >= 2:
+                proposal_overflow.append(
+                    {
+                        "dimension": dimension,
+                        "name": name,
+                        "source_field": source_field,
+                    }
+                )
+                return False
+            free_keys.add(key)
+            return True
+
+        def accept(
+            dimension: str,
+            term: Mapping[str, Any],
+            *,
+            source_field: str,
+        ) -> None:
+            if not any(
+                existing["id"] == term["id"]
+                for existing in accepted_terms[dimension]
+            ):
+                accepted_terms[dimension].append(_term_public(term))
+            accepted_fields.setdefault(source_field, [])
+            if term["name"] not in accepted_fields[source_field]:
+                accepted_fields[source_field].append(term["name"])
+
+        def exact_composite_terms(
+            dimension: str,
+            name: str,
+        ) -> list[dict[str, Any]]:
+            if dimension != "curriculum":
+                return []
+            parts = [
+                part.strip()
+                for part in re.split(r"[,，、;；\n]+", name)
+                if part.strip()
+            ]
+            if len(parts) < 2:
+                return []
+            resolved: list[dict[str, Any]] = []
+            for part in parts:
+                term = alias_index.get((dimension, _normalized_name(part)))
+                if term is None:
+                    return []
+                if not any(existing["id"] == term["id"] for existing in resolved):
+                    resolved.append(term)
+            return resolved if len(resolved) >= 2 else []
 
         def classify_one(
             dimension: str,
@@ -1036,27 +1345,60 @@ class TaxonomyGovernance:
                 return
             term = alias_index.get(key)
             if term is not None:
-                if not any(
-                    existing["id"] == term["id"]
-                    for existing in accepted_terms[dimension]
-                ):
-                    accepted_terms[dimension].append(_term_public(term))
-                accepted_fields.setdefault(source_field, [])
-                if term["name"] not in accepted_fields[source_field]:
-                    accepted_fields[source_field].append(term["name"])
+                within_candidates = (
+                    not restricted
+                    or term["id"] in allowed_ids[dimension]
+                )
+                accept(dimension, term, source_field=source_field)
+                if not within_candidates:
+                    retrieval_misses.append(
+                        {
+                            "dimension": dimension,
+                            "submitted_name": name,
+                            "canonical_id": term["id"],
+                            "canonical_name": term["name"],
+                            "source_field": source_field,
+                        }
+                    )
                 return
-            unknown_by_key.setdefault(
+            composite_terms = exact_composite_terms(dimension, name)
+            if composite_terms:
+                for composite_term in composite_terms:
+                    accept(
+                        dimension,
+                        composite_term,
+                        source_field=source_field,
+                    )
+                return
+            if not reserve_free_slot(
                 key,
-                {
+                dimension=dimension,
+                name=name,
+                source_field=source_field,
+            ):
+                return
+            nearest = nearest_term(dimension, name)
+            unknown = unknown_by_key.get(key)
+            if unknown is None:
+                unknown_by_key[key] = {
                     "dimension": dimension,
                     "name": name,
                     "reason": reason,
                     "source_field": source_field,
                     "definition": definition,
-                    "nearest_id": nearest_id,
+                    "nearest_id": nearest_id
+                    or (nearest["id"] if nearest is not None else ""),
                     "why_not_reuse": why_not_reuse,
-                },
-            )
+                }
+                return
+            for field_name, replacement in (
+                ("reason", reason),
+                ("definition", definition),
+                ("nearest_id", nearest_id),
+                ("why_not_reuse", why_not_reuse),
+            ):
+                if replacement and not unknown[field_name]:
+                    unknown[field_name] = replacement
 
         for field, value in raw_analysis.items():
             if field in _LEGACY_UNCONTROLLED_FIELDS:
@@ -1102,6 +1444,8 @@ class TaxonomyGovernance:
             "accepted_terms": accepted_terms,
             "accepted_fields": accepted_fields,
             "unknown": list(unknown_by_key.values()),
+            "retrieval_misses": retrieval_misses,
+            "proposal_overflow": proposal_overflow,
             "ignored_legacy_fields": sorted(set(ignored_fields)),
         }
 
@@ -1114,9 +1458,18 @@ class TaxonomyGovernance:
             raise TaxonomyValidationError("raw_analysis must be an object")
         context_values = _context_mapping(context)
         persist = bool(context_values.get("persist_proposals", False))
+        allowed_term_ids = context_values.get("allowed_term_ids")
         if not persist:
             state = self._read_state()
-            classified = self._classify(raw_analysis, state=state)
+            classified = self._classify(
+                raw_analysis,
+                state=state,
+                allowed_term_ids=(
+                    allowed_term_ids
+                    if isinstance(allowed_term_ids, Mapping)
+                    else None
+                ),
+            )
             suppressed_keys = {
                 (item["dimension"], item["normalized_name"])
                 for item in state["proposals"]
@@ -1148,7 +1501,15 @@ class TaxonomyGovernance:
 
         with _exclusive_state_lock(self.state_path):
             state = self._read_state_unlocked()
-            classified = self._classify(raw_analysis, state=state)
+            classified = self._classify(
+                raw_analysis,
+                state=state,
+                allowed_term_ids=(
+                    allowed_term_ids
+                    if isinstance(allowed_term_ids, Mapping)
+                    else None
+                ),
+            )
             if not classified["unknown"]:
                 return self._constraint_result(
                     classified, proposals=[], revision=state["revision"]
@@ -1176,20 +1537,18 @@ class TaxonomyGovernance:
             )
             if replay is not None:
                 return replay
-            if (
-                expected_revision is not None
-                and expected_revision != state["revision"]
-            ):
-                raise TaxonomyRevisionConflict(
-                    expected_revision, state["revision"]
-                )
+            # Machine observations are merged under the file lock against the
+            # latest state. A teacher decision made while the model was running
+            # must not cause another paid model request or a stale-write failure.
             proposal_index = {
                 (item["dimension"], item["normalized_name"]): item
                 for item in state["proposals"]
             }
             now = _now()
             persisted: list[dict[str, Any]] = []
+            state_changed = False
             for unknown in classified["unknown"]:
+                proposal_changed = False
                 normalized = _normalized_name(unknown["name"])
                 key = (unknown["dimension"], normalized)
                 proposal = proposal_index.get(key)
@@ -1214,34 +1573,57 @@ class TaxonomyGovernance:
                         "occurrences": 0,
                         "status": "pending",
                         "resolved_term_id": None,
+                        "resolved_term_ids": [],
                         "created_at": now,
                         "updated_at": now,
                         "reviewed_at": None,
                     }
                     state["proposals"].append(proposal)
                     proposal_index[key] = proposal
-                proposal["occurrences"] += 1
-                proposal["reasons"] = _unique_text(
+                    proposal_changed = True
+                observation_ref = question_ref or f"request:{request_token}"
+                if observation_ref not in proposal["question_refs"]:
+                    proposal["question_refs"].append(observation_ref)
+                    proposal["occurrences"] += 1
+                    proposal_changed = True
+                next_reasons = _unique_text(
                     [*proposal["reasons"], unknown["reason"]]
                 )
+                if next_reasons != proposal["reasons"]:
+                    proposal["reasons"] = next_reasons
+                    proposal_changed = True
                 if unknown["definition"]:
-                    proposal["definition"] = unknown["definition"]
+                    if proposal["definition"] != unknown["definition"]:
+                        proposal["definition"] = unknown["definition"]
+                        proposal_changed = True
                 if unknown["nearest_id"]:
-                    proposal["nearest_id"] = unknown["nearest_id"]
+                    if proposal["nearest_id"] != unknown["nearest_id"]:
+                        proposal["nearest_id"] = unknown["nearest_id"]
+                        proposal_changed = True
                 if unknown["why_not_reuse"]:
-                    proposal["why_not_reuse"] = unknown["why_not_reuse"]
-                proposal["models"] = _unique_text(
+                    if proposal["why_not_reuse"] != unknown["why_not_reuse"]:
+                        proposal["why_not_reuse"] = unknown["why_not_reuse"]
+                        proposal_changed = True
+                next_models = _unique_text(
                     [*proposal["models"], model]
                 )
-                proposal["question_refs"] = _unique_text(
-                    [*proposal["question_refs"], question_ref]
-                )
-                proposal["updated_at"] = now
+                if next_models != proposal["models"]:
+                    proposal["models"] = next_models
+                    proposal_changed = True
+                if proposal_changed:
+                    proposal["updated_at"] = now
+                    state_changed = True
                 persisted.append(copy.deepcopy(proposal))
             if not persisted:
                 return self._constraint_result(
                     classified,
                     proposals=[],
+                    revision=state["revision"],
+                )
+            if not state_changed:
+                return self._constraint_result(
+                    classified,
+                    proposals=persisted,
                     revision=state["revision"],
                 )
             next_revision = state["revision"] + 1
@@ -1274,14 +1656,34 @@ class TaxonomyGovernance:
             if proposals
             else ("accepted" if accepted_count else "empty")
         )
+        retrieval_misses = copy.deepcopy(
+            classified.get("retrieval_misses", [])
+        )
+        proposal_overflow = copy.deepcopy(
+            classified.get("proposal_overflow", [])
+        )
+        notes: list[str] = []
+        if retrieval_misses:
+            notes.append(
+                f"本题有 {len(retrieval_misses)} 个正式标签未被本地候选召回，"
+                "已从完整词表归并。"
+            )
+        if proposal_overflow:
+            notes.append(
+                f"模型返回的候选外标签超过2个，已忽略 "
+                f"{len(proposal_overflow)} 个多余值。"
+            )
         return {
             "accepted_analysis": copy.deepcopy(classified["accepted_analysis"]),
             "accepted_terms": copy.deepcopy(classified["accepted_terms"]),
             "accepted_fields": copy.deepcopy(classified["accepted_fields"]),
             "proposals": copy.deepcopy(proposals),
+            "retrieval_misses": retrieval_misses,
+            "proposal_overflow": proposal_overflow,
             "ignored_legacy_fields": list(
                 classified["ignored_legacy_fields"]
             ),
+            "notes": notes,
             "status": status,
             "taxonomy_revision": revision,
         }
@@ -1321,19 +1723,34 @@ class TaxonomyGovernance:
             },
         }
 
+    def get_proposal(self, proposal_id: str) -> dict[str, Any] | None:
+        wanted = _required_string(proposal_id, label="proposal_id")
+        state = self._read_state()
+        for proposal in state["proposals"]:
+            if proposal["id"] == wanted:
+                return _proposal_public(proposal)
+        return None
+
     def review_proposal(
         self,
         *,
         proposal_id: str,
         decision: str,
-        edited_name: str | None,
-        target_term_id: str | None,
         expected_revision: int,
         request_token: str,
+        edited_name: str | None = None,
+        target_term_id: str | None = None,
+        target_term_ids: Iterable[object] = (),
+        include_extended: bool = False,
     ) -> dict[str, Any]:
         """Apply the UI review contract without exposing state-file details."""
 
+        normalized_target_ids = _unique_text(
+            [*target_term_ids, target_term_id]
+        )
         action = "approve" if decision == "edit" else decision
+        if action == "merge" and len(normalized_target_ids) > 1:
+            action = "map_many"
         if decision == "edit" and not _text(edited_name):
             raise TaxonomyReviewInvalid(
                 "edited_name is required when approving a renamed term"
@@ -1346,6 +1763,7 @@ class TaxonomyGovernance:
                 request_token=request_token,
                 name=edited_name if decision == "edit" else None,
                 target_term_id=target_term_id,
+                target_term_ids=normalized_target_ids,
             )
         except TaxonomyRevisionConflict:
             raise
@@ -1361,16 +1779,30 @@ class TaxonomyGovernance:
             raise TaxonomyStorageError(
                 "Taxonomy review completed without a proposal result"
             )
+        approved_terms = [
+            dict(item)
+            for item in result.get("terms", [])
+            if isinstance(item, Mapping)
+        ]
         approved_term = result.get("term")
-        return {
+        if isinstance(approved_term, Mapping) and not approved_terms:
+            approved_terms = [dict(approved_term)]
+        response = {
             "revision": int(result["taxonomy_revision"]),
-            "proposal": _proposal_public(proposal),
+            "proposal": (
+                _proposal_public_extended(proposal)
+                if include_extended
+                else _proposal_public(proposal)
+            ),
             "approved_term": (
                 dict(approved_term)
                 if isinstance(approved_term, Mapping)
                 else None
             ),
         }
+        if include_extended:
+            response["approved_terms"] = approved_terms
+        return response
 
     def review(
         self,
@@ -1382,6 +1814,7 @@ class TaxonomyGovernance:
         name: str | None = None,
         aliases: Iterable[object] = (),
         target_term_id: str | None = None,
+        target_term_ids: Iterable[object] = (),
     ) -> dict[str, Any]:
         item_id = _required_string(item_id, label="item_id")
         action = _required_string(action, label="action")
@@ -1393,6 +1826,9 @@ class TaxonomyGovernance:
             request_token, label="request_token"
         )
         alias_values = _unique_text(aliases)
+        normalized_target_ids = _unique_text(
+            [*target_term_ids, target_term_id]
+        )
         operation_payload = {
             "kind": "review",
             "item_id": item_id,
@@ -1401,6 +1837,7 @@ class TaxonomyGovernance:
             "name": _text(name),
             "aliases": alias_values,
             "target_term_id": _text(target_term_id),
+            "target_term_ids": normalized_target_ids,
         }
         operation_fingerprint = _fingerprint(operation_payload)
         with _exclusive_state_lock(self.state_path):
@@ -1449,6 +1886,7 @@ class TaxonomyGovernance:
                     if proposal["status"] != "pending":
                         proposal["status"] = "pending"
                         proposal["resolved_term_id"] = None
+                        proposal["resolved_term_ids"] = []
                         proposal["reviewed_at"] = None
                     result = {
                         "action": action,
@@ -1458,6 +1896,7 @@ class TaxonomyGovernance:
                 elif action == "reject":
                     proposal["status"] = "rejected"
                     proposal["resolved_term_id"] = None
+                    proposal["resolved_term_ids"] = []
                     proposal["reviewed_at"] = now
                     proposal["updated_at"] = now
                     result = {
@@ -1465,43 +1904,65 @@ class TaxonomyGovernance:
                         "term": None,
                         "proposal": copy.deepcopy(proposal),
                     }
-                elif action == "merge":
-                    target_id = _required_string(
-                        target_term_id, label="target_term_id"
-                    )
-                    target = terms_by_id.get(target_id)
-                    if (
+                elif action in {"merge", "map_many"}:
+                    if action == "merge" and len(normalized_target_ids) != 1:
+                        raise TaxonomyValidationError(
+                            "Merge requires exactly one target term"
+                        )
+                    if action == "map_many" and len(normalized_target_ids) < 2:
+                        raise TaxonomyValidationError(
+                            "Multi-target merge requires at least two target terms"
+                        )
+                    targets = [
+                        terms_by_id.get(target_id)
+                        for target_id in normalized_target_ids
+                    ]
+                    if any(
                         target is None
                         or target["status"] != _ACTIVE_TERM_STATUS
                         or target["dimension"] != proposal["dimension"]
+                        for target in targets
                     ):
                         raise TaxonomyValidationError(
                             "Merge target must be an approved term in the same dimension"
                         )
-                    overlay = copy.deepcopy(target)
-                    overlay["aliases"] = _unique_text(
-                        [
-                            *target["aliases"],
-                            proposal["proposed_name"],
-                            proposal["edited_name"],
-                            *proposal["aliases"],
-                            *alias_values,
-                        ]
-                    )
-                    overlay["origin"] = "teacher"
-                    overlay.setdefault("created_at", now)
-                    overlay["updated_at"] = now
-                    self._assert_aliases_available(
-                        overlay, alias_index, owner_id=target_id
-                    )
-                    self._upsert_overlay_term(state, overlay)
+                    public_targets: list[dict[str, Any]] = []
+                    for target_id, target in zip(
+                        normalized_target_ids,
+                        targets,
+                        strict=True,
+                    ):
+                        assert target is not None
+                        if action == "merge":
+                            overlay = copy.deepcopy(target)
+                            overlay["aliases"] = _unique_text(
+                                [
+                                    *target["aliases"],
+                                    proposal["proposed_name"],
+                                    proposal["edited_name"],
+                                    *proposal["aliases"],
+                                    *alias_values,
+                                ]
+                            )
+                            overlay["origin"] = "teacher"
+                            overlay.setdefault("created_at", now)
+                            overlay["updated_at"] = now
+                            self._assert_aliases_available(
+                                overlay, alias_index, owner_id=target_id
+                            )
+                            self._upsert_overlay_term(state, overlay)
+                            public_targets.append(_term_public(overlay))
+                        else:
+                            public_targets.append(_term_public(target))
                     proposal["status"] = "merged"
-                    proposal["resolved_term_id"] = target_id
+                    proposal["resolved_term_id"] = normalized_target_ids[0]
+                    proposal["resolved_term_ids"] = normalized_target_ids
                     proposal["reviewed_at"] = now
                     proposal["updated_at"] = now
                     result = {
                         "action": action,
-                        "term": _term_public(overlay),
+                        "term": public_targets[0],
+                        "terms": public_targets,
                         "proposal": copy.deepcopy(proposal),
                     }
                 else:  # approve
@@ -1552,6 +2013,7 @@ class TaxonomyGovernance:
                     self._upsert_overlay_term(state, term)
                     proposal["status"] = "approved"
                     proposal["resolved_term_id"] = term["id"]
+                    proposal["resolved_term_ids"] = [term["id"]]
                     proposal["reviewed_at"] = now
                     proposal["updated_at"] = now
                     result = {

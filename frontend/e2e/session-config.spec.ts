@@ -43,30 +43,31 @@ function editor(configured = true, revision = initialRevision, answer = 'x = 4')
     {
       row_id: 'row-q1-p1-s1', question_id: 'Q1', part_id: 'P1', step_id: 'S1',
       part_label: '第 1 问', question_type: 'calculation', core_goal: '列式并求解', score: 10,
-      standard_answer: answer, accepted_answers: ['4'], match_rule: '按步骤', knowledge: '一元一次方程',
+      standard_answer: answer, accepted_answers: ['4'], match_rule: '按步骤',
       answer_only_max_score: 4, require_final_answer: true, required_elements: ['列式', '结果'],
-      deduction_rules: ['漏写过程扣 2 分'], final_answer_rule: '结果正确',
+      deduction_rules: ['漏写过程扣 2 分'], part_deduction_rules: ['计算错误时按步骤扣分'],
+      final_answer_rule: '结果正确',
     },
     {
       row_id: 'row-q2-p1-s1', question_id: 'Q2', part_id: 'P1', step_id: 'S1',
       part_label: '证明准备', question_type: 'proof', core_goal: '构造辅助线', score: 15,
-      standard_answer: '连接 AC', accepted_answers: [], match_rule: '按要素', knowledge: '全等三角形',
+      standard_answer: '连接 AC', accepted_answers: [], match_rule: '按要素',
       answer_only_max_score: null, require_final_answer: true, required_elements: ['辅助线'],
-      deduction_rules: [], final_answer_rule: '',
+      deduction_rules: [], part_deduction_rules: [], final_answer_rule: '',
     },
     {
-      row_id: 'row-q2-p2-s1', question_id: 'Q2', part_id: 'P2', step_id: 'S1',
-      part_label: '完成证明', question_type: 'proof', core_goal: '证明全等并得出结论', score: 25,
-      standard_answer: '由 ASA 证明全等', accepted_answers: [], match_rule: '按要素', knowledge: '全等三角形',
+      row_id: 'row-q2-p1-s2', question_id: 'Q2', part_id: 'P1', step_id: 'S2',
+      part_label: '证明准备', question_type: 'proof', core_goal: '证明全等并得出结论', score: 25,
+      standard_answer: '由 ASA 证明全等', accepted_answers: [], match_rule: '按要素',
       answer_only_max_score: null, require_final_answer: true, required_elements: ['全等', '结论'],
-      deduction_rules: [], final_answer_rule: '',
+      deduction_rules: [], part_deduction_rules: [], final_answer_rule: '',
     },
     {
       row_id: 'row-q3-p1-s1', question_id: 'Q3', part_id: 'P1', step_id: 'S1',
       part_label: '选择答案', question_type: 'choice', core_goal: '判断结论', score: 40,
-      standard_answer: 'B', accepted_answers: [], match_rule: '精确匹配', knowledge: '几何',
+      standard_answer: 'B', accepted_answers: [], match_rule: '精确匹配',
       answer_only_max_score: null, require_final_answer: true, required_elements: [],
-      deduction_rules: [], final_answer_rule: '',
+      deduction_rules: [], part_deduction_rules: [], final_answer_rule: '',
     },
   ] : []
   return {
@@ -333,6 +334,72 @@ test('expanded rubric policy fields submit exact row-id edits', async ({ page })
     deduction_rules: ['漏写过程扣 1 分'], require_final_answer: false,
     answer_only_max_score: 3, final_answer_rule: '单位必须完整',
   }))
+})
+
+test('all collapsed scoring cards keep one height across two-column rows', async ({ page }) => {
+  const state = await installConfigWorkspaceMockApi(page, { initialSessions: true })
+  state.editorReady = true
+  await page.setViewportSize({ width: 1280, height: 800 })
+  await page.addInitScript(({ sourceIdValue, revisionValue }) => {
+    localStorage.setItem('ai-grading:selected-session:v1', '7')
+    localStorage.setItem('ai-grading:config-workspace:v1', JSON.stringify({
+      sessionId: 7, phase: 'editor', sourceId: sourceIdValue, sourceRevision: revisionValue,
+      jobId: null, decisions: [],
+    }))
+  }, { sourceIdValue: sourceId, revisionValue: sourceRevision })
+  state.hasSource = true
+  await page.goto('/sessions')
+  await expect(page.getByRole('heading', { name: '编辑评分依据' })).toBeVisible()
+  await expect(page.locator('.rubric-unit-card__preview[aria-expanded="false"]')).toHaveCount(4)
+  await page.evaluate(() => document.fonts.ready)
+
+  const metrics = await page.evaluate(() => {
+    function bounds(element: Element | null) {
+      if (!(element instanceof HTMLElement)) throw new Error('rubric card element is missing')
+      const rect = element.getBoundingClientRect()
+      return { top: rect.top, bottom: rect.bottom, height: rect.height }
+    }
+    function card(rowId: string) {
+      const root = document.querySelector(`[data-row-id="${rowId}"]`)
+      const preview = root?.querySelector('.rubric-unit-card__preview[aria-expanded="false"]') ?? null
+      return {
+        card: bounds(root),
+        preview: bounds(preview),
+        footer: bounds(root?.querySelector('.rubric-unit-card__preview-footer') ?? null),
+        fieldCount: preview?.querySelectorAll('.rubric-unit-card__preview-field').length ?? 0,
+      }
+    }
+    return [
+      card('row-q1-p1-s1'),
+      card('row-q2-p1-s1'),
+      card('row-q2-p1-s2'),
+      card('row-q3-p1-s1'),
+    ]
+  })
+
+  expect(metrics.map((item) => item.fieldCount)).toEqual([4, 3, 2, 3])
+  expect(Math.abs(metrics[0]!.card.top - metrics[1]!.card.top), 'first row card tops')
+    .toBeLessThanOrEqual(1)
+  expect(Math.abs(metrics[2]!.card.top - metrics[3]!.card.top), 'second row card tops')
+    .toBeLessThanOrEqual(1)
+  const reference = metrics[0]!
+  for (const [index, current] of metrics.entries()) {
+    expect(
+      Math.abs(reference.card.height - current.card.height),
+      `card ${index + 1} height`,
+    ).toBeLessThanOrEqual(1)
+    expect(
+      Math.abs(reference.preview.height - current.preview.height),
+      `preview ${index + 1} height`,
+    ).toBeLessThanOrEqual(1)
+    expect(
+      Math.abs(
+        (reference.footer.bottom - reference.card.top)
+        - (current.footer.bottom - current.card.top),
+      ),
+      `footer ${index + 1} baseline`,
+    ).toBeLessThanOrEqual(1)
+  }
 })
 
 test('failed legacy generation restarts only in the new batched mode', async ({ page }) => {

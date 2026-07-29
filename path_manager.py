@@ -108,7 +108,7 @@ class PathManager:
                     Path.home() / ".ai_grading_system" / "config"
                 )
             self._taxonomy_state_path = (
-                taxonomy_config_root / "taxonomy_state_v1.json"
+                taxonomy_config_root / "taxonomy_state_v2.json"
             )
 
         ops_state_override = os.getenv("AI_GRADING_OPS_STATE_DIR")

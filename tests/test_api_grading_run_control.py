@@ -285,7 +285,7 @@ def test_cancelled_run_cannot_resume_and_failed_retry_keeps_original_mode(tmp_pa
         assert retried.json()["payload"]["grading_mode"] == "full_paper"
         assert retried.json()["payload"]["failed_only"] is True
         assert retried.json()["payload"]["source_run_id"] == failed_run.id
-        assert retried.json()["payload"]["max_workers"] == 1
+        assert "max_workers" not in retried.json()["payload"]
     finally:
         manager.shutdown()
 
@@ -420,7 +420,7 @@ def test_concurrent_start_requests_create_only_one_grading_job(tmp_path) -> None
         )
         assert total == 1
         assert len(jobs) == 1
-        assert jobs[0].payload["max_workers"] == 1
+        assert "max_workers" not in jobs[0].payload
         projected = client.get(f"/api/sessions/{session_id}/grading-workspace")
         assert projected.status_code == 200
         assert projected.json()["grading_run"] is None
@@ -783,7 +783,7 @@ def test_orphaned_running_ledger_projects_interrupted_and_can_resume(tmp_path) -
         resumed = client.post(f"/api/sessions/{session_id}/grading/runs/{run.id}/resume")
         assert resumed.status_code == 202
         assert resumed.json()["payload"]["resume_run_id"] == run.id
-        assert resumed.json()["payload"]["max_workers"] == 1
+        assert "max_workers" not in resumed.json()["payload"]
     finally:
         manager.shutdown()
 
@@ -933,14 +933,10 @@ def test_resume_rejects_changed_grading_configuration_before_submitting_job(tmp_
         manager.shutdown()
 
 
-@pytest.mark.parametrize(
-    ("grading_mode", "expected_max_workers"),
-    [("hybrid_batch", None), ("full_paper", 1)],
-)
+@pytest.mark.parametrize("grading_mode", ["hybrid_batch", "full_paper"])
 def test_terminal_run_can_submit_separate_original_mode_supplement(
     tmp_path,
     grading_mode: str,
-    expected_max_workers: int | None,
 ) -> None:
     from grading_run_store import GradingRunStore
 
@@ -972,8 +968,6 @@ def test_terminal_run_can_submit_separate_original_mode_supplement(
             "enhance_images": True,
             "scan_batch_id": frozen["batch_id"],
         }
-        if expected_max_workers is not None:
-            expected_payload["max_workers"] = expected_max_workers
         assert submitted.json()["payload"] == expected_payload
     finally:
         manager.shutdown()

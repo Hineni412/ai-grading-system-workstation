@@ -1,0 +1,121 @@
+from __future__ import annotations
+
+import pytest
+
+from api_profiles import ApiProfileStore
+from backend.llm.execution import LLMExecutionGovernorRegistry
+from backend.model_profiles import ModelProfileInvalid, ModelProfileService
+
+
+def test_model_profile_publishes_safe_default_request_speed_settings(
+    tmp_path,
+) -> None:
+    service = ModelProfileService(ApiProfileStore(tmp_path / "profiles.json"))
+
+    state = service.upsert(
+        "校内模型",
+        {
+            "api_key": "secret",
+            "base_url": "https://example.test/v1",
+            "ocr_model": "ocr",
+            "grading_model": "grading",
+        },
+    )
+
+    profile = state["profiles"][0]
+    assert profile["request_speed_mode"] == "automatic"
+    assert profile["max_concurrent_requests"] == 20
+    assert profile["requests_per_minute"] == 1000
+    assert "api_key" not in profile
+
+
+def test_model_profile_saves_custom_request_speed_settings(tmp_path) -> None:
+    service = ModelProfileService(ApiProfileStore(tmp_path / "profiles.json"))
+
+    state = service.upsert(
+        "高并发模型",
+        {
+            "api_key": "secret",
+            "base_url": "https://example.test/v1",
+            "ocr_model": "ocr",
+            "grading_model": "grading",
+            "request_speed_mode": "custom",
+            "max_concurrent_requests": 37,
+            "requests_per_minute": 10_000,
+        },
+    )
+
+    assert state["active_profile"] == {
+        "name": "高并发模型",
+        "base_url": "https://example.test/v1",
+        "has_api_key": True,
+        "ocr_model": "ocr",
+        "grading_model": "grading",
+        "config_base_url": "",
+        "has_config_api_key": False,
+        "config_model": "",
+        "request_speed_mode": "custom",
+        "max_concurrent_requests": 37,
+        "requests_per_minute": 10_000,
+    }
+
+
+def test_model_profile_reports_shared_runtime_execution_status(tmp_path) -> None:
+    governors = LLMExecutionGovernorRegistry()
+    service = ModelProfileService(
+        ApiProfileStore(tmp_path / "profiles.json"),
+        execution_governors=governors,
+    )
+    service.upsert(
+        "高并发模型",
+        {
+            "api_key": "secret",
+            "base_url": "https://example.test/v1",
+            "ocr_model": "ocr",
+            "grading_model": "grading",
+            "request_speed_mode": "custom",
+            "max_concurrent_requests": 37,
+            "requests_per_minute": 10_000,
+        },
+    )
+
+    assert service.execution_status("高并发模型") == {
+        "mode": "custom",
+        "configured_max_in_flight": 37,
+        "effective_max_in_flight": 37,
+        "requests_per_minute": 10_000,
+        "active": 0,
+        "queued": 0,
+        "peak_active": 0,
+        "physical_request_count": 0,
+        "limiting_reason": "configured",
+    }
+
+
+@pytest.mark.parametrize(
+    "updates",
+    [
+        {"request_speed_mode": "turbo"},
+        {"request_speed_mode": "custom", "max_concurrent_requests": 0},
+        {"request_speed_mode": "custom", "max_concurrent_requests": 101},
+        {"request_speed_mode": "custom", "requests_per_minute": 0},
+        {"request_speed_mode": "custom", "requests_per_minute": 10_001},
+    ],
+)
+def test_model_profile_rejects_invalid_request_speed_settings(
+    tmp_path,
+    updates,
+) -> None:
+    service = ModelProfileService(ApiProfileStore(tmp_path / "profiles.json"))
+
+    with pytest.raises(ModelProfileInvalid):
+        service.upsert(
+            "校内模型",
+            {
+                "api_key": "secret",
+                "base_url": "https://example.test/v1",
+                "ocr_model": "ocr",
+                "grading_model": "grading",
+                **updates,
+            },
+        )

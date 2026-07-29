@@ -33,8 +33,8 @@ def _positive_score(value: Any) -> float:
         return 0.0
 
 
-def _meaningful_proof_obligations(question: dict[str, Any]) -> list[Any]:
-    obligations = question.get("proof_obligations")
+def _meaningful_proof_obligations(node: dict[str, Any]) -> list[Any]:
+    obligations = node.get("proof_obligations")
     if not isinstance(obligations, list):
         return []
     return [
@@ -55,14 +55,19 @@ def _meaningful_proof_obligations(question: dict[str, Any]) -> list[Any]:
 
 def _has_specific_deduction_evidence(
     question: dict[str, Any],
+    part: dict[str, Any],
     steps: list[dict[str, Any]],
 ) -> bool:
     generic_policy_ids = {
         "answer_only_process_missing",
         "core_process_missing",
     }
-    policies = question.get("deduction_policy")
-    if isinstance(policies, list):
+    for node in (part, question):
+        policies = node.get("deduction_policy")
+        if isinstance(policies, str) and policies.strip():
+            return True
+        if not isinstance(policies, list):
+            continue
         for policy in policies:
             if isinstance(policy, dict):
                 policy_id = str(policy.get("policy_id") or "").strip()
@@ -149,8 +154,10 @@ def collect_generated_config_quality_warnings(payload: dict[str, Any]) -> list[s
             )
 
         if qtype in {"choice", "fill_blank", "judgement", "true_false", "direct_answer"}:
-            if not answer_texts and not answer_image_present:
-                warnings.append(f"[质量检查-阻断] {qid} 缺少可评分的标准答案")
+            if not answer_texts:
+                warnings.append(
+                    f"[质量检查-阻断] {qid} 缺少可评分的文本标准答案"
+                )
 
         for index, part in enumerate(parts):
             if not isinstance(part, dict):
@@ -186,18 +193,40 @@ def collect_generated_config_quality_warnings(payload: dict[str, Any]) -> list[s
                         warnings.append(
                             f"[质量检查-阻断] {qid}/{part_id} 缺少可独立评分的逻辑步骤和具体得分证据"
                         )
-                    if (
-                        qtype == "proof"
-                        and not _meaningful_proof_obligations(question)
-                    ) or not _has_specific_deduction_evidence(question, steps):
+                    if qtype == "proof" and not (
+                        _meaningful_proof_obligations(part)
+                        or _meaningful_proof_obligations(question)
+                    ):
                         warnings.append(
-                            f"[质量检查-阻断] {qid}/{part_id} 缺少具体证明义务或扣分证据"
+                            f"[质量检查-阻断] {qid}/{part_id} 缺少具体证明义务"
+                        )
+                    if not _has_specific_deduction_evidence(
+                        question,
+                        part,
+                        steps,
+                    ):
+                        warnings.append(
+                            f"[质量检查-阻断] {qid}/{part_id} 缺少具体扣分证据"
                         )
                 continue
             answer_part = answer_parts[index] if index < len(answer_parts) and isinstance(answer_parts[index], dict) else {}
-            if not _quality_answer_texts(answer_part) and not answer_texts and not answer_image_present:
+            if (
+                not _quality_answer_texts(answer_part)
+                and not answer_texts
+                and (
+                    mode == "exact_objective"
+                    or not answer_image_present
+                )
+            ):
                 part_id = str(part.get("part_id") or f"第{index + 1}问")
-                warnings.append(f"[质量检查-阻断] {qid}/{part_id} 缺少可评分的标准答案或答案图")
+                suffix = (
+                    "文本标准答案"
+                    if mode == "exact_objective"
+                    else "标准答案或答案图"
+                )
+                warnings.append(
+                    f"[质量检查-阻断] {qid}/{part_id} 缺少可评分的{suffix}"
+                )
 
     return list(dict.fromkeys(warnings))
 
@@ -213,6 +242,31 @@ def refresh_generated_config_quality_warnings(payload: dict[str, Any]) -> list[s
     meta["warnings"] = [*warnings, *quality_warnings]
     return quality_warnings
 
+
+def blocking_quality_question_ids(payload: dict[str, Any]) -> list[str]:
+    rubric = payload.get("rubric") if isinstance(payload, dict) else None
+    questions = rubric.get("questions") if isinstance(rubric, dict) else None
+    question_ids = [
+        str(question.get("question_id") or "").strip()
+        for question in questions or []
+        if isinstance(question, dict)
+        and str(question.get("question_id") or "").strip()
+    ] if isinstance(questions, list) else []
+    ordered_ids = sorted(
+        dict.fromkeys(question_ids),
+        key=lambda value: (-len(value), value),
+    )
+    result: list[str] = []
+    for warning in collect_generated_config_quality_warnings(payload):
+        text = str(warning)
+        for question_id in ordered_ids:
+            prefix = f"[质量检查-阻断] {question_id}"
+            if text == prefix or text.startswith(prefix + " ") or text.startswith(prefix + "/"):
+                result.append(question_id)
+                break
+    return list(dict.fromkeys(result))
+
+
 SESSION_MANAGER_COMPAT_EXPORTS = (
     "_looks_like_garbled_generated_text",
     "_quality_answer_texts",
@@ -221,6 +275,7 @@ SESSION_MANAGER_COMPAT_EXPORTS = (
 )
 
 __all__ = [
+    "blocking_quality_question_ids",
     "collect_generated_config_quality_warnings",
     "refresh_generated_config_quality_warnings",
 ]

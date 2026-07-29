@@ -24,6 +24,60 @@ def test_job_store_creates_and_reads_job_records(tmp_path) -> None:
     assert loaded.stage == "queued"
 
 
+def test_taxonomy_suggestion_same_active_operation_returns_existing_job(
+    tmp_path: Path,
+) -> None:
+    from backend.jobs.store import JobStore
+
+    store = JobStore(tmp_path / "jobs.db")
+    run_id = "a" * 32
+    first, first_created = store.create_idempotent_taxonomy_suggestion_job(
+        {
+            "run_id": run_id,
+            "operation": "process",
+            "client_request_token": "1" * 32,
+        }
+    )
+
+    repeated, repeated_created = store.create_idempotent_taxonomy_suggestion_job(
+        {
+            "run_id": run_id,
+            "operation": "process",
+            "client_request_token": "2" * 32,
+        }
+    )
+
+    assert first_created is True
+    assert repeated_created is False
+    assert repeated.id == first.id
+    assert repeated.payload["client_request_token"] == "1" * 32
+
+
+def test_taxonomy_suggestion_different_active_operation_remains_busy(
+    tmp_path: Path,
+) -> None:
+    from backend.jobs.store import JobStore, TaxonomySuggestionJobBusyError
+
+    store = JobStore(tmp_path / "jobs.db")
+    run_id = "b" * 32
+    store.create_idempotent_taxonomy_suggestion_job(
+        {
+            "run_id": run_id,
+            "operation": "process",
+            "client_request_token": "3" * 32,
+        }
+    )
+
+    with pytest.raises(TaxonomySuggestionJobBusyError):
+        store.create_idempotent_taxonomy_suggestion_job(
+            {
+                "run_id": run_id,
+                "operation": "retry",
+                "client_request_token": "4" * 32,
+            }
+        )
+
+
 def test_job_store_session_filter_only_accepts_json_positive_integer(tmp_path) -> None:
     from backend.jobs.store import JobStore
 

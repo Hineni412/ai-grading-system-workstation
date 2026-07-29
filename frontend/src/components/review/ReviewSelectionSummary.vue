@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { resolveReviewItem, type ReviewItemLike } from '../../api/review'
+import { translateGradingReason } from '../../utils/grading-reasons'
 import StatePanel from '../design-system/StatePanel.vue'
 import StatusBadge from '../design-system/StatusBadge.vue'
 
@@ -79,15 +80,15 @@ function statusTone(
       <dl v-if="item.error_summary || item.error_category || item.deduction_reason">
         <template v-if="item.error_summary">
           <dt>错误摘要</dt>
-          <dd>{{ item.error_summary }}</dd>
+          <dd>{{ translateGradingReason(item.error_summary) }}</dd>
         </template>
         <template v-if="item.error_category">
           <dt>错误类别</dt>
-          <dd>{{ item.error_category }}</dd>
+          <dd>{{ translateGradingReason(item.error_category) }}</dd>
         </template>
         <template v-if="item.deduction_reason">
           <dt>扣分原因</dt>
-          <dd>{{ item.deduction_reason }}</dd>
+          <dd>{{ translateGradingReason(item.deduction_reason) }}</dd>
         </template>
       </dl>
 

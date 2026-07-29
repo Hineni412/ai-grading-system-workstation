@@ -13,6 +13,7 @@ from llm_client import LLMClient, LLMSettings, normalize_openai_base_url
 from original_paper_exporter import OriginalPaperExporter
 from report import ReportGenerator
 from question_bank.services.ai_tagging_service import AITaggingService
+from question_bank.services.question_read_service import QuestionBankReadService
 from question_bank.services.question_write_service import QuestionBankWriteService
 from question_bank.taxonomy.governance import get_taxonomy_governance
 
@@ -24,6 +25,7 @@ from .question_import import run_question_import_job
 from .question_bank_sync import run_session_question_bank_sync_job
 from .scan_analysis import run_scan_analysis
 from .tagging_sync import run_tagging_sync_job
+from .taxonomy_suggestions import run_taxonomy_suggestion_job
 from .training_export import run_training_export_job
 
 
@@ -66,6 +68,9 @@ def register_default_job_handlers(
         ..., dict[str, object]
     ] = run_session_question_bank_sync_job,
     tagging_sync_runner: Callable[..., dict[str, object]] = run_tagging_sync_job,
+    taxonomy_suggestion_runner: Callable[
+        ..., dict[str, object]
+    ] = run_taxonomy_suggestion_job,
     training_export_runner: Callable[..., dict[str, object]] = run_training_export_job,
     assembly_export_runner: Callable[..., dict[str, object]] = run_assembly_export_job,
     tagging_ai_service_factory: Callable[[], Any] = AITaggingService,
@@ -148,6 +153,16 @@ def register_default_job_handlers(
         _build_tagging_sync_handler(
             question_bank_db_path=resolved_question_bank_db,
             tagging_sync_runner=tagging_sync_runner,
+            ai_service_factory=resolved_tagging_factory,
+            taxonomy_governance=taxonomy_governance,
+        ),
+    )
+    manager.register(
+        "taxonomy_suggestion",
+        _build_taxonomy_suggestion_handler(
+            question_bank_db_path=resolved_question_bank_db,
+            data_root=base_data_root,
+            taxonomy_suggestion_runner=taxonomy_suggestion_runner,
             ai_service_factory=resolved_tagging_factory,
             taxonomy_governance=taxonomy_governance,
         ),
@@ -257,6 +272,37 @@ def _build_tagging_sync_handler(
     return handler
 
 
+def _build_taxonomy_suggestion_handler(
+    *,
+    question_bank_db_path: Path,
+    data_root: Path,
+    taxonomy_suggestion_runner: Callable[..., dict[str, object]],
+    ai_service_factory: Callable[[], Any],
+    taxonomy_governance: Any,
+):
+    read_service = QuestionBankReadService(
+        question_bank_db_path,
+        data_root=data_root,
+    )
+    taxonomy_state_path = Path(taxonomy_governance.state_path)
+    taxonomy_state_suffix = taxonomy_state_path.suffix or ".json"
+    suggestion_state_path = taxonomy_state_path.with_name(
+        f"{taxonomy_state_path.stem}.suggestions"
+        f"{taxonomy_state_suffix}"
+    )
+
+    def handler(context: JobContext) -> dict[str, object]:
+        return taxonomy_suggestion_runner(
+            context=context,
+            suggestion_state_path=suggestion_state_path,
+            taxonomy_governance=taxonomy_governance,
+            question_loader=read_service.get_questions,
+            ai_service_factory=ai_service_factory,
+        )
+
+    return handler
+
+
 def _build_question_bank_sync_handler(
     *,
     db_path: Path,
@@ -342,11 +388,22 @@ def _build_report_export_handler(
         ) as staging_dir_value:
             staging_dir = Path(staging_dir_value)
             if report_type == "score_excel":
+                generator = report_generator_factory(
+                    open_grading_repositories(db_path),
+                    staging_dir,
+                )
+                raw_excel_options = context.payload.get(
+                    "score_excel_options"
+                )
                 staged_output = Path(
-                    report_generator_factory(
-                        open_grading_repositories(db_path),
-                        staging_dir,
-                    ).export_session(session_id)
+                    generator.export_session(
+                        session_id,
+                        **(
+                            {"score_excel_options": dict(raw_excel_options)}
+                            if isinstance(raw_excel_options, dict)
+                            else {}
+                        ),
+                    )
                 )
             else:
                 staged_output = Path(

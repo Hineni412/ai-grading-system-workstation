@@ -3,7 +3,17 @@ chcp 65001 >nul
 setlocal
 cd /d "%~dp0"
 set "PYTHON_EXE=%~dp0runtime\python\python.exe"
-set "AI_GRADING_DATA_DIR=%~dp0user_data"
-"%PYTHON_EXE%" -m pytest test_answer_normalizer.py tests\test_objective_batch_recognition_service.py tests\test_objective_escalation.py tests\test_prompt_injection_guard.py tests\test_portable_path_resolution.py -q
+if not exist "%PYTHON_EXE%" set "PYTHON_EXE=%~dp0..\..\runtime\python\python.exe"
+if not exist "%PYTHON_EXE%" goto missing_runtime
+set "PYTHONUTF8=1"
+"%PYTHON_EXE%" tools\run_test_suite.py quick
+set "TEST_EXIT_CODE=%ERRORLEVEL%"
+pause
+endlocal & exit /b %TEST_EXIT_CODE%
+
+:missing_runtime
+echo Portable Python runtime was not found.
+echo Keep this worktree inside the main project and try again.
 pause
 endlocal
+exit /b 1

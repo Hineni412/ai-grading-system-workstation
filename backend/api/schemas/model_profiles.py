@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel, ConfigDict, Field
 
 
@@ -15,6 +17,13 @@ class ModelProfileUpdateRequest(_ModelProfileModel):
     config_base_url: str | None = Field(default=None, max_length=2048)
     config_api_key: str | None = Field(default=None, max_length=8192)
     config_model: str | None = Field(default=None, max_length=200)
+    request_speed_mode: Literal[
+        "automatic",
+        "conservative",
+        "custom",
+    ] | None = None
+    max_concurrent_requests: int | None = Field(default=None, ge=1, le=100)
+    requests_per_minute: int | None = Field(default=None, ge=1, le=10_000)
 
 
 class ModelProfileResponse(_ModelProfileModel):
@@ -26,9 +35,24 @@ class ModelProfileResponse(_ModelProfileModel):
     config_base_url: str
     has_config_api_key: bool
     config_model: str
+    request_speed_mode: Literal["automatic", "conservative", "custom"]
+    max_concurrent_requests: int
+    requests_per_minute: int
 
 
 class ModelProfileStateResponse(_ModelProfileModel):
     profiles: list[ModelProfileResponse]
     active_profile_name: str | None = None
     active_profile: ModelProfileResponse | None = None
+
+
+class ModelExecutionStatusResponse(_ModelProfileModel):
+    mode: Literal["automatic", "conservative", "custom"]
+    configured_max_in_flight: int = Field(ge=1, le=100)
+    effective_max_in_flight: int = Field(ge=1, le=100)
+    requests_per_minute: int = Field(ge=1, le=10_000)
+    active: int = Field(ge=0)
+    queued: int = Field(ge=0)
+    peak_active: int = Field(ge=0)
+    physical_request_count: int = Field(ge=0)
+    limiting_reason: Literal["configured", "provider_overload", "recovering"]
