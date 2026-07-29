@@ -3,6 +3,8 @@ from __future__ import annotations
 import copy
 import json
 import re
+import threading
+from types import SimpleNamespace
 
 import pytest
 
@@ -161,6 +163,80 @@ class FakeBatchClient:
 
     def json_from_text(self, *_args, **_kwargs):
         raise AssertionError("batch generation must not make an extra AI scoring/repair call")
+
+
+def test_independent_batches_overlap_when_profile_allows_parallel_requests() -> None:
+    class ConcurrentBatchClient(FakeBatchClient):
+        def __init__(self) -> None:
+            super().__init__()
+            self.config_gateway = SimpleNamespace(
+                execution_snapshot=SimpleNamespace(max_in_flight=3)
+            )
+            self._barrier = threading.Barrier(2, timeout=2)
+            self._lock = threading.Lock()
+            self.active = 0
+            self.peak_active = 0
+            self.batch_arrivals = 0
+
+        def json_from_text_once(self, prompt: str, **kwargs):
+            if "BATCH_QUESTION_IDS_JSON=" not in prompt:
+                return super().json_from_text_once(prompt, **kwargs)
+            with self._lock:
+                self.batch_arrivals += 1
+                should_wait = self.batch_arrivals <= 2
+                self.active += 1
+                self.peak_active = max(self.peak_active, self.active)
+            try:
+                if should_wait:
+                    self._barrier.wait()
+                return super().json_from_text_once(prompt, **kwargs)
+            finally:
+                with self._lock:
+                    self.active -= 1
+
+    client = ConcurrentBatchClient()
+    payload = session_manager.generate_grading_config_in_batches(
+        _blocks(7),
+        "document",
+        llm_client=client,
+    )
+
+    assert client.peak_active == 2
+    assert set(client.calls) == {
+        ("Q1", "Q2", "Q3"),
+        ("Q4", "Q5", "Q6"),
+        ("Q7",),
+    }
+    assert payload["meta"]["failed_batches"] == []
+    assert payload["meta"]["score_allocation_ai_success"] is True
+
+
+def test_unconfirmed_parser_type_does_not_override_model_reclassification() -> None:
+    class ReclassifyingClient(FakeBatchClient):
+        def json_from_text_once(self, prompt: str, **kwargs):
+            if "BATCH_QUESTION_IDS_JSON=" not in prompt:
+                raise RuntimeError("score allocation deliberately unavailable")
+            payload = _batch_payload(["Q11"])
+            payload["rubric"]["questions"][0]["question_type"] = "comprehensive"
+            return payload
+
+    block = {
+        "question_id": "Q11",
+        "question_type": "fill_blank",
+        "question_type_confirmed": False,
+        "text": "阅读材料并回答三个问题。",
+        "answer_text": "略",
+    }
+
+    payload = session_manager.generate_grading_config_in_batches(
+        [block],
+        "document",
+        llm_client=ReclassifyingClient(),
+    )
+
+    question = payload["rubric"]["questions"][0]
+    assert question["question_type"] == "comprehensive"
+    assert question["question_type_confirmed"] is False
 
 
 def test_twelve_questions_send_constructed_response_questions_one_per_batch() -> None:
@@ -387,7 +463,7 @@ def test_failed_batch_is_retained_and_retry_only_calls_that_complete_batch() -> 
         {
             "batch_id": "B002",
             "question_ids": ["Q4", "Q5", "Q6"],
-            "category": "invalid_json",
+            "category": "model_response_parse",
             "error": "模型返回非 JSON；响应字符数: 10；响应摘要: " + "a" * 64,
         }
     ]
@@ -545,7 +621,7 @@ def test_batch_with_missing_or_extra_question_ids_fails_without_placeholder() ->
         "Q1", "Q2", "Q3", "Q4", "Q5", "Q6"
     ]
     assert {item["category"] for item in payload["meta"]["failed_batches"]} == {
-        "schema_mismatch"
+        "model_output_contract"
     }
 
 

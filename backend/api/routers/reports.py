@@ -62,6 +62,11 @@ def export_session_report(
                 report_type=request.report_type,
                 revision=score_revision(db, session_id),
                 force_regenerate=request.force_regenerate,
+                score_excel_options=(
+                    request.excel_options.model_dump()
+                    if request.excel_options is not None
+                    else None
+                ),
             )
     except UnsupportedJobTypeError as exc:
         raise ApiError(

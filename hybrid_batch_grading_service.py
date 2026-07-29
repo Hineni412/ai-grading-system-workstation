@@ -26,7 +26,7 @@ from solution_answer_guard import (
     rubric_response_mode,
 )
 from usage_logger import extract_usage_fields
-from session_manager import _canonical_question_id
+from question_id_contract import canonical_parent_id, question_id_coordinates
 OBJECTIVE_TYPES = {"choice", "fill_blank", "judgement", "true_false", "direct_answer"}
 
 
@@ -107,6 +107,8 @@ def run_hybrid_batch_grading(
             rubric=rubric,
             answer_key=answer_key,
             output_root=output_root / "objective_batch",
+            recognition_client=llm_client,
+            recognition_model=grading_model,
             batch_size=objective_batch_size,
             min_confidence=OBJECTIVE_AUTO_SCORE_MIN_CONFIDENCE,
             progress_callback=progress_callback,
@@ -484,12 +486,13 @@ def _balanced_subjective_groups(
 
 
 def normalize_sub_question_id(qid: str) -> str:
-    import re
-    s = qid.strip()
-    m = re.match(r"^Q?(\d+)(?:\(|（|-|_)[Pp]?(\d+)(?:\)|）)?$", s)
-    if m:
-        return f"{m.group(1)}-{m.group(2)}"
-    return s
+    text = str(qid or "").strip()
+    coordinates = question_id_coordinates(text)
+    if coordinates is None:
+        return text
+    if coordinates[1] is not None:
+        return f"{coordinates[0]}-{coordinates[1]}"
+    return f"Q{coordinates[0]}"
 
 
 class MajorQuestionAtlasBuilder:
@@ -1502,7 +1505,7 @@ def _question_max_score(question: dict[str, Any]) -> float:
         return score
     parts = question.get("parts")
     if isinstance(parts, list):
-        return sum(_float_value(part.get("max_score") or part.get("part_score") or part.get("score"), 0.0) for part in parts if isinstance(part, dict))
+        return sum(_float_value(part.get("part_score") or part.get("score") or part.get("max_score"), 0.0) for part in parts if isinstance(part, dict))
     return 100.0
 
 
@@ -1517,7 +1520,7 @@ def _detail_full_score(spec: MajorQuestionSpec, question_id: str) -> float | Non
             if normalize_sub_question_id(part_id) != normalized_id:
                 continue
             return _float_value(
-                part.get("max_score") or part.get("part_score") or part.get("score"),
+                part.get("part_score") or part.get("score") or part.get("max_score"),
                 None,
             )
     if normalize_sub_question_id(spec.question_id) == normalized_id:
@@ -1540,7 +1543,17 @@ def _failed_manifest_item(item: dict[str, Any], reason: str, question_id: str) -
 
 
 def _region_question_id(region: dict[str, Any]) -> str:
-    return _canonical_question_id(region.get("mapped_question_id") or region.get("detected_question_id"))
+    raw_question_id = (
+        region.get("mapped_question_id")
+        or region.get("detected_question_id")
+    )
+    coordinates = question_id_coordinates(raw_question_id)
+    if coordinates is None:
+        return str(raw_question_id or "").strip()
+    parent_id = f"Q{coordinates[0]}"
+    if coordinates[1] is None:
+        return canonical_parent_id(parent_id) or parent_id
+    return f"{parent_id}(P{coordinates[1]})"
 
 
 def _region_page(region: dict[str, Any]) -> str:

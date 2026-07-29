@@ -116,6 +116,42 @@ def test_tagging_sync_saves_only_complete_results(tmp_path: Path) -> None:
     assert "fake-tag-model" not in json.dumps(result)
 
 
+def test_tagging_sync_reports_local_retrieval_misses_without_retry(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "qb.db"
+    ids = _seed(db_path, 1)
+    result_with_miss = AITaggingResult(
+        ok=True,
+        mock_mode=False,
+        analysis=_analysis(),
+        model_name="fake-tag-model",
+        quality_status="complete",
+        retrieval_misses=[
+            {
+                "dimension": "knowledge",
+                "submitted_name": "整式运算",
+                "canonical_id": "kp_alg_polynomial",
+                "canonical_name": "整式运算",
+                "source_field": "knowledge_points",
+            }
+        ],
+    )
+    fake_ai = FakeAI({ids[0]: result_with_miss})
+    context, _store = _context(tmp_path, {"question_ids": ids})
+
+    result = run_tagging_sync_job(
+        context=context,
+        question_bank_db_path=db_path,
+        ai_service_factory=lambda: fake_ai,
+    )
+
+    assert fake_ai.calls == [ids]
+    assert result["outcome"] == "complete"
+    assert result["retrieval_miss_count"] == 1
+    assert result["retrieval_miss_question_ids"] == ids
+
+
 def test_tagging_sync_skips_complete_questions_and_retries_only_missing(
     tmp_path: Path,
 ) -> None:

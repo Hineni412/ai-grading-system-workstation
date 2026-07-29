@@ -39,7 +39,20 @@ class SolutionAnswerGuardTests(unittest.TestCase):
             root = Path(temp_dir)
             rubric_path = root / "rubric.json"
             answer_path = root / "answer.json"
-            rubric_path.write_text(json.dumps({"questions": []}), encoding="utf-8")
+            rubric_path.write_text(
+                json.dumps(
+                    {
+                        "questions": [
+                            {
+                                "question_id": "Q10",
+                                "question_type": "visual_construction",
+                                "max_score": 6,
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
             encoded = base64.b64encode(b"perfect-answer-image").decode("ascii")
             answer_path.write_text(
                 json.dumps({"questions": [{"question_id": "Q10", "answer_image_base64": encoded}]}),

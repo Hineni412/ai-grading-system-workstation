@@ -129,6 +129,33 @@ def retry_failed_grading_config_batches(
     )
 
 
+def regenerate_grading_config_questions(
+    existing_payload: dict[str, Any],
+    question_blocks: list[dict[str, Any]],
+    doc_text: str,
+    llm_client: Any,
+    model_name: str | None = None,
+    report: Any = None,
+    q_images: dict[str, Any] | None = None,
+    *,
+    regenerate_question_ids: Sequence[str],
+    checkpoint: Callable[[dict[str, Any]], None] | None = None,
+) -> dict[str, Any]:
+    return _orchestrator(
+        llm_client,
+        model_name=model_name,
+        report=report,
+        batch_size=DEFAULT_CONFIG_GENERATION_BATCH_SIZE,
+    ).regenerate_questions(
+        existing_payload,
+        question_blocks,
+        doc_text,
+        q_images=q_images,
+        regenerate_question_ids=regenerate_question_ids,
+        checkpoint=checkpoint,
+    )
+
+
 def refine_grading_config_from_manual_structure(
     payload: dict[str, Any],
     llm_client: Any,

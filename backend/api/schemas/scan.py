@@ -9,7 +9,7 @@ class ScanAnalyzeRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     enhance_images: bool = True
-    ocr_workers: int | None = Field(default=None, ge=1, le=32)
+    ocr_workers: int | None = Field(default=None, ge=1, le=100)
     front_page_parity: Literal["odd", "even"] | None = None
 
 

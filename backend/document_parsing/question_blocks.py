@@ -95,6 +95,7 @@ def parse_plain_question_blocks(doc_text: str) -> list[dict[str, Any]]:
                 question_text=question_text,
                 answer_text=raw_answer or answer_blocks.get(number, ""),
                 choice_answers=choice_answers,
+                explicitly_mapped=bool(answer_from_map or parsed_answer),
             )
             local_answer_trusted = _is_local_answer_trusted(
                 qtype=qtype,
@@ -138,6 +139,7 @@ def parse_plain_question_blocks(doc_text: str) -> list[dict[str, Any]]:
                 question_text=question_text,
                 answer_text=raw_answer,
                 choice_answers=choice_answers,
+                explicitly_mapped=bool(answer_blocks.get(number)),
             )
             local_answer_trusted = _is_local_answer_trusted(
                 qtype=qtype,
@@ -264,6 +266,7 @@ def _parse_inline_segment(
         question_text=question_text,
         answer_text=answer_raw,
         choice_answers=choice_answers,
+        explicitly_mapped=bool(answer_raw or choice_answers.get(num_str)),
     )
     local_answer_trusted = _is_local_answer_trusted(
         qtype=qtype,
@@ -506,6 +509,7 @@ def _extract_canonical_answer_for_local_question(
     question_text: str,  # noqa: ARG001
     answer_text: str,
     choice_answers: dict[str, str],
+    explicitly_mapped: bool,
 ) -> str:
     if qtype == "choice":
         answer = (
@@ -543,7 +547,20 @@ def _extract_canonical_answer_for_local_question(
         cleaned = _clean_local_answer_text(value)
         if cleaned:
             return cleaned
+    if explicitly_mapped and _looks_like_bare_fill_answer(text):
+        return _clean_local_answer_text(text)
     return ""
+
+
+def _looks_like_bare_fill_answer(value: Any) -> bool:
+    text = str(value or "").strip()
+    if not text or "\n" in text or len(text) > 120:
+        return False
+    if re.search(r"(?:^|[，,；;。．])\s*(?:解|证明|理由|步骤)\s*[:：]?", text):
+        return False
+    if any(token in text for token in ("∵", "∴", "因为", "所以", "故而", "由此")):
+        return False
+    return bool(_clean_local_answer_text(text))
 
 
 def _clean_local_answer_text(value: Any) -> str:
@@ -1101,6 +1118,7 @@ def parse_rich_question_blocks(
         question_text=question_text,
         answer_text=answer_text,
         choice_answers=choice_answers,
+        explicitly_mapped=bool(answer_text and (answer_lines or answer_blocks)),
     )
     local_answer_trusted = _is_local_answer_trusted(
         qtype=qtype,

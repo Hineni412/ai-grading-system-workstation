@@ -101,7 +101,7 @@ def test_audit_detects_missing_part_with_equivalent_sub_question_spelling() -> N
     assert major_question_ids_for_issues(audit) == ["Q10"]
 
 
-def test_audit_does_not_expand_supported_sub_question_spellings() -> None:
+def test_audit_uses_the_shared_case_insensitive_legacy_parser() -> None:
     audit = audit_grading_details(
         RUBRIC,
         [
@@ -111,10 +111,10 @@ def test_audit_does_not_expand_supported_sub_question_spellings() -> None:
         ],
     )
 
-    assert audit["status"] == "invalid"
-    assert audit["missing_question_ids"] == ["Q10(P1)"]
-    assert audit["unexpected_question_ids"] == ["q10(1)"]
-    assert audit["affected_major_question_ids"] == ["Q10"]
+    assert audit["status"] == "complete"
+    assert audit["missing_question_ids"] == []
+    assert audit["unexpected_question_ids"] == []
+    assert audit["affected_major_question_ids"] == []
 
 
 def test_audit_marks_parent_substitution_unexpected_and_invalid() -> None:

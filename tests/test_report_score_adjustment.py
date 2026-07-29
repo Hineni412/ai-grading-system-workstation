@@ -131,3 +131,45 @@ def test_batch_score_adjustment_ignores_unrelated_unmapped_detail(tmp_path: Path
     service.apply_batch_score_adjustments(1, [{"detail_id": 1, "score_awarded": 4}])
 
     assert db.get_session_results(1)[0]["student_score"] == 7.0
+
+
+def test_batch_score_adjustment_checks_a_legacy_part_against_its_own_maximum(
+    tmp_path: Path,
+) -> None:
+    db, db_path = _seed_session(tmp_path)
+    rubric_path = tmp_path / "rubric.json"
+    rubric_path.write_text(
+        json.dumps(
+            {
+                "questions": [
+                    {
+                        "question_id": "Q1",
+                        "max_score": 5,
+                        "parts": [
+                            {"part_id": "Q1(1)", "part_score": 3},
+                            {"part_id": "Q1_2", "part_score": 2},
+                        ],
+                    }
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "UPDATE session_details SET question_id = 'Q1-1', score_awarded = 2 WHERE id = 1"
+        )
+        conn.execute(
+            "UPDATE session_details SET question_id = 'Q1(2)', score_awarded = 1 WHERE id = 2"
+        )
+        conn.commit()
+
+    service = ManualReviewService(db, tmp_path / "annotated")
+    with pytest.raises(ValueError, match=r"Q1\(P1\)"):
+        service.apply_batch_score_adjustments(
+            1,
+            [{"detail_id": 1, "score_awarded": 4}],
+        )
+
+    assert [row["score_awarded"] for row in db.get_result_details(1)] == [2.0, 1.0]

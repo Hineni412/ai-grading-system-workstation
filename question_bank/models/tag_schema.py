@@ -13,6 +13,7 @@ LIST_FIELDS = (
     "method_tags",
     "ability_tags",
     "math_model_tags",
+    "special_type_tags",
     "error_prone_points",
     "prerequisite_points",
 )
@@ -23,6 +24,7 @@ PROPOSABLE_TAG_DIMENSIONS = (
     "ability",
     "method",
     "model",
+    "special_type",
 )
 STUDENT_LEVELS = ("入门补缺", "基础巩固", "中档提升", "综合突破", "压轴拔高")
 ERROR_PRONE_CATEGORIES = (
@@ -66,6 +68,8 @@ class TaggingContext:
     question_type: str | None = None
     grade: str | None = None
     semester: str | None = None
+    textbook_version: str | None = None
+    curriculum_volume_id: str | None = None
     exam_type: str | None = None
     district: str | None = None
     has_images: bool = False
@@ -85,6 +89,8 @@ class TaggingContext:
             "question_type": _clean_optional(self.question_type),
             "grade": _clean_optional(self.grade),
             "semester": _clean_optional(self.semester),
+            "textbook_version": _clean_optional(self.textbook_version),
+            "curriculum_volume_id": _clean_optional(self.curriculum_volume_id),
             "exam_type": _clean_optional(self.exam_type),
             "district": _clean_optional(self.district),
             "has_images": bool(self.has_images),
@@ -106,7 +112,7 @@ class TagAnalysis:
     method_tags: list[str]
     ability_tags: list[str]
     math_model_tags: list[str]
-    difficulty: int
+    difficulty: int | None
     error_prone_points: list[str]
     prerequisite_points: list[str]
     textbook_chapter: str
@@ -116,6 +122,9 @@ class TagAnalysis:
     confidence: float = 0.8
     taxonomy_revision: int = 0
     proposed_tags: list[dict[str, str]] = field(default_factory=list)
+    special_type_tags: list[str] = field(default_factory=list)
+    textbook_chapters: list[str] = field(default_factory=list)
+    curriculum_sections: list[str] = field(default_factory=list)
     # 主知识点稳定编码（受控，须来自 registry 的 KP_* 候选表）。
     canonical_knowledge_id: str = ""
     # 仅用于读取历史数据。P3.5 起 AI 不再生成或保存这些自由词字段。
@@ -125,6 +134,9 @@ class TagAnalysis:
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "TagAnalysis":
+        textbook_chapters = _normalize_tags(payload.get("textbook_chapters"))
+        if not textbook_chapters:
+            textbook_chapters = _normalize_tags(payload.get("textbook_chapter"))
         return cls(
             knowledge_points=_normalize_tags(payload.get("knowledge_points")),
             method_tags=_normalize_tags(payload.get("method_tags")),
@@ -133,13 +145,16 @@ class TagAnalysis:
             difficulty=_normalize_score(payload.get("difficulty")),
             error_prone_points=_normalize_error_tags(payload.get("error_prone_points")),
             prerequisite_points=_normalize_tags(payload.get("prerequisite_points")),
-            textbook_chapter=_normalize_text_value(payload.get("textbook_chapter")),
+            textbook_chapter=textbook_chapters[0] if textbook_chapters else "",
             teaching_stage=_normalize_text_value(payload.get("teaching_stage")),
             suitable_student_level=_normalize_student_level(payload.get("suitable_student_level")),
             reason=_normalize_text_value(payload.get("reason")),
             confidence=_normalize_confidence(payload.get("confidence")),
             taxonomy_revision=_normalize_revision(payload.get("taxonomy_revision")),
             proposed_tags=_normalize_proposed_tags(payload.get("proposed_tags")),
+            special_type_tags=_normalize_tags(payload.get("special_type_tags")),
+            textbook_chapters=textbook_chapters,
+            curriculum_sections=_normalize_tags(payload.get("curriculum_sections")),
             canonical_knowledge_id=_normalize_canonical_id(payload.get("canonical_knowledge_id")),
             sub_skills=_normalize_tags(payload.get("sub_skills")),
             measured_skills=_normalize_tags(payload.get("measured_skills")),
@@ -156,12 +171,15 @@ class TagAnalysis:
             "error_prone_points": self.error_prone_points,
             "prerequisite_points": self.prerequisite_points,
             "textbook_chapter": self.textbook_chapter,
+            "textbook_chapters": self.textbook_chapters,
+            "curriculum_sections": self.curriculum_sections,
             "teaching_stage": self.teaching_stage,
             "suitable_student_level": self.suitable_student_level,
             "reason": self.reason,
             "confidence": self.confidence,
             "taxonomy_revision": self.taxonomy_revision,
             "proposed_tags": self.proposed_tags,
+            "special_type_tags": self.special_type_tags,
             "canonical_knowledge_id": self.canonical_knowledge_id,
             "sub_skills": self.sub_skills,
             "measured_skills": self.measured_skills,
@@ -239,12 +257,12 @@ def _map_error_tag(text: str) -> str:
     return text if len(text) <= MAX_TAG_LENGTH else ""
 
 
-def _normalize_score(value: object) -> int:
+def _normalize_score(value: object) -> int | None:
     try:
-        score = int(value)
+        score = int(round(float(value)))
     except (TypeError, ValueError):
-        score = 1
-    return min(10, max(1, score))
+        return None
+    return score if 1 <= score <= 10 else None
 
 
 def _normalize_confidence(value: object) -> float:
@@ -291,6 +309,8 @@ def _normalize_proposed_tags(value: object) -> list[dict[str, str]]:
                 "why_not_reuse": _clean_text(item.get("why_not_reuse"))[:500],
             }
         )
+        if len(normalized) >= 2:
+            break
     return normalized
 
 
@@ -309,7 +329,7 @@ def _normalize_student_level(value: object) -> str:
     for token, normalized in aliases.items():
         if token in text:
             return normalized
-    return text or "中档提升"
+    return ""
 
 
 def _clean_optional(value: object) -> str | None:

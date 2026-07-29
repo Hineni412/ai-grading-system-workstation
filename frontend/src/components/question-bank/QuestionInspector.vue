@@ -12,6 +12,8 @@ import QuestionContentRenderer from './QuestionContentRenderer.vue'
 
 const store = useQuestionBankStore()
 const curriculum = ref<CurriculumCatalog | null>(null)
+const editableTagTypes = QUESTION_BANK_TAG_TYPES.filter((type) => type !== 'student_level')
+const newTagType = ref<QuestionBankTag['tag_type']>('knowledge_point')
 
 const tagLabels: Record<string, string> = {
   ability: '能力',
@@ -23,6 +25,7 @@ const tagLabels: Record<string, string> = {
   measured_skill_name: '测量技能',
   method: '解题方法',
   model: '模型',
+  special_type: '特殊题型/考法',
   prerequisite: '前置知识',
   student_level: '学生层级',
   sub_skill: '子技能',
@@ -76,18 +79,54 @@ function chooseCurriculumSection(sectionId: string): void {
   }
 }
 
-const coreTagTypes = ['knowledge_point', 'ability', 'exam_scope', 'student_level']
-const coreTagStatus = computed(() => coreTagTypes.map((type) => ({
-  type,
-  label: tagLabels[type],
-  complete: store.tagDraft.some((tag) => tag.tag_type === type && tag.tag_value.trim()),
-})))
+const coreTagTypes: QuestionBankTag['tag_type'][] = ['knowledge_point', 'ability', 'exam_scope']
+const coreTagStatus = computed(() => [
+  ...coreTagTypes.map((type) => ({
+    type,
+    label: tagLabels[type],
+    complete: store.tagDraft.some((tag) => tag.tag_type === type && tag.tag_value.trim()),
+  })),
+  {
+    type: null,
+    label: '难度',
+    complete: Number(store.detail?.difficulty) >= 1 && Number(store.detail?.difficulty) <= 10,
+  },
+])
+
+const tagGroups = computed(() => editableTagTypes
+  .map((type) => ({
+    type,
+    label: tagLabels[type] || type,
+    items: store.tagDraft
+      .map((tag, index) => ({ tag, index }))
+      .filter(({ tag }) => tag.tag_type === type),
+  }))
+  .filter((group) => group.items.length > 0))
+
+function tagTone(type: QuestionBankTag['tag_type']): string {
+  const tones: Partial<Record<QuestionBankTag['tag_type'], string>> = {
+    knowledge_point: 'teal',
+    ability: 'blue',
+    exam_scope: 'amber',
+    curriculum_section: 'amber',
+    method: 'violet',
+    model: 'violet',
+    special_type: 'rose',
+    error_type: 'red',
+    prerequisite: 'slate',
+  }
+  return tones[type] ?? 'slate'
+}
 
 function addTag(tagType: QuestionBankTag['tag_type'] = 'knowledge_point'): void {
   store.replaceTagDraft([
     ...store.tagDraft,
     { tag_type: tagType, tag_value: '', confidence: null },
   ])
+}
+
+function addSelectedTag(): void {
+  addTag(newTagType.value)
 }
 
 function removeTag(index: number): void {
@@ -179,6 +218,7 @@ async function removeCurrent(): Promise<void> {
               :blocks="store.detail.rich_content.question_blocks"
               :fallback="store.detail.question_text"
               image-alt="题目配图"
+              media-mode="detail"
             />
           </section>
 
@@ -189,6 +229,7 @@ async function removeCurrent(): Promise<void> {
               :fallback="store.detail.answer_text"
               empty-label="暂未录入答案或解析"
               image-alt="答案配图"
+              media-mode="detail"
             />
           </details>
 
@@ -213,22 +254,29 @@ async function removeCurrent(): Promise<void> {
                 <p class="qb-eyebrow">TEACHER CONFIRMATION</p>
                 <h3 id="qb-tags-title">标签核对</h3>
               </div>
-              <button type="button" class="qb-link" @click="addTag()">添加标签</button>
+              <div class="qb-tag-add">
+                <select v-model="newTagType" aria-label="要添加的标签类别">
+                  <option v-for="type in editableTagTypes" :key="type" :value="type">
+                    {{ tagLabels[type] || type }}
+                  </option>
+                </select>
+                <button type="button" class="qb-link" @click="addSelectedTag">添加</button>
+              </div>
             </header>
 
             <div class="qb-core-tags" aria-label="核心标签完整度">
               <button
                 v-for="status in coreTagStatus"
-                :key="status.type"
+                :key="status.label"
                 type="button"
                 :class="{ 'is-complete': status.complete }"
-                @click="!status.complete && addTag(status.type as QuestionBankTag['tag_type'])"
+                @click="!status.complete && status.type && addTag(status.type)"
               >
                 <span aria-hidden="true">{{ status.complete ? '✓' : '+' }}</span>
                 {{ status.label }}
               </button>
             </div>
-            <p class="qb-help">知识点、能力、教材章节/范围和学生层级四项齐全后，才计入试卷的完整进度。</p>
+            <p class="qb-help">知识点、能力、教材章节/范围和有效难度四项齐全后，才计入试卷的完整进度。</p>
 
             <label v-if="curriculum" class="qb-section-picker">
               <span>精确标定教材小节</span>
@@ -254,32 +302,54 @@ async function removeCurrent(): Promise<void> {
               <small>选择后会同时校准所属章节；旧题未选择时继续显示“待标定”。</small>
             </label>
 
-            <div v-if="store.tagDraft.length" class="qb-tag-editor">
-              <div v-for="(tag, index) in store.tagDraft" :key="index" class="qb-tag-row">
-                <select v-model="tag.tag_type" :aria-label="`第 ${index + 1} 个标签类型`">
-                  <option v-for="type in QUESTION_BANK_TAG_TYPES" :key="type" :value="type">
-                    {{ tagLabels[type] || type }}
-                  </option>
-                </select>
-                <input
-                  v-model="tag.tag_value"
-                  maxlength="36"
-                  :aria-label="`第 ${index + 1} 个标签值`"
-                  placeholder="标签值"
-                >
-                <input
-                  :value="tag.confidence ?? ''"
-                  type="number"
-                  min="0"
-                  max="1"
-                  step="0.01"
-                  :aria-label="`第 ${index + 1} 个标签置信度`"
-                  placeholder="置信度"
-                  @input="updateConfidence(tag, ($event.currentTarget as HTMLInputElement).value)"
-                >
-                <button type="button" class="qb-link is-danger" @click="removeTag(index)">移除</button>
+            <div v-if="tagGroups.length" class="qb-tag-editor">
+              <div
+                v-for="group in tagGroups"
+                :key="group.type"
+                class="qb-tag-group"
+                :data-tone="tagTone(group.type)"
+              >
+                <div class="qb-tag-group__heading">
+                  <strong>{{ group.label }}</strong>
+                  <button type="button" class="qb-link" @click="addTag(group.type)">添加</button>
+                </div>
+                <div class="qb-tag-group__items">
+                  <div
+                    v-for="{ tag, index } in group.items"
+                    :key="index"
+                    class="qb-tag-chip"
+                  >
+                    <input
+                      v-model="tag.tag_value"
+                      maxlength="36"
+                      :aria-label="`${group.label}标签值`"
+                      placeholder="标签值"
+                    >
+                    <input
+                      :value="tag.confidence ?? ''"
+                      type="number"
+                      min="0"
+                      max="1"
+                      step="0.01"
+                      :aria-label="`${tag.tag_value || group.label}置信度`"
+                      placeholder="置信度"
+                      @input="updateConfidence(tag, ($event.currentTarget as HTMLInputElement).value)"
+                    >
+                    <button
+                      type="button"
+                      class="qb-tag-chip__remove"
+                      :aria-label="`移除${tag.tag_value || group.label}标签`"
+                      @click="removeTag(index)"
+                    >
+                      ×
+                    </button>
+                  </div>
+                </div>
               </div>
             </div>
+            <p v-else-if="store.tagDraft.length" class="qb-help">
+              当前仅有历史学生层级标签；它会继续保留，但不再参与新筛选和完整度判断。
+            </p>
             <p v-else class="qb-help">当前没有标签。可手动添加，或在导入任务区选择题目后启动 AI 标注。</p>
             <p
               v-if="store.writeMessage"

@@ -58,7 +58,7 @@ def classify_llm_error(error: BaseException) -> LLMErrorCategory:
     status_code = _status_code(error)
     if status_code == 429:
         return LLMErrorCategory.RATE_LIMIT
-    if status_code in {500, 502, 503, 504}:
+    if status_code in {500, 502, 503, 504, 529}:
         return LLMErrorCategory.SERVER_TRANSIENT
     if status_code in {401, 403}:
         return LLMErrorCategory.AUTHENTICATION

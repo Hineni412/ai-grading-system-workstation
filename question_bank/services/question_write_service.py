@@ -10,6 +10,7 @@ import tempfile
 import threading
 import uuid
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 from pathlib import Path
 from collections.abc import AsyncIterable, Iterable
 
@@ -38,6 +39,73 @@ class QuestionWriteResult:
     tags: tuple[ConfirmedQuestionTag, ...]
 
 
+@dataclass(frozen=True)
+class PaperMetadataUpdate:
+    title: str
+    year: str | None = None
+    province: str | None = None
+    city: str | None = None
+    district: str | None = None
+    exam_type: str | None = None
+    grade: str | None = None
+    semester: str | None = None
+    textbook_version: str | None = None
+
+
+@dataclass(frozen=True)
+class PaperMetadataWriteResult:
+    id: int
+    title: str
+    year: str | None
+    province: str | None
+    city: str | None
+    district: str | None
+    exam_type: str | None
+    grade: str | None
+    semester: str | None
+    textbook_version: str | None
+    updated_at: str
+
+
+@dataclass(frozen=True)
+class PaperStateWriteResult:
+    id: int
+    deleted: bool
+    import_status: str
+    updated_at: str
+    affected_question_count: int
+
+
+@dataclass(frozen=True)
+class PaperPermanentDeleteSelection:
+    id: int
+    expected_updated_at: str
+
+
+@dataclass(frozen=True)
+class PaperPermanentDeleteImpact:
+    paper_count: int
+    question_count: int
+    tag_count: int
+    training_link_count: int
+    knowledge_graph_link_count: int
+    owned_file_count: int
+    shared_file_count: int
+    permanent_delete_phrase: str
+
+
+@dataclass(frozen=True)
+class PaperPermanentDeleteResult:
+    deleted_paper_ids: tuple[int, ...]
+    deleted_question_count: int
+    deleted_tag_count: int
+    removed_training_link_count: int
+    removed_knowledge_graph_link_count: int
+    deleted_file_count: int
+    skipped_shared_file_count: int
+    storage_cleanup_pending: bool
+
+
 class QuestionWriteNotFound(LookupError):
     pass
 
@@ -46,6 +114,43 @@ class QuestionWriteConflict(RuntimeError):
     def __init__(self, current_revision: str) -> None:
         super().__init__("Question state changed")
         self.current_revision = current_revision
+
+
+class PaperMetadataNotFound(LookupError):
+    pass
+
+
+class PaperMetadataConflict(RuntimeError):
+    def __init__(self, current_updated_at: str) -> None:
+        super().__init__("Paper metadata changed")
+        self.current_updated_at = current_updated_at
+
+
+class PaperStateNotFound(LookupError):
+    pass
+
+
+class PaperStateConflict(RuntimeError):
+    def __init__(self, current_updated_at: str, *, deleted: bool) -> None:
+        super().__init__("Paper state changed")
+        self.current_updated_at = current_updated_at
+        self.deleted = bool(deleted)
+
+
+class PaperPermanentDeleteConflict(RuntimeError):
+    pass
+
+
+class PaperPermanentDeleteRequiresTrash(RuntimeError):
+    pass
+
+
+class PaperPermanentDeleteConfirmationMismatch(ValueError):
+    pass
+
+
+class PaperPermanentDeleteStorageIncomplete(RuntimeError):
+    pass
 
 
 class QuestionImportUploadNotFound(LookupError):
@@ -136,6 +241,303 @@ class QuestionBankWriteService:
             raise QuestionWriteNotFound("Question not found")
         return revision
 
+    def update_paper_metadata(
+        self,
+        paper_id: int,
+        *,
+        expected_updated_at: str,
+        metadata: PaperMetadataUpdate,
+    ) -> PaperMetadataWriteResult:
+        target = _normalize_paper_metadata(metadata)
+        expected = str(expected_updated_at or "").strip()
+        if not expected:
+            raise ValueError("Paper metadata version is required")
+        paper_id = int(paper_id)
+        with connect(self.db_path) as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            current_row = _load_paper_metadata(conn, paper_id)
+            if current_row is None:
+                raise PaperMetadataNotFound("Paper not found")
+            current = _paper_metadata_result(current_row)
+            if _same_paper_metadata(current, target):
+                return current
+            if current.updated_at != expected:
+                raise PaperMetadataConflict(current.updated_at)
+            next_updated_at = _next_paper_updated_at(current.updated_at)
+            cursor = conn.execute(
+                """
+                UPDATE papers
+                SET title = ?,
+                    year = ?,
+                    province = ?,
+                    city = ?,
+                    district = ?,
+                    exam_type = ?,
+                    grade = ?,
+                    semester = ?,
+                    textbook_version = ?,
+                    updated_at = ?
+                WHERE id = ?
+                  AND updated_at = ?
+                  AND COALESCE(import_status, '') <> 'deleted'
+                """,
+                (
+                    target.title,
+                    target.year,
+                    target.province,
+                    target.city,
+                    target.district,
+                    target.exam_type,
+                    target.grade,
+                    target.semester,
+                    target.textbook_version,
+                    next_updated_at,
+                    paper_id,
+                    expected,
+                ),
+            )
+            if cursor.rowcount != 1:
+                latest_row = _load_paper_metadata(conn, paper_id)
+                if latest_row is None:
+                    raise PaperMetadataNotFound("Paper not found")
+                raise PaperMetadataConflict(
+                    str(latest_row["updated_at"] or "")
+                )
+            updated_row = _load_paper_metadata(conn, paper_id)
+            if updated_row is None:
+                raise PaperMetadataNotFound("Paper not found")
+            return _paper_metadata_result(updated_row)
+
+    def set_paper_deleted(
+        self,
+        paper_id: int,
+        *,
+        expected_updated_at: str,
+        deleted: bool,
+    ) -> PaperStateWriteResult:
+        expected = str(expected_updated_at or "").strip()
+        if not expected:
+            raise ValueError("Paper state version is required")
+        paper_id = int(paper_id)
+        desired = bool(deleted)
+        with connect(self.db_path) as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            current = _load_paper_state(conn, paper_id)
+            if current is None:
+                raise PaperStateNotFound("Paper not found")
+            current_deleted = _paper_row_is_deleted(current)
+            if current_deleted == desired:
+                return _paper_state_result(conn, current, desired=desired)
+            current_updated_at = str(current["updated_at"] or "")
+            if current_updated_at != expected:
+                raise PaperStateConflict(
+                    current_updated_at,
+                    deleted=current_deleted,
+                )
+            next_updated_at = _next_paper_updated_at(current_updated_at)
+            if desired:
+                operation_id = uuid.uuid4().hex
+                question_cursor = conn.execute(
+                    """
+                    UPDATE questions
+                    SET is_deleted = 1,
+                        deleted_at = COALESCE(deleted_at, ?),
+                        paper_delete_operation_id = ?,
+                        updated_at = ?
+                    WHERE paper_id = ?
+                      AND COALESCE(is_deleted, 0) = 0
+                    """,
+                    (
+                        next_updated_at,
+                        operation_id,
+                        next_updated_at,
+                        paper_id,
+                    ),
+                )
+                affected_question_count = int(question_cursor.rowcount)
+                paper_cursor = conn.execute(
+                    """
+                    UPDATE papers
+                    SET import_status = 'deleted',
+                        deleted_at = ?,
+                        deleted_from_status = import_status,
+                        delete_operation_id = ?,
+                        updated_at = ?
+                    WHERE id = ?
+                      AND updated_at = ?
+                      AND COALESCE(import_status, '') <> 'deleted'
+                    """,
+                    (
+                        next_updated_at,
+                        operation_id,
+                        next_updated_at,
+                        paper_id,
+                        expected,
+                    ),
+                )
+            else:
+                operation_id = str(current["delete_operation_id"] or "")
+                affected_question_count = 0
+                if operation_id:
+                    count_row = conn.execute(
+                        """
+                        SELECT COUNT(*)
+                        FROM questions
+                        WHERE paper_id = ?
+                          AND paper_delete_operation_id = ?
+                        """,
+                        (paper_id, operation_id),
+                    ).fetchone()
+                    affected_question_count = int(count_row[0] or 0)
+                    conn.execute(
+                        """
+                        UPDATE questions
+                        SET is_deleted = 0,
+                            deleted_at = NULL,
+                            paper_delete_operation_id = NULL,
+                            updated_at = ?
+                        WHERE paper_id = ?
+                          AND paper_delete_operation_id = ?
+                        """,
+                        (next_updated_at, paper_id, operation_id),
+                    )
+                restored_status = (
+                    str(current["deleted_from_status"] or "").strip()
+                    or "needs_review"
+                )
+                paper_cursor = conn.execute(
+                    """
+                    UPDATE papers
+                    SET import_status = ?,
+                        deleted_at = NULL,
+                        deleted_from_status = NULL,
+                        delete_operation_id = NULL,
+                        updated_at = ?
+                    WHERE id = ?
+                      AND updated_at = ?
+                      AND COALESCE(import_status, '') = 'deleted'
+                    """,
+                    (
+                        restored_status,
+                        next_updated_at,
+                        paper_id,
+                        expected,
+                    ),
+                )
+            if paper_cursor.rowcount != 1:
+                latest = _load_paper_state(conn, paper_id)
+                if latest is None:
+                    raise PaperStateNotFound("Paper not found")
+                raise PaperStateConflict(
+                    str(latest["updated_at"] or ""),
+                    deleted=_paper_row_is_deleted(latest),
+                )
+            updated = _load_paper_state(conn, paper_id)
+            if updated is None:
+                raise PaperStateNotFound("Paper not found")
+            return PaperStateWriteResult(
+                id=paper_id,
+                deleted=desired,
+                import_status=str(updated["import_status"] or ""),
+                updated_at=str(updated["updated_at"] or ""),
+                affected_question_count=affected_question_count,
+            )
+
+    def preview_paper_permanent_delete(
+        self,
+        selections: Iterable[PaperPermanentDeleteSelection],
+    ) -> PaperPermanentDeleteImpact:
+        _recover_pending_paper_deletes(self.db_path, self.data_root)
+        normalized = _normalize_paper_delete_selections(selections)
+        with connect(self.db_path) as conn:
+            paper_rows, question_ids = _validate_permanent_paper_selection(
+                conn, normalized
+            )
+            counts = _paper_permanent_delete_counts(conn, question_ids)
+            owned, shared = _paper_delete_file_candidates(
+                conn, self.data_root, paper_rows, question_ids
+            )
+        return PaperPermanentDeleteImpact(
+            paper_count=len(paper_rows),
+            question_count=len(question_ids),
+            tag_count=counts["tags"],
+            training_link_count=counts["training"],
+            knowledge_graph_link_count=counts["graph"],
+            owned_file_count=len(owned),
+            shared_file_count=len(shared),
+            permanent_delete_phrase=f"彻底删除 {len(paper_rows)} 份试卷",
+        )
+
+    def permanently_delete_papers(
+        self,
+        selections: Iterable[PaperPermanentDeleteSelection],
+        *,
+        confirmation_phrase: str,
+        request_token: str,
+    ) -> PaperPermanentDeleteResult:
+        _recover_pending_paper_deletes(self.db_path, self.data_root)
+        normalized = _normalize_paper_delete_selections(selections)
+        expected_phrase = f"彻底删除 {len(normalized)} 份试卷"
+        if str(confirmation_phrase or "") != expected_phrase:
+            raise PaperPermanentDeleteConfirmationMismatch(
+                "Permanent paper deletion confirmation does not match"
+            )
+        token = str(request_token or "").strip().lower()
+        if not re.fullmatch(r"[0-9a-f]{32}", token):
+            raise ValueError("Permanent paper deletion request token is invalid")
+        staging_root = (
+            self.data_root / "question_bank" / ".paper-delete-staging" / token
+        )
+        with _shared_request_lock(staging_root):
+            with connect(self.db_path) as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                paper_rows, question_ids = _validate_permanent_paper_selection(
+                    conn, normalized
+                )
+                counts = _paper_permanent_delete_counts(conn, question_ids)
+                owned, shared = _paper_delete_file_candidates(
+                    conn, self.data_root, paper_rows, question_ids
+                )
+                staged = _stage_paper_delete_files(
+                    staging_root,
+                    owned,
+                    [selection.id for selection in normalized],
+                )
+                try:
+                    _delete_paper_relations(conn, question_ids)
+                    paper_ids = tuple(selection.id for selection in normalized)
+                    placeholders = ",".join("?" for _ in paper_ids)
+                    conn.execute(
+                        f"DELETE FROM questions WHERE paper_id IN ({placeholders})",
+                        paper_ids,
+                    )
+                    conn.execute(
+                        f"DELETE FROM papers WHERE id IN ({placeholders})",
+                        paper_ids,
+                    )
+                    conn.commit()
+                except Exception:
+                    _restore_staged_paper_files(staged)
+                    shutil.rmtree(staging_root, ignore_errors=True)
+                    raise
+        cleanup_pending = False
+        try:
+            shutil.rmtree(staging_root)
+        except FileNotFoundError:
+            pass
+        except OSError:
+            cleanup_pending = True
+        return PaperPermanentDeleteResult(
+            deleted_paper_ids=tuple(selection.id for selection in normalized),
+            deleted_question_count=len(question_ids),
+            deleted_tag_count=counts["tags"],
+            removed_training_link_count=counts["training"],
+            removed_knowledge_graph_link_count=counts["graph"],
+            deleted_file_count=len(owned),
+            skipped_shared_file_count=len(shared),
+            storage_cleanup_pending=cleanup_pending,
+        )
+
     def replace_tags(
         self,
         question_id: int,
@@ -196,6 +598,75 @@ class QuestionBankWriteService:
             revision=updated_revision,
             deleted=False,
             tags=normalized,
+        )
+
+    def add_tags(
+        self,
+        question_id: int,
+        *,
+        tags: Iterable[ConfirmedQuestionTag],
+    ) -> QuestionWriteResult:
+        """Add teacher-confirmed tags without replacing unrelated current tags."""
+
+        additions = _normalize_tags(tags)
+        question_id = int(question_id)
+        with connect(self.db_path) as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            state = _load_question_state(conn, question_id)
+            if state is None or bool(state["is_deleted"]):
+                raise QuestionWriteNotFound("Question not found")
+            current = _load_current_tags(conn, question_id)
+            existing = {(tag.tag_type, tag.tag_value) for tag in current}
+            missing = tuple(
+                tag
+                for tag in additions
+                if (tag.tag_type, tag.tag_value) not in existing
+            )
+            current_revision = question_revision(conn, question_id)
+            assert current_revision is not None
+            if not missing:
+                return QuestionWriteResult(
+                    question_id=question_id,
+                    revision=current_revision,
+                    deleted=False,
+                    tags=current,
+                )
+            conn.executemany(
+                """
+                INSERT INTO question_tags (
+                    question_id, tag_type, tag_value, confidence, source, model_name
+                ) VALUES (?, ?, ?, ?, 'manual', NULL)
+                """,
+                [
+                    (
+                        question_id,
+                        tag.tag_type,
+                        tag.tag_value,
+                        tag.confidence,
+                    )
+                    for tag in missing
+                ],
+            )
+            _touch_question(conn, question_id)
+            updated_revision = question_revision(conn, question_id)
+            assert updated_revision is not None
+            updated_tags = _load_current_tags(conn, question_id)
+
+        try:
+            from question_bank.services.question_frequency_service import (
+                QuestionFrequencyService,
+            )
+
+            QuestionFrequencyService(
+                self.db_path
+            ).invalidate_frequency_cache_for_question(question_id)
+        except Exception:
+            pass
+        return QuestionWriteResult(
+            question_id=question_id,
+            revision=updated_revision,
+            deleted=False,
+            tags=updated_tags,
         )
 
     def set_deleted(
@@ -490,6 +961,154 @@ def _normalize_tags(
     return tuple(normalized)
 
 
+def _normalize_paper_metadata(
+    metadata: PaperMetadataUpdate,
+) -> PaperMetadataUpdate:
+    title = str(metadata.title or "").strip()
+    if not title:
+        raise ValueError("Paper title is required")
+    if len(title) > 255:
+        raise ValueError("Paper title is too long")
+
+    def optional(value: object, *, max_length: int) -> str | None:
+        clean = str(value or "").strip()
+        if len(clean) > max_length:
+            raise ValueError("Paper metadata value is too long")
+        return clean or None
+
+    return PaperMetadataUpdate(
+        title=title,
+        year=optional(metadata.year, max_length=24),
+        province=optional(metadata.province, max_length=48),
+        city=optional(metadata.city, max_length=48),
+        district=optional(metadata.district, max_length=48),
+        exam_type=optional(metadata.exam_type, max_length=48),
+        grade=optional(metadata.grade, max_length=48),
+        semester=optional(metadata.semester, max_length=48),
+        textbook_version=optional(
+            metadata.textbook_version,
+            max_length=100,
+        ),
+    )
+
+
+def _load_paper_metadata(
+    conn: sqlite3.Connection,
+    paper_id: int,
+) -> sqlite3.Row | None:
+    return conn.execute(
+        """
+        SELECT
+            id, title, year, province, city, district, exam_type, grade,
+            semester, textbook_version, updated_at
+        FROM papers
+        WHERE id = ?
+          AND COALESCE(import_status, '') <> 'deleted'
+        """,
+        (int(paper_id),),
+    ).fetchone()
+
+
+def _load_paper_state(
+    conn: sqlite3.Connection,
+    paper_id: int,
+) -> sqlite3.Row | None:
+    return conn.execute(
+        """
+        SELECT
+            id, import_status, updated_at, deleted_at,
+            deleted_from_status, delete_operation_id
+        FROM papers
+        WHERE id = ?
+        """,
+        (int(paper_id),),
+    ).fetchone()
+
+
+def _paper_row_is_deleted(row: sqlite3.Row) -> bool:
+    return str(row["import_status"] or "") == "deleted"
+
+
+def _paper_state_result(
+    conn: sqlite3.Connection,
+    row: sqlite3.Row,
+    *,
+    desired: bool,
+) -> PaperStateWriteResult:
+    affected_question_count = 0
+    operation_id = str(row["delete_operation_id"] or "")
+    if desired and operation_id:
+        count_row = conn.execute(
+            """
+            SELECT COUNT(*)
+            FROM questions
+            WHERE paper_id = ?
+              AND paper_delete_operation_id = ?
+            """,
+            (int(row["id"]), operation_id),
+        ).fetchone()
+        affected_question_count = int(count_row[0] or 0)
+    return PaperStateWriteResult(
+        id=int(row["id"]),
+        deleted=desired,
+        import_status=str(row["import_status"] or ""),
+        updated_at=str(row["updated_at"] or ""),
+        affected_question_count=affected_question_count,
+    )
+
+
+def _paper_metadata_result(row: sqlite3.Row) -> PaperMetadataWriteResult:
+    return PaperMetadataWriteResult(
+        id=int(row["id"]),
+        title=str(row["title"] or ""),
+        year=_optional_row_text(row["year"]),
+        province=_optional_row_text(row["province"]),
+        city=_optional_row_text(row["city"]),
+        district=_optional_row_text(row["district"]),
+        exam_type=_optional_row_text(row["exam_type"]),
+        grade=_optional_row_text(row["grade"]),
+        semester=_optional_row_text(row["semester"]),
+        textbook_version=_optional_row_text(row["textbook_version"]),
+        updated_at=str(row["updated_at"] or ""),
+    )
+
+
+def _optional_row_text(value: object) -> str | None:
+    clean = str(value or "").strip()
+    return clean or None
+
+
+def _same_paper_metadata(
+    current: PaperMetadataWriteResult,
+    target: PaperMetadataUpdate,
+) -> bool:
+    return all(
+        getattr(current, field) == getattr(target, field)
+        for field in (
+            "title",
+            "year",
+            "province",
+            "city",
+            "district",
+            "exam_type",
+            "grade",
+            "semester",
+            "textbook_version",
+        )
+    )
+
+
+def _next_paper_updated_at(current: str) -> str:
+    now = datetime.now()
+    try:
+        current_time = datetime.fromisoformat(str(current))
+    except ValueError:
+        current_time = None
+    if current_time is not None and now <= current_time:
+        now = current_time + timedelta(microseconds=1)
+    return now.strftime("%Y-%m-%d %H:%M:%S.%f")
+
+
 def _load_question_state(
     conn: sqlite3.Connection,
     question_id: int,
@@ -603,3 +1222,324 @@ def _file_size_and_sha256(path: Path) -> tuple[int, str]:
             size += len(chunk)
             digest.update(chunk)
     return size, digest.hexdigest()
+
+
+def _normalize_paper_delete_selections(
+    selections: Iterable[PaperPermanentDeleteSelection],
+) -> tuple[PaperPermanentDeleteSelection, ...]:
+    normalized = tuple(
+        PaperPermanentDeleteSelection(
+            id=int(selection.id),
+            expected_updated_at=str(selection.expected_updated_at or "").strip(),
+        )
+        for selection in selections
+    )
+    if not normalized or any(
+        selection.id <= 0 or not selection.expected_updated_at
+        for selection in normalized
+    ):
+        raise ValueError("Permanent paper deletion selection is invalid")
+    if len({selection.id for selection in normalized}) != len(normalized):
+        raise ValueError("Permanent paper deletion selection contains duplicates")
+    return normalized
+
+
+def _validate_permanent_paper_selection(
+    conn: sqlite3.Connection,
+    selections: tuple[PaperPermanentDeleteSelection, ...],
+) -> tuple[list[sqlite3.Row], list[int]]:
+    paper_ids = tuple(selection.id for selection in selections)
+    placeholders = ",".join("?" for _ in paper_ids)
+    rows = conn.execute(
+        f"SELECT id, source_file, import_status, updated_at FROM papers "
+        f"WHERE id IN ({placeholders}) ORDER BY id",
+        paper_ids,
+    ).fetchall()
+    if len(rows) != len(selections):
+        raise PaperStateNotFound("Paper not found")
+    expected = {selection.id: selection.expected_updated_at for selection in selections}
+    for row in rows:
+        if str(row["import_status"] or "") != "deleted":
+            raise PaperPermanentDeleteRequiresTrash(
+                "Paper must be in trash before permanent deletion"
+            )
+        if str(row["updated_at"] or "") != expected[int(row["id"])]:
+            raise PaperPermanentDeleteConflict(
+                "Paper changed before permanent deletion"
+            )
+    question_ids = [
+        int(row[0])
+        for row in conn.execute(
+            f"SELECT id FROM questions WHERE paper_id IN ({placeholders}) ORDER BY id",
+            paper_ids,
+        ).fetchall()
+    ]
+    return list(rows), question_ids
+
+
+def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
+    return conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+        (table,),
+    ).fetchone() is not None
+
+
+def _count_question_rows(
+    conn: sqlite3.Connection,
+    table: str,
+    column: str,
+    question_ids: list[int],
+) -> int:
+    if not question_ids or not _table_exists(conn, table):
+        return 0
+    placeholders = ",".join("?" for _ in question_ids)
+    return int(conn.execute(
+        f"SELECT COUNT(*) FROM {table} WHERE {column} IN ({placeholders})",
+        tuple(question_ids),
+    ).fetchone()[0])
+
+
+def _paper_permanent_delete_counts(
+    conn: sqlite3.Connection,
+    question_ids: list[int],
+) -> dict[str, int]:
+    return {
+        "tags": _count_question_rows(
+            conn, "question_tags", "question_id", question_ids
+        ),
+        "training": (
+            _count_question_rows(
+                conn, "training_set_items", "question_id", question_ids
+            )
+            + _count_question_rows(
+                conn, "training_task_items", "bank_question_id", question_ids
+            )
+        ),
+        "graph": _count_question_rows(
+            conn, "grading_question_links", "bank_question_id", question_ids
+        ),
+    }
+
+
+def _delete_paper_relations(
+    conn: sqlite3.Connection,
+    question_ids: list[int],
+) -> None:
+    if not question_ids:
+        return
+    placeholders = ",".join("?" for _ in question_ids)
+    values = tuple(question_ids)
+    for table, column in (
+        ("question_tags", "question_id"),
+        ("question_skill_links", "question_id"),
+        ("question_fingerprints", "question_id"),
+        ("question_frequency_cache", "question_id"),
+        ("question_previews", "question_id"),
+        ("training_set_items", "question_id"),
+        ("grading_question_links", "bank_question_id"),
+    ):
+        if _table_exists(conn, table):
+            conn.execute(
+                f"DELETE FROM {table} WHERE {column} IN ({placeholders})",
+                values,
+            )
+    if _table_exists(conn, "training_task_items"):
+        conn.execute(
+            f"UPDATE training_task_items SET bank_question_id = NULL "
+            f"WHERE bank_question_id IN ({placeholders})",
+            values,
+        )
+
+
+def _controlled_paper_asset(data_root: Path, value: object) -> Path | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    root = data_root.resolve()
+    stored = Path(text)
+    candidates = [stored] if stored.is_absolute() else [root / stored]
+    lowered = [part.lower() for part in stored.parts]
+    for marker in ("user_data", "data"):
+        if marker in lowered:
+            index = lowered.index(marker)
+            candidates.append(root.joinpath(*stored.parts[index + 1 :]))
+    for candidate in candidates:
+        resolved = candidate.resolve(strict=False)
+        try:
+            resolved.relative_to(root)
+        except ValueError:
+            continue
+        if resolved.is_file():
+            return resolved
+    return None
+
+
+def _paper_delete_file_candidates(
+    conn: sqlite3.Connection,
+    data_root: Path,
+    paper_rows: list[sqlite3.Row],
+    question_ids: list[int],
+) -> tuple[list[Path], list[Path]]:
+    raw_selected: list[object] = [row["source_file"] for row in paper_rows]
+    if question_ids:
+        placeholders = ",".join("?" for _ in question_ids)
+        for row in conn.execute(
+            f"SELECT source_file, image_paths FROM questions "
+            f"WHERE id IN ({placeholders})",
+            tuple(question_ids),
+        ).fetchall():
+            raw_selected.append(row["source_file"])
+            try:
+                raw_selected.extend(json.loads(str(row["image_paths"] or "[]")))
+            except (json.JSONDecodeError, TypeError):
+                pass
+        if _table_exists(conn, "question_previews"):
+            for row in conn.execute(
+                f"SELECT source_file, image_path FROM question_previews "
+                f"WHERE question_id IN ({placeholders})",
+                tuple(question_ids),
+            ).fetchall():
+                raw_selected.extend((row["source_file"], row["image_path"]))
+    selected = {
+        path
+        for value in raw_selected
+        if (path := _controlled_paper_asset(data_root, value)) is not None
+    }
+    for question_id in question_ids:
+        sidecar = (
+            data_root / "question_bank" / "rich_content" / f"question_{question_id}.json"
+        ).resolve(strict=False)
+        if sidecar.is_file():
+            selected.add(sidecar)
+
+    selected_paper_ids = tuple(int(row["id"]) for row in paper_rows)
+    paper_placeholders = ",".join("?" for _ in selected_paper_ids)
+    raw_survivors: list[object] = [
+        row[0]
+        for row in conn.execute(
+            f"SELECT source_file FROM papers WHERE id NOT IN ({paper_placeholders})",
+            selected_paper_ids,
+        ).fetchall()
+    ]
+    if question_ids:
+        placeholders = ",".join("?" for _ in question_ids)
+        for row in conn.execute(
+            f"SELECT source_file, image_paths FROM questions "
+            f"WHERE id NOT IN ({placeholders})",
+            tuple(question_ids),
+        ).fetchall():
+            raw_survivors.append(row["source_file"])
+            try:
+                raw_survivors.extend(json.loads(str(row["image_paths"] or "[]")))
+            except (json.JSONDecodeError, TypeError):
+                pass
+        if _table_exists(conn, "question_previews"):
+            for row in conn.execute(
+                f"SELECT source_file, image_path FROM question_previews "
+                f"WHERE question_id NOT IN ({placeholders})",
+                tuple(question_ids),
+            ).fetchall():
+                raw_survivors.extend((row["source_file"], row["image_path"]))
+    survivors = {
+        path
+        for value in raw_survivors
+        if (path := _controlled_paper_asset(data_root, value)) is not None
+    }
+    return (
+        sorted(selected - survivors, key=lambda path: str(path).lower()),
+        sorted(selected & survivors, key=lambda path: str(path).lower()),
+    )
+
+
+def _stage_paper_delete_files(
+    staging_root: Path,
+    paths: list[Path],
+    paper_ids: list[int],
+) -> list[tuple[Path, Path]]:
+    if staging_root.exists():
+        raise PaperPermanentDeleteConflict(
+            "Permanent paper deletion request is already in progress"
+        )
+    staging_root.mkdir(parents=True, exist_ok=False)
+    staged = [
+        (source, staging_root / f"{index:05d}" / source.name)
+        for index, source in enumerate(paths)
+    ]
+    try:
+        (staging_root / "manifest.json").write_text(
+            json.dumps({
+                "paper_ids": paper_ids,
+                "entries": [
+                    {"source": str(source), "staged": str(target)}
+                    for source, target in staged
+                ],
+            }, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        moved: list[tuple[Path, Path]] = []
+        for source, target in staged:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            os.replace(source, target)
+            moved.append((source, target))
+        return staged
+    except Exception as exc:
+        _restore_staged_paper_files(locals().get("moved", []))
+        shutil.rmtree(staging_root, ignore_errors=True)
+        raise PaperPermanentDeleteStorageIncomplete(
+            "Unable to stage all paper files"
+        ) from exc
+
+
+def _restore_staged_paper_files(
+    entries: Iterable[tuple[Path, Path]],
+) -> None:
+    for source, staged in reversed(list(entries)):
+        if not staged.exists():
+            continue
+        source.parent.mkdir(parents=True, exist_ok=True)
+        os.replace(staged, source)
+
+
+def _recover_pending_paper_deletes(db_path: Path, data_root: Path) -> None:
+    root = data_root / "question_bank" / ".paper-delete-staging"
+    if not root.is_dir():
+        return
+    for operation in root.iterdir():
+        if not operation.is_dir():
+            continue
+        lock = _shared_request_lock(operation)
+        if not lock.acquire(blocking=False):
+            continue
+        try:
+            manifest_path = operation / "manifest.json"
+            if not manifest_path.is_file():
+                continue
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            paper_ids = [int(value) for value in manifest["paper_ids"]]
+            if not paper_ids:
+                raise ValueError("Paper deletion recovery has no paper ids")
+            entries = [
+                (Path(item["source"]), Path(item["staged"]))
+                for item in manifest["entries"]
+            ]
+            placeholders = ",".join("?" for _ in paper_ids)
+            with connect(db_path) as conn:
+                remaining = int(conn.execute(
+                    f"SELECT COUNT(*) FROM papers WHERE id IN ({placeholders})",
+                    tuple(paper_ids),
+                ).fetchone()[0])
+            if remaining == len(paper_ids):
+                _restore_staged_paper_files(entries)
+            elif remaining != 0:
+                raise PaperPermanentDeleteStorageIncomplete(
+                    "Interrupted paper deletion has inconsistent database state"
+                )
+            shutil.rmtree(operation)
+        except PaperPermanentDeleteStorageIncomplete:
+            raise
+        except Exception as exc:
+            raise PaperPermanentDeleteStorageIncomplete(
+                "Unable to recover interrupted paper deletion"
+            ) from exc
+        finally:
+            lock.release()

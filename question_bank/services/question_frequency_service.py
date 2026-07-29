@@ -15,6 +15,7 @@ FINGERPRINT_VERSION = 4
 FORMAL_EXAM_TYPES = ("期中", "期末", "中考")
 PRACTICE_EXAM_MARKERS = ("同步练习", "专题练习", "练习", "作业")
 SIMPLE_QUESTION_TYPES = ("选择", "填空", "choice", "blank", "fill")
+QUESTION_SIMILARITY_MATCH_THRESHOLD = 0.5
 
 # 极宽泛的"思想方法"标签——几乎覆盖所有综合题，参与指纹会让大量几何/函数综合题
 # 聚到同一个匹配桶里，把"宽泛"误判成"高频"。这些标签从指纹中排除，指纹只保留
@@ -113,7 +114,7 @@ def _global_similar_match_count(
             continue
         # Fine calculate
         sim = calculate_question_similarity(target, candidate)
-        if sim >= 0.55:
+        if sim >= QUESTION_SIMILARITY_MATCH_THRESHOLD:
             global_matched += 1
     return global_matched
 
@@ -219,9 +220,9 @@ def _first_canonical(grouped: dict):
 
 
 def _jaccard(a: set[str], b: set[str]) -> float:
-    # Jaccard 系数：交集 / 并集。双方都为空 → 1.0；一方空 → 0.0。
+    # 缺失标签不是相似证据；双方都空时也必须返回 0。
     if not a and not b:
-        return 1.0
+        return 0.0
     if not a or not b:
         return 0.0
     return len(a & b) / len(a | b)
@@ -474,17 +475,17 @@ class QuestionFrequencyService:
             # 1. 期中
             midterm_papers = _eligible_paper_ids(conn, target, exam_type="期中")
             midterm_matched, midterm_sim_sum = _matching_similarity_stats(conn, target, midterm_papers, cache=candidates_cache)
-            score_midterm = midterm_sim_sum / len(midterm_papers) if midterm_papers else 0.0
+            score_midterm = _bayesian_frequency_score(midterm_sim_sum, len(midterm_papers))
 
             # 2. 期末
             final_papers = _eligible_paper_ids(conn, target, exam_type="期末")
             final_matched, final_sim_sum = _matching_similarity_stats(conn, target, final_papers, cache=candidates_cache)
-            score_final = final_sim_sum / len(final_papers) if final_papers else 0.0
+            score_final = _bayesian_frequency_score(final_sim_sum, len(final_papers))
 
             # 3. 中考
             zhongkao_papers = _eligible_paper_ids(conn, target, exam_type="中考")
             zhongkao_matched, zhongkao_sim_sum = _matching_similarity_stats(conn, target, zhongkao_papers, cache=candidates_cache)
-            score_zhongkao = zhongkao_sim_sum / len(zhongkao_papers) if zhongkao_papers else 0.0
+            score_zhongkao = _bayesian_frequency_score(zhongkao_sim_sum, len(zhongkao_papers))
 
             conn.execute(
                 """
@@ -498,7 +499,6 @@ class QuestionFrequencyService:
                 """,
                 (qid, score_midterm, score_final, score_zhongkao)
             )
-        conn.commit()
         conn.commit()
 
     def backfill_all_fingerprints(self) -> None:
@@ -541,6 +541,15 @@ class QuestionFrequencyService:
             if target is None:
                 return
             exam_type = normalize_exam_type(target.get("exam_type"))
+            if not exam_type:
+                # 阶段练习、小测和无法确认类型的试卷不是正式考频样本。
+                # 只清理本题，不能用空类型匹配并连带清空所有正式缓存。
+                conn.execute(
+                    "DELETE FROM question_frequency_cache WHERE question_id = ?",
+                    (question_id,),
+                )
+                conn.commit()
+                return
             paper_ids = _eligible_paper_ids(conn, target, exam_type=exam_type)
             if paper_ids:
                 placeholders = ", ".join("?" for _ in paper_ids)
@@ -570,12 +579,14 @@ def _matching_count_by_similarity(conn, target: Mapping[str, Any], paper_ids: li
         if cache is not None:
             cache[key] = candidates
             
-    matched_count = 0
+    matched_papers: set[int] = set()
     for qid, candidate in candidates.items():
         sim = calculate_question_similarity(target, candidate)
-        if sim >= 0.55:
-            matched_count += 1
-    return matched_count
+        if sim >= QUESTION_SIMILARITY_MATCH_THRESHOLD:
+            paper_id = int(candidate.get("paper_id") or 0)
+            if paper_id:
+                matched_papers.add(paper_id)
+    return len(matched_papers)
 
 
 def _matching_similarity_stats(conn, target: Mapping[str, Any], paper_ids: list[int], cache: dict | None = None) -> tuple[int, float]:
@@ -591,20 +602,22 @@ def _matching_similarity_stats(conn, target: Mapping[str, Any], paper_ids: list[
         if cache is not None:
             cache[key] = candidates
             
-    matched_count = 0
-    total_similarity = 0.0
+    best_by_paper: dict[int, float] = {}
     for qid, candidate in candidates.items():
         sim = calculate_question_similarity(target, candidate)
-        if sim >= 0.55:
-            matched_count += 1
-            total_similarity += sim
-    return matched_count, round(total_similarity, 4)
+        if sim >= QUESTION_SIMILARITY_MATCH_THRESHOLD:
+            paper_id = int(candidate.get("paper_id") or 0)
+            if paper_id:
+                best_by_paper[paper_id] = max(best_by_paper.get(paper_id, 0.0), sim)
+    return len(best_by_paper), round(sum(best_by_paper.values()), 4)
 
 
-def _bayesian_frequency_score(matched_count: int, paper_count: int) -> float:
+def _bayesian_frequency_score(similarity_sum: float, paper_count: int) -> float:
+    if paper_count <= 0:
+        return 0.0
     K = 5
     C = 0.05
-    return (matched_count + K * C) / (paper_count + K)
+    return round((similarity_sum + K * C) / (paper_count + K), 6)
 
 
 def _metrics_for_target(
@@ -630,7 +643,7 @@ def _metrics_for_target(
     
     eligible_papers = _eligible_paper_ids(conn, target, exam_type=exam_type)
     matched, sim_sum = _matching_similarity_stats(conn, target, eligible_papers)
-    p_local = sim_sum / len(eligible_papers) if eligible_papers else 0.0
+    p_local = _bayesian_frequency_score(sim_sum, len(eligible_papers))
     weighted_freq = p_local
 
     if exam_type != "中考":
@@ -767,7 +780,7 @@ def _metrics_for_target_cached(
         match_cache[match_key] = match_stats
     matched, sim_sum = match_stats
 
-    p_local = sim_sum / len(eligible_papers) if eligible_papers else 0.0
+    p_local = _bayesian_frequency_score(sim_sum, len(eligible_papers))
     weighted_freq = p_local
 
     if exam_type != "中考":
@@ -974,7 +987,7 @@ def _shenzhen_fit(
     candidates = _batch_load_questions(conn, candidate_ids)
     
     for qid, candidate in candidates.items():
-        if calculate_question_similarity(target, candidate) < 0.55:
+        if calculate_question_similarity(target, candidate) < QUESTION_SIMILARITY_MATCH_THRESHOLD:
             continue
         score, notes = _style_fit_score(
             target_features,

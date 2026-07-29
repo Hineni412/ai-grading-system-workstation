@@ -71,6 +71,7 @@ const editor = {
       require_final_answer: true,
       required_elements: ['列式'],
       deduction_rules: ['结果错误扣 1 分'],
+      part_deduction_rules: [],
       final_answer_rule: '答案完整',
     },
   ],
@@ -222,6 +223,7 @@ describe('configuration workspace API', () => {
       source_revision: source.source_revision,
       generation_mode: 'batched',
       decisions: [{ question_id: 'Q1', question_type: 'calculation', excluded: false }],
+      sync_to_question_bank: false,
     })).resolves.toEqual(job)
     await expect(fetchConfigEditor(7)).resolves.toEqual(editor)
     await expect(saveConfigEditor(7, {
@@ -297,6 +299,7 @@ describe('configuration workspace API', () => {
       source_revision: source.source_revision,
       generation_mode: 'batched',
       decisions: [],
+      sync_to_question_bank: false,
     })).rejects.toMatchObject({ kind: 'contract', code: 'invalid_success_contract' })
   })
 

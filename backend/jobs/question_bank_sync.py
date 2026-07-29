@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
@@ -16,6 +17,7 @@ from question_bank.services.source_question_link_service import (
 from .manager import JobCancellationRequested, JobContext
 from .question_import import run_question_import_job
 from .tagging_sync import run_tagging_sync_job
+from question_bank.taxonomy.curriculum_catalog import curriculum_volume
 
 
 QuestionImportRunner = Callable[..., dict[str, object]]
@@ -93,6 +95,9 @@ def run_session_question_bank_sync_job(
     mode = str(payload.get("mode") or "").strip()
     if mode not in {"sync", "sync_retry", "tag_retry"}:
         raise ValueError("unsupported question-bank sync mode")
+    volume = curriculum_volume(volume_id=payload.get("curriculum_volume_id"))
+    if volume is None:
+        raise ValueError("question-bank sync requires a valid curriculum volume")
 
     loaded, source_path = _load_current_inputs(
         grading_db,
@@ -142,14 +147,28 @@ def run_session_question_bank_sync_job(
                 raise StaleQuestionBankSyncError(
                     "source paper changed before question-bank import"
                 )
+            source_filename = _source_filename(
+                payload.get("source_safe_filename"),
+                source_path=source_path,
+                source_sha256=source_sha256,
+            )
             upload = write_service.stage_upload(
-                filename=source_path.name,
+                filename=source_filename,
                 content=source_bytes,
             )
             request = write_service.create_import_request(upload_id=upload.upload_id)
             import_context = _ChildJobContext(
                 parent=context,
-                payload={"request_id": request.request_id},
+                payload={
+                    "request_id": request.request_id,
+                    "paper_defaults": {
+                        "year": str(datetime.now().astimezone().year),
+                        "exam_type": "阶段练习",
+                        "grade": str(volume["grade"]),
+                        "semester": str(volume["semester"]),
+                        "textbook_version": str(volume["textbook_version"]),
+                    },
+                },
                 progress_start=0.05,
                 progress_end=0.46,
                 stage="question_bank_import",
@@ -177,7 +196,10 @@ def run_session_question_bank_sync_job(
         if question_ids:
             tag_context = _ChildJobContext(
                 parent=context,
-                payload={"question_ids": question_ids},
+                payload={
+                    "question_ids": question_ids,
+                    "curriculum_volume_id": str(volume["id"]),
+                },
                 progress_start=0.48,
                 progress_end=0.88,
                 stage="question_bank_tagging",
@@ -549,3 +571,28 @@ def _sha256(value: object, field: str) -> str:
     if len(clean) != 64 or any(char not in "0123456789abcdef" for char in clean):
         raise ValueError(f"{field} must be sha256")
     return clean
+
+
+def _source_filename(
+    value: object,
+    *,
+    source_path: Path,
+    source_sha256: str,
+) -> str:
+    candidate = str(value or "").strip()
+    candidate_path = Path(candidate)
+    if (
+        candidate
+        and candidate_path.name == candidate
+        and candidate_path.suffix.casefold() == source_path.suffix.casefold()
+        and candidate_path.suffix.casefold() in {".docx", ".pdf"}
+    ):
+        return candidate
+
+    stem = source_path.stem
+    for digest_suffix in (source_sha256, source_sha256[:12]):
+        marker = f"_{digest_suffix}"
+        if stem.casefold().endswith(marker.casefold()):
+            stem = stem[: -len(marker)]
+            break
+    return f"{stem or 'source-paper'}{source_path.suffix.casefold()}"

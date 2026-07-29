@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 from typing import Annotated, Literal, NoReturn
 
 from fastapi import APIRouter, Depends, Query, Request
@@ -10,6 +11,8 @@ from backend.api.dependencies import (
     get_job_manager,
     get_question_bank_read_service,
     get_question_bank_write_service,
+    get_taxonomy_review_service,
+    get_taxonomy_suggestion_service,
 )
 from backend.api.routers.jobs import _job_response
 from backend.api.schemas.jobs import JobResponse
@@ -21,6 +24,14 @@ from backend.api.schemas.question_bank import (
     QuestionListResponse,
     QuestionPaperListItem,
     QuestionPaperListResponse,
+    QuestionPaperMetadataUpdateRequest,
+    QuestionPaperMetadataWriteResponse,
+    QuestionPaperPermanentDeleteImpactRequest,
+    QuestionPaperPermanentDeleteImpactResponse,
+    QuestionPaperPermanentDeleteRequest,
+    QuestionPaperPermanentDeleteResponse,
+    QuestionPaperStateChangeRequest,
+    QuestionPaperStateWriteResponse,
     QuestionImportRequestCreate,
     QuestionImportRequestResponse,
     QuestionImportUploadResponse,
@@ -32,9 +43,14 @@ from backend.api.schemas.question_bank import (
     SimilarQuestionItem,
     SimilarQuestionListResponse,
     TaxonomyCatalogResponse,
+    TaxonomyProposalApplicationRetryRequest,
     TaxonomyProposalListResponse,
     TaxonomyProposalReviewRequest,
     TaxonomyProposalReviewResponse,
+    TaxonomySuggestionCreateRequest,
+    TaxonomySuggestionRetryRequest,
+    TaxonomySuggestionRunResponse,
+    TaxonomySuggestionStartResponse,
 )
 from question_bank.taxonomy.curriculum_catalog import (
     CurriculumCatalogError,
@@ -48,13 +64,30 @@ from question_bank.taxonomy.governance import (
     TaxonomyTargetTermNotFound,
     get_taxonomy_governance,
 )
+from question_bank.services.taxonomy_review_service import (
+    TaxonomyReviewApplicationNotFound,
+    TaxonomyReviewRequestConflict,
+    TaxonomyReviewSelectionInvalid,
+    TaxonomyReviewService,
+)
+from question_bank.services.taxonomy_review_suggestions import (
+    TaxonomySuggestionInvalid,
+    TaxonomySuggestionNotFound,
+    TaxonomySuggestionRequestConflict,
+    TaxonomySuggestionRevisionConflict,
+    TaxonomySuggestionService,
+)
 from backend.file_access import (
     ControlledFileExpired,
     ControlledFileForbidden,
     ControlledFileTypeError,
 )
 from backend.jobs.manager import JobManager, UnsupportedJobTypeError
-from backend.jobs.store import JobRecord
+from backend.jobs.store import (
+    JobRecord,
+    TaxonomySuggestionJobBusyError,
+    TaxonomySuggestionJobRequestConflictError,
+)
 from question_bank.services.question_read_service import (
     QuestionBankReadService,
     QuestionBankSnapshotBusy,
@@ -64,6 +97,18 @@ from question_bank.services.question_read_service import (
 )
 from question_bank.services.question_write_service import (
     ConfirmedQuestionTag,
+    PaperMetadataConflict,
+    PaperMetadataNotFound,
+    PaperMetadataUpdate,
+    PaperMetadataWriteResult,
+    PaperStateConflict,
+    PaperStateNotFound,
+    PaperStateWriteResult,
+    PaperPermanentDeleteConflict,
+    PaperPermanentDeleteConfirmationMismatch,
+    PaperPermanentDeleteRequiresTrash,
+    PaperPermanentDeleteSelection,
+    PaperPermanentDeleteStorageIncomplete,
     QuestionBankWriteService,
     QuestionImportTypeNotSupported,
     QuestionImportUploadNotFound,
@@ -92,6 +137,16 @@ QUESTION_WRITE_ERROR_RESPONSES = {
     404: {"model": ErrorResponse, "description": "Question not found"},
     409: {"model": ErrorResponse, "description": "Question state conflict"},
 }
+PAPER_METADATA_WRITE_ERROR_RESPONSES = {
+    404: {"model": ErrorResponse, "description": "Paper not found"},
+    409: {"model": ErrorResponse, "description": "Paper metadata conflict"},
+    422: {"model": ErrorResponse, "description": "Paper metadata is invalid"},
+}
+PAPER_STATE_WRITE_ERROR_RESPONSES = {
+    404: {"model": ErrorResponse, "description": "Paper not found"},
+    409: {"model": ErrorResponse, "description": "Paper state conflict"},
+    422: {"model": ErrorResponse, "description": "Paper state is invalid"},
+}
 TAXONOMY_READ_ERROR_RESPONSES = {
     503: {
         "model": ErrorResponse,
@@ -102,6 +157,12 @@ TAXONOMY_REVIEW_ERROR_RESPONSES = {
     404: {"model": ErrorResponse, "description": "Taxonomy proposal not found"},
     409: {"model": ErrorResponse, "description": "Taxonomy state conflict"},
     422: {"model": ErrorResponse, "description": "Taxonomy review is invalid"},
+    **TAXONOMY_READ_ERROR_RESPONSES,
+}
+TAXONOMY_SUGGESTION_ERROR_RESPONSES = {
+    404: {"model": ErrorResponse, "description": "Suggestion run not found"},
+    409: {"model": ErrorResponse, "description": "Taxonomy state conflict"},
+    422: {"model": ErrorResponse, "description": "Suggestion request is invalid"},
     **TAXONOMY_READ_ERROR_RESPONSES,
 }
 
@@ -150,6 +211,220 @@ def list_taxonomy_proposals(
 
 
 @router.post(
+    "/taxonomy/suggestions",
+    response_model=TaxonomySuggestionStartResponse,
+    status_code=202,
+    responses=TAXONOMY_SUGGESTION_ERROR_RESPONSES,
+)
+def start_taxonomy_suggestions(
+    body: TaxonomySuggestionCreateRequest,
+    service: TaxonomySuggestionService = Depends(
+        get_taxonomy_suggestion_service
+    ),
+    manager: JobManager = Depends(get_job_manager),
+) -> TaxonomySuggestionStartResponse:
+    token = body.request_token.lower()
+    try:
+        run = service.create_run(
+            proposal_ids=body.proposal_ids,
+            expected_revision=body.expected_revision,
+            request_token=token,
+        )
+        job, _created = manager.submit_idempotent_taxonomy_suggestion(
+            {
+                "run_id": run["run_id"],
+                "operation": "process",
+                "client_request_token": token,
+            }
+        )
+    except TaxonomySuggestionRevisionConflict as exc:
+        raise ApiError(
+            409,
+            "taxonomy_revision_conflict",
+            "Taxonomy state changed; refresh and retry",
+        ) from exc
+    except TaxonomySuggestionRequestConflict as exc:
+        raise ApiError(
+            409,
+            "taxonomy_suggestion_request_conflict",
+            "This suggestion request token was already used",
+        ) from exc
+    except TaxonomySuggestionJobRequestConflictError as exc:
+        raise ApiError(
+            409,
+            "taxonomy_suggestion_job_request_conflict",
+            "This suggestion job request token was already used",
+        ) from exc
+    except TaxonomySuggestionJobBusyError as exc:
+        raise ApiError(
+            409,
+            "taxonomy_suggestion_busy",
+            "This suggestion run already has active work",
+        ) from exc
+    except (TaxonomySuggestionInvalid, ValueError) as exc:
+        raise ApiError(
+            422,
+            "taxonomy_suggestion_invalid",
+            "Taxonomy suggestion request is invalid",
+        ) from exc
+    except UnsupportedJobTypeError as exc:
+        raise ApiError(
+            503,
+            "taxonomy_suggestion_unavailable",
+            "Taxonomy suggestion is temporarily unavailable",
+        ) from exc
+    except (TaxonomyStorageError, OSError, TimeoutError, RuntimeError) as exc:
+        _raise_taxonomy_storage_api_error(exc)
+    return TaxonomySuggestionStartResponse(
+        job=_job_response(job),
+        run=TaxonomySuggestionRunResponse(**run),
+    )
+
+
+@router.get(
+    "/taxonomy/suggestions/{run_id}",
+    response_model=TaxonomySuggestionRunResponse,
+    responses=TAXONOMY_SUGGESTION_ERROR_RESPONSES,
+)
+def get_taxonomy_suggestion_run(
+    run_id: str,
+    service: TaxonomySuggestionService = Depends(
+        get_taxonomy_suggestion_service
+    ),
+    manager: JobManager = Depends(get_job_manager),
+) -> TaxonomySuggestionRunResponse:
+    try:
+        run = service.get_run(run_id)
+        latest_job = _latest_taxonomy_suggestion_job(manager, run_id)
+        if (
+            run.get("status") in {"queued", "running", "cancelling"}
+            and latest_job is not None
+            and latest_job.status in {"succeeded", "failed", "cancelled"}
+        ):
+            run = service.recover_interrupted(
+                run_id,
+                cancelled=(
+                    latest_job.status == "cancelled"
+                    or run.get("status") == "cancelling"
+                ),
+            )
+    except TaxonomySuggestionNotFound as exc:
+        raise ApiError(
+            404,
+            "taxonomy_suggestion_not_found",
+            "Taxonomy suggestion run not found",
+            {"run_id": run_id},
+        ) from exc
+    except (OSError, TimeoutError, RuntimeError, ValueError) as exc:
+        _raise_taxonomy_storage_api_error(exc)
+    return TaxonomySuggestionRunResponse(**run)
+
+
+@router.post(
+    "/taxonomy/suggestions/{run_id}/retry",
+    response_model=TaxonomySuggestionStartResponse,
+    status_code=202,
+    responses=TAXONOMY_SUGGESTION_ERROR_RESPONSES,
+)
+def retry_taxonomy_suggestions(
+    run_id: str,
+    body: TaxonomySuggestionRetryRequest,
+    service: TaxonomySuggestionService = Depends(
+        get_taxonomy_suggestion_service
+    ),
+    manager: JobManager = Depends(get_job_manager),
+) -> TaxonomySuggestionStartResponse:
+    token = body.request_token.lower()
+    try:
+        run = service.get_run(run_id)
+        if run.get("stale"):
+            raise ApiError(
+                409,
+                "taxonomy_suggestion_stale",
+                "Pending proposals changed; start a new suggestion run",
+            )
+        operation = (
+            "process"
+            if run.get("status") in {"queued", "running"}
+            else "retry"
+        )
+        job, _created = manager.submit_idempotent_taxonomy_suggestion(
+            {
+                "run_id": run["run_id"],
+                "operation": operation,
+                "client_request_token": token,
+            }
+        )
+    except ApiError:
+        raise
+    except TaxonomySuggestionNotFound as exc:
+        raise ApiError(
+            404,
+            "taxonomy_suggestion_not_found",
+            "Taxonomy suggestion run not found",
+            {"run_id": run_id},
+        ) from exc
+    except TaxonomySuggestionJobRequestConflictError as exc:
+        raise ApiError(
+            409,
+            "taxonomy_suggestion_job_request_conflict",
+            "This suggestion job request token was already used",
+        ) from exc
+    except TaxonomySuggestionJobBusyError as exc:
+        raise ApiError(
+            409,
+            "taxonomy_suggestion_busy",
+            "This suggestion run already has active work",
+        ) from exc
+    except ValueError as exc:
+        raise ApiError(
+            422,
+            "taxonomy_suggestion_invalid",
+            "Taxonomy suggestion retry is invalid",
+        ) from exc
+    except UnsupportedJobTypeError as exc:
+        raise ApiError(
+            503,
+            "taxonomy_suggestion_unavailable",
+            "Taxonomy suggestion is temporarily unavailable",
+        ) from exc
+    except (OSError, TimeoutError, RuntimeError) as exc:
+        _raise_taxonomy_storage_api_error(exc)
+    return TaxonomySuggestionStartResponse(
+        job=_job_response(job),
+        run=TaxonomySuggestionRunResponse(**run),
+    )
+
+
+@router.post(
+    "/taxonomy/suggestions/{run_id}/cancel",
+    response_model=TaxonomySuggestionRunResponse,
+    responses=TAXONOMY_SUGGESTION_ERROR_RESPONSES,
+)
+def cancel_taxonomy_suggestions(
+    run_id: str,
+    service: TaxonomySuggestionService = Depends(
+        get_taxonomy_suggestion_service
+    ),
+    manager: JobManager = Depends(get_job_manager),
+) -> TaxonomySuggestionRunResponse:
+    try:
+        run = service.cancel_run(run_id)
+        for job in _active_taxonomy_suggestion_jobs(manager, run_id):
+            manager.cancel(job.id)
+    except TaxonomySuggestionNotFound as exc:
+        raise ApiError(
+            404,
+            "taxonomy_suggestion_not_found",
+            "Taxonomy suggestion run not found",
+            {"run_id": run_id},
+        ) from exc
+    except (OSError, TimeoutError, RuntimeError, ValueError) as exc:
+        _raise_taxonomy_storage_api_error(exc)
+    return TaxonomySuggestionRunResponse(**run)
+
+
+@router.post(
     "/taxonomy/proposals/{proposal_id}/review",
     response_model=TaxonomyProposalReviewResponse,
     responses=TAXONOMY_REVIEW_ERROR_RESPONSES,
@@ -157,14 +432,18 @@ def list_taxonomy_proposals(
 def review_taxonomy_proposal(
     proposal_id: str,
     body: TaxonomyProposalReviewRequest,
+    service: TaxonomyReviewService = Depends(get_taxonomy_review_service),
 ) -> TaxonomyProposalReviewResponse:
-    governance = get_taxonomy_governance()
     try:
-        payload = governance.review_proposal(
+        payload = service.review_proposal(
             proposal_id=proposal_id,
             decision=body.decision,
             edited_name=body.edited_name,
-            target_term_id=body.target_term_id,
+            target_term_ids=[
+                *body.target_term_ids,
+                *([body.target_term_id] if body.target_term_id else []),
+            ],
+            question_ids=body.question_ids,
             expected_revision=body.expected_revision,
             request_token=body.request_token.lower(),
         )
@@ -188,18 +467,133 @@ def review_taxonomy_proposal(
             "taxonomy_target_term_not_found",
             "Taxonomy merge target is invalid",
         ) from exc
-    except (TaxonomyReviewInvalid, ValueError) as exc:
+    except TaxonomyReviewRequestConflict as exc:
+        raise ApiError(
+            409,
+            "taxonomy_review_request_conflict",
+            "This review request token was already used for another decision",
+        ) from exc
+    except (TaxonomyReviewSelectionInvalid, TaxonomyReviewInvalid, ValueError) as exc:
         raise ApiError(
             422,
             "taxonomy_review_invalid",
             "Taxonomy review is invalid",
         ) from exc
-    except (TaxonomyStorageError, OSError, TimeoutError) as exc:
+    except (TaxonomyStorageError, OSError, TimeoutError, RuntimeError) as exc:
         _raise_taxonomy_storage_api_error(exc)
-    return TaxonomyProposalReviewResponse(
-        **payload,
-        application_status="not_requested",
+    return _taxonomy_review_response(payload)
+
+
+@router.post(
+    "/taxonomy/review-applications/retry",
+    response_model=TaxonomyProposalReviewResponse,
+    responses=TAXONOMY_REVIEW_ERROR_RESPONSES,
+)
+def retry_taxonomy_review_application(
+    body: TaxonomyProposalApplicationRetryRequest,
+    service: TaxonomyReviewService = Depends(get_taxonomy_review_service),
+) -> TaxonomyProposalReviewResponse:
+    try:
+        payload = service.retry_application(
+            application_token=body.application_token.lower(),
+            request_token=body.request_token.lower(),
+            question_ids=body.question_ids,
+        )
+    except TaxonomyReviewApplicationNotFound as exc:
+        raise ApiError(
+            404,
+            "taxonomy_review_application_not_found",
+            "Taxonomy review application not found",
+        ) from exc
+    except TaxonomyReviewRequestConflict as exc:
+        raise ApiError(
+            409,
+            "taxonomy_review_request_conflict",
+            "This review request token was already used for another decision",
+        ) from exc
+    except (TaxonomyReviewSelectionInvalid, ValueError) as exc:
+        raise ApiError(
+            422,
+            "taxonomy_review_invalid",
+            "Taxonomy review application retry is invalid",
+        ) from exc
+    except (TaxonomyStorageError, OSError, TimeoutError, RuntimeError) as exc:
+        _raise_taxonomy_storage_api_error(exc)
+    return _taxonomy_review_response(payload)
+
+
+def _taxonomy_review_response(
+    payload: dict,
+) -> TaxonomyProposalReviewResponse:
+    application = payload.get("application")
+    status = (
+        str(application.get("status") or "not_requested")
+        if isinstance(application, dict)
+        else "not_requested"
     )
+    return TaxonomyProposalReviewResponse(
+        revision=payload["revision"],
+        proposal=payload["proposal"],
+        approved_term=payload.get("approved_term"),
+        approved_terms=payload.get("approved_terms") or [],
+        application=(
+            application
+            if isinstance(application, dict)
+            else {
+                "status": "not_requested",
+                "selected_question_ids": [],
+                "applied_question_ids": [],
+                "failures": [],
+            }
+        ),
+        application_status=status,
+        application_token=str(payload.get("request_token") or "").lower()
+        or None,
+    )
+
+
+def _active_taxonomy_suggestion_jobs(
+    manager: JobManager,
+    run_id: str,
+) -> list[JobRecord]:
+    return _taxonomy_suggestion_jobs(
+        manager,
+        run_id,
+        statuses=("queued", "running", "paused"),
+    )
+
+
+def _latest_taxonomy_suggestion_job(
+    manager: JobManager,
+    run_id: str,
+) -> JobRecord | None:
+    jobs = _taxonomy_suggestion_jobs(manager, run_id)
+    return jobs[0] if jobs else None
+
+
+def _taxonomy_suggestion_jobs(
+    manager: JobManager,
+    run_id: str,
+    *,
+    statuses: tuple[str, ...] = (),
+) -> list[JobRecord]:
+    matched: list[JobRecord] = []
+    offset = 0
+    while True:
+        jobs, total = manager.list(
+            job_types=("taxonomy_suggestion",),
+            statuses=statuses,
+            limit=100,
+            offset=offset,
+        )
+        matched.extend(
+            job
+            for job in jobs
+            if str(job.payload.get("run_id") or "") == str(run_id)
+        )
+        offset += len(jobs)
+        if not jobs or offset >= total:
+            return matched
 
 
 @router.put(
@@ -603,14 +997,199 @@ def _unique_positive_ids(values) -> list[int]:
     responses=QUESTION_SNAPSHOT_ERROR_RESPONSES,
 )
 def list_papers(
+    deleted: bool = False,
     service: QuestionBankReadService = Depends(get_question_bank_read_service),
 ) -> QuestionPaperListResponse:
     try:
-        rows = service.list_papers()
+        rows = (
+            service.list_papers(deleted=True)
+            if deleted
+            else service.list_papers()
+        )
     except QuestionBankSnapshotError as exc:
         _raise_question_snapshot_api_error(exc)
     items = [QuestionPaperListItem(**row) for row in rows]
     return QuestionPaperListResponse(items=items, total=len(items))
+
+
+@router.post(
+    "/papers/permanent-deletion-impact",
+    response_model=QuestionPaperPermanentDeleteImpactResponse,
+)
+def preview_paper_permanent_deletion(
+    body: QuestionPaperPermanentDeleteImpactRequest,
+    service: QuestionBankWriteService = Depends(get_question_bank_write_service),
+) -> QuestionPaperPermanentDeleteImpactResponse:
+    try:
+        impact = service.preview_paper_permanent_delete(
+            PaperPermanentDeleteSelection(
+                id=item.id,
+                expected_updated_at=item.expected_updated_at,
+            )
+            for item in body.selections
+        )
+    except PaperStateNotFound as exc:
+        raise ApiError(404, "paper_not_found", "Paper not found") from exc
+    except PaperPermanentDeleteRequiresTrash as exc:
+        raise ApiError(
+            409,
+            "paper_permanent_delete_requires_trash",
+            "Paper must be in trash",
+        ) from exc
+    except PaperPermanentDeleteConflict as exc:
+        raise ApiError(
+            409,
+            "paper_permanent_delete_conflict",
+            "Paper changed; refresh and retry",
+        ) from exc
+    return QuestionPaperPermanentDeleteImpactResponse(**impact.__dict__)
+
+
+@router.post(
+    "/papers/permanent-delete",
+    response_model=QuestionPaperPermanentDeleteResponse,
+)
+def permanently_delete_papers(
+    body: QuestionPaperPermanentDeleteRequest,
+    service: QuestionBankWriteService = Depends(get_question_bank_write_service),
+) -> QuestionPaperPermanentDeleteResponse:
+    try:
+        result = service.permanently_delete_papers(
+            (
+                PaperPermanentDeleteSelection(
+                    id=item.id,
+                    expected_updated_at=item.expected_updated_at,
+                )
+                for item in body.selections
+            ),
+            confirmation_phrase=body.confirmation_phrase,
+            request_token=body.request_token,
+        )
+    except PaperStateNotFound as exc:
+        raise ApiError(404, "paper_not_found", "Paper not found") from exc
+    except PaperPermanentDeleteRequiresTrash as exc:
+        raise ApiError(
+            409,
+            "paper_permanent_delete_requires_trash",
+            "Paper must be in trash",
+        ) from exc
+    except PaperPermanentDeleteConflict as exc:
+        raise ApiError(
+            409,
+            "paper_permanent_delete_conflict",
+            "Paper changed; refresh and retry",
+        ) from exc
+    except PaperPermanentDeleteConfirmationMismatch as exc:
+        raise ApiError(
+            422,
+            "paper_permanent_delete_confirmation_mismatch",
+            "Permanent deletion confirmation does not match",
+        ) from exc
+    except PaperPermanentDeleteStorageIncomplete as exc:
+        raise ApiError(
+            409,
+            "paper_permanent_delete_storage_incomplete",
+            "Paper files could not be prepared for deletion",
+        ) from exc
+    return QuestionPaperPermanentDeleteResponse(
+        deleted_paper_ids=list(result.deleted_paper_ids),
+        deleted_question_count=result.deleted_question_count,
+        deleted_tag_count=result.deleted_tag_count,
+        removed_training_link_count=result.removed_training_link_count,
+        removed_knowledge_graph_link_count=result.removed_knowledge_graph_link_count,
+        deleted_file_count=result.deleted_file_count,
+        skipped_shared_file_count=result.skipped_shared_file_count,
+        storage_cleanup_pending=result.storage_cleanup_pending,
+    )
+
+
+@router.patch(
+    "/papers/{paper_id}",
+    response_model=QuestionPaperMetadataWriteResponse,
+    responses=PAPER_METADATA_WRITE_ERROR_RESPONSES,
+)
+def update_paper_metadata(
+    paper_id: int,
+    body: QuestionPaperMetadataUpdateRequest,
+    service: QuestionBankWriteService = Depends(get_question_bank_write_service),
+) -> QuestionPaperMetadataWriteResponse:
+    try:
+        result = service.update_paper_metadata(
+            paper_id,
+            expected_updated_at=body.expected_updated_at,
+            metadata=PaperMetadataUpdate(
+                title=body.metadata.title,
+                year=body.metadata.year,
+                province=body.metadata.province,
+                city=body.metadata.city,
+                district=body.metadata.district,
+                exam_type=body.metadata.exam_type,
+                grade=body.metadata.grade,
+                semester=body.metadata.semester,
+                textbook_version=body.metadata.textbook_version,
+            ),
+        )
+    except PaperMetadataNotFound as exc:
+        raise ApiError(
+            404,
+            "paper_not_found",
+            "Paper not found",
+            {"paper_id": int(paper_id)},
+        ) from exc
+    except PaperMetadataConflict as exc:
+        raise ApiError(
+            409,
+            "paper_metadata_conflict",
+            "Paper metadata changed; refresh and retry",
+            {
+                "paper_id": int(paper_id),
+                "current_updated_at": exc.current_updated_at,
+            },
+        ) from exc
+    except ValueError as exc:
+        raise ApiError(
+            422,
+            "paper_metadata_invalid",
+            "Paper metadata is invalid",
+            {"paper_id": int(paper_id)},
+        ) from exc
+    return _paper_metadata_write_response(result)
+
+
+@router.post(
+    "/papers/{paper_id}/trash",
+    response_model=QuestionPaperStateWriteResponse,
+    responses=PAPER_STATE_WRITE_ERROR_RESPONSES,
+)
+def trash_paper(
+    paper_id: int,
+    body: QuestionPaperStateChangeRequest,
+    service: QuestionBankWriteService = Depends(get_question_bank_write_service),
+) -> QuestionPaperStateWriteResponse:
+    return _change_paper_state(
+        paper_id,
+        expected_updated_at=body.expected_updated_at,
+        deleted=True,
+        service=service,
+    )
+
+
+@router.post(
+    "/papers/{paper_id}/restore",
+    response_model=QuestionPaperStateWriteResponse,
+    responses=PAPER_STATE_WRITE_ERROR_RESPONSES,
+)
+def restore_paper(
+    paper_id: int,
+    body: QuestionPaperStateChangeRequest,
+    service: QuestionBankWriteService = Depends(get_question_bank_write_service),
+) -> QuestionPaperStateWriteResponse:
+    return _change_paper_state(
+        paper_id,
+        expected_updated_at=body.expected_updated_at,
+        deleted=False,
+        service=service,
+    )
 
 
 @router.get(
@@ -626,6 +1205,7 @@ def list_question_facets(
     abilities: Annotated[list[str] | None, Query()] = None,
     methods: Annotated[list[str] | None, Query()] = None,
     models: Annotated[list[str] | None, Query()] = None,
+    special_types: Annotated[list[str] | None, Query()] = None,
     student_levels: Annotated[list[str] | None, Query()] = None,
     teaching_stages: Annotated[list[str] | None, Query()] = None,
     sub_skills: Annotated[list[str] | None, Query()] = None,
@@ -652,6 +1232,7 @@ def list_question_facets(
                 abilities=tuple(abilities or ()),
                 methods=tuple(methods or ()),
                 models=tuple(models or ()),
+                special_types=tuple(special_types or ()),
                 student_levels=tuple(student_levels or ()),
                 teaching_stages=tuple(teaching_stages or ()),
                 sub_skills=tuple(sub_skills or ()),
@@ -687,6 +1268,7 @@ def list_questions(
     abilities: Annotated[list[str] | None, Query()] = None,
     methods: Annotated[list[str] | None, Query()] = None,
     models: Annotated[list[str] | None, Query()] = None,
+    special_types: Annotated[list[str] | None, Query()] = None,
     student_levels: Annotated[list[str] | None, Query()] = None,
     teaching_stages: Annotated[list[str] | None, Query()] = None,
     sub_skills: Annotated[list[str] | None, Query()] = None,
@@ -701,7 +1283,14 @@ def list_questions(
     curriculum_sections: Annotated[list[str] | None, Query()] = None,
     tag_status: Literal["all", "tagged", "untagged"] = "all",
     sort: Literal[
+        "difficulty_desc",
+        "difficulty_asc",
+        "frequency_desc",
+        "frequency_asc",
+        # Legacy values remain accepted so old bookmarks and local clients do
+        # not break; the product UI no longer presents them.
         "newest",
+        "paper_order",
         "difficulty",
         "frequency_midterm",
         "frequency_final",
@@ -724,6 +1313,7 @@ def list_questions(
                 abilities=tuple(abilities or ()),
                 methods=tuple(methods or ()),
                 models=tuple(models or ()),
+                special_types=tuple(special_types or ()),
                 student_levels=tuple(student_levels or ()),
                 teaching_stages=tuple(teaching_stages or ()),
                 sub_skills=tuple(sub_skills or ()),
@@ -893,10 +1483,53 @@ def _raise_question_snapshot_api_error(
 
 
 def _raise_taxonomy_storage_api_error(exc: Exception) -> NoReturn:
+    error_number = getattr(exc, "errno", None)
+    if isinstance(exc, PermissionError) or error_number in {
+        errno.EACCES,
+        errno.EPERM,
+        errno.EROFS,
+    }:
+        raise ApiError(
+            503,
+            "taxonomy_storage_read_only",
+            "Taxonomy storage is not writable",
+            {
+                "category": "read_only",
+                "requires_restart": True,
+            },
+            headers=NO_STORE_HEADERS,
+        ) from exc
+
+    message = str(exc).casefold()
+    if isinstance(exc, TimeoutError) or (
+        isinstance(exc, TaxonomyStorageError)
+        and "timed out waiting for taxonomy lock" in message
+    ):
+        raise ApiError(
+            503,
+            "taxonomy_storage_busy",
+            "Taxonomy review storage is temporarily busy",
+            {"category": "busy"},
+            headers={**NO_STORE_HEADERS, "Retry-After": "1"},
+        ) from exc
+
+    if isinstance(exc, RuntimeError) or (
+        isinstance(exc, TaxonomyStorageError)
+        and ("invalid" in message or "ambiguous" in message)
+    ):
+        raise ApiError(
+            503,
+            "taxonomy_storage_invalid",
+            "Taxonomy review storage requires local repair",
+            {"category": "invalid"},
+            headers=NO_STORE_HEADERS,
+        ) from exc
+
     raise ApiError(
         503,
         "taxonomy_storage_unavailable",
         "Taxonomy storage is temporarily unavailable",
+        {"category": "unavailable"},
         headers=NO_STORE_HEADERS,
     ) from exc
 
@@ -936,6 +1569,77 @@ def _question_write_response(result: QuestionWriteResult) -> QuestionWriteRespon
             }
             for tag in result.tags
         ],
+    )
+
+
+def _paper_metadata_write_response(
+    result: PaperMetadataWriteResult,
+) -> QuestionPaperMetadataWriteResponse:
+    return QuestionPaperMetadataWriteResponse(
+        id=result.id,
+        title=result.title,
+        year=result.year,
+        province=result.province,
+        city=result.city,
+        district=result.district,
+        exam_type=result.exam_type,
+        grade=result.grade,
+        semester=result.semester,
+        textbook_version=result.textbook_version,
+        updated_at=result.updated_at,
+    )
+
+
+def _change_paper_state(
+    paper_id: int,
+    *,
+    expected_updated_at: str,
+    deleted: bool,
+    service: QuestionBankWriteService,
+) -> QuestionPaperStateWriteResponse:
+    try:
+        result = service.set_paper_deleted(
+            paper_id,
+            expected_updated_at=expected_updated_at,
+            deleted=deleted,
+        )
+    except PaperStateNotFound as exc:
+        raise ApiError(
+            404,
+            "paper_not_found",
+            "Paper not found",
+            {"paper_id": int(paper_id)},
+        ) from exc
+    except PaperStateConflict as exc:
+        raise ApiError(
+            409,
+            "paper_state_conflict",
+            "Paper state changed; refresh and retry",
+            {
+                "paper_id": int(paper_id),
+                "current_updated_at": exc.current_updated_at,
+                "deleted": exc.deleted,
+            },
+        ) from exc
+    except ValueError as exc:
+        raise ApiError(
+            422,
+            "paper_state_invalid",
+            "Paper state request is invalid",
+            {"paper_id": int(paper_id)},
+        ) from exc
+    return _paper_state_write_response(result)
+
+
+def _paper_state_write_response(
+    result: PaperStateWriteResult,
+) -> QuestionPaperStateWriteResponse:
+    return QuestionPaperStateWriteResponse(
+        id=result.id,
+        deleted=result.deleted,
+        import_status=result.import_status,
+        updated_at=result.updated_at,
+        affected_question_count=result.affected_question_count,
     )
 
 

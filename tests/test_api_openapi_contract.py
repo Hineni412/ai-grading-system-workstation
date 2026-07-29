@@ -352,7 +352,19 @@ def test_report_export_openapi_declares_strict_requests_and_pdf_download() -> No
     body_schema = schema["components"]["schemas"][request_ref.rsplit("/", 1)[-1]]
 
     assert body_schema["additionalProperties"] is False
-    assert set(body_schema["properties"]) == {"report_type", "force_regenerate"}
+    assert set(body_schema["properties"]) == {
+        "report_type",
+        "force_regenerate",
+        "excel_options",
+    }
+    excel_ref = body_schema["properties"]["excel_options"]["anyOf"][0]["$ref"]
+    excel_schema = schema["components"]["schemas"][excel_ref.rsplit("/", 1)[-1]]
+    assert excel_schema["additionalProperties"] is False
+    assert set(excel_schema["properties"]) == {
+        "hide_bottom_enabled",
+        "hide_bottom_n",
+        "manual_hidden_student_ids",
+    }
     download_content = schema["paths"]["/api/jobs/{job_id}/download"]["get"][
         "responses"
     ]["200"]["content"]

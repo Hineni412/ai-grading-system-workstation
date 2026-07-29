@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import io
+import json
 import warnings
 import sqlite3
 import threading
@@ -168,7 +169,7 @@ def test_generate_from_source_stages_private_input_and_public_job_is_safe(
 
     response = client.post(
         f"/api/sessions/{session_id}/config/generate-from-source",
-        json=_source_request(source),
+        json={**_source_request(source), "sync_to_question_bank": True},
     )
 
     assert response.status_code == 202
@@ -178,6 +179,7 @@ def test_generate_from_source_stages_private_input_and_public_job_is_safe(
         "generation_mode": "batched",
         "source_id": source.source_id,
         "source_revision": source.source_revision,
+        "sync_to_question_bank": True,
     }
     assert source.private_document_text not in response.text
     assert "input_id" not in response.text
@@ -195,9 +197,123 @@ def test_generate_from_source_stages_private_input_and_public_job_is_safe(
     assert private_input["source_id"] == source.source_id
     assert private_input["source_revision"] == source.source_revision
     assert private_input["generation_mode"] == "batched"
+    assert private_input["sync_to_question_bank"] is True
     assert private_input["decisions"] == [
         {"excluded": False, "question_id": "Q1", "question_type": "proof"}
     ]
+
+
+def test_generate_from_source_stages_only_blocked_questions_for_regeneration(
+    tmp_path: Path,
+) -> None:
+    client, db, manager = _client(tmp_path)
+    session_id = _session(db, tmp_path)
+    session = db.get_grading_session(session_id)
+    rubric = {
+        "exam_title": "existing",
+        "total_score": 100,
+        "questions": [{
+            "question_id": "Q1",
+            "question_type": "choice",
+            "max_score": 100,
+            "parts": [{
+                "part_id": "Q1",
+                "part_score": 100,
+                "response_mode": "process_required",
+                "steps": [{
+                    "step_id": "S1",
+                    "step_score": 100,
+                    "core_goal": "核对 A",
+                    "required_elements": ["A"],
+                    "allow_alternative_methods": True,
+                }],
+            }],
+        }],
+    }
+    answer_key = {
+        "questions": [{
+            "question_id": "Q1",
+            "canonical_answer": "A",
+            "accepted_forms": ["A"],
+            "parts": [{
+                "part_id": "Q1",
+                "answer": "A",
+                "analysis": "",
+                "step_milestones": [],
+            }],
+        }],
+    }
+    Path(str(session["rubric_path"])).write_text(
+        json.dumps(rubric),
+        encoding="utf-8",
+    )
+    Path(str(session["answer_key_path"])).write_text(
+        json.dumps(answer_key),
+        encoding="utf-8",
+    )
+    source = _source(tmp_path, session_id)
+    editor = client.get(f"/api/sessions/{session_id}/config/editor").json()
+    assert editor["issues"][0]["code"] == "quality_blocking"
+
+    response = client.post(
+        f"/api/sessions/{session_id}/config/generate-from-source",
+        json=_source_request(
+            source,
+            decisions=[{
+                "question_id": "Q1",
+                "question_type": "choice",
+                "excluded": False,
+            }],
+            regenerate_question_ids=["Q1"],
+            base_revision=editor["revision"],
+        ),
+    )
+
+    assert response.status_code == 202
+    assert response.json()["payload"]["mode"] == "regenerate_questions"
+    stored = manager.get(response.json()["id"])
+    assert stored is not None
+    private_input = load_config_generation_input(
+        tmp_path / "uploaded",
+        str(stored.payload["input_id"]),
+    )
+    assert private_input["regenerate_question_ids"] == ["Q1"]
+    assert private_input["expected_revision"] == editor["revision"]
+    assert private_input["existing_payload"]["rubric"] == rubric
+    assert private_input["existing_payload"]["answer_key"] == answer_key
+    assert private_input["sync_to_question_bank"] is False
+
+
+def test_generation_request_preserves_a_teacher_confirmed_answer(
+    tmp_path: Path,
+) -> None:
+    client, db, manager = _client(tmp_path)
+    session_id = _session(db, tmp_path)
+    source = _source(tmp_path, session_id, question="1. Fill in the answer: ____.")
+    request = _source_request(source)
+    request["decisions"] = [
+        {
+            "question_id": "Q1",
+            "question_type": "fill_blank",
+            "excluded": False,
+            "answer_confirmed": True,
+            "answer_override": "72°",
+        }
+    ]
+
+    response = client.post(
+        f"/api/sessions/{session_id}/config/generate-from-source",
+        json=request,
+    )
+
+    assert response.status_code == 202
+    stored = manager.get(response.json()["id"])
+    assert stored is not None
+    private_input = load_config_generation_input(
+        tmp_path / "uploaded",
+        str(stored.payload["input_id"]),
+    )
+    assert private_input["decisions"] == request["decisions"]
 
 
 def test_latest_generation_job_endpoint_authoritatively_finds_matching_job(
@@ -848,6 +964,7 @@ def test_config_generation_retry_route_accepts_partial_source_job(tmp_path: Path
         "generation_mode": "batched",
         "source_id": "b" * 32,
         "source_revision": "c" * 64,
+        "sync_to_question_bank": False,
     }
     stored = manager.get(response.json()["id"])
     assert stored is not None

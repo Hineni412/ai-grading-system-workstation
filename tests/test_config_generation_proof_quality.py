@@ -78,6 +78,72 @@ def test_batch_prompt_requires_independently_scorable_proof_and_calculation_step
         assert requirement in prompt
 
 
+def test_batch_prompt_pins_answers_and_part_rules_to_one_schema() -> None:
+    prompt = build_batch_generation_prompt(
+        ["Q5", "Q12"],
+        [
+            {
+                "question_id": "Q5",
+                "question_type": "fill_blank",
+                "question_text": "填写结果。",
+                "answer_text": "70",
+            },
+            {
+                "question_id": "Q12",
+                "question_type": "proof",
+                "question_text": "证明两条线段相等。",
+                "answer_text": "略",
+            },
+        ],
+        [],
+        "",
+    )
+
+    for contract_path in (
+        "answer_key.questions[].canonical_answer",
+        "answer_key.questions[].parts[].answer",
+        "rubric.questions[].parts[].proof_obligations",
+        "rubric.questions[].parts[].deduction_policy",
+        "rubric.questions[].parts[].steps[].deduction_rules",
+    ):
+        assert contract_path in prompt
+
+
+def test_batch_prompt_lists_type_enums_and_rejects_choice_response_aliases() -> None:
+    prompt = build_batch_generation_prompt(
+        ["Q4"],
+        [
+            {
+                "question_id": "Q4",
+                "question_type": "choice",
+                "question_text": "选择正确选项。",
+                "answer_text": "C",
+            }
+        ],
+        [],
+        "",
+    )
+
+    for question_type in (
+        "choice",
+        "fill_blank",
+        "calculation",
+        "proof",
+        "comprehensive",
+    ):
+        assert question_type in prompt
+    for response_mode in (
+        "exact_objective",
+        "short_answer_points",
+        "process_required",
+        "visual_construction",
+    ):
+        assert response_mode in prompt
+    assert "single_choice" in prompt
+    assert "multiple_choice" in prompt
+    assert "不得写入 response_mode" in prompt
+
+
 def test_quality_blocks_nontrivial_proof_with_one_shallow_step() -> None:
     payload = _proof_payload(
         score=6,
@@ -158,3 +224,87 @@ def test_quality_accepts_a_detailed_nontrivial_proof() -> None:
 
     assert not any("可独立评分的逻辑步骤" in warning for warning in warnings)
     assert not any("证明义务或扣分证据" in warning for warning in warnings)
+
+
+def test_quality_accepts_part_level_proof_and_deduction_evidence() -> None:
+    payload = _proof_payload(
+        score=6,
+        steps=[
+            {
+                "step_id": "S1",
+                "step_score": 2,
+                "core_goal": "列出 SAS 所需的三项对应条件",
+                "required_elements": ["AB=DE", "∠A=∠D", "AC=DF"],
+            },
+            {
+                "step_id": "S2",
+                "step_score": 2,
+                "core_goal": "依据 SAS 判定两三角形全等",
+                "required_elements": ["明确写出 SAS", "对应顶点顺序正确"],
+            },
+            {
+                "step_id": "S3",
+                "step_score": 2,
+                "core_goal": "由全等推出对应边相等",
+                "required_elements": ["引用全等三角形性质", "写出AB=DE"],
+            },
+        ],
+    )
+    part = payload["rubric"]["questions"][0]["parts"][0]
+    part["proof_obligations"] = ["证明△ABC≌△DEF", "由全等推出AB=DE"]
+    part["deduction_policy"] = (
+        "缺少一项 SAS 条件时扣对应步骤分；未写全等结论时扣判定步骤分"
+    )
+
+    warnings = collect_generated_config_quality_warnings(payload)
+
+    assert not any("证明义务" in warning for warning in warnings)
+    assert not any("扣分证据" in warning for warning in warnings)
+
+
+def test_exact_objective_requires_text_even_when_an_answer_image_exists() -> None:
+    payload = {
+        "rubric": {
+            "questions": [
+                {
+                    "question_id": "Q5",
+                    "question_type": "fill_blank",
+                    "max_score": 6,
+                    "parts": [
+                        {
+                            "part_id": "Q5",
+                            "part_score": 6,
+                            "response_mode": "exact_objective",
+                            "steps": [
+                                {
+                                    "step_id": "S1",
+                                    "step_score": 6,
+                                    "core_goal": "填写正确答案",
+                                    "required_elements": [],
+                                }
+                            ],
+                        }
+                    ],
+                }
+            ]
+        },
+        "answer_key": {
+            "questions": [
+                {
+                    "question_id": "Q5",
+                    "canonical_answer": "",
+                    "accepted_forms": [],
+                    "answer_image_base64": "image",
+                    "parts": [{"part_id": "Q5", "answer": ""}],
+                }
+            ]
+        },
+    }
+
+    warnings = collect_generated_config_quality_warnings(payload)
+
+    assert any(
+        warning.startswith("[质量检查-阻断] Q5")
+        and "文本标准答案" in warning
+        for warning in warnings
+    )

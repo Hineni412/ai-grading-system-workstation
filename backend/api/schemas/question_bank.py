@@ -4,6 +4,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from backend.api.schemas.jobs import JobResponse
+
 
 class _QuestionBankModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -32,6 +34,79 @@ class QuestionPaperListItem(_QuestionBankModel):
 class QuestionPaperListResponse(_QuestionBankModel):
     items: list[QuestionPaperListItem]
     total: int
+
+
+class QuestionPaperMetadataInput(_QuestionBankModel):
+    title: str = Field(min_length=1, max_length=255)
+    year: str | None = Field(default=None, max_length=24)
+    province: str | None = Field(default=None, max_length=48)
+    city: str | None = Field(default=None, max_length=48)
+    district: str | None = Field(default=None, max_length=48)
+    exam_type: str | None = Field(default=None, max_length=48)
+    grade: str | None = Field(default=None, max_length=48)
+    semester: str | None = Field(default=None, max_length=48)
+    textbook_version: str | None = Field(default=None, max_length=100)
+
+
+class QuestionPaperMetadataUpdateRequest(_QuestionBankModel):
+    expected_updated_at: str = Field(min_length=1, max_length=64)
+    metadata: QuestionPaperMetadataInput
+
+
+class QuestionPaperMetadataWriteResponse(QuestionPaperMetadataInput):
+    id: int
+    updated_at: str
+
+
+class QuestionPaperStateChangeRequest(_QuestionBankModel):
+    expected_updated_at: str = Field(min_length=1, max_length=64)
+
+
+class QuestionPaperStateWriteResponse(_QuestionBankModel):
+    id: int
+    deleted: bool
+    import_status: str = Field(min_length=1, max_length=64)
+    updated_at: str
+    affected_question_count: int = Field(ge=0)
+
+
+class QuestionPaperPermanentDeleteSelection(_QuestionBankModel):
+    id: int = Field(gt=0)
+    expected_updated_at: str = Field(min_length=1, max_length=64)
+
+
+class QuestionPaperPermanentDeleteImpactRequest(_QuestionBankModel):
+    selections: list[QuestionPaperPermanentDeleteSelection] = Field(
+        min_length=1,
+        max_length=200,
+    )
+
+
+class QuestionPaperPermanentDeleteImpactResponse(_QuestionBankModel):
+    paper_count: int = Field(ge=1)
+    question_count: int = Field(ge=0)
+    tag_count: int = Field(ge=0)
+    training_link_count: int = Field(ge=0)
+    knowledge_graph_link_count: int = Field(ge=0)
+    owned_file_count: int = Field(ge=0)
+    shared_file_count: int = Field(ge=0)
+    permanent_delete_phrase: str
+
+
+class QuestionPaperPermanentDeleteRequest(QuestionPaperPermanentDeleteImpactRequest):
+    confirmation_phrase: str = Field(min_length=1, max_length=80)
+    request_token: str = Field(pattern=r"^[0-9a-f]{32}$")
+
+
+class QuestionPaperPermanentDeleteResponse(_QuestionBankModel):
+    deleted_paper_ids: list[int]
+    deleted_question_count: int = Field(ge=0)
+    deleted_tag_count: int = Field(ge=0)
+    removed_training_link_count: int = Field(ge=0)
+    removed_knowledge_graph_link_count: int = Field(ge=0)
+    deleted_file_count: int = Field(ge=0)
+    skipped_shared_file_count: int = Field(ge=0)
+    storage_cleanup_pending: bool
 
 
 class CurriculumSection(_QuestionBankModel):
@@ -92,6 +167,7 @@ class QuestionTagResponse(_QuestionBankModel):
         "method",
         "model",
         "prerequisite",
+        "special_type",
         "student_level",
         "sub_skill",
         "supporting_skill_name",
@@ -212,6 +288,7 @@ class QuestionFacetsResponse(_QuestionBankModel):
     abilities: list[QuestionFacetItem]
     methods: list[QuestionFacetItem]
     models: list[QuestionFacetItem]
+    special_types: list[QuestionFacetItem]
     student_levels: list[QuestionFacetItem]
     teaching_stages: list[QuestionFacetItem]
     sub_skills: list[QuestionFacetItem]
@@ -288,6 +365,7 @@ TaxonomyDimension = Literal[
     "ability",
     "method",
     "model",
+    "special_type",
 ]
 
 
@@ -305,6 +383,7 @@ class TaxonomyDimensionsResponse(_QuestionBankModel):
     ability: list[TaxonomyTermResponse]
     method: list[TaxonomyTermResponse]
     model: list[TaxonomyTermResponse]
+    special_type: list[TaxonomyTermResponse]
 
 
 class TaxonomyCatalogResponse(_QuestionBankModel):
@@ -324,6 +403,7 @@ class TaxonomyProposalResponse(_QuestionBankModel):
     nearest_id: str = ""
     why_not_reuse: str = ""
     question_refs: list[int] = Field(default_factory=list)
+    resolved_term_ids: list[str] = Field(default_factory=list)
     status: Literal["pending", "approved", "merged", "rejected", "retired"]
     created_at: str | None = None
     updated_at: str | None = None
@@ -343,17 +423,140 @@ class TaxonomyProposalReviewRequest(_QuestionBankModel):
     decision: Literal["approve", "edit", "merge", "reject"]
     edited_name: str | None = Field(default=None, min_length=1, max_length=36)
     target_term_id: str | None = Field(default=None, min_length=1, max_length=100)
+    target_term_ids: list[str] = Field(default_factory=list, max_length=12)
+    question_ids: list[int] | None = Field(
+        default=None,
+        max_length=500,
+    )
     expected_revision: int = Field(ge=0)
     request_token: str = Field(pattern=r"^[0-9a-fA-F]{32}$")
+
+
+class TaxonomyProposalApplicationFailure(_QuestionBankModel):
+    question_id: int = Field(gt=0)
+    category: Literal["question_not_found", "write_failed"]
+    message: str
+
+
+class TaxonomyProposalApplication(_QuestionBankModel):
+    status: Literal["not_requested", "applied", "partial", "failed"]
+    selected_question_ids: list[int]
+    applied_question_ids: list[int]
+    failures: list[TaxonomyProposalApplicationFailure]
 
 
 class TaxonomyProposalReviewResponse(_QuestionBankModel):
     revision: int = Field(ge=0)
     proposal: TaxonomyProposalResponse
     approved_term: TaxonomyTermResponse | None = None
+    approved_terms: list[TaxonomyTermResponse] = Field(default_factory=list)
+    application: TaxonomyProposalApplication = Field(
+        default_factory=lambda: TaxonomyProposalApplication(
+            status="not_requested",
+            selected_question_ids=[],
+            applied_question_ids=[],
+            failures=[],
+        )
+    )
     application_status: Literal[
         "not_requested",
         "pending",
         "applied",
+        "partial",
         "failed",
     ] = "not_requested"
+    application_token: str | None = Field(
+        default=None,
+        pattern=r"^[0-9a-f]{32}$",
+    )
+
+
+class TaxonomyProposalApplicationRetryRequest(_QuestionBankModel):
+    application_token: str = Field(pattern=r"^[0-9a-fA-F]{32}$")
+    request_token: str = Field(pattern=r"^[0-9a-fA-F]{32}$")
+    question_ids: list[int] | None = Field(
+        default=None,
+        min_length=1,
+        max_length=500,
+    )
+
+
+class TaxonomySuggestionCreateRequest(_QuestionBankModel):
+    proposal_ids: list[str] = Field(min_length=1, max_length=500)
+    expected_revision: int = Field(ge=0)
+    request_token: str = Field(pattern=r"^[0-9a-fA-F]{32}$")
+
+
+class TaxonomySuggestionRetryRequest(_QuestionBankModel):
+    request_token: str = Field(pattern=r"^[0-9a-fA-F]{32}$")
+
+
+class TaxonomySuggestionDecision(_QuestionBankModel):
+    decision: Literal[
+        "merge",
+        "map_many",
+        "approve",
+        "reject",
+        "uncertain",
+    ]
+    target_term_ids: list[str] = Field(default_factory=list, max_length=12)
+    reason: str = ""
+    confidence: float = Field(ge=0.0, le=1.0)
+    source: Literal["local_exact", "ai"]
+
+
+class TaxonomySuggestionError(_QuestionBankModel):
+    category: str
+    message: str
+
+
+class TaxonomySuggestionItem(_QuestionBankModel):
+    proposal_id: str
+    dimension: TaxonomyDimension
+    proposed_name: str
+    question_refs: list[int] = Field(default_factory=list)
+    status: Literal[
+        "pending",
+        "running",
+        "suggested",
+        "failed",
+        "cancelled",
+        "stale",
+    ]
+    attempts: int = Field(ge=0)
+    suggestion: TaxonomySuggestionDecision | None = None
+    error: TaxonomySuggestionError | None = None
+
+
+class TaxonomySuggestionProgress(_QuestionBankModel):
+    total: int = Field(ge=0)
+    completed: int = Field(ge=0)
+    failed: int = Field(ge=0)
+    pending: int = Field(ge=0)
+    cancelled: int = Field(ge=0)
+
+
+class TaxonomySuggestionRunResponse(_QuestionBankModel):
+    run_id: str = Field(pattern=r"^[0-9a-f]{32}$")
+    status: Literal[
+        "queued",
+        "running",
+        "completed",
+        "partial",
+        "failed",
+        "cancelling",
+        "cancelled",
+        "stale",
+    ]
+    taxonomy_revision: int = Field(ge=0)
+    stale: bool
+    created_at: str
+    updated_at: str
+    items: list[TaxonomySuggestionItem]
+    progress: TaxonomySuggestionProgress
+    retryable: bool = False
+
+
+class TaxonomySuggestionStartResponse(_QuestionBankModel):
+    job: JobResponse
+    run: TaxonomySuggestionRunResponse

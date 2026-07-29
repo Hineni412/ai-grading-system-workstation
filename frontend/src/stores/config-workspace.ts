@@ -82,11 +82,37 @@ function validRevision(value: unknown): value is string {
 function validDecision(value: unknown): value is QuestionDecision {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return false
   const item = value as Record<string, unknown>
-  return Object.keys(item).sort().join(',') === 'excluded,question_id,question_type'
-    && typeof item.question_id === 'string'
+  const allowedKeys = new Set([
+    'question_id',
+    'question_type',
+    'excluded',
+    'answer_confirmed',
+    'answer_override',
+  ])
+  if (Object.keys(item).some((key) => !allowedKeys.has(key))) return false
+  if (item.answer_confirmed !== undefined && typeof item.answer_confirmed !== 'boolean') return false
+  if (item.answer_override !== undefined && item.answer_override !== null) {
+    if (typeof item.answer_override !== 'string'
+      || !item.answer_override.trim()
+      || item.answer_override.length > 20_000
+      || item.answer_confirmed !== true) return false
+  }
+  return typeof item.question_id === 'string'
     && ['choice', 'fill_blank', 'calculation', 'proof', 'comprehensive']
       .includes(String(item.question_type))
     && typeof item.excluded === 'boolean'
+}
+
+function safePersistedDecision(decision: QuestionDecision): QuestionDecision {
+  const safe: QuestionDecision = {
+    question_id: decision.question_id,
+    question_type: decision.question_type,
+    excluded: decision.excluded,
+  }
+  if (decision.answer_confirmed === true && decision.answer_override == null) {
+    safe.answer_confirmed = true
+  }
+  return safe
 }
 
 function validGenerationSummary(value: unknown): value is ConfigGenerationSummary {
@@ -154,6 +180,7 @@ const editableIssueFields = new Set([
   'require_final_answer',
   'required_elements',
   'deduction_rules',
+  'part_deduction_rules',
   'final_answer_rule',
 ])
 
@@ -249,7 +276,7 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
       sourceId: sourceId.value,
       sourceRevision: sourceRevision.value,
       jobId: jobId.value,
-      decisions: decisions.value.map((item) => ({ ...item })),
+      decisions: decisions.value.map(safePersistedDecision),
     }
     if (generationSummary.value !== null) {
       snapshot.generationSummary = { ...generationSummary.value }
@@ -544,7 +571,10 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
     persistSafeIndex()
   }
 
-  function sourceRequest(mode: GenerationMode): ConfigGenerationRequest {
+  function sourceRequest(
+    mode: GenerationMode,
+    syncToQuestionBank = false,
+  ): ConfigGenerationRequest {
     const ready = mode === 'whole_document' ? canGenerateWholeDocument.value : canGenerate.value
     if (!ready || sourceId.value === null || sourceRevision.value === null) {
       throw new Error('Config source is not ready')
@@ -553,6 +583,7 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
       source_id: sourceId.value,
       source_revision: sourceRevision.value,
       generation_mode: mode,
+      sync_to_question_bank: syncToQuestionBank,
       decisions: mode === 'whole_document'
         ? []
         : decisions.value.map((item) => ({ ...item })),

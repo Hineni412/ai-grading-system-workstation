@@ -95,6 +95,7 @@ class QuestionBankSyncRequest(BaseModel):
 
     config_revision: str
     client_request_token: str
+    curriculum_volume_id: str | None = Field(default=None, max_length=80)
 
     @field_validator("config_revision")
     @classmethod
@@ -111,6 +112,12 @@ class QuestionBankSyncRequest(BaseModel):
         if re.fullmatch(r"[0-9a-f]{32}", clean) is None:
             raise ValueError("must be 32 lowercase hexadecimal characters")
         return clean
+
+    @field_validator("curriculum_volume_id")
+    @classmethod
+    def _curriculum_volume_id(cls, value: str | None) -> str | None:
+        clean = str(value or "").strip()
+        return clean or None
 
 
 class SessionSummary(BaseModel):

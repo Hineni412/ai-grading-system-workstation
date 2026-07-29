@@ -178,6 +178,13 @@ def create_app(
     @api.exception_handler(ApiError)
     async def api_error_handler(request: Request, exc: ApiError) -> JSONResponse:
         request_id = getattr(request.state, "request_id", "") or uuid4().hex
+        if exc.status_code >= 500:
+            LOGGER.warning(
+                "api_error status=%s code=%s request_id=%s",
+                exc.status_code,
+                exc.code,
+                request_id,
+            )
         headers = dict(exc.headers)
         headers["x-request-id"] = request_id
         return JSONResponse(

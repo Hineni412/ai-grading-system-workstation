@@ -9,8 +9,19 @@ from typing import Callable, Mapping
 
 from .diagnostics import JsonlDiagnosticJournal
 from .errors import LLMErrorCategory, classify_llm_error, is_retryable_error
+from .execution import (
+    execution_scope_key,
+    execution_snapshot_from_profile,
+    get_default_execution_governors,
+)
 from .pacing import LLMPacerRegistry
-from .policy import LLMPolicyError, LLMProtocol, LLMRequestKind, policy_from_profile
+from .policy import (
+    EXECUTION_SCOPE_PROFILE_FIELD,
+    LLMPolicyError,
+    LLMProtocol,
+    LLMRequestKind,
+    policy_from_profile,
+)
 from .usage import (
     LLMUsageEvent,
     NullUsageSink,
@@ -73,6 +84,7 @@ class LLMGateway:
         profile: Mapping[str, object] | None = None,
         config_key: str = "default",
         pacers: object | None = None,
+        governors: object | None = None,
         usage_sink: object | None = None,
         trace_sink: object | None = None,
         diagnostic_sink: object | None = None,
@@ -83,6 +95,31 @@ class LLMGateway:
         self.profile = dict(profile or {})
         self.config_key = str(config_key)
         self.pacers = pacers if pacers is not None else _DEFAULT_PACERS
+        self.governors = (
+            governors
+            if governors is not None
+            else get_default_execution_governors()
+        )
+        self.execution_snapshot = execution_snapshot_from_profile(self.profile)
+        explicit_scope = self.profile.get(EXECUTION_SCOPE_PROFILE_FIELD)
+        self.governor_scope = str(
+            explicit_scope
+            or execution_scope_key(self.profile, fallback=self.config_key)
+        )
+        self.pacing_scope = str(explicit_scope or self.config_key)
+        configure_governor = getattr(self.governors, "configure", None)
+        if callable(configure_governor):
+            configure_governor(
+                self.governor_scope,
+                self.execution_snapshot,
+            )
+        configure_pacer = getattr(self.pacers, "configure", None)
+        if callable(configure_pacer):
+            configured_rpm = min(
+                policy_from_profile(kind, self.profile).requests_per_minute
+                for kind in LLMRequestKind
+            )
+            configure_pacer(self.pacing_scope, configured_rpm)
         self.usage_sink = usage_sink if usage_sink is not None else NullUsageSink()
         self.trace_sink = (
             trace_sink if trace_sink is not None else NullCallTraceSink()
@@ -207,9 +244,13 @@ class LLMGateway:
             attempt = attempt_counter()
             pacing_started = self.clock()
             self.pacers.acquire(
-                self.config_key,
+                self.pacing_scope,
                 kind,
                 policy.requests_per_minute,
+            )
+            execution_permit = self.governors.acquire(
+                self.governor_scope,
+                self.execution_snapshot,
             )
             pacer_wait_ms = self._latency_ms(pacing_started)
             payload = dict(kwargs)
@@ -243,6 +284,14 @@ class LLMGateway:
             try:
                 response = self._invoke(protocol, client, payload)
             except Exception as exc:
+                try:
+                    category = classify_llm_error(exc)
+                except Exception:
+                    category = LLMErrorCategory.UNKNOWN
+                execution_permit.complete(
+                    error_category=category,
+                    retry_after_seconds=self._provider_retry_after_seconds(exc),
+                )
                 latency_ms = self._latency_ms(started)
                 should_retry = (
                     retry_index < retry_limit and is_retryable_error(exc)
@@ -307,6 +356,7 @@ class LLMGateway:
                 self.sleeper(retry_delay)
                 continue
 
+            execution_permit.complete()
             latency_ms = self._latency_ms(started)
             self._record_success(
                 request_id=logical_request_id,
@@ -364,6 +414,11 @@ class LLMGateway:
 
     @staticmethod
     def _retry_delay(error: BaseException, deterministic_delay: float) -> float:
+        provider_delay = LLMGateway._provider_retry_after_seconds(error)
+        return max(provider_delay, deterministic_delay)
+
+    @staticmethod
+    def _provider_retry_after_seconds(error: BaseException) -> float:
         response = getattr(error, "response", None)
         headers = getattr(response, "headers", None)
         raw_value = None
@@ -384,10 +439,10 @@ class LLMGateway:
         try:
             parsed = float(raw_value)
         except (TypeError, ValueError):
-            return deterministic_delay
+            return 0.0
         if not math.isfinite(parsed) or parsed < 0:
-            return deterministic_delay
-        return min(parsed, deterministic_delay)
+            return 0.0
+        return parsed
 
     def _record_failure(
         self,

@@ -22,6 +22,9 @@ set "PYTHONUTF8=1"
 "%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -Command "$client = New-Object System.Net.Sockets.TcpClient; try { $task = $client.ConnectAsync('127.0.0.1', [int]$env:API_PORT); if ($task.Wait(750) -and $client.Connected) { exit 0 }; exit 1 } catch { exit 1 } finally { $client.Dispose() }" >nul 2>nul
 if not errorlevel 1 goto port_in_use
 
+"%PYTHON_EXE%" "%PROJECT_RUNNER%" backend.startup_storage_preflight
+if errorlevel 1 goto taxonomy_storage_error
+
 "%PYTHON_EXE%" "%PROJECT_RUNNER%" backend.api.launcher --check-frontend >nul
 if errorlevel 1 goto frontend_error
 
@@ -45,6 +48,12 @@ goto failed
 :missing_runner
 echo P3.5 project launcher was not found.
 echo Missing file: %PROJECT_RUNNER%
+goto failed
+
+:taxonomy_storage_error
+echo The machine-local taxonomy state cannot be saved.
+echo IMPORTANT: This launch did NOT start the P3.5 service.
+echo Fix the folder permission shown above, then run this file again.
 goto failed
 
 :frontend_error

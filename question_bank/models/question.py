@@ -9,6 +9,7 @@ ALLOWED_TAG_TYPES = {
     "ability",
     "error_type",
     "model",
+    "special_type",
     "exam_scope",
     "curriculum_section",
     "canonical_knowledge_id",

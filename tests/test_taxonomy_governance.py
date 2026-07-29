@@ -16,8 +16,12 @@ from question_bank.taxonomy.governance import (
     TaxonomyGovernance,
     TaxonomyRevisionConflict,
 )
+from question_bank.taxonomy.curriculum_catalog import (
+    infer_curriculum_volume_from_text,
+)
 from question_bank.models.tag_schema import TagAnalysis
 from question_bank.services.ai_tagging_service import _analysis_from_constraint
+from path_manager import PathManager
 
 
 CATALOG_PATH = (
@@ -29,11 +33,38 @@ CATALOG_PATH = (
 )
 
 
+def test_curriculum_volume_filename_inference_requires_one_unambiguous_volume() -> None:
+    inferred = infer_curriculum_volume_from_text(
+        "2025年七年级下册期末数学试卷.docx"
+    )
+
+    assert inferred is not None
+    assert inferred["id"] == "bnu24-math-g7-lower"
+    assert infer_curriculum_volume_from_text("0526学情小结.docx") is None
+    assert infer_curriculum_volume_from_text(
+        "七年级上册与下册复习资料.docx"
+    ) is None
+
+
 @pytest.fixture
 def governance(tmp_path: Path) -> TaxonomyGovernance:
     return TaxonomyGovernance(
         catalog_path=CATALOG_PATH,
         state_path=tmp_path / "taxonomy-state.json",
+    )
+
+
+def test_default_governance_state_uses_a_clean_v2_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("AI_GRADING_TAXONOMY_STATE_PATH", raising=False)
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+
+    manager = PathManager()
+
+    assert manager.taxonomy_state_path == (
+        tmp_path / "AIGradingSystem" / "config" / "taxonomy_state_v2.json"
     )
 
 
@@ -68,7 +99,7 @@ def _persist_unknown(
     )
 
 
-def test_catalog_and_prompt_expose_only_five_controlled_dimensions(
+def test_catalog_and_prompt_expose_six_controlled_dimensions(
     governance: TaxonomyGovernance,
 ) -> None:
     catalog = governance.catalog()
@@ -80,6 +111,8 @@ def test_catalog_and_prompt_expose_only_five_controlled_dimensions(
     assert tuple(TaxonomyDimensionsResponse.model_fields) == ALLOWED_DIMENSIONS
     assert set(contract["candidates"]) == set(ALLOWED_DIMENSIONS)
     assert contract["allowed_dimensions"] == list(ALLOWED_DIMENSIONS)
+    assert contract["candidate_fingerprint"]
+    assert contract["allowed_term_ids"].keys() == contract["candidates"].keys()
     assert contract["rules"]["forbidden_dimensions"] == [
         "sub_skill",
         "measured_skill",
@@ -98,6 +131,221 @@ def test_catalog_and_prompt_expose_only_five_controlled_dimensions(
         re.match(r"^[七八九]年级[上下]册 第[一二三四五六七八九十百0-9]+章(?:\s|$)", item.name)
         for item in response.dimensions.curriculum
     )
+    assert {
+        item.name for item in response.dimensions.special_type
+    } >= {"动态几何题", "新定义题", "数学阅读理解题"}
+
+
+def test_per_question_candidates_share_revision_but_do_not_share_shortlist(
+    governance: TaxonomyGovernance,
+) -> None:
+    contracts = governance.prompt_contracts(
+        {
+            1: {
+                "question_text": "用配方法解一元二次方程",
+                "grade": "九年级",
+                "semester": "上册",
+            },
+            2: {
+                "question_text": "阅读新定义并研究动态几何图形",
+                "grade": "八年级",
+                "semester": "下册",
+            },
+        }
+    )
+
+    assert contracts[1]["taxonomy_revision"] == contracts[2]["taxonomy_revision"]
+    assert contracts[1]["candidate_fingerprint"] != contracts[2]["candidate_fingerprint"]
+    assert (
+        contracts[1]["allowed_term_ids"]["knowledge"]
+        != contracts[2]["allowed_term_ids"]["knowledge"]
+    )
+    assert any(
+        item["name"] == "新定义题"
+        for item in contracts[2]["candidates"]["special_type"]
+    )
+
+
+def test_curriculum_candidates_are_scoped_to_teacher_selected_volume(
+    governance: TaxonomyGovernance,
+) -> None:
+    contract = governance.prompt_contract(
+        {
+            "question_text": "求三角形内角和",
+            "grade": "七年级",
+            "semester": "下册",
+            "curriculum_volume_id": "bnu24-math-g7-lower",
+        }
+    )
+
+    assert contract["curriculum_volume"]["id"] == "bnu24-math-g7-lower"
+    assert contract["curriculum_volume"]["sections"]
+    assert all(
+        item["id"].startswith("bnu24-math-g7-lower-")
+        for item in contract["candidates"]["curriculum"]
+    )
+    assert all(
+        item["id"].startswith("bnu24-math-g7-lower-")
+        for item in contract["curriculum_volume"]["sections"]
+    )
+
+
+def test_historical_saved_tags_do_not_bias_the_new_candidate_contract(
+    governance: TaxonomyGovernance,
+) -> None:
+    current = governance.prompt_contract({"question_text": "计算 1+1"})
+    with_legacy_tags = governance.prompt_contract(
+        {
+            "question_text": "计算 1+1",
+            "existing_tags_by_dimension": {
+                "special_type": ["动态几何题"],
+                "knowledge": ["旧版混乱标签"],
+            },
+        }
+    )
+
+    assert (
+        with_legacy_tags["candidate_fingerprint"]
+        == current["candidate_fingerprint"]
+    )
+
+
+def test_retrieval_hints_recall_broad_parent_without_becoming_alias(
+    governance: TaxonomyGovernance,
+) -> None:
+    contract = governance.prompt_contract(
+        {"question_text": "请在数轴上画出指定的点"}
+    )
+
+    assert governance.resolve_term("knowledge", "数轴") is None
+    assert any(
+        item["id"] == "kp_alg_real_numbers"
+        for item in contract["candidates"]["knowledge"]
+    )
+    assert any(
+        item["name"] == "数轴的概念与画法"
+        for item in contract["candidates"]["knowledge"]
+    )
+
+
+def test_full_vocabulary_match_outside_shortlist_is_accepted_and_reported(
+    governance: TaxonomyGovernance,
+) -> None:
+    constrained = governance.constrain(
+        {"knowledge_points": ["整式运算"]},
+        context={
+            "allowed_term_ids": {
+                dimension: [] for dimension in ALLOWED_DIMENSIONS
+            }
+        },
+    )
+
+    assert constrained["accepted_analysis"]["knowledge"] == ["整式运算"]
+    assert constrained["proposals"] == []
+    assert constrained["retrieval_misses"] == [
+        {
+            "dimension": "knowledge",
+            "submitted_name": "整式运算",
+            "canonical_id": "kp_alg_polynomial",
+            "canonical_name": "整式运算",
+            "source_field": "knowledge_points",
+        }
+    ]
+
+
+def test_each_question_keeps_only_two_unknown_free_proposals(
+    governance: TaxonomyGovernance,
+) -> None:
+    constrained = governance.constrain(
+        {
+            "proposed_tags": [
+                {"dimension": "knowledge", "name": "自由词一"},
+                {"dimension": "method", "name": "自由词二"},
+                {"dimension": "special_type", "name": "自由词三"},
+            ]
+        }
+    )
+
+    assert [
+        item["proposed_name"] for item in constrained["proposals"]
+    ] == ["自由词一", "自由词二"]
+    assert constrained["proposal_overflow"] == [
+        {
+            "dimension": "special_type",
+            "name": "自由词三",
+            "source_field": "proposed_tags",
+        }
+    ]
+
+
+def test_persistable_proposal_uses_its_name_not_its_transport_id(
+    governance: TaxonomyGovernance,
+) -> None:
+    constrained = governance.constrain(
+        {
+            "knowledge_points": ["待治理的新知识"],
+            "proposed_tags": [
+                {
+                    "id": "proposal-transport-id",
+                    "dimension": "knowledge",
+                    "proposed_name": "待治理的新知识",
+                    "definition": "一个需要教师判断的新知识标签",
+                    "reason": "当前正式词表没有准确表达",
+                    "nearest_id": "",
+                    "why_not_reuse": "语义边界不同",
+                }
+            ],
+        }
+    )
+
+    assert len(constrained["proposals"]) == 1
+    assert constrained["proposals"][0]["proposed_name"] == "待治理的新知识"
+    assert constrained["proposals"][0]["definition"] == "一个需要教师判断的新知识标签"
+    assert constrained["proposals"][0]["reason"] == "当前正式词表没有准确表达"
+
+
+def test_exact_composite_curriculum_name_resolves_to_multiple_existing_terms(
+    governance: TaxonomyGovernance,
+) -> None:
+    first = "七年级下册 第二章 相交线与平行线"
+    second = "七年级下册 第四章 三角形"
+
+    constrained = governance.constrain(
+        {
+            "proposed_tags": [
+                {
+                    "dimension": "curriculum",
+                    "name": f"{first}，{second}",
+                    "reason": "本题综合两个章节",
+                }
+            ]
+        }
+    )
+
+    assert constrained["accepted_analysis"]["curriculum"] == [first, second]
+    assert constrained["proposals"] == []
+    assert constrained["status"] == "accepted"
+
+
+def test_composite_curriculum_is_not_split_when_any_part_is_unknown(
+    governance: TaxonomyGovernance,
+) -> None:
+    constrained = governance.constrain(
+        {
+            "proposed_tags": [
+                {
+                    "dimension": "curriculum",
+                    "name": "七年级下册 第二章 相交线与平行线，未来教材未知章",
+                    "reason": "本题综合两个章节",
+                }
+            ]
+        }
+    )
+
+    assert constrained["accepted_analysis"]["curriculum"] == []
+    assert [
+        item["proposed_name"] for item in constrained["proposals"]
+    ] == ["七年级下册 第二章 相交线与平行线，未来教材未知章"]
 
 
 def test_unknown_term_is_idempotently_queued_and_legacy_fields_are_ignored(
@@ -113,9 +361,15 @@ def test_unknown_term_is_idempotently_queued_and_legacy_fields_are_ignored(
         name="自检规范模型",
         token="1" * 32,
     )
+    retried_by_new_job = _persist_unknown(
+        governance,
+        name="自检规范模型",
+        token="d" * 32,
+    )
     pending = governance.list_proposals(status="pending")
 
     assert first == replay
+    assert retried_by_new_job["taxonomy_revision"] == 1
     assert first["status"] == "needs_review"
     assert first["taxonomy_revision"] == 1
     assert first["ignored_legacy_fields"] == ["sub_skills", "teaching_stage"]

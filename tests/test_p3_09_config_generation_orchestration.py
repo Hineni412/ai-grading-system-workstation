@@ -4,6 +4,7 @@ import inspect
 from typing import Any
 
 from backend.config_generation.gateway import LLMConfigGenerationGateway
+from backend.config_generation.contract import GENERATED_ID_CONTRACT_PROMPT
 from backend.config_generation.orchestration import (
     ConfigGenerationOrchestrator,
     ConfigGenerationPolicy,
@@ -179,7 +180,8 @@ def test_score_allocation_prompt_snapshot_is_exact() -> None:
     assert prompt == (
         "请仅为下列已确认题目结构分配分值，总分必须精确等于100。\n"
         "不同题型之间不限制分值高低；相同类型客观题必须同分；所有分值均为正整数；单题不超过18分。\n"
-        "保持所有 question_id、part_id、step_id 和小问结构不变。"
+        f"{GENERATED_ID_CONTRACT_PROMPT}"
+        "保持所有给定的 question_id、part_id、step_id 和小问结构不变。"
         "分值可以不采用原卷分值，但不得改变小问作答要求或 response_mode。\n"
         "\n原始文档文本（仅用于识别原卷分值提示）：\n原卷文字\n"
         '仅返回 JSON：{"question_scores":[{"question_id":"Q1","max_score":1,'
@@ -309,6 +311,70 @@ def test_partial_failure_retries_only_failed_batch_then_scores_once() -> None:
     assert "SCORE_QUESTION_IDS_JSON" in retry_gateway.calls[1][1]
     assert completed["meta"]["failed_question_ids"] == []
     assert completed["meta"]["score_allocation_ai_success"] is True
+
+
+def test_targeted_regeneration_replaces_selected_question_then_reallocates_scores() -> None:
+    existing = _question_payload("Q1")
+    q2 = _question_payload("Q2")
+    existing["rubric"]["questions"].extend(q2["rubric"]["questions"])
+    existing["answer_key"]["questions"].extend(q2["answer_key"]["questions"])
+    existing["rubric"]["questions"][0]["max_score"] = 40
+    existing["rubric"]["questions"][0]["parts"][0]["part_score"] = 40
+    existing["rubric"]["questions"][0]["parts"][0]["steps"][0]["step_score"] = 40
+    existing["rubric"]["questions"][1]["max_score"] = 60
+    existing["rubric"]["questions"][1]["parts"][0]["part_score"] = 60
+    existing["rubric"]["questions"][1]["parts"][0]["steps"][0]["step_score"] = 60
+    original_q2 = existing["rubric"]["questions"][1].copy()
+    replacement = _question_payload("Q1")
+    replacement["rubric"]["questions"][0]["parts"][0]["steps"][0][
+        "core_goal"
+    ] = "采用最新返回核对 B"
+    replacement["answer_key"]["questions"][0]["canonical_answer"] = "B"
+    replacement["answer_key"]["questions"][0]["parts"][0]["answer"] = "B"
+    score_payload = {
+        "question_scores": [
+            {
+                "question_id": question_id,
+                "max_score": 50,
+                "parts": [{
+                    "part_id": question_id,
+                    "part_score": 50,
+                    "steps": [{"step_id": "S1", "step_score": 50}],
+                }],
+            }
+            for question_id in ("Q1", "Q2")
+        ],
+    }
+    gateway = _ScriptedGateway([replacement, score_payload])
+    blocks = [
+        {"question_id": "Q1", "question_type": "choice", "text": "one"},
+        {"question_id": "Q2", "question_type": "choice", "text": "two"},
+    ]
+
+    completed = ConfigGenerationOrchestrator(
+        gateway,
+        _policy(),
+        batch_size=3,
+    ).regenerate_questions(
+        existing,
+        blocks,
+        "document",
+        regenerate_question_ids=["Q1"],
+    )
+
+    assert len(gateway.calls) == 2
+    assert 'BATCH_QUESTION_IDS_JSON=["Q1"]' in gateway.calls[0][1]
+    assert "SCORE_QUESTION_IDS_JSON" in gateway.calls[1][1]
+    q1 = completed["rubric"]["questions"][0]
+    assert q1["parts"][0]["steps"][0]["core_goal"] == "采用最新返回核对 B"
+    assert q1["max_score"] == 50
+    assert q1["parts"][0]["part_score"] == 50
+    assert q1["parts"][0]["steps"][0]["step_score"] == 50
+    assert completed["answer_key"]["questions"][0]["canonical_answer"] == "B"
+    assert completed["rubric"]["questions"][1]["question_id"] == original_q2["question_id"]
+    assert completed["rubric"]["questions"][1]["max_score"] == 50
+    assert completed["rubric"]["total_score"] == 100
+    assert completed["meta"]["score_allocation_mode"] == "dedicated_ai_scoring"
 
 
 def test_production_job_no_longer_imports_config_orchestration_from_session_manager() -> None:

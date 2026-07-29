@@ -111,11 +111,19 @@ def test_session_question_bank_sync_is_version_bound_and_public(
 
     first = client.post(
         f"/api/sessions/{session_id}/question-bank-sync",
-        json={"config_revision": revision, "client_request_token": token},
+        json={
+            "config_revision": revision,
+            "client_request_token": token,
+            "curriculum_volume_id": "bnu24-math-g7-upper",
+        },
     )
     replay = client.post(
         f"/api/sessions/{session_id}/question-bank-sync",
-        json={"config_revision": revision, "client_request_token": token},
+        json={
+            "config_revision": revision,
+            "client_request_token": token,
+            "curriculum_volume_id": "bnu24-math-g7-upper",
+        },
     )
 
     assert first.status_code == 202
@@ -143,11 +151,35 @@ def test_session_question_bank_sync_rejects_stale_config_revision(
         json={
             "config_revision": "f" * 64,
             "client_request_token": "b" * 32,
+            "curriculum_volume_id": "bnu24-math-g7-upper",
         },
     )
 
     assert response.status_code == 409
     assert response.json()["error"]["code"] == "config_revision_conflict"
+    jobs, total = manager.list(
+        session_id=session_id,
+        job_types=("question_bank_sync",),
+    )
+    assert jobs == []
+    assert total == 0
+
+
+def test_session_question_bank_sync_requires_teacher_volume_when_title_is_ambiguous(
+    tmp_path: Path,
+) -> None:
+    client, _db, manager, session_id, revision = _configured_client(tmp_path)
+
+    response = client.post(
+        f"/api/sessions/{session_id}/question-bank-sync",
+        json={
+            "config_revision": revision,
+            "client_request_token": "9" * 32,
+        },
+    )
+
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "curriculum_volume_required"
     jobs, total = manager.list(
         session_id=session_id,
         job_types=("question_bank_sync",),
@@ -186,6 +218,7 @@ def test_failed_sync_without_result_can_retry_only_the_sync_chain(
         json={
             "config_revision": revision,
             "client_request_token": "e" * 32,
+            "curriculum_volume_id": "bnu24-math-g7-upper",
         },
     )
 

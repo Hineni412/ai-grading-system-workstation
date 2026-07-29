@@ -6,6 +6,11 @@ from enum import Enum
 from types import MappingProxyType
 from typing import Mapping
 
+from .execution import (
+    execution_scope_key,
+    execution_snapshot_from_profile,
+)
+
 
 class LLMPolicyError(ValueError):
     """Raised when an LLM policy override is invalid."""
@@ -58,6 +63,14 @@ _POLICY_OVERRIDE_FIELDS = frozenset(
     for kind in LLMRequestKind
     for suffix in _POLICY_SUFFIXES
 )
+_EXECUTION_PROFILE_FIELDS = frozenset(
+    {
+        "request_speed_mode",
+        "max_concurrent_requests",
+        "requests_per_minute",
+    }
+)
+EXECUTION_SCOPE_PROFILE_FIELD = "_llm_execution_scope_key"
 
 
 def _bounded_float(
@@ -117,13 +130,22 @@ def policy_from_profile(
         0,
         5,
     )
-    requests_per_minute = _bounded_int(
-        values,
-        f"{prefix}_requests_per_minute",
-        base.requests_per_minute,
-        1,
-        5000,
-    )
+    if _EXECUTION_PROFILE_FIELDS.intersection(values):
+        requests_per_minute = (
+            execution_snapshot_from_profile(values).requests_per_minute
+        )
+    else:
+        legacy_rpm_values = [
+            _bounded_int(
+                values,
+                f"llm_{candidate.value}_requests_per_minute",
+                DEFAULT_POLICIES[candidate].requests_per_minute,
+                1,
+                5000,
+            )
+            for candidate in LLMRequestKind
+        ]
+        requests_per_minute = min(legacy_rpm_values)
     return LLMRequestPolicy(
         timeout,
         retries,
@@ -136,8 +158,11 @@ def policy_overrides_from_profile(
     profile: Mapping[str, object] | None,
 ) -> dict[str, object]:
     values = profile or {}
-    return {
+    overrides = {
         field: value
         for field, value in values.items()
         if field in _POLICY_OVERRIDE_FIELDS
+        or field in _EXECUTION_PROFILE_FIELDS
     }
+    overrides[EXECUTION_SCOPE_PROFILE_FIELD] = execution_scope_key(values)
+    return overrides

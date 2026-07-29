@@ -119,6 +119,7 @@ def run_objective_batch_recognition(
     answer_key: dict[str, Any],
     output_root: Path,
     recognition_client: Any | None = None,
+    recognition_model: str | None = None,
     fallback_recognition_client: Any | None = None,
     fallback_model: str | None = None,
     batch_size: int = 15,
@@ -240,7 +241,7 @@ def run_objective_batch_recognition(
                 client,
                 prompt,
                 [image_bytes],
-                model=None,
+                model=recognition_model,
                 usage_callback=_usage_callback,
             )
         except Exception as exc:  # noqa: BLE001

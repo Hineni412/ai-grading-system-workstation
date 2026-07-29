@@ -2,7 +2,11 @@ import { createApp, nextTick } from 'vue'
 import { createPinia, setActivePinia } from 'pinia'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { uploadConfigSource, type ConfigSource } from '../api/config-workspace'
+import {
+  uploadConfigSource,
+  type ConfigGenerationRequest,
+  type ConfigSource,
+} from '../api/config-workspace'
 import type { JobResponse } from '../api/jobs'
 import { ApiError } from '../api/errors'
 import type { RegionReadiness } from '../api/template-regions'
@@ -33,6 +37,12 @@ function activeJob(): JobResponse {
     started_at: '2026-07-15T00:00:01Z', updated_at: '2026-07-15T00:00:02Z',
     finished_at: null,
   }
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>((done) => { resolve = done })
+  return { promise, resolve }
 }
 
 async function settle(): Promise<void> {
@@ -95,6 +105,171 @@ beforeEach(() => {
 })
 
 describe('SessionConfigView source replacement guard', () => {
+  it.each([
+    ['分批重新生成', 'batched'],
+    ['整卷重新生成', 'whole_document'],
+  ] as const)('starts %s beside blocking validation without leaving the editor', async (
+    buttonName,
+    generationMode,
+  ) => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const sessions = useSessionStore(pinia)
+    sessions.$patch({
+      sessions: [{ id: 7, name: '七年级数学', status: 'created', is_deleted: false,
+        deleted_at: null, created_at: null, updated_at: null }],
+      selectedSessionId: 7,
+      loadState: 'ready',
+    })
+    const workspace = useConfigWorkspaceStore(pinia)
+    workspace.selectSession(7)
+    workspace.setSource({
+      ...source(),
+      questions: [{
+        question_id: 'Q1',
+        question_type: 'calculation',
+        question_preview: '计算',
+        answer_preview: '答案',
+        answer_present: true,
+        needs_review: false,
+        local_answer_trusted: true,
+        has_question_asset: false,
+        has_answer_asset: false,
+      }],
+    })
+    workspace.setEditor({
+      session_id: 7,
+      configured: true,
+      revision: 'd'.repeat(64),
+      total_score: 100,
+      issues: [{
+        code: 'quality_blocking',
+        severity: 'error',
+        row_id: 'row-q1-p1-s1',
+        field: 'standard_answer',
+        message: '[质量检查-阻断] Q1 缺少可评分的文本标准答案',
+      }],
+      source: null,
+      rows: [{
+        row_id: 'row-q1-p1-s1',
+        question_id: 'Q1',
+        part_id: 'P1',
+        step_id: 'S1',
+        part_label: '第 1 问',
+        question_type: 'calculation',
+        core_goal: '计算',
+        score: 100,
+        standard_answer: '模型原结果',
+        accepted_answers: [],
+        match_rule: 'exact',
+        answer_only_max_score: null,
+        require_final_answer: true,
+        required_elements: [],
+        deduction_rules: [],
+        part_deduction_rules: [],
+        final_answer_rule: '',
+      }],
+    })
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true)
+    if (generationMode === 'batched') {
+      workspace.updateEditor({
+        row_id: 'row-q1-p1-s1',
+        standard_answer: '尚未保存的教师修改',
+      })
+    }
+    const pending = deferred<JobResponse>()
+    const generationSubmitter = vi.fn((
+      sessionId: number,
+      request: ConfigGenerationRequest,
+    ) => {
+      void sessionId
+      void request
+      return pending.promise
+    })
+    const editorLoader = vi.fn(async () => ({
+      session_id: 7,
+      configured: true,
+      revision: 'e'.repeat(64),
+      total_score: 100,
+      issues: [],
+      source: null,
+      rows: workspace.editor?.rows ?? [],
+    }))
+    const host = document.createElement('div')
+    document.body.append(host)
+    const app = createApp(SessionConfigView, {
+      generationSubmitter,
+      editorLoader,
+      templateReadinessLoader: vi.fn(async (): Promise<RegionReadiness> => ({
+        session_id: 7,
+        scoring_configured: true,
+        template_present: false,
+        template_ready: false,
+      })),
+    })
+    app.use(pinia)
+    app.mount(host)
+    await settle()
+
+    const button = host.querySelector<HTMLButtonElement>(`button[name="${buttonName}"]`)!
+    expect(button).not.toBeNull()
+    expect(host.querySelectorAll('.rubric-unit-card')).toHaveLength(1)
+    button.click()
+    button.click()
+    await nextTick()
+
+    expect(confirm).toHaveBeenCalledTimes(generationMode === 'batched' ? 1 : 0)
+    expect(generationSubmitter).toHaveBeenCalledExactlyOnceWith(7, expect.objectContaining({
+      source_id: 'a'.repeat(32),
+      source_revision: 'b'.repeat(64),
+      generation_mode: generationMode,
+      client_request_token: expect.stringMatching(/^[0-9a-f]{32}$/),
+      ...(generationMode === 'batched' ? {
+        regenerate_question_ids: ['Q1'],
+        base_revision: 'd'.repeat(64),
+      } : {}),
+    }))
+    expect(host.querySelectorAll('.rubric-unit-card')).toHaveLength(1)
+    expect(host.querySelector<HTMLButtonElement>('button[name="分批重新生成"]')?.disabled)
+      .toBe(true)
+    expect(host.querySelector<HTMLButtonElement>('button[name="整卷重新生成"]')?.disabled)
+      .toBe(true)
+    expect(button.textContent).toContain('正在提交')
+    const inactiveButtonName = generationMode === 'batched' ? '整卷重新生成' : '分批重新生成'
+    expect(host.querySelector<HTMLButtonElement>(
+      `button[name="${inactiveButtonName}"]`,
+    )?.textContent).toContain(inactiveButtonName)
+
+    pending.resolve({
+      ...activeJob(),
+      payload: {
+        session_id: 7,
+        mode: 'generate',
+        generation_mode: generationMode,
+        source_id: 'a'.repeat(32),
+        source_revision: 'b'.repeat(64),
+      },
+    })
+    await settle()
+    expect(useJobStore().jobs[31]?.status).toBe('running')
+    useJobStore().track({
+      ...activeJob(),
+      status: 'succeeded',
+      progress: 1,
+      result: { outcome: 'complete' },
+      updated_at: '2026-07-15T00:00:03Z',
+      finished_at: '2026-07-15T00:00:03Z',
+    })
+    await settle()
+
+    expect(editorLoader).toHaveBeenCalledWith(7)
+    expect(workspace.editor?.revision).toBe('e'.repeat(64))
+    expect(host.textContent).toContain('新评分依据已更新')
+    expect(host.querySelector('button[name="分批重新生成"]')).toBeNull()
+    expect(host.querySelector('button[name="整卷重新生成"]')).toBeNull()
+    app.unmount()
+  })
+
   it.each([
     [{ template_present: false, template_ready: false }, '准备样卷', '可开始'],
     [{ template_present: true, template_ready: false }, '继续标定', '标定中'],
@@ -180,7 +355,7 @@ describe('SessionConfigView source replacement guard', () => {
         part_label: '第 1 问', question_type: 'calculation', core_goal: '计算', score: 100,
         standard_answer: '1', accepted_answers: ['1'], match_rule: 'exact',
         answer_only_max_score: null, require_final_answer: true, required_elements: [],
-        deduction_rules: [], final_answer_rule: '' }],
+        deduction_rules: [], part_deduction_rules: [], final_answer_rule: '' }],
     })
     const timeout = new ApiError({ kind: 'network', status: null, code: 'network_error',
       message: 'offline', details: {}, requestId: 'safe', retryable: true })

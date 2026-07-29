@@ -1558,3 +1558,42 @@ def test_teacher_decisions_filter_and_override_only_known_questions(tmp_path: Pa
             record,
             [QuestionDecision(question_id="Q404", question_type="choice", excluded=True)],
         )
+
+
+def test_teacher_can_confirm_or_replace_the_answer_used_for_generation(
+    tmp_path: Path,
+) -> None:
+    document = Document()
+    document.add_paragraph("二、填空题")
+    document.add_paragraph("1. 求这个角的度数：____。")
+    document.add_paragraph("参考答案")
+    document.add_paragraph("1. 70°")
+    output = io.BytesIO()
+    document.save(output)
+    source_service = service(tmp_path)
+    record = asyncio.run(
+        source_service.stage_and_parse(
+            session_id=7,
+            filename="paper.docx",
+            chunks=chunks(output.getvalue()),
+        )
+    )
+
+    prepared = source_service.apply_teacher_decisions(
+        record,
+        [
+            QuestionDecision(
+                question_id="Q1",
+                question_type="fill_blank",
+                excluded=False,
+                answer_confirmed=True,
+                answer_override="72°",
+            )
+        ],
+    )
+
+    block = prepared.confirmed_blocks[0]
+    assert block["canonical_answer"] == "72°"
+    assert block["answer_text"] == "72°"
+    assert block["local_answer_trusted"] is True
+    assert block["answer_confirmed_by_teacher"] is True

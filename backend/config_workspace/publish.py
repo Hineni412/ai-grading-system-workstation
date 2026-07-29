@@ -31,6 +31,7 @@ from backend.config_generation.normalization import (
     validate_generated_config,
 )
 from path_manager import resolve_stored_file_path
+from question_id_contract import canonicalize_grading_config_payload
 
 if TYPE_CHECKING:
     from backend.jobs.store import JobStore
@@ -82,7 +83,8 @@ def publish_generated_config(
         if len(clean_token) != 32 or any(ch not in "0123456789abcdef" for ch in clean_token):
             raise ValueError("publication token must be 32 hexadecimal characters")
         stem = f"editor-{clean_token}"
-    validate_generated_config(payload)
+    canonical_payload = canonicalize_grading_config_payload(payload)
+    validate_generated_config(canonical_payload)
     filesystem = SecureRootFilesystem(Path(upload_config_dir))
     rubric_path = filesystem.root / f"rubric_{stem}.json"
     answer_key_path = filesystem.root / f"answer_key_{stem}.json"
@@ -93,12 +95,12 @@ def publish_generated_config(
     try:
         filesystem.atomic_write_bytes(
             rubric_path,
-            _json_bytes(payload["rubric"]),
+            _json_bytes(canonical_payload["rubric"]),
         )
         created.append(rubric_path)
         filesystem.atomic_write_bytes(
             answer_key_path,
-            _json_bytes(payload["answer_key"]),
+            _json_bytes(canonical_payload["answer_key"]),
         )
         created.append(answer_key_path)
     except BaseException:

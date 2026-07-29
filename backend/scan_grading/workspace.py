@@ -421,8 +421,6 @@ class ScanGradingWorkspace:
             "enhance_images": True,
             "resume_run_id": run.id,
         }
-        if run.grading_mode == "full_paper":
-            payload["max_workers"] = 1
         return payload
 
     def _require_current_config(self, session_id: int, run: Any) -> None:
@@ -453,8 +451,6 @@ class ScanGradingWorkspace:
             "enhance_images": True,
             "source_run_id": run.id,
         }
-        if run.grading_mode == "full_paper":
-            payload["max_workers"] = 1
         return payload
 
     def prepare_supplement(self, session_id: int, run_id: int) -> dict[str, Any]:
@@ -478,8 +474,6 @@ class ScanGradingWorkspace:
             "supplement_run_id": run.id,
             "enhance_images": True,
         }
-        if run.grading_mode == "full_paper":
-            payload["max_workers"] = 1
         return payload
 
     def submit_resume(self, session_id: int, run_id: int) -> Any:
@@ -593,8 +587,6 @@ class ScanGradingWorkspace:
             }
             if max_workers is not None:
                 payload["max_workers"] = int(max_workers)
-            elif payload["grading_mode"] == "full_paper":
-                payload["max_workers"] = 1
             if requests_per_minute is not None:
                 payload["requests_per_minute"] = int(requests_per_minute)
             return payload

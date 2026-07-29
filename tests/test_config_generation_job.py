@@ -7,6 +7,7 @@ import sqlite3
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from types import SimpleNamespace
 
 import fitz
 import pytest
@@ -26,6 +27,7 @@ from backend.jobs.config_generation import (
     stage_config_generation_input,
     stage_config_refine_input,
     stage_config_source_generation_input,
+    _submit_automatic_question_bank_sync,
 )
 from backend.config_workspace.editor import (
     ManualPartInput,
@@ -39,6 +41,7 @@ from backend.jobs.manager import JobManager
 from backend.jobs.store import JobStore
 from backend.jobs.store import ConfigRetryAlreadySubmittedError, ConfigSessionBusyError
 from db_manager import DBManager
+from question_id_contract import canonicalize_grading_config_payload
 from question_bank.services.source_paper_archive_service import archive_source_bytes
 from session_manager import save_generated_config
 
@@ -277,10 +280,51 @@ def test_stage_config_generation_input_round_trips_without_client_path(
         "session_id": 7,
         "expected_rubric_path": "server-rubric.json",
         "expected_answer_key_path": "server-answer.json",
+        "sync_to_question_bank": False,
     }
     assert sorted(path.name for path in tmp_path.iterdir()) == [
         f"config_generation_input_{input_id}.json"
     ]
+
+
+def test_automatic_question_bank_sync_uses_published_revision_and_is_idempotent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    submitted: list[dict[str, object]] = []
+    context = SimpleNamespace(
+        job_id=41,
+        submit_question_bank_sync=lambda payload: (
+            submitted.append(payload)
+            or SimpleNamespace(id=73, status="queued"),
+            True,
+        ),
+    )
+    monkeypatch.setattr(
+        "backend.jobs.config_generation.load_editor_config",
+        lambda _db, _session_id: SimpleNamespace(
+            configured=True,
+            revision="a" * 64,
+        ),
+    )
+    summary: dict[str, object] = {}
+
+    _submit_automatic_question_bank_sync(
+        context=context,
+        db=object(),
+        session_id=7,
+        source_paper_sha256="b" * 64,
+        summary=summary,
+    )
+
+    assert len(submitted) == 1
+    request = submitted[0]
+    assert request["session_id"] == 7
+    assert request["config_revision"] == "a" * 64
+    assert request["source_paper_sha256"] == "b" * 64
+    assert len(str(request["client_request_token"])) == 32
+    assert len(str(request["client_request_fingerprint"])) == 64
+    assert summary["question_bank_sync_state"] == "queued"
+    assert summary["question_bank_sync_job_id"] == 73
 
 
 def test_load_config_generation_input_rejects_path_traversal(tmp_path: Path) -> None:
@@ -541,6 +585,65 @@ def test_config_generation_job_binds_complete_result_and_returns_safe_summary(
     assert stored_job is not None
     assert stored_job.status == "succeeded"
     assert stored_job.result == result
+
+
+def test_complete_generation_enqueues_persisted_question_bank_sync(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db, session_id, old_paths = _db_with_session(tmp_path)
+    source_service, source = _controlled_source(tmp_path, session_id)
+    input_id = _stage_controlled_input(
+        tmp_path,
+        source_service,
+        source,
+        old_paths,
+        generation_mode="batched",
+    )
+    base_context, store = _job_context(
+        db.db_path,
+        {
+            "session_id": session_id,
+            "mode": "generate",
+            "generation_mode": "batched",
+            "input_id": input_id,
+            "source_id": source.source_id,
+            "source_revision": source.source_revision,
+            "sync_to_question_bank": True,
+        },
+    )
+    submitted: list[dict[str, object]] = []
+    context = JobContext(
+        job_id=base_context.job_id,
+        job_type=base_context.job_type,
+        payload=base_context.payload,
+        store=store,
+        question_bank_sync_submitter=lambda payload: (
+            submitted.append(payload)
+            or SimpleNamespace(id=91, status="queued"),
+            True,
+        ),
+    )
+    monkeypatch.setattr(
+        "backend.jobs.config_generation.generate_grading_config_from_confirmed_blocks",
+        lambda *_args, **_kwargs: _valid_config_payload(),
+    )
+
+    result = run_config_generation_job(
+        context=context,
+        db=db,
+        upload_config_dir=tmp_path / "uploaded",
+        llm_client_factory=lambda: object(),
+    )
+
+    assert result["outcome"] == "complete"
+    assert result["question_bank_sync_requested"] is True
+    assert result["question_bank_sync_state"] == "queued"
+    assert result["question_bank_sync_job_id"] == 91
+    assert len(submitted) == 1
+    assert submitted[0]["source_paper_sha256"] == source.sha256
+    assert submitted[0]["config_revision"] == result["config_revision"]
+    assert submitted[0]["source_safe_filename"] == source.safe_filename
 
 
 def test_complete_generation_persists_mapping_reconfirmation_when_template_files_are_missing(
@@ -1176,6 +1279,73 @@ def test_source_generation_cancellation_preserves_old_binding_and_new_file_set(
     assert session is not None
     assert (session["rubric_path"], session["answer_key_path"]) == old_paths
     assert not list((tmp_path / "question_bank" / "raw_papers").glob("*"))
+
+
+def test_targeted_regeneration_job_uses_current_payload_and_selected_question_only(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db, session_id, old_paths = _db_with_session(tmp_path)
+    loaded = load_editor_config(db, session_id)
+    source_service, source = _controlled_source(tmp_path, session_id)
+    input_id = stage_config_source_generation_input(
+        tmp_path / "uploaded",
+        session_id=session_id,
+        expected_rubric_path=old_paths[0],
+        expected_answer_key_path=old_paths[1],
+        generation_mode="batched",
+        source_id=source.source_id,
+        source_revision=source.source_revision,
+        decisions=[{
+            "question_id": source.questions[0].question_id,
+            "question_type": "proof",
+            "excluded": False,
+        }],
+        existing_payload=loaded.payload,
+        regenerate_question_ids=["Q1"],
+        expected_revision=loaded.revision,
+    )
+    context, _store = _job_context(
+        db.db_path,
+        {
+            "session_id": session_id,
+            "mode": "regenerate_questions",
+            "generation_mode": "batched",
+            "input_id": input_id,
+            "source_id": source.source_id,
+            "source_revision": source.source_revision,
+        },
+    )
+    captured: dict[str, object] = {}
+
+    def targeted(existing_payload, confirmed_blocks, _document_text, **kwargs):
+        captured["existing_payload"] = existing_payload
+        captured["question_ids"] = kwargs["regenerate_question_ids"]
+        captured["confirmed_ids"] = [
+            block["question_id"] for block in confirmed_blocks
+        ]
+        return _valid_config_payload()
+
+    monkeypatch.setattr(
+        "backend.jobs.config_generation.regenerate_grading_config_questions",
+        targeted,
+    )
+    monkeypatch.setattr(
+        "backend.jobs.config_generation.generate_grading_config_from_confirmed_blocks",
+        lambda *_args, **_kwargs: pytest.fail("full generation must not run"),
+    )
+
+    result = run_config_generation_job(
+        context=context,
+        db=db,
+        upload_config_dir=tmp_path / "uploaded",
+        llm_client_factory=lambda: object(),
+    )
+
+    assert result["outcome"] == "complete"
+    assert captured["existing_payload"] == loaded.payload
+    assert captured["question_ids"] == ["Q1"]
+    assert captured["confirmed_ids"] == ["Q1"]
 
 
 def test_config_generation_job_saves_partial_draft_without_binding_session(
@@ -2082,8 +2252,8 @@ def _refine_context(tmp_path: Path):
                 kind="replace_parts",
                 question_id="Q1",
                 parts=(
-                    ManualPartInput(part_id="teacher-a", score=8, core_goal="first"),
-                    ManualPartInput(part_id="teacher-b", score=9, core_goal="second"),
+                    ManualPartInput(part_id="Q1(P1)", score=8, core_goal="first"),
+                    ManualPartInput(part_id="Q1(P2)", score=9, core_goal="second"),
                 ),
             ),
         ),
@@ -2100,8 +2270,8 @@ def _refine_context(tmp_path: Path):
                 "kind": "replace_parts",
                 "question_id": "Q1",
                 "parts": [
-                    {"part_id": "teacher-a", "score": 8, "core_goal": "first"},
-                    {"part_id": "teacher-b", "score": 9, "core_goal": "second"},
+                    {"part_id": "Q1(P1)", "score": 8, "core_goal": "first"},
+                    {"part_id": "Q1(P2)", "score": 9, "core_goal": "second"},
                 ],
             }
         ],
@@ -2150,7 +2320,9 @@ def test_refine_job_preserves_teacher_part_ids_and_calls_factory_once(
     assert current["source_paper_path"] == "papers/original.docx"
     assert current["source_paper_sha256"] == "e" * 64
     published = load_editor_config(db, session_id)
-    assert editor_part_ids(published.payload) == editor_part_ids(candidate)
+    assert editor_part_ids(published.payload) == editor_part_ids(
+        canonicalize_grading_config_payload(candidate)
+    )
 
 
 def test_refine_job_rejects_changed_teacher_part_ids_and_preserves_old_binding(

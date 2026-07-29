@@ -13,6 +13,8 @@ export interface QuestionDecision {
   question_id: string
   question_type: QuestionType
   excluded: boolean
+  answer_confirmed?: boolean
+  answer_override?: string | null
 }
 
 export interface ConfigQuestionPreview {
@@ -50,6 +52,9 @@ export interface ConfigGenerationRequest {
   source_revision: string
   generation_mode: GenerationMode
   decisions: QuestionDecision[]
+  sync_to_question_bank: boolean
+  regenerate_question_ids?: string[]
+  base_revision?: string
   client_request_token?: string
 }
 
@@ -75,6 +80,7 @@ export interface ConfigEditorRow {
   require_final_answer: boolean | null
   required_elements: string[]
   deduction_rules: string[]
+  part_deduction_rules: string[]
   final_answer_rule: string
 }
 
@@ -111,6 +117,7 @@ export interface ConfigEditorEdit {
   require_final_answer?: boolean | null
   required_elements?: string[] | null
   deduction_rules?: string[] | null
+  part_deduction_rules?: string[] | null
   final_answer_rule?: string | null
 }
 
@@ -237,7 +244,7 @@ function isEditorRow(value: unknown): value is ConfigEditorRow {
     'row_id', 'question_id', 'part_id', 'step_id', 'part_label', 'question_type', 'core_goal',
     'score', 'standard_answer', 'accepted_answers', 'match_rule',
     'answer_only_max_score', 'require_final_answer', 'required_elements', 'deduction_rules',
-    'final_answer_rule',
+    'part_deduction_rules', 'final_answer_rule',
   ])) return false
   return ['row_id', 'question_id', 'part_id', 'step_id', 'part_label', 'question_type',
     'core_goal', 'standard_answer', 'match_rule', 'final_answer_rule']
@@ -247,6 +254,7 @@ function isEditorRow(value: unknown): value is ConfigEditorRow {
     && (value.require_final_answer === null || typeof value.require_final_answer === 'boolean')
     && isStringList(value.accepted_answers) && isStringList(value.required_elements)
     && isStringList(value.deduction_rules)
+    && isStringList(value.part_deduction_rules)
 }
 
 function isEditorIssue(value: unknown): value is ConfigEditorIssue {

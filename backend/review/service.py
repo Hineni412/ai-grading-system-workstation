@@ -15,6 +15,7 @@ from question_id_contract import (
     QuestionIdCatalog,
     QuestionIdContractError,
     canonicalize_question_document,
+    question_id_coordinates,
 )
 
 
@@ -24,13 +25,6 @@ REVIEW_CONFIRMED_SUMMARY = "manual_review_confirmed"
 AI_RESULT_CONFLICT_REASON = "同一题存在多份 AI 评分结果，请人工确认。"
 AI_RESULT_CONFLICT_CATEGORY = "AI 评分结果冲突"
 AI_RESULT_CONFLICT_SUMMARY = "duplicate_ai_results_for_scoring_item"
-_QUESTION_PARENT_ID = re.compile(r"^Q?\s*(\d+)\s*$", re.IGNORECASE)
-_QUESTION_PART_ID = re.compile(
-    r"^Q?\s*(\d+)\s*(?:[\(（]\s*P?\s*(\d+)\s*[\)）]|[-_.]\s*P?\s*(\d+))\s*$",
-    re.IGNORECASE,
-)
-
-
 class ReviewDetailNotFoundError(LookupError):
     def __init__(
         self,
@@ -348,6 +342,10 @@ class ReviewApplicationService:
                     else None
                 )
                 metadata = dict(ai_item.metadata) if ai_item else {}
+                if row is not None:
+                    metadata["stored_question_id"] = str(
+                        row.get("question_id") or ""
+                    ).strip()
                 metadata.update(
                     {
                         "scan_batch_id": scan_batch_id,
@@ -796,6 +794,10 @@ class ReviewApplicationService:
                     "expected_revision": expected_revision,
                     "result_id": item.result_id,
                     "detail_id": item.detail_id,
+                    "detail_question_id": (
+                        str(item.metadata.get("stored_question_id") or "").strip()
+                        or item.question_id
+                    ),
                 }
             )
             if item.result_id is not None:
@@ -867,12 +869,12 @@ def _source_region_id(
     question_id: str,
 ) -> int:
     requested = str(question_id or "").strip()
-    requested_coordinates = _question_coordinates(requested)
+    requested_coordinates = question_id_coordinates(requested)
     if requested_coordinates is not None:
         coordinate_rows = [
             (
                 region,
-                _question_coordinates(
+                question_id_coordinates(
                     region.get("mapped_question_id")
                     or region.get("detected_question_id")
                 ),
@@ -982,6 +984,11 @@ def _load_score_map(
             part_id = str(part.get("part_id") or "").strip()
             if not part_id:
                 continue
+            if len(parts) == 1 and part_id == question_id:
+                # The sole detail is the parent itself. Keep the question
+                # maximum already stored above instead of replacing it with a
+                # missing legacy part_score.
+                continue
             try:
                 scores[part_id] = float(part.get("part_score", 0))
             except (TypeError, ValueError):
@@ -1032,6 +1039,7 @@ def _load_scoring_item_map(
         question_type = _clean_optional_text(question.get("question_type"))
         if question_type is not None:
             question_type = question_type.lower()
+        question_id = str(question.get("question_id") or "").strip()
         parts = [
             part
             for part in question.get("parts", [])
@@ -1039,6 +1047,21 @@ def _load_scoring_item_map(
             and str(part.get("part_id") or "").strip()
         ]
         if parts:
+            if (
+                len(parts) == 1
+                and str(parts[0].get("part_id") or "").strip() == question_id
+            ):
+                try:
+                    scores[question_id] = float(
+                        question.get(
+                            "max_score",
+                            parts[0].get("part_score", 0),
+                        )
+                    )
+                    question_type_by_id[question_id] = question_type
+                except (TypeError, ValueError):
+                    pass
+                continue
             for part in parts:
                 part_id = str(part["part_id"]).strip()
                 try:
@@ -1047,7 +1070,6 @@ def _load_scoring_item_map(
                 except (TypeError, ValueError):
                     continue
             continue
-        question_id = str(question.get("question_id") or "").strip()
         if not question_id:
             continue
         try:
@@ -1088,8 +1110,8 @@ def _current_scoring_item_id(
     current_question_id = current_id_by_resolved.get(resolved)
     if current_question_id is None:
         return None
-    raw_coordinates = _question_coordinates(question_id)
-    current_coordinates = _question_coordinates(current_question_id)
+    raw_coordinates = question_id_coordinates(question_id)
+    current_coordinates = question_id_coordinates(current_question_id)
     if raw_coordinates is None or current_coordinates is None:
         return None
     raw_parent, raw_part = raw_coordinates
@@ -1101,18 +1123,6 @@ def _current_scoring_item_id(
     if current_part is None:
         return current_question_id if raw_part == 1 else None
     return current_question_id if raw_part == current_part else None
-
-
-def _question_coordinates(question_id: object) -> tuple[int, int | None] | None:
-    text = str(question_id or "").strip()
-    part_match = _QUESTION_PART_ID.fullmatch(text)
-    if part_match is not None:
-        part = part_match.group(2) or part_match.group(3)
-        return int(part_match.group(1)), int(part)
-    parent_match = _QUESTION_PARENT_ID.fullmatch(text)
-    if parent_match is None:
-        return None
-    return int(parent_match.group(1)), None
 
 
 def _item_matches_scope(

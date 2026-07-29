@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -218,3 +219,92 @@ def curriculum_chapter_exam_scope_values() -> dict[str, tuple[str, ...]]:
         for volume in load_curriculum_catalog()["volumes"]
         for chapter in volume["chapters"]
     }
+
+
+def curriculum_volume(
+    *,
+    volume_id: object = "",
+    grade: object = "",
+    semester: object = "",
+    textbook_version: object = "",
+) -> dict[str, Any] | None:
+    """Resolve one bundled volume from stable ID or exact paper metadata."""
+
+    clean_id = str(volume_id or "").strip()
+    clean_grade = str(grade or "").strip()
+    clean_semester = str(semester or "").strip()
+    clean_version = str(textbook_version or "").strip()
+    for volume in load_curriculum_catalog()["volumes"]:
+        if clean_id:
+            if volume["id"] == clean_id:
+                return volume
+            continue
+        if (
+            clean_grade
+            and clean_semester
+            and volume["grade"] == clean_grade
+            and volume["semester"] == clean_semester
+            and (not clean_version or volume["textbook_version"] == clean_version)
+        ):
+            return volume
+    return None
+
+
+def curriculum_volume_contract(volume_id: object) -> dict[str, Any] | None:
+    """Return the chapter and section IDs allowed for one selected volume."""
+
+    volume = curriculum_volume(volume_id=volume_id)
+    if volume is None:
+        return None
+    chapters = []
+    sections = []
+    for chapter in volume["chapters"]:
+        chapter_name = str(chapter["exam_scope_values"][0])
+        chapters.append({"id": chapter["id"], "name": chapter_name})
+        sections.extend(
+            {
+                "id": section["id"],
+                "name": section["label"],
+                "chapter_id": chapter["id"],
+                "chapter_name": chapter_name,
+            }
+            for section in chapter["sections"]
+        )
+    return {
+        "id": volume["id"],
+        "label": volume["label"],
+        "grade": volume["grade"],
+        "semester": volume["semester"],
+        "textbook_version": volume["textbook_version"],
+        "chapters": chapters,
+        "sections": sections,
+    }
+
+
+def infer_curriculum_volume_from_text(value: object) -> dict[str, Any] | None:
+    """Infer only when one grade and one semester marker are unambiguous."""
+
+    text = re.sub(r"\s+", "", str(value or ""))
+    grades = set(re.findall(r"([七八九])年级", text))
+    semesters = {
+        marker
+        for marker, patterns in (
+            ("上", ("上册", "上学期")),
+            ("下", ("下册", "下学期")),
+        )
+        if any(pattern in text for pattern in patterns)
+    }
+    if len(grades) != 1 or len(semesters) != 1:
+        return None
+    grade = f"{next(iter(grades))}年级"
+    semester = next(iter(semesters))
+    for volume in load_curriculum_catalog()["volumes"]:
+        if (
+            volume["grade"] == grade
+            and (
+                semester in volume["semester"]
+                or semester in volume["label"]
+            )
+        ):
+            return volume
+    return None

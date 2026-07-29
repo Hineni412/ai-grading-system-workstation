@@ -9,10 +9,13 @@ import {
   type QuestionBankFacets,
   type QuestionBankFilters,
   type QuestionBankListItem,
+  type QuestionBankSort,
   type SimilarQuestionItem,
 } from '../../api/question-bank'
 import { useAssemblyStore } from '../../stores/assembly'
+import DifficultyRangeFilter from './DifficultyRangeFilter.vue'
 import QuestionContentRenderer from './QuestionContentRenderer.vue'
+import QuestionSortControl from './QuestionSortControl.vue'
 
 const emit = defineEmits<{
   edit: []
@@ -23,6 +26,7 @@ const questions = ref<QuestionBankListItem[]>([])
 const total = ref(0)
 const totalPages = ref(0)
 const state = ref<'loading' | 'ready' | 'empty' | 'error'>('loading')
+const baseFacetsState = ref<'loading' | 'ready' | 'error'>('loading')
 const facetsState = ref<'loading' | 'ready' | 'error'>('loading')
 const facets = ref<QuestionBankFacets>({
   exam_scopes: [],
@@ -32,6 +36,7 @@ const facets = ref<QuestionBankFacets>({
   abilities: [],
   methods: [],
   models: [],
+  special_types: [],
   student_levels: [],
   teaching_stages: [],
   sub_skills: [],
@@ -48,6 +53,7 @@ const baseFacets = ref<QuestionBankFacets>({
   abilities: [],
   methods: [],
   models: [],
+  special_types: [],
   student_levels: [],
   teaching_stages: [],
   sub_skills: [],
@@ -75,13 +81,15 @@ const filters = reactive({
   abilities: [] as string[],
   methods: [] as string[],
   models: [] as string[],
-  studentLevels: [] as string[],
+  specialTypes: [] as string[],
+  difficultyMin: 1,
+  difficultyMax: 10,
   questionType: '',
   year: '',
   examType: '',
   grade: '',
   tagStatus: 'all' as 'all' | 'tagged' | 'untagged',
-  sort: 'newest' as QuestionBankFilters['sort'],
+  sort: 'difficulty_desc' as QuestionBankSort,
 })
 
 type TextFilterKey =
@@ -96,9 +104,9 @@ type TagArrayFilterKey =
   | 'abilities'
   | 'methods'
   | 'models'
-  | 'studentLevels'
+  | 'specialTypes'
 
-type ActiveFilterKey = TextFilterKey | TagArrayFilterKey | 'scope' | 'tagStatus'
+type ActiveFilterKey = TextFilterKey | TagArrayFilterKey | 'scope' | 'tagStatus' | 'difficulty'
 
 interface ActiveFilter {
   id: string
@@ -116,6 +124,8 @@ interface TagFilterRow {
 
 let questionAbortController: AbortController | null = null
 let questionRequestSerial = 0
+let facetsAbortController: AbortController | null = null
+let facetsRequestSerial = 0
 
 const currentVolume = computed(() => (
   catalog.value?.volumes.find((volume) => volume.id === selectedVolumeId.value) ?? null
@@ -199,10 +209,10 @@ const primaryTagRows = computed<TagFilterRow[]>(() => [
     visibleLimit: 10,
   },
   {
-    key: 'studentLevels',
-    label: '学生层级',
-    items: facets.value.student_levels,
-    visibleLimit: 8,
+    key: 'specialTypes',
+    label: '特殊题型/考法',
+    items: facets.value.special_types,
+    visibleLimit: 10,
   },
 ])
 
@@ -217,7 +227,7 @@ const activeFilterLabels: Record<TagArrayFilterKey, string> = {
   abilities: '能力',
   methods: '方法',
   models: '模型',
-  studentLevels: '学生层级',
+  specialTypes: '特殊题型/考法',
 }
 
 const activeFilters = computed<ActiveFilter[]>(() => {
@@ -278,6 +288,14 @@ const activeFilters = computed<ActiveFilter[]>(() => {
       value: filters.tagStatus === 'tagged' ? '核心标签完整' : '标签待完善',
     })
   }
+  if (filters.difficultyMin !== 1 || filters.difficultyMax !== 10) {
+    result.push({
+      id: `difficulty:${filters.difficultyMin}-${filters.difficultyMax}`,
+      key: 'difficulty',
+      label: '难度',
+      value: `${filters.difficultyMin}–${filters.difficultyMax}`,
+    })
+  }
   return result
 })
 
@@ -290,11 +308,12 @@ onMounted(async () => {
     loadFacets(),
   ])
   chooseInitialVolume()
-  await loadQuestions()
+  await loadQuestions(false, false)
 })
 
 onBeforeUnmount(() => {
   questionAbortController?.abort()
+  facetsAbortController?.abort()
 })
 
 function queryFilters(): QuestionBankFilters {
@@ -306,7 +325,11 @@ function queryFilters(): QuestionBankFilters {
     abilities: [...filters.abilities],
     methods: [...filters.methods],
     models: [...filters.models],
-    studentLevels: [...filters.studentLevels],
+    specialTypes: [...filters.specialTypes],
+    difficultyMin: filters.difficultyMin === 1 && filters.difficultyMax === 10
+      ? undefined : filters.difficultyMin,
+    difficultyMax: filters.difficultyMin === 1 && filters.difficultyMax === 10
+      ? undefined : filters.difficultyMax,
     questionTypes: filters.questionType ? [filters.questionType] : [],
     years: filters.year ? [filters.year] : [],
     examTypes: filters.examType ? [filters.examType] : [],
@@ -318,37 +341,55 @@ function queryFilters(): QuestionBankFilters {
   }
 }
 
-async function loadQuestions(resetPage = false): Promise<void> {
+async function loadQuestions(
+  resetPage = false,
+  refreshFacets = true,
+): Promise<void> {
   if (resetPage) filters.page = 1
+  const requestFilters = queryFilters()
+  if (refreshFacets) void loadFilteredFacets(requestFilters)
   questionAbortController?.abort()
   const controller = new AbortController()
   const requestSerial = ++questionRequestSerial
   questionAbortController = controller
   state.value = 'loading'
-  const [questionResult, facetsResult] = await Promise.allSettled([
-    questionBankApi.listQuestions(queryFilters(), controller.signal),
-    questionBankApi.listFacets(queryFilters(), controller.signal),
-  ])
-  if (controller.signal.aborted || requestSerial !== questionRequestSerial) return
-
-  if (facetsResult.status === 'fulfilled') {
-    facets.value = facetsResult.value
-    facetsState.value = 'ready'
-  } else {
-    facetsState.value = 'error'
-  }
-
   try {
-    if (questionResult.status === 'rejected') throw questionResult.reason
-    const result = questionResult.value
+    const result = await questionBankApi.listQuestions(
+      requestFilters,
+      controller.signal,
+    )
+    if (controller.signal.aborted || requestSerial !== questionRequestSerial) return
     questions.value = result.items
     total.value = result.total
     totalPages.value = result.total_pages
     state.value = result.items.length ? 'ready' : 'empty'
   } catch {
+    if (controller.signal.aborted || requestSerial !== questionRequestSerial) return
     state.value = 'error'
   } finally {
     if (requestSerial === questionRequestSerial) questionAbortController = null
+  }
+}
+
+async function loadFilteredFacets(requestFilters: QuestionBankFilters): Promise<void> {
+  facetsAbortController?.abort()
+  const controller = new AbortController()
+  const requestSerial = ++facetsRequestSerial
+  facetsAbortController = controller
+  facetsState.value = 'loading'
+  try {
+    const loaded = await questionBankApi.listFacets(
+      requestFilters,
+      controller.signal,
+    )
+    if (controller.signal.aborted || requestSerial !== facetsRequestSerial) return
+    facets.value = loaded
+    facetsState.value = 'ready'
+  } catch {
+    if (controller.signal.aborted || requestSerial !== facetsRequestSerial) return
+    facetsState.value = 'error'
+  } finally {
+    if (requestSerial === facetsRequestSerial) facetsAbortController = null
   }
 }
 
@@ -364,13 +405,16 @@ async function loadCatalog(): Promise<void> {
 }
 
 async function loadFacets(): Promise<void> {
+  baseFacetsState.value = 'loading'
   facetsState.value = 'loading'
   try {
     const loaded = await questionBankApi.listFacets({ tagStatus: 'all' })
     baseFacets.value = loaded
     facets.value = loaded
+    baseFacetsState.value = 'ready'
     facetsState.value = 'ready'
   } catch {
+    baseFacetsState.value = 'error'
     facetsState.value = 'error'
   }
 }
@@ -476,6 +520,9 @@ function clearActiveFilter(filter: ActiveFilter): void {
     selectedHistoricalScope.value = ''
   } else if (filter.key === 'tagStatus') {
     filters.tagStatus = 'all'
+  } else if (filter.key === 'difficulty') {
+    filters.difficultyMin = 1
+    filters.difficultyMax = 10
   } else if (filter.key in activeFilterLabels) {
     const key = filter.key as TagArrayFilterKey
     filters[key] = filters[key].filter((value) => value !== filter.value)
@@ -488,7 +535,7 @@ function clearActiveFilter(filter: ActiveFilter): void {
 function changePage(page: number): void {
   if (page < 1 || page > totalPages.value || page === filters.page) return
   filters.page = page
-  void loadQuestions()
+  void loadQuestions(false, false)
 }
 
 function resetFilters(): void {
@@ -499,18 +546,24 @@ function resetFilters(): void {
     abilities: [],
     methods: [],
     models: [],
-    studentLevels: [],
+    specialTypes: [],
+    difficultyMin: 1,
+    difficultyMax: 10,
     questionType: '',
     year: '',
     examType: '',
     grade: '',
     tagStatus: 'all',
-    sort: 'newest',
+    sort: 'difficulty_desc',
   })
   selectedChapterId.value = ''
   selectedSectionId.value = ''
   selectedHistoricalScope.value = ''
   void loadQuestions()
+}
+
+function changeSort(): void {
+  void loadQuestions(true, false)
 }
 
 function chapterCount(chapterId: string): number {
@@ -607,10 +660,10 @@ function tagsFor(question: QuestionBankListItem, tagType: string): string[] {
       <p class="assembly-chapters__hint">
         北师大版 2024 目录保存在本机。章级兼容历史标签；小节未标定时不会猜测归属。
       </p>
-      <div v-if="catalogState === 'loading' || facetsState === 'loading'" class="assembly-compact-state">
+      <div v-if="catalogState === 'loading' || baseFacetsState === 'loading'" class="assembly-compact-state">
         正在读取教材目录…
       </div>
-      <div v-else-if="catalogState === 'error' || facetsState === 'error'" class="assembly-compact-state">
+      <div v-else-if="catalogState === 'error' || baseFacetsState === 'error'" class="assembly-compact-state">
         <span>教材目录或章节计数暂不可用</span>
         <button
           type="button"
@@ -798,6 +851,16 @@ function tagsFor(question: QuestionBankListItem, tagType: string): string[] {
             </div>
           </div>
 
+          <div class="assembly-filter-row is-difficulty">
+            <span class="assembly-filter-label">难度</span>
+            <DifficultyRangeFilter
+              v-model:min="filters.difficultyMin"
+              v-model:max="filters.difficultyMax"
+              compact
+              @change="loadQuestions(true)"
+            />
+          </div>
+
           <details class="assembly-filter-groups">
             <summary>更多筛选：试卷来源与标注状态</summary>
             <div class="assembly-filter-groups__body">
@@ -906,13 +969,7 @@ function tagsFor(question: QuestionBankListItem, tagType: string): string[] {
         <div class="assembly-filter-row is-search">
           <span class="assembly-filter-label">搜索</span>
           <input v-model="filters.keyword" type="search" placeholder="输入试题关键词" @keyup.enter="loadQuestions(true)">
-          <select v-model="filters.sort" aria-label="排序" @change="loadQuestions(true)">
-            <option value="newest">最近更新</option>
-            <option value="difficulty">按难度</option>
-            <option value="frequency_midterm">期中常见</option>
-            <option value="frequency_final">期末常见</option>
-            <option value="frequency_zhongkao">中考常见</option>
-          </select>
+          <QuestionSortControl v-model="filters.sort" @change="changeSort" />
           <button type="button" class="assembly-button is-primary" @click="loadQuestions(true)">搜索</button>
         </div>
       </section>
@@ -953,6 +1010,8 @@ function tagsFor(question: QuestionBankListItem, tagType: string): string[] {
               :blocks="question.rich_content?.question_blocks"
               :fallback="question.question_text"
               image-alt="题目配图"
+              media-mode="list"
+              paper-media-flow
               dense
             />
           </div>
@@ -970,6 +1029,7 @@ function tagsFor(question: QuestionBankListItem, tagType: string): string[] {
               :fallback="question.answer_text"
               empty-label="暂未录入答案或解析"
               image-alt="答案配图"
+              media-mode="detail"
               compact
             />
           </div>
@@ -1071,6 +1131,8 @@ function tagsFor(question: QuestionBankListItem, tagType: string): string[] {
               :blocks="item.rich_content?.question_blocks"
               :fallback="item.question_text"
               image-alt="相似题配图"
+              media-mode="list"
+              paper-media-flow
               dense
             />
             <footer>
