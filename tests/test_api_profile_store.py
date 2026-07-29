@@ -338,10 +338,14 @@ def test_active_backend_settings_receive_sanitized_policy_overrides(monkeypatch)
     settings = default_handlers._active_llm_settings()
 
     assert settings is not None
-    assert settings.policy_profile == {
+    policy_profile = dict(settings.policy_profile or {})
+    execution_scope = policy_profile.pop("_llm_execution_scope_key")
+    assert policy_profile == {
         "llm_config_generation_timeout_seconds": 90,
         "llm_tagging_max_retries": 1,
     }
+    assert str(execution_scope).startswith("profile-")
+    assert "default" not in str(execution_scope)
 
 
 def test_tagging_profile_settings_receive_sanitized_policy_overrides(monkeypatch) -> None:
@@ -356,10 +360,14 @@ def test_tagging_profile_settings_receive_sanitized_policy_overrides(monkeypatch
     settings = ai_tagging_service._llm_settings_from_profile()
 
     assert settings is not None
-    assert settings.policy_profile == {
+    policy_profile = dict(settings.policy_profile or {})
+    execution_scope = policy_profile.pop("_llm_execution_scope_key")
+    assert policy_profile == {
         "llm_config_generation_timeout_seconds": 90,
         "llm_tagging_max_retries": 1,
     }
+    assert str(execution_scope).startswith("profile-")
+    assert "default" not in str(execution_scope)
 
 
 def test_environment_and_dedicated_tagging_clients_keep_default_policies() -> None:

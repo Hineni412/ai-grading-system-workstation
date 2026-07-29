@@ -16,6 +16,7 @@ from backend.domain_models import (
     QuestionGradingDetail,
     SecondaryError,
 )
+from backend.llm.execution import execution_snapshot_from_profile
 from backend.repositories.access import GradingRepositoryAccess, as_grading_repositories
 from backend.grading_workflow import rubric_scoring_item_scores
 from evidence_atlas import EvidenceAtlasBuilder
@@ -493,31 +494,36 @@ class GradingService:
             return
 
         total = len(matched_records)
+        execution_profile = getattr(
+            getattr(self.llm_client, "settings", None),
+            "policy_profile",
+            None,
+        )
+        execution_snapshot = execution_snapshot_from_profile(execution_profile)
         worker_count = bounded_int(
             max_workers,
-            _env_int("AI_GRADING_MAX_WORKERS", FULL_PAPER_WORKERS_MAX),
+            execution_snapshot.max_in_flight,
             FULL_PAPER_WORKERS_MIN,
-            FULL_PAPER_WORKERS_MAX,
+            min(
+                FULL_PAPER_WORKERS_MAX,
+                execution_snapshot.max_in_flight,
+            ),
         )
-        # 整卷大图请求（参考图 + 学生正反面）并发上限：抑制大 payload 瞬时并发。
-        large_request_workers = bounded_int(
-            None,
-            _env_int("AI_GRADING_LARGE_REQUEST_MAX_WORKERS", LARGE_REQUEST_WORKERS_DEFAULT),
-            LARGE_REQUEST_WORKERS_MIN,
-            LARGE_REQUEST_WORKERS_MAX,
-        )
-        full_paper_workers = max(FULL_PAPER_WORKERS_MIN, min(worker_count, large_request_workers))
+        full_paper_workers = worker_count
         rpm_limit = bounded_int(
             requests_per_minute,
-            _env_int("AI_GRADING_REQUESTS_PER_MINUTE", 1000),
+            execution_snapshot.requests_per_minute,
             GRADING_RPM_MIN,
             GRADING_RPM_MAX,
         )
         hybrid_worker_count = bounded_int(
-            None,
-            _env_int("AI_HYBRID_INFLIGHT_WORKERS", max(worker_count, min(rpm_limit, FULL_PAPER_WORKERS_MAX))),
+            max_workers,
+            execution_snapshot.max_in_flight,
             HYBRID_INFLIGHT_WORKERS_MIN,
-            HYBRID_INFLIGHT_WORKERS_MAX,
+            min(
+                HYBRID_INFLIGHT_WORKERS_MAX,
+                execution_snapshot.max_in_flight,
+            ),
         )
         rate_limiter = RequestPacer(rpm_limit)
         event_queue = queue.Queue()
@@ -656,28 +662,66 @@ class GradingService:
 
             completed = 0
             try:
+                objective_completed = 0
+                subjective_completed = 0
+                subjective_total = 0
+
                 def _hybrid_progress(event: dict[str, Any]) -> None:
+                    nonlocal objective_completed, subjective_completed, subjective_total
                     stage = str(event.get("stage") or "")
                     qid = str(event.get("question_id") or "?")
                     batch_index = event.get("batch_index")
-                    item_count = event.get("item_count")
-                    prefix = "【选填题并发】" if stage.startswith("objective") else "【主观题并发】"
-                    if stage.endswith("_summary"):
-                        total_q = event.get('total_questions', 0)
-                        total_b = event.get('total_batches', 0)
-                        total_p = event.get('total_papers', 0)
-                        msg = f"【总览】 {prefix}即将开始，共 {total_q} 道题，拆分为 {total_b} 个并发批次，覆盖 {total_p} 份答卷。"
-                    elif stage.endswith("_start"):
-                        msg = f"{prefix} 开始发送 -> 第 {qid} 题 (批次 #{batch_index})，合并了 {item_count} 份切片..."
-                    elif stage.endswith("_done"):
-                        accepted = event.get('accepted_count', 0)
-                        failed = event.get('review_count', event.get('failed_count', 0))
-                        msg = f"{prefix} 收到结果 <- 第 {qid} 题 (批次 #{batch_index})，AI 成功: {accepted} 份，失败/低置信: {failed} 份"
-                    elif stage.endswith("_error"):
-                        msg = f"{prefix} 请求失败 <- 第 {qid} 题 (批次 #{batch_index})，原因: {event.get('error')}"
+                    if stage.startswith("objective"):
+                        if stage.endswith(("_done", "_error")):
+                            objective_completed += 1
+                        objective_total = max(1, total)
+                        progress = 0.08 + 0.40 * min(
+                            1.0,
+                            objective_completed / objective_total,
+                        )
+                        if stage.endswith("_error"):
+                            msg = (
+                                f"正在识别客观题，已处理 "
+                                f"{objective_completed}/{objective_total} 份答卷；"
+                                "本次未识别项将转教师复核"
+                            )
+                        else:
+                            msg = (
+                                f"正在识别客观题，已处理 "
+                                f"{objective_completed}/{objective_total} 份答卷"
+                            )
+                        public_stage = "grading_objective"
+                    elif stage.endswith("_summary"):
+                        subjective_total = int(event.get("total_batches") or 0)
+                        progress = 0.48
+                        msg = (
+                            f"客观题识别完成；正在准备主观题批改，"
+                            f"共 {subjective_total} 个批次"
+                        )
+                        public_stage = "grading_subjective"
+                    elif stage.endswith(("_done", "_error")):
+                        subjective_completed += 1
+                        progress = 0.48 + 0.40 * min(
+                            1.0,
+                            subjective_completed / max(1, subjective_total),
+                        )
+                        suffix = "；失败项将转教师复核" if stage.endswith("_error") else ""
+                        msg = (
+                            f"正在批改主观题，已完成 "
+                            f"{subjective_completed}/{max(1, subjective_total)} 个批次"
+                            f"（当前 {qid}，第 {batch_index} 批）{suffix}"
+                        )
+                        public_stage = "grading_subjective"
                     else:
-                        msg = f"{prefix} 进度: {qid} batch={batch_index}"
-                    event_queue.put({"event": "grading_log", "student_name": "混合批改引擎", "message": msg})
+                        return
+                    event_queue.put(
+                        {
+                            "event": "grading_progress",
+                            "stage": public_stage,
+                            "progress": progress,
+                            "message": msg,
+                        }
+                    )
 
                 with ThreadPoolExecutor(max_workers=1) as executor:
                     future = executor.submit(

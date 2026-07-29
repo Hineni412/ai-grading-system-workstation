@@ -1,9 +1,9 @@
 .knowledge-graph-view {
   display: grid;
-  width: min(100%, 1680px);
-  margin-inline: auto;
+  width: 100%;
+  margin-inline: 0;
   gap: var(--space-5);
-  padding: var(--space-6);
+  padding: var(--space-3);
   color: var(--color-text-primary);
 }
 

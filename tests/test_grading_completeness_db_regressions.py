@@ -81,7 +81,7 @@ def test_list_incomplete_results_audits_historical_graded_rows_without_payload(t
     assert len(rows) == 1
     assert rows[0]["paper_id"] == paper_id
     assert rows[0]["status"] == "incomplete"
-    assert rows[0]["missing_question_ids"] == ["Q11(1)"]
+    assert rows[0]["missing_question_ids"] == ["Q11(P1)"]
     assert rows[0]["affected_major_question_ids"] == ["Q11"]
     assert rows[0]["retry_attempt_count"] == 0
     assert [item["paper_id"] for item in db.list_failed_papers(session_id)] == [paper_id]

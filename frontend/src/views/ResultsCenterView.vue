@@ -11,10 +11,13 @@ import type {
 } from '../api/results-center'
 import { useResultsCenterStore } from '../stores/results-center'
 import { useSessionStore } from '../stores/session'
+import { translateGradingReason } from '../utils/grading-reasons'
 import FileCenterView from './FileCenterView.vue'
 
 type ResultsTab = 'overview' | 'details' | 'exports'
 type DetailFilter = 'all' | ResultsStudentStatus
+type MatrixSortKey = 'student' | 'total' | 'question'
+type SortDirection = 'ascending' | 'descending'
 
 const route = useRoute()
 const router = useRouter()
@@ -22,6 +25,15 @@ const sessionStore = useSessionStore()
 const resultsStore = useResultsCenterStore()
 const searchQuery = ref('')
 const selectedStudent = ref<ResultsCenterStudent | null>(null)
+const matrixSort = ref<{
+  key: MatrixSortKey
+  direction: SortDirection
+  questionId: string | null
+}>({
+  key: 'student',
+  direction: 'ascending',
+  questionId: null,
+})
 const drawer = ref<HTMLElement | null>(null)
 const drawerCloseButton = ref<HTMLButtonElement | null>(null)
 let drawerTrigger: HTMLElement | null = null
@@ -93,6 +105,10 @@ const overviewStudents = computed(() => [...visibleStudents.value].sort(
     || left.student_name.localeCompare(right.student_name, 'zh-CN')
     || left.student_id - right.student_id
   ),
+))
+
+const matrixStudents = computed(() => [...visibleStudents.value].sort(
+  (left, right) => compareMatrixStudents(left, right),
 ))
 
 const scoreBands = computed(() => {
@@ -291,6 +307,114 @@ function questionIssueText(question: ResultsCenterQuestion): string {
 
 function currentTotalPrefix(student: ResultsCenterStudent): string {
   return student.ungraded_count > 0 || student.failed_count > 0 ? '当前 ' : ''
+}
+
+function setMatrixSort(key: MatrixSortKey, questionId: string | null = null): void {
+  const sameColumn = matrixSort.value.key === key
+    && matrixSort.value.questionId === questionId
+  matrixSort.value = {
+    key,
+    questionId,
+    direction: sameColumn && matrixSort.value.direction === 'ascending'
+      ? 'descending'
+      : 'ascending',
+  }
+}
+
+function matrixAriaSort(
+  key: MatrixSortKey,
+  questionId: string | null = null,
+): SortDirection | 'none' {
+  return matrixSort.value.key === key && matrixSort.value.questionId === questionId
+    ? matrixSort.value.direction
+    : 'none'
+}
+
+function matrixSortArrow(
+  key: MatrixSortKey,
+  questionId: string | null = null,
+): string {
+  const state = matrixAriaSort(key, questionId)
+  return state === 'ascending' ? '↑' : state === 'descending' ? '↓' : '↕'
+}
+
+function compareMatrixStudents(
+  left: ResultsCenterStudent,
+  right: ResultsCenterStudent,
+): number {
+  const sort = matrixSort.value
+  let result = 0
+  if (sort.key === 'student') {
+    result = (left.student_code ?? '').localeCompare(
+      right.student_code ?? '',
+      'zh-CN',
+      { numeric: true, sensitivity: 'base' },
+    )
+      || left.student_name.localeCompare(right.student_name, 'zh-CN')
+      || left.student_id - right.student_id
+  } else if (sort.key === 'total') {
+    return compareOptionalRates(
+      studentTotalRate(left),
+      studentTotalRate(right),
+      sort.direction,
+    )
+  } else {
+    return compareOptionalRates(
+      resolvedItemRate(itemFor(left, sort.questionId ?? '')),
+      resolvedItemRate(itemFor(right, sort.questionId ?? '')),
+      sort.direction,
+    )
+  }
+  return sort.direction === 'ascending' ? result : -result
+}
+
+function compareOptionalRates(
+  left: number | null,
+  right: number | null,
+  direction: SortDirection,
+): number {
+  if (left === null && right === null) return 0
+  if (left === null) return 1
+  if (right === null) return -1
+  return direction === 'ascending' ? left - right : right - left
+}
+
+function studentTotalRate(student: ResultsCenterStudent): number | null {
+  return student.max_score > 0 ? student.current_score / student.max_score : null
+}
+
+function resolvedItemRate(item: ResultsCenterItem | null): number | null {
+  if (
+    !item
+    || !['ai_ready', 'teacher_final'].includes(item.score_status)
+    || item.score_awarded === null
+    || item.max_score <= 0
+  ) return null
+  return item.score_awarded / item.max_score
+}
+
+function heatStyle(rate: number | null): Record<string, string> | undefined {
+  if (rate === null) return undefined
+  const bounded = Math.max(0, Math.min(1, rate))
+  const hue = Math.round(7 + bounded * 126)
+  return {
+    backgroundColor: `hsl(${hue} 52% 88%)`,
+    color: '#172333',
+  }
+}
+
+function totalHeatStyle(
+  student: ResultsCenterStudent,
+): Record<string, string> | undefined {
+  if (student.ungraded_count > 0 || student.failed_count > 0) return undefined
+  return heatStyle(studentTotalRate(student))
+}
+
+function questionHeatStyle(
+  student: ResultsCenterStudent,
+  questionId: string,
+): Record<string, string> | undefined {
+  return heatStyle(resolvedItemRate(itemFor(student, questionId)))
 }
 
 function itemFor(
@@ -668,14 +792,38 @@ function handleDrawerKeydown(event: KeyboardEvent): void {
             <table class="results-matrix">
               <thead>
                 <tr>
-                  <th scope="col" class="results-matrix__identity">学生</th>
-                  <th scope="col" class="results-matrix__total">当前总分</th>
+                  <th
+                    scope="col"
+                    class="results-matrix__identity"
+                    :aria-sort="matrixAriaSort('student')"
+                  >
+                    <button type="button" class="results-matrix__sort" @click="setMatrixSort('student')">
+                      学生 <span aria-hidden="true">{{ matrixSortArrow('student') }}</span>
+                    </button>
+                  </th>
+                  <th
+                    scope="col"
+                    class="results-matrix__total"
+                    :aria-sort="matrixAriaSort('total')"
+                  >
+                    <button type="button" class="results-matrix__sort" @click="setMatrixSort('total')">
+                      当前总分 <span aria-hidden="true">{{ matrixSortArrow('total') }}</span>
+                    </button>
+                  </th>
                   <th
                     v-for="question in results.questions"
                     :key="question.question_id"
                     scope="col"
+                    :aria-sort="matrixAriaSort('question', question.question_id)"
                   >
-                    <strong>{{ question.question_id }}</strong>
+                    <button
+                      type="button"
+                      class="results-matrix__sort"
+                      @click="setMatrixSort('question', question.question_id)"
+                    >
+                      <strong>{{ question.question_id }}</strong>
+                      <i aria-hidden="true">{{ matrixSortArrow('question', question.question_id) }}</i>
+                    </button>
                     <span>
                       均分 {{ formatScore(question.average_score) }}
                       / {{ formatScore(question.max_score) }}
@@ -684,7 +832,7 @@ function handleDrawerKeydown(event: KeyboardEvent): void {
                 </tr>
               </thead>
               <tbody>
-                <tr v-for="student in visibleStudents" :key="student.student_id">
+                <tr v-for="student in matrixStudents" :key="student.student_id">
                   <th scope="row" class="results-matrix__identity">
                     <button type="button" @click="openStudentDrawer(student, $event)">
                       <strong>{{ student.student_name }}</strong>
@@ -694,7 +842,10 @@ function handleDrawerKeydown(event: KeyboardEvent): void {
                       </span>
                     </button>
                   </th>
-                  <td class="results-matrix__total">
+                  <td
+                    class="results-matrix__total"
+                    :style="totalHeatStyle(student)"
+                  >
                     <strong>
                       {{ currentTotalPrefix(student) }}{{ formatScore(student.current_score) }}
                       <small>/ {{ formatScore(student.max_score) }}</small>
@@ -705,6 +856,7 @@ function handleDrawerKeydown(event: KeyboardEvent): void {
                     v-for="question in results.questions"
                     :key="question.question_id"
                     class="results-matrix__score"
+                    :style="questionHeatStyle(student, question.question_id)"
                   >
                     <button
                       v-if="itemFor(student, question.question_id)"
@@ -790,7 +942,7 @@ function handleDrawerKeydown(event: KeyboardEvent): void {
               {{ scoreStatusLabel(item.score_status) }}
             </span>
             <span class="results-drawer__reason">
-              {{ item.review_reason || confidenceLabel(item.confidence_score) || '点击查看答卷与评分依据' }}
+              {{ item.review_reason ? translateGradingReason(item.review_reason) : confidenceLabel(item.confidence_score) || '点击查看答卷与评分依据' }}
             </span>
             <span aria-hidden="true">›</span>
           </button>

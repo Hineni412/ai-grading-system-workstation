@@ -14,6 +14,21 @@ from backend.repositories.access import GradingRepositoryAccess, as_grading_repo
 from export_names import safe_filename_fragment, session_export_path_name
 from image_preprocessor import _enhanced_name
 from path_manager import resolve_stored_file_path
+from question_id_contract import (
+    QuestionIdCatalog,
+    canonical_parent_id,
+    question_id_coordinates,
+)
+
+
+class PrintableScoreContractError(ValueError):
+    """Raised when stored grading details cannot become one parent score each."""
+
+
+_PRINTED_QUESTION_NUMBER = re.compile(
+    r"^\s*(?:第\s*)?(?:Q\s*)?(\d{1,3})\s*(?:题|[.．、:：])",
+    re.IGNORECASE,
+)
 
 
 class OriginalPaperExporter:
@@ -42,10 +57,9 @@ class OriginalPaperExporter:
             session_id,
             data_root=self._data_root(),
         )
-        score_map, type_map = self._load_rubric_maps(session_id)
+        rubric = self._load_rubric(session_id)
         enhanced_path_map = self._load_enhanced_path_map(session_id)
 
-        page_images: list[Path] = []
         sorted_results = sorted(
             results,
             key=lambda item: (
@@ -54,10 +68,24 @@ class OriginalPaperExporter:
                 int(item.get("result_id") or 0),
             ),
         )
-        for index, result in enumerate(sorted_results, start=1):
+        prepared_results: list[tuple[dict[str, Any], dict[str, dict[str, float]]]] = []
+        expected_parent_ids: list[str] = []
+        for result in sorted_results:
             result_id = int(result["result_id"])
             details = self.db.get_result_details(result_id)
-            question_scores = self._build_question_scores(details, score_map, type_map)
+            question_scores = aggregate_parent_question_scores(details, rubric)
+            prepared_results.append((result, question_scores))
+            for question_id in question_scores:
+                if question_id not in expected_parent_ids:
+                    expected_parent_ids.append(question_id)
+
+        question_anchors = detect_printed_question_anchors(
+            self._anchor_page_paths(session_id, sorted_results),
+            expected_parent_ids,
+        )
+
+        page_images: list[Path] = []
+        for index, (result, question_scores) in enumerate(prepared_results, start=1):
             student_code = _safe_name(str(result.get("student_code") or f"S{index:03d}"))
             student_name = _safe_name(str(result.get("student_name") or "unknown"))
             prefix = f"{index:03d}_{student_code}_{student_name}"
@@ -71,11 +99,11 @@ class OriginalPaperExporter:
                 back_image=back_image,
                 regions=regions,
                 question_scores=question_scores,
+                question_anchors=question_anchors,
                 output_front=front_out,
                 output_back=back_out,
-                annotate_only_deductions=True,
-                label_position="bottom_right",
-                summary_labels=False,
+                annotate_only_deductions=False,
+                annotation_layout="question_score_boxes",
             )
             page_images.extend([front_out, back_out])
 
@@ -83,64 +111,52 @@ class OriginalPaperExporter:
 
         return pdf_path
 
-    def _build_question_scores(
-        self,
-        details: list[dict[str, Any]],
-        score_map: dict[str, float],
-        type_map: dict[str, str],
-    ) -> dict[str, dict[str, Any]]:
-        result: dict[str, dict[str, Any]] = {}
-        for detail in details:
-            qid = str(detail.get("question_id") or "").strip()
-            if not qid:
-                continue
-            awarded = float(detail.get("score_awarded") or 0)
-            full = score_map.get(qid, awarded)
-            result[qid] = {
-                "score_awarded": awarded,
-                "max_score": full,
-                "deduction_reason": detail.get("deduction_reason"),
-                "question_type": type_map.get(qid, ""),
-            }
-        return result
-
-    def _load_rubric_maps(self, session_id: int) -> tuple[dict[str, float], dict[str, str]]:
+    def _load_rubric(self, session_id: int) -> dict[str, Any]:
         session = self.db.get_grading_session(session_id)
         if not session:
-            return {}, {}
+            raise PrintableScoreContractError("当前考试不存在，无法读取评分依据。")
         rubric_path = self._resolve_stored_file_path(session.get("rubric_path"))
         if not rubric_path.exists():
-            return {}, {}
+            raise PrintableScoreContractError("当前考试缺少评分依据，无法汇总原卷得分。")
 
         try:
             rubric = json.loads(rubric_path.read_text(encoding="utf-8"))
-        except Exception:
-            return {}, {}
+        except Exception as exc:
+            raise PrintableScoreContractError(
+                "评分依据无法读取，不能可靠汇总原卷得分。"
+            ) from exc
+        if not isinstance(rubric, dict) or not isinstance(rubric.get("questions"), list):
+            raise PrintableScoreContractError("评分依据缺少题目列表，无法汇总原卷得分。")
+        return rubric
 
-        score_map: dict[str, float] = {}
-        type_map: dict[str, str] = {}
-        questions = rubric.get("questions") if isinstance(rubric, dict) else []
-        if not isinstance(questions, list):
-            return score_map, type_map
+    def _anchor_page_paths(
+        self,
+        session_id: int,
+        results: list[dict[str, Any]],
+    ) -> dict[str, Path]:
+        paths: dict[str, Path] = {}
+        template = self.db.get_session_template(session_id)
+        if template:
+            for page in ("front", "back"):
+                path_value = template.get(f"{page}_template_path")
+                if not path_value:
+                    continue
+                path = self._resolve_stored_file_path(path_value)
+                if path.exists():
+                    paths[page] = path
 
-        for question in questions:
-            if not isinstance(question, dict):
-                continue
-            qid = str(question.get("question_id") or "").strip()
-            qtype = str(question.get("question_type") or "").strip()
-            if qid:
-                score_map[qid] = float(question.get("max_score") or 0)
-                type_map[qid] = qtype
-            parts = question.get("parts")
-            if isinstance(parts, list):
-                for part in parts:
-                    if not isinstance(part, dict):
-                        continue
-                    pid = str(part.get("part_id") or "").strip()
-                    if pid:
-                        score_map[pid] = float(part.get("part_score") or 0)
-                        type_map[pid] = qtype
-        return score_map, type_map
+        if results:
+            first = results[0]
+            for page in ("front", "back"):
+                if page in paths:
+                    continue
+                path_value = first.get(f"{page}_image")
+                if not path_value:
+                    continue
+                path = self._resolve_stored_file_path(path_value)
+                if path.exists():
+                    paths[page] = path
+        return paths
 
     def _resolve_stored_file_path(self, path_value: object) -> Path:
         return resolve_stored_file_path(path_value, data_root=self._data_root())
@@ -216,6 +232,223 @@ class OriginalPaperExporter:
                 unique.append(candidate)
                 seen.add(key)
         return unique
+
+
+def aggregate_parent_question_scores(
+    details: list[dict[str, Any]],
+    rubric: dict[str, Any],
+) -> dict[str, dict[str, float]]:
+    """Normalize stored aliases and emit one score-only item per scored parent."""
+
+    try:
+        catalog = QuestionIdCatalog.from_document(rubric)
+    except Exception as exc:
+        raise PrintableScoreContractError(
+            "评分依据中的题号无法形成统一编号，不能可靠导出得分框。"
+        ) from exc
+
+    parent_full_scores: dict[str, float] = {}
+    formal_children: dict[str, set[str]] = {}
+    questions = rubric.get("questions")
+    if not isinstance(questions, list):
+        raise PrintableScoreContractError("评分依据缺少题目列表，无法汇总原卷得分。")
+
+    for question in questions:
+        if not isinstance(question, dict):
+            continue
+        parent_id = canonical_parent_id(question.get("question_id"))
+        if parent_id is None or parent_id not in catalog.parent_ids:
+            continue
+        parts = question.get("parts")
+        part_scores: list[float] = []
+        child_ids: set[str] = set()
+        if isinstance(parts, list):
+            for part in parts:
+                if not isinstance(part, dict):
+                    continue
+                resolved = catalog.resolve(
+                    part.get("part_id"),
+                    parent_id=parent_id,
+                )
+                if resolved is None:
+                    continue
+                child_ids.add(resolved)
+                part_scores.append(_score_number(part.get("part_score"), default=0.0))
+        formal_children[parent_id] = {
+            child_id for child_id in child_ids if child_id != parent_id
+        }
+        explicit_max = _score_number(question.get("max_score"), default=0.0)
+        parent_full_scores[parent_id] = explicit_max or sum(part_scores)
+
+    resolved_details: dict[str, dict[str, Any]] = {}
+    unresolved: list[str] = []
+    duplicate: list[str] = []
+    for detail in details:
+        if detail.get("score_awarded") is None:
+            continue
+        raw_question_id = str(detail.get("question_id") or "").strip()
+        resolved = catalog.resolve(raw_question_id)
+        if resolved is None:
+            unresolved.append(raw_question_id or "（空题号）")
+            continue
+        if resolved in resolved_details:
+            duplicate.append(raw_question_id or resolved)
+            continue
+        resolved_details[resolved] = detail
+
+    if unresolved:
+        raise PrintableScoreContractError(
+            "以下已评分题号无法对应当前评分依据，已停止导出以避免漏标："
+            + ", ".join(unresolved)
+        )
+    if duplicate:
+        raise PrintableScoreContractError(
+            "以下题号归一后出现重复评分，已停止导出以避免重复计分："
+            + ", ".join(duplicate)
+        )
+
+    scores: dict[str, dict[str, float]] = {}
+    for parent_id in catalog.parent_ids:
+        child_ids = formal_children.get(parent_id, set())
+        scored_children = [
+            resolved_details[child_id]
+            for child_id in catalog.parts_by_parent.get(parent_id, ())
+            if child_id in child_ids and child_id in resolved_details
+        ]
+        parent_detail = resolved_details.get(parent_id)
+        selected = scored_children or ([parent_detail] if parent_detail is not None else [])
+        if not selected:
+            continue
+        scores[parent_id] = {
+            "score_awarded": round(
+                sum(_score_number(item.get("score_awarded")) for item in selected),
+                4,
+            ),
+            "max_score": round(parent_full_scores.get(parent_id, 0.0), 4),
+        }
+    return scores
+
+
+def detect_printed_question_anchors(
+    page_paths: dict[str, Path],
+    expected_question_ids: list[str],
+    *,
+    ocr_engine: Any | None = None,
+) -> dict[str, dict[str, Any]]:
+    """Locate printed parent question numbers once on the confirmed template."""
+
+    expected_parents = {
+        parent_id
+        for value in expected_question_ids
+        if (coordinates := question_id_coordinates(value)) is not None
+        and (parent_id := f"Q{coordinates[0]}")
+    }
+    if not expected_parents or not page_paths:
+        return {}
+
+    if ocr_engine is None:
+        try:
+            from rapidocr_onnxruntime import RapidOCR
+
+            ocr_engine = RapidOCR()
+        except Exception:
+            return {}
+
+    candidates: dict[str, list[dict[str, Any]]] = {}
+    for page in ("front", "back"):
+        path = page_paths.get(page)
+        if path is None or not path.exists():
+            continue
+        try:
+            with Image.open(path) as source:
+                rgb = source.convert("RGB")
+                width, height = rgb.size
+                import numpy as np
+
+                image_array = np.asarray(rgb)[:, :, ::-1]
+            raw_result = ocr_engine(image_array)
+        except Exception:
+            continue
+        result = raw_result[0] if isinstance(raw_result, tuple) else raw_result
+        if not isinstance(result, list):
+            continue
+        for item in result:
+            if not isinstance(item, (list, tuple)) or len(item) < 3:
+                continue
+            box, text, raw_confidence = item[0], item[1], item[2]
+            match = _PRINTED_QUESTION_NUMBER.match(str(text or ""))
+            if match is None:
+                continue
+            question_id = f"Q{int(match.group(1))}"
+            if question_id not in expected_parents:
+                continue
+            confidence = _score_number(raw_confidence, default=0.0)
+            if confidence < 0.55:
+                continue
+            bounds = _ocr_box_bounds(box, width=width, height=height)
+            if bounds is None:
+                continue
+            x, y, box_width, box_height = bounds
+            candidates.setdefault(question_id, []).append(
+                {
+                    "page": page,
+                    "x": x,
+                    "y": y,
+                    "w": box_width,
+                    "h": box_height,
+                    "source_width": width,
+                    "source_height": height,
+                    "kind": "ocr",
+                    "confidence": confidence,
+                }
+            )
+
+    anchors: dict[str, dict[str, Any]] = {}
+    for question_id, items in candidates.items():
+        anchors[question_id] = min(
+            items,
+            key=lambda item: (
+                int(item["x"]),
+                -float(item["confidence"]),
+                1 if item["page"] == "back" else 0,
+                int(item["y"]),
+            ),
+        )
+    return anchors
+
+
+def _ocr_box_bounds(
+    box: Any,
+    *,
+    width: int,
+    height: int,
+) -> tuple[int, int, int, int] | None:
+    if not isinstance(box, (list, tuple)) or not box:
+        return None
+    points = [
+        point
+        for point in box
+        if isinstance(point, (list, tuple)) and len(point) >= 2
+    ]
+    if not points:
+        return None
+    try:
+        xs = [float(point[0]) for point in points]
+        ys = [float(point[1]) for point in points]
+    except (TypeError, ValueError):
+        return None
+    left = max(0, min(width - 1, int(round(min(xs)))))
+    top = max(0, min(height - 1, int(round(min(ys)))))
+    right = max(left + 1, min(width, int(round(max(xs)))))
+    bottom = max(top + 1, min(height, int(round(max(ys)))))
+    return left, top, right - left, bottom - top
+
+
+def _score_number(value: Any, *, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return float(default)
 
 
 def _safe_name(value: str) -> str:

@@ -8,14 +8,33 @@ const props = withDefaults(defineProps<{
   totalScore: number
   issues?: ConfigEditorIssue[]
   disabled?: boolean
+  showRegenerationActions?: boolean
+  canRegenerateBatched?: boolean
+  canRegenerateWholeDocument?: boolean
+  regenerationBusy?: boolean
+  regenerationMode?: 'batched' | 'whole_document' | null
+  regenerationSubmitting?: boolean
+  regenerationQuestionIds?: string[]
+  regenerationMessage?: string
+  regenerationError?: string
 }>(), {
   issues: () => [],
   disabled: false,
+  showRegenerationActions: false,
+  canRegenerateBatched: false,
+  canRegenerateWholeDocument: false,
+  regenerationBusy: false,
+  regenerationMode: null,
+  regenerationSubmitting: false,
+  regenerationQuestionIds: () => [],
+  regenerationMessage: '',
+  regenerationError: '',
 })
 
 const emit = defineEmits<{
   edit: [edit: ConfigEditorEdit]
   validity: [valid: boolean]
+  regenerate: [mode: 'batched' | 'whole_document']
 }>()
 const root = ref<HTMLElement | null>(null)
 const scoreErrors = ref<Record<string, string>>({})
@@ -23,6 +42,18 @@ const editingRowId = ref<string | null>(null)
 const blockingIssues = computed(() => props.issues.filter((issue) => issue.severity === 'error'))
 const warningIssues = computed(() => props.issues.filter((issue) => issue.severity !== 'error'))
 const totalBlocked = computed(() => props.totalScore !== 100)
+const batchedButtonLabel = computed(() => {
+  const ids = props.regenerationQuestionIds.join('、')
+  const base = ids ? `分批重新生成 ${ids}` : '分批重新生成'
+  if (props.regenerationMode !== 'batched') return base
+  return props.regenerationSubmitting
+    ? `正在提交 ${ids || '被拦题目'}…`
+    : `正在重新生成 ${ids || '被拦题目'}…`
+})
+const wholeDocumentButtonLabel = computed(() => {
+  if (props.regenerationMode !== 'whole_document') return '整卷重新生成'
+  return props.regenerationSubmitting ? '正在提交整卷…' : '正在重新生成整卷…'
+})
 const objectiveQuestionTypes = new Set([
   'choice',
   'fill_blank',
@@ -113,7 +144,7 @@ function acceptedEdit(row: ConfigEditorRow, event: Event): void {
 
 function listEdit(
   row: ConfigEditorRow,
-  field: 'required_elements' | 'deduction_rules',
+  field: 'required_elements' | 'deduction_rules' | 'part_deduction_rules',
   event: Event,
 ): void {
   const values = (event.currentTarget as HTMLTextAreaElement).value
@@ -143,7 +174,7 @@ function policyRuleEdit(row: ConfigEditorRow, event: Event): void {
 }
 
 type RenderedEditField = 'score' | 'standard_answer' | 'accepted_answers'
-  | 'required_elements' | 'deduction_rules' | 'answer_only_max_score'
+  | 'required_elements' | 'deduction_rules' | 'part_deduction_rules' | 'answer_only_max_score'
   | 'require_final_answer' | 'final_answer_rule'
 
 function fieldForIssue(issue: ConfigEditorIssue): RenderedEditField | null {
@@ -152,13 +183,17 @@ function fieldForIssue(issue: ConfigEditorIssue): RenderedEditField | null {
   if (issue.field === 'standard_answer') return 'standard_answer'
   if (issue.field === 'required_elements') return 'required_elements'
   if (issue.field === 'deduction_rules') return 'deduction_rules'
+  if (issue.field === 'part_deduction_rules') return 'part_deduction_rules'
   if (issue.field === 'answer_only_max_score') return 'answer_only_max_score'
   if (issue.field === 'require_final_answer') return 'require_final_answer'
   if (issue.field === 'final_answer_rule') return 'final_answer_rule'
   return null
 }
 
-const policyFields = new Set<RenderedEditField>([
+const firstRowFields = new Set<RenderedEditField>([
+  'standard_answer',
+  'accepted_answers',
+  'part_deduction_rules',
   'answer_only_max_score',
   'require_final_answer',
   'final_answer_rule',
@@ -169,7 +204,7 @@ async function focusIssue(issue: ConfigEditorIssue): Promise<void> {
   const field = fieldForIssue(issue)
   if (field === null) return
   const issueRow = props.rows.find((candidate) => candidate.row_id === issue.row_id)
-  const targetRowId = policyFields.has(field) && issueRow && !firstRowIds.value.has(issue.row_id)
+  const targetRowId = firstRowFields.has(field) && issueRow && !firstRowIds.value.has(issue.row_id)
     ? props.rows.find((candidate) => candidate.question_id === issueRow.question_id
       && candidate.part_id === issueRow.part_id)?.row_id ?? issue.row_id
     : issue.row_id
@@ -209,6 +244,40 @@ async function focusIssue(issue: ConfigEditorIssue): Promise<void> {
         :data-issue-field="issue.field"
         @click="focusIssue(issue)"
       >{{ issue.message }}</button>
+      <div
+        v-if="showRegenerationActions"
+        class="rubric-ledger__regeneration"
+        aria-label="重新生成评分依据"
+      >
+        <div>
+          <strong>如果问题来自 AI 生成结果</strong>
+          <p>可以直接在这里重新生成；当前正式评分依据会保留到新版本完整成功。操作会调用模型并可能产生费用。</p>
+        </div>
+        <div class="rubric-ledger__regeneration-actions">
+          <button
+            type="button"
+            name="分批重新生成"
+            :disabled="disabled || regenerationBusy || !canRegenerateBatched"
+            @click="emit('regenerate', 'batched')"
+          >{{ batchedButtonLabel }}</button>
+          <button
+            type="button"
+            name="整卷重新生成"
+            :disabled="disabled || regenerationBusy || !canRegenerateWholeDocument"
+            @click="emit('regenerate', 'whole_document')"
+          >{{ wholeDocumentButtonLabel }}</button>
+        </div>
+        <p
+          v-if="!canRegenerateBatched && !canRegenerateWholeDocument"
+          class="rubric-ledger__regeneration-note"
+        >当前没有可重用的来源试卷，请先重新上传试卷。</p>
+        <p v-if="regenerationMessage" class="rubric-ledger__regeneration-note" role="status">
+          {{ regenerationMessage }}
+        </p>
+        <p v-if="regenerationError" class="rubric-ledger__regeneration-error">
+          {{ regenerationError }}
+        </p>
+      </div>
     </div>
     <div v-if="warningIssues.length" class="rubric-ledger__issues rubric-ledger__issues--warning" role="status">
       <strong>请核对</strong>
@@ -255,7 +324,10 @@ async function focusIssue(issue: ConfigEditorIssue): Promise<void> {
             <strong class="rubric-unit-card__score-badge">{{ row.score }} 分</strong>
           </span>
           <span class="rubric-unit-card__preview-fields">
-            <span class="rubric-unit-card__preview-field">
+            <span
+              v-if="firstRowIds.has(row.row_id)"
+              class="rubric-unit-card__preview-field"
+            >
               <span>标准答案</span>
               <span :title="compactPreview(row.standard_answer)">{{ compactPreview(row.standard_answer) }}</span>
             </span>
@@ -269,6 +341,15 @@ async function focusIssue(issue: ConfigEditorIssue): Promise<void> {
               <span>扣分规则</span>
               <span :title="compactPreview(row.deduction_rules)">
                 {{ compactPreview(row.deduction_rules) }}
+              </span>
+            </span>
+            <span
+              v-if="firstRowIds.has(row.row_id) && row.part_deduction_rules.length"
+              class="rubric-unit-card__preview-field"
+            >
+              <span>小问统一扣分规则</span>
+              <span :title="compactPreview(row.part_deduction_rules)">
+                {{ compactPreview(row.part_deduction_rules) }}
               </span>
             </span>
           </span>
@@ -321,7 +402,7 @@ async function focusIssue(issue: ConfigEditorIssue): Promise<void> {
           </header>
 
           <div class="rubric-unit-card__fields">
-            <label>
+            <label v-if="firstRowIds.has(row.row_id)">
               <span>标准答案</span>
               <textarea
                 rows="3"
@@ -354,7 +435,7 @@ async function focusIssue(issue: ConfigEditorIssue): Promise<void> {
                 @change="listEdit(row, 'deduction_rules', $event)"
               />
             </label>
-            <label>
+            <label v-if="firstRowIds.has(row.row_id)">
               <span>等价答案（每行一个）</span>
               <textarea
                 rows="3"
@@ -363,6 +444,17 @@ async function focusIssue(issue: ConfigEditorIssue): Promise<void> {
                 :value="row.accepted_answers.join('\n')"
                 :disabled="disabled"
                 @change="acceptedEdit(row, $event)"
+              />
+            </label>
+            <label v-if="firstRowIds.has(row.row_id)">
+              <span>小问统一扣分规则</span>
+              <textarea
+                rows="3"
+                data-edit-field="part_deduction_rules"
+                :aria-label="`${row.question_id} ${row.part_id} 小问统一扣分规则`"
+                :value="row.part_deduction_rules.join('\n')"
+                :disabled="disabled"
+                @change="listEdit(row, 'part_deduction_rules', $event)"
               />
             </label>
           </div>

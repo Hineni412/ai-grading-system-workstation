@@ -43,7 +43,7 @@ function openPaper(paper: QuestionBankPaper): void {
     pageSize: 20,
     paperIds: [paper.id],
     tagStatus: 'all',
-    sort: 'newest',
+    sort: 'difficulty_desc',
   })
 }
 
@@ -118,7 +118,7 @@ function openTaxonomyReview(): void {
       </div>
 
       <QuestionBankFilters :paper-id="activePaper.id" />
-      <QuestionLedger />
+      <QuestionLedger paper-mode />
     </template>
 
     <QuestionInspector />

@@ -52,6 +52,10 @@ from backend.repositories.sessions import (
     SessionRepositoryGateway,
 )
 from backend.repositories.access import GradingRepositoryAccess
+from question_bank.taxonomy.curriculum_catalog import (
+    curriculum_volume,
+    infer_curriculum_volume_from_text,
+)
 from session_cleanup import (
     SessionDerivedTrainingDataExists,
     SessionPermanentDeletionRecoveryFailed,
@@ -187,6 +191,7 @@ def _question_bank_sync_payload(
     config_revision: str,
     source_paper_sha256: str,
     client_request_token: str,
+    curriculum_volume_id: str,
     retry_of_job_id: int | None = None,
     question_ids: list[int] | None = None,
 ) -> dict[str, Any]:
@@ -195,6 +200,7 @@ def _question_bank_sync_payload(
         "mode": str(mode),
         "config_revision": str(config_revision),
         "source_paper_sha256": str(source_paper_sha256),
+        "curriculum_volume_id": str(curriculum_volume_id),
     }
     if retry_of_job_id is not None:
         identity["retry_of_job_id"] = int(retry_of_job_id)
@@ -213,6 +219,39 @@ def _question_bank_sync_payload(
         "client_request_token": client_request_token,
         "client_request_fingerprint": fingerprint,
     }
+
+
+def _resolve_sync_curriculum_volume(
+    session: dict[str, Any],
+    requested_volume_id: object,
+) -> dict[str, Any]:
+    requested = str(requested_volume_id or "").strip()
+    if requested:
+        volume = curriculum_volume(volume_id=requested)
+        if volume is None:
+            raise ApiError(
+                422,
+                "curriculum_volume_invalid",
+                "所选教材册别不在当前本地教材目录中。",
+                {},
+            )
+        return volume
+    source_name = Path(str(session.get("source_paper_path") or "")).name
+    volume = infer_curriculum_volume_from_text(
+        " ".join(
+            item
+            for item in (str(session.get("name") or ""), source_name)
+            if item
+        )
+    )
+    if volume is None:
+        raise ApiError(
+            409,
+            "curriculum_volume_required",
+            "入库前需要老师确认试卷对应的年级和上下册。",
+            {},
+        )
+    return volume
 
 
 def _require_current_sync_inputs(
@@ -422,10 +461,14 @@ def submit_session_question_bank_sync(
     db: GradingRepositoryAccess = Depends(get_grading_db),
     manager: JobManager = Depends(get_job_manager),
 ) -> JobResponse:
-    _session, source_sha256 = _require_current_sync_inputs(
+    session, source_sha256 = _require_current_sync_inputs(
         db,
         session_id,
         request,
+    )
+    volume = _resolve_sync_curriculum_volume(
+        session,
+        request.curriculum_volume_id,
     )
     payload = _question_bank_sync_payload(
         session_id=session_id,
@@ -433,6 +476,7 @@ def submit_session_question_bank_sync(
         config_revision=request.config_revision,
         source_paper_sha256=source_sha256,
         client_request_token=request.client_request_token,
+        curriculum_volume_id=str(volume["id"]),
     )
     return _submit_question_bank_sync(manager, payload)
 
@@ -449,7 +493,7 @@ def retry_session_question_bank_sync(
     db: GradingRepositoryAccess = Depends(get_grading_db),
     manager: JobManager = Depends(get_job_manager),
 ) -> JobResponse:
-    _session, source_sha256 = _require_current_sync_inputs(
+    session, source_sha256 = _require_current_sync_inputs(
         db,
         session_id,
         request,
@@ -483,6 +527,11 @@ def retry_session_question_bank_sync(
             "The source paper or grading standard changed; start a new import.",
             {"job_id": int(job_id)},
         )
+    volume = _resolve_sync_curriculum_volume(
+        session,
+        request.curriculum_volume_id
+        or source_job.payload.get("curriculum_volume_id"),
+    )
     raw_failed_ids = source_job.result.get("failed_question_ids")
     failed_ids = (
         sorted(
@@ -514,6 +563,7 @@ def retry_session_question_bank_sync(
         config_revision=request.config_revision,
         source_paper_sha256=source_sha256,
         client_request_token=request.client_request_token,
+        curriculum_volume_id=str(volume["id"]),
         retry_of_job_id=job_id,
         question_ids=failed_ids if failed_ids else None,
     )

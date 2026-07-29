@@ -10,6 +10,11 @@ from backend.config_generation.normalization import validate_generated_config
 from backend.config_generation.quality import (
     refresh_generated_config_quality_warnings,
 )
+from question_id_contract import (
+    canonical_parent_id,
+    canonical_part_id,
+    question_id_coordinates,
+)
 
 
 _OBJECTIVE_TYPES = {"choice", "fill_blank", "judgement", "true_false", "direct_answer"}
@@ -36,6 +41,7 @@ class ConfigEditorRow:
     require_final_answer: bool | None
     required_elements: tuple[str, ...] = ()
     deduction_rules: tuple[str, ...] = ()
+    part_deduction_rules: tuple[str, ...] = ()
     final_answer_rule: str = ""
 
 
@@ -50,6 +56,7 @@ class ConfigEditorEdit:
     require_final_answer: bool | None = None
     required_elements: tuple[str, ...] | None = None
     deduction_rules: tuple[str, ...] | None = None
+    part_deduction_rules: tuple[str, ...] | None = None
     final_answer_rule: str | None = None
 
 
@@ -146,6 +153,9 @@ def project_config_editor(payload: dict[str, Any]) -> list[ConfigEditorRow]:
             if "answer_only_max_score" not in part and "answer_only_max_score" not in question:
                 part_answer_only = float(max(1, round(part_score * 0.25))) if part_score > 0 else 1.0
             part_final_rule = _final_answer_rule(part) or final_rule
+            part_deduction_rules = _deduction_policy_texts(
+                part.get("deduction_policy")
+            )
             steps = _dict_list(part.get("steps"))
             if not steps:
                 rows.append(
@@ -164,6 +174,7 @@ def project_config_editor(payload: dict[str, Any]) -> list[ConfigEditorRow]:
                         answer_only_max_score=part_answer_only if question_type in _SOLUTION_TYPES else None,
                         require_final_answer=part_require_final if question_type in _SOLUTION_TYPES else None,
                         required_elements=_unique_texts(part.get("required_elements")),
+                        part_deduction_rules=part_deduction_rules,
                         final_answer_rule=part_final_rule if question_type in _SOLUTION_TYPES else "",
                     )
                 )
@@ -189,6 +200,9 @@ def project_config_editor(payload: dict[str, Any]) -> list[ConfigEditorRow]:
                         require_final_answer=(part_require_final if question_type in _SOLUTION_TYPES else None) if is_first else None,
                         required_elements=_unique_texts(step.get("required_elements")),
                         deduction_rules=_unique_texts(step.get("deduction_rules")),
+                        part_deduction_rules=(
+                            part_deduction_rules if is_first else ()
+                        ),
                         final_answer_rule=(part_final_rule if question_type in _SOLUTION_TYPES else "") if is_first else "",
                     )
                 )
@@ -474,6 +488,11 @@ def _apply_edit(payload: dict[str, Any], row: ConfigEditorRow, edit: ConfigEdito
             step["deduction_rules"] = list(_unique_texts(edit.deduction_rules))
     elif part is not None and edit.required_elements is not None:
         part["required_elements"] = list(_unique_texts(edit.required_elements))
+    if edit.part_deduction_rules is not None:
+        policy_target = part if part is not None else question
+        policy_target["deduction_policy"] = list(
+            _unique_texts(edit.part_deduction_rules)
+        )
     if edit.final_answer_rule is not None:
         _set_final_answer_rule(policy_node, edit.final_answer_rule)
 
@@ -488,6 +507,17 @@ def _apply_split(payload: dict[str, Any], command: SplitScoringUnitCommand) -> N
     question = _question_by_id(payload, "rubric", command.question_id)
     if question is None:
         raise ConfigEditorValidationError((_issue("unknown_question_id", "commands.question_id", "The question does not exist."),))
+    parent_id = canonical_parent_id(command.question_id)
+    if parent_id is None:
+        raise ConfigEditorValidationError(
+            (
+                _issue(
+                    "invalid_question_id",
+                    "commands.question_id",
+                    "Question IDs must use the Qn format.",
+                ),
+            )
+        )
     answer = _ensure_answer_question(payload, command.question_id)
     total = int(round(_number(question.get("max_score"), float(command.count))))
     if total <= 0:
@@ -498,7 +528,7 @@ def _apply_split(payload: dict[str, Any], command: SplitScoringUnitCommand) -> N
     rubric_parts: list[dict[str, Any]] = []
     answer_parts: list[dict[str, Any]] = []
     for index, score in enumerate(scores, start=1):
-        part_id = f"{command.question_id}-B{index}" if command.style == "blank" else f"{command.question_id}({index})"
+        part_id = canonical_part_id(parent_id, index)
         rubric_parts.append(
             {
                 "part_id": part_id,
@@ -538,14 +568,44 @@ def _apply_split(payload: dict[str, Any], command: SplitScoringUnitCommand) -> N
 def _apply_replace_parts(payload: dict[str, Any], command: ReplaceScoringUnitsCommand) -> None:
     if not command.parts:
         raise ConfigEditorValidationError((_issue("empty_parts", "commands.parts", "Scoring units cannot be empty."),))
-    part_ids = [str(item.part_id).strip() for item in command.parts]
-    if any(not part_id for part_id in part_ids):
+    raw_part_ids = [str(item.part_id).strip() for item in command.parts]
+    if any(not part_id for part_id in raw_part_ids):
         raise ConfigEditorValidationError((_issue("missing_part_id", "commands.parts.part_id", "Scoring unit IDs cannot be empty."),))
-    if len(set(part_ids)) != len(part_ids):
-        raise ConfigEditorValidationError((_issue("duplicate_part_id", "commands.parts.part_id", "Scoring unit IDs must be unique."),))
     question = _question_by_id(payload, "rubric", command.question_id)
     if question is None:
         raise ConfigEditorValidationError((_issue("unknown_question_id", "commands.question_id", "The question does not exist."),))
+    parent_id = canonical_parent_id(command.question_id)
+    if parent_id is None:
+        raise ConfigEditorValidationError(
+            (
+                _issue(
+                    "invalid_question_id",
+                    "commands.question_id",
+                    "Question IDs must use the Qn format.",
+                ),
+            )
+        )
+    part_ids: list[str] = []
+    for raw_part_id in raw_part_ids:
+        canonical = _canonical_editor_part_id(
+            raw_part_id,
+            parent_id,
+            part_count=len(raw_part_ids),
+        )
+        if canonical is None:
+            raise ConfigEditorValidationError(
+                (
+                    _issue(
+                        "invalid_part_id",
+                        "commands.parts.part_id",
+                        "Scoring unit IDs must identify a sub-question of "
+                        f"{parent_id}.",
+                    ),
+                )
+            )
+        part_ids.append(canonical)
+    if len(set(part_ids)) != len(part_ids):
+        raise ConfigEditorValidationError((_issue("duplicate_part_id", "commands.parts.part_id", "Scoring unit IDs must be unique."),))
     scores = [_valid_score(item.score, None) for item in command.parts]
     current_total = _number(question.get("max_score"), 0.0)
     if current_total > 0 and not math.isclose(sum(scores), current_total, abs_tol=1e-6):
@@ -554,16 +614,19 @@ def _apply_replace_parts(payload: dict[str, Any], command: ReplaceScoringUnitsCo
         )
     answer = _ensure_answer_question(payload, command.question_id)
     old_parts = _dict_list(question.get("parts"))
-    old_part_map = {str(item.get("part_id")): item for item in old_parts}
-    old_answer_map = {
-        str(item.get("part_id")): item
-        for item in _dict_list(answer.get("parts"))
-    }
+    old_part_map = _parts_by_canonical_id(old_parts, parent_id)
+    old_answer_parts = _dict_list(answer.get("parts"))
+    old_answer_map = _parts_by_canonical_id(
+        old_answer_parts,
+        parent_id,
+    )
     new_parts: list[dict[str, Any]] = []
     new_answers: list[dict[str, Any]] = []
     for index, (item, part_id, score) in enumerate(zip(command.parts, part_ids, scores)):
         old_part = old_part_map.get(part_id) or (old_parts[index] if index < len(old_parts) else {})
-        old_answer = old_answer_map.get(part_id) or {}
+        old_answer = old_answer_map.get(part_id) or (
+            old_answer_parts[index] if index < len(old_answer_parts) else {}
+        )
         steps = copy.deepcopy(_dict_list(old_part.get("steps")))
         if steps:
             steps[0]["core_goal"] = str(item.core_goal).strip() or f"完成 {command.question_id} 第 {index + 1} 个评分单元"
@@ -921,6 +984,43 @@ def _dict_list(value: Any) -> list[dict[str, Any]]:
     return [item for item in value if isinstance(item, dict)] if isinstance(value, list) else []
 
 
+def _parts_by_canonical_id(
+    parts: list[dict[str, Any]],
+    parent_id: str,
+) -> dict[str, dict[str, Any]]:
+    result: dict[str, dict[str, Any]] = {}
+    for part in parts:
+        canonical = _canonical_editor_part_id(
+            part.get("part_id"),
+            parent_id,
+            part_count=len(parts),
+        )
+        if canonical is None:
+            continue
+        result.setdefault(canonical, part)
+    return result
+
+
+def _canonical_editor_part_id(
+    raw_part_id: object,
+    parent_id: str,
+    *,
+    part_count: int,
+) -> str | None:
+    coordinates = question_id_coordinates(
+        raw_part_id,
+        parent_id=parent_id,
+    )
+    if coordinates is None or coordinates[0] != int(parent_id[1:]):
+        return None
+    part_number = coordinates[1]
+    if part_count == 1:
+        return parent_id if part_number in (None, 1) else None
+    if part_number is None:
+        return None
+    return canonical_part_id(parent_id, part_number)
+
+
 def _question_by_id(payload: dict[str, Any], section: str, question_id: str) -> dict[str, Any] | None:
     return next((item for item in _questions(payload, section) if str(item.get("question_id")) == question_id), None)
 
@@ -1022,6 +1122,35 @@ def _first_value(node: dict[str, Any], *keys: str) -> Any:
 def _unique_texts(value: Any) -> tuple[str, ...]:
     values = value if isinstance(value, (list, tuple)) else []
     return tuple(dict.fromkeys(text for item in values if (text := str(item).strip())))
+
+
+def _deduction_policy_texts(value: Any) -> tuple[str, ...]:
+    if isinstance(value, str):
+        return _split_text(value.replace("\r\n", "\n").replace("\n", ";"))
+    if not isinstance(value, (list, tuple)):
+        return ()
+    texts: list[str] = []
+    for item in value:
+        if isinstance(item, dict):
+            text = next(
+                (
+                    str(item.get(key) or "").strip()
+                    for key in (
+                        "description",
+                        "rule",
+                        "issue",
+                        "deduction",
+                        "condition",
+                    )
+                    if str(item.get(key) or "").strip()
+                ),
+                "",
+            )
+        else:
+            text = str(item).strip()
+        if text:
+            texts.append(text)
+    return tuple(dict.fromkeys(texts))
 
 
 def _split_text(value: Any) -> tuple[str, ...]:

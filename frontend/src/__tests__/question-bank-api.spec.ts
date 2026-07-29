@@ -128,7 +128,7 @@ describe('question bank API contracts', () => {
       difficultyMin: 4,
       difficultyMax: 7,
       tagStatus: 'untagged',
-      sort: 'difficulty',
+      sort: 'difficulty_desc',
       years: [''],
     })
 
@@ -177,6 +177,117 @@ describe('question bank API contracts', () => {
       items: [{ ...paper, source_file: 'private.docx' }],
       total: 1,
     })).toThrow('Invalid question bank papers')
+  })
+
+  it('sends one version-protected paper metadata update', async () => {
+    const { questionBankApi } = await import('../api/question-bank')
+    const updated = {
+      id: 4,
+      title: '0526test2',
+      year: '2026',
+      province: null,
+      city: null,
+      district: null,
+      exam_type: '阶段练习',
+      grade: '七年级',
+      semester: '下学期',
+      textbook_version: '北师大版',
+      updated_at: '2026-07-29 10:30:00.123456',
+    }
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(
+      JSON.stringify(updated),
+      { status: 200, headers: { 'content-type': 'application/json' } },
+    ))
+
+    await expect(questionBankApi.updatePaperMetadata(
+      4,
+      '2026-07-29 10:00:00',
+      {
+        title: '  0526test2  ',
+        year: '2026',
+        province: '',
+        city: null,
+        district: null,
+        exam_type: '阶段练习',
+        grade: '七年级',
+        semester: '下学期',
+        textbook_version: '北师大版',
+      },
+    )).resolves.toEqual(updated)
+
+    const [url, init] = fetchSpy.mock.calls[0]!
+    expect(String(url)).toBe('/api/question-bank/papers/4')
+    expect(init?.method).toBe('PATCH')
+    expect(JSON.parse(String(init?.body))).toEqual({
+      expected_updated_at: '2026-07-29 10:00:00',
+      metadata: {
+        title: '0526test2',
+        year: '2026',
+        province: null,
+        city: null,
+        district: null,
+        exam_type: '阶段练习',
+        grade: '七年级',
+        semester: '下学期',
+        textbook_version: '北师大版',
+      },
+    })
+  })
+
+  it('uses explicit version-protected paper trash and restore endpoints', async () => {
+    const { questionBankApi } = await import('../api/question-bank')
+    const trashed = {
+      id: 4,
+      deleted: true,
+      import_status: 'deleted',
+      updated_at: '2026-07-29 10:01:00.000001',
+      affected_question_count: 12,
+    }
+    const restored = {
+      ...trashed,
+      deleted: false,
+      import_status: 'completed',
+      updated_at: '2026-07-29 10:02:00.000001',
+    }
+    const fetchSpy = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        items: [],
+        total: 0,
+      }), { status: 200, headers: { 'content-type': 'application/json' } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(trashed), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(restored), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }))
+
+    await questionBankApi.listPapers(true)
+    await expect(questionBankApi.trashPaper(
+      4,
+      '2026-07-29 10:00:00.000001',
+    )).resolves.toEqual(trashed)
+    await expect(questionBankApi.restorePaper(
+      4,
+      trashed.updated_at,
+    )).resolves.toEqual(restored)
+
+    expect(String(fetchSpy.mock.calls[0]?.[0])).toBe(
+      '/api/question-bank/papers?deleted=true',
+    )
+    expect(String(fetchSpy.mock.calls[1]?.[0])).toBe(
+      '/api/question-bank/papers/4/trash',
+    )
+    expect(JSON.parse(String(fetchSpy.mock.calls[1]?.[1]?.body))).toEqual({
+      expected_updated_at: '2026-07-29 10:00:00.000001',
+    })
+    expect(String(fetchSpy.mock.calls[2]?.[0])).toBe(
+      '/api/question-bank/papers/4/restore',
+    )
+    expect(JSON.parse(String(fetchSpy.mock.calls[2]?.[1]?.body))).toEqual({
+      expected_updated_at: trashed.updated_at,
+    })
   })
 
   it('sends one revision-protected full tag replacement', async () => {

@@ -16,18 +16,25 @@ import llm_client
 import usage_logger
 
 
-def _scored_question(question_id: str, question_type: str, score: int) -> dict:
+def _scored_question(
+    question_id: str,
+    question_type: str,
+    score: int,
+    *,
+    response_mode: str | None = None,
+) -> dict:
+    part = {
+        "part_id": question_id,
+        "part_score": score,
+        "steps": [{"step_id": "S1", "step_score": score}],
+    }
+    if response_mode is not None:
+        part["response_mode"] = response_mode
     return {
         "question_id": question_id,
         "question_type": question_type,
         "max_score": score,
-        "parts": [
-            {
-                "part_id": question_id,
-                "part_score": score,
-                "steps": [{"step_id": "S1", "step_score": score}],
-            }
-        ],
+        "parts": [part],
     }
 
 
@@ -500,7 +507,7 @@ def test_quality_warnings_detect_garbled_content_missing_answers_and_stem_knowle
 
     assert not any("knowledge" in warning.lower() for warning in warnings)
     assert any("疑似乱码" in warning for warning in warnings)
-    assert any("缺少可评分的标准答案" in warning for warning in warnings)
+    assert any("缺少可评分的文本标准答案" in warning for warning in warnings)
 
 
 def test_answer_image_satisfies_visual_answer_quality_check() -> None:
@@ -536,7 +543,7 @@ def test_answer_image_satisfies_visual_answer_quality_check() -> None:
 
     warnings = session_manager.collect_generated_config_quality_warnings(payload)
 
-    assert not any("缺少可评分的标准答案" in warning for warning in warnings)
+    assert not any("缺少可评分的文本标准答案" in warning for warning in warnings)
 
 
 def test_normalization_recovers_image_mode_aliases_and_nested_knowledge() -> None:
@@ -926,6 +933,95 @@ def test_subjective_top_level_equivalents_do_not_absorb_part_answers_or_list_str
     assert answer["parts"][0]["accepted_forms"] == ["6，2"]
     assert "3" not in answer["parts"][1]["accepted_forms"]
     assert answer["parts"][0]["answer"] == "6，2"
+
+
+def test_subjective_top_level_serialized_list_is_rebuilt_from_matching_parts() -> None:
+    payload = {
+        "rubric": {
+            "questions": [
+                {
+                    "question_id": "Q12",
+                    "question_type": "proof",
+                    "max_score": 6,
+                    "parts": [
+                        {"part_id": "P1", "part_score": 2, "steps": []},
+                        {"part_id": "P2", "part_score": 2, "steps": []},
+                        {"part_id": "P3", "part_score": 2, "steps": []},
+                    ],
+                }
+            ]
+        },
+        "answer_key": {
+            "questions": [
+                {
+                    "question_id": "Q12",
+                    "canonical_answer": "['22.5', '∠1=∠3', 'AB=BD+DH']",
+                    "accepted_forms": [
+                        "['22.5', '∠1＝∠3', 'AB＝BD+DH']",
+                    ],
+                    "parts": [
+                        {"part_id": "P1", "answer": "22.5"},
+                        {"part_id": "P2", "answer": "∠1=∠3"},
+                        {"part_id": "P3", "answer": "AB=BD+DH"},
+                    ],
+                }
+            ]
+        },
+    }
+
+    session_manager.normalize_generated_config_schema(payload)
+
+    answer = payload["answer_key"]["questions"][0]
+    assert answer["canonical_answer"] == "（1）22.5；（2）∠1=∠3；（3）AB=BD+DH"
+    assert answer["accepted_forms"]
+    assert not any(
+        session_manager._looks_like_serialized_answer_list(value)
+        for value in answer["accepted_forms"]
+    )
+    assert [part["answer"] for part in answer["parts"]] == [
+        "22.5",
+        "∠1=∠3",
+        "AB=BD+DH",
+    ]
+    warnings = session_manager.collect_generated_config_quality_warnings(payload)
+    assert not any("列表字符串" in warning for warning in warnings)
+
+
+def test_subjective_top_level_serialized_list_stays_blocked_when_part_count_differs() -> None:
+    payload = {
+        "rubric": {
+            "questions": [
+                {
+                    "question_id": "Q12",
+                    "question_type": "proof",
+                    "max_score": 6,
+                    "parts": [
+                        {"part_id": "P1", "part_score": 2, "steps": []},
+                        {"part_id": "P2", "part_score": 2, "steps": []},
+                        {"part_id": "P3", "part_score": 2, "steps": []},
+                    ],
+                }
+            ]
+        },
+        "answer_key": {
+            "questions": [
+                {
+                    "question_id": "Q12",
+                    "canonical_answer": "['22.5', '∠1=∠3']",
+                    "parts": [
+                        {"part_id": "P1", "answer": "22.5"},
+                        {"part_id": "P2", "answer": "∠1=∠3"},
+                        {"part_id": "P3", "answer": "AB=BD+DH"},
+                    ],
+                }
+            ]
+        },
+    }
+
+    session_manager.normalize_generated_config_schema(payload)
+
+    warnings = session_manager.collect_generated_config_quality_warnings(payload)
+    assert any("列表字符串" in warning for warning in warnings)
 
 
 def test_generated_config_normalization_recovers_paired_knowledge_list_strings_idempotently() -> None:
@@ -1471,11 +1567,17 @@ def test_retry_selected_failed_question_preserves_unselected_failure(
 def test_word_whole_generation_is_one_request_and_uses_shared_postprocessing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    scores = [17, 17, 17, 17, 17, 15]
     payload = {
         "rubric": {
             "questions": [
-                _scored_question(f"Q{i}", "comprehensive", 1)
-                for i in range(1, 7)
+                _scored_question(
+                    f"Q{i}",
+                    "comprehensive",
+                    score,
+                    response_mode="short_answer_points",
+                )
+                for i, score in enumerate(scores, start=1)
             ]
         },
         "answer_key": {
@@ -1513,11 +1615,17 @@ def test_word_whole_generation_is_one_request_and_uses_shared_postprocessing(
 def test_pdf_whole_generation_is_one_visual_request_without_extracted_text(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    scores = [17, 17, 17, 17, 17, 15]
     payload = {
         "rubric": {
             "questions": [
-                _scored_question(f"Q{i}", "comprehensive", 1)
-                for i in range(1, 7)
+                _scored_question(
+                    f"Q{i}",
+                    "comprehensive",
+                    score,
+                    response_mode="short_answer_points",
+                )
+                for i, score in enumerate(scores, start=1)
             ]
         },
         "answer_key": {

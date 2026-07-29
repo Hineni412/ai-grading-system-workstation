@@ -58,6 +58,169 @@ afterEach(() => {
 })
 
 describe('question assembly view', () => {
+  it('loads the initial question facets once while opening the workspace', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input)
+      if (url === '/api/question-assembly/draft' && init?.method !== 'PUT') {
+        return json(draft())
+      }
+      if (url === '/api/question-assembly/records?limit=100') {
+        return json({ items: [], total: 0 })
+      }
+      if (url === '/api/question-bank/curriculum') {
+        return json(curriculumCatalog())
+      }
+      if (url.startsWith('/api/question-bank/facets?')) {
+        return json(questionFacets())
+      }
+      if (url.startsWith('/api/question-bank/questions?')) {
+        return json(questionPage(bankQuestion(17, '初始题目')))
+      }
+      throw new Error(`unexpected request: ${url}`)
+    })
+
+    const host = document.createElement('div')
+    document.body.append(host)
+    const app = createApp(QuestionAssemblyView)
+    app.use(createPinia())
+    app.mount(host)
+    mounted.push(app)
+
+    await vi.waitFor(() => expect(host.textContent).toContain('初始题目'))
+    await vi.waitFor(() => expect(host.querySelector('.assembly-curriculum-tree')).toBeTruthy())
+
+    const facetCalls = fetchSpy.mock.calls.filter(
+      ([input]) => String(input).startsWith('/api/question-bank/facets?'),
+    )
+    expect(facetCalls).toHaveLength(1)
+  })
+
+  it('shows selected chapter questions before a slow facet refresh and keeps the chapter tree visible', async () => {
+    const slowFacets = deferred<Response>()
+    let holdFacetRefresh = false
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input)
+      if (url === '/api/question-assembly/draft' && init?.method !== 'PUT') {
+        return json(draft())
+      }
+      if (url === '/api/question-assembly/records?limit=100') {
+        return json({ items: [], total: 0 })
+      }
+      if (url === '/api/question-bank/curriculum') {
+        return json(curriculumCatalog())
+      }
+      if (url.startsWith('/api/question-bank/facets?')) {
+        if (holdFacetRefresh) return slowFacets.promise
+        return json(questionFacets())
+      }
+      if (url.startsWith('/api/question-bank/questions?')) {
+        const selectedChapter = url.includes('exam_scopes=')
+        return json(questionPage(bankQuestion(
+          selectedChapter ? 18 : 17,
+          selectedChapter ? '章节筛选后的题目' : '初始题目',
+        )))
+      }
+      throw new Error(`unexpected request: ${url}`)
+    })
+
+    const host = document.createElement('div')
+    document.body.append(host)
+    const app = createApp(QuestionAssemblyView)
+    app.use(createPinia())
+    app.mount(host)
+    mounted.push(app)
+
+    await vi.waitFor(() => expect(host.textContent).toContain('初始题目'))
+    const chapter = host.querySelector<HTMLButtonElement>('.assembly-curriculum-node__chapter')
+    expect(chapter).toBeTruthy()
+
+    holdFacetRefresh = true
+    chapter!.click()
+    await vi.waitFor(() => expect(fetchSpy.mock.calls.filter(
+      ([input]) => String(input).startsWith('/api/question-bank/questions?'),
+    )).toHaveLength(2))
+
+    try {
+      await vi.waitFor(() => expect(host.textContent).toContain('章节筛选后的题目'))
+      expect(host.querySelector('.assembly-curriculum-tree')).toBeTruthy()
+      expect(host.textContent).not.toContain('正在读取教材目录')
+    } finally {
+      slowFacets.resolve(new Response(JSON.stringify(questionFacets()), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }))
+      await settle()
+    }
+  })
+
+  it('refreshes facets for filter changes but not for pagination or sorting', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input)
+      if (url === '/api/question-assembly/draft' && init?.method !== 'PUT') {
+        return json(draft())
+      }
+      if (url === '/api/question-assembly/records?limit=100') {
+        return json({ items: [], total: 0 })
+      }
+      if (url === '/api/question-bank/curriculum') {
+        return json(curriculumCatalog())
+      }
+      if (url.startsWith('/api/question-bank/facets?')) {
+        return json(questionFacets())
+      }
+      if (url.startsWith('/api/question-bank/questions?')) {
+        const page = url.includes('page=2') ? 2 : 1
+        const text = page === 2 ? '第二页题目' : '第一页题目'
+        return json(questionPage(bankQuestion(page === 2 ? 18 : 17, text), page))
+      }
+      throw new Error(`unexpected request: ${url}`)
+    })
+
+    const host = document.createElement('div')
+    document.body.append(host)
+    const app = createApp(QuestionAssemblyView)
+    app.use(createPinia())
+    app.mount(host)
+    mounted.push(app)
+
+    await vi.waitFor(() => expect(host.textContent).toContain('第一页题目'))
+    const facetCallCount = () => fetchSpy.mock.calls.filter(
+      ([input]) => String(input).startsWith('/api/question-bank/facets?'),
+    ).length
+    const initialFacetCalls = facetCallCount()
+
+    const nextPage = [...host.querySelectorAll<HTMLButtonElement>('button')]
+      .find((button) => button.textContent?.trim() === '下一页')
+    expect(nextPage).toBeTruthy()
+    nextPage!.click()
+    await vi.waitFor(() => expect(host.textContent).toContain('第二页题目'))
+    expect(facetCallCount()).toBe(initialFacetCalls)
+
+    const sort = host.querySelector<HTMLButtonElement>('button[aria-label^="难度"]')
+    expect(sort).toBeTruthy()
+    sort!.click()
+    await vi.waitFor(() => expect(fetchSpy.mock.calls.some(
+      ([input]) => (
+        String(input).startsWith('/api/question-bank/questions?')
+        && String(input).includes('sort=difficulty_asc')
+      ),
+    )).toBe(true))
+    expect(facetCallCount()).toBe(initialFacetCalls)
+
+    const questionType = [...host.querySelectorAll<HTMLButtonElement>(
+      '.assembly-filter-panel button',
+    )].find((button) => button.textContent?.includes('选择题'))
+    expect(questionType).toBeTruthy()
+    questionType!.click()
+    await vi.waitFor(() => expect(facetCallCount()).toBe(initialFacetCalls + 1))
+    expect(fetchSpy.mock.calls.some(
+      ([input]) => (
+        String(input).startsWith('/api/question-bank/questions?')
+        && String(input).includes('question_types=')
+      ),
+    )).toBe(true)
+  })
+
   it('adds selected question-bank rows to the paper basket and submits an export job', async () => {
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
       const url = String(input)
@@ -307,6 +470,73 @@ function bankQuestion(id: number, text: string) {
       answer_blocks: [],
     },
   }
+}
+
+function questionPage(item: ReturnType<typeof bankQuestion>, page = 1) {
+  return {
+    items: [item],
+    total: 2,
+    page,
+    page_size: 12,
+    total_pages: 2,
+  }
+}
+
+function questionFacets() {
+  return {
+    exam_scopes: [],
+    curriculum_sections: [],
+    curriculum_chapters: [{ value: 'bnu24-math-g7-upper-c01', count: 2 }],
+    knowledge_points: [{ value: '有理数', count: 2 }],
+    abilities: [],
+    methods: [],
+    models: [],
+    special_types: [{ value: '动态几何题', count: 1 }],
+    student_levels: [],
+    teaching_stages: [],
+    sub_skills: [],
+    question_types: [{ value: '选择题', count: 2 }],
+    years: [],
+    exam_types: [],
+    grades: [],
+  }
+}
+
+function curriculumCatalog() {
+  return {
+    schema_version: 1,
+    catalog_id: 'bnu-math-2024',
+    publisher: '北京师范大学出版社',
+    subject: '数学',
+    edition: '2024',
+    volumes: Array.from({ length: 4 }, (_, index) => ({
+      id: `volume-${index + 1}`,
+      label: `${index + 7}年级${index % 2 === 0 ? '上册' : '下册'}`,
+      grade: `${index + 7}年级`,
+      semester: index % 2 === 0 ? '上学期' : '下学期',
+      textbook_version: '北师大版2024',
+      chapters: [{
+        id: index === 0 ? 'bnu24-math-g7-upper-c01' : `chapter-${index + 1}`,
+        order: 1,
+        number: '第一章',
+        title: index === 0 ? '有理数' : `测试章节${index + 1}`,
+        label: index === 0 ? '第一章 有理数' : `第一章 测试章节${index + 1}`,
+        kind: 'chapter',
+        exam_scope_values: [
+          index === 0 ? '七年级上册 第一章 有理数' : `测试范围${index + 1}`,
+        ],
+        sections: [],
+      }],
+    })),
+  }
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>((nextResolve) => {
+    resolve = nextResolve
+  })
+  return { promise, resolve }
 }
 
 function json(body: unknown, status = 200): Promise<Response> {

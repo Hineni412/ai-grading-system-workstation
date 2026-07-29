@@ -1,9 +1,8 @@
 from __future__ import annotations
 
-import re
 from typing import Any
 
-from session_manager import _canonical_question_id
+from question_id_contract import canonical_parent_id, question_id_coordinates
 
 
 _SOURCE_WIDTH_KEYS = ("source_image_width", "template_image_width", "image_width")
@@ -238,17 +237,9 @@ def _normalize_region_id(region: dict[str, Any]) -> str:
 
 def _normalize_part_id(value: str) -> str:
     text = str(value or "").strip()
-    match = re.match(
-        r"^(?:Q|q)?\s*(\d+)\s*[-_]\s*[Pp]?\s*(\d+)$",
-        text,
-    )
-    if not match:
-        match = re.match(
-            r"^(?:Q|q)?\s*(\d+)\s*[\(（]\s*[Pp]?\s*(\d+)\s*[\)）]$",
-            text,
-        )
-    if match:
-        return f"{int(match.group(1))}-{int(match.group(2))}"
+    coordinates = question_id_coordinates(text)
+    if coordinates is not None and coordinates[1] is not None:
+        return f"{coordinates[0]}-{coordinates[1]}"
     return _normalize_parent_id(text)
 
 
@@ -256,21 +247,12 @@ def _normalize_parent_id(value: str) -> str:
     text = str(value or "").strip()
     if not text:
         return ""
-    return _canonical_question_id(text, text)
+    return canonical_parent_id(text) or text
 
 
 def _looks_like_part_id(value: str) -> bool:
-    text = str(value or "").strip()
-    return bool(
-        re.match(
-            r"^(?:Q|q)?\s*\d+\s*[-_]\s*[Pp]?\s*\d+$",
-            text,
-        )
-        or re.match(
-            r"^(?:Q|q)?\s*\d+\s*[\(（]\s*[Pp]?\s*\d+\s*[\)）]$",
-            text,
-        )
-    )
+    coordinates = question_id_coordinates(value)
+    return coordinates is not None and coordinates[1] is not None
 
 
 def _region_page(region: dict[str, Any]) -> str:

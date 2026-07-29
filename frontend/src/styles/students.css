@@ -1,9 +1,11 @@
 .student-roster {
+  box-sizing: border-box;
   display: grid;
   gap: var(--space-5);
-  max-width: var(--content-max-width);
+  max-width: none;
   margin: 0 auto;
-  padding: var(--space-6);
+  padding: 16px;
+  width: 100%;
 }
 
 .student-roster__hero,

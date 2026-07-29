@@ -6,6 +6,15 @@ from .diagnostics import (
     NullDiagnosticSink,
 )
 from .errors import LLMErrorCategory, classify_llm_error, is_retryable_error
+from .execution import (
+    LLMExecutionGovernorRegistry,
+    LLMExecutionPermit,
+    LLMExecutionSettingsError,
+    LLMExecutionSnapshot,
+    execution_scope_key,
+    execution_snapshot_from_profile,
+    get_default_execution_governors,
+)
 from .gateway import LLMGateway
 from .pacing import LLMPacerRegistry
 from .policy import (
@@ -47,6 +56,10 @@ __all__ = [
     "DIAGNOSTIC_MAX_FILE_BYTES",
     "DIAGNOSTIC_ROTATED_FILE_COUNT",
     "LLMErrorCategory",
+    "LLMExecutionGovernorRegistry",
+    "LLMExecutionPermit",
+    "LLMExecutionSettingsError",
+    "LLMExecutionSnapshot",
     "LLMGateway",
     "LLMPacerRegistry",
     "LLMPolicyError",
@@ -62,6 +75,9 @@ __all__ = [
     "TRACE_LOG_FILE",
     "classify_llm_error",
     "create_openai_client",
+    "execution_scope_key",
+    "execution_snapshot_from_profile",
+    "get_default_execution_governors",
     "gateway_config_key",
     "is_retryable_error",
     "is_truncation_finish_reason",

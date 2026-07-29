@@ -848,7 +848,7 @@ describe('source-recalibrated review view', () => {
     inputValue(score, '4')
 
     const deepButton = [...host.querySelectorAll<HTMLButtonElement>('button')]
-      .find((button) => button.textContent?.trim() === '深查此份答卷')!
+      .find((button) => button.getAttribute('aria-label') === '深查答卷')!
     deepButton.click()
     await nextTick()
     expect(host.querySelector('[data-testid="review-deep-workspace"]')).not.toBeNull()

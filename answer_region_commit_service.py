@@ -11,13 +11,27 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from answer_region_models import RegionValidationResult, normalize_regions, validate_regions
+from answer_region_models import (
+    RegionIssue,
+    RegionValidationResult,
+    normalize_regions,
+    validate_regions,
+)
 from answer_region_session_lock import get_answer_region_session_lock
 from path_manager import resolve_stored_file_path
+from question_id_contract import QuestionIdCatalog, QuestionIdContractError
 
 
 logger = logging.getLogger(__name__)
 _SAFE_TOKEN = re.compile(r"[A-Za-z0-9_-]+")
+_STUDENT_NAME_REGION_ID = "__student_name__"
+_STUDENT_NAME_REGION_ALIASES = {
+    _STUDENT_NAME_REGION_ID,
+    "student_name",
+    "name",
+    "姓名",
+    "姓名区域",
+}
 
 
 class _SnapshotCollisionError(Exception):
@@ -63,10 +77,17 @@ class AnswerRegionCommitService:
                     expected_template_fingerprint=expected_template_fingerprint,
                 )
             normalized = normalize_regions(regions)
-            validation = validate_regions(
+            normalized, binding_issues = self._canonicalize_region_bindings(
+                session_id=session_id,
+                regions=normalized,
+            )
+            region_validation = validate_regions(
                 normalized,
                 image_sizes=image_sizes,
                 template_matches=template_matches,
+            )
+            validation = RegionValidationResult(
+                tuple(binding_issues) + region_validation.issues
             )
             if not validation.can_commit:
                 return AnswerRegionCommitResult(False, False, validation)
@@ -104,6 +125,78 @@ class AnswerRegionCommitService:
                 validation=validation,
                 draft_marker=draft_marker,
             )
+
+    def _canonicalize_region_bindings(
+        self,
+        *,
+        session_id: int,
+        regions: list[dict[str, Any]],
+    ) -> tuple[list[dict[str, Any]], list[RegionIssue]]:
+        try:
+            catalog = self._load_question_catalog(session_id)
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError, QuestionIdContractError):
+            logger.exception("Failed to load the question-id catalog before region commit")
+            return regions, [
+                RegionIssue(
+                    "question_catalog_invalid",
+                    "The current scoring configuration has invalid question identifiers.",
+                )
+            ]
+        except (TypeError, ValueError, KeyError):
+            logger.exception("Failed to resolve the scoring configuration before region commit")
+            return regions, [
+                RegionIssue(
+                    "question_catalog_invalid",
+                    "The current scoring configuration is unavailable.",
+                )
+            ]
+
+        issues: list[RegionIssue] = []
+        for region in regions:
+            region_uuid = _optional_text(region.get("region_uuid"))
+            mapped = _optional_text(region.get("mapped_question_id"))
+            if mapped is None:
+                continue
+
+            canonical_mapped = _canonical_region_binding(catalog, mapped)
+            if canonical_mapped is None:
+                issues.append(
+                    RegionIssue(
+                        "unknown_question_id",
+                        f"Question identifier {mapped!r} is not present in the current rubric.",
+                        region_uuid=region_uuid,
+                        question_id=mapped,
+                    )
+                )
+                continue
+            region["mapped_question_id"] = canonical_mapped
+
+            detected = _optional_text(region.get("detected_question_id"))
+            if detected is None:
+                continue
+            canonical_detected = _canonical_region_binding(catalog, detected)
+            # A teacher's mapped binding is authoritative.  An unrecognised
+            # machine-detected label must not become another formal identity.
+            region["detected_question_id"] = canonical_detected
+
+        return regions, issues
+
+    def _load_question_catalog(self, session_id: int) -> QuestionIdCatalog:
+        session = self._db.get_grading_session(session_id)
+        if not isinstance(session, dict):
+            raise ValueError("grading session is unavailable")
+        search_roots = [self._session_dir, self._session_dir.parent]
+        db_path = getattr(self._db, "db_path", None)
+        if db_path:
+            search_roots.append(Path(db_path).parent)
+        rubric_path = resolve_stored_file_path(
+            session.get("rubric_path"),
+            search_roots=search_roots,
+        )
+        rubric = json.loads(rubric_path.read_text(encoding="utf-8"))
+        if not isinstance(rubric, dict):
+            raise ValueError("rubric must be an object")
+        return QuestionIdCatalog.from_document(rubric)
 
     def _current_template_matches(
         self,
@@ -529,3 +622,18 @@ def _snapshot_is_pending(db: Any, session_id: int) -> bool:
 
 def _valid_snapshot_token(snapshot_token: str) -> bool:
     return bool(_SAFE_TOKEN.fullmatch(snapshot_token))
+
+
+def _optional_text(value: object) -> str | None:
+    text = str(value or "").strip()
+    return text or None
+
+
+def _canonical_region_binding(
+    catalog: QuestionIdCatalog,
+    raw_question_id: object,
+) -> str | None:
+    text = _optional_text(raw_question_id)
+    if text in _STUDENT_NAME_REGION_ALIASES:
+        return _STUDENT_NAME_REGION_ID
+    return catalog.resolve(text)

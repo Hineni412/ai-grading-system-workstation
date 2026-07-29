@@ -39,6 +39,9 @@ _SOURCE_CONFIG_PUBLIC_DETAILS = {
     "旧版整卷生成": "Generating grading configuration.",
     "旧版整卷修复": "Generating grading configuration.",
     "PDF 整卷视觉单次请求": "Generating grading configuration.",
+    "并行生成评分标准": "正在并行生成评分依据批次。",
+    "AI 统一配分": "评分依据批次已完成，正在统一配分。",
+    "AI 统一配分失败": "模型已返回或调用已结束，但统一配分校验未通过。",
 }
 _CONFIG_TRUNCATION_PUBLIC_ERRORS = {
     "模型因输出长度上限停止": (
@@ -93,6 +96,8 @@ def public_job_detail(job: JobRecord) -> str:
         and str(job.payload.get("source_id") or "").strip()
     ):
         if job.status == "succeeded":
+            if job.result.get("outcome") == "partial":
+                return "评分依据生成流程已结束，但本地校验尚未全部通过，未发布正式版本。"
             return "Grading configuration generated."
         return _SOURCE_CONFIG_PUBLIC_DETAILS.get(job.stage, "")
     return job.detail
@@ -198,6 +203,18 @@ def public_job_result(job: JobRecord) -> dict[str, Any]:
         return sanitize_public_mapping(
             {key: job.result[key] for key in allowed if key in job.result}
         )
+    if job.job_type == "taxonomy_suggestion":
+        allowed = (
+            "run_id",
+            "status",
+            "taxonomy_revision",
+            "progress",
+            "stale",
+            "retryable",
+        )
+        return sanitize_public_mapping(
+            {key: job.result[key] for key in allowed if key in job.result}
+        )
     if job.job_type == "config_generation":
         allowed = (
             "session_id",
@@ -210,9 +227,16 @@ def public_job_result(job: JobRecord) -> dict[str, Any]:
             "failed_batch_count",
             "failed_batches",
             "local_json_repairs",
+            "local_structure_repairs",
             "score_allocation_pending",
             "score_allocation_failed",
             "score_allocation_error",
+            "score_allocation_failure_category",
+            "question_bank_sync_requested",
+            "question_bank_sync_state",
+            "question_bank_sync_job_id",
+            "question_bank_sync_error",
+            "config_revision",
             "retryable",
             "mapping_status",
             "mapping_message",
@@ -253,7 +277,14 @@ def public_job_error(job: JobRecord) -> str | None:
 
 def public_job_payload(job: JobRecord) -> dict[str, Any]:
     if job.job_type == "report_export":
-        allowed = ("session_id", "report_type", "score_revision", "retry_of_job_id")
+        allowed = (
+            "session_id",
+            "report_type",
+            "score_revision",
+            "report_options_fingerprint",
+            "score_excel_options",
+            "retry_of_job_id",
+        )
         return sanitize_public_mapping(
             {key: job.payload[key] for key in allowed if key in job.payload}
         )
@@ -299,10 +330,20 @@ def public_job_payload(job: JobRecord) -> dict[str, Any]:
         return sanitize_public_mapping(
             {key: job.payload[key] for key in allowed if key in job.payload}
         )
+    if job.job_type == "taxonomy_suggestion":
+        allowed = ("run_id", "operation", "retry_of_job_id")
+        return sanitize_public_mapping(
+            {key: job.payload[key] for key in allowed if key in job.payload}
+        )
     if job.job_type == "config_generation":
         allowed = ("session_id", "mode")
         if str(job.payload.get("source_id") or "").strip():
-            allowed += ("generation_mode", "source_id", "source_revision")
+            allowed += (
+                "generation_mode",
+                "source_id",
+                "source_revision",
+                "sync_to_question_bank",
+            )
         return sanitize_public_mapping(
             {key: job.payload[key] for key in allowed if key in job.payload}
         )
@@ -375,6 +416,7 @@ def submit_job(
         "question_import",
         "question_bank_sync",
         "tagging_sync",
+        "taxonomy_suggestion",
         "training_export",
         "assembly_export",
         "ops_backup",

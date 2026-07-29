@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -37,6 +38,7 @@ def _request_payload(
                 "mode": "sync",
                 "config_revision": revision,
                 "source_paper_sha256": source_sha256,
+                "curriculum_volume_id": "bnu24-math-g7-upper",
             },
             sort_keys=True,
             separators=(",", ":"),
@@ -47,6 +49,7 @@ def _request_payload(
         "mode": "sync",
         "config_revision": revision,
         "source_paper_sha256": source_sha256,
+        "curriculum_volume_id": "bnu24-math-g7-upper",
         "client_request_token": token,
         "client_request_fingerprint": fingerprint,
     }
@@ -395,6 +398,7 @@ def test_sync_runs_import_then_governed_tagging_and_links_without_touching_confi
             "source_paper_sha256": source_sha256,
             "client_request_token": "f" * 32,
             "client_request_fingerprint": "1" * 64,
+            "curriculum_volume_id": "bnu24-math-g7-upper",
         },
     )
     assert store.mark_running(job.id)
@@ -469,6 +473,99 @@ def test_sync_runs_import_then_governed_tagging_and_links_without_touching_confi
     assert Path(db.get_grading_session(session_id)["rubric_path"]).read_bytes() == rubric_before
 
 
+def test_sync_carries_original_filename_and_grading_paper_defaults_to_import(
+    tmp_path: Path,
+) -> None:
+    db, session_id, _source, source_sha256, revision = _configured_session(
+        tmp_path
+    )
+    question_bank_db = tmp_path / "data" / "databases" / "question_bank.db"
+    initialize_database(question_bank_db)
+    store = JobStore(db.db_path)
+    job = store.create_job(
+        "question_bank_sync",
+        {
+            "session_id": session_id,
+            "mode": "sync",
+            "config_revision": revision,
+            "source_paper_sha256": source_sha256,
+            "source_safe_filename": "0526test2.docx",
+            "curriculum_volume_id": "bnu24-math-g7-upper",
+        },
+    )
+    assert store.mark_running(job.id)
+    context = JobContext(
+        job_id=job.id,
+        job_type=job.job_type,
+        payload=job.payload,
+        store=store,
+    )
+    captured: dict[str, object] = {}
+
+    def import_runner(**kwargs: Any) -> dict[str, object]:
+        child = kwargs["context"]
+        resource = kwargs["write_service"].load_import_resource(
+            child.payload["request_id"]
+        )
+        captured["filename"] = resource.filename
+        captured["defaults"] = dict(child.payload["paper_defaults"])
+        with connect(question_bank_db) as conn:
+            question_id = int(
+                conn.execute(
+                    """
+                    INSERT INTO questions (
+                        question_number, question_type, question_text, answer_text
+                    ) VALUES ('1', 'choice', '1 + 1 = ?', 'B')
+                    """
+                ).lastrowid
+            )
+        return {
+            "outcome": "complete",
+            "successful_question_ids": [question_id],
+            "failed_question_ids": [],
+            "failed_count": 0,
+            "retryable": False,
+        }
+
+    def tagging_runner(**kwargs: Any) -> dict[str, object]:
+        question_ids = list(kwargs["context"].payload["question_ids"])
+        return {
+            "outcome": "complete",
+            "requested_count": len(question_ids),
+            "tagged_count": len(question_ids),
+            "successful_question_ids": question_ids,
+            "failed_question_ids": [],
+            "failed_count": 0,
+            "review_count": 0,
+            "proposal_ids": [],
+            "retryable": False,
+        }
+
+    run_session_question_bank_sync_job(
+        context=context,
+        grading_db=db,
+        question_bank_db_path=question_bank_db,
+        data_root=tmp_path / "data",
+        write_service=QuestionBankWriteService(
+            question_bank_db,
+            data_root=tmp_path / "data",
+        ),
+        question_import_runner=import_runner,
+        tagging_sync_runner=tagging_runner,
+        ai_service_factory=lambda: object(),
+        taxonomy_governance=object(),
+    )
+
+    assert captured["filename"] == "0526test2.docx"
+    assert captured["defaults"] == {
+        "year": str(datetime.now().year),
+        "exam_type": "阶段练习",
+        "grade": "七年级",
+        "semester": "上学期",
+        "textbook_version": "北师大版（2024）",
+    }
+
+
 def test_sync_that_loses_final_ownership_removes_its_automatic_links(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -484,6 +581,7 @@ def test_sync_that_loses_final_ownership_removes_its_automatic_links(
             "mode": "sync",
             "config_revision": revision,
             "source_paper_sha256": source_sha256,
+            "curriculum_volume_id": "bnu24-math-g7-upper",
         },
     )
     assert store.mark_running(job.id)
@@ -573,6 +671,7 @@ def test_tag_retry_skips_import_and_failure_stays_in_the_sync_state(
         {
             "session_id": session_id,
             "mode": "tag_retry",
+            "curriculum_volume_id": "bnu24-math-g7-upper",
             "question_ids": [201],
             "config_revision": revision,
             "source_paper_sha256": source_sha256,
@@ -645,6 +744,7 @@ def test_cancellation_remains_cancelled_and_leaves_a_recoverable_sync_state(
             "source_paper_sha256": source_sha256,
             "client_request_token": "4" * 32,
             "client_request_fingerprint": "5" * 64,
+            "curriculum_volume_id": "bnu24-math-g7-upper",
         },
     )
     assert store.mark_running(job.id)
@@ -743,6 +843,7 @@ def test_stale_sync_finishes_failed_and_cannot_leave_session_running(
         "source_paper_sha256": source_sha256,
         "client_request_token": "6" * 32,
         "client_request_fingerprint": "7" * 64,
+        "curriculum_volume_id": "bnu24-math-g7-upper",
     }
 
     try:

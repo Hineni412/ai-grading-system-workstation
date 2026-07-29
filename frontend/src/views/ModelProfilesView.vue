@@ -16,8 +16,11 @@ import {
 } from '../api/ai-diagnostics'
 import {
   MODEL_PROFILE_LIMITS,
+  modelProfilesApi,
+  type ModelExecutionStatus,
   type ModelProfile,
   type ModelProfileUpsertInput,
+  type RequestSpeedMode,
 } from '../api/model-profiles'
 import { useModelProfilesStore } from '../stores/model-profiles'
 import '../styles/model-profiles.css'
@@ -34,6 +37,9 @@ interface ModelProfileDraft {
   configApiKey: string
   hasConfigApiKey: boolean
   configModel: string
+  requestSpeedMode: RequestSpeedMode
+  maxConcurrentRequests: number
+  requestsPerMinute: number
 }
 
 type DiagnosticTab = 'request' | 'attachments' | 'response' | 'parsed' | 'error'
@@ -52,8 +58,12 @@ const selectedDiagnosticId = ref('')
 const selectedDiagnostic = ref<AiDiagnosticDetail | null>(null)
 const diagnosticDetailState = ref<'idle' | 'loading' | 'error'>('idle')
 const diagnosticTab = ref<DiagnosticTab>('request')
+const executionStatus = ref<ModelExecutionStatus | null>(null)
+const executionStatusState = ref<'idle' | 'loading' | 'ready' | 'error'>('idle')
+const executionStatusError = ref('')
 let diagnosticsController: AbortController | null = null
 let diagnosticDetailController: AbortController | null = null
+let executionStatusController: AbortController | null = null
 
 const draft = reactive<ModelProfileDraft>({
   sourceName: null,
@@ -67,6 +77,9 @@ const draft = reactive<ModelProfileDraft>({
   configApiKey: '',
   hasConfigApiKey: false,
   configModel: '',
+  requestSpeedMode: 'automatic',
+  maxConcurrentRequests: 20,
+  requestsPerMinute: 1000,
 })
 
 function draftSnapshot(): string {
@@ -80,6 +93,9 @@ function draftSnapshot(): string {
     configBaseUrl: draft.configBaseUrl,
     configApiKey: draft.configApiKey,
     configModel: draft.configModel,
+    requestSpeedMode: draft.requestSpeedMode,
+    maxConcurrentRequests: draft.maxConcurrentRequests,
+    requestsPerMinute: draft.requestsPerMinute,
   })
 }
 
@@ -111,6 +127,67 @@ const hasAdvancedConfiguration = computed(() => (
   || draft.configModel !== ''
   || draft.hasConfigApiKey
 ))
+const requestSpeedSummary = computed(() => {
+  if (draft.requestSpeedMode === 'conservative') {
+    return '同时处理 1 个请求，每分钟最多启动 60 个请求。'
+  }
+  if (draft.requestSpeedMode === 'custom') {
+    return `同时最多 ${draft.maxConcurrentRequests} 个请求，`
+      + `每分钟最多启动 ${draft.requestsPerMinute} 个请求。`
+  }
+  return '从 6 个同时请求起步，稳定后逐步提高，最多 20 个；每分钟最多启动 1000 个请求。'
+})
+const executionLimitingMessage = computed(() => {
+  if (executionStatus.value?.limiting_reason === 'provider_overload') {
+    return '模型服务刚才返回了拥堵或限流，系统已自动降低同时请求数。'
+  }
+  if (executionStatus.value?.limiting_reason === 'recovering') {
+    return '模型服务正在恢复稳定，系统会逐步提高同时请求数。'
+  }
+  return '当前按照已保存的请求速度方案运行。'
+})
+
+function resetExecutionStatus(): void {
+  executionStatusController?.abort()
+  executionStatusController = null
+  executionStatus.value = null
+  executionStatusState.value = 'idle'
+  executionStatusError.value = ''
+}
+
+async function loadExecutionStatus(
+  profileName: string | null = draft.sourceName,
+): Promise<void> {
+  executionStatusController?.abort()
+  if (profileName === null) {
+    resetExecutionStatus()
+    return
+  }
+  const controller = new AbortController()
+  executionStatusController = controller
+  executionStatusState.value = 'loading'
+  executionStatusError.value = ''
+  try {
+    const status = await modelProfilesApi.getExecutionStatus(
+      profileName,
+      controller.signal,
+    )
+    if (controller.signal.aborted || draft.sourceName !== profileName) return
+    executionStatus.value = status
+    executionStatusState.value = 'ready'
+  } catch (error) {
+    if (controller.signal.aborted || draft.sourceName !== profileName) return
+    executionStatus.value = null
+    executionStatusState.value = 'error'
+    executionStatusError.value = error instanceof Error
+      ? error.message
+      : '当前运行状态没有读取成功。'
+  } finally {
+    if (executionStatusController === controller) {
+      executionStatusController = null
+    }
+  }
+}
 
 function applyProfile(profile: ModelProfile): void {
   Object.assign(draft, {
@@ -125,6 +202,9 @@ function applyProfile(profile: ModelProfile): void {
     configApiKey: '',
     hasConfigApiKey: profile.has_config_api_key,
     configModel: profile.config_model,
+    requestSpeedMode: profile.request_speed_mode,
+    maxConcurrentRequests: profile.max_concurrent_requests,
+    requestsPerMinute: profile.requests_per_minute,
   } satisfies ModelProfileDraft)
   localError.value = ''
   baseline.value = draftSnapshot()
@@ -143,6 +223,9 @@ function applyBlankProfile(): void {
     configApiKey: '',
     hasConfigApiKey: false,
     configModel: '',
+    requestSpeedMode: 'automatic',
+    maxConcurrentRequests: 20,
+    requestsPerMinute: 1000,
   } satisfies ModelProfileDraft)
   localError.value = ''
   baseline.value = draftSnapshot()
@@ -167,6 +250,7 @@ function chooseProfile(profile: ModelProfile): void {
   ) return
   profilesStore.selectProfile(profile.name)
   applyProfile(profile)
+  void loadExecutionStatus(profile.name)
 }
 
 async function beginNewProfile(): Promise<void> {
@@ -175,6 +259,7 @@ async function beginNewProfile(): Promise<void> {
   }
   profilesStore.selectProfile(null)
   applyBlankProfile()
+  resetExecutionStatus()
   await nextTick()
   nameInput.value?.focus()
 }
@@ -189,6 +274,9 @@ function toUpsertInput(): ModelProfileUpsertInput {
     config_base_url: draft.configBaseUrl,
     config_api_key: draft.configApiKey,
     config_model: draft.configModel,
+    request_speed_mode: draft.requestSpeedMode,
+    max_concurrent_requests: draft.maxConcurrentRequests,
+    requests_per_minute: draft.requestsPerMinute,
   }
 }
 
@@ -204,7 +292,10 @@ async function saveProfile(): Promise<void> {
     draft.sourceName,
     toUpsertInput(),
   )
-  if (saved) applyProfile(saved)
+  if (saved) {
+    applyProfile(saved)
+    void loadExecutionStatus(saved.name)
+  }
 }
 
 async function activateProfile(): Promise<void> {
@@ -222,6 +313,7 @@ async function activateProfile(): Promise<void> {
     if (saved) applyProfile(saved)
   }
   await profilesStore.activateProfile(draft.sourceName)
+  void loadExecutionStatus(draft.sourceName)
 }
 
 async function reloadProfiles(): Promise<void> {
@@ -229,7 +321,10 @@ async function reloadProfiles(): Promise<void> {
     !confirmDiscard('重新加载会丢弃当前未保存修改，是否继续？')
   ) return
   const loaded = await profilesStore.load()
-  if (loaded) syncFromSelection()
+  if (loaded) {
+    syncFromSelection()
+    void loadExecutionStatus()
+  }
 }
 
 function handleBeforeUnload(event: BeforeUnloadEvent): void {
@@ -265,7 +360,7 @@ function diagnosticKindLabel(value: string): string {
 }
 
 function diagnosticOutcomeLabel(value: AiDiagnosticOutcome): string {
-  if (value === 'success') return '已返回'
+  if (value === 'success') return '模型已返回'
   if (value === 'failure') return '调用失败'
   return '等待返回'
 }
@@ -362,7 +457,10 @@ async function loadDiagnostics(): Promise<void> {
 onMounted(async () => {
   window.addEventListener('beforeunload', handleBeforeUnload)
   const loaded = await profilesStore.load()
-  if (loaded) syncFromSelection()
+  if (loaded) {
+    syncFromSelection()
+    void loadExecutionStatus()
+  }
   void loadDiagnostics()
 })
 
@@ -370,6 +468,7 @@ onBeforeUnmount(() => {
   window.removeEventListener('beforeunload', handleBeforeUnload)
   diagnosticsController?.abort()
   diagnosticDetailController?.abort()
+  executionStatusController?.abort()
 })
 </script>
 
@@ -594,6 +693,166 @@ onBeforeUnmount(() => {
           </label>
         </div>
 
+        <fieldset class="model-profile-execution">
+          <legend>AI 请求速度</legend>
+          <p class="model-profile-execution__intro">
+            姓名识别、试卷批改、评分配置和题库标注共用这套限制。
+            学生可以一次全部进入队列，程序只按这里允许的数量同时请求模型。
+          </p>
+          <div class="model-profile-execution__modes">
+            <label
+              class="model-profile-speed-option"
+              :class="{ 'model-profile-speed-option--selected': draft.requestSpeedMode === 'automatic' }"
+            >
+              <input
+                v-model="draft.requestSpeedMode"
+                type="radio"
+                name="request-speed-mode"
+                value="automatic"
+                :disabled="isBusy"
+              >
+              <span>
+                <strong>自动（推荐）</strong>
+                <small>遇到限流自动降低，同时请求稳定后再缓慢恢复。</small>
+              </span>
+            </label>
+            <label
+              class="model-profile-speed-option"
+              :class="{ 'model-profile-speed-option--selected': draft.requestSpeedMode === 'conservative' }"
+            >
+              <input
+                v-model="draft.requestSpeedMode"
+                type="radio"
+                name="request-speed-mode"
+                value="conservative"
+                :disabled="isBusy"
+              >
+              <span>
+                <strong>保守</strong>
+                <small>一次只发送一个请求，适合接口不稳定时临时使用。</small>
+              </span>
+            </label>
+            <label
+              class="model-profile-speed-option"
+              :class="{ 'model-profile-speed-option--selected': draft.requestSpeedMode === 'custom' }"
+            >
+              <input
+                v-model="draft.requestSpeedMode"
+                type="radio"
+                name="request-speed-mode"
+                value="custom"
+                :disabled="isBusy"
+              >
+              <span>
+                <strong>自定义</strong>
+                <small>设置允许的上限；供应商限流时仍会自动减速。</small>
+              </span>
+            </label>
+          </div>
+          <div
+            v-if="draft.requestSpeedMode === 'custom'"
+            class="model-profile-execution__custom"
+          >
+            <label class="model-profile-field">
+              <span>最多同时请求数</span>
+              <input
+                v-model.number="draft.maxConcurrentRequests"
+                name="max-concurrent-requests"
+                type="number"
+                min="1"
+                :max="MODEL_PROFILE_LIMITS.concurrentRequests"
+                step="1"
+                :disabled="isBusy"
+                required
+              >
+              <small>这是 worker 的实际含义；填 100 不代表供应商一定接受 100 个并发。</small>
+            </label>
+            <label class="model-profile-field">
+              <span>每分钟请求数（RPM）</span>
+              <input
+                v-model.number="draft.requestsPerMinute"
+                name="requests-per-minute"
+                type="number"
+                min="1"
+                :max="MODEL_PROFILE_LIMITS.requestsPerMinute"
+                step="1"
+                :disabled="isBusy"
+                required
+              >
+              <small>RPM 只限制启动频率，不会自动增加同时处理数量。</small>
+            </label>
+          </div>
+          <p class="model-profile-execution__summary" aria-live="polite">
+            <strong>当前计划：</strong>{{ requestSpeedSummary }}
+          </p>
+          <section
+            v-if="!isNew"
+            class="model-profile-runtime"
+            aria-label="AI 请求运行状态"
+          >
+            <header>
+              <div>
+                <strong>当前运行状态</strong>
+                <small>本次程序启动以来，四类 AI 请求共用</small>
+              </div>
+              <button
+                type="button"
+                class="model-profiles-button model-profiles-button--quiet"
+                :disabled="executionStatusState === 'loading'"
+                @click="loadExecutionStatus()"
+              >
+                {{ executionStatusState === 'loading' ? '正在刷新…' : '刷新状态' }}
+              </button>
+            </header>
+            <p
+              v-if="executionStatusState === 'loading' && executionStatus === null"
+              class="model-profile-runtime__state"
+              role="status"
+            >
+              正在读取本机运行状态…
+            </p>
+            <p
+              v-else-if="executionStatusState === 'error'"
+              class="model-profile-runtime__state model-profile-runtime__state--error"
+              role="alert"
+            >
+              {{ executionStatusError || '当前运行状态没有读取成功。' }}
+            </p>
+            <template v-else-if="executionStatus !== null">
+              <dl class="model-profile-runtime__metrics">
+                <div>
+                  <dt>正在请求</dt>
+                  <dd>{{ executionStatus.active }}</dd>
+                </div>
+                <div>
+                  <dt>排队等待</dt>
+                  <dd>{{ executionStatus.queued }}</dd>
+                </div>
+                <div>
+                  <dt>当前同时上限</dt>
+                  <dd>
+                    {{ executionStatus.effective_max_in_flight }}
+                    <small>/ 计划 {{ executionStatus.configured_max_in_flight }}</small>
+                  </dd>
+                </div>
+                <div>
+                  <dt>启动后峰值</dt>
+                  <dd>{{ executionStatus.peak_active }}</dd>
+                </div>
+              </dl>
+              <p class="model-profile-runtime__reason">
+                {{ executionLimitingMessage }}
+                本次启动已向模型实际发送
+                {{ executionStatus.physical_request_count }} 个请求。
+              </p>
+            </template>
+          </section>
+          <p class="model-profile-execution__note">
+            保存不会测试接口或产生费用；新设置从下一次任务启动时生效，
+            已经运行的任务继续使用启动时的方案。
+          </p>
+        </fieldset>
+
         <details
           class="model-profile-advanced"
           :open="hasAdvancedConfiguration"
@@ -706,7 +965,7 @@ onBeforeUnmount(() => {
             <span>结果</span>
             <select v-model="diagnosticOutcome" @change="loadDiagnostics">
               <option value="">全部结果</option>
-              <option value="success">已返回</option>
+              <option value="success">模型已返回</option>
               <option value="failure">调用失败</option>
               <option value="pending">等待返回</option>
             </select>
@@ -721,6 +980,11 @@ onBeforeUnmount(() => {
           </button>
         </div>
       </header>
+
+      <p class="ai-diagnostics__privacy">
+        <strong>“模型已返回”只表示网络请求和模型响应完成。</strong>
+        JSON 结构、题号与本地业务规则是否通过，请以对应生成或批改任务页显示的结果为准。
+      </p>
 
       <p class="ai-diagnostics__privacy">
         <strong>本机敏感记录。</strong>

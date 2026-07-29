@@ -66,7 +66,7 @@ def run_grading_job(
     }
     state = "running"
     last_event: dict[str, Any] = {}
-    _report(report, 0.05, "grading_run", "starting")
+    _report(report, 0.03, "grading_starting", "正在建立本次批改队列")
 
     for event in service.run_session_grading(
         session_id=session_id,
@@ -96,10 +96,17 @@ def run_grading_job(
         last_event = dict(event)
         if event_type == "graded":
             summary["graded"] += 1
-            _report_from_event(report, event, "grading_run", f"graded {event.get('student_name') or ''}")
+            _report_saving_progress(report, event)
         elif event_type == "grading_failed":
             summary["failed"] += 1
-            _report_from_event(report, event, "grading_run", f"failed {event.get('student_name') or ''}")
+            _report_saving_progress(report, event)
+        elif event_type == "grading_progress":
+            _report(
+                report,
+                float(event.get("progress") or 0.08),
+                str(event.get("stage") or "grading_running"),
+                str(event.get("message") or "正在批改答卷"),
+            )
         elif event_type == "paper_skipped":
             summary["skipped"] += 1
         elif event_type == "paper_conflict":
@@ -110,21 +117,26 @@ def run_grading_job(
             summary["unmatched"] += 1
         elif event_type == "session_paused":
             state = "paused"
-            _report(report, 1.0, "grading_paused", "paused")
+            _report(report, 1.0, "grading_paused", "本次批改已安全暂停")
         elif event_type == "session_completed":
             state = "completed"
-            _report(report, 1.0, "grading_completed", "completed")
+            _report(report, 1.0, "grading_completed", "本次批改已完成")
         elif event_type == "session_cancelled":
             state = "cancelled"
-            _report(report, 1.0, "grading_cancelled", "cancelled")
+            _report(report, 1.0, "grading_cancelled", "本次批改已取消")
             _check_cancelled(raise_if_cancelled)
         elif event_type == "batch_grading_config":
             total = int(event.get("total") or 0)
-            _report(report, 0.08, "grading_run", f"total={total}")
+            _report(
+                report,
+                0.08,
+                "grading_queue_ready",
+                f"批改队列已建立，共 {total} 份答卷",
+            )
 
     if state == "running":
         state = "finished"
-        _report(report, 1.0, "grading_finished", "finished")
+        _report(report, 1.0, "grading_finished", "本次批改处理已结束")
 
     return {
         "session_id": session_id,
@@ -186,6 +198,26 @@ def _report_from_event(
     else:
         progress = 0.5
     _report(report, progress, stage, detail)
+
+
+def _report_saving_progress(
+    report: Callable[[float, str, str], None] | None,
+    event: dict[str, Any],
+) -> None:
+    current = int(event.get("current") or 0)
+    total = int(event.get("total") or 0)
+    ratio = current / total if total > 0 else 0.5
+    progress = min(0.99, 0.88 + 0.11 * max(0.0, min(1.0, ratio)))
+    _report(
+        report,
+        progress,
+        "grading_saving",
+        (
+            f"正在保存成绩，已处理 {current}/{total} 份答卷"
+            if total > 0
+            else "正在保存批改成绩"
+        ),
+    )
 
 
 def _check_cancelled(callback: Callable[[], None] | None) -> None:

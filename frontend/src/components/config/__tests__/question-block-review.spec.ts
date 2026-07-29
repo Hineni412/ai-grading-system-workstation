@@ -46,8 +46,13 @@ async function mountReview(options: {
   return { host, state, onUpdate, unmount: () => app.unmount() }
 }
 
-function change(element: HTMLInputElement | HTMLSelectElement, value: string | boolean): void {
-  if (element instanceof HTMLInputElement) element.checked = Boolean(value)
+function change(
+  element: HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement,
+  value: string | boolean,
+): void {
+  if (element instanceof HTMLInputElement && element.type === 'checkbox') {
+    element.checked = Boolean(value)
+  }
   else element.value = String(value)
   element.dispatchEvent(new Event('change', { bubbles: true }))
 }
@@ -106,6 +111,98 @@ describe('QuestionBlockReview', () => {
       ['Q1 答案缩略图', `/api/sessions/7/config/sources/${'a'.repeat(32)}/questions/Q1/assets/answer`],
     ])
     expect(images.every((image) => !image.src.includes('path='))).toBe(true)
+  })
+
+  it('lets the teacher correct and confirm an objective answer for generation', async () => {
+    const onUpdate = vi.fn()
+    const reviewSource = source({
+      safe_filename: '七年级数学.docx',
+      suffix: '.docx',
+      questions: [{
+        ...source().questions[0]!,
+        question_id: 'Q5',
+        question_type: 'fill_blank',
+        answer_preview: '70°',
+        answer_present: true,
+        local_answer_trusted: false,
+      }],
+    })
+    const mounted = await mountReview({ value: reviewSource, onUpdate })
+    const answer = mounted.host.querySelector<HTMLTextAreaElement>(
+      '[aria-label="Q5 确认标准答案"]',
+    )!
+    const confirmed = mounted.host.querySelector<HTMLInputElement>(
+      '[aria-label="确认 Q5 答案用于生成"]',
+    )!
+
+    expect(answer.value).toBe('70°')
+    expect(confirmed.checked).toBe(false)
+    change(answer, '72°')
+    change(confirmed, true)
+    await nextTick()
+
+    expect(onUpdate).toHaveBeenLastCalledWith([{
+      question_id: 'Q5',
+      question_type: 'fill_blank',
+      excluded: false,
+      answer_confirmed: true,
+      answer_override: '72°',
+    }])
+  })
+
+  it('confirms an unchanged preview without replacing the complete source answer', async () => {
+    const onUpdate = vi.fn()
+    const reviewSource = source({
+      safe_filename: '七年级数学.docx',
+      suffix: '.docx',
+      questions: [{
+        ...source().questions[0]!,
+        question_id: 'Q5',
+        question_type: 'fill_blank',
+        answer_preview: '70°',
+        answer_present: true,
+        local_answer_trusted: false,
+      }],
+    })
+    const mounted = await mountReview({ value: reviewSource, onUpdate })
+    change(mounted.host.querySelector<HTMLInputElement>(
+      '[aria-label="确认 Q5 答案用于生成"]',
+    )!, true)
+    await nextTick()
+
+    expect(onUpdate).toHaveBeenLastCalledWith([{
+      question_id: 'Q5',
+      question_type: 'fill_blank',
+      excluded: false,
+      answer_confirmed: true,
+    }])
+  })
+
+  it('drops an objective-answer confirmation when the teacher changes to a subjective type', async () => {
+    const onUpdate = vi.fn()
+    const reviewSource = source({
+      safe_filename: '七年级数学.docx',
+      suffix: '.docx',
+      questions: [{
+        ...source().questions[0]!,
+        question_id: 'Q5',
+        question_type: 'fill_blank',
+        answer_preview: '70°',
+      }],
+    })
+    const mounted = await mountReview({ value: reviewSource, onUpdate })
+    change(mounted.host.querySelector<HTMLInputElement>(
+      '[aria-label="确认 Q5 答案用于生成"]',
+    )!, true)
+    change(mounted.host.querySelector<HTMLSelectElement>('[aria-label="Q5 题型"]')!, 'proof')
+    await nextTick()
+
+    expect(onUpdate).toHaveBeenLastCalledWith([{
+      question_id: 'Q5',
+      question_type: 'proof',
+      excluded: false,
+    }])
+    expect(mounted.host.textContent).not.toContain('教师已确认答案')
   })
 
   it('keeps the full question visible and expands the complete answer on demand', async () => {

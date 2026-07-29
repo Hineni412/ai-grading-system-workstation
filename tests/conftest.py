@@ -1,11 +1,19 @@
 from __future__ import annotations
 
 import os
+import sys
 import tempfile
 from pathlib import Path
 from typing import Any
 
+_PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
+
 import path_manager as path_manager_module
+import pytest
+
+from tools.test_suite_manifest import categories_for_path
 
 
 _TEMPORARY_ROOT: tempfile.TemporaryDirectory[str] | None = None
@@ -48,3 +56,13 @@ def pytest_unconfigure() -> None:
     if _TEMPORARY_ROOT is not None:
         _TEMPORARY_ROOT.cleanup()
         _TEMPORARY_ROOT = None
+
+
+def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
+    for item in items:
+        try:
+            relative_path = Path(item.path).resolve().relative_to(_PROJECT_ROOT)
+        except ValueError:
+            continue
+        for category in categories_for_path(relative_path):
+            item.add_marker(category)

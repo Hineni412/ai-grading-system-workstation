@@ -4,6 +4,111 @@ from typing import Any
 
 from score_policy import MAX_QUESTION_SCORE
 
+from .contract import is_simple_objective_question
+
+
+def collect_score_consistency_issues(
+    payload: dict[str, Any],
+    *,
+    expected_total: float | None = 100.0,
+) -> list[str]:
+    """Return teacher-readable score conflicts without changing the payload."""
+
+    rubric = payload.get("rubric") if isinstance(payload, dict) else None
+    questions = rubric.get("questions") if isinstance(rubric, dict) else None
+    if not isinstance(questions, list) or not questions:
+        return ["评分标准缺少可校验的题目分值"]
+
+    issues: list[str] = []
+    question_total = 0.0
+    for question_index, question in enumerate(questions, start=1):
+        if not isinstance(question, dict):
+            issues.append(f"第 {question_index} 道题的分值结构无效")
+            continue
+        question_id = str(
+            question.get("question_id") or f"第{question_index}题"
+        ).strip()
+        question_score = _score_number(question.get("max_score"))
+        if question_score is None:
+            issues.append(f"{question_id} 缺少有效的大题分值")
+            continue
+        question_total += question_score
+
+        parts = question.get("parts")
+        if not isinstance(parts, list) or not parts:
+            issues.append(f"{question_id} 缺少可校验的小问分值")
+            continue
+        part_total = 0.0
+        for part_index, part in enumerate(parts, start=1):
+            if not isinstance(part, dict):
+                issues.append(f"{question_id} 的第 {part_index} 小问分值结构无效")
+                continue
+            part_id = str(
+                part.get("part_id") or f"第{part_index}小问"
+            ).strip()
+            part_score = _score_number(part.get("part_score"))
+            if part_score is None:
+                issues.append(f"{question_id}/{part_id} 缺少有效的小问分值")
+                continue
+            part_total += part_score
+
+            steps = part.get("steps")
+            if not isinstance(steps, list) or not steps:
+                issues.append(f"{question_id}/{part_id} 缺少可校验的评分步骤分值")
+                continue
+            step_scores = [
+                _score_number(step.get("step_score"))
+                for step in steps
+                if isinstance(step, dict)
+            ]
+            if len(step_scores) != len(steps) or any(
+                value is None for value in step_scores
+            ):
+                issues.append(f"{question_id}/{part_id} 存在无效的评分步骤分值")
+                continue
+            step_total = sum(
+                float(value) for value in step_scores if value is not None
+            )
+            if not _scores_equal(step_total, part_score):
+                issues.append(
+                    f"{question_id}/{part_id} 的步骤分合计为 {_format_score(step_total)} 分，"
+                    f"与小问分值 {_format_score(part_score)} 分不一致"
+                    f"（相差 {_format_score(abs(step_total - part_score))} 分）"
+                )
+        if not _scores_equal(part_total, question_score):
+            issues.append(
+                f"{question_id} 的小问分合计为 {_format_score(part_total)} 分，"
+                f"与大题分值 {_format_score(question_score)} 分不一致"
+                f"（相差 {_format_score(abs(part_total - question_score))} 分）"
+            )
+
+    if expected_total is not None and not _scores_equal(
+        question_total,
+        float(expected_total),
+    ):
+        issues.append(
+            f"整卷各题合计为 {_format_score(question_total)} 分，"
+            f"与设定总分 {_format_score(float(expected_total))} 分不一致"
+            f"（相差 {_format_score(abs(question_total - float(expected_total)))} 分）"
+        )
+    return list(dict.fromkeys(issues))
+
+
+def _score_number(value: Any) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    score = float(value)
+    return score if score >= 0 else None
+
+
+def _scores_equal(left: float, right: float) -> bool:
+    return abs(float(left) - float(right)) <= 0.01
+
+
+def _format_score(value: float) -> str:
+    return f"{float(value):.2f}".rstrip("0").rstrip(".")
+
+
 def _validate_exact_score_allocation_payload(
     score_data: dict[str, Any],
     structure_summary: list[dict[str, Any]],
@@ -31,7 +136,7 @@ def _validate_exact_score_allocation_payload(
             raise ValueError("AI 统一配分存在超过单题上限的分值。")
         total_score += question_score
         question_type = str(expected.get("question_type") or "").strip()
-        if question_type in {"choice", "fill_blank", "judgement", "true_false"}:
+        if is_simple_objective_question(expected):
             previous = objective_scores.setdefault(question_type, question_score)
             if previous != question_score:
                 raise ValueError("AI 统一配分未保持同类型客观题同分。")
@@ -189,6 +294,7 @@ def _apply_score_allocation(merged: dict[str, Any], score_data: dict[str, Any]) 
                     part["part_score"] = max(1, int(round(float(raw_part))))
                 except (TypeError, ValueError):
                     pass
+            part.pop("max_score", None)
 
             steps: list[Any] = part.get("steps") or []
             score_steps: list[Any] = sp.get("steps") or []
@@ -216,6 +322,7 @@ def _apply_score_allocation(merged: dict[str, Any], score_data: dict[str, Any]) 
 
 SESSION_MANAGER_COMPAT_EXPORTS = (
     "_apply_score_allocation",
+    "collect_score_consistency_issues",
     "_score_allocation_structure_summary",
     "_strict_positive_score",
     "_validate_exact_score_allocation_payload",
@@ -227,6 +334,7 @@ validate_score_allocation_payload = _validate_exact_score_allocation_payload
 
 __all__ = [
     "apply_score_allocation",
+    "collect_score_consistency_issues",
     "score_allocation_structure_summary",
     "validate_score_allocation_payload",
 ]

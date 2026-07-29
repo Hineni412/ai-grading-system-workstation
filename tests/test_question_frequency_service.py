@@ -81,9 +81,10 @@ def test_only_formal_exams_have_frequency() -> None:
     assert not is_frequency_exam_type("同步练习")
     assert not is_frequency_exam_type("专题练习")
     assert not is_frequency_exam_type("期末同步练习")
+    assert not is_frequency_exam_type("期末小测")
 
 
-def test_frequency_counts_all_matching_questions_in_same_paper(tmp_path: Path) -> None:
+def test_frequency_counts_at_most_one_best_match_per_paper(tmp_path: Path) -> None:
     db_path = tmp_path / "question_bank.db"
     service = QuestionFrequencyService(db_path)
     service.initialize_database()
@@ -96,9 +97,57 @@ def test_frequency_counts_all_matching_questions_in_same_paper(tmp_path: Path) -
     metrics = service.metrics_for_question(target_id)
 
     assert metrics.available
-    assert metrics.matched_question_count == 3
+    assert metrics.matched_question_count == 2
     assert metrics.eligible_paper_count == 2
-    assert metrics.questions_per_paper == 1.5
+    assert metrics.questions_per_paper == 1.0
+
+
+def test_practice_invalidation_does_not_clear_formal_exam_cache(tmp_path: Path) -> None:
+    db_path = tmp_path / "question_bank.db"
+    service = QuestionFrequencyService(db_path)
+    service.initialize_database()
+    formal_paper = _insert_paper(db_path, title="期末卷", exam_type="期末")
+    practice_paper = _insert_paper(db_path, title="阶段小测", exam_type="阶段练习")
+    formal_question = _insert_question(db_path, formal_paper, number="1")
+    practice_question = _insert_question(db_path, practice_paper, number="1")
+    with connect(db_path) as conn:
+        conn.executemany(
+            """
+            INSERT INTO question_frequency_cache (
+                question_id, score_midterm, score_final, score_zhongkao
+            ) VALUES (?, ?, ?, ?)
+            """,
+            [
+                (formal_question, 0.1, 0.8, 0.2),
+                (practice_question, 0.0, 0.0, 0.0),
+            ],
+        )
+
+    service.invalidate_frequency_cache_for_question(practice_question)
+
+    with connect(db_path) as conn:
+        remaining = conn.execute(
+            """
+            SELECT question_id, score_midterm, score_final, score_zhongkao
+            FROM question_frequency_cache
+            ORDER BY question_id
+            """
+        ).fetchall()
+    assert [int(row["question_id"]) for row in remaining] == [
+        formal_question,
+        practice_question,
+    ]
+    formal = remaining[0]
+    practice = remaining[1]
+    assert (
+        float(formal["score_midterm"]),
+        float(formal["score_final"]),
+        float(formal["score_zhongkao"]),
+    ) == (0.1, 0.8, 0.2)
+    assert all(
+        0.0 <= float(practice[column]) <= 1.0
+        for column in ("score_midterm", "score_final", "score_zhongkao")
+    )
 
 
 def test_frequency_excludes_practice_and_other_semesters(tmp_path: Path) -> None:
@@ -111,12 +160,18 @@ def test_frequency_excludes_practice_and_other_semesters(tmp_path: Path) -> None
     other_grade = _insert_paper(db_path, title="八年级期末", exam_type="期末", grade="八年级")
     other_exam = _insert_paper(db_path, title="七年级期中", exam_type="期中")
     practice = _insert_paper(db_path, title="同步练习", exam_type="同步练习")
+    disguised_practice = _insert_paper(
+        db_path,
+        title="期末同步练习",
+        exam_type="期末同步练习",
+    )
     target_id = _insert_question(db_path, target_paper, number="1")
     _insert_question(db_path, same_scope, number="1")
     _insert_question(db_path, other_semester, number="1")
     _insert_question(db_path, other_grade, number="1")
     _insert_question(db_path, other_exam, number="1")
     _insert_question(db_path, practice, number="1")
+    _insert_question(db_path, disguised_practice, number="1")
 
     metrics = service.metrics_for_question(target_id)
     practice_metrics = service.metrics_for_question(
@@ -126,6 +181,88 @@ def test_frequency_excludes_practice_and_other_semesters(tmp_path: Path) -> None
     assert metrics.matched_question_count == 2
     assert metrics.eligible_paper_count == 2
     assert not practice_metrics.available
+
+
+def test_formal_tag_change_refreshes_cross_type_frequency_dependants(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "question_bank.db"
+    service = QuestionFrequencyService(db_path)
+    service.initialize_database()
+    final_paper = _insert_paper(
+        db_path,
+        title="期末卷",
+        exam_type="期末",
+    )
+    midterm_paper = _insert_paper(
+        db_path,
+        title="期中卷",
+        exam_type="期中",
+    )
+    practice_paper = _insert_paper(
+        db_path,
+        title="阶段小测",
+        exam_type="阶段练习",
+    )
+    final_question = _insert_question(
+        db_path,
+        final_paper,
+        number="1",
+    )
+    midterm_question = _insert_question(
+        db_path,
+        midterm_paper,
+        number="1",
+    )
+    practice_question = _insert_question(
+        db_path,
+        practice_paper,
+        number="1",
+    )
+    sentinel = 0.987654
+    with connect(db_path) as conn:
+        conn.executemany(
+            """
+            INSERT INTO question_frequency_cache (
+                question_id, score_midterm, score_final, score_zhongkao
+            ) VALUES (?, ?, ?, ?)
+            """,
+            [
+                (question_id, sentinel, sentinel, sentinel)
+                for question_id in (
+                    final_question,
+                    midterm_question,
+                    practice_question,
+                )
+            ],
+        )
+        conn.execute(
+            """
+            UPDATE question_tags
+            SET tag_value = '一次函数'
+            WHERE question_id = ? AND tag_type = 'knowledge_point'
+            """,
+            (final_question,),
+        )
+
+    service.invalidate_frequency_cache_for_question(final_question)
+
+    with connect(db_path) as conn:
+        rows = conn.execute(
+            """
+            SELECT question_id, score_final
+            FROM question_frequency_cache
+            WHERE question_id IN (?, ?, ?)
+            ORDER BY question_id
+            """,
+            (final_question, midterm_question, practice_question),
+        ).fetchall()
+    assert [int(row["question_id"]) for row in rows] == [
+        final_question,
+        midterm_question,
+        practice_question,
+    ]
+    assert all(float(row["score_final"]) != sentinel for row in rows)
 
 
 def test_zhongkao_has_national_and_shenzhen_frequency_without_semester_limit(tmp_path: Path) -> None:

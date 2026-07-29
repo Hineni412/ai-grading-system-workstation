@@ -16,6 +16,7 @@ import {
   type ReviewDraft,
 } from '../../stores/review-drafts'
 import { useReviewQueueStore } from '../../stores/review-queue'
+import { translateGradingReason } from '../../utils/grading-reasons'
 import StatePanel from '../design-system/StatePanel.vue'
 import ReviewFeedbackToast from './ReviewFeedbackToast.vue'
 
@@ -395,9 +396,9 @@ onBeforeUnmount(() => {
           </p>
           <p v-else class="review-scoring-section__muted">当前状态：{{ statusLabel }}。</p>
           <dl class="review-risk-list">
-            <template v-if="item.deduction_reason"><dt>扣分原因</dt><dd>{{ item.deduction_reason }}</dd></template>
-            <template v-if="item.error_category"><dt>错误类别</dt><dd>{{ item.error_category }}</dd></template>
-            <template v-if="item.error_summary"><dt>错误摘要</dt><dd>{{ item.error_summary }}</dd></template>
+            <template v-if="item.deduction_reason"><dt>扣分原因</dt><dd>{{ translateGradingReason(item.deduction_reason) }}</dd></template>
+            <template v-if="item.error_category"><dt>错误类别</dt><dd>{{ translateGradingReason(item.error_category) }}</dd></template>
+            <template v-if="item.error_summary"><dt>错误摘要</dt><dd>{{ translateGradingReason(item.error_summary) }}</dd></template>
           </dl>
         </section>
 

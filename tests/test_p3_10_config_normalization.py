@@ -165,8 +165,8 @@ def test_quality_warning_order_and_text_are_exact() -> None:
     assert not any("knowledge" in warning.lower() for warning in warnings)
     assert warnings == [
         "[质量检查-阻断] Q1 的题干、公式、答案或踩分点中存在疑似乱码",
-        "[质量检查-阻断] Q1 缺少可评分的标准答案",
-        "[质量检查-阻断] Q1/Q1 缺少可评分的标准答案或答案图",
+        "[质量检查-阻断] Q1 缺少可评分的文本标准答案",
+        "[质量检查-阻断] Q1/Q1 缺少可评分的文本标准答案",
     ]
 
 

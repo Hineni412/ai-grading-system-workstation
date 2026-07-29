@@ -218,7 +218,13 @@ describe('file center store', () => {
     const store = useFileCenterStore()
     const jobStore = useJobStore()
 
-    const report = await store.submitReport(7, 'score_excel', false, api)
+    const report = await store.submitReport(
+      7,
+      'score_excel',
+      false,
+      undefined,
+      api,
+    )
     const training = await store.submitTrainingBundle(12, api)
     const retry = await store.retryTrainingExport(51, api)
 

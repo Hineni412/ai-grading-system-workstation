@@ -1,10 +1,15 @@
 import json
 import logging
-import re
 from pathlib import Path
 from typing import Any
 
 from path_manager import get_path_manager
+from question_id_contract import (
+    QuestionIdContractError,
+    canonical_part_id,
+    question_id_coordinates,
+    resolve_known_question_id,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -20,31 +25,75 @@ ANSWER_FIELDS = [
     "accepted_forms"
 ]
 
-def _normalize_question_id(qid: str) -> str:
-    """Normalize question id: 1 -> Q1, 第1题 -> Q1, 1(1) -> Q1(1)"""
-    if not isinstance(qid, str):
-        qid = str(qid)
-    
-    qid = qid.strip()
-    
-    # Remove '第' and '题'
-    qid = qid.replace("第", "").replace("题", "")
-    
-    # If it just a number, prefix with Q
-    if re.match(r"^\d+$", qid):
-        return f"Q{qid}"
-        
-    # If it is like 1(1) or 1.1 or 1-1, try to normalize
-    m = re.match(r"^(\d+)([\.\-\(（]+)(\d+)([\)）]*)$", qid)
-    if m:
-        return f"Q{m.group(1)}({m.group(3)})"
-        
-    # Standardize Q1 to Q1
-    m = re.match(r"^[Qq](\d+)$", qid)
-    if m:
-        return f"Q{m.group(1)}"
-        
-    return qid
+def normalize_objective_question_id(
+    qid: object,
+    *,
+    parent_id: object | None = None,
+) -> str:
+    """Normalize one objective-answer input alias to the shared ID contract.
+
+    ``第12题`` is retained as an objective-source input convenience. All
+    supported parent/part spellings are then delegated to the shared parser so
+    this loader cannot drift from the rest of the grading flow.
+    """
+
+    text = str(qid or "").strip()
+    if text.startswith("第") and text.endswith("题"):
+        text = text[1:-1].strip()
+    coordinates = question_id_coordinates(text, parent_id=parent_id)
+    if coordinates is None:
+        return text
+    parent_number, part_number = coordinates
+    parent = f"Q{parent_number}"
+    return parent if part_number is None else canonical_part_id(parent, part_number)
+
+
+# Compatibility for the module's existing internal callers.
+_normalize_question_id = normalize_objective_question_id
+
+
+def _store_answer(
+    answers: dict[str, dict],
+    question_id: str,
+    answer: dict,
+    *,
+    file_name: str,
+) -> None:
+    if question_id in answers:
+        raise QuestionIdContractError(
+            f"{file_name} 中多个题号别名归一到同一题号 {question_id}"
+        )
+    answers[question_id] = answer
+
+
+def _normalize_part_id(
+    raw_part_id: object,
+    *,
+    parent_id: str,
+    part_count: int,
+) -> str:
+    coordinates = question_id_coordinates(raw_part_id, parent_id=parent_id)
+    parent_coordinates = question_id_coordinates(parent_id)
+    if coordinates is None or parent_coordinates is None:
+        raise QuestionIdContractError(
+            f"大题 {parent_id} 的小问号无法解析: {raw_part_id!r}"
+        )
+    if coordinates[0] != parent_coordinates[0]:
+        raise QuestionIdContractError(
+            f"大题 {parent_id} 的小问号跨题: {raw_part_id!r}"
+        )
+    part_number = coordinates[1]
+    if part_count == 1:
+        if part_number in (None, 1):
+            return parent_id
+        raise QuestionIdContractError(
+            f"大题 {parent_id} 的唯一小问不能使用 {raw_part_id!r}"
+        )
+    if part_number is None:
+        raise QuestionIdContractError(
+            f"大题 {parent_id} 的小问号缺少小问序号: {raw_part_id!r}"
+        )
+    return canonical_part_id(parent_id, part_number)
 
 def _extract_answer_from_dict(d: dict, file_name: str) -> tuple[str, str] | None:
     for field in ANSWER_FIELDS:
@@ -72,11 +121,16 @@ def _extract_answers_from_data(data: Any, file_name: str) -> dict[str, dict]:
                 
                 ans_info = _extract_answer_from_dict(item, file_name)
                 if ans_info:
-                    answers[qid] = {
-                        "standard_answer": ans_info[0],
-                        "source": file_name,
-                        "field": ans_info[1]
-                    }
+                    _store_answer(
+                        answers,
+                        qid,
+                        {
+                            "standard_answer": ans_info[0],
+                            "source": file_name,
+                            "field": ans_info[1],
+                        },
+                        file_name=file_name,
+                    )
                     
                 # check parts
                 parts = item.get("parts", [])
@@ -85,20 +139,36 @@ def _extract_answers_from_data(data: Any, file_name: str) -> dict[str, dict]:
                         if isinstance(part, dict):
                             part_id = part.get("part_id") or part.get("id")
                             if not part_id: continue
-                            part_id = _normalize_question_id(str(part_id))
+                            part_id = _normalize_part_id(
+                                part_id,
+                                parent_id=qid,
+                                part_count=len(parts),
+                            )
                             part_ans_info = _extract_answer_from_dict(part, file_name)
                             if part_ans_info:
-                                answers[part_id] = {
-                                    "standard_answer": part_ans_info[0],
-                                    "source": file_name,
-                                    "field": part_ans_info[1]
-                                }
+                                _store_answer(
+                                    answers,
+                                    part_id,
+                                    {
+                                        "standard_answer": part_ans_info[0],
+                                        "source": file_name,
+                                        "field": part_ans_info[1],
+                                    },
+                                    file_name=file_name,
+                                )
                                 
     # Case 2: dict containing 'questions' or top level dict
     elif isinstance(data, dict):
         # if 'questions' in data, recurse
         if "questions" in data and isinstance(data["questions"], list):
-            answers.update(_extract_answers_from_data(data["questions"], file_name))
+            nested_answers = _extract_answers_from_data(data["questions"], file_name)
+            for qid, answer in nested_answers.items():
+                _store_answer(
+                    answers,
+                    qid,
+                    answer,
+                    file_name=file_name,
+                )
             
         # Or if the top-level keys look like question IDs
         for k, v in data.items():
@@ -108,19 +178,29 @@ def _extract_answers_from_data(data: Any, file_name: str) -> dict[str, dict]:
                 ans_info = _extract_answer_from_dict(v, file_name)
                 if ans_info:
                     qid = _normalize_question_id(k)
-                    answers[qid] = {
-                        "standard_answer": ans_info[0],
-                        "source": file_name,
-                        "field": ans_info[1]
-                    }
+                    _store_answer(
+                        answers,
+                        qid,
+                        {
+                            "standard_answer": ans_info[0],
+                            "source": file_name,
+                            "field": ans_info[1],
+                        },
+                        file_name=file_name,
+                    )
             elif isinstance(v, str) or isinstance(v, int) or isinstance(v, float):
                 # raw key-value answers e.g. {"Q1": "B"}
                 qid = _normalize_question_id(k)
-                answers[qid] = {
-                    "standard_answer": str(v),
-                    "source": file_name,
-                    "field": "top_level_value"
-                }
+                _store_answer(
+                    answers,
+                    qid,
+                    {
+                        "standard_answer": str(v),
+                        "source": file_name,
+                        "field": "top_level_value",
+                    },
+                    file_name=file_name,
+                )
 
     return answers
 
@@ -215,16 +295,28 @@ def get_standard_answer_for_question(combined_answer_source: dict, question_id: 
     If not found, returns ("", "", "").
     """
     answers_map = combined_answer_source.get("answers_by_question_id", {})
-    
-    # Try direct match
-    if question_id in answers_map:
-        ans = answers_map[question_id]
-        return ans.get("standard_answer", ""), ans.get("source", ""), ans.get("field", "")
-        
-    # Try normalized match
+    if not isinstance(answers_map, dict):
+        return "", "", ""
+
+    normalized_answers: dict[str, dict] = {}
+    collided_ids: set[str] = set()
+    for raw_question_id, answer in answers_map.items():
+        if not isinstance(answer, dict):
+            continue
+        normalized_id = _normalize_question_id(raw_question_id)
+        if not normalized_id:
+            continue
+        if normalized_id in normalized_answers:
+            collided_ids.add(normalized_id)
+            continue
+        normalized_answers[normalized_id] = answer
+
     norm_qid = _normalize_question_id(question_id)
-    if norm_qid in answers_map:
-        ans = answers_map[norm_qid]
+    resolved_qid = resolve_known_question_id(norm_qid, normalized_answers)
+    if resolved_qid is None or resolved_qid in collided_ids:
+        return "", "", ""
+    if resolved_qid in normalized_answers:
+        ans = normalized_answers[resolved_qid]
         return ans.get("standard_answer", ""), ans.get("source", ""), ans.get("field", "")
         
     return "", "", ""

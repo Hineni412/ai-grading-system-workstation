@@ -82,6 +82,65 @@ def test_report_export_handler_publishes_annotated_original_pdf(tmp_path) -> Non
     assert Path(loaded.result["file_path"]).read_bytes().startswith(b"%PDF")
 
 
+def test_report_export_handler_passes_frozen_excel_options_to_generator(
+    tmp_path,
+) -> None:
+    from backend.jobs.default_handlers import register_default_job_handlers
+    from backend.jobs.manager import JobManager
+    from backend.jobs.store import JobStore
+
+    received: dict[str, object] = {}
+
+    class CapturingReportGenerator:
+        def __init__(self, _db_path: Path, reports_dir: Path) -> None:
+            self.reports_dir = reports_dir
+
+        def export_session(
+            self,
+            session_id: int,
+            *,
+            score_excel_options: dict[str, object] | None = None,
+        ) -> Path:
+            received["session_id"] = session_id
+            received["options"] = score_excel_options
+            output_path = self.reports_dir / "report.xlsx"
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_bytes(b"xlsx")
+            return output_path
+
+    manager = JobManager(JobStore(tmp_path / "jobs.db"), max_workers=1)
+    register_default_job_handlers(
+        manager,
+        db_path=tmp_path / "grading.db",
+        reports_dir=tmp_path / "reports",
+        report_generator_factory=CapturingReportGenerator,
+    )
+
+    job = manager.submit(
+        "report_export",
+        {
+            "session_id": 42,
+            "report_type": "score_excel",
+            "score_excel_options": {
+                "hide_bottom_enabled": True,
+                "hide_bottom_n": 8,
+                "manual_hidden_student_ids": [3, 7],
+            },
+        },
+    )
+    manager.wait(job.id, timeout=5)
+
+    assert manager.get(job.id).status == "succeeded"
+    assert received == {
+        "session_id": 42,
+        "options": {
+            "hide_bottom_enabled": True,
+            "hide_bottom_n": 8,
+            "manual_hidden_student_ids": [3, 7],
+        },
+    }
+
+
 def test_report_export_handler_rejects_unknown_report_type(tmp_path) -> None:
     from backend.jobs.default_handlers import register_default_job_handlers
     from backend.jobs.manager import JobManager

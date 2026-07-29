@@ -105,7 +105,11 @@ def test_policy_override_copy_excludes_secrets_and_unrelated_fields():
         }
     )
 
+    scope_key = copied.pop("_llm_execution_scope_key")
     assert copied == {"llm_grading_timeout_seconds": 240}
+    assert isinstance(scope_key, str)
+    assert "secret" not in scope_key
+    assert "private.example" not in scope_key
 
 
 def test_policy_override_copy_allows_all_twelve_policy_fields():
@@ -125,7 +129,9 @@ def test_policy_override_copy_allows_all_twelve_policy_fields():
         )
     }
 
-    assert policy_overrides_from_profile(profile) == profile
+    copied = policy_overrides_from_profile(profile)
+    copied.pop("_llm_execution_scope_key")
+    assert copied == profile
 
 
 @pytest.mark.parametrize(

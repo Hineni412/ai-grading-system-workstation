@@ -20,7 +20,7 @@ function editor(answer: string): ConfigEditorResponse {
       part_label: '第 1 题', question_type: 'calculation', core_goal: '计算', score: 5,
       standard_answer: answer, accepted_answers: [], match_rule: 'exact',
       answer_only_max_score: null, require_final_answer: null, required_elements: [],
-      deduction_rules: [], final_answer_rule: '',
+      deduction_rules: [], part_deduction_rules: [], final_answer_rule: '',
     }],
     total_score: 100,
     issues: [],
@@ -92,10 +92,47 @@ describe('configuration workspace Store', () => {
       source_id: 'd'.repeat(32), source_revision: 'b'.repeat(64),
       generation_mode: 'batched',
       decisions: [{ question_id: 'Q1', question_type: 'proof', excluded: false }],
+      sync_to_question_bank: false,
     })
     store.acceptUploadedSource({ ...source('e'.repeat(32)), source_revision: 'f'.repeat(64) })
     expect(store.attachJob(31, generation)).toBe(false)
     expect(store.jobId).toBeNull()
+  })
+
+  it('preserves a teacher-confirmed answer in the safe generation request', () => {
+    const store = useConfigWorkspaceStore()
+    store.selectSession(7)
+    store.setSource({
+      ...source('d'.repeat(32)),
+      questions: [{
+        question_id: 'Q5', question_type: 'fill_blank', question_preview: '',
+        answer_preview: '70°', answer_present: true, needs_review: true,
+        local_answer_trusted: false, has_question_asset: false, has_answer_asset: false,
+      }],
+    })
+
+    store.updateDecisions([{
+      question_id: 'Q5',
+      question_type: 'fill_blank',
+      excluded: false,
+      answer_confirmed: true,
+      answer_override: '72°',
+    }])
+
+    expect(store.sourceRequest('batched').decisions).toEqual([{
+      question_id: 'Q5',
+      question_type: 'fill_blank',
+      excluded: false,
+      answer_confirmed: true,
+      answer_override: '72°',
+    }])
+    const persisted = localStorage.getItem(CONFIG_WORKSPACE_STORAGE_KEY)!
+    expect(JSON.parse(persisted).decisions).toEqual([{
+      question_id: 'Q5',
+      question_type: 'fill_blank',
+      excluded: false,
+    }])
+    expect(persisted).not.toContain('72°')
   })
 
   it('restores a stored Job into JobStore and keeps process-restart failure detail', async () => {

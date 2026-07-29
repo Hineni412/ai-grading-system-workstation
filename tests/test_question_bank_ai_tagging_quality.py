@@ -3,10 +3,12 @@ from __future__ import annotations
 import json
 import math
 import sqlite3
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
 import backend.llm as backend_llm
+import pytest
 import question_bank.services.ai_tagging_service as ai_tagging_module
 
 from question_bank.models.question import QuestionCreate, TagCreate
@@ -19,6 +21,8 @@ from question_bank.services.ai_tagging_service import (
     _batch_tag_analysis_response_format,
     _prompt_input,
     _tag_analysis_response_format,
+    _taxonomy_suggestion_prompt_input,
+    _taxonomy_suggestion_response_format,
 )
 from question_bank.services.question_service import QuestionService, has_complete_analysis_tags
 
@@ -43,6 +47,59 @@ def _analysis(**overrides) -> TagAnalysis:
     }
     payload.update(overrides)
     return TagAnalysis.from_dict(payload)
+
+
+def test_scoped_curriculum_uses_section_id_and_derives_chapter_locally() -> None:
+    analysis = _analysis(
+        textbook_chapters=["八年级下册 第一章 三角形的证明"],
+        curriculum_sections=["bnu24-math-g7-lower-c04-s01"],
+    )
+    contract = {
+        "curriculum_volume": {
+            "sections": [
+                {
+                    "id": "bnu24-math-g7-lower-c04-s01",
+                    "name": "1 认识三角形",
+                    "chapter_id": "bnu24-math-g7-lower-c04",
+                    "chapter_name": "七年级下册 第四章 三角形",
+                }
+            ]
+        }
+    }
+
+    normalized, notes = ai_tagging_module._normalize_scoped_curriculum(
+        analysis,
+        contract,
+    )
+
+    assert notes == []
+    assert normalized.curriculum_sections == [
+        "bnu24-math-g7-lower-c04-s01"
+    ]
+    assert normalized.textbook_chapters == ["七年级下册 第四章 三角形"]
+
+
+def test_scoped_curriculum_rejects_section_outside_selected_volume() -> None:
+    analysis = _analysis(
+        curriculum_sections=["bnu24-math-g8-lower-c01-s01"],
+    )
+    normalized, notes = ai_tagging_module._normalize_scoped_curriculum(
+        analysis,
+        {
+            "curriculum_volume": {
+                "sections": [
+                    {
+                        "id": "bnu24-math-g7-lower-c04-s01",
+                        "chapter_name": "七年级下册 第四章 三角形",
+                    }
+                ]
+            }
+        },
+    )
+
+    assert normalized.curriculum_sections == []
+    assert normalized.textbook_chapters == []
+    assert any("超出老师确认的册别范围" in item for item in notes)
 
 
 def _install_isolated_real_adapter(monkeypatch, *, init_calls, adapter_calls) -> None:
@@ -129,6 +186,121 @@ def test_optional_reasoning_instruction_matches_english_prompt_language(
     ] == expected
 
 
+def test_tagging_schema_supports_special_type_and_caps_free_proposals() -> None:
+    single_schema = _tag_analysis_response_format()["schema"]["properties"]
+    batch_schema = _batch_tag_analysis_response_format()["schema"]["properties"][
+        "results"
+    ]["items"]["properties"]
+    analysis = TagAnalysis.from_dict(
+        {
+            **_analysis().to_dict(),
+            "special_type_tags": ["动态几何题"],
+            "proposed_tags": [
+                {"dimension": "knowledge", "name": "自由词一"},
+                {"dimension": "method", "name": "自由词二"},
+                {"dimension": "special_type", "name": "自由词三"},
+            ],
+        }
+    )
+
+    assert "special_type_tags" in single_schema
+    assert "special_type_tags" in batch_schema
+    assert single_schema["proposed_tags"]["maxItems"] == 2
+    assert batch_schema["proposed_tags"]["maxItems"] == 2
+    assert analysis.special_type_tags == ["动态几何题"]
+    assert [item["name"] for item in analysis.proposed_tags] == [
+        "自由词一",
+        "自由词二",
+    ]
+
+
+def test_tagging_schema_preserves_multiple_textbook_chapters() -> None:
+    single_schema = _tag_analysis_response_format()["schema"]["properties"]
+    batch_schema = _batch_tag_analysis_response_format()["schema"]["properties"][
+        "results"
+    ]["items"]["properties"]
+    chapters = [
+        "七年级下册 第二章 相交线与平行线",
+        "七年级下册 第四章 三角形",
+    ]
+
+    analysis = TagAnalysis.from_dict({"textbook_chapters": chapters})
+
+    assert analysis.textbook_chapters == chapters
+    assert analysis.textbook_chapter == chapters[0]
+    assert analysis.to_dict()["textbook_chapters"] == chapters
+    assert "textbook_chapters" in single_schema
+    assert "textbook_chapter" not in single_schema
+    assert single_schema["textbook_chapters"]["type"] == "array"
+    assert "textbook_chapters" in batch_schema
+    assert "textbook_chapter" not in batch_schema
+
+
+def test_legacy_single_textbook_chapter_is_promoted_to_the_plural_contract() -> None:
+    analysis = TagAnalysis.from_dict(
+        {"textbook_chapter": "七年级上册 第二章 有理数及其运算"}
+    )
+
+    assert analysis.textbook_chapters == [
+        "七年级上册 第二章 有理数及其运算"
+    ]
+    assert analysis.textbook_chapter == "七年级上册 第二章 有理数及其运算"
+
+
+def test_batch_prompt_attaches_an_isolated_candidate_contract_per_question() -> None:
+    contexts = {
+        1: TaggingContext(
+            question_text="用配方法解一元二次方程",
+            question_number="1",
+        ),
+        2: TaggingContext(
+            question_text="阅读新定义并研究动态几何",
+            question_number="2",
+        ),
+    }
+    service = AITaggingService(env={})
+    contracts = service.taxonomy_contracts(contexts)
+    payload = json.loads(
+        _batch_prompt_input(list(contexts.items()), contracts)[1]["content"]
+    )
+    inputs = {
+        int(item["question_id"]): item for item in payload["batch_inputs"]
+    }
+
+    assert (
+        inputs[1]["candidate_contract"]["candidate_fingerprint"]
+        != inputs[2]["candidate_contract"]["candidate_fingerprint"]
+    )
+    assert (
+        inputs[1]["candidate_contract"]["taxonomy_revision"]
+        == inputs[2]["candidate_contract"]["taxonomy_revision"]
+    )
+
+
+def test_prompts_do_not_send_historical_saved_tags_to_the_model() -> None:
+    context = TaggingContext(
+        question_text="计算 1+1",
+        existing_tags=["旧版混乱标签"],
+        existing_tags_by_dimension={
+            "knowledge": ["旧知识点"],
+            "special_type": ["旧考法"],
+        },
+    )
+
+    single_payload = json.loads(_prompt_input(context)[1]["content"])
+    batch_payload = json.loads(
+        _batch_prompt_input([(1, context)])[1]["content"]
+    )
+
+    assert "existing_tags" not in single_payload["input"]
+    assert "existing_tags_by_dimension" not in single_payload["input"]
+    assert "existing_tags" not in batch_payload["batch_inputs"][0]["input"]
+    assert (
+        "existing_tags_by_dimension"
+        not in batch_payload["batch_inputs"][0]["input"]
+    )
+
+
 def test_dedicated_llm_client_uses_only_dedicated_or_default_base_url(
     monkeypatch,
 ) -> None:
@@ -195,6 +367,10 @@ def test_single_responses_uses_tagging_gateway_with_raw_client(monkeypatch) -> N
     )
 
     service = AITaggingService(env=_tagging_env(), client=fake_client)
+    expected_analysis = replace(
+        expected_analysis,
+        taxonomy_revision=service.taxonomy_revision,
+    )
     result = service.analyze_question(context)
 
     assert result.ok
@@ -279,6 +455,14 @@ def test_batch_responses_preserves_structured_payload_mapping_and_lazy_adapter(
     batch_items = list(contexts.items())
 
     service = AITaggingService(env=_tagging_env(), client=fake_client)
+    first_analysis = replace(
+        first_analysis,
+        taxonomy_revision=service.taxonomy_revision,
+    )
+    second_analysis = replace(
+        second_analysis,
+        taxonomy_revision=service.taxonomy_revision,
+    )
     single = service.analyze_question(contexts[1])
     first_adapter = service._protocol_adapter()
     results = service.analyze_questions(
@@ -343,6 +527,10 @@ def test_explicit_protocol_adapter_is_reused_for_single_and_batch_calls(
         env=_tagging_env(),
         protocol_adapter=adapter,
     )
+    analysis = replace(
+        analysis,
+        taxonomy_revision=service.taxonomy_revision,
+    )
     context = TaggingContext(
         question_text="计算 a^2 · a^3。",
         answer_text="a^5",
@@ -362,6 +550,126 @@ def test_explicit_protocol_adapter_is_reused_for_single_and_batch_calls(
     assert single.analysis == analysis
     assert batch[1].analysis == analysis
     assert len(calls) == 2
+
+
+def test_taxonomy_review_suggestions_use_tagging_gateway_and_safe_payload(
+    monkeypatch,
+) -> None:
+    calls = []
+    batch = [
+        {
+            "proposal_id": "proposal-1",
+            "dimension": "curriculum",
+            "proposed_name": "相交线和平行线、三角形",
+            "reason": "一道题跨两个章节",
+            "nearest_id": "term-1",
+            "source_path": r"C:\private\paper.docx",
+            "candidates": [
+                {"id": "term-1", "name": "相交线与平行线", "aliases": ["秘密"]},
+                {"id": "term-2", "name": "三角形"},
+            ],
+            "question_summaries": [
+                {
+                    "id": 482,
+                    "question_number": "Q12",
+                    "question_type": "解答题",
+                    "question_text": "证明两组三角形全等。",
+                    "answer_text": "由 ASA 可得全等。",
+                    "image_path": r"C:\private\q12.png",
+                }
+            ],
+        }
+    ]
+    expected = {
+        "results": [
+            {
+                "proposal_id": "proposal-1",
+                "decision": "map_many",
+                "target_term_ids": ["term-1", "term-2"],
+                "reason": "题目确实同时考查两个教材章节。",
+                "confidence": 0.91,
+            }
+        ]
+    }
+
+    class InjectedAdapter:
+        def responses(self, **kwargs):
+            calls.append(kwargs)
+            return SimpleNamespace(output_text=json.dumps(expected))
+
+    monkeypatch.setattr(ai_tagging_module, "_dotenv_values", lambda: {})
+    service = AITaggingService(
+        env=_tagging_env(),
+        protocol_adapter=InjectedAdapter(),
+    )
+
+    result = service.suggest_taxonomy_reviews(batch)
+
+    assert result == expected["results"]
+    assert calls == [
+        {
+            "request_kind": backend_llm.LLMRequestKind.TAGGING,
+            "model": "fake-tagging-model",
+            "allow_retry": False,
+            "kwargs": {
+                "text": {
+                    "format": _taxonomy_suggestion_response_format()
+                },
+                "input": _taxonomy_suggestion_prompt_input(batch),
+            },
+        }
+    ]
+    serialized = json.dumps(
+        calls[0]["kwargs"]["input"], ensure_ascii=False
+    )
+    assert "private" not in serialized
+    assert "aliases" not in serialized
+
+
+def test_taxonomy_review_suggestions_use_one_request_without_ai_repair() -> None:
+    calls = []
+    expected = {
+        "results": [
+            {
+                "proposal_id": "proposal-1",
+                "decision": "keep_new",
+                "target_term_ids": [],
+                "reason": "需要保留独立术语。",
+                "confidence": 0.88,
+            }
+        ]
+    }
+
+    class SingleRequestClient:
+        settings = SimpleNamespace(config_model="single-request-model")
+
+        def json_from_text_once(self, prompt, **kwargs):
+            calls.append((prompt, kwargs))
+            return expected
+
+        def json_from_text(self, *_args, **_kwargs):
+            raise AssertionError("taxonomy suggestions must not use AI repair")
+
+    service = AITaggingService(
+        env={"QUESTION_BANK_TAGGING_MODEL": "single-request-model"},
+        llm_client=SingleRequestClient(),
+    )
+
+    result = service.suggest_taxonomy_reviews([])
+
+    assert result == expected["results"]
+    assert len(calls) == 1
+    assert calls[0][1]["request_kind"] is backend_llm.LLMRequestKind.TAGGING
+
+
+def test_taxonomy_review_suggestions_do_not_fake_ai_in_mock_mode(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(ai_tagging_module, "_dotenv_values", lambda: {})
+    service = AITaggingService(env={})
+
+    with pytest.raises(RuntimeError, match="未配置"):
+        service.suggest_taxonomy_reviews([])
 
 
 def test_tag_analysis_normalizes_confidence_and_string_list_fields() -> None:

@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "catalog_id": "junior-math-controlled-vocabulary-v2",
-  "revision": 1,
+  "revision": 2,
   "source_snapshot": {
     "file": "xkw_junior_math_taxonomy_2026-07-26.source.json",
     "observed_at": "2026-07-26",
@@ -15,7 +15,8 @@
       "knowledge",
       "ability",
       "method",
-      "model"
+      "model",
+      "special_type"
     ],
     "excluded_branches": [
       "五四制小学衔接",
@@ -27,7 +28,224 @@
       "measured_skill",
       "supporting_skill"
     ],
-    "rule": "只晋升维度明确的末级节点；范围外、层级节点和维度不确定项保留在 reference_candidates，不能提供给 AI。"
+    "rule": "本地先从正式词表筛出相关范围，大模型优先匹配正式标签；确实无法匹配时允许少量自由标签，再回到完整词表复核，仍无法匹配的项目进入定期整理。",
+    "reviewed_source_summary": {
+      "reviewed": 55,
+      "added_term_source_paths": 42,
+      "mapped_source_paths": 10,
+      "deferred_source_paths": 3,
+      "removed_from_reference_candidates": 52
+    },
+    "retrieval_hints": {
+      "prefilter_dimensions": [
+        "curriculum",
+        "knowledge",
+        "ability",
+        "method",
+        "model",
+        "special_type"
+      ],
+      "match_fields": [
+        "id",
+        "name",
+        "aliases",
+        "retrieval_hints",
+        "source_paths"
+      ],
+      "preferred_model_output": "approved_term_id",
+      "free_text_fallback": {
+        "allowed": true,
+        "scope": "少量",
+        "local_full_vocabulary_rematch": true,
+        "unmatched_destination": "periodic_review"
+      },
+      "reviewed_source_mappings": [
+        {
+          "source_name": "按要求构造分式",
+          "source_path": [
+            "数与式",
+            "分式",
+            "分式的概念及性质",
+            "分式的定义",
+            "按要求构造分式"
+          ],
+          "targets": [
+            {
+              "kind": "taxonomy",
+              "id": "kp_alg_fraction",
+              "dimension": "knowledge",
+              "name": "分式"
+            },
+            {
+              "kind": "taxonomy",
+              "id": "special_type-f1dd25ad3bbd93a2",
+              "dimension": "special_type",
+              "name": "开放探究题"
+            }
+          ]
+        },
+        {
+          "source_name": "构造二元一次方程组求解",
+          "source_path": [
+            "方程与不等式",
+            "二元一次方程组",
+            "解二元一次方程组",
+            "解二元一次方程组的应用",
+            "构造二元一次方程组求解"
+          ],
+          "targets": [
+            {
+              "kind": "taxonomy",
+              "id": "kp_alg_system_appl",
+              "dimension": "knowledge",
+              "name": "二元一次方程组应用"
+            },
+            {
+              "kind": "taxonomy",
+              "id": "method-1deb1eb8f2a24339",
+              "dimension": "method",
+              "name": "方程思想"
+            }
+          ]
+        },
+        {
+          "source_name": "解一元二次方程——配方法",
+          "source_path": [
+            "方程与不等式",
+            "一元二次方程",
+            "解一元二次方程",
+            "解一元二次方程——配方法"
+          ],
+          "targets": [
+            {
+              "kind": "taxonomy",
+              "id": "method-07a13f2ced1fd649",
+              "dimension": "method",
+              "name": "配方法"
+            }
+          ]
+        },
+        {
+          "source_name": "连接两点构造全等三角形（全等三角形的辅助线问题）",
+          "source_path": [
+            "图形的性质",
+            "三角形",
+            "全等三角形",
+            "三角形全等的判定",
+            "连接两点构造全等三角形（全等三角形的辅助线问题）"
+          ],
+          "targets": [
+            {
+              "kind": "taxonomy",
+              "id": "method-01df3b4df4634830",
+              "dimension": "method",
+              "name": "构造全等"
+            }
+          ]
+        },
+        {
+          "source_name": "倍长中线模型(全等三角形的辅助线问题)",
+          "source_path": [
+            "图形的性质",
+            "三角形",
+            "全等三角形",
+            "三角形全等的判定",
+            "倍长中线模型(全等三角形的辅助线问题)"
+          ],
+          "targets": [
+            {
+              "kind": "taxonomy",
+              "id": "model-48ba6ae67e24dc18",
+              "dimension": "model",
+              "name": "倍长中线模型"
+            }
+          ]
+        },
+        {
+          "source_name": "旋转模型(全等三角形的辅助线问题)",
+          "source_path": [
+            "图形的性质",
+            "三角形",
+            "全等三角形",
+            "三角形全等的判定",
+            "旋转模型(全等三角形的辅助线问题)"
+          ],
+          "targets": [
+            {
+              "kind": "taxonomy",
+              "id": "model-7fd7aa81d9234b31",
+              "dimension": "model",
+              "name": "旋转模型"
+            }
+          ]
+        },
+        {
+          "source_name": "垂线模型(全等三角形的辅助线问题)",
+          "source_path": [
+            "图形的性质",
+            "三角形",
+            "全等三角形",
+            "三角形全等的判定",
+            "垂线模型(全等三角形的辅助线问题)"
+          ],
+          "targets": [
+            {
+              "kind": "taxonomy",
+              "id": "xkw-model-f1a2167b5540ab88",
+              "dimension": "model",
+              "name": "垂直模型"
+            }
+          ]
+        },
+        {
+          "source_name": "平移(作图)",
+          "source_path": [
+            "图形的变化",
+            "平移",
+            "平移(作图)"
+          ],
+          "targets": [
+            {
+              "kind": "taxonomy",
+              "id": "xkw-knowledge-62be0df457fb5dde",
+              "dimension": "knowledge",
+              "name": "图形的平移"
+            }
+          ]
+        },
+        {
+          "source_name": "调查收集数据的过程与方法",
+          "source_path": [
+            "统计与概率",
+            "数据的收集与整理",
+            "统计调查",
+            "调查收集数据的过程与方法"
+          ],
+          "targets": [
+            {
+              "kind": "taxonomy",
+              "id": "kp_sta_data_collection",
+              "dimension": "knowledge",
+              "name": "数据的收集与整理"
+            }
+          ]
+        },
+        {
+          "source_name": "综合运用",
+          "source_path": [
+            "压轴题",
+            "综合运用"
+          ],
+          "targets": [
+            {
+              "kind": "field",
+              "field": "question_type",
+              "value": "comprehensive"
+            }
+          ]
+        }
+      ]
+    }
   },
   "terms": [
     {
@@ -471,6 +689,23 @@
       ]
     },
     {
+      "id": "knowledge-82cc81b89c47df84",
+      "dimension": "knowledge",
+      "name": "(x+p)(x+q)型多项式乘法",
+      "aliases": [],
+      "status": "approved",
+      "origin": "p3_5_teacher_curated",
+      "source_paths": [
+        [
+          "数与式",
+          "代数式",
+          "整式的乘除",
+          "多项式乘多项式",
+          "（x+p）（x+q）型多项式乘法"
+        ]
+      ]
+    },
+    {
       "id": "xkw-knowledge-b1a2fb15adc83fa2",
       "dimension": "knowledge",
       "name": "(等腰)梯形的定义",
@@ -747,7 +982,6 @@
       "name": "一元二次方程",
       "aliases": [
         "解一元二次方程",
-        "配方法",
         "求根公式",
         "根的判别式",
         "韦达定理",
@@ -755,7 +989,10 @@
       ],
       "status": "approved",
       "origin": "p3_registry",
-      "source_paths": []
+      "source_paths": [],
+      "retrieval_hints": [
+        "配方法"
+      ]
     },
     {
       "id": "xkw-knowledge-4de45c1848800bee",
@@ -2076,13 +2313,15 @@
       "aliases": [
         "二元一次方程",
         "方程组",
-        "代入消元法",
-        "加减消元法",
         "ALG_02"
       ],
       "status": "approved",
       "origin": "p3_registry",
-      "source_paths": []
+      "source_paths": [],
+      "retrieval_hints": [
+        "代入消元法",
+        "加减消元法"
+      ]
     },
     {
       "id": "kp_alg_system_appl",
@@ -2093,11 +2332,20 @@
         "鸡兔同笼",
         "配套问题",
         "方案选择",
-        "二元一次方程组的应用"
+        "二元一次方程组的应用",
+        "构造二元一次方程组求解"
       ],
       "status": "approved",
       "origin": "p3_registry",
-      "source_paths": []
+      "source_paths": [
+        [
+          "方程与不等式",
+          "二元一次方程组",
+          "解二元一次方程组",
+          "解二元一次方程组的应用",
+          "构造二元一次方程组求解"
+        ]
+      ]
     },
     {
       "id": "xkw-knowledge-7580663fd8d20f98",
@@ -2237,6 +2485,22 @@
       ]
     },
     {
+      "id": "knowledge-107d807e9a334c22",
+      "dimension": "knowledge",
+      "name": "二次根式的乘法",
+      "aliases": [],
+      "status": "approved",
+      "origin": "p3_5_teacher_curated",
+      "source_paths": [
+        [
+          "数与式",
+          "二次根式",
+          "二次根式的乘除",
+          "二次根式的乘法"
+        ]
+      ]
+    },
+    {
       "id": "xkw-knowledge-a9ed674c3dcf822b",
       "dimension": "knowledge",
       "name": "二次根式的乘除混合运算",
@@ -2313,6 +2577,22 @@
           "二次根式的概念及性质",
           "二次根式的定义",
           "二次根式的识别"
+        ]
+      ]
+    },
+    {
+      "id": "knowledge-85411f028edc15f3",
+      "dimension": "knowledge",
+      "name": "二次根式的除法",
+      "aliases": [],
+      "status": "approved",
+      "origin": "p3_5_teacher_curated",
+      "source_paths": [
+        [
+          "数与式",
+          "二次根式",
+          "二次根式的乘除",
+          "二次根式的除法"
         ]
       ]
     },
@@ -2421,6 +2701,25 @@
           "代数式及其应用",
           "代数式的概念及意义",
           "代数式的概念"
+        ]
+      ]
+    },
+    {
+      "id": "knowledge-03c29e335091bc0d",
+      "dimension": "knowledge",
+      "name": "代数式的规范书写",
+      "aliases": [
+        "代数式书写方法"
+      ],
+      "status": "approved",
+      "origin": "p3_5_teacher_curated",
+      "source_paths": [
+        [
+          "数与式",
+          "代数式",
+          "代数式及其应用",
+          "代数式的概念及意义",
+          "代数式书写方法"
         ]
       ]
     },
@@ -3261,6 +3560,21 @@
       ]
     },
     {
+      "id": "knowledge-4c43c41ee4cae2cb",
+      "dimension": "knowledge",
+      "name": "函数的三种表示方法",
+      "aliases": [],
+      "status": "approved",
+      "origin": "p3_5_teacher_curated",
+      "source_paths": [
+        [
+          "函数",
+          "函数基础知识",
+          "函数的三种表示方法"
+        ]
+      ]
+    },
+    {
       "id": "xkw-knowledge-5f8611a2f651cc71",
       "dimension": "knowledge",
       "name": "函数的概念",
@@ -3299,11 +3613,20 @@
         "分式运算",
         "分式的运算",
         "分数的意义",
-        "分数"
+        "分数",
+        "按要求构造分式"
       ],
       "status": "approved",
       "origin": "p3_registry",
-      "source_paths": []
+      "source_paths": [
+        [
+          "数与式",
+          "分式",
+          "分式的概念及性质",
+          "分式的定义",
+          "按要求构造分式"
+        ]
+      ]
     },
     {
       "id": "xkw-knowledge-17908ce4f9eef4ae",
@@ -3603,6 +3926,25 @@
       ]
     },
     {
+      "id": "knowledge-d4ba1da1b45a9f8a",
+      "dimension": "knowledge",
+      "name": "分式的乘法",
+      "aliases": [
+        "分式乘法"
+      ],
+      "status": "approved",
+      "origin": "p3_5_teacher_curated",
+      "source_paths": [
+        [
+          "数与式",
+          "分式",
+          "分式的运算",
+          "分式的乘除",
+          "分式乘法"
+        ]
+      ]
+    },
+    {
       "id": "xkw-knowledge-5bdc881ea0e9f5b1",
       "dimension": "knowledge",
       "name": "分式的判断",
@@ -3650,6 +3992,25 @@
           "分式的概念及性质",
           "分式的定义",
           "分式的规律性问题"
+        ]
+      ]
+    },
+    {
+      "id": "knowledge-f6d7af1ac886a278",
+      "dimension": "knowledge",
+      "name": "分式的除法",
+      "aliases": [
+        "分式除法"
+      ],
+      "status": "approved",
+      "origin": "p3_5_teacher_curated",
+      "source_paths": [
+        [
+          "数与式",
+          "分式",
+          "分式的运算",
+          "分式的乘除",
+          "分式除法"
         ]
       ]
     },
@@ -5681,6 +6042,25 @@
       ]
     },
     {
+      "id": "knowledge-2f9ab5eaba71f8b3",
+      "dimension": "knowledge",
+      "name": "勾股定理的证明",
+      "aliases": [
+        "勾股定理的证明方法"
+      ],
+      "status": "approved",
+      "origin": "p3_5_teacher_curated",
+      "source_paths": [
+        [
+          "图形的性质",
+          "三角形",
+          "勾股定理及逆定理",
+          "勾股定理",
+          "勾股定理的证明方法"
+        ]
+      ]
+    },
+    {
       "id": "xkw-knowledge-c35931960a03de46",
       "dimension": "knowledge",
       "name": "勾股定理逆定理的实际应用",
@@ -6054,6 +6434,23 @@
           "平行线及其判定",
           "平行线的判定",
           "同位角相等两直线平行"
+        ]
+      ]
+    },
+    {
+      "id": "knowledge-a40dad49ae8df134",
+      "dimension": "knowledge",
+      "name": "同分母分式加减法",
+      "aliases": [],
+      "status": "approved",
+      "origin": "p3_5_teacher_curated",
+      "source_paths": [
+        [
+          "数与式",
+          "分式",
+          "分式的运算",
+          "分式的加减法则",
+          "同分母分式加减法"
         ]
       ]
     },
@@ -6498,7 +6895,9 @@
       "id": "xkw-knowledge-62be0df457fb5dde",
       "dimension": "knowledge",
       "name": "图形的平移",
-      "aliases": [],
+      "aliases": [
+        "平移(作图)"
+      ],
       "status": "approved",
       "origin": "xkw_2026_snapshot",
       "source_paths": [
@@ -6506,6 +6905,11 @@
           "图形的变化",
           "平移",
           "图形的平移"
+        ],
+        [
+          "图形的变化",
+          "平移",
+          "平移(作图)"
         ]
       ]
     },
@@ -7601,13 +8005,15 @@
         "代数式",
         "代数式化简",
         "单项式",
-        "多项式",
-        "科学记数法",
-        "科学记数"
+        "多项式"
       ],
       "status": "approved",
       "origin": "p3_registry",
-      "source_paths": []
+      "source_paths": [],
+      "retrieval_hints": [
+        "科学记数法",
+        "科学记数"
+      ]
     },
     {
       "id": "xkw-knowledge-97661cea2fa359cb",
@@ -7687,13 +8093,15 @@
         "平方根",
         "算术平方根",
         "立方根",
-        "数轴",
         "整数的概念",
         "整数"
       ],
       "status": "approved",
       "origin": "p3_registry",
-      "source_paths": []
+      "source_paths": [],
+      "retrieval_hints": [
+        "数轴"
+      ]
     },
     {
       "id": "xkw-knowledge-0ab0ec19fad7f3fe",
@@ -8024,21 +8432,161 @@
       ]
     },
     {
+      "id": "knowledge-ba6487298faf1f8c",
+      "dimension": "knowledge",
+      "name": "尺规作三角形",
+      "aliases": [
+        "尺规作图——作三角形"
+      ],
+      "status": "approved",
+      "origin": "p3_5_teacher_curated",
+      "source_paths": [
+        [
+          "图形的性质",
+          "限定工具作图",
+          "尺规作图——作三角形"
+        ]
+      ]
+    },
+    {
       "id": "kp_geo_construction",
       "dimension": "knowledge",
       "name": "尺规作图",
       "aliases": [
         "基本尺规作图",
-        "尺规作角平分线",
         "作一个角等于已知角",
-        "作线段",
         "作角",
-        "作垂线",
         "作线段垂直平分线"
       ],
       "status": "approved",
       "origin": "p3_registry",
-      "source_paths": []
+      "source_paths": [],
+      "retrieval_hints": [
+        "尺规作角平分线",
+        "作线段",
+        "作垂线"
+      ]
+    },
+    {
+      "id": "knowledge-e544be92d072c31b",
+      "dimension": "knowledge",
+      "name": "尺规作圆",
+      "aliases": [
+        "画圆(尺规作图)"
+      ],
+      "status": "approved",
+      "origin": "p3_5_teacher_curated",
+      "source_paths": [
+        [
+          "图形的性质",
+          "限定工具作图",
+          "画圆(尺规作图)"
+        ]
+      ]
+    },
+    {
+      "id": "knowledge-42bd8985bf57d3ff",
+      "dimension": "knowledge",
+      "name": "尺规作圆的切线",
+      "aliases": [
+        "过圆外一点作圆的切线(尺规作图)"
+      ],
+      "status": "approved",
+      "origin": "p3_5_teacher_curated",
+      "source_paths": [
+        [
+          "图形的性质",
+          "限定工具作图",
+          "过圆外一点作圆的切线(尺规作图)"
+        ]
+      ]
+    },
+    {
+      "id": "knowledge-ebc23e3600976e46",
+      "dimension": "knowledge",
+      "name": "尺规作垂线",
+      "aliases": [
+        "作垂线(尺规作图)",
+        "作垂线"
+      ],
+      "status": "approved",
+      "origin": "p3_5_teacher_curated",
+      "source_paths": [
+        [
+          "图形的性质",
+          "限定工具作图",
+          "作垂线(尺规作图)"
+        ]
+      ]
+    },
+    {
+      "id": "knowledge-d1519207f88d6869",
+      "dimension": "knowledge",
+      "name": "尺规作正多边形",
+      "aliases": [
+        "尺规作图——正多边形"
+      ],
+      "status": "approved",
+      "origin": "p3_5_teacher_curated",
+      "source_paths": [
+        [
+          "图形的性质",
+          "限定工具作图",
+          "尺规作图——正多边形"
+        ]
+      ]
+    },
+    {
+      "id": "knowledge-3992ddf04007c877",
+      "dimension": "knowledge",
+      "name": "尺规作等腰三角形",
+      "aliases": [
+        "作等腰三角形(尺规作图)"
+      ],
+      "status": "approved",
+      "origin": "p3_5_teacher_curated",
+      "source_paths": [
+        [
+          "图形的性质",
+          "限定工具作图",
+          "作等腰三角形(尺规作图)"
+        ]
+      ]
+    },
+    {
+      "id": "knowledge-afbf1ec36925e24c",
+      "dimension": "knowledge",
+      "name": "尺规作线段",
+      "aliases": [
+        "作线段(尺规作图)",
+        "作线段"
+      ],
+      "status": "approved",
+      "origin": "p3_5_teacher_curated",
+      "source_paths": [
+        [
+          "图形的性质",
+          "限定工具作图",
+          "作线段(尺规作图)"
+        ]
+      ]
+    },
+    {
+      "id": "knowledge-89da8e96d115ba15",
+      "dimension": "knowledge",
+      "name": "尺规作角平分线",
+      "aliases": [
+        "作角平分线(尺规作图)"
+      ],
+      "status": "approved",
+      "origin": "p3_5_teacher_curated",
+      "source_paths": [
+        [
+          "图形的性质",
+          "限定工具作图",
+          "作角平分线(尺规作图)"
+        ]
+      ]
     },
     {
       "id": "xkw-knowledge-ced91b0eadd711cb",
@@ -8053,6 +8601,25 @@
           "限定工具作图",
           "尺规作图——作角",
           "尺规作角的和、差"
+        ]
+      ]
+    },
+    {
+      "id": "knowledge-e571cc3dc558d48f",
+      "dimension": "knowledge",
+      "name": "尺规确定圆心",
+      "aliases": [
+        "确定圆心(尺规作图)"
+      ],
+      "status": "approved",
+      "origin": "p3_5_teacher_curated",
+      "source_paths": [
+        [
+          "图形的性质",
+          "圆",
+          "点、直线、圆的位置关系",
+          "确定圆的条件",
+          "确定圆心(尺规作图)"
         ]
       ]
     },
@@ -9339,6 +9906,23 @@
       ]
     },
     {
+      "id": "knowledge-7cabef1d9b8473dd",
+      "dimension": "knowledge",
+      "name": "异分母分式加减法",
+      "aliases": [],
+      "status": "approved",
+      "origin": "p3_5_teacher_curated",
+      "source_paths": [
+        [
+          "数与式",
+          "分式",
+          "分式的运算",
+          "分式的加减法则",
+          "异分母分式加减法"
+        ]
+      ]
+    },
+    {
       "id": "kp_geo_circle_measure",
       "dimension": "knowledge",
       "name": "弧长与面积计算",
@@ -9845,11 +10429,19 @@
       "name": "数据的收集与整理",
       "aliases": [
         "总体与样本",
-        "频数与频率"
+        "频数与频率",
+        "调查收集数据的过程与方法"
       ],
       "status": "approved",
       "origin": "p3_registry",
-      "source_paths": []
+      "source_paths": [
+        [
+          "统计与概率",
+          "数据的收集与整理",
+          "统计调查",
+          "调查收集数据的过程与方法"
+        ]
+      ]
     },
     {
       "id": "kp_sta_data_dispersion",
@@ -9972,6 +10564,24 @@
           "有理数",
           "数轴",
           "数轴上的规律探究"
+        ]
+      ]
+    },
+    {
+      "id": "knowledge-38158c69d7e84322",
+      "dimension": "knowledge",
+      "name": "数轴的概念与画法",
+      "aliases": [
+        "数轴的三要素及其画法"
+      ],
+      "status": "approved",
+      "origin": "p3_5_teacher_curated",
+      "source_paths": [
+        [
+          "数与式",
+          "有理数",
+          "数轴",
+          "数轴的三要素及其画法"
         ]
       ]
     },
@@ -16195,6 +16805,33 @@
       ]
     },
     {
+      "id": "knowledge-dd1253c255868ee4",
+      "dimension": "knowledge",
+      "name": "科学记数法的乘除运算",
+      "aliases": [
+        "用科学记数法表示数的乘法",
+        "用科学记数法表示数的除法"
+      ],
+      "status": "approved",
+      "origin": "p3_5_teacher_curated",
+      "source_paths": [
+        [
+          "数与式",
+          "代数式",
+          "整式的乘除",
+          "同底数幂的乘法",
+          "用科学记数法表示数的乘法"
+        ],
+        [
+          "数与式",
+          "代数式",
+          "整式的乘除",
+          "单项式除以单项式",
+          "用科学记数法表示数的除法"
+        ]
+      ]
+    },
+    {
       "id": "xkw-knowledge-ef92512ab8ee051a",
       "dimension": "knowledge",
       "name": "积的乘方的逆用",
@@ -16366,8 +17003,7 @@
       "name": "等式的性质",
       "aliases": [
         "等式性质",
-        "方程基础",
-        "方程思想"
+        "方程基础"
       ],
       "status": "approved",
       "origin": "p3_registry",
@@ -17394,6 +18030,23 @@
       ]
     },
     {
+      "id": "knowledge-43be5ebcb525ddb1",
+      "dimension": "knowledge",
+      "name": "角的表示方法",
+      "aliases": [],
+      "status": "approved",
+      "origin": "p3_5_teacher_curated",
+      "source_paths": [
+        [
+          "图形的性质",
+          "几何图形初步",
+          "角",
+          "角的概念",
+          "角的表示方法"
+        ]
+      ]
+    },
+    {
       "id": "xkw-knowledge-ba5b907c0179cb40",
       "dimension": "knowledge",
       "name": "解|x|≥a型的不等式",
@@ -18371,16 +19024,18 @@
       "dimension": "knowledge",
       "name": "阅读理解与规律探究",
       "aliases": [
-        "阅读理解题",
         "规律探究",
         "定义新运算",
         "数式规律",
-        "图形规律",
-        "新定义问题"
+        "图形规律"
       ],
       "status": "approved",
       "origin": "p3_registry",
-      "source_paths": []
+      "source_paths": [],
+      "retrieval_hints": [
+        "阅读理解题",
+        "新定义问题"
+      ]
     },
     {
       "id": "xkw-knowledge-1a3cc0e85e793bc6",
@@ -18496,6 +19151,22 @@
       ]
     },
     {
+      "id": "method-b76b618bc5c48457",
+      "dimension": "method",
+      "name": "代入消元法",
+      "aliases": [],
+      "status": "approved",
+      "origin": "p3_5_teacher_curated",
+      "source_paths": [
+        [
+          "方程与不等式",
+          "二元一次方程组",
+          "解二元一次方程组",
+          "代入消元法"
+        ]
+      ]
+    },
+    {
       "id": "xkw-method-8b416aa809b452e9",
       "dimension": "method",
       "name": "作垂线法",
@@ -18554,6 +19225,52 @@
       "status": "approved",
       "origin": "p3_controlled_options",
       "source_paths": []
+    },
+    {
+      "id": "method-d7772270e966d82f",
+      "dimension": "method",
+      "name": "分组分解法",
+      "aliases": [],
+      "status": "approved",
+      "origin": "p3_5_teacher_curated",
+      "source_paths": [
+        [
+          "数与式",
+          "因式分解",
+          "分组分解法"
+        ]
+      ]
+    },
+    {
+      "id": "method-66d013bb48ddc232",
+      "dimension": "method",
+      "name": "加减消元法",
+      "aliases": [],
+      "status": "approved",
+      "origin": "p3_5_teacher_curated",
+      "source_paths": [
+        [
+          "方程与不等式",
+          "二元一次方程组",
+          "解二元一次方程组",
+          "加减消元法"
+        ]
+      ]
+    },
+    {
+      "id": "method-18282c9263224e30",
+      "dimension": "method",
+      "name": "十字相乘法",
+      "aliases": [],
+      "status": "approved",
+      "origin": "p3_5_teacher_curated",
+      "source_paths": [
+        [
+          "数与式",
+          "因式分解",
+          "十字相乘法"
+        ]
+      ]
     },
     {
       "id": "method-e376be0fa7fe7ebf",
@@ -18632,10 +19349,20 @@
       "id": "method-1deb1eb8f2a24339",
       "dimension": "method",
       "name": "方程思想",
-      "aliases": [],
+      "aliases": [
+        "构造二元一次方程组求解"
+      ],
       "status": "approved",
       "origin": "p3_controlled_options",
-      "source_paths": []
+      "source_paths": [
+        [
+          "方程与不等式",
+          "二元一次方程组",
+          "解二元一次方程组",
+          "解二元一次方程组的应用",
+          "构造二元一次方程组求解"
+        ]
+      ]
     },
     {
       "id": "xkw-method-371803d883e9dba5",
@@ -18655,10 +19382,47 @@
       "id": "method-01df3b4df4634830",
       "dimension": "method",
       "name": "构造全等",
-      "aliases": [],
+      "aliases": [
+        "连接两点构造全等三角形（全等三角形的辅助线问题）"
+      ],
       "status": "approved",
       "origin": "p3_controlled_options",
-      "source_paths": []
+      "source_paths": [
+        [
+          "图形的性质",
+          "三角形",
+          "全等三角形",
+          "三角形全等的判定",
+          "连接两点构造全等三角形（全等三角形的辅助线问题）"
+        ]
+      ]
+    },
+    {
+      "id": "method-dbd02286a20bf2d9",
+      "dimension": "method",
+      "name": "构造直角三角形法",
+      "aliases": [
+        "用勾股定理构造图形解决问题",
+        "构造直角三角形求不规则图形的边长或面积"
+      ],
+      "status": "approved",
+      "origin": "p3_5_teacher_curated",
+      "source_paths": [
+        [
+          "图形的性质",
+          "三角形",
+          "勾股定理及逆定理",
+          "勾股定理",
+          "用勾股定理构造图形解决问题"
+        ],
+        [
+          "图形的变化",
+          "锐角三角函数",
+          "解直角三角形及其应用",
+          "解直角三角形",
+          "构造直角三角形求不规则图形的边长或面积"
+        ]
+      ]
     },
     {
       "id": "method-566e6d68f1fd2e05",
@@ -18698,6 +19462,24 @@
         [
           "数学方法",
           "特殊值法"
+        ]
+      ]
+    },
+    {
+      "id": "method-93d2c26abbe88811",
+      "dimension": "method",
+      "name": "直接开平方法",
+      "aliases": [
+        "解一元二次方程——直接开平方法"
+      ],
+      "status": "approved",
+      "origin": "p3_5_teacher_curated",
+      "source_paths": [
+        [
+          "方程与不等式",
+          "一元二次方程",
+          "解一元二次方程",
+          "解一元二次方程——直接开平方法"
         ]
       ]
     },
@@ -18751,10 +19533,19 @@
       "id": "method-07a13f2ced1fd649",
       "dimension": "method",
       "name": "配方法",
-      "aliases": [],
+      "aliases": [
+        "解一元二次方程——配方法"
+      ],
       "status": "approved",
       "origin": "p3_controlled_options",
-      "source_paths": []
+      "source_paths": [
+        [
+          "方程与不等式",
+          "一元二次方程",
+          "解一元二次方程",
+          "解一元二次方程——配方法"
+        ]
+      ]
     },
     {
       "id": "method-bb9fe70e08b74bc3",
@@ -19151,10 +19942,20 @@
       "id": "model-48ba6ae67e24dc18",
       "dimension": "model",
       "name": "倍长中线模型",
-      "aliases": [],
+      "aliases": [
+        "倍长中线模型(全等三角形的辅助线问题)"
+      ],
       "status": "approved",
       "origin": "p3_controlled_options",
-      "source_paths": []
+      "source_paths": [
+        [
+          "图形的性质",
+          "三角形",
+          "全等三角形",
+          "三角形全等的判定",
+          "倍长中线模型(全等三角形的辅助线问题)"
+        ]
+      ]
     },
     {
       "id": "xkw-model-4d72ea56afeec9ae",
@@ -19307,6 +20108,23 @@
       ]
     },
     {
+      "id": "model-f56232d4ecda568f",
+      "dimension": "model",
+      "name": "圆外切四边形模型",
+      "aliases": [],
+      "status": "approved",
+      "origin": "p3_5_teacher_curated",
+      "source_paths": [
+        [
+          "图形的性质",
+          "圆",
+          "点、直线、圆的位置关系",
+          "三角形内切圆",
+          "圆外切四边形模型"
+        ]
+      ]
+    },
+    {
       "id": "xkw-model-429c9a69a4e69630",
       "dimension": "model",
       "name": "圆幂定理",
@@ -19324,13 +20142,22 @@
       "id": "xkw-model-f1a2167b5540ab88",
       "dimension": "model",
       "name": "垂直模型",
-      "aliases": [],
+      "aliases": [
+        "垂线模型(全等三角形的辅助线问题)"
+      ],
       "status": "approved",
       "origin": "xkw_2026_snapshot",
       "source_paths": [
         [
           "全等三角形",
           "垂直模型"
+        ],
+        [
+          "图形的性质",
+          "三角形",
+          "全等三角形",
+          "三角形全等的判定",
+          "垂线模型(全等三角形的辅助线问题)"
         ]
       ]
     },
@@ -19481,10 +20308,20 @@
       "id": "model-7fd7aa81d9234b31",
       "dimension": "model",
       "name": "旋转模型",
-      "aliases": [],
+      "aliases": [
+        "旋转模型(全等三角形的辅助线问题)"
+      ],
       "status": "approved",
       "origin": "p3_controlled_options",
-      "source_paths": []
+      "source_paths": [
+        [
+          "图形的性质",
+          "三角形",
+          "全等三角形",
+          "三角形全等的判定",
+          "旋转模型(全等三角形的辅助线问题)"
+        ]
+      ]
     },
     {
       "id": "xkw-model-ffaa1862c57db2ac",
@@ -19908,6 +20745,199 @@
           "（双）A字型相似"
         ]
       ]
+    },
+    {
+      "id": "special_type-6e779aa715afa6aa",
+      "dimension": "special_type",
+      "name": "作图与证明综合题",
+      "aliases": [
+        "结合尺规作图的全等问题（全等三角形的判定综合）"
+      ],
+      "status": "approved",
+      "origin": "p3_5_teacher_curated",
+      "source_paths": [
+        [
+          "图形的性质",
+          "三角形",
+          "全等三角形",
+          "三角形全等的判定",
+          "结合尺规作图的全等问题（全等三角形的判定综合）"
+        ]
+      ]
+    },
+    {
+      "id": "special_type-a3f73cfd67655f4e",
+      "dimension": "special_type",
+      "name": "动态几何题",
+      "aliases": [
+        "动态几何"
+      ],
+      "status": "approved",
+      "origin": "p3_5_teacher_curated",
+      "source_paths": [
+        [
+          "压轴题",
+          "动态几何"
+        ]
+      ]
+    },
+    {
+      "id": "special_type-ad3ff46aaf8b786f",
+      "dimension": "special_type",
+      "name": "实验操作题",
+      "aliases": [
+        "实验操作类"
+      ],
+      "status": "approved",
+      "origin": "p3_5_teacher_curated",
+      "source_paths": [
+        [
+          "压轴题",
+          "实验操作类"
+        ]
+      ]
+    },
+    {
+      "id": "special_type-f1dd25ad3bbd93a2",
+      "dimension": "special_type",
+      "name": "开放探究题",
+      "aliases": [
+        "开放探究",
+        "按要求构造分式"
+      ],
+      "status": "approved",
+      "origin": "p3_5_teacher_curated",
+      "source_paths": [
+        [
+          "压轴题",
+          "开放探究"
+        ],
+        [
+          "数与式",
+          "分式",
+          "分式的概念及性质",
+          "分式的定义",
+          "按要求构造分式"
+        ]
+      ]
+    },
+    {
+      "id": "special_type-ccd6d2c84cabe9a1",
+      "dimension": "special_type",
+      "name": "数学阅读理解题",
+      "aliases": [
+        "阅读理解",
+        "阅读理解题"
+      ],
+      "status": "approved",
+      "origin": "p3_5_teacher_curated",
+      "source_paths": [
+        [
+          "压轴题",
+          "阅读理解"
+        ]
+      ]
+    },
+    {
+      "id": "special_type-5dd4d64068b1c6aa",
+      "dimension": "special_type",
+      "name": "新定义题",
+      "aliases": [
+        "新定义问题"
+      ],
+      "status": "approved",
+      "origin": "p3_5_teacher_curated",
+      "source_paths": [
+        [
+          "压轴题",
+          "新定义问题"
+        ]
+      ]
+    },
+    {
+      "id": "special_type-f6074a3ca11d01ba",
+      "dimension": "special_type",
+      "name": "无刻度直尺作图题",
+      "aliases": [
+        "无刻度直尺作图"
+      ],
+      "status": "approved",
+      "origin": "p3_5_teacher_curated",
+      "source_paths": [
+        [
+          "图形的性质",
+          "限定工具作图",
+          "无刻度直尺作图"
+        ]
+      ]
+    },
+    {
+      "id": "special_type-ebdda3d970164273",
+      "dimension": "special_type",
+      "name": "格点作图题",
+      "aliases": [],
+      "status": "approved",
+      "origin": "p3_5_teacher_curated",
+      "source_paths": [
+        [
+          "图形的性质",
+          "限定工具作图",
+          "格点作图题"
+        ]
+      ]
+    },
+    {
+      "id": "special_type-5dd828d9a8299962",
+      "dimension": "special_type",
+      "name": "猜想证明题",
+      "aliases": [
+        "猜想证明"
+      ],
+      "status": "approved",
+      "origin": "p3_5_teacher_curated",
+      "source_paths": [
+        [
+          "压轴题",
+          "猜想证明"
+        ]
+      ]
+    },
+    {
+      "id": "special_type-9bee89235f532c59",
+      "dimension": "special_type",
+      "name": "立体模型制作实践题",
+      "aliases": [
+        "课题学习制作立体模型"
+      ],
+      "status": "approved",
+      "origin": "p3_5_teacher_curated",
+      "source_paths": [
+        [
+          "图形的变化",
+          "投影与视图",
+          "三视图",
+          "课题学习制作立体模型"
+        ]
+      ]
+    },
+    {
+      "id": "special_type-781686fec1ecb853",
+      "dimension": "special_type",
+      "name": "线段和差证明题",
+      "aliases": [
+        "证一条线段等于两条线段和差（全等三角形的辅助线问题）"
+      ],
+      "status": "approved",
+      "origin": "p3_5_teacher_curated",
+      "source_paths": [
+        [
+          "图形的性质",
+          "三角形",
+          "全等三角形",
+          "三角形全等的判定",
+          "证一条线段等于两条线段和差（全等三角形的辅助线问题）"
+        ]
+      ]
     }
   ],
   "reference_candidates": [
@@ -19952,16 +20982,6 @@
         "数轴"
       ],
       "reason": "来源层级节点，仅保留作分类参考"
-    },
-    {
-      "name": "数轴的三要素及其画法",
-      "source_path": [
-        "数与式",
-        "有理数",
-        "数轴",
-        "数轴的三要素及其画法"
-      ],
-      "reason": "维度或粒度仍需教师确认"
     },
     {
       "name": "相反数",
@@ -20218,17 +21238,6 @@
       "reason": "来源层级节点，仅保留作分类参考"
     },
     {
-      "name": "代数式书写方法",
-      "source_path": [
-        "数与式",
-        "代数式",
-        "代数式及其应用",
-        "代数式的概念及意义",
-        "代数式书写方法"
-      ],
-      "reason": "维度或粒度仍需教师确认"
-    },
-    {
       "name": "代数式求值",
       "source_path": [
         "数与式",
@@ -20316,17 +21325,6 @@
       "reason": "来源层级节点，仅保留作分类参考"
     },
     {
-      "name": "用科学记数法表示数的乘法",
-      "source_path": [
-        "数与式",
-        "代数式",
-        "整式的乘除",
-        "同底数幂的乘法",
-        "用科学记数法表示数的乘法"
-      ],
-      "reason": "维度或粒度仍需教师确认"
-    },
-    {
       "name": "幂的乘方",
       "source_path": [
         "数与式",
@@ -20387,17 +21385,6 @@
       "reason": "来源层级节点，仅保留作分类参考"
     },
     {
-      "name": "（x+p）（x+q）型多项式乘法",
-      "source_path": [
-        "数与式",
-        "代数式",
-        "整式的乘除",
-        "多项式乘多项式",
-        "（x+p）（x+q）型多项式乘法"
-      ],
-      "reason": "维度或粒度仍需教师确认"
-    },
-    {
       "name": "单项式除以单项式",
       "source_path": [
         "数与式",
@@ -20406,17 +21393,6 @@
         "单项式除以单项式"
       ],
       "reason": "来源层级节点，仅保留作分类参考"
-    },
-    {
-      "name": "用科学记数法表示数的除法",
-      "source_path": [
-        "数与式",
-        "代数式",
-        "整式的乘除",
-        "单项式除以单项式",
-        "用科学记数法表示数的除法"
-      ],
-      "reason": "维度或粒度仍需教师确认"
     },
     {
       "name": "乘法公式",
@@ -20484,24 +21460,6 @@
       "reason": "来源层级节点，仅保留作分类参考"
     },
     {
-      "name": "十字相乘法",
-      "source_path": [
-        "数与式",
-        "因式分解",
-        "十字相乘法"
-      ],
-      "reason": "维度或粒度仍需教师确认"
-    },
-    {
-      "name": "分组分解法",
-      "source_path": [
-        "数与式",
-        "因式分解",
-        "分组分解法"
-      ],
-      "reason": "维度或粒度仍需教师确认"
-    },
-    {
       "name": "分式",
       "source_path": [
         "数与式",
@@ -20527,17 +21485,6 @@
         "分式的定义"
       ],
       "reason": "来源层级节点，仅保留作分类参考"
-    },
-    {
-      "name": "按要求构造分式",
-      "source_path": [
-        "数与式",
-        "分式",
-        "分式的概念及性质",
-        "分式的定义",
-        "按要求构造分式"
-      ],
-      "reason": "维度或粒度仍需教师确认"
     },
     {
       "name": "分式有无意义的条件",
@@ -20589,28 +21536,6 @@
       "reason": "来源层级节点，仅保留作分类参考"
     },
     {
-      "name": "分式乘法",
-      "source_path": [
-        "数与式",
-        "分式",
-        "分式的运算",
-        "分式的乘除",
-        "分式乘法"
-      ],
-      "reason": "维度或粒度仍需教师确认"
-    },
-    {
-      "name": "分式除法",
-      "source_path": [
-        "数与式",
-        "分式",
-        "分式的运算",
-        "分式的乘除",
-        "分式除法"
-      ],
-      "reason": "维度或粒度仍需教师确认"
-    },
-    {
       "name": "分式的加减法则",
       "source_path": [
         "数与式",
@@ -20619,28 +21544,6 @@
         "分式的加减法则"
       ],
       "reason": "来源层级节点，仅保留作分类参考"
-    },
-    {
-      "name": "同分母分式加减法",
-      "source_path": [
-        "数与式",
-        "分式",
-        "分式的运算",
-        "分式的加减法则",
-        "同分母分式加减法"
-      ],
-      "reason": "维度或粒度仍需教师确认"
-    },
-    {
-      "name": "异分母分式加减法",
-      "source_path": [
-        "数与式",
-        "分式",
-        "分式的运算",
-        "分式的加减法则",
-        "异分母分式加减法"
-      ],
-      "reason": "维度或粒度仍需教师确认"
     },
     {
       "name": "二次根式",
@@ -20687,26 +21590,6 @@
         "二次根式的乘除"
       ],
       "reason": "来源层级节点，仅保留作分类参考"
-    },
-    {
-      "name": "二次根式的乘法",
-      "source_path": [
-        "数与式",
-        "二次根式",
-        "二次根式的乘除",
-        "二次根式的乘法"
-      ],
-      "reason": "维度或粒度仍需教师确认"
-    },
-    {
-      "name": "二次根式的除法",
-      "source_path": [
-        "数与式",
-        "二次根式",
-        "二次根式的乘除",
-        "二次根式的除法"
-      ],
-      "reason": "维度或粒度仍需教师确认"
     },
     {
       "name": "最简二次根式",
@@ -20865,26 +21748,6 @@
       "reason": "来源层级节点，仅保留作分类参考"
     },
     {
-      "name": "代入消元法",
-      "source_path": [
-        "方程与不等式",
-        "二元一次方程组",
-        "解二元一次方程组",
-        "代入消元法"
-      ],
-      "reason": "维度或粒度仍需教师确认"
-    },
-    {
-      "name": "加减消元法",
-      "source_path": [
-        "方程与不等式",
-        "二元一次方程组",
-        "解二元一次方程组",
-        "加减消元法"
-      ],
-      "reason": "维度或粒度仍需教师确认"
-    },
-    {
       "name": "二元一次方程组的特殊解法",
       "source_path": [
         "方程与不等式",
@@ -20892,7 +21755,7 @@
         "解二元一次方程组",
         "二元一次方程组的特殊解法"
       ],
-      "reason": "维度或粒度仍需教师确认"
+      "reason": "暂缓收录：名称过于笼统，暂不能形成稳定的方法标签"
     },
     {
       "name": "解二元一次方程组的应用",
@@ -20903,17 +21766,6 @@
         "解二元一次方程组的应用"
       ],
       "reason": "来源层级节点，仅保留作分类参考"
-    },
-    {
-      "name": "构造二元一次方程组求解",
-      "source_path": [
-        "方程与不等式",
-        "二元一次方程组",
-        "解二元一次方程组",
-        "解二元一次方程组的应用",
-        "构造二元一次方程组求解"
-      ],
-      "reason": "维度或粒度仍需教师确认"
     },
     {
       "name": "实际问题与二元一次方程组",
@@ -21000,26 +21852,6 @@
       "reason": "来源层级节点，仅保留作分类参考"
     },
     {
-      "name": "解一元二次方程——直接开平方法",
-      "source_path": [
-        "方程与不等式",
-        "一元二次方程",
-        "解一元二次方程",
-        "解一元二次方程——直接开平方法"
-      ],
-      "reason": "维度或粒度仍需教师确认"
-    },
-    {
-      "name": "解一元二次方程——配方法",
-      "source_path": [
-        "方程与不等式",
-        "一元二次方程",
-        "解一元二次方程",
-        "解一元二次方程——配方法"
-      ],
-      "reason": "维度或粒度仍需教师确认"
-    },
-    {
       "name": "一元二次方程根的判别式",
       "source_path": [
         "方程与不等式",
@@ -21080,7 +21912,7 @@
         "方程与不等式",
         "二元二次方程组及其解法"
       ],
-      "reason": "维度或粒度仍需教师确认"
+      "reason": "暂缓收录：超出当前七至九年级常规教学范围"
     },
     {
       "name": "不等式与不等式组",
@@ -21250,15 +22082,6 @@
         "函数的图象"
       ],
       "reason": "来源层级节点，仅保留作分类参考"
-    },
-    {
-      "name": "函数的三种表示方法",
-      "source_path": [
-        "函数",
-        "函数基础知识",
-        "函数的三种表示方法"
-      ],
-      "reason": "维度或粒度仍需教师确认"
     },
     {
       "name": "一次函数",
@@ -21591,17 +22414,6 @@
       "reason": "来源层级节点，仅保留作分类参考"
     },
     {
-      "name": "角的表示方法",
-      "source_path": [
-        "图形的性质",
-        "几何图形初步",
-        "角",
-        "角的概念",
-        "角的表示方法"
-      ],
-      "reason": "维度或粒度仍需教师确认"
-    },
-    {
       "name": "方向角",
       "source_path": [
         "图形的性质",
@@ -21922,61 +22734,6 @@
       "reason": "来源层级节点，仅保留作分类参考"
     },
     {
-      "name": "结合尺规作图的全等问题（全等三角形的判定综合）",
-      "source_path": [
-        "图形的性质",
-        "三角形",
-        "全等三角形",
-        "三角形全等的判定",
-        "结合尺规作图的全等问题（全等三角形的判定综合）"
-      ],
-      "reason": "维度或粒度仍需教师确认"
-    },
-    {
-      "name": "连接两点构造全等三角形（全等三角形的辅助线问题）",
-      "source_path": [
-        "图形的性质",
-        "三角形",
-        "全等三角形",
-        "三角形全等的判定",
-        "连接两点构造全等三角形（全等三角形的辅助线问题）"
-      ],
-      "reason": "维度或粒度仍需教师确认"
-    },
-    {
-      "name": "倍长中线模型(全等三角形的辅助线问题)",
-      "source_path": [
-        "图形的性质",
-        "三角形",
-        "全等三角形",
-        "三角形全等的判定",
-        "倍长中线模型(全等三角形的辅助线问题)"
-      ],
-      "reason": "维度或粒度仍需教师确认"
-    },
-    {
-      "name": "旋转模型(全等三角形的辅助线问题)",
-      "source_path": [
-        "图形的性质",
-        "三角形",
-        "全等三角形",
-        "三角形全等的判定",
-        "旋转模型(全等三角形的辅助线问题)"
-      ],
-      "reason": "维度或粒度仍需教师确认"
-    },
-    {
-      "name": "垂线模型(全等三角形的辅助线问题)",
-      "source_path": [
-        "图形的性质",
-        "三角形",
-        "全等三角形",
-        "三角形全等的判定",
-        "垂线模型(全等三角形的辅助线问题)"
-      ],
-      "reason": "维度或粒度仍需教师确认"
-    },
-    {
       "name": "其他模型(全等三角形的辅助线问题)",
       "source_path": [
         "图形的性质",
@@ -21985,18 +22742,7 @@
         "三角形全等的判定",
         "其他模型(全等三角形的辅助线问题)"
       ],
-      "reason": "维度或粒度仍需教师确认"
-    },
-    {
-      "name": "证一条线段等于两条线段和差（全等三角形的辅助线问题）",
-      "source_path": [
-        "图形的性质",
-        "三角形",
-        "全等三角形",
-        "三角形全等的判定",
-        "证一条线段等于两条线段和差（全等三角形的辅助线问题）"
-      ],
-      "reason": "维度或粒度仍需教师确认"
+      "reason": "暂缓收录：“其他模型”无法形成稳定、可复用的模型标签"
     },
     {
       "name": "角平分线的性质与判定",
@@ -22084,28 +22830,6 @@
         "勾股定理"
       ],
       "reason": "来源层级节点，仅保留作分类参考"
-    },
-    {
-      "name": "勾股定理的证明方法",
-      "source_path": [
-        "图形的性质",
-        "三角形",
-        "勾股定理及逆定理",
-        "勾股定理",
-        "勾股定理的证明方法"
-      ],
-      "reason": "维度或粒度仍需教师确认"
-    },
-    {
-      "name": "用勾股定理构造图形解决问题",
-      "source_path": [
-        "图形的性质",
-        "三角形",
-        "勾股定理及逆定理",
-        "勾股定理",
-        "用勾股定理构造图形解决问题"
-      ],
-      "reason": "维度或粒度仍需教师确认"
     },
     {
       "name": "勾股定理的应用",
@@ -22445,17 +23169,6 @@
       "reason": "来源层级节点，仅保留作分类参考"
     },
     {
-      "name": "确定圆心(尺规作图)",
-      "source_path": [
-        "图形的性质",
-        "圆",
-        "点、直线、圆的位置关系",
-        "确定圆的条件",
-        "确定圆心(尺规作图)"
-      ],
-      "reason": "维度或粒度仍需教师确认"
-    },
-    {
       "name": "直线和圆的位置关系",
       "source_path": [
         "图形的性质",
@@ -22494,17 +23207,6 @@
         "三角形内切圆"
       ],
       "reason": "来源层级节点，仅保留作分类参考"
-    },
-    {
-      "name": "圆外切四边形模型",
-      "source_path": [
-        "图形的性质",
-        "圆",
-        "点、直线、圆的位置关系",
-        "三角形内切圆",
-        "圆外切四边形模型"
-      ],
-      "reason": "维度或粒度仍需教师确认"
     },
     {
       "name": "圆内接四边形",
@@ -22655,15 +23357,6 @@
       "reason": "来源层级节点，仅保留作分类参考"
     },
     {
-      "name": "作线段(尺规作图)",
-      "source_path": [
-        "图形的性质",
-        "限定工具作图",
-        "作线段(尺规作图)"
-      ],
-      "reason": "维度或粒度仍需教师确认"
-    },
-    {
       "name": "尺规作图——作角",
       "source_path": [
         "图形的性质",
@@ -22671,87 +23364,6 @@
         "尺规作图——作角"
       ],
       "reason": "来源层级节点，仅保留作分类参考"
-    },
-    {
-      "name": "尺规作图——作三角形",
-      "source_path": [
-        "图形的性质",
-        "限定工具作图",
-        "尺规作图——作三角形"
-      ],
-      "reason": "维度或粒度仍需教师确认"
-    },
-    {
-      "name": "作角平分线(尺规作图)",
-      "source_path": [
-        "图形的性质",
-        "限定工具作图",
-        "作角平分线(尺规作图)"
-      ],
-      "reason": "维度或粒度仍需教师确认"
-    },
-    {
-      "name": "作垂线(尺规作图)",
-      "source_path": [
-        "图形的性质",
-        "限定工具作图",
-        "作垂线(尺规作图)"
-      ],
-      "reason": "维度或粒度仍需教师确认"
-    },
-    {
-      "name": "作等腰三角形(尺规作图)",
-      "source_path": [
-        "图形的性质",
-        "限定工具作图",
-        "作等腰三角形(尺规作图)"
-      ],
-      "reason": "维度或粒度仍需教师确认"
-    },
-    {
-      "name": "画圆(尺规作图)",
-      "source_path": [
-        "图形的性质",
-        "限定工具作图",
-        "画圆(尺规作图)"
-      ],
-      "reason": "维度或粒度仍需教师确认"
-    },
-    {
-      "name": "过圆外一点作圆的切线(尺规作图)",
-      "source_path": [
-        "图形的性质",
-        "限定工具作图",
-        "过圆外一点作圆的切线(尺规作图)"
-      ],
-      "reason": "维度或粒度仍需教师确认"
-    },
-    {
-      "name": "尺规作图——正多边形",
-      "source_path": [
-        "图形的性质",
-        "限定工具作图",
-        "尺规作图——正多边形"
-      ],
-      "reason": "维度或粒度仍需教师确认"
-    },
-    {
-      "name": "格点作图题",
-      "source_path": [
-        "图形的性质",
-        "限定工具作图",
-        "格点作图题"
-      ],
-      "reason": "维度或粒度仍需教师确认"
-    },
-    {
-      "name": "无刻度直尺作图",
-      "source_path": [
-        "图形的性质",
-        "限定工具作图",
-        "无刻度直尺作图"
-      ],
-      "reason": "维度或粒度仍需教师确认"
     },
     {
       "name": "图形的变化",
@@ -22776,15 +23388,6 @@
         "平移的性质"
       ],
       "reason": "来源层级节点，仅保留作分类参考"
-    },
-    {
-      "name": "平移(作图)",
-      "source_path": [
-        "图形的变化",
-        "平移",
-        "平移(作图)"
-      ],
-      "reason": "维度或粒度仍需教师确认"
     },
     {
       "name": "坐标与图形变化——平移",
@@ -23129,17 +23732,6 @@
       "reason": "来源层级节点，仅保留作分类参考"
     },
     {
-      "name": "构造直角三角形求不规则图形的边长或面积",
-      "source_path": [
-        "图形的变化",
-        "锐角三角函数",
-        "解直角三角形及其应用",
-        "解直角三角形",
-        "构造直角三角形求不规则图形的边长或面积"
-      ],
-      "reason": "维度或粒度仍需教师确认"
-    },
-    {
       "name": "解直角三角形的应用",
       "source_path": [
         "图形的变化",
@@ -23206,16 +23798,6 @@
       "reason": "来源层级节点，仅保留作分类参考"
     },
     {
-      "name": "课题学习制作立体模型",
-      "source_path": [
-        "图形的变化",
-        "投影与视图",
-        "三视图",
-        "课题学习制作立体模型"
-      ],
-      "reason": "维度或粒度仍需教师确认"
-    },
-    {
       "name": "统计与概率",
       "source_path": [
         "统计与概率"
@@ -23238,16 +23820,6 @@
         "统计调查"
       ],
       "reason": "来源层级节点，仅保留作分类参考"
-    },
-    {
-      "name": "调查收集数据的过程与方法",
-      "source_path": [
-        "统计与概率",
-        "数据的收集与整理",
-        "统计调查",
-        "调查收集数据的过程与方法"
-      ],
-      "reason": "维度或粒度仍需教师确认"
     },
     {
       "name": "全面调查与抽样调查",
@@ -26143,62 +26715,6 @@
         "压轴题"
       ],
       "reason": "来源层级节点，仅保留作分类参考"
-    },
-    {
-      "name": "实验操作类",
-      "source_path": [
-        "压轴题",
-        "实验操作类"
-      ],
-      "reason": "题型范围或粒度仍需教师确认"
-    },
-    {
-      "name": "猜想证明",
-      "source_path": [
-        "压轴题",
-        "猜想证明"
-      ],
-      "reason": "题型范围或粒度仍需教师确认"
-    },
-    {
-      "name": "动态几何",
-      "source_path": [
-        "压轴题",
-        "动态几何"
-      ],
-      "reason": "题型范围或粒度仍需教师确认"
-    },
-    {
-      "name": "阅读理解",
-      "source_path": [
-        "压轴题",
-        "阅读理解"
-      ],
-      "reason": "题型范围或粒度仍需教师确认"
-    },
-    {
-      "name": "开放探究",
-      "source_path": [
-        "压轴题",
-        "开放探究"
-      ],
-      "reason": "题型范围或粒度仍需教师确认"
-    },
-    {
-      "name": "新定义问题",
-      "source_path": [
-        "压轴题",
-        "新定义问题"
-      ],
-      "reason": "题型范围或粒度仍需教师确认"
-    },
-    {
-      "name": "综合运用",
-      "source_path": [
-        "压轴题",
-        "综合运用"
-      ],
-      "reason": "题型范围或粒度仍需教师确认"
     }
   ]
 }

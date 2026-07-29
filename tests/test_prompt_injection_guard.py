@@ -234,7 +234,7 @@ class PromptInjectionGuardTests(unittest.TestCase):
                         "total_score": 4,
                         "questions": [
                             {
-                                "question_id": "Q12(3)",
+                                "question_id": "Q12",
                                 "question_type": "proof",
                                 "max_score": 4,
                                 "knowledge_id": "K1",
@@ -259,7 +259,7 @@ class PromptInjectionGuardTests(unittest.TestCase):
                         "needs_human_review": False,
                         "grading_details": [
                             {
-                                "question_id": "Q12(3)",
+                                "question_id": "Q12",
                                 "observed_answer": observed,
                                 "score_awarded": 4,
                                 "deduction_reason": "",

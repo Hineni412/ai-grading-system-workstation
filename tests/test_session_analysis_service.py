@@ -7,7 +7,9 @@ from pathlib import Path
 import pytest
 
 from backend.analytics import SessionAnalysisService
+from backend.analytics.service import normalize_question_analysis_details
 from db_manager import DBManager
+from question_id_contract import QuestionIdContractError
 
 
 def _insert_result(
@@ -262,8 +264,8 @@ def test_service_keeps_the_frozen_question_analysis_contract(seed_analysis):
 
     assert [(row.class_name, row.question_id) for row in actual] == [
         ("七年级一班", "Q1"),
-        ("七年级一班", "Q2(1)"),
-        ("七年级一班", "Q2(2)"),
+        ("七年级一班", "Q2(P1)"),
+        ("七年级一班", "Q2(P2)"),
     ]
     assert actual[0].question_id == "Q1"
     assert actual[0].score_rate == 90.0
@@ -301,11 +303,11 @@ def test_service_uses_null_for_uncomputable_rate(seed_missing_max_score):
 def test_student_rows_return_direct_canonical_details_and_review_state(seed_parent_parts):
     db, session_id = seed_parent_parts
 
-    rows = SessionAnalysisService(db).list_students(session_id, "Q2(1)")
+    rows = SessionAnalysisService(db).list_students(session_id, "Q2(P1)")
     direct = next(row for row in rows if row.student_code == "S-DIRECT")
 
     assert direct.student_id == 3
-    assert direct.question_id == "Q2(1)"
+    assert direct.question_id == "Q2(P1)"
     assert direct.score_awarded == 3
     assert direct.max_score == 4
     assert direct.deduction_amount == 1
@@ -316,7 +318,7 @@ def test_student_rows_return_direct_canonical_details_and_review_state(seed_pare
 def test_student_rows_infer_child_full_score_only_from_full_parent(seed_parent_parts):
     db, session_id = seed_parent_parts
 
-    rows = SessionAnalysisService(db).list_students(session_id, "Q2(1)")
+    rows = SessionAnalysisService(db).list_students(session_id, "Q2(P1)")
     inferred = next(row for row in rows if row.student_code == "S-FULL")
 
     assert inferred.score_awarded == 4
@@ -325,25 +327,44 @@ def test_student_rows_infer_child_full_score_only_from_full_parent(seed_parent_p
     assert all(row.student_code != "S-PARTIAL" for row in rows)
 
 
-def test_student_rows_merge_raw_ids_that_share_one_canonical_question(seed_parent_parts):
+def test_student_rows_resolve_legacy_part_ids_to_the_current_detail(seed_parent_parts):
     db, session_id = seed_parent_parts
 
-    rows = SessionAnalysisService(db).list_students(session_id, "Q2")
+    rows = SessionAnalysisService(db).list_students(session_id, "Q2(P2)")
     merged = [row for row in rows if row.student_code == "S-MERGED"]
 
     assert len(merged) == 1
-    assert merged[0].question_id == "Q2"
-    assert merged[0].score_awarded == 10
-    assert merged[0].max_score == 10
+    assert merged[0].question_id == "Q2(P2)"
+    assert merged[0].score_awarded == 6
+    assert merged[0].max_score == 6
     assert merged[0].deduction_amount == 0
 
 
 def test_student_rows_cap_direct_score_at_rubric_maximum(seed_parent_parts):
     db, session_id = seed_parent_parts
 
-    rows = SessionAnalysisService(db).list_students(session_id, "Q2(1)")
+    rows = SessionAnalysisService(db).list_students(session_id, "Q2(P1)")
     over_max = next(row for row in rows if row.student_code == "S-OVER")
 
     assert over_max.score_awarded == 4
     assert over_max.max_score == 4
     assert over_max.deduction_amount == 0
+
+
+def test_analysis_fails_closed_when_two_aliases_target_one_current_detail() -> None:
+    with pytest.raises(QuestionIdContractError, match=r"Q2\(P1\)"):
+        normalize_question_analysis_details(
+            [
+                {
+                    "detail_id": 1,
+                    "question_id": "Q2-1",
+                    "score_awarded": 2,
+                },
+                {
+                    "detail_id": 2,
+                    "question_id": "Q2(1)",
+                    "score_awarded": 2,
+                },
+            ],
+            {"Q2": 10, "Q2(P1)": 4, "Q2(P2)": 6},
+        )

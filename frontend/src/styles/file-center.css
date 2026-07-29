@@ -1,9 +1,12 @@
 .file-center {
+  box-sizing: border-box;
   display: grid;
   gap: var(--space-6);
-  max-width: var(--content-max-width);
+  max-width: none;
   margin: 0 auto;
-  padding: var(--space-6);
+  min-width: 0;
+  padding: 16px;
+  width: 100%;
 }
 
 .file-center__hero,
@@ -132,6 +135,159 @@
   gap: var(--space-2);
   margin-top: auto;
   padding-top: var(--space-2);
+}
+
+.excel-settings-backdrop {
+  position: fixed;
+  z-index: 80;
+  inset: 0;
+  display: grid;
+  padding: var(--space-6);
+  background: var(--color-overlay-mask);
+  place-items: center;
+}
+
+.excel-settings-dialog {
+  display: grid;
+  width: min(760px, 100%);
+  max-height: min(820px, calc(100vh - (2 * var(--space-6))));
+  gap: var(--space-4);
+  overflow-y: auto;
+  padding: var(--space-5);
+  border: var(--border-width) solid var(--color-border-default);
+  border-radius: var(--radius-panel);
+  background: var(--color-bg-surface);
+  box-shadow: var(--shadow-overlay);
+}
+
+.excel-settings-dialog__heading,
+.excel-settings-dialog__actions,
+.excel-settings-dialog__actions > div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.excel-settings-dialog__heading h3 {
+  margin-top: var(--space-1);
+}
+
+.excel-settings-dialog__explanation,
+.excel-settings-dialog__actions > span,
+.excel-settings-group small,
+.excel-settings-empty {
+  margin: 0;
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-dense);
+  line-height: 1.6;
+}
+
+.excel-settings-preview {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--space-3);
+}
+
+.excel-settings-preview > div {
+  display: grid;
+  gap: var(--space-1);
+  padding: var(--space-3);
+  border: var(--border-width) solid var(--color-border-subtle);
+  border-radius: var(--radius-control);
+  background: var(--color-bg-subtle);
+}
+
+.excel-settings-preview span {
+  color: var(--color-text-muted);
+  font-size: var(--font-size-caption);
+}
+
+.excel-settings-preview strong {
+  color: var(--color-text-primary);
+  font-size: var(--font-size-h3);
+}
+
+.excel-settings-group {
+  display: grid;
+  gap: var(--space-3);
+  margin: 0;
+  padding: var(--space-4);
+  border: var(--border-width) solid var(--color-border-default);
+  border-radius: var(--radius-panel);
+}
+
+.excel-settings-group legend {
+  padding: 0 var(--space-2);
+  color: var(--color-text-primary);
+  font-weight: var(--font-weight-semibold);
+}
+
+.excel-settings-checkline {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  color: var(--color-text-primary);
+}
+
+.excel-settings-checkline input[type='number'] {
+  width: 76px;
+}
+
+.excel-settings-search {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: var(--space-3);
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-dense);
+}
+
+.excel-settings-search input,
+.excel-settings-checkline input[type='number'] {
+  min-height: var(--control-height-default);
+  padding: 0 var(--space-3);
+  border: var(--border-width) solid var(--color-border-default);
+  border-radius: var(--radius-control);
+  background: var(--color-bg-surface);
+  color: var(--color-text-primary);
+  font: inherit;
+}
+
+.excel-settings-students {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  max-height: 240px;
+  gap: var(--space-2);
+  overflow-y: auto;
+  padding: var(--space-2);
+  border-radius: var(--radius-control);
+  background: var(--color-bg-subtle);
+}
+
+.excel-settings-students label {
+  display: flex;
+  align-items: flex-start;
+  min-width: 0;
+  gap: var(--space-2);
+  padding: var(--space-2);
+  border-radius: var(--radius-control);
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-caption);
+}
+
+.excel-settings-students label:hover {
+  background: var(--color-bg-selected);
+}
+
+.excel-settings-students strong {
+  color: var(--color-text-primary);
+}
+
+.excel-settings-dialog input:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: var(--focus-offset);
 }
 
 .file-button,
@@ -355,7 +511,9 @@
 
   .file-product-grid,
   .training-task-grid,
-  .training-export-form__fields {
+  .training-export-form__fields,
+  .excel-settings-preview,
+  .excel-settings-students {
     grid-template-columns: minmax(0, 1fr);
   }
 }
@@ -373,9 +531,15 @@
   }
 
   .training-export-form__heading,
-  .training-export-form__actions {
+  .training-export-form__actions,
+  .excel-settings-dialog__heading,
+  .excel-settings-dialog__actions {
     align-items: flex-start;
     flex-direction: column;
+  }
+
+  .excel-settings-backdrop {
+    padding: var(--space-3);
   }
 }
 

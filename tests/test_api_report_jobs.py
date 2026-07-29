@@ -196,6 +196,108 @@ def test_session_report_export_reuses_current_available_file_by_default(
     assert second.json()["id"] == first.json()["id"]
 
 
+def test_session_report_export_cache_includes_excel_name_list_options(
+    client_with_db_and_manager,
+) -> None:
+    client, db, manager = client_with_db_and_manager
+    session_id = db.create_grading_session("Exam A", "rubric.json", "answer.json")
+    _seed_result(db, session_id)
+
+    first = client.post(
+        f"/api/sessions/{session_id}/reports/export",
+        json={
+            "report_type": "score_excel",
+            "excel_options": {
+                "hide_bottom_enabled": True,
+                "hide_bottom_n": 8,
+                "manual_hidden_student_ids": [],
+            },
+        },
+    )
+    manager.wait(first.json()["id"], timeout=5)
+    second = client.post(
+        f"/api/sessions/{session_id}/reports/export",
+        json={
+            "report_type": "score_excel",
+            "excel_options": {
+                "hide_bottom_enabled": True,
+                "hide_bottom_n": 10,
+                "manual_hidden_student_ids": [],
+            },
+        },
+    )
+
+    assert first.status_code == 202
+    assert second.status_code == 202
+    assert second.json()["id"] != first.json()["id"]
+    assert first.json()["payload"]["score_excel_options"]["hide_bottom_n"] == 8
+    assert second.json()["payload"]["score_excel_options"]["hide_bottom_n"] == 10
+    assert (
+        first.json()["payload"]["report_options_fingerprint"]
+        != second.json()["payload"]["report_options_fingerprint"]
+    )
+
+
+def test_session_report_export_normalizes_manual_hidden_students_for_cache(
+    client_with_db_and_manager,
+) -> None:
+    client, db, manager = client_with_db_and_manager
+    session_id = db.create_grading_session("Exam A", "rubric.json", "answer.json")
+    _seed_result(db, session_id)
+
+    first = client.post(
+        f"/api/sessions/{session_id}/reports/export",
+        json={
+            "report_type": "score_excel",
+            "excel_options": {
+                "hide_bottom_enabled": False,
+                "hide_bottom_n": 99,
+                "manual_hidden_student_ids": [9, 2, 9],
+            },
+        },
+    )
+    manager.wait(first.json()["id"], timeout=5)
+    second = client.post(
+        f"/api/sessions/{session_id}/reports/export",
+        json={
+            "report_type": "score_excel",
+            "excel_options": {
+                "hide_bottom_enabled": False,
+                "hide_bottom_n": 1,
+                "manual_hidden_student_ids": [2, 9],
+            },
+        },
+    )
+
+    assert first.status_code == 202
+    assert second.status_code == 202
+    assert second.json()["id"] == first.json()["id"]
+    assert first.json()["payload"]["score_excel_options"] == {
+        "hide_bottom_enabled": False,
+        "hide_bottom_n": 0,
+        "manual_hidden_student_ids": [2, 9],
+    }
+
+
+def test_session_report_export_rejects_excel_options_for_pdf(
+    client_with_db_and_manager,
+) -> None:
+    client, db, _manager = client_with_db_and_manager
+    session_id = db.create_grading_session("Exam A", "rubric.json", "answer.json")
+    _seed_result(db, session_id)
+
+    response = client.post(
+        f"/api/sessions/{session_id}/reports/export",
+        json={
+            "report_type": "annotated_original_pdf",
+            "excel_options": {"hide_bottom_enabled": False},
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "validation_error"
+
+
 def test_session_report_export_reuses_cache_older_than_first_history_page(
     client_with_db_and_manager,
 ) -> None:

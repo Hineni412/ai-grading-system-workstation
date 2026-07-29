@@ -367,7 +367,39 @@
 }
 
 .review-answer-sheet__deep {
+  align-items: center;
+  display: inline-flex;
+  flex: 0 0 52px;
+  flex-direction: column;
+  height: 52px;
   justify-self: start;
+  justify-content: center;
+  line-height: 1.25;
+  padding: 0;
+  width: 52px;
+}
+
+.review-answer-sheet__footer {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.review-answer-sheet__deduction {
+  display: -webkit-box;
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-caption);
+  line-height: 1.45;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.review-answer-sheet__deduction strong {
+  color: var(--color-text-primary);
 }
 
 .review-batch-pagination {

@@ -36,18 +36,21 @@ def _apply_local_question_facts(payload: dict[str, Any], question_blocks: list[d
         if not fact:
             continue
         local_type = str(fact.get("question_type") or "").strip()
-        type_confirmed = bool(fact.get("question_type_confirmed"))
-        if local_type in {"choice", "fill_blank"} or (
-            type_confirmed and local_type in {"calculation", "proof", "comprehensive"}
-        ):
+        type_confirmed = fact.get("question_type_confirmed") is True
+        question["question_type_confirmed"] = type_confirmed
+        if type_confirmed and local_type in {
+            "choice",
+            "fill_blank",
+            "calculation",
+            "proof",
+            "comprehensive",
+        }:
             question["question_type"] = local_type
             question["grading_mode"] = (
                 "direct_answer"
                 if local_type in {"choice", "fill_blank"}
                 else "deductive_obligation"
             )
-        if type_confirmed:
-            question["question_type_confirmed"] = True
         image_semantic_source = str(fact.get("semantic_source") or "").strip() == "images"
         if (
             not image_semantic_source
@@ -63,20 +66,48 @@ def _apply_local_question_facts(payload: dict[str, Any], question_blocks: list[d
             answer_map[qid] = answer
         canonical = str(fact.get("canonical_answer") or "").strip()
         accepted = [str(item).strip() for item in fact.get("accepted_forms") or [] if str(item).strip()]
-        if canonical and not image_semantic_source:
+        teacher_confirmed = fact.get("answer_confirmed_by_teacher") is True
+        if canonical and (not image_semantic_source or teacher_confirmed):
             current_canonical = str(answer.get("canonical_answer") or "").strip()
-            if bool(fact.get("local_answer_trusted")) or not current_canonical:
+            local_answer_selected = (
+                teacher_confirmed
+                or bool(fact.get("local_answer_trusted"))
+                or not current_canonical
+            )
+            if local_answer_selected:
                 answer["canonical_answer"] = canonical
                 base_answer = canonical
             else:
                 base_answer = current_canonical
-            answer["accepted_forms"] = merge_equivalent_forms(answer.get("accepted_forms"), *accepted, base_answer, max_forms=32)
+            answer["accepted_forms"] = merge_equivalent_forms(
+                [] if teacher_confirmed else answer.get("accepted_forms"),
+                *(accepted if local_answer_selected else ()),
+                base_answer,
+                max_forms=32,
+            )
             parts = answer.get("parts")
             if not isinstance(parts, list) or not parts:
                 answer["parts"] = [{"part_id": qid, "answer": base_answer, "analysis": str(fact.get("answer_text") or ""), "step_milestones": []}]
             else:
                 for part in parts:
-                    if isinstance(part, dict) and not str(part.get("answer") or "").strip():
+                    if not isinstance(part, dict):
+                        continue
+                    if teacher_confirmed:
+                        part["answer"] = base_answer
+                        part["accepted_forms"] = [base_answer]
+                        part["answer_values"] = [base_answer]
+                        for step in part.get("steps") or []:
+                            if not isinstance(step, dict):
+                                continue
+                            for alias in (
+                                "answer_value",
+                                "correct_value",
+                                "answer",
+                                "standard_answer",
+                                "canonical_answer",
+                            ):
+                                step.pop(alias, None)
+                    elif not str(part.get("answer") or "").strip():
                         part["answer"] = base_answer
 
 def _attach_reference_answer_images(

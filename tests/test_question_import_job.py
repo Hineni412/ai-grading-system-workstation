@@ -166,6 +166,58 @@ def test_question_import_job_restores_safe_filename_metadata_inference(
     assert metadata.semester == "下学期"
 
 
+@pytest.mark.parametrize(
+    ("filename", "expected_year", "expected_exam_type"),
+    [
+        ("0526test2.docx", "2026", "阶段练习"),
+        ("2025期末练习.docx", "2025", "期末"),
+    ],
+)
+def test_question_import_job_keeps_original_title_and_uses_sync_metadata_defaults(
+    tmp_path: Path,
+    filename: str,
+    expected_year: str,
+    expected_exam_type: str,
+) -> None:
+    service = QuestionBankWriteService(
+        tmp_path / "data" / "databases" / "question_bank.db",
+        data_root=tmp_path / "data",
+    )
+    upload = service.stage_upload(
+        filename=filename,
+        content=b"fake-docx",
+    )
+    request = service.create_import_request(upload_id=upload.upload_id)
+    context, _store = _context(
+        tmp_path,
+        {
+            "request_id": request.request_id,
+            "paper_defaults": {
+                "year": "2026",
+                "exam_type": "阶段练习",
+            },
+        },
+    )
+    captured = {}
+
+    def importer(scanned, database_path, **_kwargs):
+        captured["paper"] = scanned[0]
+        return _successful_importer(scanned, database_path, **_kwargs)
+
+    run_question_import_job(
+        context=context,
+        question_bank_db_path=service.db_path,
+        data_root=service.data_root,
+        write_service=service,
+        importer=importer,
+    )
+
+    imported = captured["paper"]
+    assert imported.title == Path(filename).stem
+    assert imported.metadata.year == expected_year
+    assert imported.metadata.exam_type == expected_exam_type
+
+
 def test_question_import_job_maps_import_failure_to_safe_retryable_summary(
     tmp_path: Path,
 ) -> None:

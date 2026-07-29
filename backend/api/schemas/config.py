@@ -4,7 +4,14 @@ import base64
 import binascii
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, computed_field, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    computed_field,
+    field_validator,
+    model_validator,
+)
 
 
 class SessionConfigRequest(BaseModel):
@@ -115,6 +122,18 @@ class ConfigSourceQuestionDecisionRequest(BaseModel):
         "comprehensive",
     ]
     excluded: bool
+    answer_confirmed: bool = False
+    answer_override: str | None = Field(default=None, max_length=20_000)
+
+    @model_validator(mode="after")
+    def _validate_answer_override(self) -> "ConfigSourceQuestionDecisionRequest":
+        if self.answer_override is not None:
+            self.answer_override = self.answer_override.strip()
+            if not self.answer_override:
+                raise ValueError("answer_override must be nonblank")
+            if not self.answer_confirmed:
+                raise ValueError("answer_override requires answer_confirmed=true")
+        return self
 
 
 class ConfigSourceGenerationRequest(BaseModel):
@@ -134,10 +153,56 @@ class ConfigSourceGenerationRequest(BaseModel):
         default_factory=list,
         max_length=500,
     )
+    sync_to_question_bank: bool = False
+    regenerate_question_ids: list[str] | None = Field(
+        default=None,
+        min_length=1,
+        max_length=500,
+    )
+    base_revision: str | None = Field(
+        default=None,
+        pattern=r"^[0-9a-f]{64}$",
+    )
     client_request_token: str | None = Field(
         default=None,
         pattern=r"^[0-9a-f]{32}$",
     )
+
+    @field_validator("regenerate_question_ids")
+    @classmethod
+    def _normalize_regenerate_question_ids(
+        cls,
+        value: list[str] | None,
+    ) -> list[str] | None:
+        if value is None:
+            return None
+        normalized = list(
+            dict.fromkeys(str(item or "").strip() for item in value)
+        )
+        if not normalized or any(
+            not item or len(item) > 100
+            for item in normalized
+        ):
+            raise ValueError(
+                "regenerate_question_ids must contain nonblank bounded ids"
+            )
+        return normalized
+
+    @model_validator(mode="after")
+    def _validate_targeted_regeneration(self) -> "ConfigSourceGenerationRequest":
+        targeted = self.regenerate_question_ids is not None
+        if targeted != (self.base_revision is not None):
+            raise ValueError(
+                "regenerate_question_ids and base_revision must be provided together"
+            )
+        if targeted and (
+            self.generation_mode != "batched"
+            or self.sync_to_question_bank
+        ):
+            raise ValueError(
+                "targeted regeneration must be batched and cannot sync to question bank"
+            )
+        return self
 
 
 class ConfigGenerationQuestionImages(BaseModel):
@@ -172,6 +237,7 @@ class ConfigGenerationRequest(BaseModel):
         default_factory=dict,
         max_length=500,
     )
+    sync_to_question_bank: bool = False
 
     @field_validator("question_images")
     @classmethod
@@ -216,6 +282,7 @@ class ConfigEditorEditRequest(BaseModel):
     require_final_answer: bool | None = None
     required_elements: list[str] | None = Field(default=None, max_length=200)
     deduction_rules: list[str] | None = Field(default=None, max_length=200)
+    part_deduction_rules: list[str] | None = Field(default=None, max_length=200)
     final_answer_rule: str | None = Field(default=None, max_length=20_000)
 
     @computed_field(return_type=bool)
@@ -289,6 +356,7 @@ class ConfigEditorRowResponse(BaseModel):
     require_final_answer: bool | None
     required_elements: list[str]
     deduction_rules: list[str]
+    part_deduction_rules: list[str]
     final_answer_rule: str
 
 

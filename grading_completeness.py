@@ -2,14 +2,13 @@ from __future__ import annotations
 
 import json
 import math
-import re
 from dataclasses import dataclass
 from typing import Any
 
-
-# 同时识别旧写法 Q12(1)/Q12-2/Q12_2 和统一契约的规范写法 Q12(P1)，归一到同一键，
-# 使批改明细无论用哪种题号形式都能与评分依据对齐。
-_SUB_QUESTION_ID = re.compile(r"^Q?(\d+)(?:\(|（|-|_|\.)P?(\d+)(?:\)|）)?$")
+from question_id_contract import (
+    QuestionIdCatalog,
+    canonicalize_question_document,
+)
 
 
 @dataclass(frozen=True)
@@ -20,9 +19,11 @@ class _ExpectedQuestion:
 
 
 def audit_grading_details(rubric: dict, details: list[Any]) -> dict:
-    expected = _expected_questions(rubric)
-    expected_by_normalized = {
-        _normalize_question_id(item.question_id): item
+    normalized_rubric = canonicalize_question_document(rubric)
+    catalog = QuestionIdCatalog.from_document(normalized_rubric)
+    expected = _expected_questions(normalized_rubric)
+    expected_by_question_id = {
+        item.question_id: item
         for item in expected
     }
     seen_counts: dict[str, int] = {}
@@ -34,11 +35,11 @@ def audit_grading_details(rubric: dict, details: list[Any]) -> dict:
 
     for detail in details if isinstance(details, list) else []:
         raw_question_id = str(_detail_value(detail, "question_id") or "").strip()
-        normalized = _normalize_question_id(raw_question_id)
-        expected_item = expected_by_normalized.get(normalized)
+        canonical = catalog.resolve_detail(raw_question_id)
+        expected_item = expected_by_question_id.get(canonical or "")
         reported_question_id = expected_item.question_id if expected_item else raw_question_id
 
-        seen_key = normalized or raw_question_id
+        seen_key = canonical or raw_question_id
         seen_counts[seen_key] = seen_counts.get(seen_key, 0) + 1
         if seen_counts[seen_key] > 1 and reported_question_id not in duplicate_seen:
             duplicate_seen.add(reported_question_id)
@@ -48,7 +49,10 @@ def audit_grading_details(rubric: dict, details: list[Any]) -> dict:
             if reported_question_id not in unexpected_seen:
                 unexpected_seen.add(reported_question_id)
                 unexpected_question_ids.append(reported_question_id)
-            max_score = _rubric_score_for_question_id(rubric, raw_question_id)
+            max_score = _rubric_score_for_question_id(
+                normalized_rubric,
+                raw_question_id,
+            )
         else:
             max_score = expected_item.max_score
 
@@ -60,7 +64,7 @@ def audit_grading_details(rubric: dict, details: list[Any]) -> dict:
     missing_question_ids = [
         item.question_id
         for item in expected
-        if seen_counts.get(_normalize_question_id(item.question_id), 0) == 0
+        if seen_counts.get(item.question_id, 0) == 0
     ]
 
     invalid = bool(duplicate_question_ids or unexpected_question_ids or score_out_of_range)
@@ -80,11 +84,11 @@ def audit_grading_details(rubric: dict, details: list[Any]) -> dict:
     affected = {
         major_id
         for question_id in issue_question_ids
-        if (major_id := major_question_id(rubric, question_id)) is not None
+        if (major_id := catalog.parent_for(question_id)) is not None
     }
     affected_major_question_ids = [
         major_id
-        for major_id in _major_question_ids(rubric)
+        for major_id in catalog.parent_ids
         if major_id in affected
     ]
 
@@ -99,25 +103,8 @@ def audit_grading_details(rubric: dict, details: list[Any]) -> dict:
 
 
 def major_question_id(rubric: dict, question_id: str) -> str | None:
-    raw_question_id = str(question_id or "").strip()
-    normalized = _normalize_question_id(raw_question_id)
-    part_match = _SUB_QUESTION_ID.fullmatch(raw_question_id)
-
-    for question in _rubric_questions(rubric):
-        major_id = str(question.get("question_id") or "").strip()
-        if not major_id:
-            continue
-        if raw_question_id == major_id:
-            return major_id
-        for part in _question_parts(question):
-            part_id = str(part.get("part_id") or "").strip()
-            if part_id and _normalize_question_id(part_id) == normalized:
-                return major_id
-        if part_match is not None:
-            major_match = re.fullmatch(r"Q?(\d+)", major_id)
-            if major_match is not None and major_match.group(1) == part_match.group(1):
-                return major_id
-    return None
+    catalog = QuestionIdCatalog.from_document(rubric)
+    return catalog.parent_for(question_id)
 
 
 def major_question_ids_for_issues(audit: dict) -> list[str]:
@@ -165,11 +152,8 @@ def resolve_grading_completeness(
 
 
 def rubric_exact_question_id(rubric: dict, question_id: str) -> str | None:
-    normalized = _normalize_question_id(str(question_id or "").strip())
-    for item in _expected_questions(rubric):
-        if _normalize_question_id(item.question_id) == normalized:
-            return item.question_id
-    return None
+    catalog = QuestionIdCatalog.from_document(rubric)
+    return catalog.resolve_detail(question_id)
 
 
 def _expected_questions(rubric: dict) -> list[_ExpectedQuestion]:
@@ -287,16 +271,13 @@ def _unique_text_list(values: Any) -> list[str]:
 
 
 def _rubric_score_for_question_id(rubric: dict, question_id: str) -> float | None:
-    raw_question_id = str(question_id or "").strip()
-    normalized = _normalize_question_id(raw_question_id)
-    for question in _rubric_questions(rubric):
-        major_id = str(question.get("question_id") or "").strip()
-        if raw_question_id == major_id:
-            return _score_value(question, ("max_score", "score"))
-        for part in _question_parts(question):
-            part_id = str(part.get("part_id") or "").strip()
-            if part_id and _normalize_question_id(part_id) == normalized:
-                return _score_value(part, ("part_score", "max_score", "score"))
+    catalog = QuestionIdCatalog.from_document(rubric)
+    resolved = catalog.resolve_detail(question_id)
+    if resolved is None:
+        return None
+    for item in _expected_questions(rubric):
+        if item.question_id == resolved:
+            return item.max_score
     return None
 
 
@@ -334,14 +315,6 @@ def _score_issue(
             "reason": "above_max",
         }
     return None
-
-
-def _normalize_question_id(question_id: str) -> str:
-    text = str(question_id or "").strip()
-    match = _SUB_QUESTION_ID.fullmatch(text)
-    if match is None:
-        return text
-    return f"{match.group(1)}-{match.group(2)}"
 
 
 def _detail_value(detail: Any, field_name: str) -> Any:

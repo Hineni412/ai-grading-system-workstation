@@ -8,6 +8,7 @@ from api_profiles import ApiProfileStorageError
 from backend.api.app import ApiError, ErrorResponse
 from backend.api.dependencies import get_model_profile_service
 from backend.api.schemas.model_profiles import (
+    ModelExecutionStatusResponse,
     ModelProfileStateResponse,
     ModelProfileUpdateRequest,
 )
@@ -42,6 +43,34 @@ def list_model_profiles(
     except (ApiProfileStorageError, OSError, TimeoutError) as exc:
         _raise_profile_storage_error(exc)
     return ModelProfileStateResponse(**state)
+
+
+@router.get(
+    "/{profile_name}/execution-status",
+    response_model=ModelExecutionStatusResponse,
+    responses=MODEL_PROFILE_ERROR_RESPONSES,
+)
+def get_model_profile_execution_status(
+    profile_name: Annotated[str, Path(min_length=1, max_length=80)],
+    service: ModelProfileService = Depends(get_model_profile_service),
+) -> ModelExecutionStatusResponse:
+    try:
+        status = service.execution_status(profile_name)
+    except ModelProfileInvalid as exc:
+        raise ApiError(
+            422,
+            "model_profile_invalid",
+            str(exc),
+        ) from exc
+    except ModelProfileNotFound as exc:
+        raise ApiError(
+            404,
+            "model_profile_not_found",
+            "Model profile not found",
+        ) from exc
+    except (ApiProfileStorageError, OSError, TimeoutError) as exc:
+        _raise_profile_storage_error(exc)
+    return ModelExecutionStatusResponse(**status)
 
 
 @router.put(

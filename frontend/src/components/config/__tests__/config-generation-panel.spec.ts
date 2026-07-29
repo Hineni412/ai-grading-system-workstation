@@ -94,16 +94,32 @@ beforeEach(async () => {
 })
 
 describe('ConfigGenerationPanel', () => {
-  it('keeps optional question-bank AI tagging off by default and explains its cost', async () => {
+  it('does not duplicate the question-bank tagging entry in generation', async () => {
     const mounted = await mountPanel()
     const option = mounted.host.querySelector<HTMLInputElement>(
       '.config-generation__bank-sync input[type="checkbox"]',
-    )!
+    )
 
-    expect(option.checked).toBe(false)
-    expect(mounted.host.textContent).toContain('试卷入库并打标签')
-    expect(mounted.host.textContent).toContain('可能产生模型费用')
-    expect(mounted.host.textContent).toContain('入库失败不会影响已经生成的评分标准')
+    expect(option).toBeNull()
+    expect(mounted.host.textContent).not.toContain('评分标准生成后，将这份试卷入库并打标签')
+  })
+
+  it('keeps question-bank sync off in the generation request', async () => {
+    const submitter = vi.fn(async (
+      _sessionId: number,
+      _request: ConfigGenerationRequest,
+    ) => {
+      void _sessionId
+      void _request
+      return job({ status: 'queued', progress: 0 })
+    })
+    const mounted = await mountPanel({ submitter })
+    mounted.host.querySelector<HTMLButtonElement>('button[name="开始生成"]')!.click()
+    await settle()
+
+    expect(submitter.mock.calls[0]?.[1]).toMatchObject({
+      sync_to_question_bank: false,
+    })
   })
 
   it('explains small batches and submits a write only once while disabled', async () => {
@@ -280,7 +296,12 @@ describe('ConfigGenerationPanel', () => {
         outcome: 'partial', total_questions: 5, generated_questions: 3,
         failed_count: 2, failed_question_ids: ['Q2', 'Q5'], retryable: true,
         failed_batches: [
-          { batch_id: 'B001', question_ids: ['Q2'] },
+          {
+            batch_id: 'B001',
+            question_ids: ['Q2'],
+            category: 'model_transport',
+            error: '模型服务暂时不可用。',
+          },
           { batch_id: 'B002', question_ids: ['Q5'] },
         ],
         score_allocation_pending: true,
@@ -291,6 +312,8 @@ describe('ConfigGenerationPanel', () => {
 
     expect(mounted.host.textContent).toContain('已成功 3 道题')
     expect(mounted.host.textContent).toContain('失败 2 道题')
+    expect(mounted.host.textContent).toContain('模型服务或网络请求失败')
+    expect(mounted.host.textContent).toContain('模型服务暂时不可用')
     expect(mounted.host.querySelectorAll('input[type="checkbox"]')).toHaveLength(2)
     expect(mounted.host.querySelector('button[name="重新进行 AI 统一配分"]')).toBeNull()
     mounted.host.querySelector<HTMLInputElement>('[aria-label="选择失败批次 B002"]')!.click()
@@ -392,12 +415,16 @@ describe('ConfigGenerationPanel', () => {
         local_json_repairs: [
           { batch_id: 'B001', question_ids: ['Q1', 'Q2', 'Q3'], operations: ['remove_trailing_comma'] },
         ],
+        local_structure_repairs: [
+          { batch_id: 'B001', question_ids: ['Q1', 'Q2', 'Q3'], operations: ['part_id P1 -> Q1'] },
+        ],
       }, finished_at: '2026-07-15T00:01:00Z',
     }))
     configStore.attachJob(31, configStore.captureGenerationContext())
     const mounted = await mountPanel()
 
     expect(mounted.host.textContent).toContain('本地程序已修复 1 个批次的 JSON（B001）')
+    expect(mounted.host.textContent).toContain('本地程序已统一 1 个批次的题号、小问号或步骤号')
     expect(mounted.host.textContent).toContain('未产生额外模型请求')
   })
 
@@ -438,7 +465,7 @@ describe('ConfigGenerationPanel', () => {
     expect(mounted.host.querySelector<HTMLButtonElement>('.config-generation__partial button')?.disabled).toBe(false)
   })
 
-  it('uses a fresh batched generation after a legacy whole mode failure', async () => {
+  it('offers a whole-document restart after a legacy whole mode failure', async () => {
     const submitter = vi.fn(async (_sessionId: number, _request: ConfigGenerationRequest) => {
       void _sessionId
       void _request
@@ -454,17 +481,15 @@ describe('ConfigGenerationPanel', () => {
     configStore.attachJob(31, configStore.captureGenerationContext())
     const mounted = await mountPanel({ submitter, retryer })
 
-    expect(mounted.host.textContent).toContain('应用重启后，本次生成已停止。')
+    expect(mounted.host.textContent).toContain('评分标准生成失败')
     expect(mounted.host.textContent).not.toContain('private failure')
-    mounted.host.querySelector<HTMLButtonElement>('button[name="开始新一轮生成"]')!.click()
-    await nextTick()
-    mounted.host.querySelector<HTMLButtonElement>('button[name="开始生成"]')!.click()
+    mounted.host.querySelector<HTMLButtonElement>('button[name="重新生成"]')!.click()
     await settle()
-    expect(submitter.mock.calls[0]?.[1]).toMatchObject({ generation_mode: 'batched' })
+    expect(submitter.mock.calls[0]?.[1]).toMatchObject({ generation_mode: 'whole_document' })
     expect(retryer).not.toHaveBeenCalled()
   })
 
-  it('restarts a legacy truncated job only with the new batched mode', async () => {
+  it('does not expose private failure details when restarting a truncated job', async () => {
     const submitter = vi.fn(async (_sessionId: number, _request: ConfigGenerationRequest) => {
       void _sessionId
       void _request
@@ -479,17 +504,15 @@ describe('ConfigGenerationPanel', () => {
     configStore.attachJob(31, configStore.captureGenerationContext())
     const mounted = await mountPanel({ submitter })
 
-    expect(mounted.host.textContent).toContain('重新选择方式并生成新版本')
+    expect(mounted.host.textContent).toContain('评分标准生成失败')
     expect(mounted.host.textContent).not.toContain('private-hash')
     expect(mounted.host.querySelector('button[name="重新生成"]')?.textContent)
       .toContain('重新整卷生成')
-    mounted.host.querySelector<HTMLButtonElement>('button[name="开始新一轮生成"]')!.click()
-    await nextTick()
-    mounted.host.querySelector<HTMLButtonElement>('button[name="开始生成"]')!.click()
+    mounted.host.querySelector<HTMLButtonElement>('button[name="重新生成"]')!.click()
     await settle()
 
     expect(submitter).toHaveBeenCalledOnce()
-    expect(submitter.mock.calls[0]?.[1]).toMatchObject({ generation_mode: 'batched' })
+    expect(submitter.mock.calls[0]?.[1]).toMatchObject({ generation_mode: 'whole_document' })
   })
 
   it('keeps refine failures in the editor workflow without offering generation retry', async () => {
@@ -521,11 +544,11 @@ describe('ConfigGenerationPanel', () => {
 
   it.each([
     ['failed', {}, '生成失败'],
-    ['succeeded', { outcome: 'complete' }, '生成完成'],
+    ['succeeded', { outcome: 'complete' }, '评分标准生成成功'],
     ['succeeded', {
       outcome: 'partial', total_questions: 5, generated_questions: 3,
       failed_count: 2, failed_question_ids: ['Q2', 'Q5'], retryable: true,
-    }, '部分完成'],
+    }, '评分标准生成失败'],
   ] as const)('uses terminal %s status even when cancel_requested remains true', async (
     status, result, expected,
   ) => {
@@ -640,7 +663,7 @@ describe('ConfigGenerationPanel', () => {
     ['queued', '等待开始'],
     ['running', '正在生成'],
     ['paused', '生成已暂停'],
-    ['succeeded', '生成完成'],
+    ['succeeded', '评分标准生成成功'],
     ['failed', '生成失败'],
     ['cancelled', '已取消'],
   ] as const)('shows the %s terminal state truthfully', async (status, copy) => {

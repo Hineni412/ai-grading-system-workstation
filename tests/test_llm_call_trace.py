@@ -147,6 +147,7 @@ def test_first_party_sdk_calls_stay_inside_the_llm_gateway():
     excluded_parts = {
         ".git",
         ".pytest_cache",
+        ".test-runs",
         ".worktrees",
         "node_modules",
         "runtime",
