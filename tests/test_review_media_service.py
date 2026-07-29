@@ -597,6 +597,74 @@ def test_successful_annotation_rerender_replaces_old_pair_without_orphans(
     ) == 2
 
 
+def test_annotation_matches_legacy_detail_and_region_through_current_question_id(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import json
+
+    import manual_review_service as manual_review_module
+    from manual_review_service import ManualReviewService
+
+    seed = _seed_media(tmp_path)
+    rubric_path = seed.data_root / "rubric.json"
+    rubric_path.write_text(
+        json.dumps(
+            {
+                "questions": [
+                    {
+                        "question_id": "Q2",
+                        "max_score": 10,
+                        "parts": [
+                            {"part_id": "Q2(1)", "part_score": 4},
+                            {"part_id": "Q2_2", "part_score": 6},
+                        ],
+                    }
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    with sqlite3.connect(seed.db.db_path) as conn:
+        conn.execute(
+            "UPDATE grading_sessions SET rubric_path = ? WHERE id = ?",
+            (str(rubric_path), seed.session_id),
+        )
+        conn.execute(
+            "UPDATE session_details SET question_id = 'Q2(1)' WHERE id = ?",
+            (seed.detail_id,),
+        )
+        conn.execute(
+            """
+            UPDATE answer_regions
+            SET mapped_question_id = 'Q2-1', detected_question_id = 'Q2_1'
+            WHERE session_id = ?
+            """,
+            (seed.session_id,),
+        )
+        conn.commit()
+
+    def capture_render(**kwargs):
+        assert list(kwargs["question_scores"]) == ["Q2(P1)"]
+        assert kwargs["question_scores"]["Q2(P1)"]["max_score"] == 4
+        assert kwargs["regions"][0]["mapped_question_id"] == "Q2(P1)"
+        assert kwargs["regions"][0]["detected_question_id"] == "Q2(P1)"
+        kwargs["output_front"].parent.mkdir(parents=True, exist_ok=True)
+        kwargs["output_front"].write_text("front", encoding="utf-8")
+        kwargs["output_back"].write_text("back", encoding="utf-8")
+        return kwargs["output_front"], kwargs["output_back"]
+
+    monkeypatch.setattr(manual_review_module, "render_annotated_paper", capture_render)
+
+    result = ManualReviewService(seed.db, seed.annotated_dir).render_result_annotation(
+        seed.result_id,
+        highlight_qids=["Q2(P1)"],
+    )
+
+    assert result is not None
+
+
 def test_concurrent_annotation_renders_publish_latest_state_in_order(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

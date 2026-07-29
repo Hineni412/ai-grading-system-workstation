@@ -3,6 +3,7 @@ import { computed, ref, watch } from 'vue'
 
 import { resolveReviewItem, type ReviewItemLike } from '../../api/review'
 import { reviewDraftKey, scoreIssue, useReviewDraftStore } from '../../stores/review-drafts'
+import { translateGradingReason } from '../../utils/grading-reasons'
 
 const props = defineProps<{
   item: ReviewItemLike
@@ -28,10 +29,24 @@ const riskReason = computed(() => {
   const reason = item.error_summary?.trim()
     || item.error_category?.trim()
     || item.deduction_reason?.trim()
-  if (reason) return reason
+  if (reason) return translateGradingReason(reason)
   if (item.score_status === 'ai_review') return 'AI 结果需要教师复核'
   if (item.score_status === 'ai_ready') return '高置信 AI 结果'
   return '教师已确认'
+})
+const deductionReason = computed(() => {
+  const item = reviewItem.value
+  if (
+    item.score_awarded === null
+    || item.max_score <= 0
+    || item.score_awarded >= item.max_score - 0.001
+  ) return null
+  return translateGradingReason(
+    item.deduction_reason
+      || item.error_summary
+      || item.error_category,
+    'AI 未提供明确扣分依据，建议教师复核',
+  )
 })
 
 const statusLabel = computed(() => ({
@@ -159,12 +174,23 @@ watch(
       </p>
     </div>
 
-    <button
-      type="button"
-      class="review-answer-sheet__deep"
-      @click="emit('openItem', reviewItem.review_item_id)"
-    >
-      深查此份答卷
-    </button>
+    <footer class="review-answer-sheet__footer">
+      <button
+        type="button"
+        class="review-answer-sheet__deep"
+        aria-label="深查答卷"
+        @click="emit('openItem', reviewItem.review_item_id)"
+      >
+        <span>深查</span>
+        <span>答卷</span>
+      </button>
+      <p
+        v-if="deductionReason"
+        class="review-answer-sheet__deduction"
+        :title="deductionReason"
+      >
+        <strong>扣分原因：</strong>{{ deductionReason }}
+      </p>
+    </footer>
   </article>
 </template>

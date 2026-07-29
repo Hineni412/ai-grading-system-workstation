@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from PIL import Image
@@ -15,6 +16,7 @@ from hybrid_batch_grading_service import (
     PaperEntry,
     build_hybrid_major_prompt,
     grade_major_question_batch,
+    run_hybrid_batch_grading,
     validate_hybrid_major_response,
 )
 from scanner import ExamPaperGroup
@@ -22,6 +24,60 @@ from scanner import ExamPaperGroup
 
 class _FakeLLMClient:
     pass
+
+
+def test_hybrid_objective_recognition_reuses_active_llm_client_and_model(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    llm_client = _FakeLLMClient()
+    captured: dict[str, object] = {}
+
+    def fake_objective_run(**kwargs: object) -> SimpleNamespace:
+        captured.update(kwargs)
+        return SimpleNamespace(
+            details_by_paper_key={},
+            metadata_by_paper_key={},
+            usage_records=[],
+        )
+
+    monkeypatch.setattr(hybrid, "run_objective_batch_recognition", fake_objective_run)
+
+    run_hybrid_batch_grading(
+        session_id=1,
+        paper_groups=[],
+        answer_regions=[],
+        rubric={"questions": []},
+        answer_key={"questions": []},
+        llm_client=llm_client,
+        grading_model="active-grading-model",
+        output_root=tmp_path,
+    )
+
+    assert captured["recognition_client"] is llm_client
+    assert captured["recognition_model"] == "active-grading-model"
+
+
+def test_detail_full_score_uses_canonical_part_score_over_legacy_max_score() -> None:
+    spec = MajorQuestionSpec(
+        question_id="Q11",
+        detail_question_ids=["Q11(P1)"],
+        rubric={
+            "question_id": "Q11",
+            "max_score": 6,
+            "parts": [
+                {
+                    "part_id": "Q11(P1)",
+                    "part_score": 6,
+                    "max_score": 1,
+                }
+            ],
+        },
+        answer_key={"question_id": "Q11"},
+        max_score=6,
+    )
+
+    assert hybrid._detail_full_score(spec, "Q11(P1)") == 6
 
 
 def _multipart_spec(*, question_image_base64: str | None = None) -> MajorQuestionSpec:

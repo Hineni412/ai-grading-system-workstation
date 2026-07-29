@@ -1,10 +1,21 @@
 from __future__ import annotations
 
 import json
+import math
+import re
+import statistics
+import unicodedata
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 import pandas as pd
+from openpyxl import Workbook
+from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+from openpyxl.utils import get_column_letter
+from openpyxl.utils.dataframe import dataframe_to_rows
+from openpyxl.worksheet.pagebreak import Break
+from openpyxl.worksheet.worksheet import Worksheet
 
 from backend.repositories.access import (
     GradingRepositoryAccess,
@@ -14,6 +25,7 @@ from backend.repositories.compat import open_grading_repositories
 from export_names import session_export_path_name
 from grading_completeness import resolve_grading_completeness
 from path_manager import resolve_stored_file_path
+from question_id_contract import resolve_known_question_id
 
 
 class ReportGenerator:
@@ -30,7 +42,12 @@ class ReportGenerator:
         self.db_path = self.repositories.db_path
         self.reports_dir = Path(reports_dir)
 
-    def export_session(self, session_id: int) -> Path:
+    def export_session(
+        self,
+        session_id: int,
+        *,
+        score_excel_options: dict[str, object] | None = None,
+    ) -> Path:
         self.reports_dir.mkdir(parents=True, exist_ok=True)
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
@@ -52,6 +69,7 @@ class ReportGenerator:
             snapshot.results,
             columns=[
                 "result_id",
+                "student_id",
                 "student_code",
                 "student_name",
                 "class_name",
@@ -77,6 +95,7 @@ class ReportGenerator:
             snapshot.details,
             columns=[
                 "result_id",
+                "student_id",
                 "student_code",
                 "student_name",
                 "class_name",
@@ -93,42 +112,857 @@ class ReportGenerator:
         if df_results.empty:
             raise ValueError("该会话暂无批改结果，无法导出报表。")
 
-        # FILTER BOTTOM 8 PER CLASS FOR DETAILS
-        valid_result_ids = []
-        for class_name, group in df_results.groupby(df_results["class_name"].fillna("未分班")):
-            # Sort by score descending
-            group_sorted = group.sort_values(by="student_score", ascending=False)
-            # Exclude bottom 8 if class size > 8
-            if len(group_sorted) > 8:
-                valid_group = group_sorted.iloc[:-8]
-            else:
-                # If 8 or fewer, exclude none or exclude all? Usually exclude none or exclude bottom half.
-                # Requirement: exclude bottom 8. If less than 8, exclude all but top 1? Let's just exclude all if <=8 or maybe keep top 20%.
-                # Safe fallback: exclude bottom 8 means if N > 8, keep N-8. If N <= 8, keep nothing? No, keep all to avoid empty.
-                valid_group = group_sorted if len(group_sorted) <= 8 else group_sorted.iloc[:-8]
-            valid_result_ids.extend(valid_group["result_id"].tolist())
-
-        df_details_filtered = df_details[df_details["result_id"].isin(valid_result_ids)].copy()
-
         rubric = self._load_rubric_from_session(snapshot.session)
         score_map, type_map = self._question_maps_from_rubric(rubric)
         knowledge_label_map = self._knowledge_label_map_from_rubric(rubric)
-        
-        # summary uses full df_results
-        score_summary = self._build_compact_session_report(df_results, df_details, score_map, rubric=rubric)
-        
-        # details and knowledge use filtered details
-        question_detail = self._build_question_score_detail_sheet(df_details_filtered, score_map, type_map)
-        knowledge_summary = self._build_session_knowledge_summary_by_class(df_details_filtered, score_map, knowledge_label_map)
 
-        with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
-            score_summary.to_excel(writer, sheet_name="成绩与小题明细", index=False)
-            question_detail.to_excel(writer, sheet_name="得分情况及明细", index=False)
-            knowledge_summary.to_excel(writer, sheet_name="知识点统计", index=False)
-            if not df_attendance.empty:
-                df_attendance.to_excel(writer, sheet_name="缺考与异常", index=False)
+        result_status = self._result_statuses(
+            df_results,
+            df_details,
+            rubric,
+            df_attendance,
+        )
+        df_results = df_results.copy()
+        df_results["report_status"] = df_results["result_id"].map(
+            lambda result_id: result_status.get(int(result_id), ("无效", ""))[0]
+        )
+        df_results["missing_questions"] = df_results["result_id"].map(
+            lambda result_id: result_status.get(int(result_id), ("无效", ""))[1]
+        )
+        eligible_result_ids = {
+            int(row["result_id"])
+            for row in df_results.to_dict(orient="records")
+            if row.get("report_status") == "完整"
+        }
+        eligible_results = df_results[
+            df_results["result_id"].isin(eligible_result_ids)
+        ].copy()
+        eligible_details = df_details[
+            df_details["result_id"].isin(eligible_result_ids)
+        ].copy()
+
+        options = _normalized_excel_options(score_excel_options)
+        hidden_student_ids = self._hidden_student_ids(
+            eligible_results,
+            options,
+        )
+        score_detail = self._build_compact_session_report(
+            df_results,
+            df_details,
+            score_map,
+            rubric=rubric,
+            eligible_result_ids=eligible_result_ids,
+        )
+        question_print = self._build_question_print_analysis(
+            eligible_details,
+            score_map,
+            type_map,
+            hidden_student_ids,
+        )
+        error_detail = self._build_error_detail_sheet(
+            eligible_details,
+            score_map,
+        )
+        knowledge_summary = self._build_session_knowledge_summary_by_class(
+            eligible_details,
+            score_map,
+            knowledge_label_map,
+        )
+        exceptions = self._build_exception_sheet(
+            df_results,
+            df_attendance,
+        )
+
+        workbook = Workbook()
+        workbook.remove(workbook.active)
+        self._write_overview_sheet(
+            workbook.create_sheet("考试总览"),
+            session_name,
+            eligible_results,
+            options,
+            hidden_student_ids,
+        )
+        self._write_class_score_sheet(
+            workbook.create_sheet("班级成绩总表"),
+            session_name,
+            eligible_results,
+        )
+        self._write_question_print_sheet(
+            workbook.create_sheet("小题分析打印"),
+            session_name,
+            question_print,
+            eligible_results,
+            hidden_student_ids,
+            options,
+        )
+        self._write_dataframe_sheet(
+            workbook.create_sheet("成绩与小题明细"),
+            score_detail,
+            freeze_cell="D2",
+            landscape=True,
+        )
+        self._write_dataframe_sheet(
+            workbook.create_sheet("错因明细"),
+            error_detail,
+            freeze_cell="D2",
+            landscape=True,
+        )
+        self._write_dataframe_sheet(
+            workbook.create_sheet("知识点分析"),
+            knowledge_summary,
+            freeze_cell="C2",
+            landscape=True,
+        )
+        self._write_dataframe_sheet(
+            workbook.create_sheet("缺考与异常"),
+            exceptions,
+            freeze_cell="A2",
+            landscape=False,
+        )
+        for sheet in workbook.worksheets:
+            self._apply_used_range_borders(sheet)
+        workbook.calculation.fullCalcOnLoad = True
+        workbook.calculation.forceFullCalc = True
+        workbook.save(output_path)
 
         return output_path
+
+    def _result_statuses(
+        self,
+        df_results: pd.DataFrame,
+        df_details: pd.DataFrame,
+        rubric: dict[str, object],
+        df_attendance: pd.DataFrame,
+    ) -> dict[int, tuple[str, str]]:
+        detail_rows_by_result: dict[int, list[dict[str, object]]] = {}
+        for detail in df_details.to_dict(orient="records"):
+            detail_rows_by_result.setdefault(
+                int(detail.get("result_id") or 0),
+                [],
+            ).append(detail)
+        attendance_by_identity = {
+            (
+                str(row.get("student_code") or ""),
+                str(row.get("class_name") or "未分班"),
+            ): str(row.get("attendance_status") or "").strip()
+            for row in df_attendance.to_dict(orient="records")
+        }
+        statuses: dict[int, tuple[str, str]] = {}
+        for result in df_results.to_dict(orient="records"):
+            result_id = int(result.get("result_id") or 0)
+            identity = (
+                str(result.get("student_code") or ""),
+                str(result.get("class_name") or "未分班"),
+            )
+            attendance_status = attendance_by_identity.get(identity)
+            if attendance_status in {"absent", "scan_issue"}:
+                statuses[result_id] = ("无效", "")
+                continue
+            completeness = resolve_grading_completeness(
+                result.get("raw_json"),
+                rubric=rubric,
+                details=detail_rows_by_result.get(result_id, []),
+            )
+            statuses[result_id] = self._completeness_fields(
+                {"grading_completeness": completeness}
+            )
+        return statuses
+
+    def _hidden_student_ids(
+        self,
+        eligible_results: pd.DataFrame,
+        options: dict[str, object],
+    ) -> set[int]:
+        hidden = {
+            int(student_id)
+            for student_id in options["manual_hidden_student_ids"]
+        }
+        bottom_n = int(options["hide_bottom_n"])
+        if not options["hide_bottom_enabled"] or bottom_n <= 0:
+            return hidden
+        for _class_name, group in eligible_results.groupby(
+            eligible_results["class_name"].fillna("未分班"),
+            dropna=False,
+        ):
+            # Preserve the old small-class safeguard: a rule for eight names
+            # must not silently hide every name in a class of eight or fewer.
+            if len(group) <= bottom_n:
+                continue
+            ordered = group.assign(
+                _student_code=group["student_code"].fillna("").astype(str),
+                _student_name=group["student_name"].fillna("").astype(str),
+            ).sort_values(
+                by=[
+                    "student_score",
+                    "_student_code",
+                    "_student_name",
+                    "result_id",
+                ],
+                ascending=[True, True, True, True],
+                kind="stable",
+            )
+            hidden.update(
+                int(value)
+                for value in ordered.head(bottom_n)["student_id"].tolist()
+            )
+        return hidden
+
+    def _build_question_print_analysis(
+        self,
+        df_details: pd.DataFrame,
+        score_map: dict[str, float],
+        type_map: dict[str, str],
+        hidden_student_ids: set[int],
+    ) -> pd.DataFrame:
+        columns = [
+            "班级",
+            "题号",
+            "题型",
+            "满分",
+            "统计人数",
+            "全班得分率",
+            "平均得分",
+            "失分人数",
+            "显示姓名数",
+            "隐藏姓名数",
+            "失分同学",
+            "主要错因",
+        ]
+        if df_details.empty:
+            return pd.DataFrame(columns=columns)
+        records = _normalize_question_detail_records(
+            df_details.to_dict(orient="records"),
+            score_map,
+        )
+        if not records:
+            return pd.DataFrame(columns=columns)
+        work_df = pd.DataFrame(records)
+        rows: list[dict[str, object]] = []
+        class_names = sorted(
+            {
+                str(value or "未分班")
+                for value in work_df["class_name"].tolist()
+            }
+        )
+        for class_name in class_names:
+            class_df = work_df[
+                work_df["class_name"].fillna("未分班").astype(str)
+                == class_name
+            ]
+            qids = _natural_question_order(
+                class_df["question_id"].dropna().astype(str).unique().tolist()
+            )
+            for qid in qids:
+                qdf = class_df[
+                    class_df["question_id"].astype(str) == qid
+                ].copy()
+                full_score = float(score_map.get(qid) or 0)
+                if full_score <= 0:
+                    full_score = max(
+                        float(qdf["score_awarded"].max() or 0),
+                        0.0,
+                    )
+                lost = [
+                    item
+                    for item in qdf.to_dict(orient="records")
+                    if full_score > 0
+                    and float(item.get("score_awarded") or 0)
+                    < full_score - 1e-6
+                ]
+                displayed = [
+                    _student_label(item)
+                    for item in lost
+                    if int(item.get("student_id") or 0)
+                    not in hidden_student_ids
+                ]
+                hidden_count = len(lost) - len(displayed)
+                score_sum = float(qdf["score_awarded"].sum())
+                full_sum = full_score * len(qdf)
+                rows.append(
+                    {
+                        "班级": class_name,
+                        "题号": qid,
+                        "题型": str(type_map.get(qid) or ""),
+                        "满分": full_score,
+                        "统计人数": len(qdf),
+                        "全班得分率": (
+                            score_sum / full_sum if full_sum > 0 else None
+                        ),
+                        "平均得分": (
+                            score_sum / len(qdf) if len(qdf) else None
+                        ),
+                        "失分人数": len(lost),
+                        "显示姓名数": len(displayed),
+                        "隐藏姓名数": hidden_count,
+                        "失分同学": (
+                            "、".join(displayed)
+                            if displayed
+                            else ("姓名已隐藏" if lost else "无")
+                        ),
+                        "主要错因": _summarize_error_categories(
+                            qdf.to_dict(orient="records"),
+                            full_score,
+                        ),
+                    }
+                )
+        return (
+            pd.DataFrame(rows, columns=columns)
+            .sort_values(
+                by=["全班得分率"],
+                ascending=[True],
+                na_position="last",
+                kind="stable",
+            )
+            .reset_index(drop=True)
+        )
+
+    def _build_error_detail_sheet(
+        self,
+        df_details: pd.DataFrame,
+        score_map: dict[str, float],
+    ) -> pd.DataFrame:
+        columns = [
+            "班级",
+            "学号",
+            "学生姓名",
+            "题号",
+            "得分",
+            "满分",
+            "扣分",
+            "扣分原因",
+            "错误类别",
+            "错误摘要",
+        ]
+        if df_details.empty:
+            return pd.DataFrame(columns=columns)
+        records = _normalize_question_detail_records(
+            df_details.to_dict(orient="records"),
+            score_map,
+        )
+        rows: list[dict[str, object]] = []
+        for item in records:
+            qid = str(item.get("question_id") or "")
+            full_score = float(score_map.get(qid) or 0)
+            awarded = float(item.get("score_awarded") or 0)
+            if full_score <= 0 or awarded >= full_score - 1e-6:
+                continue
+            deduction_reason = _public_grading_reason(
+                item.get("deduction_reason"),
+                fallback="AI 未提供明确扣分依据，建议教师复核",
+            )
+            rows.append(
+                {
+                    "班级": item.get("class_name") or "未分班",
+                    "学号": item.get("student_code"),
+                    "学生姓名": item.get("student_name"),
+                    "题号": qid,
+                    "得分": awarded,
+                    "满分": full_score,
+                    "扣分": full_score - awarded,
+                    "扣分原因": deduction_reason,
+                    "错误类别": _public_grading_reason(item.get("error_category")),
+                    "错误摘要": _public_grading_reason(item.get("error_summary")),
+                }
+            )
+        return pd.DataFrame(rows, columns=columns)
+
+    def _build_exception_sheet(
+        self,
+        df_results: pd.DataFrame,
+        df_attendance: pd.DataFrame,
+    ) -> pd.DataFrame:
+        columns = ["班级", "学号", "学生姓名", "状态", "说明"]
+        rows: list[dict[str, object]] = []
+        seen: set[tuple[str, str, str]] = set()
+        for result in df_results.to_dict(orient="records"):
+            if result.get("report_status") == "完整":
+                continue
+            key = (
+                str(result.get("class_name") or "未分班"),
+                str(result.get("student_code") or ""),
+                str(result.get("student_name") or ""),
+            )
+            seen.add(key)
+            missing = str(result.get("missing_questions") or "")
+            rows.append(
+                {
+                    "班级": key[0],
+                    "学号": key[1],
+                    "学生姓名": key[2],
+                    "状态": "批改不完整",
+                    "说明": f"缺失题目：{missing}" if missing else "结果无效或不完整",
+                }
+            )
+        attendance_labels = {
+            "absent": "缺考",
+            "scan_issue": "扫描异常",
+            "present": "正常参考",
+        }
+        for item in df_attendance.to_dict(orient="records"):
+            status = str(item.get("attendance_status") or "")
+            if status == "present":
+                continue
+            key = (
+                str(item.get("class_name") or "未分班"),
+                str(item.get("student_code") or ""),
+                str(item.get("student_name") or ""),
+            )
+            if key in seen:
+                continue
+            rows.append(
+                {
+                    "班级": key[0],
+                    "学号": key[1],
+                    "学生姓名": key[2],
+                    "状态": attendance_labels.get(status, status or "异常"),
+                    "说明": item.get("source_reason") or "",
+                }
+            )
+        return pd.DataFrame(rows, columns=columns)
+
+    def _write_overview_sheet(
+        self,
+        sheet: Worksheet,
+        session_name: str,
+        eligible_results: pd.DataFrame,
+        options: dict[str, object],
+        hidden_student_ids: set[int],
+    ) -> None:
+        sheet.merge_cells("A1:H1")
+        sheet["A1"] = f"{session_name} · 考试总览"
+        sheet.merge_cells("A2:H2")
+        sheet["A2"] = "统计仅包含正常参考且完成全部题目批改的学生。姓名精简不会改变任何统计数字。"
+        scores = [
+            float(value)
+            for value in eligible_results["student_score"].dropna().tolist()
+        ]
+        classes = sorted(
+            {
+                str(value or "未分班")
+                for value in eligible_results["class_name"].tolist()
+            }
+        )
+        sheet["A3"] = "统计人数"
+        sheet["B3"] = len(eligible_results)
+        sheet["C3"] = "班级数"
+        sheet["D3"] = len(classes)
+        sheet["E3"] = "整体均分"
+        sheet["F3"] = round(sum(scores) / len(scores), 2) if scores else None
+        sheet["G3"] = "最高 / 最低"
+        sheet["H3"] = (
+            f"{_format_score(max(scores))} / {_format_score(min(scores))}"
+            if scores
+            else "-"
+        )
+        sheet.merge_cells("A5:H5")
+        sheet["A5"] = _excel_option_note(
+            options,
+            hidden_count=len(hidden_student_ids),
+        )
+        headers = ["班级", "统计人数", "均分", "中位数", "最高分", "最低分"]
+        for column, header in enumerate(headers, start=1):
+            sheet.cell(7, column, header)
+        row = 8
+        for class_name in classes:
+            class_scores = [
+                float(value)
+                for value in eligible_results[
+                    eligible_results["class_name"].fillna("未分班").astype(str)
+                    == class_name
+                ]["student_score"].dropna().tolist()
+            ]
+            values: list[object] = [
+                class_name,
+                len(class_scores),
+                round(sum(class_scores) / len(class_scores), 2)
+                if class_scores
+                else None,
+                round(statistics.median(class_scores), 2)
+                if class_scores
+                else None,
+                max(class_scores) if class_scores else None,
+                min(class_scores) if class_scores else None,
+            ]
+            for column, value in enumerate(values, start=1):
+                sheet.cell(row, column, value)
+            row += 1
+        self._style_title_sheet(sheet, header_rows={7})
+        sheet.freeze_panes = "A8"
+        sheet.sheet_view.showGridLines = False
+        sheet.column_dimensions["A"].width = 18
+        for column in "BCDEFGH":
+            sheet.column_dimensions[column].width = 14
+        sheet.print_area = f"A1:H{max(8, row - 1)}"
+        self._set_print_layout(sheet, landscape=True, repeat_rows="1:7")
+
+    def _write_class_score_sheet(
+        self,
+        sheet: Worksheet,
+        session_name: str,
+        eligible_results: pd.DataFrame,
+    ) -> None:
+        sheet.merge_cells("A1:H1")
+        sheet["A1"] = f"{session_name} · 班级成绩总表"
+        current_row = 2
+        class_names = sorted(
+            {
+                str(value or "未分班")
+                for value in eligible_results["class_name"].tolist()
+            }
+        )
+        for class_index, class_name in enumerate(class_names):
+            class_df = eligible_results[
+                eligible_results["class_name"].fillna("未分班").astype(str)
+                == class_name
+            ].copy()
+            class_df.sort_values(
+                by=[
+                    "student_score",
+                    "student_code",
+                    "student_name",
+                    "student_id",
+                ],
+                ascending=[False, True, True, True],
+                kind="stable",
+                inplace=True,
+            )
+            scores = [
+                float(value)
+                for value in class_df["student_score"].dropna().tolist()
+            ]
+            sheet.merge_cells(
+                start_row=current_row,
+                start_column=1,
+                end_row=current_row,
+                end_column=8,
+            )
+            sheet.cell(
+                current_row,
+                1,
+                f"{class_name} · 正常参考且批改完整 {len(class_df)} 人",
+            )
+            current_row += 1
+            summary = [
+                "班级均分",
+                round(sum(scores) / len(scores), 2) if scores else None,
+                "中位数",
+                round(statistics.median(scores), 2) if scores else None,
+                "最高分",
+                max(scores) if scores else None,
+                "最低分",
+                min(scores) if scores else None,
+            ]
+            for column, value in enumerate(summary, start=1):
+                sheet.cell(current_row, column, value)
+            current_row += 1
+            headers = [
+                "班级排名",
+                "学号",
+                "学生姓名",
+                "学生得分",
+                "试卷总分",
+                "得分率",
+                "需人工复核",
+                "批改时间",
+            ]
+            header_row = current_row
+            for column, header in enumerate(headers, start=1):
+                sheet.cell(header_row, column, header)
+            current_row += 1
+            for rank, result in enumerate(
+                class_df.to_dict(orient="records"),
+                start=1,
+            ):
+                total_score = float(result.get("total_score") or 0)
+                student_score = float(result.get("student_score") or 0)
+                values = [
+                    rank,
+                    result.get("student_code"),
+                    result.get("student_name"),
+                    student_score,
+                    total_score,
+                    student_score / total_score if total_score > 0 else None,
+                    "是" if result.get("needs_human_review") else "否",
+                    result.get("graded_at"),
+                ]
+                for column, value in enumerate(values, start=1):
+                    sheet.cell(current_row, column, value)
+                sheet.cell(current_row, 6).number_format = "0.0%"
+                current_row += 1
+            self._style_table_header(sheet, header_row, 8)
+            if class_index < len(class_names) - 1:
+                sheet.row_breaks.append(Break(id=current_row - 1))
+                current_row += 1
+        self._style_title_sheet(sheet)
+        sheet.sheet_view.showGridLines = False
+        sheet.freeze_panes = "A4"
+        widths = [10, 14, 14, 12, 12, 12, 12, 20]
+        for index, width in enumerate(widths, start=1):
+            sheet.column_dimensions[get_column_letter(index)].width = width
+        sheet.print_area = f"A1:H{max(3, current_row - 1)}"
+        self._set_print_layout(sheet, landscape=True, repeat_rows="1:1")
+
+    def _write_question_print_sheet(
+        self,
+        sheet: Worksheet,
+        session_name: str,
+        question_print: pd.DataFrame,
+        eligible_results: pd.DataFrame,
+        hidden_student_ids: set[int],
+        options: dict[str, object],
+    ) -> None:
+        sheet.merge_cells("A1:L1")
+        sheet["A1"] = f"{session_name} · 小题分析打印"
+        sheet.merge_cells("A2:L2")
+        sheet["A2"] = "得分率、均分和失分人数始终按全部完整成绩计算；隐藏规则仅缩短“失分同学”姓名。"
+        hidden_labels = [
+            _student_label(row)
+            for row in eligible_results.to_dict(orient="records")
+            if int(row.get("student_id") or 0) in hidden_student_ids
+        ]
+        sheet.merge_cells("A3:L3")
+        sheet["A3"] = (
+            f"{_excel_option_note(options, hidden_count=len(hidden_student_ids))}"
+            + (
+                f" 隐藏名单：{'、'.join(hidden_labels)}"
+                if hidden_labels
+                else ""
+            )
+        )
+        headers = list(question_print.columns)
+        for column, header in enumerate(headers, start=1):
+            sheet.cell(5, column, header)
+        for row_index, values in enumerate(
+            dataframe_to_rows(question_print, index=False, header=False),
+            start=6,
+        ):
+            for column, value in enumerate(values, start=1):
+                sheet.cell(row_index, column, value)
+            sheet.cell(row_index, 6).number_format = "0.0%"
+        self._style_title_sheet(sheet, header_rows={5})
+        sheet.sheet_view.showGridLines = False
+        sheet.freeze_panes = "A6"
+        widths = [12, 10, 12, 9, 10, 12, 11, 10, 11, 11, 34, 28]
+        for index, width in enumerate(widths, start=1):
+            sheet.column_dimensions[get_column_letter(index)].width = width
+        for row in range(6, sheet.max_row + 1):
+            sheet.cell(row, 11).alignment = Alignment(
+                vertical="top",
+                wrap_text=True,
+            )
+            sheet.cell(row, 12).alignment = Alignment(
+                vertical="top",
+                wrap_text=True,
+            )
+            sheet.row_dimensions[row].height = 34
+        sheet.auto_filter.ref = f"A5:L{max(5, sheet.max_row)}"
+        sheet.print_area = f"A1:L{max(5, sheet.max_row)}"
+        self._set_print_layout(sheet, landscape=True, repeat_rows="1:5")
+
+    def _write_dataframe_sheet(
+        self,
+        sheet: Worksheet,
+        frame: pd.DataFrame,
+        *,
+        freeze_cell: str,
+        landscape: bool,
+    ) -> None:
+        for row in dataframe_to_rows(frame, index=False, header=True):
+            sheet.append(row)
+        self._style_title_sheet(sheet, header_rows={1})
+        sheet.sheet_view.showGridLines = False
+        sheet.freeze_panes = freeze_cell
+        if sheet.max_column > 0:
+            sheet.auto_filter.ref = (
+                f"A1:{get_column_letter(sheet.max_column)}"
+                f"{max(1, sheet.max_row)}"
+            )
+        for column in range(1, sheet.max_column + 1):
+            letter = get_column_letter(column)
+            values = [
+                str(sheet.cell(row, column).value or "")
+                for row in range(1, min(sheet.max_row, 80) + 1)
+            ]
+            longest = max(
+                (_excel_display_width(value) for value in values),
+                default=8,
+            )
+            sheet.column_dimensions[letter].width = min(
+                38,
+                max(10, longest * 1.15 + 2),
+            )
+            header = str(sheet.cell(1, column).value or "").strip()
+            if header == "得分率":
+                for row_index in range(2, sheet.max_row + 1):
+                    sheet.cell(row_index, column).number_format = "0.0%"
+        for row_index, row in enumerate(sheet.iter_rows(), start=1):
+            required_lines = 1
+            for cell in row:
+                header = str(
+                    sheet.cell(1, cell.column).value or ""
+                ).strip()
+                column_width = float(
+                    sheet.column_dimensions[
+                        get_column_letter(cell.column)
+                    ].width
+                    or 10
+                )
+                text_width = _excel_display_width(
+                    str(cell.value or "")
+                )
+                wrap_text = (
+                    isinstance(cell.value, str)
+                    and text_width > max(8, column_width - 2)
+                )
+                cell.alignment = Alignment(
+                    horizontal=(
+                        "left"
+                        if header
+                        in {
+                            "学生姓名",
+                            "缺失题目",
+                            "扣分原因",
+                            "错误类别",
+                            "错误摘要",
+                            "知识点",
+                            "涉及题目",
+                            "说明",
+                        }
+                        or header.endswith("扣分原因")
+                        else "center"
+                    ),
+                    vertical="top",
+                    wrap_text=wrap_text,
+                )
+                if row_index > 1:
+                    cell.border = Border(
+                        bottom=Side(
+                            style="thin",
+                            color="E7EEF4",
+                        )
+                    )
+                if wrap_text:
+                    required_lines = max(
+                        required_lines,
+                        math.ceil(
+                            text_width / max(8, column_width - 2)
+                        ),
+                    )
+            if row_index > 1 and required_lines > 1:
+                sheet.row_dimensions[row_index].height = min(
+                    72,
+                    17 * required_lines,
+                )
+        self._set_print_layout(
+            sheet,
+            landscape=landscape,
+            repeat_rows="1:1",
+        )
+
+    def _style_title_sheet(
+        self,
+        sheet: Worksheet,
+        *,
+        header_rows: set[int] | None = None,
+    ) -> None:
+        if sheet["A1"].value and sheet.merged_cells.ranges:
+            sheet["A1"].font = Font(
+                name="Microsoft YaHei",
+                size=18,
+                bold=True,
+                color="FFFFFF",
+            )
+            sheet["A1"].fill = PatternFill("solid", fgColor="1F4E78")
+            sheet["A1"].alignment = Alignment(
+                horizontal="left",
+                vertical="center",
+            )
+            sheet.row_dimensions[1].height = 30
+        for merged_range in sheet.merged_cells.ranges:
+            if merged_range.min_row in {2, 3, 5}:
+                cell = sheet.cell(
+                    merged_range.min_row,
+                    merged_range.min_col,
+                )
+                cell.alignment = Alignment(
+                    vertical="center",
+                    wrap_text=True,
+                )
+        for header_row in header_rows or set():
+            self._style_table_header(
+                sheet,
+                header_row,
+                sheet.max_column,
+            )
+        for row in sheet.iter_rows():
+            for cell in row:
+                if cell.font.name is None:
+                    cell.font = Font(name="Microsoft YaHei", size=10)
+
+    def _style_table_header(
+        self,
+        sheet: Worksheet,
+        row: int,
+        max_column: int,
+    ) -> None:
+        for column in range(1, max_column + 1):
+            cell = sheet.cell(row, column)
+            cell.fill = PatternFill("solid", fgColor="D9EAF7")
+            cell.font = Font(
+                name="Microsoft YaHei",
+                size=10,
+                bold=True,
+                color="17365D",
+            )
+            cell.alignment = Alignment(
+                horizontal="center",
+                vertical="center",
+                wrap_text=True,
+            )
+            cell.border = Border(
+                bottom=Side(style="thin", color="9FBAD0"),
+            )
+        sheet.row_dimensions[row].height = 26
+
+    @staticmethod
+    def _apply_used_range_borders(sheet: Worksheet) -> None:
+        grid_side = Side(style="thin", color="AAB7C4")
+        grid_border = Border(
+            left=grid_side,
+            right=grid_side,
+            top=grid_side,
+            bottom=grid_side,
+        )
+        for row in sheet.iter_rows(
+            min_row=1,
+            max_row=sheet.max_row,
+            min_col=1,
+            max_col=sheet.max_column,
+        ):
+            for cell in row:
+                cell.border = grid_border
+
+    @staticmethod
+    def _set_print_layout(
+        sheet: Worksheet,
+        *,
+        landscape: bool,
+        repeat_rows: str,
+    ) -> None:
+        sheet.page_setup.orientation = (
+            sheet.ORIENTATION_LANDSCAPE
+            if landscape
+            else sheet.ORIENTATION_PORTRAIT
+        )
+        sheet.page_setup.paperSize = sheet.PAPERSIZE_A4
+        sheet.page_setup.fitToWidth = 1
+        sheet.page_setup.fitToHeight = 0
+        sheet.sheet_properties.pageSetUpPr.fitToPage = True
+        sheet.print_title_rows = repeat_rows
+        sheet.page_margins.left = 0.25
+        sheet.page_margins.right = 0.25
+        sheet.page_margins.top = 0.4
+        sheet.page_margins.bottom = 0.4
 
     def _build_score_summary(self, df_results: pd.DataFrame) -> pd.DataFrame:
         summary = df_results[["student_name", "total_score", "student_score", "needs_human_review", "created_at"]].copy()
@@ -172,6 +1006,7 @@ class ReportGenerator:
         score_map: dict[str, float],
         *,
         rubric: dict | None = None,
+        eligible_result_ids: set[int] | None = None,
     ) -> pd.DataFrame:
         question_ids = _natural_question_order(df_details["question_id"].dropna().astype(str).unique().tolist())
         rows_by_result: dict[int, dict[str, object]] = {}
@@ -179,26 +1014,26 @@ class ReportGenerator:
         for detail in df_details.to_dict(orient="records"):
             result_id = int(detail.get("result_id") or 0)
             detail_rows_by_result.setdefault(result_id, []).append(detail)
-        # Compute rank and average per class
+        # Rank only complete results. Summary statistics live once in the
+        # dedicated print sheet instead of being repeated on every student row.
         class_stats = {}
         for class_name, group in df_results.groupby(df_results["class_name"].fillna("未分班")):
-            group_scores = group["student_score"].dropna().tolist()
-            avg = sum(group_scores) / len(group_scores) if group_scores else 0
-            
-            # Rank
+            if eligible_result_ids is not None:
+                group = group[
+                    group["result_id"].isin(eligible_result_ids)
+                ].copy()
+            if group.empty:
+                continue
             group = group.sort_values(by="student_score", ascending=False)
             group["班级排名"] = group["student_score"].rank(method="min", ascending=False).astype(int)
-            group["班级均分"] = round(avg, 2)
-            
             for _, r in group.iterrows():
                 class_stats[int(r["result_id"])] = {
                     "班级排名": r["班级排名"],
-                    "班级均分": r["班级均分"]
                 }
 
         for result in df_results.to_dict(orient="records"):
             rid = int(result["result_id"])
-            stats = class_stats.get(rid, {"班级排名": "-", "班级均分": "-"})
+            stats = class_stats.get(rid, {"班级排名": "-"})
             completeness = resolve_grading_completeness(
                 result.get("raw_json"),
                 rubric=rubric if isinstance(rubric, dict) else None,
@@ -211,7 +1046,6 @@ class ReportGenerator:
             rows_by_result[rid] = {
                 "班级": result.get("class_name") or "未分班",
                 "班级排名": stats["班级排名"],
-                "班级均分": stats["班级均分"],
                 "学生姓名": result.get("student_name"),
                 "学号": result.get("student_code"),
                 "总分": result.get("student_score"),
@@ -233,7 +1067,7 @@ class ReportGenerator:
                 reason = ""
             row[f"{qid}扣分原因"] = reason
 
-        columns = ["班级", "班级排名", "班级均分", "学生姓名", "学号", "总分", "批改完整性", "缺失题目"]
+        columns = ["班级", "班级排名", "学生姓名", "学号", "总分", "批改完整性", "缺失题目"]
         for qid in question_ids:
             columns.extend([f"{qid}得分", f"{qid}扣分原因"])
             
@@ -498,7 +1332,7 @@ class ReportGenerator:
                     "涉及题目": "、".join(_natural_question_order([str(q) for q in questions])),
                     "累计得分": round(score_sum, 2),
                     "累计满分": round(full_sum, 2),
-                    "得分率": round(score_sum / full_sum * 100, 2) if full_sum > 0 else 0,
+                    "得分率": round(score_sum / full_sum, 4) if full_sum > 0 else 0,
                     "失分人数": len(lost_students.get((class_name, label), set())),
                 }
             )
@@ -560,6 +1394,66 @@ class ReportGenerator:
             inplace=True,
         )
         return grouped
+
+
+def _normalized_excel_options(
+    raw_options: dict[str, object] | None,
+) -> dict[str, object]:
+    options = dict(raw_options or {})
+    enabled = bool(options.get("hide_bottom_enabled", True))
+    try:
+        bottom_n = max(
+            0,
+            min(100, int(options.get("hide_bottom_n", 8))),
+        )
+    except (TypeError, ValueError):
+        bottom_n = 8
+    if not enabled:
+        bottom_n = 0
+    raw_ids = options.get("manual_hidden_student_ids")
+    manual_ids = (
+        sorted(
+            {
+                int(student_id)
+                for student_id in raw_ids
+                if isinstance(student_id, int)
+                and not isinstance(student_id, bool)
+                and student_id > 0
+            }
+        )
+        if isinstance(raw_ids, list)
+        else []
+    )
+    return {
+        "hide_bottom_enabled": enabled,
+        "hide_bottom_n": bottom_n,
+        "manual_hidden_student_ids": manual_ids,
+    }
+
+
+def _excel_option_note(
+    options: dict[str, object],
+    *,
+    hidden_count: int,
+) -> str:
+    parts: list[str] = []
+    bottom_n = int(options.get("hide_bottom_n") or 0)
+    if options.get("hide_bottom_enabled") and bottom_n > 0:
+        parts.append(f"每班隐藏总分最后 {bottom_n} 名")
+    manual_count = len(
+        options.get("manual_hidden_student_ids")
+        if isinstance(options.get("manual_hidden_student_ids"), list)
+        else []
+    )
+    if manual_count:
+        parts.append(f"另手动选择 {manual_count} 人")
+    if not parts:
+        return "错题姓名不精简；所有失分学生姓名均显示。"
+    return (
+        "错题姓名精简："
+        + "，".join(parts)
+        + f"；实际命中 {hidden_count} 人。"
+    )
 
 
 def _natural_question_order(question_ids: list[str]) -> list[str]:
@@ -641,19 +1535,16 @@ def _normalize_question_detail_records(
 
 def _canonical_question_id_for_score(question_id: str, score_map: dict[str, float]) -> str:
     qid = question_id.strip()
-    if qid in score_map:
-        return qid
-    parent_id = _question_parent_id(qid)
-    if parent_id and parent_id in score_map:
-        return parent_id
-    return qid
+    return resolve_known_question_id(qid, score_map) or qid
 
 
-def _question_parent_id(question_id: str) -> str | None:
-    import re
-
-    match = re.match(r"^(Q\d+)(?:\(|（|-)", question_id.strip())
-    return match.group(1) if match else None
+def _excel_display_width(value: str) -> int:
+    return sum(
+        2
+        if unicodedata.east_asian_width(character) in {"W", "F"}
+        else 1
+        for character in value
+    )
 
 
 def _unique_texts(values: list[object]) -> list[str]:
@@ -677,6 +1568,31 @@ def _format_score(value) -> str:
     if number.is_integer():
         return str(int(number))
     return f"{number:g}"
+
+
+def _public_grading_reason(value: object, fallback: str = "") -> str:
+    text = str(value or "").strip()
+    if not text:
+        return fallback
+    labels = {
+        "objective_api_disabled": "客观题识别未启用，已转教师复核",
+        "objective_api_not_configured": "客观题识别模型配置不完整，已转教师复核",
+        "objective_paper_model_failed": "客观题识别请求失败，已转教师复核",
+        "objective_paper_region_failed": "无法读取选填题作答区域",
+        "objective_region_not_found": "未找到此题的有效作答区域",
+        "missing_question_result": "AI 未返回此题的识别结果",
+        "duplicate_question_result": "AI 返回了重复的识别结果",
+        "paper_key_mismatch": "识别结果与当前答卷不一致",
+        "low_confidence": "作答辨识度较低，需要教师复核",
+        "needs_review": "AI 建议教师复核",
+        "objective_needs_review": "客观题识别结果需要教师复核",
+        "objective_score_uncertain": "答案识别存在不确定性",
+    }
+    if text.lower() in labels:
+        return labels[text.lower()]
+    if re.search(r"[\u3400-\u9fff]", text):
+        return text
+    return fallback or "自动处理未完成，请教师复核"
 
 
 def _student_label(item: dict) -> str:

@@ -6,7 +6,11 @@ export const MODEL_PROFILE_LIMITS = {
   url: 2048,
   model: 200,
   apiKey: 8192,
+  concurrentRequests: 100,
+  requestsPerMinute: 10000,
 } as const
+
+export type RequestSpeedMode = 'automatic' | 'conservative' | 'custom'
 
 export interface ModelProfile {
   name: string
@@ -17,12 +21,32 @@ export interface ModelProfile {
   config_base_url: string
   has_config_api_key: boolean
   config_model: string
+  request_speed_mode: RequestSpeedMode
+  max_concurrent_requests: number
+  requests_per_minute: number
 }
 
 export interface ModelProfilesState {
   profiles: ModelProfile[]
   active_profile_name: string | null
   active_profile: ModelProfile | null
+}
+
+export type ModelExecutionLimitingReason =
+  | 'configured'
+  | 'provider_overload'
+  | 'recovering'
+
+export interface ModelExecutionStatus {
+  mode: RequestSpeedMode
+  configured_max_in_flight: number
+  effective_max_in_flight: number
+  requests_per_minute: number
+  active: number
+  queued: number
+  peak_active: number
+  physical_request_count: number
+  limiting_reason: ModelExecutionLimitingReason
 }
 
 export interface ModelProfileUpsertInput {
@@ -34,6 +58,9 @@ export interface ModelProfileUpsertInput {
   config_base_url: string
   config_api_key?: string
   config_model: string
+  request_speed_mode: RequestSpeedMode
+  max_concurrent_requests: number
+  requests_per_minute: number
 }
 
 export interface ModelProfileSaveOptions {
@@ -57,6 +84,9 @@ const PROFILE_KEYS = [
   'config_base_url',
   'has_config_api_key',
   'config_model',
+  'request_speed_mode',
+  'max_concurrent_requests',
+  'requests_per_minute',
 ] as const
 
 function hasExactKeys(
@@ -130,6 +160,19 @@ function isModelProfile(value: unknown): value is ModelProfile {
     && isHttpUrl(value.config_base_url, true)
     && typeof value.has_config_api_key === 'boolean'
     && isBoundedText(value.config_model, 0, MODEL_PROFILE_LIMITS.model)
+    && (
+      value.request_speed_mode === 'automatic'
+      || value.request_speed_mode === 'conservative'
+      || value.request_speed_mode === 'custom'
+    )
+    && Number.isInteger(value.max_concurrent_requests)
+    && Number(value.max_concurrent_requests) >= 1
+    && Number(value.max_concurrent_requests)
+      <= MODEL_PROFILE_LIMITS.concurrentRequests
+    && Number.isInteger(value.requests_per_minute)
+    && Number(value.requests_per_minute) >= 1
+    && Number(value.requests_per_minute)
+      <= MODEL_PROFILE_LIMITS.requestsPerMinute
   )
 }
 
@@ -188,6 +231,71 @@ export function decodeModelProfilesState(value: unknown): ModelProfilesState {
   }
 }
 
+const EXECUTION_STATUS_KEYS = [
+  'mode',
+  'configured_max_in_flight',
+  'effective_max_in_flight',
+  'requests_per_minute',
+  'active',
+  'queued',
+  'peak_active',
+  'physical_request_count',
+  'limiting_reason',
+] as const
+
+function isNonnegativeInteger(value: unknown): value is number {
+  return Number.isInteger(value) && Number(value) >= 0
+}
+
+export function decodeModelExecutionStatus(
+  value: unknown,
+): ModelExecutionStatus {
+  assertNoReturnedSecrets(value)
+  if (
+    !isRecord(value)
+    || !hasExactKeys(value, EXECUTION_STATUS_KEYS)
+    || !(
+      value.mode === 'automatic'
+      || value.mode === 'conservative'
+      || value.mode === 'custom'
+    )
+    || !Number.isInteger(value.configured_max_in_flight)
+    || Number(value.configured_max_in_flight) < 1
+    || Number(value.configured_max_in_flight)
+      > MODEL_PROFILE_LIMITS.concurrentRequests
+    || !Number.isInteger(value.effective_max_in_flight)
+    || Number(value.effective_max_in_flight) < 1
+    || Number(value.effective_max_in_flight)
+      > Number(value.configured_max_in_flight)
+    || !Number.isInteger(value.requests_per_minute)
+    || Number(value.requests_per_minute) < 1
+    || Number(value.requests_per_minute)
+      > MODEL_PROFILE_LIMITS.requestsPerMinute
+    || !isNonnegativeInteger(value.active)
+    || !isNonnegativeInteger(value.queued)
+    || !isNonnegativeInteger(value.peak_active)
+    || !isNonnegativeInteger(value.physical_request_count)
+    || !(
+      value.limiting_reason === 'configured'
+      || value.limiting_reason === 'provider_overload'
+      || value.limiting_reason === 'recovering'
+    )
+  ) {
+    throw new Error('Invalid model execution status')
+  }
+  return {
+    mode: value.mode,
+    configured_max_in_flight: Number(value.configured_max_in_flight),
+    effective_max_in_flight: Number(value.effective_max_in_flight),
+    requests_per_minute: Number(value.requests_per_minute),
+    active: value.active,
+    queued: value.queued,
+    peak_active: value.peak_active,
+    physical_request_count: value.physical_request_count,
+    limiting_reason: value.limiting_reason,
+  }
+}
+
 function normalizeBoundedText(
   value: string,
   label: string,
@@ -238,6 +346,17 @@ function normalizeApiKey(value: string | undefined, label: string): string {
   return normalized
 }
 
+function normalizeInteger(
+  value: number,
+  label: string,
+  maximum: number,
+): number {
+  if (!Number.isInteger(value) || value < 1 || value > maximum) {
+    throw new ModelProfileInputError(`${label}需要填写 1–${maximum} 的整数。`)
+  }
+  return value
+}
+
 export function normalizeModelProfileInput(
   input: ModelProfileUpsertInput,
   requireApiKey = false,
@@ -246,6 +365,14 @@ export function normalizeModelProfileInput(
   const configApiKey = normalizeApiKey(input.config_api_key, '高级配置密钥')
   if (requireApiKey && apiKey === '') {
     throw new ModelProfileInputError('新配置需要填写 API 密钥。')
+  }
+  const requestSpeedMode = input.request_speed_mode
+  if (
+    requestSpeedMode !== 'automatic'
+    && requestSpeedMode !== 'conservative'
+    && requestSpeedMode !== 'custom'
+  ) {
+    throw new ModelProfileInputError('请选择有效的 AI 请求速度模式。')
   }
 
   const normalized: ModelProfileUpsertInput = {
@@ -275,6 +402,17 @@ export function normalizeModelProfileInput(
       '考试配置与题库标注模型',
       MODEL_PROFILE_LIMITS.model,
       false,
+    ),
+    request_speed_mode: requestSpeedMode,
+    max_concurrent_requests: normalizeInteger(
+      input.max_concurrent_requests,
+      '最多同时请求数',
+      MODEL_PROFILE_LIMITS.concurrentRequests,
+    ),
+    requests_per_minute: normalizeInteger(
+      input.requests_per_minute,
+      '每分钟请求数',
+      MODEL_PROFILE_LIMITS.requestsPerMinute,
     ),
   }
   if (apiKey !== '') normalized.api_key = apiKey
@@ -309,12 +447,15 @@ export const modelProfilesApi = {
   ): Promise<ModelProfilesState> {
     const pathName = requireProfilePathName(profileName)
     const normalized = normalizeModelProfileInput(input, options.requireApiKey)
-    const body: Record<string, string> = {
+    const body: Record<string, string | number> = {
       base_url: normalized.base_url,
       ocr_model: normalized.ocr_model,
       grading_model: normalized.grading_model,
       config_base_url: normalized.config_base_url,
       config_model: normalized.config_model,
+      request_speed_mode: normalized.request_speed_mode,
+      max_concurrent_requests: normalized.max_concurrent_requests,
+      requests_per_minute: normalized.requests_per_minute,
     }
     if (normalized.api_key !== undefined) body.api_key = normalized.api_key
     if (normalized.config_api_key !== undefined) {
@@ -338,5 +479,19 @@ export const modelProfilesApi = {
       decode: decodeModelProfilesState,
       signal,
     })
+  },
+
+  getExecutionStatus(
+    profileName: string,
+    signal?: AbortSignal,
+  ): Promise<ModelExecutionStatus> {
+    const pathName = requireProfilePathName(profileName)
+    return apiClient.request(
+      `/api/model-profiles/${pathName}/execution-status`,
+      {
+        decode: decodeModelExecutionStatus,
+        signal,
+      },
+    )
   },
 }

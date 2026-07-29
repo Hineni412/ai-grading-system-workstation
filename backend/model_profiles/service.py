@@ -6,6 +6,14 @@ from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
 from api_profiles import ApiProfileStore
+from backend.llm.execution import (
+    LLMExecutionGovernorRegistry,
+    LLMExecutionSettingsError,
+    execution_scope_key,
+    execution_snapshot_from_profile,
+    get_default_execution_governors,
+    validate_execution_profile_updates,
+)
 
 
 _PROFILE_NAME_PATTERN = re.compile(r"^[^\x00-\x1f\x7f/\\]{1,80}$")
@@ -18,6 +26,9 @@ _EDITABLE_FIELDS = frozenset(
         "config_base_url",
         "config_api_key",
         "config_model",
+        "request_speed_mode",
+        "max_concurrent_requests",
+        "requests_per_minute",
     }
 )
 _ENDPOINT_FIELDS = frozenset({"base_url", "config_base_url"})
@@ -39,8 +50,16 @@ class ModelProfileNotFound(LookupError):
 class ModelProfileService:
     """Public model-profile behavior over the machine-local profile store."""
 
-    def __init__(self, store: ApiProfileStore) -> None:
+    def __init__(
+        self,
+        store: ApiProfileStore,
+        *,
+        execution_governors: LLMExecutionGovernorRegistry | None = None,
+    ) -> None:
         self.store = store
+        self.execution_governors = (
+            execution_governors or get_default_execution_governors()
+        )
 
     def list_state(self) -> dict[str, Any]:
         profiles = self.store.load()
@@ -82,6 +101,24 @@ class ModelProfileService:
             raise ModelProfileNotFound("Model profile not found")
         return self.list_state()
 
+    def execution_status(self, profile_name: str) -> dict[str, int | str]:
+        name = _validated_profile_name(profile_name)
+        profile = next(
+            (
+                candidate
+                for candidate in self.store.load()
+                if _clean_existing_text(candidate.get("name")) == name
+            ),
+            None,
+        )
+        if profile is None:
+            raise ModelProfileNotFound("Model profile not found")
+        snapshot = execution_snapshot_from_profile(profile)
+        return self.execution_governors.status(
+            execution_scope_key(profile),
+            snapshot,
+        )
+
 
 def _validated_profile_name(value: object) -> str:
     name = str(value or "").strip()
@@ -90,12 +127,33 @@ def _validated_profile_name(value: object) -> str:
     return name
 
 
-def _validated_updates(values: Mapping[str, Any]) -> dict[str, str]:
+def _validated_updates(values: Mapping[str, Any]) -> dict[str, Any]:
     unknown = set(values) - _EDITABLE_FIELDS
     if unknown:
         raise ModelProfileInvalid("Model profile fields are invalid")
-    updates: dict[str, str] = {}
+    updates: dict[str, Any] = {}
+    execution_updates = {
+        key: value
+        for key, value in values.items()
+        if key
+        in {
+            "request_speed_mode",
+            "max_concurrent_requests",
+            "requests_per_minute",
+        }
+    }
+    if execution_updates:
+        try:
+            normalized_execution = validate_execution_profile_updates(
+                execution_updates
+            )
+        except LLMExecutionSettingsError as exc:
+            raise ModelProfileInvalid(str(exc)) from exc
+        for key in execution_updates:
+            updates[key] = normalized_execution[key]
     for field_name, raw_value in values.items():
+        if field_name in execution_updates:
+            continue
         if raw_value is None:
             continue
         value = str(raw_value).strip()
@@ -140,6 +198,7 @@ def _validated_endpoint(value: str) -> str:
 
 
 def _public_profile(profile: Mapping[str, Any]) -> dict[str, Any]:
+    execution = execution_snapshot_from_profile(profile)
     return {
         "name": _clean_existing_text(profile.get("name")),
         "base_url": _public_endpoint(profile.get("base_url")),
@@ -149,6 +208,9 @@ def _public_profile(profile: Mapping[str, Any]) -> dict[str, Any]:
         "config_base_url": _public_endpoint(profile.get("config_base_url")),
         "has_config_api_key": _has_nonempty_value(profile.get("config_api_key")),
         "config_model": _clean_existing_text(profile.get("config_model")),
+        "request_speed_mode": execution.mode,
+        "max_concurrent_requests": execution.max_in_flight,
+        "requests_per_minute": execution.requests_per_minute,
     }
 
 

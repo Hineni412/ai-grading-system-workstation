@@ -295,6 +295,8 @@ class LLMClient:
         prompt: str,
         model: str | None = None,
         extra_kwargs: dict[str, Any] | None = None,
+        *,
+        request_kind: LLMRequestKind = LLMRequestKind.CONFIG_GENERATION,
     ) -> dict[str, Any]:
         """Make exactly one model request and parse JSON locally without AI repair."""
         strict_kwargs = dict(extra_kwargs or {})
@@ -306,7 +308,7 @@ class LLMClient:
             expect_json=False,
             extra_kwargs=strict_kwargs,
             allow_parameter_fallback=False,
-            request_kind=LLMRequestKind.CONFIG_GENERATION,
+            request_kind=LLMRequestKind(request_kind),
             single_request=True,
         )
         return _parse_single_request_json(completion)

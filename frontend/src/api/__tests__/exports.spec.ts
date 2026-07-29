@@ -114,6 +114,44 @@ describe('file center API contract', () => {
     )
   })
 
+  it('normalizes visible Excel name-list options in the export request', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({
+        ...job,
+        payload: {
+          session_id: 7,
+          report_type: 'score_excel',
+          score_revision: 'a'.repeat(64),
+        },
+      }), {
+        status: 202,
+        headers: { 'content-type': 'application/json' },
+      }),
+    )
+
+    await exportsApi.submitReport(7, 'score_excel', false, {
+      hide_bottom_enabled: false,
+      hide_bottom_n: 8,
+      manual_hidden_student_ids: [9, 2, 9],
+    })
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/sessions/7/reports/export',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({
+          report_type: 'score_excel',
+          force_regenerate: false,
+          excel_options: {
+            hide_bottom_enabled: false,
+            hide_bottom_n: 0,
+            manual_hidden_student_ids: [2, 9],
+          },
+        }),
+      }),
+    )
+  })
+
   it('loads training export history and resolves a selected job safely', async () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch')
       .mockResolvedValueOnce(new Response(JSON.stringify({

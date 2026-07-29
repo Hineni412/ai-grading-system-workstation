@@ -620,6 +620,19 @@
   min-height: 58px;
 }
 
+.assembly-filter-row.is-difficulty {
+  min-height: 78px;
+}
+
+.assembly-filter-row .difficulty-range {
+  grid-column: auto;
+  padding-inline: 0;
+}
+
+.assembly-filter-row .difficulty-range__bands small {
+  font-size: 8px;
+}
+
 .assembly-filter-panel > .assembly-filter-row:last-child {
   border: 0;
 }
@@ -796,7 +809,7 @@
 }
 
 .assembly-filter-row.is-search {
-  grid-template-columns: 68px minmax(180px, 1fr) 150px auto;
+  grid-template-columns: 68px minmax(180px, 1fr) minmax(170px, 210px) auto;
 }
 
 .assembly-results-heading {

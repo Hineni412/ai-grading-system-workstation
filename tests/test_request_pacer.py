@@ -64,19 +64,19 @@ def test_concurrent_callers_reserve_distinct_future_slots() -> None:
     assert sorted(sleep_calls) == [1.0, 2.0, 3.0]
 
 
-def test_registry_reuses_pacer_for_same_config_and_kind() -> None:
+def test_registry_reuses_one_pacer_across_request_kinds() -> None:
     created: list[int] = []
     registry = LLMPacerRegistry(
         factory=lambda rpm: created.append(rpm) or FakePacer()
     )
 
     registry.acquire("profile-a", LLMRequestKind.GRADING, 60)
-    registry.acquire("profile-a", LLMRequestKind.GRADING, 60)
+    registry.acquire("profile-a", LLMRequestKind.TAGGING, 60)
 
     assert created == [60]
 
 
-def test_same_key_rpm_interleaving_tightens_one_pacer_and_never_loosens() -> None:
+def test_same_key_rpm_change_can_tighten_and_later_apply_a_saved_increase() -> None:
     created: list[FakePacer] = []
 
     def factory(rpm: int) -> FakePacer:
@@ -90,8 +90,26 @@ def test_same_key_rpm_interleaving_tightens_one_pacer_and_never_loosens() -> Non
     registry.acquire("profile-a", LLMRequestKind.GRADING, 60)
     registry.acquire("profile-a", LLMRequestKind.GRADING, 120)
 
-    assert len(created) == 1
+    assert len(created) == 2
     assert created[0].requests_per_minute == 60
+    assert created[1].requests_per_minute == 120
+
+
+def test_explicit_saved_rpm_is_not_reverted_by_an_older_caller() -> None:
+    created: list[FakePacer] = []
+
+    def factory(rpm: int) -> FakePacer:
+        pacer = FakePacer(rpm)
+        created.append(pacer)
+        return pacer
+
+    registry = LLMPacerRegistry(factory=factory)
+    registry.configure("profile-a", 600)
+
+    registry.acquire("profile-a", LLMRequestKind.GRADING, 60)
+
+    assert len(created) == 1
+    assert created[0].requests_per_minute == 600
 
 
 def test_tightening_preserves_reserved_state_without_fresh_immediate_slot() -> None:
@@ -107,10 +125,9 @@ def test_tightening_preserves_reserved_state_without_fresh_immediate_slot() -> N
 
     registry.acquire("profile-a", LLMRequestKind.GRADING, 120)
     registry.acquire("profile-a", LLMRequestKind.GRADING, 60)
-    registry.acquire("profile-a", LLMRequestKind.GRADING, 120)
 
     assert len(created) == 1
-    assert clock.sleep_calls == [1.0, 1.0]
+    assert clock.sleep_calls == [1.0]
 
 
 def test_registry_creates_one_pacer_for_simultaneous_first_access() -> None:

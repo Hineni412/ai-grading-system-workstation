@@ -148,6 +148,35 @@ def test_projection_preserves_stable_hidden_identity_and_immutable_values() -> N
         rows[0].score = 9  # type: ignore[misc]
 
 
+def test_part_level_deduction_policy_is_projected_and_edited_on_the_first_row() -> None:
+    payload = _payload()
+    payload["rubric"]["questions"][0]["parts"][0]["deduction_policy"] = (
+        "缺少全等条件扣对应步骤分；没有最终结论扣 1 分"
+    )
+    rows = project_config_editor(payload)
+
+    assert rows[0].part_deduction_rules == (
+        "缺少全等条件扣对应步骤分",
+        "没有最终结论扣 1 分",
+    )
+    assert rows[1].part_deduction_rules == ()
+
+    updated = apply_config_editor_changes(
+        payload,
+        edits=(
+            ConfigEditorEdit(
+                row_id=rows[0].row_id,
+                part_deduction_rules=("缺少对应顶点顺序扣 1 分",),
+            ),
+        ),
+        commands=(),
+    )
+
+    assert updated["rubric"]["questions"][0]["parts"][0]["deduction_policy"] == [
+        "缺少对应顶点顺序扣 1 分"
+    ]
+
+
 def test_apply_changes_uses_row_id_deep_copies_and_recomputes_score_totals() -> None:
     payload = _payload()
     original = copy.deepcopy(payload)
@@ -273,7 +302,10 @@ def test_split_accepts_real_streamlit_range_and_preserves_total(count: int) -> N
     question = updated["rubric"]["questions"][0]
     assert len(question["parts"]) == count
     assert sum(part["part_score"] for part in question["parts"]) == 6
-    assert editor_part_ids(updated)[0] == ("Q12", tuple(f"Q12-B{i}" for i in range(1, count + 1)))
+    assert editor_part_ids(updated)[0] == (
+        "Q12",
+        tuple(f"Q12(P{i})" for i in range(1, count + 1)),
+    )
 
 
 @pytest.mark.parametrize("count", [1, 21])
@@ -287,35 +319,85 @@ def test_split_rejects_counts_outside_real_streamlit_range(count: int) -> None:
     assert exc.value.issues[0]["code"] == "invalid_split_count"
 
 
-def test_replace_parts_requires_unique_ids_preserves_ids_and_does_not_mutate_source() -> None:
+def test_replace_parts_normalizes_legacy_ids_and_does_not_mutate_source() -> None:
     payload = _payload()
     original = copy.deepcopy(payload)
     command = ReplaceScoringUnitsCommand(
         kind="replace_parts",
         question_id="Q12",
         parts=(
-            ManualPartInput(part_id="老师-甲", score=2, core_goal="目标甲"),
-            ManualPartInput(part_id="老师-乙", score=4, core_goal="目标乙"),
+            ManualPartInput(part_id="P1", score=2, core_goal="目标甲"),
+            ManualPartInput(part_id="Q12_2", score=4, core_goal="目标乙"),
         ),
     )
 
     updated = apply_config_editor_changes(payload, edits=(), commands=(command,))
 
     assert payload == original
-    assert editor_part_ids(updated)[0] == ("Q12", ("老师-甲", "老师-乙"))
-    assert [part["answer"] for part in updated["answer_key"]["questions"][0]["parts"]] == ["", ""]
+    assert editor_part_ids(updated)[0] == (
+        "Q12",
+        ("Q12(P1)", "Q12(P2)"),
+    )
+    assert [
+        part["answer"]
+        for part in updated["answer_key"]["questions"][0]["parts"]
+    ] == ["证明略", ""]
 
-    duplicate = ReplaceScoringUnitsCommand(
+    ambiguous_aliases = ReplaceScoringUnitsCommand(
         kind="replace_parts",
         question_id="Q12",
         parts=(
             ManualPartInput(part_id="P1", score=3, core_goal="甲"),
-            ManualPartInput(part_id="P1", score=3, core_goal="乙"),
+            ManualPartInput(part_id="Q12(1)", score=3, core_goal="乙"),
         ),
     )
     with pytest.raises(ConfigEditorValidationError) as exc:
-        apply_config_editor_changes(payload, edits=(), commands=(duplicate,))
+        apply_config_editor_changes(
+            payload,
+            edits=(),
+            commands=(ambiguous_aliases,),
+        )
     assert exc.value.issues[0]["code"] == "duplicate_part_id"
+
+
+def test_replace_parts_rejects_opaque_internal_id_without_guessing() -> None:
+    command = ReplaceScoringUnitsCommand(
+        kind="replace_parts",
+        question_id="Q12",
+        parts=(
+            ManualPartInput(part_id="老师-甲", score=2, core_goal="目标甲"),
+            ManualPartInput(part_id="P2", score=4, core_goal="目标乙"),
+        ),
+    )
+
+    with pytest.raises(ConfigEditorValidationError) as exc:
+        apply_config_editor_changes(
+            _payload(),
+            edits=(),
+            commands=(command,),
+        )
+
+    assert exc.value.issues[0]["code"] == "invalid_part_id"
+
+
+def test_replace_parts_folds_one_part_to_parent_and_preserves_answer() -> None:
+    command = ReplaceScoringUnitsCommand(
+        kind="replace_parts",
+        question_id="Q12",
+        parts=(
+            ManualPartInput(part_id="Q12(1)", score=6, core_goal="完整作答"),
+        ),
+    )
+
+    updated = apply_config_editor_changes(
+        _payload(),
+        edits=(),
+        commands=(command,),
+    )
+
+    assert editor_part_ids(updated)[0] == ("Q12", ("Q12",))
+    assert updated["answer_key"]["questions"][0]["parts"][0]["part_id"] == "Q12"
+    assert updated["answer_key"]["questions"][0]["parts"][0]["answer"] == "证明略"
 
 
 def test_whole_solution_edit_restores_legacy_policy_semantics() -> None:

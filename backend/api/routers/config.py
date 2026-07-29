@@ -76,6 +76,7 @@ from backend.config_workspace.editor import (
     SplitScoringUnitCommand,
     apply_config_editor_changes,
 )
+from backend.config_generation.quality import blocking_quality_question_ids
 from backend.config_workspace.publish import (
     ConfigRevisionConflict,
     editor_response,
@@ -526,7 +527,17 @@ def _editor_edits(values: list[Any]) -> tuple[ConfigEditorEdit, ...]:
     return tuple(
         ConfigEditorEdit(
             **{
-                key: (tuple(value) if key in {"accepted_answers", "required_elements", "deduction_rules"} and value is not None else value)
+                key: (
+                    tuple(value)
+                    if key in {
+                        "accepted_answers",
+                        "required_elements",
+                        "deduction_rules",
+                        "part_deduction_rules",
+                    }
+                    and value is not None
+                    else value
+                )
                 for key, value in item.model_dump().items()
             }
         )
@@ -924,6 +935,9 @@ def generate_session_config(
                 "mode": "generate",
                 "generation_mode": "batched",
                 "input_id": input_id,
+                "sync_to_question_bank": bool(
+                    request.sync_to_question_bank
+                ),
             },
         )
         return response
@@ -957,10 +971,14 @@ def generate_session_config_from_source(
             source_revision=request.source_revision,
         )
         decisions = [
-            QuestionDecision(**decision.model_dump())
+            QuestionDecision(**decision.model_dump(exclude_defaults=True))
             for decision in request.decisions
         ]
-        source_service.prepare_generation_input(record, decisions, request.generation_mode)
+        prepared = source_service.prepare_generation_input(
+            record,
+            decisions,
+            request.generation_mode,
+        )
     except ConfigSourceError as exc:
         raise _source_api_error(exc) from None
     except (TypeError, ValueError):
@@ -970,6 +988,37 @@ def generate_session_config_from_source(
             "Config generation request is invalid",
         ) from None
 
+    loaded_regeneration = None
+    if request.regenerate_question_ids is not None:
+        loaded_regeneration = load_editor_config(db, session_id)
+        if (
+            not loaded_regeneration.configured
+            or loaded_regeneration.revision != request.base_revision
+        ):
+            raise ApiError(
+                409,
+                "config_revision_conflict",
+                "Configuration changed before regeneration started",
+            )
+        blocked_ids = set(
+            blocking_quality_question_ids(loaded_regeneration.payload)
+        )
+        requested_ids = set(request.regenerate_question_ids)
+        available_ids = {
+            str(block.get("question_id") or "").strip()
+            for block in prepared.confirmed_blocks
+        }
+        if (
+            not requested_ids
+            or not requested_ids.issubset(blocked_ids)
+            or not requested_ids.issubset(available_ids)
+        ):
+            raise ApiError(
+                409,
+                "config_question_regeneration_not_available",
+                "Requested questions are not current blocking questions",
+            )
+
     input_id = stage_config_source_generation_input(
         upload_config_dir,
         session_id=int(session_id),
@@ -978,18 +1027,36 @@ def generate_session_config_from_source(
         generation_mode=request.generation_mode,
         source_id=record.source_id,
         source_revision=record.source_revision,
-        decisions=[decision.model_dump() for decision in request.decisions],
+        decisions=[
+            decision.model_dump(exclude_defaults=True)
+            for decision in request.decisions
+        ],
+        sync_to_question_bank=bool(request.sync_to_question_bank),
+        existing_payload=(
+            loaded_regeneration.payload
+            if loaded_regeneration is not None
+            else None
+        ),
+        regenerate_question_ids=request.regenerate_question_ids,
+        expected_revision=request.base_revision,
     )
     try:
         response, created = _submit_config_generation(
             manager,
             {
                 "session_id": int(session_id),
-                "mode": "generate",
+                "mode": (
+                    "regenerate_questions"
+                    if request.regenerate_question_ids is not None
+                    else "generate"
+                ),
                 "generation_mode": request.generation_mode,
                 "input_id": input_id,
                 "source_id": record.source_id,
                 "source_revision": record.source_revision,
+                "sync_to_question_bank": bool(
+                    request.sync_to_question_bank
+                ),
                 **_request_identity(request),
             },
         )
@@ -1044,6 +1111,7 @@ def retry_session_config_generation(
     )
     if (
         source.job_type != "config_generation"
+        or str(source.payload.get("mode") or "") == "regenerate_questions"
         or source.status not in {"succeeded", "failed", "cancelled"}
         or not (
             retry_failed_batches
@@ -1096,6 +1164,9 @@ def retry_session_config_generation(
         "generation_mode": "batched",
         "source_job_id": int(request.source_job_id),
         "input_id": str(source.payload.get("input_id") or ""),
+        "sync_to_question_bank": bool(
+            source.payload.get("sync_to_question_bank")
+        ),
         **_request_identity(request),
     }
     source_id = str(source.payload.get("source_id") or "").strip()

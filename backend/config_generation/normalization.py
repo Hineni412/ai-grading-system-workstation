@@ -14,6 +14,13 @@ from score_policy import (
     _normalize_type,
     enforce_integer_scores_by_type,
 )
+from question_id_contract import canonical_parent_id
+
+from .contract import (
+    attach_structure_repairs,
+    canonicalize_new_generated_structure_ids,
+    is_simple_objective_question,
+)
 
 _GRADING_CONFIG_KNOWLEDGE_KEYS = frozenset(
     {"knowledge_id", "knowledge_ids", "knowledge_name", "knowledge_points"}
@@ -57,6 +64,21 @@ def _has_legacy_knowledge_metadata(question: dict[str, Any]) -> bool:
 def _looks_like_serialized_answer_list(value: Any) -> bool:
     return bool(re.fullmatch(r"\s*\[[\s\S]*\]\s*", str(value or "")))
 
+
+def _serialized_answer_values(value: Any) -> list[str] | None:
+    text = str(value or "").strip()
+    if not _looks_like_serialized_answer_list(text):
+        return None
+    try:
+        parsed = ast.literal_eval(text)
+    except (SyntaxError, ValueError):
+        return None
+    if not isinstance(parsed, (list, tuple)) or not parsed:
+        return None
+    values = [str(item).strip() for item in parsed if str(item).strip()]
+    return values or None
+
+
 def _looks_like_serialized_knowledge_sequence(value: Any) -> bool:
     return bool(
         re.fullmatch(
@@ -67,15 +89,7 @@ def _looks_like_serialized_knowledge_sequence(value: Any) -> bool:
 
 def _normalize_serialized_answer_list(value: Any) -> str:
     text = str(value or "").strip()
-    if not _looks_like_serialized_answer_list(text):
-        return text
-    try:
-        parsed = ast.literal_eval(text)
-    except (SyntaxError, ValueError):
-        return text
-    if not isinstance(parsed, (list, tuple)) or not parsed:
-        return text
-    values = [str(item).strip() for item in parsed if str(item).strip()]
+    values = _serialized_answer_values(text)
     return "、".join(values) if values else text
 
 def normalize_generated_config_schema(payload: dict[str, Any]) -> None:
@@ -130,10 +144,13 @@ def normalize_generated_config_schema(payload: dict[str, Any]) -> None:
         has_legacy_knowledge = _has_legacy_knowledge_metadata(question)
         if has_legacy_knowledge:
             _promote_nested_question_knowledge(question)
-        qtype = _normalize_question_type(
+        raw_question_type = (
             question.get("question_type")
             or question.get("type")
         )
+        if not str(raw_question_type or "").strip():
+            raw_question_type = _infer_missing_question_type_from_parts(question)
+        qtype = _normalize_question_type(raw_question_type)
         question["question_type"] = qtype
         question["max_score"] = _safe_float(
             question.get("max_score")
@@ -193,9 +210,17 @@ def normalize_new_generated_config_payload(payload: dict[str, Any]) -> None:
         return
     strip_generated_config_knowledge_fields(payload)
     normalize_generated_config_schema(payload)
+    rubric = payload.get("rubric")
+    questions = rubric.get("questions") if isinstance(rubric, dict) else None
+    for question in questions or []:
+        if isinstance(question, dict):
+            # Only local teacher decisions may later change this to true.
+            question["question_type_confirmed"] = False
+    repairs = canonicalize_new_generated_structure_ids(payload)
     canonical = canonicalize_grading_config_payload(payload)
     payload.clear()
     payload.update(canonical)
+    attach_structure_repairs(payload, repairs)
     # Future schema repairs must not reintroduce question-bank-owned fields.
     strip_generated_config_knowledge_fields(payload)
 
@@ -203,17 +228,8 @@ def normalize_new_generated_config_payload(payload: dict[str, Any]) -> None:
 def _canonical_question_id(value: Any, fallback: str = "") -> str:
     raw = str(value or "").strip()
     if not raw:
-        return str(fallback or "").strip()
-    match = re.match(r"^(?:Q|q)\s*(\d{1,2})$", raw)
-    if match:
-        return f"Q{int(match.group(1))}"
-    match = re.match(r"^(\d{1,2})$", raw)
-    if match:
-        return f"Q{int(match.group(1))}"
-    match = re.search(r"(\d{1,2})", raw)
-    if re.match(r"^\\D+\\d{1,2}", raw) and match:
-        return f"Q{int(match.group(1))}"
-    return raw
+        raw = str(fallback or "").strip()
+    return canonical_parent_id(raw) or raw
 
 def _safe_knowledge_sequence(value: Any) -> list[str] | None:
     candidate = value
@@ -580,6 +596,7 @@ def _fix_question_sum(questions: list[Any], target_total: float) -> None:
 def _normalize_answer_item(answer_item: dict[str, Any], rubric_question: dict[str, Any]) -> None:
     _coerce_answer_item_aliases(answer_item)
     qid = str(rubric_question.get("question_id") or answer_item.get("question_id") or "")
+    qtype = str(rubric_question.get("question_type") or "").strip().lower()
     answer_item["question_id"] = qid
     direct_answers = _extract_direct_answer_values(answer_item)
     canonical = (
@@ -625,6 +642,23 @@ def _normalize_answer_item(answer_item: dict[str, Any], rubric_question: dict[st
                 continue
             _coerce_answer_part_aliases(part)
             part_direct_answers = _extract_direct_answer_values(part)
+            step_solution_texts = (
+                _extract_step_solution_texts(part)
+                if qtype in {"calculation", "proof", "comprehensive"}
+                else []
+            )
+            if (
+                not part_direct_answers
+                and qtype
+                in {
+                    "choice",
+                    "fill_blank",
+                    "judgement",
+                    "true_false",
+                    "direct_answer",
+                }
+            ):
+                part_direct_answers = _extract_step_answer_values(part)
             part["answer_values"] = _string_list(part_direct_answers)
             part.setdefault("part_id", qid if len(answer_item["parts"]) == 1 else f"{qid}({idx})")
             part_answer = (
@@ -632,17 +666,19 @@ def _normalize_answer_item(answer_item: dict[str, Any], rubric_question: dict[st
                 or part.get("canonical_answer")
                 or part.get("standard_answer")
                 or ("；".join(part["answer_values"]) if part["answer_values"] else "")
+                or ("\n".join(step_solution_texts) if step_solution_texts else "")
                 or canonical
             )
             part["answer"] = str(part_answer)
             if len(part["answer_values"]) == 1 and not part.get("accepted_forms"):
                 part["accepted_forms"] = _string_list(part_direct_answers)
             part.setdefault("analysis", "")
-            if not isinstance(part.get("step_milestones"), list):
-                part["step_milestones"] = _string_list(part.get("step_milestones"))
+            existing_milestones = _string_list(part.get("step_milestones"))
+            part["step_milestones"] = list(
+                dict.fromkeys([*existing_milestones, *step_solution_texts])
+            )
 
     if not str(answer_item.get("canonical_answer") or "").strip():
-        qtype = str(rubric_question.get("question_type") or "").strip()
         if qtype in {"choice", "fill_blank", "judgement", "true_false", "direct_answer"}:
             first_part_answer = next(
                 (
@@ -666,7 +702,13 @@ def _coerce_answer_item_aliases(answer_item: dict[str, Any]) -> None:
 
 def _coerce_answer_part_aliases(part: dict[str, Any]) -> None:
     if not str(part.get("answer") or "").strip():
-        for key in ("answer_content", "standard_answer", "canonical_answer", "correct_answer"):
+        for key in (
+            "answer_content",
+            "standard_answer",
+            "canonical_answer",
+            "correct_answer",
+            "final_answer",
+        ):
             value = part.get(key)
             if value is not None and str(value).strip():
                 part["answer"] = str(value).strip()
@@ -712,6 +754,63 @@ def _extract_direct_answer_values(item: dict[str, Any]) -> list[Any]:
         values.append(answer_content)
     return values
 
+def _extract_step_answer_values(part: dict[str, Any]) -> list[Any]:
+    values: list[Any] = []
+    steps = part.get("steps")
+    if not isinstance(steps, list):
+        return values
+    for step in steps:
+        if not isinstance(step, dict):
+            continue
+        value = next(
+            (
+                step.get(alias)
+                for alias in (
+                    "answer_value",
+                    "correct_value",
+                    "answer",
+                    "standard_answer",
+                    "canonical_answer",
+                )
+                if step.get(alias) is not None
+                and str(step.get(alias)).strip()
+            ),
+            None,
+        )
+        if value is not None:
+            values.append(value)
+    return values
+
+
+def _extract_step_solution_texts(part: dict[str, Any]) -> list[str]:
+    values: list[str] = []
+    steps = part.get("steps")
+    if not isinstance(steps, list):
+        return values
+    for step in steps:
+        if not isinstance(step, dict):
+            continue
+        value = next(
+            (
+                str(step.get(alias)).strip()
+                for alias in (
+                    "step_content",
+                    "correct_value",
+                    "answer_value",
+                    "answer",
+                    "standard_answer",
+                    "canonical_answer",
+                )
+                if step.get(alias) is not None
+                and str(step.get(alias)).strip()
+            ),
+            "",
+        )
+        if value:
+            values.append(value)
+    return list(dict.fromkeys(values))
+
+
 def _should_treat_as_direct_answer_question(
     qtype: str,
     question: dict[str, Any],
@@ -737,7 +836,6 @@ def _augment_answer_equivalences(answer_item: dict[str, Any], qtype: str) -> Non
     if qtype == "choice":
         return
 
-    canonical = str(answer_item.get("canonical_answer") or "").strip()
     top_level_manually_edited = bool(answer_item.get("_manual_accepted_forms"))
     parts = answer_item.get("parts")
     subjective_multi_part = (
@@ -745,6 +843,33 @@ def _augment_answer_equivalences(answer_item: dict[str, Any], qtype: str) -> Non
         and isinstance(parts, list)
         and len([part for part in parts if isinstance(part, dict)]) > 1
     )
+    answer_parts = (
+        [part for part in parts if isinstance(part, dict)]
+        if isinstance(parts, list)
+        else []
+    )
+    serialized_canonical = _serialized_answer_values(
+        answer_item.get("canonical_answer")
+    )
+    part_answers = [
+        str(part.get("answer") or "").strip()
+        for part in answer_parts
+    ]
+    if (
+        subjective_multi_part
+        and serialized_canonical is not None
+        and len(serialized_canonical) == len(answer_parts)
+        and all(
+            answer
+            and not _looks_like_serialized_answer_list(answer)
+            for answer in part_answers
+        )
+    ):
+        answer_item["canonical_answer"] = "；".join(
+            f"（{index}）{answer}"
+            for index, answer in enumerate(part_answers, start=1)
+        )
+    canonical = str(answer_item.get("canonical_answer") or "").strip()
     if isinstance(parts, list):
         for part in parts:
             if not isinstance(part, dict):
@@ -845,6 +970,10 @@ def _normalize_rubric_question(question: dict[str, Any], answer_item: dict[str, 
             )
             part["part_id"] = str(part.get("part_id") or (qid if part_count == 1 else f"{qid}({idx})"))
             part["part_score"] = part_score
+            # part_score is the single canonical full score for a subquestion.
+            # A stale nested max_score previously survived whole-paper scoring
+            # and could override the visible part_score during grading.
+            part.pop("max_score", None)
             step_alias = _best_step_alias(part)
             if step_alias is not part.get("steps"):
                 part["steps"] = step_alias
@@ -1162,14 +1291,49 @@ _VALID_RESPONSE_MODES = {
     "visual_construction",
 }
 
+_CHOICE_RESPONSE_MODE_ALIASES = {
+    "choice",
+    "single_choice",
+    "multiple_choice",
+    "single_select",
+    "multiple_select",
+    "select_one",
+    "select_many",
+}
+
 _NON_PROCESS_RESPONSE_MODES = {
     "exact_objective",
     "short_answer_points",
     "visual_construction",
 }
 
+
+def _normalize_response_mode_token(value: Any) -> str:
+    return re.sub(r"[\s-]+", "_", str(value or "").strip().lower())
+
+
+def _infer_missing_question_type_from_parts(question: dict[str, Any]) -> str:
+    """Use only unanimous, explicit choice-mode evidence to repair a missing type."""
+    parts = question.get("parts")
+    if not isinstance(parts, list) or not parts:
+        return ""
+
+    response_modes: list[str] = []
+    for part in parts:
+        if not isinstance(part, dict):
+            return ""
+        response_mode = _normalize_response_mode_token(part.get("response_mode"))
+        if not response_mode:
+            return ""
+        response_modes.append(response_mode)
+
+    if all(mode in _CHOICE_RESPONSE_MODE_ALIASES for mode in response_modes):
+        return "choice"
+    return ""
+
+
 def _infer_part_response_mode(question: dict[str, Any], part: dict[str, Any]) -> str:
-    explicit = str(part.get("response_mode") or "").strip().lower()
+    explicit = _normalize_response_mode_token(part.get("response_mode"))
     aliases = {
         "direct_answer": "short_answer_points",
         "answer_only": "short_answer_points",
@@ -1231,7 +1395,7 @@ def _ensure_solution_hard_rules(question: dict[str, Any]) -> None:
             if not isinstance(part, dict):
                 continue
 
-            part_score = _safe_float(part.get("part_score") or part.get("max_score"), max_score)
+            part_score = _safe_float(part.get("part_score"), max_score)
             response_mode = _infer_part_response_mode(question, part)
             part["response_mode"] = response_mode
 
@@ -1470,7 +1634,10 @@ def validate_generated_config(payload: dict[str, Any]) -> None:
             )
         # 同类同分仅约束客观题（choice/fill_blank/judgement/true_false）；
         # 解答类大题（calculation/proof/comprehensive）允许各题分值不同。
-        if _normalize_type(qtype) in OBJECTIVE_TYPES:
+        if (
+            _normalize_type(qtype) in OBJECTIVE_TYPES
+            and is_simple_objective_question(item)
+        ):
             if qtype in scores_by_type and abs(scores_by_type[qtype] - max_score) > 1e-6:
                 raise ValueError(f"All questions with question_type={qtype} must use the same max_score")
             scores_by_type[qtype] = max_score

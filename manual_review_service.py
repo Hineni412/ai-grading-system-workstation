@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import math
-import re
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -12,6 +11,11 @@ from answer_region_session_lock import get_answer_region_session_lock
 from answer_region_geometry import answer_regions_with_template_source_sizes
 from backend.repositories.access import GradingRepositoryAccess, as_grading_repositories
 from path_manager import resolve_stored_file_path
+from question_id_contract import (
+    QuestionIdContractError,
+    canonicalize_question_document,
+    resolve_known_question_id,
+)
 
 
 ANNOTATION_RETRY_MESSAGE = "Annotation rendering failed; retry required."
@@ -58,64 +62,81 @@ class ManualReviewService:
             data_root=self._data_root(),
         )
         details = self.results.get_result_details(result_id)
-
-        detail_map = {str(item.get("question_id")): item for item in details}
+        max_score_map = self._load_max_score_map(session_id)
+        highlighted = {
+            resolve_known_question_id(question_id, max_score_map) or str(question_id).strip()
+            for question_id in (highlight_qids or [])
+            if str(question_id or "").strip()
+        }
         question_scores: dict[str, dict[str, Any]] = {}
+        source_id_by_question: dict[str, str] = {}
 
-        for region in regions:
-            qid = str(region.get("mapped_question_id") or region.get("detected_question_id") or "")
-            if not qid:
+        for detail in details:
+            raw_qid = str(detail.get("question_id") or "").strip()
+            if not raw_qid:
                 continue
+            qid = resolve_known_question_id(raw_qid, max_score_map)
+            if qid is None:
+                # Keep exact historical behavior only when no usable rubric is
+                # available.  With a current rubric, unknown identities are
+                # excluded instead of being guessed into another question.
+                if max_score_map:
+                    continue
+                qid = raw_qid
+            previous_source = source_id_by_question.get(qid)
+            if previous_source is not None and previous_source != raw_qid:
+                raise QuestionIdContractError(
+                    f"多个历史题号同时对应当前题号 {qid}: "
+                    f"{previous_source!r}, {raw_qid!r}"
+                )
+            source_id_by_question[qid] = raw_qid
 
-            detail = detail_map.get(qid)
-            if detail:
-                if highlight_qids is not None:
-                    if qid not in highlight_qids:
-                        continue
+            if highlight_qids is not None:
+                if qid not in highlighted:
+                    continue
+            else:
+                confidence_raw = detail.get("confidence_score")
+                reason_raw = detail.get("deduction_reason")
+                cat_raw = detail.get("error_category")
+
+                confidence = None
+                if confidence_raw is not None:
+                    import pandas as pd
+                    if not pd.isna(confidence_raw):
+                        try:
+                            confidence = float(confidence_raw)
+                        except ValueError:
+                            pass
+
+                if confidence is not None and confidence < 50:
+                    is_substantive = True
                 else:
-                    confidence_raw = detail.get("confidence_score")
-                    reason_raw = detail.get("deduction_reason")
-                    cat_raw = detail.get("error_category")
-                    
-                    confidence = None
-                    if confidence_raw is not None:
-                        import pandas as pd
-                        if not pd.isna(confidence_raw):
-                            try:
-                                confidence = float(confidence_raw)
-                            except ValueError:
-                                pass
-                                
-                    if confidence is not None and confidence < 50:
+                    reason = str(reason_raw or "").strip() if reason_raw is not None and str(reason_raw).lower() not in ("nan", "none", "<na>") else ""
+                    cat = str(cat_raw or "").strip() if cat_raw is not None and str(cat_raw).lower() not in ("nan", "none", "<na>") else ""
+                    name_only_markers = ["姓名", "名字", "学生名", "ocr", "OCR"]
+                    review_markers = ["模糊", "看不清", "争议", "无法判断", "无法识别", "需复核", "复核", "遮挡", "请人工", "未确"]
+
+                    is_substantive = False
+                    if confidence is not None and confidence >= 50 and cat != "提示注入":
+                        is_substantive = False
+                    elif cat in ("未作答", "作废答案"):
+                        pass
+                    elif "未作答" in reason and len(reason) < 15:
+                        pass
+                    elif any(m in reason for m in review_markers) or "需复核" in cat:
                         is_substantive = True
                     else:
-                        reason = str(reason_raw or "").strip() if reason_raw is not None and str(reason_raw).lower() not in ("nan", "none", "<na>") else ""
-                        cat = str(cat_raw or "").strip() if cat_raw is not None and str(cat_raw).lower() not in ("nan", "none", "<na>") else ""
-                        name_only_markers = ["姓名", "名字", "学生名", "ocr", "OCR"]
-                        review_markers = ["模糊", "看不清", "争议", "无法判断", "无法识别", "需复核", "复核", "遮挡", "请人工", "未确"]
-                        
-                        is_substantive = False
-                        if confidence is not None and confidence >= 50 and cat != "提示注入":
-                            is_substantive = False
-                        elif cat in ("未作答", "作废答案"):
-                            pass
-                        elif "未作答" in reason and len(reason) < 15:
-                            pass
-                        elif any(m in reason for m in review_markers) or "需复核" in cat:
-                            is_substantive = True
-                        else:
-                            is_substantive = bool(reason and not any(m in reason for m in name_only_markers))
-                            
-                    if not is_substantive:
-                        continue
-                        
-                question_scores[qid] = {
-                    "score_awarded": detail.get("score_awarded"),
-                    "max_score": None,
-                    "deduction_reason": detail.get("deduction_reason"),
-                }
+                        is_substantive = bool(reason and not any(m in reason for m in name_only_markers))
 
-        max_score_map = self._load_max_score_map(session_id)
+                if not is_substantive:
+                    continue
+
+            question_scores[qid] = {
+                "score_awarded": detail.get("score_awarded"),
+                "max_score": None,
+                "deduction_reason": detail.get("deduction_reason"),
+            }
+
         for qid, item in question_scores.items():
             if qid in max_score_map:
                 item["max_score"] = max_score_map[qid]
@@ -129,10 +150,32 @@ class ManualReviewService:
         front_out = output_dir / f"result_{result_id}_{render_id}_front_annotated.jpg"
         back_out = output_dir / f"result_{result_id}_{render_id}_back_annotated.jpg"
 
-        filtered_regions = [
-            r for r in regions 
-            if str(r.get("mapped_question_id") or r.get("detected_question_id") or "") in question_scores
-        ]
+        filtered_regions: list[dict[str, Any]] = []
+        for source_region in regions:
+            raw_region_id = str(
+                source_region.get("mapped_question_id")
+                or source_region.get("detected_question_id")
+                or ""
+            ).strip()
+            canonical_region_id = resolve_known_question_id(
+                raw_region_id,
+                max_score_map,
+            )
+            if canonical_region_id is None:
+                if max_score_map:
+                    continue
+                canonical_region_id = raw_region_id
+            if canonical_region_id not in question_scores:
+                continue
+            region = dict(source_region)
+            region["mapped_question_id"] = canonical_region_id
+            detected = str(region.get("detected_question_id") or "").strip()
+            region["detected_question_id"] = (
+                resolve_known_question_id(detected, max_score_map)
+                if detected
+                else None
+            ) or canonical_region_id
+            filtered_regions.append(region)
 
         try:
             front_path, back_path = render_annotated_paper(
@@ -335,7 +378,15 @@ class ManualReviewService:
 
         try:
             rubric = json.loads(rubric_path.read_text(encoding="utf-8"))
-        except Exception:
+            if not isinstance(rubric, dict):
+                return {}
+            rubric = canonicalize_question_document(rubric)
+        except (
+            OSError,
+            UnicodeDecodeError,
+            json.JSONDecodeError,
+            QuestionIdContractError,
+        ):
             return {}
 
         result: dict[str, float] = {}
@@ -362,7 +413,8 @@ class ManualReviewService:
                     if not pid:
                         continue
                     try:
-                        result[pid] = float(part.get("part_score", 0))
+                        if pid != qid:
+                            result[pid] = float(part.get("part_score", 0))
                     except Exception:
                         continue
 
@@ -376,11 +428,4 @@ class ManualReviewService:
 
 
 def _score_bucket_id(question_id: str, score_map: dict[str, float]) -> str | None:
-    qid = str(question_id or "").strip()
-    if qid in score_map:
-        return qid
-    match = re.match(r"^(Q\d+)(?:\(|（|-)", qid)
-    parent_id = match.group(1) if match else None
-    if parent_id and parent_id in score_map:
-        return parent_id
-    return None
+    return resolve_known_question_id(question_id, score_map)

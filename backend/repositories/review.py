@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import math
-import re
 from typing import Any
 
 from backend.repositories.base import RepositorySession, RepositorySessionProvider
 from backend.repositories.results import _safe_json_loads
+from question_id_contract import question_id_coordinates
 
 
 class ReviewAdjustmentOwnershipError(ValueError):
@@ -64,6 +64,11 @@ def _nonblank_text(value: Any, field_name: str) -> str:
     if not text:
         raise ValueError(f"{field_name} must be nonblank.")
     return text
+
+
+def _optional_nonblank_text(value: Any) -> str | None:
+    text = str(value or "").strip()
+    return text or None
 
 
 def _integer_at_least(value: Any, field_name: str, minimum: int) -> int:
@@ -147,6 +152,10 @@ def _normalize_teacher_score_confirmation(
         ),
         "result_id": result_id,
         "detail_id": detail_id,
+        "detail_question_id": (
+            _optional_nonblank_text(raw.get("detail_question_id"))
+            or _nonblank_text(raw.get("question_id"), "question_id")
+        ),
     }
 
 
@@ -177,16 +186,21 @@ def _validate_teacher_score_lock_revision(
 
 
 def _region_matches_question(region_question: str, requested_question: str) -> bool:
-    region_value = str(region_question or "").strip()
-    requested_value = str(requested_question or "").strip()
-    if region_value == requested_value:
+    region_identity = question_id_coordinates(region_question)
+    requested_identity = question_id_coordinates(requested_question)
+    if region_identity is None or requested_identity is None:
+        return (
+            str(region_question or "").strip()
+            == str(requested_question or "").strip()
+        )
+    if region_identity == requested_identity:
         return True
-    region_match = re.match(r"^(?:Q)?(\d+)", region_value)
-    requested_match = re.match(r"^(?:Q)?(\d+)", requested_value)
-    return bool(
-        region_match
-        and requested_match
-        and region_match.group(1) == requested_match.group(1)
+    return (
+        region_identity[0] == requested_identity[0]
+        and (
+            region_identity[1] is None
+            or requested_identity[1] is None
+        )
     )
 
 
@@ -399,6 +413,7 @@ class ReviewRepository:
                 requested_session_id,
                 item["student_id"],
                 item["question_id"],
+                detail_question_id=item["detail_question_id"],
                 result_id=item["result_id"],
                 detail_id=item["detail_id"],
                 source_target_type=item["source_target_type"],
@@ -554,6 +569,7 @@ class ReviewRepository:
         student_id: int,
         question_id: str,
         *,
+        detail_question_id: str,
         result_id: int | None,
         detail_id: int | None,
         source_target_type: str,
@@ -562,24 +578,29 @@ class ReviewRepository:
         if result_id is not None and detail_id is not None:
             row = self.session.connection.execute(
                 """
-                SELECT sd.id AS detail_id, sd.result_id
+                SELECT
+                    sd.id AS detail_id,
+                    sd.result_id,
+                    sd.question_id
                 FROM session_details sd
                 JOIN session_results sr ON sr.id = sd.result_id
                 WHERE sd.id = ?
                   AND sd.result_id = ?
                   AND sr.session_id = ?
                   AND sr.student_id = ?
-                  AND sd.question_id = ?
                 """,
                 (
                     int(detail_id),
                     int(result_id),
                     int(session_id),
                     int(student_id),
-                    str(question_id),
                 ),
             ).fetchone()
-            if row is None:
+            if (
+                row is None
+                or str(row["question_id"] or "").strip()
+                != str(detail_question_id)
+            ):
                 raise TeacherScoreLockOwnershipError(
                     "Teacher score detail does not belong to the requested "
                     "session, student, result, and question."
@@ -605,7 +626,7 @@ class ReviewRepository:
               AND sd.question_id = ?
             ORDER BY sd.id
             """,
-            (int(session_id), int(student_id), str(question_id)),
+            (int(session_id), int(student_id), str(detail_question_id)),
         ).fetchall()
         if len(rows) > 1:
             raise ValueError(

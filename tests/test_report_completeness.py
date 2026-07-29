@@ -143,7 +143,7 @@ def test_export_session_marks_incomplete_and_complete_rows_with_completeness_col
     assert "缺失题目" in exported.columns
     by_name = {row["学生姓名"]: row for _, row in exported.iterrows()}
     assert by_name["张三"]["批改完整性"] == "不完整"
-    assert by_name["张三"]["缺失题目"] == "Q11(1)"
+    assert by_name["张三"]["缺失题目"] == "Q11(P1)"
     assert by_name["李四"]["批改完整性"] == "完整"
     assert pd.isna(by_name["李四"]["缺失题目"]) or by_name["李四"]["缺失题目"] == ""
 

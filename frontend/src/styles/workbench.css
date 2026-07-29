@@ -1,7 +1,8 @@
 .workbench-view {
-  width: min(100%, var(--content-max-width));
+  box-sizing: border-box;
+  width: 100%;
   margin-inline: auto;
-  padding: var(--space-6);
+  padding: 16px;
   color: var(--color-text-primary);
 }
 

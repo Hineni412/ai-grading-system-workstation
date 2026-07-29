@@ -173,6 +173,30 @@ def intake_grading_paper_to_question_bank(
         )
         for question_id, result in results.items():
             if is_auto_saveable_result(result):
+                if result.proposals:
+                    try:
+                        governance = tagger.taxonomy_governance
+                        payload = result.analysis.to_dict()
+                        payload["proposed_tags"] = [
+                            *payload.get("proposed_tags", []),
+                            *result.proposals,
+                        ]
+                        governance.constrain(
+                            payload,
+                            context={
+                                "persist_proposals": True,
+                                "question_ref": str(question_id),
+                                "model": str(result.model_name or ""),
+                                "request_token": (
+                                    f"grading-intake:question:{question_id}:"
+                                    f"taxonomy:{int(result.taxonomy_revision or 0)}"
+                                ),
+                            },
+                        )
+                    except Exception:
+                        failed_tagging += 1
+                        failed_question_ids.append(str(question_id))
+                        continue
                 if service.save_tag_analysis(
                     question_id,
                     result.analysis,
@@ -296,7 +320,6 @@ def _questions_needing_complete_tags(
     placeholders = ",".join("?" for _ in question_ids)
     with connect(db_path) as conn:
         tag_types_by_question: dict[int, set[str]] = {}
-        tag_values_by_question: dict[int, list[str]] = {}
         for row in conn.execute(
             f"""
             SELECT question_id, tag_type, tag_value FROM question_tags
@@ -308,10 +331,6 @@ def _questions_needing_complete_tags(
         ).fetchall():
             question_id = int(row["question_id"])
             tag_types_by_question.setdefault(question_id, set()).add(str(row["tag_type"]))
-            value = str(row["tag_value"] or "").strip()
-            values = tag_values_by_question.setdefault(question_id, [])
-            if value and value not in values:
-                values.append(value)
     required = set(CORE_ANALYSIS_TAG_TYPES)
     pending: list[dict[str, Any]] = []
     for item in questions:
@@ -319,7 +338,6 @@ def _questions_needing_complete_tags(
         if required.issubset(tag_types_by_question.get(question_id, set())):
             continue
         candidate = dict(item)
-        candidate["_existing_tag_values"] = tag_values_by_question.get(question_id, [])
         pending.append(candidate)
     return pending
 
@@ -335,7 +353,6 @@ def _tagging_context(question: dict[str, Any]) -> TaggingContext:
         exam_type=str(question.get("exam_type") or ""),
         district=str(question.get("district") or ""),
         has_images=bool(question.get("has_images")),
-        existing_tags=list(question.get("_existing_tag_values") or []),
     )
 
 

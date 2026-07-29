@@ -47,6 +47,11 @@ from question_bank.services.question_read_service import (
 )
 from question_bank.services.training_task_service import TrainingTaskService
 from question_bank.services.question_write_service import QuestionBankWriteService
+from question_bank.services.taxonomy_review_service import TaxonomyReviewService
+from question_bank.services.taxonomy_review_suggestions import (
+    TaxonomySuggestionService,
+)
+from question_bank.taxonomy.governance import get_taxonomy_governance
 from question_bank.services.assembly_workspace_service import AssemblyWorkspaceService
 
 
@@ -187,6 +192,41 @@ def get_question_bank_read_service() -> QuestionBankReadService:
 def get_question_bank_write_service() -> QuestionBankWriteService:
     paths = get_path_manager()
     return QuestionBankWriteService(paths.qb_db_path, data_root=paths.data_root)
+
+
+def get_taxonomy_review_service() -> TaxonomyReviewService:
+    paths = get_path_manager()
+    return TaxonomyReviewService(
+        review_state_path=_taxonomy_companion_state_path(
+            Path(paths.taxonomy_state_path),
+            "review_receipts",
+        ),
+        governance=get_taxonomy_governance(),
+        write_service=QuestionBankWriteService(
+            paths.qb_db_path,
+            data_root=paths.data_root,
+        ),
+    )
+
+
+def get_taxonomy_suggestion_service() -> TaxonomySuggestionService:
+    paths = get_path_manager()
+    return TaxonomySuggestionService(
+        state_path=_taxonomy_companion_state_path(
+            Path(paths.taxonomy_state_path),
+            "suggestions",
+        ),
+        governance=get_taxonomy_governance(),
+        question_loader=QuestionBankReadService(
+            paths.qb_db_path,
+            data_root=paths.data_root,
+        ).get_questions,
+    )
+
+
+def _taxonomy_companion_state_path(base: Path, label: str) -> Path:
+    suffix = base.suffix or ".json"
+    return base.with_name(f"{base.stem}.{label}{suffix}")
 
 
 def get_assembly_workspace_service() -> AssemblyWorkspaceService:

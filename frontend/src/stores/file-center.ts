@@ -7,6 +7,7 @@ import {
   type JobSummaryList,
   type ReportContext,
   type ReportType,
+  type ScoreExcelOptions,
   type TrainingExportRequest,
   type TrainingTaskDetail,
   type TrainingTaskList,
@@ -33,6 +34,7 @@ export interface FileCenterApi {
     sessionId: number,
     reportType: ReportType,
     forceRegenerate?: boolean,
+    excelOptions?: ScoreExcelOptions,
     signal?: AbortSignal,
   ): Promise<JobResponse>
   listTrainingTasks(
@@ -148,17 +150,25 @@ export const useFileCenterStore = defineStore('file-center', () => {
     nextSessionId: number,
     reportType: ReportType,
     forceRegenerate: boolean,
+    excelOptions: ScoreExcelOptions | undefined = undefined,
     api: FileCenterApi = exportsApi,
   ): Promise<JobResponse> {
     const key = `report:${reportType}`
     if (submittingKey.value === key) throw new Error('Report submission is already in progress')
     submittingKey.value = key
     try {
-      const job = await api.submitReport(
-        nextSessionId,
-        reportType,
-        forceRegenerate,
-      )
+      const job = excelOptions === undefined
+        ? await api.submitReport(
+          nextSessionId,
+          reportType,
+          forceRegenerate,
+        )
+        : await api.submitReport(
+          nextSessionId,
+          reportType,
+          forceRegenerate,
+          excelOptions,
+        )
       useJobStore().track(job)
       return job
     } finally {

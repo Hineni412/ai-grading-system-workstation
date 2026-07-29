@@ -15,6 +15,12 @@ export const REPORT_TYPES = [
 
 export type ReportType = (typeof REPORT_TYPES)[number]
 
+export interface ScoreExcelOptions {
+  hide_bottom_enabled: boolean
+  hide_bottom_n: number
+  manual_hidden_student_ids: number[]
+}
+
 export const REPORT_FILE_STATUSES = [
   'pending',
   'available',
@@ -360,17 +366,48 @@ export const exportsApi = {
     sessionId: number,
     reportType: ReportType,
     forceRegenerate = false,
+    excelOptions?: ScoreExcelOptions,
     signal?: AbortSignal,
   ): Promise<JobResponse> {
     const id = requirePositiveInteger(sessionId, 'session id')
     if (!REPORT_TYPES.some((type) => type === reportType)) {
       throw new Error('Invalid report type')
     }
+    if (reportType !== 'score_excel' && excelOptions !== undefined) {
+      throw new Error('Excel options are only valid for score reports')
+    }
+    let normalizedExcelOptions: ScoreExcelOptions | undefined
+    if (excelOptions !== undefined) {
+      if (
+        typeof excelOptions.hide_bottom_enabled !== 'boolean'
+        || !Number.isSafeInteger(excelOptions.hide_bottom_n)
+        || excelOptions.hide_bottom_n < 0
+        || excelOptions.hide_bottom_n > 100
+        || !Array.isArray(excelOptions.manual_hidden_student_ids)
+        || excelOptions.manual_hidden_student_ids.some(
+          (studentId) => !Number.isSafeInteger(studentId) || studentId <= 0,
+        )
+      ) {
+        throw new Error('Invalid Excel export options')
+      }
+      normalizedExcelOptions = {
+        hide_bottom_enabled: excelOptions.hide_bottom_enabled,
+        hide_bottom_n: excelOptions.hide_bottom_enabled
+          ? excelOptions.hide_bottom_n
+          : 0,
+        manual_hidden_student_ids: [
+          ...new Set(excelOptions.manual_hidden_student_ids),
+        ].sort((left, right) => left - right),
+      }
+    }
     return apiClient.request(`/api/sessions/${id}/reports/export`, {
       method: 'POST',
       body: {
         report_type: reportType,
         force_regenerate: forceRegenerate,
+        ...(normalizedExcelOptions === undefined
+          ? {}
+          : { excel_options: normalizedExcelOptions }),
       },
       decode: decodeJobResponse,
       signal,

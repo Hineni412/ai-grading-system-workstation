@@ -17,12 +17,12 @@ CANONICAL_KNOWLEDGE: tuple[CanonicalKnowledge, ...] = (
     CanonicalKnowledge(
         canonical_id="KP_ALG_REAL_NUMBERS",
         canonical_name="实数",
-        aliases=("有理数", "有理数运算", "无理数", "相反数", "绝对值", "平方根", "算术平方根", "立方根", "数轴", "整数的概念", "整数"),
+        aliases=("有理数", "有理数运算", "无理数", "相反数", "绝对值", "平方根", "算术平方根", "立方根", "整数的概念", "整数"),
     ),
     CanonicalKnowledge(
         canonical_id="KP_ALG_LETTER_NUMBER",
         canonical_name="字母表示数",
-        aliases=("字母表示数", "用字母表示数", "代数式", "代数式化简", "单项式", "多项式", "科学记数法", "科学记数"),
+        aliases=("字母表示数", "用字母表示数", "代数式", "代数式化简", "单项式", "多项式"),
     ),
     CanonicalKnowledge(
         canonical_id="KP_ALG_POLYNOMIAL",
@@ -37,7 +37,7 @@ CANONICAL_KNOWLEDGE: tuple[CanonicalKnowledge, ...] = (
     CanonicalKnowledge(
         canonical_id="KP_ALG_EQUATION_PROPERTIES",
         canonical_name="等式的性质",
-        aliases=("等式性质", "等式的性质", "方程基础", "方程思想"),
+        aliases=("等式性质", "等式的性质", "方程基础"),
     ),
     CanonicalKnowledge(
         canonical_id="KP_ALG_FACTORIZATION",
@@ -62,12 +62,12 @@ CANONICAL_KNOWLEDGE: tuple[CanonicalKnowledge, ...] = (
     CanonicalKnowledge(
         canonical_id="KP_ALG_EQUATION_SYSTEM",
         canonical_name="二元一次方程组",
-        aliases=("二元一次方程组", "二元一次方程", "方程组", "代入消元法", "加减消元法", "ALG_02"),
+        aliases=("二元一次方程组", "二元一次方程", "方程组", "ALG_02"),
     ),
     CanonicalKnowledge(
         canonical_id="KP_ALG_QUADRATIC_EQUATION",
         canonical_name="一元二次方程",
-        aliases=("一元二次方程", "解一元二次方程", "配方法", "求根公式", "根的判别式", "韦达定理", "一元二次方程的解法"),
+        aliases=("一元二次方程", "解一元二次方程", "求根公式", "根的判别式", "韦达定理", "一元二次方程的解法"),
     ),
     CanonicalKnowledge(
         canonical_id="KP_ALG_INEQUALITY_SYSTEM",
@@ -158,7 +158,7 @@ CANONICAL_KNOWLEDGE: tuple[CanonicalKnowledge, ...] = (
     CanonicalKnowledge(
         canonical_id="KP_GEO_CONSTRUCTION",
         canonical_name="尺规作图",
-        aliases=("尺规作图", "基本尺规作图", "尺规作角平分线", "作一个角等于已知角", "作线段", "作角", "作垂线", "作线段垂直平分线"),
+        aliases=("尺规作图", "基本尺规作图", "作一个角等于已知角", "作角", "作线段垂直平分线"),
     ),
     CanonicalKnowledge(
         canonical_id="KP_GEO_PARALLEL_LINES",
@@ -365,7 +365,7 @@ CANONICAL_KNOWLEDGE: tuple[CanonicalKnowledge, ...] = (
     CanonicalKnowledge(
         canonical_id="KP_SYN_READING",
         canonical_name="阅读理解与规律探究",
-        aliases=("阅读理解题", "规律探究", "定义新运算", "数式规律", "图形规律", "新定义问题"),
+        aliases=("规律探究", "定义新运算", "数式规律", "图形规律"),
     ),
 )
 

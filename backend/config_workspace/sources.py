@@ -256,6 +256,8 @@ class QuestionDecision:
         "comprehensive",
     ]
     excluded: bool
+    answer_confirmed: bool = False
+    answer_override: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -937,6 +939,26 @@ class ConfigSourceService:
             if decision is not None:
                 block["question_type"] = decision.question_type
                 block["question_type_confirmed"] = True
+                if decision.answer_override is not None and not decision.answer_confirmed:
+                    raise ValueError("answer override must be confirmed")
+                if decision.answer_confirmed:
+                    teacher_answer = str(
+                        decision.answer_override
+                        if decision.answer_override is not None
+                        else (
+                            block.get("canonical_answer")
+                            or block.get("answer_text")
+                            or ""
+                        )
+                    ).strip()
+                    if not teacher_answer or len(teacher_answer) > 20_000:
+                        raise ValueError("confirmed answer must be nonblank and bounded")
+                    block["canonical_answer"] = teacher_answer
+                    block["answer_text"] = teacher_answer
+                    block["accepted_forms"] = [teacher_answer]
+                    block["local_answer_trusted"] = True
+                    block["needs_review"] = False
+                    block["answer_confirmed_by_teacher"] = True
             else:
                 block["question_type_confirmed"] = False
             confirmed.append(block)

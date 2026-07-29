@@ -162,7 +162,27 @@ def _region(
 def _setup(tmp_path: Path) -> tuple[DBManager, int, int, Path, AnswerRegionDraftService]:
     db = DBManager(tmp_path / "grading.db")
     db.initialize()
-    session_id = db.create_grading_session("regions", "rubric.json", "answer.json")
+    rubric_path = tmp_path / "rubric.json"
+    rubric_path.write_text(
+        json.dumps(
+            {
+                "questions": [
+                    {
+                        "question_id": "Q1",
+                        "max_score": 10,
+                        "parts": [{"part_id": "Q1(P1)", "part_score": 10}],
+                    }
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    session_id = db.create_grading_session(
+        "regions",
+        str(rubric_path),
+        "answer.json",
+    )
     template_id = db.upsert_session_template(session_id, "front.png", "back.png")
     session_dir = tmp_path / "session"
     draft_service = AnswerRegionDraftService(session_dir)
@@ -262,6 +282,49 @@ def test_commit_replaces_formal_regions_writes_both_snapshots_and_finishes_clean
     assert workflow["extra"]["regions_path"] == str(result.snapshot_path)
     assert db.get_session_template(session_id)["regions_snapshot_pending"] == 0
     assert not draft_service.draft_path.exists()
+
+
+def test_commit_rewrites_legacy_region_binding_to_the_canonical_identity(
+    tmp_path: Path,
+) -> None:
+    db, session_id, template_id, session_dir, draft_service = _setup(tmp_path)
+    service = AnswerRegionCommitService(db, session_dir, draft_service)
+
+    result = service.commit(
+        session_id=session_id,
+        template_id=template_id,
+        regions=[_region("legacy-binding", question_id="Q1(1)")],
+        image_sizes=IMAGE_SIZES,
+        template_matches=True,
+    )
+
+    assert result.committed is True
+    stored = db.list_answer_regions(session_id)
+    assert stored[0]["mapped_question_id"] == "Q1"
+    assert stored[0]["detected_question_id"] == "Q1"
+
+
+def test_commit_rejects_unknown_region_binding_without_formal_write(
+    tmp_path: Path,
+) -> None:
+    db, session_id, template_id, session_dir, draft_service = _setup(tmp_path)
+    _seed_formal(db, session_id, template_id)
+    formal_before = db.list_answer_regions(session_id)
+    service = AnswerRegionCommitService(db, session_dir, draft_service)
+
+    result = service.commit(
+        session_id=session_id,
+        template_id=template_id,
+        regions=[_region("unknown-binding", question_id="Q99")],
+        image_sizes=IMAGE_SIZES,
+        template_matches=True,
+    )
+
+    assert result.committed is False
+    assert [issue.code for issue in result.validation.issues] == [
+        "unknown_question_id"
+    ]
+    assert db.list_answer_regions(session_id) == formal_before
 
 
 def test_commit_preserves_existing_workflow_extra_fields_including_front_page_parity(

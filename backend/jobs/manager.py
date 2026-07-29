@@ -36,6 +36,9 @@ class JobContext:
     job_type: str
     payload: dict[str, Any]
     store: JobStore
+    question_bank_sync_submitter: (
+        Callable[[dict[str, Any]], tuple[JobRecord, bool]] | None
+    ) = None
 
     def report(self, progress: float, stage: str, detail: str = "") -> None:
         self.store.update_progress(
@@ -57,6 +60,14 @@ class JobContext:
             raise JobCancellationRequested(
                 f"job {self.job_id} cancellation requested"
             )
+
+    def submit_question_bank_sync(
+        self,
+        payload: dict[str, Any],
+    ) -> tuple[JobRecord, bool]:
+        if self.question_bank_sync_submitter is None:
+            raise RuntimeError("question-bank sync submission is unavailable")
+        return self.question_bank_sync_submitter(dict(payload))
 
 
 class JobManager:
@@ -283,6 +294,49 @@ class JobManager:
         )
         return job, True
 
+    def submit_idempotent_taxonomy_suggestion(
+        self,
+        payload: dict[str, Any],
+    ) -> tuple[JobRecord, bool]:
+        handler = self._handlers.get("taxonomy_suggestion")
+        if handler is None:
+            raise UnsupportedJobTypeError(
+                "unsupported job type: taxonomy_suggestion"
+            )
+        with self._lock:
+            if self._shutdown:
+                raise RuntimeError("JobManager has shut down")
+            job, created = (
+                self.store.create_idempotent_taxonomy_suggestion_job(
+                    payload
+                )
+            )
+            if not created:
+                return job, False
+            try:
+                future = self._executor.submit(
+                    self._run_job,
+                    job.id,
+                    handler,
+                )
+            except Exception as exc:
+                self.store.finish(
+                    job.id,
+                    "failed",
+                    "job scheduling failed",
+                )
+                raise RuntimeError(
+                    "taxonomy suggestion job could not be scheduled"
+                ) from exc
+            self._futures[job.id] = future
+        future.add_done_callback(
+            lambda completed, job_id=job.id: self._discard_completed_future(
+                job_id,
+                completed,
+            )
+        )
+        return job, True
+
     def submit_config_retry(self, payload: dict[str, Any]) -> JobRecord:
         handler = self._handlers.get("config_generation")
         if handler is None:
@@ -409,6 +463,9 @@ class JobManager:
             job_type=job.job_type,
             payload=job.payload,
             store=self.store,
+            question_bank_sync_submitter=(
+                self.submit_idempotent_question_bank_sync
+            ),
         )
         try:
             result = handler(context)

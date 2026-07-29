@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import hashlib
 import json
 import re
 import uuid
@@ -45,13 +46,21 @@ from backend.config_generation.compat import (
     failed_grading_config_batches,
     failed_grading_config_question_ids,
     generate_grading_config_in_batches,
+    regenerate_grading_config_questions,
     retry_failed_grading_config_batches,
     refine_grading_config_from_manual_structure,
+)
+from question_bank.taxonomy.curriculum_catalog import (
+    infer_curriculum_volume_from_text,
 )
 from backend.config_generation.normalization import (
     normalize_generated_config_schema,
     normalize_new_generated_config_payload,
     strip_generated_config_knowledge_fields,
+)
+from backend.config_generation.quality import (
+    blocking_quality_question_ids,
+    refresh_generated_config_quality_warnings,
 )
 from session_manager import (
     generate_grading_config_from_images,
@@ -103,6 +112,7 @@ def stage_config_generation_input(
     source_suffix: str | None = None,
     source_safe_filename: str | None = None,
     whole_page_images: list[bytes] | None = None,
+    sync_to_question_bank: bool = False,
 ) -> str:
     input_id = uuid.uuid4().hex
     payload: dict[str, Any] = {
@@ -112,6 +122,7 @@ def stage_config_generation_input(
         "confirmed_blocks": confirmed_blocks,
         "document_text": str(document_text or ""),
         "question_images": dict(question_images or {}),
+        "sync_to_question_bank": bool(sync_to_question_bank),
     }
     if generation_mode is not None:
         payload.update(
@@ -169,11 +180,13 @@ def stage_config_source_generation_input(
     source_id: str,
     source_revision: str,
     decisions: list[dict[str, Any]],
+    sync_to_question_bank: bool = False,
+    existing_payload: dict[str, Any] | None = None,
+    regenerate_question_ids: list[str] | None = None,
+    expected_revision: str | None = None,
 ) -> str:
     input_id = uuid.uuid4().hex
-    _write_json_atomic(
-        _input_path(upload_config_dir, input_id),
-        {
+    payload: dict[str, Any] = {
             "session_id": int(session_id),
             "expected_rubric_path": str(expected_rubric_path),
             "expected_answer_key_path": str(expected_answer_key_path),
@@ -181,8 +194,21 @@ def stage_config_source_generation_input(
             "source_id": str(source_id),
             "source_revision": str(source_revision),
             "decisions": list(decisions),
-        },
-    )
+            "sync_to_question_bank": bool(sync_to_question_bank),
+        }
+    if regenerate_question_ids is not None:
+        if existing_payload is None or expected_revision is None:
+            raise ValueError(
+                "targeted regeneration input requires the current configuration"
+            )
+        payload.update(
+            {
+                "existing_payload": existing_payload,
+                "regenerate_question_ids": list(regenerate_question_ids),
+                "expected_revision": str(expected_revision),
+            }
+        )
+    _write_json_atomic(_input_path(upload_config_dir, input_id), payload)
     return input_id
 
 
@@ -356,11 +382,11 @@ def _run_config_generation_job_impl(
     if session is None or bool(int(session.get("is_deleted") or 0)):
         raise ValueError("grading session is unavailable")
     mode = str(context.payload.get("mode") or "").strip()
-    if mode not in {"generate", "retry", "refine"}:
+    if mode not in {"generate", "retry", "refine", "regenerate_questions"}:
         raise ValueError("unsupported config generation mode")
 
     existing_payload: dict[str, Any] | None = None
-    if mode in {"generate", "refine"}:
+    if mode in {"generate", "refine", "regenerate_questions"}:
         input_id = str(context.payload.get("input_id") or "")
     else:
         source_job_id = _required_int(context.payload, "source_job_id")
@@ -398,6 +424,15 @@ def _run_config_generation_job_impl(
     inputs = load_config_generation_input(upload_config_dir, input_id)
     if _required_int(inputs, "session_id") != session_id:
         raise ValueError("config generation input does not belong to session")
+    if mode == "regenerate_questions":
+        raw_existing_payload = inputs.get("existing_payload")
+        if not isinstance(raw_existing_payload, dict):
+            raise ValueError("targeted regeneration is missing the current configuration")
+        existing_payload = raw_existing_payload
+    sync_to_question_bank = bool(
+        context.payload.get("sync_to_question_bank")
+        or inputs.get("sync_to_question_bank")
+    )
     expected_rubric_path = str(inputs.get("expected_rubric_path") or "")
     expected_answer_key_path = str(inputs.get("expected_answer_key_path") or "")
     if (
@@ -405,6 +440,10 @@ def _run_config_generation_job_impl(
         or str(session.get("answer_key_path") or "") != expected_answer_key_path
     ):
         raise ValueError("session config changed before generation started")
+    if mode == "regenerate_questions":
+        loaded = load_editor_config(db, session_id)
+        if loaded.revision != str(inputs.get("expected_revision") or ""):
+            raise ValueError("session config changed before regeneration started")
     if mode == "refine":
         return _run_refine_config_job(
             context=context,
@@ -467,6 +506,12 @@ def _run_config_generation_job_impl(
                     question_id=str(item.get("question_id") or ""),
                     question_type=str(item.get("question_type") or ""),
                     excluded=bool(item.get("excluded")),
+                    answer_confirmed=item.get("answer_confirmed") is True,
+                    answer_override=(
+                        str(item.get("answer_override"))
+                        if item.get("answer_override") is not None
+                        else None
+                    ),
                 )
             )
         prepared = source_service.prepare_generation_input(
@@ -517,7 +562,27 @@ def _run_config_generation_job_impl(
             _write_json_atomic(_draft_path(upload_config_dir, context.job_id), value)
         context.raise_if_cancelled()
 
-    if existing_payload is not None:
+    if mode == "regenerate_questions":
+        raw_regenerate_ids = inputs.get("regenerate_question_ids")
+        if not isinstance(raw_regenerate_ids, list):
+            raise ValueError("targeted regeneration question ids are invalid")
+        regenerate_ids = [
+            str(question_id).strip()
+            for question_id in raw_regenerate_ids
+            if str(question_id).strip()
+        ]
+        payload = regenerate_grading_config_questions(
+            existing_payload or {},
+            confirmed_blocks,
+            document_text,
+            llm_client=client,
+            model_name=_config_model(client),
+            report=report,
+            q_images=question_images or None,
+            regenerate_question_ids=regenerate_ids,
+            checkpoint=checkpoint,
+        )
+    elif existing_payload is not None:
         raw_retry_ids = context.payload.get("retry_question_ids")
         retry_ids = (
             [str(qid).strip() for qid in raw_retry_ids if str(qid).strip()]
@@ -566,6 +631,33 @@ def _run_config_generation_job_impl(
             report=report,
         )
     normalize_new_generated_config_payload(payload)
+    refresh_generated_config_quality_warnings(payload)
+    quality_blocked_ids = blocking_quality_question_ids(payload)
+    if quality_blocked_ids and not failed_grading_config_question_ids(payload):
+        meta = payload.setdefault("meta", {})
+        quality_warnings = [
+            str(item)
+            for item in meta.get("warnings") or []
+            if str(item).startswith("[质量检查-阻断]")
+        ]
+        failure = {
+            "batch_id": (
+                "整卷生成"
+                if generation_mode == "whole_document"
+                else "本地校验"
+            ),
+            "question_ids": quality_blocked_ids,
+            "status": "failed",
+            "category": "local_validation",
+            "error": (
+                "；".join(quality_warnings[:3])
+                or "评分标准未通过本地业务校验"
+            )[:600],
+        }
+        meta["failed_question_ids"] = quality_blocked_ids
+        meta["failed_batches"] = [failure]
+        if generation_mode == "whole_document":
+            meta["batches"] = [failure]
     context.raise_if_cancelled()
     failed_ids = failed_grading_config_question_ids(payload)
     score_allocation = _score_allocation_summary(payload)
@@ -577,15 +669,14 @@ def _run_config_generation_job_impl(
         total_batch_count=_batch_count(payload),
         failed_batches=failed_grading_config_batches(payload),
         local_json_repairs=_local_json_repairs(payload),
+        local_structure_repairs=_local_structure_repairs(payload),
         **score_allocation,
         retryable_mode=generation_mode == "batched",
     )
-    if generation_mode == "whole_document" and (
-        failed_ids or bool(score_allocation["score_allocation_pending"])
-    ):
-        raise ValueError(
-            "whole-document generation returned an incomplete result; nothing was published"
-        )
+    summary["question_bank_sync_requested"] = sync_to_question_bank
+    summary["question_bank_sync_state"] = (
+        "waiting_for_config" if sync_to_question_bank else "not_requested"
+    )
     if failed_ids or bool(score_allocation["score_allocation_pending"]):
         with session_config_lock(Path(upload_config_dir), session_id):
             current_session = db.get_grading_session(session_id)
@@ -680,6 +771,21 @@ def _run_config_generation_job_impl(
                     context.raise_if_cancelled()
                     raise ValueError(
                         "session config changed while generation was running"
+                    )
+                if sync_to_question_bank:
+                    _submit_automatic_question_bank_sync(
+                        context=context,
+                        db=db,
+                        session_id=session_id,
+                        source_paper_sha256=(
+                            archived.sha256 if archived is not None else ""
+                        ),
+                        source_safe_filename=(
+                            final_source.safe_filename
+                            if final_source is not None
+                            else ""
+                        ),
+                        summary=summary,
                     )
                 _refresh_mapping_and_finalize_job(
                     context=context,
@@ -822,6 +928,90 @@ def _set_mapping_result(
     result = refresh_mapping_after_config_save(lambda: status)
     summary["mapping_status"] = result.mapping_status
     summary["mapping_message"] = result.mapping_message
+
+
+def _submit_automatic_question_bank_sync(
+    *,
+    context: JobContext,
+    db: GradingRepositoryAccess,
+    session_id: int,
+    source_paper_sha256: str,
+    summary: dict[str, object],
+    source_safe_filename: str = "",
+) -> None:
+    source_sha = str(source_paper_sha256 or "").strip().lower()
+    if not re.fullmatch(r"[0-9a-f]{64}", source_sha):
+        summary["question_bank_sync_state"] = "blocked"
+        summary["question_bank_sync_error"] = (
+            "评分依据已发布，但来源试卷尚未形成可核对指纹；"
+            "题库任务没有启动，可在评分编辑页重新提交。"
+        )
+        return
+    try:
+        loaded = load_editor_config(db, session_id)
+        if not loaded.configured:
+            raise ValueError("published grading config is unavailable")
+        volume = infer_curriculum_volume_from_text(
+            " ".join(
+                item
+                for item in (
+                    str(loaded.session.get("name") or ""),
+                    str(source_safe_filename or ""),
+                )
+                if item
+            )
+        )
+        if volume is None:
+            summary["question_bank_sync_state"] = "awaiting_metadata"
+            summary["question_bank_sync_error"] = (
+                "评分依据已发布；入库前需要老师确认年级和上下册，"
+                "确认前不会调用标签模型。"
+            )
+            return
+        identity = {
+            "session_id": int(session_id),
+            "mode": "sync",
+            "config_revision": str(loaded.revision),
+            "source_paper_sha256": source_sha,
+            "curriculum_volume_id": str(volume["id"]),
+        }
+        clean_filename = Path(str(source_safe_filename or "")).name
+        if clean_filename:
+            identity["source_safe_filename"] = clean_filename
+        fingerprint = hashlib.sha256(
+            json.dumps(
+                identity,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        token = hashlib.sha256(
+            (
+                f"config-generation:{context.job_id}:"
+                f"{loaded.revision}:{source_sha}"
+            ).encode("utf-8")
+        ).hexdigest()[:32]
+        job, _created = context.submit_question_bank_sync(
+            {
+                **identity,
+                "client_request_token": token,
+                "client_request_fingerprint": fingerprint,
+            }
+        )
+    except Exception:
+        summary["question_bank_sync_state"] = "submission_failed"
+        summary["question_bank_sync_error"] = (
+            "评分依据已发布，但题库任务没有成功进入队列；"
+            "评分依据不受影响，可在评分编辑页重新提交题库任务。"
+        )
+        return
+    summary["question_bank_sync_state"] = (
+        "queued" if job.status == "queued" else str(job.status)
+    )
+    summary["question_bank_sync_job_id"] = int(job.id)
+    summary["config_revision"] = str(loaded.revision)
+    summary["source_paper_sha256"] = source_sha
 
 
 def _refresh_mapping_and_finalize_job(
@@ -983,9 +1173,11 @@ def _summary(
     total_batch_count: int = 0,
     failed_batches: list[dict[str, Any]] | None = None,
     local_json_repairs: list[dict[str, Any]] | None = None,
+    local_structure_repairs: list[dict[str, Any]] | None = None,
     score_allocation_pending: bool = False,
     score_allocation_failed: bool = False,
     score_allocation_error: str = "",
+    score_allocation_failure_category: str = "",
     retryable_mode: bool = True,
 ) -> dict[str, object]:
     failed_count = len(failed_ids)
@@ -1002,9 +1194,13 @@ def _summary(
         "failed_batch_count": len(clean_batches),
         "failed_batches": clean_batches,
         "local_json_repairs": list(local_json_repairs or []),
+        "local_structure_repairs": list(local_structure_repairs or []),
         "score_allocation_pending": bool(score_allocation_pending),
         "score_allocation_failed": bool(score_allocation_failed),
         "score_allocation_error": str(score_allocation_error or "")[:300],
+        "score_allocation_failure_category": str(
+            score_allocation_failure_category or ""
+        )[:80],
         "retryable": bool(is_partial and retryable_mode),
     }
 
@@ -1016,11 +1212,15 @@ def _score_allocation_summary(payload: dict[str, Any]) -> dict[str, object]:
             "score_allocation_pending": False,
             "score_allocation_failed": False,
             "score_allocation_error": "",
+            "score_allocation_failure_category": "",
         }
     return {
         "score_allocation_pending": bool(meta.get("score_allocation_pending")),
         "score_allocation_failed": bool(meta.get("score_allocation_failed")),
         "score_allocation_error": str(meta.get("score_allocation_error") or ""),
+        "score_allocation_failure_category": str(
+            meta.get("score_allocation_failure_category") or ""
+        ),
     }
 
 
@@ -1044,6 +1244,50 @@ def _local_json_repairs(payload: dict[str, Any]) -> list[dict[str, Any]]:
     return reports
 
 
+def _local_structure_repairs(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    meta = payload.get("meta") if isinstance(payload, dict) else None
+    batches = meta.get("batches") if isinstance(meta, dict) else None
+    reports: list[dict[str, Any]] = []
+    for batch in batches or []:
+        if not isinstance(batch, dict):
+            continue
+        operations = batch.get("local_structure_repairs")
+        if not isinstance(operations, list) or not operations:
+            continue
+        reports.append(
+            {
+                "batch_id": str(batch.get("batch_id") or ""),
+                "question_ids": [
+                    str(qid) for qid in batch.get("question_ids") or []
+                ],
+                "operations": [str(item)[:200] for item in operations[:100]],
+            }
+        )
+    score_operations = (
+        meta.get("score_allocation_local_structure_repairs")
+        if isinstance(meta, dict)
+        else None
+    )
+    if isinstance(score_operations, list) and score_operations:
+        rubric = payload.get("rubric") if isinstance(payload, dict) else None
+        questions = rubric.get("questions") if isinstance(rubric, dict) else None
+        reports.append(
+            {
+                "batch_id": "统一配分",
+                "question_ids": [
+                    str(item.get("question_id") or "")
+                    for item in questions or []
+                    if isinstance(item, dict)
+                    and str(item.get("question_id") or "")
+                ],
+                "operations": [
+                    str(item)[:200] for item in score_operations[:100]
+                ],
+            }
+        )
+    return reports
+
+
 def _summary_from_batch_draft(
     session_id: int,
     payload: dict[str, Any],
@@ -1056,6 +1300,7 @@ def _summary_from_batch_draft(
         total_batch_count=_batch_count(payload),
         failed_batches=failed_grading_config_batches(payload),
         local_json_repairs=_local_json_repairs(payload),
+        local_structure_repairs=_local_structure_repairs(payload),
         **_score_allocation_summary(payload),
         retryable_mode=True,
     )

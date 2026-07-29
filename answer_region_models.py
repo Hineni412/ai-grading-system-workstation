@@ -133,7 +133,22 @@ def load_question_binding_catalog(rubric_path: Path) -> QuestionBindingCatalog:
 
     catalog = None
     try:
-        catalog = QuestionIdCatalog.from_document(rubric)
+        # The name box is a template binding, not a scored question.  Keep it
+        # out of the strict scoring-ID catalog and add it back as the dedicated
+        # manual option below.
+        scoring_rubric = dict(rubric)
+        questions = rubric.get("questions")
+        if isinstance(questions, list):
+            scoring_rubric["questions"] = [
+                question
+                for question in questions
+                if not (
+                    isinstance(question, dict)
+                    and str(question.get("question_id") or "").strip()
+                    == _STUDENT_NAME_REGION_ID
+                )
+            ]
+        catalog = QuestionIdCatalog.from_document(scoring_rubric)
     except Exception:
         catalog = None
 

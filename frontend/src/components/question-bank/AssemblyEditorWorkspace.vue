@@ -281,6 +281,8 @@ async function deleteRecord(recordId: string): Promise<void> {
                     :blocks="question.rich_content?.question_blocks"
                     :fallback="question.question_text"
                     image-alt="试卷题目配图"
+                    media-mode="paper"
+                    paper-media-flow
                     dense
                   />
                 </div>
@@ -294,6 +296,7 @@ async function deleteRecord(recordId: string): Promise<void> {
                     :fallback="question.answer_text"
                     empty-label="暂未录入答案"
                     image-alt="试卷答案配图"
+                    media-mode="paper"
                     dense
                   />
                 </div>

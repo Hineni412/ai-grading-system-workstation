@@ -139,6 +139,107 @@ def test_question_facets_include_curriculum_sections(
     ]
 
 
+def test_questions_and_facets_support_special_type_filter(
+    question_bank_fixture,
+) -> None:
+    service, db_path, _ = question_bank_fixture
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO question_tags (question_id, tag_type, tag_value)
+            VALUES (1, 'special_type', '动态几何题')
+            """
+        )
+        conn.commit()
+    client = _question_bank_client(service)
+
+    page = client.get(
+        "/api/question-bank/questions",
+        params=[("special_types", "动态几何题")],
+    )
+    facets = client.get("/api/question-bank/facets")
+
+    assert page.status_code == 200
+    assert [item["id"] for item in page.json()["items"]] == [1]
+    assert {
+        item["value"]: item["count"]
+        for item in facets.json()["special_types"]
+    }["动态几何题"] == 1
+
+
+def test_question_facets_do_not_expand_empty_taxonomy_filters_repeatedly(
+    question_bank_fixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service, _, _ = question_bank_fixture
+    governance = question_read_module.get_taxonomy_governance()
+    original_expand = governance.expand_filter_values
+    original_snapshot = governance.snapshot
+    expand_calls: list[tuple[str, tuple[object, ...]]] = []
+    snapshot_calls = 0
+
+    def counted_expand(
+        dimension: str,
+        values: tuple[object, ...],
+    ) -> tuple[str, ...]:
+        expand_calls.append((dimension, tuple(values)))
+        return original_expand(dimension, values)
+
+    def counted_snapshot() -> dict[str, object]:
+        nonlocal snapshot_calls
+        snapshot_calls += 1
+        return original_snapshot()
+
+    monkeypatch.setattr(governance, "expand_filter_values", counted_expand)
+    monkeypatch.setattr(governance, "snapshot", counted_snapshot)
+    monkeypatch.setattr(
+        question_read_module,
+        "get_taxonomy_governance",
+        lambda: governance,
+    )
+
+    service.list_facets(question_read_module.QuestionReadFilters())
+
+    assert expand_calls == []
+    assert snapshot_calls == 1
+
+
+def test_question_facets_expand_each_selected_taxonomy_dimension_once(
+    question_bank_fixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service, _, _ = question_bank_fixture
+    governance = question_read_module.get_taxonomy_governance()
+    original_expand = governance.expand_filter_values
+    expand_calls: list[tuple[str, tuple[object, ...]]] = []
+
+    def counted_expand(
+        dimension: str,
+        values: tuple[object, ...],
+    ) -> tuple[str, ...]:
+        expand_calls.append((dimension, tuple(values)))
+        return original_expand(dimension, values)
+
+    monkeypatch.setattr(governance, "expand_filter_values", counted_expand)
+    monkeypatch.setattr(
+        question_read_module,
+        "get_taxonomy_governance",
+        lambda: governance,
+    )
+
+    service.list_facets(
+        question_read_module.QuestionReadFilters(
+            exam_scopes=("七年级上册 第一章",),
+            abilities=("推理能力",),
+        )
+    )
+
+    assert expand_calls == [
+        ("curriculum", ("七年级上册 第一章",)),
+        ("ability", ("推理能力",)),
+    ]
+
+
 def test_question_facets_exclude_their_own_dimension_but_keep_other_filters(
     tmp_path: Path,
 ) -> None:
@@ -704,7 +805,7 @@ def _seed_combination_filter_questions(db_path: Path) -> None:
         (104, 4, "7", "选择题", "needle wrong grade", "answer", "6", 0),
         (105, 1, "7", "解答题", "needle wrong type", "answer", "6", 0),
         (106, 1, "7", "选择题", "needle wrong difficulty", "answer", "9", 0),
-        (107, 1, "7", "选择题", "needle incomplete tags", "answer", "6", 0),
+        (107, 1, "7", "选择题", "needle incomplete tags", "answer", None, 0),
         (108, 1, "7", "选择题", "needle wrong scope", "answer", "6", 0),
         (109, 1, "7", "选择题", "needle wrong knowledge", "answer", "6", 0),
         (110, 1, "7", "选择题", "unrelated text", "different answer", "6", 0),
@@ -891,6 +992,7 @@ def _seed_sort_questions(db_path: Path) -> None:
                 (1, "Midterm", "期中",),
                 (2, "Final", "期末",),
                 (3, "Zhongkao", "中考",),
+                (4, "Practice", "阶段练习",),
             ],
         )
         conn.executemany(
@@ -904,6 +1006,7 @@ def _seed_sort_questions(db_path: Path) -> None:
                 (1, 1, "1", "Question 1", "3"),
                 (2, 2, "2", "Question 2", "9"),
                 (3, 3, "3", "Question 3", "6"),
+                (4, 4, "4", "Practice question", "10"),
             ],
         )
         conn.executemany(
@@ -927,13 +1030,19 @@ def test_questions_difficulty_sort_orders_before_pagination(tmp_path: Path) -> N
     _seed_sort_questions(db_path)
     client = _question_bank_client(QuestionBankReadService(db_path))
 
-    response = client.get(
+    descending = client.get(
         "/api/question-bank/questions",
-        params={"sort": "difficulty", "page_size": 2},
+        params={"sort": "difficulty_desc", "page_size": 2},
+    )
+    ascending = client.get(
+        "/api/question-bank/questions",
+        params={"sort": "difficulty_asc", "page_size": 2},
     )
 
-    assert response.status_code == 200
-    assert [item["id"] for item in response.json()["items"]] == [2, 3]
+    assert descending.status_code == 200
+    assert [item["id"] for item in descending.json()["items"]] == [4, 2]
+    assert ascending.status_code == 200
+    assert [item["id"] for item in ascending.json()["items"]] == [1, 3]
 
 
 def test_question_frequency_sorts_read_existing_cache_without_writes(
@@ -950,10 +1059,12 @@ def test_question_frequency_sorts_read_existing_cache_without_writes(
     client = _question_bank_client(QuestionBankReadService(db_path))
 
     expected_orders = {
-        "frequency_midterm": [1, 2, 3],
-        "frequency_final": [2, 3, 1],
-        "frequency_zhongkao": [3, 2, 1],
-        "frequency_contextual": [3, 2, 1],
+        "frequency_desc": [3, 2, 1, 4],
+        "frequency_asc": [1, 2, 3, 4],
+        "frequency_midterm": [1, 2, 3, 4],
+        "frequency_final": [2, 3, 1, 4],
+        "frequency_zhongkao": [3, 2, 1, 4],
+        "frequency_contextual": [3, 2, 1, 4],
     }
     for sort, expected_ids in expected_orders.items():
         response = client.get(
@@ -971,7 +1082,7 @@ def test_question_frequency_sorts_read_existing_cache_without_writes(
     assert cache_after == cache_before
 
 
-def test_questions_untagged_requires_all_four_core_tags(tmp_path: Path) -> None:
+def test_questions_untagged_requires_three_core_tags_and_valid_difficulty(tmp_path: Path) -> None:
     db_path = tmp_path / "question_bank.db"
     initialize_database(db_path)
     with sqlite3.connect(db_path) as conn:
@@ -980,13 +1091,13 @@ def test_questions_untagged_requires_all_four_core_tags(tmp_path: Path) -> None:
         )
         conn.executemany(
             """
-            INSERT INTO questions (id, paper_id, question_number, question_text)
-            VALUES (?, 1, ?, ?)
+            INSERT INTO questions (id, paper_id, question_number, question_text, difficulty)
+            VALUES (?, 1, ?, ?, ?)
             """,
             [
-                (1, "1", "Complete core tags"),
-                (2, "2", "Missing student level"),
-                (3, "3", "Only non-core tags"),
+                (1, "1", "Complete core tags", "6"),
+                (2, "2", "No legacy student level required", "5"),
+                (3, "3", "Only non-core tags", None),
             ],
         )
         conn.executemany(
@@ -1014,7 +1125,7 @@ def test_questions_untagged_requires_all_four_core_tags(tmp_path: Path) -> None:
     )
 
     assert response.status_code == 200
-    assert [item["id"] for item in response.json()["items"]] == [3, 2]
+    assert [item["id"] for item in response.json()["items"]] == [3]
 
 
 @pytest.mark.parametrize(

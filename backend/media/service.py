@@ -3,7 +3,6 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import re
 import threading
 from io import BytesIO
 from pathlib import Path
@@ -19,17 +18,12 @@ from backend.file_access import (
     resolve_controlled_file,
 )
 from backend.repositories.access import GradingRepositoryAccess, as_grading_repositories
+from question_id_contract import question_id_coordinates
 
 
 IMAGE_SUFFIXES = frozenset({".bmp", ".jpeg", ".jpg", ".png", ".webp"})
 _CROP_RENDER_VERSION = "review-crop-v1"
 _DEFAULT_CROP_CACHE_BYTES = 256 * 1024 * 1024
-_QUESTION_REGION_ID = re.compile(
-    r"^Q?\s*(\d+)\s*"
-    r"(?:[\(\uFF08]\s*P?\s*(\d+)\s*[\)\uFF09]|[-_.]\s*P?\s*(\d+))?"
-    r"\s*$",
-    re.IGNORECASE,
-)
 _CACHE_LOCKS_GUARD = threading.Lock()
 _CACHE_LOCKS: dict[Path, threading.RLock] = {}
 _MAINTAINED_CACHE_DIRS: set[Path] = set()
@@ -286,10 +280,10 @@ class ReviewMediaService:
                     return region
             return None
 
-        requested_identity = _question_region_identity(question_id)
+        requested_identity = question_id_coordinates(question_id)
         if requested_identity is not None:
             for region in regions:
-                if _question_region_identity(
+                if question_id_coordinates(
                     _region_question_id(region)
                 ) == requested_identity:
                     return region
@@ -297,7 +291,7 @@ class ReviewMediaService:
             requested_parent, requested_part = requested_identity
             if requested_part is not None:
                 for region in regions:
-                    if _question_region_identity(
+                    if question_id_coordinates(
                         _region_question_id(region)
                     ) == (requested_parent, None):
                         return region
@@ -306,7 +300,7 @@ class ReviewMediaService:
                     region
                     for region in regions
                     if (
-                        (identity := _question_region_identity(
+                        (identity := question_id_coordinates(
                             _region_question_id(region)
                         ))
                         is not None
@@ -362,22 +356,12 @@ def _region_question_id(region: dict[str, Any]) -> str:
     ).strip()
 
 
-def _question_region_identity(
-    question_id: object,
-) -> tuple[int, int | None] | None:
-    match = _QUESTION_REGION_ID.fullmatch(str(question_id or "").strip())
-    if match is None:
-        return None
-    part = match.group(2) or match.group(3)
-    return int(match.group(1)), int(part) if part is not None else None
-
-
 def _region_matches_question(
     region: dict[str, Any],
     question_id: str,
 ) -> bool:
-    requested = _question_region_identity(question_id)
-    mapped = _question_region_identity(_region_question_id(region))
+    requested = question_id_coordinates(question_id)
+    mapped = question_id_coordinates(_region_question_id(region))
     if requested is not None and mapped is not None:
         if requested == mapped:
             return True
@@ -406,8 +390,8 @@ def _is_unique_child_for_parent(
     selected_region: dict[str, Any],
     question_id: str,
 ) -> bool:
-    requested = _question_region_identity(question_id)
-    selected = _question_region_identity(
+    requested = question_id_coordinates(question_id)
+    selected = question_id_coordinates(
         _region_question_id(selected_region)
     )
     if (
@@ -422,7 +406,7 @@ def _is_unique_child_for_parent(
         region
         for region in regions
         if (
-            (identity := _question_region_identity(
+            (identity := question_id_coordinates(
                 _region_question_id(region)
             ))
             is not None

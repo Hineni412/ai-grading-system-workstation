@@ -68,6 +68,7 @@ class ScannedPaper:
     source_file: str
     file_type: str
     metadata: PaperMetadata = field(default_factory=lambda: PaperMetadata())
+    title: str | None = None
 
 
 @dataclass(frozen=True)
@@ -230,7 +231,7 @@ def import_scanned_papers(
                     physical_path,
                     database_path,
                     stored_source_file=stored_source_file,
-                    source_title=original_path.stem,
+                    source_title=scanned.title or original_path.stem,
                     metadata=_merge_metadata(default_metadata or PaperMetadata(), scanned.metadata),
                     question_range=question_range,
                     rich_content_root=rich_content_directory,

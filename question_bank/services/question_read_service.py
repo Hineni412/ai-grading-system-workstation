@@ -82,7 +82,44 @@ _TAG_STATUS_MAP = {
 }
 _QUESTION_SORT_CLAUSES = {
     "newest": "q.created_at DESC, q.id DESC",
-    "difficulty": "CAST(q.difficulty AS REAL) DESC, q.created_at DESC, q.id DESC",
+    "paper_order": """
+        CASE
+            WHEN TRIM(COALESCE(q.question_number, '')) <> ''
+             AND TRIM(COALESCE(q.question_number, '')) NOT GLOB '*[^0-9]*'
+            THEN 0
+            ELSE 1
+        END ASC,
+        CASE
+            WHEN TRIM(COALESCE(q.question_number, '')) <> ''
+             AND TRIM(COALESCE(q.question_number, '')) NOT GLOB '*[^0-9]*'
+            THEN CAST(TRIM(q.question_number) AS INTEGER)
+            ELSE NULL
+        END ASC,
+        q.id ASC
+    """,
+    "difficulty_desc": """
+        CASE WHEN CAST(q.difficulty AS REAL) BETWEEN 1 AND 10 THEN 0 ELSE 1 END,
+        CAST(q.difficulty AS REAL) DESC,
+        q.id DESC
+    """,
+    "difficulty_asc": """
+        CASE WHEN CAST(q.difficulty AS REAL) BETWEEN 1 AND 10 THEN 0 ELSE 1 END,
+        CAST(q.difficulty AS REAL) ASC,
+        q.id ASC
+    """,
+    "frequency_desc": """
+        CASE WHEN qfc.question_id IS NULL THEN 1 ELSE 0 END,
+        MAX(qfc.score_midterm, qfc.score_final, qfc.score_zhongkao) DESC,
+        q.id DESC
+    """,
+    "frequency_asc": """
+        CASE WHEN qfc.question_id IS NULL THEN 1 ELSE 0 END,
+        MAX(qfc.score_midterm, qfc.score_final, qfc.score_zhongkao) ASC,
+        q.id ASC
+    """,
+    # Legacy API aliases stay readable for older local clients. The current UI
+    # exposes only the unified difficulty and frequency controls above.
+    "difficulty": "CAST(q.difficulty AS REAL) DESC, q.id DESC",
     "frequency_midterm": "COALESCE(qfc.score_midterm, 0.0) DESC, q.created_at DESC, q.id DESC",
     "frequency_final": "COALESCE(qfc.score_final, 0.0) DESC, q.created_at DESC, q.id DESC",
     "frequency_zhongkao": "COALESCE(qfc.score_zhongkao, 0.0) DESC, q.created_at DESC, q.id DESC",
@@ -97,6 +134,8 @@ _QUESTION_SORT_CLAUSES = {
     """,
 }
 _FREQUENCY_SORTS = {
+    "frequency_desc",
+    "frequency_asc",
     "frequency_midterm",
     "frequency_final",
     "frequency_zhongkao",
@@ -172,6 +211,7 @@ class QuestionReadFilters:
     abilities: tuple[str, ...] = ()
     methods: tuple[str, ...] = ()
     models: tuple[str, ...] = ()
+    special_types: tuple[str, ...] = ()
     student_levels: tuple[str, ...] = ()
     teaching_stages: tuple[str, ...] = ()
     sub_skills: tuple[str, ...] = ()
@@ -551,8 +591,29 @@ class QuestionBankReadService:
         self.db_path = Path(db_path)
         self.data_root = Path(data_root) if data_root is not None else None
 
-    def list_papers(self) -> list[dict[str, Any]]:
+    def list_papers(self, *, deleted: bool = False) -> list[dict[str, Any]]:
         tag_placeholders = ", ".join("?" for _ in ANALYSIS_TAG_TYPES)
+        visible_question_sql = (
+            """
+            q.id IS NOT NULL
+            AND q.paper_delete_operation_id = p.delete_operation_id
+            """
+            if deleted
+            else """
+            q.id IS NOT NULL
+            AND COALESCE(q.is_deleted, 0) = 0
+            """
+        )
+        paper_state_sql = (
+            "COALESCE(p.import_status, '') = 'deleted'"
+            if deleted
+            else "COALESCE(p.import_status, '') <> 'deleted'"
+        )
+        order_sql = (
+            "p.updated_at DESC, p.id DESC"
+            if deleted
+            else "p.created_at DESC, p.id DESC"
+        )
         with _read_connection(self.db_path) as conn:
             rows = conn.execute(
                 f"""
@@ -572,18 +633,16 @@ class QuestionBankReadService:
                     p.created_at,
                     p.updated_at,
                     COUNT(DISTINCT CASE
-                        WHEN q.id IS NOT NULL AND COALESCE(q.is_deleted, 0) = 0
+                        WHEN {visible_question_sql}
                         THEN q.id
                     END) AS question_count,
                     COUNT(DISTINCT CASE
-                        WHEN q.id IS NOT NULL
-                         AND COALESCE(q.is_deleted, 0) = 0
+                        WHEN {visible_question_sql}
                          AND t.id IS NOT NULL
                         THEN q.id
                     END) AS tagged_any_question_count,
                     COUNT(DISTINCT CASE
-                        WHEN q.id IS NOT NULL
-                         AND COALESCE(q.is_deleted, 0) = 0
+                        WHEN {visible_question_sql}
                          AND (
                             SELECT COUNT(DISTINCT core_tags.tag_type)
                             FROM question_tags core_tags
@@ -591,11 +650,11 @@ class QuestionBankReadService:
                               AND core_tags.tag_type IN (
                                   'knowledge_point',
                                   'ability',
-                                  'exam_scope',
-                                  'student_level'
+                                  'exam_scope'
                               )
                               AND COALESCE(core_tags.tag_value, '') <> ''
-                         ) = 4
+                         ) = 3
+                         AND CAST(q.difficulty AS REAL) BETWEEN 1 AND 10
                         THEN q.id
                     END) AS tagged_question_count
                 FROM papers p
@@ -604,9 +663,9 @@ class QuestionBankReadService:
                   ON t.question_id = q.id
                  AND t.tag_type IN ({tag_placeholders})
                  AND COALESCE(t.tag_value, '') <> ''
-                WHERE COALESCE(p.import_status, '') <> 'deleted'
+                WHERE {paper_state_sql}
                 GROUP BY p.id
-                ORDER BY p.created_at DESC, p.id DESC
+                ORDER BY {order_sql}
                 """,
                 ANALYSIS_TAG_TYPES,
             ).fetchall()
@@ -701,11 +760,16 @@ class QuestionBankReadService:
         self,
         filters: QuestionReadFilters,
     ) -> dict[str, list[dict[str, Any]]]:
+        taxonomy_expansions = _taxonomy_filter_expansions(filters)
+
         def facet_source(
             **excluded_dimension: object,
         ) -> tuple[str, list[Any]]:
             facet_filters = replace(filters, **excluded_dimension)
-            joins, where, params = _question_filter_parts(facet_filters)
+            joins, where, params = _question_filter_parts(
+                facet_filters,
+                taxonomy_expansions=taxonomy_expansions,
+            )
             where_sql = "WHERE " + " AND ".join(where) if where else ""
             return (
                 " ".join(
@@ -739,6 +803,7 @@ class QuestionBankReadService:
             "abilities": facet_source(abilities=()),
             "methods": facet_source(methods=()),
             "models": facet_source(models=()),
+            "special_types": facet_source(special_types=()),
             "student_levels": facet_source(student_levels=()),
             "teaching_stages": facet_source(teaching_stages=()),
             "sub_skills": facet_source(sub_skills=()),
@@ -751,6 +816,7 @@ class QuestionBankReadService:
         def source(name: str) -> tuple[str, list[Any]]:
             return sources[name]
 
+        taxonomy_snapshot = get_taxonomy_governance().snapshot()
         with _read_connection(self.db_path) as conn:
             filtered_sql, params = source("exam_scopes")
             curriculum_section_sql, curriculum_section_params = source(
@@ -761,6 +827,7 @@ class QuestionBankReadService:
             ability_sql, ability_params = source("abilities")
             method_sql, method_params = source("methods")
             model_sql, model_params = source("models")
+            special_type_sql, special_type_params = source("special_types")
             student_level_sql, student_level_params = source(
                 "student_levels"
             )
@@ -793,6 +860,7 @@ class QuestionBankReadService:
                     knowledge_params,
                     tag_type="knowledge_point",
                     taxonomy_dimension="knowledge",
+                    taxonomy_snapshot=taxonomy_snapshot,
                 ),
                 "curriculum_chapters": _curriculum_chapter_facet(
                     conn,
@@ -805,6 +873,7 @@ class QuestionBankReadService:
                     ability_params,
                     tag_type="ability",
                     taxonomy_dimension="ability",
+                    taxonomy_snapshot=taxonomy_snapshot,
                 ),
                 "methods": _tag_facet(
                     conn,
@@ -812,6 +881,7 @@ class QuestionBankReadService:
                     method_params,
                     tag_type="method",
                     taxonomy_dimension="method",
+                    taxonomy_snapshot=taxonomy_snapshot,
                 ),
                 "models": _tag_facet(
                     conn,
@@ -819,6 +889,15 @@ class QuestionBankReadService:
                     model_params,
                     tag_type="model",
                     taxonomy_dimension="model",
+                    taxonomy_snapshot=taxonomy_snapshot,
+                ),
+                "special_types": _tag_facet(
+                    conn,
+                    special_type_sql,
+                    special_type_params,
+                    tag_type="special_type",
+                    taxonomy_dimension="special_type",
+                    taxonomy_snapshot=taxonomy_snapshot,
                 ),
                 "student_levels": _tag_facet(
                     conn,
@@ -931,7 +1010,8 @@ class QuestionBankReadService:
                     candidate["question_text"],
                 )
                 score = _combined_similarity_score(tag_score, wording_score)
-                if score <= 0:
+                # 不为凑满数量返回弱相关题：标签或题干证据不足时宁可为空。
+                if score < 0.35:
                     continue
                 reasons = _similarity_reasons(
                     target,
@@ -1224,11 +1304,28 @@ class QuestionBankReadService:
 
 def _question_filter_parts(
     filters: QuestionReadFilters,
+    *,
+    taxonomy_expansions: dict[str, tuple[str, ...]] | None = None,
 ) -> tuple[list[str], list[str], list[Any]]:
     difficulty_range = None
     if filters.difficulty_min is not None and filters.difficulty_max is not None:
         difficulty_range = (filters.difficulty_min, filters.difficulty_max)
-    governance = get_taxonomy_governance()
+
+    def expand(
+        dimension: str,
+        values: tuple[str, ...],
+    ) -> tuple[str, ...]:
+        if not values:
+            return ()
+        if taxonomy_expansions is not None:
+            cached = taxonomy_expansions.get(dimension)
+            if cached is not None:
+                return cached
+        return get_taxonomy_governance().expand_filter_values(
+            dimension,
+            values,
+        )
+
     return build_question_filter_query(
         question_number=filters.question_number,
         keyword=filters.keyword,
@@ -1244,34 +1341,28 @@ def _question_filter_parts(
             for tag_type, values in (
                 (
                     "exam_scope",
-                    governance.expand_filter_values(
-                        "curriculum", filters.exam_scopes
-                    ),
+                    expand("curriculum", filters.exam_scopes),
                 ),
                 ("curriculum_section", filters.curriculum_sections),
                 (
                     "knowledge_point",
-                    governance.expand_filter_values(
-                        "knowledge", filters.knowledge_points
-                    ),
+                    expand("knowledge", filters.knowledge_points),
                 ),
                 (
                     "ability",
-                    governance.expand_filter_values(
-                        "ability", filters.abilities
-                    ),
+                    expand("ability", filters.abilities),
                 ),
                 (
                     "method",
-                    governance.expand_filter_values(
-                        "method", filters.methods
-                    ),
+                    expand("method", filters.methods),
                 ),
                 (
                     "model",
-                    governance.expand_filter_values(
-                        "model", filters.models
-                    ),
+                    expand("model", filters.models),
+                ),
+                (
+                    "special_type",
+                    expand("special_type", filters.special_types),
                 ),
                 ("student_level", filters.student_levels),
                 ("teaching_stage", filters.teaching_stages),
@@ -1284,6 +1375,24 @@ def _question_filter_parts(
     )
 
 
+def _taxonomy_filter_expansions(
+    filters: QuestionReadFilters,
+) -> dict[str, tuple[str, ...]]:
+    governance = get_taxonomy_governance()
+    return {
+        dimension: governance.expand_filter_values(dimension, values)
+        for dimension, values in (
+            ("curriculum", filters.exam_scopes),
+            ("knowledge", filters.knowledge_points),
+            ("ability", filters.abilities),
+            ("method", filters.methods),
+            ("model", filters.models),
+            ("special_type", filters.special_types),
+        )
+        if values
+    }
+
+
 def _tag_facet(
     conn: sqlite3.Connection,
     filtered_sql: str,
@@ -1291,6 +1400,7 @@ def _tag_facet(
     *,
     tag_type: str,
     taxonomy_dimension: str | None = None,
+    taxonomy_snapshot: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     if tag_type not in {
         "ability",
@@ -1299,6 +1409,7 @@ def _tag_facet(
         "knowledge_point",
         "method",
         "model",
+        "special_type",
         "student_level",
         "sub_skill",
         "teaching_stage",
@@ -1311,6 +1422,7 @@ def _tag_facet(
             params,
             tag_type=tag_type,
             dimension=taxonomy_dimension,
+            taxonomy_snapshot=taxonomy_snapshot,
         )
     rows = conn.execute(
         f"""
@@ -1340,8 +1452,13 @@ def _controlled_taxonomy_facet(
     *,
     tag_type: str,
     dimension: str,
+    taxonomy_snapshot: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
-    snapshot = get_taxonomy_governance().snapshot()
+    snapshot = (
+        taxonomy_snapshot
+        if taxonomy_snapshot is not None
+        else get_taxonomy_governance().snapshot()
+    )
     terms = snapshot["terms_by_dimension"].get(dimension, [])
     alias_index: dict[str, str] = {}
     for term in terms:

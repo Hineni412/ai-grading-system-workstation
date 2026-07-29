@@ -9,7 +9,6 @@ import QuestionBlockReview from '../components/config/QuestionBlockReview.vue'
 import QuestionBankSyncPanel from '../components/config/QuestionBankSyncPanel.vue'
 import RubricEditorTable from '../components/config/RubricEditorTable.vue'
 import ScoringUnitEditor from '../components/config/ScoringUnitEditor.vue'
-import SessionDeletionPanel from '../components/config/SessionDeletionPanel.vue'
 import SessionDraftPanel from '../components/config/SessionDraftPanel.vue'
 import { ApiError, isAmbiguousWriteError, isAuthoritativeNotFoundError } from '../api/errors'
 import {
@@ -19,11 +18,14 @@ import {
   fetchConfigGenerationJobByToken,
   refineConfigEditor,
   saveConfigEditor,
+  submitConfigGeneration,
   type ConfigEditorCommand,
   type ConfigEditorRefineRequest,
   type ConfigEditorResponse,
   type ConfigEditorSaveRequest,
   type ConfigEditorSaveResponse,
+  type ConfigGenerationRequest,
+  type GenerationMode,
   type ManualPartInput,
 } from '../api/config-workspace'
 import type { JobResponse } from '../api/jobs'
@@ -36,6 +38,7 @@ const props = withDefaults(defineProps<{
   editorSaver?: (sessionId: number, request: ConfigEditorSaveRequest) => Promise<ConfigEditorSaveResponse>
   editorLoader?: (sessionId: number) => Promise<ConfigEditorResponse>
   editorRefiner?: (sessionId: number, request: ConfigEditorRefineRequest) => Promise<JobResponse>
+  generationSubmitter?: (sessionId: number, request: ConfigGenerationRequest) => Promise<JobResponse>
   generationLoader?: (sessionId: number, requestToken: string) => Promise<JobResponse>
   requestAbandoner?: (sessionId: number, requestToken: string) => Promise<void>
   templateReadinessLoader?: (sessionId: number) => Promise<RegionReadiness>
@@ -43,6 +46,7 @@ const props = withDefaults(defineProps<{
   editorSaver: saveConfigEditor,
   editorLoader: fetchConfigEditor,
   editorRefiner: refineConfigEditor,
+  generationSubmitter: submitConfigGeneration,
   generationLoader: fetchConfigGenerationJobByToken,
   requestAbandoner: abandonConfigGenerationRequest,
   templateReadinessLoader: fetchRegionReadiness,
@@ -60,8 +64,12 @@ const pendingStageFocus = ref<'draft' | 'source' | 'generation' | null>(null)
 const selectedScoringQuestion = ref('')
 const refining = ref(false)
 const refineError = ref('')
+const regenerationSubmitting = ref(false)
+const activeRegenerationMode = ref<GenerationMode | null>(null)
+const regenerationMessage = ref('')
+const regenerationError = ref('')
+const inlineRegenerationJobId = ref<number | null>(null)
 const rubricInputValid = ref(true)
-const syncAfterGeneration = ref(false)
 const templatePresent = ref(false)
 const templateReady = ref(false)
 let templateLoadGeneration = 0
@@ -75,6 +83,14 @@ const configJobActive = computed(() => {
     && current.payload.session_id === configStore.sessionId
     && !['succeeded', 'failed', 'cancelled'].includes(current.status)
 })
+const inlineRegenerationJob = computed(() => inlineRegenerationJobId.value === null
+  ? null
+  : jobStore.jobs[inlineRegenerationJobId.value] ?? null)
+const regenerationBusy = computed(() => regenerationSubmitting.value
+  || configJobActive.value || submissionPending.value)
+const canRegenerateBatched = computed(() => configStore.canGenerate
+  && blockingQualityQuestionIds.value.length > 0)
+const canRegenerateWholeDocument = computed(() => configStore.canGenerateWholeDocument)
 const templateReadinessTrigger = computed(() => {
   const current = configStore.jobId === null ? null : jobStore.jobs[configStore.jobId]
   if (current?.job_type !== 'config_generation'
@@ -87,6 +103,24 @@ const editorIssues = computed(() => [
 ])
 const blockingIssues = computed(() => editorIssues.value
   .some((issue) => issue.severity === 'error'))
+const blockingQualityQuestionIds = computed(() => {
+  const knownQuestionIds = [...scoringQuestions.value]
+    .sort((left, right) => right.length - left.length || left.localeCompare(right))
+  const result: string[] = []
+  for (const issue of editorIssues.value) {
+    if (issue.code !== 'quality_blocking') continue
+    const message = issue.message.trim()
+    for (const questionId of knownQuestionIds) {
+      const prefix = `[质量检查-阻断] ${questionId}`
+      if (message === prefix || message.startsWith(`${prefix} `)
+        || message.startsWith(`${prefix}/`)) {
+        if (!result.includes(questionId)) result.push(questionId)
+        break
+      }
+    }
+  }
+  return result
+})
 const saveNeeded = computed(() => configStore.hasDirtyEditor)
 const saveBlocked = computed(() => configStore.effectiveTotalScore !== 100
   || blockingIssues.value || !rubricInputValid.value)
@@ -325,6 +359,179 @@ async function refineScoringUnits(command: ConfigEditorCommand): Promise<void> {
     refining.value = false
   }
 }
+
+let inlineRegenerationContext: {
+  jobId: number
+  generationContext: number
+  sessionId: number
+} | null = null
+const loadedInlineRegenerationJobs = new Set<number>()
+
+function attachInlineRegeneration(
+  next: JobResponse,
+  generationContext: number,
+  sessionId: number,
+  mode: GenerationMode,
+): void {
+  jobStore.track(next)
+  if (!configStore.attachJob(next.id, generationContext)) return
+  inlineRegenerationJobId.value = next.id
+  inlineRegenerationContext = {
+    jobId: next.id,
+    generationContext,
+    sessionId,
+  }
+  regenerationMessage.value = mode === 'whole_document'
+    ? '整卷重新生成已经开始，当前正式评分依据继续保留。'
+    : '分批重新生成已经开始，当前正式评分依据继续保留。'
+}
+
+async function abandonMissingRegeneration(
+  sessionId: number,
+  requestToken: string,
+): Promise<void> {
+  try {
+    await props.requestAbandoner(sessionId, requestToken)
+    configStore.clearGenerationSubmissionPending()
+    activeRegenerationMode.value = null
+    regenerationError.value = '服务器确认未收到这次请求，可以再次提交。'
+  } catch {
+    regenerationError.value = '原请求可能仍在到达服务器，当前继续锁定。请稍后再试。'
+  }
+}
+
+async function regenerateBlockedEditor(mode: GenerationMode): Promise<void> {
+  const modeAvailable = mode === 'whole_document'
+    ? canRegenerateWholeDocument.value
+    : canRegenerateBatched.value
+  if (!modeAvailable || regenerationBusy.value || saving.value || refining.value
+    || configStore.sessionId === null) return
+  const targetedQuestionIds = mode === 'batched'
+    ? blockingQualityQuestionIds.value
+    : []
+  if (mode === 'batched' && targetedQuestionIds.length === 0) return
+  if (configStore.hasDirtyEditor && !window.confirm(
+    mode === 'batched'
+      ? `评分依据还有未保存修改。${targetedQuestionIds.join('、')} 重新生成成功后会发布新版本，未保存修改不会保留。是否继续？`
+      : '评分依据还有未保存修改。整卷生成完整成功后会替换当前正式版本，未保存修改不会保留。是否继续？',
+  )) return
+
+  const sessionId = configStore.sessionId
+  const generationContext = configStore.captureGenerationContext()
+  const requestToken = createClientRequestToken()
+  const request: ConfigGenerationRequest = {
+    ...configStore.sourceRequest(mode, false),
+    client_request_token: requestToken,
+  }
+  if (mode === 'batched') {
+    request.regenerate_question_ids = [...targetedQuestionIds]
+    request.base_revision = configStore.editor?.revision
+    request.sync_to_question_bank = false
+  }
+  if (!configStore.markJobSubmissionPending(requestToken, 'generate', mode)) return
+  activeRegenerationMode.value = mode
+  regenerationSubmitting.value = true
+  regenerationMessage.value = mode === 'batched'
+    ? `正在提交 ${targetedQuestionIds.join('、')} 的重新生成任务…`
+    : '正在提交整卷重新生成任务…'
+  regenerationError.value = ''
+  try {
+    const next = await props.generationSubmitter(sessionId, request)
+    attachInlineRegeneration(next, generationContext, sessionId, mode)
+  } catch (error) {
+    if (isAmbiguousWriteError(error)) {
+      regenerationMessage.value = '请求结果未知，正在核对这一次任务…'
+      try {
+        const reconciled = await props.generationLoader(sessionId, requestToken)
+        attachInlineRegeneration(reconciled, generationContext, sessionId, mode)
+      } catch (reconciliationError) {
+        regenerationMessage.value = ''
+        if (isAuthoritativeNotFoundError(
+          reconciliationError,
+          'config_generation_job_not_found',
+        )) {
+          await abandonMissingRegeneration(sessionId, requestToken)
+        } else {
+          regenerationError.value = '任务结果仍无法确认。为避免重复调用模型，当前保持锁定，请稍后再试。'
+        }
+      }
+    } else {
+      configStore.clearGenerationSubmissionPending()
+      activeRegenerationMode.value = null
+      regenerationMessage.value = ''
+      regenerationError.value = '重新生成没有开始，当前正式评分依据未改变，可以再次提交。'
+    }
+  } finally {
+    regenerationSubmitting.value = false
+  }
+}
+
+watch(
+  () => {
+    const current = inlineRegenerationJob.value
+    if (current === null) return ''
+    return `${current.id}:${current.status}:${String(current.result.outcome ?? '')}`
+  },
+  async () => {
+    const current = inlineRegenerationJob.value
+    const context = inlineRegenerationContext
+    if (current === null || context === null || current.id !== context.jobId) return
+    if (current.status === 'queued') {
+      regenerationMessage.value = '重新生成正在等待开始，当前正式评分依据继续保留。'
+      return
+    }
+    if (current.status === 'running' || current.status === 'paused') {
+      regenerationMessage.value = '重新生成正在进行，当前正式评分依据继续保留。'
+      return
+    }
+    if (current.status === 'failed') {
+      activeRegenerationMode.value = null
+      regenerationMessage.value = ''
+      regenerationError.value = '重新生成失败，当前正式评分依据仍然保留，可以再次选择生成方式。'
+      return
+    }
+    if (current.status === 'cancelled') {
+      activeRegenerationMode.value = null
+      regenerationMessage.value = '重新生成已取消，当前正式评分依据仍然保留。'
+      return
+    }
+    if (current.status !== 'succeeded') return
+    if (current.result.outcome !== 'complete') {
+      activeRegenerationMode.value = null
+      regenerationMessage.value = '分批生成只完成了一部分，当前正式评分依据未替换；可以再次选择生成方式。'
+      return
+    }
+    if (loadedInlineRegenerationJobs.has(current.id)) return
+    loadedInlineRegenerationJobs.add(current.id)
+    regenerationMessage.value = '新评分依据已生成，正在更新当前编辑区…'
+    try {
+      const replaced = await configStore.reloadEditorForGeneration(
+        context.generationContext,
+        props.editorLoader,
+      )
+      if (replaced && configStore.sessionId === context.sessionId) {
+        activeRegenerationMode.value = null
+        regenerationMessage.value = '新评分依据已更新，请继续核对。'
+        regenerationError.value = ''
+      }
+    } catch {
+      activeRegenerationMode.value = null
+      regenerationMessage.value = ''
+      regenerationError.value = '新评分依据已生成，但暂时无法读取；当前正式版本仍保留，可以稍后重新加载。'
+    }
+  },
+)
+
+watch(
+  () => sessionStore.currentSession?.id ?? null,
+  () => {
+    inlineRegenerationJobId.value = null
+    inlineRegenerationContext = null
+    activeRegenerationMode.value = null
+    regenerationMessage.value = ''
+    regenerationError.value = ''
+  },
+)
 </script>
 
 <template>
@@ -384,7 +591,9 @@ async function refineScoringUnits(command: ConfigEditorCommand): Promise<void> {
               id="config-generation-stage"
               tabindex="-1"
             >
-              <ConfigGenerationPanel v-model:sync-after-generation="syncAfterGeneration" />
+              <ConfigGenerationPanel
+                @continue="selectStage('editor')"
+              />
             </div>
           </template>
         </section>
@@ -396,17 +605,33 @@ async function refineScoringUnits(command: ConfigEditorCommand): Promise<void> {
         >
           <QuestionBankSyncPanel
             :session-id="sessionStore.currentSession.id"
+            :session-name="sessionStore.currentSession.name"
             :config-revision="configStore.editor.revision"
-            :auto-start="syncAfterGeneration"
-            @auto-start-consumed="syncAfterGeneration = false"
           />
+          <p
+            v-if="regenerationMessage && !saveBlocked"
+            class="rubric-ledger__regeneration-note"
+            role="status"
+          >
+            {{ regenerationMessage }}
+          </p>
           <RubricEditorTable
             :rows="configStore.effectiveEditorRows"
             :total-score="configStore.effectiveTotalScore"
             :issues="editorIssues"
             :disabled="saving || refining || configJobActive || submissionPending"
+            :show-regeneration-actions="saveBlocked"
+            :can-regenerate-batched="canRegenerateBatched"
+            :can-regenerate-whole-document="canRegenerateWholeDocument"
+            :regeneration-busy="regenerationBusy"
+            :regeneration-mode="activeRegenerationMode"
+            :regeneration-submitting="regenerationSubmitting"
+            :regeneration-question-ids="blockingQualityQuestionIds"
+            :regeneration-message="regenerationMessage"
+            :regeneration-error="regenerationError"
             @edit="configStore.updateEditor"
             @validity="rubricInputValid = $event"
+            @regenerate="regenerateBlockedEditor"
           />
 
           <details v-if="scoringQuestions.length" class="config-editor__units">
@@ -435,9 +660,10 @@ async function refineScoringUnits(command: ConfigEditorCommand): Promise<void> {
 
           <div class="config-editor__save-bar">
             <div>
-              <strong>{{ configStore.hasDirtyEditor ? '有未保存修改' : '已与服务器版本同步' }}</strong>
+              <strong>{{ configStore.hasDirtyEditor ? '有未保存修改' : '评分标准已自动保存' }}</strong>
               <span v-if="saveBlocked">需处理阻断问题并使总分为 100 后保存。</span>
-              <span v-else>保存时会一次提交全部行修改与评分单元命令。</span>
+              <span v-else-if="configStore.hasDirtyEditor">保存时会一次提交全部行修改与评分单元命令。</span>
+              <span v-else>只有修改评分标准后才需要再次保存；当前可以直接进入下一步。</span>
             </div>
             <button
               type="button"
@@ -445,7 +671,7 @@ async function refineScoringUnits(command: ConfigEditorCommand): Promise<void> {
               class="config-editor__save-primary"
               :disabled="!saveNeeded || saveBlocked || saving || saveUnknown || refining || configJobActive || submissionPending"
               @click="saveEditor"
-            >{{ saving ? '正在保存…' : '保存评分依据' }}</button>
+            >{{ saving ? '正在保存…' : saveNeeded ? '保存评分依据' : '无需保存' }}</button>
           </div>
           <ConfigSaveResult
             :status="configStore.saveStatus === 'saving' ? 'idle' : configStore.saveStatus"
@@ -468,7 +694,6 @@ async function refineScoringUnits(command: ConfigEditorCommand): Promise<void> {
           </div>
         </section>
       </Transition>
-      <SessionDeletionPanel />
     </template>
   </article>
 </template>

@@ -19,6 +19,7 @@ from PIL import Image
 
 from answer_region_geometry import scaled_region_bbox
 from backend.domain_models import ExamPaperGroup
+from backend.llm.execution import execution_snapshot_from_profile
 from grading_limits import PRECHECK_WORKERS_MAX, PRECHECK_WORKERS_MIN, bounded_int
 from image_preprocessor import ENHANCER_VERSION, enhance_for_ai, enhance_image_file
 from llm_client import LLMClient
@@ -289,11 +290,20 @@ class Scanner:
         self.llm_client = llm_client
         self.ocr_model = ocr_model
         self.enhance_images = enhance_images
+        execution_profile = getattr(
+            getattr(self.llm_client, "settings", None),
+            "policy_profile",
+            None,
+        )
+        execution_snapshot = execution_snapshot_from_profile(execution_profile)
         self.ocr_workers = bounded_int(
             ocr_workers,
-            _env_int("AI_GRADING_PRECHECK_WORKERS", 12),
+            execution_snapshot.max_in_flight,
             PRECHECK_WORKERS_MIN,
-            PRECHECK_WORKERS_MAX,
+            min(
+                PRECHECK_WORKERS_MAX,
+                execution_snapshot.max_in_flight,
+            ),
         )
         self.name_region = dict(name_region or {}) if name_region else None
         self.front_page_parity = _normalize_front_page_parity(front_page_parity)

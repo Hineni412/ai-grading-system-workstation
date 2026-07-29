@@ -12,7 +12,7 @@ import {
   type ConfigGenerationRequest,
   type GenerationMode,
 } from '../../api/config-workspace'
-import type { JobResponse } from '../../api/jobs'
+import { jobApi, type JobResponse } from '../../api/jobs'
 import { isAmbiguousWriteError, isAuthoritativeNotFoundError } from '../../api/errors'
 import {
   useConfigWorkspaceStore,
@@ -33,9 +33,9 @@ const props = withDefaults(defineProps<{
   generationLoader: fetchConfigGenerationJobByToken,
   requestAbandoner: abandonConfigGenerationRequest,
 })
-const syncAfterGeneration = defineModel<boolean>('syncAfterGeneration', {
-  default: false,
-})
+const emit = defineEmits<{
+  continue: []
+}>()
 
 const configStore = useConfigWorkspaceStore()
 const jobStore = useJobStore()
@@ -60,6 +60,8 @@ const outcome = computed(() => job.value?.result.outcome === 'partial'
 interface FailedBatch {
   batch_id: string
   question_ids: string[]
+  category: string
+  error: string
 }
 interface LocalJsonRepair {
   batch_id: string
@@ -73,11 +75,27 @@ const failedBatches = computed<FailedBatch[]>(() => {
     const value = item as Record<string, unknown>
     if (typeof value.batch_id !== 'string' || !Array.isArray(value.question_ids)) return []
     const ids = value.question_ids.filter((qid): qid is string => typeof qid === 'string' && qid.length > 0)
-    return ids.length > 0 ? [{ batch_id: value.batch_id, question_ids: ids }] : []
+    return ids.length > 0 ? [{
+      batch_id: value.batch_id,
+      question_ids: ids,
+      category: typeof value.category === 'string' ? value.category : '',
+      error: typeof value.error === 'string' ? value.error : '',
+    }] : []
   })
 })
 const localJsonRepairs = computed<LocalJsonRepair[]>(() => {
   const raw = job.value?.result.local_json_repairs
+  if (!Array.isArray(raw)) return []
+  return raw.flatMap((item) => {
+    if (typeof item !== 'object' || item === null || Array.isArray(item)) return []
+    const value = item as Record<string, unknown>
+    if (typeof value.batch_id !== 'string' || !Array.isArray(value.question_ids)) return []
+    const ids = value.question_ids.filter((qid): qid is string => typeof qid === 'string' && qid.length > 0)
+    return [{ batch_id: value.batch_id, question_ids: ids }]
+  })
+})
+const localStructureRepairs = computed<LocalJsonRepair[]>(() => {
+  const raw = job.value?.result.local_structure_repairs
   if (!Array.isArray(raw)) return []
   return raw.flatMap((item) => {
     if (typeof item !== 'object' || item === null || Array.isArray(item)) return []
@@ -93,6 +111,47 @@ const scoreAllocationPending = computed(
 const scoreAllocationFailed = computed(
   () => job.value?.result.score_allocation_failed === true,
 )
+const scoreAllocationError = computed(() => {
+  const value = job.value?.result.score_allocation_error
+  return typeof value === 'string' ? value : ''
+})
+const scoreAllocationFailureCategory = computed(() => {
+  const value = job.value?.result.score_allocation_failure_category
+  return typeof value === 'string' ? value : ''
+})
+const retryable = computed(() => (
+  job.value?.result.retryable === true
+  || (
+    job.value?.result.retryable !== false
+    && failedBatches.value.length > 0
+    && job.value?.payload.generation_mode !== 'whole_document'
+  )
+))
+const questionBankSyncRequested = computed(
+  () => job.value?.payload.sync_to_question_bank === true
+    || job.value?.result.question_bank_sync_requested === true,
+)
+const questionBankSyncState = computed(() => {
+  const value = job.value?.result.question_bank_sync_state
+  return typeof value === 'string' ? value : ''
+})
+const questionBankSyncCopy = computed(() => {
+  if (!questionBankSyncRequested.value) return ''
+  if (questionBankSyncState.value === 'queued') {
+    return '评分依据已发布，题库入库与 AI 打标签任务已经排队。'
+  }
+  if (questionBankSyncState.value === 'running') {
+    return '评分依据已发布，正在执行题库入库与 AI 打标签。'
+  }
+  if (questionBankSyncState.value === 'submission_failed'
+    || questionBankSyncState.value === 'blocked') {
+    return '评分依据已发布，但题库任务没有启动；进入评分编辑页后可以重新提交，评分依据不受影响。'
+  }
+  if (outcome.value === 'partial') {
+    return '已保存“完成后入库并打标签”的选择；当前等待评分依据完整生成，通过重试后会自动继续。'
+  }
+  return '已保存“完成后入库并打标签”的选择，评分依据发布成功后将由后台自动继续。'
+})
 const totalQuestionCount = computed(() => safeCount(job.value?.result.total_questions))
 const totalBatchCount = computed(() => safeCount(job.value?.result.total_batch_count))
 const generatedCount = computed(() => safeCount(job.value?.result.generated_questions))
@@ -131,6 +190,7 @@ const sourceDiffersFromPublishedConfig = computed(() => {
   return configStore.editor?.source?.sha256_prefix !== configStore.source.sha256_prefix
 })
 const safeDetail = computed(() => {
+  if (terminal.value) return ''
   const detail = job.value?.detail.trim() ?? ''
   if (!detail || detail.length > 240 || /(?:[a-z]:[\\/]|\\\\|\/[^ ]+\/)/i.test(detail)) return ''
   return detail
@@ -153,6 +213,14 @@ function safeCount(value: unknown): number {
   return Number.isSafeInteger(value) && Number(value) >= 0 ? Number(value) : 0
 }
 
+function failureCategoryCopy(category: string): string {
+  if (category === 'model_transport') return '模型服务或网络请求失败'
+  if (category === 'model_response_parse') return '模型已返回，但 JSON 无法解析'
+  if (category === 'model_output_contract') return '模型已返回，但题目结构不符合约定'
+  if (category === 'local_validation') return '模型已返回，但本地业务校验未通过'
+  return '模型请求或结果处理失败'
+}
+
 function statusCopy(value: JobResponse): string {
   if (value.cancel_requested && (value.status === 'queued' || value.status === 'running')) {
     return '已请求取消'
@@ -162,7 +230,16 @@ function statusCopy(value: JobResponse): string {
   if (value.status === 'paused') return '生成已暂停'
   if (value.status === 'cancelled') return '已取消'
   if (value.status === 'failed') return '生成失败'
-  return outcome.value === 'partial' ? '部分完成' : '生成完成'
+  return outcome.value === 'partial' ? '评分标准生成失败' : '评分标准生成成功'
+}
+
+function continueToEditor(): void {
+  emit('continue')
+}
+
+async function restartWholeDocument(): Promise<void> {
+  prepareFreshGeneration()
+  await startGeneration('whole_document')
 }
 
 function returnToEditor(): void {
@@ -210,7 +287,7 @@ async function startGeneration(requestedMode: GenerationMode = mode.value): Prom
   const sessionId = configStore.sessionId
   const requestToken = createClientRequestToken()
   const request = {
-    ...configStore.sourceRequest(requestedMode),
+    ...configStore.sourceRequest(requestedMode, false),
     client_request_token: requestToken,
   }
   if (!configStore.markJobSubmissionPending(requestToken, 'generate', requestedMode)) return
@@ -341,6 +418,12 @@ async function reloadEditor(current: JobResponse): Promise<void> {
 watch(job, (current, previous) => {
   if (current?.id !== previous?.id) selectedFailed.value = []
   if (current?.status === 'succeeded' && current.result.outcome === 'complete') {
+    const syncJobId = Number(current.result.question_bank_sync_job_id)
+    if (Number.isSafeInteger(syncJobId) && syncJobId > 0) {
+      void jobApi.getJob(syncJobId)
+        .then((next) => jobStore.track(next))
+        .catch(() => undefined)
+    }
     void reloadEditor(current)
   }
 }, { immediate: true })
@@ -382,13 +465,13 @@ watch(job, (current, previous) => {
       </label>
     </div>
 
-    <label v-if="job === null" class="config-generation__bank-sync">
-      <input v-model="syncAfterGeneration" type="checkbox">
-      <span>
-        <strong>评分标准生成后，将这份试卷入库并打标签</strong>
-        <small>默认关闭。开启后会另行调用 AI，可能产生模型费用；入库失败不会影响已经生成的评分标准。</small>
-      </span>
-    </label>
+    <p
+      v-if="job !== null && questionBankSyncCopy"
+      class="config-generation__retained"
+      role="status"
+    >
+      {{ questionBankSyncCopy }}
+    </p>
 
     <button
       v-if="job === null"
@@ -413,29 +496,53 @@ watch(job, (current, previous) => {
       <p v-if="localJsonRepairs.length > 0" class="config-generation__retained" role="status">
         本地程序已修复 {{ localJsonRepairs.length }} 个批次的 JSON（{{ localJsonRepairs.map((item) => item.batch_id).join('、') }}），未产生额外模型请求。
       </p>
+      <p v-if="localStructureRepairs.length > 0" class="config-generation__retained" role="status">
+        模型已返回；本地程序已统一 {{ localStructureRepairs.length }} 个批次的题号、小问号或步骤号（{{ localStructureRepairs.map((item) => item.batch_id).join('、') }}），无需重试，也未产生额外模型请求。
+      </p>
       <p v-if="retainedSummary" class="config-generation__retained">
         <strong>上一轮已成功 {{ retainedSummary.succeededQuestions }} 题</strong>
         / 共 {{ retainedSummary.totalQuestions }} 题；
         当前恢复任务：{{ statusCopy(job) }}。
       </p>
 
+      <p v-if="terminal && outcome === 'complete'" class="config-generation__success">
+        <strong>评分标准生成成功。</strong>
+        共 {{ totalQuestionCount || generatedCount }} 道题，已通过本地校验并完成分值配置。
+      </p>
+      <button
+        v-if="terminal && outcome === 'complete' && !refineJob"
+        type="button"
+        name="进入评分标准编辑"
+        class="config-generation__primary"
+        @click="continueToEditor"
+      >进入下一步：检查评分标准</button>
+
       <div v-if="['succeeded', 'failed', 'cancelled'].includes(job.status) && outcome === 'partial' && failedBatches.length > 0" class="config-generation__partial">
         <p>
           本次共 {{ totalQuestionCount }} 道题
           <template v-if="totalBatchCount">，分为 {{ totalBatchCount }} 个批次</template>；
-          <strong>已成功 {{ generatedCount }} 道题</strong>，失败 {{ failedCount }} 道题。
-          成功批次已保存，不会重复请求。
+          <strong>失败 {{ failedCount }} 道题</strong>，已成功 {{ generatedCount }} 道题。
+          <template v-if="retryable">已通过批次保存在本机；失败题补齐后才会统一赋分。</template>
         </p>
-        <fieldset>
+        <fieldset v-if="retryable">
           <legend>选择要重试的失败批次</legend>
           <label v-for="batch in failedBatches" :key="batch.batch_id">
             <input v-model="selectedFailed" type="checkbox" :value="batch.batch_id" :aria-label="`选择失败批次 ${batch.batch_id}`">
-            {{ batch.batch_id }}（{{ batch.question_ids.join('、') }}）
+            <span>
+              {{ batch.batch_id }}（{{ batch.question_ids.join('、') }}）：
+              {{ failureCategoryCopy(batch.category) }}
+              <small v-if="batch.error">{{ batch.error }}</small>
+            </span>
           </label>
         </fieldset>
-        <button type="button" name="重试所选批次" :disabled="submitting || workspacePending || selectedFailed.length === 0" @click="retrySelected()">
-          重试所选批次
-        </button>
+        <div class="config-generation__failure-actions">
+          <button v-if="retryable" type="button" name="重试所选批次" :disabled="submitting || workspacePending || selectedFailed.length === 0" @click="retrySelected()">
+            重试所选失败题
+          </button>
+          <button type="button" name="整卷重新生成" class="config-generation__secondary" :disabled="submitting || workspacePending" @click="restartWholeDocument">
+            整卷重新生成
+          </button>
+        </div>
       </div>
 
       <div v-if="['succeeded', 'failed', 'cancelled'].includes(job.status) && outcome === 'partial' && failedBatches.length === 0 && scoreAllocationPending" class="config-generation__partial">
@@ -448,6 +555,10 @@ watch(job, (current, previous) => {
           <template v-if="scoreAllocationFailed">AI 统一配分没有成功；没有发布评分依据，也没有使用本地分数替代。</template>
           <template v-else>尚未完成 AI 统一配分。</template>
         </p>
+        <p v-if="scoreAllocationError" class="config-generation__error" role="alert">
+          <strong>{{ failureCategoryCopy(scoreAllocationFailureCategory) }}</strong>：
+          {{ scoreAllocationError }}
+        </p>
         <button type="button" name="重新进行 AI 统一配分" :disabled="submitting || workspacePending" @click="retrySelected(true)">
           重新进行 AI 统一配分
         </button>
@@ -459,6 +570,14 @@ watch(job, (current, previous) => {
           继续 AI 统一配分
         </button>
       </div>
+      <p
+        v-if="job.status === 'failed' && outcome !== 'partial' && outcome !== 'complete'"
+        class="config-generation__error"
+        role="alert"
+      >
+        <strong>评分标准生成失败。</strong>
+        模型请求、返回格式或本地处理没有完成，因此没有发布任何新评分标准。
+      </p>
 
       <button
         v-if="active && !job.cancel_requested"
@@ -484,14 +603,6 @@ watch(job, (current, previous) => {
         :disabled="submitting || workspacePending"
         @click="startGeneration(job.payload.generation_mode === 'whole_document' ? 'whole_document' : 'batched')"
       >{{ job.payload.generation_mode === 'whole_document' ? '重新整卷生成' : '重新分批生成' }}</button>
-      <button
-        v-if="terminal && !refineJob"
-        type="button"
-        name="开始新一轮生成"
-        class="config-generation__secondary"
-        :disabled="workspacePending"
-        @click="prepareFreshGeneration"
-      >重新选择方式并生成新版本</button>
     </div>
 
     <div v-if="syncError" class="config-generation__warning" role="alert">
@@ -528,10 +639,6 @@ watch(job, (current, previous) => {
 .config-generation__modes input { flex: 0 0 auto; margin-block-start: 3px; accent-color: var(--color-accent); }
 .config-generation__modes span { display: grid; gap: var(--space-1); }
 .config-generation__modes small { color: var(--color-text-secondary); line-height: var(--line-height-relaxed); }
-.config-generation__bank-sync { display: flex; align-items: flex-start; gap: var(--space-2); margin: 0 0 var(--space-3); padding: var(--space-3) var(--space-4); border: var(--border-width) solid var(--color-border-default); border-radius: var(--radius-control); background: var(--color-bg-surface); cursor: pointer; }
-.config-generation__bank-sync input { flex: 0 0 auto; margin-block-start: 3px; accent-color: var(--color-accent); }
-.config-generation__bank-sync span { display: grid; gap: var(--space-1); }
-.config-generation__bank-sync small { color: var(--color-text-secondary); line-height: var(--line-height-relaxed); }
 .config-generation__primary,
 .config-generation__secondary,
 .config-generation__partial button,

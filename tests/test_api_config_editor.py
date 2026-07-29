@@ -294,6 +294,23 @@ def test_put_saves_once_preserves_source_and_rejects_stale_revision(editor_env) 
     current = db.get_grading_session(session_id)
     assert current["source_paper_path"] == "papers/original.docx"
     assert current["source_paper_sha256"] == "c" * 64
+    stored_rubric = json.loads(
+        Path(current["rubric_path"]).read_text(encoding="utf-8")
+    )
+    stored_answer_key = json.loads(
+        Path(current["answer_key_path"]).read_text(encoding="utf-8")
+    )
+    assert [
+        question["question_id"] for question in stored_rubric["questions"]
+    ] == [f"Q{index}" for index in range(1, 7)]
+    assert [
+        question["parts"][0]["part_id"]
+        for question in stored_rubric["questions"]
+    ] == [f"Q{index}" for index in range(1, 7)]
+    assert [
+        question["parts"][0]["part_id"]
+        for question in stored_answer_key["questions"]
+    ] == [f"Q{index}" for index in range(1, 7)]
     _assert_safe_editor(body, tmp_path)
 
     stale = client.put(
