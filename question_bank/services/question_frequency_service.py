@@ -13,7 +13,15 @@ from question_bank.services.question_service import CORE_ANALYSIS_TAG_TYPES
 
 FINGERPRINT_VERSION = 4
 FORMAL_EXAM_TYPES = ("期中", "期末", "中考")
-PRACTICE_EXAM_MARKERS = ("同步练习", "专题练习", "练习", "作业")
+PRACTICE_EXAM_MARKERS = (
+    "同步练习",
+    "专题练习",
+    "练习",
+    "作业",
+    "小测",
+    "小考",
+    "测验",
+)
 SIMPLE_QUESTION_TYPES = ("选择", "填空", "choice", "blank", "fill")
 QUESTION_SIMILARITY_MATCH_THRESHOLD = 0.5
 
@@ -547,30 +555,42 @@ class QuestionFrequencyService:
                 # 本题仍需要一条零分/低分缓存，否则按考频排序时会从结果中掉队。
                 self._update_frequency_cache_internal(conn, [question_id])
                 return
-            paper_ids = _eligible_paper_ids(conn, target, exam_type=exam_type)
-            affected_question_ids = {int(question_id)}
-            if paper_ids:
-                placeholders = ", ".join("?" for _ in paper_ids)
-                affected_question_ids.update(
-                    int(row["id"])
-                    for row in conn.execute(
-                        f"""
-                        SELECT id FROM questions
-                        WHERE paper_id IN ({placeholders}) AND is_deleted = 0
-                        """,
-                        paper_ids,
-                    ).fetchall()
+            # A formal-exam question is a candidate for every active question
+            # in the same grade/semester scope, regardless of the target
+            # question's own source type. Refresh all those dependants so the
+            # three frequency sort columns cannot retain cross-type stale data.
+            clauses = [
+                "q.is_deleted = 0",
+                "COALESCE(p.import_status, '') <> 'deleted'",
+                "p.grade = ?",
+            ]
+            params: list[Any] = [target.get("grade")]
+            if exam_type != "中考":
+                clauses.append(
+                    "COALESCE(p.semester, '') = COALESCE(?, '')"
                 )
-                conn.execute(
+                params.append(target.get("semester"))
+            affected_question_ids = {
+                int(row["id"])
+                for row in conn.execute(
                     f"""
-                    DELETE FROM question_frequency_cache
-                    WHERE question_id IN (
-                        SELECT id FROM questions WHERE paper_id IN ({placeholders})
-                    )
+                    SELECT q.id
+                    FROM questions q
+                    JOIN papers p ON p.id = q.paper_id
+                    WHERE {' AND '.join(clauses)}
                     """,
-                    paper_ids
-                )
-            conn.execute("DELETE FROM question_frequency_cache WHERE question_id = ?", (question_id,))
+                    params,
+                ).fetchall()
+            }
+            affected_question_ids.add(int(question_id))
+            placeholders = ", ".join("?" for _ in affected_question_ids)
+            conn.execute(
+                f"""
+                DELETE FROM question_frequency_cache
+                WHERE question_id IN ({placeholders})
+                """,
+                tuple(sorted(affected_question_ids)),
+            )
             self._update_frequency_cache_internal(
                 conn,
                 sorted(affected_question_ids),
@@ -891,6 +911,9 @@ def _eligible_paper_ids(conn, target: Mapping[str, Any], *, exam_type: str, city
         "p.grade = ?",
     ]
     params: list[Any] = [target.get("grade")]
+    for marker in PRACTICE_EXAM_MARKERS:
+        clauses.append("COALESCE(p.exam_type, '') NOT LIKE ?")
+        params.append(f"%{marker}%")
     if exam_type == "中考":
         clauses.append("p.exam_type LIKE '%中考%'")
     else:
