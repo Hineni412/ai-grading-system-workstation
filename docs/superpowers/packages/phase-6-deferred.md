@@ -2,9 +2,15 @@
 
 > **文档职责：** 保存班主任工作台从治理设计进入业务实现的关口和不可取消红线；动态状态只在 `EXECUTION_INDEX.md` 维护。
 >
-> **当前状态：** 用户已把班主任工作台纳入三路并行，B00 治理规格可以启动；B01 及后续业务实现仍未获准。
+> **当前状态：** 用户已于 2026-07-30 确认 B00；B01 及后续业务实现仍未获准，且仍等待 F0 合入并记录 M1。
 >
 > **详细计划：** [《班主任工作台详细实施计划》](../../product/CLASS_TEACHER_WORKBENCH_IMPLEMENTATION_PLAN.md)
+>
+> **B00 候选交付：**
+> [数据治理与保留删除规格](../../product/class-teacher/B00_DATA_GOVERNANCE.md)、
+> [深圳公办初中学校流程规格](../../product/class-teacher/B00_SHENZHEN_SCHOOL_SOP_PROFILE.md)、
+> [合成数据集与验收清单](../../product/class-teacher/B00_SYNTHETIC_ACCEPTANCE.md)、
+> [安全、加密、威胁与恢复规格](../../security/class-teacher/B00_SECURITY_AND_THREAT_MODEL.md)。
 
 ## B00 期间允许事项
 

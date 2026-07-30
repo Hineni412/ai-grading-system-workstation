@@ -14,7 +14,7 @@
 | F0 | 三路公共插槽地基 | `ready` | 一次性短期公共代码起点；合入 M1 后结束 |
 | Phase 4 / P4 | 知识图谱 2.0 与个性化训练闭环 | `ready` | 方向与 P4-00—P4-17 已冻结；实现尚未开始 |
 | A 线 | 初中数学备课工作台 | `ready_at_A00` | A00 WPS Gate 可在取得代表文件授权后开始；A01 等待 F0 |
-| B 线 | 班主任工作台 | `governance_at_B00` | 只激活 B00；B01 等待治理批准和 F0 |
+| B 线 | 班主任工作台 | `b00_approved_waiting_f0` | 用户已确认 B00；B01 等待 F0 合入、记录 M1 和单独授权 |
 | Phase 5 | 教师命题训练 | `planned` | 不在当前三路队列 |
 
 ## 2. 当前三路产品定义
@@ -61,6 +61,10 @@
 - [产品设计](../../product/CLASS_TEACHER_WORKBENCH.md)
 - [详细实施计划](../../product/CLASS_TEACHER_WORKBENCH_IMPLEMENTATION_PLAN.md)
 - [SOP 国家规范基线](../../product/CLASS_TEACHER_AFFAIRS_SOP_BASELINE.md)
+- [B00 数据治理规格](../../product/class-teacher/B00_DATA_GOVERNANCE.md)
+- [B00 深圳学校流程规格](../../product/class-teacher/B00_SHENZHEN_SCHOOL_SOP_PROFILE.md)
+- [B00 合成验收集](../../product/class-teacher/B00_SYNTHETIC_ACCEPTANCE.md)
+- [B00 安全与威胁模型](../../security/class-teacher/B00_SECURITY_AND_THREAT_MODEL.md)
 - [B00/B01 治理关口](./phase-6-deferred.md)
 
 冻结方向：
@@ -131,7 +135,7 @@ F0 可以与 P4-00/P4-01、A00、B00 同时启动，但 F0 不是长期第四条
 1. **F0 公共地基**：从文档合入后的稳定 `main` 创建 `codex/parallel-module-foundation`；
 2. **P4-00/P4-01**：创建 `codex/phase4-personalized-training-loop`，先冻结基线、gold set、故障矩阵和知识身份；
 3. **A00**：取得代表性数学 PPTX 副本的精确授权后完成 WPS 对象级 Gate；
-4. **B00**：只整理字段、保留、删除、加密、恢复、学校流程和威胁模型，不建库。
+4. **B 线**：B00 已通过；等待 F0 合入并记录 M1，未取得单独授权前不启动 B01。
 
 首个公共代码动作是 F0。首个 P4 代码前置是 P4-00；首个 A 业务代码包是 A01；首个 B 业务代码包是 B01。
 
@@ -147,11 +151,10 @@ F0 可以与 P4-00/P4-01、A00、B00 同时启动，但 F0 不是长期第四条
 
 ### B00 完成前
 
-- 学校所在地和校内升级链；
-- 允许收集字段、用途、保存与删除期限；
-- 加密、忘记密码和恢复方式；
-- 模型供应商与允许字段；
-- 高风险 SOP 的学校责任人和时限。
+- B00 文档成品已于 2026-07-30 经用户确认；
+- 真实学生试点前，学校另行补齐正式岗位名、联系人、值班方式和正式档案制度；
+- 当前外部模型冻结为关闭；未来如需开启，另行确认供应商、模型、字段和费用；
+- F0 合入并记录 M1 后，才具备申请 B01 授权的共同地基。
 
 ### P4 真实试点前
 
