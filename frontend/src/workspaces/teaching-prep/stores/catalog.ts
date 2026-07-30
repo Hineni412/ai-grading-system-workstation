@@ -596,11 +596,24 @@ export const useTeachingPrepCatalogStore = defineStore(
     ): Promise<void> {
       const packId = selectedResourcePackId.value
       if (packId === null) throw new Error('请先选择资源包')
+      const generation = lessonFlowGeneration
       errorMessage.value = ''
       try {
-        lessonDraftPreflight.value = await teachingPrepCatalogApi
+        const nextPreflight = await teachingPrepCatalogApi
           .getLessonDraftPreflight(packId, mode)
+        if (
+          generation !== lessonFlowGeneration
+          || selectedResourcePackId.value !== packId
+        ) return
+        if (nextPreflight.resource_pack_id !== packId) {
+          throw new Error('草稿生成范围与当前资源包不一致')
+        }
+        lessonDraftPreflight.value = nextPreflight
       } catch (error) {
+        if (
+          generation !== lessonFlowGeneration
+          || selectedResourcePackId.value !== packId
+        ) return
         errorMessage.value = safeMessage(error)
         throw error
       }
