@@ -4,9 +4,11 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   teachingPrepCatalogApi,
   type LessonNode,
+  type LessonDraftPreflight,
   type MaterialLink,
   type MaterialUnit,
   type MaterialVersion,
+  type ResourcePack,
 } from '../api/catalog'
 import { useTeachingPrepCatalogStore } from './catalog'
 
@@ -81,6 +83,33 @@ function materialUnit(id: string, materialVersionId: string): MaterialUnit {
     revision: 1,
     created_at: '2026-07-30T00:00:00Z',
     updated_at: '2026-07-30T00:00:00Z',
+  }
+}
+
+function resourcePack(id: string): ResourcePack {
+  return {
+    id,
+    lesson_node_id: 'l'.repeat(32),
+    version_number: 1,
+    source_state_sha256: '3'.repeat(64),
+    pack_sha256: '4'.repeat(64),
+    payload: {},
+    created_at: '2026-07-30T00:00:00Z',
+  }
+}
+
+function preflight(resourcePackId: string): LessonDraftPreflight {
+  return {
+    resource_pack_id: resourcePackId,
+    resource_pack_version: 1,
+    resource_pack_sha256: '4'.repeat(64),
+    mode: 'local_template',
+    will_call_model: false,
+    model_available: false,
+    model_label: null,
+    data_scope: {},
+    references: [{ id: resourcePackId, label: `范围 ${resourcePackId[0]}` }],
+    missing_and_uncertain_count: 0,
   }
 }
 
@@ -160,5 +189,60 @@ describe('teaching preparation selection consistency', () => {
     expect(store.selectedMaterialId).toBe(materialB.id)
     expect(store.materialUnits).toEqual([unitB])
     expect(store.loadState).toBe('ready')
+  })
+
+  it('keeps the current resource-pack preflight when an old one returns later', async () => {
+    const packA = resourcePack('a'.repeat(32))
+    const packB = resourcePack('b'.repeat(32))
+    let releasePackA!: (item: LessonDraftPreflight) => void
+    const packAResponse = new Promise<LessonDraftPreflight>((resolve) => {
+      releasePackA = resolve
+    })
+    vi.spyOn(teachingPrepCatalogApi, 'listLessonDrafts').mockResolvedValue([])
+    vi.spyOn(teachingPrepCatalogApi, 'getLessonDraftPreflight')
+      .mockImplementation((packId) => (
+        packId === packA.id
+          ? packAResponse
+          : Promise.resolve(preflight(packB.id))
+      ))
+    const store = useTeachingPrepCatalogStore()
+    await store.selectResourcePack(packA)
+
+    const prepareA = store.prepareLessonDraft()
+    await Promise.resolve()
+    await store.selectResourcePack(packB)
+    await store.prepareLessonDraft()
+    releasePackA(preflight(packA.id))
+    await prepareA
+
+    expect(store.selectedResourcePackId).toBe(packB.id)
+    expect(store.lessonDraftPreflight?.resource_pack_id).toBe(packB.id)
+    expect(store.errorMessage).toBe('')
+  })
+
+  it('ignores an old resource-pack preflight error after switching packs', async () => {
+    const packA = resourcePack('a'.repeat(32))
+    const packB = resourcePack('b'.repeat(32))
+    let rejectPackA!: (error: Error) => void
+    const packAResponse = new Promise<LessonDraftPreflight>(
+      (_resolve, reject) => {
+        rejectPackA = reject
+      },
+    )
+    vi.spyOn(teachingPrepCatalogApi, 'listLessonDrafts').mockResolvedValue([])
+    vi.spyOn(teachingPrepCatalogApi, 'getLessonDraftPreflight')
+      .mockReturnValue(packAResponse)
+    const store = useTeachingPrepCatalogStore()
+    await store.selectResourcePack(packA)
+
+    const prepareA = store.prepareLessonDraft()
+    await Promise.resolve()
+    await store.selectResourcePack(packB)
+    rejectPackA(new Error('old pack failed'))
+
+    await expect(prepareA).resolves.toBeUndefined()
+    expect(store.selectedResourcePackId).toBe(packB.id)
+    expect(store.lessonDraftPreflight).toBeNull()
+    expect(store.errorMessage).toBe('')
   })
 })
