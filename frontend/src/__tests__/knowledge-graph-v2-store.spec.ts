@@ -23,6 +23,8 @@ function graph(query: GraphQueryInput, key: string): GraphV2Response {
   return {
     response_schema_version: 'knowledge-graph-v2',
     response_version: 'a'.repeat(64),
+    mastery_mode: 'v1',
+    mastery_parameter_version: null,
     scope: {
       mode: query.scope.mode,
       student_ids: query.scope.mode === 'class' ? ['12'] : query.scope.student_ids,

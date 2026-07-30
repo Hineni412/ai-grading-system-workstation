@@ -13,14 +13,19 @@ import {
 } from '../../features/knowledge-graph/v2-model'
 import type { ResourceState } from '../../stores/workbench'
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   node: GraphV2Node | null
   nodes: GraphV2Node[]
   edges: GraphV2Edge[]
   evidence: GraphV2EvidenceResponse | null
   evidenceState: ResourceState
   evidenceError: string
-}>()
+  masteryMode: 'v1' | 'v2'
+  parameterVersion: string | null
+}>(), {
+  masteryMode: 'v1',
+  parameterVersion: null,
+})
 
 const emit = defineEmits<{
   selectNode: [stableKey: string]
@@ -74,14 +79,18 @@ const errorEntries = computed(() => {
   ))
 })
 const stateLabel = computed(() => props.node
-  ? graphV2NodeStateLabel(graphV2NodeState(props.node))
+  ? graphV2NodeStateLabel(graphV2NodeState(props.node, props.masteryMode))
   : '')
-const masteryLabel = computed(() => {
-  const mastery = props.node?.mastery_v1
+function masteryLabel(mastery: GraphV2Node['mastery_v1'] | undefined): string {
   if (!mastery || mastery.status !== 'available' || mastery.value === null) return '当前无可用证据'
   const percent = Math.round(mastery.value * 1000) / 10
   return `${Number.isInteger(percent) ? percent.toFixed(0) : percent.toFixed(1)}%`
-})
+}
+const activeMasteryLabel = computed(() => masteryLabel(
+  props.masteryMode === 'v2'
+    ? props.node?.mastery_v2
+    : props.node?.mastery_v1,
+))
 const missingReasons = computed(() => {
   const result = [...(props.node?.missing_reasons ?? [])]
   if (props.node?.mastery_v2.status === 'unavailable') result.push('mastery_v2_not_enabled')
@@ -115,11 +124,13 @@ function scoreRateLabel(value: number | null): string {
         <h3 id="knowledge-node-facts-title">{{ node.display_name }}</h3>
         <p class="knowledge-graph-stable-key">{{ node.stable_key }} · 身份版本 {{ node.identity_revision }}</p>
         <dl>
-          <div><dt>当前结果</dt><dd>{{ masteryLabel }} · {{ stateLabel }}</dd></div>
-          <div><dt>样本数量</dt><dd>{{ node.mastery_v1.evidence_count }} 条</dd></div>
+          <div><dt>当前结果</dt><dd>{{ activeMasteryLabel }} · {{ stateLabel }}</dd></div>
+          <div><dt>v1 对照</dt><dd>{{ masteryLabel(node.mastery_v1) }}</dd></div>
+          <div><dt>v2 对照</dt><dd>{{ masteryLabel(node.mastery_v2) }}</dd></div>
+          <div><dt>样本数量</dt><dd>{{ (masteryMode === 'v2' ? node.mastery_v2 : node.mastery_v1).evidence_count }} 条</dd></div>
           <div><dt>涉及学生</dt><dd>{{ node.evidence.student_count }} 名</dd></div>
           <div><dt>扣分记录</dt><dd>{{ node.evidence.deduction_count }} 次</dd></div>
-          <div><dt>计算口径</dt><dd>掌握度 v1（只读）</dd></div>
+          <div><dt>计算口径</dt><dd>掌握度 {{ masteryMode }}{{ parameterVersion ? ` · ${parameterVersion.slice(0, 8)}` : '' }}</dd></div>
         </dl>
       </section>
 

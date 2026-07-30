@@ -55,6 +55,8 @@ export interface GraphV2Response {
   scope: GraphScope
   exam_scope: GraphExamScope
   coverage: GraphCoverage
+  mastery_mode: 'v1' | 'v2'
+  mastery_parameter_version: string | null
   nodes: GraphV2Node[]
   edges: GraphV2Edge[]
   missing: GraphV2MissingItem[]
@@ -65,6 +67,78 @@ export interface GraphV2Response {
     evidence_row_count: number
     missing_count: number
   }
+}
+
+export interface MasteryComparisonV2Result {
+  schema_version: 'mastery-v2-result-v1'
+  stable_key: string
+  status: 'available' | 'missing'
+  value: number | null
+  as_of: string
+  parameter_version: string
+  direct_evidence_count: number
+  effective_sample_weight: number
+  prior_mean: number
+  prior_strength: number
+  contributions: Array<Record<string, unknown>>
+  layers: Array<Record<string, unknown>>
+  prerequisites: Array<Record<string, unknown>>
+  explanations: string[]
+}
+
+export interface MasteryComparisonItem {
+  item_hash: string
+  student_id: string
+  student_code: string
+  student_name: string
+  class_id: string
+  stable_key: string
+  display_name: string
+  mastery_v1: number | null
+  mastery_v2: MasteryComparisonV2Result
+  signed_delta: number | null
+  absolute_delta: number | null
+  reason_codes: string[]
+  reasons: string[]
+  requires_review: boolean
+}
+
+export interface MasteryEvaluationGate {
+  evaluation_id: string
+  parameter_version: string
+  revision: number
+  required_review_count: number
+  accepted_count: number
+  rejected_count: number
+  pending_count: number
+  passed: boolean
+}
+
+export interface MasteryComparisonResponse {
+  schema_version: 'mastery-v1-v2-comparison-v1'
+  evaluation_id: string
+  as_of: string
+  parameter_version: string
+  review_delta: number
+  items: MasteryComparisonItem[]
+  required_review_count: number
+  maximum_absolute_delta: number | null
+  performance: {
+    duration_ms: number
+    items_per_second: number
+  }
+  gate: MasteryEvaluationGate
+}
+
+export interface MasteryRolloutState {
+  enabled: boolean
+  active_mode: 'v1' | 'v2'
+  active_parameter_version: string | null
+  approved_evaluation_id: string | null
+  revision: number
+  updated_by: string | null
+  reason: string | null
+  updated_at: string
 }
 
 export interface GraphV2EvidenceItem {
@@ -346,13 +420,16 @@ export function decodeGraphV2Response(
     !isRecord(value) ||
     !hasExactKeys(value, [
       'response_schema_version', 'response_version', 'scope', 'exam_scope', 'coverage',
-      'nodes', 'edges', 'missing', 'warnings', 'counts',
+      'mastery_mode', 'mastery_parameter_version', 'nodes', 'edges', 'missing',
+      'warnings', 'counts',
     ]) ||
     value.response_schema_version !== 'knowledge-graph-v2' ||
     !isSha256(value.response_version) ||
     !isScope(value.scope) ||
     !isExamScope(value.exam_scope) ||
     !isCoverage(value.coverage) ||
+    (value.mastery_mode !== 'v1' && value.mastery_mode !== 'v2') ||
+    (value.mastery_parameter_version !== null && !isSha256(value.mastery_parameter_version)) ||
     !Array.isArray(value.nodes) ||
     !value.nodes.every(isNode) ||
     !Array.isArray(value.edges) ||
@@ -374,6 +451,8 @@ export function decodeGraphV2Response(
       (total, item) => total + item.count,
       0,
     ) ||
+    (response.mastery_mode === 'v1' && response.mastery_parameter_version !== null) ||
+    (response.mastery_mode === 'v2' && response.mastery_parameter_version === null) ||
     (expected && !matchesQuery(response.scope, response.exam_scope, expected))
   ) throw new Error('Invalid graph v2 response')
   return response
@@ -515,6 +594,158 @@ export function decodeRelationReviewQueue(value: unknown): RelationReviewQueueRe
   return response
 }
 
+function isMasteryV2Result(value: unknown): value is MasteryComparisonV2Result {
+  return (
+    isRecord(value) &&
+    hasExactKeys(value, [
+      'schema_version', 'stable_key', 'status', 'value', 'as_of', 'parameter_version',
+      'direct_evidence_count', 'effective_sample_weight', 'prior_mean', 'prior_strength',
+      'contributions', 'layers', 'prerequisites', 'explanations',
+    ]) &&
+    value.schema_version === 'mastery-v2-result-v1' &&
+    isStableKey(value.stable_key) &&
+    (value.status === 'available' || value.status === 'missing') &&
+    (
+      (value.status === 'available' && isRate(value.value)) ||
+      (value.status === 'missing' && value.value === null)
+    ) &&
+    typeof value.as_of === 'string' &&
+    isSha256(value.parameter_version) &&
+    isInteger(value.direct_evidence_count) &&
+    isNumber(value.effective_sample_weight) &&
+    isRate(value.prior_mean) &&
+    isNumber(value.prior_strength) &&
+    Array.isArray(value.contributions) &&
+    value.contributions.every(isRecord) &&
+    Array.isArray(value.layers) &&
+    value.layers.every(isRecord) &&
+    Array.isArray(value.prerequisites) &&
+    value.prerequisites.every(isRecord) &&
+    isStringArray(value.explanations)
+  )
+}
+
+function isComparisonItem(value: unknown): value is MasteryComparisonItem {
+  return (
+    isRecord(value) &&
+    hasExactKeys(value, [
+      'item_hash', 'student_id', 'student_code', 'student_name', 'class_id',
+      'stable_key', 'display_name', 'mastery_v1', 'mastery_v2', 'signed_delta',
+      'absolute_delta', 'reason_codes', 'reasons', 'requires_review',
+    ]) &&
+    isSha256(value.item_hash) &&
+    typeof value.student_id === 'string' &&
+    typeof value.student_code === 'string' &&
+    typeof value.student_name === 'string' &&
+    typeof value.class_id === 'string' &&
+    isStableKey(value.stable_key) &&
+    typeof value.display_name === 'string' &&
+    (value.mastery_v1 === null || isRate(value.mastery_v1)) &&
+    isMasteryV2Result(value.mastery_v2) &&
+    (value.signed_delta === null || (
+      isNumber(value.signed_delta) && value.signed_delta >= -1 && value.signed_delta <= 1
+    )) &&
+    (value.absolute_delta === null || isRate(value.absolute_delta)) &&
+    isStringArray(value.reason_codes) &&
+    isStringArray(value.reasons) &&
+    typeof value.requires_review === 'boolean'
+  )
+}
+
+export function decodeMasteryGate(value: unknown): MasteryEvaluationGate {
+  if (
+    !isRecord(value) ||
+    !hasExactKeys(value, [
+      'evaluation_id', 'parameter_version', 'revision', 'required_review_count',
+      'accepted_count', 'rejected_count', 'pending_count', 'passed',
+    ]) ||
+    !isSha256(value.evaluation_id) ||
+    !isSha256(value.parameter_version) ||
+    !isInteger(value.revision, true) ||
+    !isInteger(value.required_review_count, true) ||
+    !isInteger(value.accepted_count) ||
+    !isInteger(value.rejected_count) ||
+    !isInteger(value.pending_count) ||
+    typeof value.passed !== 'boolean'
+  ) throw new Error('Invalid mastery evaluation gate')
+  const gate = value as unknown as MasteryEvaluationGate
+  if (
+    gate.accepted_count + gate.rejected_count + gate.pending_count !==
+      gate.required_review_count ||
+    gate.passed !== (
+      gate.accepted_count === gate.required_review_count &&
+      gate.rejected_count === 0
+    )
+  ) throw new Error('Invalid mastery evaluation gate')
+  return gate
+}
+
+export function decodeMasteryComparison(value: unknown): MasteryComparisonResponse {
+  if (
+    !isRecord(value) ||
+    !hasExactKeys(value, [
+      'schema_version', 'evaluation_id', 'as_of', 'parameter_version', 'review_delta',
+      'items', 'required_review_count', 'maximum_absolute_delta', 'performance', 'gate',
+    ]) ||
+    value.schema_version !== 'mastery-v1-v2-comparison-v1' ||
+    !isSha256(value.evaluation_id) ||
+    typeof value.as_of !== 'string' ||
+    !isSha256(value.parameter_version) ||
+    !isRate(value.review_delta) ||
+    value.review_delta <= 0 ||
+    !Array.isArray(value.items) ||
+    !value.items.every(isComparisonItem) ||
+    !isInteger(value.required_review_count, true) ||
+    (value.maximum_absolute_delta !== null && !isRate(value.maximum_absolute_delta)) ||
+    !isRecord(value.performance) ||
+    !hasExactKeys(value.performance, ['duration_ms', 'items_per_second']) ||
+    !isNumber(value.performance.duration_ms) ||
+    !isNumber(value.performance.items_per_second)
+  ) throw new Error('Invalid mastery comparison')
+  const gate = decodeMasteryGate(value.gate)
+  const response = { ...value, gate } as unknown as MasteryComparisonResponse
+  if (
+    response.items.length === 0 ||
+    response.required_review_count !== response.items.filter(
+      (item) => item.requires_review,
+    ).length ||
+    response.gate.evaluation_id !== response.evaluation_id ||
+    response.gate.parameter_version !== response.parameter_version
+  ) throw new Error('Invalid mastery comparison')
+  return response
+}
+
+export function decodeMasteryRollout(value: unknown): MasteryRolloutState {
+  if (
+    !isRecord(value) ||
+    !hasExactKeys(value, [
+      'enabled', 'active_mode', 'active_parameter_version', 'approved_evaluation_id',
+      'revision', 'updated_by', 'reason', 'updated_at',
+    ]) ||
+    typeof value.enabled !== 'boolean' ||
+    (value.active_mode !== 'v1' && value.active_mode !== 'v2') ||
+    (value.active_parameter_version !== null && !isSha256(value.active_parameter_version)) ||
+    (value.approved_evaluation_id !== null && !isSha256(value.approved_evaluation_id)) ||
+    !isInteger(value.revision, true) ||
+    (value.updated_by !== null && typeof value.updated_by !== 'string') ||
+    (value.reason !== null && typeof value.reason !== 'string') ||
+    typeof value.updated_at !== 'string'
+  ) throw new Error('Invalid mastery rollout state')
+  const response = value as unknown as MasteryRolloutState
+  if (
+    response.enabled !== (response.active_mode === 'v2') ||
+    (
+      response.enabled &&
+      (response.active_parameter_version === null || response.approved_evaluation_id === null)
+    ) ||
+    (
+      !response.enabled &&
+      (response.active_parameter_version !== null || response.approved_evaluation_id !== null)
+    )
+  ) throw new Error('Invalid mastery rollout state')
+  return response
+}
+
 function normalizeStableKeys(values: string[]): string[] {
   const result: string[] = []
   for (const raw of values) {
@@ -580,5 +811,57 @@ export function fetchRelationReviewQueue(
   return apiClient.request('/api/graph/relations/review-queue?status=suggested&page=1&page_size=20', {
     decode: decodeRelationReviewQueue,
     signal,
+  })
+}
+
+export function fetchMasteryRollout(
+  signal?: AbortSignal,
+): Promise<MasteryRolloutState> {
+  return apiClient.request('/api/graph/v2/mastery/rollout', {
+    decode: decodeMasteryRollout,
+    signal,
+  })
+}
+
+export function compareMasteryVersions(
+  query: GraphQueryInput,
+  asOf: string,
+  signal?: AbortSignal,
+): Promise<MasteryComparisonResponse> {
+  const normalized = normalizeGraphQuery(query)
+  return apiClient.request('/api/graph/v2/mastery/compare', {
+    method: 'POST',
+    body: { ...normalized, as_of: asOf },
+    decode: decodeMasteryComparison,
+    signal,
+  })
+}
+
+export function reviewMasteryDifference(input: {
+  evaluation_id: string
+  item_hash: string
+  decision: 'accepted' | 'rejected'
+  teacher_ref: string
+  reason: string
+  expected_revision: number
+}): Promise<MasteryEvaluationGate> {
+  return apiClient.request('/api/graph/v2/mastery/spot-check', {
+    method: 'POST',
+    body: input,
+    decode: decodeMasteryGate,
+  })
+}
+
+export function updateMasteryRollout(input: {
+  enabled: boolean
+  expected_revision: number
+  teacher_ref: string
+  reason: string
+  evaluation_id?: string
+}): Promise<MasteryRolloutState> {
+  return apiClient.request('/api/graph/v2/mastery/rollout', {
+    method: 'PUT',
+    body: input,
+    decode: decodeMasteryRollout,
   })
 }

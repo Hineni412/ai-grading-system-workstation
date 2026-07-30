@@ -3,6 +3,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   decodeGraphV2EvidenceResponse,
   decodeGraphV2Response,
+  decodeMasteryComparison,
+  decodeMasteryRollout,
   decodeRelationReviewQueue,
   fetchGraphV2,
 } from '../graph-v2'
@@ -36,6 +38,8 @@ const node = {
 const graph = {
   response_schema_version: 'knowledge-graph-v2',
   response_version: 'a'.repeat(64),
+  mastery_mode: 'v1',
+  mastery_parameter_version: null,
   scope,
   exam_scope: examScope,
   coverage,
@@ -153,5 +157,84 @@ describe('graph v2 API contract', () => {
       total_pages: 1,
     }
     expect(decodeRelationReviewQueue(queue)).toEqual(queue)
+  })
+
+  it('validates ranked mastery differences and their review gate', () => {
+    const evaluationId = 'c'.repeat(64)
+    const parameterVersion = 'd'.repeat(64)
+    const response = {
+      schema_version: 'mastery-v1-v2-comparison-v1',
+      evaluation_id: evaluationId,
+      as_of: '2026-01-31T00:00:00+00:00',
+      parameter_version: parameterVersion,
+      review_delta: 0.1,
+      items: [{
+        item_hash: 'e'.repeat(64),
+        student_id: '12',
+        student_code: 'S12',
+        student_name: '合成学生',
+        class_id: '合成班',
+        stable_key: node.stable_key,
+        display_name: node.display_name,
+        mastery_v1: 1,
+        mastery_v2: {
+          schema_version: 'mastery-v2-result-v1',
+          stable_key: node.stable_key,
+          status: 'available',
+          value: 0.766667,
+          as_of: '2026-01-31T00:00:00+00:00',
+          parameter_version: parameterVersion,
+          direct_evidence_count: 1,
+          effective_sample_weight: 1,
+          prior_mean: 0.65,
+          prior_strength: 2,
+          contributions: [],
+          layers: [],
+          prerequisites: [],
+          explanations: ['合成解释'],
+        },
+        signed_delta: -0.233333,
+        absolute_delta: 0.233333,
+        reason_codes: ['small_sample_shrinkage'],
+        reasons: ['小样本收缩'],
+        requires_review: true,
+      }],
+      required_review_count: 1,
+      maximum_absolute_delta: 0.233333,
+      performance: { duration_ms: 1, items_per_second: 1000 },
+      gate: {
+        evaluation_id: evaluationId,
+        parameter_version: parameterVersion,
+        revision: 1,
+        required_review_count: 1,
+        accepted_count: 0,
+        rejected_count: 0,
+        pending_count: 1,
+        passed: false,
+      },
+    }
+    expect(decodeMasteryComparison(response)).toEqual(response)
+    expect(() => decodeMasteryComparison({
+      ...response,
+      required_review_count: 0,
+    })).toThrow('Invalid mastery comparison')
+  })
+
+  it('requires v1 fallback state to clear every active v2 pointer', () => {
+    const fallback = {
+      enabled: false,
+      active_mode: 'v1',
+      active_parameter_version: null,
+      approved_evaluation_id: null,
+      revision: 2,
+      updated_by: 'teacher-synthetic',
+      reason: '回退演练',
+      updated_at: '2026-01-31 08:00:00',
+    }
+    expect(decodeMasteryRollout(fallback)).toEqual(fallback)
+    expect(() => decodeMasteryRollout({
+      ...fallback,
+      active_parameter_version: 'a'.repeat(64),
+    })).toThrow('Invalid mastery rollout state')
   })
 })

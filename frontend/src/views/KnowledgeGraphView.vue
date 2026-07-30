@@ -9,6 +9,7 @@ import GraphScopeFilters from '../components/knowledge-graph/GraphScopeFilters.v
 import GraphV2NodeInspector from '../components/knowledge-graph/GraphV2NodeInspector.vue'
 import GraphV2TextDirectory from '../components/knowledge-graph/GraphV2TextDirectory.vue'
 import KnowledgeGraphV2Canvas from '../components/knowledge-graph/KnowledgeGraphV2Canvas.vue'
+import MasteryV2ComparisonPanel from '../components/knowledge-graph/MasteryV2ComparisonPanel.vue'
 import { summarizeGraphV2 } from '../features/knowledge-graph/v2-model'
 import {
   parseGraphRouteScope,
@@ -35,6 +36,7 @@ const selectedNode = computed(() => graphStore.graph?.nodes.find(
 const summary = computed(() => summarizeGraphV2(
   graphStore.graph?.nodes ?? [],
   graphStore.graph?.edges ?? [],
+  graphStore.graph?.mastery_mode ?? 'v1',
 ))
 const scopeLabel = computed(() => {
   const graph = graphStore.graph
@@ -105,6 +107,10 @@ function retryStudents(): void {
   void loadStudentOptions()
 }
 
+function refreshAfterRollout(): void {
+  void graphStore.retryGraph()
+}
+
 watch(
   () => sessionStore.loadState,
   () => { void initializeFromRoute() },
@@ -151,6 +157,10 @@ onBeforeUnmount(() => {
     </header>
 
     <GraphRelationReviewShortcut />
+    <MasteryV2ComparisonPanel
+      :query="activeQuery"
+      @rollout-changed="refreshAfterRollout"
+    />
 
     <div v-if="studentsState === 'error'" class="knowledge-graph-inline-error" role="alert">
       <p>班级和学生列表暂时无法读取</p>
@@ -231,6 +241,7 @@ onBeforeUnmount(() => {
             :selected-key="graphStore.selectedNodeKey"
             :scope-label="scopeLabel"
             :coverage="graphStore.graph.coverage"
+            :mastery-mode="graphStore.graph.mastery_mode"
             @select-node="selectNode"
           />
           <GraphV2NodeInspector
@@ -240,6 +251,8 @@ onBeforeUnmount(() => {
             :evidence="graphStore.evidence"
             :evidence-state="graphStore.evidenceState"
             :evidence-error="graphStore.evidenceError"
+            :mastery-mode="graphStore.graph.mastery_mode"
+            :parameter-version="graphStore.graph.mastery_parameter_version"
             @select-node="selectNode"
             @load-more-evidence="graphStore.loadMoreEvidence()"
             @retry-evidence="graphStore.retryEvidence()"
@@ -249,6 +262,7 @@ onBeforeUnmount(() => {
           :nodes="graphStore.graph.nodes"
           :edges="graphStore.graph.edges"
           :selected-key="graphStore.selectedNodeKey"
+          :mastery-mode="graphStore.graph.mastery_mode"
           @select-node="selectNode"
         />
       </template>

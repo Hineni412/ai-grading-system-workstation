@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { GraphQueryInput } from '../api/graph'
 import {
   fetchGraphV2,
+  fetchMasteryRollout,
   fetchRelationReviewQueue,
   type GraphV2Response,
 } from '../api/graph-v2'
@@ -23,6 +24,7 @@ vi.mock('../api/graph-v2', async (importOriginal) => ({
   ...await importOriginal<typeof import('../api/graph-v2')>(),
   fetchGraphV2: vi.fn(),
   fetchGraphV2Evidence: vi.fn(),
+  fetchMasteryRollout: vi.fn(),
   fetchRelationReviewQueue: vi.fn(),
 }))
 
@@ -72,6 +74,8 @@ function responseFor(query: GraphQueryInput): GraphV2Response {
     },
     response_schema_version: 'knowledge-graph-v2',
     response_version: 'a'.repeat(64),
+    mastery_mode: 'v1',
+    mastery_parameter_version: null,
     nodes: [{
       stable_key: 'kp_geo_triangle_congruence',
       display_name: '三角形全等',
@@ -146,6 +150,16 @@ beforeEach(() => {
   vi.stubGlobal('ResizeObserver', ResizeObserverStub)
   vi.mocked(fetchStudents).mockResolvedValue(students)
   vi.mocked(fetchGraphV2).mockImplementation(async (query) => responseFor(query))
+  vi.mocked(fetchMasteryRollout).mockResolvedValue({
+    enabled: false,
+    active_mode: 'v1',
+    active_parameter_version: null,
+    approved_evaluation_id: null,
+    revision: 1,
+    updated_by: null,
+    reason: null,
+    updated_at: '2026-01-01 00:00:00',
+  })
   vi.mocked(fetchRelationReviewQueue).mockResolvedValue({
     status: 'suggested', items: [], total: 0, page: 1, page_size: 20, total_pages: 1,
   })

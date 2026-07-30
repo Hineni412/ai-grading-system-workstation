@@ -42,9 +42,11 @@ const props = withDefaults(defineProps<{
   selectedKey: string | null
   scopeLabel: string
   coverage: GraphCoverage
+  masteryMode: 'v1' | 'v2'
   chartFactory?: (element: HTMLElement) => ChartLike
 }>(), {
   chartFactory: undefined,
+  masteryMode: 'v1',
 })
 
 const emit = defineEmits<{ selectNode: [stableKey: string] }>()
@@ -123,7 +125,7 @@ function prefersReducedMotion(): boolean {
 }
 
 function graphOption(): Record<string, unknown> {
-  const displayNodes = buildGraphV2DisplayNodes(visibleNodes.value)
+  const displayNodes = buildGraphV2DisplayNodes(visibleNodes.value, props.masteryMode)
   const names = new Map(props.nodes.map((node) => [node.stable_key, node.display_name]))
   const pathEdgeIds = new Set(path.value?.edgeIds ?? [])
   return {
@@ -296,7 +298,7 @@ function toggleRelation(type: GraphV2RelationType): void {
 }
 
 watch(
-  () => [props.nodes, props.edges, props.scopeLabel, props.coverage],
+  () => [props.nodes, props.edges, props.scopeLabel, props.coverage, props.masteryMode],
   renderChart,
   { deep: true },
 )

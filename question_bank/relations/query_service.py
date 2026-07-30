@@ -5,8 +5,9 @@ import json
 from collections import deque
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from integration.skill_graph_projection import (
     build_question_tag_graph_evidence,
@@ -18,6 +19,11 @@ from question_bank.relations.repository import (
     KnowledgeIdentityRecord,
     KnowledgeRelationRepository,
 )
+from question_bank.mastery.comparison import (
+    build_profile_comparison_cases,
+    compare_mastery_v1_v2,
+)
+from question_bank.mastery.rollout import MasteryRolloutRepository
 from question_bank.taxonomy.registry import canonicalize_knowledge_exact
 
 
@@ -44,9 +50,19 @@ class GraphV2Query:
 class KnowledgeGraphV2QueryService:
     """Join scoped v1 evidence to the teacher-confirmed stable relation graph."""
 
-    def __init__(self, db_path: Path) -> None:
+    def __init__(
+        self,
+        db_path: Path,
+        *,
+        rollout_repository: MasteryRolloutRepository | None = None,
+        clock: Callable[[], datetime] | None = None,
+    ) -> None:
         self.db_path = Path(db_path)
         self.repository = KnowledgeRelationRepository(self.db_path)
+        self.rollout_repository = (
+            rollout_repository or MasteryRolloutRepository(self.db_path)
+        )
+        self.clock = clock or (lambda: datetime.now(UTC))
 
     def query(
         self,
@@ -64,6 +80,9 @@ class KnowledgeGraphV2QueryService:
             str(node["knowledge_key"]): node
             for node in build_question_tag_graph_nodes(remapped_rows)
         }
+        mastery_mode, parameter_version, v2_by_key, rollout_warning = (
+            self._mastery_v2_projection(profile)
+        )
 
         missing: list[dict[str, object]] = [
             {
@@ -106,6 +125,19 @@ class KnowledgeGraphV2QueryService:
             _node_payload(
                 identity_by_key[key],
                 evidence_nodes.get(key),
+                (
+                    v2_by_key.get(key)
+                    if mastery_mode == "v1"
+                    else v2_by_key.get(
+                        key,
+                        {
+                            "status": "missing",
+                            "value": None,
+                            "evidence_count": 0,
+                            "reason": "mastery_v2_evidence_missing",
+                        },
+                    )
+                ),
             )
             for key in sorted(included_keys)
             if key in identity_by_key
@@ -115,6 +147,8 @@ class KnowledgeGraphV2QueryService:
             "scope": dict(profile.get("scope") or {}),
             "exam_scope": dict(profile.get("exam_scope") or {}),
             "coverage": dict(profile.get("coverage") or {}),
+            "mastery_mode": mastery_mode,
+            "mastery_parameter_version": parameter_version,
             "nodes": nodes,
             "edges": edges,
             "missing": missing,
@@ -124,7 +158,7 @@ class KnowledgeGraphV2QueryService:
                     for value in profile.get("warnings", [])
                     if str(value or "").strip()
                 ),
-                "掌握度 v2 尚未启用，当前并列字段显示为不可用。",
+                *([rollout_warning] if rollout_warning else []),
             ],
             "counts": {
                 "node_count": len(nodes),
@@ -137,6 +171,91 @@ class KnowledgeGraphV2QueryService:
         }
         payload["response_version"] = _payload_version(payload)
         return payload
+
+    def _mastery_v2_projection(
+        self,
+        profile: Mapping[str, Any],
+    ) -> tuple[
+        str,
+        str | None,
+        dict[str, dict[str, object]],
+        str | None,
+    ]:
+        try:
+            parameters = self.rollout_repository.select_parameters()
+        except Exception:
+            return (
+                "v1",
+                None,
+                {},
+                "掌握度 v2 开关读取失败，已安全回退到 v1。",
+            )
+        if parameters is None:
+            return (
+                "v1",
+                None,
+                {},
+                "掌握度 v2 尚未启用，当前并列字段显示为不可用。",
+            )
+        cases = build_profile_comparison_cases(profile)
+        if not cases:
+            return (
+                "v2",
+                parameters.version,
+                {},
+                "掌握度 v2 已启用，但当前范围没有可计算的受治理证据。",
+            )
+        try:
+            report = compare_mastery_v1_v2(
+                cases,
+                as_of=self.clock(),
+                parameters=parameters,
+            )
+        except (TypeError, ValueError):
+            return (
+                "v1",
+                None,
+                {},
+                "掌握度 v2 当前证据无法安全计算，已回退到 v1。",
+            )
+        grouped: dict[str, list[object]] = {}
+        for item in report.items:
+            grouped.setdefault(item.stable_key, []).append(item.mastery_v2)
+        projection: dict[str, dict[str, object]] = {}
+        for stable_key, results in grouped.items():
+            available = [
+                result
+                for result in results
+                if result.status.value == "available"
+                and result.value is not None
+            ]
+            if not available:
+                projection[stable_key] = {
+                    "status": "missing",
+                    "value": None,
+                    "evidence_count": 0,
+                    "reason": "mastery_v2_evidence_missing",
+                }
+                continue
+            total_weight = sum(
+                max(result.direct_evidence_count, 1)
+                for result in available
+            )
+            value = sum(
+                float(result.value)
+                * max(result.direct_evidence_count, 1)
+                for result in available
+            ) / total_weight
+            projection[stable_key] = {
+                "status": "available",
+                "value": round(value, parameters.output_precision),
+                "evidence_count": sum(
+                    result.direct_evidence_count
+                    for result in available
+                ),
+                "reason": None,
+            }
+        return "v2", parameters.version, projection, None
 
     def evidence(
         self,
@@ -321,6 +440,7 @@ def _expand_prerequisites(
 def _node_payload(
     identity: KnowledgeIdentityRecord,
     evidence: Mapping[str, Any] | None,
+    mastery_v2: Mapping[str, object] | None,
 ) -> dict[str, object]:
     if evidence is None:
         mastery_v1 = {
@@ -357,12 +477,16 @@ def _node_payload(
         "display_name": identity.display_name,
         "identity_revision": identity.revision,
         "mastery_v1": mastery_v1,
-        "mastery_v2": {
-            "status": "unavailable",
-            "value": None,
-            "evidence_count": 0,
-            "reason": "mastery_v2_not_enabled",
-        },
+        "mastery_v2": (
+            dict(mastery_v2)
+            if mastery_v2 is not None
+            else {
+                "status": "unavailable",
+                "value": None,
+                "evidence_count": 0,
+                "reason": "mastery_v2_not_enabled",
+            }
+        ),
         "evidence": evidence_summary,
         "missing_reasons": missing_reasons,
     }

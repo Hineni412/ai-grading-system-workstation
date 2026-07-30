@@ -18,6 +18,15 @@ from backend.api.schemas.graph import (
     GraphV2EvidenceResponse,
     GraphV2QueryRequest,
     GraphV2Response,
+    MasteryComparisonRequest,
+    MasteryComparisonResponse,
+    MasteryEvaluationGateResponse,
+    MasteryParameterCreateRequest,
+    MasteryParameterHistoryResponse,
+    MasteryParameterVersionResponse,
+    MasteryRolloutStateResponse,
+    MasteryRolloutUpdateRequest,
+    MasterySpotCheckRequest,
     RelationBatchReviewRequest,
     RelationBatchReviewResponse,
     RelationImpactRequest,
@@ -50,6 +59,20 @@ from question_bank.relations.query_service import (
     GraphV2Query,
     KnowledgeGraphV2QueryService,
 )
+from question_bank.mastery.comparison import (
+    build_profile_comparison_cases,
+    compare_mastery_v1_v2,
+)
+from question_bank.mastery.rollout import (
+    MasteryEvaluationItemNotFound,
+    MasteryEvaluationNotFound,
+    MasteryRolloutError,
+    MasteryRolloutGateBlocked,
+    MasteryRolloutRepository,
+    MasteryRolloutRevisionConflict,
+    MasterySpotCheckConflict,
+)
+from question_bank.mastery.v2 import MasteryV2Parameters
 
 
 router = APIRouter(prefix="/api/graph", tags=["graph"])
@@ -67,6 +90,10 @@ def get_relation_review_service() -> RelationReviewService:
 
 def get_graph_v2_query_service() -> KnowledgeGraphV2QueryService:
     return KnowledgeGraphV2QueryService(question_bank_db_path())
+
+
+def get_mastery_rollout_repository() -> MasteryRolloutRepository:
+    return MasteryRolloutRepository(question_bank_db_path())
 
 
 @router.post(
@@ -216,6 +243,251 @@ def get_graph_v2_evidence(
             "Graph data is temporarily unavailable",
         ) from exc
     return GraphV2EvidenceResponse.model_validate(payload)
+
+
+@router.post(
+    "/v2/mastery/compare",
+    response_model=MasteryComparisonResponse,
+    responses=GRAPH_DATABASE_RESPONSES,
+)
+def compare_mastery_versions(
+    body: MasteryComparisonRequest,
+    diagnosis_service: DiagnosisProfileService = Depends(
+        get_request_diagnosis_profile_service
+    ),
+    repository: MasteryRolloutRepository = Depends(
+        get_mastery_rollout_repository
+    ),
+) -> MasteryComparisonResponse:
+    profile = _build_profile(body, diagnosis_service)
+    try:
+        if body.parameter_version is None:
+            parameters = MasteryV2Parameters()
+            repository.register_parameters(parameters)
+        else:
+            parameters = repository.get_parameters(body.parameter_version)
+        cases = build_profile_comparison_cases(profile)
+        if not cases:
+            raise ApiError(
+                422,
+                "mastery_comparison_empty",
+                "No governed mastery evidence is available in this scope",
+            )
+        report = compare_mastery_v1_v2(
+            cases,
+            as_of=body.as_of,
+            parameters=parameters,
+        )
+        gate = repository.record_evaluation(report)
+    except KeyError as exc:
+        raise ApiError(
+            404,
+            "mastery_parameter_version_not_found",
+            "Mastery parameter version does not exist",
+        ) from exc
+    except ApiError:
+        raise
+    except ValueError as exc:
+        raise ApiError(
+            422,
+            "mastery_comparison_invalid",
+            "Mastery comparison input is invalid",
+        ) from exc
+    except (OSError, sqlite3.Error, MasteryRolloutError) as exc:
+        raise ApiError(
+            503,
+            "mastery_rollout_unavailable",
+            "Mastery rollout data is temporarily unavailable",
+        ) from exc
+    return MasteryComparisonResponse.model_validate(
+        {
+            **report.to_dict(),
+            "gate": gate.to_dict(),
+        }
+    )
+
+
+@router.post(
+    "/v2/mastery/spot-check",
+    response_model=MasteryEvaluationGateResponse,
+    responses=GRAPH_DATABASE_RESPONSES,
+)
+def review_mastery_difference(
+    body: MasterySpotCheckRequest,
+    repository: MasteryRolloutRepository = Depends(
+        get_mastery_rollout_repository
+    ),
+) -> MasteryEvaluationGateResponse:
+    try:
+        gate = repository.review_item(
+            evaluation_id=body.evaluation_id,
+            item_hash=body.item_hash,
+            decision=body.decision,
+            teacher_ref=body.teacher_ref,
+            reason=body.reason,
+            expected_revision=body.expected_revision,
+        )
+    except (MasteryEvaluationNotFound, MasteryEvaluationItemNotFound) as exc:
+        raise ApiError(
+            404,
+            "mastery_evaluation_not_found",
+            "Mastery evaluation item does not exist",
+        ) from exc
+    except MasteryRolloutRevisionConflict as exc:
+        raise ApiError(
+            409,
+            "mastery_evaluation_revision_conflict",
+            "Mastery evaluation changed; reload before reviewing",
+        ) from exc
+    except MasterySpotCheckConflict as exc:
+        raise ApiError(
+            409,
+            "mastery_spot_check_conflict",
+            "Mastery spot check is immutable",
+        ) from exc
+    except ValueError as exc:
+        raise ApiError(
+            422,
+            "mastery_spot_check_invalid",
+            "Mastery spot check is invalid",
+        ) from exc
+    except (OSError, sqlite3.Error) as exc:
+        raise ApiError(
+            503,
+            "mastery_rollout_unavailable",
+            "Mastery rollout data is temporarily unavailable",
+        ) from exc
+    return MasteryEvaluationGateResponse.model_validate(gate.to_dict())
+
+
+@router.get(
+    "/v2/mastery/rollout",
+    response_model=MasteryRolloutStateResponse,
+    responses=GRAPH_DATABASE_RESPONSES,
+)
+def get_mastery_rollout(
+    repository: MasteryRolloutRepository = Depends(
+        get_mastery_rollout_repository
+    ),
+) -> MasteryRolloutStateResponse:
+    try:
+        state = repository.get_state()
+    except (OSError, sqlite3.Error, MasteryRolloutError) as exc:
+        raise ApiError(
+            503,
+            "mastery_rollout_unavailable",
+            "Mastery rollout data is temporarily unavailable",
+        ) from exc
+    return MasteryRolloutStateResponse.model_validate(state.to_dict())
+
+
+@router.put(
+    "/v2/mastery/rollout",
+    response_model=MasteryRolloutStateResponse,
+    responses=GRAPH_DATABASE_RESPONSES,
+)
+def update_mastery_rollout(
+    body: MasteryRolloutUpdateRequest,
+    repository: MasteryRolloutRepository = Depends(
+        get_mastery_rollout_repository
+    ),
+) -> MasteryRolloutStateResponse:
+    try:
+        state = repository.update_state(
+            enabled=body.enabled,
+            expected_revision=body.expected_revision,
+            actor_ref=body.teacher_ref,
+            reason=body.reason,
+            evaluation_id=body.evaluation_id,
+        )
+    except MasteryEvaluationNotFound as exc:
+        raise ApiError(
+            404,
+            "mastery_evaluation_not_found",
+            "Mastery evaluation does not exist",
+        ) from exc
+    except MasteryRolloutRevisionConflict as exc:
+        raise ApiError(
+            409,
+            "mastery_rollout_revision_conflict",
+            "Mastery rollout state changed; reload before updating",
+        ) from exc
+    except MasteryRolloutGateBlocked as exc:
+        raise ApiError(
+            409,
+            "mastery_rollout_gate_blocked",
+            "Required mastery differences are not all accepted",
+        ) from exc
+    except ValueError as exc:
+        raise ApiError(
+            422,
+            "mastery_rollout_update_invalid",
+            "Mastery rollout update is invalid",
+        ) from exc
+    except (OSError, sqlite3.Error, MasteryRolloutError) as exc:
+        raise ApiError(
+            503,
+            "mastery_rollout_unavailable",
+            "Mastery rollout data is temporarily unavailable",
+        ) from exc
+    return MasteryRolloutStateResponse.model_validate(state.to_dict())
+
+
+@router.post(
+    "/v2/mastery/parameters",
+    response_model=MasteryParameterVersionResponse,
+    responses=GRAPH_DATABASE_RESPONSES,
+)
+def create_mastery_parameter_version(
+    body: MasteryParameterCreateRequest,
+    repository: MasteryRolloutRepository = Depends(
+        get_mastery_rollout_repository
+    ),
+) -> MasteryParameterVersionResponse:
+    try:
+        parameters = MasteryV2Parameters(**body.model_dump())
+        version = repository.register_parameters(parameters)
+        item = next(
+            entry
+            for entry in repository.list_parameters()
+            if entry["parameter_version"] == version
+        )
+    except ValueError as exc:
+        raise ApiError(
+            422,
+            "mastery_parameters_invalid",
+            "Mastery parameters are invalid",
+        ) from exc
+    except (OSError, sqlite3.Error, MasteryRolloutError) as exc:
+        raise ApiError(
+            503,
+            "mastery_rollout_unavailable",
+            "Mastery rollout data is temporarily unavailable",
+        ) from exc
+    return MasteryParameterVersionResponse.model_validate(item)
+
+
+@router.get(
+    "/v2/mastery/parameters",
+    response_model=MasteryParameterHistoryResponse,
+    responses=GRAPH_DATABASE_RESPONSES,
+)
+def list_mastery_parameter_versions(
+    repository: MasteryRolloutRepository = Depends(
+        get_mastery_rollout_repository
+    ),
+) -> MasteryParameterHistoryResponse:
+    try:
+        items = repository.list_parameters()
+    except (OSError, sqlite3.Error) as exc:
+        raise ApiError(
+            503,
+            "mastery_rollout_unavailable",
+            "Mastery rollout data is temporarily unavailable",
+        ) from exc
+    return MasteryParameterHistoryResponse.model_validate(
+        {"items": list(items)}
+    )
 
 
 @router.get(
@@ -454,6 +726,14 @@ def _build_profile(
             "graph_scope_invalid",
             "Graph scope is invalid",
         )
+    time_provider = getattr(service, "mastery_session_times", None)
+    if callable(time_provider):
+        try:
+            profile["_mastery_session_times"] = time_provider(
+                exam_scope=body.exam_scope.model_dump(exclude_none=True),
+            )
+        except (OSError, sqlite3.Error, ValueError):
+            profile["_mastery_session_times"] = {}
     return profile
 
 
@@ -476,6 +756,7 @@ def _profile_response(profile: dict[str, Any]) -> dict[str, Any]:
 
 __all__ = [
     "get_graph_v2_query_service",
+    "get_mastery_rollout_repository",
     "get_relation_review_service",
     "router",
 ]

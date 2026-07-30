@@ -166,6 +166,33 @@ def test_query_uses_only_confirmed_edges_and_keeps_isolated_nodes(
     assert payload["counts"]["node_count"] == len(payload["nodes"])
 
 
+def test_rollout_read_failure_falls_back_to_v1_with_explicit_warning(
+    tmp_path: Path,
+) -> None:
+    class BrokenRolloutRepository:
+        def select_parameters(self):
+            raise sqlite3.DatabaseError("synthetic rollout read failure")
+
+    database = tmp_path / "question-bank.db"
+    initialize_database(database)
+    service = KnowledgeGraphV2QueryService(
+        database,
+        rollout_repository=BrokenRolloutRepository(),
+    )
+
+    payload = service.query(_profile(), GraphV2Query())
+
+    assert payload["mastery_mode"] == "v1"
+    assert payload["mastery_parameter_version"] is None
+    assert payload["warnings"] == [
+        "掌握度 v2 开关读取失败，已安全回退到 v1。"
+    ]
+    assert all(
+        node["mastery_v2"]["reason"] == "mastery_v2_not_enabled"
+        for node in payload["nodes"]
+    )
+
+
 def test_prerequisite_depth_is_bounded_and_multiple_parents_are_preserved(
     tmp_path: Path,
 ) -> None:

@@ -11,9 +11,11 @@ const props = withDefaults(defineProps<{
   nodes: GraphV2Node[]
   edges: GraphV2Edge[]
   selectedKey: string | null
+  masteryMode: 'v1' | 'v2'
   pageSize?: number
 }>(), {
   pageSize: 50,
+  masteryMode: 'v1',
 })
 
 const emit = defineEmits<{ selectNode: [stableKey: string] }>()
@@ -36,7 +38,7 @@ const filteredNodes = computed(() => {
     : new Set(props.edges.filter(
         (edge) => edge.relation_type === relationType.value,
       ).flatMap((edge) => [edge.source_key, edge.target_key]))
-  return buildGraphV2DisplayNodes(props.nodes).filter((node) => (
+  return buildGraphV2DisplayNodes(props.nodes, props.masteryMode).filter((node) => (
     (!term || node.label.toLocaleLowerCase('zh-CN').includes(term) ||
       node.stableKey.toLocaleLowerCase('en-US').includes(term)) &&
     (allowed === null || allowed.has(node.stableKey))
@@ -48,7 +50,7 @@ const visibleNodes = computed(() => {
   return filteredNodes.value.slice(start, start + props.pageSize)
 })
 
-watch([search, relationType, () => props.nodes, () => props.edges], () => {
+watch([search, relationType, () => props.nodes, () => props.edges, () => props.masteryMode], () => {
   page.value = 1
 }, { deep: true })
 watch(totalPages, (value) => { page.value = Math.min(page.value, value) })

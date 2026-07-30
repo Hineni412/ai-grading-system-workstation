@@ -50,9 +50,17 @@ function masteryLabel(value: number): string {
   return `${Number.isInteger(percent) ? percent.toFixed(0) : percent.toFixed(1)}%`
 }
 
-export function graphV2NodeState(node: GraphV2Node): GraphV2NodeState {
-  return node.mastery_v1.status === 'available' && node.mastery_v1.value !== null
-    ? masteryBand(node.mastery_v1.value)
+function activeMastery(node: GraphV2Node, mode: 'v1' | 'v2') {
+  return mode === 'v2' ? node.mastery_v2 : node.mastery_v1
+}
+
+export function graphV2NodeState(
+  node: GraphV2Node,
+  mode: 'v1' | 'v2' = 'v1',
+): GraphV2NodeState {
+  const mastery = activeMastery(node, mode)
+  return mastery.status === 'available' && mastery.value !== null
+    ? masteryBand(mastery.value)
     : 'missing'
 }
 
@@ -60,12 +68,15 @@ export function graphV2NodeStateLabel(state: GraphV2NodeState): string {
   return state === 'missing' ? '当前无证据' : masteryBandLabel(state)
 }
 
-export function buildGraphV2DisplayNodes(nodes: GraphV2Node[]): GraphV2DisplayNode[] {
+export function buildGraphV2DisplayNodes(
+  nodes: GraphV2Node[],
+  mode: 'v1' | 'v2' = 'v1',
+): GraphV2DisplayNode[] {
   const ordered = [...nodes].sort((left, right) => {
-    const leftState = graphV2NodeState(left)
-    const rightState = graphV2NodeState(right)
-    const leftValue = left.mastery_v1.value ?? -1
-    const rightValue = right.mastery_v1.value ?? -1
+    const leftState = graphV2NodeState(left, mode)
+    const rightState = graphV2NodeState(right, mode)
+    const leftValue = activeMastery(left, mode).value ?? -1
+    const rightValue = activeMastery(right, mode).value ?? -1
     return (
       STATE_ORDER.indexOf(leftState) - STATE_ORDER.indexOf(rightState) ||
       leftValue - rightValue ||
@@ -75,7 +86,7 @@ export function buildGraphV2DisplayNodes(nodes: GraphV2Node[]): GraphV2DisplayNo
   })
   const totals = new Map<GraphV2NodeState, number>()
   for (const node of ordered) {
-    const state = graphV2NodeState(node)
+    const state = graphV2NodeState(node, mode)
     totals.set(state, (totals.get(state) ?? 0) + 1)
   }
   const starts = new Map<GraphV2NodeState, number>()
@@ -86,11 +97,12 @@ export function buildGraphV2DisplayNodes(nodes: GraphV2Node[]): GraphV2DisplayNo
   }
   const counts = new Map<GraphV2NodeState, number>()
   return ordered.map((node) => {
-    const state = graphV2NodeState(node)
+    const state = graphV2NodeState(node, mode)
     const order = counts.get(state) ?? 0
     counts.set(state, order + 1)
-    const mastery = node.mastery_v1.status === 'available'
-      ? node.mastery_v1.value
+    const selected = activeMastery(node, mode)
+    const mastery = selected.status === 'available'
+      ? selected.value
       : null
     return {
       stableKey: node.stable_key,
@@ -110,7 +122,11 @@ export function buildGraphV2DisplayNodes(nodes: GraphV2Node[]): GraphV2DisplayNo
   })
 }
 
-export function summarizeGraphV2(nodes: GraphV2Node[], edges: GraphV2Edge[]): GraphV2Summary {
+export function summarizeGraphV2(
+  nodes: GraphV2Node[],
+  edges: GraphV2Edge[],
+  mode: 'v1' | 'v2' = 'v1',
+): GraphV2Summary {
   const summary: GraphV2Summary = {
     total: nodes.length,
     relationTotal: edges.length,
@@ -120,7 +136,7 @@ export function summarizeGraphV2(nodes: GraphV2Node[], edges: GraphV2Edge[]): Gr
     review: 0,
     weak: 0,
   }
-  for (const node of nodes) summary[graphV2NodeState(node)] += 1
+  for (const node of nodes) summary[graphV2NodeState(node, mode)] += 1
   return summary
 }
 
