@@ -377,6 +377,31 @@ class PersonalizedRecommendationModule:
             raise RecommendationDraftNotFound(clean_id)
         return json.loads(str(row["draft_json"]))
 
+    def ensure_current(self, draft_id: str) -> dict[str, Any]:
+        """Return a draft only when every recommendation source is unchanged."""
+
+        clean_id = _draft_id(draft_id)
+        with connect(self.db_path) as connection:
+            row = connection.execute(
+                """
+                SELECT request_json, source_version, draft_json
+                FROM personalized_recommendation_drafts
+                WHERE draft_id = ?
+                """,
+                (clean_id,),
+            ).fetchone()
+        if row is None:
+            raise RecommendationDraftNotFound(clean_id)
+        request = json.loads(str(row["request_json"]))
+        _candidates, current_source = self._current_source_for_request(
+            request
+        )
+        if current_source != str(row["source_version"]):
+            raise RecommendationSourceChanged(
+                "recommendation sources changed"
+            )
+        return json.loads(str(row["draft_json"]))
+
     def edit(
         self,
         draft_id: str,
@@ -416,31 +441,8 @@ class PersonalizedRecommendationModule:
         if source_row is None:
             raise RecommendationDraftNotFound(clean_id)
         source_request = json.loads(str(source_row["request_json"]))
-        source_diagnosis = source_request["diagnosis"]
-        source_config = source_request["config"]
-        student_ids = tuple(
-            str(item["student_id"])
-            for item in source_diagnosis["students"]
-        )
-        source_candidates, _source_relations, base_source_version = (
-            self._source_snapshot()
-        )
-        source_recent = self._recent_question_ids(student_ids)
-        source_excluded = (
-            self._current_exam_question_ids(source_diagnosis)
-            if bool(
-                source_config.get(
-                    "exclude_current_exam_originals",
-                    True,
-                )
-            )
-            else set()
-        )
-        current_source = _context_source_version(
-            base_source_version,
-            as_of=_day_clock(self.clock()),
-            recent=source_recent,
-            excluded_question_ids=source_excluded,
+        source_candidates, current_source = (
+            self._current_source_for_request(source_request)
         )
         with connect(self.db_path) as connection:
             connection.execute("BEGIN IMMEDIATE")
@@ -561,6 +563,33 @@ class PersonalizedRecommendationModule:
                 ),
             )
         return draft
+
+    def _current_source_for_request(
+        self,
+        request: Mapping[str, Any],
+    ) -> tuple[tuple[dict[str, Any], ...], str]:
+        diagnosis = request["diagnosis"]
+        config = request["config"]
+        student_ids = tuple(
+            str(item["student_id"])
+            for item in diagnosis["students"]
+        )
+        candidates, _relations, base_source_version = self._source_snapshot()
+        recent = self._recent_question_ids(student_ids)
+        excluded = (
+            self._current_exam_question_ids(diagnosis)
+            if bool(config.get("exclude_current_exam_originals", True))
+            else set()
+        )
+        return (
+            candidates,
+            _context_source_version(
+                base_source_version,
+                as_of=_day_clock(self.clock()),
+                recent=recent,
+                excluded_question_ids=excluded,
+            ),
+        )
 
     def _build_draft(
         self,

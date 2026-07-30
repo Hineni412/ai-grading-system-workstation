@@ -2,6 +2,7 @@ import { createApp, nextTick, type App } from 'vue'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type {
+  PersonalizedPaperInstance,
   PersonalizedRecommendationDraft,
   TrainingDiagnosis,
 } from '../api/training'
@@ -10,6 +11,9 @@ import PersonalizedRecommendationDraftView from '../components/training/Personal
 const trainingApiMock = vi.hoisted(() => ({
   createPersonalizedDraft: vi.fn(),
   editPersonalizedDraft: vi.fn(),
+  createPaperInstance: vi.fn(),
+  freezePaperInstance: vi.fn(),
+  downloadPaperArtifact: vi.fn(),
 }))
 
 vi.mock('../api/training', async (importOriginal) => ({
@@ -100,6 +104,51 @@ const draft = {
   history: [],
 } satisfies PersonalizedRecommendationDraft
 
+const paper = {
+  paper_instance_id: 'e'.repeat(64),
+  paper_batch_id: 'f'.repeat(64),
+  draft_id: draft.draft_id,
+  draft_revision: 1,
+  student_id: 'SYN-S01',
+  student_code: 'S01',
+  student_name: '合成学生',
+  class_id: 'SYN-C01',
+  series_version: 1,
+  status: 'review_pending',
+  revision: 1,
+  layout_version: 'personalized-paper-school-a4-v1',
+  budget: {
+    version: 'whole-paper-context-budget-v1',
+    status: 'ready',
+    context_window_tokens: 32768,
+    question_count: 1,
+    criterion_point_count: 3,
+    image_count: 0,
+    page_count: 1,
+    page_count_is_estimate: true,
+    estimated_input_tokens: 3200,
+    estimated_output_tokens: 1340,
+    estimated_total_tokens: 4540,
+    limits: { questions: 12, criterion_points: 120, images: 48, pages: 20 },
+    blockers: [],
+  },
+  question_count: 1,
+  criterion_point_count: 3,
+  items: [],
+  pages: [],
+  review_docx_sha256: '1'.repeat(64),
+  reviewed_docx_sha256: null,
+  frozen_pdf_sha256: null,
+  downloads: {
+    review_docx: `/api/training/paper-instances/${'e'.repeat(64)}/files/review-docx`,
+    reviewed_docx: null,
+    frozen_pdf: null,
+  },
+  error_code: null,
+  created_at: '2026-07-30 08:00:00',
+  frozen_at: null,
+} satisfies PersonalizedPaperInstance
+
 const mounted: App[] = []
 
 async function settle(): Promise<void> {
@@ -119,6 +168,7 @@ beforeEach(() => {
       items: [{ ...draft.students[0]!.items[0]!, locked: true }],
     }],
   })
+  trainingApiMock.createPaperInstance.mockResolvedValue(paper)
 })
 
 afterEach(() => {
@@ -179,5 +229,22 @@ describe('personalized recommendation draft', () => {
     )
     expect(host.textContent).toContain('已锁定该题')
     expect(host.textContent).toContain('解锁')
+
+    const createPaper = [...host.querySelectorAll<HTMLButtonElement>('button')]
+      .find((button) => button.textContent?.trim() === '生成 WPS 审核稿')
+    createPaper?.click()
+    await settle()
+
+    expect(trainingApiMock.createPaperInstance).toHaveBeenCalledWith(
+      draft.draft_id,
+      expect.objectContaining({
+        expected_draft_revision: 2,
+        student_id: 'SYN-S01',
+        context_window_tokens: 32768,
+      }),
+    )
+    expect(host.textContent).toContain('V1')
+    expect(host.textContent).toContain('等待 WPS 审核')
+    expect(host.textContent).toContain('不会自动打印')
   })
 })

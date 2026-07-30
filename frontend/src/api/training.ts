@@ -123,6 +123,59 @@ export interface PersonalizedRecommendationDraft {
   history: Array<Record<string, unknown>>
 }
 
+export type PersonalizedPaperStatus =
+  | 'creating'
+  | 'review_pending'
+  | 'frozen'
+  | 'failed'
+
+export interface PersonalizedPaperBudget {
+  version: string
+  status: 'ready' | 'blocked'
+  context_window_tokens: number
+  question_count: number
+  criterion_point_count: number
+  image_count: number
+  page_count: number
+  page_count_is_estimate: boolean
+  estimated_input_tokens: number
+  estimated_output_tokens: number
+  estimated_total_tokens: number
+  limits: Record<string, number>
+  blockers: string[]
+}
+
+export interface PersonalizedPaperInstance {
+  paper_instance_id: string
+  paper_batch_id: string
+  draft_id: string
+  draft_revision: number
+  student_id: string
+  student_code?: string | null
+  student_name?: string | null
+  class_id?: string | null
+  series_version: number
+  status: PersonalizedPaperStatus
+  revision: number
+  layout_version: string
+  budget: PersonalizedPaperBudget
+  question_count: number
+  criterion_point_count: number
+  items: Array<Record<string, unknown>>
+  pages: Array<Record<string, unknown>>
+  review_docx_sha256?: string | null
+  reviewed_docx_sha256?: string | null
+  frozen_pdf_sha256?: string | null
+  downloads: {
+    review_docx?: string | null
+    reviewed_docx?: string | null
+    frozen_pdf?: string | null
+  }
+  error_code?: string | null
+  created_at: string
+  frozen_at?: string | null
+}
+
 export interface TrainingEvidenceReference {
   session_id: number
   session_name: string
@@ -634,6 +687,97 @@ export function decodePersonalizedRecommendationDraft(
   return value as unknown as PersonalizedRecommendationDraft
 }
 
+function isNullableString(value: unknown): boolean {
+  return value === undefined || value === null || typeof value === 'string'
+}
+
+function isPersonalizedPaperBudget(
+  value: unknown,
+): value is PersonalizedPaperBudget {
+  return (
+    isRecord(value)
+    && isNonEmptyString(value.version)
+    && (value.status === 'ready' || value.status === 'blocked')
+    && isInteger(value.context_window_tokens, 1)
+    && isInteger(value.question_count)
+    && isInteger(value.criterion_point_count)
+    && isInteger(value.image_count)
+    && isInteger(value.page_count, 1)
+    && typeof value.page_count_is_estimate === 'boolean'
+    && isInteger(value.estimated_input_tokens)
+    && isInteger(value.estimated_output_tokens)
+    && isInteger(value.estimated_total_tokens)
+    && isRecord(value.limits)
+    && Object.values(value.limits).every((item) => isInteger(item))
+    && isStringArray(value.blockers)
+  )
+}
+
+export function decodePersonalizedPaperInstance(
+  value: unknown,
+): PersonalizedPaperInstance {
+  assertNoPathLikeKeys(value)
+  if (
+    !isRecord(value)
+    || !/^[0-9a-f]{64}$/.test(String(value.paper_instance_id || ''))
+    || !/^[0-9a-f]{64}$/.test(String(value.paper_batch_id || ''))
+    || !/^[0-9a-f]{64}$/.test(String(value.draft_id || ''))
+    || !isInteger(value.draft_revision, 1)
+    || !isNonEmptyString(value.student_id)
+    || !isNullableString(value.student_code)
+    || !isNullableString(value.student_name)
+    || !isNullableString(value.class_id)
+    || !isInteger(value.series_version, 1)
+    || !['creating', 'review_pending', 'frozen', 'failed'].includes(
+      String(value.status),
+    )
+    || !isInteger(value.revision, 1)
+    || !isNonEmptyString(value.layout_version)
+    || !isPersonalizedPaperBudget(value.budget)
+    || !isInteger(value.question_count)
+    || !isInteger(value.criterion_point_count)
+    || !Array.isArray(value.items)
+    || !value.items.every(isRecord)
+    || !Array.isArray(value.pages)
+    || !value.pages.every(isRecord)
+    || !isNullableString(value.review_docx_sha256)
+    || !isNullableString(value.reviewed_docx_sha256)
+    || !isNullableString(value.frozen_pdf_sha256)
+    || !isRecord(value.downloads)
+    || !isNullableString(value.downloads.review_docx)
+    || !isNullableString(value.downloads.reviewed_docx)
+    || !isNullableString(value.downloads.frozen_pdf)
+    || !isNullableString(value.error_code)
+    || !isNonEmptyString(value.created_at)
+    || !isNullableString(value.frozen_at)
+  ) {
+    throw new Error('Invalid personalized paper instance')
+  }
+  return value as unknown as PersonalizedPaperInstance
+}
+
+function decodePersonalizedPaperList(
+  value: unknown,
+): { items: PersonalizedPaperInstance[] } {
+  if (
+    !isRecord(value)
+    || !Array.isArray(value.items)
+  ) {
+    throw new Error('Invalid personalized paper list')
+  }
+  return { items: value.items.map(decodePersonalizedPaperInstance) }
+}
+
+async function fileSha256(file: File): Promise<string> {
+  const digest = await globalThis.crypto.subtle.digest(
+    'SHA-256',
+    await file.arrayBuffer(),
+  )
+  return [...new Uint8Array(digest)]
+    .map((item) => item.toString(16).padStart(2, '0'))
+    .join('')
+}
+
 export const trainingApi = {
   diagnose(
     body: TrainingDiagnosisRequest,
@@ -710,5 +854,69 @@ export const trainingApi = {
       signal,
       timeoutMs: 30_000,
     })
+  },
+
+  createPaperInstance(
+    draftId: string,
+    body: {
+      operation_token: string
+      expected_draft_revision: number
+      student_id: string
+      context_window_tokens: 32768 | 65536 | 128000
+    },
+  ): Promise<PersonalizedPaperInstance> {
+    return apiClient.request(
+      `/api/training/personalized-drafts/${draftId}/paper-instances`,
+      {
+        method: 'POST',
+        body,
+        decode: decodePersonalizedPaperInstance,
+        timeoutMs: 120_000,
+      },
+    )
+  },
+
+  async listPaperInstances(
+    draftId: string,
+  ): Promise<PersonalizedPaperInstance[]> {
+    const result = await apiClient.request(
+      `/api/training/personalized-drafts/${draftId}/paper-instances`,
+      {
+        decode: decodePersonalizedPaperList,
+        timeoutMs: 30_000,
+      },
+    )
+    return result.items
+  },
+
+  async freezePaperInstance(
+    instance: PersonalizedPaperInstance,
+    file: File,
+    operationToken: string,
+  ): Promise<PersonalizedPaperInstance> {
+    const digest = await fileSha256(file)
+    return apiClient.request(
+      `/api/training/paper-instances/${instance.paper_instance_id}/freeze`
+      + `?expected_revision=${instance.revision}`,
+      {
+        method: 'POST',
+        rawBody: file,
+        headers: {
+          'content-type': (
+            'application/vnd.openxmlformats-officedocument.'
+            + 'wordprocessingml.document'
+          ),
+          'x-operation-token': operationToken,
+          'x-content-sha256': digest,
+          'x-upload-filename': encodeURIComponent(file.name),
+        },
+        decode: decodePersonalizedPaperInstance,
+        timeoutMs: 180_000,
+      },
+    )
+  },
+
+  downloadPaperArtifact(path: string) {
+    return apiClient.download(path, { timeoutMs: 60_000 })
   },
 }

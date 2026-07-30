@@ -195,6 +195,44 @@ class PersonalizedRecommendationDraftResponse(_TrainingModel):
     history: list[dict[str, Any]]
 
 
+class PersonalizedPaperCreateRequest(_TrainingModel):
+    operation_token: str = Field(pattern=r"^[0-9a-fA-F]{32}$")
+    expected_draft_revision: int = Field(ge=1)
+    student_id: str = Field(min_length=1, max_length=100)
+    context_window_tokens: Literal[32768, 65536, 128000] = 32768
+
+
+class PersonalizedPaperInstanceResponse(_TrainingModel):
+    paper_instance_id: str = Field(pattern=r"^[0-9a-f]{64}$")
+    paper_batch_id: str = Field(pattern=r"^[0-9a-f]{64}$")
+    draft_id: str = Field(pattern=r"^[0-9a-f]{64}$")
+    draft_revision: int = Field(ge=1)
+    student_id: str
+    student_code: str | None = None
+    student_name: str | None = None
+    class_id: str | None = None
+    series_version: int = Field(ge=1)
+    status: Literal["creating", "review_pending", "frozen", "failed"]
+    revision: int = Field(ge=1)
+    layout_version: str
+    budget: dict[str, Any]
+    question_count: int = Field(ge=0)
+    criterion_point_count: int = Field(ge=0)
+    items: list[dict[str, Any]]
+    pages: list[dict[str, Any]]
+    review_docx_sha256: str | None = None
+    reviewed_docx_sha256: str | None = None
+    frozen_pdf_sha256: str | None = None
+    downloads: dict[str, str | None]
+    error_code: str | None = None
+    created_at: str
+    frozen_at: str | None = None
+
+
+class PersonalizedPaperInstanceListResponse(_TrainingModel):
+    items: list[PersonalizedPaperInstanceResponse]
+
+
 class TrainingExportSubmitRequest(_TrainingModel):
     variant_id: int | None = Field(default=None, ge=1)
     format: Literal["docx", "markdown"] = "docx"
@@ -313,6 +351,9 @@ class TrainingDiagnosisResponse(_TrainingModel):
 
 
 __all__ = [
+    "PersonalizedPaperCreateRequest",
+    "PersonalizedPaperInstanceListResponse",
+    "PersonalizedPaperInstanceResponse",
     "PersonalizedRecommendationCreateRequest",
     "PersonalizedRecommendationDraftResponse",
     "PersonalizedRecommendationEditRequest",

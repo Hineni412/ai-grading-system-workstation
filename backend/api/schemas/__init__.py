@@ -112,6 +112,9 @@ from .templates import (
     TemplateUpdateRequest,
 )
 from .training import (
+    PersonalizedPaperCreateRequest,
+    PersonalizedPaperInstanceListResponse,
+    PersonalizedPaperInstanceResponse,
     PersonalizedRecommendationCreateRequest,
     PersonalizedRecommendationDraftResponse,
     PersonalizedRecommendationEditRequest,
@@ -140,6 +143,9 @@ __all__ = [
     "CreateSessionRequest",
     "DeleteSessionRequest",
     "PermanentDeleteSessionRequest",
+    "PersonalizedPaperCreateRequest",
+    "PersonalizedPaperInstanceListResponse",
+    "PersonalizedPaperInstanceResponse",
     "PersonalizedRecommendationCreateRequest",
     "PersonalizedRecommendationDraftResponse",
     "PersonalizedRecommendationEditRequest",

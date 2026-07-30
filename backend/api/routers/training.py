@@ -4,15 +4,19 @@ import hashlib
 import json
 import sqlite3
 from math import ceil
-from typing import Any
+from tempfile import SpooledTemporaryFile
+from typing import Any, NoReturn
+from urllib.parse import unquote
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Request
+from fastapi.responses import FileResponse
 from pydantic import ValidationError
 
 from backend.api.app import ApiError, ErrorResponse
 from backend.api.dependencies import (
     get_diagnosis_profile_service,
     get_job_manager,
+    get_personalized_paper_module,
     get_personalized_recommendation_module,
     get_practice_plan_service,
     get_request_diagnosis_profile_service,
@@ -22,6 +26,9 @@ from backend.api.dependencies import (
 from backend.api.routers.jobs import _job_response
 from backend.api.schemas.jobs import JobResponse
 from backend.api.schemas.training import (
+    PersonalizedPaperCreateRequest,
+    PersonalizedPaperInstanceListResponse,
+    PersonalizedPaperInstanceResponse,
     PersonalizedRecommendationCreateRequest,
     PersonalizedRecommendationDraftResponse,
     PersonalizedRecommendationEditRequest,
@@ -39,6 +46,20 @@ from backend.jobs.manager import JobManager, UnsupportedJobTypeError
 from backend.public_data import sanitize_public_mapping
 from integration.diagnosis_profile_service import DiagnosisProfileService
 from question_bank.recommendation.practice_plan_service import PracticePlanService
+from question_bank.personalized_papers import (
+    CreatePaperCommand,
+    FreezePaperCommand,
+    PaperArtifactNotFound,
+    PaperBudgetExceeded,
+    PaperInstanceNotFound,
+    PaperInvalid,
+    PaperRenderUnavailable,
+    PaperRequestConflict,
+    PaperRevisionConflict,
+    PaperSourceChanged,
+    PersonalizedPaperError,
+    PersonalizedPaperModule,
+)
 from question_bank.recommendation.personalized import (
     PersonalizedRecommendationConfig,
     PersonalizedRecommendationModule,
@@ -59,6 +80,8 @@ TRAINING_DATABASE_RESPONSES = {
         "description": "Training data is temporarily unavailable",
     }
 }
+PERSONALIZED_PAPER_UPLOAD_LIMIT = 50 * 1024 * 1024
+NO_STORE_HEADERS = {"Cache-Control": "no-store"}
 
 
 @router.post(
@@ -318,6 +341,266 @@ def edit_personalized_recommendation_draft(
         ) from exc
     return PersonalizedRecommendationDraftResponse.model_validate(
         _public_training_mapping(draft)
+    )
+
+
+@router.post(
+    "/personalized-drafts/{draft_id}/paper-instances",
+    response_model=PersonalizedPaperInstanceResponse,
+    status_code=201,
+    responses={
+        404: {"model": ErrorResponse, "description": "Draft was not found"},
+        409: {"model": ErrorResponse, "description": "Draft or sources changed"},
+        422: {"model": ErrorResponse, "description": "Paper preflight failed"},
+        **TRAINING_DATABASE_RESPONSES,
+    },
+)
+def create_personalized_paper_instance(
+    draft_id: str,
+    body: PersonalizedPaperCreateRequest,
+    module: PersonalizedPaperModule = Depends(
+        get_personalized_paper_module
+    ),
+) -> PersonalizedPaperInstanceResponse:
+    try:
+        instance = module.create_review_instance(
+            draft_id,
+            CreatePaperCommand(
+                operation_token=body.operation_token.lower(),
+                expected_draft_revision=body.expected_draft_revision,
+                student_id=body.student_id,
+                actor_ref="local_teacher",
+                context_window_tokens=body.context_window_tokens,
+            ),
+        )
+    except (
+        PersonalizedPaperError,
+        OSError,
+        sqlite3.Error,
+        TypeError,
+        ValueError,
+    ) as exc:
+        _raise_paper_api_error(exc)
+    return _paper_instance_response(instance)
+
+
+@router.get(
+    "/personalized-drafts/{draft_id}/paper-instances",
+    response_model=PersonalizedPaperInstanceListResponse,
+    responses=TRAINING_DATABASE_RESPONSES,
+)
+def list_personalized_paper_instances(
+    draft_id: str,
+    module: PersonalizedPaperModule = Depends(
+        get_personalized_paper_module
+    ),
+) -> PersonalizedPaperInstanceListResponse:
+    try:
+        items = module.list_for_draft(draft_id)
+    except (
+        PersonalizedPaperError,
+        OSError,
+        sqlite3.Error,
+        TypeError,
+        ValueError,
+    ) as exc:
+        _raise_paper_api_error(exc)
+    return PersonalizedPaperInstanceListResponse(
+        items=[_paper_instance_response(item) for item in items]
+    )
+
+
+@router.get(
+    "/paper-instances/{paper_instance_id}",
+    response_model=PersonalizedPaperInstanceResponse,
+    responses={
+        404: {"model": ErrorResponse, "description": "Paper was not found"},
+        **TRAINING_DATABASE_RESPONSES,
+    },
+)
+def get_personalized_paper_instance(
+    paper_instance_id: str,
+    module: PersonalizedPaperModule = Depends(
+        get_personalized_paper_module
+    ),
+) -> PersonalizedPaperInstanceResponse:
+    try:
+        instance = module.get(paper_instance_id)
+    except (
+        PersonalizedPaperError,
+        OSError,
+        sqlite3.Error,
+        TypeError,
+        ValueError,
+    ) as exc:
+        _raise_paper_api_error(exc)
+    return _paper_instance_response(instance)
+
+
+@router.post(
+    "/paper-instances/{paper_instance_id}/freeze",
+    response_model=PersonalizedPaperInstanceResponse,
+    responses={
+        409: {"model": ErrorResponse, "description": "Paper changed"},
+        413: {"model": ErrorResponse, "description": "DOCX is too large"},
+        415: {"model": ErrorResponse, "description": "DOCX is invalid"},
+        422: {"model": ErrorResponse, "description": "Paper preflight failed"},
+        **TRAINING_DATABASE_RESPONSES,
+    },
+    openapi_extra={
+        "parameters": [
+            {
+                "name": "X-Operation-Token",
+                "in": "header",
+                "required": True,
+                "schema": {"type": "string", "pattern": "^[0-9a-fA-F]{32}$"},
+            },
+            {
+                "name": "X-Content-SHA256",
+                "in": "header",
+                "required": True,
+                "schema": {"type": "string", "pattern": "^[0-9a-fA-F]{64}$"},
+            },
+            {
+                "name": "X-Upload-Filename",
+                "in": "header",
+                "required": True,
+                "schema": {"type": "string"},
+            },
+        ],
+        "requestBody": {
+            "required": True,
+            "content": {
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document": {
+                    "schema": {"type": "string", "format": "binary"}
+                }
+            },
+        },
+    },
+)
+async def freeze_personalized_paper_instance(
+    paper_instance_id: str,
+    request: Request,
+    expected_revision: int = Query(ge=1),
+    module: PersonalizedPaperModule = Depends(
+        get_personalized_paper_module
+    ),
+) -> PersonalizedPaperInstanceResponse:
+    media_type = (
+        str(request.headers.get("content-type") or "")
+        .split(";", 1)[0]
+        .strip()
+        .casefold()
+    )
+    expected_media_type = (
+        "application/vnd.openxmlformats-officedocument."
+        "wordprocessingml.document"
+    )
+    if media_type != expected_media_type:
+        raise ApiError(
+            415,
+            "personalized_paper_docx_invalid",
+            "Reviewed file must be a DOCX document",
+        )
+    try:
+        declared_size = int(request.headers.get("content-length") or 0)
+    except ValueError:
+        declared_size = 0
+    if declared_size > PERSONALIZED_PAPER_UPLOAD_LIMIT:
+        raise ApiError(
+            413,
+            "personalized_paper_docx_too_large",
+            "Reviewed DOCX is too large",
+        )
+    try:
+        command = FreezePaperCommand(
+            operation_token=str(
+                request.headers.get("x-operation-token") or ""
+            ).lower(),
+            expected_revision=expected_revision,
+            content_sha256=str(
+                request.headers.get("x-content-sha256") or ""
+            ).lower(),
+            filename=unquote(
+                str(request.headers.get("x-upload-filename") or "")
+            ),
+            actor_ref="local_teacher",
+        )
+        with SpooledTemporaryFile(
+            max_size=1024 * 1024,
+            mode="w+b",
+        ) as upload:
+            received = 0
+            async for chunk in request.stream():
+                received += len(chunk)
+                if received > PERSONALIZED_PAPER_UPLOAD_LIMIT:
+                    raise ApiError(
+                        413,
+                        "personalized_paper_docx_too_large",
+                        "Reviewed DOCX is too large",
+                    )
+                upload.write(chunk)
+            upload.seek(0)
+            instance = module.freeze(
+                paper_instance_id,
+                command,
+                upload,
+            )
+    except ApiError:
+        raise
+    except (
+        PersonalizedPaperError,
+        OSError,
+        sqlite3.Error,
+        TypeError,
+        ValueError,
+    ) as exc:
+        _raise_paper_api_error(exc)
+    return _paper_instance_response(instance)
+
+
+@router.get(
+    "/paper-instances/{paper_instance_id}/files/{kind}",
+    response_class=FileResponse,
+    responses={
+        404: {"model": ErrorResponse, "description": "File was not found"},
+        **TRAINING_DATABASE_RESPONSES,
+    },
+)
+def download_personalized_paper_artifact(
+    paper_instance_id: str,
+    kind: str,
+    module: PersonalizedPaperModule = Depends(
+        get_personalized_paper_module
+    ),
+) -> FileResponse:
+    if kind not in {"review-docx", "reviewed-docx", "frozen-pdf"}:
+        raise ApiError(
+            404,
+            "personalized_paper_file_not_found",
+            "Personalized paper file was not found",
+        )
+    try:
+        path, media_type = module.artifact_path(paper_instance_id, kind)
+        instance = module.get(paper_instance_id)
+    except (
+        PersonalizedPaperError,
+        OSError,
+        sqlite3.Error,
+        TypeError,
+        ValueError,
+    ) as exc:
+        _raise_paper_api_error(exc)
+    extension = ".pdf" if kind == "frozen-pdf" else ".docx"
+    filename = (
+        f"personalized-paper-{paper_instance_id[:12]}-"
+        f"v{int(instance['series_version'])}{extension}"
+    )
+    return FileResponse(
+        path,
+        filename=filename,
+        media_type=media_type,
+        headers=NO_STORE_HEADERS,
     )
 
 
@@ -688,6 +971,66 @@ def _raise_confirmation_conflict(current_revision: str) -> None:
 
 def _task_detail_response(task: dict[str, object]) -> TrainingTaskDetail:
     return TrainingTaskDetail.model_validate(_public_training_mapping(task))
+
+
+def _paper_instance_response(
+    instance: dict[str, Any],
+) -> PersonalizedPaperInstanceResponse:
+    return PersonalizedPaperInstanceResponse.model_validate(
+        _public_training_mapping(instance)
+    )
+
+
+def _raise_paper_api_error(exc: Exception) -> NoReturn:
+    if isinstance(exc, (PaperInstanceNotFound, PaperArtifactNotFound)):
+        raise ApiError(
+            404,
+            "personalized_paper_not_found",
+            "Personalized paper or file was not found",
+        ) from exc
+    if isinstance(exc, PaperRevisionConflict):
+        raise ApiError(
+            409,
+            "personalized_paper_revision_conflict",
+            "Personalized paper changed; refresh before continuing",
+            {"current_revision": exc.current_revision},
+        ) from exc
+    if isinstance(exc, PaperSourceChanged):
+        raise ApiError(
+            409,
+            "personalized_paper_source_changed",
+            "Recommendation sources changed; generate a new paper version",
+        ) from exc
+    if isinstance(exc, PaperRequestConflict):
+        raise ApiError(
+            409,
+            "personalized_paper_request_conflict",
+            "This paper operation token was already used",
+        ) from exc
+    if isinstance(exc, PaperBudgetExceeded):
+        raise ApiError(
+            422,
+            "personalized_paper_budget_exceeded",
+            "Whole-paper assessment budget was exceeded",
+            {"budget": _strip_training_storage_fields(exc.budget)},
+        ) from exc
+    if isinstance(exc, PaperInvalid):
+        raise ApiError(
+            422,
+            "personalized_paper_invalid",
+            "Personalized paper request or reviewed DOCX is invalid",
+        ) from exc
+    if isinstance(exc, (PaperRenderUnavailable, OSError, sqlite3.Error)):
+        raise ApiError(
+            503,
+            "personalized_paper_unavailable",
+            "Personalized paper generation is temporarily unavailable",
+        ) from exc
+    raise ApiError(
+        422,
+        "personalized_paper_invalid",
+        "Personalized paper request is invalid",
+    ) from exc
 
 
 def _public_training_mapping(value: dict[str, object]) -> dict[str, object]:

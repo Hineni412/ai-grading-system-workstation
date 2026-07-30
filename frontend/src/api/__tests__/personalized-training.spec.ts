@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import {
+  decodePersonalizedPaperInstance,
   decodePersonalizedRecommendationDraft,
   trainingApi,
 } from '../training'
@@ -57,6 +58,51 @@ const draftPayload = {
     action: 'created',
     revision: 1,
   }],
+} as const
+
+const paperPayload = {
+  paper_instance_id: 'e'.repeat(64),
+  paper_batch_id: 'f'.repeat(64),
+  draft_id: draftPayload.draft_id,
+  draft_revision: 1,
+  student_id: 'SYN-S01',
+  student_code: 'S01',
+  student_name: '合成学生',
+  class_id: 'SYN-C01',
+  series_version: 1,
+  status: 'review_pending',
+  revision: 1,
+  layout_version: 'personalized-paper-school-a4-v1',
+  budget: {
+    version: 'whole-paper-context-budget-v1',
+    status: 'ready',
+    context_window_tokens: 32768,
+    question_count: 1,
+    criterion_point_count: 3,
+    image_count: 0,
+    page_count: 1,
+    page_count_is_estimate: true,
+    estimated_input_tokens: 3200,
+    estimated_output_tokens: 1340,
+    estimated_total_tokens: 4540,
+    limits: { questions: 12, criterion_points: 120, images: 48, pages: 20 },
+    blockers: [],
+  },
+  question_count: 1,
+  criterion_point_count: 3,
+  items: [],
+  pages: [],
+  review_docx_sha256: '1'.repeat(64),
+  reviewed_docx_sha256: null,
+  frozen_pdf_sha256: null,
+  downloads: {
+    review_docx: `/api/training/paper-instances/${'e'.repeat(64)}/files/review-docx`,
+    reviewed_docx: null,
+    frozen_pdf: null,
+  },
+  error_code: null,
+  created_at: '2026-07-30 08:00:00',
+  frozen_at: null,
 } as const
 
 afterEach(() => {
@@ -137,6 +183,42 @@ describe('personalized training API', () => {
       expected_revision: 1,
       action: 'lock',
       reason: '保留课堂讲过的题型',
+    })
+  })
+
+  it('decodes paper versions and sends an immutable create command', async () => {
+    expect(decodePersonalizedPaperInstance(paperPayload)).toMatchObject({
+      status: 'review_pending',
+      series_version: 1,
+      question_count: 1,
+    })
+    expect(() => decodePersonalizedPaperInstance({
+      ...paperPayload,
+      output_path: 'C:\\private\\paper.docx',
+    })).toThrow('Path-like response key')
+
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify(paperPayload), {
+        status: 201,
+        headers: { 'content-type': 'application/json' },
+      }),
+    )
+    await trainingApi.createPaperInstance(draftPayload.draft_id, {
+      operation_token: '3'.repeat(32),
+      expected_draft_revision: 1,
+      student_id: 'SYN-S01',
+      context_window_tokens: 32768,
+    })
+
+    expect(fetchMock).toHaveBeenCalledOnce()
+    expect(fetchMock.mock.calls[0]?.[0]).toBe(
+      `/api/training/personalized-drafts/${draftPayload.draft_id}/paper-instances`,
+    )
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toEqual({
+      operation_token: '3'.repeat(32),
+      expected_draft_revision: 1,
+      student_id: 'SYN-S01',
+      context_window_tokens: 32768,
     })
   })
 })

@@ -44,6 +44,7 @@ from question_bank.recommendation.practice_plan_service import PracticePlanServi
 from question_bank.recommendation.personalized import (
     PersonalizedRecommendationModule,
 )
+from question_bank.personalized_papers import PersonalizedPaperModule
 from question_bank.services.question_read_service import QuestionBankReadService
 from question_bank.services.question_read_service import (
     QuestionBankSnapshotError,
@@ -309,6 +310,14 @@ def get_personalized_recommendation_module(
 ) -> PersonalizedRecommendationModule:
     paths = get_path_manager()
     return PersonalizedRecommendationModule(
+        db_path=paths.qb_db_path,
+        data_root=paths.data_root,
+    )
+
+
+def get_personalized_paper_module() -> PersonalizedPaperModule:
+    paths = get_path_manager()
+    return PersonalizedPaperModule(
         db_path=paths.qb_db_path,
         data_root=paths.data_root,
     )
