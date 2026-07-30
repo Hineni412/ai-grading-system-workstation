@@ -180,7 +180,7 @@ class MaterialVersionResponse(BaseModel):
     content_sha256: str
     safe_filename: str
     size_bytes: int
-    modified_ns: int | None
+    modified_ns: str | None
     unit_count: int | None
     inspection_status: str
     availability: str
@@ -190,6 +190,9 @@ class MaterialVersionResponse(BaseModel):
     def from_domain(cls, item: MaterialVersion) -> "MaterialVersionResponse":
         payload = asdict(item)
         payload["safe_filename"] = payload.pop("file_name")
+        payload["modified_ns"] = (
+            str(item.modified_ns) if item.modified_ns is not None else None
+        )
         return cls.model_validate(payload)
 
 

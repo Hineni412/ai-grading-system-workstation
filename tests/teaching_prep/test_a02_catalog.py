@@ -1,13 +1,35 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
+from urllib.parse import quote
 
 import pytest
+from fastapi import FastAPI
+from fastapi.responses import JSONResponse
+from fastapi.testclient import TestClient
 
+from backend.api.app import ApiError
+from backend.teaching_prep.api import create_router
 from backend.teaching_prep.application import TeachingPrepService
 from backend.teaching_prep.domain.errors import TeachingPrepConflictError
 
 from .test_a01_foundation import _migrated_service
+
+
+def _api_client(service: TeachingPrepService) -> TestClient:
+    app = FastAPI()
+    app.state.workspace_services = {"teaching-prep": service}
+    app.include_router(create_router(), prefix="/api/teaching-prep")
+
+    @app.exception_handler(ApiError)
+    async def handle_api_error(_request, exc: ApiError) -> JSONResponse:
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={"error": {"code": exc.code, "message": exc.message}},
+        )
+
+    return TestClient(app)
 
 
 def _lesson_tree(
@@ -180,3 +202,83 @@ def test_missing_material_requires_explicit_relocation_and_preserves_versions(
     assert newer.source_id == first.source_id
     versions = service.list_material_versions(search="合成参考")
     assert {item.id for item in versions} == {first.id, newer.id}
+
+
+def test_teacher_can_import_and_relocate_a_controlled_material_copy(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _paths_value, service = _migrated_service(tmp_path, monkeypatch)
+    client = _api_client(service)
+    headers = {
+        "content-type": "application/pdf",
+        "x-upload-filename": quote("合成教材.pdf"),
+        "x-display-name": quote("合成教材"),
+        "x-request-token": "material-upload-0001",
+        "x-file-modified-ms": "1760000000000",
+    }
+
+    imported = client.post(
+        "/api/teaching-prep/materials/import-copy",
+        headers=headers,
+        content=b"%PDF-1.7 controlled synthetic material",
+    )
+
+    assert imported.status_code == 201
+    payload = imported.json()
+    assert payload["safe_filename"] == "合成教材.pdf"
+    assert payload["availability"] == "available"
+    assert str(tmp_path) not in json.dumps(payload, ensure_ascii=False)
+    stored = service.catalog.get_material_location(payload["id"])
+    assert stored.is_relative_to(service.paths["materials"])
+    assert stored.read_bytes() == b"%PDF-1.7 controlled synthetic material"
+
+    stored.unlink()
+    assert service.refresh_material_availability(
+        payload["id"]
+    ).availability == "needs_relocation"
+    relocated = client.post(
+        f"/api/teaching-prep/materials/{payload['id']}/relocate-copy",
+        headers={**headers, "x-request-token": "material-upload-0002"},
+        content=b"%PDF-1.7 controlled synthetic material",
+    )
+
+    assert relocated.status_code == 200
+    assert relocated.json()["id"] == payload["id"]
+    assert relocated.json()["availability"] == "available"
+    assert service.catalog.get_material_location(payload["id"]).is_file()
+
+
+def test_material_import_rejects_path_metadata_and_oversized_body(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _paths_value, service = _migrated_service(tmp_path, monkeypatch)
+    client = _api_client(service)
+    base_headers = {
+        "content-type": "application/pdf",
+        "x-display-name": "unsafe",
+        "x-request-token": "material-upload-unsafe",
+    }
+
+    unsafe = client.post(
+        "/api/teaching-prep/materials/import-copy",
+        headers={
+            **base_headers,
+            "x-upload-filename": quote("../outside.pdf"),
+        },
+        content=b"%PDF-1.7 synthetic",
+    )
+    too_large = client.post(
+        "/api/teaching-prep/materials/import-copy",
+        headers={
+            **base_headers,
+            "x-upload-filename": "large.pdf",
+            "content-length": str(256 * 1024 * 1024 + 1),
+        },
+        content=b"small test body",
+    )
+
+    assert unsafe.status_code == 422
+    assert too_large.status_code == 413
+    assert list(service.paths["temp"].glob("material-upload-*")) == []

@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+from pathlib import Path
+from urllib.parse import unquote
+from uuid import uuid4
+
 from fastapi import APIRouter, Depends, Query, Request, Response, status
 from fastapi.responses import FileResponse, JSONResponse
 
@@ -75,6 +79,8 @@ from .schemas import (
     UpClassPackageListResponse,
     UpClassPackageResponse,
 )
+
+_MAX_MATERIAL_UPLOAD_BYTES = 256 * 1024 * 1024
 
 
 def get_teaching_prep_service(request: Request) -> TeachingPrepService:
@@ -320,6 +326,45 @@ def create_router() -> APIRouter:
                 for item in items
             ]
         )
+
+    @router.post(
+        "/materials/import-copy",
+        response_model=MaterialVersionResponse,
+        status_code=status.HTTP_201_CREATED,
+    )
+    async def import_material_copy(
+        request: Request,
+        response: Response,
+        service: TeachingPrepService = Depends(get_teaching_prep_service),
+    ) -> MaterialVersionResponse:
+        item, created = await _receive_material_copy(
+            request=request,
+            service=service,
+            relocate_version_id=None,
+        )
+        if not created:
+            response.status_code = status.HTTP_200_OK
+        return MaterialVersionResponse.from_domain(item)
+
+    @router.post(
+        "/materials/{material_version_id}/relocate-copy",
+        response_model=MaterialVersionResponse,
+        status_code=status.HTTP_201_CREATED,
+    )
+    async def relocate_material_copy(
+        material_version_id: str,
+        request: Request,
+        response: Response,
+        service: TeachingPrepService = Depends(get_teaching_prep_service),
+    ) -> MaterialVersionResponse:
+        item, created = await _receive_material_copy(
+            request=request,
+            service=service,
+            relocate_version_id=material_version_id,
+        )
+        if not created:
+            response.status_code = status.HTTP_200_OK
+        return MaterialVersionResponse.from_domain(item)
 
     @router.post(
         "/materials/{material_version_id}/parse",
@@ -1299,6 +1344,61 @@ def create_router() -> APIRouter:
         )
 
     return router
+
+
+async def _receive_material_copy(
+    *,
+    request: Request,
+    service: TeachingPrepService,
+    relocate_version_id: str | None,
+):
+    filename = unquote(str(request.headers.get("x-upload-filename") or ""))
+    display_name = unquote(
+        str(request.headers.get("x-display-name") or "")
+    ).strip()
+    request_token = str(request.headers.get("x-request-token") or "")
+    try:
+        declared_size = int(request.headers.get("content-length") or 0)
+        modified_ms = int(request.headers.get("x-file-modified-ms") or 0)
+    except ValueError as exc:
+        raise _api_error(
+            TeachingPrepValidationError("material upload metadata is invalid")
+        ) from exc
+    if declared_size > _MAX_MATERIAL_UPLOAD_BYTES:
+        raise _new_api_error(
+            413,
+            "teaching_prep_material_too_large",
+            "Teaching material exceeds the 256 MB limit",
+        )
+    suffix = Path(filename).suffix.casefold()
+    upload = (
+        service.paths["temp"] / f"material-upload-{uuid4().hex}{suffix}.part"
+    )
+    received = 0
+    try:
+        with upload.open("xb") as handle:
+            async for chunk in request.stream():
+                received += len(chunk)
+                if received > _MAX_MATERIAL_UPLOAD_BYTES:
+                    raise _new_api_error(
+                        413,
+                        "teaching_prep_material_too_large",
+                        "Teaching material exceeds the 256 MB limit",
+                    )
+                handle.write(chunk)
+        try:
+            return service.import_material_copy(
+                request_token=request_token,
+                staged_path=upload,
+                original_filename=filename,
+                display_name=display_name or Path(filename).stem,
+                modified_ns=modified_ms * 1_000_000 if modified_ms > 0 else None,
+                relocate_version_id=relocate_version_id,
+            )
+        except Exception as exc:
+            raise _api_error(exc) from exc
+    finally:
+        upload.unlink(missing_ok=True)
 
 
 def _api_error(exc: Exception) -> Exception:
