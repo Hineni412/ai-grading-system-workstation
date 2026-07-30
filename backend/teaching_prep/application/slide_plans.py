@@ -6,6 +6,9 @@ from collections.abc import Mapping, Sequence
 from copy import deepcopy
 from typing import Any
 
+from backend.teaching_prep.application.preferences import (
+    resolve_teaching_preferences,
+)
 from backend.teaching_prep.domain.errors import TeachingPrepValidationError
 from backend.teaching_prep.domain.models import (
     LessonDraftVersion,
@@ -70,7 +73,9 @@ def build_slide_plan_payload(
             "reference PPT has no frozen slide units"
         )
     operations: list[dict[str, object]] = []
-    preferences = _mapping(pack.payload.get("preparation_preferences"))
+    preferences = resolve_teaching_preferences(
+        pack.payload.get("preparation_preferences")
+    )
     adaptations = {
         str(item.get("slide_ref") or ""): item
         for item in _object_list(
@@ -143,10 +148,12 @@ def build_slide_plan_payload(
             and preferences.get("label_textbook_pages") is True
             and textbook_refs
         ):
+            label_text = _textbook_page_label(pack.payload, textbook_refs)
+            if label_text is None:
+                continue
             label_position, exact_placement = _page_label_position(
                 _mapping(slide.get("object_summary"))
             )
-            label_text = _textbook_page_label(textbook_refs)
             operations.append(
                 _operation(
                     draft.id,
@@ -281,43 +288,48 @@ def build_slide_plan_payload(
                     },
                 )
             )
-            operations.append(
-                _operation(
-                    draft.id,
-                    kind="insert_static_image",
-                    target_key=f"{source_ref}:image:{insert_position}",
-                    target={
-                        "target_kind": "new_object",
-                        "slide_signature": None,
-                        "new_slide_operation_id": add_id,
-                        "generated_page_number": insert_position,
-                        "material_unit_id": region.get("material_unit_id"),
-                        "wps_object_id": None,
-                        "object_type": "static_image",
-                        "position": {
-                            "x": 0.08,
-                            "y": 0.14,
-                            "width": 0.84,
-                            "height": 0.72,
-                        },
-                        "content_summary": recommendation.get("title"),
-                        "match_strategy": "new_object",
-                    },
-                    reason="插入教师已确认范围内的题目裁图。",
-                    citations=[source_ref],
-                    planned_minutes=0,
-                    risk="low",
-                    execution_mode="automatic",
-                    support_note="静态图片来源已冻结，未绑定对象动画。",
-                    details={
-                        "asset_ref": region.get("preview_url"),
-                        "asset_source_sha256": region.get(
-                            "source_version_sha256"
+            for region_index, region in enumerate(regions):
+                operations.append(
+                    _operation(
+                        draft.id,
+                        kind="insert_static_image",
+                        target_key=(
+                            f"{source_ref}:image:{insert_position}:"
+                            f"{region_index + 1}"
                         ),
-                        "has_object_animation": False,
-                    },
+                        target={
+                            "target_kind": "new_object",
+                            "slide_signature": None,
+                            "new_slide_operation_id": add_id,
+                            "generated_page_number": insert_position,
+                            "material_unit_id": region.get("material_unit_id"),
+                            "wps_object_id": None,
+                            "object_type": "static_image",
+                            "position": _supplement_image_position(
+                                region_index,
+                                len(regions),
+                            ),
+                            "content_summary": (
+                                f"{recommendation.get('title')} "
+                                f"（第 {region_index + 1}/{len(regions)} 部分）"
+                            ),
+                            "match_strategy": "new_object",
+                        },
+                        reason="插入教师已确认范围内的完整题目裁图。",
+                        citations=[source_ref],
+                        planned_minutes=0,
+                        risk="low",
+                        execution_mode="automatic",
+                        support_note="静态图片来源已冻结，未绑定对象动画。",
+                        details={
+                            "asset_ref": region.get("preview_url"),
+                            "asset_source_sha256": region.get(
+                                "source_version_sha256"
+                            ),
+                            "has_object_animation": False,
+                        },
+                    )
                 )
-            )
             insert_position += 1
         elif source_ref in question_map:
             operations.append(
@@ -767,13 +779,66 @@ def _overlap_area(
     return width * height
 
 
-def _textbook_page_label(refs: Sequence[str]) -> str:
+def _textbook_page_label(
+    payload: Mapping[str, object],
+    refs: Sequence[str],
+) -> str | None:
+    printed_pages: dict[str, int] = {}
+    for raw_material in _object_list(payload.get("materials")):
+        material = _mapping(raw_material)
+        if material.get("purpose") != "textbook":
+            continue
+        link_id = str(material.get("link_id") or "")
+        for raw_unit in _object_list(material.get("units")):
+            unit = _mapping(raw_unit)
+            unit_index = unit.get("unit_index")
+            summary = _mapping(unit.get("object_summary"))
+            page_number = summary.get("printed_page_number")
+            source = summary.get("printed_page_number_source")
+            if (
+                link_id
+                and isinstance(unit_index, int)
+                and isinstance(page_number, int)
+                and not isinstance(page_number, bool)
+                and 1 <= page_number <= 9_999
+                and source
+                in {"visible_footer_or_header", "teacher_confirmed"}
+            ):
+                printed_pages[
+                    f"material:{link_id}:unit:{unit_index}"
+                ] = page_number
     pages = [
-        ref.rsplit(":unit:", 1)[1]
+        printed_pages[ref]
         for ref in refs
-        if ":unit:" in ref
+        if ref in printed_pages
     ]
-    return "教材 P" + "、".join(dict.fromkeys(pages))
+    if not pages:
+        return None
+    return "教材 P" + "、".join(
+        str(page) for page in dict.fromkeys(pages)
+    )
+
+
+def _supplement_image_position(
+    index: int,
+    count: int,
+) -> dict[str, float]:
+    if count <= 1:
+        return {"x": 0.08, "y": 0.14, "width": 0.84, "height": 0.72}
+    columns = 2 if count >= 3 else 1
+    rows = (count + columns - 1) // columns
+    gap_x = 0.03
+    gap_y = 0.04
+    width = (0.84 - gap_x * (columns - 1)) / columns
+    height = (0.72 - gap_y * (rows - 1)) / rows
+    row = index // columns
+    column = index % columns
+    return {
+        "x": 0.08 + column * (width + gap_x),
+        "y": 0.14 + row * (height + gap_y),
+        "width": width,
+        "height": height,
+    }
 
 
 def _unsupported(

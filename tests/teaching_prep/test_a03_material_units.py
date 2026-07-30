@@ -20,10 +20,11 @@ from .test_a02_catalog import _lesson_tree
 def _pdf(path: Path, pages: list[str]) -> Path:
     document = fitz.open()
     try:
-        for text in pages:
+        for index, text in enumerate(pages, start=1):
             page = document.new_page(width=640, height=900)
             if text:
                 page.insert_text((48, 64), text)
+                page.insert_text((315, 870), str(index))
         document.save(path)
     finally:
         document.close()
@@ -103,6 +104,10 @@ def test_pdf_pages_render_extract_text_and_keep_formula_review_flag(
     assert len(units) == 2
     assert units[0].text_status == "embedded"
     assert units[0].formula_review_required is True
+    assert units[0].object_summary["printed_page_number"] == 1
+    assert units[0].object_summary["printed_page_number_source"] == (
+        "visible_footer_or_header"
+    )
     assert units[1].text_status == "empty"
     assert all(unit.preview_url.startswith("/api/teaching-prep/") for unit in units)
     preview = service.material_preview_path(units[0].id)
@@ -137,6 +142,34 @@ def test_blank_page_accepts_manual_label_and_preview_cache_rebuilds(
     assert labelled.formula_review_required is True
     assert rebuilt.is_file()
     assert service.list_material_units(version.id)[0].title == "人工页码标签"
+
+
+def test_pdf_printed_page_number_is_not_the_file_page_sequence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    document = fitz.open()
+    path = tmp_path / "textbook-with-cover.pdf"
+    try:
+        document.new_page(width=640, height=900)
+        page = document.new_page(width=640, height=900)
+        page.insert_text((48, 64), "Pythagorean theorem")
+        page.insert_text((315, 870), "9")
+        document.save(path)
+    finally:
+        document.close()
+    _paths_value, service = _migrated_service(tmp_path, monkeypatch)
+    version = _register(
+        service,
+        path,
+        token="material-a03-printed-page",
+        name="含封面的合成教材",
+    )
+
+    units = service.parse_material_version(version.id)
+
+    assert units[1].unit_index == 2
+    assert units[1].object_summary["printed_page_number"] == 9
 
 
 def test_pptx_slides_expose_titles_objects_and_structural_previews(

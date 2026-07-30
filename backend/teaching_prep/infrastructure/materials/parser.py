@@ -72,6 +72,21 @@ class MaterialParser:
             for index, page in enumerate(document, start=1):
                 text = str(page.get_text() or "").strip()
                 pixmap = page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5), alpha=False)
+                printed_page_number = _visible_printed_page_number(page)
+                object_summary: dict[str, object] = {
+                    "preview_kind": "rendered",
+                    "width": int(pixmap.width),
+                    "height": int(pixmap.height),
+                }
+                if printed_page_number is not None:
+                    object_summary.update(
+                        {
+                            "printed_page_number": printed_page_number,
+                            "printed_page_number_source": (
+                                "visible_footer_or_header"
+                            ),
+                        }
+                    )
                 units.append(
                     ParsedMaterialUnit(
                         unit_kind="pdf_page",
@@ -82,11 +97,7 @@ class MaterialParser:
                         formula_review_required=bool(
                             text and _FORMULA_HINT.search(text)
                         ),
-                        object_summary={
-                            "preview_kind": "rendered",
-                            "width": int(pixmap.width),
-                            "height": int(pixmap.height),
-                        },
+                        object_summary=object_summary,
                         preview_png=pixmap.tobytes("png"),
                     )
                 )
@@ -269,6 +280,38 @@ def _shape_rectangles(
         y1 = max(y0 + 1, min(539, round((top + height) / slide_height * 540)))
         rectangles.append((kind, (x0, y0, x1, y1)))
     return rectangles
+
+
+def _visible_printed_page_number(page: object) -> int | None:
+    rect = getattr(page, "rect", None)
+    height = float(getattr(rect, "height", 0) or 0)
+    if height <= 0:
+        return None
+    try:
+        blocks = page.get_text("blocks")
+    except Exception:
+        return None
+    candidates: set[int] = set()
+    for block in blocks:
+        if not isinstance(block, (tuple, list)) or len(block) < 5:
+            continue
+        try:
+            y0 = float(block[1])
+            y1 = float(block[3])
+        except (TypeError, ValueError):
+            continue
+        if y1 > height * 0.14 and y0 < height * 0.86:
+            continue
+        value = str(block[4] or "").strip()
+        match = re.fullmatch(
+            r"[—\-·\s]*(?:第\s*)?([1-9]\d{0,3})(?:\s*页)?[—\-·\s]*",
+            value,
+        )
+        if match:
+            candidates.add(int(match.group(1)))
+    if len(candidates) != 1:
+        return None
+    return next(iter(candidates))
 
 
 def _first_line(text: str) -> str | None:

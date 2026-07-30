@@ -36,6 +36,7 @@ from backend.teaching_prep.application.lesson_drafts import (
 from backend.teaching_prep.application.preferences import (
     DEFAULT_TEACHING_PREFERENCES,
     normalize_teaching_preferences,
+    resolve_teaching_preferences,
 )
 from backend.teaching_prep.application.slide_plans import (
     build_slide_plan_payload,
@@ -1256,9 +1257,15 @@ class TeachingPrepService:
                     raise TeachingPrepValidationError(
                         "lesson model is unavailable or not authorized"
                     )
+                model_payload = deepcopy(pack.payload)
+                model_payload["preparation_preferences"] = (
+                    resolve_teaching_preferences(
+                        pack.payload.get("preparation_preferences")
+                    )
+                )
                 raw = adapter.generate(
                     operation_id=clean_operation_id,
-                    resource_pack=pack.payload,
+                    resource_pack=model_payload,
                 )
             draft = validate_draft_payload(raw, pack)
             if clean_mode == "model" and not draft.get("slide_adaptations"):
