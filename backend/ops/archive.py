@@ -222,6 +222,12 @@ def _normalized_member(name: str, allowed_roots: set[str]) -> tuple[str, ...]:
         raise OpsArchiveInvalid("unsafe_member")
     if parts[0] not in allowed_roots:
         raise OpsArchiveInvalid("unknown_root")
+    if (
+        parts[0].casefold() == "user_data"
+        and len(parts) > 1
+        and parts[1].casefold() == "workspaces"
+    ):
+        raise OpsArchiveInvalid("workspace_data_not_allowed")
     return tuple(parts)
 
 

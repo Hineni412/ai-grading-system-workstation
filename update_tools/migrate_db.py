@@ -474,13 +474,23 @@ def run_migrations(
     """
     targets = _get_targets()
 
-    if target_name not in targets:
+    if (
+        target_name not in targets
+        and (db_path is None or migrations_dir is None)
+    ):
         return MigrationReport(
             target=target_name, db_path="",
             error=f"未知目标: {target_name}，可选: {', '.join(targets)}"
         )
 
-    config = targets[target_name]
+    config = (
+        targets[target_name]
+        if target_name in targets
+        else {
+            "db_path": Path(db_path),
+            "migrations_dir": Path(migrations_dir),
+        }
+    )
     has_path_override = db_path is not None
     db_path = Path(db_path) if db_path is not None else config["db_path"]
     migrations_dir = (
@@ -761,10 +771,23 @@ def get_migration_status(
 ) -> dict[str, Any]:
     """获取指定数据库的迁移状态。"""
     targets = _get_targets()
-    if target_name not in targets:
+    if (
+        target_name not in targets
+        and (
+            db_path_override is None
+            or migrations_dir_override is None
+        )
+    ):
         return {"error": f"未知目标: {target_name}"}
 
-    config = targets[target_name]
+    config = (
+        targets[target_name]
+        if target_name in targets
+        else {
+            "db_path": Path(db_path_override),
+            "migrations_dir": Path(migrations_dir_override),
+        }
+    )
     db_path = (
         Path(db_path_override)
         if db_path_override is not None

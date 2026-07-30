@@ -201,6 +201,8 @@ def _safe_restore_destination(
         return None
 
     if parts[0] == "user_data":
+        if len(parts) > 1 and parts[1].casefold() == "workspaces":
+            return None
         dest = data_root.joinpath(*parts[1:])
         return dest if _is_relative_to(dest, data_root) else None
     if parts[0] == "config":
