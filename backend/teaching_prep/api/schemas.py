@@ -5,6 +5,9 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from backend.teaching_prep.application.preferences import (
+    DEFAULT_TEACHING_PREFERENCES,
+)
 from backend.teaching_prep.domain.models import (
     ClassVariant,
     CurriculumEdition,
@@ -21,6 +24,7 @@ from backend.teaching_prep.domain.models import (
     PptxVersion,
     PostLessonReview,
     UpClassPackage,
+    TeachingPreferences,
 )
 from backend.teaching_prep.domain.states import LessonPreparationState
 
@@ -32,6 +36,44 @@ class TeachingPrepStatusResponse(BaseModel):
     real_model_enabled: bool
     real_wps_enabled: bool
     wps_execution_available: bool
+
+
+class TeachingPreferencesPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal[1] = 1
+    label_textbook_pages: bool
+    page_label_font_size: Literal[28] = 28
+    trim_excess_practice: bool
+    practice_trim_level: Literal["light", "moderate", "strong"]
+    preserve_teaching_examples: bool
+    prefer_short_practice: bool
+    supplement_from_references: bool
+    supplement_question_limit: int = Field(ge=0, le=3)
+    supplement_as_source_image: bool
+    prioritize_homework_workbook: bool
+    avoid_direct_homework_copy: bool
+    avoid_ppt_duplicates: bool
+
+
+class TeachingPreferencesResponse(BaseModel):
+    revision: int
+    payload: TeachingPreferencesPayload
+    updated_at: str
+
+    @classmethod
+    def from_domain(
+        cls,
+        item: TeachingPreferences,
+    ) -> "TeachingPreferencesResponse":
+        return cls.model_validate(asdict(item))
+
+
+class UpdateTeachingPreferencesRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    expected_revision: int = Field(gt=0)
+    payload: TeachingPreferencesPayload
 
 
 class CreatePreparationRequest(BaseModel):
@@ -467,6 +509,11 @@ class FreezeResourcePackRequest(BaseModel):
     question_ids: list[int] = Field(default_factory=list, max_length=500)
     assessment_ids: list[int] = Field(default_factory=list, max_length=50)
     knowledge_scope: list[str] = Field(default_factory=list, max_length=100)
+    preparation_preferences: TeachingPreferencesPayload = Field(
+        default_factory=lambda: TeachingPreferencesPayload.model_validate(
+            DEFAULT_TEACHING_PREFERENCES
+        )
+    )
 
 
 class ResourcePackResponse(BaseModel):
@@ -510,6 +557,7 @@ class LessonDraftPreflightResponse(BaseModel):
     data_scope: dict[str, Any]
     references: list[dict[str, str]]
     missing_and_uncertain_count: int
+    preparation_preferences: TeachingPreferencesPayload
 
 
 class GenerateLessonDraftRequest(BaseModel):

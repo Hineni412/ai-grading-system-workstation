@@ -54,6 +54,7 @@ class ResourcePackRepository:
         reference_ppt_intents: Mapping[str, str],
         question_evidence: dict[str, object],
         assessment_evidence: dict[str, object],
+        preparation_preferences: dict[str, object],
     ) -> tuple[ResourcePackVersion, bool]:
         with self._database.connect(immediate=True) as connection:
             existing = connection.execute(
@@ -95,6 +96,7 @@ class ResourcePackRepository:
                     "question": question_evidence,
                     "assessment": assessment_evidence,
                 },
+                "preparation_preferences": preparation_preferences,
                 "missing_and_uncertain": missing,
             }
             payload_json = _canonical_json(payload)

@@ -71,6 +71,8 @@ from .schemas import (
     SlidePlanPreviewResponse,
     SlidePlanResponse,
     TeachingPrepStatusResponse,
+    TeachingPreferencesResponse,
+    UpdateTeachingPreferencesRequest,
     UpdateLessonNodeRequest,
     UpdateMaterialLinkRequest,
     UpdateExerciseCandidateRequest,
@@ -103,6 +105,36 @@ def create_router() -> APIRouter:
         service: TeachingPrepService = Depends(get_teaching_prep_service),
     ) -> TeachingPrepStatusResponse:
         return TeachingPrepStatusResponse.model_validate(service.status())
+
+    @router.get(
+        "/preferences",
+        response_model=TeachingPreferencesResponse,
+    )
+    def get_teaching_preferences(
+        service: TeachingPrepService = Depends(get_teaching_prep_service),
+    ) -> TeachingPreferencesResponse:
+        try:
+            item = service.get_teaching_preferences()
+        except Exception as exc:
+            raise _api_error(exc) from exc
+        return TeachingPreferencesResponse.from_domain(item)
+
+    @router.patch(
+        "/preferences",
+        response_model=TeachingPreferencesResponse,
+    )
+    def update_teaching_preferences(
+        payload: UpdateTeachingPreferencesRequest,
+        service: TeachingPrepService = Depends(get_teaching_prep_service),
+    ) -> TeachingPreferencesResponse:
+        try:
+            item = service.update_teaching_preferences(
+                expected_revision=payload.expected_revision,
+                payload=payload.payload.model_dump(mode="python"),
+            )
+        except Exception as exc:
+            raise _api_error(exc) from exc
+        return TeachingPreferencesResponse.from_domain(item)
 
     @router.get(
         "/preparations",
@@ -714,6 +746,9 @@ def create_router() -> APIRouter:
                 question_ids=payload.question_ids,
                 assessment_ids=payload.assessment_ids,
                 knowledge_scope=payload.knowledge_scope,
+                preparation_preferences=payload.preparation_preferences.model_dump(
+                    mode="python"
+                ),
             )
         except Exception as exc:
             raise _api_error(exc) from exc

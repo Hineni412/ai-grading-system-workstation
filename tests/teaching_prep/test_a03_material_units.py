@@ -159,6 +159,7 @@ def test_pptx_slides_expose_titles_objects_and_structural_previews(
     ]
     assert units[0].object_summary["preview_kind"] == "structural"
     assert units[0].object_summary["object_count"] == 1
+    assert units[0].object_summary["occupied_boxes"]
     assert units[1].formula_review_required is True
 
 

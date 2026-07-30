@@ -176,6 +176,19 @@ try {
                     $box.Height
                 )
                 $shape.TextFrame.TextRange.Text = [string]$operation.details.text
+                if ($null -ne $operation.details.font_size) {
+                    $fontSize = [int]$operation.details.font_size
+                    if (
+                        $operation.details.semantic_role -eq 'textbook_page_label' `
+                        -and $fontSize -ne 28
+                    ) {
+                        throw 'Textbook page label font size must be 28'
+                    }
+                    if ($fontSize -lt 8 -or $fontSize -gt 96) {
+                        throw 'Text box font size is outside the safe range'
+                    }
+                    $shape.TextFrame.TextRange.Font.Size = $fontSize
+                }
             }
             'add_slide' {
                 $requested = [int]$operation.target.generated_page_number

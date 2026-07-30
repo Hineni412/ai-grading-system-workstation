@@ -30,6 +30,8 @@ import {
   type ResourcePack,
   type ResourcePackStatus,
   type TeachingPrepModuleStatus,
+  type TeachingPreferences,
+  type TeachingPreferencesPayload,
   type UpClassPackage,
 } from '../api/catalog'
 
@@ -66,6 +68,7 @@ export const useTeachingPrepCatalogStore = defineStore(
     const selectedSlidePlanId = ref<string | null>(null)
     const slidePlanPreview = ref<SlidePlanPreview | null>(null)
     const moduleStatus = ref<TeachingPrepModuleStatus | null>(null)
+    const teachingPreferences = ref<TeachingPreferences | null>(null)
     const pptxExecutions = ref<PptxExecution[]>([])
     const latestPptxVersion = ref<PptxVersion | null>(null)
     const classVariants = ref<ClassVariant[]>([])
@@ -98,13 +101,20 @@ export const useTeachingPrepCatalogStore = defineStore(
       loadState.value = 'loading'
       errorMessage.value = ''
       try {
-        const [nextStatus, nextCurricula, nextMaterials] = await Promise.all([
+        const [
+          nextStatus,
+          nextPreferences,
+          nextCurricula,
+          nextMaterials,
+        ] = await Promise.all([
           teachingPrepCatalogApi.status(controller.signal),
+          teachingPrepCatalogApi.getTeachingPreferences(controller.signal),
           teachingPrepCatalogApi.listCurricula(controller.signal),
           teachingPrepCatalogApi.listMaterials(controller.signal),
         ])
         if (controller.signal.aborted) return
         moduleStatus.value = nextStatus
+        teachingPreferences.value = nextPreferences
         curricula.value = nextCurricula
         materials.value = nextMaterials
         const currentStillExists = nextCurricula.some(
@@ -544,6 +554,26 @@ export const useTeachingPrepCatalogStore = defineStore(
         if (nextPacks[0]) {
           await selectResourcePack(nextPacks[0])
         }
+      } catch (error) {
+        errorMessage.value = safeMessage(error)
+        throw error
+      } finally {
+        saveState.value = 'idle'
+      }
+    }
+
+    async function saveTeachingPreferences(
+      payload: TeachingPreferencesPayload,
+    ): Promise<void> {
+      const current = teachingPreferences.value
+      if (current === null) {
+        throw new Error('个人备课偏好尚未加载')
+      }
+      saveState.value = 'saving'
+      errorMessage.value = ''
+      try {
+        teachingPreferences.value = await teachingPrepCatalogApi
+          .updateTeachingPreferences(current, payload)
       } catch (error) {
         errorMessage.value = safeMessage(error)
         throw error
@@ -1068,6 +1098,7 @@ export const useTeachingPrepCatalogStore = defineStore(
       selectedSlidePlanId,
       slidePlanPreview,
       moduleStatus,
+      teachingPreferences,
       pptxExecutions,
       latestPptxVersion,
       classVariants,
@@ -1094,6 +1125,7 @@ export const useTeachingPrepCatalogStore = defineStore(
       loadAvailableAssessments,
       loadAvailableQuestions,
       freezeResourcePack,
+      saveTeachingPreferences,
       selectResourcePack,
       prepareLessonDraft,
       generateLessonDraft,

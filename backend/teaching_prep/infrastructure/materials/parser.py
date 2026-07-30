@@ -222,6 +222,15 @@ def _pptx_slide_unit(
             "preview_kind": "structural",
             "object_count": sum(types.values()),
             "object_types": dict(sorted(types.items())),
+            "occupied_boxes": [
+                {
+                    "x": round(box[0] / 960, 6),
+                    "y": round(box[1] / 540, 6),
+                    "width": round((box[2] - box[0]) / 960, 6),
+                    "height": round((box[3] - box[1]) / 540, 6),
+                }
+                for _kind, box in rectangles[:200]
+            ],
         },
         preview_png=output.getvalue(),
     )

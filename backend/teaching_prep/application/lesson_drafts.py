@@ -29,13 +29,22 @@ _RECOMMENDATION_ACTIONS = {
     "exclude",
     "replace_shorter",
 }
-_TOP_LEVEL_KEYS = {
+_REQUIRED_TOP_LEVEL_KEYS = {
     "knowledge_objectives",
     "focus_points",
     "anticipated_difficulties",
     "lesson_flow",
     "exercise_recommendations",
     "uncertainties",
+}
+_OPTIONAL_TOP_LEVEL_KEYS = {"slide_adaptations"}
+_SLIDE_ROLES = {
+    "introduction",
+    "explanation",
+    "example",
+    "practice",
+    "summary",
+    "other",
 }
 _EXPLICIT_LOCATOR = re.compile(
     r"第\s*(?P<number>\d{1,6})\s*(?P<kind>页|张|题)"
@@ -80,6 +89,9 @@ def draft_preflight(
         ],
         "missing_and_uncertain_count": len(
             _list(payload.get("missing_and_uncertain"))
+        ),
+        "preparation_preferences": _mapping(
+            payload.get("preparation_preferences")
         ),
     }
 
@@ -183,9 +195,27 @@ def build_local_template(
             )
     exercise_recommendations: list[dict[str, object]] = []
     included = 0
+    preferences = _mapping(payload.get("preparation_preferences"))
+    supplement_enabled = bool(
+        preferences.get("supplement_from_references", True)
+    )
+    raw_limit = preferences.get("supplement_question_limit", 2)
+    supplement_limit = (
+        int(raw_limit)
+        if isinstance(raw_limit, int) and not isinstance(raw_limit, bool)
+        else 2
+    )
     for source_ref, item in exercise_sources + question_sources:
         selection = str(item.get("selection_status") or "")
-        action = "include" if selection != "backup" and included < 3 else "backup"
+        action = (
+            "include"
+            if (
+                supplement_enabled
+                and selection != "backup"
+                and included < supplement_limit
+            )
+            else "backup"
+        )
         if action == "include":
             included += 1
         title = str(
@@ -248,6 +278,7 @@ def build_local_template(
         "anticipated_difficulties": anticipated,
         "lesson_flow": lesson_flow,
         "exercise_recommendations": exercise_recommendations,
+        "slide_adaptations": _local_slide_adaptations(payload),
         "uncertainties": uncertainties,
     }
 
@@ -258,7 +289,11 @@ def validate_draft_payload(
 ) -> dict[str, object]:
     if not isinstance(value, Mapping):
         raise TeachingPrepValidationError("lesson draft must be an object")
-    if set(value) != _TOP_LEVEL_KEYS:
+    keys = set(value)
+    if (
+        not _REQUIRED_TOP_LEVEL_KEYS.issubset(keys)
+        or keys - _REQUIRED_TOP_LEVEL_KEYS - _OPTIONAL_TOP_LEVEL_KEYS
+    ):
         raise TeachingPrepValidationError(
             "lesson draft has missing or unsupported sections"
         )
@@ -289,14 +324,229 @@ def validate_draft_payload(
             allowed_refs,
             allowed_exercises,
         ),
+        "slide_adaptations": _slide_adaptations(
+            value.get("slide_adaptations", []),
+            pack,
+            allowed_refs,
+        ),
         "uncertainties": _strings(
             value["uncertainties"],
             maximum=100,
             item_maximum=500,
         ),
     }
+    preferences = _mapping(pack.payload.get("preparation_preferences"))
+    supplement_enabled = bool(
+        preferences.get("supplement_from_references", True)
+    )
+    raw_limit = preferences.get("supplement_question_limit", 2)
+    supplement_limit = (
+        int(raw_limit)
+        if isinstance(raw_limit, int) and not isinstance(raw_limit, bool)
+        else 2
+    )
+    included_count = sum(
+        1
+        for raw in _list(result.get("exercise_recommendations"))
+        if _mapping(raw).get("action") == "include"
+    )
+    if included_count > supplement_limit or (
+        not supplement_enabled and included_count
+    ):
+        raise TeachingPrepValidationError(
+            "draft exceeds the frozen supplement preference"
+        )
     _validate_explicit_locators(result, pack)
     return result
+
+
+def _local_slide_adaptations(
+    payload: Mapping[str, object],
+) -> list[dict[str, object]]:
+    preferences = _mapping(payload.get("preparation_preferences"))
+    trim_enabled = bool(preferences.get("trim_excess_practice", True))
+    preserve_examples = bool(preferences.get("preserve_teaching_examples", True))
+    prefer_short = bool(preferences.get("prefer_short_practice", True))
+    trim_level = str(preferences.get("practice_trim_level") or "moderate")
+    threshold = {"light": 220, "moderate": 140, "strong": 80}.get(
+        trim_level,
+        140,
+    )
+    textbook_units = _material_units(payload, "textbook")
+    result: list[dict[str, object]] = []
+    for raw_material in _list(payload.get("materials")):
+        material = _mapping(raw_material)
+        if material.get("purpose") != "reference_ppt":
+            continue
+        link_id = str(material.get("link_id") or "")
+        teacher_delete = material.get("teacher_intent") == "candidate_delete"
+        units = [_mapping(item) for item in _list(material.get("units"))]
+        tail_start = max(1, round(len(units) * 0.6))
+        for position, unit in enumerate(units, start=1):
+            unit_index = unit.get("unit_index")
+            if not link_id or not isinstance(unit_index, int):
+                continue
+            slide_ref = f"material:{link_id}:unit:{unit_index}"
+            text = str(unit.get("text") or "")
+            role = _classify_slide(text, str(unit.get("title") or ""))
+            is_tail_practice = role == "practice" and position >= tail_start
+            delete = (
+                teacher_delete
+                or (
+                    trim_enabled
+                    and is_tail_practice
+                    and (
+                        not prefer_short
+                        or len(_compact_text(text)) > threshold
+                    )
+                    and not (preserve_examples and role == "example")
+                )
+            )
+            textbook_refs = _best_textbook_refs(text, textbook_units)
+            citations = [slide_ref, *textbook_refs]
+            result.append(
+                {
+                    "slide_ref": slide_ref,
+                    "role": role,
+                    "action": "delete" if delete else "keep",
+                    "textbook_refs": textbook_refs,
+                    "reason": (
+                        "教师已把该参考课件范围标为候选删除。"
+                        if teacher_delete
+                        else "课件后段练习题干较多，按本次精简偏好列为候选删除。"
+                        if delete
+                        else (
+                            "讲授过程中的例题按教师偏好保留。"
+                            if role == "example"
+                            else "保留当前讲授结构，等待教师逐页审核。"
+                        )
+                    ),
+                    "citations": citations,
+                }
+            )
+    return result
+
+
+def _slide_adaptations(
+    value: object,
+    pack: ResourcePackVersion,
+    allowed_refs: set[str],
+) -> list[dict[str, object]]:
+    items = _object_list(value, maximum=2_000)
+    ppt_refs = set(_material_references(pack.payload, "reference_ppt"))
+    textbook_refs = set(_material_references(pack.payload, "textbook"))
+    result: list[dict[str, object]] = []
+    seen: set[str] = set()
+    for item in items:
+        slide_ref = str(item.get("slide_ref") or "")
+        if slide_ref not in ppt_refs or slide_ref in seen:
+            raise TeachingPrepValidationError(
+                "slide adaptation refers to an unknown or repeated slide"
+            )
+        seen.add(slide_ref)
+        role = str(item.get("role") or "")
+        if role not in _SLIDE_ROLES:
+            raise TeachingPrepValidationError(
+                "slide adaptation role is invalid"
+            )
+        action = str(item.get("action") or "")
+        if action not in {"keep", "delete"}:
+            raise TeachingPrepValidationError(
+                "slide adaptation action is invalid"
+            )
+        mapped_textbooks = _strings(
+            item.get("textbook_refs"),
+            maximum=6,
+            item_maximum=300,
+        )
+        if any(ref not in textbook_refs for ref in mapped_textbooks):
+            raise TeachingPrepValidationError(
+                "slide adaptation refers to an unknown textbook page"
+            )
+        citations = _citations(item.get("citations"), allowed_refs)
+        if slide_ref not in citations or any(
+            ref not in citations for ref in mapped_textbooks
+        ):
+            raise TeachingPrepValidationError(
+                "slide adaptation citations do not support its mapping"
+            )
+        result.append(
+            {
+                "slide_ref": slide_ref,
+                "role": role,
+                "action": action,
+                "textbook_refs": mapped_textbooks,
+                "reason": _text(item.get("reason"), maximum=1_000),
+                "citations": citations,
+            }
+        )
+    if items and seen != ppt_refs:
+        raise TeachingPrepValidationError(
+            "slide adaptations must cover every frozen reference slide"
+        )
+    return result
+
+
+def _material_units(
+    payload: Mapping[str, object],
+    purpose: str,
+) -> list[tuple[str, dict[str, object]]]:
+    result: list[tuple[str, dict[str, object]]] = []
+    for raw_material in _list(payload.get("materials")):
+        material = _mapping(raw_material)
+        if material.get("purpose") != purpose:
+            continue
+        link_id = str(material.get("link_id") or "")
+        for raw_unit in _list(material.get("units")):
+            unit = _mapping(raw_unit)
+            unit_index = unit.get("unit_index")
+            if link_id and isinstance(unit_index, int):
+                result.append(
+                    (f"material:{link_id}:unit:{unit_index}", unit)
+                )
+    return result
+
+
+def _best_textbook_refs(
+    slide_text: str,
+    textbook_units: list[tuple[str, dict[str, object]]],
+) -> list[str]:
+    slide_tokens = _bigrams(slide_text)
+    if not slide_tokens:
+        return []
+    scored: list[tuple[int, str]] = []
+    for ref, unit in textbook_units:
+        common = len(slide_tokens & _bigrams(str(unit.get("text") or "")))
+        if common >= 3:
+            scored.append((common, ref))
+    scored.sort(key=lambda item: (-item[0], item[1]))
+    return [ref for _score, ref in scored[:2]]
+
+
+def _classify_slide(text: str, title: str) -> str:
+    value = f"{title}\n{text}"
+    if re.search(r"例\s*\d*|例题|典型例题", value):
+        return "example"
+    if re.search(r"练习|巩固|检测|训练|做一做|试一试", value):
+        return "practice"
+    if re.search(r"小结|总结|回顾", value):
+        return "summary"
+    if re.search(r"情境|导入|问题提出", value):
+        return "introduction"
+    return "explanation"
+
+
+def _bigrams(value: str) -> set[str]:
+    compact = _compact_text(value)
+    return {
+        compact[index : index + 2]
+        for index in range(max(0, len(compact) - 1))
+        if len(compact[index : index + 2]) == 2
+    }
+
+
+def _compact_text(value: str) -> str:
+    return re.sub(r"[\W_]+", "", value, flags=re.UNICODE)
 
 
 def calculate_capacity(

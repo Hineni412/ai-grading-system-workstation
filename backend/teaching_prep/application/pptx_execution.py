@@ -65,6 +65,8 @@ def build_executor_request(
                 "destination_index",
                 "target_position",
                 "text",
+                "font_size",
+                "semantic_role",
                 "crop_left",
                 "crop_top",
                 "crop_right",
