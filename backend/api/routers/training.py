@@ -8,7 +8,7 @@ from tempfile import SpooledTemporaryFile
 from typing import Any, NoReturn
 from urllib.parse import unquote
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, Query, Request, Response
 from fastapi.responses import FileResponse
 from pydantic import ValidationError
 
@@ -22,6 +22,7 @@ from backend.api.dependencies import (
     get_request_diagnosis_profile_service,
     get_request_practice_plan_service,
     get_training_submission_module,
+    get_training_assessment_module,
     get_training_task_service,
 )
 from backend.api.routers.jobs import _job_response
@@ -34,6 +35,14 @@ from backend.api.schemas.training import (
     TrainingScanBatchResponse,
     TrainingScanPageResolveRequest,
     TrainingSubmissionCancelRequest,
+    TrainingAssessmentActionRequest,
+    TrainingAssessmentOutcomeResponse,
+    TrainingAssessmentReviewRequest,
+    TrainingAssessmentStartRequest,
+    TrainingEvidenceReplayRequest,
+    TrainingEvidenceReplayResponse,
+    TrainingEvidenceSyncRequest,
+    TrainingFeedbackResponse,
     PersonalizedRecommendationCreateRequest,
     PersonalizedRecommendationDraftResponse,
     PersonalizedRecommendationEditRequest,
@@ -89,6 +98,22 @@ from question_bank.training_submissions import (
     TrainingSubmissionModule,
 )
 from question_bank.services.training_task_service import TrainingTaskService
+from backend.training_assessment import (
+    AssessmentActionCommand,
+    AssessmentInputInvalid,
+    AssessmentOperationConflict,
+    AssessmentReviewConflict,
+    AssessmentRevisionConflict,
+    EvidenceReviewConflict,
+    EvidenceSourceInvalid,
+    EvidenceSyncCommand,
+    EvidenceSyncConflict,
+    ReviewPointCommand,
+    SubmissionAssessmentNotFound,
+    TrainingAssessmentError,
+    TrainingAssessmentModule,
+    TrainingEvidenceError,
+)
 
 
 router = APIRouter(prefix="/api/training", tags=["training"])
@@ -896,6 +921,283 @@ def preview_training_scan_page(
 
 
 @router.post(
+    "/submissions/{submission_id}/assessment",
+    response_model=TrainingAssessmentOutcomeResponse,
+    responses={
+        409: {"model": ErrorResponse, "description": "Assessment changed"},
+        422: {"model": ErrorResponse, "description": "Assessment is invalid"},
+        **TRAINING_DATABASE_RESPONSES,
+    },
+)
+def start_training_assessment(
+    submission_id: str,
+    body: TrainingAssessmentStartRequest,
+    response: Response,
+    module: TrainingAssessmentModule = Depends(
+        get_training_assessment_module
+    ),
+) -> TrainingAssessmentOutcomeResponse:
+    try:
+        outcome = module.assess(submission_id, body.expected_revision)
+    except (
+        TrainingAssessmentError,
+        OSError,
+        sqlite3.Error,
+        TypeError,
+        ValueError,
+    ) as exc:
+        _raise_assessment_api_error(exc)
+    response.headers.update(NO_STORE_HEADERS)
+    return TrainingAssessmentOutcomeResponse.model_validate(
+        _public_training_mapping(outcome.to_dict())
+    )
+
+
+@router.get(
+    "/submissions/{submission_id}/assessment",
+    response_model=TrainingAssessmentOutcomeResponse,
+    responses={
+        404: {"model": ErrorResponse, "description": "Assessment was not found"},
+        **TRAINING_DATABASE_RESPONSES,
+    },
+)
+def get_training_assessment(
+    submission_id: str,
+    response: Response,
+    submission_revision: int = Query(ge=1),
+    module: TrainingAssessmentModule = Depends(
+        get_training_assessment_module
+    ),
+) -> TrainingAssessmentOutcomeResponse:
+    try:
+        outcome = module.get_outcome(submission_id, submission_revision)
+        if outcome is None:
+            raise SubmissionAssessmentNotFound(
+                "training assessment was not found"
+            )
+    except (
+        TrainingAssessmentError,
+        OSError,
+        sqlite3.Error,
+        TypeError,
+        ValueError,
+    ) as exc:
+        _raise_assessment_api_error(exc)
+    response.headers.update(NO_STORE_HEADERS)
+    return TrainingAssessmentOutcomeResponse.model_validate(
+        _public_training_mapping(outcome.to_dict())
+    )
+
+
+@router.post(
+    "/submissions/{submission_id}/assessment/reviews",
+    response_model=TrainingAssessmentOutcomeResponse,
+    responses={
+        409: {"model": ErrorResponse, "description": "Review changed"},
+        422: {"model": ErrorResponse, "description": "Review is invalid"},
+        **TRAINING_DATABASE_RESPONSES,
+    },
+)
+def review_training_assessment_point(
+    submission_id: str,
+    body: TrainingAssessmentReviewRequest,
+    response: Response,
+    module: TrainingAssessmentModule = Depends(
+        get_training_assessment_module
+    ),
+) -> TrainingAssessmentOutcomeResponse:
+    try:
+        outcome = module.review_point(
+            submission_id,
+            body.submission_revision,
+            ReviewPointCommand(
+                operation_token=body.operation_token.lower(),
+                expected_review_revision=body.expected_review_revision,
+                task_item_code=body.task_item_code,
+                point_id=body.point_id,
+                final_state=body.final_state,
+                teacher_evidence=body.teacher_evidence,
+                teacher_reason=body.teacher_reason,
+                actor_ref="local_teacher",
+            ),
+        )
+    except (
+        TrainingAssessmentError,
+        OSError,
+        sqlite3.Error,
+        TypeError,
+        ValueError,
+    ) as exc:
+        _raise_assessment_api_error(exc)
+    response.headers.update(NO_STORE_HEADERS)
+    return TrainingAssessmentOutcomeResponse.model_validate(
+        _public_training_mapping(outcome.to_dict())
+    )
+
+
+@router.post(
+    "/submissions/{submission_id}/assessment/actions",
+    response_model=TrainingAssessmentOutcomeResponse,
+    responses={
+        409: {"model": ErrorResponse, "description": "Assessment changed"},
+        422: {"model": ErrorResponse, "description": "Action is invalid"},
+        **TRAINING_DATABASE_RESPONSES,
+    },
+)
+def control_training_assessment(
+    submission_id: str,
+    body: TrainingAssessmentActionRequest,
+    response: Response,
+    module: TrainingAssessmentModule = Depends(
+        get_training_assessment_module
+    ),
+) -> TrainingAssessmentOutcomeResponse:
+    command = AssessmentActionCommand(
+        operation_token=body.operation_token.lower(),
+        expected_review_revision=body.expected_review_revision,
+        actor_ref="local_teacher",
+        reason=body.reason,
+    )
+    handlers = {
+        "pause": module.pause,
+        "resume": module.resume,
+        "cancel": module.cancel,
+        "recover": module.recover,
+        "retry": module.retry_failed,
+    }
+    try:
+        outcome = handlers[body.action](
+            submission_id,
+            body.submission_revision,
+            command,
+        )
+    except (
+        TrainingAssessmentError,
+        OSError,
+        sqlite3.Error,
+        TypeError,
+        ValueError,
+    ) as exc:
+        _raise_assessment_api_error(exc)
+    response.headers.update(NO_STORE_HEADERS)
+    return TrainingAssessmentOutcomeResponse.model_validate(
+        _public_training_mapping(outcome.to_dict())
+    )
+
+
+@router.post(
+    "/submissions/{submission_id}/evidence",
+    response_model=TrainingFeedbackResponse,
+    responses={
+        409: {"model": ErrorResponse, "description": "Evidence changed"},
+        422: {"model": ErrorResponse, "description": "Evidence is invalid"},
+        **TRAINING_DATABASE_RESPONSES,
+    },
+)
+def sync_training_evidence(
+    submission_id: str,
+    body: TrainingEvidenceSyncRequest,
+    response: Response,
+    module: TrainingAssessmentModule = Depends(
+        get_training_assessment_module
+    ),
+) -> TrainingFeedbackResponse:
+    try:
+        feedback = module.sync_evidence(
+            submission_id,
+            body.submission_revision,
+            EvidenceSyncCommand(
+                operation_token=body.operation_token.lower(),
+                expected_review_revision=body.expected_review_revision,
+                action=body.action,
+                actor_ref="local_teacher",
+                reason=body.reason,
+            ),
+        )
+    except (
+        TrainingAssessmentError,
+        TrainingEvidenceError,
+        OSError,
+        sqlite3.Error,
+        TypeError,
+        ValueError,
+    ) as exc:
+        _raise_assessment_api_error(exc)
+    response.headers.update(NO_STORE_HEADERS)
+    return TrainingFeedbackResponse.model_validate(
+        _public_training_mapping(feedback)
+    )
+
+
+@router.get(
+    "/submissions/{submission_id}/feedback",
+    response_model=TrainingFeedbackResponse,
+    responses={
+        404: {"model": ErrorResponse, "description": "Feedback was not found"},
+        **TRAINING_DATABASE_RESPONSES,
+    },
+)
+def get_training_feedback(
+    submission_id: str,
+    response: Response,
+    submission_revision: int = Query(ge=1),
+    module: TrainingAssessmentModule = Depends(
+        get_training_assessment_module
+    ),
+) -> TrainingFeedbackResponse:
+    try:
+        feedback = module.get_feedback(
+            submission_id, submission_revision
+        )
+        if feedback is None:
+            raise SubmissionAssessmentNotFound(
+                "training feedback was not found"
+            )
+    except (
+        TrainingAssessmentError,
+        TrainingEvidenceError,
+        OSError,
+        sqlite3.Error,
+        TypeError,
+        ValueError,
+    ) as exc:
+        _raise_assessment_api_error(exc)
+    response.headers.update(NO_STORE_HEADERS)
+    return TrainingFeedbackResponse.model_validate(
+        _public_training_mapping(feedback)
+    )
+
+
+@router.post(
+    "/evidence/replay",
+    response_model=TrainingEvidenceReplayResponse,
+    responses=TRAINING_DATABASE_RESPONSES,
+)
+def replay_training_evidence(
+    body: TrainingEvidenceReplayRequest,
+    response: Response,
+    module: TrainingAssessmentModule = Depends(
+        get_training_assessment_module
+    ),
+) -> TrainingEvidenceReplayResponse:
+    try:
+        result = module.replay_evidence_outbox(body.max_items)
+    except (
+        TrainingAssessmentError,
+        TrainingEvidenceError,
+        OSError,
+        sqlite3.Error,
+        TypeError,
+        ValueError,
+    ) as exc:
+        _raise_assessment_api_error(exc)
+    response.headers.update(NO_STORE_HEADERS)
+    return TrainingEvidenceReplayResponse.model_validate(
+        _public_training_mapping(result)
+    )
+
+
+@router.post(
     "/tasks",
     response_model=TrainingTaskDetail,
     response_model_exclude_none=True,
@@ -1366,6 +1668,72 @@ def _raise_submission_api_error(exc: Exception) -> NoReturn:
         422,
         "training_submission_invalid",
         "Training scan request is invalid",
+    ) from exc
+
+
+def _raise_assessment_api_error(exc: Exception) -> NoReturn:
+    if isinstance(exc, SubmissionAssessmentNotFound):
+        raise ApiError(
+            404,
+            "training_assessment_not_found",
+            "Training assessment or feedback was not found",
+        ) from exc
+    if isinstance(exc, AssessmentRevisionConflict):
+        raise ApiError(
+            409,
+            "training_assessment_revision_conflict",
+            "Training submission changed; refresh before continuing",
+            {"current_revision": exc.current_revision},
+        ) from exc
+    if isinstance(
+        exc,
+        (
+            AssessmentReviewConflict,
+            EvidenceReviewConflict,
+        ),
+    ):
+        raise ApiError(
+            409,
+            "training_assessment_review_conflict",
+            "Training review changed; refresh before continuing",
+            {"current_revision": exc.current_revision},
+        ) from exc
+    if isinstance(
+        exc,
+        (
+            AssessmentOperationConflict,
+            EvidenceSyncConflict,
+        ),
+    ):
+        raise ApiError(
+            409,
+            "training_assessment_operation_conflict",
+            "This training assessment operation conflicts with current state",
+        ) from exc
+    if isinstance(
+        exc,
+        (
+            AssessmentInputInvalid,
+            EvidenceSourceInvalid,
+            ValueError,
+            TypeError,
+        ),
+    ):
+        raise ApiError(
+            422,
+            "training_assessment_invalid",
+            "Training assessment, review, or evidence request is invalid",
+        ) from exc
+    if isinstance(exc, (OSError, sqlite3.Error)):
+        raise ApiError(
+            503,
+            "training_assessment_unavailable",
+            "Training assessment data is temporarily unavailable",
+        ) from exc
+    raise ApiError(
+        422,
+        "training_assessment_invalid",
+        "Training assessment action is not available in the current state",
     ) from exc
 
 

@@ -143,6 +143,26 @@ async function generate(): Promise<void> {
   }
 }
 
+async function openNextDraft(draftId: string): Promise<void> {
+  if (state.value === 'loading' || state.value === 'editing') return
+  state.value = 'loading'
+  errorMessage.value = ''
+  actionMessage.value = ''
+  try {
+    draft.value = await trainingApi.getPersonalizedDraft(draftId)
+    paperInstances.value = await trainingApi.listPaperInstances(draftId)
+    paperFiles.value = {}
+    state.value = 'ready'
+    actionMessage.value = '已打开下一轮草稿；请先审核，系统不会自动生成正式训练卷。'
+  } catch (error) {
+    state.value = 'error'
+    errorMessage.value = safeError(
+      error,
+      '下一轮草稿暂时无法打开，已发布的训练证据不受影响。',
+    )
+  }
+}
+
 function instancesForStudent(studentId: string): PersonalizedPaperInstance[] {
   return paperInstances.value
     .filter((item) => item.student_id === studentId)
@@ -516,7 +536,10 @@ async function editItem(
         </section>
       </article>
 
-      <TrainingScanBatchPanel :instances="paperInstances" />
+      <TrainingScanBatchPanel
+        :instances="paperInstances"
+        @open-draft="openNextDraft"
+      />
 
       <p class="personalized-footnote">
         训练卷使用生成时的题目、推荐理由和已批准判定点快照；以后来源变化不会改写旧卷。

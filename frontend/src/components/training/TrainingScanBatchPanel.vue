@@ -10,9 +10,14 @@ import {
   type TrainingScanPage,
 } from '../../api/training'
 import { ApiError } from '../../api/errors'
+import TrainingAssessmentPanel from './TrainingAssessmentPanel.vue'
 
 const props = defineProps<{
   instances: PersonalizedPaperInstance[]
+}>()
+
+const emit = defineEmits<{
+  openDraft: [draftId: string]
 }>()
 
 const batch = ref<TrainingScanBatch | null>(null)
@@ -282,6 +287,11 @@ async function cancelSubmission(submissionId: string): Promise<void> {
           >
             取消这份提交
           </button>
+          <TrainingAssessmentPanel
+            v-if="submission.status === 'ready'"
+            :submission="submission"
+            @open-draft="emit('openDraft', $event)"
+          />
         </article>
       </div>
 

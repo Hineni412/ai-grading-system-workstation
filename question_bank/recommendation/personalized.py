@@ -5,7 +5,7 @@ import json
 import math
 from collections.abc import Callable, Mapping, Sequence
 from copy import deepcopy
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Literal
@@ -16,6 +16,7 @@ from question_bank.mastery.comparison import (
     compare_mastery_v1_v2,
 )
 from question_bank.mastery.rollout import MasteryRolloutRepository
+from question_bank.mastery.v2 import TrainingEvidence
 from question_bank.relations.bootstrap import normalize_knowledge_alias
 from question_bank.taxonomy.registry import canonicalize_knowledge_exact
 from question_bank.training_criteria import (
@@ -902,7 +903,26 @@ class PersonalizedRecommendationModule:
         ).select_parameters()
         if parameters is None or not cases:
             return _v1_mastery(diagnosis)
-        as_of = _day_clock(self.clock())
+        published = self._published_training_evidence(cases)
+        cases = tuple(
+            replace(
+                item,
+                training_evidence=published.get(
+                    (item.student_id, item.stable_key),
+                    (),
+                ),
+            )
+            for item in cases
+        )
+        as_of = max(
+            (
+                evidence.occurred_at
+                for case in cases
+                for evidence in case.training_evidence
+            ),
+            default=_day_clock(self.clock()),
+        )
+        as_of = max(as_of, _day_clock(self.clock()))
         report = compare_mastery_v1_v2(
             cases,
             as_of=as_of,
@@ -924,12 +944,79 @@ class PersonalizedRecommendationModule:
             }
         return result
 
+    def _published_training_evidence(
+        self,
+        cases: Sequence[Any],
+    ) -> dict[tuple[str, str], tuple[TrainingEvidence, ...]]:
+        student_ids = tuple(
+            sorted({str(item.student_id) for item in cases})
+        )
+        stable_keys = tuple(
+            sorted({str(item.stable_key) for item in cases})
+        )
+        if not student_ids or not stable_keys:
+            return {}
+        student_placeholders = ",".join("?" for _ in student_ids)
+        key_placeholders = ",".join("?" for _ in stable_keys)
+        with connect(self.db_path) as connection:
+            rows = connection.execute(
+                f"""
+                SELECT evidence_id, student_id, stable_key, occurred_at,
+                       achieved_points, total_points, difficulty_weight,
+                       evidence_weight
+                FROM training_evidence_records
+                WHERE status = 'active'
+                  AND student_id IN ({student_placeholders})
+                  AND stable_key IN ({key_placeholders})
+                ORDER BY student_id, stable_key, occurred_at, evidence_id
+                """,
+                (*student_ids, *stable_keys),
+            ).fetchall()
+        grouped: dict[tuple[str, str], list[TrainingEvidence]] = {}
+        for row in rows:
+            occurred_at = datetime.fromisoformat(str(row["occurred_at"]))
+            evidence = TrainingEvidence(
+                evidence_id=str(row["evidence_id"]),
+                stable_key=str(row["stable_key"]),
+                occurred_at=occurred_at,
+                achieved_points=int(row["achieved_points"]),
+                total_points=int(row["total_points"]),
+                difficulty_weight=float(row["difficulty_weight"]),
+                evidence_weight=float(row["evidence_weight"]),
+            )
+            grouped.setdefault(
+                (str(row["student_id"]), evidence.stable_key),
+                [],
+            ).append(evidence)
+        return {
+            identity: tuple(items)
+            for identity, items in grouped.items()
+        }
+
     def _mastery_rollout_version(self) -> dict[str, Any]:
         state = MasteryRolloutRepository(self.db_path).get_state()
+        with connect(self.db_path) as connection:
+            evidence_rows = [
+                (
+                    str(row["evidence_id"]),
+                    str(row["payload_hash"]),
+                    str(row["status"]),
+                    int(row["source_review_revision"]),
+                )
+                for row in connection.execute(
+                    """
+                    SELECT evidence_id, payload_hash, status,
+                           source_review_revision
+                    FROM training_evidence_records
+                    ORDER BY evidence_id
+                    """
+                ).fetchall()
+            ]
         return {
             "mode": state.active_mode,
             "parameter_version": state.active_parameter_version,
             "revision": state.revision,
+            "training_evidence_version": _hash_payload(evidence_rows),
         }
 
     def _recent_question_ids(
@@ -959,8 +1046,22 @@ class PersonalizedRecommendationModule:
                 """,
                 (*student_ids, cutoff),
             ).fetchall()
+            personalized_rows = connection.execute(
+                f"""
+                SELECT instances.student_id, items.bank_question_id
+                FROM personalized_paper_instances instances
+                JOIN personalized_paper_items items
+                  ON items.paper_instance_id =
+                     instances.paper_instance_id
+                WHERE instances.student_id IN ({placeholders})
+                  AND items.bank_question_id IS NOT NULL
+                  AND instances.status = 'frozen'
+                  AND instances.created_at >= ?
+                """,
+                (*student_ids, cutoff),
+            ).fetchall()
         result: dict[str, set[int]] = {}
-        for row in rows:
+        for row in (*rows, *personalized_rows):
             result.setdefault(str(row["student_id"]), set()).add(
                 int(row["bank_question_id"])
             )

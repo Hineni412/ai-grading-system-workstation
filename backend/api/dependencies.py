@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from collections.abc import Iterator
 import threading
+from typing import Any
 
 from fastapi import Depends, Request
 
@@ -29,6 +30,10 @@ from backend.ops.write_service import OpsWriteService
 from backend.results_center.service import ResultsCenterService
 from backend.review.service import ReviewApplicationService
 from backend.students import StudentRosterModule
+from backend.training_assessment import (
+    OpenAITrainingAssessmentGateway,
+    TrainingAssessmentModule,
+)
 from backend.repositories.sessions import SessionRepositoryGateway
 from backend.repositories.students import StudentRepositoryGateway
 from backend.scan_grading.config_fingerprint import (
@@ -51,6 +56,7 @@ from question_bank.services.question_read_service import (
     QuestionBankSnapshotError,
 )
 from question_bank.services.training_task_service import TrainingTaskService
+from question_bank.services.ai_tagging_service import AITaggingService
 from question_bank.services.question_write_service import QuestionBankWriteService
 from question_bank.services.taxonomy_review_service import TaxonomyReviewService
 from question_bank.services.taxonomy_review_suggestions import (
@@ -62,6 +68,27 @@ from question_bank.training_criteria import TrainingCriterionModule
 
 
 _TEMPLATE_UPLOAD_SERVICE_GUARD = threading.Lock()
+
+
+class _LazyTrainingAssessmentGateway:
+    """Delay model setup until a teacher explicitly starts assessment."""
+
+    def assess(
+        self,
+        request: Any,
+        *,
+        operation_id: str,
+        request_id: str,
+    ) -> Any:
+        tagging_service = AITaggingService()
+        return OpenAITrainingAssessmentGateway(
+            protocol_adapter=tagging_service._protocol_adapter(),
+            model_name=tagging_service.model,
+        ).assess(
+            request,
+            operation_id=operation_id,
+            request_id=request_id,
+        )
 
 
 def get_grading_db() -> GradingRepositoryAccess:
@@ -329,6 +356,15 @@ def get_training_submission_module() -> TrainingSubmissionModule:
     return TrainingSubmissionModule(
         db_path=paths.qb_db_path,
         data_root=paths.data_root,
+    )
+
+
+def get_training_assessment_module() -> TrainingAssessmentModule:
+    paths = get_path_manager()
+    return TrainingAssessmentModule(
+        db_path=paths.qb_db_path,
+        data_root=paths.data_root,
+        gateway=_LazyTrainingAssessmentGateway(),
     )
 
 

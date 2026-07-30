@@ -287,6 +287,91 @@ class TrainingScanBatchResponse(_TrainingModel):
     updated_at: str
 
 
+class TrainingAssessmentStartRequest(_TrainingModel):
+    expected_revision: int = Field(ge=1)
+
+
+class TrainingAssessmentReviewRequest(_TrainingModel):
+    operation_token: str = Field(pattern=r"^[0-9a-fA-F]{32}$")
+    submission_revision: int = Field(ge=1)
+    expected_review_revision: int = Field(ge=1)
+    task_item_code: str = Field(min_length=1, max_length=100)
+    point_id: str = Field(min_length=1, max_length=100)
+    final_state: Literal["met", "not_met", "uncertain", "unreadable"]
+    teacher_evidence: str = Field(min_length=1, max_length=500)
+    teacher_reason: str = Field(min_length=1, max_length=500)
+
+
+class TrainingAssessmentActionRequest(_TrainingModel):
+    operation_token: str = Field(pattern=r"^[0-9a-fA-F]{32}$")
+    submission_revision: int = Field(ge=1)
+    expected_review_revision: int = Field(ge=1)
+    action: Literal["pause", "resume", "cancel", "recover", "retry"]
+    reason: str = Field(min_length=1, max_length=500)
+
+
+class TrainingEvidenceSyncRequest(_TrainingModel):
+    operation_token: str = Field(pattern=r"^[0-9a-fA-F]{32}$")
+    submission_revision: int = Field(ge=1)
+    expected_review_revision: int = Field(ge=1)
+    action: Literal["publish", "withdraw"]
+    reason: str = Field(min_length=1, max_length=500)
+
+
+class TrainingEvidenceReplayRequest(_TrainingModel):
+    max_items: int | None = Field(default=None, ge=1, le=500)
+
+
+class TrainingAssessmentOutcomeResponse(_TrainingModel):
+    run_id: str = Field(pattern=r"^[0-9a-f]{64}$")
+    submission_id: str = Field(pattern=r"^[0-9a-f]{64}$")
+    submission_revision: int = Field(ge=1)
+    status: str
+    request_count: int = Field(ge=0)
+    expected_question_count: int = Field(ge=0)
+    expected_point_count: int = Field(ge=0)
+    model_name: str | None = None
+    usage: dict[str, Any]
+    latency_ms: int = Field(ge=0)
+    issue_codes: list[str]
+    error_code: str | None = None
+    questions: list[dict[str, Any]]
+    review_revision: int = Field(ge=1)
+    control_state: str
+    workflow_status: str
+    action_message: str
+    attempts: list[dict[str, Any]]
+
+
+class TrainingFeedbackResponse(_TrainingModel):
+    schema_version: Literal["training-feedback-v1"]
+    feedback_id: str = Field(pattern=r"^[0-9a-f]{64}$")
+    submission_id: str = Field(pattern=r"^[0-9a-f]{64}$")
+    submission_revision: int = Field(ge=1)
+    source_review_revision: int = Field(ge=1)
+    status: Literal[
+        "publication_pending",
+        "partial",
+        "complete",
+        "withdrawn",
+    ]
+    student: dict[str, Any]
+    summary: dict[str, Any]
+    questions: list[dict[str, Any]]
+    mastery_changes: list[dict[str, Any]]
+    next_round: dict[str, Any]
+    timeline: list[dict[str, Any]]
+    safety: dict[str, bool]
+    evidence_version: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class TrainingEvidenceReplayResponse(_TrainingModel):
+    examined_count: int = Field(ge=0)
+    delivered_count: int = Field(ge=0)
+    failed_count: int = Field(ge=0)
+    feedbacks: list[dict[str, Any]]
+
+
 class TrainingExportSubmitRequest(_TrainingModel):
     variant_id: int | None = Field(default=None, ge=1)
     format: Literal["docx", "markdown"] = "docx"

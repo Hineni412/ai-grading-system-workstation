@@ -4,7 +4,7 @@ import base64
 import hashlib
 import json
 from dataclasses import asdict, dataclass
-from typing import Any, Mapping, Protocol
+from typing import Any, Literal, Mapping, Protocol
 
 
 POINT_STATES = frozenset({"met", "not_met", "uncertain", "unreadable"})
@@ -215,6 +215,40 @@ class AssessmentActionCommand:
         object.__setattr__(self, "expected_review_revision", revision)
         object.__setattr__(self, "actor_ref", actor_ref)
         object.__setattr__(self, "reason", reason)
+
+
+@dataclass(frozen=True, slots=True)
+class EvidenceSyncCommand:
+    operation_token: str
+    expected_review_revision: int
+    action: Literal["publish", "withdraw"]
+    actor_ref: str
+    reason: str
+
+    def __post_init__(self) -> None:
+        token = _operation_token(self.operation_token)
+        revision = int(self.expected_review_revision)
+        action = str(self.action or "").strip().casefold()
+        actor_ref = str(self.actor_ref or "").strip()
+        reason = str(self.reason or "").strip()
+        if revision < 1:
+            raise ValueError("expected_review_revision must be positive")
+        if action not in {"publish", "withdraw"}:
+            raise ValueError("evidence action must be publish or withdraw")
+        if not actor_ref:
+            raise ValueError("actor_ref must not be empty")
+        if not reason or len(reason) > 500:
+            raise ValueError("reason must be 1-500 characters")
+        object.__setattr__(self, "operation_token", token)
+        object.__setattr__(self, "expected_review_revision", revision)
+        object.__setattr__(self, "action", action)
+        object.__setattr__(self, "actor_ref", actor_ref)
+        object.__setattr__(self, "reason", reason)
+
+
+class TrainingEvidenceSink(Protocol):
+    def deliver(self, payload: Mapping[str, Any]) -> None:
+        ...
 
 
 @dataclass(frozen=True, slots=True)

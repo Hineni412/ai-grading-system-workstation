@@ -238,6 +238,95 @@ export interface TrainingScanBatch {
   updated_at: string
 }
 
+export type TrainingPointState =
+  | 'met'
+  | 'not_met'
+  | 'uncertain'
+  | 'unreadable'
+
+export interface TrainingAssessmentPoint {
+  point_id: string
+  content: string
+  state?: TrainingPointState | null
+  evidence?: string | null
+  teacher_locked: boolean
+  teacher_reason?: string | null
+  actor_ref?: string | null
+  lock_revision: number
+}
+
+export interface TrainingAssessmentQuestion {
+  task_item_code: string
+  item_order: number
+  status: string
+  met_count: number
+  not_met_count: number
+  uncertain_count: number
+  unreadable_count: number
+  total_count: number
+  review_status: string
+  review_points: TrainingAssessmentPoint[]
+}
+
+export interface TrainingAssessmentOutcome {
+  run_id: string
+  submission_id: string
+  submission_revision: number
+  status: string
+  request_count: number
+  expected_question_count: number
+  expected_point_count: number
+  model_name?: string | null
+  usage: {
+    prompt_tokens: number
+    completion_tokens: number
+    total_tokens: number
+  }
+  latency_ms: number
+  issue_codes: string[]
+  error_code?: string | null
+  questions: TrainingAssessmentQuestion[]
+  review_revision: number
+  control_state: string
+  workflow_status: string
+  action_message: string
+  attempts: Array<Record<string, unknown>>
+}
+
+export interface TrainingFeedback {
+  schema_version: 'training-feedback-v1'
+  feedback_id: string
+  submission_id: string
+  submission_revision: number
+  source_review_revision: number
+  status: 'publication_pending' | 'partial' | 'complete' | 'withdrawn'
+  student: Record<string, unknown>
+  summary: {
+    published_question_count: number
+    ready_question_count: number
+    total_question_count: number
+    pending_outbox_count: number
+    message: string
+  }
+  questions: Array<Record<string, unknown>>
+  mastery_changes: Array<Record<string, unknown>>
+  next_round: {
+    status: string
+    draft_id?: string | null
+    message: string
+    changes: Array<Record<string, unknown>>
+    student?: Record<string, unknown>
+  }
+  timeline: Array<Record<string, unknown>>
+  safety: {
+    is_exam_score: boolean
+    changes_v1: boolean
+    auto_paper_created: boolean
+    auto_printed: boolean
+  }
+  evidence_version: string
+}
+
 export interface TrainingEvidenceReference {
   session_id: number
   session_name: string
@@ -895,6 +984,131 @@ function decodeTrainingScanBatch(value: unknown): TrainingScanBatch {
   return value as unknown as TrainingScanBatch
 }
 
+function decodeTrainingAssessment(
+  value: unknown,
+): TrainingAssessmentOutcome {
+  assertNoPathLikeKeys(value)
+  const pointIsValid = (point: unknown): boolean => (
+    isRecord(point)
+    && isNonEmptyString(point.point_id)
+    && typeof point.content === 'string'
+    && (
+      point.state === null
+      || point.state === undefined
+      || ['met', 'not_met', 'uncertain', 'unreadable'].includes(
+        String(point.state),
+      )
+    )
+    && typeof point.teacher_locked === 'boolean'
+    && isInteger(point.lock_revision)
+  )
+  const questionIsValid = (question: unknown): boolean => (
+    isRecord(question)
+    && isNonEmptyString(question.task_item_code)
+    && isInteger(question.item_order, 1)
+    && isNonEmptyString(question.status)
+    && isInteger(question.met_count)
+    && isInteger(question.not_met_count)
+    && isInteger(question.uncertain_count)
+    && isInteger(question.unreadable_count)
+    && isInteger(question.total_count, 1)
+    && isNonEmptyString(question.review_status)
+    && Array.isArray(question.review_points)
+    && question.review_points.every(pointIsValid)
+  )
+  if (
+    !isRecord(value)
+    || !/^[0-9a-f]{64}$/.test(String(value.run_id || ''))
+    || !/^[0-9a-f]{64}$/.test(String(value.submission_id || ''))
+    || !isInteger(value.submission_revision, 1)
+    || !isNonEmptyString(value.status)
+    || !isInteger(value.request_count)
+    || !isInteger(value.expected_question_count)
+    || !isInteger(value.expected_point_count)
+    || !isRecord(value.usage)
+    || !isInteger(value.usage.prompt_tokens)
+    || !isInteger(value.usage.completion_tokens)
+    || !isInteger(value.usage.total_tokens)
+    || !isInteger(value.latency_ms)
+    || !isStringArray(value.issue_codes)
+    || !Array.isArray(value.questions)
+    || !value.questions.every(questionIsValid)
+    || !isInteger(value.review_revision, 1)
+    || !isNonEmptyString(value.control_state)
+    || !isNonEmptyString(value.workflow_status)
+    || typeof value.action_message !== 'string'
+    || !Array.isArray(value.attempts)
+    || !value.attempts.every(isRecord)
+  ) {
+    throw new Error('Invalid training assessment')
+  }
+  return value as unknown as TrainingAssessmentOutcome
+}
+
+function decodeTrainingFeedback(value: unknown): TrainingFeedback {
+  assertNoPathLikeKeys(value)
+  if (
+    !isRecord(value)
+    || value.schema_version !== 'training-feedback-v1'
+    || !/^[0-9a-f]{64}$/.test(String(value.feedback_id || ''))
+    || !/^[0-9a-f]{64}$/.test(String(value.submission_id || ''))
+    || !isInteger(value.submission_revision, 1)
+    || !isInteger(value.source_review_revision, 1)
+    || !['publication_pending', 'partial', 'complete', 'withdrawn']
+      .includes(String(value.status))
+    || !isRecord(value.student)
+    || !isRecord(value.summary)
+    || !isInteger(value.summary.published_question_count)
+    || !isInteger(value.summary.ready_question_count)
+    || !isInteger(value.summary.total_question_count)
+    || !isInteger(value.summary.pending_outbox_count)
+    || typeof value.summary.message !== 'string'
+    || !Array.isArray(value.questions)
+    || !value.questions.every(isRecord)
+    || !Array.isArray(value.mastery_changes)
+    || !value.mastery_changes.every(isRecord)
+    || !isRecord(value.next_round)
+    || !isNonEmptyString(value.next_round.status)
+    || typeof value.next_round.message !== 'string'
+    || !Array.isArray(value.next_round.changes)
+    || !value.next_round.changes.every(isRecord)
+    || !Array.isArray(value.timeline)
+    || !value.timeline.every(isRecord)
+    || !isRecord(value.safety)
+    || typeof value.safety.is_exam_score !== 'boolean'
+    || typeof value.safety.changes_v1 !== 'boolean'
+    || typeof value.safety.auto_paper_created !== 'boolean'
+    || typeof value.safety.auto_printed !== 'boolean'
+    || !/^[0-9a-f]{64}$/.test(String(value.evidence_version || ''))
+  ) {
+    throw new Error('Invalid training feedback')
+  }
+  return value as unknown as TrainingFeedback
+}
+
+function decodeTrainingEvidenceReplay(value: unknown): {
+  examined_count: number
+  delivered_count: number
+  failed_count: number
+  feedbacks: TrainingFeedback[]
+} {
+  if (
+    !isRecord(value)
+    || !isInteger(value.examined_count)
+    || !isInteger(value.delivered_count)
+    || !isInteger(value.failed_count)
+    || !Array.isArray(value.feedbacks)
+  ) {
+    throw new Error('Invalid training evidence replay')
+  }
+  return {
+    examined_count: value.examined_count,
+    delivered_count: value.delivered_count,
+    failed_count: value.failed_count,
+    feedbacks: value.feedbacks.map(decodeTrainingFeedback),
+  }
+}
+
 async function fileSha256(file: File): Promise<string> {
   const digest = await globalThis.crypto.subtle.digest(
     'SHA-256',
@@ -1144,5 +1358,137 @@ export const trainingApi = {
         timeoutMs: 30_000,
       },
     )
+  },
+
+  startTrainingAssessment(
+    submissionId: string,
+    expectedRevision: number,
+  ): Promise<TrainingAssessmentOutcome> {
+    return apiClient.request(
+      `/api/training/submissions/${submissionId}/assessment`,
+      {
+        method: 'POST',
+        body: { expected_revision: expectedRevision },
+        decode: decodeTrainingAssessment,
+        timeoutMs: 180_000,
+      },
+    )
+  },
+
+  getTrainingAssessment(
+    submissionId: string,
+    submissionRevision: number,
+  ): Promise<TrainingAssessmentOutcome> {
+    return apiClient.request(
+      `/api/training/submissions/${submissionId}/assessment`
+      + `?submission_revision=${submissionRevision}`,
+      {
+        decode: decodeTrainingAssessment,
+        timeoutMs: 30_000,
+      },
+    )
+  },
+
+  reviewTrainingPoint(
+    assessment: TrainingAssessmentOutcome,
+    body: {
+      operation_token: string
+      task_item_code: string
+      point_id: string
+      final_state: TrainingPointState
+      teacher_evidence: string
+      teacher_reason: string
+    },
+  ): Promise<TrainingAssessmentOutcome> {
+    return apiClient.request(
+      `/api/training/submissions/${assessment.submission_id}`
+      + '/assessment/reviews',
+      {
+        method: 'POST',
+        body: {
+          ...body,
+          submission_revision: assessment.submission_revision,
+          expected_review_revision: assessment.review_revision,
+        },
+        decode: decodeTrainingAssessment,
+        timeoutMs: 30_000,
+      },
+    )
+  },
+
+  controlTrainingAssessment(
+    assessment: TrainingAssessmentOutcome,
+    body: {
+      operation_token: string
+      action: 'pause' | 'resume' | 'cancel' | 'recover' | 'retry'
+      reason: string
+    },
+  ): Promise<TrainingAssessmentOutcome> {
+    return apiClient.request(
+      `/api/training/submissions/${assessment.submission_id}`
+      + '/assessment/actions',
+      {
+        method: 'POST',
+        body: {
+          ...body,
+          submission_revision: assessment.submission_revision,
+          expected_review_revision: assessment.review_revision,
+        },
+        decode: decodeTrainingAssessment,
+        timeoutMs: 180_000,
+      },
+    )
+  },
+
+  syncTrainingEvidence(
+    assessment: TrainingAssessmentOutcome,
+    action: 'publish' | 'withdraw',
+    operationToken: string,
+  ): Promise<TrainingFeedback> {
+    return apiClient.request(
+      `/api/training/submissions/${assessment.submission_id}/evidence`,
+      {
+        method: 'POST',
+        body: {
+          operation_token: operationToken,
+          submission_revision: assessment.submission_revision,
+          expected_review_revision: assessment.review_revision,
+          action,
+          reason: action === 'publish'
+            ? '教师确认发布当前已完成题目的训练证据'
+            : '教师确认撤回本次训练证据',
+        },
+        decode: decodeTrainingFeedback,
+        timeoutMs: 60_000,
+      },
+    )
+  },
+
+  getTrainingFeedback(
+    submissionId: string,
+    submissionRevision: number,
+  ): Promise<TrainingFeedback> {
+    return apiClient.request(
+      `/api/training/submissions/${submissionId}/feedback`
+      + `?submission_revision=${submissionRevision}`,
+      {
+        decode: decodeTrainingFeedback,
+        timeoutMs: 30_000,
+      },
+    )
+  },
+
+  replayTrainingEvidence(): Promise<{
+    examined_count: number
+    delivered_count: number
+    failed_count: number
+    feedbacks: TrainingFeedback[]
+  }> {
+    return apiClient.request('/api/training/evidence/replay', {
+      method: 'POST',
+      body: { max_items: 100 },
+      decode: decodeTrainingEvidenceReplay,
+      timeoutMs: 60_000,
+    })
   },
 }

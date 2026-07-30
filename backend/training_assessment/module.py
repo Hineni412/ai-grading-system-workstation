@@ -19,10 +19,12 @@ from backend.training_assessment.contracts import (
     AssessmentItem,
     AssessmentPage,
     AssessmentUsage,
+    EvidenceSyncCommand,
     ModelPointResult,
     ReviewPointCommand,
     TrainingAssessmentGateway,
     TrainingAssessmentRequest,
+    TrainingEvidenceSink,
     TrainingPaperOutcome,
     stable_hash,
 )
@@ -78,11 +80,13 @@ class TrainingAssessmentModule:
         db_path: Path,
         data_root: Path,
         gateway: TrainingAssessmentGateway,
+        evidence_sink: TrainingEvidenceSink | None = None,
         clock: Any | None = None,
     ) -> None:
         self.db_path = Path(db_path)
         self.data_root = Path(data_root)
         self.gateway = gateway
+        self.evidence_sink = evidence_sink
         self.clock = clock or (lambda: datetime.now().isoformat(timespec="seconds"))
         self.artifact_root = (
             self.data_root / "question_bank" / "training_submissions"
@@ -207,6 +211,64 @@ class TrainingAssessmentModule:
             _identifier(submission_id),
             _positive_revision(submission_revision),
         )
+
+    def sync_evidence(
+        self,
+        submission_id: str,
+        submission_revision: int,
+        command: EvidenceSyncCommand,
+    ) -> dict[str, Any]:
+        from backend.training_assessment.evidence import (
+            TrainingEvidencePublisher,
+        )
+
+        clean_id = _identifier(submission_id)
+        clean_revision = _positive_revision(submission_revision)
+        initialize_database(self.db_path)
+        return TrainingEvidencePublisher(
+            db_path=self.db_path,
+            data_root=self.data_root,
+            outcome_loader=self.get_outcome,
+            sink=self.evidence_sink,
+            clock=lambda: _aware_clock(self.clock()),
+        ).sync(clean_id, clean_revision, command)
+
+    def replay_evidence_outbox(
+        self,
+        max_items: int | None = None,
+    ) -> dict[str, Any]:
+        from backend.training_assessment.evidence import (
+            TrainingEvidencePublisher,
+        )
+
+        initialize_database(self.db_path)
+        return TrainingEvidencePublisher(
+            db_path=self.db_path,
+            data_root=self.data_root,
+            outcome_loader=self.get_outcome,
+            sink=self.evidence_sink,
+            clock=lambda: _aware_clock(self.clock()),
+        ).replay(max_items)
+
+    def get_feedback(
+        self,
+        submission_id: str,
+        submission_revision: int,
+    ) -> dict[str, Any] | None:
+        from backend.training_assessment.evidence import (
+            TrainingEvidencePublisher,
+        )
+
+        clean_id = _identifier(submission_id)
+        clean_revision = _positive_revision(submission_revision)
+        initialize_database(self.db_path)
+        return TrainingEvidencePublisher(
+            db_path=self.db_path,
+            data_root=self.data_root,
+            outcome_loader=self.get_outcome,
+            sink=self.evidence_sink,
+            clock=lambda: _aware_clock(self.clock()),
+        ).get_feedback(clean_id, clean_revision)
 
     def review_point(
         self,
@@ -1874,6 +1936,21 @@ def _positive_revision(value: object) -> int:
     if revision < 1:
         raise ValueError("submission_revision must be positive")
     return revision
+
+
+def _aware_clock(value: object) -> datetime:
+    if isinstance(value, datetime):
+        parsed = value
+    else:
+        try:
+            parsed = datetime.fromisoformat(str(value))
+        except ValueError:
+            parsed = datetime.now().astimezone()
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(
+            tzinfo=datetime.now().astimezone().tzinfo
+        )
+    return parsed
 
 
 def _criterion_points(payload_json: str) -> tuple[dict[str, Any], ...]:
