@@ -1,6 +1,7 @@
 import { createRouter, createWebHistory, type RouteRecordRaw, type RouterHistory } from 'vue-router'
 
 import ComponentShowcase from '../components/design-system/ComponentShowcase.vue'
+import { workspaceRegistry } from '../workspaces/registry'
 import {
   sessionRouteDefinition,
   studentsRouteDefinition,
@@ -170,6 +171,18 @@ const routes: RouteRecordRaw[] = [
       breadcrumb: settingsRouteDefinition.breadcrumb,
     },
   },
+  ...workspaceRegistry.modules.map(({ manifest, route }) => ({
+    path: route.path,
+    name: route.id,
+    component: manifest.page,
+    meta: {
+      title: route.title,
+      description: route.description,
+      breadcrumb: route.breadcrumb,
+      dataClassifications: manifest.dataClassifications,
+      featureFlags: manifest.featureFlags,
+    },
+  })),
   {
     path: '/design-system',
     name: 'design-system',

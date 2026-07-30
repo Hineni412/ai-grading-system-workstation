@@ -16,6 +16,10 @@ from pydantic import BaseModel, Field
 
 from backend.api.frontend import mount_frontend
 from backend.performance.metrics import PerformanceSink, request_performance_scope
+from backend.workspaces.registry import (
+    WorkspaceRegistry,
+    load_default_workspace_registry,
+)
 from path_manager import PathManager, get_path_manager as get_default_path_manager
 
 
@@ -82,31 +86,46 @@ async def _lifespan(api: FastAPI) -> AsyncIterator[None]:
     )
     from backend.schema_migrations import ensure_application_schema
 
-    owns_manager = get_job_manager not in api.dependency_overrides
-    owns_ops_service = get_ops_write_service not in api.dependency_overrides
-    paths = api.state.path_manager
-    if hasattr(paths, "db_path") and hasattr(paths, "qb_db_path"):
-        ensure_application_schema(paths)
-    manager = create_job_manager(paths) if owns_manager else None
-    ops_service = create_ops_write_service(paths) if owns_ops_service else None
-    if manager is not None:
-        api.state.job_manager = manager
-    if ops_service is not None:
-        api.state.ops_write_service = ops_service
+    manager = None
+    ops_service = None
+    workspace_services: dict[str, object] = {}
     try:
+        owns_manager = get_job_manager not in api.dependency_overrides
+        owns_ops_service = get_ops_write_service not in api.dependency_overrides
+        paths = api.state.path_manager
+        registry: WorkspaceRegistry = api.state.workspace_registry
+        if hasattr(paths, "db_path") and hasattr(paths, "qb_db_path"):
+            ensure_application_schema(paths)
+        registry.run_migrations()
+        workspace_services = registry.create_services()
+        manager = create_job_manager(paths) if owns_manager else None
+        ops_service = (
+            create_ops_write_service(paths) if owns_ops_service else None
+        )
+        if manager is not None:
+            registry.register_jobs(manager, workspace_services)
+            api.state.job_manager = manager
+        if ops_service is not None:
+            api.state.ops_write_service = ops_service
+        api.state.workspace_services = workspace_services
         yield
     finally:
         if manager is not None:
             manager.shutdown()
-            del api.state.job_manager
+            if hasattr(api.state, "job_manager"):
+                del api.state.job_manager
         if ops_service is not None:
-            del api.state.ops_write_service
+            if hasattr(api.state, "ops_write_service"):
+                del api.state.ops_write_service
+        if hasattr(api.state, "workspace_services"):
+            del api.state.workspace_services
 
 
 def create_app(
     *,
     performance_sink: PerformanceSink | None = None,
     path_manager: PathManager | None = None,
+    workspace_registry: WorkspaceRegistry | None = None,
 ) -> FastAPI:
     from backend.api import dependencies
 
@@ -128,6 +147,8 @@ def create_app(
         },
     )
     api.state.path_manager = paths
+    registry = workspace_registry or load_default_workspace_registry(paths)
+    api.state.workspace_registry = registry
     project_root = getattr(paths, "project_root", None)
     if project_root is None:
         project_root = PROJECT_ROOT
@@ -269,6 +290,7 @@ def create_app(
     api.include_router(templates_router)
     api.include_router(training_router)
     api.include_router(workbench_router)
+    registry.include_routers(api)
 
     return api
 

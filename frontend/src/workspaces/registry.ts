@@ -1,0 +1,219 @@
+import type {
+  WorkspaceManifest,
+  WorkspaceManifestModule,
+  WorkspaceModuleIcon,
+  WorkspaceModuleId,
+} from './contracts'
+
+const MODULE_IDS = new Set<WorkspaceModuleId>(['teaching-prep', 'class-teacher'])
+const FEATURE_FLAG = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/
+const DATA_CLASSIFICATIONS = new Set([
+  'public',
+  'internal',
+  'confidential',
+  'restricted',
+])
+
+export interface WorkspaceModuleRouteDefinition {
+  id: WorkspaceModuleId
+  label: string
+  path: `/${WorkspaceModuleId}`
+  title: string
+  description: string
+  breadcrumb: string
+  icon: WorkspaceModuleIcon
+}
+
+export interface RegisteredWorkspaceModule {
+  manifest: WorkspaceManifest
+  route: WorkspaceModuleRouteDefinition
+}
+
+interface ManifestCandidate {
+  source: string
+  manifest: WorkspaceManifest
+}
+
+export class WorkspaceManifestError extends Error {}
+
+export class WorkspaceRegistry {
+  readonly modules: readonly RegisteredWorkspaceModule[]
+  readonly navigationItems: readonly WorkspaceModuleRouteDefinition[]
+
+  constructor(modules: readonly RegisteredWorkspaceModule[]) {
+    this.modules = modules
+    this.navigationItems = modules.map(({ route }) => route)
+  }
+
+  assertNoCoreConflicts(
+    coreRoutes: readonly { id: string; path: string }[],
+  ): void {
+    const coreIds = new Set(coreRoutes.map(({ id }) => id))
+    const corePaths = new Set(coreRoutes.map(({ path }) => path))
+    for (const { manifest } of this.modules) {
+      if (coreIds.has(manifest.moduleId)) {
+        throw new WorkspaceManifestError(
+          `Workspace ${manifest.moduleId} conflicts with a core route ID`,
+        )
+      }
+      if (corePaths.has(manifest.routePrefix)) {
+        throw new WorkspaceManifestError(
+          `Workspace ${manifest.moduleId} conflicts with a core route prefix`,
+        )
+      }
+    }
+  }
+}
+
+export function createWorkspaceRegistry(
+  manifests: readonly WorkspaceManifest[],
+): WorkspaceRegistry {
+  return createWorkspaceRegistryFromCandidates(
+    manifests.map((manifest, index) => ({
+      source: `manifest[${index}]`,
+      manifest,
+    })),
+  )
+}
+
+function createWorkspaceRegistryFromCandidates(
+  candidates: readonly ManifestCandidate[],
+): WorkspaceRegistry {
+  const seenIds = new Set<string>()
+  const seenRoutes = new Set<string>()
+  const seenOrders = new Set<number>()
+
+  for (const candidate of candidates) {
+    validateManifest(candidate.source, candidate.manifest)
+    const { moduleId, routePrefix, navigationOrder } = candidate.manifest
+    if (seenIds.has(moduleId)) {
+      throw new WorkspaceManifestError(`Duplicate workspace module ID: ${moduleId}`)
+    }
+    if (seenRoutes.has(routePrefix)) {
+      throw new WorkspaceManifestError(
+        `Duplicate workspace route prefix: ${routePrefix}`,
+      )
+    }
+    if (seenOrders.has(navigationOrder)) {
+      throw new WorkspaceManifestError(
+        `Duplicate workspace navigation order: ${navigationOrder}`,
+      )
+    }
+    seenIds.add(moduleId)
+    seenRoutes.add(routePrefix)
+    seenOrders.add(navigationOrder)
+  }
+
+  const enabled = candidates
+    .filter(({ source, manifest }) => resolveEnabled(source, manifest))
+    .sort((left, right) => (
+      left.manifest.navigationOrder - right.manifest.navigationOrder
+      || left.manifest.moduleId.localeCompare(right.manifest.moduleId)
+    ))
+    .map(({ manifest }) => ({
+      manifest,
+      route: {
+        id: manifest.moduleId,
+        label: manifest.displayName,
+        path: manifest.routePrefix,
+        title: manifest.title,
+        description: manifest.description,
+        breadcrumb: manifest.breadcrumb,
+        icon: manifest.icon,
+      },
+    }))
+
+  return new WorkspaceRegistry(enabled)
+}
+
+function resolveEnabled(source: string, manifest: WorkspaceManifest): boolean {
+  try {
+    const enabled = typeof manifest.enabled === 'function'
+      ? manifest.enabled()
+      : manifest.enabled
+    if (typeof enabled !== 'boolean') {
+      throw new TypeError('enabled condition must return boolean')
+    }
+    return enabled
+  } catch (error) {
+    throw new WorkspaceManifestError(
+      `Workspace ${manifest.moduleId || source} enablement failed: ${String(error)}`,
+    )
+  }
+}
+
+function validateManifest(source: string, manifest: WorkspaceManifest): void {
+  const label = String(manifest?.moduleId || source)
+  if (!manifest || typeof manifest !== 'object') {
+    throw new WorkspaceManifestError(`Workspace ${source} manifest is invalid`)
+  }
+  if (!MODULE_IDS.has(manifest.moduleId)) {
+    throw new WorkspaceManifestError(`Workspace ${label} module ID is invalid`)
+  }
+  if (manifest.routePrefix !== `/${manifest.moduleId}`) {
+    throw new WorkspaceManifestError(`Workspace ${label} route prefix is invalid`)
+  }
+  if (manifest.icon !== manifest.moduleId) {
+    throw new WorkspaceManifestError(`Workspace ${label} icon key is invalid`)
+  }
+  if (manifest.navigationGroup !== 'teacher-workspaces') {
+    throw new WorkspaceManifestError(
+      `Workspace ${label} navigation group is invalid`,
+    )
+  }
+  if (
+    !Number.isSafeInteger(manifest.navigationOrder)
+    || manifest.navigationOrder <= 0
+  ) {
+    throw new WorkspaceManifestError(
+      `Workspace ${label} navigation order is invalid`,
+    )
+  }
+  for (const field of [
+    manifest.displayName,
+    manifest.title,
+    manifest.description,
+    manifest.breadcrumb,
+  ]) {
+    if (!String(field || '').trim()) {
+      throw new WorkspaceManifestError(
+        `Workspace ${label} display metadata is incomplete`,
+      )
+    }
+  }
+  if (typeof manifest.page !== 'function') {
+    throw new WorkspaceManifestError(`Workspace ${label} page loader is invalid`)
+  }
+  if (
+    !Array.isArray(manifest.dataClassifications)
+    || manifest.dataClassifications.length === 0
+    || manifest.dataClassifications.some(
+      (value) => !DATA_CLASSIFICATIONS.has(value),
+    )
+  ) {
+    throw new WorkspaceManifestError(
+      `Workspace ${label} data classifications are invalid`,
+    )
+  }
+  if (
+    !Array.isArray(manifest.featureFlags)
+    || manifest.featureFlags.some((value) => !FEATURE_FLAG.test(value))
+    || new Set(manifest.featureFlags).size !== manifest.featureFlags.length
+  ) {
+    throw new WorkspaceManifestError(
+      `Workspace ${label} feature flags are invalid`,
+    )
+  }
+}
+
+const discoveredManifestModules = import.meta.glob<WorkspaceManifestModule>(
+  './*/manifest.ts',
+  { eager: true },
+)
+
+export const workspaceRegistry = createWorkspaceRegistryFromCandidates(
+  Object.entries(discoveredManifestModules).map(([source, module]) => ({
+    source,
+    manifest: module.default,
+  })),
+)
