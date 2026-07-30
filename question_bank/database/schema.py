@@ -7,6 +7,9 @@ from pathlib import Path
 
 from backend.performance.metrics import instrument_sqlite_connection
 from backend.schema_migrations import ensure_schema_current
+from question_bank.relations.bootstrap import (
+    bootstrap_governed_knowledge_identities,
+)
 
 
 @contextmanager
@@ -38,6 +41,7 @@ def initialize_database(db_path: Path) -> None:
     """Bring the question bank to the current migration version."""
     ensure_schema_current("question_bank", db_path)
     with connect(db_path) as conn:
+        bootstrap_governed_knowledge_identities(conn)
         conn.execute(
             """
             UPDATE papers
