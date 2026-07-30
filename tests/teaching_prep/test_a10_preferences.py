@@ -32,6 +32,7 @@ from backend.teaching_prep.application.preparation_service import (
 from backend.teaching_prep.application.slide_plans import (
     build_slide_plan_payload,
     validate_operation,
+    validate_plan_payload,
 )
 from backend.teaching_prep.api.schemas import LessonDraftPreflightResponse
 from backend.teaching_prep.domain.errors import (
@@ -458,6 +459,7 @@ def test_local_practice_classification_and_trim_levels_remain_distinct() -> None
     assert _classify_slide("比例练习", "") == "practice"
     assert _classify_slide("例如后练习", "") == "practice"
     assert _classify_slide("例 2：求证", "") == "example"
+    assert _classify_slide("练习后的讲解", "典型例题") == "example"
     materials = [
         {
             "purpose": "reference_ppt",
@@ -498,6 +500,38 @@ def test_local_practice_classification_and_trim_levels_remain_distinct() -> None
         }
     )
     assert not any(item["action"] == "delete" for item in short_preserved)
+    materials[0]["units"][8] = {
+        "unit_index": 9,
+        "title": "典型例题",
+        "text": "典型例题\n练习后的完整讲解" + "推导" * 120,
+    }
+    typical_example = _local_slide_adaptations(
+        {
+            "materials": materials,
+            "preparation_preferences": _preferences(
+                practice_trim_level="strong",
+                preserve_teaching_examples=True,
+            ),
+        }
+    )[8]
+    assert typical_example["role"] == "example"
+    assert typical_example["action"] == "keep"
+
+
+def test_legacy_slide_plan_validation_adds_read_only_default_preferences() -> None:
+    legacy_payload = {
+        "schema_version": 1,
+        "source_presentations": [],
+        "slides": [],
+        "operations": [],
+        "unsupported_objects": [],
+        "approval_history": [],
+    }
+
+    validated = validate_plan_payload(legacy_payload)
+
+    assert validated["preparation_preferences"] == _preferences()
+    assert "preparation_preferences" not in legacy_payload
 
 
 def test_multi_region_supplement_keeps_every_frozen_crop(
