@@ -138,11 +138,17 @@ def test_preview_backup_excludes_api_profiles_without_creating_output(tmp_path: 
     paths.config_dir.mkdir(parents=True)
     (paths.config_dir / "api_profiles.json").write_text('{"api_key":"secret"}', encoding="utf-8")
     (paths.config_dir / "safe.json").write_text('{"ok":true}', encoding="utf-8")
+    workspace_file = (
+        paths.data_root / "workspaces" / "teaching-prep" / "private.db"
+    )
+    workspace_file.parent.mkdir(parents=True)
+    workspace_file.write_text("private", encoding="utf-8")
 
     preview = preview_backup(path_manager=paths)
 
     assert "user_data/config/safe.json" in preview["files"]
     assert "user_data/config/api_profiles.json" not in preview["files"]
+    assert not any("workspaces/" in name for name in preview["files"])
     assert preview["skipped_sensitive"] == ["user_data/config/api_profiles.json"]
     assert not paths.backups_dir.exists()
     assert not paths.logs_dir.exists()
