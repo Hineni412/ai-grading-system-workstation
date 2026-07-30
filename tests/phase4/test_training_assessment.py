@@ -33,6 +33,10 @@ from question_bank.recommendation.personalized import (
     PersonalizedRecommendationConfig,
 )
 from question_bank.database.schema import connect, initialize_database
+from question_bank.relations.query_service import (
+    GraphV2Query,
+    KnowledgeGraphV2QueryService,
+)
 
 
 DRAFT_ID = "1" * 64
@@ -1457,6 +1461,26 @@ def test_published_training_changes_enabled_v2_and_next_draft_only(
     )
     assert change["applied_to_active_mode"] is True
     assert change["v2_after"]["value"] > change["v2_before"]["value"]
+    graph = KnowledgeGraphV2QueryService(
+        db_path,
+        clock=lambda: datetime(2026, 7, 30, 12, 0, tzinfo=UTC),
+    ).query(
+        diagnosis,
+        GraphV2Query(
+            knowledge_keys=("kp_alg_linear_equation",),
+            prerequisite_depth=0,
+        ),
+    )
+    graph_node = next(
+        node
+        for node in graph["nodes"]
+        if node["stable_key"] == "kp_alg_linear_equation"
+    )
+    assert graph["mastery_mode"] == "v2"
+    assert graph_node["mastery_v2"]["value"] == change["v2_after"]["value"]
+    assert graph_node["mastery_v2"]["evidence_count"] == (
+        change["v2_after"]["direct_evidence_count"]
+    )
     assert feedback["next_round"]["status"] == "draft", feedback[
         "next_round"
     ]

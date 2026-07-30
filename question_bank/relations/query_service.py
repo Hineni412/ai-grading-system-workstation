@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sqlite3
 from collections import deque
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Callable
@@ -14,16 +15,19 @@ from integration.skill_graph_projection import (
     build_question_tag_graph_nodes,
     build_question_tag_graph_rows,
 )
+from question_bank.database.schema import connect
 from question_bank.relations.repository import (
     ActiveKnowledgeRelation,
     KnowledgeIdentityRecord,
     KnowledgeRelationRepository,
 )
 from question_bank.mastery.comparison import (
+    MasteryComparisonCase,
     build_profile_comparison_cases,
     compare_mastery_v1_v2,
 )
 from question_bank.mastery.rollout import MasteryRolloutRepository
+from question_bank.mastery.v2 import TrainingEvidence
 from question_bank.taxonomy.registry import canonicalize_knowledge_exact
 
 
@@ -206,12 +210,34 @@ class KnowledgeGraphV2QueryService:
                 "掌握度 v2 已启用，但当前范围没有可计算的受治理证据。",
             )
         try:
+            published = self._published_training_evidence(cases)
+            cases = tuple(
+                replace(
+                    case,
+                    training_evidence=published.get(
+                        (case.student_id, case.stable_key),
+                        (),
+                    ),
+                )
+                for case in cases
+            )
+            query_time = self.clock()
+            as_of = max(
+                (
+                    evidence.occurred_at
+                    for case in cases
+                    for evidence in case.training_evidence
+                    if evidence.occurred_at is not None
+                ),
+                default=query_time,
+            )
+            as_of = max(as_of, query_time)
             report = compare_mastery_v1_v2(
                 cases,
-                as_of=self.clock(),
+                as_of=as_of,
                 parameters=parameters,
             )
-        except (TypeError, ValueError):
+        except (sqlite3.Error, TypeError, ValueError):
             return (
                 "v1",
                 None,
@@ -256,6 +282,50 @@ class KnowledgeGraphV2QueryService:
                 "reason": None,
             }
         return "v2", parameters.version, projection, None
+
+    def _published_training_evidence(
+        self,
+        cases: Sequence[MasteryComparisonCase],
+    ) -> dict[tuple[str, str], tuple[TrainingEvidence, ...]]:
+        student_ids = tuple(sorted({case.student_id for case in cases}))
+        stable_keys = tuple(sorted({case.stable_key for case in cases}))
+        if not student_ids or not stable_keys:
+            return {}
+        student_placeholders = ",".join("?" for _ in student_ids)
+        key_placeholders = ",".join("?" for _ in stable_keys)
+        with connect(self.db_path) as connection:
+            rows = connection.execute(
+                f"""
+                SELECT evidence_id, student_id, stable_key, occurred_at,
+                       achieved_points, total_points, difficulty_weight,
+                       evidence_weight
+                FROM training_evidence_records
+                WHERE status = 'active'
+                  AND student_id IN ({student_placeholders})
+                  AND stable_key IN ({key_placeholders})
+                ORDER BY student_id, stable_key, occurred_at, evidence_id
+                """,
+                (*student_ids, *stable_keys),
+            ).fetchall()
+        grouped: dict[tuple[str, str], list[TrainingEvidence]] = {}
+        for row in rows:
+            evidence = TrainingEvidence(
+                evidence_id=str(row["evidence_id"]),
+                stable_key=str(row["stable_key"]),
+                occurred_at=datetime.fromisoformat(str(row["occurred_at"])),
+                achieved_points=int(row["achieved_points"]),
+                total_points=int(row["total_points"]),
+                difficulty_weight=float(row["difficulty_weight"]),
+                evidence_weight=float(row["evidence_weight"]),
+            )
+            grouped.setdefault(
+                (str(row["student_id"]), evidence.stable_key),
+                [],
+            ).append(evidence)
+        return {
+            identity: tuple(items)
+            for identity, items in grouped.items()
+        }
 
     def evidence(
         self,
