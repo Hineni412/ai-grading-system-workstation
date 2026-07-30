@@ -47,6 +47,31 @@
   font-weight: var(--font-weight-medium);
 }
 
+.teaching-prep-material-import {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.teaching-prep-file-input {
+  position: absolute;
+  inline-size: 1px;
+  block-size: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+}
+
+.teaching-prep-material-import label,
+.teaching-prep-material__relocate {
+  cursor: pointer;
+}
+
+.teaching-prep-material-import label.is-disabled,
+.teaching-prep-material__relocate.is-disabled {
+  cursor: not-allowed;
+  opacity: var(--opacity-disabled);
+}
+
 .teaching-prep-page__error {
   display: flex;
   align-items: center;
@@ -321,6 +346,17 @@
 .teaching-prep-material .is-needs_relocation,
 .teaching-prep-material .is-missing {
   color: var(--color-warning);
+}
+
+.teaching-prep-material__status {
+  justify-items: end;
+}
+
+.teaching-prep-material__relocate {
+  color: var(--color-accent);
+  font-size: var(--font-size-caption);
+  text-decoration: underline;
+  text-underline-offset: 0.15em;
 }
 
 .teaching-prep-units,

@@ -52,7 +52,7 @@ export interface MaterialVersion {
   content_sha256: string
   safe_filename: string
   size_bytes: number
-  modified_ns: number | null
+  modified_ns: string | null
   unit_count: number | null
   inspection_status: string
   availability: 'available' | 'missing' | 'needs_relocation'
@@ -563,7 +563,13 @@ function material(value: unknown): MaterialVersion {
     || !text(value.content_sha256)
     || !text(value.safe_filename)
     || !integer(value.size_bytes)
-    || !(value.modified_ns === null || integer(value.modified_ns))
+    || !(
+      value.modified_ns === null
+      || (
+        typeof value.modified_ns === 'string'
+        && /^[0-9]+$/.test(value.modified_ns)
+      )
+    )
     || !(value.unit_count === null || integer(value.unit_count))
     || !text(value.inspection_status)
     || !['available', 'missing', 'needs_relocation'].includes(
@@ -1137,6 +1143,46 @@ export const teachingPrepCatalogApi = {
       signal,
       decode: (payload) => itemList(payload, material),
     })
+  },
+
+  importMaterialCopy(
+    file: File,
+    requestToken: string,
+    signal?: AbortSignal,
+  ): Promise<MaterialVersion> {
+    return apiClient.request('/api/teaching-prep/materials/import-copy', {
+      method: 'POST',
+      rawBody: file,
+      headers: materialUploadHeaders(file, requestToken),
+      signal,
+      timeoutMs: 120_000,
+      decode: (payload) => {
+        assertNoPathLikeKeys(payload)
+        return material(payload)
+      },
+    })
+  },
+
+  relocateMaterialCopy(
+    materialVersionId: string,
+    file: File,
+    requestToken: string,
+    signal?: AbortSignal,
+  ): Promise<MaterialVersion> {
+    return apiClient.request(
+      `/api/teaching-prep/materials/${encodeURIComponent(materialVersionId)}/relocate-copy`,
+      {
+        method: 'POST',
+        rawBody: file,
+        headers: materialUploadHeaders(file, requestToken),
+        signal,
+        timeoutMs: 120_000,
+        decode: (payload) => {
+          assertNoPathLikeKeys(payload)
+          return material(payload)
+        },
+      },
+    )
   },
 
   parseMaterial(
@@ -1776,4 +1822,18 @@ export const teachingPrepCatalogApi = {
       },
     )
   },
+}
+
+function materialUploadHeaders(
+  file: File,
+  requestToken: string,
+): Readonly<Record<string, string>> {
+  const displayName = file.name.replace(/\.[^.]+$/, '') || file.name
+  return {
+    'content-type': file.type || 'application/octet-stream',
+    'x-upload-filename': encodeURIComponent(file.name),
+    'x-display-name': encodeURIComponent(displayName),
+    'x-request-token': requestToken,
+    'x-file-modified-ms': String(Math.max(0, Math.trunc(file.lastModified))),
+  }
 }

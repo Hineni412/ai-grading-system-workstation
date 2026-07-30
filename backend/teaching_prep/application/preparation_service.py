@@ -167,7 +167,14 @@ class TeachingPrepService:
         self.database_path = self.root / "teaching_prep.db"
         self.paths = {
             name: self.root / name
-            for name in ("temp", "staging", "outputs", "previews", "exports")
+            for name in (
+                "temp",
+                "staging",
+                "materials",
+                "outputs",
+                "previews",
+                "exports",
+            )
         }
         for path in self.paths.values():
             path.mkdir(parents=True, exist_ok=True)
@@ -403,6 +410,7 @@ class TeachingPrepService:
         path: str | Path,
         display_name: str,
         source_id: str | None = None,
+        file_name: str | None = None,
         unit_count: int | None = None,
         inspection_status: str = "uninspected",
     ) -> tuple[MaterialVersion, bool]:
@@ -423,6 +431,15 @@ class TeachingPrepService:
             )
         clean_unit_count = _clean_unit_count(unit_count)
         file_stat = source_path.stat()
+        clean_file_name = str(file_name or source_path.name).strip()
+        if (
+            not clean_file_name
+            or len(clean_file_name) > 240
+            or clean_file_name != Path(clean_file_name).name
+            or "/" in clean_file_name
+            or "\\" in clean_file_name
+        ):
+            raise TeachingPrepValidationError("material filename is invalid")
         return self.catalog.register_material_version(
             request_token=_clean_token(request_token),
             source_id=(
@@ -435,13 +452,105 @@ class TeachingPrepService:
             ),
             material_type=material_type,
             content_sha256=_sha256_file(source_path),
-            file_name=source_path.name,
+            file_name=clean_file_name,
             local_path=str(source_path),
             size_bytes=int(file_stat.st_size),
             modified_ns=int(file_stat.st_mtime_ns),
             unit_count=clean_unit_count,
             inspection_status=clean_status,
         )
+
+    def import_material_copy(
+        self,
+        *,
+        request_token: str,
+        staged_path: str | Path,
+        original_filename: str,
+        display_name: str,
+        modified_ns: int | None = None,
+        relocate_version_id: str | None = None,
+    ) -> tuple[MaterialVersion, bool]:
+        source_path = Path(staged_path).resolve(strict=True)
+        staging_root = self.paths["temp"].resolve(strict=False)
+        if not source_path.is_relative_to(staging_root) or not source_path.is_file():
+            raise TeachingPrepValidationError(
+                "material upload is outside the controlled staging directory"
+            )
+        clean_filename = str(original_filename or "").strip()
+        if (
+            not clean_filename
+            or len(clean_filename) > 240
+            or clean_filename != Path(clean_filename).name
+            or "/" in clean_filename
+            or "\\" in clean_filename
+        ):
+            raise TeachingPrepValidationError("material filename is invalid")
+        suffix = Path(clean_filename).suffix.casefold()
+        if suffix not in _MATERIAL_SUFFIXES:
+            raise TeachingPrepValidationError(
+                "material file type is unsupported"
+            )
+        clean_modified_ns = (
+            int(modified_ns) if modified_ns is not None else None
+        )
+        if clean_modified_ns is not None and clean_modified_ns < 0:
+            raise TeachingPrepValidationError(
+                "material modified time is invalid"
+            )
+        if source_path.stat().st_size <= 0:
+            raise TeachingPrepValidationError("material upload is empty")
+
+        fingerprint = _sha256_file(source_path)
+        destination = (
+            self.paths["materials"] / f"{fingerprint}{suffix}"
+        ).resolve(strict=False)
+        materials_root = self.paths["materials"].resolve(strict=False)
+        if not destination.is_relative_to(materials_root):
+            raise TeachingPrepValidationError(
+                "material destination is outside the controlled directory"
+            )
+        if not destination.exists():
+            temporary = materials_root / f".{fingerprint}-{uuid4().hex}.part"
+            shutil.copy2(source_path, temporary)
+            os.replace(temporary, destination)
+        if clean_modified_ns is not None:
+            os.utime(
+                destination,
+                ns=(clean_modified_ns, clean_modified_ns),
+            )
+
+        if relocate_version_id is not None:
+            current = self.catalog.get_material_version(
+                _clean_entity_id(relocate_version_id)
+            )
+            if fingerprint == current.content_sha256:
+                return (
+                    self.catalog.update_material_location(
+                        current.id,
+                        local_path=str(destination),
+                    ),
+                    False,
+                )
+            source_id = current.source_id
+            effective_display_name = current.display_name
+        else:
+            source_id = None
+            effective_display_name = display_name
+
+        item, created = self.register_material_file(
+            request_token=request_token,
+            path=destination,
+            display_name=effective_display_name,
+            source_id=source_id,
+            file_name=clean_filename,
+            inspection_status="uninspected",
+        )
+        if not created:
+            item = self.catalog.update_material_location(
+                item.id,
+                local_path=str(destination),
+            )
+        return item, created
 
     def list_material_versions(
         self,

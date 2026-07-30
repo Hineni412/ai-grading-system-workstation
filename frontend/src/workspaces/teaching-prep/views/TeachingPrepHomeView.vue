@@ -323,6 +323,33 @@ async function openMaterial(material: MaterialVersion): Promise<void> {
   await catalog.openMaterial(material)
 }
 
+async function importMaterialCopy(event: Event): Promise<void> {
+  const input = event.currentTarget as HTMLInputElement
+  const file = input.files?.[0]
+  input.value = ''
+  if (!file) return
+  try {
+    await catalog.importMaterialCopy(file)
+  } catch {
+    // The store keeps a safe upload error visible.
+  }
+}
+
+async function relocateMaterialCopy(
+  material: MaterialVersion,
+  event: Event,
+): Promise<void> {
+  const input = event.currentTarget as HTMLInputElement
+  const file = input.files?.[0]
+  input.value = ''
+  if (!file) return
+  try {
+    await catalog.relocateMaterialCopy(material, file)
+  } catch {
+    // The store keeps a safe relocation error visible.
+  }
+}
+
 function toggleUnit(unit: MaterialUnit): void {
   selectedUnitIds.value = selectedUnitIds.value.includes(unit.id)
     ? selectedUnitIds.value.filter((id) => id !== unit.id)
@@ -1207,13 +1234,28 @@ function operationForReview(operationId: string): SlideOperation {
             <p>第三步</p>
             <h2>资料库</h2>
           </div>
-          <span class="teaching-prep-panel__count">
-            {{ catalog.materials.length }} 个版本
-          </span>
+          <div class="teaching-prep-material-import">
+            <span class="teaching-prep-panel__count">
+              {{ catalog.materials.length }} 个版本
+            </span>
+            <label
+              class="teaching-prep-button teaching-prep-button--quiet"
+              :class="{ 'is-disabled': catalog.saveState === 'saving' }"
+            >
+              导入副本
+              <input
+                class="teaching-prep-file-input"
+                type="file"
+                accept=".pdf,.pptx,.png,.jpg,.jpeg,.webp"
+                :disabled="catalog.saveState === 'saving'"
+                @change="importMaterialCopy"
+              >
+            </label>
+          </div>
         </div>
         <div class="teaching-prep-page__notice" role="status">
           <strong>{{ catalog.selectedLesson?.title ?? '尚未选择课时' }}</strong>
-          <span>选择具体课时后，可把资料页分成多段确认关联；原资料版本保持不变。</span>
+          <span>选择 PDF、PPTX 或图片后，会明确导入一份受控副本；原文件保持不变。</span>
         </div>
         <p v-if="catalog.materials.length === 0" class="teaching-prep-empty">
           尚未登记教材、课件或教辅版本。
@@ -1229,9 +1271,25 @@ function operationForReview(operationId: string): SlideOperation {
               <strong>{{ material.display_name }}</strong>
               <span>{{ material.safe_filename }}</span>
             </button>
-            <span :class="`is-${material.availability}`">
-              {{ materialStatusLabel(material.availability) }}
-            </span>
+            <div class="teaching-prep-material__status">
+              <span :class="`is-${material.availability}`">
+                {{ materialStatusLabel(material.availability) }}
+              </span>
+              <label
+                v-if="material.availability !== 'available'"
+                class="teaching-prep-material__relocate"
+                :class="{ 'is-disabled': catalog.saveState === 'saving' }"
+              >
+                重新选择文件
+                <input
+                  class="teaching-prep-file-input"
+                  type="file"
+                  accept=".pdf,.pptx,.png,.jpg,.jpeg,.webp"
+                  :disabled="catalog.saveState === 'saving'"
+                  @change="relocateMaterialCopy(material, $event)"
+                >
+              </label>
+            </div>
           </article>
         </template>
 

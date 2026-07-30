@@ -75,6 +75,8 @@ export const useTeachingPrepCatalogStore = defineStore(
     const saveState = ref<'idle' | 'saving'>('idle')
     const errorMessage = ref('')
     let loadController: AbortController | null = null
+    let lessonFlowGeneration = 0
+    let materialFlowGeneration = 0
 
     const selectedCurriculum = computed(
       () => curricula.value.find(
@@ -89,6 +91,8 @@ export const useTeachingPrepCatalogStore = defineStore(
 
     async function load(): Promise<void> {
       loadController?.abort()
+      lessonFlowGeneration += 1
+      materialFlowGeneration += 1
       const controller = new AbortController()
       loadController = controller
       loadState.value = 'loading'
@@ -129,6 +133,8 @@ export const useTeachingPrepCatalogStore = defineStore(
 
     async function selectCurriculum(curriculumId: string): Promise<void> {
       if (curriculumId === selectedCurriculumId.value) return
+      const generation = ++lessonFlowGeneration
+      materialFlowGeneration += 1
       selectedCurriculumId.value = curriculumId
       selectedLessonId.value = null
       selectedMaterialId.value = null
@@ -143,9 +149,18 @@ export const useTeachingPrepCatalogStore = defineStore(
       loadState.value = 'loading'
       errorMessage.value = ''
       try {
-        lessonNodes.value = await teachingPrepCatalogApi.listLessons(curriculumId)
+        const nextLessons = await teachingPrepCatalogApi.listLessons(curriculumId)
+        if (
+          generation !== lessonFlowGeneration
+          || selectedCurriculumId.value !== curriculumId
+        ) return
+        lessonNodes.value = nextLessons
         loadState.value = 'ready'
       } catch (error) {
+        if (
+          generation !== lessonFlowGeneration
+          || selectedCurriculumId.value !== curriculumId
+        ) return
         loadState.value = 'error'
         errorMessage.value = safeMessage(error)
       }
@@ -153,7 +168,24 @@ export const useTeachingPrepCatalogStore = defineStore(
 
     async function selectLesson(node: LessonNode): Promise<void> {
       if (node.node_type !== 'lesson') return
+      const generation = ++lessonFlowGeneration
       selectedLessonId.value = node.id
+      materialLinks.value = []
+      exerciseCandidates.value = []
+      resourcePacks.value = []
+      resourcePackStatus.value = null
+      selectedResourcePackId.value = null
+      lessonDrafts.value = []
+      lessonDraftPreflight.value = null
+      selectedLessonDraftId.value = null
+      slidePlans.value = []
+      selectedSlidePlanId.value = null
+      slidePlanPreview.value = null
+      pptxExecutions.value = []
+      latestPptxVersion.value = null
+      classVariants.value = []
+      upClassPackages.value = []
+      postLessonReviews.value = []
       errorMessage.value = ''
       try {
         const [
@@ -173,6 +205,29 @@ export const useTeachingPrepCatalogStore = defineStore(
           teachingPrepCatalogApi.listUpClassPackages(node.id),
           teachingPrepCatalogApi.listPostLessonReviews(node.id),
         ])
+        const nextDrafts = nextPacks[0]
+          ? await teachingPrepCatalogApi.listLessonDrafts(nextPacks[0].id)
+          : []
+        const confirmedDraft = nextDrafts.find(
+          ({ status }) => status === 'confirmed',
+        )
+        const nextPlans = confirmedDraft
+          ? await teachingPrepCatalogApi.listSlidePlans(confirmedDraft.id)
+          : []
+        const nextPreview = nextPlans[0]
+          ? await teachingPrepCatalogApi.getSlidePlanPreview(
+            nextPlans[0].id,
+          )
+          : null
+        const nextExecutions = nextPlans[0]
+          ? await teachingPrepCatalogApi.listPptxExecutions(
+            nextPlans[0].id,
+          )
+          : []
+        if (
+          generation !== lessonFlowGeneration
+          || selectedLessonId.value !== node.id
+        ) return
         materialLinks.value = nextLinks
         exerciseCandidates.value = nextExercises
         resourcePacks.value = nextPacks
@@ -181,46 +236,84 @@ export const useTeachingPrepCatalogStore = defineStore(
         upClassPackages.value = nextPackages
         postLessonReviews.value = nextReviews
         selectedResourcePackId.value = nextPacks[0]?.id ?? null
-        lessonDraftPreflight.value = null
-        lessonDrafts.value = nextPacks[0]
-          ? await teachingPrepCatalogApi.listLessonDrafts(nextPacks[0].id)
-          : []
-        const confirmedDraft = lessonDrafts.value.find(
-          ({ status }) => status === 'confirmed',
-        )
+        lessonDrafts.value = nextDrafts
         selectedLessonDraftId.value = confirmedDraft?.id ?? null
-        slidePlans.value = confirmedDraft
-          ? await teachingPrepCatalogApi.listSlidePlans(confirmedDraft.id)
-          : []
-        selectedSlidePlanId.value = slidePlans.value[0]?.id ?? null
-        slidePlanPreview.value = slidePlans.value[0]
-          ? await teachingPrepCatalogApi.getSlidePlanPreview(
-            slidePlans.value[0].id,
-          )
-          : null
-        pptxExecutions.value = slidePlans.value[0]
-          ? await teachingPrepCatalogApi.listPptxExecutions(
-            slidePlans.value[0].id,
-          )
-          : []
+        slidePlans.value = nextPlans
+        selectedSlidePlanId.value = nextPlans[0]?.id ?? null
+        slidePlanPreview.value = nextPreview
+        pptxExecutions.value = nextExecutions
         latestPptxVersion.value = null
       } catch (error) {
+        if (
+          generation !== lessonFlowGeneration
+          || selectedLessonId.value !== node.id
+        ) return
         errorMessage.value = safeMessage(error)
       }
     }
 
     async function openMaterial(material: MaterialVersion): Promise<void> {
+      const generation = ++materialFlowGeneration
       selectedMaterialId.value = material.id
       loadState.value = 'loading'
       errorMessage.value = ''
       try {
-        materialUnits.value = await teachingPrepCatalogApi.parseMaterial(
+        const nextUnits = await teachingPrepCatalogApi.parseMaterial(
           material.id,
         )
+        if (
+          generation !== materialFlowGeneration
+          || selectedMaterialId.value !== material.id
+        ) return
+        materialUnits.value = nextUnits
         loadState.value = 'ready'
       } catch (error) {
+        if (
+          generation !== materialFlowGeneration
+          || selectedMaterialId.value !== material.id
+        ) return
         loadState.value = 'error'
         errorMessage.value = safeMessage(error)
+      }
+    }
+
+    async function importMaterialCopy(file: File): Promise<void> {
+      saveState.value = 'saving'
+      errorMessage.value = ''
+      try {
+        const item = await teachingPrepCatalogApi.importMaterialCopy(
+          file,
+          `material-import-${globalThis.crypto.randomUUID().replaceAll('-', '')}`,
+        )
+        materials.value = await teachingPrepCatalogApi.listMaterials()
+        await openMaterial(item)
+      } catch (error) {
+        errorMessage.value = safeMessage(error)
+        throw error
+      } finally {
+        saveState.value = 'idle'
+      }
+    }
+
+    async function relocateMaterialCopy(
+      material: MaterialVersion,
+      file: File,
+    ): Promise<void> {
+      saveState.value = 'saving'
+      errorMessage.value = ''
+      try {
+        const item = await teachingPrepCatalogApi.relocateMaterialCopy(
+          material.id,
+          file,
+          `material-relocate-${globalThis.crypto.randomUUID().replaceAll('-', '')}`,
+        )
+        materials.value = await teachingPrepCatalogApi.listMaterials()
+        await openMaterial(item)
+      } catch (error) {
+        errorMessage.value = safeMessage(error)
+        throw error
+      } finally {
+        saveState.value = 'idle'
       }
     }
 
@@ -460,27 +553,39 @@ export const useTeachingPrepCatalogStore = defineStore(
     }
 
     async function selectResourcePack(pack: ResourcePack): Promise<void> {
+      const generation = ++lessonFlowGeneration
       selectedResourcePackId.value = pack.id
       lessonDraftPreflight.value = null
       errorMessage.value = ''
       try {
-        lessonDrafts.value = await teachingPrepCatalogApi.listLessonDrafts(
+        const nextDrafts = await teachingPrepCatalogApi.listLessonDrafts(
           pack.id,
         )
-        const confirmedDraft = lessonDrafts.value.find(
+        const confirmedDraft = nextDrafts.find(
           ({ status }) => status === 'confirmed',
         )
-        selectedLessonDraftId.value = confirmedDraft?.id ?? null
-        slidePlans.value = confirmedDraft
+        const nextPlans = confirmedDraft
           ? await teachingPrepCatalogApi.listSlidePlans(confirmedDraft.id)
           : []
-        selectedSlidePlanId.value = slidePlans.value[0]?.id ?? null
-        slidePlanPreview.value = slidePlans.value[0]
+        const nextPreview = nextPlans[0]
           ? await teachingPrepCatalogApi.getSlidePlanPreview(
-            slidePlans.value[0].id,
+            nextPlans[0].id,
           )
           : null
+        if (
+          generation !== lessonFlowGeneration
+          || selectedResourcePackId.value !== pack.id
+        ) return
+        lessonDrafts.value = nextDrafts
+        selectedLessonDraftId.value = confirmedDraft?.id ?? null
+        slidePlans.value = nextPlans
+        selectedSlidePlanId.value = nextPlans[0]?.id ?? null
+        slidePlanPreview.value = nextPreview
       } catch (error) {
+        if (
+          generation !== lessonFlowGeneration
+          || selectedResourcePackId.value !== pack.id
+        ) return
         errorMessage.value = safeMessage(error)
         throw error
       }
@@ -556,6 +661,7 @@ export const useTeachingPrepCatalogStore = defineStore(
     }
 
     async function selectLessonDraft(draft: LessonDraft): Promise<void> {
+      const generation = ++lessonFlowGeneration
       selectedLessonDraftId.value = draft.id
       selectedSlidePlanId.value = null
       slidePlanPreview.value = null
@@ -563,13 +669,28 @@ export const useTeachingPrepCatalogStore = defineStore(
       latestPptxVersion.value = null
       errorMessage.value = ''
       try {
-        slidePlans.value = await teachingPrepCatalogApi.listSlidePlans(
+        const nextPlans = await teachingPrepCatalogApi.listSlidePlans(
           draft.id,
         )
-        if (slidePlans.value[0]) {
-          await selectSlidePlan(slidePlans.value[0])
-        }
+        const nextPreview = nextPlans[0]
+          ? await teachingPrepCatalogApi.getSlidePlanPreview(nextPlans[0].id)
+          : null
+        const nextExecutions = nextPlans[0]
+          ? await teachingPrepCatalogApi.listPptxExecutions(nextPlans[0].id)
+          : []
+        if (
+          generation !== lessonFlowGeneration
+          || selectedLessonDraftId.value !== draft.id
+        ) return
+        slidePlans.value = nextPlans
+        selectedSlidePlanId.value = nextPlans[0]?.id ?? null
+        slidePlanPreview.value = nextPreview
+        pptxExecutions.value = nextExecutions
       } catch (error) {
+        if (
+          generation !== lessonFlowGeneration
+          || selectedLessonDraftId.value !== draft.id
+        ) return
         errorMessage.value = safeMessage(error)
         throw error
       }
@@ -594,6 +715,7 @@ export const useTeachingPrepCatalogStore = defineStore(
     }
 
     async function selectSlidePlan(plan: SlidePlan): Promise<void> {
+      const generation = ++lessonFlowGeneration
       selectedSlidePlanId.value = plan.id
       errorMessage.value = ''
       try {
@@ -601,10 +723,18 @@ export const useTeachingPrepCatalogStore = defineStore(
           teachingPrepCatalogApi.getSlidePlanPreview(plan.id),
           teachingPrepCatalogApi.listPptxExecutions(plan.id),
         ])
+        if (
+          generation !== lessonFlowGeneration
+          || selectedSlidePlanId.value !== plan.id
+        ) return
         slidePlanPreview.value = preview
         pptxExecutions.value = executions
         latestPptxVersion.value = null
       } catch (error) {
+        if (
+          generation !== lessonFlowGeneration
+          || selectedSlidePlanId.value !== plan.id
+        ) return
         errorMessage.value = safeMessage(error)
         throw error
       }
@@ -941,6 +1071,8 @@ export const useTeachingPrepCatalogStore = defineStore(
       moveLesson,
       selectLesson,
       openMaterial,
+      importMaterialCopy,
+      relocateMaterialCopy,
       saveMaterialUnitLabel,
       confirmMaterialRanges,
       deactivateMaterialLink,

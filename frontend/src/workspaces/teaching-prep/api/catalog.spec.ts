@@ -35,9 +35,53 @@ const packagePayload = {
   download_url: `/api/teaching-prep/up-class-packages/${'a'.repeat(32)}/download`,
 }
 
+const materialPayload = {
+  id: '8'.repeat(32),
+  source_id: '9'.repeat(32),
+  display_name: '合成教材',
+  material_type: 'pdf',
+  content_sha256: '3'.repeat(64),
+  safe_filename: '合成教材.pdf',
+  size_bytes: 18,
+  modified_ns: '1760000000000000000',
+  unit_count: null,
+  inspection_status: 'uninspected',
+  availability: 'available',
+  created_at: '2026-07-30T00:00:00Z',
+}
+
 beforeEach(() => vi.restoreAllMocks())
 
 describe('teaching preparation delivery API', () => {
+  it('imports an explicitly selected file as a binary copy without a local path', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValue(response(materialPayload, 201))
+    const file = new File(
+      ['%PDF-1.7 synthetic'],
+      '合成教材.pdf',
+      { type: 'application/pdf', lastModified: 1_760_000_000_000 },
+    )
+
+    await expect(teachingPrepCatalogApi.importMaterialCopy(
+      file,
+      'material-import-0001',
+    )).resolves.toEqual(materialPayload)
+
+    expect(fetchMock).toHaveBeenCalledExactlyOnceWith(
+      '/api/teaching-prep/materials/import-copy',
+      expect.objectContaining({
+        method: 'POST',
+        body: file,
+        headers: expect.objectContaining({
+          'content-type': 'application/pdf',
+          'x-upload-filename': encodeURIComponent('合成教材.pdf'),
+          'x-display-name': encodeURIComponent('合成教材'),
+          'x-request-token': 'material-import-0001',
+        }),
+      }),
+    )
+  })
+
   it('creates a final package once with explicit confirmation', async () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch')
       .mockResolvedValue(response(packagePayload, 201))

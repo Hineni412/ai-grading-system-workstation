@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import threading
 from pathlib import Path
 
 import pytest
@@ -19,6 +20,24 @@ from backend.teaching_prep.infrastructure.wps_adapter import (
 
 from .test_a01_foundation import _migrated_service
 from .test_a07_slide_plans import _confirmed_draft
+
+
+class _BlockingWpsAdapter:
+    def __init__(self) -> None:
+        self.started = threading.Event()
+        self.release = threading.Event()
+        self.delegate = FakeWpsAdapter()
+
+    def execute(
+        self,
+        *,
+        operation_id: str,
+        plan: dict[str, object],
+    ) -> dict[str, object]:
+        self.started.set()
+        if not self.release.wait(timeout=5):
+            raise TimeoutError("synthetic blocking adapter was not released")
+        return self.delegate.execute(operation_id=operation_id, plan=plan)
 
 
 def _sha256(path: Path) -> str:
@@ -181,6 +200,67 @@ def test_timeout_and_second_operation_never_repeat_or_overwrite(
             operation_id="a08-different-operation",
             confirmed=True,
         )
+
+
+def test_concurrent_execution_is_rejected_and_cancelled_run_never_publishes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _paths, service = _migrated_service(tmp_path, monkeypatch)
+    plan = _approved_plan(service, tmp_path)
+    adapter = _BlockingWpsAdapter()
+    service.wps_adapter = adapter
+    result: list[object] = []
+    errors: list[BaseException] = []
+
+    def execute() -> None:
+        try:
+            result.extend(
+                service.execute_slide_plan(
+                    plan.id,
+                    operation_id="a08-blocking-operation",
+                    confirmed=True,
+                )
+            )
+        except BaseException as exc:  # pragma: no cover - diagnostic capture
+            errors.append(exc)
+
+    worker = threading.Thread(target=execute)
+    worker.start()
+    assert adapter.started.wait(timeout=5)
+    running = service.pptx_executions.get_by_operation(
+        "a08-blocking-operation"
+    )
+    assert running.status == "running"
+
+    with pytest.raises(TeachingPrepConflictError):
+        service.execute_slide_plan(
+            plan.id,
+            operation_id="a08-concurrent-operation",
+            confirmed=True,
+        )
+
+    app = FastAPI()
+    app.state.workspace_services = {"teaching-prep": service}
+    app.include_router(create_router(), prefix="/api/teaching-prep")
+    client = TestClient(app)
+    cancelled = client.post(
+        f"/api/teaching-prep/pptx-executions/{running.id}/cancel"
+    )
+    adapter.release.set()
+    worker.join(timeout=10)
+
+    assert not worker.is_alive()
+    assert errors == []
+    assert cancelled.status_code == 200
+    assert cancelled.json()["status"] == "cancelled"
+    assert len(result) == 3
+    final_run, version, created = result
+    assert final_run.status == "cancelled"
+    assert version is None
+    assert created is True
+    assert list(service.paths["outputs"].rglob("*.pptx")) == []
+    assert service.list_pptx_executions(plan.id)[0].status == "cancelled"
 
 
 def test_changed_source_is_rejected_before_operation_is_created(
