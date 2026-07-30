@@ -1,0 +1,1345 @@
+from __future__ import annotations
+
+from fastapi import APIRouter, Depends, Query, Request, Response, status
+from fastapi.responses import FileResponse, JSONResponse
+
+from backend.teaching_prep.application import TeachingPrepService
+from backend.teaching_prep.domain.errors import (
+    TeachingPrepConflictError,
+    TeachingPrepNotFoundError,
+    TeachingPrepStateError,
+    TeachingPrepValidationError,
+)
+
+from .schemas import (
+    ActivateUpClassPackageRequest,
+    AssessmentChoiceListResponse,
+    AssessmentChoiceResponse,
+    CreateCurriculumRequest,
+    CreatePostLessonReviewRequest,
+    CreateUpClassPackageRequest,
+    CreateLessonNodeRequest,
+    CreateMaterialLinkRequest,
+    CreateExerciseCandidateRequest,
+    CreatePreparationRequest,
+    CreateSlidePlanRequest,
+    DiscardPptxStagingRequest,
+    DeriveClassVariantRequest,
+    ExecuteSlidePlanRequest,
+    CurriculumListResponse,
+    CurriculumResponse,
+    ClassVariantListResponse,
+    ClassVariantResponse,
+    ClassVariantResultResponse,
+    ExerciseCandidateListResponse,
+    ExerciseCandidateResponse,
+    FreezeResourcePackRequest,
+    GenerateLessonDraftRequest,
+    LessonDraftListResponse,
+    LessonDraftGenerationCancellationResponse,
+    LessonDraftPreflightResponse,
+    LessonDraftResponse,
+    LessonNodeResponse,
+    LessonTreeResponse,
+    MaterialVersionListResponse,
+    MaterialVersionResponse,
+    MaterialLinkListResponse,
+    MaterialLinkResponse,
+    MaterialUnitListResponse,
+    MaterialUnitResponse,
+    PreparationListResponse,
+    PreparationResponse,
+    PptxExecutionListResponse,
+    PptxExecutionResponse,
+    PptxExecutionResultResponse,
+    PptxVersionResponse,
+    PostLessonReviewListResponse,
+    PostLessonReviewResponse,
+    QuestionEvidenceChoiceListResponse,
+    QuestionEvidenceChoiceResponse,
+    ReorderLessonNodesRequest,
+    ResourcePackListResponse,
+    ResourcePackResponse,
+    ResourcePackStatusResponse,
+    ReviseLessonDraftRequest,
+    ReviseSlidePlanRequest,
+    SlidePlanListResponse,
+    SlidePlanPreviewResponse,
+    SlidePlanResponse,
+    TeachingPrepStatusResponse,
+    UpdateLessonNodeRequest,
+    UpdateMaterialLinkRequest,
+    UpdateExerciseCandidateRequest,
+    UpdateMaterialUnitRequest,
+    UpdatePreparationRequest,
+    UpClassPackageListResponse,
+    UpClassPackageResponse,
+)
+
+
+def get_teaching_prep_service(request: Request) -> TeachingPrepService:
+    services = getattr(request.app.state, "workspace_services", {})
+    service = services.get("teaching-prep") if isinstance(services, dict) else None
+    if not isinstance(service, TeachingPrepService):
+        raise _new_api_error(
+            503,
+            "teaching_prep_unavailable",
+            "Teaching preparation workspace is unavailable",
+        )
+    return service
+
+
+def create_router() -> APIRouter:
+    router = APIRouter(tags=["teaching-prep"])
+
+    @router.get("/status", response_model=TeachingPrepStatusResponse)
+    def module_status(
+        service: TeachingPrepService = Depends(get_teaching_prep_service),
+    ) -> TeachingPrepStatusResponse:
+        return TeachingPrepStatusResponse.model_validate(service.status())
+
+    @router.get(
+        "/preparations",
+        response_model=PreparationListResponse,
+    )
+    def list_preparations(
+        service: TeachingPrepService = Depends(get_teaching_prep_service),
+    ) -> PreparationListResponse:
+        return PreparationListResponse(
+            items=[
+                PreparationResponse.from_domain(item)
+                for item in service.list_preparations()
+            ]
+        )
+
+    @router.post(
+        "/preparations",
+        response_model=PreparationResponse,
+        status_code=status.HTTP_201_CREATED,
+    )
+    def create_preparation(
+        payload: CreatePreparationRequest,
+        response: Response,
+        service: TeachingPrepService = Depends(get_teaching_prep_service),
+    ) -> PreparationResponse:
+        try:
+            preparation, created = service.create_preparation(
+                request_token=payload.request_token,
+                title=payload.title,
+                class_name=payload.class_name,
+            )
+        except Exception as exc:
+            raise _api_error(exc) from exc
+        if not created:
+            response.status_code = status.HTTP_200_OK
+        return PreparationResponse.from_domain(preparation)
+
+    @router.get(
+        "/preparations/{preparation_id}",
+        response_model=PreparationResponse,
+    )
+    def get_preparation(
+        preparation_id: str,
+        service: TeachingPrepService = Depends(get_teaching_prep_service),
+    ) -> PreparationResponse:
+        try:
+            preparation = service.get_preparation(preparation_id)
+        except Exception as exc:
+            raise _api_error(exc) from exc
+        return PreparationResponse.from_domain(preparation)
+
+    @router.patch(
+        "/preparations/{preparation_id}",
+        response_model=PreparationResponse,
+    )
+    def update_preparation(
+        preparation_id: str,
+        payload: UpdatePreparationRequest,
+        service: TeachingPrepService = Depends(get_teaching_prep_service),
+    ) -> PreparationResponse:
+        try:
+            preparation = service.update_preparation(
+                preparation_id,
+                expected_revision=payload.expected_revision,
+                title=payload.title,
+                class_name=payload.class_name,
+                target_state=payload.target_state,
+            )
+        except Exception as exc:
+            raise _api_error(exc) from exc
+        return PreparationResponse.from_domain(preparation)
+
+    @router.get(
+        "/curricula",
+        response_model=CurriculumListResponse,
+    )
+    def list_curricula(
+        service: TeachingPrepService = Depends(get_teaching_prep_service),
+    ) -> CurriculumListResponse:
+        return CurriculumListResponse(
+            items=[
+                CurriculumResponse.from_domain(item)
+                for item in service.list_curricula()
+            ]
+        )
+
+    @router.post(
+        "/curricula",
+        response_model=CurriculumResponse,
+        status_code=status.HTTP_201_CREATED,
+    )
+    def create_curriculum(
+        payload: CreateCurriculumRequest,
+        response: Response,
+        service: TeachingPrepService = Depends(get_teaching_prep_service),
+    ) -> CurriculumResponse:
+        try:
+            curriculum, created = service.create_curriculum(
+                request_token=payload.request_token,
+                title=payload.title,
+                grade_level=payload.grade_level,
+                volume=payload.volume,
+                publisher=payload.publisher,
+                edition_label=payload.edition_label,
+            )
+        except Exception as exc:
+            raise _api_error(exc) from exc
+        if not created:
+            response.status_code = status.HTTP_200_OK
+        return CurriculumResponse.from_domain(curriculum)
+
+    @router.get(
+        "/curricula/{curriculum_id}/lessons",
+        response_model=LessonTreeResponse,
+    )
+    def list_lesson_tree(
+        curriculum_id: str,
+        service: TeachingPrepService = Depends(get_teaching_prep_service),
+    ) -> LessonTreeResponse:
+        try:
+            nodes = service.list_lesson_nodes(curriculum_id)
+        except Exception as exc:
+            raise _api_error(exc) from exc
+        return LessonTreeResponse(
+            curriculum_id=curriculum_id,
+            items=[LessonNodeResponse.from_domain(item) for item in nodes],
+        )
+
+    @router.post(
+        "/curricula/{curriculum_id}/lessons",
+        response_model=LessonNodeResponse,
+        status_code=status.HTTP_201_CREATED,
+    )
+    def create_lesson_node(
+        curriculum_id: str,
+        payload: CreateLessonNodeRequest,
+        response: Response,
+        service: TeachingPrepService = Depends(get_teaching_prep_service),
+    ) -> LessonNodeResponse:
+        try:
+            node, created = service.create_lesson_node(
+                request_token=payload.request_token,
+                curriculum_id=curriculum_id,
+                parent_id=payload.parent_id,
+                node_type=payload.node_type,
+                title=payload.title,
+                duration_minutes=payload.duration_minutes,
+                source_kind=payload.source_kind,
+            )
+        except Exception as exc:
+            raise _api_error(exc) from exc
+        if not created:
+            response.status_code = status.HTTP_200_OK
+        return LessonNodeResponse.from_domain(node)
+
+    @router.patch(
+        "/lessons/{node_id}",
+        response_model=LessonNodeResponse,
+    )
+    def update_lesson_node(
+        node_id: str,
+        payload: UpdateLessonNodeRequest,
+        service: TeachingPrepService = Depends(get_teaching_prep_service),
+    ) -> LessonNodeResponse:
+        try:
+            node = service.update_lesson_node(
+                node_id,
+                expected_revision=payload.expected_revision,
+                title=payload.title,
+                duration_minutes=payload.duration_minutes,
+                is_active=payload.is_active,
+            )
+        except Exception as exc:
+            raise _api_error(exc) from exc
+        return LessonNodeResponse.from_domain(node)
+
+    @router.post(
+        "/curricula/{curriculum_id}/lessons/reorder",
+        response_model=LessonTreeResponse,
+    )
+    def reorder_lesson_nodes(
+        curriculum_id: str,
+        payload: ReorderLessonNodesRequest,
+        service: TeachingPrepService = Depends(get_teaching_prep_service),
+    ) -> LessonTreeResponse:
+        try:
+            nodes = service.reorder_lesson_nodes(
+                curriculum_id=curriculum_id,
+                parent_id=payload.parent_id,
+                ordered_ids=payload.ordered_ids,
+                expected_revisions=payload.expected_revisions,
+            )
+        except Exception as exc:
+            raise _api_error(exc) from exc
+        return LessonTreeResponse(
+            curriculum_id=curriculum_id,
+            items=[LessonNodeResponse.from_domain(item) for item in nodes],
+        )
+
+    @router.get(
+        "/materials",
+        response_model=MaterialVersionListResponse,
+    )
+    def list_material_versions(
+        search: str | None = Query(default=None, max_length=120),
+        material_type: str | None = Query(default=None),
+        availability: str | None = Query(default=None),
+        service: TeachingPrepService = Depends(get_teaching_prep_service),
+    ) -> MaterialVersionListResponse:
+        try:
+            items = service.list_material_versions(
+                search=search,
+                material_type=material_type,
+                availability=availability,
+            )
+        except Exception as exc:
+            raise _api_error(exc) from exc
+        return MaterialVersionListResponse(
+            items=[
+                MaterialVersionResponse.from_domain(item)
+                for item in items
+            ]
+        )
+
+    @router.post(
+        "/materials/{material_version_id}/parse",
+        response_model=MaterialUnitListResponse,
+    )
+    def parse_material_version(
+        material_version_id: str,
+        service: TeachingPrepService = Depends(get_teaching_prep_service),
+    ) -> MaterialUnitListResponse:
+        try:
+            units = service.parse_material_version(material_version_id)
+        except Exception as exc:
+            raise _api_error(exc) from exc
+        return MaterialUnitListResponse(
+            material_version_id=material_version_id,
+            items=[MaterialUnitResponse.from_domain(item) for item in units],
+        )
+
+    @router.get(
+        "/materials/{material_version_id}/units",
+        response_model=MaterialUnitListResponse,
+    )
+    def list_material_units(
+        material_version_id: str,
+        service: TeachingPrepService = Depends(get_teaching_prep_service),
+    ) -> MaterialUnitListResponse:
+        try:
+            units = service.list_material_units(material_version_id)
+        except Exception as exc:
+            raise _api_error(exc) from exc
+        return MaterialUnitListResponse(
+            material_version_id=material_version_id,
+            items=[MaterialUnitResponse.from_domain(item) for item in units],
+        )
+
+    @router.patch(
+        "/material-units/{unit_id}",
+        response_model=MaterialUnitResponse,
+    )
+    def update_material_unit(
+        unit_id: str,
+        payload: UpdateMaterialUnitRequest,
+        service: TeachingPrepService = Depends(get_teaching_prep_service),
+    ) -> MaterialUnitResponse:
+        try:
+            unit = service.update_material_unit_label(
+                unit_id,
+                expected_revision=payload.expected_revision,
+                title=payload.title,
+                manual_text=payload.manual_text,
+                formula_review_required=payload.formula_review_required,
+            )
+        except Exception as exc:
+            raise _api_error(exc) from exc
+        return MaterialUnitResponse.from_domain(unit)
+
+    @router.get("/material-units/{unit_id}/preview")
+    def material_unit_preview(
+        unit_id: str,
+        service: TeachingPrepService = Depends(get_teaching_prep_service),
+    ) -> FileResponse:
+        try:
+            preview_path = service.material_preview_path(unit_id)
+        except Exception as exc:
+            raise _api_error(exc) from exc
+        return FileResponse(
+            preview_path,
+            media_type="image/png",
+            headers={"Cache-Control": "private, no-store"},
+        )
+
+    @router.get(
+        "/lessons/{lesson_node_id}/material-links",
+        response_model=MaterialLinkListResponse,
+    )
+    def list_material_links(
+        lesson_node_id: str,
+        service: TeachingPrepService = Depends(get_teaching_prep_service),
+    ) -> MaterialLinkListResponse:
+        try:
+            links = service.list_material_links(lesson_node_id)
+        except Exception as exc:
+            raise _api_error(exc) from exc
+        return MaterialLinkListResponse(
+            lesson_node_id=lesson_node_id,
+            items=[MaterialLinkResponse.from_domain(item) for item in links],
+        )
+
+    @router.post(
+        "/lessons/{lesson_node_id}/material-links",
+        response_model=MaterialLinkResponse,
+        status_code=status.HTTP_201_CREATED,
+    )
+    def create_material_link(
+        lesson_node_id: str,
+        payload: CreateMaterialLinkRequest,
+        response: Response,
+        service: TeachingPrepService = Depends(get_teaching_prep_service),
+    ) -> MaterialLinkResponse:
+        try:
+            link, created = service.create_material_link(
+                request_token=payload.request_token,
+                lesson_node_id=lesson_node_id,
+                material_version_id=payload.material_version_id,
+                start_unit=payload.start_unit,
+                end_unit=payload.end_unit,
+                crop=(
+                    payload.crop.model_dump()
+                    if payload.crop is not None
+                    else None
+                ),
+                purpose=payload.purpose,
+                teacher_note=payload.teacher_note,
+                confirmation_status=payload.confirmation_status,
+            )
+        except Exception as exc:
+            raise _api_error(exc) from exc
+        if not created:
+            response.status_code = status.HTTP_200_OK
+        return MaterialLinkResponse.from_domain(link)
+
+    @router.patch(
+        "/material-links/{link_id}",
+        response_model=MaterialLinkResponse,
+    )
+    def update_material_link(
+        link_id: str,
+        payload: UpdateMaterialLinkRequest,
+        service: TeachingPrepService = Depends(get_teaching_prep_service),
+    ) -> MaterialLinkResponse:
+        try:
+            link = service.update_material_link(
+                link_id,
+                expected_revision=payload.expected_revision,
+                start_unit=payload.start_unit,
+                end_unit=payload.end_unit,
+                crop=(
+                    payload.crop.model_dump()
+                    if payload.crop is not None
+                    else None
+                ),
+                purpose=payload.purpose,
+                teacher_note=payload.teacher_note,
+                confirmation_status=payload.confirmation_status,
+                is_active=payload.is_active,
+            )
+        except Exception as exc:
+            raise _api_error(exc) from exc
+        return MaterialLinkResponse.from_domain(link)
+
+    @router.get(
+        "/lessons/{lesson_node_id}/exercise-candidates",
+        response_model=ExerciseCandidateListResponse,
+    )
+    def list_exercise_candidates(
+        lesson_node_id: str,
+        service: TeachingPrepService = Depends(get_teaching_prep_service),
+    ) -> ExerciseCandidateListResponse:
+        try:
+            items = service.list_exercise_candidates(lesson_node_id)
+        except Exception as exc:
+            raise _api_error(exc) from exc
+        return ExerciseCandidateListResponse(
+            lesson_node_id=lesson_node_id,
+            items=[
+                ExerciseCandidateResponse.from_domain(item)
+                for item in items
+            ],
+        )
+
+    @router.post(
+        "/lessons/{lesson_node_id}/exercise-candidates",
+        response_model=ExerciseCandidateResponse,
+        status_code=status.HTTP_201_CREATED,
+    )
+    def create_exercise_candidate(
+        lesson_node_id: str,
+        payload: CreateExerciseCandidateRequest,
+        response: Response,
+        service: TeachingPrepService = Depends(get_teaching_prep_service),
+    ) -> ExerciseCandidateResponse:
+        try:
+            item, created = service.create_exercise_candidate(
+                request_token=payload.request_token,
+                lesson_node_id=lesson_node_id,
+                question_number=payload.question_number,
+                content_label=payload.content_label,
+                difficulty=payload.difficulty,
+                classroom_use=payload.classroom_use,
+                estimated_minutes=payload.estimated_minutes,
+                teaching_focus=payload.teaching_focus,
+                teacher_note=payload.teacher_note,
+                selection_status=payload.selection_status,
+                answer_status=payload.answer_status,
+                question_regions=[
+                    region.model_dump()
+                    for region in payload.question_regions
+                ],
+                answer_regions=[
+                    region.model_dump()
+                    for region in payload.answer_regions
+                ],
+            )
+        except Exception as exc:
+            raise _api_error(exc) from exc
+        if not created:
+            response.status_code = status.HTTP_200_OK
+        return ExerciseCandidateResponse.from_domain(item)
+
+    @router.patch(
+        "/exercise-candidates/{candidate_id}",
+        response_model=ExerciseCandidateResponse,
+    )
+    def update_exercise_candidate(
+        candidate_id: str,
+        payload: UpdateExerciseCandidateRequest,
+        service: TeachingPrepService = Depends(get_teaching_prep_service),
+    ) -> ExerciseCandidateResponse:
+        try:
+            item = service.update_exercise_candidate(
+                candidate_id,
+                expected_revision=payload.expected_revision,
+                question_number=payload.question_number,
+                content_label=payload.content_label,
+                difficulty=payload.difficulty,
+                classroom_use=payload.classroom_use,
+                estimated_minutes=payload.estimated_minutes,
+                teaching_focus=payload.teaching_focus,
+                teacher_note=payload.teacher_note,
+                selection_status=payload.selection_status,
+                answer_status=payload.answer_status,
+                question_regions=[
+                    region.model_dump()
+                    for region in payload.question_regions
+                ],
+                answer_regions=[
+                    region.model_dump()
+                    for region in payload.answer_regions
+                ],
+                is_active=payload.is_active,
+            )
+        except Exception as exc:
+            raise _api_error(exc) from exc
+        return ExerciseCandidateResponse.from_domain(item)
+
+    @router.get("/exercise-regions/{region_id}/preview")
+    def exercise_region_preview(
+        region_id: str,
+        service: TeachingPrepService = Depends(get_teaching_prep_service),
+    ) -> FileResponse:
+        try:
+            preview_path = service.exercise_region_preview_path(region_id)
+        except Exception as exc:
+            raise _api_error(exc) from exc
+        return FileResponse(
+            preview_path,
+            media_type="image/png",
+            headers={"Cache-Control": "private, no-store"},
+        )
+
+    @router.get(
+        "/evidence/assessments",
+        response_model=AssessmentChoiceListResponse,
+    )
+    def list_available_assessments(
+        service: TeachingPrepService = Depends(get_teaching_prep_service),
+    ) -> AssessmentChoiceListResponse:
+        try:
+            items = service.list_available_assessments()
+        except Exception as exc:
+            raise _api_error(exc) from exc
+        return AssessmentChoiceListResponse(
+            items=[
+                AssessmentChoiceResponse.model_validate(item)
+                for item in items
+            ]
+        )
+
+    @router.get(
+        "/evidence/questions",
+        response_model=QuestionEvidenceChoiceListResponse,
+    )
+    def list_available_questions(
+        service: TeachingPrepService = Depends(get_teaching_prep_service),
+    ) -> QuestionEvidenceChoiceListResponse:
+        try:
+            items = service.list_available_questions()
+        except Exception as exc:
+            raise _api_error(exc) from exc
+        return QuestionEvidenceChoiceListResponse(
+            items=[
+                QuestionEvidenceChoiceResponse.model_validate(item)
+                for item in items
+            ]
+        )
+
+    @router.get(
+        "/lessons/{lesson_node_id}/resource-packs/status",
+        response_model=ResourcePackStatusResponse,
+    )
+    def resource_pack_status(
+        lesson_node_id: str,
+        service: TeachingPrepService = Depends(get_teaching_prep_service),
+    ) -> ResourcePackStatusResponse:
+        try:
+            payload = service.resource_pack_status(lesson_node_id)
+        except Exception as exc:
+            raise _api_error(exc) from exc
+        return ResourcePackStatusResponse.model_validate(payload)
+
+    @router.get(
+        "/lessons/{lesson_node_id}/resource-packs",
+        response_model=ResourcePackListResponse,
+    )
+    def list_resource_packs(
+        lesson_node_id: str,
+        service: TeachingPrepService = Depends(get_teaching_prep_service),
+    ) -> ResourcePackListResponse:
+        try:
+            items = service.list_resource_packs(lesson_node_id)
+        except Exception as exc:
+            raise _api_error(exc) from exc
+        return ResourcePackListResponse(
+            lesson_node_id=lesson_node_id,
+            items=[ResourcePackResponse.from_domain(item) for item in items],
+        )
+
+    @router.post(
+        "/lessons/{lesson_node_id}/resource-packs",
+        response_model=ResourcePackResponse,
+        status_code=status.HTTP_201_CREATED,
+    )
+    def freeze_resource_pack(
+        lesson_node_id: str,
+        payload: FreezeResourcePackRequest,
+        response: Response,
+        service: TeachingPrepService = Depends(get_teaching_prep_service),
+    ) -> ResourcePackResponse:
+        try:
+            item, created = service.freeze_resource_pack(
+                request_token=payload.request_token,
+                lesson_node_id=lesson_node_id,
+                class_name=payload.class_name,
+                lesson_type=payload.lesson_type,
+                teacher_context=payload.teacher_context,
+                reference_ppt_intents=payload.reference_ppt_intents,
+                question_ids=payload.question_ids,
+                assessment_ids=payload.assessment_ids,
+                knowledge_scope=payload.knowledge_scope,
+            )
+        except Exception as exc:
+            raise _api_error(exc) from exc
+        if not created:
+            response.status_code = status.HTTP_200_OK
+        return ResourcePackResponse.from_domain(item)
+
+    @router.get(
+        "/resource-packs/{pack_id}",
+        response_model=ResourcePackResponse,
+    )
+    def get_resource_pack(
+        pack_id: str,
+        service: TeachingPrepService = Depends(get_teaching_prep_service),
+    ) -> ResourcePackResponse:
+        try:
+            item = service.get_resource_pack(pack_id)
+        except Exception as exc:
+            raise _api_error(exc) from exc
+        return ResourcePackResponse.from_domain(item)
+
+    @router.get("/resource-packs/{pack_id}/manifest")
+    def export_resource_pack_manifest(
+        pack_id: str,
+        service: TeachingPrepService = Depends(get_teaching_prep_service),
+    ) -> JSONResponse:
+        try:
+            item = service.get_resource_pack(pack_id)
+        except Exception as exc:
+            raise _api_error(exc) from exc
+        return JSONResponse(
+            content=ResourcePackResponse.from_domain(item).model_dump(
+                mode="json"
+            ),
+            headers={
+                "Content-Disposition": (
+                    f'attachment; filename="resource-pack-v'
+                    f'{item.version_number}.json"'
+                ),
+                "Cache-Control": "private, no-store",
+            },
+        )
+
+    @router.get(
+        "/resource-packs/{pack_id}/draft-preflight",
+        response_model=LessonDraftPreflightResponse,
+    )
+    def lesson_draft_preflight(
+        pack_id: str,
+        mode: str = Query(default="local_template"),
+        service: TeachingPrepService = Depends(get_teaching_prep_service),
+    ) -> LessonDraftPreflightResponse:
+        try:
+            payload = service.lesson_draft_preflight(pack_id, mode=mode)
+        except Exception as exc:
+            raise _api_error(exc) from exc
+        return LessonDraftPreflightResponse.model_validate(payload)
+
+    @router.get(
+        "/resource-packs/{pack_id}/lesson-drafts",
+        response_model=LessonDraftListResponse,
+    )
+    def list_lesson_drafts(
+        pack_id: str,
+        service: TeachingPrepService = Depends(get_teaching_prep_service),
+    ) -> LessonDraftListResponse:
+        try:
+            items = service.list_lesson_drafts(pack_id)
+        except Exception as exc:
+            raise _api_error(exc) from exc
+        return LessonDraftListResponse(
+            resource_pack_id=pack_id,
+            items=[LessonDraftResponse.from_domain(item) for item in items],
+        )
+
+    @router.post(
+        "/resource-packs/{pack_id}/lesson-drafts",
+        response_model=LessonDraftResponse,
+        status_code=status.HTTP_201_CREATED,
+    )
+    def generate_lesson_draft(
+        pack_id: str,
+        payload: GenerateLessonDraftRequest,
+        response: Response,
+        service: TeachingPrepService = Depends(get_teaching_prep_service),
+    ) -> LessonDraftResponse:
+        try:
+            item, created = service.generate_lesson_draft(
+                pack_id,
+                operation_id=payload.operation_id,
+                mode=payload.mode,
+                confirmed=payload.confirmed,
+            )
+        except Exception as exc:
+            raise _api_error(exc) from exc
+        if not created:
+            response.status_code = status.HTTP_200_OK
+        return LessonDraftResponse.from_domain(item)
+
+    @router.post(
+        "/lesson-draft-generations/{operation_id}/cancel",
+        response_model=LessonDraftGenerationCancellationResponse,
+    )
+    def cancel_lesson_draft_generation(
+        operation_id: str,
+        service: TeachingPrepService = Depends(get_teaching_prep_service),
+    ) -> LessonDraftGenerationCancellationResponse:
+        try:
+            clean_id, newly_cancelled = (
+                service.cancel_lesson_draft_generation(operation_id)
+            )
+        except Exception as exc:
+            raise _api_error(exc) from exc
+        return LessonDraftGenerationCancellationResponse(
+            operation_id=clean_id,
+            status="cancelled",
+            newly_cancelled=newly_cancelled,
+        )
+
+    @router.get(
+        "/lesson-drafts/{draft_id}",
+        response_model=LessonDraftResponse,
+    )
+    def get_lesson_draft(
+        draft_id: str,
+        service: TeachingPrepService = Depends(get_teaching_prep_service),
+    ) -> LessonDraftResponse:
+        try:
+            item = service.get_lesson_draft(draft_id)
+        except Exception as exc:
+            raise _api_error(exc) from exc
+        return LessonDraftResponse.from_domain(item)
+
+    @router.post(
+        "/lesson-drafts/{draft_id}/revisions",
+        response_model=LessonDraftResponse,
+        status_code=status.HTTP_201_CREATED,
+    )
+    def revise_lesson_draft(
+        draft_id: str,
+        payload: ReviseLessonDraftRequest,
+        response: Response,
+        service: TeachingPrepService = Depends(get_teaching_prep_service),
+    ) -> LessonDraftResponse:
+        try:
+            item, created = service.revise_lesson_draft(
+                draft_id,
+                request_token=payload.request_token,
+                payload=payload.payload,
+                confirmed=payload.confirmed,
+            )
+        except Exception as exc:
+            raise _api_error(exc) from exc
+        if not created:
+            response.status_code = status.HTTP_200_OK
+        return LessonDraftResponse.from_domain(item)
+
+    @router.get(
+        "/lesson-drafts/{draft_id}/slide-plans",
+        response_model=SlidePlanListResponse,
+    )
+    def list_slide_plans(
+        draft_id: str,
+        service: TeachingPrepService = Depends(get_teaching_prep_service),
+    ) -> SlidePlanListResponse:
+        try:
+            items = service.list_slide_plans(draft_id)
+        except Exception as exc:
+            raise _api_error(exc) from exc
+        return SlidePlanListResponse(
+            lesson_draft_id=draft_id,
+            items=[SlidePlanResponse.from_domain(item) for item in items],
+        )
+
+    @router.post(
+        "/lesson-drafts/{draft_id}/slide-plans",
+        response_model=SlidePlanResponse,
+        status_code=status.HTTP_201_CREATED,
+    )
+    def create_slide_plan(
+        draft_id: str,
+        payload: CreateSlidePlanRequest,
+        response: Response,
+        service: TeachingPrepService = Depends(get_teaching_prep_service),
+    ) -> SlidePlanResponse:
+        try:
+            item, created = service.create_slide_plan(
+                draft_id,
+                request_token=payload.request_token,
+            )
+        except Exception as exc:
+            raise _api_error(exc) from exc
+        if not created:
+            response.status_code = status.HTTP_200_OK
+        return SlidePlanResponse.from_domain(item)
+
+    @router.get(
+        "/slide-plans/{plan_id}",
+        response_model=SlidePlanResponse,
+    )
+    def get_slide_plan(
+        plan_id: str,
+        service: TeachingPrepService = Depends(get_teaching_prep_service),
+    ) -> SlidePlanResponse:
+        try:
+            item = service.get_slide_plan(plan_id)
+        except Exception as exc:
+            raise _api_error(exc) from exc
+        return SlidePlanResponse.from_domain(item)
+
+    @router.post(
+        "/slide-plans/{plan_id}/revisions",
+        response_model=SlidePlanResponse,
+        status_code=status.HTTP_201_CREATED,
+    )
+    def revise_slide_plan(
+        plan_id: str,
+        payload: ReviseSlidePlanRequest,
+        response: Response,
+        service: TeachingPrepService = Depends(get_teaching_prep_service),
+    ) -> SlidePlanResponse:
+        try:
+            item, created = service.revise_slide_plan(
+                plan_id,
+                request_token=payload.request_token,
+                operation_reviews=[
+                    review.model_dump()
+                    for review in payload.operation_reviews
+                ],
+                approve_low_risk_deletions=(
+                    payload.approve_low_risk_deletions
+                ),
+                review_note=payload.review_note,
+            )
+        except Exception as exc:
+            raise _api_error(exc) from exc
+        if not created:
+            response.status_code = status.HTTP_200_OK
+        return SlidePlanResponse.from_domain(item)
+
+    @router.get(
+        "/slide-plans/{plan_id}/preview",
+        response_model=SlidePlanPreviewResponse,
+    )
+    def slide_plan_preview(
+        plan_id: str,
+        include_proposed: bool = Query(default=True),
+        service: TeachingPrepService = Depends(get_teaching_prep_service),
+    ) -> SlidePlanPreviewResponse:
+        try:
+            payload = service.slide_plan_preview(
+                plan_id,
+                include_proposed=include_proposed,
+            )
+        except Exception as exc:
+            raise _api_error(exc) from exc
+        return SlidePlanPreviewResponse.model_validate(payload)
+
+    @router.get("/slide-plans/{plan_id}/checklist")
+    def export_slide_plan_checklist(
+        plan_id: str,
+        service: TeachingPrepService = Depends(get_teaching_prep_service),
+    ) -> JSONResponse:
+        try:
+            item = service.get_slide_plan(plan_id)
+            preview = service.slide_plan_preview(
+                plan_id,
+                include_proposed=True,
+            )
+        except Exception as exc:
+            raise _api_error(exc) from exc
+        return JSONResponse(
+            content={
+                "plan": SlidePlanResponse.from_domain(item).model_dump(
+                    mode="json"
+                ),
+                "preview": preview,
+            },
+            headers={
+                "Content-Disposition": (
+                    f'attachment; filename="slide-plan-v'
+                    f'{item.version_number}.json"'
+                ),
+                "Cache-Control": "private, no-store",
+            },
+        )
+
+    @router.get(
+        "/slide-plans/{plan_id}/executions",
+        response_model=PptxExecutionListResponse,
+    )
+    def list_pptx_executions(
+        plan_id: str,
+        service: TeachingPrepService = Depends(get_teaching_prep_service),
+    ) -> PptxExecutionListResponse:
+        try:
+            items = service.list_pptx_executions(plan_id)
+        except Exception as exc:
+            raise _api_error(exc) from exc
+        return PptxExecutionListResponse(
+            slide_plan_id=plan_id,
+            items=[
+                PptxExecutionResponse.from_domain(item) for item in items
+            ],
+        )
+
+    @router.post(
+        "/slide-plans/{plan_id}/executions",
+        response_model=PptxExecutionResultResponse,
+        status_code=status.HTTP_201_CREATED,
+    )
+    def execute_slide_plan(
+        plan_id: str,
+        payload: ExecuteSlidePlanRequest,
+        response: Response,
+        service: TeachingPrepService = Depends(get_teaching_prep_service),
+    ) -> PptxExecutionResultResponse:
+        try:
+            execution, version, created = service.execute_slide_plan(
+                plan_id,
+                operation_id=payload.operation_id,
+                confirmed=payload.confirmed,
+            )
+        except Exception as exc:
+            raise _api_error(exc) from exc
+        if not created:
+            response.status_code = status.HTTP_200_OK
+        return PptxExecutionResultResponse(
+            execution=PptxExecutionResponse.from_domain(execution),
+            version=(
+                PptxVersionResponse.from_domain(version)
+                if version is not None
+                else None
+            ),
+        )
+
+    @router.get(
+        "/pptx-executions/{run_id}",
+        response_model=PptxExecutionResponse,
+    )
+    def get_pptx_execution(
+        run_id: str,
+        service: TeachingPrepService = Depends(get_teaching_prep_service),
+    ) -> PptxExecutionResponse:
+        try:
+            item = service.get_pptx_execution(run_id)
+        except Exception as exc:
+            raise _api_error(exc) from exc
+        return PptxExecutionResponse.from_domain(item)
+
+    @router.post(
+        "/pptx-executions/{run_id}/cancel",
+        response_model=PptxExecutionResponse,
+    )
+    def cancel_pptx_execution(
+        run_id: str,
+        service: TeachingPrepService = Depends(get_teaching_prep_service),
+    ) -> PptxExecutionResponse:
+        try:
+            item = service.cancel_pptx_execution(run_id)
+        except Exception as exc:
+            raise _api_error(exc) from exc
+        return PptxExecutionResponse.from_domain(item)
+
+    @router.post(
+        "/pptx-executions/{run_id}/recover",
+        response_model=PptxExecutionResultResponse,
+    )
+    def recover_pptx_execution(
+        run_id: str,
+        service: TeachingPrepService = Depends(get_teaching_prep_service),
+    ) -> PptxExecutionResultResponse:
+        try:
+            execution, version = service.recover_pptx_execution(run_id)
+        except Exception as exc:
+            raise _api_error(exc) from exc
+        return PptxExecutionResultResponse(
+            execution=PptxExecutionResponse.from_domain(execution),
+            version=(
+                PptxVersionResponse.from_domain(version)
+                if version is not None
+                else None
+            ),
+        )
+
+    @router.post(
+        "/pptx-executions/{run_id}/discard-staging",
+        response_model=PptxExecutionResponse,
+    )
+    def discard_pptx_staging(
+        run_id: str,
+        payload: DiscardPptxStagingRequest,
+        service: TeachingPrepService = Depends(get_teaching_prep_service),
+    ) -> PptxExecutionResponse:
+        if not payload.confirmed:
+            raise _new_api_error(
+                422,
+                "teaching_prep_validation_error",
+                "Teaching preparation request is invalid",
+            )
+        try:
+            item = service.discard_pptx_staging(run_id)
+        except Exception as exc:
+            raise _api_error(exc) from exc
+        return PptxExecutionResponse.from_domain(item)
+
+    @router.get("/pptx-versions/{version_id}/download")
+    def download_pptx_version(
+        version_id: str,
+        service: TeachingPrepService = Depends(get_teaching_prep_service),
+    ) -> FileResponse:
+        try:
+            path, filename = service.pptx_download(version_id)
+        except Exception as exc:
+            raise _api_error(exc) from exc
+        return FileResponse(
+            path,
+            media_type=(
+                "application/vnd.openxmlformats-officedocument."
+                "presentationml.presentation"
+            ),
+            filename=filename,
+            headers={"Cache-Control": "private, no-store"},
+        )
+
+    @router.post(
+        "/resource-packs/{base_pack_id}/class-variants",
+        response_model=ClassVariantResultResponse,
+        status_code=status.HTTP_201_CREATED,
+    )
+    def derive_class_variant(
+        base_pack_id: str,
+        payload: DeriveClassVariantRequest,
+        response: Response,
+        service: TeachingPrepService = Depends(get_teaching_prep_service),
+    ) -> ClassVariantResultResponse:
+        try:
+            variant, pack, created = service.derive_class_variant(
+                base_pack_id,
+                request_token=payload.request_token,
+                class_name=payload.class_name,
+                teacher_context=payload.teacher_context,
+                assessment_ids=payload.assessment_ids,
+                knowledge_scope=payload.knowledge_scope,
+                prior_review_ids=payload.prior_review_ids,
+            )
+        except Exception as exc:
+            raise _api_error(exc) from exc
+        if not created:
+            response.status_code = status.HTTP_200_OK
+        return ClassVariantResultResponse(
+            variant=ClassVariantResponse.from_domain(variant),
+            resource_pack=ResourcePackResponse.from_domain(pack),
+        )
+
+    @router.get(
+        "/lessons/{lesson_node_id}/class-variants",
+        response_model=ClassVariantListResponse,
+    )
+    def list_class_variants(
+        lesson_node_id: str,
+        service: TeachingPrepService = Depends(get_teaching_prep_service),
+    ) -> ClassVariantListResponse:
+        try:
+            items = service.list_class_variants(lesson_node_id)
+        except Exception as exc:
+            raise _api_error(exc) from exc
+        return ClassVariantListResponse(
+            items=[ClassVariantResponse.from_domain(item) for item in items]
+        )
+
+    @router.post(
+        "/pptx-versions/{version_id}/up-class-package",
+        response_model=UpClassPackageResponse,
+        status_code=status.HTTP_201_CREATED,
+    )
+    def create_up_class_package(
+        version_id: str,
+        payload: CreateUpClassPackageRequest,
+        response: Response,
+        service: TeachingPrepService = Depends(get_teaching_prep_service),
+    ) -> UpClassPackageResponse:
+        try:
+            item, created = service.create_up_class_package(
+                version_id,
+                request_token=payload.request_token,
+                confirmed=payload.confirmed,
+            )
+        except Exception as exc:
+            raise _api_error(exc) from exc
+        if not created:
+            response.status_code = status.HTTP_200_OK
+        return UpClassPackageResponse.from_domain(item)
+
+    @router.get(
+        "/lessons/{lesson_node_id}/up-class-packages",
+        response_model=UpClassPackageListResponse,
+    )
+    def list_up_class_packages(
+        lesson_node_id: str,
+        service: TeachingPrepService = Depends(get_teaching_prep_service),
+    ) -> UpClassPackageListResponse:
+        try:
+            items = service.list_up_class_packages(lesson_node_id)
+        except Exception as exc:
+            raise _api_error(exc) from exc
+        return UpClassPackageListResponse(
+            items=[UpClassPackageResponse.from_domain(item) for item in items]
+        )
+
+    @router.get("/up-class-packages/{package_id}/download")
+    def download_up_class_package(
+        package_id: str,
+        service: TeachingPrepService = Depends(get_teaching_prep_service),
+    ) -> FileResponse:
+        try:
+            path, filename = service.up_class_package_download(package_id)
+        except Exception as exc:
+            raise _api_error(exc) from exc
+        return FileResponse(
+            path,
+            media_type="application/zip",
+            filename=filename,
+            headers={"Cache-Control": "private, no-store"},
+        )
+
+    @router.post(
+        "/up-class-packages/{package_id}/recover",
+        response_model=UpClassPackageResponse,
+    )
+    def recover_up_class_package(
+        package_id: str,
+        service: TeachingPrepService = Depends(get_teaching_prep_service),
+    ) -> UpClassPackageResponse:
+        try:
+            item = service.recover_up_class_package(package_id)
+        except Exception as exc:
+            raise _api_error(exc) from exc
+        return UpClassPackageResponse.from_domain(item)
+
+    @router.post(
+        "/up-class-packages/{package_id}/discard-staging",
+        response_model=UpClassPackageResponse,
+    )
+    def discard_up_class_package_staging(
+        package_id: str,
+        payload: DiscardPptxStagingRequest,
+        service: TeachingPrepService = Depends(get_teaching_prep_service),
+    ) -> UpClassPackageResponse:
+        if not payload.confirmed:
+            raise _new_api_error(
+                422,
+                "teaching_prep_validation_error",
+                "Teaching preparation request is invalid",
+            )
+        try:
+            item = service.discard_up_class_package_staging(package_id)
+        except Exception as exc:
+            raise _api_error(exc) from exc
+        return UpClassPackageResponse.from_domain(item)
+
+    @router.post(
+        "/up-class-packages/{package_id}/activate",
+        response_model=UpClassPackageResponse,
+    )
+    def activate_up_class_package(
+        package_id: str,
+        payload: ActivateUpClassPackageRequest,
+        response: Response,
+        service: TeachingPrepService = Depends(get_teaching_prep_service),
+    ) -> UpClassPackageResponse:
+        try:
+            item, created = service.activate_up_class_package(
+                package_id,
+                request_token=payload.request_token,
+                confirmed=payload.confirmed,
+            )
+        except Exception as exc:
+            raise _api_error(exc) from exc
+        if not created:
+            response.status_code = status.HTTP_200_OK
+        return UpClassPackageResponse.from_domain(item)
+
+    @router.post(
+        "/up-class-packages/{package_id}/reviews",
+        response_model=PostLessonReviewResponse,
+        status_code=status.HTTP_201_CREATED,
+    )
+    def create_post_lesson_review(
+        package_id: str,
+        payload: CreatePostLessonReviewRequest,
+        response: Response,
+        service: TeachingPrepService = Depends(get_teaching_prep_service),
+    ) -> PostLessonReviewResponse:
+        try:
+            item, created = service.create_post_lesson_review(
+                package_id,
+                request_token=payload.request_token,
+                timing=payload.timing,
+                question_outcome=payload.question_outcome,
+                reteach_points=payload.reteach_points,
+                next_action=payload.next_action,
+                note=payload.note,
+                use_in_next_version=payload.use_in_next_version,
+            )
+        except Exception as exc:
+            raise _api_error(exc) from exc
+        if not created:
+            response.status_code = status.HTTP_200_OK
+        return PostLessonReviewResponse.from_domain(item)
+
+    @router.get(
+        "/lessons/{lesson_node_id}/post-lesson-reviews",
+        response_model=PostLessonReviewListResponse,
+    )
+    def list_post_lesson_reviews(
+        lesson_node_id: str,
+        service: TeachingPrepService = Depends(get_teaching_prep_service),
+    ) -> PostLessonReviewListResponse:
+        try:
+            items = service.list_post_lesson_reviews(lesson_node_id)
+        except Exception as exc:
+            raise _api_error(exc) from exc
+        return PostLessonReviewListResponse(
+            items=[
+                PostLessonReviewResponse.from_domain(item) for item in items
+            ]
+        )
+
+    return router
+
+
+def _api_error(exc: Exception) -> Exception:
+    if isinstance(exc, TeachingPrepNotFoundError):
+        return _new_api_error(
+            404,
+            "teaching_prep_not_found",
+            "Teaching preparation record was not found",
+        )
+    if isinstance(exc, TeachingPrepConflictError):
+        return _new_api_error(
+            409,
+            "teaching_prep_conflict",
+            "Teaching preparation record changed; refresh and try again",
+        )
+    if isinstance(exc, TeachingPrepStateError):
+        return _new_api_error(
+            409,
+            "teaching_prep_state_conflict",
+            "Teaching preparation state does not allow this change",
+        )
+    if isinstance(exc, TeachingPrepValidationError):
+        return _new_api_error(
+            422,
+            "teaching_prep_validation_error",
+            "Teaching preparation request is invalid",
+        )
+    return _new_api_error(
+        500,
+        "teaching_prep_internal_error",
+        "Teaching preparation request could not be completed",
+    )
+
+
+def _new_api_error(
+    status_code: int,
+    code: str,
+    message: str,
+) -> Exception:
+    # Import lazily: importing the application module while workspace features
+    # are being discovered would recursively load this router.
+    from backend.api.app import ApiError
+
+    return ApiError(status_code, code, message)
