@@ -52,6 +52,20 @@ function Get-OriginalSlide {
     )
 }
 
+function Set-WpsApplicationHiddenIfSupported {
+    param(
+        [Parameter(Mandatory = $true)]$Application
+    )
+    try {
+        $Application.Visible = $false
+        return $true
+    }
+    catch [System.Runtime.InteropServices.COMException] {
+        # Some WPS builds reject changing visibility before a presentation opens.
+        return $false
+    }
+}
+
 try {
     $requestFile = (Resolve-Path -LiteralPath $RequestPath).Path
     $request = Get-Content -LiteralPath $requestFile -Raw -Encoding UTF8 |
@@ -84,7 +98,7 @@ try {
     }
     New-Item -ItemType Directory -Path $previewDirectory -Force | Out-Null
     $application = New-Object -ComObject 'KWPP.Application'
-    $application.Visible = $false
+    Set-WpsApplicationHiddenIfSupported -Application $application | Out-Null
     $presentation = $application.Presentations.Open(
         $sourceCopy,
         $false,
@@ -265,14 +279,48 @@ try {
         $candidate,
         $true,
         $false,
-        $false
+        $true
     )
-    foreach ($slide in @($verificationPresentation.Slides)) {
-        $previewPath = Join-Path $previewDirectory (
-            'slide-{0:D5}.png' -f [int]$slide.SlideIndex
-        )
-        $slide.Export($previewPath, 'PNG', 1600, 900)
+    $verificationSlideCount = [int]$verificationPresentation.Slides.Count
+    $verificationPresentation.Export(
+        $previewDirectory,
+        'PNG',
+        1600,
+        900
+    )
+    $exportedPreviews = @(
+        Get-ChildItem -LiteralPath $previewDirectory -File |
+            Where-Object { $_.Extension -ieq '.png' } |
+            Sort-Object {
+                $match = [regex]::Match($_.BaseName, '(\d+)$')
+                if (-not $match.Success) {
+                    throw 'WPS exported a preview with an unexpected name'
+                }
+                [int]$match.Groups[1].Value
+            }
+    )
+    if ($exportedPreviews.Count -ne $verificationSlideCount) {
+        throw 'WPS did not export every slide preview'
     }
+    for ($index = 1; $index -le $exportedPreviews.Count; $index++) {
+        Rename-Item `
+            -LiteralPath $exportedPreviews[$index - 1].FullName `
+            -NewName ('slide-{0:D5}.png' -f $index)
+    }
+
+    $verificationPresentation.Close()
+    $verificationPresentation = $null
+    $application.Quit()
+    $application = $null
+
+    $application = New-Object -ComObject 'KWPP.Application'
+    Set-WpsApplicationHiddenIfSupported -Application $application | Out-Null
+    $verificationPresentation = $application.Presentations.Open(
+        $candidate,
+        $true,
+        $false,
+        $true
+    )
     $slideShowWindow = $verificationPresentation.SlideShowSettings.Run()
     Start-Sleep -Milliseconds 400
     $slideShowWindow.View.Exit()
