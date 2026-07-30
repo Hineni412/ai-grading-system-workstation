@@ -53,6 +53,7 @@ from question_bank.services.taxonomy_review_suggestions import (
 )
 from question_bank.taxonomy.governance import get_taxonomy_governance
 from question_bank.services.assembly_workspace_service import AssemblyWorkspaceService
+from question_bank.training_criteria import TrainingCriterionModule
 
 
 _TEMPLATE_UPLOAD_SERVICE_GUARD = threading.Lock()
@@ -192,6 +193,10 @@ def get_question_bank_read_service() -> QuestionBankReadService:
 def get_question_bank_write_service() -> QuestionBankWriteService:
     paths = get_path_manager()
     return QuestionBankWriteService(paths.qb_db_path, data_root=paths.data_root)
+
+
+def get_training_criterion_module() -> TrainingCriterionModule:
+    return TrainingCriterionModule(get_path_manager().qb_db_path)
 
 
 def get_taxonomy_review_service() -> TaxonomyReviewService:

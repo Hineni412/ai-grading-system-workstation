@@ -19,6 +19,7 @@ from question_bank.taxonomy.governance import get_taxonomy_governance
 
 from .manager import JobContext, JobManager
 from .config_generation import run_config_generation_job
+from .criterion_backfill import run_criterion_backfill_job
 from .assembly_export import run_assembly_export_job
 from .grading_run import run_grading_job
 from .question_import import run_question_import_job
@@ -73,6 +74,9 @@ def register_default_job_handlers(
     ] = run_taxonomy_suggestion_job,
     training_export_runner: Callable[..., dict[str, object]] = run_training_export_job,
     assembly_export_runner: Callable[..., dict[str, object]] = run_assembly_export_job,
+    criterion_backfill_runner: Callable[
+        ..., dict[str, object]
+    ] = run_criterion_backfill_job,
     tagging_ai_service_factory: Callable[[], Any] = AITaggingService,
     llm_client_factory: Callable[[], Any] | None = None,
 ) -> None:
@@ -155,6 +159,15 @@ def register_default_job_handlers(
             tagging_sync_runner=tagging_sync_runner,
             ai_service_factory=resolved_tagging_factory,
             taxonomy_governance=taxonomy_governance,
+        ),
+    )
+    manager.register(
+        "criterion_backfill",
+        _build_criterion_backfill_handler(
+            question_bank_db_path=resolved_question_bank_db,
+            data_root=base_data_root,
+            criterion_backfill_runner=criterion_backfill_runner,
+            ai_service_factory=resolved_tagging_factory,
         ),
     )
     manager.register(
@@ -267,6 +280,24 @@ def _build_tagging_sync_handler(
             question_bank_db_path=question_bank_db_path,
             ai_service_factory=ai_service_factory,
             taxonomy_governance=taxonomy_governance,
+        )
+
+    return handler
+
+
+def _build_criterion_backfill_handler(
+    *,
+    question_bank_db_path: Path,
+    data_root: Path,
+    criterion_backfill_runner: Callable[..., dict[str, object]],
+    ai_service_factory: Callable[[], Any],
+):
+    def handler(context: JobContext) -> dict[str, object]:
+        return criterion_backfill_runner(
+            context=context,
+            question_bank_db_path=question_bank_db_path,
+            data_root=data_root,
+            ai_service_factory=ai_service_factory,
         )
 
     return handler

@@ -1045,6 +1045,291 @@
   font-size: 12px;
 }
 
+.criterion-review {
+  background: #fff;
+  border: 1px solid var(--color-border, #e2e4e7);
+  border-radius: 12px;
+  margin-bottom: 12px;
+  overflow: hidden;
+  padding: 15px 17px 17px;
+}
+
+.criterion-review__heading {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+}
+
+.criterion-review__heading h3 {
+  font-size: 14px;
+  margin: 0;
+}
+
+.criterion-review__loading {
+  color: var(--color-text-secondary, #5c6672);
+  font-size: 12px;
+  margin: 16px 0 2px;
+}
+
+.criterion-status {
+  --criterion-tone: #315f91;
+  --criterion-tint: #eef5fb;
+
+  align-items: center;
+  background: var(--criterion-tint);
+  border: 1px solid color-mix(in srgb, var(--criterion-tone) 20%, white);
+  border-radius: 10px;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: 8px minmax(0, 1fr) auto;
+  margin: 13px 0;
+  padding: 11px 12px;
+}
+
+.criterion-status[data-tone="available"] {
+  --criterion-tone: #0d6670;
+  --criterion-tint: #edf7f7;
+}
+
+.criterion-status[data-tone="review"] {
+  --criterion-tone: #946315;
+  --criterion-tint: #fff7e8;
+}
+
+.criterion-status[data-tone="blocked"] {
+  --criterion-tone: #9a4136;
+  --criterion-tint: #fff3f1;
+}
+
+.criterion-status[data-tone="missing"] {
+  --criterion-tone: #5c6672;
+  --criterion-tint: #f4f5f6;
+}
+
+.criterion-status__mark {
+  background: var(--criterion-tone);
+  border-radius: 999px;
+  height: 26px;
+  width: 4px;
+}
+
+.criterion-status strong {
+  color: var(--criterion-tone);
+  display: block;
+  font-size: 12px;
+}
+
+.criterion-status p {
+  color: var(--color-text-secondary, #5c6672);
+  font-size: 11px;
+  line-height: 1.45;
+  margin: 2px 0 0;
+}
+
+.criterion-status small {
+  color: var(--criterion-tone);
+  font: 650 10px/1.2 ui-monospace, "Cascadia Code", monospace;
+}
+
+.criterion-quality {
+  background: #fff8e9;
+  border-left: 3px solid #d7a13d;
+  color: #6f4d13;
+  display: grid;
+  font-size: 11px;
+  gap: 5px;
+  line-height: 1.45;
+  margin: 0 0 13px;
+  padding: 10px 12px 10px 28px;
+}
+
+.criterion-points {
+  display: grid;
+  gap: 9px;
+}
+
+.criterion-point {
+  background: #fafbfb;
+  border: 1px solid #e6e9eb;
+  border-radius: 10px;
+  display: grid;
+  grid-template-columns: 38px minmax(0, 1fr);
+  overflow: hidden;
+}
+
+.criterion-point__rail {
+  align-items: flex-start;
+  background: #eaf3f3;
+  border-right: 1px solid #d9e6e6;
+  display: flex;
+  justify-content: center;
+  padding-top: 13px;
+}
+
+.criterion-point__rail span {
+  align-items: center;
+  background: var(--color-accent, #135e6b);
+  border-radius: 50%;
+  color: #fff;
+  display: inline-flex;
+  font: 700 10px/1 ui-monospace, "Cascadia Code", monospace;
+  height: 22px;
+  justify-content: center;
+  width: 22px;
+}
+
+.criterion-point__body {
+  display: grid;
+  gap: 9px;
+  padding: 12px;
+}
+
+.criterion-point__body label,
+.criterion-meta label,
+.criterion-decision > label {
+  color: var(--color-text-secondary, #5c6672);
+  display: grid;
+  font-size: 10px;
+  font-weight: 650;
+  gap: 5px;
+}
+
+.criterion-point input,
+.criterion-point textarea,
+.criterion-meta textarea,
+.criterion-decision input {
+  background: #fff;
+  border: 1px solid var(--color-border-strong, #d8dbdf);
+  border-radius: 7px;
+  box-sizing: border-box;
+  color: var(--color-text-primary, #1c2733);
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.5;
+  padding: 7px 9px;
+  resize: vertical;
+  width: 100%;
+}
+
+.criterion-point input:focus,
+.criterion-point textarea:focus,
+.criterion-meta textarea:focus,
+.criterion-decision input:focus {
+  border-color: var(--color-accent, #135e6b);
+  box-shadow: 0 0 0 3px rgb(19 94 107 / 10%);
+  outline: none;
+}
+
+.criterion-point__topline {
+  align-items: end;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: minmax(0, 180px) auto;
+  justify-content: space-between;
+}
+
+.criterion-point__rules summary,
+.criterion-history summary {
+  color: var(--color-text-secondary, #5c6672);
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.criterion-point__rules > div {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: 1fr 1fr;
+  padding-top: 9px;
+}
+
+.criterion-add {
+  align-items: center;
+  background: transparent;
+  border: 1px dashed #b9cfd1;
+  border-radius: 9px;
+  color: var(--color-accent, #135e6b);
+  cursor: pointer;
+  display: flex;
+  font: 650 11px/1.4 inherit;
+  gap: 6px;
+  justify-content: center;
+  margin-top: 9px;
+  padding: 8px;
+  width: 100%;
+}
+
+.criterion-add:hover:not(:disabled) {
+  background: #f2f8f8;
+}
+
+.criterion-add:disabled {
+  cursor: not-allowed;
+  opacity: .48;
+}
+
+.criterion-meta {
+  display: grid;
+  gap: 9px;
+  grid-template-columns: 1fr 1fr;
+  margin-top: 12px;
+}
+
+.criterion-actions,
+.criterion-decision > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.criterion-actions {
+  margin-top: 12px;
+}
+
+.criterion-decision {
+  align-items: end;
+  background: #f7faf9;
+  border: 1px solid #dfe9e7;
+  border-radius: 10px;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: minmax(180px, 1fr) auto;
+  margin-top: 12px;
+  padding: 11px;
+}
+
+.criterion-history {
+  border-top: 1px solid #edf0f1;
+  margin-top: 13px;
+  padding-top: 11px;
+}
+
+.criterion-history ol {
+  display: grid;
+  gap: 6px;
+  list-style: none;
+  margin: 10px 0 0;
+  padding: 0;
+}
+
+.criterion-history li {
+  align-items: center;
+  color: var(--color-text-secondary, #5c6672);
+  display: grid;
+  font-size: 10px;
+  gap: 8px;
+  grid-template-columns: 34px minmax(0, 1fr) auto;
+}
+
+.criterion-history li > span {
+  color: var(--color-accent, #135e6b);
+  font-family: ui-monospace, "Cascadia Code", monospace;
+}
+
+.criterion-history li strong {
+  color: var(--color-text-primary, #1c2733);
+}
+
 .qb-modal-layer {
   align-items: flex-start;
   justify-content: center;
@@ -1880,6 +2165,24 @@
   }
 
   .qb-tag-group__heading {
+    justify-content: flex-start;
+  }
+
+  .criterion-status {
+    grid-template-columns: 8px minmax(0, 1fr);
+  }
+
+  .criterion-status small {
+    grid-column: 2;
+  }
+
+  .criterion-point__rules > div,
+  .criterion-meta,
+  .criterion-decision {
+    grid-template-columns: 1fr;
+  }
+
+  .criterion-decision > div {
     justify-content: flex-start;
   }
 

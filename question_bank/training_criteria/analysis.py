@@ -138,6 +138,29 @@ class QuestionAnalysisInput:
         )
 
     @property
+    def criterion_source_content_hash(self) -> str:
+        context = self.tagging_context
+        return _hash_payload(
+            {
+                "question_id": self.question_id,
+                "question_text": context.question_text,
+                "answer_text": context.answer_text,
+                "question_type": context.question_type,
+                "has_images": context.has_images,
+                "rich_question_blocks": self.rich_question_blocks,
+                "rich_answer_blocks": self.rich_answer_blocks,
+                "image_hashes": [
+                    {
+                        "role": image.role,
+                        "mime_type": image.mime_type,
+                        "sha256": image.sha256,
+                    }
+                    for image in self.images
+                ],
+            }
+        )
+
+    @property
     def question_type_group(self) -> str:
         value = str(self.tagging_context.question_type or "").casefold()
         text = str(self.tagging_context.question_text or "")
@@ -247,7 +270,7 @@ class TrainingCriteriaDraft:
         return cls(
             schema_version="training-criteria-draft-v1",
             question_id=question.question_id,
-            source_content_hash=question.source_content_hash,
+            source_content_hash=question.criterion_source_content_hash,
             question_type=question.question_type_group,
             points=points,
             auxiliary_rules=_text_tuple(payload.get("auxiliary_rules")),
@@ -901,7 +924,7 @@ def criteria_from_confirmed_rubric(
     return TrainingCriteriaDraft(
         schema_version="training-criteria-draft-v1",
         question_id=question.question_id,
-        source_content_hash=question.source_content_hash,
+        source_content_hash=question.criterion_source_content_hash,
         question_type=question.question_type_group,
         points=tuple(points),
         auxiliary_rules=(),
