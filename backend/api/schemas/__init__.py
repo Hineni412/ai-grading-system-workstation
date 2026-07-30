@@ -112,6 +112,9 @@ from .templates import (
     TemplateUpdateRequest,
 )
 from .training import (
+    PersonalizedRecommendationCreateRequest,
+    PersonalizedRecommendationDraftResponse,
+    PersonalizedRecommendationEditRequest,
     TrainingDiagnosisRequest,
     TrainingDiagnosisResponse,
     TrainingExamScopeRequest,
@@ -137,6 +140,9 @@ __all__ = [
     "CreateSessionRequest",
     "DeleteSessionRequest",
     "PermanentDeleteSessionRequest",
+    "PersonalizedRecommendationCreateRequest",
+    "PersonalizedRecommendationDraftResponse",
+    "PersonalizedRecommendationEditRequest",
     "QuestionBankSyncRequest",
     "ConfigGenerationRequest",
     "ConfigGenerationRetryRequest",

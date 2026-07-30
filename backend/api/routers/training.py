@@ -13,6 +13,7 @@ from backend.api.app import ApiError, ErrorResponse
 from backend.api.dependencies import (
     get_diagnosis_profile_service,
     get_job_manager,
+    get_personalized_recommendation_module,
     get_practice_plan_service,
     get_request_diagnosis_profile_service,
     get_request_practice_plan_service,
@@ -21,6 +22,9 @@ from backend.api.dependencies import (
 from backend.api.routers.jobs import _job_response
 from backend.api.schemas.jobs import JobResponse
 from backend.api.schemas.training import (
+    PersonalizedRecommendationCreateRequest,
+    PersonalizedRecommendationDraftResponse,
+    PersonalizedRecommendationEditRequest,
     TrainingDiagnosisRequest,
     TrainingDiagnosisResponse,
     TrainingExportSubmitRequest,
@@ -35,6 +39,16 @@ from backend.jobs.manager import JobManager, UnsupportedJobTypeError
 from backend.public_data import sanitize_public_mapping
 from integration.diagnosis_profile_service import DiagnosisProfileService
 from question_bank.recommendation.practice_plan_service import PracticePlanService
+from question_bank.recommendation.personalized import (
+    PersonalizedRecommendationConfig,
+    PersonalizedRecommendationModule,
+    RecommendationDraftNotFound,
+    RecommendationEditCommand,
+    RecommendationEditInvalid,
+    RecommendationRequestConflict,
+    RecommendationRevisionConflict,
+    RecommendationSourceChanged,
+)
 from question_bank.services.training_task_service import TrainingTaskService
 
 
@@ -112,6 +126,198 @@ def preview_training_plan(
     return TrainingPlanResponse(
         plan_revision=_plan_revision(plan),
         plan=plan,
+    )
+
+
+@router.post(
+    "/personalized-drafts",
+    response_model=PersonalizedRecommendationDraftResponse,
+    responses={
+        409: {
+            "model": ErrorResponse,
+            "description": "Recommendation request conflicts with an existing draft",
+        },
+        422: {
+            "model": ErrorResponse,
+            "description": "Personalized recommendation request is invalid",
+        },
+        **TRAINING_DATABASE_RESPONSES,
+    },
+)
+def create_personalized_recommendation_draft(
+    body: PersonalizedRecommendationCreateRequest,
+    diagnosis_service: DiagnosisProfileService = Depends(
+        get_diagnosis_profile_service
+    ),
+    module: PersonalizedRecommendationModule = Depends(
+        get_personalized_recommendation_module
+    ),
+) -> PersonalizedRecommendationDraftResponse:
+    try:
+        diagnosis = diagnosis_service.build_profiles(
+            scope=body.scope.model_dump(exclude_none=True),
+            exam_scope=body.exam_scope.model_dump(exclude_none=True),
+        )
+        draft = module.create(
+            request_token=body.request_token.lower(),
+            diagnosis=diagnosis,
+            config=PersonalizedRecommendationConfig(
+                question_count=body.question_count,
+                expected_minutes=body.expected_minutes,
+                difficulty_min=body.difficulty_min,
+                difficulty_max=body.difficulty_max,
+                direct_ratio=body.stage_ratios.direct,
+                prerequisite_ratio=body.stage_ratios.prerequisite,
+                transfer_ratio=body.stage_ratios.transfer,
+                target_keys=(
+                    tuple(body.target_keys)
+                    if body.target_keys
+                    else module.resolve_target_names(body.target_names)
+                ),
+                exclude_current_exam_originals=(
+                    body.exclude_current_exam_originals
+                ),
+            ),
+            actor_ref="local_teacher",
+        )
+    except RecommendationRequestConflict as exc:
+        raise ApiError(
+            409,
+            "personalized_recommendation_request_conflict",
+            "This recommendation request token was already used",
+        ) from exc
+    except (TypeError, ValueError) as exc:
+        raise ApiError(
+            422,
+            "personalized_recommendation_invalid",
+            "Personalized recommendation request is invalid",
+        ) from exc
+    except (OSError, sqlite3.Error) as exc:
+        raise ApiError(
+            503,
+            "training_database_unavailable",
+            "Training data is temporarily unavailable",
+        ) from exc
+    return PersonalizedRecommendationDraftResponse.model_validate(
+        _public_training_mapping(draft)
+    )
+
+
+@router.get(
+    "/personalized-drafts/{draft_id}",
+    response_model=PersonalizedRecommendationDraftResponse,
+    responses={
+        404: {
+            "model": ErrorResponse,
+            "description": "Personalized recommendation draft was not found",
+        },
+        **TRAINING_DATABASE_RESPONSES,
+    },
+)
+def get_personalized_recommendation_draft(
+    draft_id: str,
+    module: PersonalizedRecommendationModule = Depends(
+        get_personalized_recommendation_module
+    ),
+) -> PersonalizedRecommendationDraftResponse:
+    try:
+        draft = module.get(draft_id)
+    except (RecommendationDraftNotFound, ValueError) as exc:
+        raise ApiError(
+            404,
+            "personalized_recommendation_not_found",
+            "Personalized recommendation draft was not found",
+        ) from exc
+    except (OSError, sqlite3.Error) as exc:
+        raise ApiError(
+            503,
+            "training_database_unavailable",
+            "Training data is temporarily unavailable",
+        ) from exc
+    return PersonalizedRecommendationDraftResponse.model_validate(
+        _public_training_mapping(draft)
+    )
+
+
+@router.post(
+    "/personalized-drafts/{draft_id}/edits",
+    response_model=PersonalizedRecommendationDraftResponse,
+    responses={
+        404: {
+            "model": ErrorResponse,
+            "description": "Personalized recommendation draft was not found",
+        },
+        409: {
+            "model": ErrorResponse,
+            "description": "Recommendation draft changed or its sources changed",
+        },
+        422: {
+            "model": ErrorResponse,
+            "description": "Recommendation draft edit is invalid",
+        },
+        **TRAINING_DATABASE_RESPONSES,
+    },
+)
+def edit_personalized_recommendation_draft(
+    draft_id: str,
+    body: PersonalizedRecommendationEditRequest,
+    module: PersonalizedRecommendationModule = Depends(
+        get_personalized_recommendation_module
+    ),
+) -> PersonalizedRecommendationDraftResponse:
+    try:
+        draft = module.edit(
+            draft_id,
+            RecommendationEditCommand(
+                request_token=body.request_token.lower(),
+                expected_revision=body.expected_revision,
+                action=body.action,
+                student_id=body.student_id,
+                item_id=body.item_id,
+                actor_ref="local_teacher",
+                reason=body.reason,
+                replacement_question_id=body.replacement_question_id,
+            ),
+        )
+    except RecommendationDraftNotFound as exc:
+        raise ApiError(
+            404,
+            "personalized_recommendation_not_found",
+            "Personalized recommendation draft was not found",
+        ) from exc
+    except RecommendationRevisionConflict as exc:
+        raise ApiError(
+            409,
+            "personalized_recommendation_revision_conflict",
+            "Recommendation draft changed; refresh before editing",
+            {"current_revision": exc.current_revision},
+        ) from exc
+    except RecommendationSourceChanged as exc:
+        raise ApiError(
+            409,
+            "personalized_recommendation_source_changed",
+            "Recommendation sources changed; generate a new draft",
+        ) from exc
+    except RecommendationRequestConflict as exc:
+        raise ApiError(
+            409,
+            "personalized_recommendation_request_conflict",
+            "This recommendation edit token was already used",
+        ) from exc
+    except (RecommendationEditInvalid, TypeError, ValueError) as exc:
+        raise ApiError(
+            422,
+            "personalized_recommendation_edit_invalid",
+            "Personalized recommendation edit is invalid",
+        ) from exc
+    except (OSError, sqlite3.Error) as exc:
+        raise ApiError(
+            503,
+            "training_database_unavailable",
+            "Training data is temporarily unavailable",
+        ) from exc
+    return PersonalizedRecommendationDraftResponse.model_validate(
+        _public_training_mapping(draft)
     )
 
 

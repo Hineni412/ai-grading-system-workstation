@@ -45,6 +45,84 @@ export interface TrainingTaskConfirmRequest extends TrainingPlanRequest {
   expected_plan_revision: string
 }
 
+export interface PersonalizedRecommendationCreateRequest
+  extends TrainingDiagnosisRequest {
+  request_token: string
+  question_count: number
+  expected_minutes: number
+  difficulty_min: number
+  difficulty_max: number
+  stage_ratios: TrainingStageRatios
+  target_names: string[]
+  exclude_current_exam_originals: boolean
+}
+
+export interface PersonalizedRecommendationEditRequest {
+  request_token: string
+  expected_revision: number
+  action: 'lock' | 'unlock' | 'exclude' | 'replace'
+  student_id: string
+  item_id: string
+  reason: string
+  replacement_question_id?: number
+}
+
+export interface PersonalizedRecommendationRelation {
+  relation_id: string
+  relation_type: 'prerequisite' | 'related'
+  source_key: string
+  target_key: string
+  rationale: string
+  revision: number
+}
+
+export interface PersonalizedRecommendationItem {
+  item_id: string
+  item_order: number
+  slot: number
+  question_id: number
+  question_number: string
+  stage: TrainingStage
+  target: Record<string, unknown>
+  matched_key: string
+  matched_name: string
+  relation?: PersonalizedRecommendationRelation | null
+  criterion_version_id: string
+  criterion_point_count: number
+  difficulty: number
+  estimated_minutes: number
+  source_paper: string
+  reason: string
+  locked: boolean
+  replacement_history: Array<Record<string, unknown>>
+}
+
+export interface PersonalizedRecommendationStudent {
+  student_id: string
+  student_code: string
+  student_name: string
+  class_id: string
+  selection_mode: 'mastery_targeted' | 'maintenance_fallback'
+  targets: Array<Record<string, unknown>>
+  items: PersonalizedRecommendationItem[]
+  shortages: Array<Record<string, unknown>>
+  warnings: string[]
+  estimated_minutes: number
+}
+
+export interface PersonalizedRecommendationDraft {
+  draft_id: string
+  status: 'draft' | 'reviewed'
+  revision: number
+  result_version: string
+  engine_version: string
+  source_version: string
+  config: Record<string, unknown>
+  students: PersonalizedRecommendationStudent[]
+  warnings: string[]
+  history: Array<Record<string, unknown>>
+}
+
 export interface TrainingEvidenceReference {
   session_id: number
   session_name: string
@@ -462,6 +540,100 @@ export function decodeTrainingPlanResponse(value: unknown): TrainingPlanResponse
   return value as unknown as TrainingPlanResponse
 }
 
+function isRecommendationRelation(
+  value: unknown,
+): value is PersonalizedRecommendationRelation {
+  return (
+    isRecord(value)
+    && isNonEmptyString(value.relation_id)
+    && (value.relation_type === 'prerequisite' || value.relation_type === 'related')
+    && isNonEmptyString(value.source_key)
+    && isNonEmptyString(value.target_key)
+    && typeof value.rationale === 'string'
+    && isInteger(value.revision, 1)
+  )
+}
+
+function isRecommendationItem(
+  value: unknown,
+): value is PersonalizedRecommendationItem {
+  return (
+    isRecord(value)
+    && isNonEmptyString(value.item_id)
+    && isInteger(value.item_order, 1)
+    && isInteger(value.slot, 1)
+    && isInteger(value.question_id, 1)
+    && typeof value.question_number === 'string'
+    && isStage(value.stage)
+    && isRecord(value.target)
+    && isNonEmptyString(value.matched_key)
+    && typeof value.matched_name === 'string'
+    && (
+      value.relation === undefined
+      || value.relation === null
+      || isRecommendationRelation(value.relation)
+    )
+    && /^[0-9a-f]{64}$/.test(String(value.criterion_version_id || ''))
+    && isInteger(value.criterion_point_count, 1)
+    && isInteger(value.difficulty, 1)
+    && value.difficulty <= 10
+    && isInteger(value.estimated_minutes, 1)
+    && typeof value.source_paper === 'string'
+    && isNonEmptyString(value.reason)
+    && typeof value.locked === 'boolean'
+    && Array.isArray(value.replacement_history)
+    && value.replacement_history.every(isRecord)
+  )
+}
+
+function isRecommendationStudent(
+  value: unknown,
+): value is PersonalizedRecommendationStudent {
+  return (
+    isRecord(value)
+    && isNonEmptyString(value.student_id)
+    && typeof value.student_code === 'string'
+    && typeof value.student_name === 'string'
+    && typeof value.class_id === 'string'
+    && (
+      value.selection_mode === 'mastery_targeted'
+      || value.selection_mode === 'maintenance_fallback'
+    )
+    && Array.isArray(value.targets)
+    && value.targets.every(isRecord)
+    && Array.isArray(value.items)
+    && value.items.every(isRecommendationItem)
+    && Array.isArray(value.shortages)
+    && value.shortages.every(isRecord)
+    && isStringArray(value.warnings)
+    && isInteger(value.estimated_minutes)
+  )
+}
+
+export function decodePersonalizedRecommendationDraft(
+  value: unknown,
+): PersonalizedRecommendationDraft {
+  assertNoPathLikeKeys(value)
+  if (
+    !isRecord(value)
+    || !/^[0-9a-f]{64}$/.test(String(value.draft_id || ''))
+    || (value.status !== 'draft' && value.status !== 'reviewed')
+    || !isInteger(value.revision, 1)
+    || !/^[0-9a-f]{64}$/.test(String(value.result_version || ''))
+    || !isNonEmptyString(value.engine_version)
+    || !/^[0-9a-f]{64}$/.test(String(value.source_version || ''))
+    || !isRecord(value.config)
+    || !Array.isArray(value.students)
+    || !value.students.every(isRecommendationStudent)
+    || !isStringArray(value.warnings)
+    || !Array.isArray(value.history)
+    || !value.history.every(isRecord)
+  ) {
+    throw new Error('Invalid personalized recommendation draft')
+  }
+  return value as unknown as PersonalizedRecommendationDraft
+}
+
 export const trainingApi = {
   diagnose(
     body: TrainingDiagnosisRequest,
@@ -497,6 +669,44 @@ export const trainingApi = {
       method: 'POST',
       body,
       decode: decodeTrainingTaskDetail,
+      signal,
+      timeoutMs: 30_000,
+    })
+  },
+
+  createPersonalizedDraft(
+    body: PersonalizedRecommendationCreateRequest,
+    signal?: AbortSignal,
+  ): Promise<PersonalizedRecommendationDraft> {
+    return apiClient.request('/api/training/personalized-drafts', {
+      method: 'POST',
+      body,
+      decode: decodePersonalizedRecommendationDraft,
+      signal,
+      timeoutMs: 30_000,
+    })
+  },
+
+  getPersonalizedDraft(
+    draftId: string,
+    signal?: AbortSignal,
+  ): Promise<PersonalizedRecommendationDraft> {
+    return apiClient.request(`/api/training/personalized-drafts/${draftId}`, {
+      decode: decodePersonalizedRecommendationDraft,
+      signal,
+      timeoutMs: 30_000,
+    })
+  },
+
+  editPersonalizedDraft(
+    draftId: string,
+    body: PersonalizedRecommendationEditRequest,
+    signal?: AbortSignal,
+  ): Promise<PersonalizedRecommendationDraft> {
+    return apiClient.request(`/api/training/personalized-drafts/${draftId}/edits`, {
+      method: 'POST',
+      body,
+      decode: decodePersonalizedRecommendationDraft,
       signal,
       timeoutMs: 30_000,
     })

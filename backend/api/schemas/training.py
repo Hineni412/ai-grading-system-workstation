@@ -120,6 +120,81 @@ class TrainingTaskConfirmRequest(TrainingPlanRequest):
     expected_plan_revision: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
+class PersonalizedRecommendationCreateRequest(TrainingDiagnosisRequest):
+    request_token: str = Field(pattern=r"^[0-9a-fA-F]{32}$")
+    question_count: int = Field(default=10, ge=8, le=12)
+    expected_minutes: int = Field(default=45, ge=10, le=180)
+    difficulty_min: int = Field(default=1, ge=1, le=10)
+    difficulty_max: int = Field(default=10, ge=1, le=10)
+    stage_ratios: TrainingStageRatios = Field(
+        default_factory=TrainingStageRatios
+    )
+    target_keys: list[str] = Field(default_factory=list, max_length=20)
+    target_names: list[str] = Field(default_factory=list, max_length=20)
+    exclude_current_exam_originals: bool = True
+
+    @field_validator("target_keys")
+    @classmethod
+    def normalize_target_keys(cls, values: list[str]) -> list[str]:
+        result: list[str] = []
+        for raw_value in values:
+            value = str(raw_value or "").strip().casefold()
+            if not value.startswith(("kp_", "ki_")):
+                raise ValueError(
+                    "target_keys must use governed stable identities"
+                )
+            if value not in result:
+                result.append(value)
+        return result
+
+    @field_validator("target_names")
+    @classmethod
+    def normalize_target_names(cls, values: list[str]) -> list[str]:
+        result: list[str] = []
+        for raw_value in values:
+            value = str(raw_value or "").strip()
+            if not value:
+                raise ValueError("target_names must not contain blanks")
+            if value not in result:
+                result.append(value)
+        return result
+
+    @model_validator(mode="after")
+    def difficulty_range_is_ordered(
+        self,
+    ) -> "PersonalizedRecommendationCreateRequest":
+        if self.difficulty_min > self.difficulty_max:
+            raise ValueError("difficulty range is invalid")
+        if self.target_keys and self.target_names:
+            raise ValueError(
+                "target_keys and target_names cannot both be provided"
+            )
+        return self
+
+
+class PersonalizedRecommendationEditRequest(_TrainingModel):
+    request_token: str = Field(pattern=r"^[0-9a-fA-F]{32}$")
+    expected_revision: int = Field(ge=1)
+    action: Literal["lock", "unlock", "exclude", "replace"]
+    student_id: str = Field(min_length=1, max_length=100)
+    item_id: str = Field(min_length=1, max_length=100)
+    reason: str = Field(min_length=1, max_length=500)
+    replacement_question_id: int | None = Field(default=None, ge=1)
+
+
+class PersonalizedRecommendationDraftResponse(_TrainingModel):
+    draft_id: str = Field(pattern=r"^[0-9a-f]{64}$")
+    status: Literal["draft", "reviewed"]
+    revision: int = Field(ge=1)
+    result_version: str = Field(pattern=r"^[0-9a-f]{64}$")
+    engine_version: str
+    source_version: str = Field(pattern=r"^[0-9a-f]{64}$")
+    config: dict[str, Any]
+    students: list[dict[str, Any]]
+    warnings: list[str]
+    history: list[dict[str, Any]]
+
+
 class TrainingExportSubmitRequest(_TrainingModel):
     variant_id: int | None = Field(default=None, ge=1)
     format: Literal["docx", "markdown"] = "docx"
@@ -238,6 +313,9 @@ class TrainingDiagnosisResponse(_TrainingModel):
 
 
 __all__ = [
+    "PersonalizedRecommendationCreateRequest",
+    "PersonalizedRecommendationDraftResponse",
+    "PersonalizedRecommendationEditRequest",
     "TrainingDiagnosisRequest",
     "TrainingDiagnosisResponse",
     "TrainingExamScopeRequest",
