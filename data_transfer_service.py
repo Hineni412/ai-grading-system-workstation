@@ -46,6 +46,10 @@ REGENERABLE_USER_DATA_TOP_LEVEL = {
     "cache",
 }
 
+EXCLUDED_USER_DATA_TOP_LEVEL = {
+    "workspaces",
+}
+
 LEAN_SKIP_USER_DATA_TOP_LEVEL = {
     "annotated",
     "archives",
@@ -101,7 +105,8 @@ def should_include_export_path(path: Path, source_root: Path, arc_root: str, sco
     if (
         arc_root == "user_data"
         and lower_parts
-        and lower_parts[0] in REGENERABLE_USER_DATA_TOP_LEVEL
+        and lower_parts[0]
+        in (REGENERABLE_USER_DATA_TOP_LEVEL | EXCLUDED_USER_DATA_TOP_LEVEL)
     ):
         return False
 

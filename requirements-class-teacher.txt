@@ -1,0 +1,2 @@
+# Reserved for B-line-only Python dependencies after B00 approval.
+# F0 intentionally adds no encryption, student-data, or model dependency.

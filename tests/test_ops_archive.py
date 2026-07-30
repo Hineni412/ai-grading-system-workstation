@@ -50,6 +50,23 @@ def test_inspect_zip_rejects_unknown_root(tmp_path: Path) -> None:
         )
 
 
+def test_inspect_zip_rejects_workspace_data_in_ordinary_packages(
+    tmp_path: Path,
+) -> None:
+    archive = _zip_with_member(
+        tmp_path / "workspace.zip",
+        "user_data/workspaces/class-teacher/private.db",
+        b"private",
+    )
+
+    with pytest.raises(OpsArchiveInvalid, match="workspace_data_not_allowed"):
+        inspect_zip(
+            archive,
+            policy=OpsArchivePolicy(),
+            allowed_roots={"user_data", "config"},
+        )
+
+
 def test_inspect_zip_rejects_symlink_member(tmp_path: Path) -> None:
     archive_path = tmp_path / "symlink.zip"
     info = zipfile.ZipInfo("user_data/link")

@@ -13,10 +13,13 @@ Resolution order:
 from __future__ import annotations
 
 import os
+import re
+import stat
 from pathlib import Path
 from typing import Any, Iterable
 
 _PROJECT_ROOT = Path(__file__).resolve().parent
+_WORKSPACE_ID = re.compile(r"^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$")
 
 # ---------------------------------------------------------------------------
 # YAML loader – tiny built-in parser to avoid adding PyYAML dependency
@@ -225,6 +228,46 @@ class PathManager:
 
     # -- helpers -------------------------------------------------------------
 
+    def workspace_dir(self, workspace_id: str, *, create: bool = False) -> Path:
+        """Return one validated workspace root without creating it by default."""
+        clean_id = str(workspace_id or "").strip()
+        if not _WORKSPACE_ID.fullmatch(clean_id):
+            raise ValueError("workspace ID is invalid")
+
+        data_root = self._data_root.resolve(strict=False)
+        workspace_root = self._data_root / "workspaces"
+        resolved_workspace_root = workspace_root.resolve(strict=False)
+        try:
+            resolved_workspace_root.relative_to(data_root)
+        except ValueError as exc:
+            raise ValueError("workspace root is outside the controlled data root") from exc
+        if workspace_root.exists() and _is_reparse_point(workspace_root):
+            raise ValueError("workspace root cannot be a reparse point")
+
+        candidate = workspace_root / clean_id
+        resolved_candidate = candidate.resolve(strict=False)
+        try:
+            resolved_candidate.relative_to(resolved_workspace_root)
+        except ValueError as exc:
+            raise ValueError("workspace path is outside the controlled root") from exc
+        if candidate.exists() and _is_reparse_point(candidate):
+            raise ValueError("workspace path cannot be a reparse point")
+
+        if create:
+            candidate.mkdir(parents=True, exist_ok=True)
+            if _is_reparse_point(workspace_root) or _is_reparse_point(candidate):
+                raise ValueError("workspace path cannot be a reparse point")
+            resolved_candidate = candidate.resolve(strict=True)
+            try:
+                resolved_candidate.relative_to(
+                    self._data_root.resolve(strict=True)
+                )
+            except ValueError as exc:
+                raise ValueError(
+                    "workspace path is outside the controlled data root"
+                ) from exc
+        return candidate
+
     @property
     def version(self) -> str:
         # VERSION file is the single source of truth
@@ -282,6 +325,18 @@ class PathManager:
 # ---------------------------------------------------------------------------
 
 _instance: PathManager | None = None
+
+
+def _is_reparse_point(path: Path) -> bool:
+    try:
+        if path.is_symlink():
+            return True
+        attributes = getattr(path.lstat(), "st_file_attributes", 0)
+        return bool(
+            attributes & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+        )
+    except OSError:
+        return False
 
 
 def get_path_manager() -> PathManager:

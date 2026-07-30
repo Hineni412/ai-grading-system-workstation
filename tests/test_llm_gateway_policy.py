@@ -30,6 +30,7 @@ def test_request_and_protocol_values_are_stable():
         "recognition",
         "config_generation",
         "tagging",
+        "workspace",
     ]
     assert [protocol.value for protocol in LLMProtocol] == [
         "chat_completions",
@@ -42,6 +43,7 @@ def test_default_timeout_budgets_are_explicit():
     assert policy_from_profile(LLMRequestKind.RECOGNITION, None).timeout_seconds == 60.0
     assert policy_from_profile(LLMRequestKind.CONFIG_GENERATION, None).timeout_seconds == 600.0
     assert policy_from_profile(LLMRequestKind.TAGGING, None).timeout_seconds == 120.0
+    assert policy_from_profile(LLMRequestKind.WORKSPACE, None).max_retries == 0
 
 
 def test_profile_overrides_are_scoped_to_request_kind():

@@ -138,6 +138,10 @@ class JobManager:
         clean_type = str(job_type or "").strip()
         if not clean_type:
             raise ValueError("job_type must be nonblank")
+        if not callable(handler):
+            raise TypeError("job handler must be callable")
+        if clean_type in self._handlers:
+            raise ValueError(f"duplicate job type: {clean_type}")
         self._handlers[clean_type] = handler
 
     def submit(self, job_type: str, payload: dict[str, Any] | None = None) -> JobRecord:
