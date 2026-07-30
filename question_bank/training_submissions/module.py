@@ -1279,7 +1279,10 @@ def _read_page_identity(image: np.ndarray) -> tuple[np.ndarray, str | None, int]
         for region, position_score in regions:
             if region.size == 0:
                 continue
-            value, points, _ = detector.detectAndDecode(region)
+            try:
+                value, points, _ = detector.detectAndDecode(region)
+            except cv2.error:
+                value, points = "", None
             if not value:
                 enlarged = cv2.resize(
                     region,
@@ -1288,7 +1291,10 @@ def _read_page_identity(image: np.ndarray) -> tuple[np.ndarray, str | None, int]
                     fy=1.75,
                     interpolation=cv2.INTER_CUBIC,
                 )
-                value, points, _ = detector.detectAndDecode(enlarged)
+                try:
+                    value, points, _ = detector.detectAndDecode(enlarged)
+                except cv2.error:
+                    value, points = "", None
             if not value:
                 continue
             portrait = 0.62 <= width / max(height, 1) <= 0.80

@@ -348,6 +348,28 @@ def test_duplicate_conflict_external_and_manual_replacement_are_explicit(
         _upload(token="f", revision=int(batch["revision"]), content=second),
         BytesIO(second),
     )
+    if not any(
+        page["state"] == "assigned" and page["page_number"] == 2
+        for page in batch["pages"]
+    ):
+        page_two = next(
+            page
+            for page in batch["pages"]
+            if page["image_sha256"] == hashlib.sha256(second).hexdigest()
+            and page["state"] != "assigned"
+        )
+        batch = module.resolve_page(
+            str(batch["batch_id"]),
+            ResolvePageCommand(
+                operation_token="0" * 32,
+                expected_revision=int(batch["revision"]),
+                scan_page_id=str(page_two["scan_page_id"]),
+                action="match",
+                paper_instance_id=str(instance["paper_instance_id"]),
+                page_number=2,
+                actor_ref="teacher-1",
+            ),
+        )
     unresolved = [
         page
         for page in batch["pages"]
@@ -597,7 +619,10 @@ def _images_pdf(images: tuple[bytes, ...]) -> bytes:
                 cv2.IMREAD_COLOR,
             )
             height, width = image.shape[:2]
-            page = document.new_page(width=width, height=height)
+            page = document.new_page(
+                width=width / 2.75,
+                height=height / 2.75,
+            )
             page.insert_image(page.rect, stream=content)
         return document.tobytes(garbage=4, deflate=True)
     finally:
