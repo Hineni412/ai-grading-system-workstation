@@ -33,6 +33,10 @@ from backend.teaching_prep.application.lesson_drafts import (
     draft_preflight,
     validate_draft_payload,
 )
+from backend.teaching_prep.application.preferences import (
+    DEFAULT_TEACHING_PREFERENCES,
+    normalize_teaching_preferences,
+)
 from backend.teaching_prep.application.slide_plans import (
     build_slide_plan_payload,
     diff_preview,
@@ -64,6 +68,7 @@ from backend.teaching_prep.domain.models import (
     PptxVersion,
     PostLessonReview,
     UpClassPackage,
+    TeachingPreferences,
 )
 from backend.teaching_prep.domain.states import (
     LessonPreparationState,
@@ -82,6 +87,7 @@ from backend.teaching_prep.infrastructure.repositories import (
     PptxExecutionRepository,
     TeachingDeliveryRepository,
     TeachingCatalogRepository,
+    TeachingPreferencesRepository,
 )
 
 
@@ -180,6 +186,7 @@ class TeachingPrepService:
             path.mkdir(parents=True, exist_ok=True)
         self.database = TeachingPrepDatabase(self.database_path)
         self.preparations = LessonPreparationRepository(self.database)
+        self.preferences = TeachingPreferencesRepository(self.database)
         self.catalog = TeachingCatalogRepository(self.database)
         self.material_units = MaterialUnitRepository(self.database)
         self.exercises = ExerciseCandidateRepository(self.database)
@@ -209,7 +216,7 @@ class TeachingPrepService:
         return {
             "module": "teaching-prep",
             "enabled": True,
-            "schema_version": "008_teaching_delivery",
+            "schema_version": "009_teacher_preferences",
             "real_model_enabled": False,
             "real_wps_enabled": (
                 self.wps_adapter is not None and self.wps_adapter_is_real
@@ -235,6 +242,24 @@ class TeachingPrepService:
             request_token=clean_token,
             title=clean_title,
             class_name=clean_class_name,
+        )
+
+    def get_teaching_preferences(self) -> TeachingPreferences:
+        return self.preferences.get()
+
+    def update_teaching_preferences(
+        self,
+        *,
+        expected_revision: int,
+        payload: Mapping[str, object],
+    ) -> TeachingPreferences:
+        if isinstance(expected_revision, bool) or expected_revision < 1:
+            raise TeachingPrepValidationError(
+                "expected preference revision is invalid"
+            )
+        return self.preferences.update(
+            expected_revision=expected_revision,
+            payload=payload,
         )
 
     def get_preparation(self, preparation_id: str) -> LessonPreparation:
@@ -1010,6 +1035,7 @@ class TeachingPrepService:
         question_ids: Sequence[int],
         assessment_ids: Sequence[int],
         knowledge_scope: Sequence[str],
+        preparation_preferences: Mapping[str, object] | None = None,
     ) -> tuple[ResourcePackVersion, bool]:
         clean_token = _clean_token(request_token)
         clean_lesson_id = _clean_entity_id(lesson_node_id)
@@ -1052,6 +1078,13 @@ class TeachingPrepService:
             raise TeachingPrepValidationError(
                 "knowledge_scope contains too many items"
             )
+        clean_preferences = normalize_teaching_preferences(
+            (
+                preparation_preferences
+                if preparation_preferences is not None
+                else DEFAULT_TEACHING_PREFERENCES
+            )
+        )
         clean_intents = {
             _clean_entity_id(link_id): _clean_choice(
                 intent,
@@ -1069,6 +1102,7 @@ class TeachingPrepService:
             "question_ids": clean_question_ids,
             "assessment_ids": clean_assessment_ids,
             "knowledge_scope": clean_scope,
+            "preparation_preferences": clean_preferences,
         }
         request_hash = hashlib.sha256(
             json.dumps(
@@ -1129,6 +1163,7 @@ class TeachingPrepService:
             reference_ppt_intents=clean_intents,
             question_evidence=dict(question_evidence),
             assessment_evidence=dict(assessment_evidence),
+            preparation_preferences=clean_preferences,
         )
 
     def list_resource_packs(
@@ -1226,6 +1261,10 @@ class TeachingPrepService:
                     resource_pack=pack.payload,
                 )
             draft = validate_draft_payload(raw, pack)
+            if clean_mode == "model" and not draft.get("slide_adaptations"):
+                raise TeachingPrepValidationError(
+                    "lesson model must classify every frozen reference slide"
+                )
             capacity = calculate_capacity(pack, draft)
             saved = self.lesson_drafts.finish_generation(
                 operation_id=clean_operation_id,

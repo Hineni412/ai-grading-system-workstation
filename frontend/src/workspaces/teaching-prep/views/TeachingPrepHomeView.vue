@@ -24,6 +24,7 @@ import type {
   SlideOperation,
   SlideOperationReviewInput,
   SlidePlan,
+  TeachingPreferencesPayload,
   UpClassPackage,
 } from '../api/catalog'
 import { useTeachingPrepCatalogStore } from '../stores/catalog'
@@ -84,6 +85,21 @@ const resourcePackForm = reactive({
   className: '',
   teacherContext: '',
   knowledgeScope: '',
+})
+const preparationPreferences = reactive<TeachingPreferencesPayload>({
+  schema_version: 1,
+  label_textbook_pages: true,
+  page_label_font_size: 28,
+  trim_excess_practice: true,
+  practice_trim_level: 'moderate',
+  preserve_teaching_examples: true,
+  prefer_short_practice: true,
+  supplement_from_references: true,
+  supplement_question_limit: 2,
+  supplement_as_source_image: true,
+  prioritize_homework_workbook: true,
+  avoid_direct_homework_copy: true,
+  avoid_ppt_duplicates: true,
 })
 const editingDraft = ref<LessonDraft | null>(null)
 const draftEdit = ref<LessonDraftPayload | null>(null)
@@ -187,6 +203,25 @@ watch(
   () => {
     lessonForm.parentId = ''
     lessonForm.durationMinutes = lessonForm.nodeType === 'lesson' ? 45 : 0
+  },
+)
+watch(
+  () => catalog.teachingPreferences,
+  (preferences) => {
+    if (preferences) applyPreparationPreferences(preferences.payload)
+  },
+  { immediate: true },
+)
+watch(
+  () => preparationPreferences.supplement_from_references,
+  (enabled) => {
+    if (!enabled) {
+      preparationPreferences.supplement_question_limit = 0
+      preparationPreferences.supplement_as_source_image = false
+    } else if (preparationPreferences.supplement_question_limit === 0) {
+      preparationPreferences.supplement_question_limit = 2
+      preparationPreferences.supplement_as_source_image = true
+    }
   },
 )
 watch(
@@ -654,6 +689,48 @@ function textList(value: string): string[] {
   )]
 }
 
+function applyPreparationPreferences(
+  value: TeachingPreferencesPayload,
+): void {
+  Object.assign(preparationPreferences, structuredClone(value))
+}
+
+function resetPreparationPreferences(): void {
+  if (catalog.teachingPreferences) {
+    applyPreparationPreferences(catalog.teachingPreferences.payload)
+  }
+}
+
+async function savePersonalPreparationPreferences(): Promise<void> {
+  try {
+    await catalog.saveTeachingPreferences(
+      structuredClone(preparationPreferences),
+    )
+  } catch {
+    // Keep the current checkboxes visible so the teacher can refresh or retry.
+  }
+}
+
+function preparationPreferenceSummary(
+  value: TeachingPreferencesPayload,
+): string {
+  const items: string[] = []
+  if (value.label_textbook_pages) items.push('教材页码 28 号')
+  if (value.trim_excess_practice) {
+    const level = {
+      light: '少量精简',
+      moderate: '适度精简',
+      strong: '大幅精简',
+    }[value.practice_trim_level]
+    items.push(level)
+  }
+  if (value.preserve_teaching_examples) items.push('保留讲授例题')
+  if (value.supplement_from_references) {
+    items.push(`原图补题最多 ${value.supplement_question_limit} 道`)
+  }
+  return items.join(' · ') || '不启用自动改编偏好'
+}
+
 async function freezeResourcePack(): Promise<void> {
   const className = resourcePackForm.className.trim()
   packFormError.value = ''
@@ -675,6 +752,7 @@ async function freezeResourcePack(): Promise<void> {
       question_ids: selectedQuestionIds.value,
       assessment_ids: selectedAssessmentIds.value,
       knowledge_scope: textList(resourcePackForm.knowledgeScope),
+      preparation_preferences: structuredClone(preparationPreferences),
     })
     selectedAssessmentIds.value = []
     selectedQuestionIds.value = []
@@ -686,6 +764,14 @@ async function freezeResourcePack(): Promise<void> {
 function packMissingCount(pack: ResourcePack): number {
   const value = pack.payload.missing_and_uncertain
   return Array.isArray(value) ? value.length : 0
+}
+
+function packPreparationPreferenceSummary(pack: ResourcePack): string {
+  const value = pack.payload.preparation_preferences
+  if (!value || typeof value !== 'object') return '旧版本未记录课件改编偏好'
+  return preparationPreferenceSummary(
+    value as TeachingPreferencesPayload,
+  )
 }
 
 function startDraftEdit(draft: LessonDraft): void {
@@ -1717,6 +1803,145 @@ function operationForReview(operationId: string): SlideOperation {
           </div>
 
           <form class="teaching-prep-form" @submit.prevent="freezeResourcePack">
+            <fieldset class="teaching-prep-preferences">
+              <legend>我的课件改编偏好</legend>
+              <p>
+                当前勾选会冻结进本次备课；模型只把它作为结构化倾向，
+                页码字号、数量上限和不覆盖原件仍由本地程序强制检查。
+              </p>
+              <div class="teaching-prep-preferences__grid">
+                <label>
+                  <input
+                    v-model="preparationPreferences.label_textbook_pages"
+                    type="checkbox"
+                  >
+                  <span>
+                    <strong>标注教材页码</strong>
+                    在安全空白处添加“教材 P××”，固定 28 号
+                  </span>
+                </label>
+                <label>
+                  <input
+                    v-model="preparationPreferences.trim_excess_practice"
+                    type="checkbox"
+                  >
+                  <span>
+                    <strong>精简过多课堂练习</strong>
+                    重点检查课件后半部分
+                  </span>
+                </label>
+                <label>
+                  <input
+                    v-model="preparationPreferences.preserve_teaching_examples"
+                    type="checkbox"
+                  >
+                  <span>
+                    <strong>保留讲授过程中的例题</strong>
+                    不因练习精简误删讲解主线
+                  </span>
+                </label>
+                <label>
+                  <input
+                    v-model="preparationPreferences.prefer_short_practice"
+                    type="checkbox"
+                  >
+                  <span>
+                    <strong>优先保留短题</strong>
+                    题干较短、适合当堂完成的题目优先
+                  </span>
+                </label>
+                <label>
+                  <input
+                    v-model="preparationPreferences.supplement_from_references"
+                    type="checkbox"
+                  >
+                  <span>
+                    <strong>从参考资料补少量重点题</strong>
+                    只选择原 PPT 没有且值得进入作业设计的题
+                  </span>
+                </label>
+                <label>
+                  <input
+                    v-model="preparationPreferences.supplement_as_source_image"
+                    type="checkbox"
+                    :disabled="!preparationPreferences.supplement_from_references"
+                  >
+                  <span>
+                    <strong>补题使用原资料截图</strong>
+                    新开一页插入清晰裁图，不生成 AI 风格题图
+                  </span>
+                </label>
+                <label>
+                  <input
+                    v-model="preparationPreferences.prioritize_homework_workbook"
+                    type="checkbox"
+                  >
+                  <span>
+                    <strong>重点参考作业教辅</strong>
+                    用于判断作业题型和难度倾向
+                  </span>
+                </label>
+                <label>
+                  <input
+                    v-model="preparationPreferences.avoid_direct_homework_copy"
+                    type="checkbox"
+                  >
+                  <span>
+                    <strong>尽量不直接照搬作业教辅原题</strong>
+                    优先选择同类重点或交给教师确认
+                  </span>
+                </label>
+                <label>
+                  <input
+                    v-model="preparationPreferences.avoid_ppt_duplicates"
+                    type="checkbox"
+                  >
+                  <span>
+                    <strong>避免与原 PPT 重复</strong>
+                    重复或高度相似的补题不自动进入课件
+                  </span>
+                </label>
+              </div>
+              <div class="teaching-prep-form__row">
+                <label>
+                  练习精简程度
+                  <select
+                    v-model="preparationPreferences.practice_trim_level"
+                    :disabled="!preparationPreferences.trim_excess_practice"
+                  >
+                    <option value="light">少量精简</option>
+                    <option value="moderate">适度精简</option>
+                    <option value="strong">大幅精简</option>
+                  </select>
+                </label>
+                <label>
+                  每节补题上限
+                  <select
+                    v-model.number="preparationPreferences.supplement_question_limit"
+                    :disabled="!preparationPreferences.supplement_from_references"
+                  >
+                    <option :value="0">0 道</option>
+                    <option :value="1">1 道</option>
+                    <option :value="2">2 道</option>
+                    <option :value="3">最多 3 道</option>
+                  </select>
+                </label>
+              </div>
+              <div class="teaching-prep-preferences__actions">
+                <button
+                  type="button"
+                  :disabled="catalog.saveState === 'saving'"
+                  @click="savePersonalPreparationPreferences"
+                >
+                  保存为个人默认
+                </button>
+                <button type="button" @click="resetPreparationPreferences">
+                  恢复个人默认
+                </button>
+                <span>{{ preparationPreferenceSummary(preparationPreferences) }}</span>
+              </div>
+            </fieldset>
+
             <div class="teaching-prep-form__row">
               <label>
                 班级（选择历史考试时必填）
@@ -1869,6 +2094,11 @@ function operationForReview(operationId: string): SlideOperation {
                   {{ packMissingCount(pack) }} 项缺失或待确认 ·
                   {{ new Date(pack.created_at).toLocaleString() }}
                 </span>
+                <small
+                  v-if="pack.payload.preparation_preferences"
+                >
+                  {{ packPreparationPreferenceSummary(pack) }}
+                </small>
               </div>
               <div class="teaching-prep-pack-list__actions">
                 <button type="button" @click="catalog.selectResourcePack(pack)">
@@ -1914,6 +2144,14 @@ function operationForReview(operationId: string): SlideOperation {
               </span>
               <span>
                 不会读取资源包外资料，也不会生成 WPS 修改指令。
+              </span>
+              <span>
+                本次偏好：
+                {{
+                  preparationPreferenceSummary(
+                    catalog.lessonDraftPreflight.preparation_preferences,
+                  )
+                }}
               </span>
               <button
                 type="button"

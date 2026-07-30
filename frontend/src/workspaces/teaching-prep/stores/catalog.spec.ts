@@ -9,8 +9,25 @@ import {
   type MaterialUnit,
   type MaterialVersion,
   type ResourcePack,
+  type TeachingPreferencesPayload,
 } from '../api/catalog'
 import { useTeachingPrepCatalogStore } from './catalog'
+
+const preferences: TeachingPreferencesPayload = {
+  schema_version: 1,
+  label_textbook_pages: true,
+  page_label_font_size: 28,
+  trim_excess_practice: true,
+  practice_trim_level: 'moderate',
+  preserve_teaching_examples: true,
+  prefer_short_practice: true,
+  supplement_from_references: true,
+  supplement_question_limit: 2,
+  supplement_as_source_image: true,
+  prioritize_homework_workbook: true,
+  avoid_direct_homework_copy: true,
+  avoid_ppt_duplicates: true,
+}
 
 function lesson(id: string, title: string): LessonNode {
   return {
@@ -110,6 +127,7 @@ function preflight(resourcePackId: string): LessonDraftPreflight {
     data_scope: {},
     references: [{ id: resourcePackId, label: `范围 ${resourcePackId[0]}` }],
     missing_and_uncertain_count: 0,
+    preparation_preferences: preferences,
   }
 }
 

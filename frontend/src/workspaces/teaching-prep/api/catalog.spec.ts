@@ -50,9 +50,52 @@ const materialPayload = {
   created_at: '2026-07-30T00:00:00Z',
 }
 
+const preferencesPayload = {
+  schema_version: 1,
+  label_textbook_pages: true,
+  page_label_font_size: 28,
+  trim_excess_practice: true,
+  practice_trim_level: 'moderate',
+  preserve_teaching_examples: true,
+  prefer_short_practice: true,
+  supplement_from_references: true,
+  supplement_question_limit: 2,
+  supplement_as_source_image: true,
+  prioritize_homework_workbook: true,
+  avoid_direct_homework_copy: true,
+  avoid_ppt_duplicates: true,
+} as const
+
 beforeEach(() => vi.restoreAllMocks())
 
 describe('teaching preparation delivery API', () => {
+  it('saves structured teaching preferences with revision protection', async () => {
+    const current = {
+      revision: 1,
+      payload: preferencesPayload,
+      updated_at: '2026-07-30T00:00:00Z',
+    }
+    const saved = {
+      ...current,
+      revision: 2,
+      updated_at: '2026-07-30T00:01:00Z',
+    }
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValue(response(saved))
+
+    await expect(
+      teachingPrepCatalogApi.updateTeachingPreferences(
+        current,
+        preferencesPayload,
+      ),
+    ).resolves.toEqual(saved)
+
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toEqual({
+      expected_revision: 1,
+      payload: preferencesPayload,
+    })
+  })
+
   it('imports an explicitly selected file as a binary copy without a local path', async () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch')
       .mockResolvedValue(response(materialPayload, 201))

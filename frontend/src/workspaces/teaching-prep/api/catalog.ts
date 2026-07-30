@@ -207,6 +207,30 @@ export interface QuestionEvidenceChoice {
   updated_at: string
 }
 
+export type PracticeTrimLevel = 'light' | 'moderate' | 'strong'
+
+export interface TeachingPreferencesPayload {
+  schema_version: 1
+  label_textbook_pages: boolean
+  page_label_font_size: 28
+  trim_excess_practice: boolean
+  practice_trim_level: PracticeTrimLevel
+  preserve_teaching_examples: boolean
+  prefer_short_practice: boolean
+  supplement_from_references: boolean
+  supplement_question_limit: number
+  supplement_as_source_image: boolean
+  prioritize_homework_workbook: boolean
+  avoid_direct_homework_copy: boolean
+  avoid_ppt_duplicates: boolean
+}
+
+export interface TeachingPreferences {
+  revision: number
+  payload: TeachingPreferencesPayload
+  updated_at: string
+}
+
 export interface ResourcePack {
   id: string
   lesson_node_id: string
@@ -234,6 +258,7 @@ export interface FreezeResourcePackInput {
   question_ids: number[]
   assessment_ids: number[]
   knowledge_scope: string[]
+  preparation_preferences: TeachingPreferencesPayload
 }
 
 export interface DraftClaim {
@@ -271,6 +296,14 @@ export interface LessonDraftPayload {
   anticipated_difficulties: DraftClaim[]
   lesson_flow: DraftFlowItem[]
   exercise_recommendations: DraftExerciseRecommendation[]
+  slide_adaptations: Array<{
+    slide_ref: string
+    role: 'introduction' | 'explanation' | 'example' | 'practice' | 'summary' | 'other'
+    action: 'keep' | 'delete'
+    textbook_refs: string[]
+    reason: string
+    citations: string[]
+  }>
   uncertainties: string[]
 }
 
@@ -312,6 +345,7 @@ export interface LessonDraftPreflight {
   data_scope: Record<string, unknown>
   references: Array<{ id: string; label: string }>
   missing_and_uncertain_count: number
+  preparation_preferences: TeachingPreferencesPayload
 }
 
 export type SlideOperationDecision = 'proposed' | 'approved' | 'rejected'
@@ -746,6 +780,40 @@ function questionEvidenceChoice(value: unknown): QuestionEvidenceChoice {
   return value as unknown as QuestionEvidenceChoice
 }
 
+function teachingPreferencesPayload(value: unknown): TeachingPreferencesPayload {
+  if (
+    !isRecord(value)
+    || value.schema_version !== 1
+    || typeof value.label_textbook_pages !== 'boolean'
+    || value.page_label_font_size !== 28
+    || typeof value.trim_excess_practice !== 'boolean'
+    || !['light', 'moderate', 'strong'].includes(String(value.practice_trim_level))
+    || typeof value.preserve_teaching_examples !== 'boolean'
+    || typeof value.prefer_short_practice !== 'boolean'
+    || typeof value.supplement_from_references !== 'boolean'
+    || !integer(value.supplement_question_limit, 0)
+    || value.supplement_question_limit > 3
+    || typeof value.supplement_as_source_image !== 'boolean'
+    || typeof value.prioritize_homework_workbook !== 'boolean'
+    || typeof value.avoid_direct_homework_copy !== 'boolean'
+    || typeof value.avoid_ppt_duplicates !== 'boolean'
+  ) throw new Error('Invalid teaching preferences payload')
+  return value as unknown as TeachingPreferencesPayload
+}
+
+function teachingPreferences(value: unknown): TeachingPreferences {
+  if (
+    !isRecord(value)
+    || !integer(value.revision, 1)
+    || !text(value.updated_at)
+  ) throw new Error('Invalid teaching preferences response')
+  return {
+    revision: value.revision,
+    payload: teachingPreferencesPayload(value.payload),
+    updated_at: value.updated_at,
+  }
+}
+
 function resourcePack(value: unknown): ResourcePack {
   if (
     !isRecord(value)
@@ -795,6 +863,8 @@ function lessonDraft(value: unknown): LessonDraft {
     || !Array.isArray(value.payload.anticipated_difficulties)
     || !Array.isArray(value.payload.lesson_flow)
     || !Array.isArray(value.payload.exercise_recommendations)
+    || !(value.payload.slide_adaptations === undefined
+      || Array.isArray(value.payload.slide_adaptations))
     || !stringArray(value.payload.uncertainties)
     || !isRecord(value.capacity)
     || !integer(value.capacity.lesson_minutes, 1)
@@ -803,6 +873,9 @@ function lessonDraft(value: unknown): LessonDraft {
     || typeof value.capacity.within_capacity !== 'boolean'
     || !text(value.created_at)
   ) throw new Error('Invalid lesson draft response')
+  if (value.payload.slide_adaptations === undefined) {
+    value.payload.slide_adaptations = []
+  }
   return value as unknown as LessonDraft
 }
 
@@ -819,7 +892,11 @@ function lessonDraftPreflight(value: unknown): LessonDraftPreflight {
     || !isRecord(value.data_scope)
     || !Array.isArray(value.references)
     || !integer(value.missing_and_uncertain_count, 0)
+    || !isRecord(value.preparation_preferences)
   ) throw new Error('Invalid lesson draft preflight response')
+  value.preparation_preferences = teachingPreferencesPayload(
+    value.preparation_preferences,
+  )
   return value as unknown as LessonDraftPreflight
 }
 
@@ -1033,6 +1110,35 @@ export const teachingPrepCatalogApi = {
       decode: (payload) => {
         assertNoPathLikeKeys(payload)
         return moduleStatus(payload)
+      },
+    })
+  },
+
+  getTeachingPreferences(
+    signal?: AbortSignal,
+  ): Promise<TeachingPreferences> {
+    return apiClient.request('/api/teaching-prep/preferences', {
+      signal,
+      decode: (payload) => {
+        assertNoPathLikeKeys(payload)
+        return teachingPreferences(payload)
+      },
+    })
+  },
+
+  updateTeachingPreferences(
+    current: TeachingPreferences,
+    payload: TeachingPreferencesPayload,
+  ): Promise<TeachingPreferences> {
+    return apiClient.request('/api/teaching-prep/preferences', {
+      method: 'PATCH',
+      body: {
+        expected_revision: current.revision,
+        payload,
+      },
+      decode: (value) => {
+        assertNoPathLikeKeys(value)
+        return teachingPreferences(value)
       },
     })
   },

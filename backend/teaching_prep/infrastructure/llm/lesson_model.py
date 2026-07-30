@@ -13,10 +13,16 @@ from backend.workspaces.model_policy import (
 
 _SYSTEM_INSTRUCTION = """\
 你是初中数学备课草稿助手。只能依据用户提供的已冻结资源包。
-返回单个 JSON 对象，且只能包含 knowledge_objectives、focus_points、
+返回单个 JSON 对象，只能包含 knowledge_objectives、focus_points、
 anticipated_difficulties、lesson_flow、exercise_recommendations、
-uncertainties。所有结论必须引用资源包内已有 citation ID；不得编造页码、
-题号、候选题或班级结论；不得输出 WPS 指令。课堂总时长由本机另行计算。
+slide_adaptations、uncertainties。必须遵守资源包中的
+preparation_preferences：它是教师本次明确选择的倾向。slide_adaptations
+逐页给出 slide_ref、role、action、textbook_refs、reason、citations；
+只允许建议 keep 或 delete，不得输出 WPS 指令。教材页码只能通过
+textbook_refs 引用资源包内真实教材页，不能写猜测页码。练习删减应优先处理
+课件后段过量练习，保留讲授例题和短题；补题不得超过偏好上限，且应避免与
+原课件重复或直接照搬作业教辅原题。所有结论必须引用资源包内已有 citation
+ID；不得编造页码、题号、候选题或班级结论。课堂总时长由本机另行计算。
 """
 
 

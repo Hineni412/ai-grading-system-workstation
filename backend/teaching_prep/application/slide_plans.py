@@ -70,15 +70,34 @@ def build_slide_plan_payload(
             "reference PPT has no frozen slide units"
         )
     operations: list[dict[str, object]] = []
+    preferences = _mapping(pack.payload.get("preparation_preferences"))
+    adaptations = {
+        str(item.get("slide_ref") or ""): item
+        for item in _object_list(
+            draft.payload.get("slide_adaptations"),
+            maximum=2_000,
+        )
+    }
     for slide in slides:
         presentation = next(
             item
             for item in presentations
             if item["link_id"] == slide["source_link_id"]
         )
+        slide_ref = (
+            f"material:{slide['source_link_id']}:"
+            f"unit:{slide['original_index']}"
+        )
+        adaptation = _mapping(adaptations.get(slide_ref))
         kind = (
             "delete_slide"
-            if presentation["teacher_intent"] == "candidate_delete"
+            if (
+                adaptation.get("action") == "delete"
+                or (
+                    not adaptation
+                    and presentation["teacher_intent"] == "candidate_delete"
+                )
+            )
             else "keep_slide"
         )
         operations.append(
@@ -98,22 +117,71 @@ def build_slide_plan_payload(
                     "match_strategy": "source_fingerprint_and_slide_signature",
                 },
                 reason=(
-                    "教师在资源包中标记为候选删除。"
+                    str(adaptation.get("reason") or "")
+                    if adaptation
+                    else "教师在资源包中标记为候选删除。"
                     if kind == "delete_slide"
                     else "保留教师确认的参考课件新授流程。"
                 ),
-                citations=[
-                    (
-                        f"material:{slide['source_link_id']}:"
-                        f"unit:{slide['original_index']}"
-                    )
-                ],
+                citations=(
+                    _strings(adaptation.get("citations"), maximum=20)
+                    if adaptation
+                    else [slide_ref]
+                ),
                 planned_minutes=0,
                 risk="low",
                 execution_mode="automatic" if kind != "keep_slide" else "noop",
                 support_note=None,
             )
         )
+        textbook_refs = _strings(
+            adaptation.get("textbook_refs"),
+            maximum=6,
+        )
+        if (
+            kind == "keep_slide"
+            and preferences.get("label_textbook_pages") is True
+            and textbook_refs
+        ):
+            label_position, exact_placement = _page_label_position(
+                _mapping(slide.get("object_summary"))
+            )
+            label_text = _textbook_page_label(textbook_refs)
+            operations.append(
+                _operation(
+                    draft.id,
+                    kind="add_text_box",
+                    target_key=f"{slide['stable_signature']}:textbook-page-label",
+                    target={
+                        "target_kind": "slide",
+                        "slide_signature": slide["stable_signature"],
+                        "generated_page_number": slide["original_index"],
+                        "material_unit_id": slide["material_unit_id"],
+                        "wps_object_id": None,
+                        "object_type": "text_box",
+                        "position": label_position,
+                        "content_summary": label_text,
+                        "match_strategy": (
+                            "source_fingerprint_and_slide_signature"
+                        ),
+                    },
+                    reason="按本次备课偏好标注对应教材页码。",
+                    citations=[slide_ref, *textbook_refs],
+                    planned_minutes=0,
+                    risk="low" if exact_placement else "medium",
+                    execution_mode="automatic",
+                    support_note=(
+                        "已依据冻结对象占位选择空白角落。"
+                        if exact_placement
+                        else "缺少完整对象占位，执行前需在预览中确认没有遮挡。"
+                    ),
+                    details={
+                        "text": label_text,
+                        "font_size": 28,
+                        "semantic_role": "textbook_page_label",
+                    },
+                )
+            )
     draft_recommendations = _list(
         draft.payload.get("exercise_recommendations")
     )
@@ -149,6 +217,35 @@ def build_slide_plan_payload(
                 "add_slide",
                 f"{source_ref}:{insert_position}",
             )
+            if preferences.get("supplement_as_source_image") is not True:
+                operations.append(
+                    _operation(
+                        draft.id,
+                        kind="manual_note",
+                        target_key=f"{source_ref}:source-image-required",
+                        target={
+                            "target_kind": "manual",
+                            "slide_signature": None,
+                            "generated_page_number": None,
+                            "material_unit_id": region.get("material_unit_id"),
+                            "wps_object_id": None,
+                            "object_type": None,
+                            "position": None,
+                            "content_summary": recommendation.get("title"),
+                            "match_strategy": "manual_only",
+                        },
+                        reason="当前偏好未允许以原资料裁图自动补题。",
+                        citations=[source_ref],
+                        planned_minutes=_minutes(
+                            recommendation.get("estimated_minutes"),
+                            default=4,
+                        ),
+                        risk="blocked",
+                        execution_mode="manual_only",
+                        support_note="教师可调整偏好或手工处理。",
+                    )
+                )
+                continue
             operations.append(
                 _operation(
                     draft.id,
@@ -270,6 +367,7 @@ def build_slide_plan_payload(
     return (
         {
             "schema_version": 1,
+            "preparation_preferences": preferences,
             "source_presentations": [
                 {
                     key: item[key]
@@ -305,7 +403,12 @@ def validate_plan_payload(
         "unsupported_objects",
         "approval_history",
     }
-    if set(payload) != required or payload.get("schema_version") != 1:
+    optional = {"preparation_preferences"}
+    if (
+        not required.issubset(set(payload))
+        or set(payload) - required - optional
+        or payload.get("schema_version") != 1
+    ):
         raise TeachingPrepValidationError("slide plan structure is invalid")
     operations = [
         validate_operation(item)
@@ -318,6 +421,9 @@ def validate_plan_payload(
         )
     return {
         "schema_version": 1,
+        "preparation_preferences": _mapping(
+            payload.get("preparation_preferences")
+        ),
         "source_presentations": _object_list(
             payload.get("source_presentations"),
             maximum=50,
@@ -425,6 +531,14 @@ def require_approval_allowed(operation: Mapping[str, object]) -> None:
         )
     target = _mapping(operation.get("target"))
     details = _mapping(operation.get("details"))
+    if (
+        kind == "add_text_box"
+        and details.get("semantic_role") == "textbook_page_label"
+        and details.get("font_size") != 28
+    ):
+        raise TeachingPrepValidationError(
+            "textbook page label font size must remain 28"
+        )
     if kind in {
         "insert_static_image",
         "move_static_image",
@@ -608,6 +722,58 @@ def _slide(
         "wps_slide_id": None,
         "match_strategy": "source_fingerprint_and_slide_signature",
     }
+
+
+def _page_label_position(
+    object_summary: Mapping[str, object],
+) -> tuple[dict[str, float], bool]:
+    candidates = [
+        {"x": 0.68, "y": 0.89, "width": 0.28, "height": 0.075},
+        {"x": 0.68, "y": 0.03, "width": 0.28, "height": 0.075},
+        {"x": 0.04, "y": 0.89, "width": 0.28, "height": 0.075},
+        {"x": 0.04, "y": 0.03, "width": 0.28, "height": 0.075},
+    ]
+    occupied = [
+        _mapping(item)
+        for item in _list(object_summary.get("occupied_boxes"))
+    ]
+    if not occupied:
+        return candidates[0], False
+    scored = [
+        (sum(_overlap_area(candidate, box) for box in occupied), candidate)
+        for candidate in candidates
+    ]
+    score, best = min(scored, key=lambda item: item[0])
+    return best, score == 0
+
+
+def _overlap_area(
+    left: Mapping[str, object],
+    right: Mapping[str, object],
+) -> float:
+    try:
+        left_x0 = float(left["x"])
+        left_y0 = float(left["y"])
+        left_x1 = left_x0 + float(left["width"])
+        left_y1 = left_y0 + float(left["height"])
+        right_x0 = float(right["x"])
+        right_y0 = float(right["y"])
+        right_x1 = right_x0 + float(right["width"])
+        right_y1 = right_y0 + float(right["height"])
+    except (KeyError, TypeError, ValueError):
+        return 1.0
+    width = max(0.0, min(left_x1, right_x1) - max(left_x0, right_x0))
+    height = max(0.0, min(left_y1, right_y1) - max(left_y0, right_y0))
+    return width * height
+
+
+def _textbook_page_label(refs: Sequence[str]) -> str:
+    pages = [
+        ref.rsplit(":unit:", 1)[1]
+        for ref in refs
+        if ":unit:" in ref
+    ]
+    return "教材 P" + "、".join(dict.fromkeys(pages))
 
 
 def _unsupported(

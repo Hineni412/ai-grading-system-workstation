@@ -1252,3 +1252,66 @@
     flex-wrap: wrap;
   }
 }
+.teaching-prep-preferences {
+  display: grid;
+  gap: 16px;
+  margin: 0;
+  padding: 18px;
+  border: 1px solid var(--color-border, #d7dedb);
+  border-radius: 14px;
+  background: #f7faf8;
+}
+
+.teaching-prep-preferences legend {
+  padding: 0 8px;
+  font-weight: 700;
+  color: #173d35;
+}
+
+.teaching-prep-preferences > p {
+  margin: 0;
+  color: #52645f;
+}
+
+.teaching-prep-preferences__grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 10px;
+}
+
+.teaching-prep-preferences__grid label {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid #dce6e2;
+  border-radius: 10px;
+  background: #fff;
+}
+
+.teaching-prep-preferences__grid input {
+  width: auto;
+  margin-top: 3px;
+}
+
+.teaching-prep-preferences__grid span {
+  display: grid;
+  gap: 3px;
+  color: #52645f;
+}
+
+.teaching-prep-preferences__grid strong {
+  color: #173d35;
+}
+
+.teaching-prep-preferences__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.teaching-prep-preferences__actions span {
+  color: #52645f;
+  font-size: 0.92rem;
+}

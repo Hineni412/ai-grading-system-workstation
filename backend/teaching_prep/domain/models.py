@@ -17,6 +17,13 @@ class LessonPreparation:
 
 
 @dataclass(frozen=True, slots=True)
+class TeachingPreferences:
+    revision: int
+    payload: dict[str, object]
+    updated_at: str
+
+
+@dataclass(frozen=True, slots=True)
 class CurriculumEdition:
     id: str
     title: str
