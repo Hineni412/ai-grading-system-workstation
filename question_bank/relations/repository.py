@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+import json
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -91,6 +92,9 @@ class KnowledgeRelationRecord:
     rationale: str
     model_name: str | None
     model_version: str | None
+    prompt_version: str | None
+    confidence: float | None
+    conflict_codes: tuple[str, ...]
     decision_by: str | None
     decision_note: str | None
     decided_at: str | None
@@ -229,6 +233,9 @@ class KnowledgeRelationRepository:
         source_operation_id: str | None = None,
         model_name: str | None = None,
         model_version: str | None = None,
+        prompt_version: str | None = None,
+        confidence: float | None = None,
+        conflict_codes: tuple[str, ...] = (),
     ) -> KnowledgeRelationRecord:
         candidate = KnowledgeRelation(
             source_key=relation.source_key,
@@ -243,6 +250,14 @@ class KnowledgeRelationRepository:
         clean_operation_id = _optional_text(source_operation_id)
         clean_model_name = _optional_text(model_name)
         clean_model_version = _optional_text(model_version)
+        clean_prompt_version = _optional_text(prompt_version)
+        clean_confidence = _optional_confidence(confidence)
+        clean_conflict_codes = tuple(
+            dict.fromkeys(
+                _required_text(code, "conflict_code")
+                for code in conflict_codes
+            )
+        )
         if clean_source_kind == "model" and (
             clean_model_name is None or clean_model_version is None
         ):
@@ -293,8 +308,11 @@ class KnowledgeRelationRepository:
                     source_operation_id,
                     rationale,
                     model_name,
-                    model_version
-                ) VALUES (?, ?, ?, ?, 'suggested', ?, ?, ?, ?, ?, ?)
+                    model_version,
+                    prompt_version,
+                    confidence,
+                    conflict_codes_json
+                ) VALUES (?, ?, ?, ?, 'suggested', ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     relation_id,
@@ -307,6 +325,13 @@ class KnowledgeRelationRepository:
                     clean_rationale,
                     clean_model_name,
                     clean_model_version,
+                    clean_prompt_version,
+                    clean_confidence,
+                    json.dumps(
+                        clean_conflict_codes,
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    ),
                 ),
             )
             self._append_audit(
@@ -595,6 +620,18 @@ def _relation_record(row: sqlite3.Row) -> KnowledgeRelationRecord:
         model_version=(
             None if row["model_version"] is None else str(row["model_version"])
         ),
+        prompt_version=(
+            None
+            if row["prompt_version"] is None
+            else str(row["prompt_version"])
+        ),
+        confidence=(
+            None if row["confidence"] is None else float(row["confidence"])
+        ),
+        conflict_codes=tuple(
+            str(value)
+            for value in json.loads(str(row["conflict_codes_json"] or "[]"))
+        ),
         decision_by=(
             None if row["decision_by"] is None else str(row["decision_by"])
         ),
@@ -626,6 +663,20 @@ def _source_kind(value: object) -> str:
     normalized = _required_text(value, "source_kind").casefold()
     if normalized not in {"system", "model", "teacher", "import"}:
         raise ValueError("source_kind is invalid")
+    return normalized
+
+
+def _optional_confidence(value: object) -> float | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        raise ValueError("confidence must be between zero and one")
+    try:
+        normalized = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("confidence must be between zero and one") from exc
+    if not 0.0 <= normalized <= 1.0:
+        raise ValueError("confidence must be between zero and one")
     return normalized
 
 
