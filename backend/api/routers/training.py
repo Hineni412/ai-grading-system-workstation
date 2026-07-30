@@ -21,6 +21,7 @@ from backend.api.dependencies import (
     get_practice_plan_service,
     get_request_diagnosis_profile_service,
     get_request_practice_plan_service,
+    get_training_submission_module,
     get_training_task_service,
 )
 from backend.api.routers.jobs import _job_response
@@ -29,6 +30,10 @@ from backend.api.schemas.training import (
     PersonalizedPaperCreateRequest,
     PersonalizedPaperInstanceListResponse,
     PersonalizedPaperInstanceResponse,
+    TrainingScanBatchCreateRequest,
+    TrainingScanBatchResponse,
+    TrainingScanPageResolveRequest,
+    TrainingSubmissionCancelRequest,
     PersonalizedRecommendationCreateRequest,
     PersonalizedRecommendationDraftResponse,
     PersonalizedRecommendationEditRequest,
@@ -69,6 +74,19 @@ from question_bank.recommendation.personalized import (
     RecommendationRequestConflict,
     RecommendationRevisionConflict,
     RecommendationSourceChanged,
+)
+from question_bank.training_submissions import (
+    MAX_UPLOAD_BYTES,
+    CancelSubmissionCommand,
+    CreateScanBatchCommand,
+    IngestUploadCommand,
+    InvalidSubmissionUpload,
+    ResolvePageCommand,
+    SubmissionNotFound,
+    SubmissionRequestConflict,
+    SubmissionRevisionConflict,
+    TrainingSubmissionError,
+    TrainingSubmissionModule,
 )
 from question_bank.services.training_task_service import TrainingTaskService
 
@@ -605,6 +623,279 @@ def download_personalized_paper_artifact(
 
 
 @router.post(
+    "/scan-batches",
+    response_model=TrainingScanBatchResponse,
+    status_code=201,
+    responses={
+        409: {"model": ErrorResponse, "description": "Operation conflict"},
+        422: {"model": ErrorResponse, "description": "Paper selection is invalid"},
+        **TRAINING_DATABASE_RESPONSES,
+    },
+)
+def create_training_scan_batch(
+    body: TrainingScanBatchCreateRequest,
+    module: TrainingSubmissionModule = Depends(
+        get_training_submission_module
+    ),
+) -> TrainingScanBatchResponse:
+    try:
+        result = module.create_batch(
+            CreateScanBatchCommand(
+                operation_token=body.operation_token.lower(),
+                paper_instance_ids=tuple(body.paper_instance_ids),
+                actor_ref="local_teacher",
+            )
+        )
+    except (
+        TrainingSubmissionError,
+        PersonalizedPaperError,
+        OSError,
+        sqlite3.Error,
+        TypeError,
+        ValueError,
+    ) as exc:
+        _raise_submission_api_error(exc)
+    return TrainingScanBatchResponse.model_validate(result)
+
+
+@router.get(
+    "/scan-batches/{batch_id}",
+    response_model=TrainingScanBatchResponse,
+    responses={
+        404: {"model": ErrorResponse, "description": "Scan batch was not found"},
+        **TRAINING_DATABASE_RESPONSES,
+    },
+)
+def get_training_scan_batch(
+    batch_id: str,
+    module: TrainingSubmissionModule = Depends(
+        get_training_submission_module
+    ),
+) -> TrainingScanBatchResponse:
+    try:
+        result = module.get_batch(batch_id)
+    except (
+        TrainingSubmissionError,
+        OSError,
+        sqlite3.Error,
+        TypeError,
+        ValueError,
+    ) as exc:
+        _raise_submission_api_error(exc)
+    return TrainingScanBatchResponse.model_validate(result)
+
+
+@router.post(
+    "/scan-batches/{batch_id}/uploads",
+    response_model=TrainingScanBatchResponse,
+    responses={
+        409: {"model": ErrorResponse, "description": "Scan batch changed"},
+        413: {"model": ErrorResponse, "description": "Scan file is too large"},
+        415: {"model": ErrorResponse, "description": "Scan file is invalid"},
+        **TRAINING_DATABASE_RESPONSES,
+    },
+    openapi_extra={
+        "parameters": [
+            {
+                "name": "X-Operation-Token",
+                "in": "header",
+                "required": True,
+                "schema": {"type": "string", "pattern": "^[0-9a-fA-F]{32}$"},
+            },
+            {
+                "name": "X-Content-SHA256",
+                "in": "header",
+                "required": True,
+                "schema": {"type": "string", "pattern": "^[0-9a-fA-F]{64}$"},
+            },
+            {
+                "name": "X-Upload-Filename",
+                "in": "header",
+                "required": True,
+                "schema": {"type": "string"},
+            },
+        ],
+        "requestBody": {
+            "required": True,
+            "content": {
+                "application/pdf": {"schema": {"type": "string", "format": "binary"}},
+                "image/jpeg": {"schema": {"type": "string", "format": "binary"}},
+                "image/png": {"schema": {"type": "string", "format": "binary"}},
+            },
+        },
+    },
+)
+async def ingest_training_scan_upload(
+    batch_id: str,
+    request: Request,
+    expected_revision: int = Query(ge=1),
+    module: TrainingSubmissionModule = Depends(
+        get_training_submission_module
+    ),
+) -> TrainingScanBatchResponse:
+    media_type = (
+        str(request.headers.get("content-type") or "")
+        .split(";", 1)[0]
+        .strip()
+        .casefold()
+    )
+    try:
+        declared_size = int(request.headers.get("content-length") or 0)
+    except ValueError:
+        declared_size = 0
+    if declared_size > MAX_UPLOAD_BYTES:
+        raise ApiError(
+            413,
+            "training_scan_too_large",
+            "Training scan is too large",
+        )
+    try:
+        command = IngestUploadCommand(
+            operation_token=str(
+                request.headers.get("x-operation-token") or ""
+            ).lower(),
+            expected_revision=expected_revision,
+            filename=unquote(
+                str(request.headers.get("x-upload-filename") or "")
+            ),
+            media_type=media_type,
+            content_sha256=str(
+                request.headers.get("x-content-sha256") or ""
+            ).lower(),
+            actor_ref="local_teacher",
+        )
+        with SpooledTemporaryFile(max_size=1024 * 1024, mode="w+b") as upload:
+            received = 0
+            async for chunk in request.stream():
+                received += len(chunk)
+                if received > MAX_UPLOAD_BYTES:
+                    raise ApiError(
+                        413,
+                        "training_scan_too_large",
+                        "Training scan is too large",
+                    )
+                upload.write(chunk)
+            upload.seek(0)
+            result = module.ingest(batch_id, command, upload)
+    except ApiError:
+        raise
+    except (
+        TrainingSubmissionError,
+        OSError,
+        sqlite3.Error,
+        TypeError,
+        ValueError,
+    ) as exc:
+        _raise_submission_api_error(exc)
+    return TrainingScanBatchResponse.model_validate(result)
+
+
+@router.post(
+    "/scan-batches/{batch_id}/pages/{scan_page_id}/resolve",
+    response_model=TrainingScanBatchResponse,
+    responses={
+        409: {"model": ErrorResponse, "description": "Scan batch changed"},
+        422: {"model": ErrorResponse, "description": "Page resolution is invalid"},
+        **TRAINING_DATABASE_RESPONSES,
+    },
+)
+def resolve_training_scan_page(
+    batch_id: str,
+    scan_page_id: str,
+    body: TrainingScanPageResolveRequest,
+    module: TrainingSubmissionModule = Depends(
+        get_training_submission_module
+    ),
+) -> TrainingScanBatchResponse:
+    try:
+        result = module.resolve_page(
+            batch_id,
+            ResolvePageCommand(
+                operation_token=body.operation_token.lower(),
+                expected_revision=body.expected_revision,
+                scan_page_id=scan_page_id,
+                action=body.action,
+                actor_ref="local_teacher",
+                paper_instance_id=body.paper_instance_id,
+                page_number=body.page_number,
+            ),
+        )
+    except (
+        TrainingSubmissionError,
+        OSError,
+        sqlite3.Error,
+        TypeError,
+        ValueError,
+    ) as exc:
+        _raise_submission_api_error(exc)
+    return TrainingScanBatchResponse.model_validate(result)
+
+
+@router.post(
+    "/submissions/{submission_id}/cancel",
+    response_model=TrainingScanBatchResponse,
+    responses={
+        409: {"model": ErrorResponse, "description": "Scan batch changed"},
+        **TRAINING_DATABASE_RESPONSES,
+    },
+)
+def cancel_training_submission(
+    submission_id: str,
+    body: TrainingSubmissionCancelRequest,
+    module: TrainingSubmissionModule = Depends(
+        get_training_submission_module
+    ),
+) -> TrainingScanBatchResponse:
+    try:
+        result = module.cancel_submission(
+            submission_id,
+            CancelSubmissionCommand(
+                operation_token=body.operation_token.lower(),
+                expected_revision=body.expected_revision,
+                actor_ref="local_teacher",
+                reason=body.reason,
+            ),
+        )
+    except (
+        TrainingSubmissionError,
+        OSError,
+        sqlite3.Error,
+        TypeError,
+        ValueError,
+    ) as exc:
+        _raise_submission_api_error(exc)
+    return TrainingScanBatchResponse.model_validate(result)
+
+
+@router.get(
+    "/scan-batches/{batch_id}/pages/{scan_page_id}/preview",
+    response_class=FileResponse,
+    responses={
+        404: {"model": ErrorResponse, "description": "Scan page was not found"},
+        **TRAINING_DATABASE_RESPONSES,
+    },
+)
+def preview_training_scan_page(
+    batch_id: str,
+    scan_page_id: str,
+    module: TrainingSubmissionModule = Depends(
+        get_training_submission_module
+    ),
+) -> FileResponse:
+    try:
+        path = module.page_artifact_path(scan_page_id, batch_id=batch_id)
+    except (
+        TrainingSubmissionError,
+        OSError,
+        sqlite3.Error,
+        TypeError,
+        ValueError,
+    ) as exc:
+        _raise_submission_api_error(exc)
+    return FileResponse(path, media_type="image/png", headers=NO_STORE_HEADERS)
+
+
+@router.post(
     "/tasks",
     response_model=TrainingTaskDetail,
     response_model_exclude_none=True,
@@ -1030,6 +1321,51 @@ def _raise_paper_api_error(exc: Exception) -> NoReturn:
         422,
         "personalized_paper_invalid",
         "Personalized paper request is invalid",
+    ) from exc
+
+
+def _raise_submission_api_error(exc: Exception) -> NoReturn:
+    if isinstance(exc, SubmissionNotFound):
+        raise ApiError(
+            404,
+            "training_submission_not_found",
+            "Training scan batch, submission, or page was not found",
+        ) from exc
+    if isinstance(exc, SubmissionRevisionConflict):
+        raise ApiError(
+            409,
+            "training_submission_revision_conflict",
+            "Training scan batch changed; refresh before continuing",
+            {"current_revision": exc.current_revision},
+        ) from exc
+    if isinstance(exc, SubmissionRequestConflict):
+        raise ApiError(
+            409,
+            "training_submission_request_conflict",
+            "This training scan operation conflicts with current state",
+        ) from exc
+    if isinstance(exc, InvalidSubmissionUpload):
+        raise ApiError(
+            422,
+            "training_submission_invalid",
+            "Training scan or page resolution is invalid",
+        ) from exc
+    if isinstance(exc, PersonalizedPaperError):
+        raise ApiError(
+            422,
+            "training_submission_paper_invalid",
+            "Expected personalized paper is not available",
+        ) from exc
+    if isinstance(exc, (OSError, sqlite3.Error)):
+        raise ApiError(
+            503,
+            "training_submission_unavailable",
+            "Training scan grouping is temporarily unavailable",
+        ) from exc
+    raise ApiError(
+        422,
+        "training_submission_invalid",
+        "Training scan request is invalid",
     ) from exc
 
 

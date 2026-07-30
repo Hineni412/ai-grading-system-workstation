@@ -13,6 +13,7 @@ import {
   type TrainingStudentScopeRequest,
 } from '../../api/training'
 import { ApiError } from '../../api/errors'
+import TrainingScanBatchPanel from './TrainingScanBatchPanel.vue'
 
 const props = defineProps<{
   diagnosis: TrainingDiagnosis | null
@@ -514,6 +515,8 @@ async function editItem(
           </p>
         </section>
       </article>
+
+      <TrainingScanBatchPanel :instances="paperInstances" />
 
       <p class="personalized-footnote">
         训练卷使用生成时的题目、推荐理由和已批准判定点快照；以后来源变化不会改写旧卷。

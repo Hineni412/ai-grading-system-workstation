@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Any, Literal
 from uuid import UUID
 
@@ -231,6 +232,59 @@ class PersonalizedPaperInstanceResponse(_TrainingModel):
 
 class PersonalizedPaperInstanceListResponse(_TrainingModel):
     items: list[PersonalizedPaperInstanceResponse]
+
+
+class TrainingScanBatchCreateRequest(_TrainingModel):
+    operation_token: str = Field(pattern=r"^[0-9a-fA-F]{32}$")
+    paper_instance_ids: list[str] = Field(min_length=1, max_length=200)
+
+    @field_validator("paper_instance_ids")
+    @classmethod
+    def validate_paper_instance_ids(cls, value: list[str]) -> list[str]:
+        if any(not re.fullmatch(r"[0-9a-fA-F]{64}", item) for item in value):
+            raise ValueError("paper instance id is invalid")
+        if len(set(item.casefold() for item in value)) != len(value):
+            raise ValueError("paper instance ids must be unique")
+        return value
+
+
+class TrainingScanPageResolveRequest(_TrainingModel):
+    operation_token: str = Field(pattern=r"^[0-9a-fA-F]{32}$")
+    expected_revision: int = Field(ge=1)
+    action: Literal["match", "replace", "dismiss"]
+    paper_instance_id: str | None = Field(
+        default=None,
+        pattern=r"^[0-9a-fA-F]{64}$",
+    )
+    page_number: int | None = Field(default=None, ge=1)
+
+    @model_validator(mode="after")
+    def validate_target(self) -> "TrainingScanPageResolveRequest":
+        if self.action in {"match", "replace"} and (
+            self.paper_instance_id is None or self.page_number is None
+        ):
+            raise ValueError("matching requires a paper and page number")
+        return self
+
+
+class TrainingSubmissionCancelRequest(_TrainingModel):
+    operation_token: str = Field(pattern=r"^[0-9a-fA-F]{32}$")
+    expected_revision: int = Field(ge=1)
+    reason: str = Field(min_length=1, max_length=500)
+
+
+class TrainingScanBatchResponse(_TrainingModel):
+    batch_id: str = Field(pattern=r"^[0-9a-f]{64}$")
+    paper_batch_id: str = Field(pattern=r"^[0-9a-f]{64}$")
+    status: Literal["manual_review", "ready", "cancelled"]
+    revision: int = Field(ge=1)
+    duplicate_upload: bool
+    submissions: list[dict[str, Any]]
+    pages: list[dict[str, Any]]
+    candidates: list[dict[str, Any]]
+    history: list[dict[str, Any]]
+    created_at: str
+    updated_at: str
 
 
 class TrainingExportSubmitRequest(_TrainingModel):

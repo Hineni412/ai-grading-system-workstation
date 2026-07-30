@@ -105,6 +105,53 @@ const paperPayload = {
   frozen_at: null,
 } as const
 
+const scanBatchPayload = {
+  batch_id: '9'.repeat(64),
+  paper_batch_id: 'f'.repeat(64),
+  status: 'manual_review',
+  revision: 1,
+  duplicate_upload: false,
+  submissions: [{
+    submission_id: '8'.repeat(64),
+    paper_instance_id: 'e'.repeat(64),
+    student_id: 'SYN-S01',
+    student_code: 'S01',
+    student_name: '合成学生',
+    class_id: 'SYN-C01',
+    series_version: 1,
+    status: 'manual_review',
+    revision: 1,
+    expected_total_pages: 2,
+    missing_pages: [2],
+    issue_codes: [],
+    assessment_started: false,
+  }],
+  pages: [{
+    scan_page_id: '7'.repeat(64),
+    upload_id: '6'.repeat(64),
+    upload_page_number: 1,
+    submission_id: '8'.repeat(64),
+    paper_instance_id: 'e'.repeat(64),
+    page_number: 1,
+    total_pages: 2,
+    issue_code: null,
+    state: 'assigned',
+    rotation_degrees: 0,
+    preview_url: `/api/training/scan-batches/${'9'.repeat(64)}/pages/${'7'.repeat(64)}/preview`,
+  }],
+  candidates: [{
+    paper_instance_id: 'e'.repeat(64),
+    student_id: 'SYN-S01',
+    student_code: 'S01',
+    student_name: '合成学生',
+    series_version: 1,
+    total_pages: 2,
+  }],
+  history: [],
+  created_at: '2026-07-30T08:00:00+00:00',
+  updated_at: '2026-07-30T08:00:00+00:00',
+} as const
+
 afterEach(() => {
   vi.restoreAllMocks()
 })
@@ -219,6 +266,49 @@ describe('personalized training API', () => {
       expected_draft_revision: 1,
       student_id: 'SYN-S01',
       context_window_tokens: 32768,
+    })
+  })
+
+  it('uses isolated scan batch and revision-protected page endpoints', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response(JSON.stringify(scanBatchPayload), {
+        status: 201,
+        headers: { 'content-type': 'application/json' },
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        ...scanBatchPayload,
+        revision: 2,
+      }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }))
+
+    const batch = await trainingApi.createTrainingScanBatch(
+      [paperPayload.paper_instance_id],
+      '4'.repeat(32),
+    )
+    await trainingApi.resolveTrainingScanPage(
+      batch,
+      batch.pages[0]!,
+      {
+        operation_token: '5'.repeat(32),
+        action: 'replace',
+        paper_instance_id: paperPayload.paper_instance_id,
+        page_number: 1,
+      },
+    )
+
+    expect(fetchMock.mock.calls.map(([path]) => path)).toEqual([
+      '/api/training/scan-batches',
+      `/api/training/scan-batches/${scanBatchPayload.batch_id}`
+      + `/pages/${scanBatchPayload.pages[0].scan_page_id}/resolve`,
+    ])
+    expect(JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body))).toEqual({
+      operation_token: '5'.repeat(32),
+      action: 'replace',
+      paper_instance_id: paperPayload.paper_instance_id,
+      page_number: 1,
+      expected_revision: 1,
     })
   })
 })

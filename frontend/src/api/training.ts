@@ -176,6 +176,68 @@ export interface PersonalizedPaperInstance {
   frozen_at?: string | null
 }
 
+export type TrainingScanIssue =
+  | 'identity_unreadable'
+  | 'invalid_identity'
+  | 'unexpected_paper'
+  | 'duplicate_page'
+  | 'page_content_conflict'
+  | 'image_blurry'
+  | 'severe_crop'
+
+export interface TrainingScanPage {
+  scan_page_id: string
+  upload_id: string
+  upload_page_number: number
+  submission_id?: string | null
+  paper_instance_id?: string | null
+  page_number?: number | null
+  total_pages?: number | null
+  issue_code?: TrainingScanIssue | null
+  state: 'assigned' | 'unassigned' | 'duplicate' | 'conflict' | 'replaced' | 'dismissed'
+  rotation_degrees: 0 | 90 | 180 | 270
+  preview_url: string
+}
+
+export interface TrainingSubmission {
+  submission_id: string
+  paper_instance_id: string
+  student_id: string
+  student_code?: string | null
+  student_name?: string | null
+  class_id?: string | null
+  series_version: number
+  status: 'manual_review' | 'ready' | 'cancelled'
+  revision: number
+  expected_total_pages: number
+  missing_pages: number[]
+  issue_codes: TrainingScanIssue[]
+  assessment_started: boolean
+}
+
+export interface TrainingScanCandidate {
+  paper_instance_id: string
+  student_id: string
+  student_code?: string | null
+  student_name?: string | null
+  series_version: number
+  total_pages: number
+}
+
+export interface TrainingScanBatch {
+  batch_id: string
+  paper_batch_id: string
+  status: 'manual_review' | 'ready' | 'cancelled'
+  revision: number
+  duplicate_upload: boolean
+  submissions: TrainingSubmission[]
+  pages: TrainingScanPage[]
+  candidates: TrainingScanCandidate[]
+  history: Array<Record<string, unknown>>
+  created_at: string
+  updated_at: string
+}
+
 export interface TrainingEvidenceReference {
   session_id: number
   session_name: string
@@ -768,6 +830,71 @@ function decodePersonalizedPaperList(
   return { items: value.items.map(decodePersonalizedPaperInstance) }
 }
 
+function decodeTrainingScanBatch(value: unknown): TrainingScanBatch {
+  assertNoPathLikeKeys(value)
+  const submissionIsValid = (item: unknown): boolean => (
+    isRecord(item)
+    && /^[0-9a-f]{64}$/.test(String(item.submission_id || ''))
+    && /^[0-9a-f]{64}$/.test(String(item.paper_instance_id || ''))
+    && isNonEmptyString(item.student_id)
+    && isNullableString(item.student_code)
+    && isNullableString(item.student_name)
+    && isNullableString(item.class_id)
+    && isInteger(item.series_version, 1)
+    && ['manual_review', 'ready', 'cancelled'].includes(String(item.status))
+    && isInteger(item.revision, 1)
+    && isInteger(item.expected_total_pages, 1)
+    && Array.isArray(item.missing_pages)
+    && item.missing_pages.every((page) => isInteger(page, 1))
+    && isStringArray(item.issue_codes)
+    && typeof item.assessment_started === 'boolean'
+  )
+  const pageIsValid = (item: unknown): boolean => (
+    isRecord(item)
+    && /^[0-9a-f]{64}$/.test(String(item.scan_page_id || ''))
+    && /^[0-9a-f]{64}$/.test(String(item.upload_id || ''))
+    && isInteger(item.upload_page_number, 1)
+    && isNullableString(item.submission_id)
+    && isNullableString(item.paper_instance_id)
+    && (item.page_number === null || isInteger(item.page_number, 1))
+    && (item.total_pages === null || isInteger(item.total_pages, 1))
+    && isNullableString(item.issue_code)
+    && ['assigned', 'unassigned', 'duplicate', 'conflict', 'replaced', 'dismissed']
+      .includes(String(item.state))
+    && [0, 90, 180, 270].includes(Number(item.rotation_degrees))
+    && isNonEmptyString(item.preview_url)
+  )
+  const candidateIsValid = (item: unknown): boolean => (
+    isRecord(item)
+    && /^[0-9a-f]{64}$/.test(String(item.paper_instance_id || ''))
+    && isNonEmptyString(item.student_id)
+    && isNullableString(item.student_code)
+    && isNullableString(item.student_name)
+    && isInteger(item.series_version, 1)
+    && isInteger(item.total_pages, 1)
+  )
+  if (
+    !isRecord(value)
+    || !/^[0-9a-f]{64}$/.test(String(value.batch_id || ''))
+    || !/^[0-9a-f]{64}$/.test(String(value.paper_batch_id || ''))
+    || !['manual_review', 'ready', 'cancelled'].includes(String(value.status))
+    || !isInteger(value.revision, 1)
+    || typeof value.duplicate_upload !== 'boolean'
+    || !Array.isArray(value.submissions)
+    || !value.submissions.every(submissionIsValid)
+    || !Array.isArray(value.pages)
+    || !value.pages.every(pageIsValid)
+    || !Array.isArray(value.candidates)
+    || !value.candidates.every(candidateIsValid)
+    || !Array.isArray(value.history)
+    || !isNonEmptyString(value.created_at)
+    || !isNonEmptyString(value.updated_at)
+  ) {
+    throw new Error('Invalid training scan batch')
+  }
+  return value as unknown as TrainingScanBatch
+}
+
 async function fileSha256(file: File): Promise<string> {
   const digest = await globalThis.crypto.subtle.digest(
     'SHA-256',
@@ -918,5 +1045,104 @@ export const trainingApi = {
 
   downloadPaperArtifact(path: string) {
     return apiClient.download(path, { timeoutMs: 60_000 })
+  },
+
+  createTrainingScanBatch(
+    paperInstanceIds: string[],
+    operationToken: string,
+  ): Promise<TrainingScanBatch> {
+    return apiClient.request('/api/training/scan-batches', {
+      method: 'POST',
+      body: {
+        operation_token: operationToken,
+        paper_instance_ids: paperInstanceIds,
+      },
+      decode: decodeTrainingScanBatch,
+      timeoutMs: 30_000,
+    })
+  },
+
+  getTrainingScanBatch(batchId: string): Promise<TrainingScanBatch> {
+    return apiClient.request(`/api/training/scan-batches/${batchId}`, {
+      decode: decodeTrainingScanBatch,
+      timeoutMs: 30_000,
+    })
+  },
+
+  async uploadTrainingScan(
+    batch: TrainingScanBatch,
+    file: File,
+    operationToken: string,
+  ): Promise<TrainingScanBatch> {
+    const digest = await fileSha256(file)
+    const suffix = file.name.toLocaleLowerCase()
+    const mediaType = file.type || (
+      suffix.endsWith('.pdf')
+        ? 'application/pdf'
+        : suffix.endsWith('.png')
+          ? 'image/png'
+          : 'image/jpeg'
+    )
+    return apiClient.request(
+      `/api/training/scan-batches/${batch.batch_id}/uploads`
+      + `?expected_revision=${batch.revision}`,
+      {
+        method: 'POST',
+        rawBody: file,
+        headers: {
+          'content-type': mediaType,
+          'x-operation-token': operationToken,
+          'x-content-sha256': digest,
+          'x-upload-filename': encodeURIComponent(file.name),
+        },
+        decode: decodeTrainingScanBatch,
+        timeoutMs: 180_000,
+      },
+    )
+  },
+
+  resolveTrainingScanPage(
+    batch: TrainingScanBatch,
+    page: TrainingScanPage,
+    body: {
+      operation_token: string
+      action: 'match' | 'replace' | 'dismiss'
+      paper_instance_id?: string
+      page_number?: number
+    },
+  ): Promise<TrainingScanBatch> {
+    return apiClient.request(
+      `/api/training/scan-batches/${batch.batch_id}`
+      + `/pages/${page.scan_page_id}/resolve`,
+      {
+        method: 'POST',
+        body: {
+          ...body,
+          expected_revision: batch.revision,
+        },
+        decode: decodeTrainingScanBatch,
+        timeoutMs: 30_000,
+      },
+    )
+  },
+
+  cancelTrainingSubmission(
+    batch: TrainingScanBatch,
+    submissionId: string,
+    operationToken: string,
+  ): Promise<TrainingScanBatch> {
+    return apiClient.request(
+      `/api/training/submissions/${submissionId}/cancel`,
+      {
+        method: 'POST',
+        body: {
+          operation_token: operationToken,
+          expected_revision: batch.revision,
+          reason: '教师确认本次不提交该训练卷',
+        },
+        decode: decodeTrainingScanBatch,
+        timeoutMs: 30_000,
+      },
+    )
   },
 }
