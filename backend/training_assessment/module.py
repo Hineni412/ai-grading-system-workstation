@@ -14,11 +14,13 @@ from typing import Any
 from backend.training_assessment.adapters import AssessmentContextExceeded
 from backend.training_assessment.contracts import (
     POINT_STATES,
+    AssessmentActionCommand,
     AssessmentGatewayResponse,
     AssessmentItem,
     AssessmentPage,
     AssessmentUsage,
     ModelPointResult,
+    ReviewPointCommand,
     TrainingAssessmentGateway,
     TrainingAssessmentRequest,
     TrainingPaperOutcome,
@@ -50,6 +52,20 @@ class AssessmentRevisionConflict(TrainingAssessmentError):
 
 
 class AssessmentInputInvalid(TrainingAssessmentError):
+    pass
+
+
+class AssessmentReviewConflict(TrainingAssessmentError):
+    def __init__(self, expected_revision: int, current_revision: int) -> None:
+        self.expected_revision = int(expected_revision)
+        self.current_revision = int(current_revision)
+        super().__init__(
+            "assessment review conflict: "
+            f"expected {expected_revision}, current {current_revision}"
+        )
+
+
+class AssessmentOperationConflict(TrainingAssessmentError):
     pass
 
 
@@ -112,36 +128,592 @@ class TrainingAssessmentModule:
                         "assessment run reservation did not converge"
                     )
                 return repeated
-            request_id = stable_hash(
-                {"run_id": run_id, "request_number": 1}
+            return self._execute_attempt(run_id, run_id, request)
+
+    def _execute_attempt(
+        self,
+        run_id: str,
+        attempt_id: str,
+        request: TrainingAssessmentRequest,
+    ) -> TrainingPaperOutcome:
+        request_id = stable_hash(
+            {"run_id": run_id, "attempt_id": attempt_id}
+        )
+        try:
+            self._record_request_started(
+                run_id,
+                request.submission_id,
+                attempt_id,
             )
-            self._record_request_started(run_id, clean_id)
-            try:
-                response = self.gateway.assess(
-                    request,
-                    operation_id=run_id,
-                    request_id=request_id,
-                )
-            except (asyncio.CancelledError, FutureCancelledError):
-                self._finish_failure(run_id, "cancelled", "cancelled")
-                return self._require_outcome(run_id)
-            except AssessmentContextExceeded:
-                self._finish_failure(run_id, "failed", "context_limit")
-                return self._require_outcome(run_id)
-            except TimeoutError:
-                self._finish_failure(run_id, "failed", "timeout")
-                return self._require_outcome(run_id)
-            except (json.JSONDecodeError, TypeError, ValueError):
-                self._finish_failure(run_id, "failed", "invalid_response")
-                return self._require_outcome(run_id)
-            except Exception:
-                self._finish_failure(run_id, "failed", "model_failure")
-                return self._require_outcome(run_id)
-            try:
-                self._store_candidates(run_id, request, response)
-            except Exception:
-                self._finish_failure(run_id, "failed", "storage_failure")
+        except TrainingAssessmentError:
+            outcome = self._require_outcome(run_id)
+            if (
+                outcome.status != "running"
+                or outcome.control_state != "active"
+            ):
+                return outcome
+            raise
+        try:
+            response = self.gateway.assess(
+                request,
+                operation_id=run_id,
+                request_id=request_id,
+            )
+        except (asyncio.CancelledError, FutureCancelledError):
+            self._finish_failure(
+                run_id, "cancelled", "cancelled", attempt_id
+            )
             return self._require_outcome(run_id)
+        except AssessmentContextExceeded:
+            self._finish_failure(
+                run_id, "failed", "context_limit", attempt_id
+            )
+            return self._require_outcome(run_id)
+        except TimeoutError:
+            self._finish_failure(run_id, "failed", "timeout", attempt_id)
+            return self._require_outcome(run_id)
+        except (json.JSONDecodeError, TypeError, ValueError):
+            self._finish_failure(
+                run_id, "failed", "invalid_response", attempt_id
+            )
+            return self._require_outcome(run_id)
+        except Exception:
+            self._finish_failure(
+                run_id, "failed", "model_failure", attempt_id
+            )
+            return self._require_outcome(run_id)
+        try:
+            stored = self._store_candidates(
+                run_id,
+                attempt_id,
+                request,
+                response,
+            )
+            if not stored:
+                return self._require_outcome(run_id)
+        except Exception:
+            self._finish_failure(
+                run_id, "failed", "storage_failure", attempt_id
+            )
+        return self._require_outcome(run_id)
+
+    def get_outcome(
+        self,
+        submission_id: str,
+        submission_revision: int,
+    ) -> TrainingPaperOutcome | None:
+        initialize_database(self.db_path)
+        return self._outcome_by_submission(
+            _identifier(submission_id),
+            _positive_revision(submission_revision),
+        )
+
+    def review_point(
+        self,
+        submission_id: str,
+        submission_revision: int,
+        command: ReviewPointCommand,
+    ) -> TrainingPaperOutcome:
+        clean_id = _identifier(submission_id)
+        clean_revision = _positive_revision(submission_revision)
+        initialize_database(self.db_path)
+        fingerprint = stable_hash(
+            {
+                "kind": "training-point-review-v1",
+                "submission_id": clean_id,
+                "submission_revision": clean_revision,
+                "command": {
+                    "expected_review_revision": (
+                        command.expected_review_revision
+                    ),
+                    "task_item_code": command.task_item_code,
+                    "point_id": command.point_id,
+                    "final_state": command.final_state,
+                    "teacher_evidence": command.teacher_evidence,
+                    "teacher_reason": command.teacher_reason,
+                    "actor_ref": command.actor_ref,
+                },
+            }
+        )
+        now = self._now()
+        with connect(self.db_path) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            repeated = self._repeated_event(
+                connection,
+                command.operation_token,
+                fingerprint,
+            )
+            if repeated is not None:
+                connection.commit()
+                return self._require_outcome(repeated)
+            self._reject_attempt_token(
+                connection,
+                command.operation_token,
+            )
+            run = self._reviewable_run(
+                connection,
+                clean_id,
+                clean_revision,
+            )
+            current_review_revision = int(run["review_revision"])
+            if current_review_revision != command.expected_review_revision:
+                raise AssessmentReviewConflict(
+                    command.expected_review_revision,
+                    current_review_revision,
+                )
+            expected_point = self._expected_point(
+                connection,
+                clean_id,
+                clean_revision,
+                command.task_item_code,
+                command.point_id,
+            )
+            next_revision = current_review_revision + 1
+            lock_id = stable_hash(
+                {
+                    "submission_id": clean_id,
+                    "submission_revision": clean_revision,
+                    "task_item_code": command.task_item_code,
+                    "point_id": command.point_id,
+                }
+            )
+            connection.execute(
+                """
+                INSERT INTO training_point_locks (
+                    lock_id, run_id, submission_id, submission_revision,
+                    task_item_code, point_id, final_state,
+                    teacher_evidence, teacher_reason, actor_ref,
+                    lock_revision, expected_point_json, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT (
+                    submission_id, submission_revision,
+                    task_item_code, point_id
+                ) DO UPDATE SET
+                    final_state = excluded.final_state,
+                    teacher_evidence = excluded.teacher_evidence,
+                    teacher_reason = excluded.teacher_reason,
+                    actor_ref = excluded.actor_ref,
+                    lock_revision = excluded.lock_revision,
+                    expected_point_json = excluded.expected_point_json,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    lock_id,
+                    str(run["run_id"]),
+                    clean_id,
+                    clean_revision,
+                    command.task_item_code,
+                    command.point_id,
+                    command.final_state,
+                    command.teacher_evidence,
+                    command.teacher_reason,
+                    command.actor_ref,
+                    next_revision,
+                    _json(expected_point),
+                    now,
+                    now,
+                ),
+            )
+            self._advance_review_revision(
+                connection,
+                str(run["run_id"]),
+                current_review_revision,
+                next_revision,
+                now,
+            )
+            self._insert_event(
+                connection,
+                run_id=str(run["run_id"]),
+                token=command.operation_token,
+                fingerprint=fingerprint,
+                event_type="review_point",
+                actor_ref=command.actor_ref,
+                from_revision=current_review_revision,
+                to_revision=next_revision,
+                detail={
+                    "task_item_code": command.task_item_code,
+                    "point_id": command.point_id,
+                    "final_state": command.final_state,
+                },
+                now=now,
+            )
+            connection.commit()
+            run_id = str(run["run_id"])
+        return self._require_outcome(run_id)
+
+    def pause(
+        self,
+        submission_id: str,
+        submission_revision: int,
+        command: AssessmentActionCommand,
+    ) -> TrainingPaperOutcome:
+        return self._change_control(
+            submission_id, submission_revision, "pause", command
+        )
+
+    def resume(
+        self,
+        submission_id: str,
+        submission_revision: int,
+        command: AssessmentActionCommand,
+    ) -> TrainingPaperOutcome:
+        return self._change_control(
+            submission_id, submission_revision, "resume", command
+        )
+
+    def cancel(
+        self,
+        submission_id: str,
+        submission_revision: int,
+        command: AssessmentActionCommand,
+    ) -> TrainingPaperOutcome:
+        return self._change_control(
+            submission_id, submission_revision, "cancel", command
+        )
+
+    def recover(
+        self,
+        submission_id: str,
+        submission_revision: int,
+        command: AssessmentActionCommand,
+    ) -> TrainingPaperOutcome:
+        clean_id = _identifier(submission_id)
+        clean_revision = _positive_revision(submission_revision)
+        initialize_database(self.db_path)
+        fingerprint = self._action_fingerprint(
+            "recover", clean_id, clean_revision, command
+        )
+        now = self._now()
+        with connect(self.db_path) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            repeated = self._repeated_event(
+                connection, command.operation_token, fingerprint
+            )
+            if repeated is not None:
+                connection.commit()
+                return self._require_outcome(repeated)
+            self._reject_attempt_token(
+                connection, command.operation_token
+            )
+            run = self._reviewable_run(
+                connection, clean_id, clean_revision
+            )
+            current_review_revision = int(run["review_revision"])
+            if current_review_revision != command.expected_review_revision:
+                raise AssessmentReviewConflict(
+                    command.expected_review_revision,
+                    current_review_revision,
+                )
+            if str(run["status"]) != "running":
+                raise AssessmentInputInvalid(
+                    "只有仍显示运行中的判定才能执行退出恢复"
+                )
+            attempt = connection.execute(
+                """
+                SELECT * FROM training_assessment_attempts
+                WHERE run_id = ?
+                ORDER BY attempt_number DESC LIMIT 1
+                """,
+                (run["run_id"],),
+            ).fetchone()
+            if attempt is None:
+                raise TrainingAssessmentError(
+                    "assessment attempt ledger is missing"
+                )
+            error_code = (
+                "interrupted_after_request"
+                if int(attempt["request_count"]) == 1
+                else "interrupted_before_request"
+            )
+            next_revision = current_review_revision + 1
+            connection.execute(
+                """
+                UPDATE training_assessment_attempts
+                SET status = 'failed', error_code = ?, finished_at = ?,
+                    updated_at = ?
+                WHERE attempt_id = ?
+                """,
+                (error_code, now, now, attempt["attempt_id"]),
+            )
+            connection.execute(
+                """
+                UPDATE training_assessment_runs
+                SET status = 'failed', control_state = 'active',
+                    error_code = ?, finished_at = ?,
+                    review_revision = ?, updated_at = ?
+                WHERE run_id = ?
+                """,
+                (
+                    error_code,
+                    now,
+                    next_revision,
+                    now,
+                    run["run_id"],
+                ),
+            )
+            self._insert_event(
+                connection,
+                run_id=str(run["run_id"]),
+                token=command.operation_token,
+                fingerprint=fingerprint,
+                event_type="recover",
+                actor_ref=command.actor_ref,
+                from_revision=current_review_revision,
+                to_revision=next_revision,
+                detail={"error_code": error_code, "reason": command.reason},
+                now=now,
+            )
+            connection.commit()
+            run_id = str(run["run_id"])
+        return self._require_outcome(run_id)
+
+    def retry_failed(
+        self,
+        submission_id: str,
+        submission_revision: int,
+        command: AssessmentActionCommand,
+    ) -> TrainingPaperOutcome:
+        clean_id = _identifier(submission_id)
+        clean_revision = _positive_revision(submission_revision)
+        initialize_database(self.db_path)
+        fingerprint = self._action_fingerprint(
+            "retry", clean_id, clean_revision, command
+        )
+        with connect(self.db_path) as connection:
+            existing_attempt = connection.execute(
+                """
+                SELECT run_id, request_fingerprint
+                FROM training_assessment_attempts
+                WHERE operation_token = ?
+                """,
+                (command.operation_token,),
+            ).fetchone()
+        if existing_attempt is not None:
+            if str(existing_attempt["request_fingerprint"]) != fingerprint:
+                raise AssessmentOperationConflict(
+                    "操作标识已被另一项判定操作使用"
+                )
+            return self._require_outcome(str(existing_attempt["run_id"]))
+        request = self._load_request(clean_id, clean_revision)
+        now = self._now()
+        with connect(self.db_path) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            existing_attempt = connection.execute(
+                """
+                SELECT run_id, request_fingerprint
+                FROM training_assessment_attempts
+                WHERE operation_token = ?
+                """,
+                (command.operation_token,),
+            ).fetchone()
+            if existing_attempt is not None:
+                if str(existing_attempt["request_fingerprint"]) != fingerprint:
+                    raise AssessmentOperationConflict(
+                        "操作标识已被另一项判定操作使用"
+                    )
+                connection.commit()
+                return self._require_outcome(
+                    str(existing_attempt["run_id"])
+                )
+            self._reject_event_token(
+                connection, command.operation_token
+            )
+            run = self._reviewable_run(
+                connection, clean_id, clean_revision
+            )
+            current_review_revision = int(run["review_revision"])
+            if current_review_revision != command.expected_review_revision:
+                raise AssessmentReviewConflict(
+                    command.expected_review_revision,
+                    current_review_revision,
+                )
+            if str(run["status"]) not in {"failed", "cancelled"}:
+                raise AssessmentInputInvalid(
+                    "只有失败或已取消且没有候选结果的判定才能重试"
+                )
+            result_count = connection.execute(
+                """
+                SELECT COUNT(*) AS total
+                FROM training_question_results WHERE run_id = ?
+                """,
+                (run["run_id"],),
+            ).fetchone()
+            if int(result_count["total"]) > 0:
+                raise AssessmentInputInvalid(
+                    "已有候选结果，请直接本地复核，不能重新调用模型"
+                )
+            attempt_number = int(
+                connection.execute(
+                    """
+                    SELECT COALESCE(MAX(attempt_number), 0) + 1 AS next_number
+                    FROM training_assessment_attempts WHERE run_id = ?
+                    """,
+                    (run["run_id"],),
+                ).fetchone()["next_number"]
+            )
+            attempt_id = stable_hash(
+                {
+                    "run_id": str(run["run_id"]),
+                    "operation_token": command.operation_token,
+                }
+            )
+            connection.execute(
+                """
+                INSERT INTO training_assessment_attempts (
+                    attempt_id, run_id, attempt_number, operation_token,
+                    request_fingerprint, status, request_count,
+                    created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, 'pending', 0, ?, ?)
+                """,
+                (
+                    attempt_id,
+                    run["run_id"],
+                    attempt_number,
+                    command.operation_token,
+                    fingerprint,
+                    now,
+                    now,
+                ),
+            )
+            next_revision = current_review_revision + 1
+            connection.execute(
+                """
+                UPDATE training_assessment_runs
+                SET status = 'running', control_state = 'active',
+                    error_code = NULL, finished_at = NULL,
+                    review_revision = ?, updated_at = ?
+                WHERE run_id = ?
+                """,
+                (next_revision, now, run["run_id"]),
+            )
+            connection.commit()
+            run_id = str(run["run_id"])
+        return self._execute_attempt(run_id, attempt_id, request)
+
+    def _change_control(
+        self,
+        submission_id: str,
+        submission_revision: int,
+        action: str,
+        command: AssessmentActionCommand,
+    ) -> TrainingPaperOutcome:
+        clean_id = _identifier(submission_id)
+        clean_revision = _positive_revision(submission_revision)
+        if action not in {"pause", "resume", "cancel"}:
+            raise ValueError("unsupported assessment control action")
+        initialize_database(self.db_path)
+        fingerprint = self._action_fingerprint(
+            action, clean_id, clean_revision, command
+        )
+        now = self._now()
+        with connect(self.db_path) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            repeated = self._repeated_event(
+                connection, command.operation_token, fingerprint
+            )
+            if repeated is not None:
+                connection.commit()
+                return self._require_outcome(repeated)
+            self._reject_attempt_token(
+                connection, command.operation_token
+            )
+            run = self._reviewable_run(
+                connection, clean_id, clean_revision
+            )
+            current_review_revision = int(run["review_revision"])
+            if current_review_revision != command.expected_review_revision:
+                raise AssessmentReviewConflict(
+                    command.expected_review_revision,
+                    current_review_revision,
+                )
+            current_status = str(run["status"])
+            current_control = str(run["control_state"])
+            if action == "pause":
+                if current_status != "running" or current_control != "active":
+                    raise AssessmentInputInvalid(
+                        "只有正在运行的判定可以暂停"
+                    )
+                latest_attempt = connection.execute(
+                    """
+                    SELECT request_count
+                    FROM training_assessment_attempts
+                    WHERE run_id = ?
+                    ORDER BY attempt_number DESC LIMIT 1
+                    """,
+                    (run["run_id"],),
+                ).fetchone()
+                if (
+                    latest_attempt is None
+                    or int(latest_attempt["request_count"]) != 1
+                ):
+                    raise AssessmentInputInvalid(
+                        "请求尚未发出，无需暂停"
+                    )
+                target_control = "paused"
+                target_status = current_status
+                error_code = run["error_code"]
+                finished_at = run["finished_at"]
+            elif action == "resume":
+                if current_status != "running" or current_control != "paused":
+                    raise AssessmentInputInvalid(
+                        "只有已暂停且仍运行中的判定可以恢复"
+                    )
+                target_control = "active"
+                target_status = current_status
+                error_code = run["error_code"]
+                finished_at = run["finished_at"]
+            else:
+                if current_status != "running":
+                    raise AssessmentInputInvalid(
+                        "只有正在运行的判定可以取消"
+                    )
+                target_control = "cancelled"
+                target_status = "cancelled"
+                error_code = "cancelled_by_teacher"
+                finished_at = now
+            next_revision = current_review_revision + 1
+            connection.execute(
+                """
+                UPDATE training_assessment_runs
+                SET status = ?, control_state = ?, error_code = ?,
+                    finished_at = ?, review_revision = ?, updated_at = ?
+                WHERE run_id = ?
+                """,
+                (
+                    target_status,
+                    target_control,
+                    error_code,
+                    finished_at,
+                    next_revision,
+                    now,
+                    run["run_id"],
+                ),
+            )
+            if action == "cancel":
+                connection.execute(
+                    """
+                    UPDATE training_assessment_attempts
+                    SET status = 'cancelled', error_code = ?,
+                        finished_at = ?, updated_at = ?
+                    WHERE run_id = ? AND status IN ('pending', 'running')
+                    """,
+                    (error_code, now, now, run["run_id"]),
+                )
+            self._insert_event(
+                connection,
+                run_id=str(run["run_id"]),
+                token=command.operation_token,
+                fingerprint=fingerprint,
+                event_type=action,
+                actor_ref=command.actor_ref,
+                from_revision=current_review_revision,
+                to_revision=next_revision,
+                detail={"reason": command.reason},
+                now=now,
+            )
+            connection.commit()
+            run_id = str(run["run_id"])
+        return self._require_outcome(run_id)
 
     def _load_request(
         self,
@@ -438,6 +1010,23 @@ class TrainingAssessmentModule:
             )
             connection.execute(
                 """
+                INSERT INTO training_assessment_attempts (
+                    attempt_id, run_id, attempt_number, operation_token,
+                    request_fingerprint, status, request_count,
+                    created_at, updated_at
+                ) VALUES (?, ?, 1, ?, ?, 'pending', 0, ?, ?)
+                """,
+                (
+                    run_id,
+                    run_id,
+                    run_id[:32],
+                    run_id,
+                    now,
+                    now,
+                ),
+            )
+            connection.execute(
+                """
                 UPDATE training_submissions
                 SET assessment_started_at = COALESCE(
                         assessment_started_at, ?
@@ -454,22 +1043,39 @@ class TrainingAssessmentModule:
         self,
         run_id: str,
         submission_id: str,
+        attempt_id: str,
     ) -> None:
         now = self._now()
         with connect(self.db_path) as connection:
             connection.execute("BEGIN IMMEDIATE")
             cursor = connection.execute(
                 """
-                UPDATE training_assessment_runs
-                SET request_count = 1, started_at = ?, updated_at = ?
-                WHERE run_id = ? AND status = 'running'
-                  AND request_count = 0
+                UPDATE training_assessment_attempts
+                SET request_count = 1, status = 'running',
+                    started_at = ?, updated_at = ?
+                WHERE attempt_id = ? AND run_id = ?
+                  AND status = 'pending' AND request_count = 0
                 """,
-                (now, now, run_id),
+                (now, now, attempt_id, run_id),
             )
             if cursor.rowcount != 1:
                 raise TrainingAssessmentError(
                     "assessment request was already started"
+                )
+            run_cursor = connection.execute(
+                """
+                UPDATE training_assessment_runs
+                SET request_count = 1,
+                    started_at = COALESCE(started_at, ?),
+                    updated_at = ?
+                WHERE run_id = ? AND status = 'running'
+                  AND control_state = 'active'
+                """,
+                (now, now, run_id),
+            )
+            if run_cursor.rowcount != 1:
+                raise TrainingAssessmentError(
+                    "assessment run is not active"
                 )
             connection.execute(
                 """
@@ -484,9 +1090,10 @@ class TrainingAssessmentModule:
     def _store_candidates(
         self,
         run_id: str,
+        attempt_id: str,
         request: TrainingAssessmentRequest,
         response: AssessmentGatewayResponse,
-    ) -> None:
+    ) -> bool:
         now = self._now()
         expected_by_task = {
             item.task_item_code: item for item in request.items
@@ -543,7 +1150,7 @@ class TrainingAssessmentModule:
             connection.execute("BEGIN IMMEDIATE")
             run = connection.execute(
                 """
-                SELECT status, request_count
+                SELECT status, request_count, control_state
                 FROM training_assessment_runs WHERE run_id = ?
                 """,
                 (run_id,),
@@ -553,9 +1160,31 @@ class TrainingAssessmentModule:
                 or str(run["status"]) != "running"
                 or int(run["request_count"]) != 1
             ):
-                raise TrainingAssessmentError(
-                    "assessment run is not writable"
-                )
+                connection.commit()
+                return False
+            attempt = connection.execute(
+                """
+                SELECT status, request_count
+                FROM training_assessment_attempts
+                WHERE attempt_id = ? AND run_id = ?
+                """,
+                (attempt_id, run_id),
+            ).fetchone()
+            if (
+                attempt is None
+                or str(attempt["status"]) != "running"
+                or int(attempt["request_count"]) != 1
+            ):
+                connection.commit()
+                return False
+            connection.execute(
+                "DELETE FROM training_point_results WHERE run_id = ?",
+                (run_id,),
+            )
+            connection.execute(
+                "DELETE FROM training_question_results WHERE run_id = ?",
+                (run_id,),
+            )
             for prepared_item in prepared:
                 item = prepared_item["item"]
                 question_result_id = stable_hash(
@@ -640,7 +1269,7 @@ class TrainingAssessmentModule:
             connection.execute(
                 """
                 UPDATE training_assessment_runs
-                SET status = ?, model_name = ?,
+                SET status = ?, control_state = 'active', model_name = ?,
                     prompt_tokens = ?, completion_tokens = ?,
                     total_tokens = ?, latency_ms = ?,
                     issue_codes_json = ?, error_code = NULL,
@@ -660,13 +1289,35 @@ class TrainingAssessmentModule:
                     run_id,
                 ),
             )
+            connection.execute(
+                """
+                UPDATE training_assessment_attempts
+                SET status = 'succeeded', error_code = NULL,
+                    model_name = ?, prompt_tokens = ?,
+                    completion_tokens = ?, total_tokens = ?,
+                    latency_ms = ?, finished_at = ?, updated_at = ?
+                WHERE attempt_id = ? AND status = 'running'
+                """,
+                (
+                    response.model_name,
+                    response.usage.prompt_tokens,
+                    response.usage.completion_tokens,
+                    response.usage.total_tokens,
+                    response.latency_ms,
+                    now,
+                    now,
+                    attempt_id,
+                ),
+            )
             connection.commit()
+        return True
 
     def _finish_failure(
         self,
         run_id: str,
         status: str,
         error_code: str,
+        attempt_id: str,
     ) -> None:
         now = self._now()
         with connect(self.db_path) as connection:
@@ -688,7 +1339,223 @@ class TrainingAssessmentModule:
                 """,
                 (status, error_code, now, now, run_id),
             )
+            connection.execute(
+                """
+                UPDATE training_assessment_attempts
+                SET status = ?, error_code = ?, finished_at = ?,
+                    updated_at = ?
+                WHERE attempt_id = ?
+                  AND status IN ('pending', 'running')
+                """,
+                (status, error_code, now, now, attempt_id),
+            )
             connection.commit()
+
+    def _reviewable_run(
+        self,
+        connection: Any,
+        submission_id: str,
+        submission_revision: int,
+    ) -> Mapping[str, Any]:
+        submission = connection.execute(
+            """
+            SELECT revision FROM training_submissions
+            WHERE submission_id = ?
+            """,
+            (submission_id,),
+        ).fetchone()
+        if submission is None:
+            raise SubmissionAssessmentNotFound(submission_id)
+        current_revision = int(submission["revision"])
+        if current_revision != submission_revision:
+            raise AssessmentRevisionConflict(
+                submission_revision, current_revision
+            )
+        run = connection.execute(
+            """
+            SELECT * FROM training_assessment_runs
+            WHERE submission_id = ? AND submission_revision = ?
+            """,
+            (submission_id, submission_revision),
+        ).fetchone()
+        if run is None:
+            raise AssessmentInputInvalid(
+                "该答卷版本还没有判定运行"
+            )
+        return run
+
+    @staticmethod
+    def _expected_point(
+        connection: Any,
+        submission_id: str,
+        submission_revision: int,
+        task_item_code: str,
+        point_id: str,
+    ) -> Mapping[str, Any]:
+        row = connection.execute(
+            """
+            SELECT i.criterion_snapshot_json
+            FROM training_submissions s
+            JOIN personalized_paper_items i
+              ON i.paper_instance_id = s.paper_instance_id
+            WHERE s.submission_id = ? AND s.revision = ?
+              AND i.task_item_code = ?
+            """,
+            (submission_id, submission_revision, task_item_code),
+        ).fetchone()
+        if row is None:
+            raise AssessmentInputInvalid(
+                "题目不属于该答卷的冻结版本"
+            )
+        try:
+            payload = json.loads(str(row["criterion_snapshot_json"]))
+            points = payload["criteria"]["points"]
+        except (TypeError, KeyError, json.JSONDecodeError):
+            raise AssessmentInputInvalid(
+                "冻结判定点快照无法读取"
+            ) from None
+        for point in points:
+            if (
+                isinstance(point, Mapping)
+                and str(point.get("point_id") or "").strip() == point_id
+            ):
+                return _safe_model_mapping(point)
+        raise AssessmentInputInvalid(
+            "判定点不属于该答卷的冻结版本"
+        )
+
+    @staticmethod
+    def _advance_review_revision(
+        connection: Any,
+        run_id: str,
+        current_revision: int,
+        next_revision: int,
+        now: str,
+    ) -> None:
+        cursor = connection.execute(
+            """
+            UPDATE training_assessment_runs
+            SET review_revision = ?, updated_at = ?
+            WHERE run_id = ? AND review_revision = ?
+            """,
+            (next_revision, now, run_id, current_revision),
+        )
+        if cursor.rowcount != 1:
+            raise AssessmentReviewConflict(
+                current_revision, current_revision + 1
+            )
+
+    @staticmethod
+    def _insert_event(
+        connection: Any,
+        *,
+        run_id: str,
+        token: str,
+        fingerprint: str,
+        event_type: str,
+        actor_ref: str,
+        from_revision: int,
+        to_revision: int,
+        detail: Mapping[str, Any],
+        now: str,
+    ) -> None:
+        event_id = stable_hash(
+            {
+                "kind": "training-assessment-event-v1",
+                "operation_token": token,
+            }
+        )
+        connection.execute(
+            """
+            INSERT INTO training_assessment_events (
+                event_id, run_id, operation_token, request_fingerprint,
+                event_type, actor_ref, from_review_revision,
+                to_review_revision, detail_json, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                event_id,
+                run_id,
+                token,
+                fingerprint,
+                event_type,
+                actor_ref,
+                from_revision,
+                to_revision,
+                _json(detail),
+                now,
+            ),
+        )
+
+    @staticmethod
+    def _repeated_event(
+        connection: Any,
+        token: str,
+        fingerprint: str,
+    ) -> str | None:
+        event = connection.execute(
+            """
+            SELECT run_id, request_fingerprint
+            FROM training_assessment_events
+            WHERE operation_token = ?
+            """,
+            (token,),
+        ).fetchone()
+        if event is None:
+            return None
+        if str(event["request_fingerprint"]) != fingerprint:
+            raise AssessmentOperationConflict(
+                "操作标识已被另一项判定操作使用"
+            )
+        return str(event["run_id"])
+
+    @staticmethod
+    def _reject_attempt_token(connection: Any, token: str) -> None:
+        exists = connection.execute(
+            """
+            SELECT 1 FROM training_assessment_attempts
+            WHERE operation_token = ?
+            """,
+            (token,),
+        ).fetchone()
+        if exists is not None:
+            raise AssessmentOperationConflict(
+                "操作标识已被模型请求使用"
+            )
+
+    @staticmethod
+    def _reject_event_token(connection: Any, token: str) -> None:
+        exists = connection.execute(
+            """
+            SELECT 1 FROM training_assessment_events
+            WHERE operation_token = ?
+            """,
+            (token,),
+        ).fetchone()
+        if exists is not None:
+            raise AssessmentOperationConflict(
+                "操作标识已被另一项判定操作使用"
+            )
+
+    @staticmethod
+    def _action_fingerprint(
+        action: str,
+        submission_id: str,
+        submission_revision: int,
+        command: AssessmentActionCommand,
+    ) -> str:
+        return stable_hash(
+            {
+                "kind": f"training-assessment-{action}-v1",
+                "submission_id": submission_id,
+                "submission_revision": submission_revision,
+                "expected_review_revision": (
+                    command.expected_review_revision
+                ),
+                "actor_ref": command.actor_ref,
+                "reason": command.reason,
+            }
+        )
 
     def _outcome_by_submission(
         self,
@@ -735,15 +1602,55 @@ class TrainingAssessmentModule:
             points = connection.execute(
                 """
                 SELECT task_item_code, point_id, candidate_state,
-                       model_evidence
+                       model_evidence, expected_point_json
                 FROM training_point_results
                 WHERE run_id = ?
                 ORDER BY task_item_code, point_id
                 """,
                 (run_id,),
             ).fetchall()
+            locks = connection.execute(
+                """
+                SELECT task_item_code, point_id, final_state,
+                       teacher_evidence, teacher_reason, actor_ref,
+                       lock_revision, expected_point_json
+                FROM training_point_locks
+                WHERE run_id = ?
+                ORDER BY task_item_code, point_id
+                """,
+                (run_id,),
+            ).fetchall()
+            attempts = connection.execute(
+                """
+                SELECT attempt_number, status, request_count, error_code,
+                       model_name
+                FROM training_assessment_attempts
+                WHERE run_id = ? ORDER BY attempt_number
+                """,
+                (run_id,),
+            ).fetchall()
+            item_rows = connection.execute(
+                """
+                SELECT i.item_order, i.task_item_code,
+                       i.criterion_snapshot_json
+                FROM training_assessment_runs r
+                JOIN training_submissions s
+                  ON s.submission_id = r.submission_id
+                JOIN personalized_paper_items i
+                  ON i.paper_instance_id = s.paper_instance_id
+                WHERE r.run_id = ?
+                ORDER BY i.item_order
+                """,
+                (run_id,),
+            ).fetchall()
         point_payloads: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        candidate_by_identity: dict[tuple[str, str], Mapping[str, Any]] = {}
         for point in points:
+            identity = (
+                str(point["task_item_code"]),
+                str(point["point_id"]),
+            )
+            candidate_by_identity[identity] = point
             point_payloads[str(point["task_item_code"])].append(
                 {
                     "point_id": str(point["point_id"]),
@@ -751,31 +1658,165 @@ class TrainingAssessmentModule:
                     "evidence": str(point["model_evidence"]),
                 }
             )
-        question_payloads = tuple(
+        lock_by_identity = {
+            (str(lock["task_item_code"]), str(lock["point_id"])): lock
+            for lock in locks
+        }
+        question_by_task = {
+            str(question["task_item_code"]): question
+            for question in questions
+        }
+        question_payloads_list: list[dict[str, Any]] = []
+        completed_questions = 0
+        for item_row in item_rows:
+            task_item_code = str(item_row["task_item_code"])
+            expected_points = _criterion_points(
+                str(item_row["criterion_snapshot_json"])
+            )
+            review_points: list[dict[str, Any]] = []
+            effective_counts: Counter[str] = Counter()
+            needs_review = False
+            for expected_point in expected_points:
+                point_id = str(expected_point["point_id"])
+                identity = (task_item_code, point_id)
+                candidate = candidate_by_identity.get(identity)
+                lock = lock_by_identity.get(identity)
+                candidate_state = (
+                    None
+                    if candidate is None
+                    else str(candidate["candidate_state"])
+                )
+                teacher_locked = lock is not None
+                effective_state = (
+                    str(lock["final_state"])
+                    if lock is not None
+                    else candidate_state
+                )
+                if effective_state is not None:
+                    effective_counts[effective_state] += 1
+                if effective_state is None or (
+                    not teacher_locked
+                    and effective_state in {"uncertain", "unreadable"}
+                ):
+                    needs_review = True
+                review_points.append(
+                    {
+                        "point_id": point_id,
+                        "expected_point": expected_point,
+                        "candidate_state": candidate_state,
+                        "state": effective_state,
+                        "evidence": (
+                            str(lock["teacher_evidence"])
+                            if lock is not None
+                            else (
+                                None
+                                if candidate is None
+                                else str(candidate["model_evidence"])
+                            )
+                        ),
+                        "teacher_locked": teacher_locked,
+                        "teacher_reason": (
+                            None
+                            if lock is None
+                            else str(lock["teacher_reason"])
+                        ),
+                        "actor_ref": (
+                            None
+                            if lock is None
+                            else str(lock["actor_ref"])
+                        ),
+                        "lock_revision": (
+                            None
+                            if lock is None
+                            else int(lock["lock_revision"])
+                        ),
+                    }
+                )
+            stored_question = question_by_task.get(task_item_code)
+            run_status = str(run["status"])
+            if not needs_review and expected_points:
+                review_status = "completed"
+                completed_questions += 1
+            elif run_status == "failed" and stored_question is None:
+                review_status = "failed"
+            else:
+                review_status = "review_required"
+            question_payloads_list.append(
+                {
+                    "task_item_code": task_item_code,
+                    "item_order": int(item_row["item_order"]),
+                    "status": (
+                        str(stored_question["status"])
+                        if stored_question is not None
+                        else (
+                            "failed"
+                            if run_status == "failed"
+                            else "pending"
+                        )
+                    ),
+                    "review_status": review_status,
+                    "met_count": int(effective_counts.get("met", 0)),
+                    "not_met_count": int(
+                        effective_counts.get("not_met", 0)
+                    ),
+                    "uncertain_count": int(
+                        effective_counts.get("uncertain", 0)
+                    ),
+                    "unreadable_count": int(
+                        effective_counts.get("unreadable", 0)
+                    ),
+                    "total_count": len(expected_points),
+                    "issue_codes": (
+                        ()
+                        if stored_question is None
+                        else tuple(
+                            json.loads(
+                                str(stored_question["issue_codes_json"])
+                            )
+                        )
+                    ),
+                    "points": tuple(point_payloads[task_item_code]),
+                    "review_points": tuple(review_points),
+                }
+            )
+        question_payloads = tuple(question_payloads_list)
+        workflow_status, action_message = _workflow_summary(
+            run_status=str(run["status"]),
+            control_state=str(run["control_state"]),
+            error_code=(
+                None
+                if run["error_code"] is None
+                else str(run["error_code"])
+            ),
+            completed_questions=completed_questions,
+            expected_questions=len(item_rows),
+        )
+        attempt_payloads = tuple(
             {
-                "task_item_code": str(question["task_item_code"]),
-                "item_order": int(question["item_order"]),
-                "status": str(question["status"]),
-                "met_count": int(question["met_count"]),
-                "not_met_count": int(question["not_met_count"]),
-                "uncertain_count": int(question["uncertain_count"]),
-                "unreadable_count": int(question["unreadable_count"]),
-                "total_count": int(question["total_count"]),
-                "issue_codes": tuple(
-                    json.loads(str(question["issue_codes_json"]))
+                "attempt_number": int(attempt["attempt_number"]),
+                "status": str(attempt["status"]),
+                "request_count": int(attempt["request_count"]),
+                "error_code": (
+                    None
+                    if attempt["error_code"] is None
+                    else str(attempt["error_code"])
                 ),
-                "points": tuple(
-                    point_payloads[str(question["task_item_code"])]
+                "model_name": (
+                    None
+                    if attempt["model_name"] is None
+                    else str(attempt["model_name"])
                 ),
             }
-            for question in questions
+            for attempt in attempts
         )
         return TrainingPaperOutcome(
             run_id=str(run["run_id"]),
             submission_id=str(run["submission_id"]),
             submission_revision=int(run["submission_revision"]),
             status=str(run["status"]),
-            request_count=int(run["request_count"]),
+            request_count=sum(
+                int(attempt["request_count"]) for attempt in attempts
+            ),
             expected_question_count=int(run["expected_question_count"]),
             expected_point_count=int(run["expected_point_count"]),
             model_name=(
@@ -798,6 +1839,11 @@ class TrainingAssessmentModule:
                 else str(run["error_code"])
             ),
             questions=question_payloads,
+            review_revision=int(run["review_revision"]),
+            control_state=str(run["control_state"]),
+            workflow_status=workflow_status,
+            action_message=action_message,
+            attempts=attempt_payloads,
         )
 
     def _now(self) -> str:
@@ -821,6 +1867,119 @@ def _identifier(value: object) -> str:
     if len(clean) != 64 or any(char not in "0123456789abcdef" for char in clean):
         raise ValueError("submission_id must be a 64-character hex digest")
     return clean
+
+
+def _positive_revision(value: object) -> int:
+    revision = int(value)
+    if revision < 1:
+        raise ValueError("submission_revision must be positive")
+    return revision
+
+
+def _criterion_points(payload_json: str) -> tuple[dict[str, Any], ...]:
+    try:
+        payload = json.loads(payload_json)
+        raw_points = payload["criteria"]["points"]
+    except (TypeError, KeyError, json.JSONDecodeError):
+        raise AssessmentInputInvalid(
+            "frozen criterion snapshot is invalid"
+        ) from None
+    if not isinstance(raw_points, list):
+        raise AssessmentInputInvalid(
+            "frozen criterion points are invalid"
+        )
+    points: list[dict[str, Any]] = []
+    for raw_point in raw_points:
+        if not isinstance(raw_point, Mapping):
+            raise AssessmentInputInvalid(
+                "frozen criterion point is invalid"
+            )
+        point = _safe_model_mapping(raw_point)
+        if not str(point.get("point_id") or "").strip():
+            raise AssessmentInputInvalid(
+                "frozen criterion point identity is invalid"
+            )
+        points.append(point)
+    return tuple(points)
+
+
+def _workflow_summary(
+    *,
+    run_status: str,
+    control_state: str,
+    error_code: str | None,
+    completed_questions: int,
+    expected_questions: int,
+) -> tuple[str, str]:
+    if expected_questions > 0 and completed_questions == expected_questions:
+        return (
+            "completed",
+            "全部题目已完成判定，可进入训练证据发布。",
+        )
+    if completed_questions > 0:
+        if run_status == "cancelled":
+            return (
+                "partial_review",
+                "判定已取消；已完成题和教师锁已保留，请复核其余题目。",
+            )
+        if run_status == "failed":
+            return (
+                "partial_review",
+                "部分题目已完成；运行失败未覆盖这些明细，请复核其余题目。",
+            )
+        return (
+            "partial_review",
+            "部分题目已完成；请只复核仍标记待复核的判定点。",
+        )
+    if run_status == "running" and control_state == "paused":
+        return (
+            "paused",
+            "判定已暂停；已发出的当前请求仍会安全收尾，可等待或取消。",
+        )
+    if run_status == "running":
+        return (
+            "running",
+            "判定正在进行；请等待当前请求完成，不要重复提交。",
+        )
+    if run_status == "cancelled":
+        return (
+            "cancelled",
+            "判定已取消；已有候选和教师锁已保留，未完成点没有按未达成处理。",
+        )
+    if run_status == "failed":
+        messages = {
+            "interrupted_after_request": (
+                "应用在请求发出后中断，结果是否返回未知；系统不会自动再次"
+                "调用模型，请教师确认后再显式重试。"
+            ),
+            "interrupted_before_request": (
+                "应用在请求发出前中断，未产生模型调用；请教师显式重试。"
+            ),
+            "timeout": "模型请求超时且未自动重试；请检查网络后显式重试。",
+            "context_limit": (
+                "整卷内容超过模型上下文限制；请核对答卷页后再决定是否重试。"
+            ),
+            "invalid_response": (
+                "模型返回格式无法核对，未保存候选；请教师显式重试。"
+            ),
+            "storage_failure": (
+                "候选写入失败且未形成半份结果；请检查存储后显式重试。"
+            ),
+            "model_failure": (
+                "模型调用失败且未自动重试；请检查服务后显式重试。"
+            ),
+        }
+        return (
+            "failed",
+            messages.get(
+                error_code,
+                "判定失败且未追加请求；请查看原因后由教师显式重试。",
+            ),
+        )
+    return (
+        "review_required",
+        "当前题目仍需教师复核；不确定、无法辨认和缺失点均未按错误处理。",
+    )
 
 
 def _image_type(content: bytes) -> str:

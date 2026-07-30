@@ -152,6 +152,72 @@ class TrainingAssessmentGateway(Protocol):
 
 
 @dataclass(frozen=True, slots=True)
+class ReviewPointCommand:
+    operation_token: str
+    expected_review_revision: int
+    task_item_code: str
+    point_id: str
+    final_state: str
+    teacher_evidence: str
+    teacher_reason: str
+    actor_ref: str
+
+    def __post_init__(self) -> None:
+        token = _operation_token(self.operation_token)
+        revision = int(self.expected_review_revision)
+        if revision < 1:
+            raise ValueError("expected_review_revision must be positive")
+        task_item_code = str(self.task_item_code or "").strip()
+        point_id = str(self.point_id or "").strip()
+        state = str(self.final_state or "").strip().casefold()
+        evidence = str(self.teacher_evidence or "").strip()
+        reason = str(self.teacher_reason or "").strip()
+        actor_ref = str(self.actor_ref or "").strip()
+        if not task_item_code or not point_id:
+            raise ValueError("task item and point identity must not be empty")
+        if state not in POINT_STATES:
+            raise ValueError("unsupported final point state")
+        if not evidence or len(evidence) > 500:
+            raise ValueError("teacher evidence must be 1-500 characters")
+        if not reason or len(reason) > 500:
+            raise ValueError("teacher reason must be 1-500 characters")
+        if not actor_ref:
+            raise ValueError("actor_ref must not be empty")
+        object.__setattr__(self, "operation_token", token)
+        object.__setattr__(self, "expected_review_revision", revision)
+        object.__setattr__(self, "task_item_code", task_item_code)
+        object.__setattr__(self, "point_id", point_id)
+        object.__setattr__(self, "final_state", state)
+        object.__setattr__(self, "teacher_evidence", evidence)
+        object.__setattr__(self, "teacher_reason", reason)
+        object.__setattr__(self, "actor_ref", actor_ref)
+
+
+@dataclass(frozen=True, slots=True)
+class AssessmentActionCommand:
+    operation_token: str
+    expected_review_revision: int
+    actor_ref: str
+    reason: str
+
+    def __post_init__(self) -> None:
+        token = _operation_token(self.operation_token)
+        revision = int(self.expected_review_revision)
+        actor_ref = str(self.actor_ref or "").strip()
+        reason = str(self.reason or "").strip()
+        if revision < 1:
+            raise ValueError("expected_review_revision must be positive")
+        if not actor_ref:
+            raise ValueError("actor_ref must not be empty")
+        if not reason or len(reason) > 500:
+            raise ValueError("reason must be 1-500 characters")
+        object.__setattr__(self, "operation_token", token)
+        object.__setattr__(self, "expected_review_revision", revision)
+        object.__setattr__(self, "actor_ref", actor_ref)
+        object.__setattr__(self, "reason", reason)
+
+
+@dataclass(frozen=True, slots=True)
 class TrainingPaperOutcome:
     run_id: str
     submission_id: str
@@ -166,12 +232,18 @@ class TrainingPaperOutcome:
     issue_codes: tuple[str, ...]
     error_code: str | None
     questions: tuple[Mapping[str, Any], ...]
+    review_revision: int = 1
+    control_state: str = "active"
+    workflow_status: str = "pending"
+    action_message: str = ""
+    attempts: tuple[Mapping[str, Any], ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         payload = asdict(self)
         payload["usage"] = asdict(self.usage)
         payload["issue_codes"] = list(self.issue_codes)
         payload["questions"] = [dict(item) for item in self.questions]
+        payload["attempts"] = [dict(item) for item in self.attempts]
         return payload
 
 
@@ -223,3 +295,14 @@ def stable_hash(payload: Mapping[str, Any]) -> str:
         separators=(",", ":"),
     ).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
+
+
+def _operation_token(value: object) -> str:
+    clean = str(value or "").strip().casefold()
+    if len(clean) != 32 or any(
+        char not in "0123456789abcdef" for char in clean
+    ):
+        raise ValueError(
+            "operation_token must be a 32-character hex digest"
+        )
+    return clean

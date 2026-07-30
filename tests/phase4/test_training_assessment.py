@@ -4,6 +4,7 @@ import asyncio
 import base64
 import hashlib
 import json
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -12,11 +13,15 @@ from typing import Any
 import pytest
 
 from backend.training_assessment import (
+    AssessmentActionCommand,
     AssessmentContextExceeded,
     AssessmentInputInvalid,
+    AssessmentOperationConflict,
+    AssessmentReviewConflict,
     AssessmentRevisionConflict,
     FakeTrainingAssessmentGateway,
     OpenAITrainingAssessmentGateway,
+    ReviewPointCommand,
     TrainingAssessmentModule,
 )
 from question_bank.database.schema import connect, initialize_database
@@ -412,7 +417,13 @@ def test_model_failures_do_not_retry_or_leave_candidate_rows(
     assert first.status == expected_status
     assert first.error_code == expected_code
     assert first.request_count == gateway.calls == 1
-    assert first.questions == ()
+    assert first.action_message
+    assert all(
+        item["review_status"]
+        in ({"failed"} if expected_status == "failed" else {"review_required"})
+        for item in first.questions
+    )
+    assert all(item["not_met_count"] == 0 for item in first.questions)
     with connect(db_path) as connection:
         question_count = connection.execute(
             "SELECT COUNT(*) AS total FROM training_question_results"
@@ -488,6 +499,470 @@ def test_simultaneous_clicks_share_one_physical_request(
     assert outcomes[0] == outcomes[1]
     assert outcomes[0].status == "succeeded"
     assert gateway.calls == 1
+
+
+def test_teacher_lock_is_idempotent_conflict_safe_and_recalculates_locally(
+    assessment_workspace: tuple[Path, Path],
+) -> None:
+    db_path, data_root = assessment_workspace
+    gateway = FakeTrainingAssessmentGateway(
+        {
+            "results": [
+                {
+                    "task_item_code": f"P4-SYN-Q{order:02d}",
+                    "point_id": f"q{order}-p{point}",
+                    "state": (
+                        "uncertain"
+                        if (order, point) == (1, 2)
+                        else "met"
+                    ),
+                    "evidence": "合成模型依据",
+                }
+                for order in (1, 2)
+                for point in (1, 2)
+            ]
+        }
+    )
+    module = TrainingAssessmentModule(
+        db_path=db_path,
+        data_root=data_root,
+        gateway=gateway,
+    )
+    candidate = module.assess(SUBMISSION_ID, REVISION)
+    assert candidate.questions[0]["review_status"] == "review_required"
+    command = ReviewPointCommand(
+        operation_token="a" * 32,
+        expected_review_revision=1,
+        task_item_code="P4-SYN-Q01",
+        point_id="q1-p2",
+        final_state="not_met",
+        teacher_evidence="教师核对答卷，结论不成立",
+        teacher_reason="按冻结判定点人工复核",
+        actor_ref="synthetic-teacher",
+    )
+    reviewed = module.review_point(SUBMISSION_ID, REVISION, command)
+    repeated = module.review_point(SUBMISSION_ID, REVISION, command)
+
+    assert reviewed == repeated
+    assert reviewed.review_revision == 2
+    assert reviewed.questions[0]["review_status"] == "completed"
+    assert reviewed.questions[0]["met_count"] == 1
+    assert reviewed.questions[0]["not_met_count"] == 1
+    point = reviewed.questions[0]["review_points"][1]
+    assert point["teacher_locked"] is True
+    assert point["candidate_state"] == "uncertain"
+    assert point["state"] == "not_met"
+    assert gateway.calls == 1
+
+    with pytest.raises(AssessmentOperationConflict):
+        module.review_point(
+            SUBMISSION_ID,
+            REVISION,
+            ReviewPointCommand(
+                operation_token="a" * 32,
+                expected_review_revision=1,
+                task_item_code="P4-SYN-Q01",
+                point_id="q1-p2",
+                final_state="met",
+                teacher_evidence="不同输入",
+                teacher_reason="不同操作不应复用 token",
+                actor_ref="synthetic-teacher",
+            ),
+        )
+    with pytest.raises(AssessmentReviewConflict):
+        module.review_point(
+            SUBMISSION_ID,
+            REVISION,
+            ReviewPointCommand(
+                operation_token="b" * 32,
+                expected_review_revision=1,
+                task_item_code="P4-SYN-Q02",
+                point_id="q2-p1",
+                final_state="met",
+                teacher_evidence="旧页面提交",
+                teacher_reason="验证并发版本冲突",
+                actor_ref="synthetic-teacher",
+            ),
+        )
+    assert module.assess(SUBMISSION_ID, REVISION) == reviewed
+    with connect(db_path) as connection:
+        lock_count = connection.execute(
+            "SELECT COUNT(*) AS total FROM training_point_locks"
+        ).fetchone()["total"]
+    assert int(lock_count) == 1
+    with connect(db_path) as connection:
+        connection.execute(
+            """
+            UPDATE training_submissions
+            SET revision = revision + 1
+            WHERE submission_id = ?
+            """,
+            (SUBMISSION_ID,),
+        )
+    with pytest.raises(AssessmentRevisionConflict):
+        module.review_point(
+            SUBMISSION_ID,
+            REVISION,
+            ReviewPointCommand(
+                operation_token="c" * 32,
+                expected_review_revision=2,
+                task_item_code="P4-SYN-Q01",
+                point_id="q1-p2",
+                final_state="met",
+                teacher_evidence="新页面不能改写旧锁",
+                teacher_reason="验证答卷版本隔离",
+                actor_ref="synthetic-teacher",
+            ),
+        )
+
+
+def test_teacher_can_complete_a_structurally_missing_question_from_snapshot(
+    assessment_workspace: tuple[Path, Path],
+) -> None:
+    db_path, data_root = assessment_workspace
+    gateway = FakeTrainingAssessmentGateway(
+        {
+            "results": [
+                {
+                    "task_item_code": "P4-SYN-Q02",
+                    "point_id": f"q2-p{point}",
+                    "state": "met",
+                    "evidence": "第二题合成依据",
+                }
+                for point in (1, 2)
+            ]
+        }
+    )
+    module = TrainingAssessmentModule(
+        db_path=db_path,
+        data_root=data_root,
+        gateway=gateway,
+    )
+    outcome = module.assess(SUBMISSION_ID, REVISION)
+    assert outcome.questions[0]["points"] == ()
+    assert outcome.questions[0]["review_status"] == "review_required"
+
+    for index, state in enumerate(("met", "not_met"), start=1):
+        outcome = module.review_point(
+            SUBMISSION_ID,
+            REVISION,
+            ReviewPointCommand(
+                operation_token=f"{index + 2:x}" * 32,
+                expected_review_revision=index,
+                task_item_code="P4-SYN-Q01",
+                point_id=f"q1-p{index}",
+                final_state=state,
+                teacher_evidence=f"教师补充核对点 {index}",
+                teacher_reason="模型漏点，按冻结快照人工完成",
+                actor_ref="synthetic-teacher",
+            ),
+        )
+    assert outcome.questions[0]["review_status"] == "completed"
+    assert outcome.questions[0]["met_count"] == 1
+    assert outcome.questions[0]["not_met_count"] == 1
+    assert outcome.workflow_status == "completed"
+    assert module.assess(SUBMISSION_ID, REVISION) == outcome
+    assert gateway.calls == 1
+
+
+def test_failed_retry_is_explicit_attempt_scoped_and_response_idempotent(
+    assessment_workspace: tuple[Path, Path],
+) -> None:
+    db_path, data_root = assessment_workspace
+
+    class FailThenSucceedGateway:
+        model_name = "fail-then-succeed"
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def assess(self, request, *, operation_id, request_id):
+            del operation_id, request_id
+            self.calls += 1
+            if self.calls == 1:
+                raise TimeoutError()
+            return FakeTrainingAssessmentGateway(
+                {
+                    "results": [
+                        {
+                            "task_item_code": item.task_item_code,
+                            "point_id": point["point_id"],
+                            "state": "met",
+                            "evidence": "显式重试合成依据",
+                        }
+                        for item in request.items
+                        for point in item.points
+                    ]
+                }
+            ).assess(
+                request,
+                operation_id="retry",
+                request_id="retry",
+            )
+
+    gateway = FailThenSucceedGateway()
+    module = TrainingAssessmentModule(
+        db_path=db_path,
+        data_root=data_root,
+        gateway=gateway,
+    )
+    failed = module.assess(SUBMISSION_ID, REVISION)
+    assert failed.status == "failed"
+    assert failed.request_count == 1
+    command = AssessmentActionCommand(
+        operation_token="e" * 32,
+        expected_review_revision=1,
+        actor_ref="synthetic-teacher",
+        reason="教师确认网络恢复后显式重试",
+    )
+    retried = module.retry_failed(SUBMISSION_ID, REVISION, command)
+    repeated = module.retry_failed(SUBMISSION_ID, REVISION, command)
+
+    assert retried == repeated
+    assert retried.status == "succeeded"
+    assert retried.workflow_status == "completed"
+    assert retried.request_count == gateway.calls == 2
+    assert [item["request_count"] for item in retried.attempts] == [1, 1]
+    assert [item["status"] for item in retried.attempts] == [
+        "failed",
+        "succeeded",
+    ]
+
+
+def test_restart_recovery_never_repeats_an_unknown_request(
+    assessment_workspace: tuple[Path, Path],
+) -> None:
+    db_path, data_root = assessment_workspace
+    started = threading.Event()
+    release = threading.Event()
+
+    class BlockingGateway:
+        model_name = "blocking-fake"
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def assess(self, request, *, operation_id, request_id):
+            del operation_id, request_id
+            self.calls += 1
+            started.set()
+            assert release.wait(timeout=5)
+            return FakeTrainingAssessmentGateway(
+                {
+                    "results": [
+                        {
+                            "task_item_code": item.task_item_code,
+                            "point_id": point["point_id"],
+                            "state": "met",
+                            "evidence": "迟到的响应",
+                        }
+                        for item in request.items
+                        for point in item.points
+                    ]
+                }
+            ).assess(
+                request,
+                operation_id="late",
+                request_id="late",
+            )
+
+    gateway = BlockingGateway()
+    module = TrainingAssessmentModule(
+        db_path=db_path,
+        data_root=data_root,
+        gateway=gateway,
+    )
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(module.assess, SUBMISSION_ID, REVISION)
+        assert started.wait(timeout=5)
+        command = AssessmentActionCommand(
+            operation_token="f" * 32,
+            expected_review_revision=1,
+            actor_ref="synthetic-teacher",
+            reason="模拟应用在请求发出后退出",
+        )
+        recovered = module.recover(SUBMISSION_ID, REVISION, command)
+        repeated = module.recover(SUBMISSION_ID, REVISION, command)
+        release.set()
+        late = future.result(timeout=5)
+
+    assert recovered == repeated == late
+    assert recovered.status == "failed"
+    assert recovered.error_code == "interrupted_after_request"
+    assert recovered.request_count == gateway.calls == 1
+    assert "不会自动再次" in recovered.action_message
+    assert all(
+        point["state"] is None
+        for question in recovered.questions
+        for point in question["review_points"]
+    )
+
+
+def test_pause_and_resume_preserve_the_in_flight_response(
+    assessment_workspace: tuple[Path, Path],
+) -> None:
+    db_path, data_root = assessment_workspace
+    started = threading.Event()
+    release = threading.Event()
+
+    class BlockingGateway:
+        model_name = "blocking-fake"
+
+        def assess(self, request, *, operation_id, request_id):
+            del operation_id, request_id
+            started.set()
+            assert release.wait(timeout=5)
+            return FakeTrainingAssessmentGateway(
+                {
+                    "results": [
+                        {
+                            "task_item_code": item.task_item_code,
+                            "point_id": point["point_id"],
+                            "state": "met",
+                            "evidence": "暂停后返回",
+                        }
+                        for item in request.items
+                        for point in item.points
+                    ]
+                }
+            ).assess(
+                request,
+                operation_id="resume",
+                request_id="resume",
+            )
+
+    module = TrainingAssessmentModule(
+        db_path=db_path,
+        data_root=data_root,
+        gateway=BlockingGateway(),
+    )
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(module.assess, SUBMISSION_ID, REVISION)
+        assert started.wait(timeout=5)
+        paused_command = AssessmentActionCommand(
+            operation_token="7" * 32,
+            expected_review_revision=1,
+            actor_ref="synthetic-teacher",
+            reason="教师临时暂停核对",
+        )
+        paused = module.pause(
+            SUBMISSION_ID, REVISION, paused_command
+        )
+        assert module.pause(
+            SUBMISSION_ID, REVISION, paused_command
+        ) == paused
+        assert paused.workflow_status == "paused"
+        resumed = module.resume(
+            SUBMISSION_ID,
+            REVISION,
+            AssessmentActionCommand(
+                operation_token="8" * 32,
+                expected_review_revision=2,
+                actor_ref="synthetic-teacher",
+                reason="教师确认可以继续",
+            ),
+        )
+        assert resumed.control_state == "active"
+        release.set()
+        completed = future.result(timeout=5)
+    assert completed.workflow_status == "completed"
+
+
+def test_cancel_during_request_keeps_missing_points_unscored(
+    assessment_workspace: tuple[Path, Path],
+) -> None:
+    db_path, data_root = assessment_workspace
+    started = threading.Event()
+    release = threading.Event()
+
+    class BlockingGateway:
+        model_name = "blocking-cancel-fake"
+
+        def assess(self, request, *, operation_id, request_id):
+            del operation_id, request_id
+            started.set()
+            assert release.wait(timeout=5)
+            return FakeTrainingAssessmentGateway(
+                {
+                    "results": [
+                        {
+                            "task_item_code": item.task_item_code,
+                            "point_id": point["point_id"],
+                            "state": "not_met",
+                            "evidence": "取消后迟到的响应",
+                        }
+                        for item in request.items
+                        for point in item.points
+                    ]
+                }
+            ).assess(
+                request,
+                operation_id="cancel",
+                request_id="cancel",
+            )
+
+    module = TrainingAssessmentModule(
+        db_path=db_path,
+        data_root=data_root,
+        gateway=BlockingGateway(),
+    )
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(module.assess, SUBMISSION_ID, REVISION)
+        assert started.wait(timeout=5)
+        cancelled = module.cancel(
+            SUBMISSION_ID,
+            REVISION,
+            AssessmentActionCommand(
+                operation_token="9" * 32,
+                expected_review_revision=1,
+                actor_ref="synthetic-teacher",
+                reason="教师取消当前判定",
+            ),
+        )
+        release.set()
+        late = future.result(timeout=5)
+    assert cancelled == late
+    assert cancelled.status == "cancelled"
+    assert cancelled.workflow_status == "cancelled"
+    assert all(
+        question["not_met_count"] == 0
+        for question in cancelled.questions
+    )
+    assert all(
+        point["state"] is None
+        for question in cancelled.questions
+        for point in question["review_points"]
+    )
+
+
+def test_cancel_before_request_returns_cancelled_without_model_call(
+    assessment_workspace: tuple[Path, Path],
+) -> None:
+    db_path, data_root = assessment_workspace
+    gateway = FakeTrainingAssessmentGateway({"results": []})
+    module = TrainingAssessmentModule(
+        db_path=db_path,
+        data_root=data_root,
+        gateway=gateway,
+    )
+    request = module._load_request(SUBMISSION_ID, REVISION)
+    run_id = "0" * 64
+    assert module._reserve_run(run_id, request) is True
+    cancelled = module.cancel(
+        SUBMISSION_ID,
+        REVISION,
+        AssessmentActionCommand(
+            operation_token="6" * 32,
+            expected_review_revision=1,
+            actor_ref="synthetic-teacher",
+            reason="模型请求发出前取消",
+        ),
+    )
+    returned = module._execute_attempt(run_id, run_id, request)
+
+    assert returned == cancelled
+    assert returned.status == "cancelled"
+    assert returned.request_count == gateway.calls == 0
 
 
 def test_openai_adapter_uses_strict_one_request_and_injection_guard(
