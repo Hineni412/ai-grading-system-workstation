@@ -552,9 +552,9 @@ async function editItem(
 .personalized-draft {
   margin-top: 1.25rem;
   padding: 1rem;
-  border: 1px solid var(--line, #d6d3cd);
+  border: 1px solid var(--line, var(--color-border-default));
   border-radius: 14px;
-  background: #fbfaf7;
+  background: var(--color-bg-subtle);
 }
 
 .personalized-draft > header,
@@ -586,7 +586,7 @@ async function editItem(
 .personalized-edit-reason {
   display: grid;
   gap: 0.35rem;
-  color: #49443d;
+  color: var(--color-text-primary);
   font-size: 0.9rem;
 }
 
@@ -594,7 +594,7 @@ async function editItem(
 .personalized-edit-reason input {
   min-width: 0;
   padding: 0.55rem 0.65rem;
-  border: 1px solid #cbc6bd;
+  border: 1px solid var(--color-border-strong);
   border-radius: 8px;
   background: white;
 }
@@ -605,7 +605,7 @@ async function editItem(
   gap: 0.65rem 1rem;
   margin: 0 0 1rem;
   padding: 0.75rem;
-  border: 1px solid #ddd8cf;
+  border: 1px solid var(--color-border-default);
   border-radius: 10px;
 }
 
@@ -616,7 +616,7 @@ async function editItem(
 
 .personalized-targets p {
   flex-basis: 100%;
-  color: #7a5d22;
+  color: var(--color-warning);
 }
 
 .personalized-edit-reason {
@@ -626,7 +626,7 @@ async function editItem(
 .personalized-student {
   margin-top: 1rem;
   padding: 0.85rem;
-  border: 1px solid #e1ddd5;
+  border: 1px solid var(--color-border-default);
   border-radius: 10px;
   background: white;
 }
@@ -647,7 +647,7 @@ async function editItem(
 .personalized-student li {
   padding: 0.7rem;
   border-radius: 8px;
-  background: #f6f4ef;
+  background: var(--color-bg-subtle);
 }
 
 .personalized-item-actions {
@@ -662,9 +662,9 @@ async function editItem(
   gap: 0.75rem;
   margin-top: 1rem;
   padding: 0.85rem;
-  border: 1px solid #cfd9df;
+  border: 1px solid var(--color-border-default);
   border-radius: 10px;
-  background: #f3f7f8;
+  background: var(--color-info-subtle);
 }
 
 .personalized-paper-panel > header {
@@ -686,7 +686,7 @@ async function editItem(
 .personalized-paper-freeze input {
   min-width: 0;
   padding: 0.48rem 0.6rem;
-  border: 1px solid #b9c8cf;
+  border: 1px solid var(--color-border-strong);
   border-radius: 8px;
   background: white;
 }
@@ -695,7 +695,7 @@ async function editItem(
   display: grid;
   gap: 0.45rem;
   padding: 0.75rem;
-  border: 1px solid #d6e0e5;
+  border: 1px solid var(--color-border-default);
   border-radius: 9px;
   background: white;
 }
@@ -713,13 +713,13 @@ async function editItem(
 }
 
 .personalized-paper-note {
-  color: #55636a;
+  color: var(--color-text-secondary);
   font-size: 0.84rem;
 }
 
 .personalized-footnote {
   margin-top: 1rem !important;
-  color: #675f55;
+  color: var(--color-text-secondary);
   font-size: 0.88rem;
 }
 

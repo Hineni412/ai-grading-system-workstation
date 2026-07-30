@@ -1210,6 +1210,7 @@ def test_correction_to_unreadable_withdraws_stale_evidence_and_recalculates(
                 ]
             }
         ),
+        clock=lambda: datetime(2026, 7, 30, 12, 0, tzinfo=UTC),
     )
     module.assess(SUBMISSION_ID, REVISION)
     initial = module.sync_evidence(
@@ -1288,6 +1289,9 @@ def test_correction_to_unreadable_withdraws_stale_evidence_and_recalculates(
     )
     assert withdrawn["status"] == "withdrawn"
     assert withdrawn["summary"]["published_question_count"] == 0
+    assert [
+        event["action"] for event in withdrawn["timeline"]
+    ] == ["publish", "publish", "withdraw"]
     with connect(db_path) as connection:
         active_count = int(
             connection.execute(

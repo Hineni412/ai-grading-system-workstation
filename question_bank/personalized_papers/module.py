@@ -514,6 +514,7 @@ class PersonalizedPaperModule:
             total_pages=int(decoded["total_pages"]),
             reviewed_docx_sha256=str(row["reviewed_docx_sha256"]),
             layout_version=str(row["layout_version"]),
+            identity_version=str(decoded["identity_version"]),
         )
         if not hmac.compare_digest(expected, str(decoded["page_signature"])):
             raise PaperInvalid("page identity signature is invalid")

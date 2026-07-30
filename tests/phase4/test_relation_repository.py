@@ -170,6 +170,49 @@ def test_historical_database_keeps_tags_and_maps_only_exact_governed_values(
     ]
 
 
+def test_bootstrap_keeps_stable_identity_when_visible_tag_text_changes(
+    relation_store: tuple[Path, KnowledgeRelationRepository],
+) -> None:
+    database, _repository = relation_store
+    with sqlite3.connect(database) as connection:
+        question_id = connection.execute(
+            """
+            INSERT INTO questions (question_number, question_text)
+            VALUES ('1', '合成标签改名题')
+            """
+        ).lastrowid
+        tag_id = connection.execute(
+            """
+            INSERT INTO question_tags (
+                question_id, tag_type, tag_value, source
+            ) VALUES (?, 'knowledge_point', '三角形全等', 'synthetic')
+            """,
+            (question_id,),
+        ).lastrowid
+        connection.commit()
+
+    initialize_database(database)
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "UPDATE question_tags SET tag_value = '轴对称' WHERE id = ?",
+            (tag_id,),
+        )
+        connection.commit()
+
+    initialize_database(database)
+
+    with sqlite3.connect(database) as connection:
+        mapping = connection.execute(
+            """
+            SELECT stable_key, source_value_snapshot
+            FROM knowledge_tag_identity_mappings
+            WHERE question_tag_id = ?
+            """,
+            (tag_id,),
+        ).fetchone()
+    assert mapping == ("kp_geo_triangle_congruence", "三角形全等")
+
+
 def test_bootstrap_conflict_rolls_back_all_new_identity_rows(
     tmp_path: Path,
 ) -> None:

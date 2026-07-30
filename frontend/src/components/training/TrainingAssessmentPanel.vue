@@ -520,10 +520,10 @@ onMounted(restore)
 .assessment-ledger {
   margin-top: 0.75rem;
   padding: 0.85rem;
-  border: 1px solid #b8ccc5;
-  border-left: 4px solid #397d68;
+  border: 1px solid var(--color-border-strong);
+  border-left: 4px solid var(--color-success);
   border-radius: 4px 12px 12px 4px;
-  background: #f7faf8;
+  background: var(--color-bg-subtle);
 }
 
 .ledger-heading,
@@ -540,7 +540,7 @@ onMounted(restore)
 .ledger-kicker {
   display: block;
   margin-bottom: 0.15rem;
-  color: #397d68;
+  color: var(--color-success);
   font-size: 0.68rem;
   font-weight: 800;
   letter-spacing: 0.12em;
@@ -557,21 +557,21 @@ onMounted(restore)
   flex: 0 0 auto;
   padding: 0.25rem 0.55rem;
   border-radius: 999px;
-  background: #fff0cc;
-  color: #785000;
+  background: var(--color-warning-subtle);
+  color: var(--color-warning);
   font-size: 0.78rem;
   font-weight: 700;
 }
 
 .ledger-status.is-complete {
-  background: #dff3e8;
-  color: #205d3d;
+  background: var(--color-success-subtle);
+  color: var(--color-success);
 }
 
 .ledger-status.is-failed,
 .ledger-status.is-cancelled {
-  background: #f9e3df;
-  color: #873f32;
+  background: var(--color-danger-subtle);
+  color: var(--color-danger);
 }
 
 .ledger-start,
@@ -585,7 +585,7 @@ onMounted(restore)
 .ledger-publish p,
 .feedback-sheet p,
 .point-list p {
-  color: #5d6864;
+  color: var(--color-text-secondary);
   font-size: 0.84rem;
 }
 
@@ -602,10 +602,10 @@ onMounted(restore)
 
 .ledger-summary span {
   padding: 0.25rem 0.45rem;
-  border: 1px solid #d2ded9;
+  border: 1px solid var(--color-border-default);
   border-radius: 4px;
-  background: #fff;
-  color: #47544f;
+  background: var(--color-bg-surface);
+  color: var(--color-text-secondary);
   font-size: 0.75rem;
   font-variant-numeric: tabular-nums;
 }
@@ -625,9 +625,9 @@ onMounted(restore)
 
 .question-ledger > li {
   padding: 0.7rem;
-  border: 1px solid #d5dfdb;
+  border: 1px solid var(--color-border-default);
   border-radius: 9px;
-  background: #fff;
+  background: var(--color-bg-surface);
 }
 
 .question-ledger header div,
@@ -638,13 +638,13 @@ onMounted(restore)
 }
 
 .question-ledger header small {
-  color: #75817c;
+  color: var(--color-text-muted);
   font-size: 0.68rem;
   letter-spacing: 0.04em;
 }
 
 .question-ledger header > span {
-  color: #397d68;
+  color: var(--color-success);
   font-size: 0.8rem;
   font-weight: 700;
 }
@@ -655,7 +655,7 @@ onMounted(restore)
 
 .point-list details {
   padding-top: 0.45rem;
-  border-top: 1px dashed #d8e1dd;
+  border-top: 1px dashed var(--color-border-default);
 }
 
 .point-list summary {
@@ -666,7 +666,7 @@ onMounted(restore)
 }
 
 .point-state {
-  color: #397d68;
+  color: var(--color-success);
   font-size: 0.75rem;
   font-style: normal;
   font-weight: 700;
@@ -674,14 +674,14 @@ onMounted(restore)
 
 .point-state.is-uncertain,
 .point-state.is-unreadable {
-  color: #9a5c16;
+  color: var(--color-warning);
 }
 
 .point-review-form {
   margin-top: 0.55rem;
   padding: 0.65rem;
   border-radius: 7px;
-  background: #f5f7f6;
+  background: var(--color-bg-subtle);
 }
 
 .point-review-form label {
@@ -689,7 +689,7 @@ onMounted(restore)
   grid-template-columns: minmax(92px, 0.24fr) minmax(0, 1fr);
   align-items: center;
   gap: 0.55rem;
-  color: #47544f;
+  color: var(--color-text-secondary);
   font-size: 0.78rem;
 }
 
@@ -701,9 +701,9 @@ onMounted(restore)
 
 .ledger-publish {
   padding: 0.75rem;
-  border: 1px solid #c3d6cf;
+  border: 1px solid var(--color-border-strong);
   border-radius: 9px;
-  background: #eef6f2;
+  background: var(--color-success-subtle);
 }
 
 .ledger-publish > div:last-child {
@@ -713,14 +713,14 @@ onMounted(restore)
 }
 
 .training-link.is-danger {
-  color: #873f32;
+  color: var(--color-danger);
 }
 
 .feedback-sheet {
   padding: 0.8rem;
-  border: 1px solid #d7c79a;
+  border: 1px solid var(--color-border-strong);
   border-radius: 9px;
-  background: #fffdf6;
+  background: var(--color-warning-subtle);
 }
 
 .feedback-sheet h6 {
@@ -728,7 +728,7 @@ onMounted(restore)
 }
 
 .feedback-sheet > header > strong {
-  color: #6f5a1d;
+  color: var(--color-warning);
   font-size: 0.8rem;
   font-variant-numeric: tabular-nums;
 }
@@ -745,7 +745,7 @@ onMounted(restore)
   align-items: center;
   gap: 0.6rem;
   padding-top: 0.45rem;
-  border-top: 1px solid #ebe2c7;
+  border-top: 1px solid var(--color-border-default);
 }
 
 .mastery-strip span {
@@ -754,17 +754,17 @@ onMounted(restore)
 
 .mastery-strip b {
   padding: 0 0.2rem;
-  color: #397d68;
+  color: var(--color-success);
 }
 
 .mastery-strip small {
-  color: #6a6659;
+  color: var(--color-text-muted);
 }
 
 .next-round-card {
   margin-top: 0.75rem;
   padding-top: 0.7rem;
-  border-top: 2px solid #397d68;
+  border-top: 2px solid var(--color-success);
 }
 
 .feedback-safety,

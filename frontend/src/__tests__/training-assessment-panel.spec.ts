@@ -98,16 +98,16 @@ const completedAssessment = {
   workflow_status: 'complete',
   review_revision: 2,
   questions: [{
-    ...pendingAssessment.questions[0],
+    ...pendingAssessment.questions[0]!,
     status: 'complete',
     met_count: 1,
     not_met_count: 1,
     uncertain_count: 0,
     review_status: 'completed',
     review_points: [
-      pendingAssessment.questions[0].review_points[0],
+      pendingAssessment.questions[0]!.review_points[0]!,
       {
-        ...pendingAssessment.questions[0].review_points[1],
+        ...pendingAssessment.questions[0]!.review_points[1]!,
         state: 'not_met',
         evidence: '教师核对后确认结论错误',
         teacher_locked: true,

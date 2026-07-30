@@ -1268,6 +1268,10 @@ def _decode_upload(content: bytes, media_type: str) -> Iterator[np.ndarray]:
 def _read_page_identity(image: np.ndarray) -> tuple[np.ndarray, str | None, int]:
     detector = cv2.QRCodeDetector()
     best: tuple[float, np.ndarray, str, int] | None = None
+    original_height, original_width = image.shape[:2]
+    original_is_portrait = (
+        0.62 <= original_width / max(original_height, 1) <= 0.80
+    )
     for turns, degrees in ((0, 0), (1, 90), (2, 180), (3, 270)):
         candidate = np.ascontiguousarray(np.rot90(image, turns))
         height, width = candidate.shape[:2]
@@ -1279,22 +1283,51 @@ def _read_page_identity(image: np.ndarray) -> tuple[np.ndarray, str | None, int]
         for region, position_score in regions:
             if region.size == 0:
                 continue
-            try:
-                value, points, _ = detector.detectAndDecode(region)
-            except cv2.error:
-                value, points = "", None
-            if not value:
-                enlarged = cv2.resize(
+            attempts = [
+                region,
+                cv2.resize(
+                    region,
+                    None,
+                    fx=1.5,
+                    fy=1.5,
+                    interpolation=cv2.INTER_NEAREST,
+                ),
+                cv2.resize(
                     region,
                     None,
                     fx=1.75,
                     fy=1.75,
                     interpolation=cv2.INTER_CUBIC,
+                ),
+            ]
+            if position_score >= 2.5:
+                gray = cv2.cvtColor(region, cv2.COLOR_BGR2GRAY)
+                adaptive = cv2.adaptiveThreshold(
+                    gray,
+                    255,
+                    cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                    cv2.THRESH_BINARY,
+                    51,
+                    1,
                 )
+                attempts.append(
+                    cv2.resize(
+                        adaptive,
+                        None,
+                        fx=1.75,
+                        fy=1.75,
+                        interpolation=cv2.INTER_NEAREST,
+                    )
+                )
+            value = ""
+            points = None
+            for attempt in attempts:
                 try:
-                    value, points, _ = detector.detectAndDecode(enlarged)
+                    value, points, _ = detector.detectAndDecode(attempt)
                 except cv2.error:
                     value, points = "", None
+                if value:
+                    break
             if not value:
                 continue
             portrait = 0.62 <= width / max(height, 1) <= 0.80
@@ -1315,6 +1348,12 @@ def _read_page_identity(image: np.ndarray) -> tuple[np.ndarray, str | None, int]
             break
     if best is None:
         return image, None, 0
+    best_height, best_width = best[1].shape[:2]
+    best_is_portrait = (
+        0.62 <= best_width / max(best_height, 1) <= 0.80
+    )
+    if original_is_portrait and not best_is_portrait:
+        return image, best[2], 0
     return best[1], best[2], best[3]
 
 

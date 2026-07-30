@@ -24,6 +24,10 @@ from question_bank.personalized_papers import (
     PaperSourceChanged,
     PersonalizedPaperModule,
 )
+from question_bank.personalized_papers.rendering import (
+    decode_page_identity,
+    page_identity,
+)
 from question_bank.recommendation.personalized import (
     PersonalizedRecommendationConfig,
     PersonalizedRecommendationModule,
@@ -85,6 +89,31 @@ def paper_workspace(
         clock=lambda: NOW,
     )
     return module, draft, db_path, data_root
+
+
+def test_page_identity_uses_compact_v2_qr_format_and_reads_legacy_v1() -> None:
+    instance_id = "a" * 64
+    signature = "b" * 32
+
+    current = page_identity(
+        paper_instance_id=instance_id,
+        series_version=1,
+        page_number=2,
+        total_pages=3,
+        signature=signature,
+    )
+    legacy = f"P4P1|{instance_id}|1|2|3|{signature}"
+
+    assert current == f"P4P2:{instance_id.upper()}:1:2:3:{signature.upper()}"
+    assert decode_page_identity(current) == {
+        "identity_version": "P4P2",
+        "paper_instance_id": instance_id,
+        "series_version": 1,
+        "page_number": 2,
+        "total_pages": 3,
+        "page_signature": signature,
+    }
+    assert decode_page_identity(legacy)["identity_version"] == "P4P1"
 
 
 def test_create_review_docx_is_idempotent_versioned_and_immutable(

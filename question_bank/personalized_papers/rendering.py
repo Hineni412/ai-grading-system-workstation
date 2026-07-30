@@ -24,7 +24,8 @@ from PIL import Image
 
 
 LAYOUT_VERSION = "personalized-paper-school-a4-v1"
-PAGE_IDENTITY_VERSION = "P4P1"
+PAGE_IDENTITY_VERSION = "P4P2"
+LEGACY_PAGE_IDENTITY_VERSION = "P4P1"
 DOCX_MEDIA_TYPE = (
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 )
@@ -335,7 +336,7 @@ def stamp_frozen_pdf(
                 overlay=True,
             )
             page.insert_image(
-                fitz.Rect(width - 64.0, footer_top, width - 18.0, footer_top + 46.0),
+                fitz.Rect(width - 70.0, footer_top, width - 18.0, footer_top + 52.0),
                 stream=qr,
                 overlay=True,
             )
@@ -383,14 +384,17 @@ def page_identity(
     total_pages: int,
     signature: str,
 ) -> str:
-    return "|".join(
+    # P4P2 stays inside QR's compact alphanumeric mode. The previous
+    # lowercase, pipe-delimited byte payload produced data-dependent OpenCV
+    # decode failures even before printing.
+    return ":".join(
         (
             PAGE_IDENTITY_VERSION,
-            paper_instance_id,
+            paper_instance_id.upper(),
             str(int(series_version)),
             str(int(page_number)),
             str(int(total_pages)),
-            signature,
+            signature.upper(),
         )
     )
 
@@ -405,10 +409,11 @@ def page_signature(
     total_pages: int,
     reviewed_docx_sha256: str,
     layout_version: str,
+    identity_version: str = PAGE_IDENTITY_VERSION,
 ) -> str:
     message = "|".join(
         (
-            PAGE_IDENTITY_VERSION,
+            identity_version,
             paper_batch_id,
             paper_instance_id,
             str(int(series_version)),
@@ -426,8 +431,17 @@ def page_signature(
 
 
 def decode_page_identity(value: str) -> dict[str, Any]:
-    parts = str(value or "").split("|")
-    if len(parts) != 6 or parts[0] != PAGE_IDENTITY_VERSION:
+    raw = str(value or "")
+    if raw.startswith(f"{PAGE_IDENTITY_VERSION}:"):
+        parts = raw.split(":")
+    elif raw.startswith(f"{LEGACY_PAGE_IDENTITY_VERSION}|"):
+        parts = raw.split("|")
+    else:
+        raise ValueError("page identity is invalid")
+    if len(parts) != 6 or parts[0] not in {
+        PAGE_IDENTITY_VERSION,
+        LEGACY_PAGE_IDENTITY_VERSION,
+    }:
         raise ValueError("page identity is invalid")
     instance_id, version, page, total, signature = parts[1:]
     if (
@@ -449,11 +463,12 @@ def decode_page_identity(value: str) -> dict[str, Any]:
     ):
         raise ValueError("page identity is invalid")
     return {
-        "paper_instance_id": instance_id,
+        "identity_version": parts[0],
+        "paper_instance_id": instance_id.casefold(),
         "series_version": version_number,
         "page_number": page_number,
         "total_pages": total_pages,
-        "page_signature": signature,
+        "page_signature": signature.casefold(),
     }
 
 
@@ -670,6 +685,10 @@ def _set_fixed_table_geometry(
 def _qr_png(payload: str) -> bytes:
     params = cv2.QRCodeEncoder_Params()
     params.correction_level = cv2.QRCodeEncoder_CORRECT_LEVEL_M
+    # A fixed, slightly roomier symbol avoids OpenCV's data-dependent AUTO
+    # version choices while the P4P2 payload remains comfortably within
+    # capacity.
+    params.version = 6
     encoder = cv2.QRCodeEncoder_create(params)
     image = encoder.encode(payload)
     image = cv2.copyMakeBorder(

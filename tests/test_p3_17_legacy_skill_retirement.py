@@ -456,10 +456,13 @@ def test_009_drops_exact_legacy_tables_and_backup_restores_rows(
     )
 
     assert report.error is None, report.error
+    expected_pending = [
+        source.stem
+        for source in sorted(QUESTION_BANK_MIGRATIONS.glob("*.sql"))
+        if int(source.name.split("_", 1)[0]) >= 9
+    ]
     assert [(item.name, item.status) for item in report.results] == [
-        ("009_drop_legacy_skill_semantics", "applied"),
-        ("010_add_paper_trash_state", "applied"),
-        ("011_add_paper_permanent_delete_receipts", "applied"),
+        (name, "applied") for name in expected_pending
     ]
     backup = Path(report.results[0].backup_path or "")
     assert backup.is_file()
@@ -470,7 +473,22 @@ def test_009_drops_exact_legacy_tables_and_backup_restores_rows(
                 "SELECT name FROM sqlite_schema WHERE type = 'table'"
             )
         }
-        assert not set(LEGACY_TABLES).intersection(tables)
+        # P4 deliberately reuses the generic knowledge_relations table name
+        # for its governed stable-identity graph after migration 009 retires
+        # the old concept-id relation table.
+        assert not (set(LEGACY_TABLES) - {"knowledge_relations"}).intersection(
+            tables
+        )
+        relation_columns = {
+            str(row[1])
+            for row in connection.execute("PRAGMA table_info(knowledge_relations)")
+        }
+        assert {"relation_id", "source_key", "target_key", "relation_type"} <= (
+            relation_columns
+        )
+        assert {"id", "source_concept_id", "target_concept_id"}.isdisjoint(
+            relation_columns
+        )
         assert {
             "question_tags",
             "grading_question_links",
@@ -594,7 +612,9 @@ def test_009_accepts_the_supported_untracked_legacy_column_order(
     )
 
     assert report.error is None, report.error
-    assert report.results[-1].name == "011_add_paper_permanent_delete_receipts"
+    assert report.results[-1].name == sorted(
+        QUESTION_BANK_MIGRATIONS.glob("*.sql")
+    )[-1].stem
 
 
 @pytest.mark.parametrize("mode", ["partial", "extra"])

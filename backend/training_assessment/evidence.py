@@ -700,7 +700,14 @@ class TrainingEvidencePublisher:
                 SELECT action
                 FROM training_evidence_sync_events
                 WHERE submission_id = ? AND submission_revision = ?
-                ORDER BY created_at DESC, event_id DESC LIMIT 1
+                ORDER BY source_review_revision DESC,
+                         CASE action
+                           WHEN 'withdraw' THEN 1
+                           ELSE 0
+                         END DESC,
+                         created_at DESC,
+                         event_id DESC
+                LIMIT 1
                 """,
                 (submission_id, submission_revision),
             ).fetchone()
@@ -710,7 +717,7 @@ class TrainingEvidencePublisher:
                        source_review_revision, created_at
                 FROM training_evidence_sync_events
                 WHERE submission_id = ? AND submission_revision = ?
-                ORDER BY created_at, event_id
+                ORDER BY rowid
                 """,
                 (submission_id, submission_revision),
             ).fetchall()
@@ -1342,7 +1349,7 @@ class TrainingEvidencePublisher:
                 SELECT actor_ref
                 FROM training_evidence_sync_events
                 WHERE submission_id = ? AND submission_revision = ?
-                ORDER BY created_at DESC, event_id DESC LIMIT 1
+                ORDER BY rowid DESC LIMIT 1
                 """,
                 (submission_id, submission_revision),
             ).fetchone()

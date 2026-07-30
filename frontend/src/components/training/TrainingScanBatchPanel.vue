@@ -373,9 +373,9 @@ async function cancelSubmission(submissionId: string): Promise<void> {
 .training-scan-panel {
   margin-top: 1rem;
   padding: 1rem;
-  border: 1px solid #c8d7d1;
+  border: 1px solid var(--color-border-strong);
   border-radius: 12px;
-  background: #f4f8f6;
+  background: var(--color-bg-subtle);
 }
 
 .training-scan-panel > header,
@@ -398,7 +398,7 @@ async function cancelSubmission(submissionId: string): Promise<void> {
 .scan-note,
 .scan-submissions p,
 .scan-review small {
-  color: #5d6864;
+  color: var(--color-text-secondary);
   font-size: 0.86rem;
 }
 
@@ -414,13 +414,13 @@ async function cancelSubmission(submissionId: string): Promise<void> {
   flex: 0 0 auto;
   padding: 0.3rem 0.6rem;
   border-radius: 999px;
-  background: #fff0cc;
-  color: #785000;
+  background: var(--color-warning-subtle);
+  color: var(--color-warning);
 }
 
 .scan-status.is-ready {
-  background: #dff3e8;
-  color: #205d3d;
+  background: var(--color-success-subtle);
+  color: var(--color-success);
 }
 
 .scan-upload {
@@ -442,9 +442,9 @@ async function cancelSubmission(submissionId: string): Promise<void> {
 
 .scan-submissions article {
   padding: 0.7rem;
-  border: 1px solid #d5dfdb;
+  border: 1px solid var(--color-border-default);
   border-radius: 9px;
-  background: #fff;
+  background: var(--color-bg-surface);
 }
 
 .scan-review {
@@ -457,17 +457,17 @@ async function cancelSubmission(submissionId: string): Promise<void> {
   gap: 0.85rem;
   margin-top: 0.65rem;
   padding: 0.7rem;
-  border: 1px solid #e1c9bd;
+  border: 1px solid var(--color-border-default);
   border-radius: 9px;
-  background: #fffaf7;
+  background: var(--color-danger-subtle);
 }
 
 .scan-review img {
   width: 100%;
   max-height: 220px;
   object-fit: contain;
-  border: 1px solid #d8d4cf;
-  background: #fff;
+  border: 1px solid var(--color-border-default);
+  background: var(--color-bg-surface);
 }
 
 .scan-review > article > div {

@@ -395,7 +395,8 @@ class PersonalizedRecommendationModule:
             raise RecommendationDraftNotFound(clean_id)
         request = json.loads(str(row["request_json"]))
         _candidates, current_source = self._current_source_for_request(
-            request
+            request,
+            draft_id=clean_id,
         )
         if current_source != str(row["source_version"]):
             raise RecommendationSourceChanged(
@@ -443,7 +444,10 @@ class PersonalizedRecommendationModule:
             raise RecommendationDraftNotFound(clean_id)
         source_request = json.loads(str(source_row["request_json"]))
         source_candidates, current_source = (
-            self._current_source_for_request(source_request)
+            self._current_source_for_request(
+                source_request,
+                draft_id=clean_id,
+            )
         )
         with connect(self.db_path) as connection:
             connection.execute("BEGIN IMMEDIATE")
@@ -491,6 +495,7 @@ class PersonalizedRecommendationModule:
             draft = json.loads(str(row["draft_json"]))
             before, after = self._apply_edit(
                 draft,
+                draft_id=clean_id,
                 request=request,
                 command=command,
                 candidates=source_candidates,
@@ -568,6 +573,8 @@ class PersonalizedRecommendationModule:
     def _current_source_for_request(
         self,
         request: Mapping[str, Any],
+        *,
+        draft_id: str | None = None,
     ) -> tuple[tuple[dict[str, Any], ...], str]:
         diagnosis = request["diagnosis"]
         config = request["config"]
@@ -576,7 +583,10 @@ class PersonalizedRecommendationModule:
             for item in diagnosis["students"]
         )
         candidates, _relations, base_source_version = self._source_snapshot()
-        recent = self._recent_question_ids(student_ids)
+        recent = self._recent_question_ids(
+            student_ids,
+            exclude_draft_id=draft_id,
+        )
         excluded = (
             self._current_exam_question_ids(diagnosis)
             if bool(config.get("exclude_current_exam_originals", True))
@@ -1020,7 +1030,10 @@ class PersonalizedRecommendationModule:
         }
 
     def _recent_question_ids(
-        self, student_ids: tuple[str, ...]
+        self,
+        student_ids: tuple[str, ...],
+        *,
+        exclude_draft_id: str | None = None,
     ) -> dict[str, set[int]]:
         if not student_ids:
             return {}
@@ -1046,6 +1059,20 @@ class PersonalizedRecommendationModule:
                 """,
                 (*student_ids, cutoff),
             ).fetchall()
+            draft_filter = (
+                "AND instances.draft_id <> ?"
+                if exclude_draft_id is not None
+                else ""
+            )
+            personalized_parameters: tuple[object, ...] = (
+                *student_ids,
+                *(
+                    (exclude_draft_id,)
+                    if exclude_draft_id is not None
+                    else ()
+                ),
+                cutoff,
+            )
             personalized_rows = connection.execute(
                 f"""
                 SELECT instances.student_id, items.bank_question_id
@@ -1056,9 +1083,10 @@ class PersonalizedRecommendationModule:
                 WHERE instances.student_id IN ({placeholders})
                   AND items.bank_question_id IS NOT NULL
                   AND instances.status = 'frozen'
+                  {draft_filter}
                   AND instances.created_at >= ?
                 """,
-                (*student_ids, cutoff),
+                personalized_parameters,
             ).fetchall()
         result: dict[str, set[int]] = {}
         for row in (*rows, *personalized_rows):
@@ -1114,6 +1142,7 @@ class PersonalizedRecommendationModule:
         self,
         draft: dict[str, Any],
         *,
+        draft_id: str,
         request: dict[str, Any],
         command: RecommendationEditCommand,
         candidates: Sequence[dict[str, Any]],
@@ -1182,7 +1211,8 @@ class PersonalizedRecommendationModule:
                 == "maintenance_fallback",
                 used=used,
                 recent=self._recent_question_ids(
-                    (str(student["student_id"]),)
+                    (str(student["student_id"]),),
+                    exclude_draft_id=draft_id,
                 ).get(str(student["student_id"]), set()),
                 excluded=(
                     self._current_exam_question_ids(request["diagnosis"])

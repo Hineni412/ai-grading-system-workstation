@@ -77,10 +77,6 @@ def bootstrap_governed_knowledge_identities(
         """
     ).fetchall()
     for row in historical_rows:
-        canonical = canonicalize_knowledge_exact(row[1])
-        if canonical is None:
-            continue
-        stable_key = normalize_stable_key(canonical.canonical_id)
         existing_mapping = connection.execute(
             """
             SELECT stable_key
@@ -90,11 +86,14 @@ def bootstrap_governed_knowledge_identities(
             (int(row[0]),),
         ).fetchone()
         if existing_mapping is not None:
-            if str(existing_mapping[0]) != stable_key:
-                raise ValueError(
-                    "historical knowledge tag already maps to another identity"
-                )
+            # The row identity is stable even if a teacher later edits the
+            # visible tag text. Re-running bootstrap must not reinterpret that
+            # edit as a move to a different governed identity.
             continue
+        canonical = canonicalize_knowledge_exact(row[1])
+        if canonical is None:
+            continue
+        stable_key = normalize_stable_key(canonical.canonical_id)
         connection.execute(
             """
             INSERT INTO knowledge_tag_identity_mappings (
