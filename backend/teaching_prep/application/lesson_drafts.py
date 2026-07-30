@@ -6,6 +6,9 @@ from typing import Any
 
 from backend.teaching_prep.domain.errors import TeachingPrepValidationError
 from backend.teaching_prep.domain.models import ResourcePackVersion
+from backend.teaching_prep.application.preferences import (
+    resolve_teaching_preferences,
+)
 
 
 _PHASE_MINUTES = {
@@ -90,7 +93,7 @@ def draft_preflight(
         "missing_and_uncertain_count": len(
             _list(payload.get("missing_and_uncertain"))
         ),
-        "preparation_preferences": _mapping(
+        "preparation_preferences": resolve_teaching_preferences(
             payload.get("preparation_preferences")
         ),
     }
@@ -195,7 +198,9 @@ def build_local_template(
             )
     exercise_recommendations: list[dict[str, object]] = []
     included = 0
-    preferences = _mapping(payload.get("preparation_preferences"))
+    preferences = resolve_teaching_preferences(
+        payload.get("preparation_preferences")
+    )
     supplement_enabled = bool(
         preferences.get("supplement_from_references", True)
     )
@@ -205,13 +210,20 @@ def build_local_template(
         if isinstance(raw_limit, int) and not isinstance(raw_limit, bool)
         else 2
     )
-    for source_ref, item in exercise_sources + question_sources:
+    ranked_sources = _rank_supplement_sources(
+        payload,
+        exercise_sources,
+        question_sources,
+        preferences,
+    )
+    for source_ref, item, eligible, preference_reason in ranked_sources:
         selection = str(item.get("selection_status") or "")
         action = (
             "include"
             if (
                 supplement_enabled
                 and selection != "backup"
+                and eligible
                 and included < supplement_limit
             )
             else "backup"
@@ -233,7 +245,8 @@ def build_local_template(
                 "reason": (
                     "作为本课关键检查题。"
                     if action == "include"
-                    else "保留为课堂时间允许时的备用题。"
+                    else preference_reason
+                    or "保留为课堂时间允许时的备用题。"
                 ),
                 "estimated_minutes": _positive_minutes(
                     item.get("estimated_minutes"),
@@ -335,7 +348,9 @@ def validate_draft_payload(
             item_maximum=500,
         ),
     }
-    preferences = _mapping(pack.payload.get("preparation_preferences"))
+    preferences = resolve_teaching_preferences(
+        pack.payload.get("preparation_preferences")
+    )
     supplement_enabled = bool(
         preferences.get("supplement_from_references", True)
     )
@@ -363,14 +378,18 @@ def validate_draft_payload(
 def _local_slide_adaptations(
     payload: Mapping[str, object],
 ) -> list[dict[str, object]]:
-    preferences = _mapping(payload.get("preparation_preferences"))
+    preferences = resolve_teaching_preferences(
+        payload.get("preparation_preferences")
+    )
     trim_enabled = bool(preferences.get("trim_excess_practice", True))
     preserve_examples = bool(preferences.get("preserve_teaching_examples", True))
     prefer_short = bool(preferences.get("prefer_short_practice", True))
     trim_level = str(preferences.get("practice_trim_level") or "moderate")
     threshold = {"light": 220, "moderate": 140, "strong": 80}.get(
-        trim_level,
-        140,
+        trim_level, 140
+    )
+    tail_ratio = {"light": 0.85, "moderate": 0.70, "strong": 0.60}.get(
+        trim_level, 0.70
     )
     textbook_units = _material_units(payload, "textbook")
     result: list[dict[str, object]] = []
@@ -381,7 +400,7 @@ def _local_slide_adaptations(
         link_id = str(material.get("link_id") or "")
         teacher_delete = material.get("teacher_intent") == "candidate_delete"
         units = [_mapping(item) for item in _list(material.get("units"))]
-        tail_start = max(1, round(len(units) * 0.6))
+        tail_start = max(1, int(len(units) * tail_ratio) + 1)
         for position, unit in enumerate(units, start=1):
             unit_index = unit.get("unit_index")
             if not link_id or not isinstance(unit_index, int):
@@ -389,7 +408,10 @@ def _local_slide_adaptations(
             slide_ref = f"material:{link_id}:unit:{unit_index}"
             text = str(unit.get("text") or "")
             role = _classify_slide(text, str(unit.get("title") or ""))
-            is_tail_practice = role == "practice" and position >= tail_start
+            is_trim_candidate = role == "practice" or (
+                role == "example" and not preserve_examples
+            )
+            is_tail_practice = is_trim_candidate and position >= tail_start
             delete = (
                 teacher_delete
                 or (
@@ -399,7 +421,6 @@ def _local_slide_adaptations(
                         not prefer_short
                         or len(_compact_text(text)) > threshold
                     )
-                    and not (preserve_examples and role == "example")
                 )
             )
             textbook_refs = _best_textbook_refs(text, textbook_units)
@@ -525,7 +546,10 @@ def _best_textbook_refs(
 
 def _classify_slide(text: str, title: str) -> str:
     value = f"{title}\n{text}"
-    if re.search(r"例\s*\d*|例题|典型例题", value):
+    if re.search(
+        r"(?:^|[\s：:（(])例(?:题|\s*\d{1,3}(?=\s|[：:、.．)）]|$))",
+        value,
+    ):
         return "example"
     if re.search(r"练习|巩固|检测|训练|做一做|试一试", value):
         return "practice"
@@ -884,6 +908,85 @@ def _material_references(
                     f"material:{link_id}:unit:{item['unit_index']}"
                 )
     return result
+
+
+def _rank_supplement_sources(
+    payload: Mapping[str, object],
+    exercise_sources: list[tuple[str, dict[str, object]]],
+    question_sources: list[tuple[str, dict[str, object]]],
+    preferences: Mapping[str, object],
+) -> list[tuple[str, dict[str, object], bool, str | None]]:
+    avoid_homework_copy = bool(
+        preferences.get("avoid_direct_homework_copy", True)
+    )
+    prioritize_homework = bool(
+        preferences.get("prioritize_homework_workbook", True)
+    )
+    avoid_duplicates = bool(
+        preferences.get("avoid_ppt_duplicates", True)
+    )
+    ppt_text = "\n".join(
+        str(unit.get("text") or "")
+        for _ref, unit in _material_units(payload, "reference_ppt")
+    )
+    ranked: list[
+        tuple[int, int, str, dict[str, object], bool, str | None]
+    ] = []
+    for order, (source_ref, item) in enumerate(exercise_sources):
+        homework_source = _is_homework_workbook(item)
+        duplicate = avoid_duplicates and _duplicates_reference_ppt(
+            item,
+            ppt_text,
+        )
+        eligible = not (avoid_homework_copy and homework_source) and not duplicate
+        reason = None
+        if avoid_homework_copy and homework_source:
+            reason = "重点参考作业教辅的题型，但不直接照搬学生作业原题。"
+        elif duplicate:
+            reason = "与原课件内容重复，按本次偏好保留为备用而不再补入。"
+        priority = (
+            0
+            if prioritize_homework and homework_source and not avoid_homework_copy
+            else 1
+        )
+        ranked.append(
+            (priority, order, source_ref, item, eligible, reason)
+        )
+    question_offset = len(exercise_sources)
+    for order, (source_ref, item) in enumerate(question_sources):
+        ranked.append(
+            (
+                2,
+                question_offset + order,
+                source_ref,
+                item,
+                True,
+                None,
+            )
+        )
+    ranked.sort(key=lambda item: (item[0], item[1], item[2]))
+    return [
+        (source_ref, item, eligible, reason)
+        for _priority, _order, source_ref, item, eligible, reason in ranked
+    ]
+
+
+def _is_homework_workbook(item: Mapping[str, object]) -> bool:
+    names = {
+        str(region.get("material_name") or "")
+        for region in _list(item.get("question_regions"))
+        if isinstance(region, Mapping)
+    }
+    return any("全品" in name for name in names)
+
+
+def _duplicates_reference_ppt(
+    item: Mapping[str, object],
+    ppt_text: str,
+) -> bool:
+    label = _compact_text(str(item.get("content_label") or ""))
+    compact_ppt = _compact_text(ppt_text)
+    return len(label) >= 6 and label in compact_ppt
 
 
 def _exercise_sources(

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from copy import deepcopy
 
 from backend.teaching_prep.domain.errors import TeachingPrepValidationError
 
@@ -84,7 +85,15 @@ def normalize_teaching_preferences(value: object) -> dict[str, object]:
     }
 
 
+def resolve_teaching_preferences(value: object) -> dict[str, object]:
+    """Return frozen preferences, or legacy defaults without rewriting the pack."""
+    if value is None:
+        return deepcopy(DEFAULT_TEACHING_PREFERENCES)
+    return normalize_teaching_preferences(value)
+
+
 __all__ = [
     "DEFAULT_TEACHING_PREFERENCES",
     "normalize_teaching_preferences",
+    "resolve_teaching_preferences",
 ]
