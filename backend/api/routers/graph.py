@@ -14,6 +14,10 @@ from backend.api.schemas.graph import (
     GraphProfilesResponse,
     GraphQueryRequest,
     GraphRowsResponse,
+    GraphV2EvidenceRequest,
+    GraphV2EvidenceResponse,
+    GraphV2QueryRequest,
+    GraphV2Response,
     RelationBatchReviewRequest,
     RelationBatchReviewResponse,
     RelationImpactRequest,
@@ -42,6 +46,10 @@ from question_bank.relations.review_service import (
     RelationReviewCommand,
     RelationReviewService,
 )
+from question_bank.relations.query_service import (
+    GraphV2Query,
+    KnowledgeGraphV2QueryService,
+)
 
 
 router = APIRouter(prefix="/api/graph", tags=["graph"])
@@ -55,6 +63,10 @@ GRAPH_DATABASE_RESPONSES = {
 
 def get_relation_review_service() -> RelationReviewService:
     return RelationReviewService(question_bank_db_path())
+
+
+def get_graph_v2_query_service() -> KnowledgeGraphV2QueryService:
+    return KnowledgeGraphV2QueryService(question_bank_db_path())
 
 
 @router.post(
@@ -123,6 +135,87 @@ def get_graph_evidence(
             "total_pages": max(1, ceil(total / body.page_size)),
         }
     )
+
+
+@router.post(
+    "/v2/query",
+    response_model=GraphV2Response,
+    responses=GRAPH_DATABASE_RESPONSES,
+)
+def query_graph_v2(
+    body: GraphV2QueryRequest,
+    diagnosis_service: DiagnosisProfileService = Depends(
+        get_request_diagnosis_profile_service
+    ),
+    graph_service: KnowledgeGraphV2QueryService = Depends(
+        get_graph_v2_query_service
+    ),
+) -> GraphV2Response:
+    profile = _build_profile(body, diagnosis_service)
+    try:
+        payload = graph_service.query(
+            profile,
+            GraphV2Query(
+                knowledge_keys=tuple(body.knowledge_keys),
+                prerequisite_depth=body.prerequisite_depth,
+            ),
+        )
+    except ValueError as exc:
+        raise ApiError(
+            422,
+            "graph_v2_query_invalid",
+            "Graph v2 query is invalid",
+        ) from exc
+    except (OSError, sqlite3.Error) as exc:
+        raise ApiError(
+            503,
+            "graph_database_unavailable",
+            "Graph data is temporarily unavailable",
+        ) from exc
+    return GraphV2Response.model_validate(payload)
+
+
+@router.post(
+    "/v2/evidence",
+    response_model=GraphV2EvidenceResponse,
+    responses=GRAPH_DATABASE_RESPONSES,
+)
+def get_graph_v2_evidence(
+    body: GraphV2EvidenceRequest,
+    diagnosis_service: DiagnosisProfileService = Depends(
+        get_request_diagnosis_profile_service
+    ),
+    graph_service: KnowledgeGraphV2QueryService = Depends(
+        get_graph_v2_query_service
+    ),
+) -> GraphV2EvidenceResponse:
+    profile = _build_profile(body, diagnosis_service)
+    try:
+        payload = graph_service.evidence(
+            profile,
+            stable_key=body.stable_key,
+            page=body.page,
+            page_size=body.page_size,
+        )
+    except KeyError as exc:
+        raise ApiError(
+            404,
+            "knowledge_identity_not_found",
+            "Knowledge identity does not exist",
+        ) from exc
+    except ValueError as exc:
+        raise ApiError(
+            422,
+            "graph_v2_query_invalid",
+            "Graph v2 query is invalid",
+        ) from exc
+    except (OSError, sqlite3.Error) as exc:
+        raise ApiError(
+            503,
+            "graph_database_unavailable",
+            "Graph data is temporarily unavailable",
+        ) from exc
+    return GraphV2EvidenceResponse.model_validate(payload)
 
 
 @router.get(
@@ -381,4 +474,8 @@ def _profile_response(profile: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-__all__ = ["get_relation_review_service", "router"]
+__all__ = [
+    "get_graph_v2_query_service",
+    "get_relation_review_service",
+    "router",
+]

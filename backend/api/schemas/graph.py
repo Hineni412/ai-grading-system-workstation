@@ -217,6 +217,88 @@ class RelationTimelineResponse(_GraphModel):
     timeline: list[dict[str, Any]]
 
 
+class GraphV2QueryRequest(GraphQueryRequest):
+    knowledge_keys: list[str] = Field(
+        default_factory=list,
+        max_length=1000,
+    )
+    prerequisite_depth: int = Field(default=1, ge=0, le=5)
+
+    @field_validator("knowledge_keys")
+    @classmethod
+    def validate_stable_keys(cls, values: list[str]) -> list[str]:
+        normalized: list[str] = []
+        for value in values:
+            key = str(value or "").strip().casefold()
+            if not key.startswith(("kp_", "ki_")):
+                raise ValueError("knowledge_keys must use stable identities")
+            if key not in normalized:
+                normalized.append(key)
+        return normalized
+
+
+class GraphV2EvidenceRequest(GraphQueryRequest):
+    stable_key: str = Field(
+        pattern=r"^(?:kp_[a-z0-9_]+|ki_[0-9a-f]{32})$"
+    )
+    page: int = Field(default=1, ge=1)
+    page_size: int = Field(default=20, ge=1, le=100)
+
+
+class GraphV2Mastery(_GraphModel):
+    status: Literal["available", "missing", "unavailable"]
+    value: float | None = Field(default=None, ge=0.0, le=1.0)
+    evidence_count: int = Field(ge=0)
+    reason: str | None = None
+
+
+class GraphV2Node(_GraphModel):
+    stable_key: str
+    display_name: str
+    identity_revision: int = Field(ge=1)
+    mastery_v1: GraphV2Mastery
+    mastery_v2: GraphV2Mastery
+    evidence: dict[str, Any]
+    missing_reasons: list[str]
+
+
+class GraphV2Edge(_GraphModel):
+    relation_id: str
+    source_key: str
+    target_key: str
+    relation_type: Literal["prerequisite", "parent", "related"]
+    rationale: str
+    revision: int = Field(ge=1)
+
+
+class GraphV2Response(_GraphModel):
+    response_schema_version: Literal["knowledge-graph-v2"]
+    response_version: str = Field(pattern=r"^[0-9a-f]{64}$")
+    scope: TrainingNormalizedScope
+    exam_scope: TrainingNormalizedExamScope
+    coverage: TrainingCoverage
+    nodes: list[GraphV2Node]
+    edges: list[GraphV2Edge]
+    missing: list[dict[str, Any]]
+    warnings: list[str]
+    counts: dict[str, int]
+
+
+class GraphV2EvidenceResponse(_GraphModel):
+    response_schema_version: Literal["knowledge-graph-evidence-v2"]
+    response_version: str = Field(pattern=r"^[0-9a-f]{64}$")
+    scope: TrainingNormalizedScope
+    exam_scope: TrainingNormalizedExamScope
+    coverage: TrainingCoverage
+    stable_key: str
+    display_name: str
+    items: list[dict[str, Any]]
+    total: int = Field(ge=0)
+    page: int = Field(ge=1)
+    page_size: int = Field(ge=1, le=100)
+    total_pages: int = Field(ge=1)
+
+
 __all__ = [
     "GraphEdge",
     "GraphEvidenceItem",
@@ -228,6 +310,13 @@ __all__ = [
     "GraphRow",
     "GraphRowsResponse",
     "GraphSourceQuestionReference",
+    "GraphV2Edge",
+    "GraphV2EvidenceRequest",
+    "GraphV2EvidenceResponse",
+    "GraphV2Mastery",
+    "GraphV2Node",
+    "GraphV2QueryRequest",
+    "GraphV2Response",
     "RelationBatchCommand",
     "RelationBatchReviewRequest",
     "RelationBatchReviewResponse",
