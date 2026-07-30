@@ -466,8 +466,9 @@ flowchart LR
 | 当前三路产品与实施计划 | `docs/product/TEACHER_WORKSPACES_PARALLEL_IMPLEMENTATION.md`、`docs/superpowers/packages/phase-4-execution-packages.md` |
 
 自动测试分为约一分钟的 `quick`、当前产品合并验收 `full`、Windows/进程全局状态 `serial` 和正式发布
-`release` 四档；所有入口强制使用临时数据和临时配置并移除 API Key。正式 P4/A/B 实施按对应风险和执行计划
-选择受影响测试、候选完整测试、双复审和用户人工验收。
+`release` 四档；所有入口强制使用临时数据和临时配置并移除 API Key。正式 P4/A/B 采用连续实现节奏，
+不在每个小任务或实施包后启动正式测试与复审；整条业务线到达用户最终验收阶段后，再按对应风险和执行计划
+集中运行受影响回归、候选完整测试、双复审和用户人工验收。
 
 ## 12. 已知限制与未决事项
 
