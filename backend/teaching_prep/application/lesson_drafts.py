@@ -547,7 +547,8 @@ def _best_textbook_refs(
 def _classify_slide(text: str, title: str) -> str:
     value = f"{title}\n{text}"
     if re.search(
-        r"(?:^|[\s：:（(])例(?:题|\s*\d{1,3}(?=\s|[：:、.．)）]|$))",
+        r"典型例题|(?:^|[\s：:（(])例"
+        r"(?:题|\s*\d{1,3}(?=\s|[：:、.．)）]|$))",
         value,
     ):
         return "example"

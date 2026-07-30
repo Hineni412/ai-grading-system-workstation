@@ -433,7 +433,7 @@ def validate_plan_payload(
         )
     return {
         "schema_version": 1,
-        "preparation_preferences": _mapping(
+        "preparation_preferences": resolve_teaching_preferences(
             payload.get("preparation_preferences")
         ),
         "source_presentations": _object_list(
