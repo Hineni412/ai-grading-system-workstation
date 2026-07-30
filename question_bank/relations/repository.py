@@ -465,6 +465,129 @@ class KnowledgeRelationRepository:
             assert updated is not None
             return _relation_record(updated)
 
+    def amend_suggestion(
+        self,
+        relation_id: str,
+        *,
+        expected_revision: int,
+        relation: KnowledgeRelation,
+        actor_ref: str,
+        reason: str,
+    ) -> KnowledgeRelationRecord:
+        clean_id = _required_text(relation_id, "relation_id")
+        clean_actor = _required_text(actor_ref, "actor_ref")
+        clean_reason = _required_text(reason, "reason")
+        amended = KnowledgeRelation(
+            source_key=relation.source_key,
+            target_key=relation.target_key,
+            relation_type=relation.relation_type,
+            status=RelationStatus.SUGGESTED,
+        )
+        if isinstance(expected_revision, bool) or int(expected_revision) < 1:
+            raise ValueError("expected_revision must be a positive integer")
+
+        with self._transaction() as connection:
+            row = connection.execute(
+                "SELECT * FROM knowledge_relations WHERE relation_id = ?",
+                (clean_id,),
+            ).fetchone()
+            if row is None:
+                raise KnowledgeRelationNotFound(clean_id)
+            current = _relation_record(row)
+            if current.revision != int(expected_revision):
+                raise KnowledgeRelationRevisionConflict(
+                    int(expected_revision),
+                    current.revision,
+                )
+            if current.status is not RelationStatus.SUGGESTED:
+                raise KnowledgeRelationTransitionError(
+                    current.status,
+                    RelationStatus.SUGGESTED,
+                )
+            self._require_active_identity(connection, amended.source_key)
+            self._require_active_identity(connection, amended.target_key)
+            duplicate = connection.execute(
+                """
+                SELECT relation_id, status
+                FROM knowledge_relations
+                WHERE source_key = ?
+                  AND target_key = ?
+                  AND relation_type = ?
+                  AND relation_id <> ?
+                """,
+                (
+                    amended.source_key,
+                    amended.target_key,
+                    amended.relation_type.value,
+                    clean_id,
+                ),
+            ).fetchone()
+            if duplicate is not None:
+                raise KnowledgeRelationDuplicate(
+                    str(duplicate["relation_id"]),
+                    RelationStatus(duplicate["status"]),
+                )
+            new_revision = current.revision + 1
+            connection.execute(
+                """
+                UPDATE knowledge_relations
+                SET source_key = ?,
+                    target_key = ?,
+                    relation_type = ?,
+                    rationale = ?,
+                    conflict_codes_json = '[]',
+                    revision = ?,
+                    updated_at = datetime('now','localtime')
+                WHERE relation_id = ?
+                  AND revision = ?
+                """,
+                (
+                    amended.source_key,
+                    amended.target_key,
+                    amended.relation_type.value,
+                    clean_reason,
+                    new_revision,
+                    clean_id,
+                    current.revision,
+                ),
+            )
+            connection.execute(
+                """
+                INSERT INTO knowledge_relation_amendment_events (
+                    relation_id,
+                    from_source_key,
+                    from_target_key,
+                    from_relation_type,
+                    to_source_key,
+                    to_target_key,
+                    to_relation_type,
+                    actor_ref,
+                    reason,
+                    expected_revision,
+                    resulting_revision
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    clean_id,
+                    current.source_key,
+                    current.target_key,
+                    current.relation_type.value,
+                    amended.source_key,
+                    amended.target_key,
+                    amended.relation_type.value,
+                    clean_actor,
+                    clean_reason,
+                    current.revision,
+                    new_revision,
+                ),
+            )
+            updated = connection.execute(
+                "SELECT * FROM knowledge_relations WHERE relation_id = ?",
+                (clean_id,),
+            ).fetchone()
+            assert updated is not None
+            return _relation_record(updated)
+
     def audit_events(self, relation_id: str) -> tuple[dict[str, object], ...]:
         clean_id = _required_text(relation_id, "relation_id")
         with connect(self.db_path) as connection:
@@ -472,6 +595,23 @@ class KnowledgeRelationRepository:
                 """
                 SELECT *
                 FROM knowledge_relation_audit_events
+                WHERE relation_id = ?
+                ORDER BY resulting_revision
+                """,
+                (clean_id,),
+            ).fetchall()
+        return tuple(dict(row) for row in rows)
+
+    def amendment_events(
+        self,
+        relation_id: str,
+    ) -> tuple[dict[str, object], ...]:
+        clean_id = _required_text(relation_id, "relation_id")
+        with connect(self.db_path) as connection:
+            rows = connection.execute(
+                """
+                SELECT *
+                FROM knowledge_relation_amendment_events
                 WHERE relation_id = ?
                 ORDER BY resulting_revision
                 """,

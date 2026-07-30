@@ -14,12 +14,33 @@ from backend.api.schemas.graph import (
     GraphProfilesResponse,
     GraphQueryRequest,
     GraphRowsResponse,
+    RelationBatchReviewRequest,
+    RelationBatchReviewResponse,
+    RelationImpactRequest,
+    RelationImpactResponse,
+    RelationReviewQueueResponse,
+    RelationReviewRequest,
+    RelationReviewResponse,
+    RelationTimelineResponse,
 )
 from integration.diagnosis_profile_service import DiagnosisProfileService
 from integration.skill_graph_projection import (
     build_question_tag_graph_evidence,
     build_question_tag_graph_nodes,
     build_question_tag_graph_rows,
+)
+from question_bank.database.paths import question_bank_db_path
+from question_bank.relations.contracts import KnowledgeRelation
+from question_bank.relations.repository import (
+    KnowledgeRelationConfirmationConflict,
+    KnowledgeRelationDuplicate,
+    KnowledgeRelationNotFound,
+    KnowledgeRelationRevisionConflict,
+    KnowledgeRelationTransitionError,
+)
+from question_bank.relations.review_service import (
+    RelationReviewCommand,
+    RelationReviewService,
 )
 
 
@@ -30,6 +51,10 @@ GRAPH_DATABASE_RESPONSES = {
         "description": "Graph data is temporarily unavailable",
     }
 }
+
+
+def get_relation_review_service() -> RelationReviewService:
+    return RelationReviewService(question_bank_db_path())
 
 
 @router.post(
@@ -100,6 +125,215 @@ def get_graph_evidence(
     )
 
 
+@router.get(
+    "/relations/review-queue",
+    response_model=RelationReviewQueueResponse,
+    responses=GRAPH_DATABASE_RESPONSES,
+)
+def get_relation_review_queue(
+    status: str = "suggested",
+    page: int = 1,
+    page_size: int = 50,
+    service: RelationReviewService = Depends(get_relation_review_service),
+) -> RelationReviewQueueResponse:
+    try:
+        payload = service.list_queue(
+            status=status,
+            page=page,
+            page_size=page_size,
+        )
+    except ValueError as exc:
+        raise ApiError(
+            422,
+            "relation_review_query_invalid",
+            "Relation review query is invalid",
+        ) from exc
+    except (OSError, sqlite3.Error) as exc:
+        raise ApiError(
+            503,
+            "graph_database_unavailable",
+            "Graph data is temporarily unavailable",
+        ) from exc
+    return RelationReviewQueueResponse.model_validate(payload)
+
+
+@router.post(
+    "/relations/{relation_id}/impact",
+    response_model=RelationImpactResponse,
+    responses=GRAPH_DATABASE_RESPONSES,
+)
+def preview_relation_impact(
+    relation_id: str,
+    body: RelationImpactRequest,
+    service: RelationReviewService = Depends(get_relation_review_service),
+) -> RelationImpactResponse:
+    amended = (
+        None
+        if body.amended_relation is None
+        else KnowledgeRelation(**body.amended_relation.model_dump())
+    )
+    try:
+        payload = service.preview(
+            relation_id,
+            action=body.action,
+            amended_relation=amended,
+        )
+    except KnowledgeRelationNotFound as exc:
+        raise ApiError(
+            404,
+            "relation_not_found",
+            "Knowledge relation does not exist",
+        ) from exc
+    except ValueError as exc:
+        raise ApiError(
+            422,
+            "relation_review_invalid",
+            "Relation review command is invalid",
+        ) from exc
+    except (OSError, sqlite3.Error) as exc:
+        raise ApiError(
+            503,
+            "graph_database_unavailable",
+            "Graph data is temporarily unavailable",
+        ) from exc
+    return RelationImpactResponse.model_validate(payload)
+
+
+@router.post(
+    "/relations/{relation_id}/review",
+    response_model=RelationReviewResponse,
+    responses=GRAPH_DATABASE_RESPONSES,
+)
+def review_relation(
+    relation_id: str,
+    body: RelationReviewRequest,
+    service: RelationReviewService = Depends(get_relation_review_service),
+) -> RelationReviewResponse:
+    amended = (
+        None
+        if body.amended_relation is None
+        else KnowledgeRelation(**body.amended_relation.model_dump())
+    )
+    try:
+        payload = service.review_one(
+            relation_id,
+            expected_revision=body.expected_revision,
+            action=body.action,
+            actor_ref=body.teacher_ref,
+            reason=body.reason,
+            amended_relation=amended,
+        )
+    except KnowledgeRelationNotFound as exc:
+        raise ApiError(
+            404,
+            "relation_not_found",
+            "Knowledge relation does not exist",
+        ) from exc
+    except KnowledgeRelationRevisionConflict as exc:
+        raise ApiError(
+            409,
+            "relation_revision_conflict",
+            "Knowledge relation changed; refresh before reviewing",
+            details={"current_revision": exc.current_revision},
+        ) from exc
+    except KnowledgeRelationConfirmationConflict as exc:
+        raise ApiError(
+            409,
+            "relation_confirmation_conflict",
+            "Knowledge relation conflicts with the active graph",
+            details={
+                "conflict_codes": [
+                    conflict.value for conflict in exc.conflicts
+                ]
+            },
+        ) from exc
+    except KnowledgeRelationDuplicate as exc:
+        raise ApiError(
+            409,
+            "relation_duplicate",
+            "Knowledge relation already exists",
+            details={
+                "relation_id": exc.relation_id,
+                "status": exc.status.value,
+            },
+        ) from exc
+    except (KnowledgeRelationTransitionError, ValueError) as exc:
+        raise ApiError(
+            422,
+            "relation_review_invalid",
+            "Relation review command is invalid",
+        ) from exc
+    except (OSError, sqlite3.Error) as exc:
+        raise ApiError(
+            503,
+            "graph_database_unavailable",
+            "Graph data is temporarily unavailable",
+        ) from exc
+    return RelationReviewResponse.model_validate(payload)
+
+
+@router.post(
+    "/relations/review-batch",
+    response_model=RelationBatchReviewResponse,
+    responses=GRAPH_DATABASE_RESPONSES,
+)
+def review_relations_batch(
+    body: RelationBatchReviewRequest,
+    service: RelationReviewService = Depends(get_relation_review_service),
+) -> RelationBatchReviewResponse:
+    try:
+        payload = service.review_batch(
+            [
+                RelationReviewCommand(**command.model_dump())
+                for command in body.commands
+            ],
+            actor_ref=body.teacher_ref,
+        )
+    except ValueError as exc:
+        raise ApiError(
+            422,
+            "relation_review_invalid",
+            "Relation review command is invalid",
+        ) from exc
+    except (OSError, sqlite3.Error) as exc:
+        raise ApiError(
+            503,
+            "graph_database_unavailable",
+            "Graph data is temporarily unavailable",
+        ) from exc
+    return RelationBatchReviewResponse.model_validate(payload)
+
+
+@router.get(
+    "/relations/{relation_id}/timeline",
+    response_model=RelationTimelineResponse,
+    responses=GRAPH_DATABASE_RESPONSES,
+)
+def get_relation_timeline(
+    relation_id: str,
+    service: RelationReviewService = Depends(get_relation_review_service),
+) -> RelationTimelineResponse:
+    try:
+        service.repository.get_relation(relation_id)
+        timeline = service.timeline(relation_id)
+    except KnowledgeRelationNotFound as exc:
+        raise ApiError(
+            404,
+            "relation_not_found",
+            "Knowledge relation does not exist",
+        ) from exc
+    except (OSError, sqlite3.Error) as exc:
+        raise ApiError(
+            503,
+            "graph_database_unavailable",
+            "Graph data is temporarily unavailable",
+        ) from exc
+    return RelationTimelineResponse(
+        relation_id=relation_id,
+        timeline=list(timeline),
+    )
+
+
 def _build_profile(
     body: GraphQueryRequest,
     service: DiagnosisProfileService,
@@ -147,4 +381,4 @@ def _profile_response(profile: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-__all__ = ["router"]
+__all__ = ["get_relation_review_service", "router"]
