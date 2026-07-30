@@ -1,3 +1,5 @@
+import { workspaceRegistry } from './workspaces/registry'
+
 export type WorkspaceRouteId =
   | 'workbench'
   | 'sessions'
@@ -11,6 +13,8 @@ export type WorkspaceRouteId =
   | 'grading'
   | 'model-profiles'
   | 'settings'
+  | 'teaching-prep'
+  | 'class-teacher'
 
 export type WorkspaceNavigationIcon =
   | 'workbench'
@@ -25,6 +29,8 @@ export type WorkspaceNavigationIcon =
   | 'students'
   | 'model'
   | 'settings'
+  | 'teaching-prep'
+  | 'class-teacher'
 
 export type AppIconName =
   | WorkspaceNavigationIcon
@@ -44,7 +50,7 @@ export interface WorkspaceRouteDefinition {
 }
 
 export interface WorkspaceNavigationGroup {
-  id: 'exam' | 'question-work' | 'analysis'
+  id: 'exam' | 'question-work' | 'analysis' | 'teacher-workspaces'
   label: string
   items: readonly WorkspaceRouteDefinition[]
 }
@@ -185,6 +191,21 @@ export const settingsRouteDefinition = {
   icon: 'settings',
 } as const satisfies WorkspaceRouteDefinition
 
+workspaceRegistry.assertNoCoreConflicts([
+  workbenchRouteDefinition,
+  sessionRouteDefinition,
+  studentsRouteDefinition,
+  questionBankRouteDefinition,
+  questionAssemblyRouteDefinition,
+  trainingRouteDefinition,
+  reviewRouteDefinition,
+  knowledgeGraphRouteDefinition,
+  filesRouteDefinition,
+  resultsRouteDefinition,
+  modelProfilesRouteDefinition,
+  settingsRouteDefinition,
+])
+
 export const navigationGroups: readonly WorkspaceNavigationGroup[] = [
   {
     id: 'exam',
@@ -211,6 +232,13 @@ export const navigationGroups: readonly WorkspaceNavigationGroup[] = [
       trainingRouteDefinition,
     ],
   },
+  ...(workspaceRegistry.navigationItems.length
+    ? [{
+        id: 'teacher-workspaces' as const,
+        label: '教师工作台',
+        items: workspaceRegistry.navigationItems,
+      }]
+    : []),
 ] as const
 
 export const settingsNavigationItems: readonly WorkspaceRouteDefinition[] = [

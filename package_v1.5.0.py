@@ -254,10 +254,17 @@ def copy_private_user_data(src_dir: Path, pkg_dir: Path) -> None:
         dst.mkdir(parents=True, exist_ok=True)
         return
 
-    def ignore(_directory: str, names: list[str]) -> set[str]:
+    source_root = src.resolve()
+
+    def ignore(directory: str, names: list[str]) -> set[str]:
         ignored: set[str] = set()
         for name in names:
             if name in {"__pycache__", ".pytest_cache", "api_profiles.json"}:
+                ignored.add(name)
+            elif (
+                Path(directory).resolve() == source_root
+                and name.casefold() == "workspaces"
+            ):
                 ignored.add(name)
             elif name.endswith((".pyc", ".pyo")):
                 ignored.add(name)

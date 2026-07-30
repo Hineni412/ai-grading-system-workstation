@@ -54,7 +54,7 @@ _TRACE_EVENT_TYPES = frozenset(
     {"request_started", "request_succeeded", "request_failed"}
 )
 _REQUEST_KINDS = frozenset(
-    {"config_generation", "grading", "recognition", "tagging"}
+    {"config_generation", "grading", "recognition", "tagging", "workspace"}
 )
 _PROTOCOLS = frozenset({"chat_completions", "responses"})
 _OUTCOMES = frozenset({"", "failure", "success"})
