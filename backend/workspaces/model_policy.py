@@ -212,6 +212,7 @@ class WorkspaceModelGateway:
         client: object,
         model: str,
         kwargs: Mapping[str, object],
+        timeout_override_seconds: float | None = None,
     ) -> object:
         return self._execute(
             protocol=LLMProtocol.CHAT_COMPLETIONS,
@@ -219,6 +220,7 @@ class WorkspaceModelGateway:
             client=client,
             model=model,
             kwargs=kwargs,
+            timeout_override_seconds=timeout_override_seconds,
         )
 
     def responses(
@@ -228,6 +230,7 @@ class WorkspaceModelGateway:
         client: object,
         model: str,
         kwargs: Mapping[str, object],
+        timeout_override_seconds: float | None = None,
     ) -> object:
         return self._execute(
             protocol=LLMProtocol.RESPONSES,
@@ -235,6 +238,7 @@ class WorkspaceModelGateway:
             client=client,
             model=model,
             kwargs=kwargs,
+            timeout_override_seconds=timeout_override_seconds,
         )
 
     def _execute(
@@ -245,6 +249,7 @@ class WorkspaceModelGateway:
         client: object,
         model: str,
         kwargs: Mapping[str, object],
+        timeout_override_seconds: float | None,
     ) -> object:
         purpose, classification, operation_id = self._validate_request(request)
         safe_model = safe_trace_label(model)
@@ -267,6 +272,7 @@ class WorkspaceModelGateway:
                 request_id=operation_id,
                 operation_id=operation_id,
                 allow_retry=False,
+                timeout_override_seconds=timeout_override_seconds,
             )
         except Exception as exc:
             try:
