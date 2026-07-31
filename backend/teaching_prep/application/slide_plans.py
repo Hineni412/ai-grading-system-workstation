@@ -7,6 +7,7 @@ from copy import deepcopy
 from typing import Any
 
 from backend.teaching_prep.application.preferences import (
+    normalize_teaching_preferences,
     resolve_teaching_preferences,
 )
 from backend.teaching_prep.domain.errors import TeachingPrepValidationError
@@ -431,11 +432,14 @@ def validate_plan_payload(
         raise TeachingPrepValidationError(
             "slide plan operation IDs must be unique"
         )
+    preferences = (
+        normalize_teaching_preferences(payload["preparation_preferences"])
+        if "preparation_preferences" in payload
+        else resolve_teaching_preferences(None)
+    )
     return {
         "schema_version": 1,
-        "preparation_preferences": resolve_teaching_preferences(
-            payload.get("preparation_preferences")
-        ),
+        "preparation_preferences": preferences,
         "source_presentations": _object_list(
             payload.get("source_presentations"),
             maximum=50,
