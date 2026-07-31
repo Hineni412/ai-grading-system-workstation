@@ -387,17 +387,16 @@ class OpsWriteService:
                     digest.update(_file_sha256(migration).encode("ascii"))
             return digest.hexdigest()
         preview = preview_backup(path_manager=self.paths)
-        digest = hashlib.sha256()
-        for name in preview["files"]:
-            path = self._path_for_backup_name(str(name))
-            digest.update(str(name).encode("utf-8"))
-            try:
-                stat_result = path.stat()
-                digest.update(str(stat_result.st_size).encode("ascii"))
-                digest.update(str(stat_result.st_mtime_ns).encode("ascii"))
-            except OSError:
-                digest.update(b"missing")
-        return digest.hexdigest()
+        return _path_entries_fingerprint(
+            [
+                (str(name), self._path_for_backup_name(str(name)))
+                for name in preview["files"]
+            ],
+            sqlite_ignored_data_tables={
+                Path(self.paths.db_path): frozenset({"jobs"}),
+                Path(self.paths.qb_db_path): frozenset(),
+            },
+        )
 
     def _migration_preview(self, target: str) -> dict[str, Any]:
         source = Path(self.paths.db_path if target == "grading" else self.paths.qb_db_path)
@@ -448,14 +447,27 @@ def _entry_fingerprint(
     *,
     sqlite_ignored_data_tables: dict[Path, frozenset[str]] | None = None,
 ) -> str:
+    return _path_entries_fingerprint(
+        [
+            (str(entry.arc_name), Path(entry.source_path))
+            for entry in entries
+        ],
+        sqlite_ignored_data_tables=sqlite_ignored_data_tables,
+    )
+
+
+def _path_entries_fingerprint(
+    entries: list[tuple[str, Path]],
+    *,
+    sqlite_ignored_data_tables: dict[Path, frozenset[str]] | None = None,
+) -> str:
     digest = hashlib.sha256()
     sqlite_tables_by_path = {
         Path(path).resolve(strict=False): ignored_tables
         for path, ignored_tables in (sqlite_ignored_data_tables or {}).items()
     }
-    for entry in entries:
-        digest.update(str(entry.arc_name).encode("utf-8"))
-        source_path = Path(entry.source_path)
+    for arc_name, source_path in entries:
+        digest.update(arc_name.encode("utf-8"))
         ignored_tables = sqlite_tables_by_path.get(
             source_path.resolve(strict=False)
         )

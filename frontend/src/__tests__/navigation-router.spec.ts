@@ -18,6 +18,7 @@ import {
   workbenchRouteDefinition,
 } from '../navigation'
 import { createAppRouter } from '../router'
+import { workspaceRegistry } from '../workspaces/registry'
 
 const topLevelDefinitions = [
   workbenchRouteDefinition,
@@ -28,6 +29,7 @@ const topLevelDefinitions = [
   questionAssemblyRouteDefinition,
   knowledgeGraphRouteDefinition,
   trainingRouteDefinition,
+  ...workspaceRegistry.navigationItems,
   studentsRouteDefinition,
   modelProfilesRouteDefinition,
   settingsRouteDefinition,
@@ -45,6 +47,7 @@ describe('source-recalibrated navigation', () => {
       ['question-assembly', '/question-assembly'],
       ['knowledge-graph', '/knowledge-graph'],
       ['training', '/training'],
+      ['class-teacher', '/class-teacher'],
       ['students', '/students'],
       ['model-profiles', '/model-profiles'],
       ['settings', '/settings'],

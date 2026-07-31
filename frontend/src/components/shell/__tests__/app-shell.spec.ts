@@ -107,6 +107,7 @@ describe('AppShell', () => {
       ['组卷工作台', '/question-assembly'],
       ['知识图谱', '/knowledge-graph'],
       ['训练推荐', '/training'],
+      ['班主任工作台', '/class-teacher'],
     ])
     expect(
       host.querySelector('[data-testid="app-navigation"] a[href="/grading"]')?.getAttribute(
@@ -129,6 +130,7 @@ describe('AppShell', () => {
       '组卷工作台',
       '知识图谱',
       '训练推荐',
+      '班主任工作台',
       '学生管理',
       '大模型 API',
       '设置与运维',
