@@ -532,6 +532,10 @@ def test_legacy_slide_plan_validation_adds_read_only_default_preferences() -> No
 
     assert validated["preparation_preferences"] == _preferences()
     assert "preparation_preferences" not in legacy_payload
+    invalid_payload = deepcopy(legacy_payload)
+    invalid_payload["preparation_preferences"] = None
+    with pytest.raises(TeachingPrepValidationError):
+        validate_plan_payload(invalid_payload)
 
 
 def test_multi_region_supplement_keeps_every_frozen_crop(
