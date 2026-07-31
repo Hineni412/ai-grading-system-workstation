@@ -1,2 +1,2 @@
-# Reserved for B-line-only Python dependencies after B00 approval.
-# F0 intentionally adds no encryption, student-data, or model dependency.
+# B-line-only dependencies. Keep this file separate from the shared runtime.
+cryptography==49.0.0

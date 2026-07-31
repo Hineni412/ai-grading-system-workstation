@@ -117,6 +117,22 @@ export function createApiClient(
     createRequestId: overrides.createRequestId ?? generatedRequestId,
     delay: overrides.delay ?? abortAwareDelay,
   }
+  const pendingMutationIds = new Map<string, string>()
+
+  function mutationKey(
+    method: ApiMethod,
+    path: string,
+    body: Record<string, unknown>,
+  ): string {
+    const stable = Object.fromEntries(
+      Object.entries(body).filter(([name]) => (
+        name !== 'operation_id'
+        && name !== 'observed_at'
+        && name !== 'reference_at'
+      )),
+    )
+    return `${method}:${path}:${JSON.stringify(stable)}`
+  }
 
   return {
     async request<T>(path: string, options: ApiRequestOptions<T>): Promise<T> {
@@ -149,9 +165,27 @@ export function createApiClient(
         if (!normalizedName || normalizedName === 'accept' || normalizedName === 'x-request-id') continue
         headers[normalizedName] = value
       }
-      if (options.body !== undefined) headers['content-type'] = 'application/json'
+      let requestBody = options.body
+      let pendingMutationKey: string | null = null
+      if (
+        method !== 'GET'
+        && requestBody
+        && typeof requestBody === 'object'
+        && !Array.isArray(requestBody)
+        && 'operation_id' in requestBody
+      ) {
+        const value = { ...(requestBody as Record<string, unknown>) }
+        pendingMutationKey = mutationKey(method, path, value)
+        const pending = pendingMutationIds.get(pendingMutationKey)
+        if (pending) value.operation_id = pending
+        else if (typeof value.operation_id === 'string') {
+          pendingMutationIds.set(pendingMutationKey, value.operation_id)
+        }
+        requestBody = value
+      }
+      if (requestBody !== undefined) headers['content-type'] = 'application/json'
       const body = options.rawBody ?? (
-        options.body === undefined ? undefined : JSON.stringify(options.body)
+        requestBody === undefined ? undefined : JSON.stringify(requestBody)
       )
 
       try {
@@ -195,13 +229,23 @@ export function createApiClient(
             }
 
             try {
-              return options.decode(payload)
+              const decoded = options.decode(payload)
+              if (pendingMutationKey) pendingMutationIds.delete(pendingMutationKey)
+              return decoded
             } catch {
               throw contractError('invalid_success_contract', responseRequestId, response.status)
             }
           } catch (error) {
             if (controller.signal.aborted) throw abortError(requestId, timedOut)
-            if (error instanceof ApiError) throw error
+            if (error instanceof ApiError) {
+              if (
+                pendingMutationKey
+                && error.kind !== 'network'
+                && error.kind !== 'timeout'
+                && error.kind !== 'cancelled'
+              ) pendingMutationIds.delete(pendingMutationKey)
+              throw error
+            }
             const normalized = networkError(requestId)
             if (method === 'GET' && attempt < attempts - 1) {
               await waitBeforeRetry(250 * 2 ** attempt)

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import sqlite3
+import logging
+import shutil
 from pathlib import Path
 
 import pytest
@@ -9,6 +11,8 @@ from fastapi.testclient import TestClient
 
 from backend.jobs.manager import JobManager
 from backend.jobs.store import JobStore
+from backend.class_teacher.feature import create_workspace_feature
+from backend.schema_migrations import ensure_schema_current
 from backend.workspaces.contracts import (
     WorkspaceContext,
     WorkspaceFeature,
@@ -26,6 +30,9 @@ from backend.workspaces.registry import (
 )
 from path_manager import PathManager
 from update_tools.backup_core import _safe_restore_destination
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 def _paths(tmp_path: Path) -> PathManager:
@@ -60,7 +67,7 @@ def _feature(
     )
 
 
-def test_default_features_are_disabled_without_filesystem_side_effects(
+def test_activated_class_teacher_shell_has_no_filesystem_side_effects(
     tmp_path: Path,
 ) -> None:
     paths = _paths(tmp_path)
@@ -71,9 +78,59 @@ def test_default_features_are_disabled_without_filesystem_side_effects(
     registry.run_migrations()
     services = registry.create_services()
 
-    assert registry.enabled_features == ()
-    assert services == {}
+    assert [
+        feature.module_id for feature in registry.enabled_features
+    ] == ["class-teacher"]
+    assert set(services) == {"class-teacher"}
     assert not (paths.data_root / "workspaces").exists()
+
+
+def test_existing_class_teacher_vault_is_migrated_before_service_creation(
+    tmp_path: Path,
+) -> None:
+    paths = _paths(tmp_path)
+    paths._project_root = PROJECT_ROOT
+    legacy_migrations = tmp_path / "legacy-student-affairs-migrations"
+    legacy_migrations.mkdir()
+    for migration in sorted(
+        (PROJECT_ROOT / "migrations" / "student_affairs").glob("*.sql")
+    ):
+        if int(migration.name.split("_", 1)[0]) <= 16:
+            shutil.copy2(migration, legacy_migrations / migration.name)
+    root = paths.workspace_dir("class-teacher")
+    ensure_schema_current(
+        "student_affairs",
+        root / "student_affairs.db",
+        migrations_dir=legacy_migrations,
+        backup_dir=root / "backups",
+        logger_override=logging.getLogger("test.class-teacher.migration"),
+    )
+
+    registry = WorkspaceRegistry(
+        [create_workspace_feature()],
+        paths=paths,
+    )
+    registry.run_migrations()
+    services = registry.create_services()
+
+    with sqlite3.connect(root / "student_affairs.db") as connection:
+        assert connection.execute(
+            """
+            SELECT name FROM sqlite_master
+            WHERE type = 'table'
+              AND name = 'initialization_recovery_receipts'
+            """
+        ).fetchone() == ("initialization_recovery_receipts",)
+        confirmation_columns = {
+            str(row[1])
+            for row in connection.execute(
+                "PRAGMA table_info(confirmation_claims)"
+            )
+        }
+    assert {"state", "target_kind", "target_id", "updated_at"} <= (
+        confirmation_columns
+    )
+    assert set(services) == {"class-teacher"}
 
 
 @pytest.mark.parametrize(
