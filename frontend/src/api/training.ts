@@ -988,19 +988,56 @@ function decodeTrainingAssessment(
   value: unknown,
 ): TrainingAssessmentOutcome {
   assertNoPathLikeKeys(value)
+  const pointStateIsValid = (state: unknown): boolean => (
+    state === null
+    || state === undefined
+    || ['met', 'not_met', 'uncertain', 'unreadable'].includes(String(state))
+  )
+  const expectedPointIsValid = (expected: unknown): boolean => (
+    isRecord(expected)
+    && isNonEmptyString(expected.point_id)
+    && isNonEmptyString(expected.target)
+    && isNonEmptyString(expected.observable_evidence)
+    && isStringArray(expected.equivalent_rules)
+    && isStringArray(expected.counterexamples)
+  )
+  const pointContent = (point: Record<string, unknown>): string | null => {
+    if (typeof point.content === 'string') return point.content
+    if (
+      expectedPointIsValid(point.expected_point)
+      && isRecord(point.expected_point)
+    ) {
+      return String(point.expected_point.target)
+    }
+    return null
+  }
   const pointIsValid = (point: unknown): boolean => (
     isRecord(point)
     && isNonEmptyString(point.point_id)
-    && typeof point.content === 'string'
+    && pointContent(point) !== null
     && (
-      point.state === null
-      || point.state === undefined
-      || ['met', 'not_met', 'uncertain', 'unreadable'].includes(
-        String(point.state),
+      point.expected_point === undefined
+      || (
+        expectedPointIsValid(point.expected_point)
+        && isRecord(point.expected_point)
+        && point.expected_point.point_id === point.point_id
       )
     )
+    && pointStateIsValid(point.candidate_state)
+    && pointStateIsValid(point.state)
+    && isNullableString(point.evidence)
     && typeof point.teacher_locked === 'boolean'
-    && isInteger(point.lock_revision)
+    && isNullableString(point.teacher_reason)
+    && isNullableString(point.actor_ref)
+    && (
+      point.teacher_locked
+        ? isInteger(point.lock_revision, 1)
+        : (
+          point.lock_revision === null
+          || point.lock_revision === undefined
+          || point.lock_revision === 0
+        )
+    )
   )
   const questionIsValid = (question: unknown): boolean => (
     isRecord(question)
@@ -1042,7 +1079,22 @@ function decodeTrainingAssessment(
   ) {
     throw new Error('Invalid training assessment')
   }
-  return value as unknown as TrainingAssessmentOutcome
+  return {
+    ...value,
+    questions: value.questions.map((question: Record<string, unknown>) => {
+      const reviewPoints = (
+        question.review_points as Record<string, unknown>[]
+      )
+      return {
+        ...question,
+        review_points: reviewPoints.map((point) => ({
+          ...point,
+          content: pointContent(point),
+          lock_revision: point.lock_revision ?? 0,
+        })),
+      }
+    }),
+  } as unknown as TrainingAssessmentOutcome
 }
 
 function decodeTrainingFeedback(value: unknown): TrainingFeedback {
