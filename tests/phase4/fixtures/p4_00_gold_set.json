@@ -1,0 +1,492 @@
+{
+  "schema_version": "p4-gold-set-v1",
+  "baseline_commit": "bb01d8db1e49aff6c7716c045e4d8918bc4371dc",
+  "synthetic_only": true,
+  "relation_samples": [
+    {
+      "id": "relation-parent-valid",
+      "kind": "positive",
+      "source_key": "kp_geo_congruent_triangle_criteria",
+      "target_key": "kp_geo_congruent_triangle",
+      "relation_type": "parent",
+      "expected": "allowed",
+      "reason": "全等三角形的判定属于全等三角形知识结构"
+    },
+    {
+      "id": "relation-prerequisite-valid",
+      "kind": "positive",
+      "source_key": "kp_fun_linear_function",
+      "target_key": "kp_geo_coordinate_system",
+      "relation_type": "prerequisite",
+      "expected": "allowed",
+      "reason": "一次函数图像以平面直角坐标系为通常先修"
+    },
+    {
+      "id": "relation-related-valid",
+      "kind": "positive",
+      "source_key": "kp_geo_pythagorean_theorem",
+      "target_key": "kp_alg_square_root",
+      "relation_type": "related",
+      "expected": "allowed",
+      "reason": "勾股定理计算经常与平方根共同出现，但不是固定父子关系"
+    },
+    {
+      "id": "relation-self-invalid",
+      "kind": "negative",
+      "source_key": "kp_alg_linear_equation",
+      "target_key": "kp_alg_linear_equation",
+      "relation_type": "parent",
+      "expected": "self_relation",
+      "reason": "任何关系都不能指向自身"
+    },
+    {
+      "id": "relation-name-identity-invalid",
+      "kind": "negative",
+      "source_key": "knowledge_point:一元一次方程",
+      "target_key": "kp_alg_equation",
+      "relation_type": "parent",
+      "expected": "invalid_identity",
+      "reason": "可变中文名称不能充当稳定身份"
+    },
+    {
+      "id": "relation-reverse-invalid",
+      "kind": "conflict",
+      "source_key": "kp_geo_triangle",
+      "target_key": "kp_geo_congruent_triangle",
+      "relation_type": "parent",
+      "existing": [
+        {
+          "source_key": "kp_geo_congruent_triangle",
+          "target_key": "kp_geo_triangle",
+          "relation_type": "parent",
+          "status": "confirmed"
+        }
+      ],
+      "expected": "reverse_conflict",
+      "reason": "同一父子关系不能同时以相反方向生效"
+    },
+    {
+      "id": "relation-cycle-invalid",
+      "kind": "conflict",
+      "source_key": "kp_alg_equation",
+      "target_key": "kp_alg_real_numbers",
+      "relation_type": "prerequisite",
+      "existing": [
+        {
+          "source_key": "kp_alg_real_numbers",
+          "target_key": "kp_alg_expression",
+          "relation_type": "prerequisite",
+          "status": "confirmed"
+        },
+        {
+          "source_key": "kp_alg_expression",
+          "target_key": "kp_alg_equation",
+          "relation_type": "prerequisite",
+          "status": "confirmed"
+        }
+      ],
+      "expected": "prerequisite_cycle",
+      "reason": "确认后会形成有向先修循环"
+    },
+    {
+      "id": "relation-suggested-inactive",
+      "kind": "negative",
+      "source_key": "kp_alg_equation",
+      "target_key": "kp_alg_expression",
+      "relation_type": "prerequisite",
+      "status": "suggested",
+      "expected": "excluded_from_active_graph",
+      "reason": "未经教师确认的建议不能进入活动图"
+    }
+  ],
+  "criterion_samples": [
+    {
+      "id": "criterion-single-choice",
+      "question_type": "single_choice",
+      "question_id": "SYN-Q1",
+      "points": [
+        {
+          "point_id": "p-answer",
+          "target": "选择正确选项",
+          "observable_evidence": "最终选择为 C",
+          "equivalent_rules": [
+            "圈选 C",
+            "明确写出答案 C"
+          ],
+          "counterexamples": [
+            "同时选择多个选项"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "criterion-fill-blank",
+      "question_type": "fill_blank",
+      "question_id": "SYN-Q2",
+      "points": [
+        {
+          "point_id": "p-first-blank",
+          "target": "填写第一空",
+          "observable_evidence": "第一空为 -2",
+          "equivalent_rules": [
+            "-2",
+            "负二"
+          ],
+          "counterexamples": []
+        },
+        {
+          "point_id": "p-second-blank",
+          "target": "填写第二空",
+          "observable_evidence": "第二空为 2",
+          "equivalent_rules": [
+            "2",
+            "正二"
+          ],
+          "counterexamples": []
+        }
+      ]
+    },
+    {
+      "id": "criterion-calculation",
+      "question_type": "calculation",
+      "question_id": "SYN-Q3",
+      "points": [
+        {
+          "point_id": "p-form-relation",
+          "target": "根据题意建立等量关系",
+          "observable_evidence": "列出与题意一致的一元一次方程",
+          "equivalent_rules": [
+            "移项前后的等价方程均可"
+          ],
+          "counterexamples": [
+            "只写最终答案且无可核对关系"
+          ]
+        },
+        {
+          "point_id": "p-transform",
+          "target": "正确变形方程",
+          "observable_evidence": "变形过程保持等式同解",
+          "equivalent_rules": [
+            "合法移项",
+            "等式两边同时进行相同运算"
+          ],
+          "counterexamples": [
+            "移项后符号未改变"
+          ]
+        },
+        {
+          "point_id": "p-conclusion",
+          "target": "得到并核对结论",
+          "observable_evidence": "写出正确未知数值并符合题意",
+          "equivalent_rules": [],
+          "counterexamples": []
+        }
+      ]
+    },
+    {
+      "id": "criterion-proof",
+      "question_type": "proof",
+      "question_id": "SYN-Q4",
+      "points": [
+        {
+          "point_id": "p-condition",
+          "target": "提取必要已知条件",
+          "observable_evidence": "使用题目给出的两组对应相等条件",
+          "equivalent_rules": [],
+          "counterexamples": [
+            "使用题目未给出的相等关系"
+          ]
+        },
+        {
+          "point_id": "p-theorem",
+          "target": "使用适用的全等判定",
+          "observable_evidence": "明确使用 SAS 判定",
+          "equivalent_rules": [
+            "边角边"
+          ],
+          "counterexamples": [
+            "SSA"
+          ]
+        },
+        {
+          "point_id": "p-proof-conclusion",
+          "target": "由全等推出待证结论",
+          "observable_evidence": "依据全等三角形对应边相等写出结论",
+          "equivalent_rules": [],
+          "counterexamples": []
+        }
+      ]
+    },
+    {
+      "id": "criterion-construction",
+      "question_type": "construction",
+      "question_id": "SYN-Q5",
+      "points": [
+        {
+          "point_id": "p-required-line",
+          "target": "作出规定的垂线",
+          "observable_evidence": "图中存在过指定点且垂直于目标直线的线",
+          "equivalent_rules": [],
+          "counterexamples": [
+            "仅画出相交线但没有垂直关系"
+          ]
+        },
+        {
+          "point_id": "p-right-angle-mark",
+          "target": "标明垂直关系",
+          "observable_evidence": "交点处有直角标记或文字说明",
+          "equivalent_rules": [
+            "直角符号",
+            "明确的垂直符号"
+          ],
+          "counterexamples": []
+        }
+      ]
+    }
+  ],
+  "mastery_v1_golden": [
+    {
+      "id": "v1-weighted-score-rate",
+      "evidence": [
+        {
+          "score_awarded": 8,
+          "full_score": 10
+        },
+        {
+          "score_awarded": 3,
+          "full_score": 5
+        }
+      ],
+      "expected_mastery": 0.7333,
+      "note": "当前口径按满分加权，不按题目数平均"
+    },
+    {
+      "id": "v1-award-capped-at-full-score",
+      "evidence": [
+        {
+          "score_awarded": 12,
+          "full_score": 10
+        }
+      ],
+      "expected_mastery": 1.0,
+      "note": "异常超分在聚合前截到满分"
+    },
+    {
+      "id": "v1-no-positive-full-score",
+      "evidence": [
+        {
+          "score_awarded": 0,
+          "full_score": 0
+        }
+      ],
+      "expected_mastery": 1.0,
+      "note": "冻结当前实现事实；v2 不继承这一缺失语义"
+    }
+  ],
+  "personalized_students": [
+    {
+      "student_id": "SYN-S01",
+      "weaknesses": [
+        "kp_alg_linear_equation"
+      ],
+      "expected_question_ids": [
+        "SYN-Q3",
+        "SYN-Q2"
+      ],
+      "expected_difference": "以直接巩固方程变形为主"
+    },
+    {
+      "student_id": "SYN-S02",
+      "weaknesses": [
+        "kp_geo_congruent_triangle"
+      ],
+      "expected_question_ids": [
+        "SYN-Q4",
+        "SYN-Q1"
+      ],
+      "expected_difference": "以证明义务和判定条件为主"
+    },
+    {
+      "student_id": "SYN-S03",
+      "weaknesses": [
+        "kp_geo_construction"
+      ],
+      "expected_question_ids": [
+        "SYN-Q5",
+        "SYN-Q4"
+      ],
+      "expected_difference": "以作图可观察要求为主"
+    },
+    {
+      "student_id": "SYN-S04",
+      "weaknesses": [
+        "kp_fun_linear_function"
+      ],
+      "expected_question_ids": [
+        "SYN-Q3",
+        "SYN-Q5"
+      ],
+      "expected_difference": "先补坐标与关系建立，再做迁移练习"
+    },
+    {
+      "student_id": "SYN-S05",
+      "weaknesses": [],
+      "expected_question_ids": [
+        "SYN-Q1",
+        "SYN-Q2"
+      ],
+      "expected_difference": "证据不足时使用明确的保守降级，不补造薄弱点"
+    }
+  ],
+  "fault_matrix": [
+    {
+      "category": "duplicate_operation",
+      "trigger": "重复提交同一关系建议、题目分析、生成卷、归卷、判定或证据发布命令",
+      "expected": "返回已有 operation 或结果，不重复写入、不重复收费"
+    },
+    {
+      "category": "concurrent_operation",
+      "trigger": "两个页面用同一旧 revision 同时确认关系、修改判定点或归卷",
+      "expected": "只允许一个提交成功，另一提交明确返回 revision 冲突"
+    },
+    {
+      "category": "mid_operation_exit",
+      "trigger": "事务或文件发布中途退出",
+      "expected": "数据库回滚，文件保留在可识别暂存区，旧正式版本不变"
+    },
+    {
+      "category": "restart",
+      "trigger": "应用在 Job、归卷、判定或 outbox 未结束时重启",
+      "expected": "从明细恢复、重算或安全收口，不猜测完成"
+    },
+    {
+      "category": "retry_after_failure",
+      "trigger": "模型、文件或跨库发布失败后教师重试",
+      "expected": "仅显式重试失败部分；成功部分和已收费 operation 不重复"
+    },
+    {
+      "category": "cancel",
+      "trigger": "教师取消部分完成的生成、归卷或判定",
+      "expected": "已正式发布结果保留，未完成项不伪装为未达成或零"
+    },
+    {
+      "category": "partial_completion",
+      "trigger": "标签成功而判定点失败，或部分题等待教师复核",
+      "expected": "每个投影和每道题显示真实状态，互不回滚已成功结果"
+    },
+    {
+      "category": "missing_data",
+      "trigger": "关系、判定点、页面、答案或掌握证据缺失",
+      "expected": "明确降级或阻断，不推断、不补造、不调用不必要模型"
+    },
+    {
+      "category": "conflicting_data",
+      "trigger": "题目版本、页面身份、教师锁或跨库版本冲突",
+      "expected": "失败关闭并保留可人工核对的来源和旧正式版本"
+    },
+    {
+      "category": "file_failure",
+      "trigger": "DOCX、PDF、扫描暂存或原子发布失败",
+      "expected": "不覆盖旧文件，不发布半份文件，临时文件可识别并可恢复"
+    },
+    {
+      "category": "model_failure",
+      "trigger": "超时、取消、坏 JSON、漏点、重复点或未知 point_id",
+      "expected": "不自动追加请求，不发布非法训练证据，不影响普通考试"
+    },
+    {
+      "category": "page_identity_failure",
+      "trigger": "缺页、重页、错页、外批页、签名失败或同身份不同图像",
+      "expected": "在模型调用前进入人工队列"
+    }
+  ],
+  "success_thresholds": {
+    "relation_precision_min": 0.9,
+    "relation_coverage_min": 0.7,
+    "invalid_relation_escape_max": 0,
+    "criterion_schema_valid_rate": 1.0,
+    "criterion_no_score_field_rate": 1.0,
+    "criterion_expected_point_coverage": 1.0,
+    "mixed_scan_routing_accuracy": 1.0,
+    "assessment_requests_per_student_max": 1,
+    "automatic_model_retries_max": 0,
+    "idempotency_duplicate_writes_max": 0,
+    "ordinary_exam_score_changes_max": 0,
+    "graph_1000_node_p95_ms_max": 500,
+    "graph_performance_regression_ratio_max": 1.2
+  },
+  "package_assertion_map": {
+    "P4-00": [
+      "gold-set-schema",
+      "fault-matrix-completeness"
+    ],
+    "P4-01": [
+      "stable-identity",
+      "relation-direction-conflict-cycle"
+    ],
+    "P4-02": [
+      "migration-idempotency",
+      "active-relation-projection"
+    ],
+    "P4-03": [
+      "relation-offline-quality",
+      "zero-auto-retry"
+    ],
+    "P4-04": [
+      "teacher-review-revision",
+      "relation-audit"
+    ],
+    "P4-05": [
+      "confirmed-only-graph",
+      "graph-performance"
+    ],
+    "P4-06": [
+      "graph-accessibility",
+      "graph-evidence-drilldown"
+    ],
+    "P4-07": [
+      "mastery-v2-properties",
+      "mastery-golden"
+    ],
+    "P4-08": [
+      "v1-v2-comparison",
+      "v2-rollback"
+    ],
+    "P4-09": [
+      "combined-analysis-projections",
+      "partial-projection-retry"
+    ],
+    "P4-10": [
+      "criterion-quality-gate",
+      "criterion-version-freeze"
+    ],
+    "P4-11": [
+      "five-student-differentiation",
+      "recommendation-explanation"
+    ],
+    "P4-12": [
+      "paper-instance-freeze",
+      "atomic-docx-pdf-publication"
+    ],
+    "P4-13": [
+      "mixed-scan-routing",
+      "missing-duplicate-conflict-pages"
+    ],
+    "P4-14": [
+      "one-request-per-student",
+      "point-identity-validation"
+    ],
+    "P4-15": [
+      "teacher-lock",
+      "restart-and-idempotency"
+    ],
+    "P4-16": [
+      "outbox-replay",
+      "next-round-explanation"
+    ],
+    "P4-17": [
+      "synthetic-end-to-end",
+      "ordinary-exam-non-regression"
+    ]
+  }
+}

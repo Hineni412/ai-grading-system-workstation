@@ -45,6 +45,288 @@ export interface TrainingTaskConfirmRequest extends TrainingPlanRequest {
   expected_plan_revision: string
 }
 
+export interface PersonalizedRecommendationCreateRequest
+  extends TrainingDiagnosisRequest {
+  request_token: string
+  question_count: number
+  expected_minutes: number
+  difficulty_min: number
+  difficulty_max: number
+  stage_ratios: TrainingStageRatios
+  target_names: string[]
+  exclude_current_exam_originals: boolean
+}
+
+export interface PersonalizedRecommendationEditRequest {
+  request_token: string
+  expected_revision: number
+  action: 'lock' | 'unlock' | 'exclude' | 'replace'
+  student_id: string
+  item_id: string
+  reason: string
+  replacement_question_id?: number
+}
+
+export interface PersonalizedRecommendationRelation {
+  relation_id: string
+  relation_type: 'prerequisite' | 'related'
+  source_key: string
+  target_key: string
+  rationale: string
+  revision: number
+}
+
+export interface PersonalizedRecommendationItem {
+  item_id: string
+  item_order: number
+  slot: number
+  question_id: number
+  question_number: string
+  stage: TrainingStage
+  target: Record<string, unknown>
+  matched_key: string
+  matched_name: string
+  relation?: PersonalizedRecommendationRelation | null
+  criterion_version_id: string
+  criterion_point_count: number
+  difficulty: number
+  estimated_minutes: number
+  source_paper: string
+  reason: string
+  locked: boolean
+  replacement_history: Array<Record<string, unknown>>
+}
+
+export interface PersonalizedRecommendationStudent {
+  student_id: string
+  student_code: string
+  student_name: string
+  class_id: string
+  selection_mode: 'mastery_targeted' | 'maintenance_fallback'
+  targets: Array<Record<string, unknown>>
+  items: PersonalizedRecommendationItem[]
+  shortages: Array<Record<string, unknown>>
+  warnings: string[]
+  estimated_minutes: number
+}
+
+export interface PersonalizedRecommendationDraft {
+  draft_id: string
+  status: 'draft' | 'reviewed'
+  revision: number
+  result_version: string
+  engine_version: string
+  source_version: string
+  config: Record<string, unknown>
+  students: PersonalizedRecommendationStudent[]
+  warnings: string[]
+  history: Array<Record<string, unknown>>
+}
+
+export type PersonalizedPaperStatus =
+  | 'creating'
+  | 'review_pending'
+  | 'frozen'
+  | 'failed'
+
+export interface PersonalizedPaperBudget {
+  version: string
+  status: 'ready' | 'blocked'
+  context_window_tokens: number
+  question_count: number
+  criterion_point_count: number
+  image_count: number
+  page_count: number
+  page_count_is_estimate: boolean
+  estimated_input_tokens: number
+  estimated_output_tokens: number
+  estimated_total_tokens: number
+  limits: Record<string, number>
+  blockers: string[]
+}
+
+export interface PersonalizedPaperInstance {
+  paper_instance_id: string
+  paper_batch_id: string
+  draft_id: string
+  draft_revision: number
+  student_id: string
+  student_code?: string | null
+  student_name?: string | null
+  class_id?: string | null
+  series_version: number
+  status: PersonalizedPaperStatus
+  revision: number
+  layout_version: string
+  budget: PersonalizedPaperBudget
+  question_count: number
+  criterion_point_count: number
+  items: Array<Record<string, unknown>>
+  pages: Array<Record<string, unknown>>
+  review_docx_sha256?: string | null
+  reviewed_docx_sha256?: string | null
+  frozen_pdf_sha256?: string | null
+  downloads: {
+    review_docx?: string | null
+    reviewed_docx?: string | null
+    frozen_pdf?: string | null
+  }
+  error_code?: string | null
+  created_at: string
+  frozen_at?: string | null
+}
+
+export type TrainingScanIssue =
+  | 'identity_unreadable'
+  | 'invalid_identity'
+  | 'unexpected_paper'
+  | 'duplicate_page'
+  | 'page_content_conflict'
+  | 'image_blurry'
+  | 'severe_crop'
+
+export interface TrainingScanPage {
+  scan_page_id: string
+  upload_id: string
+  upload_page_number: number
+  submission_id?: string | null
+  paper_instance_id?: string | null
+  page_number?: number | null
+  total_pages?: number | null
+  issue_code?: TrainingScanIssue | null
+  state: 'assigned' | 'unassigned' | 'duplicate' | 'conflict' | 'replaced' | 'dismissed'
+  rotation_degrees: 0 | 90 | 180 | 270
+  preview_url: string
+}
+
+export interface TrainingSubmission {
+  submission_id: string
+  paper_instance_id: string
+  student_id: string
+  student_code?: string | null
+  student_name?: string | null
+  class_id?: string | null
+  series_version: number
+  status: 'manual_review' | 'ready' | 'cancelled'
+  revision: number
+  expected_total_pages: number
+  missing_pages: number[]
+  issue_codes: TrainingScanIssue[]
+  assessment_started: boolean
+}
+
+export interface TrainingScanCandidate {
+  paper_instance_id: string
+  student_id: string
+  student_code?: string | null
+  student_name?: string | null
+  series_version: number
+  total_pages: number
+}
+
+export interface TrainingScanBatch {
+  batch_id: string
+  paper_batch_id: string
+  status: 'manual_review' | 'ready' | 'cancelled'
+  revision: number
+  duplicate_upload: boolean
+  submissions: TrainingSubmission[]
+  pages: TrainingScanPage[]
+  candidates: TrainingScanCandidate[]
+  history: Array<Record<string, unknown>>
+  created_at: string
+  updated_at: string
+}
+
+export type TrainingPointState =
+  | 'met'
+  | 'not_met'
+  | 'uncertain'
+  | 'unreadable'
+
+export interface TrainingAssessmentPoint {
+  point_id: string
+  content: string
+  state?: TrainingPointState | null
+  evidence?: string | null
+  teacher_locked: boolean
+  teacher_reason?: string | null
+  actor_ref?: string | null
+  lock_revision: number
+}
+
+export interface TrainingAssessmentQuestion {
+  task_item_code: string
+  item_order: number
+  status: string
+  met_count: number
+  not_met_count: number
+  uncertain_count: number
+  unreadable_count: number
+  total_count: number
+  review_status: string
+  review_points: TrainingAssessmentPoint[]
+}
+
+export interface TrainingAssessmentOutcome {
+  run_id: string
+  submission_id: string
+  submission_revision: number
+  status: string
+  request_count: number
+  expected_question_count: number
+  expected_point_count: number
+  model_name?: string | null
+  usage: {
+    prompt_tokens: number
+    completion_tokens: number
+    total_tokens: number
+  }
+  latency_ms: number
+  issue_codes: string[]
+  error_code?: string | null
+  questions: TrainingAssessmentQuestion[]
+  review_revision: number
+  control_state: string
+  workflow_status: string
+  action_message: string
+  attempts: Array<Record<string, unknown>>
+}
+
+export interface TrainingFeedback {
+  schema_version: 'training-feedback-v1'
+  feedback_id: string
+  submission_id: string
+  submission_revision: number
+  source_review_revision: number
+  status: 'publication_pending' | 'partial' | 'complete' | 'withdrawn'
+  student: Record<string, unknown>
+  summary: {
+    published_question_count: number
+    ready_question_count: number
+    total_question_count: number
+    pending_outbox_count: number
+    message: string
+  }
+  questions: Array<Record<string, unknown>>
+  mastery_changes: Array<Record<string, unknown>>
+  next_round: {
+    status: string
+    draft_id?: string | null
+    message: string
+    changes: Array<Record<string, unknown>>
+    student?: Record<string, unknown>
+  }
+  timeline: Array<Record<string, unknown>>
+  safety: {
+    is_exam_score: boolean
+    changes_v1: boolean
+    auto_paper_created: boolean
+    auto_printed: boolean
+  }
+  evidence_version: string
+}
+
 export interface TrainingEvidenceReference {
   session_id: number
   session_name: string
@@ -462,6 +744,433 @@ export function decodeTrainingPlanResponse(value: unknown): TrainingPlanResponse
   return value as unknown as TrainingPlanResponse
 }
 
+function isRecommendationRelation(
+  value: unknown,
+): value is PersonalizedRecommendationRelation {
+  return (
+    isRecord(value)
+    && isNonEmptyString(value.relation_id)
+    && (value.relation_type === 'prerequisite' || value.relation_type === 'related')
+    && isNonEmptyString(value.source_key)
+    && isNonEmptyString(value.target_key)
+    && typeof value.rationale === 'string'
+    && isInteger(value.revision, 1)
+  )
+}
+
+function isRecommendationItem(
+  value: unknown,
+): value is PersonalizedRecommendationItem {
+  return (
+    isRecord(value)
+    && isNonEmptyString(value.item_id)
+    && isInteger(value.item_order, 1)
+    && isInteger(value.slot, 1)
+    && isInteger(value.question_id, 1)
+    && typeof value.question_number === 'string'
+    && isStage(value.stage)
+    && isRecord(value.target)
+    && isNonEmptyString(value.matched_key)
+    && typeof value.matched_name === 'string'
+    && (
+      value.relation === undefined
+      || value.relation === null
+      || isRecommendationRelation(value.relation)
+    )
+    && /^[0-9a-f]{64}$/.test(String(value.criterion_version_id || ''))
+    && isInteger(value.criterion_point_count, 1)
+    && isInteger(value.difficulty, 1)
+    && value.difficulty <= 10
+    && isInteger(value.estimated_minutes, 1)
+    && typeof value.source_paper === 'string'
+    && isNonEmptyString(value.reason)
+    && typeof value.locked === 'boolean'
+    && Array.isArray(value.replacement_history)
+    && value.replacement_history.every(isRecord)
+  )
+}
+
+function isRecommendationStudent(
+  value: unknown,
+): value is PersonalizedRecommendationStudent {
+  return (
+    isRecord(value)
+    && isNonEmptyString(value.student_id)
+    && typeof value.student_code === 'string'
+    && typeof value.student_name === 'string'
+    && typeof value.class_id === 'string'
+    && (
+      value.selection_mode === 'mastery_targeted'
+      || value.selection_mode === 'maintenance_fallback'
+    )
+    && Array.isArray(value.targets)
+    && value.targets.every(isRecord)
+    && Array.isArray(value.items)
+    && value.items.every(isRecommendationItem)
+    && Array.isArray(value.shortages)
+    && value.shortages.every(isRecord)
+    && isStringArray(value.warnings)
+    && isInteger(value.estimated_minutes)
+  )
+}
+
+export function decodePersonalizedRecommendationDraft(
+  value: unknown,
+): PersonalizedRecommendationDraft {
+  assertNoPathLikeKeys(value)
+  if (
+    !isRecord(value)
+    || !/^[0-9a-f]{64}$/.test(String(value.draft_id || ''))
+    || (value.status !== 'draft' && value.status !== 'reviewed')
+    || !isInteger(value.revision, 1)
+    || !/^[0-9a-f]{64}$/.test(String(value.result_version || ''))
+    || !isNonEmptyString(value.engine_version)
+    || !/^[0-9a-f]{64}$/.test(String(value.source_version || ''))
+    || !isRecord(value.config)
+    || !Array.isArray(value.students)
+    || !value.students.every(isRecommendationStudent)
+    || !isStringArray(value.warnings)
+    || !Array.isArray(value.history)
+    || !value.history.every(isRecord)
+  ) {
+    throw new Error('Invalid personalized recommendation draft')
+  }
+  return value as unknown as PersonalizedRecommendationDraft
+}
+
+function isNullableString(value: unknown): boolean {
+  return value === undefined || value === null || typeof value === 'string'
+}
+
+function isPersonalizedPaperBudget(
+  value: unknown,
+): value is PersonalizedPaperBudget {
+  return (
+    isRecord(value)
+    && isNonEmptyString(value.version)
+    && (value.status === 'ready' || value.status === 'blocked')
+    && isInteger(value.context_window_tokens, 1)
+    && isInteger(value.question_count)
+    && isInteger(value.criterion_point_count)
+    && isInteger(value.image_count)
+    && isInteger(value.page_count, 1)
+    && typeof value.page_count_is_estimate === 'boolean'
+    && isInteger(value.estimated_input_tokens)
+    && isInteger(value.estimated_output_tokens)
+    && isInteger(value.estimated_total_tokens)
+    && isRecord(value.limits)
+    && Object.values(value.limits).every((item) => isInteger(item))
+    && isStringArray(value.blockers)
+  )
+}
+
+export function decodePersonalizedPaperInstance(
+  value: unknown,
+): PersonalizedPaperInstance {
+  assertNoPathLikeKeys(value)
+  if (
+    !isRecord(value)
+    || !/^[0-9a-f]{64}$/.test(String(value.paper_instance_id || ''))
+    || !/^[0-9a-f]{64}$/.test(String(value.paper_batch_id || ''))
+    || !/^[0-9a-f]{64}$/.test(String(value.draft_id || ''))
+    || !isInteger(value.draft_revision, 1)
+    || !isNonEmptyString(value.student_id)
+    || !isNullableString(value.student_code)
+    || !isNullableString(value.student_name)
+    || !isNullableString(value.class_id)
+    || !isInteger(value.series_version, 1)
+    || !['creating', 'review_pending', 'frozen', 'failed'].includes(
+      String(value.status),
+    )
+    || !isInteger(value.revision, 1)
+    || !isNonEmptyString(value.layout_version)
+    || !isPersonalizedPaperBudget(value.budget)
+    || !isInteger(value.question_count)
+    || !isInteger(value.criterion_point_count)
+    || !Array.isArray(value.items)
+    || !value.items.every(isRecord)
+    || !Array.isArray(value.pages)
+    || !value.pages.every(isRecord)
+    || !isNullableString(value.review_docx_sha256)
+    || !isNullableString(value.reviewed_docx_sha256)
+    || !isNullableString(value.frozen_pdf_sha256)
+    || !isRecord(value.downloads)
+    || !isNullableString(value.downloads.review_docx)
+    || !isNullableString(value.downloads.reviewed_docx)
+    || !isNullableString(value.downloads.frozen_pdf)
+    || !isNullableString(value.error_code)
+    || !isNonEmptyString(value.created_at)
+    || !isNullableString(value.frozen_at)
+  ) {
+    throw new Error('Invalid personalized paper instance')
+  }
+  return value as unknown as PersonalizedPaperInstance
+}
+
+function decodePersonalizedPaperList(
+  value: unknown,
+): { items: PersonalizedPaperInstance[] } {
+  if (
+    !isRecord(value)
+    || !Array.isArray(value.items)
+  ) {
+    throw new Error('Invalid personalized paper list')
+  }
+  return { items: value.items.map(decodePersonalizedPaperInstance) }
+}
+
+function decodeTrainingScanBatch(value: unknown): TrainingScanBatch {
+  assertNoPathLikeKeys(value)
+  const submissionIsValid = (item: unknown): boolean => (
+    isRecord(item)
+    && /^[0-9a-f]{64}$/.test(String(item.submission_id || ''))
+    && /^[0-9a-f]{64}$/.test(String(item.paper_instance_id || ''))
+    && isNonEmptyString(item.student_id)
+    && isNullableString(item.student_code)
+    && isNullableString(item.student_name)
+    && isNullableString(item.class_id)
+    && isInteger(item.series_version, 1)
+    && ['manual_review', 'ready', 'cancelled'].includes(String(item.status))
+    && isInteger(item.revision, 1)
+    && isInteger(item.expected_total_pages, 1)
+    && Array.isArray(item.missing_pages)
+    && item.missing_pages.every((page) => isInteger(page, 1))
+    && isStringArray(item.issue_codes)
+    && typeof item.assessment_started === 'boolean'
+  )
+  const pageIsValid = (item: unknown): boolean => (
+    isRecord(item)
+    && /^[0-9a-f]{64}$/.test(String(item.scan_page_id || ''))
+    && /^[0-9a-f]{64}$/.test(String(item.upload_id || ''))
+    && isInteger(item.upload_page_number, 1)
+    && isNullableString(item.submission_id)
+    && isNullableString(item.paper_instance_id)
+    && (item.page_number === null || isInteger(item.page_number, 1))
+    && (item.total_pages === null || isInteger(item.total_pages, 1))
+    && isNullableString(item.issue_code)
+    && ['assigned', 'unassigned', 'duplicate', 'conflict', 'replaced', 'dismissed']
+      .includes(String(item.state))
+    && [0, 90, 180, 270].includes(Number(item.rotation_degrees))
+    && isNonEmptyString(item.preview_url)
+  )
+  const candidateIsValid = (item: unknown): boolean => (
+    isRecord(item)
+    && /^[0-9a-f]{64}$/.test(String(item.paper_instance_id || ''))
+    && isNonEmptyString(item.student_id)
+    && isNullableString(item.student_code)
+    && isNullableString(item.student_name)
+    && isInteger(item.series_version, 1)
+    && isInteger(item.total_pages, 1)
+  )
+  if (
+    !isRecord(value)
+    || !/^[0-9a-f]{64}$/.test(String(value.batch_id || ''))
+    || !/^[0-9a-f]{64}$/.test(String(value.paper_batch_id || ''))
+    || !['manual_review', 'ready', 'cancelled'].includes(String(value.status))
+    || !isInteger(value.revision, 1)
+    || typeof value.duplicate_upload !== 'boolean'
+    || !Array.isArray(value.submissions)
+    || !value.submissions.every(submissionIsValid)
+    || !Array.isArray(value.pages)
+    || !value.pages.every(pageIsValid)
+    || !Array.isArray(value.candidates)
+    || !value.candidates.every(candidateIsValid)
+    || !Array.isArray(value.history)
+    || !isNonEmptyString(value.created_at)
+    || !isNonEmptyString(value.updated_at)
+  ) {
+    throw new Error('Invalid training scan batch')
+  }
+  return value as unknown as TrainingScanBatch
+}
+
+function decodeTrainingAssessment(
+  value: unknown,
+): TrainingAssessmentOutcome {
+  assertNoPathLikeKeys(value)
+  const pointStateIsValid = (state: unknown): boolean => (
+    state === null
+    || state === undefined
+    || ['met', 'not_met', 'uncertain', 'unreadable'].includes(String(state))
+  )
+  const expectedPointIsValid = (expected: unknown): boolean => (
+    isRecord(expected)
+    && isNonEmptyString(expected.point_id)
+    && isNonEmptyString(expected.target)
+    && isNonEmptyString(expected.observable_evidence)
+    && isStringArray(expected.equivalent_rules)
+    && isStringArray(expected.counterexamples)
+  )
+  const pointContent = (point: Record<string, unknown>): string | null => {
+    if (typeof point.content === 'string') return point.content
+    if (
+      expectedPointIsValid(point.expected_point)
+      && isRecord(point.expected_point)
+    ) {
+      return String(point.expected_point.target)
+    }
+    return null
+  }
+  const pointIsValid = (point: unknown): boolean => (
+    isRecord(point)
+    && isNonEmptyString(point.point_id)
+    && pointContent(point) !== null
+    && (
+      point.expected_point === undefined
+      || (
+        expectedPointIsValid(point.expected_point)
+        && isRecord(point.expected_point)
+        && point.expected_point.point_id === point.point_id
+      )
+    )
+    && pointStateIsValid(point.candidate_state)
+    && pointStateIsValid(point.state)
+    && isNullableString(point.evidence)
+    && typeof point.teacher_locked === 'boolean'
+    && isNullableString(point.teacher_reason)
+    && isNullableString(point.actor_ref)
+    && (
+      point.teacher_locked
+        ? isInteger(point.lock_revision, 1)
+        : (
+          point.lock_revision === null
+          || point.lock_revision === undefined
+          || point.lock_revision === 0
+        )
+    )
+  )
+  const questionIsValid = (question: unknown): boolean => (
+    isRecord(question)
+    && isNonEmptyString(question.task_item_code)
+    && isInteger(question.item_order, 1)
+    && isNonEmptyString(question.status)
+    && isInteger(question.met_count)
+    && isInteger(question.not_met_count)
+    && isInteger(question.uncertain_count)
+    && isInteger(question.unreadable_count)
+    && isInteger(question.total_count, 1)
+    && isNonEmptyString(question.review_status)
+    && Array.isArray(question.review_points)
+    && question.review_points.every(pointIsValid)
+  )
+  if (
+    !isRecord(value)
+    || !/^[0-9a-f]{64}$/.test(String(value.run_id || ''))
+    || !/^[0-9a-f]{64}$/.test(String(value.submission_id || ''))
+    || !isInteger(value.submission_revision, 1)
+    || !isNonEmptyString(value.status)
+    || !isInteger(value.request_count)
+    || !isInteger(value.expected_question_count)
+    || !isInteger(value.expected_point_count)
+    || !isRecord(value.usage)
+    || !isInteger(value.usage.prompt_tokens)
+    || !isInteger(value.usage.completion_tokens)
+    || !isInteger(value.usage.total_tokens)
+    || !isInteger(value.latency_ms)
+    || !isStringArray(value.issue_codes)
+    || !Array.isArray(value.questions)
+    || !value.questions.every(questionIsValid)
+    || !isInteger(value.review_revision, 1)
+    || !isNonEmptyString(value.control_state)
+    || !isNonEmptyString(value.workflow_status)
+    || typeof value.action_message !== 'string'
+    || !Array.isArray(value.attempts)
+    || !value.attempts.every(isRecord)
+  ) {
+    throw new Error('Invalid training assessment')
+  }
+  return {
+    ...value,
+    questions: value.questions.map((question: Record<string, unknown>) => {
+      const reviewPoints = (
+        question.review_points as Record<string, unknown>[]
+      )
+      return {
+        ...question,
+        review_points: reviewPoints.map((point) => ({
+          ...point,
+          content: pointContent(point),
+          lock_revision: point.lock_revision ?? 0,
+        })),
+      }
+    }),
+  } as unknown as TrainingAssessmentOutcome
+}
+
+function decodeTrainingFeedback(value: unknown): TrainingFeedback {
+  assertNoPathLikeKeys(value)
+  if (
+    !isRecord(value)
+    || value.schema_version !== 'training-feedback-v1'
+    || !/^[0-9a-f]{64}$/.test(String(value.feedback_id || ''))
+    || !/^[0-9a-f]{64}$/.test(String(value.submission_id || ''))
+    || !isInteger(value.submission_revision, 1)
+    || !isInteger(value.source_review_revision, 1)
+    || !['publication_pending', 'partial', 'complete', 'withdrawn']
+      .includes(String(value.status))
+    || !isRecord(value.student)
+    || !isRecord(value.summary)
+    || !isInteger(value.summary.published_question_count)
+    || !isInteger(value.summary.ready_question_count)
+    || !isInteger(value.summary.total_question_count)
+    || !isInteger(value.summary.pending_outbox_count)
+    || typeof value.summary.message !== 'string'
+    || !Array.isArray(value.questions)
+    || !value.questions.every(isRecord)
+    || !Array.isArray(value.mastery_changes)
+    || !value.mastery_changes.every(isRecord)
+    || !isRecord(value.next_round)
+    || !isNonEmptyString(value.next_round.status)
+    || typeof value.next_round.message !== 'string'
+    || !Array.isArray(value.next_round.changes)
+    || !value.next_round.changes.every(isRecord)
+    || !Array.isArray(value.timeline)
+    || !value.timeline.every(isRecord)
+    || !isRecord(value.safety)
+    || typeof value.safety.is_exam_score !== 'boolean'
+    || typeof value.safety.changes_v1 !== 'boolean'
+    || typeof value.safety.auto_paper_created !== 'boolean'
+    || typeof value.safety.auto_printed !== 'boolean'
+    || !/^[0-9a-f]{64}$/.test(String(value.evidence_version || ''))
+  ) {
+    throw new Error('Invalid training feedback')
+  }
+  return value as unknown as TrainingFeedback
+}
+
+function decodeTrainingEvidenceReplay(value: unknown): {
+  examined_count: number
+  delivered_count: number
+  failed_count: number
+  feedbacks: TrainingFeedback[]
+} {
+  if (
+    !isRecord(value)
+    || !isInteger(value.examined_count)
+    || !isInteger(value.delivered_count)
+    || !isInteger(value.failed_count)
+    || !Array.isArray(value.feedbacks)
+  ) {
+    throw new Error('Invalid training evidence replay')
+  }
+  return {
+    examined_count: value.examined_count,
+    delivered_count: value.delivered_count,
+    failed_count: value.failed_count,
+    feedbacks: value.feedbacks.map(decodeTrainingFeedback),
+  }
+}
+
+async function fileSha256(file: File): Promise<string> {
+  const digest = await globalThis.crypto.subtle.digest(
+    'SHA-256',
+    await file.arrayBuffer(),
+  )
+  return [...new Uint8Array(digest)]
+    .map((item) => item.toString(16).padStart(2, '0'))
+    .join('')
+}
+
 export const trainingApi = {
   diagnose(
     body: TrainingDiagnosisRequest,
@@ -499,6 +1208,339 @@ export const trainingApi = {
       decode: decodeTrainingTaskDetail,
       signal,
       timeoutMs: 30_000,
+    })
+  },
+
+  createPersonalizedDraft(
+    body: PersonalizedRecommendationCreateRequest,
+    signal?: AbortSignal,
+  ): Promise<PersonalizedRecommendationDraft> {
+    return apiClient.request('/api/training/personalized-drafts', {
+      method: 'POST',
+      body,
+      decode: decodePersonalizedRecommendationDraft,
+      signal,
+      timeoutMs: 30_000,
+    })
+  },
+
+  getPersonalizedDraft(
+    draftId: string,
+    signal?: AbortSignal,
+  ): Promise<PersonalizedRecommendationDraft> {
+    return apiClient.request(`/api/training/personalized-drafts/${draftId}`, {
+      decode: decodePersonalizedRecommendationDraft,
+      signal,
+      timeoutMs: 30_000,
+    })
+  },
+
+  editPersonalizedDraft(
+    draftId: string,
+    body: PersonalizedRecommendationEditRequest,
+    signal?: AbortSignal,
+  ): Promise<PersonalizedRecommendationDraft> {
+    return apiClient.request(`/api/training/personalized-drafts/${draftId}/edits`, {
+      method: 'POST',
+      body,
+      decode: decodePersonalizedRecommendationDraft,
+      signal,
+      timeoutMs: 30_000,
+    })
+  },
+
+  createPaperInstance(
+    draftId: string,
+    body: {
+      operation_token: string
+      expected_draft_revision: number
+      student_id: string
+      context_window_tokens: 32768 | 65536 | 128000
+    },
+  ): Promise<PersonalizedPaperInstance> {
+    return apiClient.request(
+      `/api/training/personalized-drafts/${draftId}/paper-instances`,
+      {
+        method: 'POST',
+        body,
+        decode: decodePersonalizedPaperInstance,
+        timeoutMs: 120_000,
+      },
+    )
+  },
+
+  async listPaperInstances(
+    draftId: string,
+  ): Promise<PersonalizedPaperInstance[]> {
+    const result = await apiClient.request(
+      `/api/training/personalized-drafts/${draftId}/paper-instances`,
+      {
+        decode: decodePersonalizedPaperList,
+        timeoutMs: 30_000,
+      },
+    )
+    return result.items
+  },
+
+  async freezePaperInstance(
+    instance: PersonalizedPaperInstance,
+    file: File,
+    operationToken: string,
+  ): Promise<PersonalizedPaperInstance> {
+    const digest = await fileSha256(file)
+    return apiClient.request(
+      `/api/training/paper-instances/${instance.paper_instance_id}/freeze`
+      + `?expected_revision=${instance.revision}`,
+      {
+        method: 'POST',
+        rawBody: file,
+        headers: {
+          'content-type': (
+            'application/vnd.openxmlformats-officedocument.'
+            + 'wordprocessingml.document'
+          ),
+          'x-operation-token': operationToken,
+          'x-content-sha256': digest,
+          'x-upload-filename': encodeURIComponent(file.name),
+        },
+        decode: decodePersonalizedPaperInstance,
+        timeoutMs: 180_000,
+      },
+    )
+  },
+
+  downloadPaperArtifact(path: string) {
+    return apiClient.download(path, { timeoutMs: 60_000 })
+  },
+
+  createTrainingScanBatch(
+    paperInstanceIds: string[],
+    operationToken: string,
+  ): Promise<TrainingScanBatch> {
+    return apiClient.request('/api/training/scan-batches', {
+      method: 'POST',
+      body: {
+        operation_token: operationToken,
+        paper_instance_ids: paperInstanceIds,
+      },
+      decode: decodeTrainingScanBatch,
+      timeoutMs: 30_000,
+    })
+  },
+
+  getTrainingScanBatch(batchId: string): Promise<TrainingScanBatch> {
+    return apiClient.request(`/api/training/scan-batches/${batchId}`, {
+      decode: decodeTrainingScanBatch,
+      timeoutMs: 30_000,
+    })
+  },
+
+  async uploadTrainingScan(
+    batch: TrainingScanBatch,
+    file: File,
+    operationToken: string,
+  ): Promise<TrainingScanBatch> {
+    const digest = await fileSha256(file)
+    const suffix = file.name.toLocaleLowerCase()
+    const mediaType = file.type || (
+      suffix.endsWith('.pdf')
+        ? 'application/pdf'
+        : suffix.endsWith('.png')
+          ? 'image/png'
+          : 'image/jpeg'
+    )
+    return apiClient.request(
+      `/api/training/scan-batches/${batch.batch_id}/uploads`
+      + `?expected_revision=${batch.revision}`,
+      {
+        method: 'POST',
+        rawBody: file,
+        headers: {
+          'content-type': mediaType,
+          'x-operation-token': operationToken,
+          'x-content-sha256': digest,
+          'x-upload-filename': encodeURIComponent(file.name),
+        },
+        decode: decodeTrainingScanBatch,
+        timeoutMs: 180_000,
+      },
+    )
+  },
+
+  resolveTrainingScanPage(
+    batch: TrainingScanBatch,
+    page: TrainingScanPage,
+    body: {
+      operation_token: string
+      action: 'match' | 'replace' | 'dismiss'
+      paper_instance_id?: string
+      page_number?: number
+    },
+  ): Promise<TrainingScanBatch> {
+    return apiClient.request(
+      `/api/training/scan-batches/${batch.batch_id}`
+      + `/pages/${page.scan_page_id}/resolve`,
+      {
+        method: 'POST',
+        body: {
+          ...body,
+          expected_revision: batch.revision,
+        },
+        decode: decodeTrainingScanBatch,
+        timeoutMs: 30_000,
+      },
+    )
+  },
+
+  cancelTrainingSubmission(
+    batch: TrainingScanBatch,
+    submissionId: string,
+    operationToken: string,
+  ): Promise<TrainingScanBatch> {
+    return apiClient.request(
+      `/api/training/submissions/${submissionId}/cancel`,
+      {
+        method: 'POST',
+        body: {
+          operation_token: operationToken,
+          expected_revision: batch.revision,
+          reason: '教师确认本次不提交该训练卷',
+        },
+        decode: decodeTrainingScanBatch,
+        timeoutMs: 30_000,
+      },
+    )
+  },
+
+  startTrainingAssessment(
+    submissionId: string,
+    expectedRevision: number,
+  ): Promise<TrainingAssessmentOutcome> {
+    return apiClient.request(
+      `/api/training/submissions/${submissionId}/assessment`,
+      {
+        method: 'POST',
+        body: { expected_revision: expectedRevision },
+        decode: decodeTrainingAssessment,
+        timeoutMs: 180_000,
+      },
+    )
+  },
+
+  getTrainingAssessment(
+    submissionId: string,
+    submissionRevision: number,
+  ): Promise<TrainingAssessmentOutcome> {
+    return apiClient.request(
+      `/api/training/submissions/${submissionId}/assessment`
+      + `?submission_revision=${submissionRevision}`,
+      {
+        decode: decodeTrainingAssessment,
+        timeoutMs: 30_000,
+      },
+    )
+  },
+
+  reviewTrainingPoint(
+    assessment: TrainingAssessmentOutcome,
+    body: {
+      operation_token: string
+      task_item_code: string
+      point_id: string
+      final_state: TrainingPointState
+      teacher_evidence: string
+      teacher_reason: string
+    },
+  ): Promise<TrainingAssessmentOutcome> {
+    return apiClient.request(
+      `/api/training/submissions/${assessment.submission_id}`
+      + '/assessment/reviews',
+      {
+        method: 'POST',
+        body: {
+          ...body,
+          submission_revision: assessment.submission_revision,
+          expected_review_revision: assessment.review_revision,
+        },
+        decode: decodeTrainingAssessment,
+        timeoutMs: 30_000,
+      },
+    )
+  },
+
+  controlTrainingAssessment(
+    assessment: TrainingAssessmentOutcome,
+    body: {
+      operation_token: string
+      action: 'pause' | 'resume' | 'cancel' | 'recover' | 'retry'
+      reason: string
+    },
+  ): Promise<TrainingAssessmentOutcome> {
+    return apiClient.request(
+      `/api/training/submissions/${assessment.submission_id}`
+      + '/assessment/actions',
+      {
+        method: 'POST',
+        body: {
+          ...body,
+          submission_revision: assessment.submission_revision,
+          expected_review_revision: assessment.review_revision,
+        },
+        decode: decodeTrainingAssessment,
+        timeoutMs: 180_000,
+      },
+    )
+  },
+
+  syncTrainingEvidence(
+    assessment: TrainingAssessmentOutcome,
+    action: 'publish' | 'withdraw',
+    operationToken: string,
+  ): Promise<TrainingFeedback> {
+    return apiClient.request(
+      `/api/training/submissions/${assessment.submission_id}/evidence`,
+      {
+        method: 'POST',
+        body: {
+          operation_token: operationToken,
+          submission_revision: assessment.submission_revision,
+          expected_review_revision: assessment.review_revision,
+          action,
+          reason: action === 'publish'
+            ? '教师确认发布当前已完成题目的训练证据'
+            : '教师确认撤回本次训练证据',
+        },
+        decode: decodeTrainingFeedback,
+        timeoutMs: 60_000,
+      },
+    )
+  },
+
+  getTrainingFeedback(
+    submissionId: string,
+    submissionRevision: number,
+  ): Promise<TrainingFeedback> {
+    return apiClient.request(
+      `/api/training/submissions/${submissionId}/feedback`
+      + `?submission_revision=${submissionRevision}`,
+      {
+        decode: decodeTrainingFeedback,
+        timeoutMs: 30_000,
+      },
+    )
+  },
+
+  replayTrainingEvidence(): Promise<{
+    examined_count: number
+    delivered_count: number
+    failed_count: number
+    feedbacks: TrainingFeedback[]
+  }> {
+    return apiClient.request('/api/training/evidence/replay', {
+      method: 'POST',
+      body: { max_items: 100 },
+      decode: decodeTrainingEvidenceReplay,
+      timeoutMs: 60_000,
     })
   },
 }

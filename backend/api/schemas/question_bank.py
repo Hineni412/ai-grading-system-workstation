@@ -359,6 +359,163 @@ class QuestionJobRetryRequest(_QuestionBankModel):
     question_ids: list[int] | None = Field(default=None, min_length=1, max_length=500)
 
 
+class TrainingCriterionPointSchema(_QuestionBankModel):
+    point_id: str = Field(min_length=2, max_length=64)
+    target: str = Field(min_length=1, max_length=500)
+    observable_evidence: str = Field(min_length=1, max_length=1000)
+    equivalent_rules: list[str] = Field(default_factory=list, max_length=30)
+    counterexamples: list[str] = Field(default_factory=list, max_length=30)
+
+
+class TrainingCriterionDraftSchema(_QuestionBankModel):
+    schema_version: Literal["training-criteria-draft-v1"] = (
+        "training-criteria-draft-v1"
+    )
+    question_id: int = Field(gt=0)
+    source_content_hash: str = Field(default="", max_length=64)
+    question_type: str = Field(default="", max_length=64)
+    points: list[TrainingCriterionPointSchema] = Field(
+        min_length=1,
+        max_length=50,
+    )
+    auxiliary_rules: list[str] = Field(default_factory=list, max_length=50)
+    rationale: str = Field(default="", max_length=2000)
+    confidence: float = Field(default=1.0, ge=0.0, le=1.0)
+    source_kind: Literal[
+        "combined_model",
+        "confirmed_rubric_adapter",
+    ] = "combined_model"
+
+
+class TrainingCriterionVersionResponse(_QuestionBankModel):
+    version_id: str
+    question_id: int
+    version_number: int
+    parent_version_id: str | None = None
+    source_content_hash: str
+    schema_version: str
+    status: Literal[
+        "proposed",
+        "approved",
+        "rejected",
+        "superseded",
+        "stale",
+    ]
+    source_kind: Literal[
+        "combined_model",
+        "confirmed_rubric_adapter",
+        "teacher_manual",
+        "backfill",
+    ]
+    source_reference: str
+    criteria: TrainingCriterionDraftSchema
+    criteria_hash: str
+    quality_status: Literal["passed", "failed"]
+    quality_codes: list[str]
+    created_by: str
+    decision_by: str | None = None
+    decision_note: str | None = None
+    decided_at: str | None = None
+    created_at: str
+    updated_at: str
+
+
+class TrainingCriterionWorkspaceResponse(_QuestionBankModel):
+    question_id: int
+    state: Literal[
+        "missing",
+        "proposed",
+        "approved",
+        "rejected",
+        "superseded",
+        "stale",
+        "available",
+    ]
+    available: bool
+    revision: int = Field(ge=0)
+    current_source_hash: str
+    current_version: TrainingCriterionVersionResponse | None = None
+    approved_version: TrainingCriterionVersionResponse | None = None
+    versions: list[TrainingCriterionVersionResponse]
+
+
+class TrainingCriterionDraftWriteRequest(_QuestionBankModel):
+    expected_revision: int = Field(ge=0)
+    parent_version_id: str | None = Field(
+        default=None,
+        pattern=r"^[0-9a-f]{64}$",
+    )
+    request_token: str = Field(pattern=r"^[0-9a-fA-F]{32}$")
+    reason: str = Field(min_length=1, max_length=500)
+    points: list[TrainingCriterionPointSchema] = Field(
+        min_length=1,
+        max_length=50,
+    )
+    auxiliary_rules: list[str] = Field(default_factory=list, max_length=50)
+    rationale: str = Field(default="", max_length=2000)
+    confidence: float = Field(default=1.0, ge=0.0, le=1.0)
+
+
+class TrainingCriterionReviewRequest(_QuestionBankModel):
+    version_id: str = Field(pattern=r"^[0-9a-f]{64}$")
+    expected_revision: int = Field(ge=1)
+    action: Literal["approve", "reject"]
+    reason: str = Field(min_length=1, max_length=500)
+
+
+class TrainingCriterionBackfillCreateRequest(_QuestionBankModel):
+    question_ids: list[int] = Field(min_length=1, max_length=500)
+    request_token: str = Field(pattern=r"^[0-9a-fA-F]{32}$")
+    mode: Literal["missing_only", "regenerate"] = "missing_only"
+
+
+class TrainingCriterionBackfillRetryRequest(_QuestionBankModel):
+    request_token: str = Field(pattern=r"^[0-9a-fA-F]{32}$")
+    question_ids: list[int] | None = Field(
+        default=None,
+        min_length=1,
+        max_length=500,
+    )
+
+
+class TrainingCriterionBackfillItemResponse(_QuestionBankModel):
+    question_id: int
+    status: Literal[
+        "pending",
+        "running",
+        "succeeded",
+        "failed",
+        "cancelled",
+        "skipped",
+    ]
+    version_id: str | None = None
+    error_category: str
+    attempt_count: int = Field(ge=0)
+
+
+class TrainingCriterionBackfillRunResponse(_QuestionBankModel):
+    run_id: str
+    mode: Literal["missing_only", "regenerate"]
+    status: Literal[
+        "pending",
+        "running",
+        "partial",
+        "succeeded",
+        "failed",
+        "cancelled",
+    ]
+    question_ids: list[int]
+    created_at: str
+    updated_at: str
+    finished_at: str | None = None
+    items: list[TrainingCriterionBackfillItemResponse]
+
+
+class TrainingCriterionBackfillStartResponse(_QuestionBankModel):
+    run: TrainingCriterionBackfillRunResponse
+    job: JobResponse | None = None
+
+
 TaxonomyDimension = Literal[
     "curriculum",
     "knowledge",

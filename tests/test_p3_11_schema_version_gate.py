@@ -22,6 +22,10 @@ from update_tools.migrate_db import run_migrations
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+QUESTION_BANK_MIGRATIONS = PROJECT_ROOT / "migrations" / "question_bank"
+CURRENT_QUESTION_BANK_MIGRATION = sorted(
+    QUESTION_BANK_MIGRATIONS.glob("*.sql")
+)[-1].stem
 RUNTIME_SCHEMA_OWNERS = (
     PROJECT_ROOT / "db_manager.py",
     PROJECT_ROOT / "backend" / "jobs" / "store.py",
@@ -346,7 +350,7 @@ def test_question_bank_initializer_uses_current_migrations(
             LIMIT 1
             """
         ).fetchone()
-    assert current == ("011_add_paper_permanent_delete_receipts",)
+    assert current == (CURRENT_QUESTION_BANK_MIGRATION,)
 
 
 @pytest.mark.parametrize("source_path", RUNTIME_SCHEMA_OWNERS)
@@ -369,10 +373,7 @@ def test_application_schema_gate_checks_both_databases(tmp_path: Path) -> None:
     results = ensure_application_schema(paths)
 
     assert results["grading"].current_version == "009_add_teacher_score_locks"
-    assert (
-        results["question_bank"].current_version
-        == "011_add_paper_permanent_delete_receipts"
-    )
+    assert results["question_bank"].current_version == CURRENT_QUESTION_BANK_MIGRATION
 
 
 def test_application_schema_gate_uses_formal_backup_directory(
@@ -435,6 +436,9 @@ def test_fastapi_lifespan_checks_both_schema_versions(tmp_path: Path) -> None:
         outputs_dir=data_root / "outputs",
         backups_dir=data_root / "backups",
         ops_state_dir=data_root / "ops",
+        workspace_dir=lambda workspace_id, *, create=False: (
+            data_root / "workspaces" / workspace_id
+        ),
     )
 
     with TestClient(create_app(path_manager=paths)) as client:
@@ -445,7 +449,7 @@ def test_fastapi_lifespan_checks_both_schema_versions(tmp_path: Path) -> None:
             "SELECT migration_name FROM schema_migrations "
             "WHERE success = 1 ORDER BY id DESC LIMIT 1"
         ).fetchone()
-    assert current == ("011_add_paper_permanent_delete_receipts",)
+    assert current == (CURRENT_QUESTION_BANK_MIGRATION,)
 
 
 def test_fastapi_lifespan_schema_failure_does_not_expose_local_path(

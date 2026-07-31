@@ -231,6 +231,19 @@ class DiagnosisProfileService:
             "diagnosis_identity": "question_tag",
         }
 
+    def mastery_session_times(
+        self,
+        *,
+        exam_scope: Mapping[str, Any],
+    ) -> dict[str, str]:
+        """Expose evidence time only to the internal mastery adapter."""
+
+        sessions = self._resolve_sessions(exam_scope, [])
+        return {
+            str(int(item["id"])): str(item.get("created_at") or "")
+            for item in sessions
+        }
+
     def tag_evidence(
         self,
         *,

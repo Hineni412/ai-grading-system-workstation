@@ -425,6 +425,18 @@ def test_training_openapi_declares_strict_safe_requests_and_stable_errors() -> N
     expected_errors = {
         ("post", "/api/training/diagnosis"): {422, 503},
         ("post", "/api/training/plans/preview"): {422, 503},
+        ("post", "/api/training/personalized-drafts"): {409, 422, 503},
+        ("get", "/api/training/personalized-drafts/{draft_id}"): {
+            404,
+            422,
+            503,
+        },
+        ("post", "/api/training/personalized-drafts/{draft_id}/edits"): {
+            404,
+            409,
+            422,
+            503,
+        },
         ("post", "/api/training/tasks"): {409, 422, 503},
         ("get", "/api/training/tasks"): {422, 503},
         ("get", "/api/training/tasks/{task_id}"): {404, 422, 503},

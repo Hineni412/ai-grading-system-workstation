@@ -184,6 +184,17 @@ def public_job_result(job: JobRecord) -> dict[str, Any]:
         return sanitize_public_mapping(
             {key: job.result[key] for key in allowed if key in job.result}
         )
+    if job.job_type == "criterion_backfill":
+        allowed = (
+            "run_id",
+            "status",
+            "successful_question_ids",
+            "failed_question_ids",
+            "retryable",
+        )
+        return sanitize_public_mapping(
+            {key: job.result[key] for key in allowed if key in job.result}
+        )
     if job.job_type == "question_bank_sync":
         allowed = (
             "session_id",
@@ -316,6 +327,11 @@ def public_job_payload(job: JobRecord) -> dict[str, Any]:
         )
     if job.job_type == "tagging_sync":
         allowed = ("question_ids", "source_job_id", "retry_of_job_id")
+        return sanitize_public_mapping(
+            {key: job.payload[key] for key in allowed if key in job.payload}
+        )
+    if job.job_type == "criterion_backfill":
+        allowed = ("run_id", "retry_of_run_id")
         return sanitize_public_mapping(
             {key: job.payload[key] for key in allowed if key in job.payload}
         )
