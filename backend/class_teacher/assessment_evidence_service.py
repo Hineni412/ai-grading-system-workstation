@@ -1,0 +1,912 @@
+from __future__ import annotations
+
+import hashlib
+import hmac
+import json
+import csv
+from io import BytesIO, StringIO
+from contextlib import closing
+from datetime import UTC, datetime
+from typing import Any, Callable, Protocol
+from uuid import uuid4
+
+from .encrypted_database import EncryptedDatabase
+from .errors import VaultError
+from .secure_repository import EncryptedObjectRepository
+
+
+_RESULT_STATES = {
+    "normal",
+    "absent",
+    "exempt",
+    "missing",
+    "incomplete",
+    "makeup",
+}
+
+
+def _iso() -> str:
+    return datetime.now(UTC).isoformat()
+
+
+class AssessmentEvidenceSource(Protocol):
+    def read(self, query: dict[str, object]) -> dict[str, object]: ...
+
+
+class ExistingMathAssessmentAdapter:
+    """Read-only boundary around an injected math-summary reader."""
+
+    def __init__(
+        self,
+        reader: Callable[[dict[str, object]], dict[str, object]],
+    ) -> None:
+        self._reader = reader
+
+    def read(self, query: dict[str, object]) -> dict[str, object]:
+        batch = dict(self._reader(dict(query)))
+        batch["source_kind"] = "existing_math"
+        batch["read_only"] = True
+        return batch
+
+
+class ConfirmedSpreadsheetAdapter:
+    """Turns an already teacher-confirmed preview into a neutral batch."""
+
+    @staticmethod
+    def preview(
+        *,
+        file_name: str,
+        content: bytes,
+        sheet_name: str | None = None,
+    ) -> dict[str, object]:
+        if not content or len(content) > 10 * 1024 * 1024:
+            raise VaultError(
+                "assessment_file_size_invalid",
+                "成绩文件不能为空且不能超过 10 MB",
+                status_code=422,
+            )
+        lower_name = file_name.casefold()
+        if lower_name.endswith(".csv"):
+            decoded = None
+            for encoding in ("utf-8-sig", "gb18030"):
+                try:
+                    decoded = content.decode(encoding)
+                    break
+                except UnicodeDecodeError:
+                    continue
+            if decoded is None:
+                raise VaultError(
+                    "assessment_csv_encoding_invalid",
+                    "CSV 文件编码无法识别",
+                    status_code=422,
+                )
+            rows = [
+                [str(cell).strip() for cell in row]
+                for row in csv.reader(StringIO(decoded))
+                if any(str(cell).strip() for cell in row)
+            ]
+            sheets = ["CSV"]
+            selected_sheet = "CSV"
+        elif lower_name.endswith(".xlsx"):
+            try:
+                from openpyxl import load_workbook
+
+                workbook = load_workbook(
+                    BytesIO(content),
+                    read_only=True,
+                    data_only=True,
+                )
+                sheets = list(workbook.sheetnames)
+                selected_sheet = sheet_name or sheets[0]
+                if selected_sheet not in sheets:
+                    raise VaultError(
+                        "assessment_sheet_not_found",
+                        "选择的工作表不存在",
+                        status_code=422,
+                    )
+                worksheet = workbook[selected_sheet]
+                rows = [
+                    [
+                        "" if cell is None else str(cell).strip()
+                        for cell in row
+                    ]
+                    for row in worksheet.iter_rows(
+                        min_row=1,
+                        max_row=5002,
+                        values_only=True,
+                    )
+                    if any(cell is not None and str(cell).strip() for cell in row)
+                ]
+                workbook.close()
+            except VaultError:
+                raise
+            except Exception as exc:
+                raise VaultError(
+                    "assessment_xlsx_invalid",
+                    "XLSX 文件无法读取或已经损坏",
+                    status_code=422,
+                ) from exc
+        else:
+            raise VaultError(
+                "assessment_file_type_invalid",
+                "只支持 CSV 或 XLSX 成绩文件",
+                status_code=422,
+            )
+        if not rows:
+            raise VaultError(
+                "assessment_sheet_empty",
+                "成绩工作表为空",
+                status_code=422,
+            )
+        width = max(len(row) for row in rows)
+        headers = [
+            value or f"未命名列 {index + 1}"
+            for index, value in enumerate(rows[0] + [""] * (width - len(rows[0])))
+        ]
+        preview_rows = [
+            {
+                headers[index]: (
+                    row[index] if index < len(row) else ""
+                )
+                for index in range(width)
+            }
+            for row in rows[1:5001]
+        ]
+        return {
+            "file_name": file_name,
+            "sheet_names": sheets,
+            "selected_sheet": selected_sheet,
+            "headers": headers,
+            "rows": preview_rows,
+            "preview_row_count": len(preview_rows),
+            "truncated": len(rows) > 5001,
+            "raw_file_retained": False,
+            "temporary_file_created": False,
+        }
+
+    def read(self, query: dict[str, object]) -> dict[str, object]:
+        if not bool(query.get("teacher_confirmed")):
+            raise VaultError(
+                "assessment_preview_confirmation_required",
+                "成绩预览必须由教师确认后才能进入证据库",
+                status_code=422,
+            )
+        return {
+            "source_kind": "confirmed_spreadsheet",
+            "read_only": True,
+            "teacher_confirmed": True,
+            "source_label": str(
+                query.get("source_label") or "教师确认的表格预览"
+            ),
+            "assessments": list(query.get("assessments") or []),
+        }
+
+
+class AssessmentEvidenceService:
+    def __init__(
+        self,
+        database: EncryptedDatabase,
+        repository: EncryptedObjectRepository,
+        key_provider: Callable[[str], bytes],
+    ) -> None:
+        self.database = database
+        self.repository = repository
+        self._key_provider = key_provider
+
+    def confirm_batch(
+        self,
+        *,
+        token: str,
+        operation_id: str,
+        batch: dict[str, object],
+    ) -> dict[str, object]:
+        vmk = self._key_provider(token)
+        replay = self._idempotent(operation_id, "evidence.batch.confirm")
+        if replay is not None:
+            return replay
+        source_kind = str(batch.get("source_kind") or "")
+        if source_kind not in {"existing_math", "confirmed_spreadsheet"}:
+            raise VaultError(
+                "assessment_source_invalid",
+                "学业证据来源无效",
+                status_code=422,
+            )
+        if not bool(batch.get("teacher_confirmed")):
+            raise VaultError(
+                "assessment_confirmation_required",
+                "学业证据必须经过教师确认",
+                status_code=422,
+            )
+        assessments = list(batch.get("assessments") or [])
+        if not assessments:
+            raise VaultError(
+                "assessment_batch_empty",
+                "没有可确认的考试证据",
+                status_code=422,
+            )
+        source_signature = {
+            "source_kind": source_kind,
+            "source_label": str(batch.get("source_label") or ""),
+            "assessments": assessments,
+        }
+        fingerprint = hmac.new(
+            vmk,
+            json.dumps(
+                source_signature,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8"),
+            hashlib.sha256,
+        ).digest()
+        with closing(self.database.connect()) as connection:
+            duplicate = connection.execute(
+                """
+                SELECT import_id FROM source_fingerprints
+                WHERE source_fingerprint = ?
+                """,
+                (fingerprint,),
+            ).fetchone()
+        if duplicate is not None:
+            return {
+                "import_id": str(duplicate["import_id"]),
+                "duplicate": True,
+                "created_assessments": 0,
+                "created_results": 0,
+                "model_enabled": False,
+                "physical_request_count": 0,
+            }
+        import_id = uuid4().hex
+        import_object_id = f"assessment-import-{import_id}"
+        timestamp = _iso()
+        created_results = 0
+        with closing(self.database.connect()) as connection:
+            with connection:
+                self.repository.put(
+                    connection,
+                    vmk=vmk,
+                    object_id=import_object_id,
+                    object_type="assessment_import",
+                    payload={
+                        "source_kind": source_kind,
+                        "source_label": str(
+                            batch.get("source_label") or ""
+                        ),
+                        "teacher_confirmed": True,
+                        "read_only_source": True,
+                        "raw_file_retained": False,
+                        "model_enabled": False,
+                        "physical_request_count": 0,
+                    },
+                )
+                connection.execute(
+                    """
+                    INSERT INTO assessment_imports (
+                        import_id, payload_object_id, source_kind,
+                        status, created_at
+                    ) VALUES (?, ?, ?, 'confirmed', ?)
+                    """,
+                    (
+                        import_id,
+                        import_object_id,
+                        source_kind,
+                        timestamp,
+                    ),
+                )
+                connection.execute(
+                    """
+                    INSERT INTO source_fingerprints (
+                        source_fingerprint, import_id, created_at
+                    ) VALUES (?, ?, ?)
+                    """,
+                    (fingerprint, import_id, timestamp),
+                )
+                for assessment in assessments:
+                    created_results += self._insert_assessment(
+                        connection,
+                        vmk=vmk,
+                        import_id=import_id,
+                        assessment=dict(assessment),
+                    )
+                result = {
+                    "import_id": import_id,
+                    "duplicate": False,
+                    "created_assessments": len(assessments),
+                    "created_results": created_results,
+                    "model_enabled": False,
+                    "physical_request_count": 0,
+                }
+                self._remember(
+                    connection,
+                    operation_id,
+                    "evidence.batch.confirm",
+                    result,
+                )
+        return result
+
+    def list_subject_evidence(
+        self,
+        *,
+        token: str,
+        subject_id: str,
+    ) -> dict[str, object]:
+        vmk = self._key_provider(token)
+        with closing(self.database.connect()) as connection:
+            self._subject_exists(connection, subject_id)
+            rows = connection.execute(
+                """
+                SELECT sr.*, a.occurred_on, a.payload_object_id AS assessment_object,
+                       ai.source_kind, ai.payload_object_id AS import_object,
+                       ev.evidence_version_id, ev.version,
+                       ev.payload_object_id AS evidence_object, ev.state
+                FROM subject_results sr
+                JOIN assessments a ON a.assessment_id = sr.assessment_id
+                JOIN assessment_imports ai ON ai.import_id = a.import_id
+                JOIN evidence_versions ev ON ev.result_id = sr.result_id
+                WHERE sr.subject_id = ? AND ev.state = 'active'
+                ORDER BY a.occurred_on, sr.created_at
+                """,
+                (subject_id,),
+            ).fetchall()
+            items = [
+                self._evidence_from_row(connection, vmk, row)
+                for row in rows
+            ]
+        return {
+            "subject_id": subject_id,
+            "items": items,
+            "model_enabled": False,
+            "physical_request_count": 0,
+        }
+
+    def compare(
+        self,
+        *,
+        token: str,
+        older_evidence_version_id: str,
+        newer_evidence_version_id: str,
+    ) -> dict[str, object]:
+        older = self.get_evidence(
+            token=token,
+            evidence_version_id=older_evidence_version_id,
+        )
+        newer = self.get_evidence(
+            token=token,
+            evidence_version_id=newer_evidence_version_id,
+        )
+        if older["subject_id"] != newer["subject_id"]:
+            raise VaultError(
+                "assessment_subject_mismatch",
+                "只能比较同一学生的证据",
+                status_code=422,
+            )
+        status, limitations = self._comparability(older, newer)
+        delta = None
+        if (
+            status == "directly_comparable"
+            and
+            older["result_state"] in {"normal", "makeup"}
+            and newer["result_state"] in {"normal", "makeup"}
+            and older.get("score") is not None
+            and newer.get("score") is not None
+        ):
+            delta = float(newer["score"]) - float(older["score"])
+        return {
+            "older_evidence_version_id": older_evidence_version_id,
+            "newer_evidence_version_id": newer_evidence_version_id,
+            "comparability": status,
+            "limitations": limitations,
+            "score_delta": delta,
+        }
+
+    def trend(
+        self,
+        *,
+        token: str,
+        subject_id: str,
+        subject_name: str,
+    ) -> dict[str, object]:
+        items = [
+            item
+            for item in self.list_subject_evidence(
+                token=token,
+                subject_id=subject_id,
+            )["items"]
+            if item["subject_name"] == subject_name
+        ]
+        comparisons = [
+            self._comparability(items[index - 1], items[index])
+            for index in range(1, len(items))
+        ]
+        trend_allowed = (
+            len(items) >= 3
+            and all(status == "directly_comparable" for status, _ in comparisons)
+        )
+        return {
+            "subject_id": subject_id,
+            "subject_name": subject_name,
+            "evidence_count": len(items),
+            "trend_allowed": trend_allowed,
+            "conclusion": (
+                "口径相近的证据达到三次，可描述变化趋势"
+                if trend_allowed
+                else "证据不足或口径不同，不能称为趋势"
+            ),
+            "comparison_basis": [
+                {
+                    "from": items[index - 1]["evidence_version_id"],
+                    "to": items[index]["evidence_version_id"],
+                    "comparability": comparisons[index - 1][0],
+                    "limitations": comparisons[index - 1][1],
+                }
+                for index in range(1, len(items))
+            ],
+        }
+
+    def get_evidence(
+        self,
+        *,
+        token: str,
+        evidence_version_id: str,
+    ) -> dict[str, object]:
+        vmk = self._key_provider(token)
+        with closing(self.database.connect()) as connection:
+            row = connection.execute(
+                """
+                SELECT sr.*, a.occurred_on,
+                       a.payload_object_id AS assessment_object,
+                       ai.source_kind, ai.payload_object_id AS import_object,
+                       ev.evidence_version_id, ev.version,
+                       ev.payload_object_id AS evidence_object, ev.state
+                FROM evidence_versions ev
+                JOIN subject_results sr ON sr.result_id = ev.result_id
+                JOIN assessments a ON a.assessment_id = sr.assessment_id
+                JOIN assessment_imports ai ON ai.import_id = a.import_id
+                WHERE ev.evidence_version_id = ?
+                """,
+                (evidence_version_id,),
+            ).fetchone()
+            if row is None:
+                raise VaultError(
+                    "assessment_evidence_not_found",
+                    "学业证据不存在",
+                    status_code=404,
+                )
+            return self._evidence_from_row(connection, vmk, row)
+
+    def supersede_evidence(
+        self,
+        *,
+        token: str,
+        operation_id: str,
+        evidence_version_id: str,
+        reason: str,
+    ) -> dict[str, object]:
+        vmk = self._key_provider(token)
+        replay = self._idempotent(operation_id, "evidence.supersede")
+        if replay is not None:
+            return replay
+        clean_reason = self._text(reason, "证据修订原因", 1000)
+        with closing(self.database.connect()) as connection:
+            with connection:
+                row = connection.execute(
+                    """
+                    SELECT * FROM evidence_versions
+                    WHERE evidence_version_id = ?
+                    """,
+                    (evidence_version_id,),
+                ).fetchone()
+                if row is None:
+                    raise VaultError(
+                        "assessment_evidence_not_found",
+                        "学业证据不存在",
+                        status_code=404,
+                    )
+                payload, revision = self.repository.get(
+                    connection,
+                    vmk=vmk,
+                    object_id=str(row["payload_object_id"]),
+                )
+                payload["superseded_reason"] = clean_reason
+                payload["superseded_at"] = _iso()
+                self.repository.put(
+                    connection,
+                    vmk=vmk,
+                    object_id=str(row["payload_object_id"]),
+                    object_type="assessment_evidence_version",
+                    payload=payload,
+                    expected_revision=revision,
+                )
+                connection.execute(
+                    """
+                    UPDATE evidence_versions SET state = 'superseded'
+                    WHERE evidence_version_id = ?
+                    """,
+                    (evidence_version_id,),
+                )
+                connection.execute(
+                    """
+                    UPDATE attention_cards SET state = 'invalidated',
+                        updated_at = ?
+                    WHERE evidence_version_id = ? AND state = 'draft'
+                    """,
+                    (_iso(), evidence_version_id),
+                )
+                result = {
+                    "evidence_version_id": evidence_version_id,
+                    "superseded": True,
+                }
+                self._remember(
+                    connection,
+                    operation_id,
+                    "evidence.supersede",
+                    result,
+                )
+        return result
+
+    def _insert_assessment(
+        self,
+        connection: Any,
+        *,
+        vmk: bytes,
+        import_id: str,
+        assessment: dict[str, object],
+    ) -> int:
+        title = self._text(assessment.get("title"), "考试名称", 500)
+        subject_name = self._text(
+            assessment.get("subject_name"),
+            "学科名称",
+            120,
+        )
+        occurred_on = self._text(
+            assessment.get("occurred_on"),
+            "考试日期",
+            40,
+        )
+        try:
+            datetime.fromisoformat(occurred_on)
+        except ValueError as exc:
+            raise VaultError(
+                "assessment_date_invalid",
+                "考试日期无效",
+                status_code=422,
+            ) from exc
+        results = list(assessment.get("results") or [])
+        if not results:
+            raise VaultError(
+                "assessment_results_empty",
+                "考试没有学生结果",
+                status_code=422,
+            )
+        assessment_id = uuid4().hex
+        object_id = f"assessment-{assessment_id}"
+        assessment_payload = {
+            "title": title,
+            "subject_name": subject_name,
+            "max_score": self._optional_number(assessment.get("max_score")),
+            "rank_scope": str(assessment.get("rank_scope") or "") or None,
+            "participant_count": self._optional_integer(
+                assessment.get("participant_count")
+            ),
+            "assessment_nature": str(
+                assessment.get("assessment_nature") or ""
+            ) or None,
+        }
+        self.repository.put(
+            connection,
+            vmk=vmk,
+            object_id=object_id,
+            object_type="assessment",
+            payload=assessment_payload,
+        )
+        connection.execute(
+            """
+            INSERT INTO assessments (
+                assessment_id, import_id, payload_object_id,
+                occurred_on, created_at
+            ) VALUES (?, ?, ?, ?, ?)
+            """,
+            (assessment_id, import_id, object_id, occurred_on, _iso()),
+        )
+        for result in results:
+            self._insert_result(
+                connection,
+                vmk=vmk,
+                assessment_id=assessment_id,
+                assessment_payload=assessment_payload,
+                occurred_on=occurred_on,
+                result=dict(result),
+            )
+        return len(results)
+
+    def _insert_result(
+        self,
+        connection: Any,
+        *,
+        vmk: bytes,
+        assessment_id: str,
+        assessment_payload: dict[str, object],
+        occurred_on: str,
+        result: dict[str, object],
+    ) -> None:
+        subject_id = str(result.get("subject_id") or "")
+        self._subject_exists(connection, subject_id)
+        result_state = str(result.get("result_state") or "")
+        if result_state not in _RESULT_STATES:
+            raise VaultError(
+                "assessment_result_state_invalid",
+                "成绩状态无效",
+                status_code=422,
+            )
+        score = self._optional_number(result.get("score"))
+        if result_state in {"normal", "makeup"} and score is None:
+            raise VaultError(
+                "assessment_score_required",
+                "正常成绩和补考成绩必须保留数值，0 分也是有效成绩",
+                status_code=422,
+            )
+        if result_state not in {"normal", "makeup"} and score is not None:
+            raise VaultError(
+                "assessment_score_state_conflict",
+                "缺考、免考、缺失或未完成不能伪装成数值成绩",
+                status_code=422,
+            )
+        result_id = uuid4().hex
+        result_object_id = f"subject-result-{result_id}"
+        result_payload = {
+            "score": score,
+            "result_state": result_state,
+            "teacher_note": str(result.get("teacher_note") or "") or None,
+        }
+        self.repository.put(
+            connection,
+            vmk=vmk,
+            object_id=result_object_id,
+            object_type="subject_result",
+            payload=result_payload,
+        )
+        connection.execute(
+            """
+            INSERT INTO subject_results (
+                result_id, assessment_id, subject_id,
+                payload_object_id, result_state, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                result_id,
+                assessment_id,
+                subject_id,
+                result_object_id,
+                result_state,
+                _iso(),
+            ),
+        )
+        rank = self._optional_integer(result.get("rank"))
+        if rank is not None:
+            rank_context_id = uuid4().hex
+            rank_object_id = f"rank-context-{rank_context_id}"
+            self.repository.put(
+                connection,
+                vmk=vmk,
+                object_id=rank_object_id,
+                object_type="rank_context",
+                payload={
+                    "rank": rank,
+                    "rank_scope": assessment_payload["rank_scope"],
+                    "participant_count": assessment_payload[
+                        "participant_count"
+                    ],
+                },
+            )
+            connection.execute(
+                """
+                INSERT INTO rank_contexts (
+                    rank_context_id, result_id,
+                    payload_object_id, created_at
+                ) VALUES (?, ?, ?, ?)
+                """,
+                (rank_context_id, result_id, rank_object_id, _iso()),
+            )
+        evidence_id = uuid4().hex
+        evidence_object_id = f"evidence-version-{evidence_id}"
+        self.repository.put(
+            connection,
+            vmk=vmk,
+            object_id=evidence_object_id,
+            object_type="assessment_evidence_version",
+            payload={
+                **assessment_payload,
+                **result_payload,
+                "occurred_on": occurred_on,
+                "source_snapshot": True,
+                "source_write_back": False,
+            },
+        )
+        connection.execute(
+            """
+            INSERT INTO evidence_versions (
+                evidence_version_id, result_id, version,
+                payload_object_id, state, created_at
+            ) VALUES (?, ?, 1, ?, 'active', ?)
+            """,
+            (evidence_id, result_id, evidence_object_id, _iso()),
+        )
+
+    def _evidence_from_row(
+        self,
+        connection: Any,
+        vmk: bytes,
+        row: Any,
+    ) -> dict[str, object]:
+        payload, _ = self.repository.get(
+            connection,
+            vmk=vmk,
+            object_id=str(row["evidence_object"]),
+        )
+        rank_row = connection.execute(
+            """
+            SELECT payload_object_id FROM rank_contexts
+            WHERE result_id = ?
+            """,
+            (str(row["result_id"]),),
+        ).fetchone()
+        rank_context = None
+        if rank_row is not None:
+            rank_context, _ = self.repository.get(
+                connection,
+                vmk=vmk,
+                object_id=str(rank_row["payload_object_id"]),
+            )
+        return {
+            "evidence_version_id": str(row["evidence_version_id"]),
+            "version": int(row["version"]),
+            "state": str(row["state"]),
+            "result_id": str(row["result_id"]),
+            "subject_id": str(row["subject_id"]),
+            "result_state": str(row["result_state"]),
+            "source_kind": str(row["source_kind"]),
+            **payload,
+            "rank_context": rank_context,
+        }
+
+    @staticmethod
+    def _comparability(
+        older: dict[str, object],
+        newer: dict[str, object],
+    ) -> tuple[str, list[str]]:
+        limitations: list[str] = []
+        if (
+            older.get("subject_name") != newer.get("subject_name")
+            or older.get("max_score") is None
+            or newer.get("max_score") is None
+            or not older.get("assessment_nature")
+            or not newer.get("assessment_nature")
+        ):
+            return "insufficient_information", ["学科、满分或考试性质不完整"]
+        special_states = {
+            str(older.get("result_state")),
+            str(newer.get("result_state")),
+        }
+        if special_states - {"normal", "makeup"}:
+            return "not_comparable", ["存在缺考、免考、缺失或未完成"]
+        if older.get("assessment_nature") != newer.get("assessment_nature"):
+            return "not_comparable", ["考试性质不同"]
+        if older.get("max_score") != newer.get("max_score"):
+            limitations.append("满分不同")
+        if older.get("rank_scope") != newer.get("rank_scope"):
+            limitations.append("排名范围不同")
+        if older.get("participant_count") != newer.get("participant_count"):
+            limitations.append("参考人数不同")
+        if "makeup" in special_states:
+            limitations.append("包含补考")
+        if limitations:
+            return "reference_only", limitations
+        return "directly_comparable", []
+
+    @staticmethod
+    def _subject_exists(connection: Any, subject_id: str) -> None:
+        if connection.execute(
+            "SELECT 1 FROM student_subject_links WHERE subject_id = ?",
+            (subject_id,),
+        ).fetchone() is None:
+            raise VaultError(
+                "support_subject_not_found",
+                "学生支持对象不存在",
+                status_code=404,
+            )
+
+    def _idempotent(
+        self,
+        operation_id: str,
+        operation_type: str,
+    ) -> dict[str, object] | None:
+        with closing(self.database.connect()) as connection:
+            row = connection.execute(
+                """
+                SELECT operation_type, result_json FROM idempotency_ledger
+                WHERE operation_id = ?
+                """,
+                (operation_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        if str(row["operation_type"]) != operation_type:
+            raise VaultError(
+                "vault_operation_conflict",
+                "此操作编号已经用于另一项操作",
+                status_code=409,
+            )
+        return dict(json.loads(str(row["result_json"])))
+
+    @staticmethod
+    def _remember(
+        connection: Any,
+        operation_id: str,
+        operation_type: str,
+        result: dict[str, object],
+    ) -> None:
+        connection.execute(
+            """
+            INSERT INTO idempotency_ledger (
+                operation_id, operation_type, result_json, created_at
+            ) VALUES (?, ?, ?, ?)
+            """,
+            (
+                operation_id,
+                operation_type,
+                json.dumps(result, sort_keys=True),
+                _iso(),
+            ),
+        )
+
+    @staticmethod
+    def _text(value: object, label: str, maximum: int) -> str:
+        clean = str(value or "").strip()
+        if not clean or len(clean) > maximum:
+            raise VaultError(
+                "assessment_text_invalid",
+                f"{label}不能为空且不能超过 {maximum} 个字符",
+                status_code=422,
+            )
+        return clean
+
+    @staticmethod
+    def _optional_number(value: object) -> float | None:
+        if value is None or value == "":
+            return None
+        try:
+            return float(value)
+        except (TypeError, ValueError) as exc:
+            raise VaultError(
+                "assessment_number_invalid",
+                "成绩或满分必须是数字",
+                status_code=422,
+            ) from exc
+
+    @staticmethod
+    def _optional_integer(value: object) -> int | None:
+        if value is None or value == "":
+            return None
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError) as exc:
+            raise VaultError(
+                "assessment_integer_invalid",
+                "排名或人数必须是整数",
+                status_code=422,
+            ) from exc
+        if parsed < 0:
+            raise VaultError(
+                "assessment_integer_invalid",
+                "排名或人数不能为负数",
+                status_code=422,
+            )
+        return parsed
+
+
+__all__ = [
+    "AssessmentEvidenceService",
+    "AssessmentEvidenceSource",
+    "ConfirmedSpreadsheetAdapter",
+    "ExistingMathAssessmentAdapter",
+]

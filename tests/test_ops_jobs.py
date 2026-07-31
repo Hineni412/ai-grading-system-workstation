@@ -194,6 +194,65 @@ def test_ops_online_job_rejects_resource_changed_after_submission(tmp_path: Path
         run_ops_transfer_export_job(context=_Context(payload), paths=paths)
 
 
+def test_ops_backup_still_rejects_business_database_changes(
+    tmp_path: Path,
+) -> None:
+    paths = _paths(tmp_path)
+    service = _service(paths)
+    payload = _payload(service, "backup", reason="manual")
+    with sqlite3.connect(paths.db_path) as connection:
+        connection.execute("UPDATE sample SET value = 'changed'")
+        connection.commit()
+
+    with pytest.raises(ValueError, match="preflight resource changed"):
+        run_ops_backup_job(context=_Context(payload), paths=paths)
+
+
+def test_ops_backup_still_rejects_jobs_schema_changes(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    with sqlite3.connect(paths.db_path) as connection:
+        connection.execute(
+            "CREATE TABLE jobs (id INTEGER PRIMARY KEY AUTOINCREMENT, status TEXT)"
+        )
+        connection.commit()
+    payload = _payload(_service(paths), "backup", reason="manual")
+    with sqlite3.connect(paths.db_path) as connection:
+        connection.execute("ALTER TABLE jobs ADD COLUMN detail TEXT")
+        connection.commit()
+
+    with pytest.raises(ValueError, match="preflight resource changed"):
+        run_ops_backup_job(context=_Context(payload), paths=paths)
+
+
+def test_ops_backup_rejects_selected_file_changes(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    payload = _payload(_service(paths), "backup", reason="manual")
+    (paths.config_dir / "safe.json").write_text(
+        '{"changed": true}',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="preflight resource changed"):
+        run_ops_backup_job(context=_Context(payload), paths=paths)
+
+
+def test_ops_backup_rejects_question_bank_wal_changes(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    connection = sqlite3.connect(paths.qb_db_path)
+    try:
+        connection.execute("PRAGMA journal_mode = WAL")
+        connection.execute("PRAGMA wal_autocheckpoint = 0")
+        payload = _payload(_service(paths), "backup", reason="manual")
+        connection.execute("UPDATE sample SET value = 'changed-in-wal'")
+        connection.commit()
+        assert Path(f"{paths.qb_db_path}-wal").is_file()
+
+        with pytest.raises(ValueError, match="preflight resource changed"):
+            run_ops_backup_job(context=_Context(payload), paths=paths)
+    finally:
+        connection.close()
+
+
 def test_ops_transfer_export_still_rejects_business_database_changes(
     tmp_path: Path,
 ) -> None:
@@ -305,6 +364,49 @@ def test_ops_transfer_export_allows_job_store_updates_inside_data_root(
         published = paths.outputs_dir / "ops" / str(loaded.result["filename"])
         assert published.is_file()
         assert zipfile.is_zipfile(published)
+    finally:
+        manager.shutdown()
+
+
+def test_ops_backup_allows_its_job_store_updates_and_excludes_workspaces(
+    tmp_path: Path,
+) -> None:
+    from backend.jobs.manager import JobManager
+    from backend.jobs.store import JobStore
+
+    paths = _paths(tmp_path, migration_current=True)
+    protected = paths.data_root / "workspaces" / "class-teacher" / "student_affairs.db"
+    protected.parent.mkdir(parents=True)
+    protected.write_bytes(b"protected-workspace-data")
+    manager = JobManager(
+        JobStore(paths.db_path),
+        max_workers=1,
+    )
+    register_ops_job_handlers(manager, paths=paths)
+    try:
+        service = _service(paths)
+        preflight = service.preflight(
+            SimpleNamespace(operation="backup", reason="manual")
+        )
+
+        submitted = service.submit(
+            str(preflight["confirmation_token"]),
+            manager,
+        )
+        manager.wait(submitted.id, timeout=5)
+        loaded = manager.get(submitted.id)
+
+        assert loaded is not None
+        assert loaded.status == "succeeded", loaded.error
+        assert loaded.error is None
+        published = paths.backups_dir / str(loaded.result["filename"])
+        assert published.is_file()
+        assert zipfile.is_zipfile(published)
+        with zipfile.ZipFile(published, "r") as archive:
+            names = set(archive.namelist())
+        assert "user_data/databases/grading_system.db" in names
+        assert "user_data/databases/question_bank.db" in names
+        assert not any(name.startswith("user_data/workspaces/") for name in names)
     finally:
         manager.shutdown()
 

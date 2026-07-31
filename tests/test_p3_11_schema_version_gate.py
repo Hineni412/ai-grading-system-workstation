@@ -436,6 +436,9 @@ def test_fastapi_lifespan_checks_both_schema_versions(tmp_path: Path) -> None:
         outputs_dir=data_root / "outputs",
         backups_dir=data_root / "backups",
         ops_state_dir=data_root / "ops",
+        workspace_dir=lambda workspace_id, *, create=False: (
+            data_root / "workspaces" / workspace_id
+        ),
     )
 
     with TestClient(create_app(path_manager=paths)) as client:
