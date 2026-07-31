@@ -8,7 +8,7 @@ import re
 import shutil
 from copy import deepcopy
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from collections.abc import Mapping, Sequence
 from uuid import uuid4
@@ -19,13 +19,16 @@ from backend.teaching_prep.application.ports import (
     AssessmentEvidenceReader,
     LessonModelAdapter,
     QuestionEvidenceReader,
+    SemesterMappingModelAdapter,
     WpsAdapter,
 )
 from backend.teaching_prep.application.pptx_execution import (
     build_executor_request,
     digest as execution_digest,
     safe_execution_report,
-    verify_candidate,
+)
+from backend.teaching_prep.application.pptx_verification import (
+    verify_candidate_with_deadline,
 )
 from backend.teaching_prep.application.lesson_drafts import (
     build_local_template,
@@ -44,6 +47,9 @@ from backend.teaching_prep.application.slide_plans import (
     require_approval_allowed,
     validate_plan_payload,
 )
+from backend.teaching_prep.application.semester_mapping import (
+    validate_semester_mapping_payload,
+)
 from backend.teaching_prep.application.up_class_packages import (
     build_up_class_package,
     verify_package_archive,
@@ -51,6 +57,7 @@ from backend.teaching_prep.application.up_class_packages import (
 from backend.teaching_prep.domain.errors import (
     TeachingPrepConflictError,
     TeachingPrepNotFoundError,
+    TeachingPrepRetryAvailableError,
     TeachingPrepValidationError,
 )
 from backend.teaching_prep.domain.models import (
@@ -60,16 +67,21 @@ from backend.teaching_prep.domain.models import (
     LessonMaterialLink,
     LessonNode,
     LessonDraftVersion,
+    LessonGenerationPerformance,
     LessonPreparation,
     MaterialUnit,
     MaterialVersion,
     ResourcePackVersion,
+    SemesterMappingProposal,
+    SemesterLessonProgress,
+    SemesterMaterialRecord,
     SlidePlanVersion,
     PptxExecutionRun,
     PptxVersion,
     PostLessonReview,
     UpClassPackage,
     TeachingPreferences,
+    TeachingSemester,
 )
 from backend.teaching_prep.domain.states import (
     LessonPreparationState,
@@ -84,6 +96,8 @@ from backend.teaching_prep.infrastructure.repositories import (
     LessonPreparationRepository,
     MaterialUnitRepository,
     ResourcePackRepository,
+    SemesterMappingRepository,
+    SemesterWorkspaceRepository,
     SlidePlanRepository,
     PptxExecutionRepository,
     TeachingDeliveryRepository,
@@ -106,6 +120,31 @@ _MATERIAL_SUFFIXES = {
 _VOLUMES = {"first", "second", "whole_year"}
 _NODE_TYPES = {"chapter", "section", "lesson"}
 _SOURCE_KINDS = {"teacher", "catalog"}
+_SEMESTER_TERMS = {"first", "second"}
+_SEMESTER_STATUSES = {"planning", "active", "completed", "archived"}
+_LESSON_PROGRESS_STATUSES = {
+    "not_started",
+    "preparing",
+    "ready",
+    "taught",
+    "skipped",
+}
+_SEMESTER_MATERIAL_ROLES = {
+    "textbook",
+    "reference_ppt",
+    "exercise_workbook",
+    "homework_workbook",
+    "answer_book",
+    "supplement",
+}
+_SEMESTER_MAPPING_STATUSES = {
+    "unmapped",
+    "proposed",
+    "partial",
+    "confirmed",
+    "needs_review",
+    "conflict",
+}
 _INSPECTION_STATUSES = {
     "uninspected",
     "ready",
@@ -144,6 +183,8 @@ _EXERCISE_PREVIEW_REF = re.compile(
     r"^/api/teaching-prep/exercise-regions/([0-9a-f]{32})/preview$"
 )
 _LESSON_TYPES = {"new_lesson"}
+_LESSON_GENERATION_BUDGET_MS = 300_000
+_WPS_EXECUTION_TIMEOUT_SECONDS = 170
 _FORBIDDEN_EVIDENCE_KEYS = {
     "name",
     "student_name",
@@ -167,6 +208,9 @@ class TeachingPrepService:
         assessment_evidence_reader: AssessmentEvidenceReader | None = None,
         lesson_model_adapter: LessonModelAdapter | None = None,
         lesson_model_label: str | None = None,
+        semester_mapping_model_adapter: SemesterMappingModelAdapter | None = None,
+        semester_mapping_model_label: str | None = None,
+        material_parser: MaterialParser | None = None,
         wps_adapter: WpsAdapter | None = None,
         wps_adapter_is_real: bool = False,
     ) -> None:
@@ -189,6 +233,8 @@ class TeachingPrepService:
         self.preparations = LessonPreparationRepository(self.database)
         self.preferences = TeachingPreferencesRepository(self.database)
         self.catalog = TeachingCatalogRepository(self.database)
+        self.semesters = SemesterWorkspaceRepository(self.database)
+        self.semester_mapping = SemesterMappingRepository(self.database)
         self.material_units = MaterialUnitRepository(self.database)
         self.exercises = ExerciseCandidateRepository(self.database)
         self.resource_packs = ResourcePackRepository(self.database)
@@ -196,10 +242,11 @@ class TeachingPrepService:
         self.slide_plans = SlidePlanRepository(self.database)
         self.pptx_executions = PptxExecutionRepository(self.database)
         self.teaching_delivery = TeachingDeliveryRepository(self.database)
-        self.material_parser = MaterialParser()
+        self.material_parser = material_parser or MaterialParser()
         self.question_evidence_reader = question_evidence_reader
         self.assessment_evidence_reader = assessment_evidence_reader
         self.lesson_model_adapter = lesson_model_adapter
+        self.semester_mapping_model_adapter = semester_mapping_model_adapter
         self.wps_adapter = wps_adapter
         self.wps_adapter_is_real = bool(wps_adapter_is_real)
         self.lesson_model_label = (
@@ -211,14 +258,30 @@ class TeachingPrepService:
             if lesson_model_label is not None
             else None
         )
+        self.semester_mapping_model_label = (
+            _clean_optional_text(
+                semester_mapping_model_label,
+                "semester_mapping_model_label",
+                maximum=120,
+            )
+            if semester_mapping_model_label is not None
+            else None
+        )
         self.mark_interrupted_operations()
 
     def status(self) -> dict[str, object]:
         return {
             "module": "teaching-prep",
             "enabled": True,
-            "schema_version": "009_teacher_preferences",
-            "real_model_enabled": False,
+            "schema_version": "012_generation_performance",
+            "real_model_enabled": _model_adapter_available(
+                self.lesson_model_adapter
+            ),
+            "semester_mapping_model_available": (
+                _model_adapter_available(
+                    self.semester_mapping_model_adapter
+                )
+            ),
             "real_wps_enabled": (
                 self.wps_adapter is not None and self.wps_adapter_is_real
             ),
@@ -343,6 +406,346 @@ class TeachingPrepService:
 
     def list_curricula(self) -> tuple[CurriculumEdition, ...]:
         return self.catalog.list_curricula()
+
+    def create_semester_workspace(
+        self,
+        *,
+        request_token: str,
+        title: str,
+        grade_level: int,
+        volume: str,
+        publisher: str | None = None,
+        edition_label: str | None = None,
+        school_year: str,
+        term: str,
+        planned_new_lesson_count: int,
+    ) -> tuple[CurriculumEdition, TeachingSemester, bool]:
+        """Establish the curriculum and its semester in one transaction.
+
+        This is deliberately separate from the legacy low-level creation
+        methods.  A teacher-facing new-semester action must never leave a
+        curriculum without the state library that gives it context.
+        """
+        clean_grade = int(grade_level)
+        if clean_grade not in {7, 8, 9}:
+            raise TeachingPrepValidationError("grade_level is invalid")
+        clean_volume = str(volume or "").strip()
+        if clean_volume not in _VOLUMES:
+            raise TeachingPrepValidationError("volume is invalid")
+        clean_term = str(term or "").strip()
+        if clean_term not in _SEMESTER_TERMS:
+            raise TeachingPrepValidationError("semester term is invalid")
+        clean_count = int(planned_new_lesson_count)
+        if clean_count < 0 or clean_count > 500:
+            raise TeachingPrepValidationError(
+                "planned lesson count is invalid"
+            )
+        return self.semesters.create_workspace(
+            request_token=_clean_token(request_token),
+            title=_clean_text(title, "title", maximum=160),
+            grade_level=clean_grade,
+            volume=clean_volume,
+            publisher=_clean_optional_text(
+                publisher,
+                "publisher",
+                maximum=120,
+            ),
+            edition_label=_clean_optional_text(
+                edition_label,
+                "edition_label",
+                maximum=120,
+            ),
+            school_year=_clean_text(
+                school_year,
+                "school_year",
+                maximum=20,
+            ),
+            term=clean_term,
+            planned_new_lesson_count=clean_count,
+        )
+
+    def create_semester(
+        self,
+        *,
+        request_token: str,
+        curriculum_id: str,
+        school_year: str,
+        term: str,
+        planned_new_lesson_count: int,
+    ) -> tuple[TeachingSemester, bool]:
+        clean_term = str(term or "").strip()
+        if clean_term not in _SEMESTER_TERMS:
+            raise TeachingPrepValidationError("semester term is invalid")
+        clean_count = int(planned_new_lesson_count)
+        if clean_count < 0 or clean_count > 500:
+            raise TeachingPrepValidationError(
+                "planned lesson count is invalid"
+            )
+        return self.semesters.create(
+            request_token=_clean_token(request_token),
+            curriculum_id=_clean_entity_id(curriculum_id),
+            school_year=_clean_text(
+                school_year,
+                "school_year",
+                maximum=20,
+            ),
+            term=clean_term,
+            planned_new_lesson_count=clean_count,
+        )
+
+    def list_semesters(self) -> tuple[TeachingSemester, ...]:
+        return self.semesters.list()
+
+    def update_semester(
+        self,
+        semester_id: str,
+        *,
+        expected_revision: int,
+        planned_new_lesson_count: int,
+        status: str,
+    ) -> TeachingSemester:
+        clean_status = str(status or "").strip()
+        if clean_status not in _SEMESTER_STATUSES:
+            raise TeachingPrepValidationError("semester status is invalid")
+        clean_count = int(planned_new_lesson_count)
+        if clean_count < 0 or clean_count > 500:
+            raise TeachingPrepValidationError(
+                "planned lesson count is invalid"
+            )
+        return self.semesters.update(
+            _clean_entity_id(semester_id),
+            expected_revision=_clean_revision(expected_revision),
+            planned_new_lesson_count=clean_count,
+            status=clean_status,
+        )
+
+    def set_semester_lesson_progress(
+        self,
+        semester_id: str,
+        lesson_node_id: str,
+        *,
+        status: str,
+        expected_revision: int | None,
+    ) -> SemesterLessonProgress:
+        clean_status = str(status or "").strip()
+        if clean_status not in _LESSON_PROGRESS_STATUSES:
+            raise TeachingPrepValidationError(
+                "lesson progress status is invalid"
+            )
+        return self.semesters.set_lesson_progress(
+            _clean_entity_id(semester_id),
+            _clean_entity_id(lesson_node_id),
+            status=clean_status,
+            expected_revision=(
+                _clean_revision(expected_revision)
+                if expected_revision is not None
+                else None
+            ),
+        )
+
+    def list_semester_lesson_progress(
+        self,
+        semester_id: str,
+    ) -> tuple[SemesterLessonProgress, ...]:
+        return self.semesters.list_lesson_progress(
+            _clean_entity_id(semester_id)
+        )
+
+    def attach_semester_material(
+        self,
+        semester_id: str,
+        *,
+        request_token: str,
+        material_version_id: str,
+        material_role: str,
+    ) -> tuple[SemesterMaterialRecord, bool]:
+        clean_role = str(material_role or "").strip()
+        if clean_role not in _SEMESTER_MATERIAL_ROLES:
+            raise TeachingPrepValidationError("material role is invalid")
+        return self.semesters.attach_material(
+            _clean_entity_id(semester_id),
+            request_token=_clean_token(request_token),
+            material_version_id=_clean_entity_id(material_version_id),
+            material_role=clean_role,
+        )
+
+    def list_semester_materials(
+        self,
+        semester_id: str,
+    ) -> tuple[SemesterMaterialRecord, ...]:
+        return self.semesters.list_materials(
+            _clean_entity_id(semester_id)
+        )
+
+    def update_semester_material(
+        self,
+        record_id: str,
+        *,
+        expected_revision: int,
+        material_role: str,
+        mapping_status: str,
+        is_active: bool,
+    ) -> SemesterMaterialRecord:
+        clean_role = str(material_role or "").strip()
+        if clean_role not in _SEMESTER_MATERIAL_ROLES:
+            raise TeachingPrepValidationError("material role is invalid")
+        clean_mapping = str(mapping_status or "").strip()
+        if clean_mapping not in _SEMESTER_MAPPING_STATUSES:
+            raise TeachingPrepValidationError(
+                "material mapping status is invalid"
+            )
+        return self.semesters.update_material(
+            _clean_entity_id(record_id),
+            expected_revision=_clean_revision(expected_revision),
+            material_role=clean_role,
+            mapping_status=clean_mapping,
+            is_active=bool(is_active),
+        )
+
+    def semester_mapping_preflight(
+        self,
+        semester_id: str,
+        *,
+        material_record_ids: Sequence[str],
+    ) -> dict[str, object]:
+        clean_semester_id = _clean_entity_id(semester_id)
+        clean_material_ids = tuple(
+            _clean_entity_id(item) for item in material_record_ids
+        )
+        if len(clean_material_ids) != 1:
+            raise TeachingPrepValidationError(
+                "semester mapping handles one material at a time"
+            )
+        snapshot, digest = self.semester_mapping.snapshot(
+            clean_semester_id,
+            clean_material_ids,
+        )
+        _require_initial_tree_source(snapshot)
+        materials = list(snapshot["materials"])
+        lessons = list(snapshot["lessons"])
+        return {
+            "semester_id": clean_semester_id,
+            "source_state_sha256": digest,
+            "will_call_model": True,
+            "model_available": (
+                _model_adapter_available(
+                    self.semester_mapping_model_adapter
+                )
+            ),
+            "model_label": self.semester_mapping_model_label,
+            "material_count": len(materials),
+            "unit_count": sum(
+                int(item["unit_count"])
+                for item in materials
+                if isinstance(item, Mapping)
+            ),
+            "existing_lesson_count": sum(
+                item.get("node_type") == "lesson"
+                for item in lessons
+                if isinstance(item, Mapping)
+            ),
+            "creates_initial_tree": not lessons,
+            "automatic_retry": False,
+        }
+
+    def generate_semester_mapping_proposal(
+        self,
+        semester_id: str,
+        *,
+        operation_id: str,
+        material_record_ids: Sequence[str],
+    ) -> tuple[SemesterMappingProposal, bool]:
+        clean_semester_id = _clean_entity_id(semester_id)
+        clean_operation_id = _clean_token(operation_id)
+        clean_material_ids = tuple(
+            dict.fromkeys(
+                _clean_entity_id(item) for item in material_record_ids
+            )
+        )
+        if len(clean_material_ids) != 1:
+            raise TeachingPrepValidationError(
+                "semester mapping handles one material at a time"
+            )
+        snapshot, source_digest = self.semester_mapping.snapshot(
+            clean_semester_id,
+            clean_material_ids,
+        )
+        _require_initial_tree_source(snapshot)
+        request_hash = _stable_hash(
+            {
+                "semester_id": clean_semester_id,
+                "material_record_ids": clean_material_ids,
+                "source_state_sha256": source_digest,
+            }
+        )
+        existing = self.semester_mapping.find_generation(
+            operation_id=clean_operation_id,
+            request_hash=request_hash,
+        )
+        if existing is not None:
+            return existing, False
+        if not _model_adapter_available(
+            self.semester_mapping_model_adapter
+        ):
+            raise TeachingPrepValidationError(
+                "semester mapping model is unavailable"
+            )
+        existing = self.semester_mapping.begin_generation(
+            operation_id=clean_operation_id,
+            request_hash=request_hash,
+            semester_id=clean_semester_id,
+        )
+        if existing is not None:
+            return existing, False
+        try:
+            raw = self.semester_mapping_model_adapter.generate(
+                operation_id=clean_operation_id,
+                semester_snapshot=snapshot,
+            )
+            normalized = validate_semester_mapping_payload(
+                raw,
+                snapshot=snapshot,
+            )
+            stored = {
+                **normalized,
+                "source_material_record_ids": list(clean_material_ids),
+            }
+            return (
+                self.semester_mapping.finish_generation(
+                    operation_id=clean_operation_id,
+                    semester_id=clean_semester_id,
+                    source_state_sha256=source_digest,
+                    payload=stored,
+                ),
+                True,
+            )
+        except Exception as exc:
+            self.semester_mapping.fail_generation(
+                clean_operation_id,
+                "semester_mapping_failed",
+            )
+            raise TeachingPrepRetryAvailableError(
+                "semester mapping did not complete; the teacher may retry"
+            ) from exc
+
+    def list_semester_mapping_proposals(
+        self,
+        semester_id: str,
+    ) -> tuple[SemesterMappingProposal, ...]:
+        return self.semester_mapping.list(
+            _clean_entity_id(semester_id)
+        )
+
+    def apply_semester_mapping_proposal(
+        self,
+        proposal_id: str,
+        *,
+        expected_revision: int,
+    ) -> SemesterMappingProposal:
+        return self.semester_mapping.apply(
+            _clean_entity_id(proposal_id),
+            expected_revision=_clean_revision(expected_revision),
+        )
 
     def create_lesson_node(
         self,
@@ -649,48 +1052,54 @@ class TeachingPrepService:
     ) -> tuple[MaterialUnit, ...]:
         clean_id = _clean_entity_id(version_id)
         version = self.catalog.get_material_version(clean_id)
-        source_path = self.catalog.get_material_location(clean_id)
-        if not source_path.is_file():
-            self.catalog.mark_material_missing(clean_id)
-            raise TeachingPrepValidationError(
-                "material file requires relocation"
+        try:
+            source_path = self.catalog.get_material_location(clean_id)
+            if not source_path.is_file():
+                self.catalog.mark_material_missing(clean_id)
+                raise TeachingPrepValidationError(
+                    "material file requires relocation"
+                )
+            current_sha = _sha256_file(source_path)
+            if current_sha != version.content_sha256:
+                self.catalog.mark_material_missing(clean_id)
+                raise TeachingPrepConflictError(
+                    "material file changed; register a new version"
+                )
+            parsed = self.material_parser.parse(
+                source_path,
+                material_type=version.material_type,
             )
-        current_sha = _sha256_file(source_path)
-        if current_sha != version.content_sha256:
-            self.catalog.mark_material_missing(clean_id)
-            raise TeachingPrepConflictError(
-                "material file changed; register a new version"
+            relative_paths: list[str] = []
+            preview_hashes: list[str] = []
+            for unit in parsed:
+                relative = (
+                    Path("previews")
+                    / clean_id
+                    / f"unit-{unit.unit_index:05d}.png"
+                )
+                target = self.root / relative
+                target.parent.mkdir(parents=True, exist_ok=True)
+                temporary = target.with_name(
+                    f".{target.name}.{uuid4().hex}.tmp"
+                )
+                temporary.write_bytes(unit.preview_png)
+                temporary.replace(target)
+                relative_paths.append(relative.as_posix())
+                preview_hashes.append(
+                    hashlib.sha256(unit.preview_png).hexdigest()
+                )
+            units = self.material_units.save_parsed_units(
+                clean_id,
+                source_version_sha256=version.content_sha256,
+                units=parsed,
+                preview_relpaths=tuple(relative_paths),
+                preview_hashes=tuple(preview_hashes),
             )
-        parsed = self.material_parser.parse(
-            source_path,
-            material_type=version.material_type,
-        )
-        relative_paths: list[str] = []
-        preview_hashes: list[str] = []
-        for unit in parsed:
-            relative = (
-                Path("previews")
-                / clean_id
-                / f"unit-{unit.unit_index:05d}.png"
-            )
-            target = self.root / relative
-            target.parent.mkdir(parents=True, exist_ok=True)
-            temporary = target.with_name(
-                f".{target.name}.{uuid4().hex}.tmp"
-            )
-            temporary.write_bytes(unit.preview_png)
-            temporary.replace(target)
-            relative_paths.append(relative.as_posix())
-            preview_hashes.append(
-                hashlib.sha256(unit.preview_png).hexdigest()
-            )
-        return self.material_units.save_parsed_units(
-            clean_id,
-            source_version_sha256=version.content_sha256,
-            units=parsed,
-            preview_relpaths=tuple(relative_paths),
-            preview_hashes=tuple(preview_hashes),
-        )
+            self.semesters.mark_version_parsed(clean_id)
+            return units
+        except Exception:
+            self.semesters.mark_version_parse_failed(clean_id)
+            raise
 
     def list_material_units(
         self,
@@ -1201,7 +1610,9 @@ class TeachingPrepService:
         return draft_preflight(
             pack,
             mode=clean_mode,
-            model_available=self.lesson_model_adapter is not None,
+            model_available=_model_adapter_available(
+                self.lesson_model_adapter
+            ),
             model_label=self.lesson_model_label,
         )
 
@@ -1224,7 +1635,9 @@ class TeachingPrepService:
             raise TeachingPrepValidationError(
                 "draft generation requires teacher confirmation"
             )
-        if clean_mode == "model" and self.lesson_model_adapter is None:
+        if clean_mode == "model" and not _model_adapter_available(
+            self.lesson_model_adapter
+        ):
             raise TeachingPrepValidationError(
                 "lesson model is unavailable or not authorized"
             )
@@ -1696,8 +2109,12 @@ class TeachingPrepService:
         source_copy = staging / "source-copy.pptx"
         candidate = staging / "candidate.pptx"
         preview_dir = staging / "wps-previews"
+        output: Path | None = None
         publication_moved = False
+        published = False
+        reserved_version_id: str | None = None
         try:
+            self._require_generation_budget(run.id)
             staging.mkdir(parents=True, exist_ok=False)
             preview_dir.mkdir(parents=True, exist_ok=False)
             shutil.copy2(source_path, source_copy)
@@ -1732,13 +2149,24 @@ class TeachingPrepService:
                 preview_dir=preview_dir,
                 resolve_asset=resolve_asset,
             )
+            remaining_budget_ms = self._remaining_generation_budget_ms(run.id)
+            executor_request["performance_budget"] = {
+                "timeout_milliseconds": min(
+                    _WPS_EXECUTION_TIMEOUT_SECONDS * 1000,
+                    remaining_budget_ms,
+                ),
+                "total_budget_ms": _LESSON_GENERATION_BUDGET_MS,
+                "remaining_budget_ms": remaining_budget_ms,
+            }
+            self.pptx_executions.mark_wps_started(run.id)
             raw_report = self.wps_adapter.execute(
                 operation_id=clean_operation_id,
                 plan=executor_request,
             )
+            self._require_generation_budget(run.id)
             report = safe_execution_report(raw_report)
             self.pptx_executions.set_verifying(run.id, report)
-            verification = verify_candidate(
+            verification = verify_candidate_with_deadline(
                 candidate=candidate,
                 preview_dir=preview_dir,
                 plan_payload=plan.payload,
@@ -1747,28 +2175,43 @@ class TeachingPrepService:
                 source_sha256=source_sha256,
                 execution_report=report,
                 parser=self.material_parser,
+                timeout_seconds=(
+                    self._remaining_generation_budget_ms(run.id) / 1000
+                ),
             )
+            self._require_generation_budget(run.id)
+            publication_deadline_at = self._generation_publish_deadline(run.id)
+            publication_verification = {
+                **verification,
+                "generation_deadline_at": publication_deadline_at,
+            }
             pack = self.resource_packs.get(plan.resource_pack_id)
             version, relative = self.pptx_executions.begin_publish(
                 run_id=run.id,
                 lesson_node_id=pack.lesson_node_id,
                 slide_plan_id=plan.id,
                 slide_count=expected_slide_count,
-                verification_report=verification,
+                verification_report=publication_verification,
             )
+            reserved_version_id = version.id
             output = self._controlled_output(relative)
             output.parent.mkdir(parents=True, exist_ok=True)
             if output.exists():
                 raise TeachingPrepConflictError(
                     "reserved PPTX output already exists"
                 )
+            self._require_generation_budget(run.id)
             os.rename(candidate, output)
             publication_moved = True
+            self._require_generation_budget(run.id)
             version = self.pptx_executions.finish_publish(
                 run_id=run.id,
                 version_id=version.id,
                 output_sha256=str(verification["candidate_sha256"]),
+                deadline_at=publication_deadline_at,
             )
+            published = True
+            self._require_generation_budget(run.id)
             return (
                 self._execution_with_storage(
                     self.pptx_executions.get(run.id)
@@ -1777,7 +2220,23 @@ class TeachingPrepService:
                 True,
             )
         except Exception as exc:
-            if not publication_moved:
+            error_code = _execution_error_code(exc)
+            if published and reserved_version_id is not None:
+                self.pptx_executions.revoke_published(
+                    run_id=run.id,
+                    version_id=reserved_version_id,
+                    error_code=error_code,
+                )
+                _restore_candidate_from_output(
+                    candidate=candidate,
+                    output=output,
+                )
+            else:
+                if publication_moved:
+                    _restore_candidate_from_output(
+                        candidate=candidate,
+                        output=output,
+                    )
                 self.pptx_executions.fail(run.id, _execution_error_code(exc))
             return (
                 self._execution_with_storage(
@@ -1791,6 +2250,44 @@ class TeachingPrepService:
         return self._execution_with_storage(
             self.pptx_executions.get(_clean_entity_id(run_id))
         )
+
+    def get_lesson_generation_performance(
+        self,
+        run_id: str,
+    ) -> LessonGenerationPerformance:
+        return self.pptx_executions.performance(
+            _clean_entity_id(run_id),
+            budget_ms=_LESSON_GENERATION_BUDGET_MS,
+        )
+
+    def _require_generation_budget(self, run_id: str) -> None:
+        self._remaining_generation_budget_ms(run_id)
+
+    def _remaining_generation_budget_ms(self, run_id: str) -> int:
+        performance = self.pptx_executions.performance(
+            run_id,
+            budget_ms=_LESSON_GENERATION_BUDGET_MS,
+        )
+        remaining = (
+            _LESSON_GENERATION_BUDGET_MS
+            - performance.total_machine_elapsed_ms
+        )
+        if remaining <= 0:
+            raise TimeoutError("lesson generation budget exceeded")
+        return remaining
+
+    def _generation_publish_deadline(self, run_id: str) -> str:
+        """Persist the remaining hard deadline alongside a reserved version.
+
+        The in-process monotonic clock protects live validation.  A restart
+        needs an equivalent durable wall-clock deadline so recovery cannot
+        turn a timed-out publication into a downloadable file.
+        """
+        remaining = self._remaining_generation_budget_ms(run_id)
+        return (
+            datetime.now(UTC)
+            + timedelta(milliseconds=remaining)
+        ).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
     def list_pptx_executions(
         self,
@@ -1832,6 +2329,33 @@ class TeachingPrepService:
             raise TeachingPrepConflictError(
                 "interrupted execution has no trusted candidate fingerprint"
             )
+        publication_deadline_at = _generation_deadline_from_verification(
+            verification
+        )
+        output = self._controlled_output(
+            self.pptx_executions.version_output_relpath(
+                run.published_version_id
+            )
+        )
+        candidate = self._execution_staging(run.id) / "candidate.pptx"
+        if (
+            publication_deadline_at is None
+            or not _generation_deadline_is_open(publication_deadline_at)
+        ):
+            self.pptx_executions.fail(
+                run.id,
+                "generation_budget_exceeded",
+            )
+            _restore_candidate_from_output(
+                candidate=candidate,
+                output=output,
+            )
+            return (
+                self._execution_with_storage(
+                    self.pptx_executions.get(run.id)
+                ),
+                None,
+            )
         source_path = self.catalog.get_material_location(
             run.source_material_version_id
         )
@@ -1842,12 +2366,6 @@ class TeachingPrepService:
             raise TeachingPrepConflictError(
                 "source PPTX changed before publication recovery"
             )
-        output = self._controlled_output(
-            self.pptx_executions.version_output_relpath(
-                run.published_version_id
-            )
-        )
-        candidate = self._execution_staging(run.id) / "candidate.pptx"
         if not output.is_file():
             if not candidate.is_file():
                 raise TeachingPrepConflictError(
@@ -1862,16 +2380,44 @@ class TeachingPrepService:
                 raise TeachingPrepConflictError(
                     "reserved PPTX output already exists"
                 )
+            _require_generation_deadline(publication_deadline_at)
             os.rename(candidate, output)
         if _sha256_file(output) != expected_output_sha256:
             raise TeachingPrepConflictError(
                 "interrupted output fingerprint changed"
             )
-        version = self.pptx_executions.finish_publish(
-            run_id=run.id,
-            version_id=run.published_version_id,
-            output_sha256=expected_output_sha256,
-        )
+        published = False
+        try:
+            version = self.pptx_executions.finish_publish(
+                run_id=run.id,
+                version_id=run.published_version_id,
+                output_sha256=expected_output_sha256,
+                deadline_at=publication_deadline_at,
+            )
+            published = True
+            _require_generation_deadline(publication_deadline_at)
+        except TimeoutError:
+            if published:
+                self.pptx_executions.revoke_published(
+                    run_id=run.id,
+                    version_id=run.published_version_id,
+                    error_code="generation_budget_exceeded",
+                )
+            else:
+                self.pptx_executions.fail(
+                    run.id,
+                    "generation_budget_exceeded",
+                )
+            _restore_candidate_from_output(
+                candidate=candidate,
+                output=output,
+            )
+            return (
+                self._execution_with_storage(
+                    self.pptx_executions.get(run.id)
+                ),
+                None,
+            )
         return (
             self._execution_with_storage(
                 self.pptx_executions.get(run.id)
@@ -2449,7 +2995,14 @@ class TeachingPrepService:
         if run.status == "interrupted":
             actions = (
                 ("resume_publication", "discard_staging")
-                if run.published_version_id is not None
+                if (
+                    run.published_version_id is not None
+                    and _generation_deadline_is_open(
+                        _generation_deadline_from_verification(
+                            run.verification_report
+                        )
+                    )
+                )
                 else ("discard_staging",)
             )
         elif run.status in {"failed", "cancelled", "published"} and retained:
@@ -2484,8 +3037,43 @@ def _clean_token(value: str) -> str:
     return clean
 
 
+def _model_adapter_available(adapter: object | None) -> bool:
+    if adapter is None:
+        return False
+    probe = getattr(adapter, "is_available", None)
+    if not callable(probe):
+        return True
+    try:
+        return bool(probe())
+    except (OSError, ValueError):
+        return False
+
+
+def _require_initial_tree_source(snapshot: Mapping[str, object]) -> None:
+    lessons = snapshot.get("lessons")
+    if isinstance(lessons, list) and lessons:
+        return
+    materials = snapshot.get("materials")
+    if not isinstance(materials, list) or len(materials) != 1:
+        raise TeachingPrepValidationError(
+            "initial lesson tree requires one textbook or homework workbook"
+        )
+    material = materials[0]
+    role = (
+        str(material.get("material_role") or "")
+        if isinstance(material, Mapping)
+        else ""
+    )
+    if role not in {"textbook", "homework_workbook"}:
+        raise TeachingPrepValidationError(
+            "initial lesson tree requires a textbook or homework workbook"
+        )
+
+
 def _execution_error_code(exc: Exception) -> str:
     if isinstance(exc, TimeoutError):
+        if "generation budget" in str(exc):
+            return "generation_budget_exceeded"
         return "wps_helper_timeout"
     if isinstance(exc, PermissionError):
         return "source_or_output_locked"
@@ -2494,6 +3082,49 @@ def _execution_error_code(exc: Exception) -> str:
     if isinstance(exc, TeachingPrepValidationError):
         return "verification_failed"
     return "wps_execution_failed"
+
+
+def _generation_deadline_from_verification(
+    verification: Mapping[str, object] | None,
+) -> str | None:
+    if not isinstance(verification, Mapping):
+        return None
+    value = verification.get("generation_deadline_at")
+    return value if isinstance(value, str) else None
+
+
+def _generation_deadline_is_open(deadline_at: str | None) -> bool:
+    if not deadline_at:
+        return False
+    try:
+        parsed = datetime.fromisoformat(deadline_at.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    if parsed.tzinfo is None:
+        return False
+    return datetime.now(UTC) < parsed.astimezone(UTC)
+
+
+def _require_generation_deadline(deadline_at: str) -> None:
+    if not _generation_deadline_is_open(deadline_at):
+        raise TimeoutError("lesson generation budget exceeded")
+
+
+def _restore_candidate_from_output(
+    *,
+    candidate: Path,
+    output: Path | None,
+) -> None:
+    """Return a failed publication to its isolated staging area when able."""
+    if output is None:
+        return
+    try:
+        if output.is_file() and not candidate.exists():
+            os.rename(output, candidate)
+    except OSError:
+        # The database version has already been made unavailable.  A locked
+        # file cannot be safely moved here and is never exposed for download.
+        return
 
 
 def _package_error_code(exc: Exception) -> str:
@@ -2510,6 +3141,15 @@ def _clean_entity_id(value: str) -> str:
     clean = str(value or "").strip().casefold()
     if not _ENTITY_ID.fullmatch(clean):
         raise TeachingPrepValidationError("preparation ID is invalid")
+    return clean
+
+
+def _clean_revision(value: int) -> int:
+    clean = int(value)
+    if clean < 1:
+        raise TeachingPrepValidationError(
+            "expected_revision must be positive"
+        )
     return clean
 
 

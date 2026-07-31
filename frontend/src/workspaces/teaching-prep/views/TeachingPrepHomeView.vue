@@ -1,5 +1,12 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import {
+  computed,
+  onMounted,
+  reactive,
+  ref,
+  toRaw,
+  watch,
+} from 'vue'
 
 import type {
   CurriculumVolume,
@@ -19,6 +26,12 @@ import type {
   NormalizedCrop,
   QuestionEvidenceChoice,
   ResourcePack,
+  SemesterMappingProposal,
+  SemesterLessonProgressStatus,
+  SemesterMaterialMappingStatus,
+  SemesterMaterialRecord,
+  SemesterMaterialRole,
+  SemesterStatus,
   PptxExecution,
   PostLessonReview,
   SlideOperation,
@@ -36,6 +49,9 @@ const showLessonForm = ref(false)
 const editingNodeId = ref<string | null>(null)
 const editingTitle = ref('')
 const selectedUnitIds = ref<string[]>([])
+const importMaterialRole = ref<SemesterMaterialRole>('supplement')
+const materialRoleDrafts = reactive<Record<string, SemesterMaterialRole>>({})
+const selectedSemesterMaterialId = ref('')
 const linkPurpose = ref<MaterialLinkPurpose>('textbook')
 const linkNote = ref('')
 const editingUnitId = ref<string | null>(null)
@@ -134,6 +150,22 @@ const curriculumForm = reactive({
   volume: 'first' as CurriculumVolume,
   publisher: '',
   editionLabel: '',
+  schoolYear: (() => {
+    const today = new Date()
+    const startYear = today.getMonth() >= 6
+      ? today.getFullYear()
+      : today.getFullYear() - 1
+    return `${startYear}-${startYear + 1}`
+  })(),
+  term: 'first' as 'first' | 'second',
+  plannedNewLessonCount: 48,
+})
+const semesterEdit = reactive<{
+  plannedNewLessonCount: number
+  status: SemesterStatus
+}>({
+  plannedNewLessonCount: 0,
+  status: 'planning',
 })
 
 const lessonForm = reactive({
@@ -197,6 +229,18 @@ const referencePptLinks = computed(() => catalog.materialLinks.filter(
     && link.purpose === 'reference_ppt'
   ),
 ))
+const semesterMaterialBySource = computed(() => Object.fromEntries(
+  catalog.semesterMaterials.map((record) => [
+    record.material_source_id,
+    record,
+  ]),
+))
+const lessonProgressByNode = computed(() => Object.fromEntries(
+  catalog.semesterLessonProgress.map((progress) => [
+    progress.lesson_node_id,
+    progress.status,
+  ]),
+))
 
 watch(
   () => lessonForm.nodeType,
@@ -204,6 +248,33 @@ watch(
     lessonForm.parentId = ''
     lessonForm.durationMinutes = lessonForm.nodeType === 'lesson' ? 45 : 0
   },
+)
+watch(
+  () => catalog.semesterMaterials,
+  (records) => {
+    const eligible = new Set(
+      records
+        .filter((record) => (
+          record.is_active
+          && record.parse_status === 'parsed'
+          && !record.has_unparsed_update
+        ))
+        .map(({ id }) => id),
+    )
+    if (!eligible.has(selectedSemesterMaterialId.value)) {
+      selectedSemesterMaterialId.value = [...eligible][0] ?? ''
+    }
+  },
+  { immediate: true },
+)
+watch(
+  () => catalog.selectedSemester,
+  (semester) => {
+    if (!semester) return
+    semesterEdit.plannedNewLessonCount = semester.planned_new_lesson_count
+    semesterEdit.status = semester.status
+  },
+  { immediate: true },
 )
 watch(
   () => catalog.teachingPreferences,
@@ -258,18 +329,35 @@ function requestToken(prefix: string): string {
 async function submitCurriculum(): Promise<void> {
   if (!curriculumForm.title.trim()) return
   try {
-    await catalog.createCurriculum({
-      request_token: requestToken('curriculum'),
-      title: curriculumForm.title.trim(),
-      grade_level: curriculumForm.gradeLevel,
-      volume: curriculumForm.volume,
-      publisher: curriculumForm.publisher.trim() || null,
-      edition_label: curriculumForm.editionLabel.trim() || null,
+    await catalog.createSemesterWorkspace({
+      curriculum: {
+        title: curriculumForm.title.trim(),
+        grade_level: curriculumForm.gradeLevel,
+        volume: curriculumForm.volume,
+        publisher: curriculumForm.publisher.trim() || null,
+        edition_label: curriculumForm.editionLabel.trim() || null,
+      },
+      semester: {
+        school_year: curriculumForm.schoolYear.trim(),
+        term: curriculumForm.term,
+        planned_new_lesson_count: curriculumForm.plannedNewLessonCount,
+      },
     })
     curriculumForm.title = ''
     curriculumForm.publisher = ''
     curriculumForm.editionLabel = ''
     showCurriculumForm.value = false
+  } catch {
+    // The store keeps the user-safe message and the form stays intact.
+  }
+}
+
+async function saveSemesterState(): Promise<void> {
+  try {
+    await catalog.updateSemester({
+      plannedNewLessonCount: semesterEdit.plannedNewLessonCount,
+      status: semesterEdit.status,
+    })
   } catch {
     // The store keeps the user-safe message and the form stays intact.
   }
@@ -364,10 +452,116 @@ async function importMaterialCopy(event: Event): Promise<void> {
   input.value = ''
   if (!file) return
   try {
-    await catalog.importMaterialCopy(file)
+    await catalog.importMaterialCopy(file, importMaterialRole.value)
   } catch {
     // The store keeps a safe upload error visible.
   }
+}
+
+function semesterParseStatusLabel(
+  record: SemesterMaterialRecord | undefined,
+): string {
+  if (!record) return '尚未登记'
+  if (record.has_unparsed_update) return '有新版本待解析'
+  return {
+    not_started: '尚未解析',
+    parsed: '已解析',
+    needs_review: '解析待核对',
+    failed: '解析失败',
+  }[record.parse_status]
+}
+
+function semesterMappingStatusLabel(
+  status: SemesterMaterialMappingStatus | undefined,
+): string {
+  if (!status) return '尚未映射课时'
+  return {
+    unmapped: '尚未映射课时',
+    proposed: 'AI 建议待确认',
+    partial: '部分已映射',
+    confirmed: '课时映射已确认',
+    needs_review: '新版本映射待复核',
+    conflict: '映射有冲突',
+  }[status]
+}
+
+function lessonProgressStatus(
+  lessonNodeId: string,
+): SemesterLessonProgressStatus {
+  return lessonProgressByNode.value[lessonNodeId] ?? 'not_started'
+}
+
+function proposalLessonLabel(
+  proposal: SemesterMappingProposal,
+  lessonRef: string,
+): string {
+  if (!lessonRef.startsWith('proposal:')) {
+    return catalog.lessonNodes.find(({ id }) => id === lessonRef)?.title
+      ?? '现有课时（名称已变化）'
+  }
+  const key = lessonRef.slice('proposal:'.length)
+  for (const chapter of proposal.payload.tree) {
+    for (const section of chapter.sections) {
+      const lesson = section.lessons.find((item) => item.key === key)
+      if (lesson) return `${chapter.title} / ${section.title} / ${lesson.title}`
+    }
+  }
+  return '拟建课时（名称不可用）'
+}
+
+function proposalMaterialLabel(materialRecordId: string): string {
+  return catalog.semesterMaterials.find(
+    ({ id }) => id === materialRecordId,
+  )?.display_name ?? '本学期资料'
+}
+
+async function changeLessonProgress(
+  lessonNodeId: string,
+  event: Event,
+): Promise<void> {
+  const target = event.target as HTMLSelectElement
+  await catalog.setSemesterLessonProgress(
+    lessonNodeId,
+    target.value as SemesterLessonProgressStatus,
+  )
+}
+
+async function attachMaterialToSemester(
+  material: MaterialVersion,
+): Promise<void> {
+  await catalog.attachSemesterMaterial(
+    material,
+    materialRoleDrafts[material.id] ?? 'supplement',
+  )
+}
+
+async function changeSemesterMaterialRole(
+  record: SemesterMaterialRecord,
+  event: Event,
+): Promise<void> {
+  const target = event.target as HTMLSelectElement
+  await catalog.updateSemesterMaterial(record, {
+    materialRole: target.value as SemesterMaterialRole,
+  })
+}
+
+async function changeSemesterMaterialRoleBySource(
+  sourceId: string,
+  event: Event,
+): Promise<void> {
+  const record = semesterMaterialBySource.value[sourceId]
+  if (!record) return
+  await changeSemesterMaterialRole(record, event)
+}
+
+async function prepareSemesterMapping(): Promise<void> {
+  if (!selectedSemesterMaterialId.value) return
+  await catalog.prepareSemesterMapping([selectedSemesterMaterialId.value])
+}
+
+async function generateSemesterMapping(): Promise<void> {
+  if (!selectedSemesterMaterialId.value) return
+  await catalog.generateSemesterMapping([selectedSemesterMaterialId.value])
 }
 
 async function relocateMaterialCopy(
@@ -692,7 +886,11 @@ function textList(value: string): string[] {
 function applyPreparationPreferences(
   value: TeachingPreferencesPayload,
 ): void {
-  Object.assign(preparationPreferences, structuredClone(value))
+  Object.assign(preparationPreferences, clonePlain(value))
+}
+
+function clonePlain<T>(value: T): T {
+  return structuredClone(toRaw(value))
 }
 
 function resetPreparationPreferences(): void {
@@ -704,7 +902,7 @@ function resetPreparationPreferences(): void {
 async function savePersonalPreparationPreferences(): Promise<void> {
   try {
     await catalog.saveTeachingPreferences(
-      structuredClone(preparationPreferences),
+      clonePlain(preparationPreferences),
     )
   } catch {
     // Keep the current checkboxes visible so the teacher can refresh or retry.
@@ -752,7 +950,7 @@ async function freezeResourcePack(): Promise<void> {
       question_ids: selectedQuestionIds.value,
       assessment_ids: selectedAssessmentIds.value,
       knowledge_scope: textList(resourcePackForm.knowledgeScope),
-      preparation_preferences: structuredClone(preparationPreferences),
+      preparation_preferences: clonePlain(preparationPreferences),
     })
     selectedAssessmentIds.value = []
     selectedQuestionIds.value = []
@@ -776,7 +974,7 @@ function packPreparationPreferenceSummary(pack: ResourcePack): string {
 
 function startDraftEdit(draft: LessonDraft): void {
   editingDraft.value = draft
-  draftEdit.value = structuredClone(draft.payload)
+  draftEdit.value = clonePlain(draft.payload)
 }
 
 async function saveDraftEdit(confirmed: boolean): Promise<void> {
@@ -904,6 +1102,7 @@ function executionErrorLabel(code: string | null): string {
   if (code === null) return ''
   return {
     wps_helper_timeout: 'WPS 响应超时，源文件未修改。',
+    generation_budget_exceeded: '机器处理超过 5 分钟，本次已停止且没有发布。',
     source_or_output_locked: '文件正在被占用，请关闭对应文件后创建新计划再试。',
     execution_state_conflict: '来源或执行状态发生变化，本次没有发布。',
     verification_failed: '候选副本未通过完整验证，本次没有发布。',
@@ -911,6 +1110,13 @@ function executionErrorLabel(code: string | null): string {
     application_restarted: '应用运行期间中断，暂存内容已保留。',
     teacher_cancelled: '教师已取消，本次没有发布。',
   }[code] ?? '本次没有发布，请保留诊断信息后处理。'
+}
+
+function formatMachineElapsed(milliseconds: number): string {
+  const totalSeconds = Math.max(0, Math.round(milliseconds / 1000))
+  const minutes = Math.floor(totalSeconds / 60)
+  const seconds = totalSeconds % 60
+  return minutes > 0 ? `${minutes} 分 ${seconds} 秒` : `${seconds} 秒`
 }
 
 async function executeApprovedPlan(plan: SlidePlan): Promise<void> {
@@ -1051,7 +1257,7 @@ function operationForReview(operationId: string): SlideOperation {
         <p class="teaching-prep-page__eyebrow">初中数学 · 个人备课</p>
         <h1 id="teaching-prep-title" tabindex="-1">备课工作台</h1>
         <p class="teaching-prep-page__summary">
-          先建立实际课时，再逐步关联教材、课件和课堂练习。
+          先建立本学期计划和资料台账，再按实际进度准备每一课时。
         </p>
       </div>
       <span class="teaching-prep-page__safety">原课件不会被覆盖</span>
@@ -1071,14 +1277,14 @@ function operationForReview(operationId: string): SlideOperation {
         <div class="teaching-prep-panel__header">
           <div>
             <p>第一步</p>
-            <h2>教材与课时树</h2>
+            <h2>学期与教材</h2>
           </div>
           <button
             type="button"
             class="teaching-prep-button teaching-prep-button--quiet"
             @click="showCurriculumForm = !showCurriculumForm"
           >
-            新建版本
+            新建学期库
           </button>
         </div>
 
@@ -1088,7 +1294,7 @@ function operationForReview(operationId: string): SlideOperation {
           @submit.prevent="submitCurriculum"
         >
           <label>
-            教材版本名称
+            本学期教材名称
             <input
               v-model="curriculumForm.title"
               required
@@ -1114,6 +1320,33 @@ function operationForReview(operationId: string): SlideOperation {
               </select>
             </label>
           </div>
+          <div class="teaching-prep-form__row">
+            <label>
+              学年
+              <input
+                v-model="curriculumForm.schoolYear"
+                required
+                maxlength="20"
+                placeholder="例如：2026-2027"
+              >
+            </label>
+            <label>
+              学期
+              <select v-model="curriculumForm.term">
+                <option value="first">第一学期</option>
+                <option value="second">第二学期</option>
+              </select>
+            </label>
+          </div>
+          <label>
+            计划新授课时数
+            <input
+              v-model.number="curriculumForm.plannedNewLessonCount"
+              type="number"
+              min="0"
+              max="500"
+            >
+          </label>
           <label>
             出版社（可选）
             <input v-model="curriculumForm.publisher" maxlength="120">
@@ -1124,7 +1357,7 @@ function operationForReview(operationId: string): SlideOperation {
               class="teaching-prep-button teaching-prep-button--primary"
               :disabled="catalog.saveState === 'saving'"
             >
-              保存教材版本
+              建立学期库
             </button>
             <button
               type="button"
@@ -1156,6 +1389,19 @@ function operationForReview(operationId: string): SlideOperation {
           >
             <strong>{{ item.title }}</strong>
             <span>{{ item.grade_level }} 年级 · {{ item.volume === 'first' ? '上册' : item.volume === 'second' ? '下册' : '全一册' }}</span>
+            <span
+              v-if="catalog.semesters.find(({ curriculum_id: id }) => id === item.id)"
+            >
+              {{
+                catalog.semesters.find(({ curriculum_id: id }) => id === item.id)?.school_year
+              }}
+              ·
+              {{
+                catalog.semesters.find(({ curriculum_id: id }) => id === item.id)?.term === 'first'
+                  ? '第一学期'
+                  : '第二学期'
+              }}
+            </span>
           </button>
         </template>
       </aside>
@@ -1175,6 +1421,254 @@ function operationForReview(operationId: string): SlideOperation {
             新增节点
           </button>
         </div>
+
+        <section
+          v-if="catalog.selectedSemester"
+          class="teaching-prep-semester-summary"
+          aria-label="本学期状态"
+        >
+          <div>
+            <strong>
+              {{ catalog.selectedSemester.school_year }}
+              ·
+              {{ catalog.selectedSemester.term === 'first' ? '第一学期' : '第二学期' }}
+            </strong>
+            <span>
+              已上 {{ catalog.selectedSemester.taught_lesson_count }}
+              / 计划 {{ catalog.selectedSemester.planned_new_lesson_count }} 个新授课时
+            </span>
+          </div>
+          <div>
+            <span>备课中 {{ catalog.selectedSemester.preparing_lesson_count }}</span>
+            <span>待上课 {{ catalog.selectedSemester.ready_lesson_count }}</span>
+            <span>
+              资料已解析
+              {{ catalog.selectedSemester.parsed_material_count }}
+              / {{ catalog.selectedSemester.material_count }}
+            </span>
+            <span>
+              映射已确认
+              {{ catalog.selectedSemester.mapped_material_count }}
+              / {{ catalog.selectedSemester.material_count }}
+            </span>
+          </div>
+          <form
+            class="teaching-prep-semester-summary__edit"
+            aria-label="调整学期计划"
+            @submit.prevent="saveSemesterState"
+          >
+            <label>
+              计划新授课时
+              <input
+                v-model.number="semesterEdit.plannedNewLessonCount"
+                type="number"
+                min="0"
+                max="500"
+                required
+              >
+            </label>
+            <label>
+              学期状态
+              <select v-model="semesterEdit.status">
+                <option value="planning">规划中</option>
+                <option value="active">进行中</option>
+                <option value="completed">已结束</option>
+                <option value="archived">已归档</option>
+              </select>
+            </label>
+            <button
+              type="submit"
+              class="teaching-prep-button teaching-prep-button--quiet"
+              :disabled="catalog.saveState === 'saving'"
+            >
+              保存学期状态
+            </button>
+          </form>
+        </section>
+
+        <section
+          v-if="catalog.selectedSemester"
+          class="teaching-prep-semester-mapping"
+          aria-labelledby="semester-mapping-title"
+        >
+          <div class="teaching-prep-units__header">
+            <div>
+              <h3 id="semester-mapping-title">AI 整理课时与页码</h3>
+              <span>每次整理一份已完成本地解析的资料；建议确认前不会改正式课时树。</span>
+            </div>
+          </div>
+          <p
+            v-if="catalog.semesterMaterials.length === 0"
+            class="teaching-prep-empty"
+          >
+            先把教材、教辅或 PPT 加入本学期并完成逐份解析。
+          </p>
+          <div v-else class="teaching-prep-semester-mapping__materials">
+            <label
+              v-for="record in catalog.semesterMaterials"
+              :key="record.id"
+              :class="{ 'is-disabled': (
+                record.parse_status !== 'parsed'
+                || record.has_unparsed_update
+                || !record.is_active
+              ) }"
+            >
+              <input
+                v-model="selectedSemesterMaterialId"
+                type="radio"
+                name="semester-mapping-material"
+                :value="record.id"
+                :disabled="(
+                  record.parse_status !== 'parsed'
+                  || record.has_unparsed_update
+                  || !record.is_active
+                )"
+              >
+              <span>
+                <strong>{{ record.display_name }}</strong>
+                {{ semesterParseStatusLabel(record) }}
+              </span>
+            </label>
+          </div>
+          <div class="teaching-prep-form__actions">
+            <button
+              type="button"
+              class="teaching-prep-button teaching-prep-button--quiet"
+              :disabled="(
+                !selectedSemesterMaterialId
+                || catalog.loadState === 'loading'
+              )"
+              @click="prepareSemesterMapping"
+            >
+              检查发送范围
+            </button>
+            <button
+              type="button"
+              class="teaching-prep-button teaching-prep-button--primary"
+              :disabled="(
+                !selectedSemesterMaterialId
+                || !catalog.semesterMappingPreflight?.model_available
+                || catalog.saveState === 'saving'
+              )"
+              @click="generateSemesterMapping"
+            >
+              生成待确认建议
+            </button>
+          </div>
+          <div
+            v-if="catalog.semesterMappingPreflight"
+            class="teaching-prep-page__notice"
+            role="status"
+          >
+            <strong>
+              本次 {{ catalog.semesterMappingPreflight.material_count }} 份资料，
+              {{ catalog.semesterMappingPreflight.unit_count }} 页
+            </strong>
+            <span>
+              {{
+                catalog.semesterMappingPreflight.creates_initial_tree
+                  ? '将建议初始章—节—课时树'
+                  : `将映射到现有 ${catalog.semesterMappingPreflight.existing_lesson_count} 个课时`
+              }}
+              · 只调用模型一次 · 不自动重试
+            </span>
+            <span v-if="!catalog.semesterMappingPreflight.model_available">
+              当前尚未配置真实学期整理模型；不会产生调用或费用。
+            </span>
+          </div>
+          <article
+            v-for="proposal in catalog.semesterMappingProposals"
+            :key="proposal.id"
+            class="teaching-prep-semester-mapping__proposal"
+          >
+            <div>
+              <strong>
+                {{
+                  proposal.status === 'applied'
+                    ? '已确认并写入'
+                    : proposal.status === 'rejected'
+                      ? '已拒绝'
+                      : '待人工确认'
+                }}
+              </strong>
+              <span>
+                {{ proposal.payload.tree.length }} 章建议 ·
+                {{ proposal.payload.mappings.length }} 条页码映射 ·
+                {{ proposal.payload.uncertainties.length }} 项不确定
+              </span>
+            </div>
+            <div class="teaching-prep-semester-mapping__review">
+              <details v-if="proposal.payload.tree.length" open>
+                <summary>查看拟建课时树</summary>
+                <ol>
+                  <li
+                    v-for="chapter in proposal.payload.tree"
+                    :key="chapter.key"
+                  >
+                    <strong>{{ chapter.title }}</strong>
+                    <ul>
+                      <li
+                        v-for="section in chapter.sections"
+                        :key="section.key"
+                      >
+                        {{ section.title }}
+                        <span>
+                          {{
+                            section.lessons
+                              .map(({ title }) => title)
+                              .join('、')
+                          }}
+                        </span>
+                      </li>
+                    </ul>
+                  </li>
+                </ol>
+              </details>
+              <details v-if="proposal.payload.mappings.length" open>
+                <summary>逐条查看课时—页码对应</summary>
+                <ol>
+                  <li
+                    v-for="(mapping, index) in proposal.payload.mappings"
+                    :key="`${mapping.material_record_id}-${mapping.lesson_ref}-${index}`"
+                  >
+                    <strong>
+                      {{ proposalMaterialLabel(mapping.material_record_id) }}
+                    </strong>
+                    <span>
+                      → {{ proposalLessonLabel(proposal, mapping.lesson_ref) }}
+                      · 文件第 {{ mapping.start_unit }}
+                      <template v-if="mapping.end_unit !== mapping.start_unit">
+                        —{{ mapping.end_unit }}
+                      </template>
+                      页/张
+                    </span>
+                  </li>
+                </ol>
+              </details>
+              <details v-if="proposal.payload.uncertainties.length">
+                <summary>
+                  查看 {{ proposal.payload.uncertainties.length }} 项不确定内容
+                </summary>
+                <ul>
+                  <li
+                    v-for="(item, index) in proposal.payload.uncertainties"
+                    :key="`${index}-${item}`"
+                  >
+                    {{ item }}
+                  </li>
+                </ul>
+              </details>
+            </div>
+            <button
+              v-if="proposal.status === 'proposed'"
+              type="button"
+              :disabled="catalog.saveState === 'saving'"
+              @click="catalog.applySemesterMapping(proposal)"
+            >
+              确认并写入
+            </button>
+          </article>
+        </section>
 
         <form
           v-if="showLessonForm"
@@ -1280,6 +1774,23 @@ function operationForReview(operationId: string): SlideOperation {
                 </button>
                 <strong v-else>{{ node.title }}</strong>
                 <span v-if="node.duration_minutes">{{ node.duration_minutes }} 分钟</span>
+                <label
+                  v-if="node.node_type === 'lesson' && catalog.selectedSemester"
+                  class="teaching-prep-node__progress"
+                >
+                  进度
+                  <select
+                    :value="lessonProgressStatus(node.id)"
+                    :disabled="catalog.saveState === 'saving'"
+                    @change="changeLessonProgress(node.id, $event)"
+                  >
+                    <option value="not_started">未开始</option>
+                    <option value="preparing">备课中</option>
+                    <option value="ready">已备好</option>
+                    <option value="taught">已上课</option>
+                    <option value="skipped">本学期跳过</option>
+                  </select>
+                </label>
               </template>
             </div>
             <div class="teaching-prep-node__actions">
@@ -1337,6 +1848,17 @@ function operationForReview(operationId: string): SlideOperation {
                 @change="importMaterialCopy"
               >
             </label>
+            <label v-if="catalog.selectedSemester">
+              资料角色
+              <select v-model="importMaterialRole">
+                <option value="textbook">教材</option>
+                <option value="reference_ppt">参考课件</option>
+                <option value="exercise_workbook">普通教辅</option>
+                <option value="homework_workbook">日常作业教辅</option>
+                <option value="answer_book">答案册</option>
+                <option value="supplement">补充资料</option>
+              </select>
+            </label>
           </div>
         </div>
         <div class="teaching-prep-page__notice" role="status">
@@ -1375,6 +1897,67 @@ function operationForReview(operationId: string): SlideOperation {
                   @change="relocateMaterialCopy(material, $event)"
                 >
               </label>
+            </div>
+            <div
+              v-if="catalog.selectedSemester"
+              class="teaching-prep-material__semester"
+            >
+              <template
+                v-if="semesterMaterialBySource[material.source_id]"
+              >
+                <label>
+                  本学期角色
+                  <select
+                    :value="semesterMaterialBySource[material.source_id]?.material_role"
+                    :disabled="catalog.saveState === 'saving'"
+                    @change="changeSemesterMaterialRoleBySource(
+                      material.source_id,
+                      $event,
+                    )"
+                  >
+                    <option value="textbook">教材</option>
+                    <option value="reference_ppt">参考课件</option>
+                    <option value="exercise_workbook">普通教辅</option>
+                    <option value="homework_workbook">日常作业教辅</option>
+                    <option value="answer_book">答案册</option>
+                    <option value="supplement">补充资料</option>
+                  </select>
+                </label>
+                <span>
+                  {{
+                    semesterParseStatusLabel(
+                      semesterMaterialBySource[material.source_id],
+                    )
+                  }}
+                </span>
+                <span>
+                  {{
+                    semesterMappingStatusLabel(
+                      semesterMaterialBySource[material.source_id]?.mapping_status,
+                    )
+                  }}
+                </span>
+              </template>
+              <template v-else>
+                <select
+                  v-model="materialRoleDrafts[material.id]"
+                  aria-label="加入学期时的资料角色"
+                >
+                  <option value="textbook">教材</option>
+                  <option value="reference_ppt">参考课件</option>
+                  <option value="exercise_workbook">普通教辅</option>
+                  <option value="homework_workbook">日常作业教辅</option>
+                  <option value="answer_book">答案册</option>
+                  <option value="supplement">补充资料</option>
+                </select>
+                <button
+                  type="button"
+                  :disabled="catalog.saveState === 'saving'"
+                  @click="attachMaterialToSemester(material)"
+                >
+                  加入本学期
+                </button>
+              </template>
             </div>
           </article>
         </template>
@@ -2643,6 +3226,58 @@ function operationForReview(operationId: string): SlideOperation {
                   >
                     所有建议都作出决定并通过白名单检查后，才可生成副本。
                   </p>
+
+                  <section
+                    v-if="catalog.lessonGenerationPerformance"
+                    class="teaching-prep-performance"
+                    aria-label="本次生成性能"
+                  >
+                    <header>
+                      <strong>机器处理用时</strong>
+                      <span
+                        :class="{
+                          'is-exceeded': (
+                            catalog.lessonGenerationPerformance.budget_status
+                            === 'exceeded'
+                          ),
+                        }"
+                      >
+                        {{
+                          formatMachineElapsed(
+                            catalog.lessonGenerationPerformance.total_machine_elapsed_ms,
+                          )
+                        }}
+                        / 5 分钟
+                      </span>
+                    </header>
+                    <ul>
+                      <li>
+                        模型调用
+                        {{ catalog.lessonGenerationPerformance.model_call_count }}
+                        次
+                      </li>
+                      <li>
+                        WPS 执行
+                        {{ catalog.lessonGenerationPerformance.wps_execution_count }}
+                        次
+                      </li>
+                      <li>
+                        技术重试
+                        {{ catalog.lessonGenerationPerformance.technical_retry_count }}
+                        次
+                      </li>
+                    </ul>
+                    <p>
+                      {{
+                        catalog.lessonGenerationPerformance.budget_status === 'exceeded'
+                          ? '已超过硬上限，系统不会自行追加模型调用或再次修改。'
+                          : catalog.lessonGenerationPerformance.budget_status === 'running'
+                            ? '正在处理；这里只计算程序运行时间。'
+                            : '符合 5 分钟硬上限。'
+                      }}
+                      人工查看和审核停留时间不计入。
+                    </p>
+                  </section>
 
                   <article
                     v-for="run in catalog.pptxExecutions"

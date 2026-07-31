@@ -14,5 +14,9 @@ class TeachingPrepStateError(TeachingPrepError):
     pass
 
 
+class TeachingPrepRetryAvailableError(TeachingPrepError):
+    """The previous operation ended cleanly enough for a teacher retry."""
+
+
 class TeachingPrepValidationError(TeachingPrepError):
     pass

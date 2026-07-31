@@ -1,17 +1,25 @@
 import { createPinia, setActivePinia } from 'pinia'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { ApiError } from '../../../api/errors'
 import {
   teachingPrepCatalogApi,
+  type CurriculumEdition,
   type LessonNode,
   type LessonDraftPreflight,
   type MaterialLink,
   type MaterialUnit,
   type MaterialVersion,
   type ResourcePack,
+  type SemesterMappingPreflight,
+  type SemesterMappingProposal,
+  type TeachingSemester,
   type TeachingPreferencesPayload,
 } from '../api/catalog'
-import { useTeachingPrepCatalogStore } from './catalog'
+import {
+  SEMESTER_MAPPING_COMMAND_STORAGE_KEY,
+  useTeachingPrepCatalogStore,
+} from './catalog'
 
 const preferences: TeachingPreferencesPayload = {
   schema_version: 1,
@@ -131,9 +139,262 @@ function preflight(resourcePackId: string): LessonDraftPreflight {
   }
 }
 
+function curriculum(id = 'c'.repeat(32)): CurriculumEdition {
+  return {
+    id,
+    title: '八年级上册',
+    grade_level: 8,
+    volume: 'first',
+    publisher: null,
+    edition_label: null,
+    revision: 1,
+    is_active: true,
+    created_at: '2026-07-31T00:00:00Z',
+    updated_at: '2026-07-31T00:00:00Z',
+  }
+}
+
+function semester(
+  curriculumId = 'c'.repeat(32),
+  id = 's'.repeat(32),
+): TeachingSemester {
+  return {
+    id,
+    curriculum_id: curriculumId,
+    curriculum_title: '八年级上册',
+    school_year: '2026-2027',
+    term: 'first',
+    planned_new_lesson_count: 48,
+    status: 'planning',
+    active_lesson_count: 0,
+    not_started_lesson_count: 0,
+    preparing_lesson_count: 0,
+    ready_lesson_count: 0,
+    taught_lesson_count: 0,
+    skipped_lesson_count: 0,
+    material_count: 0,
+    parsed_material_count: 0,
+    mapped_material_count: 0,
+    revision: 1,
+    created_at: '2026-07-31T00:00:00Z',
+    updated_at: '2026-07-31T00:00:00Z',
+  }
+}
+
+function mappingPreflight(semesterId: string): SemesterMappingPreflight {
+  return {
+    semester_id: semesterId,
+    source_state_sha256: 'a'.repeat(64),
+    will_call_model: true,
+    model_available: true,
+    model_label: '合成模型',
+    material_count: 1,
+    unit_count: 3,
+    existing_lesson_count: 1,
+    creates_initial_tree: false,
+    automatic_retry: false,
+  }
+}
+
+function mappingProposal(semesterId: string): SemesterMappingProposal {
+  return {
+    id: 'p'.repeat(32),
+    semester_id: semesterId,
+    operation_id: 'stored-operation',
+    source_state_sha256: 'a'.repeat(64),
+    status: 'proposed',
+    payload: {
+      tree: [],
+      mappings: [],
+      uncertainties: [],
+      source_material_record_ids: ['m'.repeat(32)],
+    },
+    revision: 1,
+    created_at: '2026-07-31T00:00:00Z',
+    updated_at: '2026-07-31T00:00:00Z',
+    applied_at: null,
+  }
+}
+
 beforeEach(() => {
   vi.restoreAllMocks()
+  localStorage.removeItem(SEMESTER_MAPPING_COMMAND_STORAGE_KEY)
   setActivePinia(createPinia())
+})
+
+describe('semester workflow idempotency', () => {
+  it('uses one atomic semester-workspace request after a lost response', async () => {
+    const curriculumItem = curriculum()
+    const semesterItem = semester(curriculumItem.id)
+    const createWorkspace = vi.spyOn(
+      teachingPrepCatalogApi,
+      'createSemesterWorkspace',
+    )
+      .mockRejectedValueOnce(new Error('synthetic lost response'))
+      .mockResolvedValue({
+        curriculum: curriculumItem,
+        semester: semesterItem,
+      })
+    const createCurriculum = vi.spyOn(
+      teachingPrepCatalogApi,
+      'createCurriculum',
+    )
+    const createSemester = vi.spyOn(
+      teachingPrepCatalogApi,
+      'createSemester',
+    )
+    vi.spyOn(teachingPrepCatalogApi, 'listSemesters')
+      .mockResolvedValue([semesterItem])
+    vi.spyOn(teachingPrepCatalogApi, 'listSemesterLessonProgress')
+      .mockResolvedValue([])
+    vi.spyOn(teachingPrepCatalogApi, 'listSemesterMaterials')
+      .mockResolvedValue([])
+    vi.spyOn(teachingPrepCatalogApi, 'listSemesterMappingProposals')
+      .mockResolvedValue([])
+    const store = useTeachingPrepCatalogStore()
+    const input = {
+      curriculum: {
+        title: curriculumItem.title,
+        grade_level: 8,
+        volume: 'first' as const,
+        publisher: null,
+        edition_label: null,
+      },
+      semester: {
+        school_year: semesterItem.school_year,
+        term: 'first' as const,
+        planned_new_lesson_count: 48,
+      },
+    }
+
+    await expect(store.createSemesterWorkspace(input)).rejects.toThrow()
+    await expect(store.createSemesterWorkspace(input)).resolves.toBeUndefined()
+
+    expect(createWorkspace).toHaveBeenCalledTimes(2)
+    expect(createWorkspace.mock.calls[0]?.[0].request_token).not.toBe(
+      createWorkspace.mock.calls[1]?.[0].request_token,
+    )
+    expect(createWorkspace.mock.calls[0]?.[0]).toMatchObject({
+      curriculum: input.curriculum,
+      ...input.semester,
+    })
+    expect(createCurriculum).not.toHaveBeenCalled()
+    expect(createSemester).not.toHaveBeenCalled()
+  })
+
+  it('reuses the operation id after a lost mapping response', async () => {
+    const curriculumItem = curriculum()
+    const semesterItem = semester(curriculumItem.id)
+    const preflightItem = mappingPreflight(semesterItem.id)
+    const proposalItem = mappingProposal(semesterItem.id)
+    vi.spyOn(teachingPrepCatalogApi, 'semesterMappingPreflight')
+      .mockResolvedValue(preflightItem)
+    const generate = vi.spyOn(
+      teachingPrepCatalogApi,
+      'generateSemesterMappingProposal',
+    )
+      .mockRejectedValueOnce(new Error('synthetic lost response'))
+      .mockResolvedValue(proposalItem)
+    vi.spyOn(teachingPrepCatalogApi, 'listSemesterMappingProposals')
+      .mockResolvedValue([proposalItem])
+    const store = useTeachingPrepCatalogStore()
+    store.curricula = [curriculumItem]
+    store.semesters = [semesterItem]
+    store.selectedCurriculumId = curriculumItem.id
+
+    await expect(
+      store.generateSemesterMapping(['m'.repeat(32)]),
+    ).rejects.toThrow()
+    await expect(
+      store.generateSemesterMapping(['m'.repeat(32)]),
+    ).resolves.toBeUndefined()
+
+    expect(generate).toHaveBeenCalledTimes(2)
+    expect(generate.mock.calls[0]?.[1].operation_id).toBe(
+      generate.mock.calls[1]?.[1].operation_id,
+    )
+  })
+
+  it('preserves a lost mapping request across a page reload', async () => {
+    const curriculumItem = curriculum()
+    const semesterItem = semester(curriculumItem.id)
+    const preflightItem = mappingPreflight(semesterItem.id)
+    const proposalItem = mappingProposal(semesterItem.id)
+    vi.spyOn(teachingPrepCatalogApi, 'semesterMappingPreflight')
+      .mockResolvedValue(preflightItem)
+    const generate = vi.spyOn(
+      teachingPrepCatalogApi,
+      'generateSemesterMappingProposal',
+    )
+      .mockRejectedValueOnce(new Error('synthetic lost response'))
+      .mockResolvedValue(proposalItem)
+    vi.spyOn(teachingPrepCatalogApi, 'listSemesterMappingProposals')
+      .mockResolvedValue([proposalItem])
+    const firstStore = useTeachingPrepCatalogStore()
+    firstStore.curricula = [curriculumItem]
+    firstStore.semesters = [semesterItem]
+    firstStore.selectedCurriculumId = curriculumItem.id
+
+    await expect(
+      firstStore.generateSemesterMapping(['m'.repeat(32)]),
+    ).rejects.toThrow()
+
+    setActivePinia(createPinia())
+    const reloadedStore = useTeachingPrepCatalogStore()
+    reloadedStore.curricula = [curriculumItem]
+    reloadedStore.semesters = [semesterItem]
+    reloadedStore.selectedCurriculumId = curriculumItem.id
+
+    await expect(
+      reloadedStore.generateSemesterMapping(['m'.repeat(32)]),
+    ).resolves.toBeUndefined()
+
+    expect(generate).toHaveBeenCalledTimes(2)
+    expect(generate.mock.calls[0]?.[1].operation_id).toBe(
+      generate.mock.calls[1]?.[1].operation_id,
+    )
+  })
+
+  it('starts a new mapping operation only after the server confirms failure', async () => {
+    const curriculumItem = curriculum()
+    const semesterItem = semester(curriculumItem.id)
+    const preflightItem = mappingPreflight(semesterItem.id)
+    const proposalItem = mappingProposal(semesterItem.id)
+    vi.spyOn(teachingPrepCatalogApi, 'semesterMappingPreflight')
+      .mockResolvedValue(preflightItem)
+    const generate = vi.spyOn(
+      teachingPrepCatalogApi,
+      'generateSemesterMappingProposal',
+    )
+      .mockRejectedValueOnce(new ApiError({
+        kind: 'conflict',
+        status: 409,
+        code: 'semester_mapping_retry_available',
+        message: 'mapping failed',
+        details: {},
+        requestId: 'request-1',
+        retryable: false,
+      }))
+      .mockResolvedValue(proposalItem)
+    vi.spyOn(teachingPrepCatalogApi, 'listSemesterMappingProposals')
+      .mockResolvedValue([proposalItem])
+    const store = useTeachingPrepCatalogStore()
+    store.curricula = [curriculumItem]
+    store.semesters = [semesterItem]
+    store.selectedCurriculumId = curriculumItem.id
+
+    await expect(
+      store.generateSemesterMapping(['m'.repeat(32)]),
+    ).rejects.toThrow()
+    await expect(
+      store.generateSemesterMapping(['m'.repeat(32)]),
+    ).resolves.toBeUndefined()
+
+    expect(generate).toHaveBeenCalledTimes(2)
+    expect(generate.mock.calls[0]?.[1].operation_id).not.toBe(
+      generate.mock.calls[1]?.[1].operation_id,
+    )
+  })
 })
 
 describe('teaching preparation selection consistency', () => {

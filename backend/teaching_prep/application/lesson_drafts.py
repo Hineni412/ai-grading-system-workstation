@@ -973,12 +973,12 @@ def _rank_supplement_sources(
 
 
 def _is_homework_workbook(item: Mapping[str, object]) -> bool:
-    names = {
-        str(region.get("material_name") or "")
+    roles = {
+        str(region.get("semester_material_role") or "")
         for region in _list(item.get("question_regions"))
         if isinstance(region, Mapping)
     }
-    return any("全品" in name for name in names)
+    return "homework_workbook" in roles
 
 
 def _duplicates_reference_ppt(

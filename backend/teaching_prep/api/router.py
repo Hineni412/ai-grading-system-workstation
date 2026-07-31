@@ -11,6 +11,7 @@ from backend.teaching_prep.application import TeachingPrepService
 from backend.teaching_prep.domain.errors import (
     TeachingPrepConflictError,
     TeachingPrepNotFoundError,
+    TeachingPrepRetryAvailableError,
     TeachingPrepStateError,
     TeachingPrepValidationError,
 )
@@ -19,7 +20,10 @@ from .schemas import (
     ActivateUpClassPackageRequest,
     AssessmentChoiceListResponse,
     AssessmentChoiceResponse,
+    AttachSemesterMaterialRequest,
+    ApplySemesterMappingProposalRequest,
     CreateCurriculumRequest,
+    CreateSemesterWorkspaceRequest,
     CreatePostLessonReviewRequest,
     CreateUpClassPackageRequest,
     CreateLessonNodeRequest,
@@ -39,9 +43,11 @@ from .schemas import (
     ExerciseCandidateResponse,
     FreezeResourcePackRequest,
     GenerateLessonDraftRequest,
+    GenerateSemesterMappingRequest,
     LessonDraftListResponse,
     LessonDraftGenerationCancellationResponse,
     LessonDraftPreflightResponse,
+    LessonGenerationPerformanceResponse,
     LessonDraftResponse,
     LessonNodeResponse,
     LessonTreeResponse,
@@ -70,10 +76,25 @@ from .schemas import (
     SlidePlanListResponse,
     SlidePlanPreviewResponse,
     SlidePlanResponse,
+    SemesterLessonProgressListResponse,
+    SemesterLessonProgressResponse,
+    SemesterListResponse,
+    SemesterMaterialListResponse,
+    SemesterMaterialResponse,
+    SemesterMappingPreflightResponse,
+    SemesterMappingProposalListResponse,
+    SemesterMappingProposalResponse,
+    SemesterMappingRequest,
+    SemesterResponse,
+    SemesterWorkspaceResponse,
+    CreateSemesterRequest,
+    SetSemesterLessonProgressRequest,
     TeachingPrepStatusResponse,
     TeachingPreferencesResponse,
     UpdateTeachingPreferencesRequest,
     UpdateLessonNodeRequest,
+    UpdateSemesterMaterialRequest,
+    UpdateSemesterRequest,
     UpdateMaterialLinkRequest,
     UpdateExerciseCandidateRequest,
     UpdateMaterialUnitRequest,
@@ -245,6 +266,278 @@ def create_router() -> APIRouter:
         if not created:
             response.status_code = status.HTTP_200_OK
         return CurriculumResponse.from_domain(curriculum)
+
+    @router.post(
+        "/semester-workspaces",
+        response_model=SemesterWorkspaceResponse,
+        status_code=status.HTTP_201_CREATED,
+    )
+    def create_semester_workspace(
+        payload: CreateSemesterWorkspaceRequest,
+        response: Response,
+        service: TeachingPrepService = Depends(get_teaching_prep_service),
+    ) -> SemesterWorkspaceResponse:
+        try:
+            curriculum, semester, created = service.create_semester_workspace(
+                request_token=payload.request_token,
+                title=payload.curriculum.title,
+                grade_level=payload.curriculum.grade_level,
+                volume=payload.curriculum.volume,
+                publisher=payload.curriculum.publisher,
+                edition_label=payload.curriculum.edition_label,
+                school_year=payload.school_year,
+                term=payload.term,
+                planned_new_lesson_count=payload.planned_new_lesson_count,
+            )
+        except Exception as exc:
+            raise _api_error(exc) from exc
+        if not created:
+            response.status_code = status.HTTP_200_OK
+        return SemesterWorkspaceResponse(
+            curriculum=CurriculumResponse.from_domain(curriculum),
+            semester=SemesterResponse.from_domain(semester),
+        )
+
+    @router.get(
+        "/semesters",
+        response_model=SemesterListResponse,
+    )
+    def list_semesters(
+        service: TeachingPrepService = Depends(get_teaching_prep_service),
+    ) -> SemesterListResponse:
+        try:
+            items = service.list_semesters()
+        except Exception as exc:
+            raise _api_error(exc) from exc
+        return SemesterListResponse(
+            items=[SemesterResponse.from_domain(item) for item in items]
+        )
+
+    @router.post(
+        "/semesters",
+        response_model=SemesterResponse,
+        status_code=status.HTTP_201_CREATED,
+    )
+    def create_semester(
+        payload: CreateSemesterRequest,
+        response: Response,
+        service: TeachingPrepService = Depends(get_teaching_prep_service),
+    ) -> SemesterResponse:
+        try:
+            item, created = service.create_semester(
+                request_token=payload.request_token,
+                curriculum_id=payload.curriculum_id,
+                school_year=payload.school_year,
+                term=payload.term,
+                planned_new_lesson_count=payload.planned_new_lesson_count,
+            )
+        except Exception as exc:
+            raise _api_error(exc) from exc
+        if not created:
+            response.status_code = status.HTTP_200_OK
+        return SemesterResponse.from_domain(item)
+
+    @router.patch(
+        "/semesters/{semester_id}",
+        response_model=SemesterResponse,
+    )
+    def update_semester(
+        semester_id: str,
+        payload: UpdateSemesterRequest,
+        service: TeachingPrepService = Depends(get_teaching_prep_service),
+    ) -> SemesterResponse:
+        try:
+            item = service.update_semester(
+                semester_id,
+                expected_revision=payload.expected_revision,
+                planned_new_lesson_count=payload.planned_new_lesson_count,
+                status=payload.status,
+            )
+        except Exception as exc:
+            raise _api_error(exc) from exc
+        return SemesterResponse.from_domain(item)
+
+    @router.get(
+        "/semesters/{semester_id}/lesson-progress",
+        response_model=SemesterLessonProgressListResponse,
+    )
+    def list_semester_lesson_progress(
+        semester_id: str,
+        service: TeachingPrepService = Depends(get_teaching_prep_service),
+    ) -> SemesterLessonProgressListResponse:
+        try:
+            items = service.list_semester_lesson_progress(semester_id)
+        except Exception as exc:
+            raise _api_error(exc) from exc
+        return SemesterLessonProgressListResponse(
+            items=[
+                SemesterLessonProgressResponse.from_domain(item)
+                for item in items
+            ]
+        )
+
+    @router.put(
+        "/semesters/{semester_id}/lesson-progress/{lesson_node_id}",
+        response_model=SemesterLessonProgressResponse,
+    )
+    def set_semester_lesson_progress(
+        semester_id: str,
+        lesson_node_id: str,
+        payload: SetSemesterLessonProgressRequest,
+        service: TeachingPrepService = Depends(get_teaching_prep_service),
+    ) -> SemesterLessonProgressResponse:
+        try:
+            item = service.set_semester_lesson_progress(
+                semester_id,
+                lesson_node_id,
+                status=payload.status,
+                expected_revision=payload.expected_revision,
+            )
+        except Exception as exc:
+            raise _api_error(exc) from exc
+        return SemesterLessonProgressResponse.from_domain(item)
+
+    @router.get(
+        "/semesters/{semester_id}/materials",
+        response_model=SemesterMaterialListResponse,
+    )
+    def list_semester_materials(
+        semester_id: str,
+        service: TeachingPrepService = Depends(get_teaching_prep_service),
+    ) -> SemesterMaterialListResponse:
+        try:
+            items = service.list_semester_materials(semester_id)
+        except Exception as exc:
+            raise _api_error(exc) from exc
+        return SemesterMaterialListResponse(
+            items=[
+                SemesterMaterialResponse.from_domain(item)
+                for item in items
+            ]
+        )
+
+    @router.post(
+        "/semesters/{semester_id}/materials",
+        response_model=SemesterMaterialResponse,
+        status_code=status.HTTP_201_CREATED,
+    )
+    def attach_semester_material(
+        semester_id: str,
+        payload: AttachSemesterMaterialRequest,
+        response: Response,
+        service: TeachingPrepService = Depends(get_teaching_prep_service),
+    ) -> SemesterMaterialResponse:
+        try:
+            item, created = service.attach_semester_material(
+                semester_id,
+                request_token=payload.request_token,
+                material_version_id=payload.material_version_id,
+                material_role=payload.material_role,
+            )
+        except Exception as exc:
+            raise _api_error(exc) from exc
+        if not created:
+            response.status_code = status.HTTP_200_OK
+        return SemesterMaterialResponse.from_domain(item)
+
+    @router.patch(
+        "/semester-materials/{record_id}",
+        response_model=SemesterMaterialResponse,
+    )
+    def update_semester_material(
+        record_id: str,
+        payload: UpdateSemesterMaterialRequest,
+        service: TeachingPrepService = Depends(get_teaching_prep_service),
+    ) -> SemesterMaterialResponse:
+        try:
+            item = service.update_semester_material(
+                record_id,
+                expected_revision=payload.expected_revision,
+                material_role=payload.material_role,
+                mapping_status=payload.mapping_status,
+                is_active=payload.is_active,
+            )
+        except Exception as exc:
+            raise _api_error(exc) from exc
+        return SemesterMaterialResponse.from_domain(item)
+
+    @router.post(
+        "/semesters/{semester_id}/mapping-preflight",
+        response_model=SemesterMappingPreflightResponse,
+    )
+    def semester_mapping_preflight(
+        semester_id: str,
+        payload: SemesterMappingRequest,
+        service: TeachingPrepService = Depends(get_teaching_prep_service),
+    ) -> SemesterMappingPreflightResponse:
+        try:
+            item = service.semester_mapping_preflight(
+                semester_id,
+                material_record_ids=payload.material_record_ids,
+            )
+        except Exception as exc:
+            raise _api_error(exc) from exc
+        return SemesterMappingPreflightResponse.model_validate(item)
+
+    @router.post(
+        "/semesters/{semester_id}/mapping-proposals",
+        response_model=SemesterMappingProposalResponse,
+        status_code=status.HTTP_201_CREATED,
+    )
+    def generate_semester_mapping_proposal(
+        semester_id: str,
+        payload: GenerateSemesterMappingRequest,
+        response: Response,
+        service: TeachingPrepService = Depends(get_teaching_prep_service),
+    ) -> SemesterMappingProposalResponse:
+        try:
+            item, created = service.generate_semester_mapping_proposal(
+                semester_id,
+                operation_id=payload.operation_id,
+                material_record_ids=payload.material_record_ids,
+            )
+        except Exception as exc:
+            raise _api_error(exc) from exc
+        if not created:
+            response.status_code = status.HTTP_200_OK
+        return SemesterMappingProposalResponse.from_domain(item)
+
+    @router.get(
+        "/semesters/{semester_id}/mapping-proposals",
+        response_model=SemesterMappingProposalListResponse,
+    )
+    def list_semester_mapping_proposals(
+        semester_id: str,
+        service: TeachingPrepService = Depends(get_teaching_prep_service),
+    ) -> SemesterMappingProposalListResponse:
+        try:
+            items = service.list_semester_mapping_proposals(semester_id)
+        except Exception as exc:
+            raise _api_error(exc) from exc
+        return SemesterMappingProposalListResponse(
+            items=[
+                SemesterMappingProposalResponse.from_domain(item)
+                for item in items
+            ]
+        )
+
+    @router.post(
+        "/semester-mapping-proposals/{proposal_id}/apply",
+        response_model=SemesterMappingProposalResponse,
+    )
+    def apply_semester_mapping_proposal(
+        proposal_id: str,
+        payload: ApplySemesterMappingProposalRequest,
+        service: TeachingPrepService = Depends(get_teaching_prep_service),
+    ) -> SemesterMappingProposalResponse:
+        try:
+            item = service.apply_semester_mapping_proposal(
+                proposal_id,
+                expected_revision=payload.expected_revision,
+            )
+        except Exception as exc:
+            raise _api_error(exc) from exc
+        return SemesterMappingProposalResponse.from_domain(item)
 
     @router.get(
         "/curricula/{curriculum_id}/lessons",
@@ -1099,6 +1392,20 @@ def create_router() -> APIRouter:
             raise _api_error(exc) from exc
         return PptxExecutionResponse.from_domain(item)
 
+    @router.get(
+        "/pptx-executions/{run_id}/performance",
+        response_model=LessonGenerationPerformanceResponse,
+    )
+    def get_lesson_generation_performance(
+        run_id: str,
+        service: TeachingPrepService = Depends(get_teaching_prep_service),
+    ) -> LessonGenerationPerformanceResponse:
+        try:
+            item = service.get_lesson_generation_performance(run_id)
+        except Exception as exc:
+            raise _api_error(exc) from exc
+        return LessonGenerationPerformanceResponse.from_domain(item)
+
     @router.post(
         "/pptx-executions/{run_id}/cancel",
         response_model=PptxExecutionResponse,
@@ -1442,6 +1749,12 @@ def _api_error(exc: Exception) -> Exception:
             404,
             "teaching_prep_not_found",
             "Teaching preparation record was not found",
+        )
+    if isinstance(exc, TeachingPrepRetryAvailableError):
+        return _new_api_error(
+            409,
+            "semester_mapping_retry_available",
+            "Semester mapping did not complete; submit again to start a new proposal",
         )
     if isinstance(exc, TeachingPrepConflictError):
         return _new_api_error(

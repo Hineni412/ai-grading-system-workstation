@@ -377,18 +377,25 @@ def _capture_local_payload(
             version.content_sha256,
             version.created_at AS material_version_created_at,
             source.display_name AS material_name,
-            source.material_type
+            source.material_type,
+            semester_material.material_role
         FROM lesson_material_links AS link
         JOIN material_versions AS version
             ON version.id = link.material_version_id
         JOIN material_sources AS source
             ON source.id = version.source_id
+        LEFT JOIN teaching_semesters AS semester
+            ON semester.curriculum_id = ?
+        LEFT JOIN semester_material_records AS semester_material
+            ON semester_material.semester_id = semester.id
+           AND semester_material.material_source_id = source.id
+           AND semester_material.is_active = 1
         WHERE link.lesson_node_id = ?
           AND link.is_active = 1
           AND link.confirmation_status = 'confirmed'
         ORDER BY link.sort_order, link.id
         """,
-        (lesson_node_id,),
+        (str(lesson["curriculum_id"]), lesson_node_id),
     ).fetchall()
     reference_link_ids = {
         str(row["id"])
@@ -464,6 +471,11 @@ def _capture_local_payload(
             "material_version_id": str(link["material_version_id"]),
             "material_name": str(link["material_name"]),
             "material_type": str(link["material_type"]),
+            "semester_material_role": (
+                str(link["material_role"])
+                if link["material_role"] is not None
+                else None
+            ),
             "content_sha256": str(link["content_sha256"]),
             "version_created_at": str(
                 link["material_version_created_at"]
@@ -483,6 +495,11 @@ def _capture_local_payload(
                 "link_id": link_id,
                 "link_revision": int(link["revision"]),
                 "content_sha256": str(link["content_sha256"]),
+                "semester_material_role": (
+                    str(link["material_role"])
+                    if link["material_role"] is not None
+                    else None
+                ),
                 "units": [
                     {
                         "id": str(unit["id"]),
@@ -527,7 +544,8 @@ def _capture_local_payload(
                 region.*,
                 unit.material_version_id,
                 unit.unit_index,
-                source.display_name AS material_name
+                source.display_name AS material_name,
+                semester_material.material_role
             FROM exercise_regions AS region
             JOIN material_units AS unit
                 ON unit.id = region.material_unit_id
@@ -535,10 +553,16 @@ def _capture_local_payload(
                 ON version.id = unit.material_version_id
             JOIN material_sources AS source
                 ON source.id = version.source_id
+            LEFT JOIN teaching_semesters AS semester
+                ON semester.curriculum_id = ?
+            LEFT JOIN semester_material_records AS semester_material
+                ON semester_material.semester_id = semester.id
+               AND semester_material.material_source_id = source.id
+               AND semester_material.is_active = 1
             WHERE region.exercise_candidate_id = ?
             ORDER BY region.region_role DESC, region.sequence
             """,
-            (str(candidate["id"]),),
+            (str(lesson["curriculum_id"]), str(candidate["id"])),
         ).fetchall()
         region_payload = [
             {
@@ -550,6 +574,11 @@ def _capture_local_payload(
                     region["material_version_id"]
                 ),
                 "material_name": str(region["material_name"]),
+                "semester_material_role": (
+                    str(region["material_role"])
+                    if region["material_role"] is not None
+                    else None
+                ),
                 "unit_index": int(region["unit_index"]),
                 "crop": _json_object(str(region["crop_json"])),
                 "source_version_sha256": str(
@@ -612,6 +641,11 @@ def _capture_local_payload(
                         "id": str(region["id"]),
                         "source_sha256": str(
                             region["source_version_sha256"]
+                        ),
+                        "semester_material_role": (
+                            str(region["material_role"])
+                            if region["material_role"] is not None
+                            else None
                         ),
                     }
                     for region in regions

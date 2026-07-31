@@ -70,6 +70,77 @@ class MaterialVersion:
 
 
 @dataclass(frozen=True, slots=True)
+class TeachingSemester:
+    id: str
+    curriculum_id: str
+    curriculum_title: str
+    school_year: str
+    term: str
+    planned_new_lesson_count: int
+    status: str
+    active_lesson_count: int
+    not_started_lesson_count: int
+    preparing_lesson_count: int
+    ready_lesson_count: int
+    taught_lesson_count: int
+    skipped_lesson_count: int
+    material_count: int
+    parsed_material_count: int
+    mapped_material_count: int
+    revision: int
+    created_at: str
+    updated_at: str
+
+
+@dataclass(frozen=True, slots=True)
+class SemesterLessonProgress:
+    id: str
+    semester_id: str
+    lesson_node_id: str
+    lesson_title: str
+    status: str
+    revision: int
+    created_at: str
+    updated_at: str
+
+
+@dataclass(frozen=True, slots=True)
+class SemesterMaterialRecord:
+    id: str
+    semester_id: str
+    material_source_id: str
+    display_name: str
+    material_role: str
+    parse_status: str
+    mapping_status: str
+    current_material_version_id: str
+    current_file_name: str
+    current_inspection_status: str
+    current_unit_count: int | None
+    last_parsed_version_id: str | None
+    has_unparsed_update: bool
+    parsed_at: str | None
+    is_active: bool
+    revision: int
+    created_at: str
+    updated_at: str
+
+
+@dataclass(frozen=True, slots=True)
+class SemesterMappingProposal:
+    id: str
+    semester_id: str
+    operation_id: str
+    source_state_sha256: str
+    status: str
+    payload: dict[str, object]
+    revision: int
+    created_at: str
+    updated_at: str
+    applied_at: str | None
+
+
+@dataclass(frozen=True, slots=True)
 class MaterialUnit:
     id: str
     material_version_id: str
@@ -224,6 +295,23 @@ class PptxExecutionRun:
     created_at: str
     updated_at: str
     finished_at: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class LessonGenerationPerformance:
+    execution_run_id: str
+    slide_plan_id: str
+    status: str
+    budget_ms: int
+    total_machine_elapsed_ms: int
+    draft_elapsed_ms: int
+    wps_elapsed_ms: int
+    model_call_count: int
+    wps_execution_count: int
+    technical_retry_count: int
+    budget_status: str
+    within_budget: bool | None
+    human_review_wait_excluded: bool
 
 
 @dataclass(frozen=True, slots=True)

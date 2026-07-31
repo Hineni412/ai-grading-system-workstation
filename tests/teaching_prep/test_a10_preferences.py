@@ -16,6 +16,7 @@ from backend.teaching_prep.api import create_router
 from backend.teaching_prep.application.lesson_drafts import build_local_template
 from backend.teaching_prep.application.lesson_drafts import (
     _classify_slide,
+    _is_homework_workbook,
     _local_slide_adaptations,
     draft_preflight,
 )
@@ -432,9 +433,10 @@ def test_local_supplement_selection_uses_homework_and_duplicate_preferences(
     ordinary = payload["exercises"][0]
     homework = deepcopy(ordinary)
     homework["candidate_id"] = "full-workbook"
-    homework["content_label"] = "全品重点题"
+    homework["content_label"] = "学期指定作业教辅重点题"
     for region in homework["question_regions"]:
-        region["material_name"] = "全品作业本"
+        region["material_name"] = "不含品牌名的练习册"
+        region["semester_material_role"] = "homework_workbook"
     duplicate = deepcopy(ordinary)
     duplicate["candidate_id"] = "ppt-duplicate"
     duplicate["content_label"] = "Synthetic example x = 2"
@@ -453,6 +455,28 @@ def test_local_supplement_selection_uses_homework_and_duplicate_preferences(
     assert recommendations[
         f"exercise:{ordinary['candidate_id']}"
     ]["action"] == "include"
+
+
+def test_homework_workbook_role_never_comes_from_filename() -> None:
+    branded_without_role = {
+        "question_regions": [
+            {
+                "material_name": "全品学练考",
+                "semester_material_role": "exercise_workbook",
+            }
+        ]
+    }
+    explicitly_selected = {
+        "question_regions": [
+            {
+                "material_name": "普通练习册",
+                "semester_material_role": "homework_workbook",
+            }
+        ]
+    }
+
+    assert _is_homework_workbook(branded_without_role) is False
+    assert _is_homework_workbook(explicitly_selected) is True
 
 
 def test_local_practice_classification_and_trim_levels_remain_distinct() -> None:
