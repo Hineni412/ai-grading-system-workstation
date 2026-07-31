@@ -27,6 +27,45 @@ function Get-NormalizedBox {
     }
 }
 
+function Add-PictureFit {
+    param(
+        [Parameter(Mandatory = $true)]$Slide,
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][hashtable]$Box
+    )
+    $shape = $Slide.Shapes.AddPicture(
+        $Path,
+        $false,
+        $true,
+        0,
+        0,
+        -1,
+        -1
+    )
+    $sourceWidth = [double]$shape.Width
+    $sourceHeight = [double]$shape.Height
+    if ($sourceWidth -le 0 -or $sourceHeight -le 0) {
+        $shape.Delete()
+        throw 'Inserted image has invalid dimensions'
+    }
+    $scale = [Math]::Min(
+        ([double]$Box.Width / $sourceWidth),
+        ([double]$Box.Height / $sourceHeight)
+    )
+    $targetWidth = $sourceWidth * $scale
+    $targetHeight = $sourceHeight * $scale
+    $shape.LockAspectRatio = -1
+    $shape.Width = $targetWidth
+    $shape.Height = $targetHeight
+    $shape.Left = [double]$Box.Left + (
+        ([double]$Box.Width - $targetWidth) / 2
+    )
+    $shape.Top = [double]$Box.Top + (
+        ([double]$Box.Height - $targetHeight) / 2
+    )
+    return $shape
+}
+
 function Get-Shape {
     param(
         [Parameter(Mandatory = $true)]$Slide,
@@ -47,9 +86,14 @@ function Get-OriginalSlide {
     if (-not $OriginalSlideIds.ContainsKey($OriginalIndex)) {
         throw 'Original slide target is unavailable'
     }
-    return $Presentation.Slides.FindBySlideID(
-        [int]$OriginalSlideIds[$OriginalIndex]
-    )
+    $expectedSlideId = [int]$OriginalSlideIds[$OriginalIndex]
+    for ($index = 1; $index -le $Presentation.Slides.Count; $index++) {
+        $slide = $Presentation.Slides.Item($index)
+        if ([int]$slide.SlideID -eq $expectedSlideId) {
+            return $slide
+        }
+    }
+    throw 'Original slide target is unavailable'
 }
 
 function Set-WpsApplicationHiddenIfSupported {
@@ -64,6 +108,47 @@ function Set-WpsApplicationHiddenIfSupported {
         # Some WPS builds reject changing visibility before a presentation opens.
         return $false
     }
+}
+
+function Wait-WpsSlidePreviews {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$PreviewDirectory,
+        [Parameter(Mandatory = $true)]
+        [int]$ExpectedCount,
+        [int]$TimeoutSeconds = 30
+    )
+    $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
+    $lastSignature = $null
+    $stableCount = 0
+    do {
+        $files = @(
+            Get-ChildItem -LiteralPath $PreviewDirectory -File |
+                Where-Object { $_.Extension -ieq '.png' }
+        )
+        $signature = (
+            $files |
+                Sort-Object Name |
+                ForEach-Object {
+                    '{0}:{1}' -f $_.Name, $_.Length
+                }
+        ) -join '|'
+        if (
+            $files.Count -eq $ExpectedCount `
+            -and @($files | Where-Object { $_.Length -le 0 }).Count -eq 0 `
+            -and $signature -eq $lastSignature
+        ) {
+            $stableCount += 1
+        } else {
+            $stableCount = 0
+        }
+        if ($stableCount -ge 2) {
+            return $files
+        }
+        $lastSignature = $signature
+        Start-Sleep -Milliseconds 200
+    } while ([DateTime]::UtcNow -lt $deadline)
+    throw 'WPS did not finish exporting every slide preview'
 }
 
 try {
@@ -97,6 +182,8 @@ try {
         throw 'Preview directory is outside the isolated helper directory'
     }
     New-Item -ItemType Directory -Path $previewDirectory -Force | Out-Null
+    Get-ChildItem -LiteralPath $previewDirectory -File |
+        Remove-Item -Force
     $application = New-Object -ComObject 'KWPP.Application'
     Set-WpsApplicationHiddenIfSupported -Application $application | Out-Null
     $presentation = $application.Presentations.Open(
@@ -224,15 +311,10 @@ try {
                         -Position $position `
                         -SlideWidth $slideWidth `
                         -SlideHeight $slideHeight
-                    $slide.Shapes.AddPicture(
-                        [string]$operation.details.isolated_asset_path,
-                        $false,
-                        $true,
-                        $box.Left,
-                        $box.Top,
-                        $box.Width,
-                        $box.Height
-                    ) | Out-Null
+                    Add-PictureFit `
+                        -Slide $slide `
+                        -Path ([string]$operation.details.isolated_asset_path) `
+                        -Box $box | Out-Null
                 } else {
                     $slide = Get-OriginalSlide `
                         -Presentation $presentation `
@@ -249,15 +331,12 @@ try {
                             Height = [double]$shape.Height
                         }
                         $shape.Delete()
-                        $shape = $slide.Shapes.AddPicture(
-                            [string]$operation.details.isolated_asset_path,
-                            $false,
-                            $true,
-                            $box.Left,
-                            $box.Top,
-                            $box.Width,
-                            $box.Height
-                        )
+                        $shape = Add-PictureFit `
+                            -Slide $slide `
+                            -Path (
+                                [string]$operation.details.isolated_asset_path
+                            ) `
+                            -Box $box
                     }
                     if ($null -ne $position) {
                         $box = Get-NormalizedBox `
@@ -302,8 +381,9 @@ try {
         900
     )
     $exportedPreviews = @(
-        Get-ChildItem -LiteralPath $previewDirectory -File |
-            Where-Object { $_.Extension -ieq '.png' } |
+        Wait-WpsSlidePreviews `
+            -PreviewDirectory $previewDirectory `
+            -ExpectedCount $verificationSlideCount |
             Sort-Object {
                 $match = [regex]::Match($_.BaseName, '(\d+)$')
                 if (-not $match.Success) {
@@ -312,19 +392,26 @@ try {
                 [int]$match.Groups[1].Value
             }
     )
-    if ($exportedPreviews.Count -ne $verificationSlideCount) {
-        throw 'WPS did not export every slide preview'
+    try {
+        $verificationPresentation.Close()
     }
+    catch [System.Runtime.InteropServices.COMException] {
+        # Some WPS builds end the export COM server after all files are complete.
+    }
+    $verificationPresentation = $null
+    try {
+        $application.Quit()
+    }
+    catch [System.Runtime.InteropServices.COMException] {
+        # The export COM server may already have exited.
+    }
+    $application = $null
+
     for ($index = 1; $index -le $exportedPreviews.Count; $index++) {
         Rename-Item `
             -LiteralPath $exportedPreviews[$index - 1].FullName `
             -NewName ('slide-{0:D5}.png' -f $index)
     }
-
-    $verificationPresentation.Close()
-    $verificationPresentation = $null
-    $application.Quit()
-    $application = $null
 
     $application = New-Object -ComObject 'KWPP.Application'
     Set-WpsApplicationHiddenIfSupported -Application $application | Out-Null
