@@ -479,6 +479,7 @@ def test_workspace_model_policy_requires_metadata_and_allows_one_request(
         client=object(),
         model="safe-model",
         kwargs={"messages": [{"role": "user", "content": "not logged"}]},
+        timeout_override_seconds=110,
     )
 
     assert result["usage"]["total_tokens"] == 16
@@ -486,6 +487,7 @@ def test_workspace_model_policy_requires_metadata_and_allows_one_request(
     assert gateway.calls[0]["allow_retry"] is False
     assert gateway.calls[0]["request_id"] == "op-123"
     assert gateway.calls[0]["operation_id"] == "op-123"
+    assert gateway.calls[0]["timeout_override_seconds"] == 110
     assert gateway.calls[0]["request_kind"].value == "workspace"
     assert audit.events[0].total_tokens == 16
     assert not hasattr(audit.events[0], "request_body")
