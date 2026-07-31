@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Any, Literal
 from uuid import UUID
 
@@ -120,6 +121,257 @@ class TrainingTaskConfirmRequest(TrainingPlanRequest):
     expected_plan_revision: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
+class PersonalizedRecommendationCreateRequest(TrainingDiagnosisRequest):
+    request_token: str = Field(pattern=r"^[0-9a-fA-F]{32}$")
+    question_count: int = Field(default=10, ge=8, le=12)
+    expected_minutes: int = Field(default=45, ge=10, le=180)
+    difficulty_min: int = Field(default=1, ge=1, le=10)
+    difficulty_max: int = Field(default=10, ge=1, le=10)
+    stage_ratios: TrainingStageRatios = Field(
+        default_factory=TrainingStageRatios
+    )
+    target_keys: list[str] = Field(default_factory=list, max_length=20)
+    target_names: list[str] = Field(default_factory=list, max_length=20)
+    exclude_current_exam_originals: bool = True
+
+    @field_validator("target_keys")
+    @classmethod
+    def normalize_target_keys(cls, values: list[str]) -> list[str]:
+        result: list[str] = []
+        for raw_value in values:
+            value = str(raw_value or "").strip().casefold()
+            if not value.startswith(("kp_", "ki_")):
+                raise ValueError(
+                    "target_keys must use governed stable identities"
+                )
+            if value not in result:
+                result.append(value)
+        return result
+
+    @field_validator("target_names")
+    @classmethod
+    def normalize_target_names(cls, values: list[str]) -> list[str]:
+        result: list[str] = []
+        for raw_value in values:
+            value = str(raw_value or "").strip()
+            if not value:
+                raise ValueError("target_names must not contain blanks")
+            if value not in result:
+                result.append(value)
+        return result
+
+    @model_validator(mode="after")
+    def difficulty_range_is_ordered(
+        self,
+    ) -> "PersonalizedRecommendationCreateRequest":
+        if self.difficulty_min > self.difficulty_max:
+            raise ValueError("difficulty range is invalid")
+        if self.target_keys and self.target_names:
+            raise ValueError(
+                "target_keys and target_names cannot both be provided"
+            )
+        return self
+
+
+class PersonalizedRecommendationEditRequest(_TrainingModel):
+    request_token: str = Field(pattern=r"^[0-9a-fA-F]{32}$")
+    expected_revision: int = Field(ge=1)
+    action: Literal["lock", "unlock", "exclude", "replace"]
+    student_id: str = Field(min_length=1, max_length=100)
+    item_id: str = Field(min_length=1, max_length=100)
+    reason: str = Field(min_length=1, max_length=500)
+    replacement_question_id: int | None = Field(default=None, ge=1)
+
+
+class PersonalizedRecommendationDraftResponse(_TrainingModel):
+    draft_id: str = Field(pattern=r"^[0-9a-f]{64}$")
+    status: Literal["draft", "reviewed"]
+    revision: int = Field(ge=1)
+    result_version: str = Field(pattern=r"^[0-9a-f]{64}$")
+    engine_version: str
+    source_version: str = Field(pattern=r"^[0-9a-f]{64}$")
+    config: dict[str, Any]
+    students: list[dict[str, Any]]
+    warnings: list[str]
+    history: list[dict[str, Any]]
+
+
+class PersonalizedPaperCreateRequest(_TrainingModel):
+    operation_token: str = Field(pattern=r"^[0-9a-fA-F]{32}$")
+    expected_draft_revision: int = Field(ge=1)
+    student_id: str = Field(min_length=1, max_length=100)
+    context_window_tokens: Literal[32768, 65536, 128000] = 32768
+
+
+class PersonalizedPaperInstanceResponse(_TrainingModel):
+    paper_instance_id: str = Field(pattern=r"^[0-9a-f]{64}$")
+    paper_batch_id: str = Field(pattern=r"^[0-9a-f]{64}$")
+    draft_id: str = Field(pattern=r"^[0-9a-f]{64}$")
+    draft_revision: int = Field(ge=1)
+    student_id: str
+    student_code: str | None = None
+    student_name: str | None = None
+    class_id: str | None = None
+    series_version: int = Field(ge=1)
+    status: Literal["creating", "review_pending", "frozen", "failed"]
+    revision: int = Field(ge=1)
+    layout_version: str
+    budget: dict[str, Any]
+    question_count: int = Field(ge=0)
+    criterion_point_count: int = Field(ge=0)
+    items: list[dict[str, Any]]
+    pages: list[dict[str, Any]]
+    review_docx_sha256: str | None = None
+    reviewed_docx_sha256: str | None = None
+    frozen_pdf_sha256: str | None = None
+    downloads: dict[str, str | None]
+    error_code: str | None = None
+    created_at: str
+    frozen_at: str | None = None
+
+
+class PersonalizedPaperInstanceListResponse(_TrainingModel):
+    items: list[PersonalizedPaperInstanceResponse]
+
+
+class TrainingScanBatchCreateRequest(_TrainingModel):
+    operation_token: str = Field(pattern=r"^[0-9a-fA-F]{32}$")
+    paper_instance_ids: list[str] = Field(min_length=1, max_length=200)
+
+    @field_validator("paper_instance_ids")
+    @classmethod
+    def validate_paper_instance_ids(cls, value: list[str]) -> list[str]:
+        if any(not re.fullmatch(r"[0-9a-fA-F]{64}", item) for item in value):
+            raise ValueError("paper instance id is invalid")
+        if len(set(item.casefold() for item in value)) != len(value):
+            raise ValueError("paper instance ids must be unique")
+        return value
+
+
+class TrainingScanPageResolveRequest(_TrainingModel):
+    operation_token: str = Field(pattern=r"^[0-9a-fA-F]{32}$")
+    expected_revision: int = Field(ge=1)
+    action: Literal["match", "replace", "dismiss"]
+    paper_instance_id: str | None = Field(
+        default=None,
+        pattern=r"^[0-9a-fA-F]{64}$",
+    )
+    page_number: int | None = Field(default=None, ge=1)
+
+    @model_validator(mode="after")
+    def validate_target(self) -> "TrainingScanPageResolveRequest":
+        if self.action in {"match", "replace"} and (
+            self.paper_instance_id is None or self.page_number is None
+        ):
+            raise ValueError("matching requires a paper and page number")
+        return self
+
+
+class TrainingSubmissionCancelRequest(_TrainingModel):
+    operation_token: str = Field(pattern=r"^[0-9a-fA-F]{32}$")
+    expected_revision: int = Field(ge=1)
+    reason: str = Field(min_length=1, max_length=500)
+
+
+class TrainingScanBatchResponse(_TrainingModel):
+    batch_id: str = Field(pattern=r"^[0-9a-f]{64}$")
+    paper_batch_id: str = Field(pattern=r"^[0-9a-f]{64}$")
+    status: Literal["manual_review", "ready", "cancelled"]
+    revision: int = Field(ge=1)
+    duplicate_upload: bool
+    submissions: list[dict[str, Any]]
+    pages: list[dict[str, Any]]
+    candidates: list[dict[str, Any]]
+    history: list[dict[str, Any]]
+    created_at: str
+    updated_at: str
+
+
+class TrainingAssessmentStartRequest(_TrainingModel):
+    expected_revision: int = Field(ge=1)
+
+
+class TrainingAssessmentReviewRequest(_TrainingModel):
+    operation_token: str = Field(pattern=r"^[0-9a-fA-F]{32}$")
+    submission_revision: int = Field(ge=1)
+    expected_review_revision: int = Field(ge=1)
+    task_item_code: str = Field(min_length=1, max_length=100)
+    point_id: str = Field(min_length=1, max_length=100)
+    final_state: Literal["met", "not_met", "uncertain", "unreadable"]
+    teacher_evidence: str = Field(min_length=1, max_length=500)
+    teacher_reason: str = Field(min_length=1, max_length=500)
+
+
+class TrainingAssessmentActionRequest(_TrainingModel):
+    operation_token: str = Field(pattern=r"^[0-9a-fA-F]{32}$")
+    submission_revision: int = Field(ge=1)
+    expected_review_revision: int = Field(ge=1)
+    action: Literal["pause", "resume", "cancel", "recover", "retry"]
+    reason: str = Field(min_length=1, max_length=500)
+
+
+class TrainingEvidenceSyncRequest(_TrainingModel):
+    operation_token: str = Field(pattern=r"^[0-9a-fA-F]{32}$")
+    submission_revision: int = Field(ge=1)
+    expected_review_revision: int = Field(ge=1)
+    action: Literal["publish", "withdraw"]
+    reason: str = Field(min_length=1, max_length=500)
+
+
+class TrainingEvidenceReplayRequest(_TrainingModel):
+    max_items: int | None = Field(default=None, ge=1, le=500)
+
+
+class TrainingAssessmentOutcomeResponse(_TrainingModel):
+    run_id: str = Field(pattern=r"^[0-9a-f]{64}$")
+    submission_id: str = Field(pattern=r"^[0-9a-f]{64}$")
+    submission_revision: int = Field(ge=1)
+    status: str
+    request_count: int = Field(ge=0)
+    expected_question_count: int = Field(ge=0)
+    expected_point_count: int = Field(ge=0)
+    model_name: str | None = None
+    usage: dict[str, Any]
+    latency_ms: int = Field(ge=0)
+    issue_codes: list[str]
+    error_code: str | None = None
+    questions: list[dict[str, Any]]
+    review_revision: int = Field(ge=1)
+    control_state: str
+    workflow_status: str
+    action_message: str
+    attempts: list[dict[str, Any]]
+
+
+class TrainingFeedbackResponse(_TrainingModel):
+    schema_version: Literal["training-feedback-v1"]
+    feedback_id: str = Field(pattern=r"^[0-9a-f]{64}$")
+    submission_id: str = Field(pattern=r"^[0-9a-f]{64}$")
+    submission_revision: int = Field(ge=1)
+    source_review_revision: int = Field(ge=1)
+    status: Literal[
+        "publication_pending",
+        "partial",
+        "complete",
+        "withdrawn",
+    ]
+    student: dict[str, Any]
+    summary: dict[str, Any]
+    questions: list[dict[str, Any]]
+    mastery_changes: list[dict[str, Any]]
+    next_round: dict[str, Any]
+    timeline: list[dict[str, Any]]
+    safety: dict[str, bool]
+    evidence_version: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class TrainingEvidenceReplayResponse(_TrainingModel):
+    examined_count: int = Field(ge=0)
+    delivered_count: int = Field(ge=0)
+    failed_count: int = Field(ge=0)
+    feedbacks: list[dict[str, Any]]
+
+
 class TrainingExportSubmitRequest(_TrainingModel):
     variant_id: int | None = Field(default=None, ge=1)
     format: Literal["docx", "markdown"] = "docx"
@@ -238,6 +490,12 @@ class TrainingDiagnosisResponse(_TrainingModel):
 
 
 __all__ = [
+    "PersonalizedPaperCreateRequest",
+    "PersonalizedPaperInstanceListResponse",
+    "PersonalizedPaperInstanceResponse",
+    "PersonalizedRecommendationCreateRequest",
+    "PersonalizedRecommendationDraftResponse",
+    "PersonalizedRecommendationEditRequest",
     "TrainingDiagnosisRequest",
     "TrainingDiagnosisResponse",
     "TrainingExamScopeRequest",

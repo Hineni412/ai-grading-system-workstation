@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import errno
+from pathlib import Path
 from typing import Annotated, Literal, NoReturn
 
 from fastapi import APIRouter, Depends, Query, Request
@@ -9,10 +10,13 @@ from fastapi.responses import FileResponse
 from backend.api.app import ApiError, ErrorResponse
 from backend.api.dependencies import (
     get_job_manager,
+    get_data_root,
+    get_question_bank_db_path,
     get_question_bank_read_service,
     get_question_bank_write_service,
     get_taxonomy_review_service,
     get_taxonomy_suggestion_service,
+    get_training_criterion_module,
 )
 from backend.api.routers.jobs import _job_response
 from backend.api.schemas.jobs import JobResponse
@@ -51,6 +55,14 @@ from backend.api.schemas.question_bank import (
     TaxonomySuggestionRetryRequest,
     TaxonomySuggestionRunResponse,
     TaxonomySuggestionStartResponse,
+    TrainingCriterionBackfillCreateRequest,
+    TrainingCriterionBackfillRetryRequest,
+    TrainingCriterionBackfillRunResponse,
+    TrainingCriterionBackfillStartResponse,
+    TrainingCriterionDraftWriteRequest,
+    TrainingCriterionReviewRequest,
+    TrainingCriterionVersionResponse,
+    TrainingCriterionWorkspaceResponse,
 )
 from question_bank.taxonomy.curriculum_catalog import (
     CurriculumCatalogError,
@@ -118,6 +130,17 @@ from question_bank.services.question_write_service import (
     QuestionWriteNotFound,
     QuestionWriteResult,
 )
+from question_bank.training_criteria import (
+    CriterionQualityError,
+    CriterionRequestConflict,
+    CriterionReviewCommand,
+    CriterionRevisionConflict,
+    CriterionTransitionError,
+    CriterionVersionNotFound,
+    QuestionAnalysisInput,
+    QuestionAnalysisInputLoader,
+    TrainingCriterionModule,
+)
 
 
 router = APIRouter(prefix="/api/question-bank", tags=["question-bank"])
@@ -164,6 +187,20 @@ TAXONOMY_SUGGESTION_ERROR_RESPONSES = {
     409: {"model": ErrorResponse, "description": "Taxonomy state conflict"},
     422: {"model": ErrorResponse, "description": "Suggestion request is invalid"},
     **TAXONOMY_READ_ERROR_RESPONSES,
+}
+CRITERION_WRITE_ERROR_RESPONSES = {
+    404: {
+        "model": ErrorResponse,
+        "description": "Question or criterion version not found",
+    },
+    409: {
+        "model": ErrorResponse,
+        "description": "Criterion version changed",
+    },
+    422: {
+        "model": ErrorResponse,
+        "description": "Criterion decision is invalid",
+    },
 }
 
 
@@ -989,6 +1026,381 @@ def _unique_positive_ids(values) -> list[int]:
             "At least one question ID is required",
         )
     return result
+
+
+@router.get(
+    "/criteria/questions/{question_id}",
+    response_model=TrainingCriterionWorkspaceResponse,
+    responses={404: {"model": ErrorResponse}},
+)
+def get_training_criterion_workspace(
+    question_id: int,
+    module: TrainingCriterionModule = Depends(
+        get_training_criterion_module
+    ),
+    question_bank_db_path: Path = Depends(get_question_bank_db_path),
+    data_root: Path = Depends(get_data_root),
+) -> TrainingCriterionWorkspaceResponse:
+    question = _load_criterion_question(
+        question_id,
+        db_path=question_bank_db_path,
+        data_root=data_root,
+    )
+    return TrainingCriterionWorkspaceResponse(**module.read(question))
+
+
+@router.get(
+    "/criteria/versions/{version_id}",
+    response_model=TrainingCriterionVersionResponse,
+    responses={404: {"model": ErrorResponse}},
+)
+def get_training_criterion_version(
+    version_id: str,
+    module: TrainingCriterionModule = Depends(
+        get_training_criterion_module
+    ),
+) -> TrainingCriterionVersionResponse:
+    try:
+        payload = module.get_version(version_id)
+    except CriterionVersionNotFound as exc:
+        raise ApiError(
+            404,
+            "criterion_version_not_found",
+            "Training criterion version was not found",
+        ) from exc
+    return TrainingCriterionVersionResponse(**payload)
+
+
+@router.post(
+    "/criteria/questions/{question_id}/drafts",
+    response_model=TrainingCriterionWorkspaceResponse,
+    responses=CRITERION_WRITE_ERROR_RESPONSES,
+)
+def edit_training_criterion_draft(
+    question_id: int,
+    body: TrainingCriterionDraftWriteRequest,
+    module: TrainingCriterionModule = Depends(
+        get_training_criterion_module
+    ),
+    question_bank_db_path: Path = Depends(get_question_bank_db_path),
+    data_root: Path = Depends(get_data_root),
+) -> TrainingCriterionWorkspaceResponse:
+    question = _load_criterion_question(
+        question_id,
+        db_path=question_bank_db_path,
+        data_root=data_root,
+    )
+    try:
+        payload = module.edit(
+            question=question,
+            criteria={
+                "schema_version": "training-criteria-draft-v1",
+                "question_id": question_id,
+                "points": [
+                    item.model_dump() for item in body.points
+                ],
+                "auxiliary_rules": list(body.auxiliary_rules),
+                "rationale": body.rationale,
+                "confidence": body.confidence,
+            },
+            expected_revision=body.expected_revision,
+            parent_version_id=body.parent_version_id,
+            request_token=body.request_token.lower(),
+            actor_ref="local_teacher",
+            reason=body.reason,
+        )
+    except CriterionRevisionConflict as exc:
+        raise ApiError(
+            409,
+            "criterion_revision_conflict",
+            "Training criteria changed; refresh before saving",
+            {"current_revision": exc.current_revision},
+        ) from exc
+    except CriterionRequestConflict as exc:
+        raise ApiError(
+            409,
+            "criterion_request_conflict",
+            "This criterion request token was already used",
+        ) from exc
+    except CriterionVersionNotFound as exc:
+        raise ApiError(
+            404,
+            "criterion_version_not_found",
+            "Parent criterion version was not found",
+        ) from exc
+    except (TypeError, ValueError) as exc:
+        raise ApiError(
+            422,
+            "criterion_draft_invalid",
+            "Training criterion draft is invalid",
+        ) from exc
+    return TrainingCriterionWorkspaceResponse(**payload)
+
+
+@router.post(
+    "/criteria/questions/{question_id}/review",
+    response_model=TrainingCriterionWorkspaceResponse,
+    responses=CRITERION_WRITE_ERROR_RESPONSES,
+)
+def review_training_criterion(
+    question_id: int,
+    body: TrainingCriterionReviewRequest,
+    module: TrainingCriterionModule = Depends(
+        get_training_criterion_module
+    ),
+    question_bank_db_path: Path = Depends(get_question_bank_db_path),
+    data_root: Path = Depends(get_data_root),
+) -> TrainingCriterionWorkspaceResponse:
+    question = _load_criterion_question(
+        question_id,
+        db_path=question_bank_db_path,
+        data_root=data_root,
+    )
+    try:
+        payload = module.review(
+            CriterionReviewCommand(
+                question_id=question_id,
+                version_id=body.version_id,
+                expected_revision=body.expected_revision,
+                action=body.action,
+                actor_ref="local_teacher",
+                reason=body.reason,
+            ),
+            question=question,
+        )
+    except CriterionRevisionConflict as exc:
+        raise ApiError(
+            409,
+            "criterion_revision_conflict",
+            "Training criteria changed; refresh before reviewing",
+            {"current_revision": exc.current_revision},
+        ) from exc
+    except CriterionQualityError as exc:
+        raise ApiError(
+            422,
+            "criterion_quality_failed",
+            "Training criteria must pass the quality gate before approval",
+            {"quality_codes": list(exc.quality_codes)},
+        ) from exc
+    except CriterionVersionNotFound as exc:
+        raise ApiError(
+            404,
+            "criterion_version_not_found",
+            "Training criterion version was not found",
+        ) from exc
+    except (CriterionTransitionError, TypeError, ValueError) as exc:
+        raise ApiError(
+            422,
+            "criterion_review_invalid",
+            "Training criterion review is invalid",
+        ) from exc
+    return TrainingCriterionWorkspaceResponse(**payload)
+
+
+@router.post(
+    "/criteria/backfill-runs",
+    response_model=TrainingCriterionBackfillStartResponse,
+    status_code=202,
+    responses=CRITERION_WRITE_ERROR_RESPONSES,
+)
+def start_training_criterion_backfill(
+    body: TrainingCriterionBackfillCreateRequest,
+    module: TrainingCriterionModule = Depends(
+        get_training_criterion_module
+    ),
+    manager: JobManager = Depends(get_job_manager),
+) -> TrainingCriterionBackfillStartResponse:
+    try:
+        run, created = module.create_backfill_run(
+            question_ids=body.question_ids,
+            request_token=body.request_token.lower(),
+            mode=body.mode,
+        )
+    except CriterionRequestConflict as exc:
+        raise ApiError(
+            409,
+            "criterion_backfill_request_conflict",
+            "This backfill request token was already used",
+        ) from exc
+    except CriterionVersionNotFound as exc:
+        raise ApiError(
+            404,
+            "criterion_backfill_question_not_found",
+            "One or more selected questions were not found",
+        ) from exc
+    except (TypeError, ValueError) as exc:
+        raise ApiError(
+            422,
+            "criterion_backfill_invalid",
+            "Criterion backfill selection is invalid",
+        ) from exc
+    job = _active_criterion_backfill_job(manager, run["run_id"])
+    if created or (job is None and run["status"] == "pending"):
+        try:
+            job = manager.submit(
+                "criterion_backfill",
+                {"run_id": run["run_id"]},
+            )
+        except UnsupportedJobTypeError as exc:
+            raise ApiError(
+                503,
+                "criterion_backfill_unavailable",
+                "Criterion backfill is temporarily unavailable",
+            ) from exc
+    return TrainingCriterionBackfillStartResponse(
+        run=TrainingCriterionBackfillRunResponse(**run),
+        job=None if job is None else _job_response(job),
+    )
+
+
+@router.get(
+    "/criteria/backfill-runs/{run_id}",
+    response_model=TrainingCriterionBackfillRunResponse,
+    responses={404: {"model": ErrorResponse}},
+)
+def get_training_criterion_backfill(
+    run_id: str,
+    module: TrainingCriterionModule = Depends(
+        get_training_criterion_module
+    ),
+) -> TrainingCriterionBackfillRunResponse:
+    try:
+        payload = module.get_backfill_run(run_id)
+    except CriterionVersionNotFound as exc:
+        raise ApiError(
+            404,
+            "criterion_backfill_not_found",
+            "Criterion backfill run was not found",
+        ) from exc
+    return TrainingCriterionBackfillRunResponse(**payload)
+
+
+@router.post(
+    "/criteria/backfill-runs/{run_id}/cancel",
+    response_model=TrainingCriterionBackfillRunResponse,
+    responses={404: {"model": ErrorResponse}},
+)
+def cancel_training_criterion_backfill(
+    run_id: str,
+    module: TrainingCriterionModule = Depends(
+        get_training_criterion_module
+    ),
+    manager: JobManager = Depends(get_job_manager),
+) -> TrainingCriterionBackfillRunResponse:
+    job = _active_criterion_backfill_job(manager, run_id)
+    try:
+        payload = module.get_backfill_run(run_id)
+    except CriterionVersionNotFound as exc:
+        raise ApiError(
+            404,
+            "criterion_backfill_not_found",
+            "Criterion backfill run was not found",
+        ) from exc
+    if job is not None:
+        manager.cancel(job.id)
+    if job is None or job.status == "queued":
+        payload = module.cancel_backfill(run_id)
+    return TrainingCriterionBackfillRunResponse(**payload)
+
+
+@router.post(
+    "/criteria/backfill-runs/{run_id}/retry",
+    response_model=TrainingCriterionBackfillStartResponse,
+    status_code=202,
+    responses=CRITERION_WRITE_ERROR_RESPONSES,
+)
+def retry_training_criterion_backfill(
+    run_id: str,
+    body: TrainingCriterionBackfillRetryRequest,
+    module: TrainingCriterionModule = Depends(
+        get_training_criterion_module
+    ),
+    manager: JobManager = Depends(get_job_manager),
+) -> TrainingCriterionBackfillStartResponse:
+    try:
+        source = module.recover_backfill(run_id)
+    except CriterionVersionNotFound as exc:
+        raise ApiError(
+            404,
+            "criterion_backfill_not_found",
+            "Criterion backfill run was not found",
+        ) from exc
+    retryable = {
+        int(item["question_id"])
+        for item in source["items"]
+        if item["status"] in {"failed", "cancelled"}
+    }
+    selected = set(body.question_ids or sorted(retryable))
+    if not selected or not selected.issubset(retryable):
+        raise ApiError(
+            409,
+            "criterion_backfill_retry_not_available",
+            "Only failed or cancelled questions can be retried",
+        )
+    try:
+        run, _created = module.create_backfill_run(
+            question_ids=sorted(selected),
+            request_token=body.request_token.lower(),
+            mode=source["mode"],
+        )
+        job = manager.submit(
+            "criterion_backfill",
+            {"run_id": run["run_id"], "retry_of_run_id": run_id},
+        )
+    except CriterionRequestConflict as exc:
+        raise ApiError(
+            409,
+            "criterion_backfill_request_conflict",
+            "This backfill request token was already used",
+        ) from exc
+    except UnsupportedJobTypeError as exc:
+        raise ApiError(
+            503,
+            "criterion_backfill_unavailable",
+            "Criterion backfill is temporarily unavailable",
+        ) from exc
+    return TrainingCriterionBackfillStartResponse(
+        run=TrainingCriterionBackfillRunResponse(**run),
+        job=_job_response(job),
+    )
+
+
+def _load_criterion_question(
+    question_id: int,
+    *,
+    db_path: Path,
+    data_root: Path,
+) -> QuestionAnalysisInput:
+    try:
+        return QuestionAnalysisInputLoader(
+            db_path=db_path,
+            data_root=data_root,
+        ).load((int(question_id),))[0]
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ApiError(
+            404,
+            "criterion_question_not_found",
+            "Question was not found",
+        ) from exc
+
+
+def _active_criterion_backfill_job(
+    manager: JobManager,
+    run_id: str,
+) -> JobRecord | None:
+    jobs, _total = manager.list(
+        job_types=("criterion_backfill",),
+        statuses=("queued", "running"),
+        limit=200,
+    )
+    return next(
+        (
+            job
+            for job in jobs
+            if str(job.payload.get("run_id") or "") == run_id
+        ),
+        None,
+    )
 
 
 @router.get(

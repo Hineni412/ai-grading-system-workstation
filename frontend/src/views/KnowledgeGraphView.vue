@@ -4,37 +4,40 @@ import { useRoute, useRouter } from 'vue-router'
 
 import type { GraphQueryInput } from '../api/graph'
 import { fetchStudents, type StudentSummary } from '../api/students'
-import GraphNodeInspector from '../components/knowledge-graph/GraphNodeInspector.vue'
+import GraphRelationReviewShortcut from '../components/knowledge-graph/GraphRelationReviewShortcut.vue'
 import GraphScopeFilters from '../components/knowledge-graph/GraphScopeFilters.vue'
-import GraphTextDirectory from '../components/knowledge-graph/GraphTextDirectory.vue'
-import KnowledgeGraphCanvas, {
-  type GraphDisplayMode,
-} from '../components/knowledge-graph/KnowledgeGraphCanvas.vue'
-import { summarizeGraph } from '../features/knowledge-graph/model'
+import GraphV2NodeInspector from '../components/knowledge-graph/GraphV2NodeInspector.vue'
+import GraphV2TextDirectory from '../components/knowledge-graph/GraphV2TextDirectory.vue'
+import KnowledgeGraphV2Canvas from '../components/knowledge-graph/KnowledgeGraphV2Canvas.vue'
+import MasteryV2ComparisonPanel from '../components/knowledge-graph/MasteryV2ComparisonPanel.vue'
+import { summarizeGraphV2 } from '../features/knowledge-graph/v2-model'
 import {
   parseGraphRouteScope,
   serializeGraphRouteScope,
 } from '../features/knowledge-graph/route'
-import { useKnowledgeGraphStore } from '../stores/knowledge-graph'
+import { useKnowledgeGraphV2Store } from '../stores/knowledge-graph-v2'
 import { useSessionStore } from '../stores/session'
 
 const route = useRoute()
 const router = useRouter()
 const sessionStore = useSessionStore()
-const graphStore = useKnowledgeGraphStore()
+const graphStore = useKnowledgeGraphV2Store()
 
 const students = ref<StudentSummary[]>([])
 const studentsState = ref<'loading' | 'ready' | 'error'>('loading')
 const activeQuery = ref<GraphQueryInput | null>(null)
 const routeNotice = ref('')
-const mode = ref<GraphDisplayMode>('graph')
 let studentsController: AbortController | null = null
 let routeInitialized = false
 
 const selectedNode = computed(() => graphStore.graph?.nodes.find(
-  (node) => node.knowledge_key === graphStore.selectedNodeKey,
+  (node) => node.stable_key === graphStore.selectedNodeKey,
 ) ?? null)
-const summary = computed(() => summarizeGraph(graphStore.graph?.nodes ?? []))
+const summary = computed(() => summarizeGraphV2(
+  graphStore.graph?.nodes ?? [],
+  graphStore.graph?.edges ?? [],
+  graphStore.graph?.mastery_mode ?? 'v1',
+))
 const scopeLabel = computed(() => {
   const graph = graphStore.graph
   if (!graph) return '尚未应用查看范围'
@@ -87,13 +90,12 @@ async function loadStudentOptions(): Promise<void> {
 async function applyQuery(query: GraphQueryInput): Promise<void> {
   activeQuery.value = query
   routeNotice.value = ''
-  mode.value = 'graph'
   await router.replace({ name: 'knowledge-graph', query: serializeGraphRouteScope(query) })
   await graphStore.loadGraph(query)
 }
 
 function selectNode(knowledgeKey: string): void {
-  const node = graphStore.graph?.nodes.find((candidate) => candidate.knowledge_key === knowledgeKey)
+  const node = graphStore.graph?.nodes.find((candidate) => candidate.stable_key === knowledgeKey)
   if (node) void graphStore.selectNode(node)
 }
 
@@ -103,6 +105,10 @@ function retryGraph(): void {
 
 function retryStudents(): void {
   void loadStudentOptions()
+}
+
+function refreshAfterRollout(): void {
+  void graphStore.retryGraph()
 }
 
 watch(
@@ -137,18 +143,24 @@ onBeforeUnmount(() => {
   <section class="knowledge-graph-view" aria-labelledby="knowledge-graph-title">
     <header class="knowledge-graph-page-heading">
       <div>
-        <p>只读知识标签证据</p>
-        <h1 id="knowledge-graph-title" tabindex="-1">知识图谱</h1>
-        <p>按已有题库标签查看得分率和原始证据，不推断知识点关系。</p>
+        <p>已确认关系 · 可追溯证据</p>
+        <h1 id="knowledge-graph-title" tabindex="-1">知识图谱 2.0</h1>
+        <p>查看教师已确认的父子、先修与相关关系；候选关系不会在图中生效。</p>
       </div>
-      <dl v-if="graphStore.graph" class="knowledge-graph-summary" aria-label="知识标签分档汇总">
-        <div><dt>全部</dt><dd>{{ summary.total }}</dd></div>
+      <dl v-if="graphStore.graph" class="knowledge-graph-summary" aria-label="知识图谱汇总">
+        <div><dt>知识点</dt><dd>{{ summary.total }}</dd></div>
+        <div><dt>已确认关系</dt><dd>{{ summary.relationTotal }}</dd></div>
+        <div><dt>当前无证据</dt><dd>{{ summary.missing }}</dd></div>
         <div><dt>重点薄弱</dt><dd>{{ summary.weak }}</dd></div>
         <div><dt>需要讲评</dt><dd>{{ summary.review }}</dd></div>
-        <div><dt>轻微欠缺</dt><dd>{{ summary.slight }}</dd></div>
-        <div><dt>稳定</dt><dd>{{ summary.stable }}</dd></div>
       </dl>
     </header>
+
+    <GraphRelationReviewShortcut />
+    <MasteryV2ComparisonPanel
+      :query="activeQuery"
+      @rollout-changed="refreshAfterRollout"
+    />
 
     <div v-if="studentsState === 'error'" class="knowledge-graph-inline-error" role="alert">
       <p>班级和学生列表暂时无法读取</p>
@@ -176,15 +188,15 @@ onBeforeUnmount(() => {
       <section class="knowledge-graph-canvas-panel">
         <header class="knowledge-graph-canvas-toolbar">
           <div>
-            <h2>知识标签分布</h2>
-            <p>正在准备当前范围的图表…</p>
+            <h2>已确认知识关系</h2>
+            <p>正在准备当前范围的关系与证据…</p>
           </div>
         </header>
         <div class="knowledge-graph-canvas" aria-hidden="true" />
       </section>
       <aside class="knowledge-graph-inspector">
         <header>
-          <p class="knowledge-graph-inspector__eyebrow">只读事实与证据</p>
+          <p class="knowledge-graph-inspector__eyebrow">关系、事实与证据</p>
           <h2>知识点详情</h2>
         </header>
         <p class="knowledge-graph-state-copy">正在准备节点事实和题目证据…</p>
@@ -200,40 +212,57 @@ onBeforeUnmount(() => {
         <p>当前显示上次成功读取的知识图谱，最新内容暂时无法确认。</p>
         <button type="button" @click="retryGraph">重新加载知识图谱</button>
       </div>
-      <section class="knowledge-graph-coverage" aria-label="标签覆盖情况">
+      <section class="knowledge-graph-coverage" aria-label="证据覆盖情况">
         <strong>已覆盖 {{ graphStore.graph.coverage.covered_items }} / {{ graphStore.graph.coverage.total_items }} 份作答</strong>
         <span>未覆盖 {{ graphStore.graph.coverage.total_items - graphStore.graph.coverage.covered_items }} 份</span>
+        <span>响应版本 {{ graphStore.graph.response_version.slice(0, 8) }}</span>
       </section>
       <ul v-if="graphStore.graph.warnings.length" class="knowledge-graph-warnings" aria-label="知识图谱说明">
         <li v-for="warning in graphStore.graph.warnings" :key="warning">{{ warning }}</li>
       </ul>
       <p v-if="graphStore.graph.nodes.length === 0" class="knowledge-graph-scope-notice">
-        当前范围没有可显示的知识标签
+        当前范围没有可显示的已治理知识点。可调整考试或学生范围；未治理标签不会被伪装成关系节点。
       </p>
-      <template v-else>
+      <ul v-if="graphStore.graph.missing.length" class="knowledge-graph-missing-list" aria-label="未纳入图谱的项目">
+        <li v-for="item in graphStore.graph.missing" :key="item.kind === 'ungoverned_knowledge_label' ? item.label : item.stable_key">
+          <template v-if="item.kind === 'ungoverned_knowledge_label'">
+            “{{ item.label || '未命名标签' }}”尚未治理，{{ item.count }} 条证据未纳入关系图。
+          </template>
+          <template v-else>
+            稳定知识点 {{ item.stable_key }} 不存在，未显示。
+          </template>
+        </li>
+      </ul>
+      <template v-if="graphStore.graph.nodes.length > 0">
         <div class="knowledge-graph-workspace">
-          <KnowledgeGraphCanvas
+          <KnowledgeGraphV2Canvas
             :nodes="graphStore.graph.nodes"
-            :rows="graphStore.graph.rows"
-            :mode="mode"
+            :edges="graphStore.graph.edges"
             :selected-key="graphStore.selectedNodeKey"
             :scope-label="scopeLabel"
             :coverage="graphStore.graph.coverage"
-            @change-mode="mode = $event"
+            :mastery-mode="graphStore.graph.mastery_mode"
             @select-node="selectNode"
           />
-          <GraphNodeInspector
+          <GraphV2NodeInspector
             :node="selectedNode"
+            :nodes="graphStore.graph.nodes"
+            :edges="graphStore.graph.edges"
             :evidence="graphStore.evidence"
             :evidence-state="graphStore.evidenceState"
             :evidence-error="graphStore.evidenceError"
+            :mastery-mode="graphStore.graph.mastery_mode"
+            :parameter-version="graphStore.graph.mastery_parameter_version"
+            @select-node="selectNode"
             @load-more-evidence="graphStore.loadMoreEvidence()"
             @retry-evidence="graphStore.retryEvidence()"
           />
         </div>
-        <GraphTextDirectory
+        <GraphV2TextDirectory
           :nodes="graphStore.graph.nodes"
+          :edges="graphStore.graph.edges"
           :selected-key="graphStore.selectedNodeKey"
+          :mastery-mode="graphStore.graph.mastery_mode"
           @select-node="selectNode"
         />
       </template>

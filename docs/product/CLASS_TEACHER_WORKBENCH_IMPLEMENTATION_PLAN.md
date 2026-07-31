@@ -1,6 +1,6 @@
 # 班主任工作台详细实施计划（B 线）
 
-> 状态：B00 治理准备已激活；B01 以后等待治理规格与共同地基 F0
+> 状态：用户已于 2026-07-30 确认 B00，共同地基 F0/M1 已完成；B01 以后仍须单独授权
 >
 > 产品依据：[《班主任工作台总体设计》](./CLASS_TEACHER_WORKBENCH.md)
 >
@@ -13,6 +13,12 @@
 > 风险等级：高
 >
 > 重要声明：用户已决定把班主任工作台纳入三路并行，这只激活 B00 治理规格。B00 没有获批、共同地基 F0 没有合入之前，不得创建 B01 业务数据库、页面或接口，不得读取真实学生数据，不得调用真实模型。
+
+> B00 候选交付：
+> [数据治理与保留删除规格](./class-teacher/B00_DATA_GOVERNANCE.md)、
+> [深圳公办初中学校流程规格](./class-teacher/B00_SHENZHEN_SCHOOL_SOP_PROFILE.md)、
+> [合成数据集与验收清单](./class-teacher/B00_SYNTHETIC_ACCEPTANCE.md)、
+> [安全、加密、威胁与恢复规格](../security/class-teacher/B00_SECURITY_AND_THREAT_MODEL.md)。
 
 ## 1. 这条分支要交付什么
 

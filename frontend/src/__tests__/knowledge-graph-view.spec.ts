@@ -3,7 +3,13 @@ import { createPinia, setActivePinia } from 'pinia'
 import { createMemoryHistory } from 'vue-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { fetchScopedGraphRows, type GraphQueryInput, type GraphRowsResponse } from '../api/graph'
+import type { GraphQueryInput } from '../api/graph'
+import {
+  fetchGraphV2,
+  fetchMasteryRollout,
+  fetchRelationReviewQueue,
+  type GraphV2Response,
+} from '../api/graph-v2'
 import { fetchStudents } from '../api/students'
 import { createAppRouter } from '../router'
 import { useSessionStore } from '../stores/session'
@@ -14,10 +20,12 @@ vi.mock('../api/students', async (importOriginal) => ({
   fetchStudents: vi.fn(),
 }))
 
-vi.mock('../api/graph', async (importOriginal) => ({
-  ...await importOriginal<typeof import('../api/graph')>(),
-  fetchScopedGraphRows: vi.fn(),
-  fetchScopedGraphEvidence: vi.fn(),
+vi.mock('../api/graph-v2', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../api/graph-v2')>(),
+  fetchGraphV2: vi.fn(),
+  fetchGraphV2Evidence: vi.fn(),
+  fetchMasteryRollout: vi.fn(),
+  fetchRelationReviewQueue: vi.fn(),
 }))
 
 const fakeChart = vi.hoisted(() => ({
@@ -38,7 +46,7 @@ const students = [
   { id: 21, student_code: 'S021', name: '匿名学生丙', class_name: '七年级二班', created_at: null },
 ]
 
-function responseFor(query: GraphQueryInput): GraphRowsResponse {
+function responseFor(query: GraphQueryInput): GraphV2Response {
   const sessionIds = query.exam_scope.mode === 'cross_exam'
     ? [7, 8]
     : query.exam_scope.session_ids
@@ -64,21 +72,33 @@ function responseFor(query: GraphQueryInput): GraphRowsResponse {
       session_ids: sessionIds,
       sessions: sessionIds.map((id) => ({ session_id: id, session_name: `匿名考试${id}` })),
     },
-    rows: [],
+    response_schema_version: 'knowledge-graph-v2',
+    response_version: 'a'.repeat(64),
+    mastery_mode: 'v1',
+    mastery_parameter_version: null,
     nodes: [{
-      knowledge_key: 'knowledge_point:三角形全等',
-      knowledge_label: '三角形全等',
-      student_count: studentIds.length,
-      item_count: 4,
-      deduction_count: 2,
-      average_mastery: 0.62,
-      tag_context: {},
-      error_counts: { primary: {}, secondary: {} },
+      stable_key: 'kp_geo_triangle_congruence',
+      display_name: '三角形全等',
+      identity_revision: 1,
+      mastery_v1: { status: 'available', value: 0.62, evidence_count: 4, reason: null },
+      mastery_v2: {
+        status: 'unavailable', value: null, evidence_count: 0,
+        reason: 'mastery_v2_not_enabled',
+      },
+      evidence: {
+        student_count: studentIds.length,
+        item_count: 4,
+        deduction_count: 2,
+        tag_context: {},
+        error_counts: { primary: {}, secondary: {} },
+      },
+      missing_reasons: [],
     }],
     edges: [],
+    missing: [],
     coverage: { covered_items: 4, total_items: 5, missing_items: { Q5: '未标注' } },
     warnings: ['部分题目没有知识标签'],
-    diagnosis_identity: 'question_tag',
+    counts: { node_count: 1, edge_count: 0, evidence_row_count: 4, missing_count: 0 },
   }
 }
 
@@ -129,7 +149,20 @@ beforeEach(() => {
   vi.clearAllMocks()
   vi.stubGlobal('ResizeObserver', ResizeObserverStub)
   vi.mocked(fetchStudents).mockResolvedValue(students)
-  vi.mocked(fetchScopedGraphRows).mockImplementation(async (query) => responseFor(query))
+  vi.mocked(fetchGraphV2).mockImplementation(async (query) => responseFor(query))
+  vi.mocked(fetchMasteryRollout).mockResolvedValue({
+    enabled: false,
+    active_mode: 'v1',
+    active_parameter_version: null,
+    approved_evaluation_id: null,
+    revision: 1,
+    updated_by: null,
+    reason: null,
+    updated_at: '2026-01-01 00:00:00',
+  })
+  vi.mocked(fetchRelationReviewQueue).mockResolvedValue({
+    status: 'suggested', items: [], total: 0, page: 1, page_size: 20, total_pages: 1,
+  })
 })
 
 afterEach(() => {
@@ -141,7 +174,7 @@ afterEach(() => {
 describe('knowledge graph view', () => {
   it('uses a validated workbench exam and class without guessing another scope', async () => {
     const { host } = await mountView('/knowledge-graph?session=7&class=七年级一班')
-    await vi.waitFor(() => expect(fetchScopedGraphRows).toHaveBeenCalledWith({
+    await vi.waitFor(() => expect(fetchGraphV2).toHaveBeenCalledWith({
       scope: { mode: 'class', class_id: '七年级一班' },
       exam_scope: { mode: 'current', session_ids: [7] },
     }, expect.any(AbortSignal)))
@@ -151,14 +184,14 @@ describe('knowledge graph view', () => {
   })
 
   it('keeps the canvas and inspector skeleton visible during the first graph load', async () => {
-    const pending = deferred<GraphRowsResponse>()
-    vi.mocked(fetchScopedGraphRows).mockImplementationOnce(async () => pending.promise)
+    const pending = deferred<GraphV2Response>()
+    vi.mocked(fetchGraphV2).mockImplementationOnce(async () => pending.promise)
     const { host } = await mountView('/knowledge-graph?session=7&class=七年级一班')
 
     await vi.waitFor(() => (
       expect(host.querySelector('.knowledge-graph-loading-skeleton')).not.toBeNull()
     ))
-    expect(host.textContent).toContain('知识标签分布')
+    expect(host.textContent).toContain('已确认知识关系')
     expect(host.textContent).toContain('知识点详情')
 
     pending.resolve(responseFor({
@@ -170,24 +203,24 @@ describe('knowledge graph view', () => {
 
   it('does not request a graph when no valid class was supplied', async () => {
     const { host } = await mountView('/knowledge-graph')
-    expect(fetchScopedGraphRows).not.toHaveBeenCalled()
+    expect(fetchGraphV2).not.toHaveBeenCalled()
     expect(host.textContent).toContain('请选择班级并应用范围')
   })
 
   it('rejects an invalid routed class instead of silently choosing the first class', async () => {
     const { host, router } = await mountView('/knowledge-graph?session=7&class=不存在的班级')
-    expect(fetchScopedGraphRows).not.toHaveBeenCalled()
+    expect(fetchGraphV2).not.toHaveBeenCalled()
     expect(host.textContent).toContain('地址中的考试、班级或学生范围已不可用')
     await vi.waitFor(() => expect(router.currentRoute.value.query).toEqual({}))
   })
 
   it('clears a current-exam graph when the topbar exam changes', async () => {
     const { host, sessionStore } = await mountView('/knowledge-graph?session=7&class=七年级一班')
-    await vi.waitFor(() => expect(fetchScopedGraphRows).toHaveBeenCalledTimes(1))
+    await vi.waitFor(() => expect(fetchGraphV2).toHaveBeenCalledTimes(1))
     sessionStore.selectSession(8)
     await nextTick()
     expect(host.textContent).toContain('当前考试已更改，请选择班级并应用范围')
-    expect(fetchScopedGraphRows).toHaveBeenCalledTimes(1)
+    expect(fetchGraphV2).toHaveBeenCalledTimes(1)
   })
 
   it('applies an exact manual-exam selected-student scope and switches modes locally', async () => {
@@ -205,27 +238,27 @@ describe('knowledge graph view', () => {
     studentIds.dispatchEvent(new Event('change', { bubbles: true }))
     host.querySelector<HTMLButtonElement>('[data-testid="apply-graph-scope"]')!.click()
 
-    await vi.waitFor(() => expect(fetchScopedGraphRows).toHaveBeenLastCalledWith({
+    await vi.waitFor(() => expect(fetchGraphV2).toHaveBeenLastCalledWith({
       scope: { mode: 'selected', student_ids: ['12', '15'] },
       exam_scope: { mode: 'manual', session_ids: [7, 8] },
     }, expect.any(AbortSignal)))
     expect(router.currentRoute.value.query).toEqual({
       exam: 'manual', sessions: '7,8', scope: 'selected', students: '12,15',
     })
-    const calls = vi.mocked(fetchScopedGraphRows).mock.calls.length
-    const treeButton = [...host.querySelectorAll<HTMLButtonElement>('button')]
-      .find((button) => button.textContent?.trim() === '学生分组树')!
-    treeButton.click()
+    const calls = vi.mocked(fetchGraphV2).mock.calls.length
+    const overviewButton = [...host.querySelectorAll<HTMLButtonElement>('button')]
+      .find((button) => button.textContent?.trim() === '全部关系')!
+    overviewButton.click()
     await nextTick()
-    expect(fetchScopedGraphRows).toHaveBeenCalledTimes(calls)
-    expect(host.textContent).toContain('不是知识点父子、先修或相关关系')
+    expect(fetchGraphV2).toHaveBeenCalledTimes(calls)
+    expect(host.textContent).toContain('已确认知识关系')
   })
 
   it('restores a controlled manual and selected-student scope after refresh', async () => {
     const { router } = await mountView(
       '/knowledge-graph?exam=manual&sessions=7,8&scope=selected&students=12,15',
     )
-    await vi.waitFor(() => expect(fetchScopedGraphRows).toHaveBeenCalledWith({
+    await vi.waitFor(() => expect(fetchGraphV2).toHaveBeenCalledWith({
       scope: { mode: 'selected', student_ids: ['12', '15'] },
       exam_scope: { mode: 'manual', session_ids: [7, 8] },
     }, expect.any(AbortSignal)))
@@ -241,10 +274,10 @@ describe('knowledge graph view', () => {
     const { host, router } = await mountView('/knowledge-graph?session=7&class=七年级一班')
     expect(host.textContent).toContain('班级和学生列表暂时无法读取')
     expect(router.currentRoute.value.query).toEqual({ session: '7', class: '七年级一班' })
-    expect(fetchScopedGraphRows).not.toHaveBeenCalled()
+    expect(fetchGraphV2).not.toHaveBeenCalled()
 
     host.querySelector<HTMLButtonElement>('.knowledge-graph-inline-error button')!.click()
-    await vi.waitFor(() => expect(fetchScopedGraphRows).toHaveBeenCalledWith({
+    await vi.waitFor(() => expect(fetchGraphV2).toHaveBeenCalledWith({
       scope: { mode: 'class', class_id: '七年级一班' },
       exam_scope: { mode: 'current', session_ids: [7] },
     }, expect.any(AbortSignal)))

@@ -509,6 +509,8 @@ TrainingAssessmentModule
 
 - 不给现有 `TagAnalysis` 直接塞评分字段；
 - 判定点不保存分值；
+- 产品操作上先完成普通标签治理，再在题库同一道题的详情中审核训练判定点；
+  同一次物理请求共享只用于减少请求数，不改变这一题库归属和操作顺序；
 - 模型漏图时图片题失败关闭；
 - 一题的受控标签候选不能被同批另一题借用；
 - 失败不自动产生修复请求；
@@ -528,6 +530,7 @@ TrainingAssessmentModule
 ### 17.1 包含
 
 - `training_criterion_versions` 与当前 head；
+- 题库题目详情中、普通标签流程之后的训练判定点审核入口；
 - `source_content_hash`、父版本和 schema 版本；
 - `proposed/approved/rejected/superseded/stale`；
 - 教师编辑、批准、拒绝和重新生成；
