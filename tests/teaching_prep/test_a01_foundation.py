@@ -7,6 +7,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from api_profiles import ApiProfileStore
 from backend.jobs.manager import JobManager
 from backend.jobs.store import JobStore
 from backend.teaching_prep.api import create_router
@@ -28,6 +29,7 @@ def _paths(tmp_path: Path) -> PathManager:
     paths = PathManager()
     paths._project_root = PROJECT_ROOT
     paths._data_root = tmp_path / "user_data"
+    paths._api_profiles_path = tmp_path / "config" / "api_profiles.json"
     return paths
 
 
@@ -94,6 +96,7 @@ def test_enabled_feature_creates_only_teaching_prep_workspace(
     }
     assert (root / "teaching_prep.db").is_file()
     assert isinstance(services["teaching-prep"], TeachingPrepService)
+    assert services["teaching-prep"].status()["real_model_enabled"] is False
     with sqlite3.connect(root / "teaching_prep.db") as connection:
         assert connection.execute(
             """
@@ -102,6 +105,33 @@ def test_enabled_feature_creates_only_teaching_prep_workspace(
             WHERE type = 'table' AND name = 'lesson_preparations'
             """
         ).fetchone() == ("lesson_preparations",)
+
+
+def test_active_model_profile_is_resolved_without_making_a_model_call(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths, registry = _enabled_registry(tmp_path, monkeypatch)
+    ApiProfileStore(paths.api_profiles_path).replace_all(
+        [
+            {
+                "name": "合成备课模型",
+                "config_api_key": "test-key-not-real",
+                "config_base_url": "https://example.invalid/v1",
+                "config_model": "test-model",
+            }
+        ]
+    )
+    registry.run_migrations()
+
+    service = registry.create_services()["teaching-prep"]
+
+    assert isinstance(service, TeachingPrepService)
+    assert service.status()["real_model_enabled"] is True
+    assert service.status()["semester_mapping_model_available"] is True
+    assert not (
+        paths.workspace_dir("teaching-prep") / ".model-operations"
+    ).exists()
 
 
 def test_create_is_idempotent_and_rejects_token_reuse(

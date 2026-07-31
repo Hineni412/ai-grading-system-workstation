@@ -231,4 +231,91 @@ describe('teaching preparation delivery API', () => {
       expect.objectContaining({ method: 'POST' }),
     )
   })
+
+  it('preflights exactly the selected semester material before model mapping', async () => {
+    const semesterId = 's'.repeat(32)
+    const materialRecordId = 'r'.repeat(32)
+    const payload = {
+      semester_id: semesterId,
+      source_state_sha256: '4'.repeat(64),
+      will_call_model: true,
+      model_available: true,
+      model_label: '合成模型',
+      material_count: 1,
+      unit_count: 128,
+      existing_lesson_count: 36,
+      creates_initial_tree: false,
+      automatic_retry: false,
+    }
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValue(response(payload))
+
+    await expect(teachingPrepCatalogApi.semesterMappingPreflight(
+      semesterId,
+      [materialRecordId],
+    )).resolves.toEqual(payload)
+
+    expect(fetchMock).toHaveBeenCalledExactlyOnceWith(
+      `/api/teaching-prep/semesters/${semesterId}/mapping-preflight`,
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({
+          material_record_ids: [materialRecordId],
+        }),
+      }),
+    )
+  })
+
+  it('accepts a safe semester material filename without weakening path checks', async () => {
+    const semesterId = 's'.repeat(32)
+    const payload = {
+      id: 'r'.repeat(32),
+      semester_id: semesterId,
+      material_source_id: 'm'.repeat(32),
+      display_name: '合成日常作业教辅',
+      material_role: 'homework_workbook',
+      parse_status: 'parsed',
+      mapping_status: 'unmapped',
+      current_material_version_id: 'v'.repeat(32),
+      safe_filename: 'synthetic-homework.pdf',
+      current_inspection_status: 'uninspected',
+      current_unit_count: 3,
+      last_parsed_version_id: 'v'.repeat(32),
+      has_unparsed_update: false,
+      parsed_at: '2026-07-31T00:00:00Z',
+      is_active: true,
+      revision: 2,
+      created_at: '2026-07-31T00:00:00Z',
+      updated_at: '2026-07-31T00:00:00Z',
+    }
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(response({ items: [payload] }))
+
+    await expect(
+      teachingPrepCatalogApi.listSemesterMaterials(semesterId),
+    ).resolves.toEqual([payload])
+  })
+
+  it('reads the five-minute performance result without inventing a WPS call', async () => {
+    const runId = 'e'.repeat(32)
+    const payload = {
+      execution_run_id: runId,
+      slide_plan_id: 'p'.repeat(32),
+      status: 'failed',
+      budget_ms: 300_000,
+      total_machine_elapsed_ms: 301_000,
+      draft_elapsed_ms: 301_000,
+      wps_elapsed_ms: 0,
+      model_call_count: 1,
+      wps_execution_count: 0,
+      technical_retry_count: 0,
+      budget_status: 'exceeded',
+      within_budget: false,
+      human_review_wait_excluded: true,
+    }
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(response(payload))
+
+    await expect(
+      teachingPrepCatalogApi.getLessonGenerationPerformance(runId),
+    ).resolves.toEqual(payload)
+  })
 })

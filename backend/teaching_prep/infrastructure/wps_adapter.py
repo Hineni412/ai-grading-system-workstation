@@ -14,7 +14,7 @@ class SubprocessWpsAdapter:
         *,
         helper_script: str | Path,
         powershell_executable: str = "pwsh",
-        timeout_seconds: int = 180,
+        timeout_seconds: int = 170,
     ) -> None:
         self._helper_script = Path(helper_script).resolve(strict=True)
         self._powershell_executable = powershell_executable
@@ -86,8 +86,28 @@ class SubprocessWpsAdapter:
             shell=False,
             creationflags=creation_flags,
         )
+        budget = plan.get("performance_budget")
+        if isinstance(budget, dict):
+            requested_milliseconds = float(
+                budget.get(
+                    "timeout_milliseconds",
+                    float(
+                        budget.get(
+                            "timeout_seconds",
+                            self._timeout_seconds,
+                        )
+                    )
+                    * 1000,
+                )
+            )
+            effective_timeout = max(
+                0.001,
+                min(self._timeout_seconds, requested_milliseconds / 1000),
+            )
+        else:
+            effective_timeout = float(self._timeout_seconds)
         try:
-            return_code = process.wait(timeout=self._timeout_seconds)
+            return_code = process.wait(timeout=effective_timeout)
         except subprocess.TimeoutExpired as exc:
             _terminate_helper_tree(process)
             raise TimeoutError("WPS helper timed out") from exc

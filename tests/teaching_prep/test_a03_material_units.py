@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import json
 import zipfile
 from pathlib import Path
@@ -12,6 +13,7 @@ from fastapi.testclient import TestClient
 from backend.teaching_prep.api import create_router
 from backend.teaching_prep.application import TeachingPrepService
 from backend.teaching_prep.domain.errors import TeachingPrepConflictError
+from backend.teaching_prep.infrastructure.materials import MaterialParser
 
 from .test_a01_foundation import _migrated_service
 from .test_a02_catalog import _lesson_tree
@@ -25,6 +27,23 @@ def _pdf(path: Path, pages: list[str]) -> Path:
             if text:
                 page.insert_text((48, 64), text)
                 page.insert_text((315, 870), str(index))
+        document.save(path)
+    finally:
+        document.close()
+    return path
+
+
+def _scanned_pdf(path: Path) -> Path:
+    from PIL import Image, ImageDraw
+
+    scan = Image.new("RGB", (640, 900), "white")
+    ImageDraw.Draw(scan).text((80, 120), "synthetic scan", fill="black")
+    buffer = io.BytesIO()
+    scan.save(buffer, format="PNG")
+    document = fitz.open()
+    try:
+        page = document.new_page(width=640, height=900)
+        page.insert_image(page.rect, stream=buffer.getvalue())
         document.save(path)
     finally:
         document.close()
@@ -112,6 +131,61 @@ def test_pdf_pages_render_extract_text_and_keep_formula_review_flag(
     assert all(unit.preview_url.startswith("/api/teaching-prep/") for unit in units)
     preview = service.material_preview_path(units[0].id)
     assert preview.read_bytes().startswith(b"\x89PNG")
+
+
+def test_scanned_pdf_uses_local_ocr_without_a_model_call(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeOcr:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def __call__(self, _image):
+            self.calls += 1
+            return (
+                [
+                    (
+                        [[80, 120], [300, 120], [300, 160], [80, 160]],
+                        "勾股定理",
+                        0.99,
+                    ),
+                    (
+                        [
+                            [450, 1280],
+                            [510, 1280],
+                            [510, 1320],
+                            [450, 1320],
+                        ],
+                        "88",
+                        0.99,
+                    ),
+                ],
+                0.01,
+            )
+
+    _paths_value, service = _migrated_service(tmp_path, monkeypatch)
+    fake_ocr = FakeOcr()
+    service.material_parser = MaterialParser(
+        ocr_engine_factory=lambda: fake_ocr
+    )
+    version = _register(
+        service,
+        _scanned_pdf(tmp_path / "synthetic-scanned-workbook.pdf"),
+        token="material-a03-local-ocr",
+        name="合成扫描教辅",
+    )
+
+    unit = service.parse_material_version(version.id)[0]
+
+    assert fake_ocr.calls == 1
+    assert unit.text_status == "empty"
+    assert "勾股定理" in unit.text_excerpt
+    assert unit.object_summary["text_source"] == "local_ocr"
+    assert unit.object_summary["printed_page_number"] == 88
+    assert unit.object_summary["printed_page_number_source"] == (
+        "local_ocr_footer_or_header"
+    )
 
 
 def test_blank_page_accepts_manual_label_and_preview_cache_rebuilds(

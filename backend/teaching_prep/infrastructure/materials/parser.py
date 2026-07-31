@@ -4,8 +4,10 @@ import io
 import re
 import zipfile
 from collections import Counter
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 from xml.etree import ElementTree
 
 from PIL import Image, ImageDraw
@@ -43,6 +45,15 @@ class ParsedMaterialUnit:
 
 
 class MaterialParser:
+    def __init__(
+        self,
+        *,
+        ocr_engine_factory: Callable[[], object] | None = None,
+    ) -> None:
+        self._ocr_engine_factory = (
+            ocr_engine_factory or _default_ocr_engine
+        )
+
     def parse(
         self,
         path: Path,
@@ -57,8 +68,7 @@ class MaterialParser:
             return self._parse_image(path)
         raise TeachingPrepValidationError("material type is unsupported")
 
-    @staticmethod
-    def _parse_pdf(path: Path) -> tuple[ParsedMaterialUnit, ...]:
+    def _parse_pdf(self, path: Path) -> tuple[ParsedMaterialUnit, ...]:
         import fitz
 
         try:
@@ -68,22 +78,47 @@ class MaterialParser:
                 "PDF could not be opened"
             ) from exc
         units: list[ParsedMaterialUnit] = []
+        ocr_engine: object | None = None
+        ocr_unavailable = False
         try:
             for index, page in enumerate(document, start=1):
                 text = str(page.get_text() or "").strip()
                 pixmap = page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5), alpha=False)
+                preview_png = pixmap.tobytes("png")
                 printed_page_number = _visible_printed_page_number(page)
                 object_summary: dict[str, object] = {
                     "preview_kind": "rendered",
                     "width": int(pixmap.width),
                     "height": int(pixmap.height),
                 }
+                if (
+                    not text
+                    and page.get_images(full=True)
+                    and not ocr_unavailable
+                ):
+                    if ocr_engine is None:
+                        try:
+                            ocr_engine = self._ocr_engine_factory()
+                        except Exception:
+                            ocr_unavailable = True
+                    if ocr_engine is not None:
+                        text, ocr_page_number = _ocr_page(
+                            preview_png,
+                            ocr_engine,
+                        )
+                        if text:
+                            object_summary["text_source"] = "local_ocr"
+                        if printed_page_number is None:
+                            printed_page_number = ocr_page_number
                 if printed_page_number is not None:
                     object_summary.update(
                         {
                             "printed_page_number": printed_page_number,
                             "printed_page_number_source": (
-                                "visible_footer_or_header"
+                                "local_ocr_footer_or_header"
+                                if object_summary.get("text_source")
+                                == "local_ocr"
+                                else "visible_footer_or_header"
                             ),
                         }
                     )
@@ -93,12 +128,18 @@ class MaterialParser:
                         unit_index=index,
                         title=_first_line(text),
                         extracted_text=text,
-                        text_status="embedded" if text else "empty",
+                        text_status=(
+                            "embedded"
+                            if text
+                            and object_summary.get("text_source")
+                            != "local_ocr"
+                            else "empty"
+                        ),
                         formula_review_required=bool(
                             text and _FORMULA_HINT.search(text)
                         ),
                         object_summary=object_summary,
-                        preview_png=pixmap.tobytes("png"),
+                        preview_png=preview_png,
                     )
                 )
         finally:
@@ -280,6 +321,77 @@ def _shape_rectangles(
         y1 = max(y0 + 1, min(539, round((top + height) / slide_height * 540)))
         rectangles.append((kind, (x0, y0, x1, y1)))
     return rectangles
+
+
+def _default_ocr_engine() -> object:
+    from rapidocr_onnxruntime import RapidOCR
+
+    return RapidOCR()
+
+
+def _ocr_page(
+    preview_png: bytes,
+    ocr_engine: object,
+) -> tuple[str, int | None]:
+    try:
+        import numpy as np
+
+        with Image.open(io.BytesIO(preview_png)) as source:
+            rgb = source.convert("RGB")
+            width, height = rgb.size
+            image = np.asarray(rgb)[:, :, ::-1]
+        raw = ocr_engine(image)  # type: ignore[operator]
+    except Exception:
+        return "", None
+    result: Any = raw[0] if isinstance(raw, tuple) else raw
+    if not isinstance(result, list):
+        return "", None
+    text_lines: list[str] = []
+    page_number: int | None = None
+    for item in result:
+        if not isinstance(item, (list, tuple)) or len(item) < 3:
+            continue
+        text = str(item[1] or "").strip()
+        try:
+            confidence = float(item[2])
+        except (TypeError, ValueError):
+            confidence = 0.0
+        if text and confidence >= 0.35:
+            text_lines.append(text)
+        if page_number is None and confidence >= 0.55:
+            page_number = _ocr_footer_page_number(
+                item[0],
+                text,
+                width=width,
+                height=height,
+            )
+    return "\n".join(text_lines), page_number
+
+
+def _ocr_footer_page_number(
+    raw_box: object,
+    text: str,
+    *,
+    width: int,
+    height: int,
+) -> int | None:
+    if not re.fullmatch(r"[0-9]{1,3}", text):
+        return None
+    if not isinstance(raw_box, (list, tuple)) or len(raw_box) < 4:
+        return None
+    try:
+        xs = [float(point[0]) for point in raw_box]
+        ys = [float(point[1]) for point in raw_box]
+    except (TypeError, ValueError, IndexError):
+        return None
+    center_x = (min(xs) + max(xs)) / 2
+    center_y = (min(ys) + max(ys)) / 2
+    if not (width * 0.25 <= center_x <= width * 0.75):
+        return None
+    if not (center_y <= height * 0.1 or center_y >= height * 0.9):
+        return None
+    value = int(text)
+    return value if value > 0 else None
 
 
 def _visible_printed_page_number(page: object) -> int | None:

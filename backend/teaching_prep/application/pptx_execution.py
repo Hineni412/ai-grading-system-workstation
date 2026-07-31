@@ -123,7 +123,10 @@ def verify_candidate(
     source_sha256: str,
     execution_report: Mapping[str, object],
     parser: MaterialParser,
+    require_budget: Callable[[], None] | None = None,
 ) -> dict[str, object]:
+    check_budget = require_budget or (lambda: None)
+    check_budget()
     if not candidate.is_file():
         raise TeachingPrepValidationError(
             "WPS execution did not create a candidate PPTX"
@@ -144,7 +147,9 @@ def verify_candidate(
         raise TeachingPrepValidationError(
             "WPS applied operation list does not match the approved plan"
         )
+    check_budget()
     units = parser.parse(candidate, material_type="pptx")
+    check_budget()
     actual_slide_count = len(units)
     if actual_slide_count != expected_slide_count:
         raise TeachingPrepValidationError(
@@ -156,11 +161,13 @@ def verify_candidate(
             "candidate PPTX theme, master, or page size is unreadable"
         )
     preview_files = sorted(preview_dir.glob("slide-*.png"))
+    check_budget()
     if len(preview_files) != actual_slide_count:
         raise TeachingPrepValidationError(
             "WPS did not render a complete preview set"
         )
     for preview in preview_files:
+        check_budget()
         try:
             with Image.open(preview) as image:
                 image.verify()
@@ -168,14 +175,18 @@ def verify_candidate(
             raise TeachingPrepValidationError(
                 "WPS preview output is invalid"
             ) from exc
+    check_budget()
     _require_surviving_titles(payload, units)
+    check_budget()
     expected_protected = _expected_protected_counts(payload)
     actual_protected = _actual_protected_counts(units)
     if actual_protected != expected_protected:
         raise TeachingPrepValidationError(
             "protected PPTX objects changed unexpectedly"
         )
+    check_budget()
     candidate_sha256 = _sha256(candidate)
+    check_budget()
     return {
         "schema_version": 1,
         "verified": True,

@@ -3,11 +3,16 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+from api_profiles import ApiProfileStore
 from backend.teaching_prep.api import create_router
 from backend.teaching_prep.application import TeachingPrepService
 from backend.teaching_prep.infrastructure.evidence import (
     ReadOnlyAssessmentEvidenceReader,
     ReadOnlyQuestionEvidenceReader,
+)
+from backend.teaching_prep.infrastructure.llm import (
+    ActiveProfileLessonModelAdapter,
+    ActiveProfileSemesterMappingModelAdapter,
 )
 from backend.teaching_prep.infrastructure.wps_adapter import (
     SubprocessWpsAdapter,
@@ -79,6 +84,17 @@ def _service(context: WorkspaceContext) -> TeachingPrepService:
         if real_wps_enabled
         else None
     )
+    profile_store = ApiProfileStore(
+        Path(context.paths.api_profiles_path),
+        legacy_paths=tuple(
+            Path(item)
+            for item in getattr(
+                context.paths,
+                "legacy_api_profiles_paths",
+                (),
+            )
+        ),
+    )
     return TeachingPrepService(
         context.root,
         question_evidence_reader=ReadOnlyQuestionEvidenceReader(
@@ -88,6 +104,18 @@ def _service(context: WorkspaceContext) -> TeachingPrepService:
             Path(context.paths.db_path),
             Path(context.paths.qb_db_path),
         ),
+        lesson_model_adapter=ActiveProfileLessonModelAdapter(
+            context=context,
+            profile_store=profile_store,
+        ),
+        lesson_model_label="当前启用的模型配置",
+        semester_mapping_model_adapter=(
+            ActiveProfileSemesterMappingModelAdapter(
+                context=context,
+                profile_store=profile_store,
+            )
+        ),
+        semester_mapping_model_label="当前启用的模型配置",
         wps_adapter=helper,
         wps_adapter_is_real=real_wps_enabled,
     )

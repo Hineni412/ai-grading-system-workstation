@@ -9,6 +9,7 @@ import {
   type CreateCurriculumInput,
   type CreateLessonNodeInput,
   type CurriculumEdition,
+  type CreateSemesterInput,
   type ExerciseCandidate,
   type ExerciseCandidateInput,
   type FreezeResourcePackInput,
@@ -16,6 +17,7 @@ import {
   type LessonDraft,
   type LessonDraftPayload,
   type LessonDraftPreflight,
+  type LessonGenerationPerformance,
   type SlideOperationReviewInput,
   type SlidePlan,
   type SlidePlanPreview,
@@ -29,6 +31,15 @@ import {
   type QuestionEvidenceChoice,
   type ResourcePack,
   type ResourcePackStatus,
+  type SemesterLessonProgress,
+  type SemesterLessonProgressStatus,
+  type SemesterMaterialMappingStatus,
+  type SemesterMaterialRecord,
+  type SemesterMaterialRole,
+  type SemesterMappingPreflight,
+  type SemesterMappingProposal,
+  type SemesterStatus,
+  type TeachingSemester,
   type TeachingPrepModuleStatus,
   type TeachingPreferences,
   type TeachingPreferencesPayload,
@@ -37,7 +48,77 @@ import {
 
 export type CatalogLoadState = 'idle' | 'loading' | 'ready' | 'error'
 
+export const SEMESTER_MAPPING_COMMAND_STORAGE_KEY =
+  'ai-grading:teaching-prep:semester-mapping-pending-command:v1'
+
+interface PendingSemesterMappingCommand {
+  fingerprint: string
+  operationId: string
+}
+
+function pendingSemesterMappingCommand(
+  fingerprint: string,
+): PendingSemesterMappingCommand {
+  try {
+    const stored = globalThis.localStorage?.getItem(
+      SEMESTER_MAPPING_COMMAND_STORAGE_KEY,
+    )
+    if (stored) {
+      const parsed = JSON.parse(stored) as Partial<PendingSemesterMappingCommand>
+      if (
+        parsed.fingerprint === fingerprint
+        && typeof parsed.operationId === 'string'
+        && /^semester-mapping-[0-9a-f]{32}$/i.test(parsed.operationId)
+      ) {
+        return {
+          fingerprint,
+          operationId: parsed.operationId,
+        }
+      }
+    }
+    const command = {
+      fingerprint,
+      operationId: `semester-mapping-${globalThis.crypto.randomUUID().replaceAll('-', '')}`,
+    }
+    globalThis.localStorage?.setItem(
+      SEMESTER_MAPPING_COMMAND_STORAGE_KEY,
+      JSON.stringify(command),
+    )
+    return command
+  } catch {
+    // The backend also de-duplicates the semantic mapping request. Browser
+    // storage only preserves the original operation ID across a refresh.
+    return {
+      fingerprint,
+      operationId: `semester-mapping-${globalThis.crypto.randomUUID().replaceAll('-', '')}`,
+    }
+  }
+}
+
+function clearPendingSemesterMappingCommand(fingerprint: string): void {
+  try {
+    const stored = globalThis.localStorage?.getItem(
+      SEMESTER_MAPPING_COMMAND_STORAGE_KEY,
+    )
+    if (!stored) return
+    const parsed = JSON.parse(stored) as Partial<PendingSemesterMappingCommand>
+    if (parsed.fingerprint === fingerprint) {
+      globalThis.localStorage?.removeItem(
+        SEMESTER_MAPPING_COMMAND_STORAGE_KEY,
+      )
+    }
+  } catch {
+    // No browser state needs recovery when storage is unavailable.
+  }
+}
+
 function safeMessage(error: unknown): string {
+  if (
+    error instanceof ApiError
+    && error.code === 'semester_mapping_retry_available'
+  ) {
+    return '本次目录整理没有完成。请确认资料后，再次点击生成新的建议。'
+  }
   if (error instanceof ApiError && error.kind === 'conflict') {
     return '内容已在其他页面更新，请刷新后继续。'
   }
@@ -48,9 +129,14 @@ export const useTeachingPrepCatalogStore = defineStore(
   'teaching-prep-catalog',
   () => {
     const curricula = ref<CurriculumEdition[]>([])
+    const semesters = ref<TeachingSemester[]>([])
     const selectedCurriculumId = ref<string | null>(null)
     const lessonNodes = ref<LessonNode[]>([])
     const materials = ref<MaterialVersion[]>([])
+    const semesterLessonProgress = ref<SemesterLessonProgress[]>([])
+    const semesterMaterials = ref<SemesterMaterialRecord[]>([])
+    const semesterMappingPreflight = ref<SemesterMappingPreflight | null>(null)
+    const semesterMappingProposals = ref<SemesterMappingProposal[]>([])
     const selectedLessonId = ref<string | null>(null)
     const selectedMaterialId = ref<string | null>(null)
     const materialUnits = ref<MaterialUnit[]>([])
@@ -70,6 +156,9 @@ export const useTeachingPrepCatalogStore = defineStore(
     const moduleStatus = ref<TeachingPrepModuleStatus | null>(null)
     const teachingPreferences = ref<TeachingPreferences | null>(null)
     const pptxExecutions = ref<PptxExecution[]>([])
+    const lessonGenerationPerformance = ref<LessonGenerationPerformance | null>(
+      null,
+    )
     const latestPptxVersion = ref<PptxVersion | null>(null)
     const classVariants = ref<ClassVariant[]>([])
     const upClassPackages = ref<UpClassPackage[]>([])
@@ -80,10 +169,18 @@ export const useTeachingPrepCatalogStore = defineStore(
     let loadController: AbortController | null = null
     let lessonFlowGeneration = 0
     let materialFlowGeneration = 0
+    let pendingSemesterMapping: PendingSemesterMappingCommand | null = null
 
     const selectedCurriculum = computed(
       () => curricula.value.find(
         ({ id }) => id === selectedCurriculumId.value,
+      ) ?? null,
+    )
+    const selectedSemester = computed(
+      () => semesters.value.find(
+        ({ curriculum_id: curriculumId }) => (
+          curriculumId === selectedCurriculumId.value
+        ),
       ) ?? null,
     )
     const selectedLesson = computed(
@@ -105,17 +202,20 @@ export const useTeachingPrepCatalogStore = defineStore(
           nextStatus,
           nextPreferences,
           nextCurricula,
+          nextSemesters,
           nextMaterials,
         ] = await Promise.all([
           teachingPrepCatalogApi.status(controller.signal),
           teachingPrepCatalogApi.getTeachingPreferences(controller.signal),
           teachingPrepCatalogApi.listCurricula(controller.signal),
+          teachingPrepCatalogApi.listSemesters(controller.signal),
           teachingPrepCatalogApi.listMaterials(controller.signal),
         ])
         if (controller.signal.aborted) return
         moduleStatus.value = nextStatus
         teachingPreferences.value = nextPreferences
         curricula.value = nextCurricula
+        semesters.value = nextSemesters
         materials.value = nextMaterials
         const currentStillExists = nextCurricula.some(
           ({ id }) => id === selectedCurriculumId.value,
@@ -128,8 +228,40 @@ export const useTeachingPrepCatalogStore = defineStore(
             selectedCurriculumId.value,
             controller.signal,
           )
+          const semester = nextSemesters.find(
+            ({ curriculum_id: curriculumId }) => (
+              curriculumId === selectedCurriculumId.value
+            ),
+          )
+          if (semester) {
+            ;[
+              semesterLessonProgress.value,
+              semesterMaterials.value,
+              semesterMappingProposals.value,
+            ] = await Promise.all([
+              teachingPrepCatalogApi.listSemesterLessonProgress(
+                semester.id,
+                controller.signal,
+              ),
+              teachingPrepCatalogApi.listSemesterMaterials(
+                semester.id,
+                controller.signal,
+              ),
+              teachingPrepCatalogApi.listSemesterMappingProposals(
+                semester.id,
+                controller.signal,
+              ),
+            ])
+          } else {
+            semesterLessonProgress.value = []
+            semesterMaterials.value = []
+            semesterMappingProposals.value = []
+          }
         } else {
           lessonNodes.value = []
+          semesterLessonProgress.value = []
+          semesterMaterials.value = []
+          semesterMappingProposals.value = []
         }
         if (!controller.signal.aborted) loadState.value = 'ready'
       } catch (error) {
@@ -156,6 +288,10 @@ export const useTeachingPrepCatalogStore = defineStore(
       classVariants.value = []
       upClassPackages.value = []
       postLessonReviews.value = []
+      semesterLessonProgress.value = []
+      semesterMaterials.value = []
+      semesterMappingPreflight.value = null
+      semesterMappingProposals.value = []
       loadState.value = 'loading'
       errorMessage.value = ''
       try {
@@ -165,6 +301,20 @@ export const useTeachingPrepCatalogStore = defineStore(
           || selectedCurriculumId.value !== curriculumId
         ) return
         lessonNodes.value = nextLessons
+        const semester = semesters.value.find(
+          ({ curriculum_id: selectedId }) => selectedId === curriculumId,
+        )
+        if (semester) {
+          ;[
+            semesterLessonProgress.value,
+            semesterMaterials.value,
+            semesterMappingProposals.value,
+          ] = await Promise.all([
+            teachingPrepCatalogApi.listSemesterLessonProgress(semester.id),
+            teachingPrepCatalogApi.listSemesterMaterials(semester.id),
+            teachingPrepCatalogApi.listSemesterMappingProposals(semester.id),
+          ])
+        }
         loadState.value = 'ready'
       } catch (error) {
         if (
@@ -192,6 +342,7 @@ export const useTeachingPrepCatalogStore = defineStore(
       selectedSlidePlanId.value = null
       slidePlanPreview.value = null
       pptxExecutions.value = []
+      lessonGenerationPerformance.value = null
       latestPptxVersion.value = null
       classVariants.value = []
       upClassPackages.value = []
@@ -252,6 +403,11 @@ export const useTeachingPrepCatalogStore = defineStore(
         selectedSlidePlanId.value = nextPlans[0]?.id ?? null
         slidePlanPreview.value = nextPreview
         pptxExecutions.value = nextExecutions
+        lessonGenerationPerformance.value = nextExecutions[0]
+          ? await teachingPrepCatalogApi.getLessonGenerationPerformance(
+              nextExecutions[0].id,
+            )
+          : null
         latestPptxVersion.value = null
       } catch (error) {
         if (
@@ -276,6 +432,14 @@ export const useTeachingPrepCatalogStore = defineStore(
           || selectedMaterialId.value !== material.id
         ) return
         materialUnits.value = nextUnits
+        if (selectedSemester.value) {
+          semesterMaterials.value = await (
+            teachingPrepCatalogApi.listSemesterMaterials(
+              selectedSemester.value.id,
+            )
+          )
+          semesters.value = await teachingPrepCatalogApi.listSemesters()
+        }
         loadState.value = 'ready'
       } catch (error) {
         if (
@@ -287,7 +451,10 @@ export const useTeachingPrepCatalogStore = defineStore(
       }
     }
 
-    async function importMaterialCopy(file: File): Promise<void> {
+    async function importMaterialCopy(
+      file: File,
+      materialRole?: SemesterMaterialRole,
+    ): Promise<void> {
       saveState.value = 'saving'
       errorMessage.value = ''
       try {
@@ -296,6 +463,22 @@ export const useTeachingPrepCatalogStore = defineStore(
           `material-import-${globalThis.crypto.randomUUID().replaceAll('-', '')}`,
         )
         materials.value = await teachingPrepCatalogApi.listMaterials()
+        if (selectedSemester.value && materialRole) {
+          await teachingPrepCatalogApi.attachSemesterMaterial(
+            selectedSemester.value.id,
+            {
+              request_token: `semester-material-${globalThis.crypto.randomUUID().replaceAll('-', '')}`,
+              material_version_id: item.id,
+              material_role: materialRole,
+            },
+          )
+          semesterMaterials.value = await (
+            teachingPrepCatalogApi.listSemesterMaterials(
+              selectedSemester.value.id,
+            )
+          )
+          semesters.value = await teachingPrepCatalogApi.listSemesters()
+        }
         await openMaterial(item)
       } catch (error) {
         errorMessage.value = safeMessage(error)
@@ -709,6 +892,7 @@ export const useTeachingPrepCatalogStore = defineStore(
       selectedSlidePlanId.value = null
       slidePlanPreview.value = null
       pptxExecutions.value = []
+      lessonGenerationPerformance.value = null
       latestPptxVersion.value = null
       errorMessage.value = ''
       try {
@@ -729,6 +913,11 @@ export const useTeachingPrepCatalogStore = defineStore(
         selectedSlidePlanId.value = nextPlans[0]?.id ?? null
         slidePlanPreview.value = nextPreview
         pptxExecutions.value = nextExecutions
+        lessonGenerationPerformance.value = nextExecutions[0]
+          ? await teachingPrepCatalogApi.getLessonGenerationPerformance(
+              nextExecutions[0].id,
+            )
+          : null
       } catch (error) {
         if (
           generation !== lessonFlowGeneration
@@ -772,6 +961,11 @@ export const useTeachingPrepCatalogStore = defineStore(
         ) return
         slidePlanPreview.value = preview
         pptxExecutions.value = executions
+        lessonGenerationPerformance.value = executions[0]
+          ? await teachingPrepCatalogApi.getLessonGenerationPerformance(
+              executions[0].id,
+            )
+          : null
         latestPptxVersion.value = null
       } catch (error) {
         if (
@@ -794,6 +988,11 @@ export const useTeachingPrepCatalogStore = defineStore(
         latestPptxVersion.value = result.version
         pptxExecutions.value = await teachingPrepCatalogApi
           .listPptxExecutions(plan.id)
+        lessonGenerationPerformance.value = pptxExecutions.value[0]
+          ? await teachingPrepCatalogApi.getLessonGenerationPerformance(
+              pptxExecutions.value[0].id,
+            )
+          : null
       } catch (error) {
         errorMessage.value = safeMessage(error)
         throw error
@@ -806,6 +1005,11 @@ export const useTeachingPrepCatalogStore = defineStore(
       await teachingPrepCatalogApi.cancelPptxExecution(run.id)
       pptxExecutions.value = await teachingPrepCatalogApi
         .listPptxExecutions(run.slide_plan_id)
+      lessonGenerationPerformance.value = pptxExecutions.value[0]
+        ? await teachingPrepCatalogApi.getLessonGenerationPerformance(
+            pptxExecutions.value[0].id,
+          )
+        : null
     }
 
     async function recoverPptxExecution(run: PptxExecution): Promise<void> {
@@ -973,7 +1177,7 @@ export const useTeachingPrepCatalogStore = defineStore(
 
     async function createCurriculum(
       input: CreateCurriculumInput,
-    ): Promise<void> {
+    ): Promise<CurriculumEdition> {
       saveState.value = 'saving'
       errorMessage.value = ''
       try {
@@ -984,6 +1188,317 @@ export const useTeachingPrepCatalogStore = defineStore(
         ]
         selectedCurriculumId.value = created.id
         lessonNodes.value = []
+        semesterLessonProgress.value = []
+        semesterMaterials.value = []
+        semesterMappingPreflight.value = null
+        semesterMappingProposals.value = []
+        return created
+      } catch (error) {
+        errorMessage.value = safeMessage(error)
+        throw error
+      } finally {
+        saveState.value = 'idle'
+      }
+    }
+
+    async function createSemesterWorkspace(input: {
+      curriculum: Omit<CreateCurriculumInput, 'request_token'>
+      semester: Omit<CreateSemesterInput, 'request_token' | 'curriculum_id'>
+    }): Promise<void> {
+      saveState.value = 'saving'
+      errorMessage.value = ''
+      try {
+        const workspace = await teachingPrepCatalogApi.createSemesterWorkspace({
+          request_token: (
+            `semester-workspace-${globalThis.crypto.randomUUID().replaceAll('-', '')}`
+          ),
+          curriculum: input.curriculum,
+          ...input.semester,
+        })
+        const created = workspace.curriculum
+        curricula.value = [
+          created,
+          ...curricula.value.filter(({ id }) => id !== created.id),
+        ]
+        selectedCurriculumId.value = created.id
+        lessonNodes.value = []
+        semesterLessonProgress.value = []
+        semesterMaterials.value = []
+        semesterMappingPreflight.value = null
+        semesterMappingProposals.value = []
+        semesters.value = await teachingPrepCatalogApi.listSemesters()
+        ;[
+          semesterLessonProgress.value,
+          semesterMaterials.value,
+          semesterMappingProposals.value,
+        ] = await Promise.all([
+          teachingPrepCatalogApi.listSemesterLessonProgress(workspace.semester.id),
+          teachingPrepCatalogApi.listSemesterMaterials(workspace.semester.id),
+          teachingPrepCatalogApi.listSemesterMappingProposals(workspace.semester.id),
+        ])
+      } catch (error) {
+        errorMessage.value = safeMessage(error)
+        throw error
+      } finally {
+        saveState.value = 'idle'
+      }
+    }
+
+    async function createSemester(
+      input: Omit<CreateSemesterInput, 'curriculum_id'>,
+    ): Promise<void> {
+      const curriculumId = selectedCurriculumId.value
+      if (curriculumId === null) throw new Error('请先选择教材版本')
+      saveState.value = 'saving'
+      errorMessage.value = ''
+      try {
+        await teachingPrepCatalogApi.createSemester({
+          ...input,
+          curriculum_id: curriculumId,
+        })
+        semesters.value = await teachingPrepCatalogApi.listSemesters()
+        const semester = selectedSemester.value
+        if (semester) {
+          ;[
+            semesterLessonProgress.value,
+            semesterMaterials.value,
+            semesterMappingProposals.value,
+          ] = await Promise.all([
+            teachingPrepCatalogApi.listSemesterLessonProgress(semester.id),
+            teachingPrepCatalogApi.listSemesterMaterials(semester.id),
+            teachingPrepCatalogApi.listSemesterMappingProposals(semester.id),
+          ])
+        }
+      } catch (error) {
+        errorMessage.value = safeMessage(error)
+        throw error
+      } finally {
+        saveState.value = 'idle'
+      }
+    }
+
+    async function updateSemester(
+      input: {
+        plannedNewLessonCount: number
+        status: SemesterStatus
+      },
+    ): Promise<void> {
+      const semester = selectedSemester.value
+      if (!semester) throw new Error('请先建立学期状态')
+      saveState.value = 'saving'
+      errorMessage.value = ''
+      try {
+        await teachingPrepCatalogApi.updateSemester(semester, {
+          planned_new_lesson_count: input.plannedNewLessonCount,
+          status: input.status,
+        })
+        semesters.value = await teachingPrepCatalogApi.listSemesters()
+      } catch (error) {
+        errorMessage.value = safeMessage(error)
+        throw error
+      } finally {
+        saveState.value = 'idle'
+      }
+    }
+
+    async function setSemesterLessonProgress(
+      lessonNodeId: string,
+      status: SemesterLessonProgressStatus,
+    ): Promise<void> {
+      const semester = selectedSemester.value
+      if (!semester) throw new Error('请先建立学期状态')
+      const current = semesterLessonProgress.value.find(
+        ({ lesson_node_id: nodeId }) => nodeId === lessonNodeId,
+      )
+      saveState.value = 'saving'
+      errorMessage.value = ''
+      try {
+        await teachingPrepCatalogApi.setSemesterLessonProgress(
+          semester.id,
+          lessonNodeId,
+          {
+            status,
+            expected_revision: current?.revision ?? null,
+          },
+        )
+        ;[
+          semesterLessonProgress.value,
+          semesters.value,
+        ] = await Promise.all([
+          teachingPrepCatalogApi.listSemesterLessonProgress(semester.id),
+          teachingPrepCatalogApi.listSemesters(),
+        ])
+      } catch (error) {
+        errorMessage.value = safeMessage(error)
+        throw error
+      } finally {
+        saveState.value = 'idle'
+      }
+    }
+
+    async function attachSemesterMaterial(
+      material: MaterialVersion,
+      materialRole: SemesterMaterialRole,
+    ): Promise<void> {
+      const semester = selectedSemester.value
+      if (!semester) throw new Error('请先建立学期状态')
+      saveState.value = 'saving'
+      errorMessage.value = ''
+      try {
+        await teachingPrepCatalogApi.attachSemesterMaterial(
+          semester.id,
+          {
+            request_token: `semester-material-${globalThis.crypto.randomUUID().replaceAll('-', '')}`,
+            material_version_id: material.id,
+            material_role: materialRole,
+          },
+        )
+        ;[
+          semesterMaterials.value,
+          semesters.value,
+        ] = await Promise.all([
+          teachingPrepCatalogApi.listSemesterMaterials(semester.id),
+          teachingPrepCatalogApi.listSemesters(),
+        ])
+      } catch (error) {
+        errorMessage.value = safeMessage(error)
+        throw error
+      } finally {
+        saveState.value = 'idle'
+      }
+    }
+
+    async function updateSemesterMaterial(
+      record: SemesterMaterialRecord,
+      input: {
+        materialRole?: SemesterMaterialRole
+        mappingStatus?: SemesterMaterialMappingStatus
+        isActive?: boolean
+      },
+    ): Promise<void> {
+      const semester = selectedSemester.value
+      if (!semester) throw new Error('请先建立学期状态')
+      saveState.value = 'saving'
+      errorMessage.value = ''
+      try {
+        await teachingPrepCatalogApi.updateSemesterMaterial(record, {
+          material_role: input.materialRole ?? record.material_role,
+          mapping_status: input.mappingStatus ?? record.mapping_status,
+          is_active: input.isActive ?? record.is_active,
+        })
+        ;[
+          semesterMaterials.value,
+          semesters.value,
+        ] = await Promise.all([
+          teachingPrepCatalogApi.listSemesterMaterials(semester.id),
+          teachingPrepCatalogApi.listSemesters(),
+        ])
+      } catch (error) {
+        errorMessage.value = safeMessage(error)
+        throw error
+      } finally {
+        saveState.value = 'idle'
+      }
+    }
+
+    async function prepareSemesterMapping(
+      materialRecordIds: string[],
+    ): Promise<void> {
+      const semester = selectedSemester.value
+      if (!semester) throw new Error('请先建立学期状态')
+      loadState.value = 'loading'
+      errorMessage.value = ''
+      try {
+        semesterMappingPreflight.value = await (
+          teachingPrepCatalogApi.semesterMappingPreflight(
+            semester.id,
+            materialRecordIds,
+          )
+        )
+        loadState.value = 'ready'
+      } catch (error) {
+        loadState.value = 'error'
+        errorMessage.value = safeMessage(error)
+        throw error
+      }
+    }
+
+    async function generateSemesterMapping(
+      materialRecordIds: string[],
+    ): Promise<void> {
+      const semester = selectedSemester.value
+      if (!semester) throw new Error('请先建立学期状态')
+      saveState.value = 'saving'
+      errorMessage.value = ''
+      let fingerprint: string | null = null
+      try {
+        const freshPreflight = await (
+          teachingPrepCatalogApi.semesterMappingPreflight(
+            semester.id,
+            materialRecordIds,
+          )
+        )
+        semesterMappingPreflight.value = freshPreflight
+        if (!freshPreflight.model_available) {
+          throw new Error('请先在模型配置中启用可用模型')
+        }
+        fingerprint = JSON.stringify({
+          semesterId: semester.id,
+          materialRecordIds: [...materialRecordIds].sort(),
+          sourceStateSha256: freshPreflight.source_state_sha256,
+        })
+        if (pendingSemesterMapping?.fingerprint !== fingerprint) {
+          pendingSemesterMapping = pendingSemesterMappingCommand(fingerprint)
+        }
+        await teachingPrepCatalogApi.generateSemesterMappingProposal(
+          semester.id,
+          {
+            operation_id: pendingSemesterMapping.operationId,
+            material_record_ids: materialRecordIds,
+          },
+        )
+        semesterMappingProposals.value = await (
+          teachingPrepCatalogApi.listSemesterMappingProposals(semester.id)
+        )
+      } catch (error) {
+        if (
+          error instanceof ApiError
+          && error.code === 'semester_mapping_retry_available'
+          && fingerprint !== null
+        ) {
+          clearPendingSemesterMappingCommand(fingerprint)
+          pendingSemesterMapping = null
+        }
+        errorMessage.value = safeMessage(error)
+        throw error
+      } finally {
+        saveState.value = 'idle'
+      }
+    }
+
+    async function applySemesterMapping(
+      proposal: SemesterMappingProposal,
+    ): Promise<void> {
+      const semester = selectedSemester.value
+      const curriculumId = selectedCurriculumId.value
+      if (!semester || !curriculumId) {
+        throw new Error('请先选择当前学期')
+      }
+      saveState.value = 'saving'
+      errorMessage.value = ''
+      try {
+        await teachingPrepCatalogApi.applySemesterMappingProposal(proposal)
+        ;[
+          lessonNodes.value,
+          semesterMaterials.value,
+          semesterMappingProposals.value,
+          semesters.value,
+        ] = await Promise.all([
+          teachingPrepCatalogApi.listLessons(curriculumId),
+          teachingPrepCatalogApi.listSemesterMaterials(semester.id),
+          teachingPrepCatalogApi.listSemesterMappingProposals(semester.id),
+          teachingPrepCatalogApi.listSemesters(),
+        ])
       } catch (error) {
         errorMessage.value = safeMessage(error)
         throw error
@@ -1076,10 +1591,16 @@ export const useTeachingPrepCatalogStore = defineStore(
 
     return {
       curricula,
+      semesters,
       selectedCurriculumId,
       selectedCurriculum,
+      selectedSemester,
       lessonNodes,
       materials,
+      semesterLessonProgress,
+      semesterMaterials,
+      semesterMappingPreflight,
+      semesterMappingProposals,
       selectedLessonId,
       selectedLesson,
       selectedMaterialId,
@@ -1100,6 +1621,7 @@ export const useTeachingPrepCatalogStore = defineStore(
       moduleStatus,
       teachingPreferences,
       pptxExecutions,
+      lessonGenerationPerformance,
       latestPptxVersion,
       classVariants,
       upClassPackages,
@@ -1110,6 +1632,15 @@ export const useTeachingPrepCatalogStore = defineStore(
       load,
       selectCurriculum,
       createCurriculum,
+      createSemesterWorkspace,
+      createSemester,
+      updateSemester,
+      setSemesterLessonProgress,
+      attachSemesterMaterial,
+      updateSemesterMaterial,
+      prepareSemesterMapping,
+      generateSemesterMapping,
+      applySemesterMapping,
       createLesson,
       updateLesson,
       moveLesson,

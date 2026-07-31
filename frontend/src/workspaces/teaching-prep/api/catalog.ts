@@ -12,6 +12,7 @@ export interface TeachingPrepModuleStatus {
   enabled: boolean
   schema_version: string
   real_model_enabled: boolean
+  semester_mapping_model_available: boolean
   real_wps_enabled: boolean
   wps_execution_available: boolean
 }
@@ -29,6 +30,139 @@ export interface CurriculumEdition {
   updated_at: string
 }
 
+export type SemesterStatus = 'planning' | 'active' | 'completed' | 'archived'
+export type SemesterLessonProgressStatus =
+  | 'not_started'
+  | 'preparing'
+  | 'ready'
+  | 'taught'
+  | 'skipped'
+export type SemesterMaterialRole =
+  | 'textbook'
+  | 'reference_ppt'
+  | 'exercise_workbook'
+  | 'homework_workbook'
+  | 'answer_book'
+  | 'supplement'
+export type SemesterMaterialMappingStatus =
+  | 'unmapped'
+  | 'proposed'
+  | 'partial'
+  | 'confirmed'
+  | 'needs_review'
+  | 'conflict'
+
+export interface TeachingSemester {
+  id: string
+  curriculum_id: string
+  curriculum_title: string
+  school_year: string
+  term: 'first' | 'second'
+  planned_new_lesson_count: number
+  status: SemesterStatus
+  active_lesson_count: number
+  not_started_lesson_count: number
+  preparing_lesson_count: number
+  ready_lesson_count: number
+  taught_lesson_count: number
+  skipped_lesson_count: number
+  material_count: number
+  parsed_material_count: number
+  mapped_material_count: number
+  revision: number
+  created_at: string
+  updated_at: string
+}
+
+export interface SemesterLessonProgress {
+  id: string
+  semester_id: string
+  lesson_node_id: string
+  lesson_title: string
+  status: SemesterLessonProgressStatus
+  revision: number
+  created_at: string
+  updated_at: string
+}
+
+export interface SemesterMaterialRecord {
+  id: string
+  semester_id: string
+  material_source_id: string
+  display_name: string
+  material_role: SemesterMaterialRole
+  parse_status: 'not_started' | 'parsed' | 'needs_review' | 'failed'
+  mapping_status: SemesterMaterialMappingStatus
+  current_material_version_id: string
+  safe_filename: string
+  current_inspection_status: string
+  current_unit_count: number | null
+  last_parsed_version_id: string | null
+  has_unparsed_update: boolean
+  parsed_at: string | null
+  is_active: boolean
+  revision: number
+  created_at: string
+  updated_at: string
+}
+
+export interface SemesterMappingPreflight {
+  semester_id: string
+  source_state_sha256: string
+  will_call_model: boolean
+  model_available: boolean
+  model_label: string | null
+  material_count: number
+  unit_count: number
+  existing_lesson_count: number
+  creates_initial_tree: boolean
+  automatic_retry: boolean
+}
+
+export interface SemesterMappingProposalLesson {
+  key: string
+  title: string
+  duration_minutes: number
+}
+
+export interface SemesterMappingProposalSection {
+  key: string
+  title: string
+  lessons: SemesterMappingProposalLesson[]
+}
+
+export interface SemesterMappingProposalChapter {
+  key: string
+  title: string
+  sections: SemesterMappingProposalSection[]
+}
+
+export interface SemesterMappingProposalRange {
+  material_record_id: string
+  lesson_ref: string
+  start_unit: number
+  end_unit: number
+  purpose: 'textbook' | 'reference_ppt' | 'exercise' | 'answer' | 'supplement'
+}
+
+export interface SemesterMappingProposal {
+  id: string
+  semester_id: string
+  operation_id: string
+  source_state_sha256: string
+  status: 'proposed' | 'applied' | 'rejected'
+  payload: {
+    tree: SemesterMappingProposalChapter[]
+    mappings: SemesterMappingProposalRange[]
+    uncertainties: string[]
+    source_material_record_ids: string[]
+  }
+  revision: number
+  created_at: string
+  updated_at: string
+  applied_at: string | null
+}
+
 export interface LessonNode {
   id: string
   curriculum_id: string
@@ -37,7 +171,7 @@ export interface LessonNode {
   title: string
   sort_order: number
   duration_minutes: number | null
-  source_kind: 'teacher' | 'catalog'
+  source_kind: 'teacher' | 'catalog' | 'assistant_draft'
   is_active: boolean
   revision: number
   created_at: string
@@ -432,6 +566,22 @@ export interface PptxExecution {
   finished_at: string | null
 }
 
+export interface LessonGenerationPerformance {
+  execution_run_id: string
+  slide_plan_id: string
+  status: PptxExecutionStatus
+  budget_ms: number
+  total_machine_elapsed_ms: number
+  draft_elapsed_ms: number
+  wps_elapsed_ms: number
+  model_call_count: number
+  wps_execution_count: number
+  technical_retry_count: number
+  budget_status: 'running' | 'within' | 'exceeded'
+  within_budget: boolean | null
+  human_review_wait_excluded: boolean
+}
+
 export interface PptxVersion {
   id: string
   slide_plan_id: string
@@ -517,6 +667,19 @@ export interface CreateCurriculumInput {
   edition_label?: string | null
 }
 
+export interface CreateSemesterWorkspaceInput {
+  request_token: string
+  curriculum: Omit<CreateCurriculumInput, 'request_token'>
+  school_year: string
+  term: 'first' | 'second'
+  planned_new_lesson_count: number
+}
+
+export interface SemesterWorkspace {
+  curriculum: CurriculumEdition
+  semester: TeachingSemester
+}
+
 export interface CreateLessonNodeInput {
   request_token: string
   parent_id: string | null
@@ -537,6 +700,14 @@ export interface ReorderLessonNodesInput {
   parent_id: string | null
   ordered_ids: string[]
   expected_revisions: Record<string, number>
+}
+
+export interface CreateSemesterInput {
+  request_token: string
+  curriculum_id: string
+  school_year: string
+  term: 'first' | 'second'
+  planned_new_lesson_count: number
 }
 
 function text(value: unknown): value is string {
@@ -568,6 +739,185 @@ function curriculum(value: unknown): CurriculumEdition {
   return value as unknown as CurriculumEdition
 }
 
+function semester(value: unknown): TeachingSemester {
+  if (
+    !isRecord(value)
+    || !text(value.id)
+    || !text(value.curriculum_id)
+    || !text(value.curriculum_title)
+    || !text(value.school_year)
+    || !['first', 'second'].includes(String(value.term))
+    || !integer(value.planned_new_lesson_count)
+    || !['planning', 'active', 'completed', 'archived'].includes(
+      String(value.status),
+    )
+    || !integer(value.active_lesson_count)
+    || !integer(value.not_started_lesson_count)
+    || !integer(value.preparing_lesson_count)
+    || !integer(value.ready_lesson_count)
+    || !integer(value.taught_lesson_count)
+    || !integer(value.skipped_lesson_count)
+    || !integer(value.material_count)
+    || !integer(value.parsed_material_count)
+    || !integer(value.mapped_material_count)
+    || !integer(value.revision, 1)
+    || !text(value.created_at)
+    || !text(value.updated_at)
+  ) throw new Error('Invalid semester response')
+  return value as unknown as TeachingSemester
+}
+
+function semesterWorkspace(value: unknown): SemesterWorkspace {
+  if (
+    !isRecord(value)
+    || !isRecord(value.curriculum)
+    || !isRecord(value.semester)
+  ) throw new Error('Invalid semester workspace response')
+  return {
+    curriculum: curriculum(value.curriculum),
+    semester: semester(value.semester),
+  }
+}
+
+function semesterLessonProgress(value: unknown): SemesterLessonProgress {
+  if (
+    !isRecord(value)
+    || !text(value.id)
+    || !text(value.semester_id)
+    || !text(value.lesson_node_id)
+    || !text(value.lesson_title)
+    || !['not_started', 'preparing', 'ready', 'taught', 'skipped'].includes(
+      String(value.status),
+    )
+    || !integer(value.revision, 1)
+    || !text(value.created_at)
+    || !text(value.updated_at)
+  ) throw new Error('Invalid semester lesson progress response')
+  return value as unknown as SemesterLessonProgress
+}
+
+function semesterMaterial(value: unknown): SemesterMaterialRecord {
+  if (
+    !isRecord(value)
+    || !text(value.id)
+    || !text(value.semester_id)
+    || !text(value.material_source_id)
+    || !text(value.display_name)
+    || ![
+      'textbook',
+      'reference_ppt',
+      'exercise_workbook',
+      'homework_workbook',
+      'answer_book',
+      'supplement',
+    ].includes(String(value.material_role))
+    || !['not_started', 'parsed', 'needs_review', 'failed'].includes(
+      String(value.parse_status),
+    )
+    || ![
+      'unmapped',
+      'proposed',
+      'partial',
+      'confirmed',
+      'needs_review',
+      'conflict',
+    ].includes(String(value.mapping_status))
+    || !text(value.current_material_version_id)
+    || !text(value.safe_filename)
+    || !text(value.current_inspection_status)
+    || !(value.current_unit_count === null || integer(value.current_unit_count))
+    || !nullableText(value.last_parsed_version_id)
+    || typeof value.has_unparsed_update !== 'boolean'
+    || !nullableText(value.parsed_at)
+    || typeof value.is_active !== 'boolean'
+    || !integer(value.revision, 1)
+    || !text(value.created_at)
+    || !text(value.updated_at)
+  ) throw new Error('Invalid semester material response')
+  return value as unknown as SemesterMaterialRecord
+}
+
+function semesterMappingPreflight(value: unknown): SemesterMappingPreflight {
+  if (
+    !isRecord(value)
+    || !text(value.semester_id)
+    || !text(value.source_state_sha256)
+    || typeof value.will_call_model !== 'boolean'
+    || typeof value.model_available !== 'boolean'
+    || !nullableText(value.model_label)
+    || !integer(value.material_count, 1)
+    || !integer(value.unit_count, 1)
+    || !integer(value.existing_lesson_count)
+    || typeof value.creates_initial_tree !== 'boolean'
+    || typeof value.automatic_retry !== 'boolean'
+  ) throw new Error('Invalid semester mapping preflight response')
+  return value as unknown as SemesterMappingPreflight
+}
+
+function semesterMappingProposal(value: unknown): SemesterMappingProposal {
+  if (
+    !isRecord(value)
+    || !text(value.id)
+    || !text(value.semester_id)
+    || !text(value.operation_id)
+    || !text(value.source_state_sha256)
+    || !['proposed', 'applied', 'rejected'].includes(String(value.status))
+    || !isRecord(value.payload)
+    || !Array.isArray(value.payload.tree)
+    || !Array.isArray(value.payload.mappings)
+    || !Array.isArray(value.payload.uncertainties)
+    || !Array.isArray(value.payload.source_material_record_ids)
+    || !value.payload.tree.every(validSemesterProposalChapter)
+    || !value.payload.mappings.every(validSemesterProposalRange)
+    || !value.payload.uncertainties.every(text)
+    || !value.payload.source_material_record_ids.every(text)
+    || !integer(value.revision, 1)
+    || !text(value.created_at)
+    || !text(value.updated_at)
+    || !nullableText(value.applied_at)
+  ) throw new Error('Invalid semester mapping proposal response')
+  return value as unknown as SemesterMappingProposal
+}
+
+function validSemesterProposalChapter(value: unknown): boolean {
+  return (
+    isRecord(value)
+    && text(value.key)
+    && text(value.title)
+    && Array.isArray(value.sections)
+    && value.sections.every((section) => (
+      isRecord(section)
+      && text(section.key)
+      && text(section.title)
+      && Array.isArray(section.lessons)
+      && section.lessons.every((lesson) => (
+        isRecord(lesson)
+        && text(lesson.key)
+        && text(lesson.title)
+        && integer(lesson.duration_minutes, 1)
+      ))
+    ))
+  )
+}
+
+function validSemesterProposalRange(value: unknown): boolean {
+  return (
+    isRecord(value)
+    && text(value.material_record_id)
+    && text(value.lesson_ref)
+    && integer(value.start_unit, 1)
+    && integer(value.end_unit, 1)
+    && value.end_unit >= value.start_unit
+    && [
+      'textbook',
+      'reference_ppt',
+      'exercise',
+      'answer',
+      'supplement',
+    ].includes(String(value.purpose))
+  )
+}
+
 function lessonNode(value: unknown): LessonNode {
   if (
     !isRecord(value)
@@ -578,7 +928,9 @@ function lessonNode(value: unknown): LessonNode {
     || !text(value.title)
     || !integer(value.sort_order, 1)
     || !(value.duration_minutes === null || integer(value.duration_minutes, 1))
-    || !['teacher', 'catalog'].includes(String(value.source_kind))
+    || !['teacher', 'catalog', 'assistant_draft'].includes(
+      String(value.source_kind),
+    )
     || typeof value.is_active !== 'boolean'
     || !integer(value.revision, 1)
     || !text(value.created_at)
@@ -965,6 +1317,7 @@ function moduleStatus(value: unknown): TeachingPrepModuleStatus {
     || typeof value.enabled !== 'boolean'
     || !text(value.schema_version)
     || typeof value.real_model_enabled !== 'boolean'
+    || typeof value.semester_mapping_model_available !== 'boolean'
     || typeof value.real_wps_enabled !== 'boolean'
     || typeof value.wps_execution_available !== 'boolean'
   ) throw new Error('Invalid teaching prep status response')
@@ -1000,6 +1353,38 @@ function pptxExecution(value: unknown): PptxExecution {
     || !nullableText(value.finished_at)
   ) throw new Error('Invalid PPTX execution response')
   return value as unknown as PptxExecution
+}
+
+function lessonGenerationPerformance(
+  value: unknown,
+): LessonGenerationPerformance {
+  if (
+    !isRecord(value)
+    || !text(value.execution_run_id)
+    || !text(value.slide_plan_id)
+    || ![
+      'running',
+      'verifying',
+      'publishing',
+      'published',
+      'failed',
+      'cancelled',
+      'interrupted',
+    ].includes(String(value.status))
+    || !integer(value.budget_ms, 1)
+    || !integer(value.total_machine_elapsed_ms)
+    || !integer(value.draft_elapsed_ms)
+    || !integer(value.wps_elapsed_ms)
+    || !integer(value.model_call_count)
+    || !integer(value.wps_execution_count)
+    || !integer(value.technical_retry_count)
+    || !['running', 'within', 'exceeded'].includes(
+      String(value.budget_status),
+    )
+    || !(value.within_budget === null || typeof value.within_budget === 'boolean')
+    || typeof value.human_review_wait_excluded !== 'boolean'
+  ) throw new Error('Invalid lesson generation performance response')
+  return value as unknown as LessonGenerationPerformance
 }
 
 function pptxVersion(value: unknown): PptxVersion {
@@ -1163,6 +1548,228 @@ export const teachingPrepCatalogApi = {
         return curriculum(payload)
       },
     })
+  },
+
+  createSemesterWorkspace(
+    input: CreateSemesterWorkspaceInput,
+    signal?: AbortSignal,
+  ): Promise<SemesterWorkspace> {
+    return apiClient.request('/api/teaching-prep/semester-workspaces', {
+      method: 'POST',
+      body: input,
+      signal,
+      decode: (payload) => {
+        assertNoPathLikeKeys(payload)
+        return semesterWorkspace(payload)
+      },
+    })
+  },
+
+  listSemesters(signal?: AbortSignal): Promise<TeachingSemester[]> {
+    return apiClient.request('/api/teaching-prep/semesters', {
+      signal,
+      decode: (payload) => itemList(payload, semester),
+    })
+  },
+
+  createSemester(
+    input: CreateSemesterInput,
+    signal?: AbortSignal,
+  ): Promise<TeachingSemester> {
+    return apiClient.request('/api/teaching-prep/semesters', {
+      method: 'POST',
+      body: input,
+      signal,
+      decode: (payload) => {
+        assertNoPathLikeKeys(payload)
+        return semester(payload)
+      },
+    })
+  },
+
+  updateSemester(
+    current: TeachingSemester,
+    input: {
+      planned_new_lesson_count: number
+      status: SemesterStatus
+    },
+  ): Promise<TeachingSemester> {
+    return apiClient.request(
+      `/api/teaching-prep/semesters/${encodeURIComponent(current.id)}`,
+      {
+        method: 'PATCH',
+        body: {
+          expected_revision: current.revision,
+          ...input,
+        },
+        decode: (payload) => {
+          assertNoPathLikeKeys(payload)
+          return semester(payload)
+        },
+      },
+    )
+  },
+
+  listSemesterLessonProgress(
+    semesterId: string,
+    signal?: AbortSignal,
+  ): Promise<SemesterLessonProgress[]> {
+    return apiClient.request(
+      `/api/teaching-prep/semesters/${encodeURIComponent(semesterId)}/lesson-progress`,
+      {
+        signal,
+        decode: (payload) => itemList(payload, semesterLessonProgress),
+      },
+    )
+  },
+
+  setSemesterLessonProgress(
+    semesterId: string,
+    lessonNodeId: string,
+    input: {
+      status: SemesterLessonProgressStatus
+      expected_revision: number | null
+    },
+  ): Promise<SemesterLessonProgress> {
+    return apiClient.request(
+      (
+        `/api/teaching-prep/semesters/${encodeURIComponent(semesterId)}`
+        + `/lesson-progress/${encodeURIComponent(lessonNodeId)}`
+      ),
+      {
+        method: 'PUT',
+        body: input,
+        decode: (payload) => {
+          assertNoPathLikeKeys(payload)
+          return semesterLessonProgress(payload)
+        },
+      },
+    )
+  },
+
+  listSemesterMaterials(
+    semesterId: string,
+    signal?: AbortSignal,
+  ): Promise<SemesterMaterialRecord[]> {
+    return apiClient.request(
+      `/api/teaching-prep/semesters/${encodeURIComponent(semesterId)}/materials`,
+      {
+        signal,
+        decode: (payload) => itemList(payload, semesterMaterial),
+      },
+    )
+  },
+
+  attachSemesterMaterial(
+    semesterId: string,
+    input: {
+      request_token: string
+      material_version_id: string
+      material_role: SemesterMaterialRole
+    },
+  ): Promise<SemesterMaterialRecord> {
+    return apiClient.request(
+      `/api/teaching-prep/semesters/${encodeURIComponent(semesterId)}/materials`,
+      {
+        method: 'POST',
+        body: input,
+        decode: (payload) => {
+          assertNoPathLikeKeys(payload)
+          return semesterMaterial(payload)
+        },
+      },
+    )
+  },
+
+  updateSemesterMaterial(
+    current: SemesterMaterialRecord,
+    input: {
+      material_role: SemesterMaterialRole
+      mapping_status: SemesterMaterialMappingStatus
+      is_active: boolean
+    },
+  ): Promise<SemesterMaterialRecord> {
+    return apiClient.request(
+      `/api/teaching-prep/semester-materials/${encodeURIComponent(current.id)}`,
+      {
+        method: 'PATCH',
+        body: {
+          expected_revision: current.revision,
+          ...input,
+        },
+        decode: (payload) => {
+          assertNoPathLikeKeys(payload)
+          return semesterMaterial(payload)
+        },
+      },
+    )
+  },
+
+  semesterMappingPreflight(
+    semesterId: string,
+    materialRecordIds: string[],
+  ): Promise<SemesterMappingPreflight> {
+    return apiClient.request(
+      `/api/teaching-prep/semesters/${encodeURIComponent(semesterId)}/mapping-preflight`,
+      {
+        method: 'POST',
+        body: { material_record_ids: materialRecordIds },
+        decode: (payload) => {
+          assertNoPathLikeKeys(payload)
+          return semesterMappingPreflight(payload)
+        },
+      },
+    )
+  },
+
+  generateSemesterMappingProposal(
+    semesterId: string,
+    input: {
+      operation_id: string
+      material_record_ids: string[]
+    },
+  ): Promise<SemesterMappingProposal> {
+    return apiClient.request(
+      `/api/teaching-prep/semesters/${encodeURIComponent(semesterId)}/mapping-proposals`,
+      {
+        method: 'POST',
+        body: input,
+        timeoutMs: 620_000,
+        decode: (payload) => {
+          assertNoPathLikeKeys(payload)
+          return semesterMappingProposal(payload)
+        },
+      },
+    )
+  },
+
+  listSemesterMappingProposals(
+    semesterId: string,
+    signal?: AbortSignal,
+  ): Promise<SemesterMappingProposal[]> {
+    return apiClient.request(
+      `/api/teaching-prep/semesters/${encodeURIComponent(semesterId)}/mapping-proposals`,
+      {
+        signal,
+        decode: (payload) => itemList(payload, semesterMappingProposal),
+      },
+    )
+  },
+
+  applySemesterMappingProposal(
+    proposal: SemesterMappingProposal,
+  ): Promise<SemesterMappingProposal> {
+    return apiClient.request(
+      `/api/teaching-prep/semester-mapping-proposals/${encodeURIComponent(proposal.id)}/apply`,
+      {
+        method: 'POST',
+        body: { expected_revision: proposal.revision },
+        decode: (payload) => {
+          assertNoPathLikeKeys(payload)
+          return semesterMappingProposal(payload)
+        },
+      },
+    )
   },
 
   listLessons(
@@ -1711,6 +2318,22 @@ export const teachingPrepCatalogApi = {
       {
         signal,
         decode: (payload) => itemList(payload, pptxExecution),
+      },
+    )
+  },
+
+  getLessonGenerationPerformance(
+    runId: string,
+    signal?: AbortSignal,
+  ): Promise<LessonGenerationPerformance> {
+    return apiClient.request(
+      `/api/teaching-prep/pptx-executions/${encodeURIComponent(runId)}/performance`,
+      {
+        signal,
+        decode: (payload) => {
+          assertNoPathLikeKeys(payload)
+          return lessonGenerationPerformance(payload)
+        },
       },
     )
   },

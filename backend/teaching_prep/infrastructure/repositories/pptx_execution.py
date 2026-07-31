@@ -2,13 +2,18 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from datetime import UTC, datetime
 from uuid import uuid4
 
 from backend.teaching_prep.domain.errors import (
     TeachingPrepConflictError,
     TeachingPrepNotFoundError,
 )
-from backend.teaching_prep.domain.models import PptxExecutionRun, PptxVersion
+from backend.teaching_prep.domain.models import (
+    LessonGenerationPerformance,
+    PptxExecutionRun,
+    PptxVersion,
+)
 from backend.teaching_prep.infrastructure.database import TeachingPrepDatabase
 
 
@@ -154,6 +159,158 @@ class PptxExecutionRepository:
             ).fetchall()
         return tuple(_run(row) for row in rows)
 
+    def performance(
+        self,
+        run_id: str,
+        *,
+        budget_ms: int = 300_000,
+    ) -> LessonGenerationPerformance:
+        with self._database.connect() as connection:
+            run = connection.execute(
+                """
+                SELECT
+                    execution.*,
+                    operation.created_at AS operation_created_at,
+                    operation.finished_at AS operation_finished_at
+                FROM pptx_execution_runs AS execution
+                JOIN teaching_prep_operations AS operation
+                  ON operation.operation_id = execution.operation_id
+                WHERE execution.id = ?
+                """,
+                (run_id,),
+            ).fetchone()
+            if run is None:
+                raise TeachingPrepNotFoundError(
+                    "PPTX execution record was not found"
+                )
+            lineage = connection.execute(
+                """
+                WITH RECURSIVE draft_lineage(
+                    id,
+                    based_on_draft_id,
+                    operation_id,
+                    source_kind,
+                    depth
+                ) AS (
+                    SELECT
+                        draft.id,
+                        draft.based_on_draft_id,
+                        draft.operation_id,
+                        draft.source_kind,
+                        0
+                    FROM slide_plan_versions AS plan
+                    JOIN lesson_draft_versions AS draft
+                      ON draft.id = plan.lesson_draft_id
+                    WHERE plan.id = ?
+                    UNION ALL
+                    SELECT
+                        parent.id,
+                        parent.based_on_draft_id,
+                        parent.operation_id,
+                        parent.source_kind,
+                        lineage.depth + 1
+                    FROM lesson_draft_versions AS parent
+                    JOIN draft_lineage AS lineage
+                      ON parent.id = lineage.based_on_draft_id
+                )
+                SELECT
+                    lineage.*,
+                    operation.created_at AS operation_created_at,
+                    operation.finished_at AS operation_finished_at
+                FROM draft_lineage AS lineage
+                LEFT JOIN teaching_prep_operations AS operation
+                  ON operation.operation_id = lineage.operation_id
+                ORDER BY lineage.depth
+                """,
+                (str(run["slide_plan_id"]),),
+            ).fetchall()
+        draft_row = next(
+            (row for row in lineage if row["operation_id"] is not None),
+            None,
+        )
+        now = datetime.now(UTC)
+        draft_elapsed = (
+            _elapsed_ms(
+                str(draft_row["operation_created_at"]),
+                (
+                    str(draft_row["operation_finished_at"])
+                    if draft_row["operation_finished_at"] is not None
+                    else None
+                ),
+                now=now,
+            )
+            if draft_row is not None
+            else 0
+        )
+        wps_elapsed = _elapsed_ms(
+            str(run["operation_created_at"]),
+            (
+                str(run["operation_finished_at"])
+                if run["operation_finished_at"] is not None
+                else None
+            ),
+            now=now,
+        )
+        total = draft_elapsed + wps_elapsed
+        status = str(run["status"])
+        terminal = status in {
+            "published",
+            "failed",
+            "cancelled",
+            "interrupted",
+        }
+        return LessonGenerationPerformance(
+            execution_run_id=str(run["id"]),
+            slide_plan_id=str(run["slide_plan_id"]),
+            status=status,
+            budget_ms=budget_ms,
+            total_machine_elapsed_ms=total,
+            draft_elapsed_ms=draft_elapsed,
+            wps_elapsed_ms=wps_elapsed,
+            model_call_count=(
+                1
+                if draft_row is not None
+                and str(draft_row["source_kind"]) == "model"
+                else 0
+            ),
+            wps_execution_count=int(run["wps_invocation_count"]),
+            technical_retry_count=0,
+            budget_status=(
+                "exceeded"
+                if total > budget_ms
+                else "within"
+                if terminal
+                else "running"
+            ),
+            within_budget=(total <= budget_ms if terminal else None),
+            human_review_wait_excluded=True,
+        )
+
+    def mark_wps_started(self, run_id: str) -> None:
+        with self._database.connect(immediate=True) as connection:
+            cursor = connection.execute(
+                """
+                UPDATE pptx_execution_runs
+                SET wps_started_at = strftime(
+                        '%Y-%m-%dT%H:%M:%fZ',
+                        'now'
+                    ),
+                    wps_invocation_count = 1,
+                    updated_at = strftime(
+                        '%Y-%m-%dT%H:%M:%fZ',
+                        'now'
+                    )
+                WHERE id = ?
+                  AND status = 'running'
+                  AND wps_invocation_count = 0
+                """,
+                (run_id,),
+            )
+            if cursor.rowcount != 1:
+                raise TeachingPrepConflictError(
+                    "WPS execution cannot start more than once"
+                )
+
     def staging_name(self, run_id: str) -> str:
         with self._database.connect() as connection:
             row = connection.execute(
@@ -280,6 +437,7 @@ class PptxExecutionRepository:
         run_id: str,
         version_id: str,
         output_sha256: str,
+        deadline_at: str,
     ) -> PptxVersion:
         with self._database.connect(immediate=True) as connection:
             version_cursor = connection.execute(
@@ -288,9 +446,11 @@ class PptxExecutionRepository:
                 SET status = 'published',
                     output_sha256 = ?,
                     published_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-                WHERE id = ? AND status = 'publishing'
+                WHERE id = ?
+                  AND status = 'publishing'
+                  AND julianday(?) > julianday('now')
                 """,
-                (output_sha256, version_id),
+                (output_sha256, version_id, deadline_at),
             )
             run_cursor = connection.execute(
                 """
@@ -302,8 +462,9 @@ class PptxExecutionRepository:
                 WHERE id = ?
                   AND status IN ('publishing', 'interrupted')
                   AND published_version_id = ?
+                  AND julianday(?) > julianday('now')
                 """,
-                (run_id, version_id),
+                (run_id, version_id, deadline_at),
             )
             operation_cursor = connection.execute(
                 """
@@ -318,14 +479,17 @@ class PptxExecutionRepository:
                     WHERE id = ?
                 )
                   AND status IN ('running', 'interrupted')
+                  AND julianday(?) > julianday('now')
                 """,
-                (run_id,),
+                (run_id, deadline_at),
             )
             if (
                 version_cursor.rowcount != 1
                 or run_cursor.rowcount != 1
                 or operation_cursor.rowcount != 1
             ):
+                if _deadline_has_elapsed(connection, deadline_at):
+                    raise TimeoutError("lesson generation budget exceeded")
                 raise TeachingPrepConflictError(
                     "PPTX publication state changed"
                 )
@@ -353,7 +517,12 @@ class PptxExecutionRepository:
                     updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
                     finished_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
                 WHERE id = ?
-                  AND status IN ('running', 'verifying', 'publishing')
+                  AND status IN (
+                      'running',
+                      'verifying',
+                      'publishing',
+                      'interrupted'
+                  )
                 """,
                 (error_code, run_id),
             )
@@ -364,7 +533,8 @@ class PptxExecutionRepository:
                     error_code = ?,
                     updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
                     finished_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-                WHERE operation_id = ? AND status = 'running'
+                WHERE operation_id = ?
+                  AND status IN ('running', 'interrupted')
                 """,
                 (error_code, str(run["operation_id"])),
             )
@@ -376,6 +546,67 @@ class PptxExecutionRepository:
                     WHERE id = ? AND status = 'publishing'
                     """,
                     (str(run["published_version_id"]),),
+                )
+
+    def revoke_published(
+        self,
+        *,
+        run_id: str,
+        version_id: str,
+        error_code: str,
+    ) -> None:
+        """Make a just-published version unavailable after a deadline breach.
+
+        This narrow recovery path is only used when the final budget check
+        discovers that publication crossed the hard generation deadline.
+        """
+        with self._database.connect(immediate=True) as connection:
+            version_cursor = connection.execute(
+                """
+                UPDATE pptx_versions
+                SET status = 'failed'
+                WHERE id = ?
+                  AND execution_run_id = ?
+                  AND status = 'published'
+                """,
+                (version_id, run_id),
+            )
+            run_cursor = connection.execute(
+                """
+                UPDATE pptx_execution_runs
+                SET status = 'failed',
+                    error_code = ?,
+                    updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+                    finished_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                WHERE id = ?
+                  AND status = 'published'
+                  AND published_version_id = ?
+                """,
+                (error_code, run_id, version_id),
+            )
+            operation_cursor = connection.execute(
+                """
+                UPDATE teaching_prep_operations
+                SET status = 'failed',
+                    error_code = ?,
+                    updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+                    finished_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                WHERE operation_id = (
+                    SELECT operation_id
+                    FROM pptx_execution_runs
+                    WHERE id = ?
+                )
+                  AND status = 'succeeded'
+                """,
+                (error_code, run_id),
+            )
+            if (
+                version_cursor.rowcount != 1
+                or run_cursor.rowcount != 1
+                or operation_cursor.rowcount != 1
+            ):
+                raise TeachingPrepConflictError(
+                    "published PPTX state changed before deadline recovery"
                 )
 
     def cancel(self, run_id: str) -> PptxExecutionRun:
@@ -473,6 +704,19 @@ class PptxExecutionRepository:
         ).fetchone()
 
 
+def _deadline_has_elapsed(
+    connection: sqlite3.Connection,
+    deadline_at: str,
+) -> bool:
+    row = connection.execute(
+        """
+        SELECT julianday(?) <= julianday('now') AS expired
+        """,
+        (deadline_at,),
+    ).fetchone()
+    return bool(row["expired"]) if row is not None else False
+
+
 def _run(row: sqlite3.Row) -> PptxExecutionRun:
     status = str(row["status"])
     actions = (
@@ -537,6 +781,21 @@ def _version(row: sqlite3.Row) -> PptxVersion:
 
 def _optional_json(value: object) -> dict[str, object] | None:
     return json.loads(str(value)) if value is not None else None
+
+
+def _elapsed_ms(
+    started_at: str,
+    finished_at: str | None,
+    *,
+    now: datetime,
+) -> int:
+    started = datetime.fromisoformat(started_at.replace("Z", "+00:00"))
+    finished = (
+        datetime.fromisoformat(finished_at.replace("Z", "+00:00"))
+        if finished_at is not None
+        else now
+    )
+    return max(0, int(round((finished - started).total_seconds() * 1000)))
 
 
 def _json(value: dict[str, object]) -> str:

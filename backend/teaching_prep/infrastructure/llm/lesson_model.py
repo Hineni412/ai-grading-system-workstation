@@ -71,6 +71,7 @@ class WorkspaceLessonModelAdapter:
                 ],
                 "response_format": {"type": "json_object"},
             },
+            timeout_override_seconds=110,
         )
         text = _response_text(response)
         try:

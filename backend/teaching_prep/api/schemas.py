@@ -13,18 +13,23 @@ from backend.teaching_prep.domain.models import (
     CurriculumEdition,
     ExerciseCandidate,
     LessonDraftVersion,
+    LessonGenerationPerformance,
     LessonMaterialLink,
     LessonNode,
     LessonPreparation,
     MaterialUnit,
     MaterialVersion,
     ResourcePackVersion,
+    SemesterLessonProgress,
+    SemesterMappingProposal,
+    SemesterMaterialRecord,
     SlidePlanVersion,
     PptxExecutionRun,
     PptxVersion,
     PostLessonReview,
     UpClassPackage,
     TeachingPreferences,
+    TeachingSemester,
 )
 from backend.teaching_prep.domain.states import LessonPreparationState
 
@@ -34,6 +39,7 @@ class TeachingPrepStatusResponse(BaseModel):
     enabled: bool
     schema_version: str
     real_model_enabled: bool
+    semester_mapping_model_available: bool
     real_wps_enabled: bool
     wps_execution_available: bool
 
@@ -133,6 +139,18 @@ class CreateCurriculumRequest(BaseModel):
     edition_label: str | None = Field(default=None, max_length=120)
 
 
+class SemesterWorkspaceCurriculumRequest(BaseModel):
+    """The curriculum identity supplied while starting one semester."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    title: str = Field(min_length=1, max_length=160)
+    grade_level: int = Field(ge=7, le=9)
+    volume: Literal["first", "second", "whole_year"]
+    publisher: str | None = Field(default=None, max_length=120)
+    edition_label: str | None = Field(default=None, max_length=120)
+
+
 class CurriculumResponse(BaseModel):
     id: str
     title: str
@@ -152,6 +170,225 @@ class CurriculumResponse(BaseModel):
 
 class CurriculumListResponse(BaseModel):
     items: list[CurriculumResponse]
+
+
+class CreateSemesterRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    request_token: str = Field(min_length=8, max_length=96)
+    curriculum_id: str = Field(min_length=32, max_length=32)
+    school_year: str = Field(min_length=4, max_length=20)
+    term: Literal["first", "second"]
+    planned_new_lesson_count: int = Field(ge=0, le=500)
+
+
+class CreateSemesterWorkspaceRequest(BaseModel):
+    """Atomically establish a curriculum together with its semester state."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    request_token: str = Field(min_length=8, max_length=96)
+    curriculum: SemesterWorkspaceCurriculumRequest
+    school_year: str = Field(min_length=4, max_length=20)
+    term: Literal["first", "second"]
+    planned_new_lesson_count: int = Field(ge=0, le=500)
+
+
+class UpdateSemesterRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    expected_revision: int = Field(gt=0)
+    planned_new_lesson_count: int = Field(ge=0, le=500)
+    status: Literal["planning", "active", "completed", "archived"]
+
+
+class SemesterResponse(BaseModel):
+    id: str
+    curriculum_id: str
+    curriculum_title: str
+    school_year: str
+    term: str
+    planned_new_lesson_count: int
+    status: str
+    active_lesson_count: int
+    not_started_lesson_count: int
+    preparing_lesson_count: int
+    ready_lesson_count: int
+    taught_lesson_count: int
+    skipped_lesson_count: int
+    material_count: int
+    parsed_material_count: int
+    mapped_material_count: int
+    revision: int
+    created_at: str
+    updated_at: str
+
+    @classmethod
+    def from_domain(cls, item: TeachingSemester) -> "SemesterResponse":
+        return cls.model_validate(asdict(item))
+
+
+class SemesterWorkspaceResponse(BaseModel):
+    curriculum: CurriculumResponse
+    semester: SemesterResponse
+
+
+class SemesterListResponse(BaseModel):
+    items: list[SemesterResponse]
+
+
+class SetSemesterLessonProgressRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    status: Literal["not_started", "preparing", "ready", "taught", "skipped"]
+    expected_revision: int | None = Field(default=None, gt=0)
+
+
+class SemesterLessonProgressResponse(BaseModel):
+    id: str
+    semester_id: str
+    lesson_node_id: str
+    lesson_title: str
+    status: str
+    revision: int
+    created_at: str
+    updated_at: str
+
+    @classmethod
+    def from_domain(
+        cls,
+        item: SemesterLessonProgress,
+    ) -> "SemesterLessonProgressResponse":
+        return cls.model_validate(asdict(item))
+
+
+class SemesterLessonProgressListResponse(BaseModel):
+    items: list[SemesterLessonProgressResponse]
+
+
+class AttachSemesterMaterialRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    request_token: str = Field(min_length=8, max_length=96)
+    material_version_id: str = Field(min_length=32, max_length=32)
+    material_role: Literal[
+        "textbook",
+        "reference_ppt",
+        "exercise_workbook",
+        "homework_workbook",
+        "answer_book",
+        "supplement",
+    ]
+
+
+class UpdateSemesterMaterialRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    expected_revision: int = Field(gt=0)
+    material_role: Literal[
+        "textbook",
+        "reference_ppt",
+        "exercise_workbook",
+        "homework_workbook",
+        "answer_book",
+        "supplement",
+    ]
+    mapping_status: Literal[
+        "unmapped",
+        "proposed",
+        "partial",
+        "confirmed",
+        "needs_review",
+        "conflict",
+    ]
+    is_active: bool
+
+
+class SemesterMaterialResponse(BaseModel):
+    id: str
+    semester_id: str
+    material_source_id: str
+    display_name: str
+    material_role: str
+    parse_status: str
+    mapping_status: str
+    current_material_version_id: str
+    safe_filename: str
+    current_inspection_status: str
+    current_unit_count: int | None
+    last_parsed_version_id: str | None
+    has_unparsed_update: bool
+    parsed_at: str | None
+    is_active: bool
+    revision: int
+    created_at: str
+    updated_at: str
+
+    @classmethod
+    def from_domain(
+        cls,
+        item: SemesterMaterialRecord,
+    ) -> "SemesterMaterialResponse":
+        payload = asdict(item)
+        payload["safe_filename"] = payload.pop("current_file_name")
+        return cls.model_validate(payload)
+
+
+class SemesterMaterialListResponse(BaseModel):
+    items: list[SemesterMaterialResponse]
+
+
+class SemesterMappingRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    material_record_ids: list[str] = Field(min_length=1, max_length=1)
+
+
+class GenerateSemesterMappingRequest(SemesterMappingRequest):
+    operation_id: str = Field(min_length=8, max_length=96)
+
+
+class SemesterMappingPreflightResponse(BaseModel):
+    semester_id: str
+    source_state_sha256: str
+    will_call_model: bool
+    model_available: bool
+    model_label: str | None
+    material_count: int
+    unit_count: int
+    existing_lesson_count: int
+    creates_initial_tree: bool
+    automatic_retry: bool
+
+
+class SemesterMappingProposalResponse(BaseModel):
+    id: str
+    semester_id: str
+    operation_id: str
+    source_state_sha256: str
+    status: str
+    payload: dict[str, object]
+    revision: int
+    created_at: str
+    updated_at: str
+    applied_at: str | None
+
+    @classmethod
+    def from_domain(
+        cls,
+        item: SemesterMappingProposal,
+    ) -> "SemesterMappingProposalResponse":
+        return cls.model_validate(asdict(item))
+
+
+class SemesterMappingProposalListResponse(BaseModel):
+    items: list[SemesterMappingProposalResponse]
+
+
+class ApplySemesterMappingProposalRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    expected_revision: int = Field(gt=0)
 
 
 class CreateLessonNodeRequest(BaseModel):
@@ -751,6 +988,29 @@ class PptxExecutionResultResponse(BaseModel):
 class PptxExecutionListResponse(BaseModel):
     slide_plan_id: str
     items: list[PptxExecutionResponse]
+
+
+class LessonGenerationPerformanceResponse(BaseModel):
+    execution_run_id: str
+    slide_plan_id: str
+    status: str
+    budget_ms: int
+    total_machine_elapsed_ms: int
+    draft_elapsed_ms: int
+    wps_elapsed_ms: int
+    model_call_count: int
+    wps_execution_count: int
+    technical_retry_count: int
+    budget_status: Literal["running", "within", "exceeded"]
+    within_budget: bool | None
+    human_review_wait_excluded: bool
+
+    @classmethod
+    def from_domain(
+        cls,
+        item: LessonGenerationPerformance,
+    ) -> "LessonGenerationPerformanceResponse":
+        return cls.model_validate(asdict(item))
 
 
 class DeriveClassVariantRequest(BaseModel):

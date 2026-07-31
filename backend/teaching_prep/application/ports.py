@@ -34,6 +34,16 @@ class LessonModelAdapter(Protocol):
         """Generate one structured draft without automatic retry."""
 
 
+class SemesterMappingModelAdapter(Protocol):
+    def generate(
+        self,
+        *,
+        operation_id: str,
+        semester_snapshot: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Generate one reviewable lesson-tree and page-range proposal."""
+
+
 class WpsAdapter(Protocol):
     def execute(
         self,
