@@ -27,6 +27,11 @@
 - [班主任工作台总体设计](./CLASS_TEACHER_WORKBENCH.md)
 - [班主任工作台详细实施计划](./CLASS_TEACHER_WORKBENCH_IMPLEMENTATION_PLAN.md)
 - [班主任德育事务国家规范基线与 SOP 初稿](./CLASS_TEACHER_AFFAIRS_SOP_BASELINE.md)
+- [B00 数据治理与保留删除规格](./class-teacher/B00_DATA_GOVERNANCE.md)
+- [B00 深圳公办初中学校流程规格](./class-teacher/B00_SHENZHEN_SCHOOL_SOP_PROFILE.md)
+- [B00 合成数据集与验收清单](./class-teacher/B00_SYNTHETIC_ACCEPTANCE.md)
+- [B00 执行记录](./class-teacher/B00_EXECUTION_RECORD.md)
+- [B00 安全、加密、威胁与恢复规格](../security/class-teacher/B00_SECURITY_AND_THREAT_MODEL.md)
 - [B00/B01 治理关口](../superpowers/packages/phase-6-deferred.md)
 
 动态状态和下一动作只看 [执行索引](../superpowers/packages/EXECUTION_INDEX.md)。当前实现事实只看根目录 `ARCHITECTURE.md`。

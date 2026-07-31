@@ -9,6 +9,7 @@ import {
 } from '../../api/question-bank'
 import { useQuestionBankStore } from '../../stores/question-bank'
 import QuestionContentRenderer from './QuestionContentRenderer.vue'
+import TrainingCriterionReview from './TrainingCriterionReview.vue'
 
 const store = useQuestionBankStore()
 const curriculum = ref<CurriculumCatalog | null>(null)
@@ -247,6 +248,8 @@ async function removeCurrent(): Promise<void> {
               </template>
             </div>
           </section>
+
+          <TrainingCriterionReview :question-id="store.detail.id" />
 
           <section class="qb-tags" aria-labelledby="qb-tags-title">
             <header class="qb-section-heading">

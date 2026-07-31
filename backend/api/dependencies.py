@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from collections.abc import Iterator
 import threading
+from typing import Any
 
 from fastapi import Depends, Request
 
@@ -29,6 +30,10 @@ from backend.ops.write_service import OpsWriteService
 from backend.results_center.service import ResultsCenterService
 from backend.review.service import ReviewApplicationService
 from backend.students import StudentRosterModule
+from backend.training_assessment import (
+    OpenAITrainingAssessmentGateway,
+    TrainingAssessmentModule,
+)
 from backend.repositories.sessions import SessionRepositoryGateway
 from backend.repositories.students import StudentRepositoryGateway
 from backend.scan_grading.config_fingerprint import (
@@ -41,11 +46,17 @@ from manual_review_service import ManualReviewService
 from path_manager import PathManager, get_path_manager
 from integration.diagnosis_profile_service import DiagnosisProfileService
 from question_bank.recommendation.practice_plan_service import PracticePlanService
+from question_bank.recommendation.personalized import (
+    PersonalizedRecommendationModule,
+)
+from question_bank.personalized_papers import PersonalizedPaperModule
+from question_bank.training_submissions import TrainingSubmissionModule
 from question_bank.services.question_read_service import QuestionBankReadService
 from question_bank.services.question_read_service import (
     QuestionBankSnapshotError,
 )
 from question_bank.services.training_task_service import TrainingTaskService
+from question_bank.services.ai_tagging_service import AITaggingService
 from question_bank.services.question_write_service import QuestionBankWriteService
 from question_bank.services.taxonomy_review_service import TaxonomyReviewService
 from question_bank.services.taxonomy_review_suggestions import (
@@ -53,9 +64,31 @@ from question_bank.services.taxonomy_review_suggestions import (
 )
 from question_bank.taxonomy.governance import get_taxonomy_governance
 from question_bank.services.assembly_workspace_service import AssemblyWorkspaceService
+from question_bank.training_criteria import TrainingCriterionModule
 
 
 _TEMPLATE_UPLOAD_SERVICE_GUARD = threading.Lock()
+
+
+class _LazyTrainingAssessmentGateway:
+    """Delay model setup until a teacher explicitly starts assessment."""
+
+    def assess(
+        self,
+        request: Any,
+        *,
+        operation_id: str,
+        request_id: str,
+    ) -> Any:
+        tagging_service = AITaggingService()
+        return OpenAITrainingAssessmentGateway(
+            protocol_adapter=tagging_service._protocol_adapter(),
+            model_name=tagging_service.model,
+        ).assess(
+            request,
+            operation_id=operation_id,
+            request_id=request_id,
+        )
 
 
 def get_grading_db() -> GradingRepositoryAccess:
@@ -194,6 +227,10 @@ def get_question_bank_write_service() -> QuestionBankWriteService:
     return QuestionBankWriteService(paths.qb_db_path, data_root=paths.data_root)
 
 
+def get_training_criterion_module() -> TrainingCriterionModule:
+    return TrainingCriterionModule(get_path_manager().qb_db_path)
+
+
 def get_taxonomy_review_service() -> TaxonomyReviewService:
     paths = get_path_manager()
     return TaxonomyReviewService(
@@ -295,6 +332,40 @@ def get_practice_plan_service() -> PracticePlanService:
 
 def get_training_task_service() -> TrainingTaskService:
     return TrainingTaskService(get_path_manager().qb_db_path)
+
+
+def get_personalized_recommendation_module(
+) -> PersonalizedRecommendationModule:
+    paths = get_path_manager()
+    return PersonalizedRecommendationModule(
+        db_path=paths.qb_db_path,
+        data_root=paths.data_root,
+    )
+
+
+def get_personalized_paper_module() -> PersonalizedPaperModule:
+    paths = get_path_manager()
+    return PersonalizedPaperModule(
+        db_path=paths.qb_db_path,
+        data_root=paths.data_root,
+    )
+
+
+def get_training_submission_module() -> TrainingSubmissionModule:
+    paths = get_path_manager()
+    return TrainingSubmissionModule(
+        db_path=paths.qb_db_path,
+        data_root=paths.data_root,
+    )
+
+
+def get_training_assessment_module() -> TrainingAssessmentModule:
+    paths = get_path_manager()
+    return TrainingAssessmentModule(
+        db_path=paths.qb_db_path,
+        data_root=paths.data_root,
+        gateway=_LazyTrainingAssessmentGateway(),
+    )
 
 
 def get_job_file_service(

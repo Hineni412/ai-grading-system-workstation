@@ -1,0 +1,144 @@
+{
+  "schema_version": "p4-mastery-v2-golden-v1",
+  "synthetic_only": true,
+  "samples": [
+    {
+      "id": "layered-exam-and-training",
+      "as_of": "2026-01-01T00:00:00+00:00",
+      "parameters": {
+        "prior_mean": 0.5,
+        "prior_strength": 2.0,
+        "exam_source_weight": 1.0,
+        "training_source_weight": 0.5
+      },
+      "exam": [
+        {
+          "evidence_id": "exam-q1",
+          "stable_key": "kp_alg_linear_equation",
+          "occurred_at": "2026-01-01T00:00:00+00:00",
+          "score_awarded": 8,
+          "full_score": 10
+        }
+      ],
+      "training": [
+        {
+          "evidence_id": "training-q1",
+          "stable_key": "kp_alg_linear_equation",
+          "occurred_at": "2026-01-01T00:00:00+00:00",
+          "achieved_points": 1,
+          "total_points": 2
+        }
+      ],
+      "expected": {
+        "status": "available",
+        "value": 0.585714,
+        "direct_evidence_count": 2,
+        "exam_mean": 0.8,
+        "training_mean": 0.5
+      }
+    },
+    {
+      "id": "teacher-correction-replaces-one-evidence",
+      "as_of": "2026-01-01T00:00:00+00:00",
+      "parameters": {
+        "prior_mean": 0.5,
+        "prior_strength": 0.0
+      },
+      "exam": [
+        {
+          "evidence_id": "exam-corrected",
+          "stable_key": "kp_alg_linear_equation",
+          "occurred_at": "2026-01-01T00:00:00+00:00",
+          "score_awarded": 2,
+          "full_score": 10,
+          "teacher_correction": 0.9,
+          "teacher_correction_reason": "合成教师核对"
+        }
+      ],
+      "training": [],
+      "expected": {
+        "status": "available",
+        "value": 0.9,
+        "direct_evidence_count": 1,
+        "exam_mean": 0.9,
+        "training_mean": null
+      }
+    },
+    {
+      "id": "half-life-decay",
+      "as_of": "2026-01-31T00:00:00+00:00",
+      "parameters": {
+        "prior_mean": 0.5,
+        "prior_strength": 1.0,
+        "exam_half_life_days": 30.0
+      },
+      "exam": [
+        {
+          "evidence_id": "exam-old-perfect",
+          "stable_key": "kp_alg_linear_equation",
+          "occurred_at": "2026-01-01T00:00:00+00:00",
+          "score_awarded": 10,
+          "full_score": 10
+        }
+      ],
+      "training": [],
+      "expected": {
+        "status": "available",
+        "value": 0.666667,
+        "direct_evidence_count": 1,
+        "exam_mean": 1.0,
+        "training_mean": null
+      }
+    },
+    {
+      "id": "training-is-normalized-per-question",
+      "as_of": "2026-01-01T00:00:00+00:00",
+      "parameters": {
+        "prior_mean": 0.5,
+        "prior_strength": 0.0,
+        "training_source_weight": 1.0
+      },
+      "exam": [],
+      "training": [
+        {
+          "evidence_id": "training-short-question",
+          "stable_key": "kp_alg_linear_equation",
+          "occurred_at": "2026-01-01T00:00:00+00:00",
+          "achieved_points": 1,
+          "total_points": 1
+        },
+        {
+          "evidence_id": "training-long-question",
+          "stable_key": "kp_alg_linear_equation",
+          "occurred_at": "2026-01-01T00:00:00+00:00",
+          "achieved_points": 0,
+          "total_points": 4
+        }
+      ],
+      "expected": {
+        "status": "available",
+        "value": 0.5,
+        "direct_evidence_count": 2,
+        "exam_mean": null,
+        "training_mean": 0.5
+      }
+    },
+    {
+      "id": "no-usable-evidence-is-missing",
+      "as_of": "2026-01-01T00:00:00+00:00",
+      "parameters": {
+        "prior_mean": 0.65,
+        "prior_strength": 2.0
+      },
+      "exam": [],
+      "training": [],
+      "expected": {
+        "status": "missing",
+        "value": null,
+        "direct_evidence_count": 0,
+        "exam_mean": null,
+        "training_mean": null
+      }
+    }
+  ]
+}

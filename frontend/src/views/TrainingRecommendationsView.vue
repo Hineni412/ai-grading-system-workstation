@@ -6,10 +6,13 @@ import type { TrainingVariant } from '../api/exports'
 import type { JobResponse } from '../api/jobs'
 import { fetchStudents, type StudentSummary } from '../api/students'
 import type {
+  TrainingExamScopeRequest,
   TrainingPlanItem,
   TrainingStage,
+  TrainingStudentScopeRequest,
   TrainingWeakPoint,
 } from '../api/training'
+import PersonalizedRecommendationDraft from '../components/training/PersonalizedRecommendationDraft.vue'
 import { useJobStore } from '../stores/jobs'
 import { useSessionStore } from '../stores/session'
 import { useTrainingStore } from '../stores/training'
@@ -137,6 +140,19 @@ const canPreview = computed(
     && training.planState !== 'loading'
     && stageRatioTotal.value === 100,
 )
+
+const personalizedScope = computed<TrainingStudentScopeRequest>(() => ({
+  mode: training.studentScope.mode,
+  student_ids: [...training.studentScope.studentIds],
+  ...(training.studentScope.classId
+    ? { class_id: training.studentScope.classId }
+    : {}),
+}))
+
+const personalizedExamScope = computed<TrainingExamScopeRequest>(() => ({
+  mode: training.examScope.mode,
+  session_ids: [...training.examScope.sessionIds],
+}))
 
 function weakKey(studentId: string, knowledgeKey: string): string {
   return `${studentId}\u0000${knowledgeKey}`
@@ -691,6 +707,21 @@ onBeforeUnmount(() => {
               提升应用 {{ transferRatio }}%
             </span>
           </div>
+
+          <PersonalizedRecommendationDraft
+            v-if="training.diagnosis"
+            :diagnosis="training.diagnosis"
+            :scope="personalizedScope"
+            :exam-scope="personalizedExamScope"
+            :question-count="questionCount"
+            :stage-ratios="{
+              direct: directRatio / 100,
+              prerequisite: prerequisiteRatio / 100,
+              transfer: transferRatio / 100,
+            }"
+            :exclude-current-exam-originals="excludeCurrentOriginals"
+            :disabled="stageRatioTotal !== 100"
+          />
 
           <div class="training-plan-controls">
             <label>
