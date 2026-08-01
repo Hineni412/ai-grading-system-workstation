@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Mapping
 
 import pytest
@@ -641,6 +642,21 @@ def test_combined_schema_is_strict_and_tag_only_v1_adapter_stays_separate() -> N
     ]["items"]
     assert proposal["additionalProperties"] is False
     assert set(proposal["required"]) == set(proposal["properties"])
+    evidence = item["properties"]["solution_evidence"]
+    part = evidence["properties"]["parts"]["items"]
+    point = part["properties"]["evidence_points"]["items"]
+    link = point["properties"]["fine_term_links"]["items"]
+    expected_identifier = "^[a-z][a-z0-9_-]{1,127}$"
+    assert part["properties"]["part_id"]["pattern"] == expected_identifier
+    assert (
+        point["properties"]["evidence_point_id"]["pattern"]
+        == expected_identifier
+    )
+    assert point["properties"]["target"]["minLength"] == 1
+    assert point["properties"]["observable_evidence"]["minLength"] == 1
+    assert link["properties"]["fine_term_id"]["minLength"] == 1
+    assert link["properties"]["fine_term_name"]["minLength"] == 1
+    assert part["properties"]["deduction_policy"]["items"]["minLength"] == 1
 
     @dataclass
     class LegacyResult:
@@ -752,6 +768,45 @@ class CapturingProtocolAdapter:
         return FakeProtocolResponse(self.payload)
 
 
+def test_openai_gateway_exposes_shared_execution_parallel_limit() -> None:
+    protocol = CapturingProtocolAdapter({"results": []})
+    protocol.gateway = SimpleNamespace(
+        execution_snapshot=SimpleNamespace(max_in_flight=4),
+    )
+
+    gateway = OpenAICombinedAnalysisGateway(
+        protocol_adapter=protocol,
+        model_name="synthetic-model",
+    )
+
+    assert gateway.max_parallel_requests == 4
+
+
+def test_openai_gateway_uses_current_effective_parallel_limit() -> None:
+    protocol = CapturingProtocolAdapter({"results": []})
+    protocol.gateway = SimpleNamespace(
+        execution_snapshot=SimpleNamespace(max_in_flight=20),
+        governor_scope="synthetic-scope",
+        governors=SimpleNamespace(
+            status=lambda scope, snapshot: {
+                "effective_max_in_flight": (
+                    2
+                    if scope == "synthetic-scope"
+                    and snapshot.max_in_flight == 20
+                    else 1
+                )
+            }
+        ),
+    )
+
+    gateway = OpenAICombinedAnalysisGateway(
+        protocol_adapter=protocol,
+        model_name="synthetic-model",
+    )
+
+    assert gateway.max_parallel_requests == 2
+
+
 def test_openai_gateway_sends_images_once_without_logging_image_body() -> None:
     image = QuestionAnalysisImage(
         role="question",
@@ -847,6 +902,11 @@ def test_gateway_keeps_each_questions_candidate_contract_isolated() -> None:
         "kp_geo_parallel_lines"
     )
     assert "existing_tags" not in prompt["questions"][0]["question"]
+    rules = prompt["rules"]
+    assert "candidate_contract.candidates.knowledge only" in rules
+    assert "Copy the id and name together, verbatim" in rules
+    assert "part-1-step-1" in rules
+    assert "exact_objective" in rules and "canonical_answer must be non-empty" in rules
 
 
 def test_input_loader_includes_rich_text_and_controlled_actual_images(

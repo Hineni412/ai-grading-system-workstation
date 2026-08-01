@@ -31,6 +31,7 @@ from question_bank.training_criteria.analysis import (
     PlannedAnalysisBatch,
     QuestionAnalysisImage,
     QuestionAnalysisInput,
+    TaxonomyProjectionReviewRequired,
     combined_response_format,
 )
 
@@ -80,7 +81,9 @@ class ExistingTagProjectionWriter:
             question_ref=str(question.question_id),
         )
         if not is_auto_saveable_result(checked):
-            raise ValueError("tag projection did not meet the quality gate")
+            raise TaxonomyProjectionReviewRequired(
+                "tag projection requires taxonomy review"
+            )
         assert checked.analysis is not None
         persisted_proposals: list[dict[str, Any]] = []
         if checked.proposals:
@@ -183,6 +186,30 @@ class OpenAICombinedAnalysisGateway:
         self.model_name = str(model_name or "").strip()
         if not self.model_name:
             raise ValueError("model_name must not be empty")
+
+    @property
+    def max_parallel_requests(self) -> int:
+        gateway = getattr(self.protocol_adapter, "gateway", None)
+        snapshot = getattr(gateway, "execution_snapshot", None)
+        value = None
+        governors = getattr(gateway, "governors", None)
+        status = getattr(governors, "status", None)
+        if callable(status):
+            try:
+                current = status(
+                    getattr(gateway, "governor_scope", ""),
+                    snapshot,
+                )
+            except Exception:
+                current = None
+            if isinstance(current, Mapping):
+                value = current.get("effective_max_in_flight")
+        if value is None:
+            value = getattr(snapshot, "max_in_flight", 1)
+        try:
+            return max(1, min(100, int(value)))
+        except (TypeError, ValueError):
+            return 1
 
     def analyze(
         self,
@@ -454,16 +481,31 @@ def _combined_prompt(
 ) -> list[dict[str, Any]]:
     instructions = (
         "Analyze only the listed junior-middle-school math questions. "
-        "Keep each question_id isolated. Tag candidates may only come from "
-        "that question's candidate_contract. Solution evidence must be split "
+        "Return exactly one result for every listed question_id, copy that "
+        "integer unchanged into both the result and solution_evidence, and "
+        "never mix candidates between questions. Tag candidates may only come "
+        "from that question's candidate_contract. Solution evidence must be split "
         "into question parts and observable answer/process obligations. Every "
-        "evidence point must link one or more candidate fine terms and label "
-        "each link as direct or supporting_prerequisite. Never infer or return "
+        "part_id and evidence_point_id must be a unique lowercase ASCII machine "
+        "identifier matching ^[a-z][a-z0-9_-]{1,127}$; prefer part-1 and "
+        "part-1-step-1 style IDs, and keep evidence_point_id unique across the "
+        "whole question. Every evidence point may link zero or more entries from "
+        "that question's candidate_contract.candidates.knowledge only. Copy the "
+        "id and name together, verbatim, from the same knowledge candidate; do "
+        "not use another candidate dimension, a proposed tag, a paraphrase, or "
+        "an invented term. If no governed knowledge candidate is an exact fit, "
+        "return an empty fine_term_links array; keep any genuinely new term only "
+        "in tag_analysis.proposed_tags for later human review. Label each link "
+        "as direct or supporting_prerequisite and do not repeat the same "
+        "(id, role) pair in "
+        "one evidence point. Never infer or return "
         "core graph mappings; the application resolves those from governed "
         "local mappings. For every part also return response_mode, canonical "
         "and full answers, accepted forms, proof and visual obligations, a "
         "non-empty deduction policy, and whether alternative methods are "
-        "allowed. Keep "
+        "allowed. target and observable_evidence must be non-empty. For "
+        "exact_objective, canonical_answer must be non-empty; for every other "
+        "response_mode, full_answer must be non-empty. Keep "
         "keys present even when a type-specific list or answer is empty. "
         "Solution evidence must never contain score fields. "
         "Do not invent content hidden by a missing image."
