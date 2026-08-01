@@ -21,6 +21,9 @@ const sessionStore = useSessionStore()
 const configStore = useConfigWorkspaceStore()
 const pageTitle = computed(() => String(route.meta.title ?? '工作台'))
 const pageDescription = computed(() => String(route.meta.description ?? ''))
+const showCurrentExamContext = computed(
+  () => route.meta.topbarContext !== 'workspace',
+)
 
 function selectSession(event: Event): void {
   const selector = event.currentTarget as HTMLSelectElement
@@ -55,7 +58,11 @@ function retrySessions(): void {
 </script>
 
 <template>
-  <header class="app-topbar" data-testid="app-topbar">
+  <header
+    class="app-topbar"
+    :class="{ 'app-topbar--workspace-context': !showCurrentExamContext }"
+    data-testid="app-topbar"
+  >
     <a class="app-topbar__skip-link" href="#main-workspace">跳到主要工作区</a>
 
     <div class="app-topbar__page">
@@ -74,7 +81,7 @@ function retrySessions(): void {
       </div>
     </div>
 
-    <div class="app-topbar__session">
+    <div v-if="showCurrentExamContext" class="app-topbar__session">
       <label for="current-session">当前考试</label>
       <select
         id="current-session"
@@ -90,10 +97,18 @@ function retrySessions(): void {
       <SessionManagementDrawer />
     </div>
 
-    <div v-if="sessionStore.loadState === 'loading'" class="app-topbar__status" role="status">
+    <div
+      v-if="showCurrentExamContext && sessionStore.loadState === 'loading'"
+      class="app-topbar__status"
+      role="status"
+    >
       正在读取考试列表
     </div>
-    <div v-else-if="sessionStore.loadState === 'error'" class="app-topbar__status" role="alert">
+    <div
+      v-else-if="showCurrentExamContext && sessionStore.loadState === 'error'"
+      class="app-topbar__status"
+      role="alert"
+    >
       <span>考试列表加载失败。</span>
       <AppButton variant="secondary" @click="retrySessions">重新加载</AppButton>
     </div>

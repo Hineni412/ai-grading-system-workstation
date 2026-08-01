@@ -181,6 +181,7 @@ const routes: RouteRecordRaw[] = [
       breadcrumb: route.breadcrumb,
       dataClassifications: manifest.dataClassifications,
       featureFlags: manifest.featureFlags,
+      topbarContext: route.topbarContext,
     },
   })),
   {
