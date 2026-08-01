@@ -5,7 +5,7 @@
 - 分支：`codex/teacher-platform-integration`
 - 工作区：`.worktrees/teacher-platform-integration`
 - 稳定基线：`e63136c6c5471f358cfaf11065f5b92b0f46ca10`
-- 当前阅卷检查点：`a3758098`（`codex/grading-system-iteration`）
+- 当前阅卷检查点：`baa1d3fb`（`codex/grading-system-iteration`）
 - 当前备课检查点：`862436f2`（`codex/teaching-prep-iteration`）
 - 当前班主任检查点：`2249346d`（`codex/class-teacher-iteration`）
 - 风险等级：中。它组合未最终验收的本地迭代，只能用于快速页面与操作路径预览。
@@ -63,3 +63,9 @@
 ## 最终验收与发布
 
 本预览区的“能打开、能查看”不代表业务线已经通过验收。三条业务线仍分别形成完整候选，集中完成本线回归、完整测试、必要构建、跨模块冒烟，以及同一冻结版本的一次需求符合性复审和一次代码质量复审。用户人工验收并逐次授权后，只有对应业务分支可以进入 `main`；本预览分支永不作为正式合并来源。
+
+## 最近刷新记录
+
+- 2026-08-01：阅卷检查点更新到 `baa1d3fb`，已由合并提交 `31244c2a` 单向进入组合预览。
+- 合并后评分相关后端与预览隔离测试 `205 passed`；两个前端配置组件 `43 passed`；类型检查与受影响 ESLint 通过。
+- 本次刷新没有暂存、提交、清理或覆盖预览 `user_data/`；没有调用真实模型，也没有启动或重启预览服务。
