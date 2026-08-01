@@ -120,6 +120,61 @@ def test_tagging_route_submits_safe_batch_and_projects_partial_result(
     assert "question_text" not in queried["result"]
 
 
+def test_tagging_route_marks_explicit_retag_scope(tmp_path: Path) -> None:
+    client, _manager, _service, _request = _client(tmp_path)
+
+    response = client.post(
+        "/api/question-bank/tagging-jobs",
+        json={"question_ids": [11, 12, 11], "force_retag": True},
+    )
+
+    assert response.status_code == 202
+    assert response.json()["payload"] == {
+        "question_ids": [11, 12],
+        "force_retag_question_ids": [11, 12],
+    }
+
+
+def test_tagging_route_reuses_client_request_token_without_duplicate_work(
+    tmp_path: Path,
+) -> None:
+    client, manager, _service, _request = _client(tmp_path)
+    payload = {
+        "question_ids": [11, 12],
+        "force_retag": True,
+        "client_request_token": "a" * 32,
+    }
+
+    first = client.post("/api/question-bank/tagging-jobs", json=payload)
+    repeated = client.post("/api/question-bank/tagging-jobs", json=payload)
+
+    assert first.status_code == 202
+    assert repeated.status_code == 202
+    assert repeated.json()["id"] == first.json()["id"]
+    jobs, total = manager.store.list_jobs(job_types=("tagging_sync",))
+    assert total == 1
+    assert jobs[0].payload["client_request_token"] == "a" * 32
+
+
+def test_tagging_route_rejects_reusing_token_for_other_questions(
+    tmp_path: Path,
+) -> None:
+    client, _manager, _service, _request = _client(tmp_path)
+    token = "b" * 32
+    first = client.post(
+        "/api/question-bank/tagging-jobs",
+        json={"question_ids": [11], "client_request_token": token},
+    )
+    conflict = client.post(
+        "/api/question-bank/tagging-jobs",
+        json={"question_ids": [12], "client_request_token": token},
+    )
+
+    assert first.status_code == 202
+    assert conflict.status_code == 409
+    assert conflict.json()["error"]["code"] == "question_tagging_request_conflict"
+
+
 def test_tagging_route_validates_question_ids_against_source_import_job(
     tmp_path: Path,
 ) -> None:
@@ -175,6 +230,68 @@ def test_tagging_retry_accepts_only_source_failed_ids(tmp_path: Path) -> None:
     assert accepted.json()["payload"] == {
         "question_ids": [12],
         "retry_of_job_id": initial["id"],
+    }
+
+
+def test_tagging_retry_marks_evidence_only_ids_without_losing_tag_success(
+    tmp_path: Path,
+) -> None:
+    client, manager, _service, _request = _client(tmp_path)
+    source = manager.store.create_job("tagging_sync", {"question_ids": [11]})
+    assert manager.store.mark_running(source.id)
+    manager.store.finish(
+        source.id,
+        "succeeded",
+        result={
+            "outcome": "partial",
+            "successful_question_ids": [11],
+            "failed_question_ids": [11],
+            "evidence_failed_question_ids": [11],
+            "retryable": True,
+        },
+    )
+
+    response = client.post(
+        f"/api/question-bank/tagging-jobs/{source.id}/retry",
+        json={"question_ids": [11]},
+    )
+
+    assert response.status_code == 202
+    assert response.json()["payload"] == {
+        "question_ids": [11],
+        "retry_evidence_question_ids": [11],
+        "retry_of_job_id": source.id,
+    }
+
+
+def test_tagging_retry_marks_relation_only_ids_for_local_replay(
+    tmp_path: Path,
+) -> None:
+    client, manager, _service, _request = _client(tmp_path)
+    source = manager.store.create_job("tagging_sync", {"question_ids": [11]})
+    assert manager.store.mark_running(source.id)
+    manager.store.finish(
+        source.id,
+        "succeeded",
+        result={
+            "outcome": "partial",
+            "successful_question_ids": [11],
+            "failed_question_ids": [],
+            "relation_governance_failed_question_ids": [11],
+            "retryable": True,
+        },
+    )
+
+    response = client.post(
+        f"/api/question-bank/tagging-jobs/{source.id}/retry",
+        json={"question_ids": [11]},
+    )
+
+    assert response.status_code == 202
+    assert response.json()["payload"] == {
+        "question_ids": [11],
+        "retry_relation_question_ids": [11],
+        "retry_of_job_id": source.id,
     }
 
 

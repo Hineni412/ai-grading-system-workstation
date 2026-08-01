@@ -8,6 +8,7 @@ import type {
 } from '../../api/question-bank'
 import { questionBankApi } from '../../api/question-bank'
 import { useQuestionBankStore } from '../../stores/question-bank'
+import { useJobStore } from '../../stores/jobs'
 
 const props = withDefaults(defineProps<{
   pendingTaxonomyCount?: number
@@ -22,6 +23,7 @@ const emit = defineEmits<{
 }>()
 
 const store = useQuestionBankStore()
+const jobStore = useJobStore()
 const keyword = ref('')
 const year = ref('')
 const examType = ref('')
@@ -41,6 +43,10 @@ const permanentDeleteState = ref<'idle' | 'loading' | 'working' | 'error'>('idle
 const permanentDeleteMessage = ref('')
 const permanentDeleteRequestToken = ref('')
 const formError = ref('')
+const retagBusyPaperId = ref<number | null>(null)
+const retagAllBusy = ref(false)
+const taggingMode = ref<'fill' | 'retag' | null>(null)
+const retagMessage = ref('')
 const paperDraft = ref({
   title: '',
   year: '',
@@ -157,6 +163,169 @@ function resetFilters(): void {
   examType.value = ''
   sourceType.value = ''
   progressStatus.value = ''
+}
+
+async function loadQuestionIds(
+  paperIds?: number[],
+  tagStatus: 'all' | 'untagged' = 'all',
+): Promise<number[]> {
+  const ids: number[] = []
+  let page = 1
+  while (true) {
+    const result = await questionBankApi.listQuestions({
+      page,
+      pageSize: 100,
+      paperIds,
+      tagStatus,
+      sort: 'paper_order',
+    })
+    ids.push(...result.items.map((item) => item.id))
+    if (page >= result.total_pages) break
+    page += 1
+  }
+  return [...new Set(ids)]
+}
+
+function newRequestToken(): string {
+  const bytes = new Uint8Array(16)
+  globalThis.crypto.getRandomValues(bytes)
+  return Array.from(bytes, (value) => value.toString(16).padStart(2, '0')).join('')
+}
+
+function requestTokenFor(storageKey: string): string {
+  const existing = window.localStorage.getItem(storageKey)
+  if (existing && /^[0-9a-f]{32}$/.test(existing)) return existing
+  const token = newRequestToken()
+  window.localStorage.setItem(storageKey, token)
+  return token
+}
+
+async function submitTaggingBatches(
+  questionIds: number[],
+  options: { forceRetag: boolean; scope: string },
+): Promise<number> {
+  let jobs = 0
+  for (let index = 0; index < questionIds.length; index += 500) {
+    const batch = questionIds.slice(index, index + 500)
+    if (batch.length === 0) continue
+    const storageKey = `question-bank:tagging:${options.scope}:${index}:${batch.join('-')}`
+    const requestToken = requestTokenFor(storageKey)
+    const job = await questionBankApi.submitTagging(
+      batch, undefined, undefined, options.forceRetag, requestToken,
+    )
+    jobStore.track(job)
+    window.localStorage.removeItem(storageKey)
+    jobs += 1
+  }
+  return jobs
+}
+
+async function retagPaper(paper: QuestionBankPaper): Promise<void> {
+  if (retagBusyPaperId.value !== null || retagAllBusy.value) return
+  retagMessage.value = ''
+  retagBusyPaperId.value = paper.id
+  taggingMode.value = 'retag'
+  try {
+    const ids = await loadQuestionIds([paper.id])
+    if (ids.length === 0) {
+      retagMessage.value = '这份试卷没有可重新标注的题目。'
+      return
+    }
+    if (!window.confirm(
+      `将重新分析“${paper.title || `试卷 #${paper.id}`}”的 ${ids.length} 道题，可能产生模型费用；人工修改的标签会保留。确认继续吗？`,
+    )) return
+    const count = await submitTaggingBatches(ids, {
+      forceRetag: true,
+      scope: `paper-${paper.id}-retag`,
+    })
+    retagMessage.value = `已提交 ${ids.length} 道题，共 ${count} 个重新标注任务。`
+  } catch {
+    retagMessage.value = '重新标注任务没有完整提交；已提交的任务会保留，请先查看任务记录。'
+  } finally {
+    retagBusyPaperId.value = null
+    taggingMode.value = null
+  }
+}
+
+async function fillPaperTags(paper: QuestionBankPaper): Promise<void> {
+  if (retagBusyPaperId.value !== null || retagAllBusy.value) return
+  retagMessage.value = ''
+  retagBusyPaperId.value = paper.id
+  taggingMode.value = 'fill'
+  try {
+    const ids = await loadQuestionIds([paper.id], 'untagged')
+    if (ids.length === 0) {
+      retagMessage.value = '这份试卷的核心标签已经完整。'
+      return
+    }
+    if (!window.confirm(
+      `将只补齐“${paper.title || `试卷 #${paper.id}`}”中 ${ids.length} 道标签不完整的题，可能产生模型费用；已有标签和人工修改会保留。确认继续吗？`,
+    )) return
+    const count = await submitTaggingBatches(ids, {
+      forceRetag: false,
+      scope: `paper-${paper.id}-fill`,
+    })
+    retagMessage.value = `已提交 ${ids.length} 道标签不完整的题，共 ${count} 个补齐任务。`
+  } catch {
+    retagMessage.value = '补齐标签任务没有完整提交；已提交的任务会保留，请先查看任务记录。'
+  } finally {
+    retagBusyPaperId.value = null
+    taggingMode.value = null
+  }
+}
+
+async function retagAllPapers(): Promise<void> {
+  if (retagBusyPaperId.value !== null || retagAllBusy.value) return
+  retagMessage.value = ''
+  retagAllBusy.value = true
+  taggingMode.value = 'retag'
+  try {
+    const ids = await loadQuestionIds()
+    if (ids.length === 0) {
+      retagMessage.value = '题库中没有可重新标注的题目。'
+      return
+    }
+    if (!window.confirm(
+      `将重新分析题库中的 ${ids.length} 道题，可能产生模型费用；人工修改的标签会保留。确认继续吗？`,
+    )) return
+    const count = await submitTaggingBatches(ids, {
+      forceRetag: true,
+      scope: 'all-retag',
+    })
+    retagMessage.value = `已提交全库 ${ids.length} 道题，共 ${count} 个重新标注任务。`
+  } catch {
+    retagMessage.value = '全库重新标注没有完整提交；已提交的任务会保留，请先查看任务记录。'
+  } finally {
+    retagAllBusy.value = false
+    taggingMode.value = null
+  }
+}
+
+async function fillAllTags(): Promise<void> {
+  if (retagBusyPaperId.value !== null || retagAllBusy.value) return
+  retagMessage.value = ''
+  retagAllBusy.value = true
+  taggingMode.value = 'fill'
+  try {
+    const ids = await loadQuestionIds(undefined, 'untagged')
+    if (ids.length === 0) {
+      retagMessage.value = '题库中的核心标签已经完整。'
+      return
+    }
+    if (!window.confirm(
+      `将只补齐题库中 ${ids.length} 道标签不完整的题，可能产生模型费用；已有标签和人工修改会保留。确认继续吗？`,
+    )) return
+    const count = await submitTaggingBatches(ids, {
+      forceRetag: false,
+      scope: 'all-fill',
+    })
+    retagMessage.value = `已提交全库 ${ids.length} 道标签不完整的题，共 ${count} 个补齐任务。`
+  } catch {
+    retagMessage.value = '全库补齐标签没有完整提交；已提交的任务会保留，请先查看任务记录。'
+  } finally {
+    retagAllBusy.value = false
+    taggingMode.value = null
+  }
 }
 
 function editPaper(paper: QuestionBankPaper): void {
@@ -353,6 +522,13 @@ async function confirmPermanentDelete(): Promise<void> {
         <span><strong>{{ totalQuestions }}</strong> 道题</span>
         <span><strong>{{ completeQuestions }}</strong> 道标签完整</span>
         <button
+          v-if="completeQuestions < totalQuestions"
+          type="button"
+          class="paper-button is-quiet"
+          :disabled="retagAllBusy || retagBusyPaperId !== null"
+          @click="fillAllTags"
+        >{{ retagAllBusy && taggingMode === 'fill' ? '正在准备…' : '补齐未完整标签' }}</button>
+        <button
           type="button"
           class="paper-button is-review"
           @click="emit('reviewTaxonomy')"
@@ -360,14 +536,29 @@ async function confirmPermanentDelete(): Promise<void> {
           待审核新词
           <strong>{{ props.pendingTaxonomyCount }}</strong>
         </button>
-        <button type="button" class="paper-button is-quiet" @click="openTrashDrawer">
-          回收站
+        <button
+          type="button"
+          class="paper-button is-quiet paper-icon-button"
+          aria-label="打开回收站"
+          title="回收站"
+          @click="openTrashDrawer"
+        >
+          <span aria-hidden="true">♲</span>
+          <span class="sr-only">回收站</span>
         </button>
+        <button
+          type="button"
+          class="paper-button is-quiet"
+          :disabled="retagAllBusy || retagBusyPaperId !== null"
+          @click="retagAllPapers"
+        >{{ retagAllBusy && taggingMode === 'retag' ? '正在准备…' : '全库重新打标签' }}</button>
         <button type="button" class="paper-button is-primary" @click="emit('import')">
           上传试卷
         </button>
       </div>
     </header>
+
+    <p v-if="retagMessage" class="paper-library__state" role="status">{{ retagMessage }}</p>
 
     <div class="paper-library__filters">
       <label class="paper-search">
@@ -472,13 +663,37 @@ async function confirmPermanentDelete(): Promise<void> {
             <span>更新于 {{ formatDate(paper.updated_at) }}</span>
             <div class="paper-card__actions">
               <button
+                v-if="paper.tagged_question_count < paper.question_count"
                 type="button"
-                class="paper-button is-danger-quiet"
+                class="paper-button is-quiet"
+                :disabled="retagBusyPaperId !== null || retagAllBusy"
+                @click="fillPaperTags(paper)"
+              >{{
+                retagBusyPaperId === paper.id && taggingMode === 'fill'
+                  ? '准备中…'
+                  : '补齐标签'
+              }}</button>
+              <button
+                type="button"
+                class="paper-button is-danger-quiet paper-icon-button"
                 :disabled="store.paperTrashBusyId === paper.id"
+                :aria-label="`将${paper.title || `试卷 ${paper.id}`}移入回收站`"
+                title="移入回收站"
                 @click="requestPaperTrash(paper)"
               >
-                移入回收站
+                <span aria-hidden="true">♲</span>
+                <span class="sr-only">移入回收站</span>
               </button>
+              <button
+                type="button"
+                class="paper-button is-quiet"
+                :disabled="retagBusyPaperId !== null || retagAllBusy"
+                @click="retagPaper(paper)"
+              >{{
+                retagBusyPaperId === paper.id && taggingMode === 'retag'
+                  ? '准备中…'
+                  : '重新打标签'
+              }}</button>
               <button type="button" class="paper-button is-quiet" @click="editPaper(paper)">
                 编辑资料
               </button>
@@ -1248,6 +1463,14 @@ async function confirmPermanentDelete(): Promise<void> {
   margin: 0;
   min-width: 18px;
   padding: 0 5px;
+}
+
+.paper-button.paper-icon-button {
+  width: 38px;
+  min-width: 38px;
+  padding-inline: 0;
+  font-size: 20px;
+  line-height: 1;
 }
 
 .paper-library__state {

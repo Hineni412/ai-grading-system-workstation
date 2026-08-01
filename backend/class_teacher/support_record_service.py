@@ -1411,6 +1411,33 @@ class SupportRecordService:
                         (subject_id,),
                     ).fetchall()
                 )
+                object_ids.update(
+                    str(row[0])
+                    for row in connection.execute(
+                        """
+                        SELECT payload_object_id FROM student_card_entries
+                        WHERE subject_id = ?
+                        """,
+                        (subject_id,),
+                    ).fetchall()
+                )
+                model_artifacts = connection.execute(
+                    """
+                    SELECT preview_payload_object_id, result_payload_object_id
+                    FROM student_model_artifacts
+                    WHERE subject_id = ?
+                    """,
+                    (subject_id,),
+                ).fetchall()
+                object_ids.update(
+                    str(object_id)
+                    for row in model_artifacts
+                    for object_id in (
+                        row["preview_payload_object_id"],
+                        row["result_payload_object_id"],
+                    )
+                    if object_id is not None
+                )
                 linked_action_rows = connection.execute(
                     """
                     SELECT DISTINCT a.action_id, a.payload_object_id

@@ -7,6 +7,7 @@ import type { JobResponse } from '../api/jobs'
 import { fetchStudents, type StudentSummary } from '../api/students'
 import type {
   TrainingExamScopeRequest,
+  TrainingDiagnosis,
   TrainingPlanItem,
   TrainingStage,
   TrainingStudentScopeRequest,
@@ -27,12 +28,14 @@ const jobs = useJobStore()
 
 const students = ref<StudentSummary[]>([])
 const referenceState = ref<ReferenceState>('loading')
-const examMode = ref<'current' | 'manual' | 'cross_exam'>('current')
+const examMode = ref<'current' | 'recent' | 'manual' | 'cross_exam'>('current')
 const manualSessionIds = ref<number[]>([])
-const studentMode = ref<'student' | 'selected' | 'class'>('student')
-const singleStudentId = ref('')
+const studentMode = ref<'class' | 'score_band' | 'selected'>('class')
 const selectedStudentIds = ref<string[]>([])
 const selectedClass = ref('')
+const studentSearch = ref('')
+const scoreBand = ref<'low' | 'middle' | 'high'>('low')
+const scoreBandMatchCount = ref<number | null>(null)
 const selectedWeakKey = ref('')
 const variantMode = ref<'individual' | 'auto_group'>('individual')
 const questionCount = ref(10)
@@ -45,12 +48,32 @@ const exportFormat = ref<'docx' | 'markdown'>('docx')
 const exportAudience = ref<'student' | 'teacher'>('student')
 const exportVariantId = ref<number | null>(null)
 let studentsController: AbortController | null = null
+let autoAnalyzeHandle: ReturnType<typeof setTimeout> | null = null
+let autoAnalyzeGeneration = 0
 
 const classes = computed(() => [...new Set(
   students.value
     .map((student) => student.class_name?.trim() ?? '')
     .filter(Boolean),
 )].sort())
+
+const availableSessions = computed(() => sessionStore.sessions.filter((item) => !item.is_deleted))
+const recentSessions = computed(() => {
+  const cutoff = Date.now() - 30 * 24 * 60 * 60 * 1000
+  return availableSessions.value.filter((session) => {
+    const timestamp = Date.parse(session.created_at ?? '')
+    return Number.isFinite(timestamp) && timestamp >= cutoff
+  })
+})
+const classStudents = computed(() => students.value.filter(
+  (student) => !selectedClass.value || student.class_name === selectedClass.value,
+))
+const visibleStudents = computed(() => {
+  const query = studentSearch.value.trim().toLocaleLowerCase('zh-CN')
+  return classStudents.value.filter((student) => (
+    !query || `${student.name} ${student.student_code}`.toLocaleLowerCase('zh-CN').includes(query)
+  ))
+})
 
 const selectedWeakPoint = computed<{
   studentName: string
@@ -109,8 +132,13 @@ const stageRatioTotal = computed<number | null>(() => {
 })
 
 const selectedStudentCount = computed(() => {
-  if (studentMode.value === 'student') return singleStudentId.value ? 1 : 0
-  if (studentMode.value === 'selected') return selectedStudentIds.value.length
+  if (studentMode.value === 'selected') {
+    const classIds = new Set(classStudents.value.map((student) => String(student.id)))
+    return selectedStudentIds.value.filter((id) => classIds.has(id)).length
+  }
+  if (studentMode.value === 'score_band' && scoreBandMatchCount.value !== null) {
+    return scoreBandMatchCount.value
+  }
   return students.value.filter(
     (student) => student.class_name === selectedClass.value,
   ).length
@@ -118,14 +146,18 @@ const selectedStudentCount = computed(() => {
 
 const selectedExamCount = computed(() => {
   if (examMode.value === 'current') return sessionStore.selectedSessionId ? 1 : 0
+  if (examMode.value === 'recent') return recentSessions.value.length
   if (examMode.value === 'manual') return manualSessionIds.value.length
-  return sessionStore.sessions.filter((session) => !session.is_deleted).length
+  return availableSessions.value.length
 })
 
-const canAnalyze = computed(
+const hasAnalyzableScope = computed(
   () => selectedStudentCount.value > 0
-    && selectedExamCount.value > 0
-    && training.analysisState !== 'loading',
+    && selectedExamCount.value > 0,
+)
+
+const canAnalyze = computed(
+  () => hasAnalyzableScope.value && training.analysisState !== 'loading',
 )
 
 const canConfirm = computed(
@@ -261,10 +293,10 @@ function variantItemReason(item: Record<string, unknown>): string {
 }
 
 function scopeStudentIds(): string[] {
-  if (studentMode.value === 'student') {
-    return singleStudentId.value ? [singleStudentId.value] : []
+  if (studentMode.value === 'selected') {
+    const classIds = new Set(classStudents.value.map((student) => String(student.id)))
+    return selectedStudentIds.value.filter((id) => classIds.has(id))
   }
-  if (studentMode.value === 'selected') return selectedStudentIds.value
   return students.value
     .filter((student) => student.class_name === selectedClass.value)
     .map((student) => String(student.id))
@@ -274,23 +306,57 @@ function scopeSessionIds(): number[] {
   if (examMode.value === 'current') {
     return sessionStore.selectedSessionId ? [sessionStore.selectedSessionId] : []
   }
+  if (examMode.value === 'recent') return recentSessions.value.map((session) => session.id)
   if (examMode.value === 'manual') return manualSessionIds.value
-  return sessionStore.sessions
-    .filter((session) => !session.is_deleted)
-    .map((session) => session.id)
+  return availableSessions.value.map((session) => session.id)
 }
 
-function applyScope(): void {
+function applyScope(studentIds = scopeStudentIds(), forceClass = false): void {
+  const apiStudentMode = forceClass || studentMode.value === 'class'
+    ? 'class'
+    : 'selected'
   training.setStudentScope({
-    mode: studentMode.value,
-    studentIds: scopeStudentIds(),
-    classId: studentMode.value === 'class' ? selectedClass.value : '',
+    mode: apiStudentMode,
+    studentIds,
+    classId: apiStudentMode === 'class' ? selectedClass.value : '',
   })
   training.setExamScope({
-    mode: examMode.value,
+    mode: examMode.value === 'current'
+      ? 'current'
+      : examMode.value === 'cross_exam' ? 'cross_exam' : 'manual',
     sessionIds: scopeSessionIds(),
   })
   selectedWeakKey.value = ''
+}
+
+function toggleSession(sessionId: number): void {
+  manualSessionIds.value = manualSessionIds.value.includes(sessionId)
+    ? manualSessionIds.value.filter((id) => id !== sessionId)
+    : [...manualSessionIds.value, sessionId]
+}
+
+function toggleStudent(studentId: string): void {
+  selectedStudentIds.value = selectedStudentIds.value.includes(studentId)
+    ? selectedStudentIds.value.filter((id) => id !== studentId)
+    : [...selectedStudentIds.value, studentId]
+}
+
+function selectVisibleStudents(): void {
+  selectedStudentIds.value = [...new Set([
+    ...selectedStudentIds.value,
+    ...visibleStudents.value.map((student) => String(student.id)),
+  ])]
+}
+
+function clearSelectedStudents(): void {
+  selectedStudentIds.value = []
+}
+
+function scoreBandMatches(value: number | null | undefined): boolean {
+  if (value === null || value === undefined || !Number.isFinite(value)) return false
+  if (scoreBand.value === 'low') return value < 40
+  if (scoreBand.value === 'middle') return value >= 40 && value < 70
+  return value >= 70
 }
 
 async function loadStudents(): Promise<void> {
@@ -300,7 +366,9 @@ async function loadStudents(): Promise<void> {
   referenceState.value = 'loading'
   try {
     students.value = await fetchStudents(controller.signal)
+    if (!selectedClass.value) selectedClass.value = classes.value[0] ?? ''
     referenceState.value = 'ready'
+    scheduleAnalysis()
   } catch {
     if (controller.signal.aborted) return
     students.value = []
@@ -311,9 +379,31 @@ async function loadStudents(): Promise<void> {
 }
 
 async function analyze(): Promise<void> {
-  applyScope()
+  const request = ++autoAnalyzeGeneration
   try {
-    const result = await training.analyze()
+    let result: TrainingDiagnosis | null
+    if (studentMode.value === 'score_band') {
+      const classIds = students.value
+        .filter((student) => student.class_name === selectedClass.value)
+        .map((student) => String(student.id))
+      applyScope(classIds, true)
+      const classDiagnosis = await training.analyze()
+      if (request !== autoAnalyzeGeneration || !classDiagnosis) return
+      const matchedIds = classDiagnosis.students
+        .filter((student) => scoreBandMatches(student.score_rate))
+        .map((student) => student.student_id)
+      scoreBandMatchCount.value = matchedIds.length
+      if (!matchedIds.length) {
+        training.setStudentScope({ mode: 'selected', studentIds: [], classId: '' })
+        return
+      }
+      applyScope(matchedIds)
+      result = await training.analyze()
+    } else {
+      applyScope()
+      result = await training.analyze()
+    }
+    if (request !== autoAnalyzeGeneration) return
     const first = result?.students
       .flatMap((student) => student.weak_points.map((weak) => ({
         studentId: student.student_id,
@@ -323,6 +413,26 @@ async function analyze(): Promise<void> {
   } catch {
     // The store publishes a safe user-facing recovery message.
   }
+}
+
+function scheduleAnalysis(): void {
+  if (autoAnalyzeHandle) clearTimeout(autoAnalyzeHandle)
+  autoAnalyzeGeneration += 1
+  if (studentMode.value === 'score_band') scoreBandMatchCount.value = null
+  if (referenceState.value !== 'ready') return
+  if (studentMode.value === 'score_band') {
+    const classIds = students.value
+      .filter((student) => student.class_name === selectedClass.value)
+      .map((student) => String(student.id))
+    applyScope(classIds, true)
+  } else {
+    applyScope()
+  }
+  if (!hasAnalyzableScope.value) return
+  autoAnalyzeHandle = setTimeout(() => {
+    autoAnalyzeHandle = null
+    void analyze()
+  }, 260)
 }
 
 async function previewPlan(): Promise<void> {
@@ -415,9 +525,30 @@ function itemsForStage(items: TrainingPlanItem[], stage: TrainingStage): Trainin
 watch(
   () => sessionStore.selectedSessionId,
   () => {
-    if (examMode.value === 'current') applyScope()
+    if (examMode.value === 'current') scheduleAnalysis()
   },
 )
+
+watch(
+  [
+    examMode,
+    () => manualSessionIds.value.join(','),
+    studentMode,
+    selectedClass,
+    () => selectedStudentIds.value.join(','),
+    scoreBand,
+  ],
+  scheduleAnalysis,
+)
+
+watch(selectedClass, () => {
+  const currentClassIds = new Set(
+    students.value
+      .filter((student) => student.class_name === selectedClass.value)
+      .map((student) => String(student.id)),
+  )
+  selectedStudentIds.value = selectedStudentIds.value.filter((id) => currentClassIds.has(id))
+})
 
 watch(
   [
@@ -455,6 +586,8 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   studentsController?.abort()
+  if (autoAnalyzeHandle) clearTimeout(autoAnalyzeHandle)
+  autoAnalyzeGeneration += 1
 })
 </script>
 
@@ -487,90 +620,93 @@ onBeforeUnmount(() => {
       </div>
 
       <div class="training-scope-grid">
-        <fieldset>
-          <legend>考试范围</legend>
-          <label>
-            范围方式
-            <select v-model="examMode" data-testid="training-exam-mode" @change="applyScope">
-              <option value="current">顶部当前考试</option>
-              <option value="manual">手动选择考试</option>
-              <option value="cross_exam">全部可用考试</option>
-            </select>
-          </label>
-          <label v-if="examMode === 'manual'">
-            选择考试（可多选）
-            <select v-model="manualSessionIds" multiple @change="applyScope">
-              <option
-                v-for="session in sessionStore.sessions.filter((item) => !item.is_deleted)"
-                :key="session.id"
-                :value="session.id"
+        <fieldset class="training-filter-group">
+          <legend>考试</legend>
+          <div class="training-filter-modes" data-testid="training-exam-mode">
+            <button type="button" :class="{ 'is-active': examMode === 'current' }" @click="examMode = 'current'">
+              <strong>当前考试</strong><span>{{ sessionStore.currentSession?.name || '尚未选择' }}</span>
+            </button>
+            <button type="button" :class="{ 'is-active': examMode === 'recent' }" @click="examMode = 'recent'">
+              <strong>最近一个月</strong><span>{{ recentSessions.length }} 场</span>
+            </button>
+            <button type="button" :class="{ 'is-active': examMode === 'manual' }" @click="examMode = 'manual'">
+              <strong>指定考试</strong><span>{{ manualSessionIds.length }} 场</span>
+            </button>
+            <button type="button" :class="{ 'is-active': examMode === 'cross_exam' }" @click="examMode = 'cross_exam'">
+              <strong>全部考试</strong><span>{{ availableSessions.length }} 场</span>
+            </button>
+          </div>
+          <div v-if="examMode === 'manual'" class="training-choice-grid" aria-label="选择考试">
+            <label v-for="session in availableSessions" :key="session.id" :class="{ 'is-selected': manualSessionIds.includes(session.id) }">
+              <input
+                type="checkbox"
+                :checked="manualSessionIds.includes(session.id)"
+                @change="toggleSession(session.id)"
               >
-                {{ session.name }}
-              </option>
-            </select>
-          </label>
-          <p v-else-if="examMode === 'current'" class="training-field-note">
-            {{ sessionStore.currentSession?.name || '请先在顶部选择考试' }}
-          </p>
-          <p v-else class="training-field-note">
-            将读取 {{ selectedExamCount }} 场未删除考试。
-          </p>
+              <span><strong>{{ session.name }}</strong><small>{{ session.created_at ? new Date(session.created_at).toLocaleDateString('zh-CN') : '日期未记录' }}</small></span>
+            </label>
+          </div>
         </fieldset>
 
-        <fieldset>
-          <legend>学生范围</legend>
-          <label>
-            范围方式
-            <select v-model="studentMode" @change="applyScope">
-              <option value="student">单个学生</option>
-              <option value="selected">明确多选</option>
-              <option value="class">整班</option>
-            </select>
-          </label>
-          <label v-if="studentMode === 'student'">
-            学生
-            <select
-              v-model="singleStudentId"
-              data-testid="training-student"
-              @change="applyScope"
-            >
-              <option value="">请明确选择要训练的学生</option>
-              <option v-for="student in students" :key="student.id" :value="String(student.id)">
-                {{ student.name }} · {{ student.student_code }}
-              </option>
-            </select>
-          </label>
-          <label v-else-if="studentMode === 'selected'">
-            学生（可多选）
-            <select v-model="selectedStudentIds" multiple @change="applyScope">
-              <option v-for="student in students" :key="student.id" :value="String(student.id)">
-                {{ student.name }} · {{ student.student_code }}
-              </option>
-            </select>
-          </label>
-          <label v-else>
-            班级
-            <select v-model="selectedClass" @change="applyScope">
-              <option value="">请选择班级</option>
-              <option v-for="className in classes" :key="className" :value="className">
-                {{ className }}
-              </option>
-            </select>
-          </label>
+        <fieldset class="training-filter-group training-filter-group--students">
+          <legend>班级与学生</legend>
+          <div class="training-filter-inline">
+            <label>
+              <span>班级</span>
+              <select v-model="selectedClass">
+                <option value="">请选择班级</option>
+                <option v-for="className in classes" :key="className" :value="className">{{ className }}</option>
+              </select>
+            </label>
+            <div class="training-filter-modes training-filter-modes--students">
+              <button type="button" :class="{ 'is-active': studentMode === 'class' }" @click="studentMode = 'class'">整班</button>
+              <button type="button" :class="{ 'is-active': studentMode === 'score_band' }" @click="studentMode = 'score_band'">按得分率</button>
+              <button type="button" :class="{ 'is-active': studentMode === 'selected' }" @click="studentMode = 'selected'">指定学生</button>
+            </div>
+          </div>
+
+          <div v-if="studentMode === 'score_band'" class="training-score-bands" aria-label="按所选考试得分率筛选">
+            <button type="button" :class="{ 'is-active': scoreBand === 'low' }" @click="scoreBand = 'low'"><strong>0–39%</strong><span>优先补缺</span></button>
+            <button type="button" :class="{ 'is-active': scoreBand === 'middle' }" @click="scoreBand = 'middle'"><strong>40–69%</strong><span>基础巩固</span></button>
+            <button type="button" :class="{ 'is-active': scoreBand === 'high' }" @click="scoreBand = 'high'"><strong>70–100%</strong><span>提升训练</span></button>
+            <p>系统先读取所选考试的实际得分率，再自动缩小学生范围；缺失成绩不会按 0 分处理。</p>
+          </div>
+
+          <template v-if="studentMode === 'selected'">
+            <div class="training-student-tools">
+              <input v-model="studentSearch" type="search" placeholder="搜索姓名或学号" aria-label="搜索学生">
+              <button type="button" @click="selectVisibleStudents">选择当前结果</button>
+              <button type="button" @click="clearSelectedStudents">清空</button>
+            </div>
+            <div class="training-choice-grid training-choice-grid--students" data-testid="training-student">
+              <label v-for="student in visibleStudents" :key="student.id" :class="{ 'is-selected': selectedStudentIds.includes(String(student.id)) }">
+                <input
+                  type="checkbox"
+                  :checked="selectedStudentIds.includes(String(student.id))"
+                  @change="toggleStudent(String(student.id))"
+                >
+                <span><strong>{{ student.name }}</strong><small>{{ student.student_code }}</small></span>
+              </label>
+            </div>
+          </template>
         </fieldset>
       </div>
 
       <div class="training-action-row">
-        <p>筛选结果不会自动成为训练范围；只有上方明确选择的学生会进入诊断。</p>
+        <p>筛选条件有效后会自动刷新下方热力图，不调用外部 AI，也不会产生模型费用。</p>
         <button
+          v-if="training.analysisState === 'error'"
           type="button"
-          class="training-button is-primary"
-          data-testid="analyze-training"
+          class="training-button is-secondary"
+          data-testid="retry-training-analysis"
           :disabled="!canAnalyze"
           @click="analyze"
         >
-          {{ training.analysisState === 'loading' ? '正在分析…' : '分析薄弱知识点' }}
+          重新读取热力图
         </button>
+        <span v-else class="training-auto-state" role="status">
+          {{ training.analysisState === 'loading' ? '正在自动刷新…' : '范围变化后自动刷新' }}
+        </span>
       </div>
     </section>
 
@@ -596,7 +732,7 @@ onBeforeUnmount(() => {
             正在读取评分证据和当前精确标签…
           </div>
           <div v-else-if="training.analysisState === 'idle'" class="training-empty">
-            先明确考试和学生范围，再分析薄弱知识点。
+            请选择有效的考试、班级和学生范围；完成后这里会自动显示热力图。
           </div>
           <div v-else-if="training.analysisState === 'empty'" class="training-empty">
             当前范围没有可生成推荐的精确标签证据。请先到题库核对来源题和知识点标签。

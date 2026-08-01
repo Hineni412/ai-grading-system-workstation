@@ -69,7 +69,9 @@ def _feature(
 
 def test_activated_class_teacher_shell_has_no_filesystem_side_effects(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setenv("AI_GRADING_TEACHING_PREP_ENABLED", "0")
     paths = _paths(tmp_path)
 
     registry = load_default_workspace_registry(paths)
@@ -131,6 +133,45 @@ def test_existing_class_teacher_vault_is_migrated_before_service_creation(
         confirmation_columns
     )
     assert set(services) == {"class-teacher"}
+
+
+def test_existing_main_class_teacher_vault_accepts_new_tail_migration(
+    tmp_path: Path,
+) -> None:
+    """A released 018 history must remain a prefix of the next manifest."""
+
+    migration_root = PROJECT_ROOT / "migrations" / "student_affairs"
+    released_manifest = tmp_path / "released-student-affairs-migrations"
+    released_manifest.mkdir()
+    for migration in sorted(migration_root.glob("*.sql")):
+        sql = migration.read_text(encoding="utf-8")
+        if "CREATE TABLE IF NOT EXISTS student_card_entries" in sql:
+            continue
+        shutil.copy2(migration, released_manifest / migration.name)
+
+    database = tmp_path / "class-teacher" / "student_affairs.db"
+    ensure_schema_current(
+        "student_affairs",
+        database,
+        migrations_dir=released_manifest,
+        backup_dir=tmp_path / "released-backups",
+        logger_override=logging.getLogger("test.class-teacher.released-migration"),
+    )
+
+    result = ensure_schema_current(
+        "student_affairs",
+        database,
+        migrations_dir=migration_root,
+        backup_dir=tmp_path / "upgrade-backups",
+        logger_override=logging.getLogger("test.class-teacher.upgrade-migration"),
+    )
+
+    assert result.applied[-1] == "019_student_card_entries"
+    with sqlite3.connect(database) as connection:
+        assert connection.execute(
+            "SELECT name FROM sqlite_master "
+            "WHERE type = 'table' AND name = 'student_card_entries'"
+        ).fetchone() == ("student_card_entries",)
 
 
 @pytest.mark.parametrize(

@@ -463,6 +463,100 @@ class KnowledgeRelationRepository:
                 (clean_id,),
             ).fetchone()
             assert updated is not None
+        return _relation_record(updated)
+
+    def accumulate_suggestion(
+        self,
+        relation_id: str,
+        *,
+        expected_revision: int,
+        source_reference: str,
+        rationale: str,
+        model_name: str,
+        confidence: float,
+        conflict_codes: tuple[str, ...] = (),
+    ) -> KnowledgeRelationRecord:
+        """Merge later evidence into a pending suggestion atomically."""
+
+        clean_id = _required_text(relation_id, "relation_id")
+        clean_reference = _required_text(source_reference, "source_reference")
+        clean_rationale = _required_text(rationale, "rationale")
+        clean_model_name = _required_text(model_name, "model_name")
+        clean_confidence = _optional_confidence(confidence)
+        assert clean_confidence is not None
+        clean_conflicts = tuple(
+            dict.fromkeys(
+                _required_text(code, "conflict_code")
+                for code in conflict_codes
+            )
+        )
+        with self._transaction() as connection:
+            row = connection.execute(
+                "SELECT * FROM knowledge_relations WHERE relation_id = ?",
+                (clean_id,),
+            ).fetchone()
+            if row is None:
+                raise KnowledgeRelationNotFound(clean_id)
+            current = _relation_record(row)
+            if current.revision != int(expected_revision):
+                raise KnowledgeRelationRevisionConflict(
+                    int(expected_revision),
+                    current.revision,
+                )
+            if current.status is not RelationStatus.SUGGESTED:
+                return current
+            new_revision = current.revision + 1
+            cursor = connection.execute(
+                """
+                UPDATE knowledge_relations
+                SET source_reference = ?, rationale = ?, model_name = ?,
+                    confidence = ?, conflict_codes_json = ?, revision = ?,
+                    updated_at = datetime('now','localtime')
+                WHERE relation_id = ? AND revision = ? AND status = 'suggested'
+                """,
+                (
+                    clean_reference,
+                    clean_rationale,
+                    clean_model_name,
+                    clean_confidence,
+                    json.dumps(
+                        clean_conflicts,
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    ),
+                    new_revision,
+                    clean_id,
+                    current.revision,
+                ),
+            )
+            if cursor.rowcount != 1:
+                latest = connection.execute(
+                    "SELECT revision FROM knowledge_relations WHERE relation_id = ?",
+                    (clean_id,),
+                ).fetchone()
+                raise KnowledgeRelationRevisionConflict(
+                    current.revision,
+                    current.revision if latest is None else int(latest["revision"]),
+                )
+            self._append_audit(
+                connection,
+                relation_id=clean_id,
+                event_type="suggested",
+                from_status=RelationStatus.SUGGESTED,
+                to_status=RelationStatus.SUGGESTED,
+                actor_kind="model",
+                actor_ref=clean_reference,
+                reason=clean_rationale,
+                expected_revision=current.revision,
+                resulting_revision=new_revision,
+                model_name=clean_model_name,
+                model_version=current.model_version,
+            )
+            updated = connection.execute(
+                "SELECT * FROM knowledge_relations WHERE relation_id = ?",
+                (clean_id,),
+            ).fetchone()
+            assert updated is not None
             return _relation_record(updated)
 
     def amend_suggestion(

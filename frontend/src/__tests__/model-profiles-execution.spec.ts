@@ -16,6 +16,8 @@ function profile(overrides: Record<string, unknown> = {}) {
     config_base_url: '',
     has_config_api_key: false,
     config_model: '',
+    teaching_prep_model: '',
+    class_teacher_model: '',
     request_speed_mode: 'automatic',
     max_concurrent_requests: 20,
     requests_per_minute: 1000,

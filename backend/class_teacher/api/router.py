@@ -16,6 +16,10 @@ from .schemas import (
     InitializeRequest,
     InitializeResponse,
     OperationResponse,
+    PinInitializeRequest,
+    PinRecoverRequest,
+    PinUpgradeRequest,
+    PinUnlockRequest,
     RecoverRequest,
     RestoreConfirmRequest,
     RestoreConfirmResponse,
@@ -109,12 +113,12 @@ async def _serialized_operation(request: Request):
 
 
 def create_router() -> APIRouter:
-    router = APIRouter(
-        tags=["class-teacher"],
+    router = APIRouter(tags=["class-teacher"])
+    protected_router = APIRouter(
         dependencies=[Depends(_serialized_operation)],
     )
 
-    @router.get("/vault/status", response_model=VaultStatusResponse)
+    @protected_router.get("/vault/status", response_model=VaultStatusResponse)
     def status(
         request: Request,
         response: Response,
@@ -126,7 +130,7 @@ def create_router() -> APIRouter:
         _no_store(response)
         return _call(lambda: _service(request).status(session_token))
 
-    @router.post("/vault/initialize", response_model=InitializeResponse)
+    @protected_router.post("/vault/initialize", response_model=InitializeResponse)
     def initialize(request: Request, body: InitializeRequest, response: Response):
         _require_trusted_mutation(request)
         _no_store(response)
@@ -137,7 +141,22 @@ def create_router() -> APIRouter:
             )
         )
 
-    @router.post("/vault/unlock", response_model=SessionResponse)
+    @protected_router.post("/vault/pin/initialize", response_model=InitializeResponse)
+    def initialize_pin(
+        request: Request,
+        body: PinInitializeRequest,
+        response: Response,
+    ):
+        _require_trusted_mutation(request)
+        _no_store(response)
+        return _call(
+            lambda: _service(request).initialize_pin(
+                pin=body.pin.get_secret_value(),
+                operation_id=body.operation_id,
+            )
+        )
+
+    @protected_router.post("/vault/unlock", response_model=SessionResponse)
     def unlock(request: Request, body: UnlockRequest, response: Response):
         _require_trusted_mutation(request)
         _no_store(response)
@@ -147,7 +166,19 @@ def create_router() -> APIRouter:
             )
         )
 
-    @router.post("/vault/recover", response_model=SessionResponse)
+    @protected_router.post("/vault/pin/unlock", response_model=SessionResponse)
+    def unlock_pin(
+        request: Request,
+        body: PinUnlockRequest,
+        response: Response,
+    ):
+        _require_trusted_mutation(request)
+        _no_store(response)
+        return _call(
+            lambda: _service(request).unlock_pin(pin=body.pin.get_secret_value())
+        )
+
+    @protected_router.post("/vault/recover", response_model=SessionResponse)
     def recover(request: Request, body: RecoverRequest, response: Response):
         _require_trusted_mutation(request)
         _no_store(response)
@@ -159,7 +190,44 @@ def create_router() -> APIRouter:
             )
         )
 
-    @router.post("/vault/lock", response_model=OperationResponse)
+    @protected_router.post("/vault/pin/recover", response_model=SessionResponse)
+    def recover_pin(
+        request: Request,
+        body: PinRecoverRequest,
+        response: Response,
+    ):
+        _require_trusted_mutation(request)
+        _no_store(response)
+        return _call(
+            lambda: _service(request).recover_pin(
+                recovery_key=body.recovery_key.get_secret_value(),
+                new_pin=body.new_pin.get_secret_value(),
+                operation_id=body.operation_id,
+            )
+        )
+
+    @protected_router.post("/vault/pin/upgrade", response_model=OperationResponse)
+    def upgrade_legacy_to_pin(
+        request: Request,
+        body: PinUpgradeRequest,
+        response: Response,
+        session_token: str | None = Header(
+            default=None,
+            alias="x-class-teacher-session",
+        ),
+    ):
+        _require_trusted_mutation(request)
+        _no_store(response)
+        return _call(
+            lambda: _service(request).upgrade_legacy_to_pin(
+                token=_token(session_token),
+                current_password=body.current_password.get_secret_value(),
+                new_pin=body.new_pin.get_secret_value(),
+                operation_id=body.operation_id,
+            )
+        )
+
+    @protected_router.post("/vault/lock", response_model=OperationResponse)
     def lock(
         request: Request,
         response: Response,
@@ -173,7 +241,7 @@ def create_router() -> APIRouter:
         _service(request).lock(session_token)
         return OperationResponse(completed=True, locked=True)
 
-    @router.post("/vault/touch", response_model=TouchResponse)
+    @protected_router.post("/vault/touch", response_model=TouchResponse)
     def touch(
         request: Request,
         response: Response,
@@ -188,7 +256,7 @@ def create_router() -> APIRouter:
             lambda: _service(request).touch(token=_token(session_token))
         )
 
-    @router.post("/vault/recovery-key/acknowledge")
+    @protected_router.post("/vault/recovery-key/acknowledge")
     def acknowledge_recovery_key(
         request: Request,
         response: Response,
@@ -205,7 +273,7 @@ def create_router() -> APIRouter:
             )
         )
 
-    @router.post("/vault/change-password", response_model=OperationResponse)
+    @protected_router.post("/vault/change-password", response_model=OperationResponse)
     def change_password(
         request: Request,
         body: ChangePasswordRequest,
@@ -227,7 +295,7 @@ def create_router() -> APIRouter:
         )
         return OperationResponse(completed=True, locked=True)
 
-    @router.post("/vault/backups", response_model=BackupCreateResponse)
+    @protected_router.post("/vault/backups", response_model=BackupCreateResponse)
     def create_backup(
         request: Request,
         body: BackupCreateRequest,
@@ -247,7 +315,7 @@ def create_router() -> APIRouter:
             )
         )
 
-    @router.get("/vault/backups", response_model=BackupListResponse)
+    @protected_router.get("/vault/backups", response_model=BackupListResponse)
     def list_backups(
         request: Request,
         response: Response,
@@ -263,7 +331,7 @@ def create_router() -> APIRouter:
             )
         )
 
-    @router.post("/vault/backups/verify", response_model=BackupSummaryResponse)
+    @protected_router.post("/vault/backups/verify", response_model=BackupSummaryResponse)
     def verify_backup(
         request: Request,
         body: BackupSecretRequest,
@@ -279,7 +347,7 @@ def create_router() -> APIRouter:
             )
         )
 
-    @router.post("/vault/restore/preview", response_model=RestorePreviewResponse)
+    @protected_router.post("/vault/restore/preview", response_model=RestorePreviewResponse)
     def preview_restore(
         request: Request,
         body: BackupSecretRequest,
@@ -300,7 +368,7 @@ def create_router() -> APIRouter:
             )
         )
 
-    @router.post("/vault/restore/confirm", response_model=RestoreConfirmResponse)
+    @protected_router.post("/vault/restore/confirm", response_model=RestoreConfirmResponse)
     def confirm_restore(
         request: Request,
         body: RestoreConfirmRequest,
@@ -331,12 +399,19 @@ def create_router() -> APIRouter:
     from .sop_router import create_sop_router
     from .collection_router import create_collection_router
     from .support_router import create_support_router
+    from .work_router import create_work_router
+    from .model_router import create_model_router
+    from .card_router import create_card_router
 
-    router.include_router(create_action_router())
-    router.include_router(create_planning_router())
-    router.include_router(create_sop_router())
-    router.include_router(create_collection_router())
-    router.include_router(create_support_router())
+    protected_router.include_router(create_action_router())
+    protected_router.include_router(create_planning_router())
+    protected_router.include_router(create_sop_router())
+    protected_router.include_router(create_collection_router())
+    protected_router.include_router(create_support_router())
+    protected_router.include_router(create_card_router())
+    protected_router.include_router(create_model_router())
+    router.include_router(protected_router)
+    router.include_router(create_work_router())
     return router
 
 

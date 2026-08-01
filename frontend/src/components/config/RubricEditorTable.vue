@@ -10,9 +10,8 @@ const props = withDefaults(defineProps<{
   disabled?: boolean
   showRegenerationActions?: boolean
   canRegenerateBatched?: boolean
-  canRegenerateWholeDocument?: boolean
   regenerationBusy?: boolean
-  regenerationMode?: 'batched' | 'whole_document' | null
+  regenerationMode?: 'batched' | null
   regenerationSubmitting?: boolean
   regenerationQuestionIds?: string[]
   regenerationMessage?: string
@@ -22,7 +21,6 @@ const props = withDefaults(defineProps<{
   disabled: false,
   showRegenerationActions: false,
   canRegenerateBatched: false,
-  canRegenerateWholeDocument: false,
   regenerationBusy: false,
   regenerationMode: null,
   regenerationSubmitting: false,
@@ -34,7 +32,7 @@ const props = withDefaults(defineProps<{
 const emit = defineEmits<{
   edit: [edit: ConfigEditorEdit]
   validity: [valid: boolean]
-  regenerate: [mode: 'batched' | 'whole_document']
+  regenerate: []
 }>()
 const root = ref<HTMLElement | null>(null)
 const scoreErrors = ref<Record<string, string>>({})
@@ -44,15 +42,11 @@ const warningIssues = computed(() => props.issues.filter((issue) => issue.severi
 const totalBlocked = computed(() => props.totalScore !== 100)
 const batchedButtonLabel = computed(() => {
   const ids = props.regenerationQuestionIds.join('、')
-  const base = ids ? `分批重新生成 ${ids}` : '分批重新生成'
+  const base = ids ? `重新分析 ${ids}` : '重新分析被拦题目'
   if (props.regenerationMode !== 'batched') return base
   return props.regenerationSubmitting
     ? `正在提交 ${ids || '被拦题目'}…`
-    : `正在重新生成 ${ids || '被拦题目'}…`
-})
-const wholeDocumentButtonLabel = computed(() => {
-  if (props.regenerationMode !== 'whole_document') return '整卷重新生成'
-  return props.regenerationSubmitting ? '正在提交整卷…' : '正在重新生成整卷…'
+    : `正在重新分析 ${ids || '被拦题目'}…`
 })
 const objectiveQuestionTypes = new Set([
   'choice',
@@ -251,26 +245,20 @@ async function focusIssue(issue: ConfigEditorIssue): Promise<void> {
       >
         <div>
           <strong>如果问题来自 AI 生成结果</strong>
-          <p>可以直接在这里重新生成；当前正式评分依据会保留到新版本完整成功。操作会调用模型并可能产生费用。</p>
+          <p>可以只重新分析被拦题目；系统会复用其余已确认结果，再统一检查评分依据。当前正式版本会保留到新版本完整成功。操作会调用模型并可能产生费用。</p>
         </div>
         <div class="rubric-ledger__regeneration-actions">
           <button
             type="button"
-            name="分批重新生成"
+            name="重新分析被拦题目"
             :disabled="disabled || regenerationBusy || !canRegenerateBatched"
-            @click="emit('regenerate', 'batched')"
+            @click="emit('regenerate')"
           >{{ batchedButtonLabel }}</button>
-          <button
-            type="button"
-            name="整卷重新生成"
-            :disabled="disabled || regenerationBusy || !canRegenerateWholeDocument"
-            @click="emit('regenerate', 'whole_document')"
-          >{{ wholeDocumentButtonLabel }}</button>
         </div>
         <p
-          v-if="!canRegenerateBatched && !canRegenerateWholeDocument"
+          v-if="!canRegenerateBatched"
           class="rubric-ledger__regeneration-note"
-        >当前没有可重用的来源试卷，请先重新上传试卷。</p>
+        >当前没有可重新分析的来源题目，请先修正总分或重新核对来源试卷。</p>
         <p v-if="regenerationMessage" class="rubric-ledger__regeneration-note" role="status">
           {{ regenerationMessage }}
         </p>

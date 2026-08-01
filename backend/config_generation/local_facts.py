@@ -134,16 +134,26 @@ def _attach_reference_answer_images(
         if isinstance(item, dict)
     } if isinstance(rubric_questions, list) else {}
 
+    def first_image(value: Any) -> str:
+        if isinstance(value, str):
+            return value.strip()
+        if isinstance(value, list):
+            return next(
+                (item.strip() for item in value if isinstance(item, str) and item.strip()),
+                "",
+            )
+        return ""
+
     for qid, image_data in q_images.items():
         if not isinstance(image_data, dict):
             continue
-        answer_image = str(image_data.get("answer") or "").strip()
+        answer_image = first_image(image_data.get("answer"))
         answer_item = answer_map.get(str(qid))
         if answer_image and isinstance(answer_item, dict):
             answer_item["answer_image_base64"] = answer_image
             answer_item["answer_image_role"] = "perfect_standard_answer"
 
-        question_image = str(image_data.get("question") or "").strip()
+        question_image = first_image(image_data.get("question"))
         rubric_item = rubric_map.get(str(qid))
         if question_image and isinstance(rubric_item, dict):
             rubric_item["question_image_base64"] = question_image

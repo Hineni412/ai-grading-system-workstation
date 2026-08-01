@@ -150,7 +150,7 @@ class ConfigSourceRecord:
     private_source_bytes: bytes
     private_blocks: tuple[dict[str, Any], ...]
     private_document_text: str
-    private_question_images: dict[str, dict[str, str | None]]
+    private_question_images: dict[str, dict[str, str | list[str] | None]]
     private_whole_page_images: tuple[bytes, ...]
 
     def public_snapshot(self) -> dict[str, Any]:
@@ -169,6 +169,17 @@ class ConfigSourceRecord:
                 session_id=self.session_id,
                 source_id=self.source_id,
                 source_suffix=self.suffix,
+            ),
+            "ambiguous_assets": _public_ambiguous_assets(
+                self.private_blocks,
+                session_id=self.session_id,
+                source_id=self.source_id,
+            ),
+            "assets": _public_source_assets(
+                self.questions,
+                self.private_blocks,
+                session_id=self.session_id,
+                source_id=self.source_id,
             ),
         }
 
@@ -209,6 +220,17 @@ class _ConfigSourceMetadata:
                 source_id=self.source_id,
                 source_suffix=self.suffix,
             ),
+            "ambiguous_assets": _public_ambiguous_assets(
+                self.private_blocks,
+                session_id=self.session_id,
+                source_id=self.source_id,
+            ),
+            "assets": _public_source_assets(
+                self.questions,
+                self.private_blocks,
+                session_id=self.session_id,
+                source_id=self.source_id,
+            ),
         }
 
 
@@ -248,23 +270,31 @@ class ConfigSourceActivationBusyError(ConfigSourceError):
 @dataclass(frozen=True, slots=True)
 class QuestionDecision:
     question_id: str
+    excluded: bool
     question_type: Literal[
         "choice",
         "fill_blank",
         "calculation",
         "proof",
         "comprehensive",
-    ]
-    excluded: bool
+    ] | None = None
     answer_confirmed: bool = False
     answer_override: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class AmbiguousAssetDecision:
+    candidate_id: str
+    action: Literal["bind", "ignore"]
+    question_id: str | None = None
+    asset_kind: Literal["question", "answer"] | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class PreparedGenerationInput:
     confirmed_blocks: tuple[dict[str, Any], ...]
     document_text: str
-    question_images: dict[str, dict[str, str | None]]
+    question_images: dict[str, dict[str, str | list[str] | None]]
     whole_page_images: tuple[bytes, ...]
 
 
@@ -373,7 +403,9 @@ class ConfigSourceService:
             except asyncio.CancelledError:
                 await parse_task
                 raise
-            self._enforce_asset_budget(source_dir, asset_files, whole_page_files)
+            self._enforce_asset_budget(
+                source_dir, asset_files, whole_page_files, blocks=blocks
+            )
             questions = _question_previews(blocks, asset_files)
             source_sha256 = digest.hexdigest()
             manifest_path = source_dir / "manifest.json"
@@ -729,13 +761,17 @@ class ConfigSourceService:
         source_dir: Path,
         asset_files: dict[str, dict[str, str | None]],
         whole_page_files: Sequence[str],
+        *,
+        blocks: Sequence[dict[str, Any]] = (),
     ) -> None:
         names = [
             filename
             for entry in asset_files.values()
             for filename in entry.values()
             if isinstance(filename, str) and filename
-        ] + list(whole_page_files)
+        ] + list(whole_page_files) + [
+            item["filename"] for item in _ambiguous_assets_from_blocks(blocks)
+        ]
         total_bytes = 0
         total_pixels = 0
         for name in dict.fromkeys(names):
@@ -911,10 +947,53 @@ class ConfigSourceService:
             raise ConfigAssetNotFoundError() from None
         return content, media_type
 
+    def read_ambiguous_asset(
+        self,
+        *,
+        session_id: int,
+        source_id: str,
+        candidate_id: str,
+    ) -> tuple[bytes, str]:
+        clean_candidate_id = str(candidate_id or "").strip()
+        if not re.fullmatch(r"A[1-9]\d{0,3}", clean_candidate_id):
+            raise ConfigAssetNotFoundError()
+        metadata = self._load_metadata(
+            session_id=session_id,
+            source_id=source_id,
+            require_active=True,
+        )
+        candidate = next(
+            (
+                item
+                for item in _ambiguous_assets_from_blocks(metadata.private_blocks)
+                if item["candidate_id"] == clean_candidate_id
+            ),
+            None,
+        )
+        if candidate is None:
+            raise ConfigAssetNotFoundError()
+        filename = str(candidate["filename"])
+        try:
+            path = self._owned_path(metadata.manifest_path.parent, filename)
+            content = self._files.read_bytes(path)
+            self._validate_inventory_content(metadata, filename, content)
+            inventory_entry = metadata.file_inventory.get(filename)
+            if (
+                not isinstance(inventory_entry, dict)
+                or inventory_entry.get("role") != "ambiguous_asset"
+                or inventory_entry.get("candidate_id") != clean_candidate_id
+            ):
+                raise ConfigSourceInvalidError()
+            _suffix, media_type = _image_type(content)
+        except Exception:
+            raise ConfigAssetNotFoundError() from None
+        return content, media_type
+
     def apply_teacher_decisions(
         self,
         record: ConfigSourceRecord,
         decisions: Sequence[QuestionDecision],
+        asset_decisions: Sequence[AmbiguousAssetDecision] = (),
     ) -> PreparedGenerationInput:
         known = {question.question_id for question in record.questions}
         by_id: dict[str, QuestionDecision] = {}
@@ -924,9 +1003,116 @@ class ConfigSourceService:
                 raise ValueError("unknown question decision")
             if question_id in by_id:
                 raise ValueError("duplicate question decision")
-            if decision.question_type not in _ALLOWED_QUESTION_TYPES:
+            if (
+                decision.question_type is not None
+                and decision.question_type not in _ALLOWED_QUESTION_TYPES
+            ):
                 raise ValueError("unsupported question type")
             by_id[question_id] = decision
+
+        ambiguous_candidates = {
+            item["candidate_id"]: item
+            for item in _ambiguous_assets_from_blocks(record.private_blocks)
+        }
+        automatic_assets = _automatic_asset_bindings(record)
+        candidates = {**automatic_assets, **ambiguous_candidates}
+        asset_by_id: dict[str, AmbiguousAssetDecision] = {}
+        for decision in asset_decisions:
+            candidate_id = str(decision.candidate_id or "").strip()
+            candidate = candidates.get(candidate_id)
+            if candidate is None or candidate_id in asset_by_id:
+                raise ValueError("invalid ambiguous asset decision")
+            if decision.action == "ignore":
+                if decision.question_id is not None or decision.asset_kind is not None:
+                    raise ValueError("ignored asset cannot have a binding target")
+            elif decision.action == "bind":
+                if (
+                    decision.question_id not in known
+                    or decision.asset_kind not in {"question", "answer"}
+                ):
+                    raise ValueError("asset target is invalid")
+            else:
+                raise ValueError("ambiguous asset action is invalid")
+            asset_by_id[candidate_id] = decision
+
+        unresolved_question_ids = {
+            str(candidate[key])
+            for candidate_id, candidate in ambiguous_candidates.items()
+            if candidate_id not in asset_by_id
+            for key in ("previous_question_id", "next_question_id")
+        }
+        question_images: dict[str, dict[str, str | list[str] | None]] = {
+            question_id: {"question": None, "answer": None}
+            for question_id in known
+        }
+
+        def append_image(question_id: str, asset_kind: str, encoded: str) -> None:
+            target = question_images.setdefault(
+                question_id, {"question": None, "answer": None}
+            )
+            existing = target.get(asset_kind)
+            if existing is None:
+                target[asset_kind] = encoded
+            elif isinstance(existing, str):
+                target[asset_kind] = [existing, encoded]
+            elif isinstance(existing, list) and all(
+                isinstance(item, str) and item for item in existing
+            ):
+                if len(existing) >= 32:
+                    raise ValueError("asset target contains too many images")
+                existing.append(encoded)
+            else:
+                raise ConfigSourceInvalidError()
+
+        for asset_id, automatic in automatic_assets.items():
+            decision = asset_by_id.get(asset_id)
+            if decision is not None and decision.action == "ignore":
+                continue
+            target_question_id = (
+                str(decision.question_id)
+                if decision is not None
+                else str(automatic["question_id"])
+            )
+            target_kind = (
+                str(decision.asset_kind)
+                if decision is not None
+                else str(automatic["asset_kind"])
+            )
+            append_image(target_question_id, target_kind, str(automatic["encoded"]))
+
+        current_metadata: _ConfigSourceMetadata | None = None
+        if any(
+            candidate_id in ambiguous_candidates and decision.action == "bind"
+            for candidate_id, decision in asset_by_id.items()
+        ):
+            current_metadata = self._load_metadata(
+                session_id=record.session_id,
+                source_id=record.source_id,
+                require_active=True,
+            )
+            if current_metadata.source_revision != record.source_revision:
+                raise ConfigSourceChangedError()
+        for candidate_id, decision in asset_by_id.items():
+            if candidate_id not in ambiguous_candidates or decision.action != "bind":
+                continue
+            assert current_metadata is not None
+            candidate = candidates[candidate_id]
+            filename = str(candidate["filename"])
+            content = self._files.read_bytes(
+                self._owned_path(record.manifest_path.parent, filename)
+            )
+            self._validate_inventory_content(current_metadata, filename, content)
+            inventory_entry = current_metadata.file_inventory.get(filename)
+            if (
+                not isinstance(inventory_entry, dict)
+                or inventory_entry.get("role") != "ambiguous_asset"
+                or inventory_entry.get("candidate_id") != candidate_id
+            ):
+                raise ConfigSourceInvalidError()
+            _image_type(content)
+            encoded = base64.b64encode(content).decode("ascii")
+            assert decision.asset_kind is not None
+            append_image(str(decision.question_id), decision.asset_kind, encoded)
 
         confirmed: list[dict[str, Any]] = []
         included_ids: set[str] = set()
@@ -936,31 +1122,12 @@ class ConfigSourceService:
             decision = by_id.get(question_id)
             if decision is not None and decision.excluded:
                 continue
-            if decision is not None:
-                block["question_type"] = decision.question_type
-                block["question_type_confirmed"] = True
-                if decision.answer_override is not None and not decision.answer_confirmed:
-                    raise ValueError("answer override must be confirmed")
-                if decision.answer_confirmed:
-                    teacher_answer = str(
-                        decision.answer_override
-                        if decision.answer_override is not None
-                        else (
-                            block.get("canonical_answer")
-                            or block.get("answer_text")
-                            or ""
-                        )
-                    ).strip()
-                    if not teacher_answer or len(teacher_answer) > 20_000:
-                        raise ValueError("confirmed answer must be nonblank and bounded")
-                    block["canonical_answer"] = teacher_answer
-                    block["answer_text"] = teacher_answer
-                    block["accepted_forms"] = [teacher_answer]
-                    block["local_answer_trusted"] = True
-                    block["needs_review"] = False
-                    block["answer_confirmed_by_teacher"] = True
-            else:
-                block["question_type_confirmed"] = False
+            if question_id in unresolved_question_ids:
+                continue
+            # Local parsing provides preview hints only. Question type, subparts,
+            # response form, and answer structure are determined by the combined
+            # model analysis rather than being frozen by this review screen.
+            block["question_type_confirmed"] = False
             confirmed.append(block)
             included_ids.add(question_id)
         return PreparedGenerationInput(
@@ -968,8 +1135,9 @@ class ConfigSourceService:
             document_text=record.private_document_text,
             question_images={
                 question_id: copy.deepcopy(images)
-                for question_id, images in record.private_question_images.items()
+                for question_id, images in question_images.items()
                 if question_id in included_ids
+                and any(images.get(kind) is not None for kind in ("question", "answer"))
             },
             whole_page_images=record.private_whole_page_images,
         )
@@ -979,14 +1147,15 @@ class ConfigSourceService:
         record: ConfigSourceRecord,
         decisions: Sequence[QuestionDecision],
         generation_mode: str,
+        asset_decisions: Sequence[AmbiguousAssetDecision] = (),
     ) -> PreparedGenerationInput:
         mode = str(generation_mode or "").strip()
         if mode == "per_question":
             mode = "batched"
         if mode == "whole_document":
-            if decisions:
+            if decisions or asset_decisions:
                 raise ValueError(
-                    "whole-document generation does not accept per-question decisions"
+                    "whole-document generation does not accept source review decisions"
                 )
             if record.suffix == ".docx" and not record.private_document_text.strip():
                 raise ValueError("whole-document DOCX source has no readable text")
@@ -1000,9 +1169,9 @@ class ConfigSourceService:
             )
         if mode != "batched":
             raise ValueError("unsupported config generation mode")
-        prepared = self.apply_teacher_decisions(record, decisions)
+        prepared = self.apply_teacher_decisions(record, decisions, asset_decisions)
         if not prepared.confirmed_blocks:
-            raise ValueError("at least one confirmed question is required")
+            raise ValueError("at least one included question is required")
         return prepared
 
     def cleanup_inactive(
@@ -1461,21 +1630,31 @@ class ConfigSourceService:
             metadata.source_path.name,
             source_content,
         )
-        private_images: dict[str, dict[str, str | None]] = {}
-        for question_id, entry in metadata.asset_files.items():
-            encoded: dict[str, str | None] = {"question": None, "answer": None}
+        private_images: dict[str, dict[str, str | list[str] | None]] = {}
+        for question_id in metadata.asset_files:
+            encoded: dict[str, str | list[str] | None] = {
+                "question": None,
+                "answer": None,
+            }
             for kind in ("question", "answer"):
-                filename = entry.get(kind)
-                if filename is None:
-                    continue
-                content = self._owned_path(
-                    metadata.manifest_path.parent,
-                    filename,
-                )
-                content = self._files.read_bytes(content)
-                self._validate_inventory_content(metadata, filename, content)
-                _image_type(content)
-                encoded[kind] = base64.b64encode(content).decode("ascii")
+                values: list[str] = []
+                for filename in _question_asset_filenames(
+                    metadata,
+                    question_id=question_id,
+                    asset_kind=kind,
+                ):
+                    content_path = self._owned_path(
+                        metadata.manifest_path.parent,
+                        filename,
+                    )
+                    content = self._files.read_bytes(content_path)
+                    self._validate_inventory_content(metadata, filename, content)
+                    _image_type(content)
+                    values.append(base64.b64encode(content).decode("ascii"))
+                if len(values) == 1:
+                    encoded[kind] = values[0]
+                elif values:
+                    encoded[kind] = values
             private_images[question_id] = encoded
         whole_pages: list[bytes] = []
         for filename in metadata.whole_page_files:
@@ -1794,6 +1973,17 @@ def _expected_inventory_roles(
             }
             for raw_path in _block_image_paths(block, kind):
                 register(_semantic_owned_name(raw_path, source_dir), role)
+        for candidate in block.get("_ambiguous_assets") or []:
+            if not isinstance(candidate, dict):
+                raise ConfigSourceInvalidError()
+            candidate_id = str(candidate.get("candidate_id") or "")
+            filename = str(candidate.get("filename") or "")
+            if not re.fullmatch(r"A[1-9]\d{0,3}", candidate_id):
+                raise ConfigSourceInvalidError()
+            register(
+                filename,
+                {"role": "ambiguous_asset", "candidate_id": candidate_id},
+            )
     for question_id, entry in asset_files.items():
         if not _QUESTION_ID.fullmatch(str(question_id)):
             raise ConfigSourceInvalidError()
@@ -1841,12 +2031,72 @@ def _copy_docx_assets(
     private_blocks = copy.deepcopy(list(blocks))
     asset_files: dict[str, dict[str, str | None]] = {}
     parser_resolved = parser_root.resolve(strict=False)
+    known_question_ids = {
+        str(block.get("question_id") or "").strip()
+        for block in private_blocks
+        if isinstance(block, dict)
+    }
+    ambiguous_index = 0
     for block_index, block in enumerate(private_blocks, start=1):
         question_id = str(block.get("question_id") or "").strip()
         if not _QUESTION_ID.fullmatch(question_id):
             raise ConfigSourceInvalidError()
         entry: dict[str, str | None] = {"question": None, "answer": None}
         replacements: dict[str, str] = {}
+        raw_candidates = block.get("_ambiguous_assets")
+        copied_candidates: list[dict[str, str]] = []
+        if raw_candidates is not None:
+            if not isinstance(raw_candidates, list):
+                raise ConfigSourceInvalidError()
+            for raw_candidate in raw_candidates:
+                if not isinstance(raw_candidate, dict):
+                    raise ConfigSourceInvalidError()
+                raw_path = str(raw_candidate.get("path") or "").strip()
+                previous_id = str(raw_candidate.get("previous_question_id") or "").strip()
+                next_id = str(raw_candidate.get("next_question_id") or "").strip()
+                source_section = str(raw_candidate.get("source_section") or "").strip()
+                if (
+                    not raw_path
+                    or not _QUESTION_ID.fullmatch(previous_id)
+                    or not _QUESTION_ID.fullmatch(next_id)
+                    or previous_id == next_id
+                    or previous_id not in known_question_ids
+                    or next_id not in known_question_ids
+                    or source_section not in {"question", "answer"}
+                ):
+                    raise ConfigSourceInvalidError()
+                path = Path(raw_path)
+                try:
+                    resolved = path.resolve(strict=True)
+                    if not resolved.is_relative_to(parser_resolved) or _is_reparse(path):
+                        raise ConfigSourceInvalidError()
+                    content = filesystem.read_bytes(path)
+                    suffix, _media_type = _image_type(content)
+                except ConfigSourceError:
+                    raise
+                except Exception:
+                    raise ConfigSourceInvalidError() from None
+                if ambiguous_index >= 5_000:
+                    raise ConfigSourceInvalidError()
+                ambiguous_index += 1
+                candidate_id = f"A{ambiguous_index}"
+                output = source_dir / f"ambiguous-{ambiguous_index}{suffix}"
+                _write_bytes_atomic(
+                    output,
+                    content,
+                    registry=registry,
+                    filesystem=filesystem,
+                )
+                copied_candidates.append(
+                    {
+                        "candidate_id": candidate_id,
+                        "filename": output.name,
+                        "previous_question_id": previous_id,
+                        "next_question_id": next_id,
+                        "source_section": source_section,
+                    }
+                )
+            block["_ambiguous_assets"] = copied_candidates
         by_kind = {
             "question": _block_image_paths(block, "question"),
             "answer": _block_image_paths(block, "answer"),
@@ -1882,6 +2132,155 @@ def _copy_docx_assets(
             asset_files[question_id] = entry
         _replace_block_paths(block, replacements)
     return private_blocks, asset_files
+
+
+def _ambiguous_assets_from_blocks(
+    blocks: Sequence[dict[str, Any]],
+) -> list[dict[str, str]]:
+    result: list[dict[str, str]] = []
+    seen: set[str] = set()
+    known_question_ids = {
+        str(block.get("question_id") or "").strip()
+        for block in blocks
+        if isinstance(block, dict)
+    }
+    for block in blocks:
+        raw_candidates = block.get("_ambiguous_assets")
+        if raw_candidates is None:
+            continue
+        if not isinstance(raw_candidates, list):
+            raise ConfigSourceInvalidError()
+        for raw in raw_candidates:
+            if not isinstance(raw, dict):
+                raise ConfigSourceInvalidError()
+            candidate = {
+                "candidate_id": str(raw.get("candidate_id") or ""),
+                "filename": str(raw.get("filename") or ""),
+                "previous_question_id": str(raw.get("previous_question_id") or ""),
+                "next_question_id": str(raw.get("next_question_id") or ""),
+                "source_section": str(raw.get("source_section") or ""),
+            }
+            if (
+                not re.fullmatch(r"A[1-9]\d{0,3}", candidate["candidate_id"])
+                or candidate["candidate_id"] in seen
+                or Path(candidate["filename"]).name != candidate["filename"]
+                or not _QUESTION_ID.fullmatch(candidate["previous_question_id"])
+                or not _QUESTION_ID.fullmatch(candidate["next_question_id"])
+                or candidate["previous_question_id"] == candidate["next_question_id"]
+                or candidate["previous_question_id"] not in known_question_ids
+                or candidate["next_question_id"] not in known_question_ids
+                or candidate["source_section"] not in {"question", "answer"}
+            ):
+                raise ConfigSourceInvalidError()
+            seen.add(candidate["candidate_id"])
+            result.append(candidate)
+    return result
+
+
+def _public_ambiguous_assets(
+    blocks: Sequence[dict[str, Any]],
+    *,
+    session_id: int,
+    source_id: str,
+) -> list[dict[str, str]]:
+    return [
+        {
+            "candidate_id": item["candidate_id"],
+            "previous_question_id": item["previous_question_id"],
+            "next_question_id": item["next_question_id"],
+            "source_section": item["source_section"],
+            "asset_url": (
+                f"/api/sessions/{session_id}/config/sources/{source_id}"
+                f"/ambiguous-assets/{item['candidate_id']}"
+            ),
+        }
+        for item in _ambiguous_assets_from_blocks(blocks)
+    ]
+
+
+def _public_source_assets(
+    questions: Sequence[ConfigQuestionPreview],
+    blocks: Sequence[dict[str, Any]],
+    *,
+    session_id: int,
+    source_id: str,
+) -> list[dict[str, Any]]:
+    blocks_by_id = {
+        str(block.get("question_id") or "").strip(): block
+        for block in blocks
+        if isinstance(block, dict)
+    }
+    assets: list[dict[str, Any]] = []
+    automatic_index = 0
+    for question in questions:
+        block = blocks_by_id.get(question.question_id)
+        for asset_kind in ("question", "answer"):
+            has_legacy_asset = (
+                question.has_question_asset
+                if asset_kind == "question"
+                else question.has_answer_asset
+            )
+            urls = _config_asset_urls(
+                block,
+                session_id=session_id,
+                source_id=source_id,
+                question_id=question.question_id,
+                asset_kind=asset_kind,
+                has_legacy_asset=has_legacy_asset,
+            )
+            for url in urls:
+                automatic_index += 1
+                assets.append(
+                    {
+                        "asset_id": f"P{automatic_index}",
+                        "asset_url": url,
+                        "assignment_state": "automatic",
+                        "question_id": question.question_id,
+                        "asset_kind": asset_kind,
+                        "candidate_question_ids": [],
+                    }
+                )
+    for item in _public_ambiguous_assets(
+        blocks,
+        session_id=session_id,
+        source_id=source_id,
+    ):
+        assets.append(
+            {
+                "asset_id": item["candidate_id"],
+                "asset_url": item["asset_url"],
+                "assignment_state": "uncertain",
+                "question_id": None,
+                "asset_kind": item["source_section"],
+                "candidate_question_ids": [
+                    item["previous_question_id"],
+                    item["next_question_id"],
+                ],
+            }
+        )
+    return assets
+
+
+def _automatic_asset_bindings(
+    record: ConfigSourceRecord,
+) -> dict[str, dict[str, str]]:
+    result: dict[str, dict[str, str]] = {}
+    asset_index = 0
+    for question in record.questions:
+        entry = record.private_question_images.get(question.question_id) or {}
+        for asset_kind in ("question", "answer"):
+            raw = entry.get(asset_kind)
+            values = [raw] if isinstance(raw, str) else raw if isinstance(raw, list) else []
+            for encoded in values:
+                if not isinstance(encoded, str) or not encoded:
+                    raise ConfigSourceInvalidError()
+                asset_index += 1
+                result[f"P{asset_index}"] = {
+                    "question_id": question.question_id,
+                    "asset_kind": asset_kind,
+                    "encoded": encoded,
+                }
+    return result
 
 
 def _block_image_paths(block: dict[str, Any], kind: str) -> list[str]:

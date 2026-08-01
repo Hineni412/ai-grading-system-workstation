@@ -15,6 +15,7 @@ import {
   type ConfigEditorSaveRequest,
   type ConfigEditorSaveResponse,
   type ConfigSource,
+  type ConfigAmbiguousAssetDecision,
   type QuestionDecision,
 } from '../api/config-workspace'
 import { jobApi, type JobResponse } from '../api/jobs'
@@ -30,6 +31,7 @@ export interface PersistedConfigWorkspace {
   sourceRevision: string | null
   jobId: number | null
   decisions: QuestionDecision[]
+  assetDecisions?: ConfigAmbiguousAssetDecision[]
   generationSummary?: ConfigGenerationSummary
   pendingGenerationMode?: GenerationMode
   pendingJobRequestToken?: string
@@ -84,35 +86,41 @@ function validDecision(value: unknown): value is QuestionDecision {
   const item = value as Record<string, unknown>
   const allowedKeys = new Set([
     'question_id',
-    'question_type',
     'excluded',
+    'question_type',
     'answer_confirmed',
     'answer_override',
   ])
   if (Object.keys(item).some((key) => !allowedKeys.has(key))) return false
+  if (item.question_type !== undefined
+    && !['choice', 'fill_blank', 'calculation', 'proof', 'comprehensive']
+      .includes(String(item.question_type))) return false
   if (item.answer_confirmed !== undefined && typeof item.answer_confirmed !== 'boolean') return false
-  if (item.answer_override !== undefined && item.answer_override !== null) {
-    if (typeof item.answer_override !== 'string'
-      || !item.answer_override.trim()
-      || item.answer_override.length > 20_000
-      || item.answer_confirmed !== true) return false
-  }
+  if (item.answer_override !== undefined && item.answer_override !== null
+    && typeof item.answer_override !== 'string') return false
   return typeof item.question_id === 'string'
-    && ['choice', 'fill_blank', 'calculation', 'proof', 'comprehensive']
-      .includes(String(item.question_type))
     && typeof item.excluded === 'boolean'
 }
 
 function safePersistedDecision(decision: QuestionDecision): QuestionDecision {
   const safe: QuestionDecision = {
     question_id: decision.question_id,
-    question_type: decision.question_type,
     excluded: decision.excluded,
   }
-  if (decision.answer_confirmed === true && decision.answer_override == null) {
-    safe.answer_confirmed = true
-  }
   return safe
+}
+
+function validAssetDecision(value: unknown): value is ConfigAmbiguousAssetDecision {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false
+  const item = value as Record<string, unknown>
+  if (typeof item.candidate_id !== 'string' || !/^[AP][1-9]\d{0,3}$/.test(item.candidate_id)) return false
+  if (item.action === 'ignore') {
+    return Object.keys(item).sort().join(',') === 'action,candidate_id'
+  }
+  return item.action === 'bind'
+    && Object.keys(item).sort().join(',') === 'action,asset_kind,candidate_id,question_id'
+    && typeof item.question_id === 'string'
+    && ['question', 'answer'].includes(String(item.asset_kind))
 }
 
 function validGenerationSummary(value: unknown): value is ConfigGenerationSummary {
@@ -136,6 +144,7 @@ function parsePersisted(raw: string | null): PersistedConfigWorkspace | null {
     const allowedKeys = new Set([
       ...requiredKeys, 'generationSummary', 'pendingGenerationMode',
       'pendingJobRequestToken', 'pendingJobRequestKind', 'pendingUploadRequestToken',
+      'assetDecisions',
     ])
     if (!requiredKeys.every((key) => key in item)
       || Object.keys(item).some((key) => !allowedKeys.has(key))) return null
@@ -145,6 +154,9 @@ function parsePersisted(raw: string | null): PersistedConfigWorkspace | null {
       || (item.sourceRevision !== null && !validRevision(item.sourceRevision))
       || (item.jobId !== null && !positiveInteger(item.jobId))
       || !Array.isArray(item.decisions) || !item.decisions.every(validDecision)
+      || ('assetDecisions' in item && (
+        !Array.isArray(item.assetDecisions) || !item.assetDecisions.every(validAssetDecision)
+      ))
       || ('pendingGenerationMode' in item
         && !['batched', 'per_question', 'whole_document'].includes(String(item.pendingGenerationMode)))
       || ('pendingJobRequestToken' in item
@@ -215,6 +227,7 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
   const sourceRevision = ref<string | null>(null)
   const jobId = ref<number | null>(null)
   const decisions = ref<QuestionDecision[]>([])
+  const assetDecisions = ref<ConfigAmbiguousAssetDecision[]>([])
   const source = ref<ConfigSource | null>(null)
   const editor = ref<ConfigEditorResponse | null>(null)
   const editorEdits = ref<ConfigEditorEdit[]>([])
@@ -256,7 +269,17 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
       || sourceRevision.value === null || source.value.questions.length === 0) return false
     const excluded = new Set(decisions.value.filter((item) => item.excluded)
       .map((item) => item.question_id))
-    return source.value.questions.some((question) => !excluded.has(question.question_id))
+    const resolvedCandidates = new Set(assetDecisions.value.map((item) => item.candidate_id))
+    const uncertainAssetIds = source.value.assets === undefined
+      ? (source.value.ambiguous_assets ?? []).map((item) => item.candidate_id)
+      : source.value.assets
+        .filter((item) => item.assignment_state === 'uncertain')
+        .map((item) => item.asset_id)
+    const hasUnresolvedAssets = uncertainAssetIds
+      .some((assetId) => !resolvedCandidates.has(assetId))
+    return !hasUnresolvedAssets && source.value.questions.some(
+      (question) => !excluded.has(question.question_id),
+    )
   })
   const canGenerateWholeDocument = computed(() => sessionId.value !== null
     && source.value !== null && sourceId.value !== null && sourceRevision.value !== null)
@@ -277,6 +300,9 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
       sourceRevision: sourceRevision.value,
       jobId: jobId.value,
       decisions: decisions.value.map(safePersistedDecision),
+    }
+    if (assetDecisions.value.length > 0) {
+      snapshot.assetDecisions = assetDecisions.value.map((item) => ({ ...item }))
     }
     if (generationSummary.value !== null) {
       snapshot.generationSummary = { ...generationSummary.value }
@@ -328,6 +354,7 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
     pendingJobRequestKind.value = null
     pendingUploadRequestToken.value = null
     decisions.value = []
+    assetDecisions.value = []
     phase.value = 'draft'
     resetMemory()
     localStorage.removeItem(CONFIG_WORKSPACE_STORAGE_KEY)
@@ -357,6 +384,7 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
     pendingJobRequestKind.value = null
     pendingUploadRequestToken.value = null
     decisions.value = []
+    assetDecisions.value = []
     phase.value = 'draft'
     resetMemory()
     editorDirty.value = false
@@ -381,6 +409,8 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
     pendingJobRequestToken.value = null
     pendingJobRequestKind.value = null
     pendingUploadRequestToken.value = null
+    decisions.value = []
+    assetDecisions.value = []
     editor.value = null
     editorEdits.value = []
     editorCommands.value = []
@@ -433,6 +463,7 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
     pendingJobRequestKind.value = null
     pendingUploadRequestToken.value = null
     decisions.value = []
+    assetDecisions.value = []
     editor.value = null
     editorEdits.value = []
     editorCommands.value = []
@@ -449,6 +480,24 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
     const knownIds = new Set(source.value.questions.map((question) => question.question_id))
     decisions.value = value.filter((decision) => knownIds.has(decision.question_id)
       && validDecision(decision)).map((decision) => ({ ...decision }))
+    persistSafeIndex()
+  }
+
+  function updateAssetDecisions(value: ConfigAmbiguousAssetDecision[]): void {
+    if (source.value === null) return
+    const candidateIds = new Set([
+      ...(source.value.assets ?? []).map((item) => item.asset_id),
+      ...(source.value.ambiguous_assets ?? []).map((item) => item.candidate_id),
+    ])
+    const knownQuestionIds = new Set(source.value.questions.map((item) => item.question_id))
+    const seen = new Set<string>()
+    assetDecisions.value = value.filter((decision) => {
+      if (!candidateIds.has(decision.candidate_id) || seen.has(decision.candidate_id)
+        || !validAssetDecision(decision)) return false
+      seen.add(decision.candidate_id)
+      return decision.action === 'ignore'
+        || knownQuestionIds.has(decision.question_id)
+    }).map((item) => ({ ...item }))
     persistSafeIndex()
   }
 
@@ -574,12 +623,13 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
   function sourceRequest(
     mode: GenerationMode,
     syncToQuestionBank = false,
+    curriculumVolumeId?: string,
   ): ConfigGenerationRequest {
     const ready = mode === 'whole_document' ? canGenerateWholeDocument.value : canGenerate.value
     if (!ready || sourceId.value === null || sourceRevision.value === null) {
       throw new Error('Config source is not ready')
     }
-    return {
+    const request: ConfigGenerationRequest = {
       source_id: sourceId.value,
       source_revision: sourceRevision.value,
       generation_mode: mode,
@@ -588,6 +638,17 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
         ? []
         : decisions.value.map((item) => ({ ...item })),
     }
+    if (mode !== 'whole_document' && assetDecisions.value.length > 0) {
+      request.asset_decisions = assetDecisions.value.map((item) => ({ ...item }))
+    }
+    if (syncToQuestionBank) {
+      const normalizedVolumeId = String(curriculumVolumeId ?? '').trim()
+      if (!normalizedVolumeId) {
+        throw new Error('Curriculum volume is required for question analysis')
+      }
+      request.curriculum_volume_id = normalizedVolumeId
+    }
+    return request
   }
 
   async function reloadEditorForGeneration(
@@ -661,6 +722,7 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
     sourceRevision.value = null
     jobId.value = null
     decisions.value = []
+    assetDecisions.value = []
     phase.value = 'draft'
     resetMemory()
     pendingGenerationMode.value = candidate.pendingGenerationMode ?? null
@@ -699,6 +761,7 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
     const sanitized: PersistedConfigWorkspace = {
       ...candidate,
       decisions: candidate.decisions.map((item) => ({ ...item })),
+      assetDecisions: (candidate.assetDecisions ?? []).map((item) => ({ ...item })),
     }
     let candidateChanged = false
     if (sourceWasReplaced) {
@@ -706,6 +769,7 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
       sanitized.sourceRevision = null
       sanitized.jobId = null
       sanitized.decisions = []
+      sanitized.assetDecisions = []
       delete sanitized.generationSummary
       candidateChanged = true
     }
@@ -721,10 +785,20 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
         decisions.value = sourceWasReplaced || candidate.sourceId === null
           ? []
           : candidate.decisions.map((item) => ({ ...item }))
+        const candidateAssetIds = new Set([
+          ...(loaded.assets ?? []).map((item) => item.asset_id),
+          ...(loaded.ambiguous_assets ?? []).map((item) => item.candidate_id),
+        ])
+        assetDecisions.value = sourceWasReplaced || candidate.sourceId === null
+          ? []
+          : (candidate.assetDecisions ?? [])
+            .filter((item) => candidateAssetIds.has(item.candidate_id))
+            .map((item) => ({ ...item }))
         if (candidate.sourceId === null || sourceWasReplaced) {
           sanitized.sourceId = loaded.source_id
           sanitized.sourceRevision = loaded.source_revision
           sanitized.decisions = []
+          sanitized.assetDecisions = []
           candidateChanged = true
         }
       } else {
@@ -876,7 +950,7 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
   }
 
   return {
-    sessionId, phase, sourceId, sourceRevision, jobId, decisions,
+    sessionId, phase, sourceId, sourceRevision, jobId, decisions, assetDecisions,
     source, editor, editorEdits, editorCommands, serverIssues, generationSummary,
     pendingGenerationMode, pendingJobRequestToken, pendingJobRequestKind,
     pendingUploadRequestToken, sourceLoading, sourceError,
@@ -884,7 +958,7 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
     effectiveEditorRows, effectiveTotalScore,
     canGenerate, canGenerateWholeDocument, hydrateSafeIndex, persistSafeIndex, clearWorkspace,
     selectSession, selectSource, discardEditorDraft, setSource, acceptUploadedSource,
-    updateDecisions, loadSource,
+    updateDecisions, updateAssetDecisions, loadSource,
     setEditor, captureGenerationContext, attachJob, detachJob, sourceRequest,
     markJobSubmissionPending, clearGenerationSubmissionPending,
     markUploadSubmissionPending, clearUploadSubmissionPending,

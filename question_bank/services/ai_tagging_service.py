@@ -179,6 +179,11 @@ class AITaggingService:
             self.llm_client = llm_client
         else:
             self.llm_client = _llm_client_from_saved_profile(self.env) if env is None else None
+        if self.llm_client is not None:
+            saved_settings = getattr(self.llm_client, "settings", None)
+            saved_model = str(getattr(saved_settings, "config_model", "") or "").strip()
+            if saved_model:
+                self.model = saved_model
         self._configure_review_client(tagging_api_key=str(self.env.get("QUESTION_BANK_TAGGING_API_KEY") or "").strip())
 
     @property
@@ -520,11 +525,27 @@ class AITaggingService:
         with self._protocol_adapter_lock:
             adapter = self._protocol_adapter_instance
             if adapter is None:
+                settings = getattr(self.llm_client, "settings", None)
+                configured_key = str(
+                    getattr(settings, "config_api_key", "")
+                    or getattr(settings, "api_key", "")
+                    or self.api_key
+                ).strip()
+                configured_base_url = str(
+                    getattr(settings, "config_base_url", "")
+                    or getattr(settings, "base_url", "")
+                    or self._tagging_base_url
+                ).strip()
+                configured_client = (
+                    getattr(self.llm_client, "config_client", None)
+                    if self.llm_client is not None
+                    else self.client
+                )
                 adapter = LLMProtocolAdapter(
-                    self.api_key,
-                    self._tagging_base_url,
+                    configured_key,
+                    configured_base_url,
                     policy_profile=self._tagging_policy_profile,
-                    client=self.client,
+                    client=configured_client or self.client,
                 )
                 self._protocol_adapter_instance = adapter
         return adapter

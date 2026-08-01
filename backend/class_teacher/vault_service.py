@@ -92,16 +92,39 @@ class _RestorePreview:
 
 
 class VaultService:
-    def __init__(self, context: WorkspaceContext) -> None:
+    def __init__(self, context: WorkspaceContext, *, protection_provider=None, model_gateway=None) -> None:
         self._operation_lock = asyncio.Lock()
         self.database = EncryptedDatabase(context)
         self.repository = EncryptedObjectRepository()
+        from .ordinary_database import OrdinaryWorkDatabase
+        from .model_approval import ModelApproval
+        from .protection import PinProtection
+        from .windows_dpapi import WindowsCurrentUserProtection
+        from .work_graph import WorkGraph
+
+        self.ordinary_database = OrdinaryWorkDatabase(context)
+        self.work = WorkGraph(
+            self.ordinary_database,
+            model_gateway=model_gateway,
+        )
+        self.pin_protection = PinProtection(
+            self.ordinary_database,
+            protection_provider or WindowsCurrentUserProtection(),
+        )
+        self.model_approval = ModelApproval(
+            self.ordinary_database,
+            self.database,
+            self.repository,
+            self.session_key,
+            model_gateway,
+        )
         from .action_ledger_service import ActionLedgerService
         from .planning_service import PlanningService
         from .sop_workflow_service import SopWorkflowService
         from .collection_service import CollectionService
         from .sop_baseline_service import SopBaselineService
         from .support_record_service import SupportRecordService
+        from .student_card_service import StudentCardService
         from .quick_inbox_service import QuickInboxService
         from .assessment_evidence_service import AssessmentEvidenceService
         from .attention_service import AttentionService
@@ -132,6 +155,14 @@ class VaultService:
             self.database,
             self.repository,
             self.session_key,
+        )
+        self.student_cards = StudentCardService(
+            self.database,
+            self.repository,
+            self.session_key,
+            self.support,
+            self.model_approval,
+            self.work,
         )
         self.quick_inbox = QuickInboxService(
             self.database,
@@ -174,6 +205,9 @@ class VaultService:
                     "idle_timeout_seconds": _SESSION_SECONDS,
                     "retry_after_seconds": 0,
                     "format_version": FORMAT_VERSION,
+                    "protection_mode": "uninitialized",
+                    "protection_state": self.pin_protection.state(),
+                    "legacy_upgrade_available": False,
                 }
             metadata = self._metadata()
             retry_after = self._retry_after(metadata["blocked_until"])
@@ -185,7 +219,144 @@ class VaultService:
                 "idle_timeout_seconds": _SESSION_SECONDS,
                 "retry_after_seconds": retry_after,
                 "format_version": int(metadata["format_version"]),
+                "protection_mode": self.pin_protection.mode(vault_exists=True),
+                "protection_state": self.pin_protection.state(),
+                "legacy_upgrade_available": (
+                    self.pin_protection.mode(vault_exists=True)
+                    == "legacy_password_v1"
+                ),
             }
+
+    def initialize_pin(self, *, pin: str, operation_id: str) -> dict[str, object]:
+        """Create a v2 PIN/CurrentUser vault without changing the v1 DB format."""
+
+        self.pin_protection.validate_pin(pin)
+        self._validate_operation_id(operation_id)
+        if self.database.exists:
+            raise VaultError(
+                "vault_already_initialized",
+                "班主任工作台已经初始化",
+                status_code=409,
+            )
+        internal_secret = secrets.token_urlsafe(32)
+        self.pin_protection.stage(pin=pin, secret=internal_secret)
+        try:
+            result = self.initialize(
+                password=internal_secret,
+                operation_id=operation_id,
+            )
+            self.pin_protection.activate()
+            return {**result, "protection_mode": "pin_dpapi_current_user_v2"}
+        except Exception:
+            if not self.database.exists:
+                self.pin_protection.discard()
+            raise
+
+    def unlock_pin(self, *, pin: str) -> dict[str, object]:
+        with self._lock:
+            if self.pin_protection.mode(vault_exists=self.database.exists) != (
+                "pin_dpapi_current_user_v2"
+            ) and self.pin_protection.state() != "pending":
+                raise VaultError(
+                    "vault_legacy_password_required",
+                    "这是旧版保险箱，请继续使用原模块密码",
+                    status_code=409,
+                )
+            metadata = self._metadata()
+            retry_after = self._retry_after(metadata["blocked_until"])
+            if retry_after:
+                raise VaultError(
+                    "vault_access_delayed",
+                    "解锁尝试过于频繁，请稍后再试",
+                    status_code=429,
+                    details={"retry_after_seconds": retry_after},
+                )
+            try:
+                pending = self.pin_protection.pending_secret(pin=pin)
+                if pending is not None:
+                    try:
+                        result = self.unlock(password=pending)
+                    except VaultError as exc:
+                        if exc.code != "vault_access_denied":
+                            raise
+                    else:
+                        self.pin_protection.activate()
+                        return {
+                            **result,
+                            "protection_mode": "pin_dpapi_current_user_v2",
+                        }
+                secret = self.pin_protection.secret(pin=pin)
+            except VaultError as exc:
+                if exc.code == "vault_pin_invalid":
+                    self._record_failed_unlock(int(metadata["failed_attempts"]) + 1)
+                raise
+            result = self.unlock(password=secret)
+            return {**result, "protection_mode": "pin_dpapi_current_user_v2"}
+
+    def recover_pin(
+        self,
+        *,
+        recovery_key: str,
+        new_pin: str,
+        operation_id: str,
+    ) -> dict[str, object]:
+        self.pin_protection.validate_pin(new_pin)
+        self._validate_operation_id(operation_id)
+        internal_secret = secrets.token_urlsafe(32)
+        self.pin_protection.stage(pin=new_pin, secret=internal_secret)
+        try:
+            result = self.recover(
+                recovery_key=recovery_key,
+                new_password=internal_secret,
+                operation_id=operation_id,
+            )
+            self.pin_protection.activate()
+            return {**result, "protection_mode": "pin_dpapi_current_user_v2"}
+        except Exception:
+            self.pin_protection.discard()
+            raise
+
+    def upgrade_legacy_to_pin(
+        self,
+        *,
+        token: str,
+        current_password: str,
+        new_pin: str,
+        operation_id: str,
+    ) -> dict[str, object]:
+        """Explicitly replace a legacy password unlock with PIN protection.
+
+        The PIN package is staged before the password wrapper changes. If the
+        process stops between those steps, ``unlock_pin`` can finish activation
+        from the pending package without repeating the password change.
+        """
+
+        self.pin_protection.validate_pin(new_pin)
+        self._validate_operation_id(operation_id)
+        with self._lock:
+            mode = self.pin_protection.mode(vault_exists=self.database.exists)
+            if mode != "legacy_password_v1":
+                resumed = self.unlock_pin(pin=new_pin)
+                self.lock(str(resumed["session_token"]))
+                return {"completed": True, "locked": True}
+
+            internal_secret = secrets.token_urlsafe(32)
+            self.pin_protection.stage(pin=new_pin, secret=internal_secret)
+            password_rewrapped = False
+            try:
+                self.change_password(
+                    token=token,
+                    current_password=current_password,
+                    new_password=internal_secret,
+                    operation_id=operation_id,
+                )
+                password_rewrapped = True
+                self.pin_protection.activate()
+            except Exception:
+                if not password_rewrapped:
+                    self.pin_protection.discard()
+                raise
+            return {"completed": True, "locked": True}
 
     def initialize(
         self,

@@ -99,7 +99,7 @@ describe('configuration workspace Store', () => {
     expect(store.jobId).toBeNull()
   })
 
-  it('preserves a teacher-confirmed answer in the safe generation request', () => {
+  it('keeps legacy answer fields transient and strips them from the safe index', () => {
     const store = useConfigWorkspaceStore()
     store.selectSession(7)
     store.setSource({
@@ -129,10 +129,73 @@ describe('configuration workspace Store', () => {
     const persisted = localStorage.getItem(CONFIG_WORKSPACE_STORAGE_KEY)!
     expect(JSON.parse(persisted).decisions).toEqual([{
       question_id: 'Q5',
-      question_type: 'fill_blank',
       excluded: false,
     }])
     expect(persisted).not.toContain('72°')
+  })
+
+  it('requires every uncertain image to be resolved before the whole paper can generate', () => {
+    const store = useConfigWorkspaceStore()
+    store.selectSession(7)
+    store.setSource({
+      ...source('d'.repeat(32)),
+      ambiguous_assets: [
+        {
+          candidate_id: 'A1',
+          previous_question_id: 'Q1',
+          next_question_id: 'Q2',
+          source_section: 'question',
+          asset_url: `/api/sessions/7/config/sources/${'d'.repeat(32)}/ambiguous-assets/A1`,
+        },
+        {
+          candidate_id: 'A2',
+          previous_question_id: 'Q2',
+          next_question_id: 'Q3',
+          source_section: 'answer',
+          asset_url: `/api/sessions/7/config/sources/${'d'.repeat(32)}/ambiguous-assets/A2`,
+        },
+      ],
+      questions: [
+        {
+          question_id: 'Q1', question_type: 'comprehensive', question_preview: '第一题',
+          answer_preview: '', answer_present: false, needs_review: false,
+          local_answer_trusted: false, has_question_asset: false, has_answer_asset: false,
+        },
+        {
+          question_id: 'Q2', question_type: 'comprehensive', question_preview: '第二题',
+          answer_preview: '', answer_present: false, needs_review: false,
+          local_answer_trusted: false, has_question_asset: false, has_answer_asset: false,
+        },
+        {
+          question_id: 'Q3', question_type: 'comprehensive', question_preview: '第三题',
+          answer_preview: '', answer_present: false, needs_review: false,
+          local_answer_trusted: false, has_question_asset: false, has_answer_asset: false,
+        },
+      ],
+    })
+
+    expect(store.canGenerate).toBe(false)
+    store.updateAssetDecisions([{
+      candidate_id: 'A1', action: 'bind', question_id: 'Q2', asset_kind: 'question',
+    }])
+
+    expect(store.canGenerate).toBe(false)
+    store.updateAssetDecisions([
+      { candidate_id: 'A1', action: 'bind', question_id: 'Q2', asset_kind: 'question' },
+      { candidate_id: 'A2', action: 'bind', question_id: 'Q3', asset_kind: 'answer' },
+    ])
+
+    expect(store.canGenerate).toBe(true)
+    expect(store.sourceRequest('batched').asset_decisions).toEqual([{
+      candidate_id: 'A1', action: 'bind', question_id: 'Q2', asset_kind: 'question',
+    }, {
+      candidate_id: 'A2', action: 'bind', question_id: 'Q3', asset_kind: 'answer',
+    }])
+    expect(JSON.parse(localStorage.getItem(CONFIG_WORKSPACE_STORAGE_KEY)!).assetDecisions)
+      .toEqual([
+        { candidate_id: 'A1', action: 'bind', question_id: 'Q2', asset_kind: 'question' },
+        { candidate_id: 'A2', action: 'bind', question_id: 'Q3', asset_kind: 'answer' },
+      ])
   })
 
   it('restores a stored Job into JobStore and keeps process-restart failure detail', async () => {

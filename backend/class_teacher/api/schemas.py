@@ -11,6 +11,13 @@ class VaultStatusResponse(BaseModel):
     idle_timeout_seconds: int
     retry_after_seconds: int
     format_version: int
+    protection_mode: Literal[
+        "uninitialized",
+        "legacy_password_v1",
+        "pin_dpapi_current_user_v2",
+    ]
+    protection_state: Literal["pending", "active"] | None = None
+    legacy_upgrade_available: bool = False
 
 
 class InitializeRequest(BaseModel):
@@ -27,6 +34,27 @@ class InitializeResponse(BaseModel):
 
 class UnlockRequest(BaseModel):
     password: SecretStr
+
+
+class PinInitializeRequest(BaseModel):
+    pin: SecretStr
+    operation_id: str = Field(min_length=8, max_length=128)
+
+
+class PinUnlockRequest(BaseModel):
+    pin: SecretStr
+
+
+class PinRecoverRequest(BaseModel):
+    recovery_key: SecretStr
+    new_pin: SecretStr
+    operation_id: str = Field(min_length=8, max_length=128)
+
+
+class PinUpgradeRequest(BaseModel):
+    current_password: SecretStr
+    new_pin: SecretStr
+    operation_id: str = Field(min_length=8, max_length=128)
 
 
 class SessionResponse(BaseModel):
@@ -125,6 +153,10 @@ __all__ = [
     "InitializeRequest",
     "InitializeResponse",
     "OperationResponse",
+    "PinInitializeRequest",
+    "PinRecoverRequest",
+    "PinUpgradeRequest",
+    "PinUnlockRequest",
     "RecoverRequest",
     "RestoreConfirmRequest",
     "RestoreConfirmResponse",

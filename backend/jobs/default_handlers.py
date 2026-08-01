@@ -87,6 +87,11 @@ def register_default_job_handlers(
         if question_bank_db_path is not None
         else base_data_root / "databases" / "question_bank.db"
     )
+    resolved_upload_config_dir = (
+        Path(upload_config_dir)
+        if upload_config_dir is not None
+        else base_data_root / "config" / "uploaded"
+    )
     taxonomy_governance = get_taxonomy_governance()
     resolved_tagging_factory = (
         (lambda: AITaggingService(taxonomy_governance=taxonomy_governance))
@@ -129,19 +134,18 @@ def register_default_job_handlers(
         "config_generation",
         _build_config_generation_handler(
             db_path=Path(db_path),
+            question_bank_db_path=resolved_question_bank_db,
             data_root=base_data_root,
             mapping_output_dir=(
                 Path(templates_dir)
                 if templates_dir is not None
                 else base_data_root / "templates"
             ),
-            upload_config_dir=(
-                Path(upload_config_dir)
-                if upload_config_dir is not None
-                else base_data_root / "config" / "uploaded"
-            ),
+            upload_config_dir=resolved_upload_config_dir,
             config_generation_runner=config_generation_runner,
             llm_client_factory=scan_llm_client_factory,
+            tagging_ai_service_factory=resolved_tagging_factory,
+            taxonomy_governance=taxonomy_governance,
         ),
     )
     manager.register(
@@ -156,6 +160,7 @@ def register_default_job_handlers(
         "tagging_sync",
         _build_tagging_sync_handler(
             question_bank_db_path=resolved_question_bank_db,
+            data_root=base_data_root,
             tagging_sync_runner=tagging_sync_runner,
             ai_service_factory=resolved_tagging_factory,
             taxonomy_governance=taxonomy_governance,
@@ -191,6 +196,7 @@ def register_default_job_handlers(
             tagging_sync_runner=tagging_sync_runner,
             ai_service_factory=resolved_tagging_factory,
             taxonomy_governance=taxonomy_governance,
+            analysis_artifact_root=resolved_upload_config_dir,
         ),
     )
     manager.register(
@@ -270,6 +276,7 @@ def _build_question_import_handler(
 def _build_tagging_sync_handler(
     *,
     question_bank_db_path: Path,
+    data_root: Path,
     tagging_sync_runner: Callable[..., dict[str, object]],
     ai_service_factory: Callable[[], Any],
     taxonomy_governance: Any,
@@ -280,6 +287,7 @@ def _build_tagging_sync_handler(
             question_bank_db_path=question_bank_db_path,
             ai_service_factory=ai_service_factory,
             taxonomy_governance=taxonomy_governance,
+            data_root=data_root,
         )
 
     return handler
@@ -344,6 +352,7 @@ def _build_question_bank_sync_handler(
     tagging_sync_runner: Callable[..., dict[str, object]],
     ai_service_factory: Callable[[], Any],
     taxonomy_governance: Any,
+    analysis_artifact_root: Path,
 ):
     write_service = QuestionBankWriteService(
         question_bank_db_path,
@@ -361,6 +370,7 @@ def _build_question_bank_sync_handler(
             tagging_sync_runner=tagging_sync_runner,
             ai_service_factory=ai_service_factory,
             taxonomy_governance=taxonomy_governance,
+            analysis_artifact_root=analysis_artifact_root,
         )
 
     return handler
@@ -369,11 +379,14 @@ def _build_question_bank_sync_handler(
 def _build_config_generation_handler(
     *,
     db_path: Path,
+    question_bank_db_path: Path,
     data_root: Path,
     mapping_output_dir: Path,
     upload_config_dir: Path,
     config_generation_runner: Callable[..., dict[str, object]],
     llm_client_factory: Callable[[], Any],
+    tagging_ai_service_factory: Callable[[], Any],
+    taxonomy_governance: Any,
 ):
     def handler(context: JobContext) -> dict[str, object]:
         return config_generation_runner(
@@ -383,6 +396,9 @@ def _build_config_generation_handler(
             mapping_output_dir=mapping_output_dir,
             upload_config_dir=upload_config_dir,
             llm_client_factory=llm_client_factory,
+            question_bank_db_path=question_bank_db_path,
+            tagging_ai_service_factory=tagging_ai_service_factory,
+            taxonomy_governance=taxonomy_governance,
         )
 
     return handler

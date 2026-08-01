@@ -92,6 +92,33 @@ def generate_grading_config_in_batches(
     )
 
 
+def allocate_grading_config_scores(
+    structure_payload: dict[str, Any],
+    confirmed_blocks: list[dict[str, Any]],
+    doc_text: str,
+    llm_client: Any,
+    model_name: str | None = None,
+    report: Any = None,
+    q_images: dict[str, Any] | None = None,
+    *,
+    checkpoint: Callable[[dict[str, Any]], None] | None = None,
+) -> dict[str, Any]:
+    """Run only the whole-paper score allocation over a fixed structure."""
+
+    return _orchestrator(
+        llm_client,
+        model_name=model_name,
+        report=report,
+        batch_size=DEFAULT_CONFIG_GENERATION_BATCH_SIZE,
+    ).allocate_scores_for_structure(
+        structure_payload,
+        confirmed_blocks,
+        doc_text,
+        q_images=q_images,
+        checkpoint=checkpoint,
+    )
+
+
 def retry_failed_grading_config_batches(
     existing_payload: dict[str, Any],
     question_blocks: list[dict[str, Any]],

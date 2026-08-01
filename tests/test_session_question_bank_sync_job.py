@@ -10,6 +10,7 @@ from typing import Any
 import pytest
 
 from backend.config_workspace.publish import load_editor_config
+from backend.config_workspace.deferred_analysis import DeferredAnalysisArtifactStore
 from backend.jobs.manager import JobCancellationRequested, JobContext, JobManager
 from backend.jobs.question_bank_sync import (
     StaleQuestionBankSyncError,
@@ -23,6 +24,14 @@ from backend.jobs.store import (
 from db_manager import DBManager
 from question_bank.database.schema import connect, initialize_database
 from question_bank.services.question_write_service import QuestionBankWriteService
+from question_bank.services.question_service import QuestionService
+from question_bank.solution_evidence import SolutionEvidenceRepository
+from question_bank.training_criteria import (
+    ConfigQuestionAnalysisSource,
+    GatewayBatchResponse,
+    InMemoryCombinedQuestionAnalysisModule,
+    question_analysis_input_from_config_source,
+)
 
 
 def _request_payload(
@@ -869,3 +878,285 @@ def test_stale_sync_finishes_failed_and_cannot_leave_session_running(
         "source_paper_sha256": source_sha256,
         "stage": "stale",
     }
+
+
+def _deferred_sync_contract() -> dict[str, Any]:
+    return {
+        "taxonomy_revision": 2,
+        "allowed_dimensions": ["knowledge", "ability"],
+        "candidates": {
+            "knowledge": [
+                {
+                    "id": "kp_alg_linear_equation",
+                    "name": "一元一次方程",
+                    "aliases": ["一次方程"],
+                }
+            ],
+            "ability": [
+                {
+                    "id": "ability-calculation",
+                    "name": "运算能力",
+                    "aliases": [],
+                }
+            ],
+        },
+    }
+
+
+def _deferred_sync_result(question_id: int) -> dict[str, Any]:
+    return {
+        "results": [
+            {
+                "question_id": question_id,
+                "tag_analysis": {
+                    "knowledge_points": ["一元一次方程"],
+                    "method_tags": [],
+                    "ability_tags": ["运算能力"],
+                    "math_model_tags": [],
+                    "special_type_tags": [],
+                    "difficulty": 3,
+                    "error_prone_points": ["运算化简错误"],
+                    "prerequisite_points": [],
+                    "textbook_chapters": ["一元一次方程"],
+                    "curriculum_sections": ["synthetic-section"],
+                    "suitable_student_level": "",
+                    "canonical_knowledge_id": "kp_alg_linear_equation",
+                    "taxonomy_revision": 2,
+                    "proposed_tags": [],
+                    "reason": "合成延期标签。",
+                    "confidence": 0.95,
+                },
+                "solution_evidence": {
+                    "schema_version": "question-solution-evidence-v1",
+                    "question_id": question_id,
+                    "parts": [
+                        {
+                            "part_id": "part-1",
+                            "label": "第1题",
+                            "response_mode": "exact_objective",
+                            "canonical_answer": "B",
+                            "accepted_forms": ["B"],
+                            "full_answer": "B",
+                            "proof_obligations": [],
+                            "visual_requirements": [],
+                            "deduction_policy": ["答案不等价则未达成"],
+                            "allow_alternative_methods": False,
+                            "evidence_points": [
+                                {
+                                    "evidence_point_id": "answer-1",
+                                    "target": "选出正确答案",
+                                    "observable_evidence": "作答为 B",
+                                    "fine_term_links": [
+                                        {
+                                            "fine_term_id": "kp_alg_linear_equation",
+                                            "fine_term_name": "一元一次方程",
+                                            "role": "direct",
+                                        }
+                                    ],
+                                    "equivalent_rules": [],
+                                    "counterexamples": ["作答为 A"],
+                                }
+                            ],
+                        }
+                    ],
+                    "auxiliary_rules": [],
+                    "rationale": "合成延期证据。",
+                    "confidence": 0.95,
+                },
+            }
+        ]
+    }
+
+
+class _DeferredSyncGateway:
+    def __init__(self) -> None:
+        self.calls: list[tuple[int, ...]] = []
+
+    def analyze(self, batch: Any, **_kwargs: Any) -> GatewayBatchResponse:
+        self.calls.append(batch.question_ids)
+        return GatewayBatchResponse(
+            payload=_deferred_sync_result(batch.question_ids[0]),
+            model_name="synthetic-combined-v3",
+        )
+
+
+class _PassThroughTaxonomyGovernance:
+    def constrain(
+        self,
+        raw_analysis: dict[str, Any],
+        context: object = None,
+    ) -> dict[str, Any]:
+        del context
+        accepted_fields = {
+            field: list(raw_analysis.get(field) or [])
+            for field in (
+                "knowledge_points",
+                "prerequisite_points",
+                "method_tags",
+                "ability_tags",
+                "math_model_tags",
+                "special_type_tags",
+                "textbook_chapters",
+            )
+        }
+        return {
+            "accepted_fields": accepted_fields,
+            "accepted_terms": {
+                "knowledge": [
+                    {
+                        "id": "kp_alg_linear_equation",
+                        "name": "一元一次方程",
+                    }
+                ]
+            },
+            "proposals": [],
+            "retrieval_misses": [],
+            "taxonomy_revision": 2,
+            "status": "complete",
+            "notes": [],
+        }
+
+
+class _DeferredAdoptionTaggingService:
+    model = "synthetic-combined-v3"
+
+    def __init__(self) -> None:
+        self.taxonomy_governance = _PassThroughTaxonomyGovernance()
+
+    def taxonomy_contracts(
+        self,
+        contexts: dict[int, object],
+    ) -> dict[int, dict[str, Any]]:
+        return {
+            question_id: _deferred_sync_contract()
+            for question_id in contexts
+        }
+
+
+def test_sync_adopts_deferred_tags_and_evidence_without_tagging_model(
+    tmp_path: Path,
+) -> None:
+    db, session_id, _source, source_sha256, revision = _configured_session(
+        tmp_path
+    )
+    question_bank_db = tmp_path / "data" / "databases" / "question_bank.db"
+    initialize_database(question_bank_db)
+    source_question = question_analysis_input_from_config_source(
+        {
+            "question_id": "Q1",
+            "question_text": "1 + 1 = ?",
+            "answer_text": "B",
+            "question_type": "choice",
+        },
+        question_id=1,
+        curriculum_volume_id="bnu24-math-g7-upper",
+        taxonomy_contract=_deferred_sync_contract(),
+    )
+    gateway = _DeferredSyncGateway()
+    bundle = InMemoryCombinedQuestionAnalysisModule(gateway=gateway).analyze(
+        operation_id="config:synthetic:deferred-adoption",
+        curriculum_volume_id="bnu24-math-g7-upper",
+        sources=(ConfigQuestionAnalysisSource("Q1", source_question),),
+    )
+    artifact_id = "a" * 32
+    source_id = "b" * 32
+    source_revision = "c" * 64
+    artifact_root = tmp_path / "analysis-artifacts"
+    artifact = DeferredAnalysisArtifactStore(artifact_root).save(
+        artifact_id=artifact_id,
+        session_id=session_id,
+        source_id=source_id,
+        source_revision=source_revision,
+        curriculum_volume_id="bnu24-math-g7-upper",
+        bundle=bundle,
+    )
+    store = JobStore(db.db_path)
+    job = store.create_job(
+        "question_bank_sync",
+        {
+            "session_id": session_id,
+            "mode": "sync",
+            "config_revision": revision,
+            "source_paper_sha256": source_sha256,
+            "curriculum_volume_id": "bnu24-math-g7-upper",
+            "analysis_artifact_id": artifact.artifact_id,
+            "analysis_artifact_hash": artifact.content_hash,
+            "analysis_source_id": source_id,
+            "analysis_source_revision": source_revision,
+        },
+    )
+    assert store.mark_running(job.id)
+    context = JobContext(
+        job_id=job.id,
+        job_type=job.job_type,
+        payload=job.payload,
+        store=store,
+    )
+    imported_ids: list[int] = []
+
+    def import_runner(**_kwargs: Any) -> dict[str, object]:
+        with connect(question_bank_db) as connection:
+            question_id = int(
+                connection.execute(
+                    """
+                    INSERT INTO questions (
+                        question_number, question_type, question_text,
+                        answer_text, source_file
+                    ) VALUES ('1', 'choice', '1 + 1 = ?', 'B', 'paper.docx')
+                    """
+                ).lastrowid
+            )
+        imported_ids.append(question_id)
+        return {
+            "outcome": "complete",
+            "successful_question_ids": [question_id],
+            "failed_question_ids": [],
+            "failed_count": 0,
+            "retryable": False,
+        }
+
+    tagging_runner_called = False
+
+    def unexpected_tagging_runner(**_kwargs: Any) -> dict[str, object]:
+        nonlocal tagging_runner_called
+        tagging_runner_called = True
+        pytest.fail("deferred adoption must not call the tagging model runner")
+
+    result = run_session_question_bank_sync_job(
+        context=context,
+        grading_db=db,
+        question_bank_db_path=question_bank_db,
+        data_root=tmp_path / "data",
+        write_service=QuestionBankWriteService(
+            question_bank_db,
+            data_root=tmp_path / "data",
+        ),
+        question_import_runner=import_runner,
+        tagging_sync_runner=unexpected_tagging_runner,
+        ai_service_factory=_DeferredAdoptionTaggingService,
+        taxonomy_governance=_PassThroughTaxonomyGovernance(),
+        analysis_artifact_root=artifact_root,
+    )
+
+    assert result["outcome"] == "complete", result
+    assert result["tagged_count"] == 1
+    assert result["evidence_count"] == 1
+    assert result["analysis_artifact_consumed"] is True
+    assert tagging_runner_called is False
+    assert gateway.calls == [(1,)]
+    saved = QuestionService(question_bank_db).get_question(imported_ids[0])
+    assert saved is not None
+    assert any(
+        tag["tag_type"] == "knowledge_point"
+        and tag["tag_value"] == "一元一次方程"
+        for tag in saved["tags"]
+    )
+    evidence = SolutionEvidenceRepository(question_bank_db).latest(imported_ids[0])
+    assert evidence is not None
+    assert evidence["evidence"]["parts"][0]["evidence_points"][0][
+        "fine_term_links"
+    ][0]["role"] == "direct"
+    assert not (
+        artifact_root
+        / f"deferred_question_analysis_{artifact.artifact_id}.json"
+    ).exists()

@@ -26,13 +26,23 @@ _EDITABLE_FIELDS = frozenset(
         "config_base_url",
         "config_api_key",
         "config_model",
+        "teaching_prep_model",
+        "class_teacher_model",
         "request_speed_mode",
         "max_concurrent_requests",
         "requests_per_minute",
     }
 )
 _ENDPOINT_FIELDS = frozenset({"base_url", "config_base_url"})
-_MODEL_FIELDS = frozenset({"ocr_model", "grading_model", "config_model"})
+_MODEL_FIELDS = frozenset(
+    {
+        "ocr_model",
+        "grading_model",
+        "config_model",
+        "teaching_prep_model",
+        "class_teacher_model",
+    }
+)
 _SECRET_FIELDS = frozenset({"api_key", "config_api_key"})
 _MAX_ENDPOINT_LENGTH = 2048
 _MAX_MODEL_LENGTH = 200
@@ -208,6 +218,12 @@ def _public_profile(profile: Mapping[str, Any]) -> dict[str, Any]:
         "config_base_url": _public_endpoint(profile.get("config_base_url")),
         "has_config_api_key": _has_nonempty_value(profile.get("config_api_key")),
         "config_model": _clean_existing_text(profile.get("config_model")),
+        "teaching_prep_model": _clean_existing_text(
+            profile.get("teaching_prep_model")
+        ),
+        "class_teacher_model": _clean_existing_text(
+            profile.get("class_teacher_model")
+        ),
         "request_speed_mode": execution.mode,
         "max_concurrent_requests": execution.max_in_flight,
         "requests_per_minute": execution.requests_per_minute,

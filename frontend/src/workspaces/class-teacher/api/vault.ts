@@ -8,6 +8,9 @@ export interface VaultStatus {
   idle_timeout_seconds: number
   retry_after_seconds: number
   format_version: number
+  protection_mode?: 'uninitialized' | 'legacy_password_v1' | 'pin_dpapi_current_user_v2'
+  protection_state?: 'pending' | 'active' | null
+  legacy_upgrade_available?: boolean
 }
 
 export interface VaultSession {
@@ -63,12 +66,31 @@ function boolean(value: unknown): boolean {
 
 function status(payload: unknown): VaultStatus {
   const value = object(payload)
+  const initialized = boolean(value.initialized)
+  const fallbackMode = initialized ? 'legacy_password_v1' : 'uninitialized'
+  const protectionMode = value.protection_mode === undefined
+    ? fallbackMode
+    : text(value.protection_mode)
+  if (!['uninitialized', 'legacy_password_v1', 'pin_dpapi_current_user_v2'].includes(
+    protectionMode,
+  )) throw new Error('contract')
+  const protectionState = value.protection_state === undefined || value.protection_state === null
+    ? null
+    : text(value.protection_state)
+  if (protectionState !== null && !['pending', 'active'].includes(protectionState)) {
+    throw new Error('contract')
+  }
   return {
-    initialized: boolean(value.initialized),
+    initialized,
     locked: boolean(value.locked),
     idle_timeout_seconds: number(value.idle_timeout_seconds),
     retry_after_seconds: number(value.retry_after_seconds),
     format_version: number(value.format_version),
+    protection_mode: protectionMode as VaultStatus['protection_mode'],
+    protection_state: protectionState as VaultStatus['protection_state'],
+    legacy_upgrade_available: value.legacy_upgrade_available === undefined
+      ? protectionMode === 'legacy_password_v1'
+      : boolean(value.legacy_upgrade_available),
   }
 }
 
@@ -158,11 +180,27 @@ export const vaultApi = {
       decode: initialization,
     })
   },
+  initializePin(pin: string) {
+    return apiClient.request('/api/class-teacher/vault/pin/initialize', {
+      method: 'POST',
+      headers: headers(),
+      body: { pin, operation_id: operationId() },
+      decode: initialization,
+    })
+  },
   unlock(password: string) {
     return apiClient.request('/api/class-teacher/vault/unlock', {
       method: 'POST',
       headers: headers(),
       body: { password },
+      decode: session,
+    })
+  },
+  unlockPin(pin: string) {
+    return apiClient.request('/api/class-teacher/vault/pin/unlock', {
+      method: 'POST',
+      headers: headers(),
+      body: { pin },
       decode: session,
     })
   },
@@ -176,6 +214,30 @@ export const vaultApi = {
         operation_id: operationId(),
       },
       decode: session,
+    })
+  },
+  recoverPin(recoveryKey: string, newPin: string) {
+    return apiClient.request('/api/class-teacher/vault/pin/recover', {
+      method: 'POST',
+      headers: headers(),
+      body: {
+        recovery_key: recoveryKey,
+        new_pin: newPin,
+        operation_id: operationId(),
+      },
+      decode: session,
+    })
+  },
+  upgradeLegacyToPin(token: string, currentPassword: string, newPin: string) {
+    return apiClient.request('/api/class-teacher/vault/pin/upgrade', {
+      method: 'POST',
+      headers: headers(token),
+      body: {
+        current_password: currentPassword,
+        new_pin: newPin,
+        operation_id: operationId(),
+      },
+      decode: object,
     })
   },
   lock(token: string) {

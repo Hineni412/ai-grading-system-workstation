@@ -856,7 +856,6 @@ function tagsFor(question: QuestionBankListItem, tagType: string): string[] {
             <DifficultyRangeFilter
               v-model:min="filters.difficultyMin"
               v-model:max="filters.difficultyMax"
-              compact
               @change="loadQuestions(true)"
             />
           </div>

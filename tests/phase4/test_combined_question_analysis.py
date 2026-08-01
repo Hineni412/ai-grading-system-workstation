@@ -633,7 +633,7 @@ def test_combined_schema_is_strict_and_tag_only_v1_adapter_stays_separate() -> N
     assert set(item["required"]) == {
         "question_id",
         "tag_analysis",
-        "training_criteria",
+        "solution_evidence",
     }
     assert "score" not in json.dumps(schema)
     proposal = item["properties"]["tag_analysis"]["properties"][
@@ -653,6 +653,7 @@ def test_combined_schema_is_strict_and_tag_only_v1_adapter_stays_separate() -> N
     )
     assert set(adapted) == {"question_id", "tag_analysis"}
     assert "training_criteria" not in adapted
+    assert "solution_evidence" not in adapted
 
 
 class AcceptingGovernance:
@@ -906,9 +907,10 @@ def test_input_loader_includes_rich_text_and_controlled_actual_images(
     loaded = QuestionAnalysisInputLoader(
         db_path=database,
         data_root=data_root,
-    ).load((1,))
+    ).load((1,), curriculum_volume_id="pep-7-up")
 
     assert loaded[0].has_required_images is True
+    assert loaded[0].tagging_context.curriculum_volume_id == "pep-7-up"
     assert loaded[0].rich_question_blocks == (
         {"text": "富内容题干"},
     )

@@ -204,6 +204,13 @@ export interface RelationReviewQueueResponse {
   total_pages: number
 }
 
+export interface RelationBatchReviewResponse {
+  status: 'applied' | 'partial' | 'failed'
+  applied_count: number
+  failed_count: number
+  results: Array<Record<string, unknown>>
+}
+
 function hasExactKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
   const actual = Object.keys(value)
   return actual.length === keys.length && keys.every(
@@ -811,6 +818,40 @@ export function fetchRelationReviewQueue(
   return apiClient.request('/api/graph/relations/review-queue?status=suggested&page=1&page_size=20', {
     decode: decodeRelationReviewQueue,
     signal,
+  })
+}
+
+function decodeRelationBatchReview(value: unknown): RelationBatchReviewResponse {
+  if (
+    !isRecord(value)
+    || !['applied', 'partial', 'failed'].includes(String(value.status))
+    || !isInteger(value.applied_count)
+    || !isInteger(value.failed_count)
+    || !Array.isArray(value.results)
+    || !value.results.every(isRecord)
+    || value.results.length !== value.applied_count + value.failed_count
+  ) throw new Error('Invalid relation batch review response')
+  return value as unknown as RelationBatchReviewResponse
+}
+
+export function reviewRelationExceptions(input: {
+  items: RelationReviewQueueItem[]
+  action: 'confirm' | 'reject'
+}): Promise<RelationBatchReviewResponse> {
+  return apiClient.request('/api/graph/relations/review-batch', {
+    method: 'POST',
+    body: {
+      teacher_ref: 'teacher:local-workbench',
+      commands: input.items.map((item) => ({
+        relation_id: item.relation_id,
+        expected_revision: item.revision,
+        action: input.action,
+        reason: input.action === 'confirm'
+          ? '教师在异常队列中确认 AI 建议'
+          : '教师在异常队列中拒绝 AI 建议',
+      })),
+    },
+    decode: decodeRelationBatchReview,
   })
 }
 

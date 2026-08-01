@@ -52,7 +52,10 @@ def _extract_rich_question_blocks(
     register_created_file: Callable[[Path], None] | None = None,
     write_created_file: Callable[[Path, bytes], None] | None = None,
 ) -> list[dict[str, Any]] | None:
-    from question_bank.importers.batch_importer import map_rich_content_by_number
+    from question_bank.importers.batch_importer import (
+        map_rich_content_by_number,
+        partition_ambiguous_floating_images,
+    )
     from question_bank.importers.docx_importer import import_docx
 
     temporary_path = Path(temporary_root)
@@ -76,8 +79,11 @@ def _extract_rich_question_blocks(
             controlled_writer if write_created_file is not None else None
         ),
     )
+    normalized_paragraphs, ambiguous_assets = partition_ambiguous_floating_images(
+        split_inline_main_question_paragraphs(extracted.rich_paragraphs)
+    )
     content = map_rich_content_by_number(
-        split_inline_main_question_paragraphs(extracted.rich_paragraphs),
+        normalized_paragraphs,
         source_file=str(source_path),
     )
     question_map = content.get("question") if isinstance(content, dict) else {}
@@ -117,4 +123,6 @@ def _extract_rich_question_blocks(
         )
         if block:
             blocks.append(block)
+    if blocks and ambiguous_assets:
+        blocks[0]["_ambiguous_assets"] = ambiguous_assets
     return blocks or None

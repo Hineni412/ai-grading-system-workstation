@@ -10,15 +10,17 @@ import {
 import { useQuestionBankStore } from '../../stores/question-bank'
 import QuestionContentRenderer from './QuestionContentRenderer.vue'
 import TrainingCriterionReview from './TrainingCriterionReview.vue'
+import SolutionEvidenceReview from './SolutionEvidenceReview.vue'
 
 const store = useQuestionBankStore()
 const curriculum = ref<CurriculumCatalog | null>(null)
-const editableTagTypes = QUESTION_BANK_TAG_TYPES.filter((type) => type !== 'student_level')
+const editableTagTypes = QUESTION_BANK_TAG_TYPES.filter(
+  (type) => !['student_level', 'canonical_knowledge_id'].includes(type),
+)
 const newTagType = ref<QuestionBankTag['tag_type']>('knowledge_point')
 
 const tagLabels: Record<string, string> = {
   ability: '能力',
-  canonical_knowledge_id: '标准知识点 ID',
   curriculum_section: '教材小节',
   error_type: '错误类型',
   exam_scope: '教材章节/考试范围',
@@ -134,10 +136,6 @@ function removeTag(index: number): void {
   store.replaceTagDraft(store.tagDraft.filter((_tag, itemIndex) => itemIndex !== index))
 }
 
-function updateConfidence(tag: QuestionBankTag, value: string): void {
-  tag.confidence = value === '' ? null : Number(value)
-}
-
 function validTags(): boolean {
   return store.tagDraft.every((tag) => (
     tag.tag_value.trim().length > 0 &&
@@ -249,6 +247,7 @@ async function removeCurrent(): Promise<void> {
             </div>
           </section>
 
+          <SolutionEvidenceReview :question-id="store.detail.id" />
           <TrainingCriterionReview :question-id="store.detail.id" />
 
           <section class="qb-tags" aria-labelledby="qb-tags-title">
@@ -327,16 +326,6 @@ async function removeCurrent(): Promise<void> {
                       maxlength="36"
                       :aria-label="`${group.label}标签值`"
                       placeholder="标签值"
-                    >
-                    <input
-                      :value="tag.confidence ?? ''"
-                      type="number"
-                      min="0"
-                      max="1"
-                      step="0.01"
-                      :aria-label="`${tag.tag_value || group.label}置信度`"
-                      placeholder="置信度"
-                      @input="updateConfidence(tag, ($event.currentTarget as HTMLInputElement).value)"
                     >
                     <button
                       type="button"

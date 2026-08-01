@@ -6,6 +6,9 @@ from typing import Any
 
 from question_bank.database.schema import connect
 from question_bank.models.tag_schema import TaggingContext
+from question_bank.relations.evidence_governance import (
+    EvidenceRelationGovernanceService,
+)
 from question_bank.services.ai_tagging_service import (
     AITaggingResult,
     AITaggingService,
@@ -15,6 +18,20 @@ from question_bank.services.ai_tagging_service import (
 from question_bank.services.question_service import (
     CORE_ANALYSIS_TAG_TYPES,
     QuestionService,
+)
+from question_bank.solution_evidence import (
+    FineTermCoreMappingRepository,
+    SolutionEvidenceProjectionWriter,
+    SolutionEvidenceRepository,
+    build_fine_term_mapping_baseline,
+    install_fine_term_mapping_baseline,
+)
+from question_bank.training_criteria import (
+    CombinedAnalysisRepository,
+    CombinedQuestionAnalysisModule,
+    ExistingTagProjectionWriter,
+    OpenAICombinedAnalysisGateway,
+    QuestionAnalysisInputLoader,
 )
 
 from .execution_locks import keyed_execution_locks
@@ -29,6 +46,7 @@ _RETRYABLE_CATEGORIES = {
     "parse",
     "quality",
     "save",
+    "evidence",
     "unknown",
 }
 _PUBLIC_FAILURE_MESSAGES = {
@@ -39,6 +57,7 @@ _PUBLIC_FAILURE_MESSAGES = {
     "validation": "Question is unavailable for tagging.",
     "quality": "AI tagging result did not meet the save quality gate.",
     "save": "Complete AI tags could not be saved.",
+    "evidence": "Solution evidence could not be saved.",
     "unknown": "AI tagging failed.",
 }
 
@@ -50,8 +69,21 @@ def run_tagging_sync_job(
     ai_service_factory: TaggingFactory,
     taxonomy_governance: Any | None = None,
     batch_size: int = 20,
+    data_root: Path | None = None,
 ) -> dict[str, object]:
     question_ids = _normalize_question_ids(context.payload.get("question_ids"))
+    retry_evidence_question_ids = _normalize_retry_evidence_question_ids(
+        context.payload.get("retry_evidence_question_ids"),
+        requested_ids=question_ids,
+    )
+    retry_relation_question_ids = _normalize_retry_evidence_question_ids(
+        context.payload.get("retry_relation_question_ids"),
+        requested_ids=question_ids,
+    )
+    force_retag_question_ids = _normalize_retry_evidence_question_ids(
+        context.payload.get("force_retag_question_ids"),
+        requested_ids=question_ids,
+    )
     db_path = Path(question_bank_db_path)
     lock_keys = [
         f"tagging-sync:{db_path.resolve(strict=False)}:{question_id}"
@@ -67,7 +99,11 @@ def run_tagging_sync_job(
             ai_service_factory=ai_service_factory,
             taxonomy_governance=taxonomy_governance,
             batch_size=batch_size,
+            data_root=(None if data_root is None else Path(data_root)),
             question_ids=question_ids,
+            retry_evidence_question_ids=retry_evidence_question_ids,
+            retry_relation_question_ids=retry_relation_question_ids,
+            force_retag_question_ids=force_retag_question_ids,
             curriculum_volume_id=str(
                 context.payload.get("curriculum_volume_id") or ""
             ).strip(),
@@ -81,17 +117,33 @@ def _run_tagging_sync_job_locked(
     ai_service_factory: TaggingFactory,
     taxonomy_governance: Any | None,
     batch_size: int,
+    data_root: Path | None,
     question_ids: list[int],
+    retry_evidence_question_ids: list[int],
+    retry_relation_question_ids: list[int],
+    force_retag_question_ids: list[int],
     curriculum_volume_id: str,
 ) -> dict[str, object]:
     size = max(1, min(int(batch_size), 50))
     db_path = Path(question_bank_db_path)
     context.raise_if_cancelled()
+    if (
+        retry_relation_question_ids
+        and set(retry_relation_question_ids) == set(question_ids)
+        and not retry_evidence_question_ids
+    ):
+        return _replay_relation_governance(
+            context=context,
+            db_path=db_path,
+            question_ids=retry_relation_question_ids,
+        )
     try:
         contexts, complete_ids, unavailable_ids = _load_tagging_candidates(
             db_path,
             question_ids,
             curriculum_volume_id=curriculum_volume_id,
+            force_question_ids=set(retry_evidence_question_ids)
+            | set(force_retag_question_ids),
         )
     except Exception:
         raise RuntimeError("tagging sync setup failed") from None
@@ -101,6 +153,16 @@ def _run_tagging_sync_job_locked(
     successful_ids = list(complete_ids)
     tagged_count = 0
     pending_ids = [item for item in question_ids if item in contexts]
+    complete_set = set(complete_ids)
+    evidence_retry_set = set(retry_evidence_question_ids)
+    evidence_only_ids = [
+        item
+        for item in pending_ids
+        if item in evidence_retry_set and item in complete_set
+    ]
+    normal_pending_ids = [
+        item for item in pending_ids if item not in set(evidence_only_ids)
+    ]
     total_batches = max(1, (len(pending_ids) + size - 1) // size)
     try:
         ai_service = ai_service_factory() if pending_ids else None
@@ -118,6 +180,33 @@ def _run_tagging_sync_job_locked(
             governance,
             contexts=contexts,
         )
+    if (
+        pending_ids
+        and data_root is not None
+        and isinstance(ai_service, AITaggingService)
+    ):
+        return _run_unified_tagging_analysis(
+            context=context,
+            db_path=db_path,
+            data_root=data_root,
+            ai_service=ai_service,
+            pending_ids=pending_ids,
+            evidence_only_ids=evidence_only_ids,
+            complete_ids=complete_ids,
+            unavailable_ids=unavailable_ids,
+            taxonomy_contracts=taxonomy_contracts,
+            taxonomy_revision=taxonomy_revision,
+            requested_ids=question_ids,
+            retry_relation_question_ids=retry_relation_question_ids,
+            taxonomy_governance=governance,
+        )
+    if evidence_only_ids:
+        # Evidence-only retry is available only through the combined-v3 path.
+        # Fail closed here so an already-successful tag projection is never
+        # rewritten by the legacy tag-only implementation.
+        failures.extend(_failure(question_id, "evidence") for question_id in evidence_only_ids)
+        pending_ids = normal_pending_ids
+        total_batches = max(1, (len(pending_ids) + size - 1) // size)
     proposal_ids: list[str] = []
     proposal_keys: set[str] = set()
     review_question_ids: list[int] = []
@@ -233,9 +322,400 @@ def _run_tagging_sync_job_locked(
         "review_count": len(proposal_keys),
         "review_question_ids": review_question_ids,
         "proposal_ids": proposal_ids,
+        "evidence_succeeded_question_ids": [],
+        "evidence_failed_question_ids": list(evidence_only_ids),
         "retryable": any(
             str(item["category"]) in _RETRYABLE_CATEGORIES for item in failures
         ),
+    }
+
+
+class _CancellationAwareCombinedGateway:
+    def __init__(self, gateway: Any, context: JobContext) -> None:
+        self.gateway = gateway
+        self.context = context
+
+    def analyze(self, *args: Any, **kwargs: Any) -> Any:
+        self.context.raise_if_cancelled()
+        response = self.gateway.analyze(*args, **kwargs)
+        self.context.raise_if_cancelled()
+        return response
+
+
+def _run_unified_tagging_analysis(
+    *,
+    context: JobContext,
+    db_path: Path,
+    data_root: Path,
+    ai_service: AITaggingService,
+    pending_ids: list[int],
+    evidence_only_ids: list[int],
+    complete_ids: list[int],
+    unavailable_ids: list[int],
+    taxonomy_contracts: Mapping[int, Mapping[str, Any]],
+    taxonomy_revision: int,
+    requested_ids: list[int],
+    retry_relation_question_ids: list[int],
+    taxonomy_governance: Any | None,
+) -> dict[str, object]:
+    """Run the production tagging entry through combined-v3 once per batch."""
+
+    context.raise_if_cancelled()
+    loader = QuestionAnalysisInputLoader(db_path=db_path, data_root=data_root)
+    loaded_by_id: dict[int, Any] = {}
+    input_failures: list[dict[str, object]] = [
+        _failure(question_id, "validation") for question_id in unavailable_ids
+    ]
+    for question_id in pending_ids:
+        try:
+            loaded_by_id[question_id] = loader.load(
+                (question_id,),
+                taxonomy_contracts={
+                    question_id: taxonomy_contracts.get(question_id, {})
+                },
+            )[0]
+        except (KeyError, OSError, TypeError, ValueError):
+            input_failures.append(_failure(question_id, "validation"))
+    if not loaded_by_id:
+        failed_ids = [int(item["question_id"]) for item in input_failures]
+        outcome = "partial" if complete_ids else "failed"
+        context.report(1.0, "tagging_sync", outcome)
+        return {
+            "outcome": outcome,
+            "requested_count": len(requested_ids),
+            "skipped_complete_count": len(complete_ids),
+            "tagged_count": 0,
+            "failed_count": len(failed_ids),
+            "successful_question_ids": list(complete_ids),
+            "failed_question_ids": failed_ids,
+            "failures": input_failures,
+            "taxonomy_revision": taxonomy_revision,
+            "retrieval_miss_count": 0,
+            "retrieval_miss_question_ids": [],
+            "review_count": 0,
+            "review_question_ids": [],
+            "proposal_ids": [],
+            "evidence_succeeded_question_ids": [],
+            "evidence_failed_question_ids": failed_ids,
+            "retryable": False,
+        }
+    context.report(0.1, "tagging_sync", "combined-v3")
+    protocol_adapter = ai_service._protocol_adapter()
+    gateway = _CancellationAwareCombinedGateway(
+        OpenAICombinedAnalysisGateway(
+            protocol_adapter=protocol_adapter,
+            model_name=ai_service.model,
+        ),
+        context,
+    )
+    mapping_repository = FineTermCoreMappingRepository(db_path)
+    install_fine_term_mapping_baseline(
+        mapping_repository,
+        build_fine_term_mapping_baseline(),
+        actor_ref="system:taxonomy-baseline-v1",
+    )
+    tag_writer = ExistingTagProjectionWriter(
+        question_service=QuestionService(db_path),
+        tagging_service=ai_service,
+    )
+    evidence_writer = SolutionEvidenceProjectionWriter(
+        mapping_repository=mapping_repository,
+        evidence_repository=SolutionEvidenceRepository(db_path),
+        taxonomy_governance=(
+            taxonomy_governance or ai_service.taxonomy_governance
+        ),
+    )
+    module = CombinedQuestionAnalysisModule(
+        repository=CombinedAnalysisRepository(db_path),
+        gateway=gateway,
+        tag_writer=tag_writer,
+        evidence_writer=evidence_writer,
+    )
+    evidence_only_set = set(evidence_only_ids)
+    regular_loaded = tuple(
+        loaded_by_id[question_id]
+        for question_id in pending_ids
+        if question_id in loaded_by_id and question_id not in evidence_only_set
+    )
+    evidence_loaded = tuple(
+        loaded_by_id[question_id]
+        for question_id in evidence_only_ids
+        if question_id in loaded_by_id
+    )
+    summaries: list[Mapping[str, Any]] = []
+    audit_rows: list[Mapping[str, Any]] = []
+    if regular_loaded:
+        regular_operation_id = f"tagging-sync:{context.job_id}"
+        summaries.append(
+            module.analyze(
+                operation_id=regular_operation_id,
+                questions=regular_loaded,
+                projection="both",
+            )
+        )
+        regular_ids = [item.question_id for item in regular_loaded]
+        audit_rows.extend(
+            (
+                tag_writer.audit_summary(regular_operation_id, regular_ids),
+                evidence_writer.audit_summary(
+                    regular_operation_id,
+                    regular_ids,
+                ),
+            )
+        )
+    if evidence_loaded:
+        evidence_operation_id = f"tagging-sync:{context.job_id}:evidence"
+        summaries.append(
+            module.analyze(
+                operation_id=evidence_operation_id,
+                questions=evidence_loaded,
+                projection="training_criteria",
+            )
+        )
+        audit_rows.append(
+            evidence_writer.audit_summary(
+                evidence_operation_id,
+                [item.question_id for item in evidence_loaded],
+            )
+        )
+    context.raise_if_cancelled()
+    items: dict[int, Mapping[str, Any]] = {}
+    for summary in summaries:
+        for item in summary.get("items", []):
+            if isinstance(item, Mapping):
+                items[int(item["question_id"])] = item
+    failures = list(input_failures)
+    tag_success = list(complete_ids)
+    newly_tagged: list[int] = []
+    evidence_success: list[int] = []
+    evidence_failed: list[int] = []
+    for question_id in pending_ids:
+        item = items.get(question_id)
+        if item is None:
+            if not any(int(entry["question_id"]) == question_id for entry in failures):
+                failures.append(_failure(question_id, "validation"))
+            evidence_failed.append(question_id)
+            continue
+        if question_id not in evidence_only_set:
+            if str(item.get("tag_status")) == "succeeded":
+                tag_success.append(question_id)
+                newly_tagged.append(question_id)
+            else:
+                category = _combined_public_category(
+                    str(item.get("tag_error_category") or "")
+                )
+                failures.append(_failure(question_id, category))
+        if str(item.get("criteria_status")) == "succeeded":
+            evidence_success.append(question_id)
+        else:
+            evidence_failed.append(question_id)
+            if not any(
+                int(entry["question_id"]) == question_id
+                for entry in failures
+            ):
+                failures.append(_failure(question_id, "evidence"))
+    successful_ids = [item for item in requested_ids if item in set(tag_success)]
+    failed_set = {
+        int(item["question_id"]) for item in failures
+    } | set(evidence_failed)
+    failed_ids = [item for item in requested_ids if item in failed_set]
+    audits = _merge_governance_audits(*audit_rows)
+    if retry_relation_question_ids:
+        audits["relation_hints"].extend(
+            SolutionEvidenceRepository(db_path).relation_hints(
+                retry_relation_question_ids,
+                operation_id=f"tagging-sync:{context.job_id}:relation-replay",
+            )
+        )
+    try:
+        relation_governance = EvidenceRelationGovernanceService(db_path).govern(
+            audits["relation_hints"],
+            operation_id=f"tagging-sync:{context.job_id}",
+        )
+        relation_governance["status"] = "complete"
+    except Exception as exc:
+        # Relation governance is a recoverable secondary projection. A graph
+        # write failure must never discard otherwise valid question tags or
+        # solution evidence.
+        relation_governance = {
+            "status": "failed",
+            "candidate_count": len(audits["relation_hints"]),
+            "auto_confirmed_count": 0,
+            "exception_count": 0,
+            "reused_count": 0,
+            "failed_count": len(audits["relation_hints"]),
+            "failed_question_ids": sorted({
+                int(item.get("question_id") or 0)
+                for item in audits["relation_hints"]
+                if int(item.get("question_id") or 0) > 0
+            }),
+            "error_type": type(exc).__name__,
+        }
+    relation_failed_ids = [
+        int(item)
+        for item in relation_governance.get("failed_question_ids", [])
+    ]
+    if failures or evidence_failed or relation_failed_ids:
+        outcome = "partial" if successful_ids or evidence_success else "failed"
+    else:
+        outcome = "complete"
+    context.report(1.0, "tagging_sync", outcome)
+    return {
+        "outcome": outcome,
+        "requested_count": len(requested_ids),
+        "skipped_complete_count": len(complete_ids),
+        "tagged_count": len(newly_tagged),
+        "failed_count": len(failed_ids),
+        "successful_question_ids": successful_ids,
+        "failed_question_ids": failed_ids,
+        "failures": failures,
+        "taxonomy_revision": taxonomy_revision,
+        "retrieval_miss_count": len(audits["retrieval_misses"]),
+        "retrieval_miss_question_ids": audits["retrieval_miss_question_ids"],
+        "review_count": len(audits["proposals"]),
+        "review_question_ids": audits["proposal_question_ids"],
+        "proposal_ids": [
+            proposal_id
+            for item in audits["proposals"]
+            if (proposal_id := _proposal_id(item))
+        ],
+        "evidence_secondary_match_count": len(audits["secondary_matches"]),
+        "relation_governance": relation_governance,
+        "relation_governance_failed_question_ids": relation_failed_ids,
+        "evidence_succeeded_question_ids": evidence_success,
+        "evidence_failed_question_ids": evidence_failed,
+        "analysis_contract": "combined-v3",
+        "retryable": bool(failures or evidence_failed or relation_failed_ids),
+    }
+
+
+def _replay_relation_governance(
+    *,
+    context: JobContext,
+    db_path: Path,
+    question_ids: list[int],
+) -> dict[str, object]:
+    """Retry the local graph projection from saved evidence without calling AI."""
+
+    context.report(0.1, "tagging_sync", "relation_replay")
+    hints = SolutionEvidenceRepository(db_path).relation_hints(
+        question_ids,
+        operation_id=f"tagging-sync:{context.job_id}:relation-replay",
+    )
+    try:
+        governance = EvidenceRelationGovernanceService(db_path).govern(
+            hints,
+            operation_id=f"tagging-sync:{context.job_id}:relation-replay",
+        )
+        governance["status"] = "complete"
+    except Exception as exc:
+        governance = {
+            "status": "failed",
+            "candidate_count": len(hints),
+            "auto_confirmed_count": 0,
+            "exception_count": 0,
+            "reused_count": 0,
+            "failed_count": len(hints),
+            "failed_question_ids": list(question_ids),
+            "error_type": type(exc).__name__,
+        }
+    failed_ids = [
+        int(item) for item in governance.get("failed_question_ids", [])
+    ]
+    outcome = "partial" if failed_ids else "complete"
+    context.report(1.0, "tagging_sync", outcome)
+    return {
+        "outcome": outcome,
+        "requested_count": len(question_ids),
+        "skipped_complete_count": len(question_ids),
+        "tagged_count": 0,
+        "failed_count": len(failed_ids),
+        "successful_question_ids": [
+            item for item in question_ids if item not in set(failed_ids)
+        ],
+        "failed_question_ids": failed_ids,
+        "failures": [],
+        "taxonomy_revision": 0,
+        "retrieval_miss_count": 0,
+        "retrieval_miss_question_ids": [],
+        "review_count": 0,
+        "review_question_ids": [],
+        "proposal_ids": [],
+        "evidence_succeeded_question_ids": [],
+        "evidence_failed_question_ids": [],
+        "relation_governance": governance,
+        "relation_governance_failed_question_ids": failed_ids,
+        "analysis_contract": "combined-v3-relation-replay",
+        "retryable": bool(failed_ids),
+    }
+
+
+def _combined_public_category(category: str) -> str:
+    normalized = str(category or "").strip().casefold()
+    if normalized in {"tag_validation", "validation"}:
+        return "quality"
+    if normalized == "missing_image":
+        return "validation"
+    if normalized in {"timeout", "parse"}:
+        return normalized
+    return "unknown"
+
+
+def _merge_governance_audits(*audits: Mapping[str, Any]) -> dict[str, Any]:
+    retrieval_misses: list[dict[str, Any]] = []
+    proposals: list[dict[str, Any]] = []
+    secondary_matches: list[dict[str, Any]] = []
+    relation_hints: list[dict[str, Any]] = []
+    retrieval_question_ids: list[int] = []
+    proposal_question_ids: list[int] = []
+    seen_misses: set[str] = set()
+    seen_proposals: set[str] = set()
+    seen_secondary: set[str] = set()
+    seen_relation_hints: set[str] = set()
+    for audit in audits:
+        for item in audit.get("retrieval_misses", []):
+            if not isinstance(item, Mapping):
+                continue
+            signature = repr(sorted(dict(item).items()))
+            if signature not in seen_misses:
+                seen_misses.add(signature)
+                retrieval_misses.append(dict(item))
+        for item in audit.get("proposals", []):
+            if not isinstance(item, Mapping):
+                continue
+            signature = _proposal_key(item)
+            if signature not in seen_proposals:
+                seen_proposals.add(signature)
+                proposals.append(dict(item))
+        for item in audit.get("secondary_matches", []):
+            if not isinstance(item, Mapping):
+                continue
+            signature = repr(sorted(dict(item).items()))
+            if signature not in seen_secondary:
+                seen_secondary.add(signature)
+                secondary_matches.append(dict(item))
+        for item in audit.get("relation_hints", []):
+            if not isinstance(item, Mapping):
+                continue
+            signature = repr(sorted(dict(item).items()))
+            if signature not in seen_relation_hints:
+                seen_relation_hints.add(signature)
+                relation_hints.append(dict(item))
+        for key, target in (
+            ("retrieval_miss_question_ids", retrieval_question_ids),
+            ("proposal_question_ids", proposal_question_ids),
+        ):
+            for question_id in audit.get(key, []):
+                value = int(question_id)
+                if value not in target:
+                    target.append(value)
+    return {
+        "retrieval_misses": retrieval_misses,
+        "proposals": proposals,
+        "secondary_matches": secondary_matches,
+        "relation_hints": relation_hints,
+        "retrieval_miss_question_ids": retrieval_question_ids,
+        "proposal_question_ids": proposal_question_ids,
     }
 
 
@@ -261,11 +741,35 @@ def _normalize_question_ids(value: object) -> list[int]:
     return result
 
 
+def _normalize_retry_evidence_question_ids(
+    value: object,
+    *,
+    requested_ids: Sequence[int],
+) -> list[int]:
+    if value is None:
+        return []
+    if not isinstance(value, Sequence) or isinstance(
+        value,
+        (str, bytes, bytearray),
+    ):
+        raise ValueError("retry_evidence_question_ids must be a list")
+    if not value:
+        return []
+    normalized = _normalize_question_ids(value)
+    requested = set(int(item) for item in requested_ids)
+    if any(question_id not in requested for question_id in normalized):
+        raise ValueError(
+            "retry_evidence_question_ids must be a subset of question_ids"
+        )
+    return normalized
+
+
 def _load_tagging_candidates(
     db_path: Path,
     question_ids: list[int],
     *,
     curriculum_volume_id: str = "",
+    force_question_ids: set[int] | None = None,
 ) -> tuple[dict[int, TaggingContext], list[int], list[int]]:
     placeholders = ",".join("?" for _ in question_ids)
     with connect(db_path) as conn:
@@ -299,26 +803,29 @@ def _load_tagging_candidates(
     contexts: dict[int, TaggingContext] = {}
     complete: list[int] = []
     unavailable: list[int] = []
+    forced = force_question_ids or set()
     for question_id in question_ids:
         row = rows_by_id.get(question_id)
         if row is None or bool(row["is_deleted"]):
             unavailable.append(question_id)
-        elif required.issubset(tag_types.get(question_id, set())):
+            continue
+        if required.issubset(tag_types.get(question_id, set())):
             complete.append(question_id)
-        else:
-            contexts[question_id] = TaggingContext(
-                question_text=str(row["question_text"] or ""),
-                answer_text=str(row["answer_text"] or ""),
-                question_number=str(row["question_number"] or ""),
-                question_type=str(row["question_type"] or ""),
-                grade=str(row["grade"] or ""),
-                semester=str(row["semester"] or ""),
-                textbook_version=str(row["textbook_version"] or ""),
-                curriculum_volume_id=curriculum_volume_id,
-                exam_type=str(row["exam_type"] or ""),
-                district=str(row["district"] or ""),
-                has_images=bool(row["has_images"]),
-            )
+            if question_id not in forced:
+                continue
+        contexts[question_id] = TaggingContext(
+            question_text=str(row["question_text"] or ""),
+            answer_text=str(row["answer_text"] or ""),
+            question_number=str(row["question_number"] or ""),
+            question_type=str(row["question_type"] or ""),
+            grade=str(row["grade"] or ""),
+            semester=str(row["semester"] or ""),
+            textbook_version=str(row["textbook_version"] or ""),
+            curriculum_volume_id=curriculum_volume_id,
+            exam_type=str(row["exam_type"] or ""),
+            district=str(row["district"] or ""),
+            has_images=bool(row["has_images"]),
+        )
     return contexts, complete, unavailable
 
 

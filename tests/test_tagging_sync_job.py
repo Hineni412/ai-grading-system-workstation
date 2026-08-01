@@ -14,8 +14,11 @@ from backend.jobs.store import JobStore
 from backend.jobs.tagging_sync import run_tagging_sync_job
 from question_bank.models.question import QuestionCreate
 from question_bank.models.tag_schema import TagAnalysis
-from question_bank.services.ai_tagging_service import AITaggingResult
+from question_bank.services.ai_tagging_service import AITaggingResult, AITaggingService
 from question_bank.services.question_service import QuestionService
+from question_bank.solution_evidence import SolutionEvidenceRepository
+from question_bank.taxonomy.governance import TaxonomyGovernance
+from question_bank.training_criteria import GatewayBatchResponse
 
 
 def _analysis(*, confidence: float = 0.88) -> TagAnalysis:
@@ -116,6 +119,149 @@ def test_tagging_sync_saves_only_complete_results(tmp_path: Path) -> None:
     assert "fake-tag-model" not in json.dumps(result)
 
 
+def test_production_tagging_uses_one_combined_call_and_persists_point_evidence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "qb.db"
+    data_root = tmp_path / "data"
+    question_id = QuestionService(db_path).add_question(
+        QuestionCreate(
+            question_number="1",
+            question_text="计算整式运算并化简。",
+            answer_text="合并同类项后写出化简结果。",
+            question_type="解答题",
+        )
+    )
+    context, _store = _context(tmp_path, {"question_ids": [question_id]})
+    gateway_calls: list[tuple[str, tuple[int, ...]]] = []
+
+    class FakeCombinedGateway:
+        def __init__(self, **_kwargs) -> None:
+            pass
+
+        def analyze(self, batch, *, projection, operation_id, request_id):
+            del request_id
+            gateway_calls.append(
+                (projection, tuple(item.question_id for item in batch.questions))
+            )
+            item = batch.questions[0]
+            candidates = item.taxonomy_contract["candidates"]
+            knowledge = candidates["knowledge"][0]
+            ability = candidates["ability"][0]
+            curriculum = candidates["curriculum"][0]
+            tag_payload = _analysis().to_dict()
+            tag_payload.update(
+                {
+                    "knowledge_points": [knowledge["name"]],
+                    "ability_tags": [ability["name"]],
+                    "method_tags": [],
+                    "textbook_chapter": curriculum["name"],
+                    "textbook_chapters": [curriculum["name"]],
+                    "canonical_knowledge_id": knowledge["id"],
+                    "reason": "按动态候选识别整式运算。",
+                    "confidence": 0.92,
+                }
+            )
+            return GatewayBatchResponse(
+                payload={
+                    "results": [
+                        {
+                            "question_id": item.question_id,
+                            "tag_analysis": tag_payload,
+                            "solution_evidence": {
+                                "schema_version": "question-solution-evidence-v1",
+                                "question_id": item.question_id,
+                                "parts": [
+                                    {
+                                        "part_id": "part-1",
+                                        "label": "整题",
+                                        "response_mode": "process_required",
+                                        "canonical_answer": "",
+                                        "accepted_forms": [],
+                                        "full_answer": "合并同类项并写出化简结果。",
+                                        "proof_obligations": [],
+                                        "visual_requirements": [],
+                                        "deduction_policy": [
+                                            "没有合并同类项过程则该点未达成"
+                                        ],
+                                        "allow_alternative_methods": True,
+                                        "evidence_points": [
+                                            {
+                                                "evidence_point_id": "point-1",
+                                                "target": "完成整式化简",
+                                                "observable_evidence": "正确合并同类项。",
+                                                "fine_term_links": [
+                                                    {
+                                                        "fine_term_id": knowledge["id"],
+                                                        "fine_term_name": knowledge["name"],
+                                                        "role": "direct",
+                                                    }
+                                                ],
+                                                "equivalent_rules": [],
+                                                "counterexamples": [],
+                                            }
+                                        ],
+                                    }
+                                ],
+                                "auxiliary_rules": [],
+                                "rationale": "按可观察步骤拆分。",
+                                "confidence": 0.93,
+                            },
+                        }
+                    ]
+                },
+                model_name="synthetic-combined",
+            )
+
+    monkeypatch.setattr(
+        tagging_sync_module,
+        "OpenAICombinedAnalysisGateway",
+        FakeCombinedGateway,
+    )
+    governance = TaxonomyGovernance(
+        state_path=tmp_path / "taxonomy-state.json"
+    )
+    service = AITaggingService(
+        env={
+            "QUESTION_BANK_TAGGING_API_KEY": "synthetic-key",
+            "QUESTION_BANK_TAGGING_MODEL": "synthetic-combined",
+        },
+        protocol_adapter=object(),
+        taxonomy_governance=governance,
+    )
+
+    result = run_tagging_sync_job(
+        context=context,
+        question_bank_db_path=db_path,
+        data_root=data_root,
+        ai_service_factory=lambda: service,
+        taxonomy_governance=governance,
+    )
+
+    assert gateway_calls == [("both", (question_id,))]
+    assert result["outcome"] == "complete"
+    assert result["analysis_contract"] == "combined-v3"
+    assert result["evidence_succeeded_question_ids"] == [question_id]
+    assert QuestionService(db_path).get_question(question_id)["tags"]
+    stored = SolutionEvidenceRepository(db_path).latest(question_id)
+    assert stored is not None
+    assert stored["evidence"]["parts"][0]["evidence_points"][0]["target"] == (
+        "完成整式化简"
+    )
+    assert stored["evidence"]["whole_question_classification"][
+        "direct_fine_terms"
+    ] == [
+        {
+            "fine_term_id": "kp_alg_polynomial",
+            "fine_term_name": "整式运算",
+        }
+    ]
+    assert stored["evidence"]["whole_question_classification"][
+        "resolved_core_node_ids"
+    ] == ["kp_alg_polynomial"]
+
+
 def test_tagging_sync_reports_local_retrieval_misses_without_retry(
     tmp_path: Path,
 ) -> None:
@@ -150,6 +296,131 @@ def test_tagging_sync_reports_local_retrieval_misses_without_retry(
     assert result["outcome"] == "complete"
     assert result["retrieval_miss_count"] == 1
     assert result["retrieval_miss_question_ids"] == ids
+
+
+def test_unified_tagging_exposes_evidence_failure_in_retry_ids(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "qb.db"
+    data_root = tmp_path / "data"
+    ids = _seed(db_path, 1)
+    context, _store = _context(tmp_path, {"question_ids": ids})
+
+    class StubCombinedModule:
+        def __init__(self, **_kwargs) -> None:
+            pass
+
+        def analyze(self, **_kwargs):
+            return {
+                "items": [
+                    {
+                        "question_id": ids[0],
+                        "tag_status": "succeeded",
+                        "tag_error_category": "",
+                        "criteria_status": "failed",
+                        "criteria_error_category": "evidence_validation",
+                    }
+                ]
+            }
+
+    monkeypatch.setattr(
+        tagging_sync_module,
+        "CombinedQuestionAnalysisModule",
+        StubCombinedModule,
+    )
+    service = AITaggingService(
+        env={
+            "QUESTION_BANK_TAGGING_API_KEY": "synthetic-key",
+            "QUESTION_BANK_TAGGING_MODEL": "synthetic-model",
+        },
+        protocol_adapter=object(),
+    )
+
+    result = run_tagging_sync_job(
+        context=context,
+        question_bank_db_path=db_path,
+        data_root=data_root,
+        ai_service_factory=lambda: service,
+    )
+
+    assert result["successful_question_ids"] == ids
+    assert result["evidence_failed_question_ids"] == ids
+    assert result["failed_question_ids"] == ids
+    assert result["failed_count"] == 1
+    assert result["retryable"] is True
+
+
+def test_unified_evidence_retry_preserves_existing_successful_tags(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "qb.db"
+    data_root = tmp_path / "data"
+    question_id = _seed(db_path, 1)[0]
+    service = QuestionService(db_path)
+    assert service.save_tag_analysis(
+        question_id,
+        _analysis(),
+        model_name="existing-model",
+    )
+    existing_tags = service.get_question(question_id)["tags"]
+    context, _store = _context(
+        tmp_path,
+        {
+            "question_ids": [question_id],
+            "retry_evidence_question_ids": [question_id],
+        },
+    )
+    calls: list[tuple[str, tuple[int, ...]]] = []
+
+    class StubCombinedModule:
+        def __init__(self, **_kwargs) -> None:
+            pass
+
+        def analyze(self, *, questions, projection, **_kwargs):
+            calls.append(
+                (projection, tuple(item.question_id for item in questions))
+            )
+            return {
+                "items": [
+                    {
+                        "question_id": question_id,
+                        "tag_status": "not_requested",
+                        "tag_error_category": "",
+                        "criteria_status": "succeeded",
+                        "criteria_error_category": "",
+                    }
+                ]
+            }
+
+    monkeypatch.setattr(
+        tagging_sync_module,
+        "CombinedQuestionAnalysisModule",
+        StubCombinedModule,
+    )
+    ai_service = AITaggingService(
+        env={
+            "QUESTION_BANK_TAGGING_API_KEY": "synthetic-key",
+            "QUESTION_BANK_TAGGING_MODEL": "synthetic-model",
+        },
+        protocol_adapter=object(),
+    )
+
+    result = run_tagging_sync_job(
+        context=context,
+        question_bank_db_path=db_path,
+        data_root=data_root,
+        ai_service_factory=lambda: ai_service,
+    )
+
+    assert calls == [("training_criteria", (question_id,))]
+    assert service.get_question(question_id)["tags"] == existing_tags
+    assert result["outcome"] == "complete"
+    assert result["tagged_count"] == 0
+    assert result["successful_question_ids"] == [question_id]
+    assert result["evidence_succeeded_question_ids"] == [question_id]
+    assert result["failed_question_ids"] == []
 
 
 def test_tagging_sync_skips_complete_questions_and_retries_only_missing(
@@ -470,6 +741,83 @@ def test_tagging_sync_sanitizes_ai_failure_details(tmp_path: Path) -> None:
     assert result["failures"][0]["category"] == "timeout"
     assert "super-secret" not in serialized
     assert str(tmp_path) not in serialized
+
+
+def test_relation_projection_retry_replays_saved_evidence_without_ai(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "qb.db"
+    context, _store = _context(
+        tmp_path,
+        {
+            "question_ids": [11],
+            "retry_relation_question_ids": [11],
+        },
+    )
+    monkeypatch.setattr(
+        SolutionEvidenceRepository,
+        "relation_hints",
+        lambda self, question_ids, *, operation_id: [{
+            "question_id": 11,
+            "evidence_point_id": "point-1",
+            "source_keys": ["kp_alg_linear_equation"],
+            "target_keys": ["kp_alg_equation_properties"],
+            "confidence": 0.99,
+            "model_name": "stored-model",
+        }],
+    )
+    monkeypatch.setattr(
+        tagging_sync_module.EvidenceRelationGovernanceService,
+        "govern",
+        lambda self, hints, *, operation_id: {
+            "candidate_count": 1,
+            "auto_confirmed_count": 0,
+            "exception_count": 1,
+            "reused_count": 0,
+            "failed_count": 0,
+            "failed_question_ids": [],
+            "outcomes": [],
+        },
+    )
+
+    result = run_tagging_sync_job(
+        context=context,
+        question_bank_db_path=db_path,
+        ai_service_factory=lambda: (_ for _ in ()).throw(
+            AssertionError("relation replay must not call AI")
+        ),
+    )
+
+    assert result["outcome"] == "complete"
+
+
+def test_tagging_sync_explicit_retag_reanalyzes_complete_question(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "qb.db"
+    ids = _seed(db_path, 1)
+    service = QuestionService(db_path)
+    assert service.save_tag_analysis(ids[0], _analysis(), model_name="existing")
+    fake_ai = FakeAI({ids[0]: _complete()})
+    context, _store = _context(
+        tmp_path,
+        {
+            "question_ids": ids,
+            "force_retag_question_ids": ids,
+        },
+    )
+
+    result = run_tagging_sync_job(
+        context=context,
+        question_bank_db_path=db_path,
+        ai_service_factory=lambda: fake_ai,
+    )
+
+    assert fake_ai.calls == [ids]
+    assert result["tagged_count"] == 1
+    assert result["outcome"] == "complete"
+    assert result["retryable"] is False
 
 
 @pytest.mark.parametrize(

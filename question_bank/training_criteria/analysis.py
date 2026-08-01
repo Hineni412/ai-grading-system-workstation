@@ -9,6 +9,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Any, Literal, Mapping, Protocol, Sequence
 
 from question_bank.models.tag_schema import TagAnalysis, TaggingContext
+from question_bank.solution_evidence.contracts import QuestionSolutionEvidence
 
 
 AnalysisProjection = Literal["both", "tag", "training_criteria"]
@@ -360,6 +361,18 @@ class TagProjectionWriter(Protocol):
         ...
 
 
+class SolutionEvidenceWriter(Protocol):
+    def write(
+        self,
+        question: QuestionAnalysisInput,
+        payload: Mapping[str, Any],
+        *,
+        model_name: str,
+        operation_id: str,
+    ) -> QuestionSolutionEvidence:
+        ...
+
+
 class AnalysisProjectionRepository(Protocol):
     def begin_operation(
         self,
@@ -427,10 +440,12 @@ class CombinedQuestionAnalysisModule:
         repository: AnalysisProjectionRepository,
         gateway: QuestionAnalysisGateway,
         tag_writer: TagProjectionWriter,
+        evidence_writer: SolutionEvidenceWriter | None = None,
     ) -> None:
         self.repository = repository
         self.gateway = gateway
         self.tag_writer = tag_writer
+        self.evidence_writer = evidence_writer
 
     def analyze(
         self,
@@ -651,7 +666,12 @@ class CombinedQuestionAnalysisModule:
                         "training_criteria",
                     )
                     if not retry or status in {"failed", "cancelled", "pending"}:
-                        self._save_criteria(operation_id, question, raw)
+                        self._save_criteria(
+                            operation_id,
+                            question,
+                            raw,
+                            response.model_name,
+                        )
 
     def _save_tag(
         self,
@@ -699,9 +719,14 @@ class CombinedQuestionAnalysisModule:
         operation_id: str,
         question: QuestionAnalysisInput,
         raw: Mapping[str, Any],
+        model_name: str,
     ) -> None:
-        payload = raw.get("training_criteria")
-        if not isinstance(payload, Mapping):
+        evidence_payload = raw.get("solution_evidence")
+        legacy_payload = raw.get("training_criteria")
+        if not isinstance(evidence_payload, Mapping) and not isinstance(
+            legacy_payload,
+            Mapping,
+        ):
             self.repository.save_projection(
                 operation_id=operation_id,
                 question_id=question.question_id,
@@ -711,17 +736,38 @@ class CombinedQuestionAnalysisModule:
             )
             return
         try:
-            draft = TrainingCriteriaDraft.from_model_dict(
-                payload,
-                question=question,
-            )
-        except (TypeError, ValueError):
+            if isinstance(evidence_payload, Mapping):
+                if self.evidence_writer is None:
+                    raise ProjectionValidationError(
+                        "solution evidence writer is unavailable"
+                    )
+                evidence = self.evidence_writer.write(
+                    question,
+                    evidence_payload,
+                    model_name=model_name,
+                    operation_id=operation_id,
+                )
+                draft = training_criteria_from_solution_evidence(
+                    evidence,
+                    question=question,
+                )
+            else:
+                assert isinstance(legacy_payload, Mapping)
+                draft = TrainingCriteriaDraft.from_model_dict(
+                    legacy_payload,
+                    question=question,
+                )
+        except Exception:
             self.repository.save_projection(
                 operation_id=operation_id,
                 question_id=question.question_id,
                 projection="training_criteria",
                 status="failed",
-                error_category="criteria_validation",
+                error_category=(
+                    "evidence_validation"
+                    if isinstance(evidence_payload, Mapping)
+                    else "criteria_validation"
+                ),
             )
             return
         self.repository.save_projection(
@@ -934,6 +980,167 @@ def criteria_from_confirmed_rubric(
     )
 
 
+def training_criteria_from_solution_evidence(
+    evidence: QuestionSolutionEvidence,
+    *,
+    question: QuestionAnalysisInput,
+) -> TrainingCriteriaDraft:
+    """Project rich evidence to the existing score-free criterion contract."""
+
+    if evidence.question_id != question.question_id:
+        raise ProjectionValidationError(
+            "solution evidence belongs to another question"
+        )
+    if evidence.source_content_hash != solution_evidence_source_content_hash(
+        question
+    ):
+        raise ProjectionValidationError("solution evidence source is stale")
+    points = tuple(
+        TrainingCriterionPoint(
+            point_id=point.evidence_point_id,
+            target=point.target,
+            observable_evidence=point.observable_evidence,
+            equivalent_rules=point.equivalent_rules,
+            counterexamples=point.counterexamples,
+        )
+        for part in evidence.parts
+        for point in part.evidence_points
+    )
+    return TrainingCriteriaDraft(
+        schema_version="training-criteria-draft-v1",
+        question_id=question.question_id,
+        source_content_hash=question.criterion_source_content_hash,
+        question_type=question.question_type_group,
+        points=points,
+        auxiliary_rules=evidence.auxiliary_rules,
+        rationale=evidence.rationale,
+        confidence=evidence.confidence,
+        source_kind="combined_model",
+    )
+
+
+def solution_evidence_source_content_hash(
+    question: QuestionAnalysisInput,
+) -> str:
+    """Hash portable question content without a database-local question id."""
+
+    context = question.tagging_context
+    return _hash_payload(
+        {
+            "question_text": context.question_text,
+            "answer_text": context.answer_text,
+            "question_type": context.question_type,
+            "has_images": context.has_images,
+            "rich_question_blocks": question.rich_question_blocks,
+            "rich_answer_blocks": question.rich_answer_blocks,
+            "image_hashes": [
+                {
+                    "role": image.role,
+                    "mime_type": image.mime_type,
+                    "sha256": image.sha256,
+                }
+                for image in question.images
+            ],
+        }
+    )
+
+
+def rubric_skeleton_from_solution_evidence(
+    evidence: QuestionSolutionEvidence,
+    *,
+    question_ref: str | None = None,
+) -> dict[str, Any]:
+    """Build a rubric-shaped, deliberately unallocated scoring skeleton."""
+
+    return {
+        "schema_version": "solution-evidence-rubric-skeleton-v1",
+        "question_id": str(question_ref or evidence.question_id),
+        "source_evidence_version_id": evidence.version_id,
+        "source_content_hash": evidence.source_content_hash,
+        "parts": [
+            {
+                "part_id": part.part_id,
+                "part_label": part.label,
+                "response_mode": part.response_mode,
+                "require_final_answer": bool(
+                    part.canonical_answer or part.full_answer
+                ),
+                "allow_alternative_methods": part.allow_alternative_methods,
+                "deduction_policy": list(part.deduction_policy),
+                "proof_obligations": list(part.proof_obligations),
+                "visual_requirements": list(part.visual_requirements),
+                "steps": [
+                    {
+                        "step_id": point.evidence_point_id,
+                        "core_goal": point.target,
+                        "required_elements": [point.observable_evidence],
+                        "equivalent_rules": list(point.equivalent_rules),
+                        "counterexamples": list(point.counterexamples),
+                    }
+                    for point in part.evidence_points
+                ],
+            }
+            for part in evidence.parts
+        ],
+        "allocation_status": "unassigned",
+    }
+
+
+def answer_key_skeleton_from_solution_evidence(
+    evidence: QuestionSolutionEvidence,
+    *,
+    question_ref: str | None = None,
+) -> dict[str, Any]:
+    """Project the same evidence into a complete, score-free answer key."""
+
+    return {
+        "schema_version": "solution-evidence-answer-key-v1",
+        "question_id": str(question_ref or evidence.question_id),
+        "source_evidence_version_id": evidence.version_id,
+        "source_content_hash": evidence.source_content_hash,
+        "parts": [
+            {
+                "part_id": part.part_id,
+                "answer": part.full_answer or part.canonical_answer,
+                "canonical_answer": part.canonical_answer,
+                "accepted_forms": list(part.accepted_forms),
+                "analysis": part.full_answer,
+                "step_milestones": [
+                    {
+                        "step_id": point.evidence_point_id,
+                        "target": point.target,
+                        "observable_evidence": point.observable_evidence,
+                        "equivalent_rules": list(point.equivalent_rules),
+                    }
+                    for point in part.evidence_points
+                ],
+                "proof_obligations": list(part.proof_obligations),
+                "visual_requirements": list(part.visual_requirements),
+            }
+            for part in evidence.parts
+        ],
+    }
+
+
+def grading_config_skeleton_from_solution_evidence(
+    evidence: QuestionSolutionEvidence,
+    *,
+    question_ref: str | None = None,
+) -> dict[str, Any]:
+    """Return the paired rubric/answer-key source for later whole-paper allocation."""
+
+    return {
+        "rubric_question": rubric_skeleton_from_solution_evidence(
+            evidence,
+            question_ref=question_ref,
+        ),
+        "answer_key_question": answer_key_skeleton_from_solution_evidence(
+            evidence,
+            question_ref=question_ref,
+        ),
+    }
+
+
 class TagOnlyV1ResultAdapter:
     """Compatibility Adapter that exposes an old tag result at the new seam."""
 
@@ -964,13 +1171,13 @@ def combined_response_format(
     if "tag" in selected:
         item_properties["tag_analysis"] = _tag_schema()
     if "training_criteria" in selected:
-        item_properties["training_criteria"] = _criteria_schema()
+        item_properties["solution_evidence"] = _solution_evidence_schema()
     return {
         "type": "json_schema",
         "name": (
-            "question_bank_combined_analysis_v2"
+            "question_bank_combined_analysis_v3"
             if projection == "both"
-            else f"question_bank_{projection}_projection_v2"
+            else f"question_bank_{projection}_projection_v3"
         ),
         "strict": True,
         "schema": {
@@ -1082,6 +1289,94 @@ def _criteria_schema() -> dict[str, Any]:
     }
 
 
+def _solution_evidence_schema() -> dict[str, Any]:
+    text_array = {"type": "array", "items": {"type": "string"}}
+    fine_term_properties = {
+        "fine_term_id": {"type": "string"},
+        "fine_term_name": {"type": "string"},
+        "role": {
+            "type": "string",
+            "enum": ["direct", "supporting_prerequisite"],
+        },
+    }
+    fine_term_link = {
+        "type": "object",
+        "properties": fine_term_properties,
+        "required": list(fine_term_properties),
+        "additionalProperties": False,
+    }
+    evidence_point_properties = {
+        "evidence_point_id": {"type": "string"},
+        "target": {"type": "string"},
+        "observable_evidence": {"type": "string"},
+        "fine_term_links": {
+            "type": "array",
+            "minItems": 1,
+            "items": fine_term_link,
+        },
+        "equivalent_rules": text_array,
+        "counterexamples": text_array,
+    }
+    evidence_point = {
+        "type": "object",
+        "properties": evidence_point_properties,
+        "required": list(evidence_point_properties),
+        "additionalProperties": False,
+    }
+    part_properties = {
+        "part_id": {"type": "string"},
+        "label": {"type": "string"},
+        "response_mode": {
+            "type": "string",
+            "enum": [
+                "exact_objective",
+                "short_answer_points",
+                "process_required",
+                "visual_construction",
+            ],
+        },
+        "canonical_answer": {"type": "string"},
+        "accepted_forms": text_array,
+        "full_answer": {"type": "string"},
+        "proof_obligations": text_array,
+        "visual_requirements": text_array,
+        "deduction_policy": {
+            "type": "array",
+            "minItems": 1,
+            "items": {"type": "string"},
+        },
+        "allow_alternative_methods": {"type": "boolean"},
+        "evidence_points": {
+            "type": "array",
+            "minItems": 1,
+            "items": evidence_point,
+        },
+    }
+    part = {
+        "type": "object",
+        "properties": part_properties,
+        "required": list(part_properties),
+        "additionalProperties": False,
+    }
+    properties = {
+        "schema_version": {
+            "type": "string",
+            "enum": ["question-solution-evidence-v1"],
+        },
+        "question_id": {"type": "integer"},
+        "parts": {"type": "array", "minItems": 1, "items": part},
+        "auxiliary_rules": text_array,
+        "rationale": {"type": "string"},
+        "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+    }
+    return {
+        "type": "object",
+        "properties": properties,
+        "required": list(properties),
+        "additionalProperties": False,
+    }
+
+
 def _response_items(
     payload: Mapping[str, Any],
     batch: PlannedAnalysisBatch,
@@ -1126,7 +1421,7 @@ def _operation_fingerprint(
 ) -> str:
     return _hash_payload(
         {
-            "contract": "combined-v2",
+            "contract": "combined-v3",
             "requested_projection": projection,
             "questions": [
                 {
@@ -1299,5 +1594,10 @@ __all__ = [
     "TrainingCriterionPoint",
     "combined_response_format",
     "criteria_from_confirmed_rubric",
+    "answer_key_skeleton_from_solution_evidence",
+    "grading_config_skeleton_from_solution_evidence",
+    "rubric_skeleton_from_solution_evidence",
+    "solution_evidence_source_content_hash",
+    "training_criteria_from_solution_evidence",
     "plan_analysis_batches",
 ]

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -275,6 +275,17 @@ class QuestionDetailResponse(QuestionListItem):
     previews: list[QuestionPreviewMetadata]
 
 
+class QuestionSolutionEvidenceResponse(_QuestionBankModel):
+    question_id: int = Field(gt=0)
+    available: bool
+    evidence_version_id: str | None = Field(
+        default=None,
+        pattern=r"^[0-9a-f]{64}$",
+    )
+    status: Literal["proposed", "approved", "rejected", "superseded", "stale"] | None = None
+    evidence: dict[str, Any] | None = None
+
+
 class QuestionFacetItem(_QuestionBankModel):
     value: str
     count: int = Field(ge=1)
@@ -353,6 +364,11 @@ class QuestionImportRequestResponse(_QuestionBankModel):
 class QuestionTaggingJobRequest(_QuestionBankModel):
     question_ids: list[int] = Field(min_length=1, max_length=500)
     source_job_id: int | None = Field(default=None, gt=0)
+    force_retag: bool = False
+    client_request_token: str | None = Field(
+        default=None,
+        pattern=r"^[0-9a-f]{32}$",
+    )
 
 
 class QuestionJobRetryRequest(_QuestionBankModel):

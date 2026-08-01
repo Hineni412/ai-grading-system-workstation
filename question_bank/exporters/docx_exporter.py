@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 import sqlite3
 from collections import defaultdict
@@ -20,8 +21,19 @@ from question_bank.services.question_frequency_service import (
 )
 from question_bank.exporters.base_exporter import _resolve_image_path, apply_exporter_layout
 from question_bank.exporters.export_config import ExportConfig
+from question_bank.document_pipeline.word_renderer import (
+    SharedWordQuestionRenderer,
+    WordStyleProfile,
+)
+from question_bank.document_pipeline.contracts import FormulaFallback, MathExpression
+from question_bank.document_pipeline.legacy_exports import (
+    data_root_for_database,
+    published_math_metadata,
+    save_validated_legacy_export,
+)
 
 
+LOGGER = logging.getLogger(__name__)
 
 STAGE_ORDER = ["基础回补", "方法形成", "典型模型", "综合提升", "压轴迁移"]
 STAGE_TITLES = {
@@ -56,6 +68,8 @@ class ExportQuestion:
     suggested_order: int = 0
     training_stage: str = "基础回补"
     task_item_code: str = ""
+    content_revision: str = ""
+    math_expressions: tuple[MathExpression, ...] = ()
 
 
 def export_training_docx(
@@ -94,6 +108,12 @@ def export_training_docx(
     document = Document()
     active_config = config or ExportConfig()
     apply_exporter_layout(document, active_config)
+    data_root = data_root_for_database(db_path)
+    style_profile = WordStyleProfile.from_export_config(active_config)
+    renderer = SharedWordQuestionRenderer(
+        style=style_profile,
+        asset_resolver=lambda value: _resolve_image_path(value, data_root=data_root),
+    )
 
     title_name = resolve_title_name(
         display_name=display_name,
@@ -109,13 +129,28 @@ def export_training_docx(
     if audience == "teacher" and variant_code:
         document.add_paragraph(f"训练版本：{variant_code}")
 
-
+    fallbacks: list[FormulaFallback] = []
     for stage, stage_items in _group_by_stage(items).items():
         document.add_heading(STAGE_TITLES.get(stage, stage), level=1)
         for item in stage_items:
-            _add_question_to_docx(document, item, include_teacher_fields=audience == "teacher")
+            fallbacks.extend(
+                _add_question_to_docx(
+                    document,
+                    item,
+                    include_teacher_fields=audience == "teacher",
+                    renderer=renderer,
+                )
+            )
 
-    document.save(output_path)
+    save_validated_legacy_export(
+        document,
+        output_path,
+        operation_namespace="training-word",
+        question_ids=tuple(f"question-{item.question_id}" for item in items),
+        content_revisions=tuple(item.content_revision for item in items),
+        style=style_profile,
+        fallbacks=fallbacks,
+    )
     return output_path
 
 
@@ -137,6 +172,7 @@ def load_export_questions(
     details = _load_question_details(db_path, question_ids)
     tags = _load_question_tags(db_path, question_ids)
     frequencies = QuestionFrequencyService(db_path).metrics_for_questions(question_ids)
+    data_root = data_root_for_database(db_path)
     result: list[ExportQuestion] = []
     for recommendation in recommendation_list:
         question_id = int(recommendation.get("question_id") or 0)
@@ -144,6 +180,12 @@ def load_export_questions(
         detail = dict(snapshot) if isinstance(snapshot, Mapping) else details.get(question_id)
         if not detail:
             continue
+        metadata = published_math_metadata(
+            question_id,
+            data_root=data_root,
+            question_text=_text(_row_value(detail, "question_text")),
+            answer_text=_text(_row_value(detail, "answer_text")),
+        )
         tag_map = _merged_tags(tags.get(question_id, {}), detail)
         result.append(
             ExportQuestion(
@@ -166,6 +208,8 @@ def load_export_questions(
                 suggested_order=_int(recommendation.get("suggested_order")),
                 training_stage=_text(recommendation.get("training_stage")) or "基础回补",
                 task_item_code=_text(recommendation.get("task_item_code")),
+                content_revision=metadata.content_revision,
+                math_expressions=metadata.expressions,
             )
         )
     return sorted(result, key=lambda item: (STAGE_ORDER.index(item.training_stage) if item.training_stage in STAGE_ORDER else 99, item.suggested_order, item.question_id))
@@ -197,15 +241,40 @@ def teaching_tip(item: ExportQuestion) -> str:
     return tip
 
 
-def _add_question_to_docx(document: Document, item: ExportQuestion, *, include_teacher_fields: bool) -> None:
+def _add_question_to_docx(
+    document: Document,
+    item: ExportQuestion,
+    *,
+    include_teacher_fields: bool,
+    renderer: SharedWordQuestionRenderer,
+) -> tuple[FormulaFallback, ...]:
+    fallbacks: list[FormulaFallback] = []
     heading = f"{item.suggested_order or item.question_id}. 来源：{item.source_paper} 第{item.question_number}题"
     document.add_paragraph(heading)
-    document.add_paragraph(item.question_text)
-    _add_images(document, item.image_paths)
+    fallbacks.extend(
+        _report_formula_fallbacks(
+            renderer.add_text(
+            document,
+            item.question_text,
+            question_id=f"training-{item.question_id}",
+            expressions=item.math_expressions,
+            )
+        )
+    )
+    renderer.add_images(document, item.image_paths)
     if include_teacher_fields:
         if item.task_item_code:
             document.add_paragraph(f"任务题码：{item.task_item_code}")
-        document.add_paragraph(f"答案：{item.answer_text or '（暂无答案）'}")
+        document.add_paragraph("答案：")
+        fallbacks.extend(
+            _report_formula_fallbacks(
+                renderer.add_text(
+                document,
+                item.answer_text or "（暂无答案）",
+                question_id=f"training-{item.question_id}-answer",
+                )
+            )
+        )
         document.add_paragraph(f"知识点：{_join_or_dash(item.knowledge_points)}")
         document.add_paragraph(f"方法标签：{_join_or_dash(item.method_tags)}")
         document.add_paragraph(f"难度：{item.difficulty or '-'}")
@@ -216,6 +285,19 @@ def _add_question_to_docx(document: Document, item: ExportQuestion, *, include_t
         document.add_paragraph("答题区：")
         for _ in range(4):
             document.add_paragraph("____________________________________________________________")
+    return tuple(fallbacks)
+
+
+def _report_formula_fallbacks(
+    fallbacks: tuple[FormulaFallback, ...],
+) -> tuple[FormulaFallback, ...]:
+    for fallback in fallbacks:
+        LOGGER.warning(
+            "Word formula fallback for %s: %s",
+            fallback.expression_id,
+            fallback.reason,
+        )
+    return fallbacks
 
 
 def _add_images(document: Document, image_paths: list[str]) -> None:

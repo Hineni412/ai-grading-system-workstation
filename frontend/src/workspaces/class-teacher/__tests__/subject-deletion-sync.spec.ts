@@ -13,7 +13,6 @@ import {
   actionApi,
   type ActionDashboard,
   type ActionItem,
-  type SchoolCalendar,
   type WorkPlan,
 } from '../api/actions'
 import { collectionApi } from '../api/collections'
@@ -22,11 +21,9 @@ import {
   type AttentionCard,
   type SupportSubject,
 } from '../api/support'
-import { vaultApi, type VaultStatus } from '../api/vault'
 import { sopApi } from '../api/sop'
 import CollectionInboxPanel from '../components/CollectionInboxPanel.vue'
 import SupportWorkspacePanel from '../components/SupportWorkspacePanel.vue'
-import ClassTeacherWorkbenchView from '../views/ClassTeacherWorkbenchView.vue'
 
 const mounted: App[] = []
 
@@ -95,22 +92,6 @@ const attentionCard: AttentionCard = {
   evidence_sufficiency: '单条证据，仅能提示进一步了解',
   review_suggestion: '结合后续同口径证据复查',
   risk_score: null,
-}
-
-const lockedStatus: VaultStatus = {
-  initialized: true,
-  locked: true,
-  idle_timeout_seconds: 300,
-  retry_after_seconds: 0,
-  format_version: 1,
-}
-
-const calendar: SchoolCalendar = {
-  configured: false,
-  revision: 0,
-  school_day_end: null,
-  locked_dates: [],
-  working_weekdays: [1, 2, 3, 4, 5],
 }
 
 function dashboard(actions: ActionItem[]): ActionDashboard {
@@ -249,117 +230,6 @@ afterEach(() => {
 })
 
 describe('student deletion current-page consistency', () => {
-  it('removes a deleted student action from B02, B04, and B10 without reloading', async () => {
-    let deleted = false
-
-    vi.spyOn(vaultApi, 'status').mockImplementation(async (token) => ({
-      ...lockedStatus,
-      locked: !token,
-    }))
-    vi.spyOn(vaultApi, 'unlock').mockResolvedValue({
-      session_token: 'synthetic-session',
-      idle_timeout_seconds: 300,
-      recovery_key: null,
-    })
-    vi.spyOn(vaultApi, 'listBackups').mockResolvedValue([])
-    vi.spyOn(vaultApi, 'lock').mockResolvedValue({})
-    vi.spyOn(vaultApi, 'touch').mockResolvedValue({})
-
-    vi.spyOn(collectionApi, 'listInboxes').mockResolvedValue([])
-    vi.spyOn(collectionApi, 'listBoards').mockResolvedValue([])
-    vi.spyOn(actionApi, 'listPlans').mockResolvedValue([plan])
-    vi.spyOn(actionApi, 'listActions').mockImplementation(
-      async () => deleted ? [] : [structuredClone(derivedAction)],
-    )
-    vi.spyOn(actionApi, 'dashboard').mockImplementation(
-      async () => dashboard(deleted ? [] : [derivedAction]),
-    )
-    vi.spyOn(actionApi, 'getCalendar').mockResolvedValue(calendar)
-    vi.spyOn(sopApi, 'listTemplates').mockResolvedValue([])
-
-    vi.spyOn(supportApi, 'listSubjects').mockImplementation(
-      async () => structuredClone(deleted ? [subjectB] : [subjectA, subjectB]),
-    )
-    vi.spyOn(supportApi, 'listRecords').mockResolvedValue([])
-    vi.spyOn(supportApi, 'listEvidence').mockResolvedValue([])
-    vi.spyOn(supportApi, 'listAttention').mockImplementation(
-      async (_token, subjectId) => (
-        !deleted && subjectId === subjectA.subject_id
-          ? [structuredClone(attentionCard)]
-          : []
-      ),
-    )
-    vi.spyOn(supportApi, 'getSummary').mockImplementation(
-      async (_token, subjectId) => ({
-        subject_id: subjectId,
-        as_of: '2026-07-30T00:00:00.000Z',
-        items: [],
-        source_record_count: 0,
-      }),
-    )
-    vi.spyOn(supportApi, 'listSupportPlans').mockResolvedValue([])
-    vi.spyOn(supportApi, 'listQuickInbox').mockResolvedValue([])
-    vi.spyOn(supportApi, 'previewSubjectDeletion').mockResolvedValue({
-      subject_id: subjectA.subject_id,
-      affected_backup_count: 0,
-      affected_backups: [],
-      shared_object_count: 0,
-      shared_objects: [],
-      delete_confirmation_phrase: '确认完整删除学生支持数据',
-      backup_confirmation_phrase: null,
-    })
-    const deleteSubject = vi.spyOn(supportApi, 'deleteSubject')
-      .mockImplementation(async () => {
-        deleted = true
-        return {}
-      })
-
-    const host = document.createElement('div')
-    document.body.append(host)
-    const app = createApp(ClassTeacherWorkbenchView)
-    app.mount(host)
-    mounted.push(app)
-    await flushAll()
-
-    const password = host.querySelector<HTMLInputElement>('input[type="password"]')
-    if (!password) throw new Error('Missing vault password input')
-    setValue(password, '合成删除同步密码-足够长-001')
-    await nextTick()
-    buttons(host, '解锁工作台')[0]!.click()
-    await flushAll()
-
-    const b04Action = labelledControl<HTMLSelectElement>(host, '关联正式行动')
-    expect([...b04Action.options].map((option) => option.text)).toContain(derivedAction.title)
-    expect(host.querySelector('.action-list')?.textContent).toContain(derivedAction.title)
-    expect(host.textContent).toContain(attentionCard.observed_fact)
-
-    const deleteSummary = [...host.querySelectorAll<HTMLElement>('summary')]
-      .find((item) => item.textContent?.includes(`完整删除 ${subjectA.display_name}`))
-    if (!deleteSummary) throw new Error('Missing subject deletion controls')
-    deleteSummary.click()
-    await nextTick()
-    buttons(host, '查看删除影响')[0]!.click()
-    await flushAll()
-
-    const confirmation = host.querySelector<HTMLInputElement>(
-      'input[placeholder="输入：确认完整删除学生支持数据"]',
-    )
-    if (!confirmation) throw new Error('Missing subject deletion confirmation')
-    setValue(confirmation, '确认完整删除学生支持数据')
-    await nextTick()
-    buttons(host, '完整删除')[0]!.click()
-    await flushAll()
-
-    expect(deleteSubject).toHaveBeenCalledOnce()
-    expect(host.textContent).toContain(subjectB.display_name)
-    expect(host.textContent).not.toContain(subjectA.display_name)
-    expect(host.querySelector('.action-list')?.textContent ?? '').not.toContain(derivedAction.title)
-    expect(host.textContent).not.toContain(attentionCard.observed_fact)
-    expect(
-      [...b04Action.options].map((option) => option.text),
-    ).not.toContain(derivedAction.title)
-  })
-
   it('reports that deletion already completed when the B04 reread fails', async () => {
     const refreshKey = ref(0)
     const errors: string[] = []

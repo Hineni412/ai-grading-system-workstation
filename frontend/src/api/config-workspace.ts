@@ -11,10 +11,38 @@ export type GenerationMode = 'batched' | 'whole_document'
 
 export interface QuestionDecision {
   question_id: string
-  question_type: QuestionType
   excluded: boolean
+  /** Legacy fields are accepted on old persisted clients but are no longer emitted. */
+  question_type?: QuestionType
   answer_confirmed?: boolean
   answer_override?: string | null
+}
+
+export interface ConfigAmbiguousAsset {
+  candidate_id: string
+  previous_question_id: string
+  next_question_id: string
+  source_section: 'question' | 'answer'
+  asset_url: string
+}
+
+export interface ConfigSourceAsset {
+  asset_id: string
+  asset_url: string
+  assignment_state: 'automatic' | 'uncertain'
+  question_id: string | null
+  asset_kind: 'question' | 'answer'
+  candidate_question_ids: string[]
+}
+
+export type ConfigAmbiguousAssetDecision = {
+  candidate_id: string
+  action: 'ignore'
+} | {
+  candidate_id: string
+  action: 'bind'
+  question_id: string
+  asset_kind: 'question' | 'answer'
 }
 
 export interface ConfigQuestionPreview {
@@ -40,6 +68,8 @@ export interface ConfigSource {
   sha256_prefix: string
   parse_state: 'ready'
   questions: ConfigQuestionPreview[]
+  ambiguous_assets?: ConfigAmbiguousAsset[]
+  assets?: ConfigSourceAsset[]
 }
 
 export interface ConfigSourceSubmission {
@@ -52,7 +82,9 @@ export interface ConfigGenerationRequest {
   source_revision: string
   generation_mode: GenerationMode
   decisions: QuestionDecision[]
+  asset_decisions?: ConfigAmbiguousAssetDecision[]
   sync_to_question_bank: boolean
+  curriculum_volume_id?: string
   regenerate_question_ids?: string[]
   base_revision?: string
   client_request_token?: string
@@ -224,18 +256,52 @@ function isSafeBasename(value: unknown): value is string {
   return !/^[a-z]:/i.test(value) && !value.startsWith('\\\\')
 }
 
+function isAmbiguousAsset(value: unknown): value is ConfigAmbiguousAsset {
+  return isRecord(value) && hasExactKeys(value, [
+    'candidate_id', 'previous_question_id', 'next_question_id', 'source_section', 'asset_url',
+  ]) && typeof value.candidate_id === 'string' && /^A[1-9]\d{0,3}$/.test(value.candidate_id)
+    && typeof value.previous_question_id === 'string'
+    && typeof value.next_question_id === 'string'
+    && ['question', 'answer'].includes(String(value.source_section))
+    && typeof value.asset_url === 'string'
+    && /^\/api\/sessions\/[1-9]\d*\/config\/sources\/[0-9a-f]{32}\/ambiguous-assets\/A[1-9]\d{0,3}$/.test(value.asset_url)
+}
+
+function isSourceAsset(value: unknown): value is ConfigSourceAsset {
+  if (!isRecord(value) || !hasExactKeys(value, [
+    'asset_id', 'asset_url', 'assignment_state', 'question_id', 'asset_kind',
+    'candidate_question_ids',
+  ])) return false
+  return typeof value.asset_id === 'string' && /^[AP][1-9]\d{0,3}$/.test(value.asset_id)
+    && typeof value.asset_url === 'string'
+    && /^\/api\/sessions\/[1-9]\d*\/config\/sources\/[0-9a-f]{32}\/(?:ambiguous-assets\/A[1-9]\d{0,3}|questions\/[A-Za-z0-9_-]{1,100}\/assets\/(?:question|answer)(?:\/\d+)?)$/.test(value.asset_url)
+    && ['automatic', 'uncertain'].includes(String(value.assignment_state))
+    && (value.question_id === null || typeof value.question_id === 'string')
+    && ['question', 'answer'].includes(String(value.asset_kind))
+    && isStringList(value.candidate_question_ids)
+}
+
 function decodeConfigSource(value: unknown): ConfigSource {
   assertNoPathLikeKeys(value)
-  if (!isRecord(value) || !hasExactKeys(value, [
+  const baseKeys = [
     'session_id', 'source_id', 'source_revision', 'safe_filename', 'suffix', 'size_bytes',
     'sha256_prefix', 'parse_state', 'questions',
-  ]) || !isPositiveInteger(value.session_id) || typeof value.source_id !== 'string'
+  ]
+  if (!isRecord(value)
+    || Object.keys(value).some((key) => ![...baseKeys, 'ambiguous_assets', 'assets'].includes(key))
+    || baseKeys.some((key) => !(key in value))
+    || !isPositiveInteger(value.session_id) || typeof value.source_id !== 'string'
     || !/^[0-9a-f]{32}$/.test(value.source_id) || typeof value.source_revision !== 'string'
     || !/^[0-9a-f]{64}$/.test(value.source_revision) || !isSafeBasename(value.safe_filename)
     || (value.suffix !== '.docx' && value.suffix !== '.pdf') || !isPositiveInteger(value.size_bytes)
     || typeof value.sha256_prefix !== 'string' || !/^[0-9a-f]{12}$/.test(value.sha256_prefix)
     || value.parse_state !== 'ready' || !Array.isArray(value.questions)
-    || !value.questions.every(isQuestionPreview)) throw new Error('Invalid config source response')
+    || !value.questions.every(isQuestionPreview)
+    || (value.ambiguous_assets !== undefined && (
+      !Array.isArray(value.ambiguous_assets) || !value.ambiguous_assets.every(isAmbiguousAsset)
+    )) || (value.assets !== undefined && (
+      !Array.isArray(value.assets) || !value.assets.every(isSourceAsset)
+    ))) throw new Error('Invalid config source response')
   return value as unknown as ConfigSource
 }
 

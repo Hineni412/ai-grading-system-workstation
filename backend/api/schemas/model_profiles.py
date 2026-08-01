@@ -17,6 +17,8 @@ class ModelProfileUpdateRequest(_ModelProfileModel):
     config_base_url: str | None = Field(default=None, max_length=2048)
     config_api_key: str | None = Field(default=None, max_length=8192)
     config_model: str | None = Field(default=None, max_length=200)
+    teaching_prep_model: str | None = Field(default=None, max_length=200)
+    class_teacher_model: str | None = Field(default=None, max_length=200)
     request_speed_mode: Literal[
         "automatic",
         "conservative",
@@ -35,6 +37,8 @@ class ModelProfileResponse(_ModelProfileModel):
     config_base_url: str
     has_config_api_key: bool
     config_model: str
+    teaching_prep_model: str
+    class_teacher_model: str
     request_speed_mode: Literal["automatic", "conservative", "custom"]
     max_concurrent_requests: int
     requests_per_minute: int

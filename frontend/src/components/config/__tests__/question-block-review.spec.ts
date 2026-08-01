@@ -1,7 +1,11 @@
 import { createApp, nextTick, reactive } from 'vue'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import type { ConfigSource, QuestionDecision } from '../../../api/config-workspace'
+import type {
+  ConfigAmbiguousAssetDecision,
+  ConfigSource,
+  QuestionDecision,
+} from '../../../api/config-workspace'
 import QuestionBlockReview from '../QuestionBlockReview.vue'
 
 function source(overrides: Partial<ConfigSource> = {}): ConfigSource {
@@ -30,20 +34,27 @@ function source(overrides: Partial<ConfigSource> = {}): ConfigSource {
 async function mountReview(options: {
   value?: ConfigSource
   decisions?: QuestionDecision[]
+  assetDecisions?: ConfigAmbiguousAssetDecision[]
   onUpdate?: (value: QuestionDecision[]) => void
+  onAssetUpdate?: (value: ConfigAmbiguousAssetDecision[]) => void
 } = {}) {
   const host = document.createElement('div')
   document.body.append(host)
   const state = reactive({ value: options.value ?? source() })
   const onUpdate = options.onUpdate ?? vi.fn()
+  const onAssetUpdate = options.onAssetUpdate ?? vi.fn()
   const app = createApp({
     components: { QuestionBlockReview },
-    setup: () => ({ state, onUpdate, decisions: options.decisions ?? [] }),
-    template: '<QuestionBlockReview :source="state.value" :decisions="decisions" @update:decisions="onUpdate" />',
+    setup: () => ({
+      state, onUpdate, onAssetUpdate,
+      decisions: options.decisions ?? [],
+      assetDecisions: options.assetDecisions ?? [],
+    }),
+    template: '<QuestionBlockReview :source="state.value" :decisions="decisions" :asset-decisions="assetDecisions" @update:decisions="onUpdate" @update:asset-decisions="onAssetUpdate" />',
   })
   app.mount(host)
   await nextTick()
-  return { host, state, onUpdate, unmount: () => app.unmount() }
+  return { host, state, onUpdate, onAssetUpdate, unmount: () => app.unmount() }
 }
 
 function change(
@@ -60,28 +71,23 @@ function change(
 beforeEach(() => { document.body.innerHTML = '' })
 
 describe('QuestionBlockReview', () => {
-  it('emits only type and exclusion decisions for known questions', async () => {
+  it('shows preview only without question exclusion controls', async () => {
     const onUpdate = vi.fn()
     const mounted = await mountReview({
       decisions: [
-        { question_id: 'missing', question_type: 'proof', excluded: true },
-        { question_id: 'Q1', question_type: 'calculation', excluded: false },
+        { question_id: 'missing', excluded: true },
+        { question_id: 'Q1', excluded: false },
       ],
       onUpdate,
     })
-    change(mounted.host.querySelector<HTMLSelectElement>('[aria-label="Q2 题型"]')!, 'proof')
-    await nextTick()
-    change(mounted.host.querySelector<HTMLInputElement>('[aria-label="排除 Q3"]')!, true)
-    await nextTick()
-
-    expect(onUpdate).toHaveBeenLastCalledWith([
-      { question_id: 'Q2', question_type: 'proof', excluded: false },
-      { question_id: 'Q3', question_type: 'comprehensive', excluded: true },
-    ])
+    expect(mounted.host.querySelector<HTMLInputElement>('[aria-label="排除 Q3"]')).toBeNull()
+    expect(onUpdate).toHaveBeenLastCalledWith([])
+    expect(mounted.host.querySelector('[aria-label="Q2 题型"]')).toBeNull()
+    expect(mounted.host.textContent).not.toContain('确认用于生成')
+    expect(mounted.host.textContent).not.toContain('排除此题')
   })
 
-  it('emits an explicit known correction when the parsed question type is unknown', async () => {
-    const onUpdate = vi.fn()
+  it('does not expose or persist a local type guess when the parser is uncertain', async () => {
     const unknown = source({
       questions: [{
         ...source().questions[1]!,
@@ -89,13 +95,10 @@ describe('QuestionBlockReview', () => {
         question_type: 'essay-from-parser',
       }],
     })
-    const mounted = await mountReview({ value: unknown, onUpdate })
+    const mounted = await mountReview({ value: unknown })
 
-    expect(mounted.host.querySelector<HTMLSelectElement>('[aria-label="Q-unknown 题型"]')?.value)
-      .toBe('comprehensive')
-    expect(onUpdate).toHaveBeenLastCalledWith([{
-      question_id: 'Q-unknown', question_type: 'comprehensive', excluded: false,
-    }])
+    expect(mounted.host.querySelector('[aria-label="Q-unknown 题型"]')).toBeNull()
+    expect(mounted.host.textContent).toContain('题型、小问和作答方式由 AI')
   })
 
   it('shows answer facts and builds assets only from semantic identifiers', async () => {
@@ -107,105 +110,113 @@ describe('QuestionBlockReview', () => {
     expect(mounted.host.textContent).toContain('未识别到答案')
     const images = [...mounted.host.querySelectorAll<HTMLImageElement>('img')]
     expect(images.map((image) => [image.alt, image.getAttribute('src')])).toEqual([
-      ['Q1 题目图', `/api/sessions/7/config/sources/${'a'.repeat(32)}/questions/Q1/assets/question`],
-      ['Q1 答案缩略图', `/api/sessions/7/config/sources/${'a'.repeat(32)}/questions/Q1/assets/answer`],
+      ['Q1 题目图 1', `/api/sessions/7/config/sources/${'a'.repeat(32)}/questions/Q1/assets/question`],
+      ['Q1 答案图 1', `/api/sessions/7/config/sources/${'a'.repeat(32)}/questions/Q1/assets/answer`],
     ])
     expect(images.every((image) => !image.src.includes('path='))).toBe(true)
   })
 
-  it('lets the teacher correct and confirm an objective answer for generation', async () => {
-    const onUpdate = vi.fn()
+  it('renders one adjacent-image candidate and emits a single manual binding', async () => {
+    const onAssetUpdate = vi.fn()
+    const baseSource = source()
     const reviewSource = source({
-      safe_filename: '七年级数学.docx',
       suffix: '.docx',
-      questions: [{
-        ...source().questions[0]!,
-        question_id: 'Q5',
-        question_type: 'fill_blank',
-        answer_preview: '70°',
-        answer_present: true,
-        local_answer_trusted: false,
+      safe_filename: '七年级数学.docx',
+      questions: baseSource.questions.map((question) => question.question_id === 'Q2'
+        ? { ...question, has_question_asset: true }
+        : question),
+      ambiguous_assets: [{
+        candidate_id: 'A1',
+        previous_question_id: 'Q1',
+        next_question_id: 'Q2',
+        source_section: 'question',
+        asset_url: `/api/sessions/7/config/sources/${'a'.repeat(32)}/ambiguous-assets/A1`,
       }],
     })
-    const mounted = await mountReview({ value: reviewSource, onUpdate })
-    const answer = mounted.host.querySelector<HTMLTextAreaElement>(
-      '[aria-label="Q5 确认标准答案"]',
+    const mounted = await mountReview({ value: reviewSource, onAssetUpdate })
+    const selector = mounted.host.querySelector<HTMLSelectElement>('[aria-label="A1 图片归属"]')!
+
+    expect(mounted.host.querySelectorAll('.question-review__asset-candidate')).toHaveLength(1)
+    expect(mounted.host.textContent).toContain('本地程序不猜测')
+    expect(selector.querySelector<HTMLOptionElement>('option[value="Q2:question"]')?.disabled).toBe(false)
+    change(selector, 'Q2:question')
+    await nextTick()
+
+    expect(onAssetUpdate).toHaveBeenLastCalledWith([{
+      candidate_id: 'A1', action: 'bind', question_id: 'Q2', asset_kind: 'question',
+    }])
+  })
+
+  it('lets a teacher drag an automatically assigned image into an answer panel', async () => {
+    const onAssetUpdate = vi.fn()
+    const base = source({ suffix: '.docx', safe_filename: '七年级数学.docx' })
+    const assetUrl = `/api/sessions/7/config/sources/${'a'.repeat(32)}/questions/Q1/assets/question`
+    const mounted = await mountReview({
+      value: {
+        ...base,
+        assets: [{
+          asset_id: 'P1',
+          asset_url: assetUrl,
+          assignment_state: 'automatic',
+          question_id: 'Q1',
+          asset_kind: 'question',
+          candidate_question_ids: [],
+        }],
+      },
+      onAssetUpdate,
+    })
+    const values = new Map<string, string>()
+    const dataTransfer = {
+      effectAllowed: 'none',
+      setData: (type: string, value: string) => values.set(type, value),
+      getData: (type: string) => values.get(type) ?? '',
+    }
+    const dragged = mounted.host.querySelector<HTMLImageElement>('[data-asset-id="P1"]')!
+    const dragStart = new Event('dragstart', { bubbles: true })
+    Object.defineProperty(dragStart, 'dataTransfer', { value: dataTransfer })
+    dragged.dispatchEvent(dragStart)
+    const answerPanel = mounted.host.querySelector<HTMLElement>('[data-answer-panel="Q2"]')!
+    const drop = new Event('drop', { bubbles: true, cancelable: true })
+    Object.defineProperty(drop, 'dataTransfer', { value: dataTransfer })
+    answerPanel.dispatchEvent(drop)
+    await nextTick()
+
+    expect(onAssetUpdate).toHaveBeenLastCalledWith([{
+      candidate_id: 'P1', action: 'bind', question_id: 'Q2', asset_kind: 'answer',
+    }])
+  })
+
+  it('also lets a keyboard user move an automatically assigned image', async () => {
+    const onAssetUpdate = vi.fn()
+    const base = source({ suffix: '.docx', safe_filename: '七年级数学.docx' })
+    const mounted = await mountReview({
+      value: {
+        ...base,
+        assets: [{
+          asset_id: 'P1',
+          asset_url: `/api/sessions/7/config/sources/${'a'.repeat(32)}/questions/Q1/assets/question`,
+          assignment_state: 'automatic',
+          question_id: 'Q1',
+          asset_kind: 'question',
+          candidate_question_ids: [],
+        }],
+      },
+      onAssetUpdate,
+    })
+    const selector = mounted.host.querySelector<HTMLSelectElement>(
+      '.question-review__placed-asset select',
     )!
-    const confirmed = mounted.host.querySelector<HTMLInputElement>(
-      '[aria-label="确认 Q5 答案用于生成"]',
-    )!
+    expect(selector.value).toBe('Q1:question')
 
-    expect(answer.value).toBe('70°')
-    expect(confirmed.checked).toBe(false)
-    change(answer, '72°')
-    change(confirmed, true)
+    change(selector, 'Q2:answer')
     await nextTick()
 
-    expect(onUpdate).toHaveBeenLastCalledWith([{
-      question_id: 'Q5',
-      question_type: 'fill_blank',
-      excluded: false,
-      answer_confirmed: true,
-      answer_override: '72°',
+    expect(onAssetUpdate).toHaveBeenLastCalledWith([{
+      candidate_id: 'P1', action: 'bind', question_id: 'Q2', asset_kind: 'answer',
     }])
   })
 
-  it('confirms an unchanged preview without replacing the complete source answer', async () => {
-    const onUpdate = vi.fn()
-    const reviewSource = source({
-      safe_filename: '七年级数学.docx',
-      suffix: '.docx',
-      questions: [{
-        ...source().questions[0]!,
-        question_id: 'Q5',
-        question_type: 'fill_blank',
-        answer_preview: '70°',
-        answer_present: true,
-        local_answer_trusted: false,
-      }],
-    })
-    const mounted = await mountReview({ value: reviewSource, onUpdate })
-    change(mounted.host.querySelector<HTMLInputElement>(
-      '[aria-label="确认 Q5 答案用于生成"]',
-    )!, true)
-    await nextTick()
-
-    expect(onUpdate).toHaveBeenLastCalledWith([{
-      question_id: 'Q5',
-      question_type: 'fill_blank',
-      excluded: false,
-      answer_confirmed: true,
-    }])
-  })
-
-  it('drops an objective-answer confirmation when the teacher changes to a subjective type', async () => {
-    const onUpdate = vi.fn()
-    const reviewSource = source({
-      safe_filename: '七年级数学.docx',
-      suffix: '.docx',
-      questions: [{
-        ...source().questions[0]!,
-        question_id: 'Q5',
-        question_type: 'fill_blank',
-        answer_preview: '70°',
-      }],
-    })
-    const mounted = await mountReview({ value: reviewSource, onUpdate })
-    change(mounted.host.querySelector<HTMLInputElement>(
-      '[aria-label="确认 Q5 答案用于生成"]',
-    )!, true)
-    change(mounted.host.querySelector<HTMLSelectElement>('[aria-label="Q5 题型"]')!, 'proof')
-    await nextTick()
-
-    expect(onUpdate).toHaveBeenLastCalledWith([{
-      question_id: 'Q5',
-      question_type: 'proof',
-      excluded: false,
-    }])
-    expect(mounted.host.textContent).not.toContain('教师已确认答案')
-  })
-
-  it('keeps the full question visible and expands the complete answer on demand', async () => {
+  it('shows the complete question and answer side by side without an expand step', async () => {
     const onUpdate = vi.fn()
     const longQuestion = '完整题干不能折叠。'.repeat(30)
     const completeSolution = '完整解答第一步：由已知条件得到中间结论。'
@@ -238,19 +249,14 @@ describe('QuestionBlockReview', () => {
       }],
     })
     const mounted = await mountReview({ value: reviewSource, onUpdate })
-    const expand = mounted.host.querySelector<HTMLButtonElement>('[aria-label="展开 Q1 答案"]')!
-
     expect(mounted.host.querySelector('[data-question-content="Q1"]')?.classList)
       .not.toContain('question-review__preview--clamped')
     expect(mounted.host.textContent).toContain(longQuestion)
     expect(mounted.host.textContent).toContain('结论成立')
-    expect(mounted.host.textContent).not.toContain(completeSolution)
-    expect(expand.getAttribute('aria-expanded')).toBe('false')
-    expand.click()
-    await nextTick()
-    expect(expand.getAttribute('aria-expanded')).toBe('true')
-    expect(expand.textContent).toContain('收起答案')
     expect(mounted.host.textContent).toContain(completeSolution)
+    expect(mounted.host.querySelector('[aria-label="展开 Q1 答案"]')).toBeNull()
+    expect(mounted.host.querySelector('[data-question-panel="Q1"]')).not.toBeNull()
+    expect(mounted.host.querySelector('[data-answer-panel="Q1"]')).not.toBeNull()
     expect(
       [...mounted.host.querySelectorAll('.question-content')]
         .every((element) => element.classList.contains('is-dense')),
@@ -263,8 +269,7 @@ describe('QuestionBlockReview', () => {
     await nextTick()
 
     expect(onUpdate).toHaveBeenLastCalledWith([])
-    expect(mounted.host.querySelector<HTMLButtonElement>('[aria-label="展开 Q1 答案"]')?.getAttribute('aria-expanded')).toBe('false')
-    expect(mounted.host.textContent).not.toContain(completeSolution)
+    expect(mounted.host.querySelector('[aria-label="展开 Q1 答案"]')).toBeNull()
   })
 
   it('renders a continuous list and an explicit zero-question state', async () => {

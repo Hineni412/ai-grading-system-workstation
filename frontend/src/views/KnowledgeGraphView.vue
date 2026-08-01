@@ -9,7 +9,6 @@ import GraphScopeFilters from '../components/knowledge-graph/GraphScopeFilters.v
 import GraphV2NodeInspector from '../components/knowledge-graph/GraphV2NodeInspector.vue'
 import GraphV2TextDirectory from '../components/knowledge-graph/GraphV2TextDirectory.vue'
 import KnowledgeGraphV2Canvas from '../components/knowledge-graph/KnowledgeGraphV2Canvas.vue'
-import MasteryV2ComparisonPanel from '../components/knowledge-graph/MasteryV2ComparisonPanel.vue'
 import { summarizeGraphV2 } from '../features/knowledge-graph/v2-model'
 import {
   parseGraphRouteScope,
@@ -45,6 +44,13 @@ const scopeLabel = computed(() => {
   if (graph.scope.mode === 'class') return `${exams} · ${graph.scope.class_id ?? '班级暂不可用'}`
   return `${exams} · ${graph.scope.student_ids.length} 名学生`
 })
+const visibleWarnings = computed(() => [...new Set(
+  (graphStore.graph?.warnings ?? []).map((warning) => (
+    /\bv[12]\b/i.test(warning)
+      ? '当前掌握证据使用系统已启用的正式计算口径。'
+      : warning
+  )),
+)])
 
 async function initializeFromRoute(): Promise<void> {
   if (routeInitialized || sessionStore.loadState !== 'ready' || studentsState.value !== 'ready') return
@@ -107,10 +113,6 @@ function retryStudents(): void {
   void loadStudentOptions()
 }
 
-function refreshAfterRollout(): void {
-  void graphStore.retryGraph()
-}
-
 watch(
   () => sessionStore.loadState,
   () => { void initializeFromRoute() },
@@ -144,8 +146,8 @@ onBeforeUnmount(() => {
     <header class="knowledge-graph-page-heading">
       <div>
         <p>已确认关系 · 可追溯证据</p>
-        <h1 id="knowledge-graph-title" tabindex="-1">知识图谱 2.0</h1>
-        <p>查看教师已确认的父子、先修与相关关系；候选关系不会在图中生效。</p>
+        <h1 id="knowledge-graph-title" tabindex="-1">知识图谱</h1>
+        <p>查看经过规则与 AI 治理的父子、先修和相关关系；教师只处理少量异常。</p>
       </div>
       <dl v-if="graphStore.graph" class="knowledge-graph-summary" aria-label="知识图谱汇总">
         <div><dt>知识点</dt><dd>{{ summary.total }}</dd></div>
@@ -157,10 +159,6 @@ onBeforeUnmount(() => {
     </header>
 
     <GraphRelationReviewShortcut />
-    <MasteryV2ComparisonPanel
-      :query="activeQuery"
-      @rollout-changed="refreshAfterRollout"
-    />
 
     <div v-if="studentsState === 'error'" class="knowledge-graph-inline-error" role="alert">
       <p>班级和学生列表暂时无法读取</p>
@@ -215,10 +213,10 @@ onBeforeUnmount(() => {
       <section class="knowledge-graph-coverage" aria-label="证据覆盖情况">
         <strong>已覆盖 {{ graphStore.graph.coverage.covered_items }} / {{ graphStore.graph.coverage.total_items }} 份作答</strong>
         <span>未覆盖 {{ graphStore.graph.coverage.total_items - graphStore.graph.coverage.covered_items }} 份</span>
-        <span>响应版本 {{ graphStore.graph.response_version.slice(0, 8) }}</span>
+        <span>已应用当前筛选范围</span>
       </section>
-      <ul v-if="graphStore.graph.warnings.length" class="knowledge-graph-warnings" aria-label="知识图谱说明">
-        <li v-for="warning in graphStore.graph.warnings" :key="warning">{{ warning }}</li>
+      <ul v-if="visibleWarnings.length" class="knowledge-graph-warnings" aria-label="知识图谱说明">
+        <li v-for="warning in visibleWarnings" :key="warning">{{ warning }}</li>
       </ul>
       <p v-if="graphStore.graph.nodes.length === 0" class="knowledge-graph-scope-notice">
         当前范围没有可显示的已治理知识点。可调整考试或学生范围；未治理标签不会被伪装成关系节点。

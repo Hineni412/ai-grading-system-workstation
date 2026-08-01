@@ -31,21 +31,28 @@ from backend.jobs.store import JobStore
 from db_manager import DBManager
 
 
-def _client(tmp_path: Path) -> tuple[TestClient, DBManager, JobManager]:
+def _client(
+    tmp_path: Path,
+    *,
+    config_generation_handler=None,
+) -> tuple[TestClient, DBManager, JobManager]:
     db = DBManager(tmp_path / "grading.db")
     db.initialize()
     manager = JobManager(JobStore(tmp_path / "jobs.db"), max_workers=1)
     manager.register(
         "config_generation",
-        lambda context: {
-            "session_id": int(context.payload["session_id"]),
-            "outcome": "partial",
-            "total_questions": 1,
-            "generated_questions": 0,
-            "failed_count": 1,
-            "failed_question_ids": ["Q1"],
-            "retryable": True,
-        },
+        config_generation_handler
+        or (
+            lambda context: {
+                "session_id": int(context.payload["session_id"]),
+                "outcome": "partial",
+                "total_questions": 1,
+                "generated_questions": 0,
+                "failed_count": 1,
+                "failed_question_ids": ["Q1"],
+                "retryable": True,
+            }
+        ),
     )
     app = create_app()
     app.dependency_overrides[get_grading_db] = lambda: db
@@ -169,7 +176,11 @@ def test_generate_from_source_stages_private_input_and_public_job_is_safe(
 
     response = client.post(
         f"/api/sessions/{session_id}/config/generate-from-source",
-        json={**_source_request(source), "sync_to_question_bank": True},
+        json={
+            **_source_request(source),
+            "sync_to_question_bank": True,
+            "curriculum_volume_id": "bnu24-math-g7-upper",
+        },
     )
 
     assert response.status_code == 202
@@ -198,6 +209,7 @@ def test_generate_from_source_stages_private_input_and_public_job_is_safe(
     assert private_input["source_revision"] == source.source_revision
     assert private_input["generation_mode"] == "batched"
     assert private_input["sync_to_question_bank"] is True
+    assert private_input["curriculum_volume_id"] == "bnu24-math-g7-upper"
     assert private_input["decisions"] == [
         {"excluded": False, "question_id": "Q1", "question_type": "proof"}
     ]
@@ -480,9 +492,6 @@ def test_generation_request_token_rejects_a_different_request(tmp_path: Path) ->
 def test_session_allows_exact_replay_but_rejects_another_active_config_job(
     tmp_path: Path,
 ) -> None:
-    client, db, manager = _client(tmp_path)
-    session_id = _session(db, tmp_path)
-    source = _source(tmp_path, session_id)
     started = threading.Event()
     release = threading.Event()
 
@@ -495,7 +504,12 @@ def test_session_allows_exact_replay_but_rejects_another_active_config_job(
             "retryable": True,
         }
 
-    manager.register("config_generation", blocked)
+    client, db, manager = _client(
+        tmp_path,
+        config_generation_handler=blocked,
+    )
+    session_id = _session(db, tmp_path)
+    source = _source(tmp_path, session_id)
     first_request = _source_request(source, client_request_token="4" * 32)
     first = client.post(
         f"/api/sessions/{session_id}/config/generate-from-source",
@@ -1009,6 +1023,43 @@ def test_config_generation_retry_accepts_score_allocation_pending_without_batch_
     stored = manager.get(response.json()["id"])
     assert stored is not None
     assert "retry_question_ids" not in stored.payload
+
+
+def test_config_generation_retry_rejects_unknown_external_request_outcome(
+    tmp_path: Path,
+) -> None:
+    client, db, manager = _client(tmp_path)
+    session_id = _session(db, tmp_path)
+    source = manager.store.create_job(
+        "config_generation",
+        {
+            "session_id": session_id,
+            "mode": "generate",
+            "generation_mode": "batched",
+            "input_id": "a" * 32,
+        },
+    )
+    manager.store.finish(
+        source.id,
+        "failed",
+        result={
+            "session_id": session_id,
+            "outcome": "partial",
+            "failed_question_ids": [],
+            "failed_batches": [],
+            "uncertain_question_ids": ["Q1"],
+            "needs_teacher_resolution": True,
+            "retryable": False,
+        },
+    )
+
+    response = client.post(
+        f"/api/sessions/{session_id}/config/generate/retry",
+        json={"source_job_id": source.id},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "config_generation_retry_not_available"
 
 
 def test_config_generation_retry_rejects_part_of_a_failed_batch(tmp_path: Path) -> None:

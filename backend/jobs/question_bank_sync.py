@@ -6,10 +6,15 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
+from backend.config_workspace.deferred_analysis import (
+    DeferredAnalysisArtifact,
+    DeferredAnalysisArtifactStore,
+)
 from backend.config_workspace.publish import LoadedEditorConfig, load_editor_config
 from path_manager import resolve_stored_file_path
 from question_bank.database.schema import connect
 from question_bank.services.question_write_service import QuestionBankWriteService
+from question_bank.services.question_service import QuestionService
 from question_bank.services.source_question_link_service import (
     SourceQuestionLinkService,
 )
@@ -18,6 +23,18 @@ from .manager import JobCancellationRequested, JobContext
 from .question_import import run_question_import_job
 from .tagging_sync import run_tagging_sync_job
 from question_bank.taxonomy.curriculum_catalog import curriculum_volume
+from question_bank.solution_evidence import (
+    FineTermCoreMappingRepository,
+    SolutionEvidenceRepository,
+    build_fine_term_mapping_baseline,
+    install_fine_term_mapping_baseline,
+)
+from question_bank.training_criteria import (
+    ConfirmedQuestionAdoptionLink,
+    DeferredCombinedProjectionWriter,
+    ExistingTagProjectionWriter,
+    QuestionAnalysisInputLoader,
+)
 
 
 QuestionImportRunner = Callable[..., dict[str, object]]
@@ -74,6 +91,7 @@ def run_session_question_bank_sync_job(
     tagging_sync_runner: TaggingSyncRunner = run_tagging_sync_job,
     ai_service_factory: Callable[[], Any],
     taxonomy_governance: Any,
+    analysis_artifact_root: Path | None = None,
 ) -> dict[str, object]:
     """Import an archived session paper, then run governed AI tagging.
 
@@ -98,6 +116,12 @@ def run_session_question_bank_sync_job(
     volume = curriculum_volume(volume_id=payload.get("curriculum_volume_id"))
     if volume is None:
         raise ValueError("question-bank sync requires a valid curriculum volume")
+    deferred_artifact = _load_deferred_artifact(
+        payload,
+        analysis_artifact_root=analysis_artifact_root,
+        session_id=session_id,
+        curriculum_volume_id=str(volume["id"]),
+    )
 
     loaded, source_path = _load_current_inputs(
         grading_db,
@@ -193,7 +217,7 @@ def run_session_question_bank_sync_job(
             data_root=Path(data_root),
         )
 
-        if question_ids:
+        if question_ids and deferred_artifact is None:
             tag_context = _ChildJobContext(
                 parent=context,
                 payload={
@@ -210,7 +234,7 @@ def run_session_question_bank_sync_job(
                 ai_service_factory=ai_service_factory,
                 taxonomy_governance=taxonomy_governance,
             )
-        else:
+        elif deferred_artifact is None:
             tagging_result = {
                 "outcome": "failed",
                 "requested_count": 0,
@@ -251,6 +275,17 @@ def run_session_question_bank_sync_job(
             if isinstance(item, dict)
         ]
 
+        if deferred_artifact is not None:
+            context.report(0.68, "question_bank_analysis_adoption", "adopting")
+            tagging_result = _adopt_deferred_analysis(
+                artifact=deferred_artifact,
+                session_id=session_id,
+                question_bank_db_path=Path(question_bank_db_path),
+                data_root=Path(data_root),
+                link_service=link_service,
+                ai_service_factory=ai_service_factory,
+            )
+
         result = _result(
             session_id=session_id,
             mode=mode,
@@ -276,6 +311,7 @@ def run_session_question_bank_sync_job(
                 outcome=result["outcome"],
                 imported_count=result["imported_count"],
                 tagged_count=result["tagged_count"],
+                evidence_count=result["evidence_count"],
                 linked_count=result["linked_count"],
                 failed_count=result["failed_count"],
                 review_count=result["review_count"],
@@ -296,6 +332,12 @@ def run_session_question_bank_sync_job(
                 "question-bank sync ownership changed"
             )
         link_rollback_changes = []
+        if deferred_artifact is not None and result["outcome"] == "complete":
+            assert analysis_artifact_root is not None
+            DeferredAnalysisArtifactStore(
+                Path(analysis_artifact_root)
+            ).discard(deferred_artifact.artifact_id)
+            result["analysis_artifact_consumed"] = True
         context.report(1.0, "question_bank_sync", str(result["outcome"]))
         return result
     except StaleQuestionBankSyncError as exc:
@@ -476,6 +518,10 @@ def _result(
             len(successful_ids),
             int(tagging_result.get("tagged_count") or 0),
         ),
+        "evidence_count": max(
+            0,
+            int(tagging_result.get("evidence_count") or 0),
+        ),
         "linked_count": int(link_result.get("confirmed") or 0),
         "failed_count": failed_count,
         "successful_question_ids": successful_ids,
@@ -490,6 +536,172 @@ def _result(
                 or tagging_result.get("retryable")
             )
         ),
+    }
+
+
+def _load_deferred_artifact(
+    payload: dict[str, Any],
+    *,
+    analysis_artifact_root: Path | None,
+    session_id: int,
+    curriculum_volume_id: str,
+) -> DeferredAnalysisArtifact | None:
+    fields = {
+        "artifact_id": str(payload.get("analysis_artifact_id") or "").strip(),
+        "content_hash": str(payload.get("analysis_artifact_hash") or "").strip(),
+        "source_id": str(payload.get("analysis_source_id") or "").strip(),
+        "source_revision": str(
+            payload.get("analysis_source_revision") or ""
+        ).strip(),
+    }
+    if not any(fields.values()):
+        return None
+    if not all(fields.values()) or analysis_artifact_root is None:
+        raise ValueError("deferred question analysis hand-off is incomplete")
+    artifact = DeferredAnalysisArtifactStore(Path(analysis_artifact_root)).load(
+        fields["artifact_id"],
+        session_id=session_id,
+        source_id=fields["source_id"],
+        source_revision=fields["source_revision"],
+        curriculum_volume_id=curriculum_volume_id,
+        expected_content_hash=fields["content_hash"],
+    )
+    if artifact.bundle.status != "succeeded":
+        raise ValueError("deferred question analysis is not complete")
+    return artifact
+
+
+def _adopt_deferred_analysis(
+    *,
+    artifact: DeferredAnalysisArtifact,
+    session_id: int,
+    question_bank_db_path: Path,
+    data_root: Path,
+    link_service: SourceQuestionLinkService,
+    ai_service_factory: Callable[[], Any],
+) -> dict[str, object]:
+    links = {
+        str(item.get("source_question_id") or "").strip(): item
+        for item in link_service.list_links(session_id)
+        if str(item.get("status") or "") == "confirmed"
+    }
+    linked_items = [
+        (item, links.get(item.source_question_ref))
+        for item in artifact.bundle.items
+    ]
+    bank_ids = [
+        int(link["bank_question_id"])
+        for _item, link in linked_items
+        if isinstance(link, dict)
+    ]
+    if not bank_ids:
+        return {
+            "outcome": "failed",
+            "requested_count": len(artifact.bundle.items),
+            "tagged_count": 0,
+            "evidence_count": 0,
+            "successful_question_ids": [],
+            "failed_question_ids": [],
+            "failed_count": len(artifact.bundle.items),
+            "review_count": 0,
+            "proposal_ids": [],
+            "retryable": True,
+        }
+
+    ai_service = ai_service_factory()
+    loader = QuestionAnalysisInputLoader(
+        db_path=question_bank_db_path,
+        data_root=data_root,
+    )
+    provisional = loader.load(
+        bank_ids,
+        curriculum_volume_id=artifact.curriculum_volume_id,
+    )
+    contracts = ai_service.taxonomy_contracts(
+        {item.question_id: item.tagging_context for item in provisional}
+    )
+    questions = {
+        item.question_id: item
+        for item in loader.load(
+            bank_ids,
+            taxonomy_contracts=contracts,
+            curriculum_volume_id=artifact.curriculum_volume_id,
+        )
+    }
+    mapping_repository = FineTermCoreMappingRepository(question_bank_db_path)
+    baseline_result = install_fine_term_mapping_baseline(
+        mapping_repository,
+        build_fine_term_mapping_baseline(),
+        actor_ref="system:taxonomy-baseline-v1",
+    )
+    writer = DeferredCombinedProjectionWriter(
+        tag_writer=ExistingTagProjectionWriter(
+            question_service=QuestionService(question_bank_db_path),
+            tagging_service=ai_service,
+        ),
+        mapping_repository=mapping_repository,
+        evidence_repository=SolutionEvidenceRepository(question_bank_db_path),
+    )
+    adoption_results: list[dict[str, Any]] = []
+    missing_links = 0
+    for item, raw_link in linked_items:
+        if not isinstance(raw_link, dict):
+            missing_links += 1
+            continue
+        bank_question_id = int(raw_link["bank_question_id"])
+        question = questions.get(bank_question_id)
+        if question is None:
+            missing_links += 1
+            continue
+        adoption_results.append(
+            writer.adopt_linked(
+                item,
+                question=question,
+                link=ConfirmedQuestionAdoptionLink(
+                    source_question_ref=item.source_question_ref,
+                    bank_question_id=bank_question_id,
+                    confirmed_by=f"question-bank-sync:{session_id}",
+                ),
+            )
+        )
+    successful_ids = [
+        int(item["question_id"])
+        for item in adoption_results
+        if item.get("tag_status") == "succeeded"
+        and item.get("evidence_status") == "succeeded"
+    ]
+    failed_ids = [
+        int(item["question_id"])
+        for item in adoption_results
+        if item.get("tag_status") != "succeeded"
+        or item.get("evidence_status") != "succeeded"
+    ]
+    tagged_count = sum(
+        item.get("tag_status") == "succeeded" for item in adoption_results
+    )
+    evidence_count = sum(
+        item.get("evidence_status") == "succeeded" for item in adoption_results
+    )
+    failed_count = len(failed_ids) + missing_links
+    if failed_count == 0 and len(successful_ids) == len(artifact.bundle.items):
+        outcome = "complete"
+    elif successful_ids or tagged_count or evidence_count:
+        outcome = "partial"
+    else:
+        outcome = "failed"
+    return {
+        "outcome": outcome,
+        "requested_count": len(artifact.bundle.items),
+        "tagged_count": tagged_count,
+        "evidence_count": evidence_count,
+        "successful_question_ids": successful_ids,
+        "failed_question_ids": failed_ids,
+        "failed_count": failed_count,
+        "review_count": 0,
+        "proposal_ids": [],
+        "retryable": failed_count > 0,
+        "mapping_baseline": baseline_result,
+        "adoption_results": adoption_results,
     }
 
 

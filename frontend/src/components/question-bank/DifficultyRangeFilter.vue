@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { ref, useId } from 'vue'
 
 const props = withDefaults(defineProps<{
   min: number
@@ -15,15 +15,26 @@ const emit = defineEmits<{
   change: []
 }>()
 
-const lowerPercent = computed(() => ((props.min - 1) / 9) * 100)
-const upperPercent = computed(() => ((props.max - 1) / 9) * 100)
+const summaryId = useId()
+const activeThumb = ref<'min' | 'max' | null>(null)
+const ticks = Array.from({ length: 10 }, (_value, index) => index + 1)
+
+function railPosition(value: number): string {
+  const ratio = (value - 1) / 9
+  return `calc(${ratio * 100}% + ${16 - 32 * ratio}px)`
+}
+
+function railDistanceFromRight(value: number): string {
+  const ratio = (10 - value) / 9
+  return `calc(${ratio * 100}% + ${16 - 32 * ratio}px)`
+}
 
 const bands = [
-  { range: '1–2', label: '入门补缺' },
-  { range: '3–4', label: '基础巩固' },
-  { range: '5–6', label: '中档提升' },
-  { range: '7–8', label: '综合突破' },
-  { range: '9–10', label: '压轴拔高' },
+  { range: '1–2', label: '入门补缺', span: 2 },
+  { range: '3–4', label: '基础巩固', span: 2 },
+  { range: '5–6', label: '中档提升', span: 2 },
+  { range: '7', label: '综合突破', span: 1 },
+  { range: '8–10', label: '压轴拔高', span: 3 },
 ]
 
 function updateMin(value: string): void {
@@ -33,21 +44,92 @@ function updateMin(value: string): void {
 function updateMax(value: string): void {
   emit('update:max', Math.max(Number(value), props.min))
 }
+
+function finishMin(): void {
+  emit('change')
+  if (props.min === props.max) activeThumb.value = 'max'
+}
+
+function finishMax(): void {
+  emit('change')
+  if (props.min === props.max) activeThumb.value = 'min'
+}
+
+function thumbLayer(thumb: 'min' | 'max'): number {
+  if (activeThumb.value === thumb) return 5
+  if (props.min !== props.max) return thumb === 'min' ? 4 : 3
+  if (activeThumb.value === null) return thumb === 'max' ? 4 : 3
+  return 3
+}
+
+function keyboardValue(
+  event: KeyboardEvent,
+  current: number,
+  lower: number,
+  upper: number,
+): number | null {
+  if (event.key === 'ArrowLeft' || event.key === 'ArrowDown') {
+    return Math.max(lower, current - 1)
+  }
+  if (event.key === 'ArrowRight' || event.key === 'ArrowUp') {
+    return Math.min(upper, current + 1)
+  }
+  if (event.key === 'Home') return lower
+  if (event.key === 'End') return upper
+  return null
+}
+
+function updateMinFromKeyboard(event: KeyboardEvent): void {
+  const value = keyboardValue(event, props.min, 1, props.max)
+  if (value === null) return
+  event.preventDefault()
+  if (value === props.min) return
+  emit('update:min', value)
+  emit('change')
+}
+
+function updateMaxFromKeyboard(event: KeyboardEvent): void {
+  const value = keyboardValue(event, props.max, props.min, 10)
+  if (value === null) return
+  event.preventDefault()
+  if (value === props.max) return
+  emit('update:max', value)
+  emit('change')
+}
 </script>
 
 <template>
   <fieldset class="difficulty-range" :class="{ 'is-compact': compact }">
     <legend>
-      <span>难度范围</span>
+      <span>难度区间</span>
       <strong>{{ min }}–{{ max }}</strong>
     </legend>
+    <p :id="summaryId" class="difficulty-range__summary">
+      难度使用 1 到 10 的整数刻度，压轴拔高为 8 到 10，当前选择 {{ min }} 到 {{ max }}。
+    </p>
     <div class="difficulty-range__rail">
       <div class="difficulty-range__track" />
       <div
         class="difficulty-range__selection"
-        :style="{ left: `${lowerPercent}%`, right: `${100 - upperPercent}%` }"
+        :style="{
+          left: railPosition(min),
+          right: railDistanceFromRight(max),
+        }"
+      />
+      <span
+        class="difficulty-range__thumb difficulty-range__thumb--min"
+        :class="{ 'is-overlapping': min === max }"
+        :style="{ left: railPosition(min) }"
+        aria-hidden="true"
+      />
+      <span
+        class="difficulty-range__thumb difficulty-range__thumb--max"
+        :class="{ 'is-overlapping': min === max }"
+        :style="{ left: railPosition(max) }"
+        aria-hidden="true"
       />
       <input
+        class="difficulty-range__input difficulty-range__input--min"
         :value="min"
         type="range"
         min="1"
@@ -55,10 +137,16 @@ function updateMax(value: string): void {
         step="1"
         aria-label="最低难度"
         :aria-valuetext="`最低难度 ${min}`"
+        :aria-describedby="summaryId"
+        :style="{ zIndex: thumbLayer('min') }"
         @input="updateMin(($event.currentTarget as HTMLInputElement).value)"
-        @change="emit('change')"
+        @change="finishMin"
+        @focus="activeThumb = 'min'"
+        @pointerdown="activeThumb = 'min'"
+        @keydown="updateMinFromKeyboard"
       >
       <input
+        class="difficulty-range__input difficulty-range__input--max"
         :value="max"
         type="range"
         min="1"
@@ -66,12 +154,31 @@ function updateMax(value: string): void {
         step="1"
         aria-label="最高难度"
         :aria-valuetext="`最高难度 ${max}`"
+        :aria-describedby="summaryId"
+        :style="{ zIndex: thumbLayer('max') }"
         @input="updateMax(($event.currentTarget as HTMLInputElement).value)"
-        @change="emit('change')"
+        @change="finishMax"
+        @focus="activeThumb = 'max'"
+        @pointerdown="activeThumb = 'max'"
+        @keydown="updateMaxFromKeyboard"
       >
     </div>
-    <div class="difficulty-range__bands" aria-hidden="true">
-      <span v-for="band in bands" :key="band.range">
+    <div class="difficulty-range__ticks" aria-hidden="true">
+      <span
+        v-for="tick in ticks"
+        :key="tick"
+        :style="{ left: railPosition(tick) }"
+      >
+        <i />
+        <b>{{ tick }}</b>
+      </span>
+    </div>
+    <div class="difficulty-range__bands" aria-label="难度分段">
+      <span
+        v-for="band in bands"
+        :key="band.range"
+        :style="{ '--difficulty-band-span': band.span }"
+      >
         <b>{{ band.range }}</b>
         <small>{{ band.label }}</small>
       </span>

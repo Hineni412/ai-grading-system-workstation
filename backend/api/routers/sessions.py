@@ -194,6 +194,7 @@ def _question_bank_sync_payload(
     curriculum_volume_id: str,
     retry_of_job_id: int | None = None,
     question_ids: list[int] | None = None,
+    deferred_analysis: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     identity: dict[str, Any] = {
         "session_id": int(session_id),
@@ -206,6 +207,8 @@ def _question_bank_sync_payload(
         identity["retry_of_job_id"] = int(retry_of_job_id)
     if question_ids is not None:
         identity["question_ids"] = list(question_ids)
+    if deferred_analysis:
+        identity.update(deferred_analysis)
     fingerprint = hashlib.sha256(
         json.dumps(
             identity,
@@ -566,6 +569,16 @@ def retry_session_question_bank_sync(
         curriculum_volume_id=str(volume["id"]),
         retry_of_job_id=job_id,
         question_ids=failed_ids if failed_ids else None,
+        deferred_analysis={
+            key: source_job.payload[key]
+            for key in (
+                "analysis_artifact_id",
+                "analysis_artifact_hash",
+                "analysis_source_id",
+                "analysis_source_revision",
+            )
+            if key in source_job.payload
+        },
     )
     return _submit_question_bank_sync(manager, payload)
 

@@ -114,6 +114,56 @@ class ConfigGenerationOrchestrator:
             checkpoint=checkpoint,
         )
 
+    def allocate_scores_for_structure(
+        self,
+        structure_payload: dict[str, Any],
+        question_blocks: list[dict[str, Any]],
+        doc_text: str,
+        *,
+        q_images: dict[str, Any] | None = None,
+        checkpoint: CheckpointWriter | None = None,
+    ) -> dict[str, Any]:
+        """Allocate scores without asking the model to regenerate structure.
+
+        The caller owns the complete, unscored rubric and answer projection.
+        This seam is used by solution-evidence analysis so the model request in
+        this module can be limited to whole-paper score allocation.
+        """
+
+        if not isinstance(structure_payload, dict):
+            raise TypeError("评分结构必须是一个对象。")
+        locked_blocks = [copy.deepcopy(block) for block in question_blocks]
+        if not locked_blocks:
+            raise ValueError("至少需要一道已确认题目。")
+        _validate_unique_question_ids(locked_blocks)
+        self._policy.validate_image_inputs(locked_blocks, q_images)
+
+        payload = copy.deepcopy(structure_payload)
+        self._policy.apply_local_question_facts(payload, locked_blocks)
+        self._policy.normalize_payload(payload)
+        self._policy.apply_local_question_facts(payload, locked_blocks)
+        expected_ids = [
+            str(block.get("question_id") or "").strip()
+            for block in locked_blocks
+        ]
+        _validate_exact_batch_payload(payload, expected_ids)
+        self._policy.refresh_quality_warnings(payload)
+        if failed_grading_config_batches(payload):
+            raise ValueError("证据结构仍有失败题目，不能进行整卷 AI 统一配分。")
+
+        meta = payload.setdefault("meta", {})
+        if not isinstance(meta, dict):
+            payload["meta"] = meta = {}
+        meta["structure_source"] = "solution_evidence"
+        meta["structure_generation_model_requests"] = 0
+        return self._score_completed_draft_once(
+            payload,
+            locked_blocks,
+            doc_text,
+            q_images=q_images,
+            checkpoint=checkpoint,
+        )
+
     def retry(
         self,
         existing_payload: dict[str, Any],

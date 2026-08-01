@@ -425,6 +425,117 @@ describe('question bank workspace', () => {
     expect(document.body.querySelector('[role="dialog"]')).toBeNull()
   })
 
+  it('confirms cost and submits a forced retag from the paper card', async () => {
+    const host = document.createElement('div')
+    document.body.append(host)
+    const pinia = createPinia()
+    const app = createApp(PaperLibrary)
+    app.use(pinia)
+    const store = useQuestionBankStore(pinia)
+    store.papers = [paper]
+    store.papersState = 'ready'
+    app.mount(host)
+    mounted.push(app)
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input)
+      if (url.startsWith('/api/question-bank/questions?')) {
+        return response({
+          items: [item],
+          total: 1,
+          page: 1,
+          page_size: 100,
+          total_pages: 1,
+        })
+      }
+      if (url === '/api/question-bank/tagging-jobs' && init?.method === 'POST') {
+        return response({
+          id: 44,
+          job_type: 'tagging_sync',
+          payload: { question_ids: [17], force_retag_question_ids: [17] },
+          result: {},
+          status: 'queued',
+          progress: 0,
+          stage: '',
+          detail: '',
+          error: null,
+          cancel_requested: false,
+          created_at: '2026-08-01T10:00:00Z',
+          started_at: null,
+          updated_at: '2026-08-01T10:00:00Z',
+          finished_at: null,
+        }, 202)
+      }
+      throw new Error(`unexpected request: ${url}`)
+    })
+
+    const retag = [...host.querySelectorAll<HTMLButtonElement>('button')]
+      .find((button) => button.textContent?.trim() === '重新打标签')!
+    retag.click()
+
+    await vi.waitFor(() => expect(fetchSpy).toHaveBeenCalledTimes(2))
+    expect(confirmSpy).toHaveBeenCalledWith(expect.stringContaining('1 道题'))
+    expect(JSON.parse(String(fetchSpy.mock.calls[1]?.[1]?.body))).toEqual({
+      question_ids: [17],
+      force_retag: true,
+      client_request_token: expect.stringMatching(/^[0-9a-f]{32}$/),
+    })
+    expect(host.textContent).toContain('已提交 1 道题')
+  })
+
+  it('can fill only incomplete tags without overwriting completed analysis', async () => {
+    const host = document.createElement('div')
+    document.body.append(host)
+    const pinia = createPinia()
+    const app = createApp(PaperLibrary)
+    app.use(pinia)
+    const store = useQuestionBankStore(pinia)
+    store.papers = [paper]
+    store.papersState = 'ready'
+    app.mount(host)
+    mounted.push(app)
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    let questionListUrl = ''
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input)
+      if (url.startsWith('/api/question-bank/questions?')) {
+        questionListUrl = url
+        return response({ items: [item], total: 1, page: 1, page_size: 100, total_pages: 1 })
+      }
+      if (url === '/api/question-bank/tagging-jobs' && init?.method === 'POST') {
+        return response({
+          id: 45,
+          job_type: 'tagging_sync',
+          payload: { question_ids: [17] },
+          result: {},
+          status: 'queued',
+          progress: 0,
+          stage: '',
+          detail: '',
+          error: null,
+          cancel_requested: false,
+          created_at: '2026-08-01T10:00:00Z',
+          started_at: null,
+          updated_at: '2026-08-01T10:00:00Z',
+          finished_at: null,
+        }, 202)
+      }
+      throw new Error(`unexpected request: ${url}`)
+    })
+
+    const fill = [...host.querySelectorAll<HTMLButtonElement>('button')]
+      .find((button) => button.textContent?.trim() === '补齐标签')!
+    fill.click()
+
+    await vi.waitFor(() => expect(fetchSpy).toHaveBeenCalledTimes(2))
+    expect(questionListUrl).toContain('tag_status=untagged')
+    expect(JSON.parse(String(fetchSpy.mock.calls[1]?.[1]?.body))).toEqual({
+      question_ids: [17],
+      client_request_token: expect.stringMatching(/^[0-9a-f]{32}$/),
+    })
+    expect(host.textContent).toContain('1 道标签不完整的题')
+  })
+
   it('requires explicit confirmation before trashing a paper and restores it from the drawer', async () => {
     const host = document.createElement('div')
     document.body.append(host)

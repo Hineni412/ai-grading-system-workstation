@@ -1,5 +1,5 @@
 import { apiClient } from './client'
-import { isNullableString, isRecord } from './validation'
+import { assertNoPathLikeKeys, isNullableString, isRecord } from './validation'
 import { decodeJobResponse, type JobResponse } from './jobs'
 
 export const QUESTION_BANK_TAG_TYPES = [
@@ -321,6 +321,80 @@ export interface QuestionBankDetail extends QuestionBankListItem {
   previews: QuestionBankPreview[]
 }
 
+export type CoreResolutionStatus = 'resolved' | 'ambiguous' | 'unmapped'
+export type FineTermRole = 'direct' | 'supporting_prerequisite'
+
+export interface SolutionEvidenceCoreResolution {
+  status: CoreResolutionStatus
+  stable_keys: string[]
+  reason: string
+}
+
+export interface SolutionEvidenceFineTermLink {
+  fine_term_id: string
+  fine_term_name: string
+  role: FineTermRole
+  core_resolution: SolutionEvidenceCoreResolution
+}
+
+export interface SolutionEvidencePoint {
+  evidence_point_id: string
+  target: string
+  observable_evidence: string
+  fine_term_links: SolutionEvidenceFineTermLink[]
+  equivalent_rules: string[]
+  counterexamples: string[]
+}
+
+export interface SolutionEvidencePart {
+  part_id: string
+  label: string
+  response_mode: 'exact_objective' | 'short_answer_points' | 'process_required' | 'visual_construction'
+  canonical_answer: string
+  accepted_forms: string[]
+  full_answer: string
+  proof_obligations: string[]
+  visual_requirements: string[]
+  deduction_policy: string[]
+  allow_alternative_methods: boolean
+  evidence_points: SolutionEvidencePoint[]
+}
+
+export interface WholeQuestionClassification {
+  direct_fine_terms: Array<{ fine_term_id: string; fine_term_name: string }>
+  supporting_prerequisite_fine_terms: Array<{ fine_term_id: string; fine_term_name: string }>
+  direct_resolved_core_node_ids: string[]
+  supporting_resolved_core_node_ids: string[]
+  direct_ambiguous_core_node_ids: string[]
+  supporting_ambiguous_core_node_ids: string[]
+  direct_unmapped_fine_term_ids: string[]
+  supporting_unmapped_fine_term_ids: string[]
+  resolved_core_node_ids: string[]
+  ambiguous_core_node_ids: string[]
+  unmapped_fine_term_ids: string[]
+}
+
+export interface QuestionSolutionEvidence {
+  schema_version: 'question-solution-evidence-v1'
+  question_id: number
+  source_content_hash: string
+  parts: SolutionEvidencePart[]
+  auxiliary_rules: string[]
+  rationale: string
+  confidence: number
+  content_hash: string
+  version_id: string
+  whole_question_classification: WholeQuestionClassification
+}
+
+export interface QuestionSolutionEvidenceResponse {
+  question_id: number
+  available: boolean
+  evidence_version_id: string | null
+  status: 'proposed' | 'approved' | 'rejected' | 'superseded' | 'stale' | null
+  evidence: QuestionSolutionEvidence | null
+}
+
 export type QuestionBankTagStatus = 'all' | 'tagged' | 'untagged'
 export type QuestionBankSort =
   | 'paper_order'
@@ -399,6 +473,10 @@ function isNonnegativeInteger(value: unknown): value is number {
 
 function isPositiveInteger(value: unknown): value is number {
   return Number.isSafeInteger(value) && Number(value) > 0
+}
+
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value)
 }
 
 function isRevision(value: unknown): value is string {
@@ -1030,6 +1108,124 @@ export function decodeQuestionBankPaperPermanentDeleteResult(
   return value as unknown as QuestionBankPaperPermanentDeleteResult
 }
 
+function isSolutionEvidenceCoreResolution(value: unknown): boolean {
+  return isRecord(value)
+    && hasExactKeys(value, ['status', 'stable_keys', 'reason'])
+    && ['resolved', 'ambiguous', 'unmapped'].includes(String(value.status))
+    && isStringArray(value.stable_keys)
+    && typeof value.reason === 'string'
+}
+
+function isSolutionEvidenceFineTerm(value: unknown): boolean {
+  return isRecord(value)
+    && hasExactKeys(value, ['fine_term_id', 'fine_term_name', 'role', 'core_resolution'])
+    && typeof value.fine_term_id === 'string' && value.fine_term_id.length > 0
+    && typeof value.fine_term_name === 'string' && value.fine_term_name.length > 0
+    && ['direct', 'supporting_prerequisite'].includes(String(value.role))
+    && isSolutionEvidenceCoreResolution(value.core_resolution)
+}
+
+function isSolutionEvidencePoint(value: unknown): boolean {
+  return isRecord(value)
+    && hasExactKeys(value, [
+      'evidence_point_id', 'target', 'observable_evidence', 'fine_term_links',
+      'equivalent_rules', 'counterexamples',
+    ])
+    && typeof value.evidence_point_id === 'string' && value.evidence_point_id.length > 0
+    && typeof value.target === 'string' && value.target.length > 0
+    && typeof value.observable_evidence === 'string' && value.observable_evidence.length > 0
+    && Array.isArray(value.fine_term_links) && value.fine_term_links.length > 0
+    && value.fine_term_links.every(isSolutionEvidenceFineTerm)
+    && isStringArray(value.equivalent_rules) && isStringArray(value.counterexamples)
+}
+
+function isSolutionEvidencePart(value: unknown): boolean {
+  return isRecord(value)
+    && hasExactKeys(value, [
+      'part_id', 'label', 'response_mode', 'canonical_answer', 'accepted_forms',
+      'full_answer', 'proof_obligations', 'visual_requirements', 'deduction_policy',
+      'allow_alternative_methods', 'evidence_points',
+    ])
+    && typeof value.part_id === 'string' && value.part_id.length > 0
+    && typeof value.label === 'string'
+    && ['exact_objective', 'short_answer_points', 'process_required', 'visual_construction']
+      .includes(String(value.response_mode))
+    && typeof value.canonical_answer === 'string'
+    && typeof value.full_answer === 'string'
+    && isStringArray(value.accepted_forms)
+    && isStringArray(value.proof_obligations)
+    && isStringArray(value.visual_requirements)
+    && isStringArray(value.deduction_policy)
+    && typeof value.allow_alternative_methods === 'boolean'
+    && Array.isArray(value.evidence_points) && value.evidence_points.length > 0
+    && value.evidence_points.every(isSolutionEvidencePoint)
+}
+
+const WHOLE_CLASSIFICATION_KEYS = [
+  'direct_fine_terms', 'supporting_prerequisite_fine_terms',
+  'direct_resolved_core_node_ids', 'supporting_resolved_core_node_ids',
+  'direct_ambiguous_core_node_ids', 'supporting_ambiguous_core_node_ids',
+  'direct_unmapped_fine_term_ids', 'supporting_unmapped_fine_term_ids',
+  'resolved_core_node_ids', 'ambiguous_core_node_ids', 'unmapped_fine_term_ids',
+] as const
+
+function isSummaryFineTerm(value: unknown): boolean {
+  return isRecord(value)
+    && hasExactKeys(value, ['fine_term_id', 'fine_term_name'])
+    && typeof value.fine_term_id === 'string'
+    && typeof value.fine_term_name === 'string'
+}
+
+function isWholeQuestionClassification(value: unknown): boolean {
+  if (!isRecord(value) || !hasExactKeys(value, WHOLE_CLASSIFICATION_KEYS)) return false
+  return Array.isArray(value.direct_fine_terms)
+    && value.direct_fine_terms.every(isSummaryFineTerm)
+    && Array.isArray(value.supporting_prerequisite_fine_terms)
+    && value.supporting_prerequisite_fine_terms.every(isSummaryFineTerm)
+    && WHOLE_CLASSIFICATION_KEYS.slice(2).every((key) => isStringArray(value[key]))
+}
+
+function isQuestionSolutionEvidence(value: unknown): boolean {
+  return isRecord(value)
+    && hasExactKeys(value, [
+      'schema_version', 'question_id', 'source_content_hash', 'parts',
+      'auxiliary_rules', 'rationale', 'confidence', 'content_hash', 'version_id',
+      'whole_question_classification',
+    ])
+    && value.schema_version === 'question-solution-evidence-v1'
+    && isPositiveInteger(value.question_id)
+    && isHex(value.source_content_hash, 64)
+    && Array.isArray(value.parts) && value.parts.length > 0
+    && value.parts.every(isSolutionEvidencePart)
+    && isStringArray(value.auxiliary_rules)
+    && typeof value.rationale === 'string'
+    && isFiniteNumber(value.confidence) && value.confidence >= 0 && value.confidence <= 1
+    && isHex(value.content_hash, 64) && isHex(value.version_id, 64)
+    && isWholeQuestionClassification(value.whole_question_classification)
+}
+
+export function decodeQuestionSolutionEvidenceResponse(
+  value: unknown,
+): QuestionSolutionEvidenceResponse {
+  assertNoPathLikeKeys(value)
+  if (
+    !isRecord(value)
+    || !hasExactKeys(value, [
+      'question_id', 'available', 'evidence_version_id', 'status', 'evidence',
+    ])
+    || !isPositiveInteger(value.question_id)
+    || typeof value.available !== 'boolean'
+    || !(value.evidence_version_id === null || isHex(value.evidence_version_id, 64))
+    || !(value.status === null || ['proposed', 'approved', 'rejected', 'superseded', 'stale']
+      .includes(String(value.status)))
+    || !(value.evidence === null || isQuestionSolutionEvidence(value.evidence))
+    || value.available !== (value.evidence !== null)
+  ) {
+    throw new Error('Invalid question solution evidence')
+  }
+  return value as unknown as QuestionSolutionEvidenceResponse
+}
+
 export function decodeQuestionDetailResponse(value: unknown): QuestionBankDetail {
   if (
     !isRecord(value) ||
@@ -1418,6 +1614,20 @@ export const questionBankApi = {
     })
   },
 
+  getSolutionEvidence(
+    questionId: number,
+    signal?: AbortSignal,
+  ): Promise<QuestionSolutionEvidenceResponse> {
+    if (!isPositiveInteger(questionId)) throw new Error('Invalid question id')
+    return apiClient.request(
+      `/api/question-bank/questions/${questionId}/solution-evidence`,
+      {
+        decode: decodeQuestionSolutionEvidenceResponse,
+        signal,
+      },
+    )
+  },
+
   listSimilar(
     questionId: number,
     limit = 6,
@@ -1570,13 +1780,27 @@ export const questionBankApi = {
     questionIds: readonly number[],
     sourceJobId?: number,
     signal?: AbortSignal,
+    forceRetag = false,
+    clientRequestToken?: string,
   ): Promise<JobResponse> {
-    const body: { question_ids: number[]; source_job_id?: number } = {
+    const body: {
+      question_ids: number[]
+      source_job_id?: number
+      force_retag?: boolean
+      client_request_token?: string
+    } = {
       question_ids: normalizedQuestionIds(questionIds),
     }
     if (sourceJobId !== undefined) {
       if (!isPositiveInteger(sourceJobId)) throw new Error('Invalid source job id')
       body.source_job_id = sourceJobId
+    }
+    if (forceRetag) body.force_retag = true
+    if (clientRequestToken !== undefined) {
+      if (!/^[0-9a-f]{32}$/.test(clientRequestToken)) {
+        throw new Error('Invalid tagging request token')
+      }
+      body.client_request_token = clientRequestToken
     }
     return apiClient.request('/api/question-bank/tagging-jobs', {
       method: 'POST',
