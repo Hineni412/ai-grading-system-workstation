@@ -44,6 +44,12 @@ class ProjectionValidationError(ValueError):
     pass
 
 
+class TaxonomyProjectionReviewRequired(ValueError):
+    """The scoring payload is usable but its tag projection needs a teacher."""
+
+    pass
+
+
 @dataclass(frozen=True, slots=True)
 class QuestionAnalysisImage:
     role: Literal["question", "answer"]
@@ -338,6 +344,10 @@ class PlannedAnalysisBatch:
 
 
 class QuestionAnalysisGateway(Protocol):
+    @property
+    def max_parallel_requests(self) -> int:
+        ...
+
     def analyze(
         self,
         batch: PlannedAnalysisBatch,
@@ -1291,9 +1301,14 @@ def _criteria_schema() -> dict[str, Any]:
 
 def _solution_evidence_schema() -> dict[str, Any]:
     text_array = {"type": "array", "items": {"type": "string"}}
+    non_empty_text = {"type": "string", "minLength": 1}
+    machine_identifier = {
+        "type": "string",
+        "pattern": "^[a-z][a-z0-9_-]{1,127}$",
+    }
     fine_term_properties = {
-        "fine_term_id": {"type": "string"},
-        "fine_term_name": {"type": "string"},
+        "fine_term_id": non_empty_text,
+        "fine_term_name": non_empty_text,
         "role": {
             "type": "string",
             "enum": ["direct", "supporting_prerequisite"],
@@ -1306,12 +1321,11 @@ def _solution_evidence_schema() -> dict[str, Any]:
         "additionalProperties": False,
     }
     evidence_point_properties = {
-        "evidence_point_id": {"type": "string"},
-        "target": {"type": "string"},
-        "observable_evidence": {"type": "string"},
+        "evidence_point_id": machine_identifier,
+        "target": non_empty_text,
+        "observable_evidence": non_empty_text,
         "fine_term_links": {
             "type": "array",
-            "minItems": 1,
             "items": fine_term_link,
         },
         "equivalent_rules": text_array,
@@ -1324,7 +1338,7 @@ def _solution_evidence_schema() -> dict[str, Any]:
         "additionalProperties": False,
     }
     part_properties = {
-        "part_id": {"type": "string"},
+        "part_id": machine_identifier,
         "label": {"type": "string"},
         "response_mode": {
             "type": "string",
@@ -1343,7 +1357,7 @@ def _solution_evidence_schema() -> dict[str, Any]:
         "deduction_policy": {
             "type": "array",
             "minItems": 1,
-            "items": {"type": "string"},
+            "items": non_empty_text,
         },
         "allow_alternative_methods": {"type": "boolean"},
         "evidence_points": {

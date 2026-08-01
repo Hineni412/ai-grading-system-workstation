@@ -3,10 +3,13 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from typing import Any, Callable, Literal, Mapping, Sequence
 
 from question_bank.models.tag_schema import TagAnalysis
+from question_bank.services.ai_tagging_service import converge_tag_analysis
+from question_bank.solution_evidence.convergence import converge_evidence_terms
 from question_bank.solution_evidence.contracts import (
     CoreResolution,
     FineTermResolver,
@@ -19,12 +22,17 @@ from question_bank.solution_evidence.repository import (
 )
 from question_bank.training_criteria.analysis import (
     GatewayBatchResponse,
+    PlannedAnalysisBatch,
     QuestionAnalysisGateway,
     QuestionAnalysisInput,
+    TaxonomyProjectionReviewRequired,
     grading_config_skeleton_from_solution_evidence,
     plan_analysis_batches,
     solution_evidence_source_content_hash,
 )
+
+
+_MODEL_IDENTIFIER = re.compile(r"^[a-z][a-z0-9_-]{1,127}$")
 
 
 class UnmappedFineTermResolver:
@@ -44,6 +52,14 @@ class ConfigQuestionAnalysisSource:
         if not reference:
             raise ValueError("source_question_ref must not be empty")
         object.__setattr__(self, "source_question_ref", reference)
+
+
+@dataclass(frozen=True, slots=True)
+class _DeferredAnalysisRequest:
+    batch: PlannedAnalysisBatch
+    request_id: str
+    request_fingerprint: str
+    source_refs: tuple[str, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -127,6 +143,7 @@ class DeferredCombinedAnalysisItem:
     tag_analysis: Mapping[str, Any]
     solution_evidence_payload: Mapping[str, Any]
     solution_evidence: QuestionSolutionEvidence
+    taxonomy_audit: Mapping[str, Any]
     model_name: str
     operation_id: str
 
@@ -151,16 +168,17 @@ class DeferredCombinedAnalysisItem:
         if self.solution_evidence.source_content_hash != source_hash:
             raise ValueError("deferred evidence source hash does not match")
         candidates = tuple(self.knowledge_candidates)
-        if not candidates or not all(
+        if not all(
             isinstance(item, DeferredKnowledgeCandidate) for item in candidates
         ) or len(
             {item.fine_term_id for item in candidates}
         ) != len(candidates):
-            raise ValueError("deferred knowledge candidates are empty or duplicated")
+            raise ValueError("deferred knowledge candidates are invalid or duplicated")
         validate_evidence_fine_terms(
             self.solution_evidence,
             _candidate_contract(candidates),
         )
+        audit = _normalize_taxonomy_audit(self.taxonomy_audit)
         object.__setattr__(self, "source_question_ref", reference)
         object.__setattr__(self, "analysis_question_id", int(self.analysis_question_id))
         object.__setattr__(self, "source_content_hash", source_hash)
@@ -170,6 +188,7 @@ class DeferredCombinedAnalysisItem:
         object.__setattr__(self, "model_name", model)
         object.__setattr__(self, "operation_id", operation)
         object.__setattr__(self, "tag_analysis", dict(self.tag_analysis))
+        object.__setattr__(self, "taxonomy_audit", audit)
         object.__setattr__(
             self,
             "solution_evidence_payload",
@@ -181,6 +200,73 @@ class DeferredCombinedAnalysisItem:
             self.solution_evidence,
             question_ref=self.source_question_ref,
         )
+
+    def evidence_payload_for_taxonomy_retry(
+        self,
+        *,
+        question_id: int,
+    ) -> dict[str, Any]:
+        """Restore unresolved model links for a later local-only convergence."""
+
+        payload = json.loads(
+            json.dumps(dict(self.solution_evidence_payload), ensure_ascii=False)
+        )
+        payload["question_id"] = int(question_id)
+        parts = payload.get("parts")
+        if not isinstance(parts, list):
+            return payload
+        part_by_id = {
+            str(part.get("part_id") or ""): part
+            for part in parts
+            if isinstance(part, dict)
+        }
+        for unresolved in self.taxonomy_audit.get("unresolved_links", []):
+            if not isinstance(unresolved, Mapping):
+                continue
+            part = part_by_id.get(str(unresolved.get("part_id") or ""))
+            points = part.get("evidence_points") if isinstance(part, dict) else None
+            if not isinstance(points, list):
+                continue
+            point = next(
+                (
+                    item
+                    for item in points
+                    if isinstance(item, dict)
+                    and str(item.get("evidence_point_id") or "")
+                    == str(unresolved.get("evidence_point_id") or "")
+                ),
+                None,
+            )
+            if not isinstance(point, dict):
+                continue
+            role = str(unresolved.get("role") or "").strip().casefold()
+            name = str(unresolved.get("submitted_name") or "").strip()
+            term_id = str(unresolved.get("submitted_id") or "").strip()
+            if not name or role not in {"direct", "supporting_prerequisite"}:
+                continue
+            links = point.get("fine_term_links")
+            if not isinstance(links, list):
+                point["fine_term_links"] = links = []
+            signature = (term_id, name, role)
+            if any(
+                isinstance(item, Mapping)
+                and (
+                    str(item.get("fine_term_id") or "").strip(),
+                    str(item.get("fine_term_name") or "").strip(),
+                    str(item.get("role") or "").strip().casefold(),
+                )
+                == signature
+                for item in links
+            ):
+                continue
+            links.append(
+                {
+                    "fine_term_id": term_id,
+                    "fine_term_name": name,
+                    "role": role,
+                }
+            )
+        return payload
 
     def bind_evidence(
         self,
@@ -200,7 +286,10 @@ class DeferredCombinedAnalysisItem:
             source_content_hash=actual_hash,
             resolver=resolver,
         )
-        validate_evidence_fine_terms(evidence, question.taxonomy_contract)
+        validate_evidence_fine_terms(
+            evidence,
+            _candidate_contract(self.knowledge_candidates),
+        )
         return evidence
 
     def bind_linked_evidence(
@@ -240,7 +329,7 @@ class DeferredCombinedAnalysisItem:
 
     def to_dict(self) -> dict[str, Any]:
         payload = {
-            "schema_version": "deferred-combined-analysis-item-v2",
+            "schema_version": "deferred-combined-analysis-item-v3",
             "source_question_ref": self.source_question_ref,
             "analysis_question_id": self.analysis_question_id,
             "source_content_hash": self.source_content_hash,
@@ -251,6 +340,7 @@ class DeferredCombinedAnalysisItem:
             ],
             "tag_analysis": dict(self.tag_analysis),
             "solution_evidence_payload": dict(self.solution_evidence_payload),
+            "taxonomy_audit": dict(self.taxonomy_audit),
             "model_name": self.model_name,
             "operation_id": self.operation_id,
         }
@@ -266,25 +356,30 @@ class DeferredCombinedAnalysisItem:
         *,
         resolver: FineTermResolver,
     ) -> "DeferredCombinedAnalysisItem":
-        _require_exact_keys(
-            payload,
-            {
-                "schema_version",
-                "source_question_ref",
-                "analysis_question_id",
-                "source_content_hash",
-                "curriculum_volume_id",
-                "taxonomy_contract_hash",
-                "knowledge_candidates",
-                "tag_analysis",
-                "solution_evidence_payload",
-                "model_name",
-                "operation_id",
-                "content_hash",
-            },
-            "deferred analysis item",
-        )
-        if payload.get("schema_version") != "deferred-combined-analysis-item-v2":
+        version = str(payload.get("schema_version") or "")
+        common_keys = {
+            "schema_version",
+            "source_question_ref",
+            "analysis_question_id",
+            "source_content_hash",
+            "curriculum_volume_id",
+            "taxonomy_contract_hash",
+            "knowledge_candidates",
+            "tag_analysis",
+            "solution_evidence_payload",
+            "model_name",
+            "operation_id",
+            "content_hash",
+        }
+        if version == "deferred-combined-analysis-item-v2":
+            _require_exact_keys(payload, common_keys, "deferred analysis item")
+        elif version == "deferred-combined-analysis-item-v3":
+            _require_exact_keys(
+                payload,
+                {*common_keys, "taxonomy_audit"},
+                "deferred analysis item",
+            )
+        else:
             raise ValueError("deferred analysis item version is invalid")
         submitted_hash = _sha256_text(payload.get("content_hash"), "content_hash")
         unhashed = {key: value for key, value in payload.items() if key != "content_hash"}
@@ -310,6 +405,11 @@ class DeferredCombinedAnalysisItem:
             source_content_hash=source_hash,
             resolver=resolver,
         )
+        taxonomy_audit = (
+            _normalize_taxonomy_audit(payload.get("taxonomy_audit"))
+            if version == "deferred-combined-analysis-item-v3"
+            else _legacy_taxonomy_audit(normalized_tag)
+        )
         return cls(
             source_question_ref=str(payload.get("source_question_ref") or ""),
             analysis_question_id=question_id,
@@ -326,6 +426,7 @@ class DeferredCombinedAnalysisItem:
             tag_analysis=normalized_tag,
             solution_evidence_payload=dict(raw_evidence),
             solution_evidence=evidence,
+            taxonomy_audit=taxonomy_audit,
             model_name=str(payload.get("model_name") or ""),
             operation_id=str(payload.get("operation_id") or ""),
         )
@@ -464,16 +565,49 @@ class DeferredCombinedAnalysisBundle:
             for value in latest_request_status.values()
         ):
             return "needs_resolution"
-        if self.failures and self.items:
+        incomplete = bool(self.failures or self.missing_source_refs)
+        if incomplete and self.items:
             return "partial"
-        if self.failures:
+        if incomplete:
             return "failed"
         return "succeeded"
 
     @property
     def failed_source_refs(self) -> tuple[str, ...]:
+        selected = {
+            item.source_question_ref for item in self.failures
+        } | set(self.missing_source_refs)
         return tuple(
-            dict.fromkeys(item.source_question_ref for item in self.failures)
+            reference
+            for reference, _fingerprint in self.source_fingerprints
+            if reference in selected
+        )
+
+    @property
+    def taxonomy_review_source_refs(self) -> tuple[str, ...]:
+        selected = {
+            item.source_question_ref
+            for item in self.items
+            if str(item.taxonomy_audit.get("status") or "")
+            in {"needs_review", "unavailable", "legacy_unrecorded"}
+        }
+        return tuple(
+            reference
+            for reference, _fingerprint in self.source_fingerprints
+            if reference in selected
+        )
+
+    @property
+    def missing_source_refs(self) -> tuple[str, ...]:
+        covered = {
+            item.source_question_ref for item in self.items
+        } | {
+            item.source_question_ref for item in self.failures
+        } | set(self.uncertain_source_refs)
+        return tuple(
+            reference
+            for reference, _fingerprint in self.source_fingerprints
+            if reference not in covered
         )
 
     @property
@@ -550,14 +684,20 @@ class DeferredCombinedAnalysisBundle:
             raise ValueError(
                 "deferred analysis must be complete before config composition"
             )
-        return compose_generated_config_from_skeletons(
+        payload = compose_generated_config_from_skeletons(
             self.grading_config_skeletons(),
             exam_title=exam_title,
         )
+        meta = payload.setdefault("meta", {})
+        meta["taxonomy_review_question_ids"] = list(
+            self.taxonomy_review_source_refs
+        )
+        meta["taxonomy_review_count"] = len(self.taxonomy_review_source_refs)
+        return payload
 
     def to_dict(self) -> dict[str, Any]:
         payload = {
-            "schema_version": "deferred-combined-analysis-v2",
+            "schema_version": "deferred-combined-analysis-v3",
             "operation_id": self.operation_id,
             "curriculum_volume_id": self.curriculum_volume_id,
             "status": self.status,
@@ -595,7 +735,10 @@ class DeferredCombinedAnalysisBundle:
             },
             "deferred analysis bundle",
         )
-        if payload.get("schema_version") != "deferred-combined-analysis-v2":
+        if payload.get("schema_version") not in {
+            "deferred-combined-analysis-v2",
+            "deferred-combined-analysis-v3",
+        }:
             raise ValueError("deferred analysis checkpoint version is invalid")
         submitted_hash = _sha256_text(payload.get("content_hash"), "content_hash")
         unhashed = {key: value for key, value in payload.items() if key != "content_hash"}
@@ -723,9 +866,11 @@ class InMemoryCombinedQuestionAnalysisModule:
         *,
         gateway: QuestionAnalysisGateway,
         resolver: FineTermResolver | None = None,
+        taxonomy_governance: Any | None = None,
     ) -> None:
         self.gateway = gateway
         self.resolver = resolver or UnmappedFineTermResolver()
+        self.taxonomy_governance = taxonomy_governance
 
     def analyze(
         self,
@@ -898,9 +1043,6 @@ class InMemoryCombinedQuestionAnalysisModule:
         base_requests: tuple[AnalysisRequestCheckpoint, ...],
         checkpoint: Callable[[DeferredCombinedAnalysisBundle], None] | None,
     ) -> DeferredCombinedAnalysisBundle:
-        by_question_id = {
-            item.question.question_id: item for item in selected_sources
-        }
         result = list(base_items)
         failures = list(base_failures)
         requests = list(base_requests)
@@ -916,7 +1058,12 @@ class InMemoryCombinedQuestionAnalysisModule:
                 items=tuple(
                     sorted(result, key=lambda item: order[item.source_question_ref])
                 ),
-                failures=tuple(failures),
+                failures=tuple(
+                    sorted(
+                        failures,
+                        key=lambda item: order[item.source_question_ref],
+                    )
+                ),
                 requests=tuple(requests),
                 source_fingerprints=source_fingerprints,
                 input_fingerprint=input_fingerprint,
@@ -925,16 +1072,21 @@ class InMemoryCombinedQuestionAnalysisModule:
                 checkpoint(bundle)
             return bundle
 
+        by_question_id = {
+            item.question.question_id: item for item in selected_sources
+        }
         batches = plan_analysis_batches(
             tuple(item.question for item in selected_sources),
             projection="both",
         )
+        prior_attempts = len({item.request_id for item in requests})
+        planned_requests: list[_DeferredAnalysisRequest] = []
         for batch_index, batch in enumerate(batches, start=1):
             request_id = _hash_payload(
                 {
                     "operation_id": operation_id,
                     "batch_hash": batch.batch_hash,
-                    "attempt": len({item.request_id for item in requests}) + batch_index,
+                    "attempt": prior_attempts + batch_index,
                     "contract": "combined-v3-memory",
                 }
             )
@@ -949,145 +1101,270 @@ class InMemoryCombinedQuestionAnalysisModule:
                     "source_question_refs": source_refs,
                 }
             )
-            requests.append(
-                AnalysisRequestCheckpoint(
+            planned_requests.append(
+                _DeferredAnalysisRequest(
+                    batch=batch,
                     request_id=request_id,
                     request_fingerprint=request_fingerprint,
-                    batch_hash=batch.batch_hash,
-                    source_question_refs=source_refs,
+                    source_refs=source_refs,
+                )
+            )
+
+        if not planned_requests:
+            return snapshot()
+
+        worker_count = min(
+            len(planned_requests),
+            _gateway_parallel_limit(self.gateway),
+        )
+        executor = ThreadPoolExecutor(
+            max_workers=max(1, worker_count),
+            thread_name_prefix="combined-question-analysis",
+        )
+        future_map: dict[
+            Future[GatewayBatchResponse],
+            _DeferredAnalysisRequest,
+        ] = {}
+        next_request_index = 0
+        stop_scheduling = False
+
+        def record_unscheduled_cancellations() -> None:
+            recorded_refs = {
+                item.source_question_ref for item in result
+            } | {
+                item.source_question_ref for item in failures
+            }
+            for planned in planned_requests[next_request_index:]:
+                for question_id, source_ref in zip(
+                    planned.batch.question_ids,
+                    planned.source_refs,
+                    strict=True,
+                ):
+                    if source_ref in recorded_refs:
+                        continue
+                    failures.append(
+                        DeferredAnalysisFailure(
+                            source_question_ref=source_ref,
+                            analysis_question_id=question_id,
+                            request_id=planned.request_id,
+                            batch_hash=planned.batch.batch_hash,
+                            category="cancelled",
+                        )
+                    )
+                    recorded_refs.add(source_ref)
+
+        def submit_next() -> None:
+            nonlocal next_request_index
+            planned = planned_requests[next_request_index]
+            next_request_index += 1
+            requests.append(
+                AnalysisRequestCheckpoint(
+                    request_id=planned.request_id,
+                    request_fingerprint=planned.request_fingerprint,
+                    batch_hash=planned.batch.batch_hash,
+                    source_question_refs=planned.source_refs,
                     status="running",
                 )
             )
+            # Persist the running request before a worker can send it. A crash
+            # can therefore never make an outbound request look unsent.
             snapshot()
-            try:
-                response = self.gateway.analyze(
-                    batch,
-                    projection="both",
-                    operation_id=operation_id,
-                    request_id=request_id,
-                )
-                raw_items = _response_items(response, batch.question_ids)
-            except Exception as exc:
-                category = _analysis_error_category(exc)
-                if _analysis_outcome_is_unknown(exc):
+            future = executor.submit(
+                self.gateway.analyze,
+                planned.batch,
+                projection="both",
+                operation_id=operation_id,
+                request_id=planned.request_id,
+            )
+            future_map[future] = planned
+
+        def fill_available_slots() -> None:
+            current_window = min(
+                worker_count,
+                _gateway_parallel_limit(self.gateway),
+            )
+            while (
+                next_request_index < len(planned_requests)
+                and len(future_map) < current_window
+            ):
+                submit_next()
+
+        try:
+            fill_available_slots()
+
+            while future_map:
+                future = next(as_completed(tuple(future_map)))
+                planned = future_map.pop(future)
+                batch = planned.batch
+                request_id = planned.request_id
+                request_fingerprint = planned.request_fingerprint
+                source_refs = planned.source_refs
+                try:
+                    response = future.result()
+                    raw_items = _response_items(response, batch.question_ids)
+                except Exception as exc:
+                    category = _analysis_error_category(exc)
+                    if _analysis_outcome_is_unknown(exc):
+                        requests.append(
+                            AnalysisRequestCheckpoint(
+                                request_id=request_id,
+                                request_fingerprint=request_fingerprint,
+                                batch_hash=batch.batch_hash,
+                                source_question_refs=source_refs,
+                                status="outcome_unknown",
+                            )
+                        )
+                        snapshot()
+                        if category == "cancelled":
+                            stop_scheduling = True
+                    else:
+                        failures.extend(
+                            DeferredAnalysisFailure(
+                                source_question_ref=(
+                                    by_question_id[question_id].source_question_ref
+                                ),
+                                analysis_question_id=question_id,
+                                request_id=request_id,
+                                batch_hash=batch.batch_hash,
+                                category=category,
+                            )
+                            for question_id in batch.question_ids
+                        )
+                        requests.append(
+                            AnalysisRequestCheckpoint(
+                                request_id=request_id,
+                                request_fingerprint=request_fingerprint,
+                                batch_hash=batch.batch_hash,
+                                source_question_refs=source_refs,
+                                status=(
+                                    "cancelled"
+                                    if category == "cancelled"
+                                    else "failed"
+                                ),
+                            )
+                        )
+                        snapshot()
+                        if category == "cancelled":
+                            stop_scheduling = True
+                else:
+                    parsed_count = 0
+                    validated_raw_results: list[dict[str, Any]] = []
+                    for question in batch.questions:
+                        source = by_question_id[question.question_id]
+                        validation_category = "combined_item_contract"
+                        try:
+                            raw = raw_items[question.question_id]
+                            raw_tag = raw.get("tag_analysis")
+                            raw_evidence = raw.get("solution_evidence")
+                            if not isinstance(raw_evidence, Mapping):
+                                raise ValueError(
+                                    "combined response solution_evidence is invalid"
+                                )
+                            source_hash = solution_evidence_source_content_hash(
+                                question
+                            )
+                            validation_category = "solution_evidence_contract"
+                            (
+                                normalized_tag,
+                                normalized_evidence,
+                                evidence,
+                                candidate_snapshot,
+                                taxonomy_audit,
+                            ) = _govern_deferred_analysis_item(
+                                raw_tag=raw_tag,
+                                raw_evidence=raw_evidence,
+                                question=question,
+                                source_question_ref=source.source_question_ref,
+                                source_content_hash=source_hash,
+                                resolver=self.resolver,
+                                taxonomy_governance=self.taxonomy_governance,
+                                model_name=response.model_name,
+                                operation_id=operation_id,
+                            )
+                        except Exception as exc:
+                            if isinstance(exc, _DeferredAnalysisValidationError):
+                                validation_category = exc.category
+                            failures.append(
+                                DeferredAnalysisFailure(
+                                    source_question_ref=source.source_question_ref,
+                                    analysis_question_id=question.question_id,
+                                    request_id=request_id,
+                                    batch_hash=batch.batch_hash,
+                                    category=validation_category,
+                                )
+                            )
+                            continue
+                        result.append(
+                            DeferredCombinedAnalysisItem(
+                                source_question_ref=source.source_question_ref,
+                                analysis_question_id=question.question_id,
+                                source_content_hash=source_hash,
+                                curriculum_volume_id=curriculum_volume_id,
+                                taxonomy_contract_hash=_hash_payload(
+                                    dict(question.taxonomy_contract)
+                                ),
+                                knowledge_candidates=candidate_snapshot,
+                                tag_analysis=normalized_tag,
+                                solution_evidence_payload=normalized_evidence,
+                                solution_evidence=evidence,
+                                taxonomy_audit=taxonomy_audit,
+                                model_name=response.model_name,
+                                operation_id=operation_id,
+                            )
+                        )
+                        validated_raw_results.append(
+                            {
+                                "question_id": question.question_id,
+                                "tag_analysis": normalized_tag,
+                                "solution_evidence": normalized_evidence,
+                            }
+                        )
+                        parsed_count += 1
                     requests.append(
                         AnalysisRequestCheckpoint(
                             request_id=request_id,
                             request_fingerprint=request_fingerprint,
                             batch_hash=batch.batch_hash,
                             source_question_refs=source_refs,
-                            status="outcome_unknown",
+                            status=(
+                                "succeeded"
+                                if parsed_count == len(batch.questions)
+                                else "partial"
+                            ),
+                            model_name=response.model_name,
+                            raw_payload={"results": validated_raw_results},
                         )
                     )
                     snapshot()
-                    if category == "cancelled":
-                        break
-                    continue
-                failures.extend(
-                    DeferredAnalysisFailure(
-                        source_question_ref=by_question_id[question_id].source_question_ref,
-                        analysis_question_id=question_id,
-                        request_id=request_id,
-                        batch_hash=batch.batch_hash,
-                        category=category,
-                    )
-                    for question_id in batch.question_ids
-                )
-                requests.append(
-                    AnalysisRequestCheckpoint(
-                        request_id=request_id,
-                        request_fingerprint=request_fingerprint,
-                        batch_hash=batch.batch_hash,
-                        source_question_refs=source_refs,
-                        status="cancelled" if category == "cancelled" else "failed",
-                    )
-                )
-                snapshot()
-                if category == "cancelled":
-                    break
-                continue
-            parsed_count = 0
-            validated_raw_results: list[dict[str, Any]] = []
-            for question in batch.questions:
-                source = by_question_id[question.question_id]
+
+                if not stop_scheduling:
+                    fill_available_slots()
+            if stop_scheduling:
+                record_unscheduled_cancellations()
+        except BaseException as exc:
+            if _analysis_error_category(exc) == "cancelled":
+                record_unscheduled_cancellations()
                 try:
-                    raw = raw_items[question.question_id]
-                    raw_tag = raw.get("tag_analysis")
-                    raw_evidence = raw.get("solution_evidence")
-                    if not isinstance(raw_tag, Mapping):
-                        raise ValueError("combined response tag_analysis is invalid")
-                    if not isinstance(raw_evidence, Mapping):
-                        raise ValueError("combined response solution_evidence is invalid")
-                    _validate_model_tag_payload(raw_tag)
-                    normalized_tag = TagAnalysis.from_dict(dict(raw_tag)).to_dict()
-                    source_hash = solution_evidence_source_content_hash(question)
-                    evidence = QuestionSolutionEvidence.from_model_dict(
-                        raw_evidence,
-                        question_id=question.question_id,
-                        source_content_hash=source_hash,
-                        resolver=self.resolver,
-                    )
-                    validate_evidence_fine_terms(
-                        evidence,
-                        question.taxonomy_contract,
-                    )
-                    candidate_snapshot = _minimal_candidate_snapshot(
-                        question.taxonomy_contract,
-                        evidence,
-                    )
-                except Exception:
-                    failures.append(
-                        DeferredAnalysisFailure(
-                            source_question_ref=source.source_question_ref,
-                            analysis_question_id=question.question_id,
-                            request_id=request_id,
-                            batch_hash=batch.batch_hash,
-                            category="evidence_validation",
-                        )
-                    )
-                    continue
-                result.append(
-                    DeferredCombinedAnalysisItem(
-                        source_question_ref=source.source_question_ref,
-                        analysis_question_id=question.question_id,
-                        source_content_hash=source_hash,
-                        curriculum_volume_id=curriculum_volume_id,
-                        taxonomy_contract_hash=_hash_payload(
-                            dict(question.taxonomy_contract)
-                        ),
-                        knowledge_candidates=candidate_snapshot,
-                        tag_analysis=normalized_tag,
-                        solution_evidence_payload=dict(raw_evidence),
-                        solution_evidence=evidence,
-                        model_name=response.model_name,
-                        operation_id=operation_id,
-                    )
-                )
-                validated_raw_results.append(
-                    {
-                        "question_id": question.question_id,
-                        "tag_analysis": dict(raw_tag),
-                        "solution_evidence": dict(raw_evidence),
-                    }
-                )
-                parsed_count += 1
-            requests.append(
-                AnalysisRequestCheckpoint(
-                    request_id=request_id,
-                    request_fingerprint=request_fingerprint,
-                    batch_hash=batch.batch_hash,
-                    source_question_refs=source_refs,
-                    status=(
-                        "succeeded"
-                        if parsed_count == len(batch.questions)
-                        else "partial"
-                    ),
-                    model_name=response.model_name,
-                    raw_payload={"results": validated_raw_results},
-                )
-            )
-            snapshot()
+                    snapshot()
+                except BaseException:
+                    # The cancellation-aware checkpoint is expected to raise
+                    # again after durably saving the augmented bundle.
+                    pass
+            for future in future_map:
+                future.cancel()
+            executor.shutdown(wait=True, cancel_futures=True)
+            raise
+        else:
+            executor.shutdown(wait=True)
         return snapshot()
+
+
+@dataclass(frozen=True, slots=True)
+class _DeferredEvidenceBinding:
+    evidence: QuestionSolutionEvidence
+    proposal_ids: tuple[str, ...] = ()
+    review_required: bool = False
+    retry_required: bool = False
 
 
 class DeferredCombinedProjectionWriter:
@@ -1099,10 +1376,12 @@ class DeferredCombinedProjectionWriter:
         tag_writer: Any,
         mapping_repository: FineTermCoreMappingRepository,
         evidence_repository: SolutionEvidenceRepository,
+        taxonomy_governance: Any | None = None,
     ) -> None:
         self.tag_writer = tag_writer
         self.mapping_repository = mapping_repository
         self.evidence_repository = evidence_repository
+        self.taxonomy_governance = taxonomy_governance
 
     def write(
         self,
@@ -1118,6 +1397,9 @@ class DeferredCombinedProjectionWriter:
         tag_error = ""
         evidence_error = ""
         evidence_version_id = ""
+        taxonomy_proposal_ids: tuple[str, ...] = ()
+        taxonomy_review_required = False
+        taxonomy_retry_required = False
         try:
             self.tag_writer.write(
                 question,
@@ -1125,17 +1407,19 @@ class DeferredCombinedProjectionWriter:
                 model_name=item.model_name,
                 operation_id=item.operation_id,
             )
+        except TaxonomyProjectionReviewRequired:
+            tag_status = "needs_taxonomy_review"
         except Exception:
             tag_error = "tag_validation"
         else:
             tag_status = "succeeded"
         try:
-            evidence = item.bind_evidence(
-                question,
-                resolver=self.mapping_repository,
-            )
+            binding = self._bind_adoption_evidence(item, question=question)
+            taxonomy_proposal_ids = binding.proposal_ids
+            taxonomy_review_required = binding.review_required
+            taxonomy_retry_required = binding.retry_required
             evidence_version_id = self.evidence_repository.save(
-                evidence,
+                binding.evidence,
                 source_kind="combined_model",
                 source_reference=(
                     f"deferred:{item.operation_id}:{item.source_question_ref}"
@@ -1154,6 +1438,9 @@ class DeferredCombinedProjectionWriter:
             "evidence_status": evidence_status,
             "evidence_error_category": evidence_error,
             "source_evidence_version_id": evidence_version_id,
+            "taxonomy_proposal_ids": list(taxonomy_proposal_ids),
+            "taxonomy_review_required": taxonomy_review_required,
+            "taxonomy_retry_required": taxonomy_retry_required,
         }
 
     def adopt(
@@ -1195,6 +1482,9 @@ class DeferredCombinedProjectionWriter:
         tag_error = ""
         evidence_error = ""
         evidence_version_id = ""
+        taxonomy_proposal_ids: tuple[str, ...] = ()
+        taxonomy_review_required = False
+        taxonomy_retry_required = False
         try:
             self.tag_writer.write(
                 question,
@@ -1202,18 +1492,23 @@ class DeferredCombinedProjectionWriter:
                 model_name=item.model_name,
                 operation_id=item.operation_id,
             )
+        except TaxonomyProjectionReviewRequired:
+            tag_status = "needs_taxonomy_review"
         except Exception:
             tag_error = "tag_validation"
         else:
             tag_status = "succeeded"
         try:
-            evidence = item.bind_linked_evidence(
-                question,
+            binding = self._bind_adoption_evidence(
+                item,
+                question=question,
                 link=link,
-                resolver=self.mapping_repository,
             )
+            taxonomy_proposal_ids = binding.proposal_ids
+            taxonomy_review_required = binding.review_required
+            taxonomy_retry_required = binding.retry_required
             evidence_version_id = self.evidence_repository.save(
-                evidence,
+                binding.evidence,
                 source_kind="combined_model",
                 source_reference=(
                     f"deferred-linked:{item.operation_id}:"
@@ -1237,7 +1532,84 @@ class DeferredCombinedProjectionWriter:
             "evidence_status": evidence_status,
             "evidence_error_category": evidence_error,
             "source_evidence_version_id": evidence_version_id,
+            "taxonomy_proposal_ids": list(taxonomy_proposal_ids),
+            "taxonomy_review_required": taxonomy_review_required,
+            "taxonomy_retry_required": taxonomy_retry_required,
         }
+
+    def _bind_adoption_evidence(
+        self,
+        item: DeferredCombinedAnalysisItem,
+        *,
+        question: QuestionAnalysisInput,
+        link: ConfirmedQuestionAdoptionLink | None = None,
+    ) -> _DeferredEvidenceBinding:
+        if self.taxonomy_governance is None:
+            if link is None:
+                return _DeferredEvidenceBinding(
+                    item.bind_evidence(
+                        question,
+                        resolver=self.mapping_repository,
+                    )
+                )
+            return _DeferredEvidenceBinding(
+                item.bind_linked_evidence(
+                    question,
+                    link=link,
+                    resolver=self.mapping_repository,
+                )
+            )
+        payload = item.evidence_payload_for_taxonomy_retry(
+            question_id=question.question_id
+        )
+        convergence = converge_evidence_terms(
+            payload,
+            taxonomy_contract=question.taxonomy_contract,
+            governance=self.taxonomy_governance,
+            question_ref=str(question.question_id),
+            model_name=item.model_name,
+            operation_id=item.operation_id,
+            persist_proposals=True,
+        )
+        evidence = QuestionSolutionEvidence.from_model_dict(
+            convergence.payload,
+            question_id=question.question_id,
+            source_content_hash=solution_evidence_source_content_hash(question),
+            resolver=self.mapping_repository,
+        )
+        validate_evidence_fine_terms(
+            evidence,
+            question.taxonomy_contract,
+            additional_allowed_term_ids=convergence.canonical_term_ids,
+        )
+        missing_links = any(
+            not point.fine_term_links
+            for part in evidence.parts
+            for point in part.evidence_points
+        )
+        unresolved_reasons = {
+            str(item.get("reason_code") or "")
+            for item in convergence.unresolved_links
+        }
+        return _DeferredEvidenceBinding(
+            evidence=evidence,
+            proposal_ids=tuple(
+                dict.fromkeys(
+                    str(item.get("proposal_id") or item.get("id") or "")
+                    for item in convergence.proposals
+                    if str(item.get("proposal_id") or item.get("id") or "")
+                )
+            ),
+            review_required=bool(convergence.unresolved_links or missing_links),
+            retry_required=bool(
+                unresolved_reasons
+                & {
+                    "unknown_term",
+                    "id_name_conflict",
+                    "taxonomy_governance_unavailable",
+                }
+            ),
+        )
 
 
 def compose_generated_config_from_skeletons(
@@ -1554,6 +1926,8 @@ def _analysis_error_category(exc: BaseException) -> str:
         return "connection"
     if "json" in text or "parse" in text:
         return "parse"
+    if isinstance(exc, ValueError) and "combined response" in text:
+        return "combined_response_contract"
     return "model"
 
 
@@ -1563,6 +1937,14 @@ def _analysis_outcome_is_unknown(exc: BaseException) -> bool:
         "timeout",
         "connection",
     }
+
+
+def _gateway_parallel_limit(gateway: QuestionAnalysisGateway) -> int:
+    value = getattr(gateway, "max_parallel_requests", 1)
+    try:
+        return max(1, min(100, int(value)))
+    except (TypeError, ValueError):
+        return 1
 
 
 def _hash_payload(value: Mapping[str, Any]) -> str:
@@ -1591,6 +1973,98 @@ def _require_exact_keys(
         raise ValueError(f"{label} fields do not match the contract")
 
 
+_TAXONOMY_AUDIT_KEYS = {
+    "schema_version",
+    "taxonomy_revision",
+    "status",
+    "tag_quality_status",
+    "quality_notes",
+    "retrieval_misses",
+    "proposals",
+    "secondary_matches",
+    "unresolved_links",
+}
+
+
+def _normalize_taxonomy_audit(value: object) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        raise ValueError("deferred taxonomy audit is invalid")
+    _require_exact_keys(value, _TAXONOMY_AUDIT_KEYS, "deferred taxonomy audit")
+    if value.get("schema_version") != "deferred-taxonomy-audit-v1":
+        raise ValueError("deferred taxonomy audit version is invalid")
+    status = str(value.get("status") or "").strip().casefold()
+    if status not in {
+        "accepted",
+        "needs_review",
+        "unavailable",
+        "legacy_unrecorded",
+    }:
+        raise ValueError("deferred taxonomy audit status is invalid")
+    try:
+        revision = max(0, int(value.get("taxonomy_revision") or 0))
+    except (TypeError, ValueError) as exc:
+        raise ValueError("deferred taxonomy revision is invalid") from exc
+    quality_status = str(value.get("tag_quality_status") or "").strip()[:80]
+    quality_notes = _audit_text_list(value.get("quality_notes"))
+    return {
+        "schema_version": "deferred-taxonomy-audit-v1",
+        "taxonomy_revision": revision,
+        "status": status,
+        "tag_quality_status": quality_status,
+        "quality_notes": quality_notes,
+        "retrieval_misses": _audit_mapping_list(value.get("retrieval_misses")),
+        "proposals": _audit_mapping_list(value.get("proposals")),
+        "secondary_matches": _audit_mapping_list(value.get("secondary_matches")),
+        "unresolved_links": _audit_mapping_list(value.get("unresolved_links")),
+    }
+
+
+def _legacy_taxonomy_audit(tag_analysis: Mapping[str, Any]) -> dict[str, Any]:
+    try:
+        revision = max(0, int(tag_analysis.get("taxonomy_revision") or 0))
+    except (TypeError, ValueError):
+        revision = 0
+    return {
+        "schema_version": "deferred-taxonomy-audit-v1",
+        "taxonomy_revision": revision,
+        "status": "legacy_unrecorded",
+        "tag_quality_status": "legacy_unrecorded",
+        "quality_notes": ["旧断点未保存独立标签治理审计。"],
+        "retrieval_misses": [],
+        "proposals": [],
+        "secondary_matches": [],
+        "unresolved_links": [],
+    }
+
+
+def _audit_text_list(value: object) -> list[str]:
+    if not isinstance(value, (list, tuple)):
+        raise ValueError("deferred taxonomy audit notes are invalid")
+    return list(
+        dict.fromkeys(
+            str(item or "").strip()[:500]
+            for item in value
+            if str(item or "").strip()
+        )
+    )
+
+
+def _audit_mapping_list(value: object) -> list[dict[str, Any]]:
+    if not isinstance(value, (list, tuple)) or not all(
+        isinstance(item, Mapping) for item in value
+    ):
+        raise ValueError("deferred taxonomy audit details are invalid")
+    result: list[dict[str, Any]] = []
+    for item in value:
+        # A JSON round-trip rejects non-portable checkpoint values while retaining
+        # the governed audit fields without coupling this layer to one registry.
+        portable = json.loads(json.dumps(dict(item), ensure_ascii=False))
+        if not isinstance(portable, dict):
+            raise ValueError("deferred taxonomy audit detail is invalid")
+        result.append(portable)
+    return result
+
+
 def _validate_model_tag_payload(payload: Mapping[str, Any]) -> None:
     _require_exact_keys(
         payload,
@@ -1614,6 +2088,464 @@ def _validate_model_tag_payload(payload: Mapping[str, Any]) -> None:
         },
         "combined tag analysis",
     )
+
+
+class _DeferredAnalysisValidationError(ValueError):
+    def __init__(self, category: str) -> None:
+        super().__init__(category)
+        self.category = str(category or "combined_item_contract")
+
+
+def _govern_deferred_analysis_item(
+    *,
+    raw_tag: object,
+    raw_evidence: Mapping[str, Any],
+    question: QuestionAnalysisInput,
+    source_question_ref: str,
+    source_content_hash: str,
+    resolver: FineTermResolver,
+    taxonomy_governance: Any | None,
+    model_name: str,
+    operation_id: str,
+) -> tuple[
+    dict[str, Any],
+    dict[str, Any],
+    QuestionSolutionEvidence,
+    tuple[DeferredKnowledgeCandidate, ...],
+    dict[str, Any],
+]:
+    """Validate scoring structure and audit taxonomy on independent axes."""
+
+    if taxonomy_governance is None:
+        try:
+            if not isinstance(raw_tag, Mapping):
+                raise ValueError("combined response tag_analysis is invalid")
+            _validate_model_tag_payload(raw_tag)
+        except Exception as exc:
+            raise _DeferredAnalysisValidationError("tag_contract") from exc
+        try:
+            normalized_tag = TagAnalysis.from_dict(dict(raw_tag)).to_dict()
+        except Exception as exc:
+            raise _DeferredAnalysisValidationError("tag_normalization") from exc
+        normalized_evidence = _normalize_model_solution_evidence(
+            raw_evidence,
+            question.taxonomy_contract,
+        )
+        try:
+            evidence = QuestionSolutionEvidence.from_model_dict(
+                normalized_evidence,
+                question_id=question.question_id,
+                source_content_hash=source_content_hash,
+                resolver=resolver,
+            )
+        except Exception as exc:
+            raise _DeferredAnalysisValidationError(
+                "solution_evidence_contract"
+            ) from exc
+        try:
+            validate_evidence_fine_terms(evidence, question.taxonomy_contract)
+        except Exception as exc:
+            raise _DeferredAnalysisValidationError(
+                "solution_evidence_terms"
+            ) from exc
+        try:
+            candidates = _minimal_candidate_snapshot(
+                question.taxonomy_contract,
+                evidence,
+            )
+        except Exception as exc:
+            raise _DeferredAnalysisValidationError(
+                "solution_evidence_candidates"
+            ) from exc
+        return (
+            normalized_tag,
+            normalized_evidence,
+            evidence,
+            candidates,
+            {
+                "schema_version": "deferred-taxonomy-audit-v1",
+                "taxonomy_revision": _taxonomy_contract_revision(
+                    question.taxonomy_contract
+                ),
+                "status": "accepted",
+                "tag_quality_status": "not_checked",
+                "quality_notes": [],
+                "retrieval_misses": [],
+                "proposals": [],
+                "secondary_matches": [],
+                "unresolved_links": [],
+            },
+        )
+
+    tag_parse_failed = False
+    tag_quality_status = "invalid"
+    tag_quality_notes: list[str] = []
+    tag_proposals: list[dict[str, Any]] = []
+    tag_retrieval_misses: list[dict[str, Any]] = []
+    try:
+        if not isinstance(raw_tag, Mapping):
+            raise ValueError("combined response tag_analysis is invalid")
+        _validate_model_tag_payload(raw_tag)
+        parsed_tag = TagAnalysis.from_dict(dict(raw_tag))
+        checked_tag = converge_tag_analysis(
+            parsed_tag,
+            question.tagging_context,
+            governance=taxonomy_governance,
+            taxonomy_contract=question.taxonomy_contract,
+            question_ref=source_question_ref,
+            model_name=model_name,
+        )
+        normalized_tag_analysis = checked_tag.analysis or parsed_tag
+        tag_quality_status = str(checked_tag.quality_status or "invalid")
+        tag_quality_notes = [
+            str(item or "").strip()
+            for item in checked_tag.quality_notes
+            if str(item or "").strip()
+        ]
+        tag_proposals = [
+            dict(item)
+            for item in checked_tag.proposals
+            if isinstance(item, Mapping)
+        ]
+        tag_retrieval_misses = [
+            dict(item)
+            for item in checked_tag.retrieval_misses
+            if isinstance(item, Mapping)
+        ]
+    except Exception:
+        tag_parse_failed = True
+        tag_quality_notes = ["标签字段未通过本地规范化，已保留评分依据并转待处理。"]
+        normalized_tag_analysis = _safe_fallback_tag_analysis(raw_tag)
+
+    structure_only = _normalize_model_solution_evidence(raw_evidence, {})
+    governance_unavailable = False
+    evidence_proposals: list[dict[str, Any]] = []
+    evidence_retrieval_misses: list[dict[str, Any]] = []
+    secondary_matches: list[dict[str, Any]] = []
+    unresolved_links: list[dict[str, Any]] = []
+    canonical_terms: Sequence[Mapping[str, Any]] = ()
+    additional_allowed: Sequence[str] = ()
+    taxonomy_revision = _taxonomy_contract_revision(question.taxonomy_contract)
+    try:
+        convergence = converge_evidence_terms(
+            structure_only,
+            taxonomy_contract=question.taxonomy_contract,
+            governance=taxonomy_governance,
+            question_ref=source_question_ref,
+            model_name=model_name,
+            operation_id=operation_id,
+            persist_proposals=False,
+        )
+        normalized_evidence = dict(convergence.payload)
+        additional_allowed = convergence.canonical_term_ids
+        canonical_terms = convergence.canonical_terms
+        evidence_proposals = [dict(item) for item in convergence.proposals]
+        evidence_retrieval_misses = [
+            dict(item) for item in convergence.retrieval_misses
+        ]
+        secondary_matches = [
+            dict(item) for item in convergence.secondary_matches
+        ]
+        unresolved_links = [
+            dict(item) for item in convergence.unresolved_links
+        ]
+        taxonomy_revision = int(
+            getattr(convergence, "taxonomy_revision", taxonomy_revision)
+            or taxonomy_revision
+        )
+    except Exception:
+        governance_unavailable = True
+        normalized_evidence, unresolved_links = _strip_unverified_evidence_links(
+            structure_only,
+            reason_code="taxonomy_governance_unavailable",
+        )
+        tag_quality_notes.append(
+            "本地完整词表暂时不可用；评分依据已保留，标签等待本地重试。"
+        )
+
+    evidence = QuestionSolutionEvidence.from_model_dict(
+        normalized_evidence,
+        question_id=question.question_id,
+        source_content_hash=source_content_hash,
+        resolver=resolver,
+    )
+    validate_evidence_fine_terms(
+        evidence,
+        question.taxonomy_contract,
+        additional_allowed_term_ids=additional_allowed,
+    )
+    candidates = _governed_candidate_snapshot(canonical_terms, evidence)
+    proposals = _merge_taxonomy_proposals(tag_proposals, evidence_proposals)
+    tag_payload = normalized_tag_analysis.to_dict()
+    tag_payload["proposed_tags"] = proposals
+    normalized_tag = TagAnalysis.from_dict(tag_payload).to_dict()
+    missing_term_links = any(
+        not point.fine_term_links
+        for part in evidence.parts
+        for point in part.evidence_points
+    )
+    if missing_term_links:
+        tag_quality_notes.append(
+            "部分判分点暂未关联正式知识词；评分依据已保留，标签等待补充或归并。"
+        )
+    tag_requires_review = tag_quality_status != "complete"
+    status = (
+        "unavailable"
+        if governance_unavailable
+        else "needs_review"
+        if (
+            tag_parse_failed
+            or tag_requires_review
+            or proposals
+            or unresolved_links
+            or missing_term_links
+        )
+        else "accepted"
+    )
+    audit = {
+        "schema_version": "deferred-taxonomy-audit-v1",
+        "taxonomy_revision": taxonomy_revision,
+        "status": status,
+        "tag_quality_status": tag_quality_status,
+        "quality_notes": list(dict.fromkeys(tag_quality_notes)),
+        "retrieval_misses": [
+            *tag_retrieval_misses,
+            *evidence_retrieval_misses,
+        ],
+        "proposals": proposals,
+        "secondary_matches": secondary_matches,
+        "unresolved_links": unresolved_links,
+    }
+    return (
+        normalized_tag,
+        normalized_evidence,
+        evidence,
+        candidates,
+        _normalize_taxonomy_audit(audit),
+    )
+
+
+def _safe_fallback_tag_analysis(raw_tag: object) -> TagAnalysis:
+    payload = dict(raw_tag) if isinstance(raw_tag, Mapping) else {}
+    return TagAnalysis.from_dict(payload)
+
+
+def _merge_taxonomy_proposals(
+    *groups: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for group in groups:
+        for raw in group:
+            dimension = str(raw.get("dimension") or "knowledge").strip().casefold()
+            name = str(
+                raw.get("proposed_name") or raw.get("name") or ""
+            ).strip()
+            key = (dimension, name.casefold())
+            if not name or key in seen:
+                continue
+            seen.add(key)
+            item = dict(raw)
+            item.setdefault("dimension", dimension)
+            item.setdefault("proposed_name", name)
+            result.append(item)
+            if len(result) >= 2:
+                return result
+    return result
+
+
+def _strip_unverified_evidence_links(
+    payload: Mapping[str, Any],
+    *,
+    reason_code: str,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    normalized = json.loads(json.dumps(dict(payload), ensure_ascii=False))
+    unresolved: list[dict[str, Any]] = []
+    parts = normalized.get("parts")
+    if not isinstance(parts, list):
+        return normalized, unresolved
+    for part in parts:
+        if not isinstance(part, dict):
+            continue
+        points = part.get("evidence_points")
+        if not isinstance(points, list):
+            continue
+        for point in points:
+            if not isinstance(point, dict):
+                continue
+            raw_links = point.get("fine_term_links")
+            if not isinstance(raw_links, list):
+                continue
+            for raw in raw_links:
+                if not isinstance(raw, Mapping):
+                    continue
+                unresolved.append(
+                    {
+                        "part_id": str(part.get("part_id") or ""),
+                        "evidence_point_id": str(
+                            point.get("evidence_point_id") or ""
+                        ),
+                        "role": str(raw.get("role") or ""),
+                        "submitted_id": str(raw.get("fine_term_id") or ""),
+                        "submitted_name": str(raw.get("fine_term_name") or ""),
+                        "proposal_id": "",
+                        "reason_code": reason_code,
+                    }
+                )
+            point["fine_term_links"] = []
+    return normalized, unresolved
+
+
+def _taxonomy_contract_revision(contract: Mapping[str, Any]) -> int:
+    try:
+        return max(0, int(contract.get("taxonomy_revision") or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _normalize_model_solution_evidence(
+    payload: Mapping[str, Any],
+    taxonomy_contract: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Repair only machine identities and governed candidate display names."""
+
+    normalized = dict(payload)
+    raw_parts = payload.get("parts")
+    if not isinstance(raw_parts, list):
+        return normalized
+    candidate_names = _knowledge_candidate_names(taxonomy_contract)
+    used_part_ids: set[str] = set()
+    used_point_ids: set[str] = set()
+    parts: list[object] = []
+    for part_index, raw_part in enumerate(raw_parts, start=1):
+        if not isinstance(raw_part, Mapping):
+            parts.append(raw_part)
+            continue
+        part = dict(raw_part)
+        part_id = _stable_model_identifier(
+            part.get("part_id"),
+            fallback=f"part-{part_index}",
+            used=used_part_ids,
+        )
+        part["part_id"] = part_id
+        raw_points = part.get("evidence_points")
+        if isinstance(raw_points, list):
+            points: list[object] = []
+            for point_index, raw_point in enumerate(raw_points, start=1):
+                if not isinstance(raw_point, Mapping):
+                    points.append(raw_point)
+                    continue
+                point = dict(raw_point)
+                point["evidence_point_id"] = _stable_model_identifier(
+                    point.get("evidence_point_id"),
+                    fallback=f"{part_id}-step-{point_index}",
+                    used=used_point_ids,
+                )
+                raw_links = point.get("fine_term_links")
+                if isinstance(raw_links, list):
+                    links: list[object] = []
+                    seen_links: set[tuple[str, str]] = set()
+                    for raw_link in raw_links:
+                        if not isinstance(raw_link, Mapping):
+                            links.append(raw_link)
+                            continue
+                        link = dict(raw_link)
+                        term_id = str(link.get("fine_term_id") or "").strip()
+                        role = str(link.get("role") or "").strip().casefold()
+                        if term_id in candidate_names:
+                            link["fine_term_id"] = term_id
+                            link["fine_term_name"] = candidate_names[term_id]
+                        signature = (term_id, role)
+                        if term_id and role and signature in seen_links:
+                            continue
+                        if term_id and role:
+                            seen_links.add(signature)
+                        links.append(link)
+                    point["fine_term_links"] = links
+                points.append(point)
+            part["evidence_points"] = points
+        parts.append(part)
+    normalized["parts"] = parts
+    return normalized
+
+
+def _stable_model_identifier(
+    value: object,
+    *,
+    fallback: str,
+    used: set[str],
+) -> str:
+    candidate = str(value or "").strip().casefold()
+    if not _MODEL_IDENTIFIER.fullmatch(candidate) or candidate in used:
+        candidate = fallback
+    suffix = 2
+    base = candidate
+    while candidate in used:
+        candidate = f"{base}-{suffix}"
+        suffix += 1
+    used.add(candidate)
+    return candidate
+
+
+def _knowledge_candidate_names(
+    taxonomy_contract: Mapping[str, Any],
+) -> dict[str, str]:
+    candidates = taxonomy_contract.get("candidates")
+    knowledge = (
+        candidates.get("knowledge")
+        if isinstance(candidates, Mapping)
+        else None
+    )
+    if not isinstance(knowledge, list):
+        return {}
+    result: dict[str, str] = {}
+    for raw in knowledge:
+        if not isinstance(raw, Mapping):
+            continue
+        term_id = str(raw.get("id") or "").strip()
+        term_name = str(raw.get("name") or "").strip()
+        if term_id and term_name:
+            result.setdefault(term_id, term_name)
+    return result
+
+
+def _governed_candidate_snapshot(
+    canonical_terms: Sequence[Mapping[str, Any]],
+    evidence: QuestionSolutionEvidence,
+) -> tuple[DeferredKnowledgeCandidate, ...]:
+    by_id: dict[str, DeferredKnowledgeCandidate] = {}
+    for raw in canonical_terms:
+        term_id = str(raw.get("id") or raw.get("fine_term_id") or "").strip()
+        term_name = str(
+            raw.get("name") or raw.get("fine_term_name") or ""
+        ).strip()
+        raw_aliases = raw.get("aliases")
+        aliases = (
+            tuple(
+                str(item or "").strip()
+                for item in raw_aliases
+                if str(item or "").strip()
+            )
+            if isinstance(raw_aliases, (list, tuple))
+            else ()
+        )
+        if term_id and term_name:
+            by_id[term_id] = DeferredKnowledgeCandidate(
+                fine_term_id=term_id,
+                fine_term_name=term_name,
+                aliases=aliases,
+            )
+    referenced_ids: list[str] = []
+    for part in evidence.parts:
+        for point in part.evidence_points:
+            for link in point.fine_term_links:
+                if link.fine_term_id not in referenced_ids:
+                    referenced_ids.append(link.fine_term_id)
+    if any(term_id not in by_id for term_id in referenced_ids):
+        raise ValueError("governed solution evidence term snapshot is incomplete")
+    snapshot = tuple(by_id[term_id] for term_id in referenced_ids)
+    validate_evidence_fine_terms(evidence, _candidate_contract(snapshot))
+    return snapshot
 
 
 def _minimal_candidate_snapshot(

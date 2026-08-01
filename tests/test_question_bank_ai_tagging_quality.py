@@ -159,6 +159,59 @@ def _tagging_env() -> dict[str, str]:
     }
 
 
+def test_saved_llm_client_policy_reaches_lazy_tagging_adapter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+    configured_client = object()
+    policy_profile = {
+        "llm_concurrency_mode": "custom",
+        "llm_custom_max_in_flight": 3,
+        "_llm_execution_scope_key": "synthetic-scope",
+    }
+
+    class CapturingAdapter:
+        def __init__(
+            self,
+            api_key: str,
+            base_url: str,
+            policy_profile=None,
+            client=None,
+        ) -> None:
+            captured.update(
+                api_key=api_key,
+                base_url=base_url,
+                policy_profile=dict(policy_profile or {}),
+                client=client,
+            )
+
+    monkeypatch.setattr(ai_tagging_module, "_dotenv_values", lambda: {})
+    monkeypatch.setattr(ai_tagging_module, "LLMProtocolAdapter", CapturingAdapter)
+    service = AITaggingService(
+        env={},
+        llm_client=SimpleNamespace(
+            settings=SimpleNamespace(
+                config_model="synthetic-config-model",
+                config_api_key="synthetic-config-key",
+                api_key="synthetic-default-key",
+                config_base_url="https://config.invalid/v1",
+                base_url="https://default.invalid/v1",
+                policy_profile=policy_profile,
+            ),
+            config_client=configured_client,
+        ),
+    )
+
+    service._protocol_adapter()
+
+    assert captured == {
+        "api_key": "synthetic-config-key",
+        "base_url": "https://config.invalid/v1",
+        "policy_profile": policy_profile,
+        "client": configured_client,
+    }
+
+
 def test_optional_reasoning_instruction_matches_english_prompt_language(
     monkeypatch,
 ) -> None:

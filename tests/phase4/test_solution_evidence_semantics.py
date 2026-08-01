@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
+import threading
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, Mapping
@@ -35,6 +37,7 @@ from question_bank.training_criteria import (
     GatewayBatchResponse,
     InMemoryCombinedQuestionAnalysisModule,
     QuestionAnalysisInput,
+    TaxonomyProjectionReviewRequired,
     DeferredCombinedProjectionWriter,
     compose_generated_config_from_skeletons,
     grading_config_skeleton_from_solution_evidence,
@@ -203,6 +206,17 @@ def _assert_no_score_fields(value: object) -> None:
     elif isinstance(value, list):
         for child in value:
             _assert_no_score_fields(child)
+
+
+def _checkpoint_hash(value: Mapping[str, Any]) -> str:
+    return hashlib.sha256(
+        json.dumps(
+            dict(value),
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
 
 
 def test_solution_evidence_projects_role_preserving_union_and_complete_config() -> None:
@@ -439,6 +453,580 @@ class QueueGateway:
             payload=response,
             model_name="synthetic-combined-model",
         )
+
+
+class ConcurrentGateway:
+    max_parallel_requests = 2
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[int, ...]] = []
+        self.max_active = 0
+        self._active = 0
+        self._lock = threading.Lock()
+        self._overlap = threading.Event()
+
+    def analyze(self, batch, **_kwargs):
+        with self._lock:
+            self.calls.append(batch.question_ids)
+            self._active += 1
+            self.max_active = max(self.max_active, self._active)
+            if self._active >= 2:
+                self._overlap.set()
+        try:
+            # A serial implementation times out here and records a peak of one;
+            # a bounded parallel implementation releases both calls immediately.
+            self._overlap.wait(timeout=0.2)
+            question_id = batch.question_ids[0]
+            return GatewayBatchResponse(
+                payload=_combined_payload(question_id),
+                model_name="synthetic-concurrent-model",
+            )
+        finally:
+            with self._lock:
+                self._active -= 1
+
+
+class DecreasingLimitGateway:
+    def __init__(self) -> None:
+        self.limit = 2
+        self.second_started = threading.Event()
+        self.release_second = threading.Event()
+        self.third_started = threading.Event()
+
+    @property
+    def max_parallel_requests(self) -> int:
+        return self.limit
+
+    def analyze(self, batch, **_kwargs):
+        question_id = batch.question_ids[0]
+        if question_id == 1:
+            assert self.second_started.wait(timeout=1)
+            self.limit = 1
+        elif question_id == 2:
+            self.second_started.set()
+            assert self.release_second.wait(timeout=2)
+        elif question_id == 3:
+            self.third_started.set()
+        return GatewayBatchResponse(
+            payload=_combined_payload(question_id),
+            model_name="synthetic-decreasing-limit-model",
+        )
+
+
+def test_in_memory_analysis_honors_gateway_parallel_limit() -> None:
+    sources = tuple(
+        ConfigQuestionAnalysisSource(
+            f"Q{question_id}",
+            _question(
+                question_id,
+                source_ref=f"Q{question_id}",
+                text=f"证明第 {question_id} 个等式成立。",
+            ),
+        )
+        for question_id in range(1, 4)
+    )
+    gateway = ConcurrentGateway()
+
+    bundle = InMemoryCombinedQuestionAnalysisModule(
+        gateway=gateway,
+        resolver=Resolver(),
+    ).analyze(
+        operation_id="config-source-analysis:parallel-limit",
+        curriculum_volume_id=VOLUME_ID,
+        sources=sources,
+    )
+
+    assert bundle.status == "succeeded"
+    assert gateway.max_active == 2
+    assert sorted(gateway.calls) == [(1,), (2,), (3,)]
+
+
+def test_parallel_analysis_stops_refilling_when_effective_limit_drops() -> None:
+    sources = tuple(
+        ConfigQuestionAnalysisSource(
+            f"Q{question_id}",
+            _question(
+                question_id,
+                source_ref=f"Q{question_id}",
+                text=f"证明第 {question_id} 个等式成立。",
+            ),
+        )
+        for question_id in range(1, 4)
+    )
+    gateway = DecreasingLimitGateway()
+    bundles: list[DeferredCombinedAnalysisBundle] = []
+    errors: list[BaseException] = []
+
+    def run_analysis() -> None:
+        try:
+            bundles.append(
+                InMemoryCombinedQuestionAnalysisModule(
+                    gateway=gateway,
+                    resolver=Resolver(),
+                ).analyze(
+                    operation_id="config-source-analysis:limit-drop",
+                    curriculum_volume_id=VOLUME_ID,
+                    sources=sources,
+                )
+            )
+        except BaseException as exc:
+            errors.append(exc)
+
+    worker = threading.Thread(target=run_analysis, daemon=True)
+    worker.start()
+    assert gateway.second_started.wait(timeout=1)
+    assert not gateway.third_started.wait(timeout=0.2)
+    gateway.release_second.set()
+    worker.join(timeout=2)
+
+    assert not worker.is_alive()
+    assert errors == []
+    assert bundles[0].status == "succeeded"
+    assert gateway.third_started.is_set()
+
+
+def test_parallel_analysis_stops_scheduling_after_checkpoint_cancellation() -> None:
+    class SyntheticCancellation(RuntimeError):
+        pass
+
+    sources = tuple(
+        ConfigQuestionAnalysisSource(
+            f"Q{question_id}",
+            _question(
+                question_id,
+                source_ref=f"Q{question_id}",
+                text=f"证明第 {question_id} 个等式成立。",
+            ),
+        )
+        for question_id in range(1, 5)
+    )
+    gateway = ConcurrentGateway()
+    checkpoints: list[DeferredCombinedAnalysisBundle] = []
+
+    def cancel_after_first_result(bundle: DeferredCombinedAnalysisBundle) -> None:
+        checkpoints.append(bundle)
+        if bundle.items:
+            raise SyntheticCancellation("cancel after first durable result")
+
+    with pytest.raises(SyntheticCancellation):
+        InMemoryCombinedQuestionAnalysisModule(
+            gateway=gateway,
+            resolver=Resolver(),
+        ).analyze(
+            operation_id="config-source-analysis:bounded-cancellation",
+            curriculum_volume_id=VOLUME_ID,
+            sources=sources,
+            checkpoint=cancel_after_first_result,
+        )
+
+    assert sorted(gateway.calls) == [(1,), (2,)]
+    assert any(bundle.items for bundle in checkpoints)
+    running_before_send = checkpoints[1]
+    assert running_before_send.running_source_refs == ("Q1", "Q2")
+    assert checkpoints[-1].failed_source_refs == ("Q3", "Q4")
+
+
+def test_terminal_checkpoint_crash_leaves_unsent_sources_retryable() -> None:
+    sources = tuple(
+        ConfigQuestionAnalysisSource(
+            f"Q{question_id}",
+            _question(
+                question_id,
+                source_ref=f"Q{question_id}",
+                text=f"证明第 {question_id} 个等式成立。",
+            ),
+        )
+        for question_id in range(1, 4)
+    )
+    checkpoints: list[DeferredCombinedAnalysisBundle] = []
+
+    def crash_after_first_terminal(
+        bundle: DeferredCombinedAnalysisBundle,
+    ) -> None:
+        checkpoints.append(bundle)
+        if bundle.items and not bundle.running_source_refs:
+            raise KeyboardInterrupt()
+
+    with pytest.raises(KeyboardInterrupt):
+        InMemoryCombinedQuestionAnalysisModule(
+            gateway=QueueGateway([_combined_payload(1)]),
+            resolver=Resolver(),
+        ).analyze(
+            operation_id="config-source-analysis:terminal-crash",
+            curriculum_volume_id=VOLUME_ID,
+            sources=sources,
+            checkpoint=crash_after_first_terminal,
+        )
+
+    interrupted = checkpoints[-1]
+    assert interrupted.status == "partial"
+    assert interrupted.failed_source_refs == ("Q2", "Q3")
+
+    retry_gateway = QueueGateway([
+        _combined_payload(2),
+        _combined_payload(3),
+    ])
+    recovered = InMemoryCombinedQuestionAnalysisModule(
+        gateway=retry_gateway,
+        resolver=Resolver(),
+    ).retry_failed(
+        interrupted,
+        sources=sources,
+        curriculum_volume_id=VOLUME_ID,
+    )
+
+    assert recovered.status == "succeeded"
+    assert retry_gateway.calls == [(2,), (3,)]
+
+
+def test_in_memory_failures_keep_safe_validation_stage_for_retry_ui() -> None:
+    first_payload = copy.deepcopy(_combined_payload(1))
+    first_payload["results"][0]["solution_evidence"]["parts"][0][
+        "evidence_points"
+    ][0]["target"] = ""
+    sources = (
+        ConfigQuestionAnalysisSource(
+            "Q1",
+            _question(1, source_ref="Q1"),
+        ),
+        ConfigQuestionAnalysisSource(
+            "Q2",
+            _question(2, source_ref="Q2"),
+        ),
+    )
+
+    bundle = InMemoryCombinedQuestionAnalysisModule(
+        gateway=QueueGateway(
+            [
+                first_payload,
+                _combined_payload(2, invented_term=True),
+            ]
+        ),
+        resolver=Resolver(),
+    ).analyze(
+        operation_id="config-source-analysis:safe-failure-stage",
+        curriculum_volume_id=VOLUME_ID,
+        sources=sources,
+    )
+
+    assert bundle.failed_source_refs == ("Q1", "Q2")
+    assert [item.category for item in bundle.failures] == [
+        "solution_evidence_contract",
+        "solution_evidence_terms",
+    ]
+    assert "solution evidence" not in json.dumps(bundle.to_dict(), ensure_ascii=False)
+
+    from backend.jobs.config_generation import _deferred_analysis_draft
+
+    draft = _deferred_analysis_draft(bundle, exam_title="合成测试")
+    assert draft["meta"]["failed_batches"] == [
+        {
+            "batch_id": "解题证据分析-1",
+            "question_ids": ["Q1"],
+            "status": "failed",
+            "category": "model_output_contract",
+            "error": "模型已返回，但拆分点字段或标识不符合约定。",
+        },
+        {
+            "batch_id": "解题证据分析-2",
+            "question_ids": ["Q2"],
+            "status": "failed",
+            "category": "model_output_contract",
+            "error": "模型已返回，但拆分点引用了本题候选范围外的知识词。",
+        },
+    ]
+
+
+def test_in_memory_normalizes_machine_ids_candidate_names_and_duplicate_links() -> None:
+    payload = copy.deepcopy(_combined_payload(1))
+    part = payload["results"][0]["solution_evidence"]["parts"][0]
+    part["part_id"] = "第1问"
+    point = part["evidence_points"][0]
+    point["evidence_point_id"] = "1"
+    point["fine_term_links"][0]["fine_term_name"] = "模型改写的显示名"
+    point["fine_term_links"].append(copy.deepcopy(point["fine_term_links"][0]))
+
+    bundle = InMemoryCombinedQuestionAnalysisModule(
+        gateway=QueueGateway([payload]),
+        resolver=Resolver(),
+    ).analyze(
+        operation_id="config-source-analysis:safe-local-normalization",
+        curriculum_volume_id=VOLUME_ID,
+        sources=(ConfigQuestionAnalysisSource("Q1", _question(1)),),
+    )
+
+    assert bundle.status == "succeeded"
+    evidence = bundle.get("Q1").solution_evidence
+    assert evidence.parts[0].part_id == "part-1"
+    assert evidence.parts[0].evidence_points[0].evidence_point_id == (
+        "part-1-step-1"
+    )
+    links = evidence.parts[0].evidence_points[0].fine_term_links
+    assert [item.fine_term_name for item in links] == [
+        "一元一次方程",
+        "移项解方程",
+    ]
+    assert len(links) == 2
+    rebound = DeferredCombinedAnalysisBundle.from_dict(
+        bundle.to_dict(),
+        resolver=Resolver(),
+    )
+    assert rebound.to_dict() == bundle.to_dict()
+
+
+def test_deferred_v2_checkpoint_loads_without_replaying_successful_analysis() -> None:
+    gateway = QueueGateway([_combined_payload(1)])
+    bundle = InMemoryCombinedQuestionAnalysisModule(
+        gateway=gateway,
+        resolver=Resolver(),
+    ).analyze(
+        operation_id="config-source-analysis:v2-checkpoint-compatibility",
+        curriculum_volume_id=VOLUME_ID,
+        sources=(ConfigQuestionAnalysisSource("Q1", _question(1)),),
+    )
+    legacy = copy.deepcopy(bundle.to_dict())
+    legacy_item = legacy["items"][0]
+    legacy_item.pop("content_hash")
+    legacy_item.pop("taxonomy_audit")
+    legacy_item["schema_version"] = "deferred-combined-analysis-item-v2"
+    legacy_item["content_hash"] = _checkpoint_hash(legacy_item)
+    legacy.pop("content_hash")
+    legacy["schema_version"] = "deferred-combined-analysis-v2"
+    legacy["content_hash"] = _checkpoint_hash(legacy)
+
+    restored = DeferredCombinedAnalysisBundle.from_dict(
+        legacy,
+        resolver=Resolver(),
+    )
+
+    assert gateway.calls == [(1,)]
+    assert restored.status == "succeeded"
+    assert restored.get("Q1").taxonomy_audit["status"] == "legacy_unrecorded"
+    assert restored.to_dict()["schema_version"] == "deferred-combined-analysis-v3"
+    assert restored.to_dict()["items"][0]["schema_version"] == (
+        "deferred-combined-analysis-item-v3"
+    )
+
+
+def test_in_memory_unknown_taxonomy_does_not_block_scoring_evidence(
+    tmp_path: Path,
+) -> None:
+    payload = _combined_payload(1, invented_term=True)
+    gateway = QueueGateway([payload])
+    governance = TaxonomyGovernance(
+        state_path=tmp_path / "taxonomy-state.json"
+    )
+
+    bundle = InMemoryCombinedQuestionAnalysisModule(
+        gateway=gateway,
+        resolver=Resolver(),
+        taxonomy_governance=governance,
+    ).analyze(
+        operation_id="config-source-analysis:taxonomy-review-nonblocking",
+        curriculum_volume_id=VOLUME_ID,
+        sources=(ConfigQuestionAnalysisSource("Q1", _question(1)),),
+    )
+
+    assert gateway.calls == [(1,)]
+    assert bundle.status == "succeeded"
+    assert bundle.failed_source_refs == ()
+    assert bundle.taxonomy_review_source_refs == ("Q1",)
+    generated = bundle.compose_generated_config(exam_title="标签待归并测试卷")
+    assert generated["rubric"]["questions"][0]["parts"][0]["steps"]
+    audit = bundle.get("Q1").taxonomy_audit
+    assert audit["status"] == "needs_review"
+    assert audit["proposals"][0]["proposed_name"] == "模型新造词"
+    assert governance.list_proposals(status="pending")["counts"] == {
+        "pending": 0
+    }
+
+
+def test_in_memory_empty_shortlist_uses_full_vocabulary_without_blocking(
+    tmp_path: Path,
+) -> None:
+    question = replace(
+        _question(1),
+        taxonomy_contract={
+            "taxonomy_revision": 2,
+            "allowed_dimensions": ["knowledge"],
+            "candidates": {"knowledge": []},
+        },
+    )
+    payload = _combined_payload(1)
+    payload["results"][0]["solution_evidence"]["parts"][0][
+        "evidence_points"
+    ][0]["fine_term_links"] = [
+        payload["results"][0]["solution_evidence"]["parts"][0][
+            "evidence_points"
+        ][0]["fine_term_links"][0]
+    ]
+    gateway = QueueGateway([payload])
+    governance = TaxonomyGovernance(
+        state_path=tmp_path / "taxonomy-state.json"
+    )
+
+    bundle = InMemoryCombinedQuestionAnalysisModule(
+        gateway=gateway,
+        resolver=Resolver(),
+        taxonomy_governance=governance,
+    ).analyze(
+        operation_id="config-source-analysis:empty-shortlist-convergence",
+        curriculum_volume_id=VOLUME_ID,
+        sources=(ConfigQuestionAnalysisSource("Q1", question),),
+    )
+
+    assert gateway.calls == [(1,)]
+    assert bundle.status == "succeeded"
+    assert bundle.failed_source_refs == ()
+    assert bundle.taxonomy_review_source_refs == ("Q1",)
+    audit = bundle.get("Q1").taxonomy_audit
+    assert audit["status"] == "needs_review"
+    assert audit["tag_quality_status"] != "complete"
+    assert {
+        item["canonical_id"]
+        for item in audit["retrieval_misses"]
+        if item.get("dimension") == "knowledge"
+    } == {
+        "kp_alg_linear_equation",
+    }
+
+
+def test_in_memory_all_unknown_links_keep_sound_scoring_point(
+    tmp_path: Path,
+) -> None:
+    payload = _combined_payload(1, invented_term=True)
+    point = payload["results"][0]["solution_evidence"]["parts"][0][
+        "evidence_points"
+    ][0]
+    point["fine_term_links"] = [point["fine_term_links"][0]]
+    point["target"] = "完成关键等价变形"
+    point["observable_evidence"] = "写出正确的中间式"
+    point["equivalent_rules"] = ["中间步骤顺序可以不同"]
+    point["counterexamples"] = ["只写结论而没有过程"]
+    governance = TaxonomyGovernance(
+        state_path=tmp_path / "taxonomy-state.json"
+    )
+
+    bundle = InMemoryCombinedQuestionAnalysisModule(
+        gateway=QueueGateway([payload]),
+        resolver=Resolver(),
+        taxonomy_governance=governance,
+    ).analyze(
+        operation_id="config-source-analysis:all-taxonomy-links-unknown",
+        curriculum_volume_id=VOLUME_ID,
+        sources=(ConfigQuestionAnalysisSource("Q1", _question(1)),),
+    )
+
+    assert bundle.status == "succeeded"
+    assert bundle.failed_source_refs == ()
+    assert bundle.taxonomy_review_source_refs == ("Q1",)
+    item = bundle.get("Q1")
+    assert item.solution_evidence.parts[0].evidence_points[0].fine_term_links == ()
+    assert item.knowledge_candidates == ()
+    assert item.taxonomy_audit["unresolved_links"][0]["submitted_name"] == (
+        "模型新造词"
+    )
+    assert item.grading_config_skeleton()["rubric_question"]["parts"][0][
+        "steps"
+    ][0]["core_goal"] == "完成关键等价变形"
+    assert governance.list_proposals(status="pending")["counts"] == {
+        "pending": 0
+    }
+
+
+def test_in_memory_missing_links_are_review_work_not_scoring_failure(
+    tmp_path: Path,
+) -> None:
+    payload = _combined_payload(1)
+    point = payload["results"][0]["solution_evidence"]["parts"][0][
+        "evidence_points"
+    ][0]
+    point["fine_term_links"] = []
+    point["target"] = "完成本步推导"
+    point["observable_evidence"] = "写出可核对的中间结果"
+    point["equivalent_rules"] = ["表达顺序可以不同"]
+    point["counterexamples"] = ["只写最终结论"]
+
+    bundle = InMemoryCombinedQuestionAnalysisModule(
+        gateway=QueueGateway([payload]),
+        resolver=Resolver(),
+        taxonomy_governance=TaxonomyGovernance(
+            state_path=tmp_path / "taxonomy-state.json"
+        ),
+    ).analyze(
+        operation_id="config-source-analysis:missing-taxonomy-links",
+        curriculum_volume_id=VOLUME_ID,
+        sources=(ConfigQuestionAnalysisSource("Q1", _question(1)),),
+    )
+
+    assert bundle.status == "succeeded"
+    assert bundle.failed_source_refs == ()
+    assert bundle.taxonomy_review_source_refs == ("Q1",)
+    item = bundle.get("Q1")
+    assert item.taxonomy_audit["status"] == "needs_review"
+    assert item.taxonomy_audit["proposals"] == []
+    assert item.taxonomy_audit["unresolved_links"] == []
+    assert item.grading_config_skeleton()["rubric_question"]["parts"][0][
+        "steps"
+    ][0]["core_goal"] == "完成本步推导"
+
+
+def test_in_memory_malformed_tags_do_not_block_sound_scoring_evidence(
+    tmp_path: Path,
+) -> None:
+    payload = _combined_payload(1)
+    payload["results"][0]["tag_analysis"] = {"knowledge_points": "broken"}
+
+    bundle = InMemoryCombinedQuestionAnalysisModule(
+        gateway=QueueGateway([payload]),
+        resolver=Resolver(),
+        taxonomy_governance=TaxonomyGovernance(
+            state_path=tmp_path / "taxonomy-state.json"
+        ),
+    ).analyze(
+        operation_id="config-source-analysis:tag-contract-nonblocking",
+        curriculum_volume_id=VOLUME_ID,
+        sources=(ConfigQuestionAnalysisSource("Q1", _question(1)),),
+    )
+
+    assert bundle.status == "succeeded"
+    assert bundle.failed_source_refs == ()
+    assert bundle.taxonomy_review_source_refs == ("Q1",)
+    assert bundle.get("Q1").taxonomy_audit["tag_quality_status"] == "invalid"
+    assert bundle.compose_generated_config(exam_title="标签字段待复核测试卷")[
+        "rubric"
+    ]["questions"]
+
+
+def test_in_memory_structured_low_quality_tags_stay_visible_for_review(
+    tmp_path: Path,
+) -> None:
+    payload = _combined_payload(1)
+    payload["results"][0]["tag_analysis"]["confidence"] = 0.05
+
+    bundle = InMemoryCombinedQuestionAnalysisModule(
+        gateway=QueueGateway([payload]),
+        resolver=Resolver(),
+        taxonomy_governance=TaxonomyGovernance(
+            state_path=tmp_path / "taxonomy-state.json"
+        ),
+    ).analyze(
+        operation_id="config-source-analysis:tag-quality-review",
+        curriculum_volume_id=VOLUME_ID,
+        sources=(ConfigQuestionAnalysisSource("Q1", _question(1)),),
+    )
+
+    assert bundle.status == "succeeded"
+    assert bundle.failed_source_refs == ()
+    assert bundle.taxonomy_review_source_refs == ("Q1",)
+    audit = bundle.get("Q1").taxonomy_audit
+    assert audit["status"] == "needs_review"
+    assert audit["tag_quality_status"] in {
+        "invalid",
+        "low_confidence",
+        "conflict",
+        "needs_review",
+    }
 
 
 def test_in_memory_bundle_checkpoints_round_trips_and_retries_only_failed() -> None:
@@ -701,6 +1289,13 @@ def test_deferred_linked_adoption_allows_format_changes_but_rechecks_candidates(
     assert latest is not None
     assert result["source_evidence_version_id"] == latest["evidence_version_id"]
     assert latest["source_content_hash"] != item.source_content_hash
+    review_result = DeferredCombinedProjectionWriter(
+        tag_writer=ReviewTagWriter(),
+        mapping_repository=FineTermCoreMappingRepository(database),
+        evidence_repository=SolutionEvidenceRepository(database),
+    ).adopt_linked(item, question=actual, link=link)
+    assert review_result["tag_status"] == "needs_taxonomy_review"
+    assert review_result["evidence_status"] == "succeeded"
     with pytest.raises(ValueError, match="source reference"):
         writer.adopt_linked(
             item,
@@ -716,6 +1311,11 @@ def test_deferred_linked_adoption_allows_format_changes_but_rechecks_candidates(
 class SuccessfulTagWriter:
     def write(self, *_args, **_kwargs) -> Mapping[str, Any]:
         return {"saved": True}
+
+
+class ReviewTagWriter:
+    def write(self, *_args, **_kwargs) -> Mapping[str, Any]:
+        raise TaxonomyProjectionReviewRequired("synthetic taxonomy review")
 
 
 def test_combined_tag_succeeds_when_hallucinated_evidence_term_is_rejected(
@@ -757,7 +1357,7 @@ def test_combined_tag_succeeds_when_hallucinated_evidence_term_is_rejected(
     assert SolutionEvidenceRepository(database).latest(question_id) is None
 
 
-def test_evidence_writer_converges_point_text_against_full_vocabulary_and_audits(
+def test_evidence_writer_saves_governed_scoring_and_audits_unknown_links(
     tmp_path: Path,
 ) -> None:
     database = tmp_path / "question-bank.db"
@@ -802,27 +1402,17 @@ def test_evidence_writer_converges_point_text_against_full_vocabulary_and_audits
         operation_id="combined-v3:local-convergence",
     )
 
-    links = evidence.parts[0].evidence_points[0].fine_term_links
-    assert ("kp_alg_linear_equation", "direct") in {
-        (item.fine_term_id, item.role) for item in links
-    }
-    assert ("kp_alg_polynomial", "supporting_prerequisite") in {
-        (item.fine_term_id, item.role) for item in links
-    }
-    assert all(item.fine_term_name != "全新代数平衡术" for item in links)
+    latest = SolutionEvidenceRepository(database).latest(question_id)
+    assert latest is not None
+    assert [
+        (link.fine_term_id, link.role)
+        for link in evidence.parts[0].evidence_points[0].fine_term_links
+    ] == [("kp_alg_linear_equation", "direct")]
     audit = writer.audit_summary(
         "combined-v3:local-convergence",
         (question.question_id,),
     )
-    assert audit["retrieval_misses"] == [
-        {
-            "dimension": "knowledge",
-            "submitted_name": "整式运算",
-            "canonical_id": "kp_alg_polynomial",
-            "canonical_name": "整式运算",
-            "source_field": "knowledge_points",
-        }
-    ]
+    assert audit["retrieval_misses"] == []
     assert len(audit["proposals"]) == 1
     assert audit["proposals"][0]["proposed_name"] == "全新代数平衡术"
     assert governance.list_proposals(status="pending")["counts"] == {"pending": 1}

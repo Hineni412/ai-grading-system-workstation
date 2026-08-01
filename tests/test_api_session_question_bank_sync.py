@@ -94,6 +94,10 @@ def _configured_client(
             "failed_question_ids": [],
             "review_count": 0,
             "proposal_ids": [],
+            "taxonomy_review_count": 1,
+            "taxonomy_review_question_ids": [11],
+            "taxonomy_review_source_refs": ["Q1"],
+            "taxonomy_retry_question_ids": [11],
             "retryable": False,
         },
     )
@@ -139,6 +143,10 @@ def test_session_question_bank_sync_is_version_bound_and_public(
     manager.wait(first.json()["id"], timeout=5)
     queried = client.get(f"/api/jobs/{first.json()['id']}")
     assert queried.json()["result"]["tagged_count"] == 1
+    assert queried.json()["result"]["taxonomy_review_count"] == 1
+    assert queried.json()["result"]["taxonomy_review_question_ids"] == [11]
+    assert queried.json()["result"]["taxonomy_review_source_refs"] == ["Q1"]
+    assert "taxonomy_retry_question_ids" not in queried.text
 
 
 def test_session_question_bank_sync_rejects_stale_config_revision(
