@@ -3,6 +3,7 @@ import type {
   WorkspaceManifestModule,
   WorkspaceModuleIcon,
   WorkspaceModuleId,
+  WorkspaceTopbarContext,
 } from './contracts'
 
 const MODULE_IDS = new Set<WorkspaceModuleId>(['teaching-prep', 'class-teacher'])
@@ -13,6 +14,10 @@ const DATA_CLASSIFICATIONS = new Set([
   'confidential',
   'restricted',
 ])
+const TOPBAR_CONTEXTS = new Set<WorkspaceTopbarContext>([
+  'current-exam',
+  'workspace',
+])
 
 export interface WorkspaceModuleRouteDefinition {
   id: WorkspaceModuleId
@@ -22,6 +27,7 @@ export interface WorkspaceModuleRouteDefinition {
   description: string
   breadcrumb: string
   icon: WorkspaceModuleIcon
+  topbarContext: WorkspaceTopbarContext
 }
 
 export interface RegisteredWorkspaceModule {
@@ -120,6 +126,7 @@ function createWorkspaceRegistryFromCandidates(
         description: manifest.description,
         breadcrumb: manifest.breadcrumb,
         icon: manifest.icon,
+        topbarContext: manifest.topbarContext,
       },
     }))
 
@@ -159,6 +166,11 @@ function validateManifest(source: string, manifest: WorkspaceManifest): void {
   if (manifest.navigationGroup !== 'teacher-workspaces') {
     throw new WorkspaceManifestError(
       `Workspace ${label} navigation group is invalid`,
+    )
+  }
+  if (!TOPBAR_CONTEXTS.has(manifest.topbarContext)) {
+    throw new WorkspaceManifestError(
+      `Workspace ${label} topbar context is invalid`,
     )
   }
   if (
