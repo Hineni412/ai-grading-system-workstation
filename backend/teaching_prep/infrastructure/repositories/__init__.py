@@ -10,6 +10,7 @@ from .semester_mapping import SemesterMappingRepository
 from .slide_plans import SlidePlanRepository
 from .pptx_execution import PptxExecutionRepository
 from .teaching_delivery import TeachingDeliveryRepository
+from .workbench_iteration import WorkbenchIterationRepository
 
 __all__ = [
     "ExerciseCandidateRepository",
@@ -24,5 +25,6 @@ __all__ = [
     "SlidePlanRepository",
     "PptxExecutionRepository",
     "TeachingDeliveryRepository",
+    "WorkbenchIterationRepository",
     "TeachingCatalogRepository",
 ]

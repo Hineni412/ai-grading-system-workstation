@@ -4,7 +4,15 @@ from pathlib import Path
 from urllib.parse import unquote
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, Query, Request, Response, status
+from fastapi import (
+    APIRouter,
+    BackgroundTasks,
+    Depends,
+    Query,
+    Request,
+    Response,
+    status,
+)
 from fastapi.responses import FileResponse, JSONResponse
 
 from backend.teaching_prep.application import TeachingPrepService
@@ -18,6 +26,8 @@ from backend.teaching_prep.domain.errors import (
 
 from .schemas import (
     ActivateUpClassPackageRequest,
+    ActivatePptxVersionRequest,
+    ActivatePptxVersionResponse,
     AssessmentChoiceListResponse,
     AssessmentChoiceResponse,
     AttachSemesterMaterialRequest,
@@ -41,6 +51,9 @@ from .schemas import (
     ClassVariantResultResponse,
     ExerciseCandidateListResponse,
     ExerciseCandidateResponse,
+    ExerciseSuggestionPreflightResponse,
+    ExerciseSuggestionResponse,
+    ExerciseSuggestionRunResponse,
     FreezeResourcePackRequest,
     GenerateLessonDraftRequest,
     GenerateSemesterMappingRequest,
@@ -49,7 +62,10 @@ from .schemas import (
     LessonDraftPreflightResponse,
     LessonGenerationPerformanceResponse,
     LessonDraftResponse,
+    LessonDraftCapacityPreviewRequest,
     LessonNodeResponse,
+    LessonPreparationStatusListResponse,
+    LessonPreparationStatusResponse,
     LessonTreeResponse,
     MaterialVersionListResponse,
     MaterialVersionResponse,
@@ -63,6 +79,8 @@ from .schemas import (
     PptxExecutionResponse,
     PptxExecutionResultResponse,
     PptxVersionResponse,
+    PptxVersionListItemResponse,
+    PptxVersionListResponse,
     PostLessonReviewListResponse,
     PostLessonReviewResponse,
     QuestionEvidenceChoiceListResponse,
@@ -70,6 +88,7 @@ from .schemas import (
     ReorderLessonNodesRequest,
     ResourcePackListResponse,
     ResourcePackResponse,
+    ResourcePackSelectionPreflightRequest,
     ResourcePackStatusResponse,
     ReviseLessonDraftRequest,
     ReviseSlidePlanRequest,
@@ -87,6 +106,15 @@ from .schemas import (
     SemesterMappingRequest,
     SemesterResponse,
     SemesterWorkspaceResponse,
+    ReviewSemesterMappingRowRequest,
+    RejectSemesterMappingProposalRequest,
+    ReferenceSelectionDraftResponse,
+    ReferenceSelectionPreflightResponse,
+    ReferenceSelectionSnapshotResponse,
+    SaveReferenceSelectionDraftRequest,
+    FreezeReferenceSelectionSnapshotRequest,
+    StartExerciseSuggestionRunRequest,
+    ReviewExerciseSuggestionRequest,
     CreateSemesterRequest,
     SetSemesterLessonProgressRequest,
     TeachingPrepStatusResponse,
@@ -1042,6 +1070,10 @@ def create_router() -> APIRouter:
                 preparation_preferences=payload.preparation_preferences.model_dump(
                     mode="python"
                 ),
+                selected_material_link_ids=payload.selected_material_link_ids,
+                selected_exercise_candidate_ids=(
+                    payload.selected_exercise_candidate_ids
+                ),
             )
         except Exception as exc:
             raise _api_error(exc) from exc
@@ -1351,16 +1383,17 @@ def create_router() -> APIRouter:
     @router.post(
         "/slide-plans/{plan_id}/executions",
         response_model=PptxExecutionResultResponse,
-        status_code=status.HTTP_201_CREATED,
+        status_code=status.HTTP_202_ACCEPTED,
     )
     def execute_slide_plan(
         plan_id: str,
         payload: ExecuteSlidePlanRequest,
         response: Response,
+        background_tasks: BackgroundTasks,
         service: TeachingPrepService = Depends(get_teaching_prep_service),
     ) -> PptxExecutionResultResponse:
         try:
-            execution, version, created = service.execute_slide_plan(
+            execution, created = service.start_pptx_execution(
                 plan_id,
                 operation_id=payload.operation_id,
                 confirmed=payload.confirmed,
@@ -1369,13 +1402,13 @@ def create_router() -> APIRouter:
             raise _api_error(exc) from exc
         if not created:
             response.status_code = status.HTTP_200_OK
+        else:
+            background_tasks.add_task(
+                service.process_pptx_execution, execution.id
+            )
         return PptxExecutionResultResponse(
             execution=PptxExecutionResponse.from_domain(execution),
-            version=(
-                PptxVersionResponse.from_domain(version)
-                if version is not None
-                else None
-            ),
+            version=None,
         )
 
     @router.get(
@@ -1683,6 +1716,316 @@ def create_router() -> APIRouter:
             items=[
                 PostLessonReviewResponse.from_domain(item) for item in items
             ]
+        )
+
+    @router.get(
+        "/semesters/{semester_id}/lesson-preparation-statuses",
+        response_model=LessonPreparationStatusListResponse,
+    )
+    def list_lesson_preparation_statuses(
+        semester_id: str,
+        service: TeachingPrepService = Depends(get_teaching_prep_service),
+    ) -> LessonPreparationStatusListResponse:
+        try:
+            items = service.list_lesson_preparation_statuses(semester_id)
+        except Exception as exc:
+            raise _api_error(exc) from exc
+        return LessonPreparationStatusListResponse(
+            semester_id=semester_id,
+            items=[
+                LessonPreparationStatusResponse.model_validate(item)
+                for item in items
+            ],
+        )
+
+    @router.patch(
+        "/semester-mapping-proposals/{proposal_id}/mappings/{mapping_id}",
+        response_model=SemesterMappingProposalResponse,
+    )
+    def review_semester_mapping_row(
+        proposal_id: str,
+        mapping_id: str,
+        payload: ReviewSemesterMappingRowRequest,
+        service: TeachingPrepService = Depends(get_teaching_prep_service),
+    ) -> SemesterMappingProposalResponse:
+        try:
+            item = service.review_semester_mapping_row(
+                proposal_id,
+                mapping_id,
+                expected_revision=payload.expected_revision,
+                decision=payload.model_dump(
+                    exclude={"expected_revision"}, exclude_none=True
+                ),
+            )
+        except Exception as exc:
+            raise _api_error(exc) from exc
+        return SemesterMappingProposalResponse.from_domain(item)
+
+    @router.post(
+        "/semester-mapping-proposals/{proposal_id}/reject",
+        response_model=SemesterMappingProposalResponse,
+    )
+    def reject_semester_mapping_proposal(
+        proposal_id: str,
+        payload: RejectSemesterMappingProposalRequest,
+        service: TeachingPrepService = Depends(get_teaching_prep_service),
+    ) -> SemesterMappingProposalResponse:
+        try:
+            item = service.reject_semester_mapping_proposal(
+                proposal_id,
+                expected_revision=payload.expected_revision,
+            )
+        except Exception as exc:
+            raise _api_error(exc) from exc
+        return SemesterMappingProposalResponse.from_domain(item)
+
+    @router.post(
+        "/lessons/{lesson_node_id}/reference-selection-preflight",
+        response_model=ReferenceSelectionPreflightResponse,
+    )
+    def reference_selection_preflight(
+        lesson_node_id: str,
+        service: TeachingPrepService = Depends(get_teaching_prep_service),
+    ) -> ReferenceSelectionPreflightResponse:
+        try:
+            payload = service.reference_selection_preflight(lesson_node_id)
+        except Exception as exc:
+            raise _api_error(exc) from exc
+        return ReferenceSelectionPreflightResponse.model_validate(payload)
+
+    @router.put(
+        "/lessons/{lesson_node_id}/reference-selection-draft",
+        response_model=ReferenceSelectionDraftResponse,
+    )
+    def save_reference_selection_draft(
+        lesson_node_id: str,
+        payload: SaveReferenceSelectionDraftRequest,
+        service: TeachingPrepService = Depends(get_teaching_prep_service),
+    ) -> ReferenceSelectionDraftResponse:
+        try:
+            item = service.save_reference_selection_draft(
+                lesson_node_id,
+                expected_revision=payload.expected_revision,
+                source_state_sha256=payload.source_state_sha256,
+                selection=payload.selection,
+            )
+        except Exception as exc:
+            raise _api_error(exc) from exc
+        return ReferenceSelectionDraftResponse.from_domain(item)
+
+    @router.post(
+        "/lessons/{lesson_node_id}/reference-selection-snapshots",
+        response_model=ReferenceSelectionSnapshotResponse,
+        status_code=status.HTTP_201_CREATED,
+    )
+    def freeze_reference_selection_snapshot(
+        lesson_node_id: str,
+        payload: FreezeReferenceSelectionSnapshotRequest,
+        response: Response,
+        service: TeachingPrepService = Depends(get_teaching_prep_service),
+    ) -> ReferenceSelectionSnapshotResponse:
+        try:
+            item, created = service.freeze_reference_selection_snapshot(
+                lesson_node_id,
+                request_token=payload.request_token,
+                expected_draft_revision=payload.expected_draft_revision,
+            )
+        except Exception as exc:
+            raise _api_error(exc) from exc
+        if not created:
+            response.status_code = status.HTTP_200_OK
+        return ReferenceSelectionSnapshotResponse.from_domain(item)
+
+    @router.post(
+        "/reference-selection-snapshots/{snapshot_id}/exercise-suggestion-preflight",
+        response_model=ExerciseSuggestionPreflightResponse,
+    )
+    def exercise_suggestion_preflight(
+        snapshot_id: str,
+        service: TeachingPrepService = Depends(get_teaching_prep_service),
+    ) -> ExerciseSuggestionPreflightResponse:
+        try:
+            payload = service.exercise_suggestion_preflight(snapshot_id)
+        except Exception as exc:
+            raise _api_error(exc) from exc
+        return ExerciseSuggestionPreflightResponse.model_validate(payload)
+
+    @router.post(
+        "/reference-selection-snapshots/{snapshot_id}/exercise-suggestion-runs",
+        response_model=ExerciseSuggestionRunResponse,
+        status_code=status.HTTP_202_ACCEPTED,
+    )
+    def start_exercise_suggestion_run(
+        snapshot_id: str,
+        payload: StartExerciseSuggestionRunRequest,
+        background_tasks: BackgroundTasks,
+        service: TeachingPrepService = Depends(get_teaching_prep_service),
+    ) -> ExerciseSuggestionRunResponse:
+        try:
+            run, created = service.start_exercise_suggestion_run(
+                snapshot_id,
+                operation_id=payload.operation_id,
+                confirmed=payload.confirmed,
+            )
+        except Exception as exc:
+            raise _api_error(exc) from exc
+        if created:
+            background_tasks.add_task(
+                service.process_exercise_suggestion_run, run.id
+            )
+        return ExerciseSuggestionRunResponse.from_domain(run)
+
+    @router.get(
+        "/exercise-suggestion-runs/{run_id}",
+        response_model=ExerciseSuggestionRunResponse,
+    )
+    def get_exercise_suggestion_run(
+        run_id: str,
+        service: TeachingPrepService = Depends(get_teaching_prep_service),
+    ) -> ExerciseSuggestionRunResponse:
+        try:
+            run, items = service.get_exercise_suggestion_run(run_id)
+        except Exception as exc:
+            raise _api_error(exc) from exc
+        return ExerciseSuggestionRunResponse.from_domain(run, items)
+
+    @router.post(
+        "/exercise-suggestion-runs/{run_id}/cancel",
+        response_model=ExerciseSuggestionRunResponse,
+    )
+    def cancel_exercise_suggestion_run(
+        run_id: str,
+        service: TeachingPrepService = Depends(get_teaching_prep_service),
+    ) -> ExerciseSuggestionRunResponse:
+        try:
+            run = service.cancel_exercise_suggestion_run(run_id)
+        except Exception as exc:
+            raise _api_error(exc) from exc
+        return ExerciseSuggestionRunResponse.from_domain(run)
+
+    @router.patch(
+        "/exercise-suggestions/{suggestion_id}",
+        response_model=ExerciseSuggestionResponse,
+    )
+    def review_exercise_suggestion(
+        suggestion_id: str,
+        payload: ReviewExerciseSuggestionRequest,
+        service: TeachingPrepService = Depends(get_teaching_prep_service),
+    ) -> ExerciseSuggestionResponse:
+        try:
+            item = service.review_exercise_suggestion(
+                suggestion_id,
+                expected_revision=payload.expected_revision,
+                decision=payload.decision,
+                teacher_payload=payload.teacher_payload,
+                rejection_reason=payload.rejection_reason,
+            )
+        except Exception as exc:
+            raise _api_error(exc) from exc
+        return ExerciseSuggestionResponse.from_domain(item)
+
+    @router.post(
+        "/lessons/{lesson_node_id}/resource-pack-preflight",
+        response_model=dict[str, object],
+    )
+    def resource_pack_selection_preflight(
+        lesson_node_id: str,
+        payload: ResourcePackSelectionPreflightRequest,
+        service: TeachingPrepService = Depends(get_teaching_prep_service),
+    ) -> dict[str, object]:
+        try:
+            return service.resource_pack_preflight(
+                lesson_node_id,
+                reference_ppt_intents=payload.reference_ppt_intents,
+                selected_material_link_ids=payload.selected_material_link_ids,
+                selected_exercise_candidate_ids=(
+                    payload.selected_exercise_candidate_ids
+                ),
+            )
+        except Exception as exc:
+            raise _api_error(exc) from exc
+
+    @router.post(
+        "/lesson-drafts/{draft_id}/capacity-preview",
+        response_model=dict[str, object],
+    )
+    def preview_lesson_draft_capacity(
+        draft_id: str,
+        payload: LessonDraftCapacityPreviewRequest,
+        service: TeachingPrepService = Depends(get_teaching_prep_service),
+    ) -> dict[str, object]:
+        try:
+            return service.preview_lesson_draft_capacity(
+                draft_id, payload=payload.payload
+            )
+        except Exception as exc:
+            raise _api_error(exc) from exc
+
+    @router.get(
+        "/lessons/{lesson_node_id}/pptx-versions",
+        response_model=PptxVersionListResponse,
+    )
+    def list_lesson_pptx_versions(
+        lesson_node_id: str,
+        service: TeachingPrepService = Depends(get_teaching_prep_service),
+    ) -> PptxVersionListResponse:
+        try:
+            items = service.list_lesson_pptx_versions(lesson_node_id)
+        except Exception as exc:
+            raise _api_error(exc) from exc
+        payloads: list[PptxVersionListItemResponse] = []
+        for item in items:
+            payload = PptxVersionResponse.from_domain(item["version"]).model_dump()
+            payload.update(
+                {
+                    "is_current": item["is_current"],
+                    "current_revision": item["current_revision"],
+                    "file_verified": item["file_verified"],
+                    "preview_url": item["preview_url"],
+                }
+            )
+            payloads.append(PptxVersionListItemResponse.model_validate(payload))
+        return PptxVersionListResponse(
+            lesson_node_id=lesson_node_id, items=payloads
+        )
+
+    @router.post(
+        "/pptx-versions/{version_id}/activate",
+        response_model=ActivatePptxVersionResponse,
+    )
+    def activate_pptx_version(
+        version_id: str,
+        payload: ActivatePptxVersionRequest,
+        service: TeachingPrepService = Depends(get_teaching_prep_service),
+    ) -> ActivatePptxVersionResponse:
+        try:
+            version, revision, changed = service.activate_pptx_version(
+                version_id, expected_revision=payload.expected_revision
+            )
+        except Exception as exc:
+            raise _api_error(exc) from exc
+        return ActivatePptxVersionResponse(
+            version=PptxVersionResponse.from_domain(version),
+            current_revision=revision,
+            changed=changed,
+        )
+
+    @router.get("/pptx-versions/{version_id}/preview")
+    def pptx_version_preview(
+        version_id: str,
+        slide: int = Query(default=1, ge=1),
+        service: TeachingPrepService = Depends(get_teaching_prep_service),
+    ) -> FileResponse:
+        try:
+            preview = service.pptx_version_preview_path(
+                version_id, slide_number=slide
+            )
+        except Exception as exc:
+            raise _api_error(exc) from exc
+        return FileResponse(
+            preview,
+            media_type="image/png",
+            headers={"Cache-Control": "private, no-store"},
         )
 
     return router

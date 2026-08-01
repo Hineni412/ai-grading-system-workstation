@@ -234,6 +234,54 @@ class ResourcePackVersion:
 
 
 @dataclass(frozen=True, slots=True)
+class ReferenceSelectionDraft:
+    lesson_node_id: str
+    payload: dict[str, object]
+    source_state_sha256: str
+    revision: int
+    created_at: str
+    updated_at: str
+
+
+@dataclass(frozen=True, slots=True)
+class ReferenceSelectionSnapshot:
+    id: str
+    lesson_node_id: str
+    source_state_sha256: str
+    payload: dict[str, object]
+    created_at: str
+
+
+@dataclass(frozen=True, slots=True)
+class ExerciseSuggestionRun:
+    id: str
+    snapshot_id: str
+    operation_id: str
+    status: str
+    error_code: str | None
+    model_call_count: int
+    created_at: str
+    updated_at: str
+    finished_at: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class ExerciseSuggestion:
+    id: str
+    run_id: str
+    lesson_node_id: str
+    source_state_sha256: str
+    decision: str
+    original_payload: dict[str, object]
+    teacher_payload: dict[str, object] | None
+    rejection_reason: str | None
+    exercise_candidate_id: str | None
+    revision: int
+    created_at: str
+    updated_at: str
+
+
+@dataclass(frozen=True, slots=True)
 class LessonDraftVersion:
     id: str
     resource_pack_id: str
@@ -290,6 +338,8 @@ class PptxExecutionRun:
     verification_report: dict[str, object] | None
     error_code: str | None
     published_version_id: str | None
+    phase: str
+    cancel_requested: bool
     staging_retained: bool
     recovery_actions: tuple[str, ...]
     created_at: str
