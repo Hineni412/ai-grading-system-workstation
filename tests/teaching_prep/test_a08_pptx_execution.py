@@ -702,16 +702,32 @@ def test_execution_api_is_path_safe_and_downloads_verified_copy(
         },
     )
 
-    assert response.status_code == 201
+    assert response.status_code == 202
     payload = response.json()
-    assert payload["execution"]["status"] == "published"
-    assert payload["version"]["download_url"].startswith(
+    assert payload["execution"]["status"] == "running"
+    assert payload["execution"]["phase"] == "copying"
+    assert payload["version"] is None
+    finished = client.get(
+        f"/api/teaching-prep/pptx-executions/{payload['execution']['id']}"
+    )
+    assert finished.status_code == 200
+    assert finished.json()["status"] == "published"
+    lesson_id = service.get_resource_pack(plan.resource_pack_id).lesson_node_id
+    versions = client.get(
+        f"/api/teaching-prep/lessons/{lesson_id}/pptx-versions"
+    )
+    assert versions.status_code == 200
+    version = versions.json()["items"][0]
+    assert version["download_url"].startswith(
         "/api/teaching-prep/pptx-versions/"
     )
-    serialized = json.dumps(payload, ensure_ascii=False)
+    serialized = json.dumps(
+        {"start": payload, "finished": finished.json(), "version": version},
+        ensure_ascii=False,
+    )
     assert str(tmp_path) not in serialized
     assert "source-copy.pptx" not in serialized
-    download = client.get(payload["version"]["download_url"])
+    download = client.get(version["download_url"])
     assert download.status_code == 200
     assert download.headers["content-type"].startswith(
         "application/vnd.openxmlformats"

@@ -13,6 +13,7 @@ export interface TeachingPrepModuleStatus {
   schema_version: string
   real_model_enabled: boolean
   semester_mapping_model_available: boolean
+  exercise_suggestion_model_available: boolean
   real_wps_enabled: boolean
   wps_execution_available: boolean
 }
@@ -138,11 +139,19 @@ export interface SemesterMappingProposalChapter {
 }
 
 export interface SemesterMappingProposalRange {
+  mapping_id: string
   material_record_id: string
   lesson_ref: string
   start_unit: number
   end_unit: number
   purpose: 'textbook' | 'reference_ppt' | 'exercise' | 'answer' | 'supplement'
+  decision: 'pending' | 'accepted' | 'modified' | 'rejected'
+  teacher_revision: {
+    lesson_ref: string
+    start_unit: number
+    end_unit: number
+  } | null
+  decision_reason: string | null
 }
 
 export interface SemesterMappingProposal {
@@ -393,6 +402,8 @@ export interface FreezeResourcePackInput {
   assessment_ids: number[]
   knowledge_scope: string[]
   preparation_preferences: TeachingPreferencesPayload
+  selected_material_link_ids?: string[] | null
+  selected_exercise_candidate_ids?: string[] | null
 }
 
 export interface DraftClaim {
@@ -559,6 +570,8 @@ export interface PptxExecution {
   verification_report: Record<string, unknown> | null
   error_code: string | null
   published_version_id: string | null
+  phase: 'copying' | 'executing' | 'verifying' | 'publishing' | 'done'
+  cancel_requested: boolean
   staging_retained: boolean
   recovery_actions: string[]
   created_at: string
@@ -1318,6 +1331,7 @@ function moduleStatus(value: unknown): TeachingPrepModuleStatus {
     || !text(value.schema_version)
     || typeof value.real_model_enabled !== 'boolean'
     || typeof value.semester_mapping_model_available !== 'boolean'
+    || typeof value.exercise_suggestion_model_available !== 'boolean'
     || typeof value.real_wps_enabled !== 'boolean'
     || typeof value.wps_execution_available !== 'boolean'
   ) throw new Error('Invalid teaching prep status response')
@@ -1346,6 +1360,10 @@ function pptxExecution(value: unknown): PptxExecution {
     || !(value.verification_report === null || isRecord(value.verification_report))
     || !nullableText(value.error_code)
     || !nullableText(value.published_version_id)
+    || !['copying', 'executing', 'verifying', 'publishing', 'done'].includes(
+      String(value.phase),
+    )
+    || typeof value.cancel_requested !== 'boolean'
     || typeof value.staging_retained !== 'boolean'
     || !stringArray(value.recovery_actions)
     || !text(value.created_at)

@@ -47,6 +47,24 @@ class _FakeSemesterMappingModel:
         return self.payload
 
 
+def _accept_all_mappings(service, proposal):
+    current = proposal
+    for item in tuple(current.payload["mappings"]):
+        current = service.review_semester_mapping_row(
+            current.id,
+            str(item["mapping_id"]),
+            expected_revision=current.revision,
+            decision={
+                "decision": "accepted",
+                "lesson_ref": item["lesson_ref"],
+                "start_unit": item["start_unit"],
+                "end_unit": item["end_unit"],
+                "reason": "合成测试逐条接受",
+            },
+        )
+    return current
+
+
 def _semester(service):
     curriculum_id, _chapter_id, _section_id, lesson_ids = _lesson_tree(service)
     semester, created = service.create_semester(
@@ -482,9 +500,10 @@ def test_mapping_model_proposes_existing_lesson_ranges_once_then_teacher_applies
     assert refreshed_created is False
     assert refreshed.id == proposal.id
     assert len(fake.calls) == 1
+    reviewed = _accept_all_mappings(service, proposal)
     applied = service.apply_semester_mapping_proposal(
-        proposal.id,
-        expected_revision=proposal.revision,
+        reviewed.id,
+        expected_revision=reviewed.revision,
     )
     assert applied.status == "applied"
     links = service.list_material_links(lesson_ids[0])
@@ -724,9 +743,10 @@ def test_initial_mapping_proposal_creates_three_level_tree_atomically(
         material_record_ids=[record.id],
     )
 
+    reviewed = _accept_all_mappings(service, proposal)
     service.apply_semester_mapping_proposal(
-        proposal.id,
-        expected_revision=proposal.revision,
+        reviewed.id,
+        expected_revision=reviewed.revision,
     )
 
     nodes = service.list_lesson_nodes(curriculum.id)

@@ -152,6 +152,17 @@ class SemesterMappingRepository:
                     "mapping operation is no longer running"
                 )
             proposal_id = uuid4().hex
+            reviewable_payload = dict(payload)
+            reviewable_payload["mappings"] = [
+                {
+                    **dict(item),
+                    "mapping_id": uuid4().hex,
+                    "decision": "pending",
+                    "teacher_revision": None,
+                    "decision_reason": None,
+                }
+                for item in list(payload.get("mappings") or [])
+            ]
             connection.execute(
                 """
                 INSERT INTO semester_mapping_proposals (
@@ -168,7 +179,7 @@ class SemesterMappingRepository:
                     semester_id,
                     operation_id,
                     source_state_sha256,
-                    _json(payload),
+                    _json(reviewable_payload),
                 ),
             )
             connection.execute(
@@ -182,6 +193,130 @@ class SemesterMappingRepository:
                 (operation_id,),
             )
             return self._get(connection, proposal_id)
+
+    def review_mapping(
+        self,
+        proposal_id: str,
+        mapping_id: str,
+        *,
+        expected_revision: int,
+        decision: dict[str, object],
+    ) -> SemesterMappingProposal:
+        with self._database.connect(immediate=True) as connection:
+            proposal = self._get(connection, proposal_id)
+            if proposal.status != "proposed":
+                raise TeachingPrepConflictError(
+                    "mapping proposal can no longer be reviewed"
+                )
+            if proposal.revision != expected_revision:
+                raise TeachingPrepConflictError(
+                    "mapping proposal changed; refresh before reviewing"
+                )
+            payload = dict(proposal.payload)
+            mappings = [dict(item) for item in payload["mappings"]]
+            target = next(
+                (
+                    item
+                    for item in mappings
+                    if str(item.get("mapping_id") or "") == mapping_id
+                ),
+                None,
+            )
+            if target is None:
+                raise TeachingPrepNotFoundError(
+                    "mapping proposal row was not found"
+                )
+            material_ids = tuple(
+                str(item)
+                for item in proposal.payload["source_material_record_ids"]
+            )
+            snapshot, source_sha = self._snapshot(
+                connection, proposal.semester_id, material_ids
+            )
+            if source_sha != proposal.source_state_sha256:
+                raise TeachingPrepConflictError(
+                    "semester lessons or materials changed; review a new proposal"
+                )
+            normalized = dict(decision)
+            if normalized["decision"] in {"accepted", "modified"}:
+                material = next(
+                    item
+                    for item in snapshot["materials"]
+                    if str(item["record_id"])
+                    == str(target["material_record_id"])
+                )
+                start = int(normalized["start_unit"])
+                end = int(normalized["end_unit"])
+                if start < 1 or end < start or end > int(material["unit_count"]):
+                    raise TeachingPrepConflictError(
+                        "reviewed mapping range is outside the material"
+                    )
+                valid_lessons = {
+                    str(item["id"])
+                    for item in snapshot["lessons"]
+                    if item["node_type"] == "lesson"
+                }
+                valid_lessons.update(
+                    f"proposal:{lesson['key']}"
+                    for chapter in payload["tree"]
+                    for section in chapter["sections"]
+                    for lesson in section["lessons"]
+                )
+                if str(normalized["lesson_ref"]) not in valid_lessons:
+                    raise TeachingPrepConflictError(
+                        "reviewed mapping lesson is no longer available"
+                    )
+            target["decision"] = str(normalized["decision"])
+            target["decision_reason"] = normalized.get("reason")
+            target["teacher_revision"] = (
+                {
+                    "lesson_ref": normalized["lesson_ref"],
+                    "start_unit": normalized["start_unit"],
+                    "end_unit": normalized["end_unit"],
+                }
+                if normalized["decision"] == "modified"
+                else None
+            )
+            payload["mappings"] = mappings
+            updated = connection.execute(
+                """
+                UPDATE semester_mapping_proposals
+                SET payload_json = ?, revision = revision + 1,
+                    updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                WHERE id = ? AND revision = ? AND status = 'proposed'
+                """,
+                (_json(payload), proposal.id, expected_revision),
+            ).rowcount
+            if updated != 1:
+                raise TeachingPrepConflictError(
+                    "mapping proposal changed; refresh before reviewing"
+                )
+            return self._get(connection, proposal.id)
+
+    def reject(
+        self,
+        proposal_id: str,
+        *,
+        expected_revision: int,
+    ) -> SemesterMappingProposal:
+        with self._database.connect(immediate=True) as connection:
+            proposal = self._get(connection, proposal_id)
+            if proposal.status == "rejected":
+                return proposal
+            if proposal.status != "proposed" or proposal.revision != expected_revision:
+                raise TeachingPrepConflictError(
+                    "mapping proposal changed; refresh before rejecting"
+                )
+            connection.execute(
+                """
+                UPDATE semester_mapping_proposals
+                SET status = 'rejected', revision = revision + 1,
+                    updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                WHERE id = ? AND revision = ? AND status = 'proposed'
+                """,
+                (proposal.id, expected_revision),
+            )
+            return self._get(connection, proposal.id)
 
     def fail_generation(self, operation_id: str, error_code: str) -> None:
         with self._database.connect(immediate=True) as connection:
@@ -245,6 +380,16 @@ class SemesterMappingRepository:
             if digest != proposal.source_state_sha256:
                 raise TeachingPrepConflictError(
                     "semester lessons or materials changed; generate a new proposal"
+                )
+            reviewed_mappings = [
+                dict(item) for item in proposal.payload["mappings"]
+            ]
+            if any(
+                str(item.get("decision") or "pending") == "pending"
+                for item in reviewed_mappings
+            ):
+                raise TeachingPrepConflictError(
+                    "decide every mapping row before applying the proposal"
                 )
             semester = connection.execute(
                 """
@@ -327,11 +472,19 @@ class SemesterMappingRepository:
                         ] = lesson_id
 
             mapped_records: set[str] = set()
+            accepted_mappings = [
+                item
+                for item in reviewed_mappings
+                if str(item.get("decision")) in {"accepted", "modified"}
+            ]
             for index, raw_mapping in enumerate(
-                proposal.payload["mappings"],
+                accepted_mappings,
                 start=1,
             ):
                 mapping = dict(raw_mapping)
+                teacher_revision = mapping.get("teacher_revision")
+                if isinstance(teacher_revision, dict):
+                    mapping.update(teacher_revision)
                 record_id = str(mapping["material_record_id"])
                 material = connection.execute(
                     """

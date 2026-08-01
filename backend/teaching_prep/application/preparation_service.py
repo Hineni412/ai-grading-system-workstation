@@ -7,7 +7,7 @@ import os
 import re
 import shutil
 from copy import deepcopy
-from dataclasses import replace
+from dataclasses import asdict, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from collections.abc import Mapping, Sequence
@@ -17,6 +17,7 @@ from PIL import Image
 
 from backend.teaching_prep.application.ports import (
     AssessmentEvidenceReader,
+    ExerciseSuggestionModelAdapter,
     LessonModelAdapter,
     QuestionEvidenceReader,
     SemesterMappingModelAdapter,
@@ -49,6 +50,12 @@ from backend.teaching_prep.application.slide_plans import (
 )
 from backend.teaching_prep.application.semester_mapping import (
     validate_semester_mapping_payload,
+)
+from backend.teaching_prep.application.workbench_iteration import (
+    normalize_exercise_suggestion_payload,
+    normalize_mapping_decision,
+    normalize_reference_selection,
+    snapshot_model_payload,
 )
 from backend.teaching_prep.application.up_class_packages import (
     build_up_class_package,
@@ -103,6 +110,7 @@ from backend.teaching_prep.infrastructure.repositories import (
     TeachingDeliveryRepository,
     TeachingCatalogRepository,
     TeachingPreferencesRepository,
+    WorkbenchIterationRepository,
 )
 
 
@@ -210,6 +218,8 @@ class TeachingPrepService:
         lesson_model_label: str | None = None,
         semester_mapping_model_adapter: SemesterMappingModelAdapter | None = None,
         semester_mapping_model_label: str | None = None,
+        exercise_suggestion_model_adapter: ExerciseSuggestionModelAdapter | None = None,
+        exercise_suggestion_model_label: str | None = None,
         material_parser: MaterialParser | None = None,
         wps_adapter: WpsAdapter | None = None,
         wps_adapter_is_real: bool = False,
@@ -242,11 +252,13 @@ class TeachingPrepService:
         self.slide_plans = SlidePlanRepository(self.database)
         self.pptx_executions = PptxExecutionRepository(self.database)
         self.teaching_delivery = TeachingDeliveryRepository(self.database)
+        self.workbench = WorkbenchIterationRepository(self.database)
         self.material_parser = material_parser or MaterialParser()
         self.question_evidence_reader = question_evidence_reader
         self.assessment_evidence_reader = assessment_evidence_reader
         self.lesson_model_adapter = lesson_model_adapter
         self.semester_mapping_model_adapter = semester_mapping_model_adapter
+        self.exercise_suggestion_model_adapter = exercise_suggestion_model_adapter
         self.wps_adapter = wps_adapter
         self.wps_adapter_is_real = bool(wps_adapter_is_real)
         self.lesson_model_label = (
@@ -267,13 +279,22 @@ class TeachingPrepService:
             if semester_mapping_model_label is not None
             else None
         )
+        self.exercise_suggestion_model_label = (
+            _clean_optional_text(
+                exercise_suggestion_model_label,
+                "exercise_suggestion_model_label",
+                maximum=120,
+            )
+            if exercise_suggestion_model_label is not None
+            else None
+        )
         self.mark_interrupted_operations()
 
     def status(self) -> dict[str, object]:
         return {
             "module": "teaching-prep",
             "enabled": True,
-            "schema_version": "012_generation_performance",
+            "schema_version": "013_workbench_iteration",
             "real_model_enabled": _model_adapter_available(
                 self.lesson_model_adapter
             ),
@@ -282,11 +303,319 @@ class TeachingPrepService:
                     self.semester_mapping_model_adapter
                 )
             ),
+            "exercise_suggestion_model_available": (
+                _model_adapter_available(
+                    self.exercise_suggestion_model_adapter
+                )
+            ),
             "real_wps_enabled": (
                 self.wps_adapter is not None and self.wps_adapter_is_real
             ),
             "wps_execution_available": self.wps_adapter is not None,
         }
+
+    def list_lesson_preparation_statuses(
+        self,
+        semester_id: str,
+    ) -> tuple[dict[str, object], ...]:
+        return self.workbench.lesson_preparation_statuses(
+            _clean_entity_id(semester_id)
+        )
+
+    def review_semester_mapping_row(
+        self,
+        proposal_id: str,
+        mapping_id: str,
+        *,
+        expected_revision: int,
+        decision: Mapping[str, object],
+    ) -> SemesterMappingProposal:
+        if isinstance(expected_revision, bool) or expected_revision < 1:
+            raise TeachingPrepValidationError(
+                "expected mapping revision is invalid"
+            )
+        return self.semester_mapping.review_mapping(
+            _clean_entity_id(proposal_id),
+            _clean_entity_id(mapping_id),
+            expected_revision=expected_revision,
+            decision=normalize_mapping_decision(decision),
+        )
+
+    def reject_semester_mapping_proposal(
+        self,
+        proposal_id: str,
+        *,
+        expected_revision: int,
+    ) -> SemesterMappingProposal:
+        return self.semester_mapping.reject(
+            _clean_entity_id(proposal_id),
+            expected_revision=expected_revision,
+        )
+
+    def reference_selection_preflight(
+        self,
+        lesson_node_id: str,
+    ) -> dict[str, object]:
+        clean_lesson_id = _clean_entity_id(lesson_node_id)
+        catalog, source_state = self.workbench.selection_catalog(
+            clean_lesson_id
+        )
+        draft = self.workbench.get_reference_draft(clean_lesson_id)
+        return {
+            "lesson_node_id": clean_lesson_id,
+            "source_state_sha256": source_state,
+            "catalog": catalog,
+            "draft": asdict(draft) if draft is not None else None,
+            "model_available": _model_adapter_available(
+                self.exercise_suggestion_model_adapter
+            ),
+            "model_label": self.exercise_suggestion_model_label,
+            "will_call_model": False,
+        }
+
+    def save_reference_selection_draft(
+        self,
+        lesson_node_id: str,
+        *,
+        expected_revision: int | None,
+        source_state_sha256: str,
+        selection: Mapping[str, object],
+    ):
+        clean_lesson_id = _clean_entity_id(lesson_node_id)
+        catalog, current_source = self.workbench.selection_catalog(
+            clean_lesson_id
+        )
+        if current_source != source_state_sha256:
+            raise TeachingPrepConflictError(
+                "reference sources changed; refresh before saving"
+            )
+        normalized = normalize_reference_selection(selection, catalog=catalog)
+        return self.workbench.save_reference_draft(
+            lesson_node_id=clean_lesson_id,
+            expected_revision=expected_revision,
+            payload=normalized,
+            source_state_sha256=current_source,
+        )
+
+    def freeze_reference_selection_snapshot(
+        self,
+        lesson_node_id: str,
+        *,
+        request_token: str,
+        expected_draft_revision: int,
+    ):
+        clean_lesson_id = _clean_entity_id(lesson_node_id)
+        clean_token = _clean_token(request_token)
+        draft = self.workbench.get_reference_draft(clean_lesson_id)
+        if draft is None or draft.revision != expected_draft_revision:
+            raise TeachingPrepConflictError(
+                "reference selection draft changed; refresh before freezing"
+            )
+        catalog, current_source = self.workbench.selection_catalog(
+            clean_lesson_id
+        )
+        if current_source != draft.source_state_sha256:
+            raise TeachingPrepConflictError(
+                "reference sources changed; review the draft again"
+            )
+        model_payload = snapshot_model_payload(draft.payload, catalog=catalog)
+        payload = {
+            "selection": draft.payload,
+            "model_input": model_payload,
+            "draft_revision": draft.revision,
+        }
+        return self.workbench.freeze_reference_snapshot(
+            request_token=clean_token,
+            request_hash=_json_digest(
+                {
+                    "lesson_node_id": clean_lesson_id,
+                    "source_state_sha256": current_source,
+                    "payload": payload,
+                }
+            ),
+            lesson_node_id=clean_lesson_id,
+            source_state_sha256=current_source,
+            payload=payload,
+        )
+
+    def exercise_suggestion_preflight(
+        self,
+        snapshot_id: str,
+    ) -> dict[str, object]:
+        snapshot = self.workbench.get_reference_snapshot(
+            _clean_entity_id(snapshot_id)
+        )
+        available = _model_adapter_available(
+            self.exercise_suggestion_model_adapter
+        )
+        return {
+            "snapshot_id": snapshot.id,
+            "lesson_node_id": snapshot.lesson_node_id,
+            "source_state_sha256": snapshot.source_state_sha256,
+            "model_available": available,
+            "model_label": self.exercise_suggestion_model_label,
+            "will_call_model": available,
+            "automatic_retry_count": 0,
+            "material_range_count": len(
+                list(snapshot.payload["selection"]["material_selections"])
+            ),
+        }
+
+    def start_exercise_suggestion_run(
+        self,
+        snapshot_id: str,
+        *,
+        operation_id: str,
+        confirmed: bool,
+    ):
+        if not confirmed:
+            raise TeachingPrepValidationError(
+                "exercise suggestion generation requires explicit confirmation"
+            )
+        if not _model_adapter_available(self.exercise_suggestion_model_adapter):
+            raise TeachingPrepValidationError(
+                "exercise suggestion model is not configured"
+            )
+        clean_snapshot_id = _clean_entity_id(snapshot_id)
+        clean_operation_id = _clean_token(operation_id)
+        snapshot = self.workbench.get_reference_snapshot(clean_snapshot_id)
+        _catalog, current_source = self.workbench.selection_catalog(
+            snapshot.lesson_node_id
+        )
+        if current_source != snapshot.source_state_sha256:
+            raise TeachingPrepConflictError(
+                "reference sources changed before suggestion generation"
+            )
+        return self.workbench.begin_suggestion_run(
+            snapshot_id=clean_snapshot_id,
+            operation_id=clean_operation_id,
+            request_hash=_json_digest(
+                {
+                    "snapshot_id": clean_snapshot_id,
+                    "source_state_sha256": snapshot.source_state_sha256,
+                }
+            ),
+        )
+
+    def process_exercise_suggestion_run(self, run_id: str) -> None:
+        clean_run_id = _clean_entity_id(run_id)
+        run, _items = self.workbench.get_suggestion_run(clean_run_id)
+        if run.status != "running":
+            return
+        snapshot = self.workbench.get_reference_snapshot(run.snapshot_id)
+        adapter = self.exercise_suggestion_model_adapter
+        if adapter is None:
+            self.workbench.fail_suggestion_run(
+                clean_run_id, "model_unavailable"
+            )
+            return
+        try:
+            self.workbench.mark_suggestion_call_started(clean_run_id)
+            raw = adapter.generate(
+                operation_id=run.operation_id,
+                reference_snapshot=dict(snapshot.payload["model_input"]),
+            )
+            suggestions = normalize_exercise_suggestion_payload(
+                raw,
+                snapshot=dict(snapshot.payload["model_input"]),
+            )
+            self.workbench.finish_suggestion_run(
+                run_id=clean_run_id,
+                lesson_node_id=snapshot.lesson_node_id,
+                source_state_sha256=snapshot.source_state_sha256,
+                suggestions=suggestions,
+            )
+        except Exception as exc:
+            self.workbench.fail_suggestion_run(
+                clean_run_id, _model_error_code(exc)
+            )
+
+    def get_exercise_suggestion_run(self, run_id: str):
+        return self.workbench.get_suggestion_run(_clean_entity_id(run_id))
+
+    def cancel_exercise_suggestion_run(self, run_id: str):
+        return self.workbench.cancel_suggestion_run(_clean_entity_id(run_id))
+
+    def review_exercise_suggestion(
+        self,
+        suggestion_id: str,
+        *,
+        expected_revision: int,
+        decision: str,
+        teacher_payload: Mapping[str, object] | None,
+        rejection_reason: str | None,
+    ):
+        clean_id = _clean_entity_id(suggestion_id)
+        run, items = self.workbench.get_suggestion_run_for_suggestion(clean_id)
+        suggestion = next(item for item in items if item.id == clean_id)
+        clean_decision = _clean_choice(
+            decision,
+            {"accepted", "modified", "rejected"},
+            "suggestion_decision",
+        )
+        payload = (
+            dict(teacher_payload)
+            if clean_decision == "modified"
+            else suggestion.original_payload
+        )
+        candidate_id: str | None = None
+        normalized_teacher: dict[str, object] | None = None
+        if clean_decision in {"accepted", "modified"}:
+            snapshot = self.workbench.get_reference_snapshot(run.snapshot_id)
+            _catalog, current_source = self.workbench.selection_catalog(
+                snapshot.lesson_node_id
+            )
+            if current_source != snapshot.source_state_sha256:
+                raise TeachingPrepConflictError(
+                    "reference sources changed before accepting the suggestion"
+                )
+            normalized_items = normalize_exercise_suggestion_payload(
+                {"suggestions": [payload]},
+                snapshot=dict(snapshot.payload["model_input"]),
+            )
+            normalized_teacher = normalized_items[0]
+            candidate, _created = self.create_exercise_candidate(
+                request_token=f"suggestion-{clean_id}-{expected_revision:04d}",
+                lesson_node_id=suggestion.lesson_node_id,
+                question_number=normalized_teacher["question_number"],
+                content_label=normalized_teacher["content_label"],
+                difficulty=str(normalized_teacher["difficulty"]),
+                classroom_use=str(normalized_teacher["classroom_use"]),
+                estimated_minutes=normalized_teacher["estimated_minutes"],
+                teaching_focus=normalized_teacher["teaching_focus"],
+                teacher_note=str(normalized_teacher["reason"]),
+                selection_status="classroom_candidate",
+                answer_status=(
+                    "candidate"
+                    if normalized_teacher["answer_regions"]
+                    else "missing"
+                ),
+                question_regions=[
+                    {
+                        "material_unit_id": item["material_unit_id"],
+                        "crop": item["crop"],
+                    }
+                    for item in normalized_teacher["question_regions"]
+                ],
+                answer_regions=[
+                    {
+                        "material_unit_id": item["material_unit_id"],
+                        "crop": item["crop"],
+                    }
+                    for item in normalized_teacher["answer_regions"]
+                ],
+            )
+            candidate_id = candidate.id
+        return self.workbench.update_suggestion(
+            clean_id,
+            expected_revision=expected_revision,
+            decision=clean_decision,
+            teacher_payload=normalized_teacher,
+            rejection_reason=_clean_optional_text(
+                rejection_reason, "rejection_reason", maximum=500
+            ),
+            exercise_candidate_id=candidate_id,
+        )
 
     def create_preparation(
         self,
@@ -1446,6 +1775,8 @@ class TeachingPrepService:
         assessment_ids: Sequence[int],
         knowledge_scope: Sequence[str],
         preparation_preferences: Mapping[str, object] | None = None,
+        selected_material_link_ids: Sequence[str] | None = None,
+        selected_exercise_candidate_ids: Sequence[str] | None = None,
     ) -> tuple[ResourcePackVersion, bool]:
         clean_token = _clean_token(request_token)
         clean_lesson_id = _clean_entity_id(lesson_node_id)
@@ -1503,6 +1834,30 @@ class TeachingPrepService:
             )
             for link_id, intent in reference_ppt_intents.items()
         }
+        clean_material_link_ids = (
+            tuple(
+                dict.fromkeys(
+                    _clean_entity_id(item)
+                    for item in selected_material_link_ids
+                )
+            )
+            if selected_material_link_ids is not None
+            else None
+        )
+        clean_exercise_candidate_ids = (
+            tuple(
+                dict.fromkeys(
+                    _clean_entity_id(item)
+                    for item in selected_exercise_candidate_ids
+                )
+            )
+            if selected_exercise_candidate_ids is not None
+            else None
+        )
+        if clean_material_link_ids is not None and not clean_material_link_ids:
+            raise TeachingPrepValidationError(
+                "at least one material link must be selected"
+            )
         request_values = {
             "lesson_node_id": clean_lesson_id,
             "class_name": clean_class,
@@ -1513,6 +1868,8 @@ class TeachingPrepService:
             "assessment_ids": clean_assessment_ids,
             "knowledge_scope": clean_scope,
             "preparation_preferences": clean_preferences,
+            "selected_material_link_ids": clean_material_link_ids,
+            "selected_exercise_candidate_ids": clean_exercise_candidate_ids,
         }
         request_hash = hashlib.sha256(
             json.dumps(
@@ -1574,6 +1931,49 @@ class TeachingPrepService:
             question_evidence=dict(question_evidence),
             assessment_evidence=dict(assessment_evidence),
             preparation_preferences=clean_preferences,
+            selected_material_link_ids=clean_material_link_ids,
+            selected_exercise_candidate_ids=clean_exercise_candidate_ids,
+        )
+
+    def resource_pack_preflight(
+        self,
+        lesson_node_id: str,
+        *,
+        reference_ppt_intents: Mapping[str, str],
+        selected_material_link_ids: Sequence[str] | None,
+        selected_exercise_candidate_ids: Sequence[str] | None,
+    ) -> dict[str, object]:
+        clean_intents = {
+            _clean_entity_id(link_id): _clean_choice(
+                intent,
+                _REFERENCE_PPT_INTENTS,
+                "reference_ppt_intent",
+            )
+            for link_id, intent in reference_ppt_intents.items()
+        }
+        return self.resource_packs.preflight_selection(
+            lesson_node_id=_clean_entity_id(lesson_node_id),
+            reference_ppt_intents=clean_intents,
+            selected_material_link_ids=(
+                tuple(
+                    dict.fromkeys(
+                        _clean_entity_id(item)
+                        for item in selected_material_link_ids
+                    )
+                )
+                if selected_material_link_ids is not None
+                else None
+            ),
+            selected_exercise_candidate_ids=(
+                tuple(
+                    dict.fromkeys(
+                        _clean_entity_id(item)
+                        for item in selected_exercise_candidate_ids
+                    )
+                )
+                if selected_exercise_candidate_ids is not None
+                else None
+            ),
         )
 
     def list_resource_packs(
@@ -1750,6 +2150,17 @@ class TeachingPrepService:
 
     def get_lesson_draft(self, draft_id: str) -> LessonDraftVersion:
         return self.lesson_drafts.get(_clean_entity_id(draft_id))
+
+    def preview_lesson_draft_capacity(
+        self,
+        draft_id: str,
+        *,
+        payload: Mapping[str, object],
+    ) -> dict[str, object]:
+        draft = self.lesson_drafts.get(_clean_entity_id(draft_id))
+        pack = self.resource_packs.get(draft.resource_pack_id)
+        normalized = validate_draft_payload(payload, pack)
+        return calculate_capacity(pack, normalized)
 
     def list_lesson_drafts(
         self,
@@ -2024,6 +2435,104 @@ class TeachingPrepService:
         operation_id: str,
         confirmed: bool,
     ) -> tuple[PptxExecutionRun, PptxVersion | None, bool]:
+        return self._execute_slide_plan_sync(
+            plan_id,
+            operation_id=operation_id,
+            confirmed=confirmed,
+            continue_existing=False,
+        )
+
+    def start_pptx_execution(
+        self,
+        plan_id: str,
+        *,
+        operation_id: str,
+        confirmed: bool,
+    ) -> tuple[PptxExecutionRun, bool]:
+        if not confirmed:
+            raise TeachingPrepValidationError(
+                "PPTX copy execution requires explicit confirmation"
+            )
+        if self.wps_adapter is None:
+            raise TeachingPrepValidationError(
+                "WPS execution adapter is not configured"
+            )
+        clean_plan_id = _clean_entity_id(plan_id)
+        clean_operation_id = _clean_token(operation_id)
+        plan = self._effective_slide_plan(self.slide_plans.get(clean_plan_id))
+        if plan.status != "approved":
+            raise TeachingPrepValidationError(
+                "only a current approved slide plan can execute"
+            )
+        source_presentations = plan.payload.get("source_presentations")
+        if (
+            not isinstance(source_presentations, list)
+            or len(source_presentations) != 1
+            or not isinstance(source_presentations[0], Mapping)
+        ):
+            raise TeachingPrepValidationError(
+                "automatic execution requires exactly one source PPTX"
+            )
+        source_record = dict(source_presentations[0])
+        source_version_id = _clean_entity_id(
+            str(source_record.get("material_version_id") or "")
+        )
+        source_sha256 = str(source_record.get("content_sha256") or "")
+        source_version = self.catalog.get_material_version(source_version_id)
+        if (
+            source_version.material_type != "pptx"
+            or source_version.content_sha256 != source_sha256
+        ):
+            raise TeachingPrepConflictError(
+                "source PPTX version no longer matches the approved plan"
+            )
+        source_path = self.catalog.get_material_location(source_version_id)
+        if not source_path.is_file() or _sha256_file(source_path) != source_sha256:
+            raise TeachingPrepConflictError(
+                "source PPTX is missing or changed after plan approval"
+            )
+        preview = self.slide_plan_preview(clean_plan_id, include_proposed=False)
+        if not preview["valid_for_execution"]:
+            raise TeachingPrepValidationError(
+                "slide plan is not valid for execution"
+            )
+        request_hash = execution_digest(
+            {
+                "slide_plan_id": clean_plan_id,
+                "source_material_version_id": source_version_id,
+                "source_sha256": source_sha256,
+                "expected_slide_count": int(preview["after_slide_count"]),
+            }
+        )
+        run, created = self.pptx_executions.begin(
+            operation_id=clean_operation_id,
+            request_hash=request_hash,
+            slide_plan_id=clean_plan_id,
+            source_material_version_id=source_version_id,
+            source_sha256=source_sha256,
+            expected_slide_count=int(preview["after_slide_count"]),
+        )
+        return self._execution_with_storage(run), created
+
+    def process_pptx_execution(self, run_id: str) -> None:
+        run = self.pptx_executions.get(_clean_entity_id(run_id))
+        if run.status != "running":
+            return
+        self._execute_slide_plan_sync(
+            run.slide_plan_id,
+            operation_id=run.operation_id,
+            confirmed=True,
+            continue_existing=True,
+        )
+
+    def _execute_slide_plan_sync(
+        self,
+        plan_id: str,
+        *,
+        operation_id: str,
+        confirmed: bool,
+        continue_existing: bool,
+    ) -> tuple[PptxExecutionRun, PptxVersion | None, bool]:
         if not confirmed:
             raise TeachingPrepValidationError(
                 "PPTX copy execution requires explicit confirmation"
@@ -2097,7 +2606,7 @@ class TeachingPrepService:
             source_sha256=source_sha256,
             expected_slide_count=expected_slide_count,
         )
-        if not created:
+        if not created and not (continue_existing and run.status == "running"):
             version = (
                 self.pptx_executions.get_version(run.published_version_id)
                 if run.published_version_id is not None
@@ -2113,6 +2622,7 @@ class TeachingPrepService:
         publication_moved = False
         published = False
         reserved_version_id: str | None = None
+        published_preview_dir: Path | None = None
         try:
             self._require_generation_budget(run.id)
             staging.mkdir(parents=True, exist_ok=False)
@@ -2212,6 +2722,12 @@ class TeachingPrepService:
             )
             published = True
             self._require_generation_budget(run.id)
+            published_preview_dir = (
+                self.paths["previews"] / "pptx-versions" / version.id
+            )
+            published_preview_dir.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copytree(preview_dir, published_preview_dir)
+            self._require_generation_budget(run.id)
             return (
                 self._execution_with_storage(
                     self.pptx_executions.get(run.id)
@@ -2220,6 +2736,8 @@ class TeachingPrepService:
                 True,
             )
         except Exception as exc:
+            if published_preview_dir is not None:
+                shutil.rmtree(published_preview_dir, ignore_errors=True)
             error_code = _execution_error_code(exc)
             if published and reserved_version_id is not None:
                 self.pptx_executions.revoke_published(
@@ -2250,6 +2768,86 @@ class TeachingPrepService:
         return self._execution_with_storage(
             self.pptx_executions.get(_clean_entity_id(run_id))
         )
+
+    def list_lesson_pptx_versions(
+        self,
+        lesson_node_id: str,
+    ) -> tuple[dict[str, object], ...]:
+        clean_lesson_id = _clean_entity_id(lesson_node_id)
+        result: list[dict[str, object]] = []
+        for version, is_current, current_revision in (
+            self.pptx_executions.list_versions_for_lesson(clean_lesson_id)
+        ):
+            output = self._controlled_output(
+                self.pptx_executions.version_output_relpath(version.id)
+            )
+            file_ok = (
+                output.is_file()
+                and version.output_sha256 is not None
+                and _sha256_file(output) == version.output_sha256
+            )
+            result.append(
+                {
+                    "version": version,
+                    "is_current": is_current,
+                    "current_revision": current_revision,
+                    "file_verified": file_ok,
+                    "preview_url": (
+                        f"/api/teaching-prep/pptx-versions/{version.id}/preview"
+                    ),
+                }
+            )
+        return tuple(result)
+
+    def activate_pptx_version(
+        self,
+        version_id: str,
+        *,
+        expected_revision: int | None,
+    ) -> tuple[PptxVersion, int, bool]:
+        clean_id = _clean_entity_id(version_id)
+        version = self.pptx_executions.get_version(clean_id)
+        output = self._controlled_output(
+            self.pptx_executions.version_output_relpath(clean_id)
+        )
+        if (
+            not output.is_file()
+            or version.output_sha256 is None
+            or _sha256_file(output) != version.output_sha256
+        ):
+            raise TeachingPrepConflictError(
+                "PPTX file is missing or changed; current version was not updated"
+            )
+        return self.pptx_executions.activate_version(
+            clean_id,
+            expected_revision=expected_revision,
+        )
+
+    def pptx_version_preview_path(
+        self,
+        version_id: str,
+        *,
+        slide_number: int = 1,
+    ) -> Path:
+        clean_id = _clean_entity_id(version_id)
+        version = self.pptx_executions.get_version(clean_id)
+        if slide_number < 1 or slide_number > version.slide_count:
+            raise TeachingPrepValidationError("preview slide number is invalid")
+        root = (self.paths["previews"] / "pptx-versions" / clean_id).resolve(
+            strict=False
+        )
+        target = (root / f"slide-{slide_number:05d}.png").resolve(
+            strict=False
+        )
+        try:
+            target.relative_to(root)
+        except ValueError as exc:
+            raise TeachingPrepValidationError(
+                "PPTX preview path is invalid"
+            ) from exc
+        if not target.is_file():
+            raise TeachingPrepNotFoundError("PPTX preview is unavailable")
+        return target
 
     def get_lesson_generation_performance(
         self,
@@ -3016,6 +3614,7 @@ class TeachingPrepService:
     def mark_interrupted_operations(self) -> int:
         detailed = self.pptx_executions.mark_interrupted()
         delivery = self.teaching_delivery.mark_interrupted_packages()
+        workbench = self.workbench.mark_interrupted()
         with self.database.connect(immediate=True) as connection:
             cursor = connection.execute(
                 """
@@ -3027,7 +3626,7 @@ class TeachingPrepService:
                 WHERE status IN ('pending', 'running')
                 """
             )
-            return max(detailed, delivery, int(cursor.rowcount))
+            return max(detailed, delivery, workbench, int(cursor.rowcount))
 
 
 def _clean_token(value: str) -> str:
@@ -3047,6 +3646,25 @@ def _model_adapter_available(adapter: object | None) -> bool:
         return bool(probe())
     except (OSError, ValueError):
         return False
+
+
+def _model_error_code(exc: Exception) -> str:
+    if isinstance(exc, TimeoutError):
+        return "model_timeout"
+    if isinstance(exc, TeachingPrepValidationError):
+        return "model_response_invalid"
+    return "model_request_failed"
+
+
+def _json_digest(value: object) -> str:
+    return hashlib.sha256(
+        json.dumps(
+            value,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
 
 
 def _require_initial_tree_source(snapshot: Mapping[str, object]) -> None:
