@@ -2989,6 +2989,25 @@ def test_complete_evidence_first_generation_queues_exact_artifact_identity(
             True,
         ),
     )
+    progress_reports: list[tuple[float, str, str]] = []
+    update_progress = store.update_progress
+
+    def record_progress(
+        job_id: int,
+        *,
+        progress: float,
+        stage: str,
+        detail: str = "",
+    ) -> None:
+        progress_reports.append((progress, stage, detail))
+        update_progress(
+            job_id,
+            progress=progress,
+            stage=stage,
+            detail=detail,
+        )
+
+    monkeypatch.setattr(store, "update_progress", record_progress)
     protocol = _DeferredProtocol()
     score_client = _DeferredScoreClient(valid_six_question_score=True)
     monkeypatch.setattr(
@@ -3014,6 +3033,17 @@ def test_complete_evidence_first_generation_queues_exact_artifact_identity(
         sort_keys=True,
     )
     assert len(score_client.calls) == 1
+    analysis_reports = [
+        item
+        for item in progress_reports
+        if item[1] == "question_analysis" and item[0] > 0.08
+    ]
+    assert [item[0] for item in analysis_reports] == sorted(
+        item[0] for item in analysis_reports
+    )
+    assert len(analysis_reports) >= 2
+    assert analysis_reports[-1][0] == pytest.approx(0.84)
+    assert "6/6" in analysis_reports[-1][2]
     assert len(submitted) == 1
     queued = submitted[0]
     assert queued["analysis_source_id"] == source.source_id

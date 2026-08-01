@@ -201,6 +201,9 @@ const totalQuestionCount = computed(() => safeCount(job.value?.result.total_ques
 const totalBatchCount = computed(() => safeCount(job.value?.result.total_batch_count))
 const generatedCount = computed(() => safeCount(job.value?.result.generated_questions))
 const failedCount = computed(() => safeCount(job.value?.result.failed_count))
+const taxonomyReviewCount = computed(() => (
+  safeCount(job.value?.result.taxonomy_review_count)
+))
 const includedSourceQuestionCount = computed(() => {
   const source = configStore.source
   if (source === null) return 0
@@ -559,7 +562,7 @@ watch(job, (current, previous) => {
       </div>
       <progress :value="progress" max="1" aria-label="评分依据生成进度" />
       <p v-if="waitingForCancel">
-        已收到取消请求，正在等待当前模型请求返回；服务器确认前任务仍未取消。
+        已收到取消请求，正在等待已经发出的模型请求返回；服务器确认前任务仍未取消。
       </p>
       <p v-else-if="safeDetail">{{ safeDetail }}</p>
       <p v-if="mappingNotice" class="config-generation__mapping" role="status">{{ mappingNotice }}</p>
@@ -578,6 +581,13 @@ watch(job, (current, previous) => {
       <p v-if="terminal && outcome === 'complete'" class="config-generation__success">
         <strong>评分标准生成成功。</strong>
         共 {{ totalQuestionCount || generatedCount }} 道题，已通过本地校验并完成分值配置。
+      </p>
+      <p
+        v-if="terminal && outcome === 'complete' && taxonomyReviewCount > 0"
+        class="config-generation__retained"
+        role="status"
+      >
+        其中 {{ taxonomyReviewCount }} 道题的知识标签需要稍后重试或人工归并；评分依据不受影响，未知词尚未写入正式标签。
       </p>
       <button
         v-if="terminal && outcome === 'complete' && !refineJob"

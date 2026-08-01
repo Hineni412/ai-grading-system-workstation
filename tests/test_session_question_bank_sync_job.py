@@ -26,6 +26,7 @@ from question_bank.database.schema import connect, initialize_database
 from question_bank.services.question_write_service import QuestionBankWriteService
 from question_bank.services.question_service import QuestionService
 from question_bank.solution_evidence import SolutionEvidenceRepository
+from question_bank.taxonomy.governance import TaxonomyGovernance
 from question_bank.training_criteria import (
     ConfigQuestionAnalysisSource,
     GatewayBatchResponse,
@@ -969,18 +970,88 @@ def _deferred_sync_result(question_id: int) -> dict[str, Any]:
 
 
 class _DeferredSyncGateway:
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        invented_term: bool = False,
+        empty_links: bool = False,
+    ) -> None:
         self.calls: list[tuple[int, ...]] = []
+        self.invented_term = bool(invented_term)
+        self.empty_links = bool(empty_links)
 
     def analyze(self, batch: Any, **_kwargs: Any) -> GatewayBatchResponse:
         self.calls.append(batch.question_ids)
+        payload = _deferred_sync_result(batch.question_ids[0])
+        if self.invented_term:
+            result = payload["results"][0]
+            result["tag_analysis"]["knowledge_points"] = ["模型新造知识"]
+            result["tag_analysis"]["canonical_knowledge_id"] = ""
+            for field in (
+                "method_tags",
+                "ability_tags",
+                "math_model_tags",
+                "special_type_tags",
+                "prerequisite_points",
+                "textbook_chapters",
+                "curriculum_sections",
+            ):
+                result["tag_analysis"][field] = []
+            point = result["solution_evidence"]["parts"][0][
+                "evidence_points"
+            ][0]
+            point["fine_term_links"] = [
+                {
+                    "fine_term_id": "invented-model-term",
+                    "fine_term_name": "模型新造知识",
+                    "role": "direct",
+                }
+            ]
+            point["target"] = "选出正确答案"
+            point["observable_evidence"] = "作答为 B"
+        elif self.empty_links:
+            point = payload["results"][0]["solution_evidence"]["parts"][0][
+                "evidence_points"
+            ][0]
+            point["fine_term_links"] = []
+            point["target"] = "选出正确答案"
+            point["observable_evidence"] = "作答为 B"
         return GatewayBatchResponse(
-            payload=_deferred_sync_result(batch.question_ids[0]),
+            payload=payload,
             model_name="synthetic-combined-v3",
         )
 
 
 class _PassThroughTaxonomyGovernance:
+    def snapshot(self) -> dict[str, Any]:
+        return {
+            "terms_by_dimension": {
+                "knowledge": [
+                    {
+                        "id": "kp_alg_linear_equation",
+                        "name": "一元一次方程",
+                        "aliases": ["一次方程"],
+                    }
+                ]
+            }
+        }
+
+    def resolve_term(
+        self,
+        dimension: str,
+        name: str,
+    ) -> dict[str, Any] | None:
+        if dimension != "knowledge" or name not in {
+            "一元一次方程",
+            "一次方程",
+        }:
+            return None
+        return {
+            "id": "kp_alg_linear_equation",
+            "name": "一元一次方程",
+            "aliases": ["一次方程"],
+        }
+
     def constrain(
         self,
         raw_analysis: dict[str, Any],
@@ -1020,8 +1091,10 @@ class _PassThroughTaxonomyGovernance:
 class _DeferredAdoptionTaggingService:
     model = "synthetic-combined-v3"
 
-    def __init__(self) -> None:
-        self.taxonomy_governance = _PassThroughTaxonomyGovernance()
+    def __init__(self, taxonomy_governance: Any | None = None) -> None:
+        self.taxonomy_governance = (
+            taxonomy_governance or _PassThroughTaxonomyGovernance()
+        )
 
     def taxonomy_contracts(
         self,
@@ -1033,9 +1106,20 @@ class _DeferredAdoptionTaggingService:
         }
 
 
-def test_sync_adopts_deferred_tags_and_evidence_without_tagging_model(
+def _run_deferred_adoption(
     tmp_path: Path,
-) -> None:
+    *,
+    invented_term: bool = False,
+    empty_links: bool = False,
+    analysis_governance: Any | None = None,
+    adoption_governance: Any | None = None,
+) -> tuple[
+    dict[str, object],
+    _DeferredSyncGateway,
+    list[int],
+    Path,
+    Path,
+]:
     db, session_id, _source, source_sha256, revision = _configured_session(
         tmp_path
     )
@@ -1052,8 +1136,14 @@ def test_sync_adopts_deferred_tags_and_evidence_without_tagging_model(
         curriculum_volume_id="bnu24-math-g7-upper",
         taxonomy_contract=_deferred_sync_contract(),
     )
-    gateway = _DeferredSyncGateway()
-    bundle = InMemoryCombinedQuestionAnalysisModule(gateway=gateway).analyze(
+    gateway = _DeferredSyncGateway(
+        invented_term=invented_term,
+        empty_links=empty_links,
+    )
+    bundle = InMemoryCombinedQuestionAnalysisModule(
+        gateway=gateway,
+        taxonomy_governance=analysis_governance,
+    ).analyze(
         operation_id="config:synthetic:deferred-adoption",
         curriculum_volume_id="bnu24-math-g7-upper",
         sources=(ConfigQuestionAnalysisSource("Q1", source_question),),
@@ -1115,12 +1205,10 @@ def test_sync_adopts_deferred_tags_and_evidence_without_tagging_model(
             "retryable": False,
         }
 
-    tagging_runner_called = False
-
     def unexpected_tagging_runner(**_kwargs: Any) -> dict[str, object]:
-        nonlocal tagging_runner_called
-        tagging_runner_called = True
         pytest.fail("deferred adoption must not call the tagging model runner")
+
+    governance = adoption_governance or _PassThroughTaxonomyGovernance()
 
     result = run_session_question_bank_sync_job(
         context=context,
@@ -1133,16 +1221,34 @@ def test_sync_adopts_deferred_tags_and_evidence_without_tagging_model(
         ),
         question_import_runner=import_runner,
         tagging_sync_runner=unexpected_tagging_runner,
-        ai_service_factory=_DeferredAdoptionTaggingService,
-        taxonomy_governance=_PassThroughTaxonomyGovernance(),
+        ai_service_factory=lambda: _DeferredAdoptionTaggingService(governance),
+        taxonomy_governance=governance,
         analysis_artifact_root=artifact_root,
+    )
+
+    return (
+        result,
+        gateway,
+        imported_ids,
+        question_bank_db,
+        artifact_root / f"deferred_question_analysis_{artifact.artifact_id}.json",
+    )
+
+
+def test_sync_adopts_deferred_tags_and_evidence_without_tagging_model(
+    tmp_path: Path,
+) -> None:
+    result, gateway, imported_ids, question_bank_db, artifact_path = (
+        _run_deferred_adoption(tmp_path)
     )
 
     assert result["outcome"] == "complete", result
     assert result["tagged_count"] == 1
     assert result["evidence_count"] == 1
+    assert result["taxonomy_review_count"] == 0
+    assert result["taxonomy_review_question_ids"] == []
+    assert result["retryable"] is False
     assert result["analysis_artifact_consumed"] is True
-    assert tagging_runner_called is False
     assert gateway.calls == [(1,)]
     saved = QuestionService(question_bank_db).get_question(imported_ids[0])
     assert saved is not None
@@ -1156,7 +1262,67 @@ def test_sync_adopts_deferred_tags_and_evidence_without_tagging_model(
     assert evidence["evidence"]["parts"][0]["evidence_points"][0][
         "fine_term_links"
     ][0]["role"] == "direct"
-    assert not (
-        artifact_root
-        / f"deferred_question_analysis_{artifact.artifact_id}.json"
-    ).exists()
+    assert not artifact_path.exists()
+
+
+def test_sync_keeps_taxonomy_review_artifact_for_local_retry(
+    tmp_path: Path,
+) -> None:
+    governance = TaxonomyGovernance(
+        state_path=tmp_path / "taxonomy-state.json"
+    )
+    result, gateway, imported_ids, question_bank_db, artifact_path = (
+        _run_deferred_adoption(
+            tmp_path,
+            invented_term=True,
+            analysis_governance=governance,
+            adoption_governance=governance,
+        )
+    )
+
+    assert result["outcome"] == "complete", result
+    assert result["failed_count"] == 0
+    assert result["successful_question_ids"] == imported_ids
+    assert result["tagged_count"] == 1
+    assert result["evidence_count"] == 1
+    assert result["review_count"] == 1
+    assert result["taxonomy_review_count"] == 1
+    assert result["taxonomy_review_question_ids"] == imported_ids
+    assert result["taxonomy_review_source_refs"] == ["Q1"]
+    assert result["retryable"] is True
+    assert "analysis_artifact_consumed" not in result
+    assert gateway.calls == [(1,)]
+    assert artifact_path.exists()
+    evidence = SolutionEvidenceRepository(question_bank_db).latest(imported_ids[0])
+    assert evidence is not None
+    assert evidence["evidence"]["parts"][0]["evidence_points"][0][
+        "fine_term_links"
+    ] == []
+    proposals = governance.list_proposals(status="pending")
+    assert proposals["counts"] == {"pending": 1}
+    assert proposals["items"][0]["question_refs"] == imported_ids
+
+
+def test_sync_saves_empty_link_scoring_without_retry_loop(
+    tmp_path: Path,
+) -> None:
+    result, gateway, imported_ids, question_bank_db, artifact_path = (
+        _run_deferred_adoption(tmp_path, empty_links=True)
+    )
+
+    assert result["outcome"] == "complete", result
+    assert result["failed_count"] == 0
+    assert result["evidence_count"] == 1
+    assert result["taxonomy_review_count"] == 1
+    assert result["taxonomy_review_question_ids"] == imported_ids
+    assert result["taxonomy_review_source_refs"] == ["Q1"]
+    assert result["review_count"] == 0
+    assert result["retryable"] is False
+    assert result["analysis_artifact_consumed"] is True
+    assert gateway.calls == [(1,)]
+    assert not artifact_path.exists()
+    evidence = SolutionEvidenceRepository(question_bank_db).latest(imported_ids[0])
+    assert evidence is not None
+    assert evidence["evidence"]["parts"][0]["evidence_points"][0][
+        "fine_term_links"
+    ] == []

@@ -521,9 +521,10 @@ class SolutionEvidenceProjectionWriter:
                 payload,
                 taxonomy_contract=question.taxonomy_contract,
                 governance=self.taxonomy_governance,
-                question_id=question.question_id,
+                question_ref=str(question.question_id),
                 model_name=model_name,
                 operation_id=operation_id,
+                persist_proposals=True,
             )
             normalized_payload = convergence.payload
             additional_allowed = convergence.canonical_term_ids
@@ -566,6 +567,8 @@ class SolutionEvidenceProjectionWriter:
         retrieval_misses: list[dict[str, Any]] = []
         proposals: list[dict[str, Any]] = []
         secondary_matches: list[dict[str, Any]] = []
+        unresolved_links: list[dict[str, Any]] = []
+        missing_link_points: list[dict[str, Any]] = []
         relation_hints: list[dict[str, Any]] = []
         retrieval_question_ids: list[int] = []
         proposal_question_ids: list[int] = []
@@ -597,6 +600,16 @@ class SolutionEvidenceProjectionWriter:
                 for item in audit.get("secondary_matches", [])
                 if isinstance(item, Mapping)
             )
+            unresolved_links.extend(
+                dict(item)
+                for item in audit.get("unresolved_links", [])
+                if isinstance(item, Mapping)
+            )
+            missing_link_points.extend(
+                dict(item)
+                for item in audit.get("missing_link_points", [])
+                if isinstance(item, Mapping)
+            )
             relation_hints.extend(
                 dict(item)
                 for item in audit.get("relation_hints", [])
@@ -610,6 +623,8 @@ class SolutionEvidenceProjectionWriter:
             "retrieval_misses": retrieval_misses,
             "proposals": proposals,
             "secondary_matches": secondary_matches,
+            "unresolved_links": unresolved_links,
+            "missing_link_points": missing_link_points,
             "relation_hints": relation_hints,
             "retrieval_miss_question_ids": retrieval_question_ids,
             "proposal_question_ids": proposal_question_ids,

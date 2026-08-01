@@ -197,4 +197,49 @@ describe('QuestionBankSyncPanel', () => {
     )
     app.unmount()
   })
+
+  it('keeps taxonomy-only evidence work visible and locally retryable', async () => {
+    useJobStore().track(job({
+      status: 'succeeded',
+      progress: 1,
+      result: {
+        outcome: 'complete',
+        imported_count: 1,
+        tagged_count: 1,
+        linked_count: 1,
+        failed_count: 0,
+        review_count: 1,
+        taxonomy_review_count: 1,
+        taxonomy_review_question_ids: [101],
+        taxonomy_review_source_refs: ['Q1'],
+        retryable: true,
+      },
+    }))
+    const retryer = vi.fn(async () => job({ id: 84 }))
+    const host = document.createElement('div')
+    document.body.append(host)
+    const app = createApp(QuestionBankSyncPanel, {
+      sessionId: 7,
+      sessionName: '七年级上册阶段练习',
+      configRevision: 'd'.repeat(64),
+      retryer,
+      curriculumLoader: vi.fn(async () => curriculum),
+    })
+
+    app.mount(host)
+    await nextTick()
+
+    expect(host.textContent).toContain('1 题标签待补充或归并')
+    expect(host.textContent).toContain('含 1 个新标签')
+    expect(host.textContent).toContain('试卷已入库，标签仍待补充或归并')
+    expect(host.textContent).not.toContain('试卷已入库并完成标签治理')
+    expect(host.textContent).toContain('待处理：Q1')
+    const retryButton = [...host.querySelectorAll('button')]
+      .find((button) => button.textContent?.includes('标签处理后重新本地校验'))
+    expect(retryButton).toBeDefined()
+    retryButton!.click()
+    await settle()
+    expect(retryer).toHaveBeenCalledOnce()
+    app.unmount()
+  })
 })

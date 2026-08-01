@@ -641,6 +641,7 @@ def _run_config_generation_job_impl(
         and taxonomy_governance is not None
     )
     if evidence_flow:
+        evidence_reported_count = 0
         analysis_artifact_id = str(
             inputs.get("analysis_artifact_id") or ""
         ).strip().casefold()
@@ -660,7 +661,7 @@ def _run_config_generation_job_impl(
         )
 
         def evidence_checkpoint(bundle: DeferredCombinedAnalysisBundle) -> None:
-            nonlocal evidence_artifact_hash
+            nonlocal evidence_artifact_hash, evidence_reported_count
             artifact = artifact_store.save(
                 artifact_id=analysis_artifact_id,
                 session_id=session_id,
@@ -676,6 +677,35 @@ def _run_config_generation_job_impl(
                     exam_title=str(session.get("name") or "待命名试卷"),
                 )
             )
+            running_refs = set(bundle.running_source_refs)
+            completed_refs = (
+                {item.source_question_ref for item in bundle.items}
+                | {
+                    item.source_question_ref
+                    for item in bundle.failures
+                }
+                | set(bundle.uncertain_source_refs)
+            ) - running_refs
+            completed_count = len(completed_refs)
+            total_count = len(bundle.source_fingerprints)
+            if completed_count > evidence_reported_count and total_count > 0:
+                evidence_reported_count = completed_count
+                succeeded_count = len(
+                    {
+                        item.source_question_ref
+                        for item in bundle.items
+                        if item.source_question_ref in completed_refs
+                    }
+                )
+                pending_count = max(0, completed_count - succeeded_count)
+                context.report(
+                    0.08 + 0.76 * (completed_count / total_count),
+                    "question_analysis",
+                    (
+                        f"题目分析已完成 {completed_count}/{total_count} 题；"
+                        f"成功 {succeeded_count} 题，待处理 {pending_count} 题。"
+                    ),
+                )
 
         if previous_artifact is not None and previous_artifact.bundle.status == "succeeded":
             analysis_bundle = previous_artifact.bundle
@@ -693,9 +723,16 @@ def _run_config_generation_job_impl(
                 protocol_adapter=tagging_service._protocol_adapter(),
                 model_name=str(tagging_service.model),
             )
-            analysis_module = InMemoryCombinedQuestionAnalysisModule(gateway=gateway)
+            analysis_module = InMemoryCombinedQuestionAnalysisModule(
+                gateway=gateway,
+                taxonomy_governance=taxonomy_governance,
+            )
         if previous_artifact is None:
-            context.report(0.08, "question_analysis", "analyzing_evidence")
+            context.report(
+                0.08,
+                "question_analysis",
+                f"正在分析题目：0/{len(sources)}。",
+            )
             analysis_bundle = analysis_module.analyze(
                 operation_id=f"config:{session_id}:{analysis_artifact_id}",
                 curriculum_volume_id=curriculum_volume_id,
@@ -703,7 +740,11 @@ def _run_config_generation_job_impl(
                 checkpoint=evidence_checkpoint,
             )
         elif previous_artifact.bundle.running_source_refs:
-            context.report(0.08, "question_analysis", "resolving_interrupted_evidence")
+            context.report(
+                0.08,
+                "question_analysis",
+                "正在核对上次中断的题目分析结果。",
+            )
             analysis_bundle = analysis_module.resume_interrupted(
                 previous_artifact.bundle,
                 sources=sources,
@@ -712,7 +753,11 @@ def _run_config_generation_job_impl(
             )
         elif previous_artifact.bundle.status != "succeeded":
             retry_source_refs = _retry_source_refs(context.payload)
-            context.report(0.08, "question_analysis", "retrying_evidence")
+            context.report(
+                0.08,
+                "question_analysis",
+                "正在重试教师选定的未完成题目。",
+            )
             analysis_bundle = analysis_module.retry_failed(
                 previous_artifact.bundle,
                 sources=sources,
@@ -869,6 +914,9 @@ def _run_config_generation_job_impl(
         **score_allocation,
         retryable_mode=generation_mode == "batched",
     )
+    taxonomy_review_ids = _taxonomy_review_question_ids(payload)
+    summary["taxonomy_review_count"] = len(taxonomy_review_ids)
+    summary["taxonomy_review_question_ids"] = taxonomy_review_ids
     summary["question_bank_sync_requested"] = sync_to_question_bank
     summary["question_bank_sync_state"] = (
         "waiting_for_config" if sync_to_question_bank else "not_requested"
@@ -1372,6 +1420,94 @@ def _deferred_analysis_draft(
 ) -> dict[str, Any]:
     failed_refs = list(bundle.failed_source_refs)
     uncertain_refs = list(bundle.uncertain_source_refs)
+    taxonomy_review_refs = list(bundle.taxonomy_review_source_refs)
+    internal_category_by_ref: dict[str, str] = {}
+    for failure in bundle.failures:
+        internal_category_by_ref.setdefault(
+            failure.source_question_ref,
+            failure.category,
+        )
+    for reference in failed_refs:
+        internal_category_by_ref.setdefault(reference, "analysis_incomplete")
+    grouped_refs: dict[str, list[str]] = {}
+    for reference in failed_refs:
+        category = internal_category_by_ref[reference]
+        grouped_refs.setdefault(category, []).append(reference)
+    category_copy = {
+        "combined_response_contract": (
+            "model_response_parse",
+            "模型已返回，但题号或结果列表不完整。",
+        ),
+        "combined_item_contract": (
+            "model_output_contract",
+            "模型已返回，但题目分析对象缺少必要字段。",
+        ),
+        "tag_contract": (
+            "model_output_contract",
+            "模型已返回，但标签字段不符合约定。",
+        ),
+        "tag_normalization": (
+            "model_output_contract",
+            "模型已返回，但标签内容无法安全规范化。",
+        ),
+        "solution_evidence_contract": (
+            "model_output_contract",
+            "模型已返回，但拆分点字段或标识不符合约定。",
+        ),
+        "solution_evidence_terms": (
+            "model_output_contract",
+            "模型已返回，但拆分点引用了本题候选范围外的知识词。",
+        ),
+        "solution_evidence_candidates": (
+            "model_output_contract",
+            "模型已返回，但拆分点引用的知识候选无法建立安全快照。",
+        ),
+        "taxonomy_retrieval_insufficient": (
+            "local_validation",
+            "本题没有召回到可用知识候选，已在调用模型前停止，未产生本题模型费用。",
+        ),
+        "evidence_validation": (
+            "model_output_contract",
+            "拆分点未通过本地校验；旧记录未保留具体失败阶段。",
+        ),
+        "parse": (
+            "model_response_parse",
+            "模型已返回，但结果 JSON 无法解析。",
+        ),
+        "model": (
+            "model_request",
+            "模型请求或返回处理失败，未自动重试。",
+        ),
+        "cancelled": (
+            "cancelled",
+            "题目尚未发送或任务已取消，可以安全重试。",
+        ),
+        "analysis_incomplete": (
+            "local_validation",
+            "题目分析未完成且没有出站请求记录，可以安全重试。",
+        ),
+    }
+    failed_batches = []
+    for index, (internal_category, question_ids) in enumerate(
+        grouped_refs.items(),
+        start=1,
+    ):
+        public_category, error = category_copy.get(
+            internal_category,
+            (
+                "model_output_contract",
+                "模型已返回，但拆分点未通过本地安全校验。",
+            ),
+        )
+        failed_batches.append(
+            {
+                "batch_id": f"解题证据分析-{index}",
+                "question_ids": question_ids,
+                "status": "failed",
+                "category": public_category,
+                "error": error,
+            }
+        )
     warnings: list[str] = []
     if failed_refs:
         warnings.append("部分题目的拆分点分析失败")
@@ -1392,18 +1528,12 @@ def _deferred_analysis_draft(
                 {item.request_id for item in bundle.requests}
             ),
             "failed_question_ids": failed_refs,
-            "failed_batches": [
-                {
-                    "batch_id": "解题证据分析",
-                    "question_ids": failed_refs,
-                    "status": "failed",
-                    "category": "question_analysis",
-                    "error": "部分题目的拆分点分析失败，可只重试失败题目",
-                }
-            ] if failed_refs else [],
+            "failed_batches": failed_batches,
             "analysis_total_questions": len(bundle.source_fingerprints),
             "uncertain_question_ids": uncertain_refs,
             "needs_teacher_resolution": bool(uncertain_refs),
+            "taxonomy_review_question_ids": taxonomy_review_refs,
+            "taxonomy_review_count": len(taxonomy_review_refs),
             "score_allocation_pending": False,
         },
     }
@@ -1569,6 +1699,20 @@ def _batch_count(payload: dict[str, Any]) -> int:
         for batch in batches
         if isinstance(batch, dict)
         and any(str(qid).strip() for qid in batch.get("question_ids") or [])
+    )
+
+
+def _taxonomy_review_question_ids(payload: dict[str, Any]) -> list[str]:
+    meta = payload.get("meta") if isinstance(payload, dict) else None
+    raw = meta.get("taxonomy_review_question_ids") if isinstance(meta, dict) else None
+    if not isinstance(raw, list):
+        return []
+    return list(
+        dict.fromkeys(
+            str(item or "").strip()
+            for item in raw
+            if str(item or "").strip()
+        )
     )
 
 

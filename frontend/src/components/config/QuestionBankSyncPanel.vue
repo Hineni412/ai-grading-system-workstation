@@ -95,6 +95,16 @@ function safeCount(value: unknown): number {
   return Number.isSafeInteger(value) && Number(value) >= 0 ? Number(value) : 0
 }
 
+function reviewRefs(value: unknown): string {
+  if (!Array.isArray(value)) return ''
+  const refs = [...new Set(value
+    .map((item) => String(item ?? '').trim())
+    .filter((item) => item.length > 0))]
+  if (refs.length === 0) return ''
+  const visible = refs.slice(0, 8).join('、')
+  return refs.length > 8 ? `${visible} 等 ${refs.length} 题` : visible
+}
+
 function statusCopy(current: JobResponse): string {
   if (current.status === 'queued') return '等待入库'
   if (current.status === 'running') {
@@ -104,7 +114,11 @@ function statusCopy(current: JobResponse): string {
   }
   if (current.status === 'failed') return '题库流程异常结束'
   if (current.status === 'cancelled') return '题库流程已取消'
-  if (outcome.value === 'complete') return '试卷已入库并完成标签治理'
+  if (outcome.value === 'complete') {
+    return safeCount(current.result.taxonomy_review_count)
+      ? '试卷已入库，标签仍待补充或归并'
+      : '试卷已入库并完成标签治理'
+  }
   if (outcome.value === 'partial') return '已部分入库，仍有标签需要处理'
   return '题库流程未完成'
 }
@@ -244,12 +258,22 @@ watch(
         入库 {{ safeCount(job.result.imported_count) }} 题 ·
         已标注 {{ safeCount(job.result.tagged_count) }} 题 ·
         已关联 {{ safeCount(job.result.linked_count) }} 题
+        <template v-if="safeCount(job.result.taxonomy_review_count)">
+          · {{ safeCount(job.result.taxonomy_review_count) }} 题标签待补充或归并
+        </template>
         <template v-if="safeCount(job.result.review_count)">
-          · 待人工审核 {{ safeCount(job.result.review_count) }} 个新标签
+          （含 {{ safeCount(job.result.review_count) }} 个新标签）
+        </template>
+        <template v-if="reviewRefs(job.result.taxonomy_review_source_refs)">
+          · 待处理：{{ reviewRefs(job.result.taxonomy_review_source_refs) }}
         </template>
       </p>
       <button v-if="canRetry" type="button" :disabled="submitting" @click="retry">
-        {{ submitting ? '正在提交…' : '只重试未完成的题库流程' }}
+        {{ submitting
+          ? '正在提交…'
+          : safeCount(job.result.taxonomy_review_count) && !safeCount(job.result.failed_count)
+            ? '标签处理后重新本地校验'
+            : '只重试未完成的题库流程' }}
       </button>
     </div>
 

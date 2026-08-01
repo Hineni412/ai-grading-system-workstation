@@ -458,6 +458,25 @@ describe('ConfigGenerationPanel', () => {
     expect(mounted.host.textContent).toContain('未产生额外模型请求')
   })
 
+  it('keeps scoring success when taxonomy labels need later review', async () => {
+    const configStore = useConfigWorkspaceStore()
+    useJobStore().track(job({
+      status: 'succeeded', progress: 1, result: {
+        outcome: 'complete', total_questions: 3, generated_questions: 3,
+        failed_count: 0, failed_question_ids: [], failed_batches: [],
+        taxonomy_review_count: 2,
+        taxonomy_review_question_ids: ['Q1', 'Q2'],
+      }, finished_at: '2026-07-15T00:01:00Z',
+    }))
+    configStore.attachJob(31, configStore.captureGenerationContext())
+    const mounted = await mountPanel({ editorLoader: vi.fn(async () => editor()) })
+
+    expect(mounted.host.textContent).toContain('评分标准生成成功')
+    expect(mounted.host.textContent).toContain('2 道题的知识标签需要稍后重试或人工归并')
+    expect(mounted.host.textContent).toContain('未知词尚未写入正式标签')
+    expect(mounted.host.textContent).not.toContain('失败 2 道题')
+  })
+
   it('unlocks an ambiguous retry when its exact lookup confirms 404', async () => {
     const timeout = new ApiError({ kind: 'timeout', status: null, code: 'request_timeout',
       message: 'timeout', details: {}, requestId: 'safe', retryable: false })
@@ -568,7 +587,7 @@ describe('ConfigGenerationPanel', () => {
     configStore.attachJob(31, configStore.captureGenerationContext())
     const mounted = await mountPanel()
 
-    expect(mounted.host.textContent).toContain('正在等待当前模型请求返回')
+    expect(mounted.host.textContent).toContain('正在等待已经发出的模型请求返回')
     expect(mounted.host.textContent).not.toContain('已取消')
   })
 
