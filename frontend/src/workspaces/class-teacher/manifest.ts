@@ -14,6 +14,7 @@ const manifest: WorkspaceManifest = {
   title: '班主任工作台',
   description: '普通工作免解锁，具体学生信息单独保护',
   breadcrumb: '班主任工作台',
+  topbarContext: 'workspace',
 }
 
 export default manifest
