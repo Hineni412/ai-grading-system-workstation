@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from .normalization import (
@@ -33,6 +34,102 @@ def _positive_score(value: Any) -> float:
         return 0.0
 
 
+_GENERIC_SCORING_FRAGMENTS = tuple(
+    sorted(
+        {
+            "完成",
+            "本题",
+            "本问",
+            "本步",
+            "写出",
+            "给出",
+            "说明",
+            "进行",
+            "证明",
+            "推理",
+            "计算",
+            "解题",
+            "作答",
+            "必要",
+            "正确",
+            "合理",
+            "完整",
+            "相关",
+            "相应",
+            "关键",
+            "主要",
+            "基本",
+            "过程",
+            "步骤",
+            "结论",
+            "答案",
+            "理由",
+            "方法",
+            "依据",
+            "内容",
+            "结果",
+            "要求",
+            "评分点",
+            "评分",
+            "标准",
+            "得出",
+            "得到",
+            "根据",
+            "利用",
+            "体现",
+            "包含",
+            "缺少",
+            "未写出",
+            "未给出",
+            "酌情",
+            "扣分",
+            "不得分",
+            "未达成",
+            "成立",
+            "对应",
+            "部分",
+            "该步",
+            "否则",
+            "需要",
+            "以及",
+            "或者",
+            "并且",
+            "如果",
+            "时",
+            "的",
+            "地",
+            "得",
+            "由",
+            "与",
+            "和",
+            "或",
+            "并",
+            "则",
+            "若",
+        },
+        key=len,
+        reverse=True,
+    )
+)
+
+
+def _has_specific_scoring_content(value: Any) -> bool:
+    """Return whether scoring text still names question-specific evidence.
+
+    Model wording varies, so exact phrase blacklists are insufficient.  Strip the
+    small vocabulary that merely says "finish/write/reason/deduct points" and
+    require a concrete mathematical object, relation, result, or operation to
+    remain.
+    """
+
+    remaining = re.sub(r"[^\w]+", "", str(value or "").strip()).lower()
+    if not remaining:
+        return False
+    for fragment in _GENERIC_SCORING_FRAGMENTS:
+        remaining = remaining.replace(fragment, "")
+    return bool(remaining)
+
+
 def _meaningful_proof_obligations(node: dict[str, Any]) -> list[Any]:
     obligations = node.get("proof_obligations")
     if not isinstance(obligations, list):
@@ -48,8 +145,13 @@ def _meaningful_proof_obligations(node: dict[str, Any]) -> list[Any]:
                 or item.get("core_goal")
                 or ""
             ).strip()
+            and _has_specific_scoring_content(
+                item.get("description")
+                or item.get("obligation")
+                or item.get("core_goal")
+            )
         )
-        or (not isinstance(item, dict) and str(item or "").strip())
+        or (not isinstance(item, dict) and _has_specific_scoring_content(item))
     ]
 
 
@@ -64,7 +166,7 @@ def _has_specific_deduction_evidence(
     }
     for node in (part, question):
         policies = node.get("deduction_policy")
-        if isinstance(policies, str) and policies.strip():
+        if isinstance(policies, str) and _has_specific_scoring_content(policies):
             return True
         if not isinstance(policies, list):
             continue
@@ -77,11 +179,18 @@ def _has_specific_deduction_evidence(
                     or policy.get("rule")
                     or ""
                 ).strip()
-                if policy_id not in generic_policy_ids and detail:
+                if (
+                    policy_id not in generic_policy_ids
+                    and _has_specific_scoring_content(detail)
+                ):
                     return True
-            elif str(policy or "").strip():
+            elif _has_specific_scoring_content(policy):
                 return True
-    return any(_string_list(step.get("deduction_rules")) for step in steps)
+    return any(
+        _has_specific_scoring_content(rule)
+        for step in steps
+        for rule in _string_list(step.get("deduction_rules"))
+    )
 
 
 def _has_independently_scorable_steps(
@@ -95,9 +204,14 @@ def _has_independently_scorable_steps(
         required = [
             item
             for item in _string_list(step.get("required_elements"))
-            if item not in generic_goals
+            if item not in generic_goals and _has_specific_scoring_content(item)
         ]
-        if not goal or goal in generic_goals or not required:
+        if (
+            not goal
+            or goal in generic_goals
+            or not _has_specific_scoring_content(goal)
+            or not required
+        ):
             return False
     return True
 
