@@ -425,7 +425,41 @@ def _run_config_generation_job_impl(
         source_job_id = _required_int(context.payload, "source_job_id")
         source_job = context.store.get_job(source_job_id)
         source_outcome = source_job.result.get("outcome") if source_job is not None else None
+        # Keep accepting legacy partial checkpoints that predate structured
+        # failed_batches. The public route still validates the exact selected
+        # failure scope before creating a retry job.
         retry_failed_batches = source_outcome == "partial"
+        raw_requested_retry_ids = context.payload.get("retry_question_ids")
+        requested_retry_ids = {
+            str(item).strip()
+            for item in (
+                raw_requested_retry_ids
+                if isinstance(raw_requested_retry_ids, list)
+                else []
+            )
+            if str(item).strip()
+        }
+        raw_source_uncertain_ids = (
+            source_job.result.get("uncertain_question_ids")
+            if source_job is not None
+            else None
+        )
+        source_uncertain_ids = {
+            str(item).strip()
+            for item in (
+                raw_source_uncertain_ids
+                if isinstance(raw_source_uncertain_ids, list)
+                else []
+            )
+            if str(item).strip()
+        }
+        retry_uncertain_results = (
+            source_outcome == "partial"
+            and source_job is not None
+            and bool(context.payload.get("confirm_uncertain_retry"))
+            and bool(source_uncertain_ids)
+            and requested_retry_ids == source_uncertain_ids
+        )
         retry_score_allocation = (
             source_outcome == "partial"
             and source_job is not None
@@ -443,6 +477,7 @@ def _run_config_generation_job_impl(
             or source_job.status not in {"succeeded", "failed", "cancelled"}
             or not (
                 retry_failed_batches
+                or retry_uncertain_results
                 or retry_score_allocation
                 or resume_complete_draft
             )
@@ -763,6 +798,9 @@ def _run_config_generation_job_impl(
                 sources=sources,
                 curriculum_volume_id=curriculum_volume_id,
                 retry_source_refs=retry_source_refs,
+                retry_uncertain=bool(
+                    context.payload.get("confirm_uncertain_retry")
+                ),
                 checkpoint=evidence_checkpoint,
             )
         if analysis_bundle.status != "succeeded":
@@ -1760,6 +1798,7 @@ def _summary(
         "retryable": bool(
             retryable_mode and (failed_count or score_allocation_pending)
         ),
+        "uncertain_retry_available": bool(retryable_mode and clean_uncertain),
     }
     if clean_uncertain:
         result.update(
