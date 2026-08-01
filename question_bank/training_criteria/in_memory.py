@@ -1025,6 +1025,89 @@ class InMemoryCombinedQuestionAnalysisModule:
             checkpoint=checkpoint,
         )
 
+    def reanalyze_selected(
+        self,
+        previous: DeferredCombinedAnalysisBundle,
+        *,
+        sources: Sequence[ConfigQuestionAnalysisSource],
+        curriculum_volume_id: str,
+        source_refs: Sequence[str],
+        checkpoint: Callable[[DeferredCombinedAnalysisBundle], None] | None = None,
+    ) -> DeferredCombinedAnalysisBundle:
+        """Replace selected successful analyses after downstream quality fails.
+
+        A combined analysis can satisfy its transport/shape contract and still
+        produce a grading skeleton that fails the later scoring-quality gate.
+        This explicit teacher-triggered seam preserves every other successful
+        item while issuing a new physical request only for the selected refs.
+        """
+
+        clean_operation, volume_id, normalized = _normalize_sources(
+            previous.operation_id,
+            curriculum_volume_id,
+            sources,
+        )
+        if volume_id != previous.curriculum_volume_id:
+            raise ValueError("deferred retry curriculum volume changed")
+        current_fingerprints = tuple(
+            (
+                item.source_question_ref,
+                solution_evidence_source_content_hash(item.question),
+            )
+            for item in normalized
+        )
+        current_input_fingerprint = _hash_payload(
+            {
+                "contract": "combined-v3-memory",
+                "curriculum_volume_id": volume_id,
+                "sources": current_fingerprints,
+            }
+        )
+        if (
+            current_input_fingerprint != previous.input_fingerprint
+            or current_fingerprints != previous.source_fingerprints
+        ):
+            raise ValueError("deferred retry input changed")
+        requested = tuple(str(value or "").strip() for value in source_refs)
+        if (
+            not requested
+            or any(not value for value in requested)
+            or len(set(requested)) != len(requested)
+        ):
+            raise ValueError("source_refs must be a non-empty unique sequence")
+        selected_refs = set(requested)
+        successful_refs = {
+            item.source_question_ref for item in previous.items
+        }
+        if not selected_refs.issubset(successful_refs):
+            raise ValueError("source_refs must select successful analyses")
+        selected = tuple(
+            item
+            for item in normalized
+            if item.source_question_ref in selected_refs
+        )
+        if len(selected) != len(selected_refs):
+            raise ValueError("selected analysis source is unavailable")
+        return self._run(
+            operation_id=clean_operation,
+            curriculum_volume_id=volume_id,
+            selected_sources=selected,
+            source_fingerprints=current_fingerprints,
+            input_fingerprint=current_input_fingerprint,
+            base_items=tuple(
+                item
+                for item in previous.items
+                if item.source_question_ref not in selected_refs
+            ),
+            base_failures=tuple(
+                item
+                for item in previous.failures
+                if item.source_question_ref not in selected_refs
+            ),
+            base_requests=previous.requests,
+            checkpoint=checkpoint,
+        )
+
     def resume_interrupted(
         self,
         checkpoint_bundle: DeferredCombinedAnalysisBundle,

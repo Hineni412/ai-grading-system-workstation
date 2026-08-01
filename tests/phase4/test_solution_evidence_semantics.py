@@ -1143,6 +1143,59 @@ def test_in_memory_bundle_checkpoints_round_trips_and_retries_only_failed() -> N
         DeferredCombinedAnalysisBundle.from_dict(unknown, resolver=Resolver())
 
 
+def test_in_memory_reanalysis_replaces_only_the_teacher_selected_success() -> None:
+    sources = (
+        ConfigQuestionAnalysisSource(
+            "Q1",
+            _question(1, source_ref="Q1", text="证明第一个等式成立。"),
+        ),
+        ConfigQuestionAnalysisSource(
+            "Q2",
+            _question(2, source_ref="Q2", text="证明第二个等式成立。"),
+        ),
+    )
+    initial_gateway = QueueGateway(
+        [_combined_payload(1), _combined_payload(2)]
+    )
+    initial = InMemoryCombinedQuestionAnalysisModule(
+        gateway=initial_gateway,
+        resolver=Resolver(),
+    ).analyze(
+        operation_id="config-source-analysis:quality-retry",
+        curriculum_volume_id=VOLUME_ID,
+        sources=sources,
+    )
+    q1_before = initial.get("Q1").to_checkpoint_dict()
+    old_request_ids = {request.request_id for request in initial.requests}
+
+    retry_gateway = QueueGateway([_combined_payload(2)])
+    retried = InMemoryCombinedQuestionAnalysisModule(
+        gateway=retry_gateway,
+        resolver=Resolver(),
+    ).reanalyze_selected(
+        initial,
+        sources=sources,
+        curriculum_volume_id=VOLUME_ID,
+        source_refs=("Q2",),
+    )
+
+    assert retried.status == "succeeded"
+    assert retry_gateway.calls == [(2,)]
+    assert retried.get("Q1").to_checkpoint_dict() == q1_before
+    assert [item.source_question_ref for item in retried.items] == ["Q1", "Q2"]
+    assert retried.requests[-1].request_id not in old_request_ids
+    with pytest.raises(ValueError, match="successful analyses"):
+        InMemoryCombinedQuestionAnalysisModule(
+            gateway=QueueGateway([]),
+            resolver=Resolver(),
+        ).reanalyze_selected(
+            retried,
+            sources=sources,
+            curriculum_volume_id=VOLUME_ID,
+            source_refs=("Q3",),
+        )
+
+
 def test_in_memory_unknown_request_outcome_is_durable_and_never_normally_retried() -> None:
     source = ConfigQuestionAnalysisSource("Q1", _question(1, source_ref="Q1"))
     timeout_gateway = QueueGateway([TimeoutError("synthetic timeout after send")])
