@@ -1025,7 +1025,7 @@ def test_config_generation_retry_accepts_score_allocation_pending_without_batch_
     assert "retry_question_ids" not in stored.payload
 
 
-def test_config_generation_retry_rejects_unknown_external_request_outcome(
+def test_config_generation_retry_rejects_unknown_external_request_outcome_without_confirmation(
     tmp_path: Path,
 ) -> None:
     client, db, manager = _client(tmp_path)
@@ -1055,7 +1055,139 @@ def test_config_generation_retry_rejects_unknown_external_request_outcome(
 
     response = client.post(
         f"/api/sessions/{session_id}/config/generate/retry",
-        json={"source_job_id": source.id},
+        json={"source_job_id": source.id, "retry_question_ids": ["Q1"]},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "config_generation_retry_not_available"
+
+
+def test_config_generation_retry_accepts_all_uncertain_questions_after_teacher_confirmation(
+    tmp_path: Path,
+) -> None:
+    client, db, manager = _client(tmp_path)
+    session_id = _session(db, tmp_path)
+    source = manager.store.create_job(
+        "config_generation",
+        {
+            "session_id": session_id,
+            "mode": "generate",
+            "generation_mode": "batched",
+            "input_id": "a" * 32,
+            "sync_to_question_bank": True,
+        },
+    )
+    manager.store.finish(
+        source.id,
+        "succeeded",
+        result={
+            "session_id": session_id,
+            "outcome": "partial",
+            "failed_question_ids": [],
+            "failed_batches": [],
+            "uncertain_question_ids": ["Q10"],
+            "needs_teacher_resolution": True,
+            "uncertain_retry_available": True,
+            "retryable": False,
+        },
+    )
+
+    response = client.post(
+        f"/api/sessions/{session_id}/config/generate/retry",
+        json={
+            "source_job_id": source.id,
+            "retry_question_ids": ["Q10"],
+            "confirm_uncertain_retry": True,
+            "client_request_token": "b" * 32,
+        },
+    )
+
+    assert response.status_code == 202
+    stored = manager.get(response.json()["id"])
+    assert stored is not None
+    assert stored.payload["retry_question_ids"] == ["Q10"]
+    assert stored.payload["confirm_uncertain_retry"] is True
+    assert stored.payload["sync_to_question_bank"] is True
+
+
+def test_config_generation_retry_rejects_only_part_of_uncertain_questions(
+    tmp_path: Path,
+) -> None:
+    client, db, manager = _client(tmp_path)
+    session_id = _session(db, tmp_path)
+    source = manager.store.create_job(
+        "config_generation",
+        {
+            "session_id": session_id,
+            "mode": "generate",
+            "generation_mode": "batched",
+            "input_id": "a" * 32,
+        },
+    )
+    manager.store.finish(
+        source.id,
+        "succeeded",
+        result={
+            "session_id": session_id,
+            "outcome": "partial",
+            "failed_question_ids": [],
+            "failed_batches": [],
+            "uncertain_question_ids": ["Q10", "Q11"],
+            "needs_teacher_resolution": True,
+            "uncertain_retry_available": True,
+            "retryable": False,
+        },
+    )
+
+    response = client.post(
+        f"/api/sessions/{session_id}/config/generate/retry",
+        json={
+            "source_job_id": source.id,
+            "retry_question_ids": ["Q10"],
+            "confirm_uncertain_retry": True,
+        },
+    )
+
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "config_generation_retry_not_available"
+
+
+def test_config_generation_retry_requires_question_ids_for_uncertain_confirmation(
+    tmp_path: Path,
+) -> None:
+    client, db, manager = _client(tmp_path)
+    session_id = _session(db, tmp_path)
+    source = manager.store.create_job(
+        "config_generation",
+        {
+            "session_id": session_id,
+            "mode": "generate",
+            "generation_mode": "batched",
+            "input_id": "a" * 32,
+        },
+    )
+    manager.store.finish(
+        source.id,
+        "succeeded",
+        result={
+            "session_id": session_id,
+            "outcome": "partial",
+            "failed_question_ids": ["Q1"],
+            "failed_batches": [
+                {"batch_id": "B001", "question_ids": ["Q1"]}
+            ],
+            "uncertain_question_ids": ["Q10"],
+            "needs_teacher_resolution": True,
+            "retryable": True,
+        },
+    )
+
+    response = client.post(
+        f"/api/sessions/{session_id}/config/generate/retry",
+        json={
+            "source_job_id": source.id,
+            "confirm_uncertain_retry": True,
+        },
     )
 
     assert response.status_code == 409

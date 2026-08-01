@@ -2904,7 +2904,7 @@ def test_interrupted_evidence_request_is_reported_uncertain_without_model_replay
     assert interrupted_job.result["retryable"] is False
 
     replay_protocol = _DeferredProtocol()
-    resume_context, _resume_store = _job_context(
+    resume_context, resume_store = _job_context(
         db.db_path,
         {
             "session_id": session_id,
@@ -2929,6 +2929,41 @@ def test_interrupted_evidence_request_is_reported_uncertain_without_model_replay
     assert resumed["uncertain_question_ids"] == ["Q1"]
     assert resumed["retryable"] is False
     assert replay_protocol.calls == []
+
+    resume_store.finish(resume_context.job_id, "succeeded", result=resumed)
+    confirmed_protocol = _DeferredProtocol()
+    score_client = _DeferredScoreClient(valid_six_question_score=False)
+    confirmed_context, _confirmed_store = _job_context(
+        db.db_path,
+        {
+            "session_id": session_id,
+            "mode": "retry",
+            "generation_mode": "batched",
+            "source_job_id": resume_context.job_id,
+            "source_id": source.source_id,
+            "source_revision": source.source_revision,
+            "sync_to_question_bank": True,
+            "retry_question_ids": ["Q1"],
+            "confirm_uncertain_retry": True,
+        },
+    )
+    confirmed = run_config_generation_job(
+        context=confirmed_context,
+        db=db,
+        upload_config_dir=tmp_path / "uploaded",
+        data_root=tmp_path / "data",
+        llm_client_factory=lambda: score_client,
+        tagging_ai_service_factory=lambda: _DeferredTaggingService(
+            confirmed_protocol
+        ),
+        taxonomy_governance=object(),
+    )
+
+    assert len(confirmed_protocol.calls) == 1
+    assert confirmed["generated_questions"] == 1
+    assert confirmed.get("uncertain_question_ids") is None
+    assert confirmed["score_allocation_pending"] is True
+    assert len(score_client.calls) == 1
 
 
 def test_complete_evidence_first_generation_queues_exact_artifact_identity(

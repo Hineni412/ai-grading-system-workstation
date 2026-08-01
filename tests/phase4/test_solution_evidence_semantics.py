@@ -1176,6 +1176,36 @@ def test_in_memory_unknown_request_outcome_is_durable_and_never_normally_retried
     assert unchanged.to_dict() == uncertain.to_dict()
     assert retry_gateway.calls == []
 
+    confirmed_gateway = QueueGateway([_combined_payload(1)])
+    confirmed = InMemoryCombinedQuestionAnalysisModule(
+        gateway=confirmed_gateway,
+        resolver=Resolver(),
+    ).retry_failed(
+        DeferredCombinedAnalysisBundle.from_dict(
+            uncertain.to_dict(),
+            resolver=Resolver(),
+        ),
+        sources=(source,),
+        curriculum_volume_id=VOLUME_ID,
+        retry_source_refs=("Q1",),
+        retry_uncertain=True,
+    )
+
+    assert confirmed.status == "succeeded"
+    assert confirmed.uncertain_source_refs == ()
+    assert confirmed_gateway.calls == [(1,)]
+    assert any(
+        request.status == "failed"
+        and request.request_id == uncertain.requests[-1].request_id
+        for request in confirmed.requests
+    )
+    assert confirmed.requests[-1].status == "succeeded"
+    assert confirmed.requests[-1].request_id != uncertain.requests[-1].request_id
+    assert DeferredCombinedAnalysisBundle.from_dict(
+        confirmed.to_dict(),
+        resolver=Resolver(),
+    ).to_dict() == confirmed.to_dict()
+
 
 def test_in_memory_crash_checkpoint_becomes_unknown_without_replaying_request() -> None:
     source = ConfigQuestionAnalysisSource("Q1", _question(1, source_ref="Q1"))
