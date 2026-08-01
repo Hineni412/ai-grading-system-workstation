@@ -284,6 +284,7 @@ def run_session_question_bank_sync_job(
                 data_root=Path(data_root),
                 link_service=link_service,
                 ai_service_factory=ai_service_factory,
+                taxonomy_governance=taxonomy_governance,
             )
 
         result = _result(
@@ -332,7 +333,11 @@ def run_session_question_bank_sync_job(
                 "question-bank sync ownership changed"
             )
         link_rollback_changes = []
-        if deferred_artifact is not None and result["outcome"] == "complete":
+        if (
+            deferred_artifact is not None
+            and result["outcome"] == "complete"
+            and not result.get("taxonomy_retry_question_ids")
+        ):
             assert analysis_artifact_root is not None
             DeferredAnalysisArtifactStore(
                 Path(analysis_artifact_root)
@@ -505,6 +510,21 @@ def _result(
         for item in tagging_result.get("proposal_ids", [])
         if str(item).strip()
     ] if isinstance(tagging_result.get("proposal_ids"), list) else []
+    taxonomy_review_ids = _question_ids(
+        tagging_result.get("taxonomy_review_question_ids"),
+        allow_empty=True,
+    )
+    taxonomy_retry_ids = _question_ids(
+        tagging_result.get("taxonomy_retry_question_ids"),
+        allow_empty=True,
+    )
+    taxonomy_review_source_refs = list(
+        dict.fromkeys(
+            str(item or "").strip()
+            for item in tagging_result.get("taxonomy_review_source_refs", [])
+            if str(item or "").strip()
+        )
+    )
     failed_count = max(
         len(failed_ids),
         int(import_result.get("failed_count") or 0),
@@ -529,11 +549,18 @@ def _result(
         "unresolved_question_ids": unresolved,
         "review_count": review_count,
         "proposal_ids": proposal_ids,
+        "taxonomy_review_count": len(taxonomy_review_ids),
+        "taxonomy_review_question_ids": taxonomy_review_ids,
+        "taxonomy_review_source_refs": taxonomy_review_source_refs,
+        "taxonomy_retry_question_ids": taxonomy_retry_ids,
         "retryable": bool(
-            failed_count
-            and (
-                import_result.get("retryable")
-                or tagging_result.get("retryable")
+            taxonomy_retry_ids
+            or (
+                failed_count
+                and (
+                    import_result.get("retryable")
+                    or tagging_result.get("retryable")
+                )
             )
         ),
     }
@@ -579,6 +606,7 @@ def _adopt_deferred_analysis(
     data_root: Path,
     link_service: SourceQuestionLinkService,
     ai_service_factory: Callable[[], Any],
+    taxonomy_governance: Any,
 ) -> dict[str, object]:
     links = {
         str(item.get("source_question_id") or "").strip(): item
@@ -605,6 +633,10 @@ def _adopt_deferred_analysis(
             "failed_count": len(artifact.bundle.items),
             "review_count": 0,
             "proposal_ids": [],
+            "taxonomy_review_count": 0,
+            "taxonomy_review_question_ids": [],
+            "taxonomy_review_source_refs": [],
+            "taxonomy_retry_question_ids": [],
             "retryable": True,
         }
 
@@ -634,13 +666,15 @@ def _adopt_deferred_analysis(
         build_fine_term_mapping_baseline(),
         actor_ref="system:taxonomy-baseline-v1",
     )
+    tag_writer = ExistingTagProjectionWriter(
+        question_service=QuestionService(question_bank_db_path),
+        tagging_service=ai_service,
+    )
     writer = DeferredCombinedProjectionWriter(
-        tag_writer=ExistingTagProjectionWriter(
-            question_service=QuestionService(question_bank_db_path),
-            tagging_service=ai_service,
-        ),
+        tag_writer=tag_writer,
         mapping_repository=mapping_repository,
         evidence_repository=SolutionEvidenceRepository(question_bank_db_path),
+        taxonomy_governance=taxonomy_governance,
     )
     adoption_results: list[dict[str, Any]] = []
     missing_links = 0
@@ -667,20 +701,91 @@ def _adopt_deferred_analysis(
     successful_ids = [
         int(item["question_id"])
         for item in adoption_results
-        if item.get("tag_status") == "succeeded"
-        and item.get("evidence_status") == "succeeded"
+        if item.get("tag_status")
+        in {"succeeded", "needs_taxonomy_review"}
+        and item.get("evidence_status")
+        in {"succeeded", "needs_taxonomy_review"}
     ]
     failed_ids = [
         int(item["question_id"])
         for item in adoption_results
-        if item.get("tag_status") != "succeeded"
-        or item.get("evidence_status") != "succeeded"
+        if item.get("tag_status")
+        not in {"succeeded", "needs_taxonomy_review"}
+        or item.get("evidence_status")
+        not in {"succeeded", "needs_taxonomy_review"}
     ]
     tagged_count = sum(
         item.get("tag_status") == "succeeded" for item in adoption_results
     )
     evidence_count = sum(
         item.get("evidence_status") == "succeeded" for item in adoption_results
+    )
+    taxonomy_audit = tag_writer.audit_summary(
+        artifact.bundle.operation_id,
+        [int(item["question_id"]) for item in adoption_results],
+    )
+    observed_proposals = [
+        dict(item)
+        for item in taxonomy_audit.get("proposals", [])
+        if isinstance(item, dict)
+    ]
+    proposal_ids = list(
+        dict.fromkeys(
+            str(item.get("proposal_id") or item.get("id") or "").strip()
+            for item in observed_proposals
+            if str(item.get("proposal_id") or item.get("id") or "").strip()
+        )
+    )
+    proposal_ids = list(
+        dict.fromkeys(
+            [
+                *proposal_ids,
+                *(
+                    str(proposal_id or "").strip()
+                    for item in adoption_results
+                    for proposal_id in item.get("taxonomy_proposal_ids", [])
+                    if str(proposal_id or "").strip()
+                ),
+            ]
+        )
+    )
+    evidence_taxonomy_review_ids = [
+        int(item["question_id"])
+        for item in adoption_results
+        if item.get("taxonomy_review_required") is True
+    ]
+    taxonomy_retry_ids = [
+        int(item["question_id"])
+        for item in adoption_results
+        if item.get("taxonomy_retry_required") is True
+    ]
+    tag_taxonomy_review_ids = [
+        int(item["question_id"])
+        for item in adoption_results
+        if item.get("tag_status") == "needs_taxonomy_review"
+    ]
+    taxonomy_review_ids = list(
+        dict.fromkeys(
+            [
+                *(
+                    int(question_id)
+                    for question_id in taxonomy_audit.get(
+                        "proposal_question_ids", []
+                    )
+                ),
+                *tag_taxonomy_review_ids,
+                *evidence_taxonomy_review_ids,
+            ]
+        )
+    )
+    taxonomy_review_id_set = set(taxonomy_review_ids)
+    taxonomy_review_source_refs = list(
+        dict.fromkeys(
+            str(item.get("source_question_ref") or "").strip()
+            for item in adoption_results
+            if int(item["question_id"]) in taxonomy_review_id_set
+            and str(item.get("source_question_ref") or "").strip()
+        )
     )
     failed_count = len(failed_ids) + missing_links
     if failed_count == 0 and len(successful_ids) == len(artifact.bundle.items):
@@ -697,9 +802,13 @@ def _adopt_deferred_analysis(
         "successful_question_ids": successful_ids,
         "failed_question_ids": failed_ids,
         "failed_count": failed_count,
-        "review_count": 0,
-        "proposal_ids": [],
-        "retryable": failed_count > 0,
+        "review_count": len(proposal_ids),
+        "proposal_ids": proposal_ids,
+        "taxonomy_review_count": len(taxonomy_review_ids),
+        "taxonomy_review_question_ids": taxonomy_review_ids,
+        "taxonomy_review_source_refs": taxonomy_review_source_refs,
+        "taxonomy_retry_question_ids": taxonomy_retry_ids,
+        "retryable": failed_count > 0 or bool(taxonomy_retry_ids),
         "mapping_baseline": baseline_result,
         "adoption_results": adoption_results,
     }

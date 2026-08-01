@@ -184,6 +184,9 @@ class AITaggingService:
             saved_model = str(getattr(saved_settings, "config_model", "") or "").strip()
             if saved_model:
                 self.model = saved_model
+            saved_policy_profile = getattr(saved_settings, "policy_profile", None)
+            if isinstance(saved_policy_profile, Mapping):
+                self._tagging_policy_profile = dict(saved_policy_profile)
         self._configure_review_client(tagging_api_key=str(self.env.get("QUESTION_BANK_TAGGING_API_KEY") or "").strip())
 
     @property
@@ -1650,6 +1653,37 @@ def _with_quality(
         proposals=proposals,
         retrieval_misses=retrieval_misses,
         taxonomy_revision=int(payload["taxonomy_revision"]),
+    )
+
+
+def converge_tag_analysis(
+    analysis: TagAnalysis,
+    context: TaggingContext,
+    *,
+    governance: Any | None = None,
+    taxonomy_contract: Mapping[str, Any] | None = None,
+    question_ref: str | None = None,
+    model_name: str | None = None,
+) -> AITaggingResult:
+    """Run the established read-only taxonomy convergence for one tag result.
+
+    This public seam is shared by ordinary question-bank tagging and deferred
+    configuration analysis.  It intentionally never persists proposals;
+    persistence remains the responsibility of a writer that already has a
+    stable question-bank identity.
+    """
+
+    return _with_quality(
+        AITaggingResult(
+            ok=True,
+            mock_mode=False,
+            analysis=analysis,
+            model_name=str(model_name or "").strip() or None,
+        ),
+        context,
+        governance=governance,
+        taxonomy_contract=taxonomy_contract,
+        question_ref=question_ref,
     )
 
 

@@ -144,8 +144,8 @@ class SolutionEvidencePoint:
             "solution_evidence_point",
         )
         raw_links = payload.get("fine_term_links")
-        if not isinstance(raw_links, list) or not raw_links:
-            raise ValueError("each evidence point must contain fine term links")
+        if not isinstance(raw_links, list):
+            raise ValueError("fine_term_links must be an array")
         links = tuple(
             FineTermLink.from_model_dict(item, resolver=resolver)
             for item in raw_links
@@ -169,8 +169,6 @@ class SolutionEvidencePoint:
         target = _required_text(self.target, "target")
         evidence = _required_text(self.observable_evidence, "observable_evidence")
         links = tuple(self.fine_term_links)
-        if not links:
-            raise ValueError("evidence point must contain fine term links")
         signatures = [(item.fine_term_id, item.role) for item in links]
         if len(signatures) != len(set(signatures)):
             raise ValueError("fine term link is duplicated in an evidence point")
@@ -530,16 +528,23 @@ def validate_evidence_fine_terms(
 ) -> None:
     """Require links to match the shortlist or governed local convergence."""
 
+    links = tuple(
+        link
+        for part in evidence.parts
+        for point in part.evidence_points
+        for link in point.fine_term_links
+    )
+    if not links:
+        return
+
     raw_candidates = taxonomy_contract.get("candidates")
     knowledge = (
         raw_candidates.get("knowledge")
         if isinstance(raw_candidates, Mapping)
         else None
     )
-    if not isinstance(knowledge, list) or not knowledge:
-        raise ValueError("question taxonomy contract has no knowledge candidates")
     candidates: dict[str, set[str]] = {}
-    for raw in knowledge:
+    for raw in (knowledge if isinstance(knowledge, list) else []):
         if not isinstance(raw, Mapping):
             continue
         term_id = str(raw.get("id") or "").strip()
@@ -556,18 +561,16 @@ def validate_evidence_fine_terms(
     locally_converged = {
         str(item or "").strip() for item in additional_allowed_term_ids
     }
-    for part in evidence.parts:
-        for point in part.evidence_points:
-            for link in point.fine_term_links:
-                if link.fine_term_id in locally_converged:
-                    continue
-                allowed_names = candidates.get(link.fine_term_id)
-                if not allowed_names or _normalize_term_name(
-                    link.fine_term_name
-                ) not in allowed_names:
-                    raise ValueError(
-                        "solution evidence fine term is outside the question contract"
-                    )
+    for link in links:
+        if link.fine_term_id in locally_converged:
+            continue
+        allowed_names = candidates.get(link.fine_term_id)
+        if not allowed_names or _normalize_term_name(
+            link.fine_term_name
+        ) not in allowed_names:
+            raise ValueError(
+                "solution evidence fine term is outside the question contract"
+            )
 
 
 def _normalize_term_name(value: object) -> str:

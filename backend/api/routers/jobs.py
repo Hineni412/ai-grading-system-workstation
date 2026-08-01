@@ -209,6 +209,9 @@ def public_job_result(job: JobRecord) -> dict[str, Any]:
             "unresolved_question_ids",
             "review_count",
             "proposal_ids",
+            "taxonomy_review_count",
+            "taxonomy_review_question_ids",
+            "taxonomy_review_source_refs",
             "failure_category",
             "retryable",
         )
@@ -241,6 +244,8 @@ def public_job_result(job: JobRecord) -> dict[str, Any]:
             "uncertain_count",
             "uncertain_question_ids",
             "needs_teacher_resolution",
+            "taxonomy_review_count",
+            "taxonomy_review_question_ids",
             "local_json_repairs",
             "local_structure_repairs",
             "score_allocation_pending",
