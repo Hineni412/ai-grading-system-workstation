@@ -57,6 +57,10 @@ class TaxonomySuggestionJobBusyError(RuntimeError):
     pass
 
 
+class TaggingSyncJobRequestConflictError(RuntimeError):
+    pass
+
+
 class GradingSessionBusyError(RuntimeError):
     pass
 
@@ -215,6 +219,125 @@ class JobStore:
         if loaded is None:
             raise RuntimeError(
                 f"created taxonomy suggestion job {job_id} could not be loaded"
+            )
+        return loaded, True
+
+    def create_idempotent_tagging_sync_job(
+        self,
+        payload: dict[str, Any],
+    ) -> tuple[JobRecord, bool]:
+        clean_payload = dict(payload)
+        token = _clean_request_token(clean_payload.get("client_request_token"))
+        question_ids = sorted(
+            {
+                _positive_int(item)
+                for item in clean_payload.get("question_ids", [])
+            }
+        )
+        if not question_ids:
+            raise ValueError("question_ids must contain at least one question")
+        force_retag_question_ids = sorted(
+            {
+                _positive_int(item)
+                for item in clean_payload.get("force_retag_question_ids", [])
+            }
+        )
+        if not set(force_retag_question_ids).issubset(question_ids):
+            raise ValueError("force_retag_question_ids must be part of question_ids")
+        source_job_id = clean_payload.get("source_job_id")
+        normalized_source_job_id = (
+            _positive_int(source_job_id) if source_job_id is not None else None
+        )
+        clean_payload["question_ids"] = question_ids
+        if force_retag_question_ids:
+            clean_payload["force_retag_question_ids"] = force_retag_question_ids
+        else:
+            clean_payload.pop("force_retag_question_ids", None)
+        if normalized_source_job_id is not None:
+            clean_payload["source_job_id"] = normalized_source_job_id
+        else:
+            clean_payload.pop("source_job_id", None)
+        clean_payload["client_request_token"] = token
+        signature = (
+            question_ids,
+            force_retag_question_ids,
+            normalized_source_job_id,
+        )
+        payload_json = json.dumps(
+            clean_payload,
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                rows = conn.execute(
+                    """
+                    SELECT *
+                    FROM jobs
+                    WHERE job_type = 'tagging_sync'
+                    ORDER BY id DESC
+                    """
+                ).fetchall()
+                for row in rows:
+                    try:
+                        existing_payload = json.loads(
+                            str(row["payload_json"] or "{}")
+                        )
+                    except json.JSONDecodeError:
+                        continue
+                    if not isinstance(existing_payload, dict):
+                        continue
+                    existing_signature = (
+                        sorted(
+                            {
+                                _positive_int(item)
+                                for item in existing_payload.get("question_ids", [])
+                            }
+                        ),
+                        sorted(
+                            {
+                                _positive_int(item)
+                                for item in existing_payload.get(
+                                    "force_retag_question_ids", []
+                                )
+                            }
+                        ),
+                        (
+                            _positive_int(existing_payload.get("source_job_id"))
+                            if existing_payload.get("source_job_id") is not None
+                            else None
+                        ),
+                    )
+                    if existing_payload.get("client_request_token") == token:
+                        if existing_signature != signature:
+                            raise TaggingSyncJobRequestConflictError(
+                                "tagging request token was reused"
+                            )
+                        conn.commit()
+                        return _job_record(row), False
+                    if (
+                        existing_signature == signature
+                        and str(row["status"]) in {"queued", "running", "paused"}
+                    ):
+                        conn.commit()
+                        return _job_record(row), False
+                cursor = conn.execute(
+                    """
+                    INSERT INTO jobs (job_type, payload_json, status)
+                    VALUES ('tagging_sync', ?, 'queued')
+                    """,
+                    (payload_json,),
+                )
+                job_id = int(cursor.lastrowid)
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+        loaded = self.get_job(job_id)
+        if loaded is None:
+            raise RuntimeError(
+                f"created tagging sync job {job_id} could not be loaded"
             )
         return loaded, True
 

@@ -230,3 +230,55 @@ def test_failed_sync_without_result_can_retry_only_the_sync_chain(
         "config_revision": revision,
         "retry_of_job_id": source_job.id,
     }
+
+
+def test_sync_retry_privately_reuses_deferred_artifact_identity(
+    tmp_path: Path,
+) -> None:
+    client, db, manager, session_id, revision = _configured_client(tmp_path)
+    source_sha256 = str(
+        db.get_grading_session(session_id)["source_paper_sha256"]
+    )
+    deferred_identity = {
+        "analysis_artifact_id": "a" * 32,
+        "analysis_artifact_hash": "b" * 64,
+        "analysis_source_id": "c" * 32,
+        "analysis_source_revision": "d" * 64,
+    }
+    source_job = manager.store.create_job(
+        "question_bank_sync",
+        {
+            "session_id": session_id,
+            "mode": "sync",
+            "config_revision": revision,
+            "source_paper_sha256": source_sha256,
+            "curriculum_volume_id": "bnu24-math-g7-upper",
+            "client_request_token": "1" * 32,
+            "client_request_fingerprint": "2" * 64,
+            **deferred_identity,
+        },
+    )
+    manager.store.finish(
+        source_job.id,
+        "failed",
+        error="synthetic import interruption",
+        result={"retryable": True},
+    )
+
+    response = client.post(
+        f"/api/sessions/{session_id}/question-bank-sync/{source_job.id}/retry",
+        json={
+            "config_revision": revision,
+            "client_request_token": "3" * 32,
+            "curriculum_volume_id": "bnu24-math-g7-upper",
+        },
+    )
+
+    assert response.status_code == 202
+    retry_job = manager.store.get_job(int(response.json()["id"]))
+    assert retry_job is not None
+    assert {
+        key: retry_job.payload[key]
+        for key in deferred_identity
+    } == deferred_identity
+    assert all(key not in response.text for key in deferred_identity)

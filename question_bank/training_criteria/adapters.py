@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import mimetypes
 import re
+import threading
 from pathlib import Path
 from time import perf_counter
 from typing import Any, Mapping, Sequence
@@ -48,6 +49,8 @@ class ExistingTagProjectionWriter:
     ) -> None:
         self.question_service = question_service
         self.tagging_service = tagging_service
+        self._audit_lock = threading.Lock()
+        self._audits: dict[tuple[str, int], dict[str, Any]] = {}
 
     def write(
         self,
@@ -79,6 +82,39 @@ class ExistingTagProjectionWriter:
         if not is_auto_saveable_result(checked):
             raise ValueError("tag projection did not meet the quality gate")
         assert checked.analysis is not None
+        persisted_proposals: list[dict[str, Any]] = []
+        if checked.proposals:
+            governance_payload = checked.analysis.to_dict()
+            governance_payload["proposed_tags"] = [
+                *governance_payload.get("proposed_tags", []),
+                *checked.proposals,
+            ]
+            governed = self.tagging_service.taxonomy_governance.constrain(
+                governance_payload,
+                context={
+                    "persist_proposals": True,
+                    "question_ref": str(question.question_id),
+                    "model": str(model_name or ""),
+                    "request_token": (
+                        f"combined-tag:{operation_id}:question:"
+                        f"{question.question_id}:taxonomy:{checked.taxonomy_revision}"
+                    ),
+                },
+            )
+            persisted_proposals = [
+                dict(item)
+                for item in governed.get("proposals", [])
+                if isinstance(item, Mapping)
+            ]
+        with self._audit_lock:
+            self._audits[(str(operation_id), question.question_id)] = {
+                "retrieval_misses": [
+                    dict(item)
+                    for item in checked.retrieval_misses
+                    if isinstance(item, Mapping)
+                ],
+                "proposals": persisted_proposals,
+            }
         if not self.question_service.save_tag_analysis(
             question.question_id,
             checked.analysis,
@@ -91,8 +127,51 @@ class ExistingTagProjectionWriter:
             "analysis": checked.analysis.to_dict(),
             "quality_status": checked.quality_status,
             "taxonomy_revision": checked.taxonomy_revision,
-            "proposal_count": len(checked.proposals),
+            "proposal_count": len(persisted_proposals),
             "operation_id": operation_id,
+        }
+
+    def audit_summary(
+        self,
+        operation_id: str,
+        question_ids: Sequence[int],
+    ) -> dict[str, Any]:
+        retrieval_misses: list[dict[str, Any]] = []
+        proposals: list[dict[str, Any]] = []
+        retrieval_question_ids: list[int] = []
+        proposal_question_ids: list[int] = []
+        with self._audit_lock:
+            rows = [
+                (
+                    int(question_id),
+                    self._audits.get((str(operation_id), int(question_id))),
+                )
+                for question_id in question_ids
+            ]
+        for question_id, audit in rows:
+            if not isinstance(audit, Mapping):
+                continue
+            misses = [
+                dict(item)
+                for item in audit.get("retrieval_misses", [])
+                if isinstance(item, Mapping)
+            ]
+            observed = [
+                dict(item)
+                for item in audit.get("proposals", [])
+                if isinstance(item, Mapping)
+            ]
+            retrieval_misses.extend(misses)
+            proposals.extend(observed)
+            if misses:
+                retrieval_question_ids.append(question_id)
+            if observed:
+                proposal_question_ids.append(question_id)
+        return {
+            "retrieval_misses": retrieval_misses,
+            "proposals": proposals,
+            "retrieval_miss_question_ids": retrieval_question_ids,
+            "proposal_question_ids": proposal_question_ids,
         }
 
 
@@ -166,6 +245,7 @@ class QuestionAnalysisInputLoader:
         question_ids: Sequence[int],
         *,
         taxonomy_contracts: Mapping[int, Mapping[str, Any]] | None = None,
+        curriculum_volume_id: str | None = None,
     ) -> tuple[QuestionAnalysisInput, ...]:
         ids = tuple(dict.fromkeys(int(value) for value in question_ids))
         if not ids or any(value <= 0 for value in ids):
@@ -234,6 +314,9 @@ class QuestionAnalysisInputLoader:
                         textbook_version=str(
                             row["textbook_version"] or ""
                         ),
+                        curriculum_volume_id=str(
+                            curriculum_volume_id or ""
+                        ).strip(),
                         exam_type=str(row["exam_type"] or ""),
                         district=str(row["district"] or ""),
                         has_images=has_images,
@@ -290,6 +373,81 @@ class QuestionAnalysisInputLoader:
         return result
 
 
+def question_analysis_input_from_config_source(
+    source: Mapping[str, Any],
+    *,
+    question_id: int,
+    curriculum_volume_id: str,
+    taxonomy_contract: Mapping[str, Any] | None = None,
+    images: Sequence[QuestionAnalysisImage] = (),
+) -> QuestionAnalysisInput:
+    """Adapt an in-memory config question/answer block without writing it first."""
+
+    question_text = _first_source_text(
+        source,
+        "question_text",
+        "text",
+        "content",
+        "stem",
+    )
+    if not question_text:
+        raise ValueError("config source question text must not be empty")
+    answer_text = _first_source_text(
+        source,
+        "answer_text",
+        "reference_answer",
+        "answer",
+        "canonical_answer",
+    )
+    question_blocks = _safe_blocks(
+        source.get("rich_question_blocks")
+        or source.get("question_blocks")
+    )
+    answer_blocks = _safe_blocks(
+        source.get("rich_answer_blocks")
+        or source.get("answer_blocks")
+    )
+    normalized_images = tuple(images)
+    volume_id = str(curriculum_volume_id or "").strip()
+    if not volume_id:
+        raise ValueError("curriculum_volume_id must be selected before analysis")
+    return QuestionAnalysisInput(
+        question_id=int(question_id),
+        tagging_context=TaggingContext(
+            question_text=question_text,
+            answer_text=answer_text,
+            question_number=_first_source_text(
+                source,
+                "question_number",
+                "question_id",
+                "id",
+            ),
+            question_type=_first_source_text(
+                source,
+                "question_type",
+                "type",
+            ),
+            grade=_first_source_text(source, "grade"),
+            semester=_first_source_text(source, "semester"),
+            textbook_version=_first_source_text(
+                source,
+                "textbook_version",
+            ),
+            curriculum_volume_id=volume_id,
+            exam_type=_first_source_text(source, "exam_type"),
+            district=_first_source_text(source, "district"),
+            has_images=bool(normalized_images or source.get("has_images")),
+        ),
+        # Config-source manifests may contain controlled local asset names.
+        # Images are attached as bodies below, so only path-free text is sent
+        # to an external model.
+        rich_question_blocks=tuple(_public_block(item) for item in question_blocks),
+        rich_answer_blocks=tuple(_public_block(item) for item in answer_blocks),
+        images=normalized_images,
+        taxonomy_contract=dict(taxonomy_contract or {}),
+    )
+
+
 def _combined_prompt(
     batch: PlannedAnalysisBatch,
     projection: AnalysisProjection,
@@ -297,8 +455,17 @@ def _combined_prompt(
     instructions = (
         "Analyze only the listed junior-middle-school math questions. "
         "Keep each question_id isolated. Tag candidates may only come from "
-        "that question's candidate_contract. Training criteria are observable "
-        "answer/process obligations and must never contain score fields. "
+        "that question's candidate_contract. Solution evidence must be split "
+        "into question parts and observable answer/process obligations. Every "
+        "evidence point must link one or more candidate fine terms and label "
+        "each link as direct or supporting_prerequisite. Never infer or return "
+        "core graph mappings; the application resolves those from governed "
+        "local mappings. For every part also return response_mode, canonical "
+        "and full answers, accepted forms, proof and visual obligations, a "
+        "non-empty deduction policy, and whether alternative methods are "
+        "allowed. Keep "
+        "keys present even when a type-specific list or answer is empty. "
+        "Solution evidence must never contain score fields. "
         "Do not invent content hidden by a missing image."
     )
     questions = []
@@ -325,7 +492,7 @@ def _combined_prompt(
             "type": "input_text",
             "text": json.dumps(
                 {
-                    "task": "combined-v2 question analysis",
+                    "task": "combined-v3 question analysis",
                     "rules": instructions,
                     "questions": questions,
                 },
@@ -377,6 +544,26 @@ def _stored_paths(value: object) -> list[str]:
     return [str(item).strip() for item in parsed if str(item).strip()]
 
 
+def _first_source_text(source: Mapping[str, Any], *keys: str) -> str:
+    for key in keys:
+        value = source.get(key)
+        if isinstance(value, Mapping):
+            nested = _first_source_text(
+                value,
+                "text",
+                "content",
+                "answer",
+                "canonical_answer",
+            )
+            if nested:
+                return nested
+        elif isinstance(value, (str, int, float)) and not isinstance(value, bool):
+            text = str(value).strip()
+            if text:
+                return text
+    return ""
+
+
 def _marker_paths(value: object) -> list[str]:
     return [
         match.group("path").strip()
@@ -424,4 +611,5 @@ __all__ = [
     "ExistingTagProjectionWriter",
     "OpenAICombinedAnalysisGateway",
     "QuestionAnalysisInputLoader",
+    "question_analysis_input_from_config_source",
 ]

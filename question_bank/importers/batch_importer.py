@@ -537,6 +537,69 @@ def map_rich_content_by_number(
     return content
 
 
+def partition_ambiguous_floating_images(
+    rich_paragraphs: list[dict[str, object]],
+) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
+    """Remove only floating image-only blocks sitting between adjacent questions.
+
+    Word anchors describe drawing placement, not semantic ownership.  When such
+    an image appears after one numbered question and before the next, neither
+    neighbour is a safe automatic choice.  Inline images and end-of-question
+    images remain on the existing high-confidence path.
+    """
+    normalized: list[dict[str, object]] = []
+    candidates: list[dict[str, object]] = []
+    section = "question"
+    current_number: str | None = None
+
+    for index, paragraph in enumerate(rich_paragraphs):
+        text = str(paragraph.get("text") or "").strip()
+        if _ANSWER_HEADING.search(text):
+            section = "answer"
+            current_number = None
+            normalized.append(paragraph)
+            continue
+        marker = _MAIN_QUESTION_MARKER.match(text) or _PAREN_QUESTION_MARKER.match(text)
+        if marker is not None:
+            current_number = _normalized_number(marker)
+
+        next_number: str | None = None
+        if current_number and _is_floating_image_only_paragraph(paragraph):
+            future_section = section
+            for following in rich_paragraphs[index + 1 :]:
+                following_text = str(following.get("text") or "").strip()
+                if _ANSWER_HEADING.search(following_text):
+                    future_section = "answer"
+                    if future_section != section:
+                        break
+                    continue
+                following_marker = (
+                    _MAIN_QUESTION_MARKER.match(following_text)
+                    or _PAREN_QUESTION_MARKER.match(following_text)
+                )
+                if following_marker is not None:
+                    next_number = _normalized_number(following_marker)
+                    break
+            paths = [
+                match.group("path").strip()
+                for match in _IMAGE_MARKER.finditer(text)
+                if match.group("path").strip()
+            ]
+            if next_number and next_number != current_number and paths:
+                for path in dict.fromkeys(paths):
+                    candidates.append(
+                        {
+                            "path": path,
+                            "previous_question_id": f"Q{current_number}",
+                            "next_question_id": f"Q{next_number}",
+                            "source_section": section,
+                        }
+                    )
+                continue
+        normalized.append(paragraph)
+    return normalized, candidates
+
+
 def _move_image_only_paragraphs_to_following_question(
     rich_paragraphs: list[dict[str, object]],
 ) -> list[dict[str, object]]:

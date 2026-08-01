@@ -19,10 +19,8 @@ import {
   type WorkPlan,
 } from '../api/actions'
 import { collectionApi, type MeetingDraft, type MeetingInbox } from '../api/collections'
-import { vaultApi, type VaultStatus } from '../api/vault'
 import CollectionInboxPanel from '../components/CollectionInboxPanel.vue'
 import ActionLedgerPanel from '../components/ActionLedgerPanel.vue'
-import ClassTeacherWorkbenchView from '../views/ClassTeacherWorkbenchView.vue'
 
 const mounted: App[] = []
 
@@ -117,14 +115,6 @@ const calendar: SchoolCalendar = {
   school_day_end: '17:30',
   locked_dates: [],
   working_weekdays: [1, 2, 3, 4, 5],
-}
-
-const lockedStatus: VaultStatus = {
-  initialized: true,
-  locked: true,
-  idle_timeout_seconds: 300,
-  retry_after_seconds: 0,
-  format_version: 1,
 }
 
 async function flush(): Promise<void> {
@@ -232,87 +222,6 @@ describe('B04 meeting draft interactions', () => {
 })
 
 describe('B04 waiting review consistency', () => {
-  it('updates the B04 waiting pocket after an action is saved without a page reload', async () => {
-    let currentAction = action()
-    vi.spyOn(vaultApi, 'status').mockImplementation(async (token) => ({
-      ...lockedStatus,
-      locked: !token,
-    }))
-    vi.spyOn(vaultApi, 'unlock').mockResolvedValue({
-      session_token: 'synthetic-session',
-      idle_timeout_seconds: 300,
-      recovery_key: null,
-    })
-    vi.spyOn(vaultApi, 'listBackups').mockResolvedValue([])
-    vi.spyOn(vaultApi, 'lock').mockResolvedValue({})
-    vi.spyOn(vaultApi, 'touch').mockResolvedValue({})
-
-    vi.spyOn(collectionApi, 'listInboxes').mockResolvedValue([])
-    vi.spyOn(collectionApi, 'listBoards').mockResolvedValue([])
-    vi.spyOn(actionApi, 'listPlans').mockResolvedValue([plan])
-    vi.spyOn(actionApi, 'listActions').mockImplementation(
-      async () => [structuredClone(currentAction)],
-    )
-    vi.spyOn(actionApi, 'dashboard').mockImplementation(async () => ({
-      ...dashboard(),
-      today: currentAction.status === 'pending'
-        ? [structuredClone(currentAction)]
-        : [],
-      waiting: currentAction.status === 'waiting'
-        ? [structuredClone(currentAction)]
-        : [],
-    }))
-    vi.spyOn(actionApi, 'getCalendar').mockResolvedValue(calendar)
-    const updateAction = vi.spyOn(actionApi, 'updateAction')
-      .mockImplementation(async () => {
-        currentAction = action('waiting')
-        return structuredClone(currentAction)
-      })
-
-    const host = document.createElement('div')
-    document.body.append(host)
-    const app = createApp(ClassTeacherWorkbenchView)
-    app.mount(host)
-    mounted.push(app)
-    await flushAll()
-
-    const password = host.querySelector<HTMLInputElement>('input[type="password"]')
-    if (!password) throw new Error('Missing vault password input')
-    setValue(password, '合成B04验收密码-足够长-001')
-    await nextTick()
-    buttons(host, '解锁工作台')[0]!.click()
-    await flushAll()
-
-    const actionButton = [...host.querySelectorAll<HTMLButtonElement>('.action-list button')]
-      .find((button) => button.textContent?.includes(currentAction.title))
-    if (!actionButton) throw new Error('Missing synthetic action')
-    actionButton.click()
-    await nextTick()
-
-    setValue(
-      labelledControl<HTMLSelectElement>(host, '当前状态'),
-      'waiting',
-    )
-    await nextTick()
-    setValue(
-      labelledControl<HTMLInputElement>(host, '正在等待谁或什么'),
-      '合成家长回复',
-    )
-    setValue(
-      labelledControl<HTMLInputElement>(host, '复查时间'),
-      '2026-08-01T09:00',
-    )
-    await nextTick()
-    buttons(host, '保存行动变化')[0]!.click()
-    await flushAll()
-
-    expect(updateAction).toHaveBeenCalledOnce()
-    const waitingPocket = host.querySelector('.waiting-pocket')
-    expect(waitingPocket?.textContent).toContain('完成最终收齐与核对')
-    expect(waitingPocket?.textContent).toContain('合成家长回复')
-    expect(waitingPocket?.textContent).toContain('2026-08-01 09:00')
-  })
-
   it('does not notify B04 when the action ledger cannot refresh after saving', async () => {
     const changed = vi.fn()
     const errors: string[] = []

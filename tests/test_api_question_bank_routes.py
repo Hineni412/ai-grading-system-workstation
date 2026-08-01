@@ -24,6 +24,15 @@ from fastapi.testclient import TestClient
 from question_bank.database.schema import initialize_database
 import question_bank.services.question_read_service as question_read_module
 from question_bank.services.question_read_service import QuestionBankReadService
+from question_bank.solution_evidence import (
+    CoreResolution,
+    QuestionSolutionEvidence,
+    SolutionEvidenceRepository,
+)
+from question_bank.training_criteria import (
+    QuestionAnalysisInputLoader,
+    solution_evidence_source_content_hash,
+)
 
 
 @pytest.fixture
@@ -116,6 +125,148 @@ def test_question_read_payload_exposes_stable_state_revision(
     changed = service.get_question(1)
     assert changed is not None
     assert changed["revision"] != before_revision
+
+
+@pytest.mark.parametrize("changed_content", ["stem", "answer", "media"])
+def test_solution_evidence_route_returns_latest_point_level_union(
+    question_bank_fixture,
+    changed_content: str,
+) -> None:
+    service, db_path, _ = question_bank_fixture
+    data_root = db_path.parent / "data"
+    client = _question_bank_client(
+        service,
+        question_bank_db_path=db_path,
+        data_root=data_root,
+    )
+
+    empty = client.get("/api/question-bank/questions/1/solution-evidence")
+    assert empty.status_code == 200
+    assert empty.json() == {
+        "question_id": 1,
+        "available": False,
+        "evidence_version_id": None,
+        "status": None,
+        "evidence": None,
+    }
+
+    class Resolver:
+        def resolve(self, fine_term_id: str) -> CoreResolution:
+            if fine_term_id == "fine-direct":
+                return CoreResolution(
+                    status="resolved",
+                    stable_keys=("kp_equation",),
+                    reason="test mapping",
+                )
+            return CoreResolution(status="unmapped", reason="test unmapped")
+
+    evidence = QuestionSolutionEvidence.from_model_dict(
+        {
+            "schema_version": "question-solution-evidence-v1",
+            "question_id": 1,
+            "parts": [
+                {
+                    "part_id": "part-1",
+                    "label": "（1）",
+                    "response_mode": "process_required",
+                    "canonical_answer": "x=2",
+                    "accepted_forms": ["x = 2"],
+                    "full_answer": "移项后求得 x=2。",
+                    "proof_obligations": [],
+                    "visual_requirements": [],
+                    "deduction_policy": ["没有等价变形过程则该点未达成"],
+                    "allow_alternative_methods": True,
+                    "evidence_points": [
+                        {
+                            "evidence_point_id": "point-1",
+                            "target": "求出方程的解",
+                            "observable_evidence": "给出等价变形并写出正确解。",
+                            "fine_term_links": [
+                                {
+                                    "fine_term_id": "fine-direct",
+                                    "fine_term_name": "一元一次方程求解",
+                                    "role": "direct",
+                                },
+                                {
+                                    "fine_term_id": "fine-support",
+                                    "fine_term_name": "规范移项",
+                                    "role": "supporting_prerequisite",
+                                },
+                            ],
+                            "equivalent_rules": [],
+                            "counterexamples": [],
+                        }
+                    ],
+                }
+            ],
+            "auxiliary_rules": [],
+            "rationale": "按踩分点拆分。",
+            "confidence": 0.9,
+        },
+        question_id=1,
+        source_content_hash=solution_evidence_source_content_hash(
+            QuestionAnalysisInputLoader(
+                db_path=db_path,
+                data_root=data_root,
+            ).load((1,))[0]
+        ),
+        resolver=Resolver(),
+    )
+    version_id = SolutionEvidenceRepository(db_path).save(
+        evidence,
+        source_kind="combined_model",
+        source_reference="analysis:test-route:1",
+        created_by="model:synthetic",
+    )
+
+    response = client.get("/api/question-bank/questions/1/solution-evidence")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["available"] is True
+    assert body["evidence_version_id"] == version_id
+    assert body["evidence"]["parts"][0]["evidence_points"][0]["target"] == "求出方程的解"
+    union = body["evidence"]["whole_question_classification"]
+    assert union["direct_fine_terms"] == [
+        {"fine_term_id": "fine-direct", "fine_term_name": "一元一次方程求解"}
+    ]
+    assert union["supporting_prerequisite_fine_terms"] == [
+        {"fine_term_id": "fine-support", "fine_term_name": "规范移项"}
+    ]
+    assert union["resolved_core_node_ids"] == ["kp_equation"]
+    assert union["unmapped_fine_term_ids"] == ["fine-support"]
+
+    with sqlite3.connect(db_path) as conn:
+        if changed_content == "stem":
+            conn.execute(
+                "UPDATE questions SET question_text = 'Changed stem' WHERE id = 1"
+            )
+        elif changed_content == "answer":
+            conn.execute(
+                "UPDATE questions SET answer_text = 'Changed answer' WHERE id = 1"
+            )
+        else:
+            image = data_root / "question_bank" / "extracted_images" / "changed.png"
+            image.parent.mkdir(parents=True, exist_ok=True)
+            image.write_bytes(b"synthetic changed image")
+            conn.execute(
+                """
+                UPDATE questions
+                SET has_images = 1, image_paths = ?
+                WHERE id = 1
+                """,
+                (json.dumps(["question_bank/extracted_images/changed.png"]),),
+            )
+        conn.commit()
+
+    stale = client.get("/api/question-bank/questions/1/solution-evidence")
+    assert stale.status_code == 200
+    assert stale.json() == {
+        "question_id": 1,
+        "available": False,
+        "evidence_version_id": version_id,
+        "status": "stale",
+        "evidence": None,
+    }
 
 
 def test_question_facets_include_curriculum_sections(
@@ -323,13 +474,25 @@ def test_question_facets_exclude_their_own_dimension_but_keep_other_filters(
 def _question_bank_client(
     service: QuestionBankReadService,
     *,
+    question_bank_db_path: Path | None = None,
+    data_root: Path | None = None,
     raise_server_exceptions: bool = True,
 ) -> TestClient:
     from backend.api.app import create_app
-    from backend.api.dependencies import get_question_bank_read_service
+    from backend.api.dependencies import (
+        get_data_root,
+        get_question_bank_db_path,
+        get_question_bank_read_service,
+    )
 
     app = create_app()
     app.dependency_overrides[get_question_bank_read_service] = lambda: service
+    if question_bank_db_path is not None:
+        app.dependency_overrides[get_question_bank_db_path] = (
+            lambda: question_bank_db_path
+        )
+    if data_root is not None:
+        app.dependency_overrides[get_data_root] = lambda: data_root
     return TestClient(app, raise_server_exceptions=raise_server_exceptions)
 
 

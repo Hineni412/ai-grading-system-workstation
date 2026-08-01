@@ -47,6 +47,7 @@ describe('source-recalibrated navigation', () => {
       ['question-assembly', '/question-assembly'],
       ['knowledge-graph', '/knowledge-graph'],
       ['training', '/training'],
+      ['teaching-prep', '/teaching-prep'],
       ['class-teacher', '/class-teacher'],
       ['students', '/students'],
       ['model-profiles', '/model-profiles'],

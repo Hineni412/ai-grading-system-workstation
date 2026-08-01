@@ -1,32 +1,29 @@
 <script setup lang="ts">
-import { computed, reactive, watch } from 'vue'
+import { computed, watch } from 'vue'
 
 import {
-  QUESTION_TYPES,
   type ConfigQuestionPreview,
+  type ConfigAmbiguousAssetDecision,
   type ConfigSource,
+  type ConfigSourceAsset,
   type QuestionDecision,
-  type QuestionType,
 } from '../../api/config-workspace'
 import QuestionContentRenderer from '../question-bank/QuestionContentRenderer.vue'
 
 const props = withDefaults(defineProps<{
   source: ConfigSource
   decisions?: QuestionDecision[]
+  assetDecisions?: ConfigAmbiguousAssetDecision[]
 }>(), {
   decisions: () => [],
+  assetDecisions: () => [],
 })
 
 const emit = defineEmits<{
   'update:decisions': [decisions: QuestionDecision[]]
+  'update:asset-decisions': [decisions: ConfigAmbiguousAssetDecision[]]
 }>()
 
-const selectedTypes = reactive<Record<string, QuestionType>>({})
-const exclusions = reactive<Record<string, boolean>>({})
-const expandedAnswers = reactive<Record<string, boolean>>({})
-const answerDrafts = reactive<Record<string, string>>({})
-const answerConfirmations = reactive<Record<string, boolean>>({})
-const imageOnlySource = computed(() => props.source.suffix === '.pdf')
 const emptyRichContent: NonNullable<ConfigQuestionPreview['rich_content']> = {
   available: false,
   question_block_count: 0,
@@ -35,136 +32,128 @@ const emptyRichContent: NonNullable<ConfigQuestionPreview['rich_content']> = {
   answer_blocks: [],
 }
 
+const sourceAssets = computed<ConfigSourceAsset[]>(() => {
+  if (props.source.assets !== undefined) return props.source.assets
+  let automaticIndex = 0
+  const automatic = props.source.questions.flatMap((question) => (
+    (['question', 'answer'] as const).flatMap((assetKind) => (
+      imageUrls(question, assetKind).map((assetUrl) => ({
+        asset_id: `P${++automaticIndex}`,
+        asset_url: assetUrl,
+        assignment_state: 'automatic' as const,
+        question_id: question.question_id,
+        asset_kind: assetKind,
+        candidate_question_ids: [],
+      }))
+    ))
+  ))
+  return [
+    ...automatic,
+    ...(props.source.ambiguous_assets ?? []).map((item) => ({
+      asset_id: item.candidate_id,
+      asset_url: item.asset_url,
+      assignment_state: 'uncertain' as const,
+      question_id: null,
+      asset_kind: item.source_section,
+      candidate_question_ids: [item.previous_question_id, item.next_question_id],
+    })),
+  ]
+})
+
+const uncertainAssets = computed(() => sourceAssets.value
+  .filter((item) => item.assignment_state === 'uncertain'))
+
+const unresolvedAssetCount = computed(() => {
+  const resolved = new Set(props.assetDecisions.map((item) => item.candidate_id))
+  return uncertainAssets.value.filter((item) => !resolved.has(item.asset_id)).length
+})
+
 function richContent(question: ConfigQuestionPreview): NonNullable<ConfigQuestionPreview['rich_content']> {
   return question.rich_content ?? emptyRichContent
 }
 
-function knownType(value: string): value is QuestionType {
-  return (QUESTION_TYPES as readonly string[]).includes(value)
+function textBlocks(
+  question: ConfigQuestionPreview,
+  kind: 'question' | 'answer',
+): NonNullable<ConfigQuestionPreview['rich_content']>['question_blocks'] {
+  const blocks = kind === 'question'
+    ? richContent(question).question_blocks
+    : richContent(question).answer_blocks
+  return blocks.map((block) => ({ ...block, asset_indexes: [], asset_urls: [] }))
 }
 
-function defaultType(question: ConfigQuestionPreview): QuestionType {
-  return knownType(question.question_type) ? question.question_type : 'comprehensive'
+function assetDecision(candidateId: string): ConfigAmbiguousAssetDecision | undefined {
+  return props.assetDecisions.find((item) => item.candidate_id === candidateId)
 }
 
-function resetReview(): void {
-  for (const key of Object.keys(selectedTypes)) delete selectedTypes[key]
-  for (const key of Object.keys(exclusions)) delete exclusions[key]
-  for (const key of Object.keys(expandedAnswers)) delete expandedAnswers[key]
-  for (const key of Object.keys(answerDrafts)) delete answerDrafts[key]
-  for (const key of Object.keys(answerConfirmations)) delete answerConfirmations[key]
-  const knownIds = new Set(props.source.questions.map((question) => question.question_id))
-  for (const question of props.source.questions) {
-    selectedTypes[question.question_id] = defaultType(question)
-    exclusions[question.question_id] = false
-    answerDrafts[question.question_id] = question.answer_preview
-    answerConfirmations[question.question_id] = false
+function assetChoice(asset: ConfigSourceAsset): string {
+  const decision = assetDecision(asset.asset_id)
+  if (decision === undefined) {
+    return asset.question_id === null
+      ? ''
+      : `${asset.question_id}:${asset.asset_kind}`
   }
-  for (const decision of props.decisions) {
-    if (!knownIds.has(decision.question_id) || !knownType(decision.question_type)) continue
-    selectedTypes[decision.question_id] = decision.question_type
-    exclusions[decision.question_id] = decision.excluded
-    answerConfirmations[decision.question_id] = decision.answer_confirmed === true
-    if (decision.answer_override !== undefined && decision.answer_override !== null) {
-      answerDrafts[decision.question_id] = decision.answer_override
-    }
-  }
+  if (decision.action === 'ignore') return 'ignore'
+  return `${decision.question_id}:${decision.asset_kind}`
 }
 
-function currentDecisions(): QuestionDecision[] {
-  return props.source.questions.flatMap((question) => {
-    const questionType = selectedTypes[question.question_id] ?? defaultType(question)
-    const excluded = exclusions[question.question_id] ?? false
-    const answerConfirmed = answerConfirmations[question.question_id] === true
-      && (questionType === 'choice' || questionType === 'fill_blank')
-    if (knownType(question.question_type)
-      && questionType === question.question_type && !excluded && !answerConfirmed) return []
-    const decision: QuestionDecision = {
-      question_id: question.question_id,
-      question_type: questionType,
-      excluded,
-    }
-    if (answerConfirmed) {
-      decision.answer_confirmed = true
-      const draft = (answerDrafts[question.question_id] ?? '').trim()
-      if (draft !== question.answer_preview.trim()) decision.answer_override = draft
-    }
-    return [decision]
-  })
+function bindAsset(
+  assetId: string,
+  questionId: string,
+  assetKind: 'question' | 'answer',
+): void {
+  const retained = props.assetDecisions.filter(
+    (item) => item.candidate_id !== assetId,
+  )
+  emit('update:asset-decisions', [
+    ...retained,
+    {
+      candidate_id: assetId,
+      action: 'bind',
+      question_id: questionId,
+      asset_kind: assetKind,
+    },
+  ])
 }
 
-function updateType(question: ConfigQuestionPreview, event: Event): void {
+function updateAssetChoice(asset: ConfigSourceAsset, event: Event): void {
   const value = (event.currentTarget as HTMLSelectElement).value
-  if (!knownType(value)) return
-  selectedTypes[question.question_id] = value
-  if (value !== 'choice' && value !== 'fill_blank') {
-    answerConfirmations[question.question_id] = false
+  const retained = props.assetDecisions.filter(
+    (item) => item.candidate_id !== asset.asset_id,
+  )
+  if (!value) {
+    emit('update:asset-decisions', retained)
+    return
   }
-  emit('update:decisions', currentDecisions())
-}
-
-function updateExcluded(question: ConfigQuestionPreview, event: Event): void {
-  exclusions[question.question_id] = (event.currentTarget as HTMLInputElement).checked
-  emit('update:decisions', currentDecisions())
-}
-
-function canConfirmAnswer(question: ConfigQuestionPreview): boolean {
-  if (imageOnlySource.value) return false
-  const questionType = selectedTypes[question.question_id] ?? defaultType(question)
-  return questionType === 'choice' || questionType === 'fill_blank'
-}
-
-function updateAnswerDraft(question: ConfigQuestionPreview, event: Event): void {
-  const wasConfirmed = answerConfirmations[question.question_id] === true
-  const draft = (event.currentTarget as HTMLTextAreaElement).value
-  answerDrafts[question.question_id] = draft
-  if (wasConfirmed && !draft.trim()) {
-    answerConfirmations[question.question_id] = false
+  if (value === 'ignore') {
+    emit('update:asset-decisions', [
+      ...retained,
+      { candidate_id: asset.asset_id, action: 'ignore' },
+    ])
+    return
   }
-  if (wasConfirmed) emit('update:decisions', currentDecisions())
+  const [questionId, assetKind] = value.split(':')
+  if (!props.source.questions.some((item) => item.question_id === questionId)
+    || !['question', 'answer'].includes(assetKind ?? '')) return
+  bindAsset(asset.asset_id, questionId!, assetKind as 'question' | 'answer')
 }
 
-function updateAnswerConfirmation(question: ConfigQuestionPreview, event: Event): void {
-  const checked = (event.currentTarget as HTMLInputElement).checked
-  if (checked && !(answerDrafts[question.question_id] ?? '').trim()) return
-  answerConfirmations[question.question_id] = checked
-  emit('update:decisions', currentDecisions())
+function startAssetDrag(assetId: string, event: DragEvent): void {
+  event.dataTransfer?.setData('application/x-config-asset', assetId)
+  event.dataTransfer?.setData('text/plain', assetId)
+  if (event.dataTransfer) event.dataTransfer.effectAllowed = 'move'
 }
 
-function toggleAnswer(questionId: string): void {
-  expandedAnswers[questionId] = !expandedAnswers[questionId]
-}
-
-function answerImageUrls(question: ConfigQuestionPreview): string[] {
-  const urls = richContent(question).answer_blocks.flatMap((block) => block.asset_urls)
-  return urls.length ? urls : supplementalAssetUrls(question, 'answer')
-}
-
-function questionImageUrls(question: ConfigQuestionPreview): string[] {
-  const urls = richContent(question).question_blocks.flatMap((block) => block.asset_urls)
-  return urls.length ? urls : supplementalAssetUrls(question, 'question')
-}
-
-function answerSummaryImageUrls(question: ConfigQuestionPreview): string[] {
-  return answerImageUrls(question).slice(0, 1)
-}
-
-function isAnswerExpandable(question: ConfigQuestionPreview): boolean {
-  const summary = question.answer_preview.trim()
-  const hasAdditionalText = richContent(question).answer_blocks.some((block) => {
-    const text = block.text.trim()
-    return Boolean(text && text !== summary)
-  })
-  return question.answer_preview.length > 180
-    || hasAdditionalText
-    || answerImageUrls(question).length > 0
-}
-
-function answerStatus(question: ConfigQuestionPreview): string {
-  if (answerConfirmations[question.question_id]) return '教师已确认答案'
-  if (question.local_answer_trusted) return '答案已匹配'
-  if (question.answer_present) return '识别到答案片段，需核对'
-  return '未识别到答案'
+function dropCandidate(
+  questionId: string,
+  assetKind: 'question' | 'answer',
+  event: DragEvent,
+): void {
+  const assetId = event.dataTransfer?.getData('application/x-config-asset')
+    || event.dataTransfer?.getData('text/plain')
+  if (!assetId) return
+  if (!sourceAssets.value.some((item) => item.asset_id === assetId)) return
+  bindAsset(assetId, questionId, assetKind)
 }
 
 function assetUrl(questionId: string, assetKind: 'question' | 'answer'): string {
@@ -172,24 +161,49 @@ function assetUrl(questionId: string, assetKind: 'question' | 'answer'): string 
     + `/questions/${encodeURIComponent(questionId)}/assets/${assetKind}`
 }
 
-function supplementalAssetUrls(
-  question: ConfigQuestionPreview,
-  assetKind: 'question' | 'answer',
-): string[] {
+function imageUrls(question: ConfigQuestionPreview, assetKind: 'question' | 'answer'): string[] {
   const blocks = assetKind === 'question'
     ? richContent(question).question_blocks
     : richContent(question).answer_blocks
-  if (blocks.some((block) => block.asset_urls.length > 0)) return []
+  const urls = blocks.flatMap((block) => block.asset_urls)
+  if (urls.length) return urls
   const hasAsset = assetKind === 'question'
     ? question.has_question_asset
     : question.has_answer_asset
   return hasAsset ? [assetUrl(question.question_id, assetKind)] : []
 }
 
+function assetPlacement(asset: ConfigSourceAsset): { questionId: string | null; assetKind: 'question' | 'answer' } | null {
+  const decision = assetDecision(asset.asset_id)
+  if (decision?.action === 'ignore') return null
+  if (decision?.action === 'bind') {
+    return { questionId: decision.question_id, assetKind: decision.asset_kind }
+  }
+  return { questionId: asset.question_id, assetKind: asset.asset_kind }
+}
+
+function placedAssets(questionId: string, assetKind: 'question' | 'answer'): ConfigSourceAsset[] {
+  return sourceAssets.value.filter((asset) => {
+    const placement = assetPlacement(asset)
+    return placement?.questionId === questionId && placement.assetKind === assetKind
+  })
+}
+
+function candidatePlacement(asset: ConfigSourceAsset): string {
+  const decision = assetDecision(asset.asset_id)
+  if (decision === undefined) return '待归属'
+  if (decision.action === 'ignore') return '已忽略'
+  return `${decision.question_id} · ${decision.asset_kind === 'question' ? '题目' : '答案'}`
+}
+
+function answerStatus(question: ConfigQuestionPreview): string {
+  if (question.local_answer_trusted) return '答案已匹配'
+  if (question.answer_present) return '识别到答案，完整预览'
+  return '未识别到答案'
+}
+
 watch(() => props.source.source_revision, (_revision, previous) => {
-  resetReview()
-  const normalized = currentDecisions()
-  if (previous !== undefined || normalized.length > 0) emit('update:decisions', normalized)
+  if (previous !== undefined || props.decisions.length > 0) emit('update:decisions', [])
 }, { immediate: true })
 </script>
 
@@ -198,12 +212,59 @@ watch(() => props.source.source_revision, (_revision, previous) => {
     <header class="config-section-heading">
       <div>
         <h2 id="question-review-title">核对拆题结果</h2>
-        <p>可修正题型、排除错误拆题，并确认或改正客观题答案；题号由来源保持不变。</p>
+        <p>题目与完整答案并排呈现。黄色图片请拖到对应区域；题型、小问和作答方式由 AI 在后续分析中判断。</p>
       </div>
       <span v-if="source.questions.length" class="question-review__count">
         共 {{ source.questions.length }} 题
       </span>
     </header>
+
+    <aside
+      v-if="uncertainAssets.length"
+      class="question-review__asset-tray"
+      :class="{ 'is-complete': unresolvedAssetCount === 0 }"
+      aria-label="待归属图片"
+    >
+      <div class="question-review__asset-tray-heading">
+        <div>
+          <strong>{{ unresolvedAssetCount ? `${unresolvedAssetCount} 张图片待归属` : '图片归属已完成' }}</strong>
+          <span>本地程序不猜测，只提供相邻题作为建议；你也可以拖到其他题目的题目区或答案区。</span>
+        </div>
+      </div>
+      <div class="question-review__asset-tray-list">
+        <article
+          v-for="candidate in uncertainAssets"
+          :key="candidate.asset_id"
+          class="question-review__asset-candidate"
+          :class="{ 'is-resolved': assetDecision(candidate.asset_id) !== undefined }"
+          draggable="true"
+          :data-asset-id="candidate.asset_id"
+          @dragstart="startAssetDrag(candidate.asset_id, $event)"
+        >
+          <img :src="candidate.asset_url" :alt="`${candidate.asset_id} 待归属图片`">
+          <div>
+            <strong>{{ candidate.asset_id }}</strong>
+            <span>{{ candidate.candidate_question_ids.join(' / ') }}</span>
+            <small>{{ candidatePlacement(candidate) }}</small>
+          </div>
+          <label>
+            <span class="sr-only">放到</span>
+            <select
+              :aria-label="`${candidate.asset_id} 图片归属`"
+              :value="assetChoice(candidate)"
+              @change="updateAssetChoice(candidate, $event)"
+            >
+              <option value="">暂不确定</option>
+              <template v-for="question in source.questions" :key="question.question_id">
+                <option :value="`${question.question_id}:question`">{{ question.question_id }} 题目</option>
+                <option :value="`${question.question_id}:answer`">{{ question.question_id }} 答案</option>
+              </template>
+              <option value="ignore">忽略这张图片</option>
+            </select>
+          </label>
+        </article>
+      </div>
+    </aside>
 
     <p v-if="source.questions.length === 0" class="question-review__empty" role="status">
       当前来源没有可核对的题目，请更换文件后重试。
@@ -214,139 +275,102 @@ watch(() => props.source.source_revision, (_revision, previous) => {
         :key="question.question_id"
         class="question-review__row"
       >
-        <div class="question-review__identity">
+        <header class="question-review__identity">
           <strong class="question-review__id">{{ question.question_id }}</strong>
-          <span v-if="question.needs_review" class="question-review__warning">需要核对</span>
-        </div>
+          <span v-if="question.needs_review" class="question-review__warning">建议留意预览</span>
+        </header>
 
-        <label class="question-review__type">
-          <span>题型</span>
-          <select
-            :aria-label="`${question.question_id} 题型`"
-            :value="selectedTypes[question.question_id]"
-            @change="updateType(question, $event)"
+        <div class="question-review__pair">
+          <section
+            class="question-review__paper-panel"
+            :data-question-panel="question.question_id"
+            @dragover.prevent
+            @drop.prevent="dropCandidate(question.question_id, 'question', $event)"
           >
-            <option value="choice">选择题</option>
-            <option value="fill_blank">填空题</option>
-            <option value="calculation">计算题</option>
-            <option value="proof">证明题</option>
-            <option value="comprehensive">综合题</option>
-          </select>
-        </label>
-
-        <div v-if="imageOnlySource" class="question-review__content question-review__content--images-only">
-          <div class="question-review__pdf-images" :data-question-content="question.question_id">
-            <QuestionContentRenderer
-              v-if="questionImageUrls(question).length"
-              :supplemental-image-urls="questionImageUrls(question)"
-              :image-alt="`${question.question_id} 题目裁图`"
-              media-mode="review"
-              dense
-            />
-            <QuestionContentRenderer
-              v-if="answerImageUrls(question).length"
-              :supplemental-image-urls="answerImageUrls(question)"
-              :image-alt="`${question.question_id} 答案裁图`"
-              media-mode="review"
-              dense
-            />
-          </div>
-        </div>
-        <div v-else class="question-review__content">
-          <div
-            class="question-review__preview"
-            :data-question-content="question.question_id"
-          >
-            <QuestionContentRenderer
-              :blocks="richContent(question).question_blocks"
-              :fallback="question.question_preview"
-              empty-label="题目文字未提供预览。"
-              :image-alt="`${question.question_id} 题目图`"
-              :supplemental-image-urls="supplementalAssetUrls(question, 'question')"
-              media-mode="review"
-              paper-media-flow
-              dense
-            />
-          </div>
-          <div class="question-review__answer-fact">
-            <strong :class="{ 'is-untrusted': question.answer_present && !question.local_answer_trusted }">
-              {{ answerStatus(question) }}
-            </strong>
-            <div
-              v-if="question.answer_present || richContent(question).answer_blocks.length || question.has_answer_asset"
-              class="question-review__answer-content"
-              :class="{ 'is-expanded': expandedAnswers[question.question_id] }"
-              :data-answer-content="question.question_id"
-            >
+            <header><strong>题目预览</strong><span>题目图片</span></header>
+            <div :data-question-content="question.question_id">
               <QuestionContentRenderer
-                v-if="expandedAnswers[question.question_id]"
-                :blocks="richContent(question).answer_blocks"
-                :fallback="question.answer_preview"
-                empty-label="答案内容暂未识别。"
-                :image-alt="`${question.question_id} 答案图`"
-                :supplemental-image-urls="supplementalAssetUrls(question, 'answer')"
+                :blocks="textBlocks(question, 'question')"
+                :fallback="question.question_preview"
+                empty-label="题目文字未提供预览。"
                 media-mode="review"
+                paper-media-flow
                 dense
               />
+            </div>
+            <div class="question-review__image-well" :aria-label="`${question.question_id} 题目图片放置区`">
+              <div
+                v-for="(asset, index) in placedAssets(question.question_id, 'question')"
+                :key="asset.asset_id"
+                class="question-review__placed-asset"
+              >
+                <img
+                  :src="asset.asset_url"
+                  :alt="`${question.question_id} 题目图 ${index + 1}`"
+                  draggable="true"
+                  :data-asset-id="asset.asset_id"
+                  @dragstart="startAssetDrag(asset.asset_id, $event)"
+                >
+                <label>
+                  <span class="sr-only">移动{{ question.question_id }}题目图{{ index + 1 }}</span>
+                  <select :value="assetChoice(asset)" @change="updateAssetChoice(asset, $event)">
+                    <option value="">选择图片归属</option>
+                    <template v-for="target in source.questions" :key="target.question_id">
+                      <option :value="`${target.question_id}:question`">{{ target.question_id }} 题目</option>
+                      <option :value="`${target.question_id}:answer`">{{ target.question_id }} 答案</option>
+                    </template>
+                    <option value="ignore">忽略这张图片</option>
+                  </select>
+                </label>
+              </div>
+              <span v-if="placedAssets(question.question_id, 'question').length === 0">可将图片拖到这里</span>
+            </div>
+          </section>
+
+          <section
+            class="question-review__paper-panel question-review__paper-panel--answer"
+            :data-answer-panel="question.question_id"
+            @dragover.prevent
+            @drop.prevent="dropCandidate(question.question_id, 'answer', $event)"
+          >
+            <header><strong>完整答案</strong><span>{{ answerStatus(question) }}</span></header>
+            <div :data-answer-content="question.question_id">
               <QuestionContentRenderer
-                v-else
+                :blocks="textBlocks(question, 'answer')"
                 :fallback="question.answer_preview"
-                empty-label="答案内容已识别，展开后查看完整内容。"
-                :image-alt="`${question.question_id} 答案缩略图`"
-                :supplemental-image-urls="answerSummaryImageUrls(question)"
+                empty-label="答案内容暂未识别。"
                 media-mode="review"
                 dense
               />
             </div>
-          </div>
-        </div>
-
-        <div class="question-review__actions">
-          <div class="question-review__action-row">
-            <button
-              v-if="!imageOnlySource && isAnswerExpandable(question)"
-              type="button"
-              :aria-label="`${expandedAnswers[question.question_id] ? '收起' : '展开'} ${question.question_id} 答案`"
-              :aria-expanded="expandedAnswers[question.question_id] ? 'true' : 'false'"
-              @click="toggleAnswer(question.question_id)"
-            >
-              {{ expandedAnswers[question.question_id] ? '收起答案' : '展开答案' }}
-            </button>
-            <label class="question-review__exclude">
-              <input
-                type="checkbox"
-                :aria-label="`排除 ${question.question_id}`"
-                :checked="exclusions[question.question_id]"
-                @change="updateExcluded(question, $event)"
+            <div class="question-review__image-well" :aria-label="`${question.question_id} 答案图片放置区`">
+              <div
+                v-for="(asset, index) in placedAssets(question.question_id, 'answer')"
+                :key="asset.asset_id"
+                class="question-review__placed-asset"
               >
-              排除此题
-            </label>
-          </div>
-          <div
-            v-if="canConfirmAnswer(question)"
-            class="question-review__answer-confirmation"
-          >
-            <label>
-              <span>评分标准答案</span>
-              <textarea
-                rows="1"
-                maxlength="20000"
-                :aria-label="`${question.question_id} 确认标准答案`"
-                :value="answerDrafts[question.question_id]"
-                @change="updateAnswerDraft(question, $event)"
-              />
-            </label>
-            <label class="question-review__answer-confirmation-check">
-              <input
-                type="checkbox"
-                :aria-label="`确认 ${question.question_id} 答案用于生成`"
-                :checked="answerConfirmations[question.question_id]"
-                :disabled="!(answerDrafts[question.question_id] ?? '').trim()"
-                @change="updateAnswerConfirmation(question, $event)"
-              >
-              确认用于生成
-            </label>
-          </div>
+                <img
+                  :src="asset.asset_url"
+                  :alt="`${question.question_id} 答案图 ${index + 1}`"
+                  draggable="true"
+                  :data-asset-id="asset.asset_id"
+                  @dragstart="startAssetDrag(asset.asset_id, $event)"
+                >
+                <label>
+                  <span class="sr-only">移动{{ question.question_id }}答案图{{ index + 1 }}</span>
+                  <select :value="assetChoice(asset)" @change="updateAssetChoice(asset, $event)">
+                    <option value="">选择图片归属</option>
+                    <template v-for="target in source.questions" :key="target.question_id">
+                      <option :value="`${target.question_id}:question`">{{ target.question_id }} 题目</option>
+                      <option :value="`${target.question_id}:answer`">{{ target.question_id }} 答案</option>
+                    </template>
+                    <option value="ignore">忽略这张图片</option>
+                  </select>
+                </label>
+              </div>
+              <span v-if="placedAssets(question.question_id, 'answer').length === 0">可将图片拖到这里</span>
+            </div>
+          </section>
         </div>
       </li>
     </ol>
@@ -354,15 +378,148 @@ watch(() => props.source.source_revision, (_revision, previous) => {
 </template>
 
 <style scoped>
-.question-review__pdf-images {
-  display: flex;
-  align-items: flex-start;
-  flex-wrap: wrap;
+.question-review__asset-tray {
+  display: grid;
+  gap: var(--space-3);
+  margin: 0 var(--space-4) var(--space-4);
+  padding: var(--space-4);
+  border: 1px solid #d7a94a;
+  border-left-width: 4px;
+  border-radius: var(--radius-md);
+  background: #fff8e8;
+}
+
+.question-review__asset-tray.is-complete {
+  border-color: var(--color-success, #2f7d60);
+  background: #f4faf7;
+}
+
+.question-review__asset-tray-heading span,
+.question-review__asset-candidate span,
+.question-review__asset-candidate small {
+  display: block;
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-caption);
+}
+
+.question-review__asset-tray-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
   gap: var(--space-2);
+}
+
+.question-review__asset-candidate {
+  grid-column: auto;
+  display: grid;
+  grid-template-columns: 64px minmax(0, 1fr);
+  gap: var(--space-2);
+  align-items: center;
+  margin: 0;
+  padding: var(--space-2);
+  border: 1px solid #e4c476;
+  border-radius: var(--radius-sm);
+  background: #fff;
+  cursor: grab;
+}
+
+.question-review__asset-candidate.is-resolved { border-color: #8dbba7; }
+.question-review__asset-candidate:active { cursor: grabbing; }
+.question-review__asset-candidate img { width: 64px; height: 64px; object-fit: contain; }
+.question-review__asset-candidate label { grid-column: 1 / -1; }
+.question-review__asset-candidate select { width: 100%; min-height: 36px; }
+
+.question-review__list {
+  display: grid;
+  gap: var(--space-3);
+  margin: 0;
+  padding: 0;
+  border: 0;
+  list-style: none;
+}
+
+.question-review__row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-2);
+  padding: 0 0 var(--space-3);
+  border-bottom: 1px solid var(--color-border-subtle);
+}
+
+.question-review__identity {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.question-review__pair {
+  display: grid;
+  grid-template-columns: minmax(0, 1.15fr) minmax(0, .85fr);
+  gap: var(--space-3);
   min-width: 0;
 }
 
-.question-review__pdf-images :deep(.question-content) {
-  min-width: min(100%, 280px);
+.question-review__paper-panel {
+  display: grid;
+  align-content: start;
+  gap: var(--space-3);
+  min-width: 0;
+  padding: var(--space-4);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: #fff;
+}
+
+.question-review__paper-panel--answer { background: #f8fbfb; }
+
+.question-review__paper-panel > header {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding-bottom: var(--space-2);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.question-review__paper-panel > header span {
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-caption);
+}
+
+.question-review__image-well {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  min-height: 54px;
+  padding: var(--space-2);
+  border: 1px dashed #9eb4ba;
+  border-radius: var(--radius-sm);
+  background: #f7fafb;
+}
+
+.question-review__placed-asset {
+  display: grid;
+  gap: var(--space-1);
+  width: min(100%, 240px);
+}
+
+.question-review__placed-asset > img {
+  max-width: min(100%, 240px);
+  max-height: 180px;
+  object-fit: contain;
+  cursor: grab;
+}
+
+.question-review__placed-asset select {
+  width: 100%;
+  min-height: 34px;
+}
+
+.question-review__image-well > span {
+  align-self: center;
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-caption);
+}
+
+@media (max-width: 900px) {
+  .question-review__pair { grid-template-columns: minmax(0, 1fr); }
 }
 </style>

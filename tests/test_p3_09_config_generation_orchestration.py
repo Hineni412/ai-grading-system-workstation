@@ -313,6 +313,49 @@ def test_partial_failure_retries_only_failed_batch_then_scores_once() -> None:
     assert completed["meta"]["score_allocation_ai_success"] is True
 
 
+def test_solution_evidence_structure_uses_only_one_score_request() -> None:
+    structure = _question_payload("Q1")
+    structure["rubric"]["questions"][0]["max_score"] = 1
+    structure["rubric"]["questions"][0]["parts"][0]["part_score"] = 1
+    structure["rubric"]["questions"][0]["parts"][0]["steps"][0][
+        "step_score"
+    ] = 1
+    score_payload = {
+        "question_scores": [
+            {
+                "question_id": "Q1",
+                "max_score": 100,
+                "parts": [
+                    {
+                        "part_id": "Q1",
+                        "part_score": 100,
+                        "steps": [{"step_id": "S1", "step_score": 100}],
+                    }
+                ],
+            }
+        ]
+    }
+    gateway = _ScriptedGateway([score_payload])
+
+    completed = ConfigGenerationOrchestrator(
+        gateway,
+        _policy(),
+    ).allocate_scores_for_structure(
+        structure,
+        [{"question_id": "Q1", "question_type": "choice", "text": "one"}],
+        "document",
+    )
+
+    assert len(gateway.calls) == 1
+    assert gateway.calls[0][0] == "text"
+    assert "SCORE_QUESTION_IDS_JSON" in gateway.calls[0][1]
+    assert "BATCH_QUESTION_IDS_JSON" not in gateway.calls[0][1]
+    assert completed["rubric"]["questions"][0]["max_score"] == 100
+    assert completed["meta"]["structure_source"] == "solution_evidence"
+    assert completed["meta"]["structure_generation_model_requests"] == 0
+    assert completed["meta"]["score_allocation_ai_success"] is True
+
+
 def test_targeted_regeneration_replaces_selected_question_then_reallocates_scores() -> None:
     existing = _question_payload("Q1")
     q2 = _question_payload("Q2")

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import io
 import json
 import sqlite3
@@ -8,6 +9,7 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import fitz
 import pytest
@@ -20,9 +22,12 @@ from backend.config_workspace.sources import (
     QuestionDecision,
 )
 from backend.jobs.config_generation import (
+    _config_analysis_images,
+    _run_config_generation_job_impl,
     cleanup_consumed_config_retry_artifacts,
     discard_config_generation_input,
     load_config_generation_input,
+    preserve_interrupted_config_generation_checkpoints,
     run_config_generation_job,
     stage_config_generation_input,
     stage_config_refine_input,
@@ -36,6 +41,7 @@ from backend.config_workspace.editor import (
     editor_part_ids,
 )
 from backend.config_workspace.publish import load_editor_config
+from backend.config_workspace.deferred_analysis import DeferredAnalysisArtifactStore
 from backend.jobs.manager import JobCancellationRequested, JobContext
 from backend.jobs.manager import JobManager
 from backend.jobs.store import JobStore
@@ -170,6 +176,7 @@ def _stage_controlled_input(
     expected_paths: tuple[str, str],
     *,
     generation_mode: str,
+    sync_to_question_bank: bool = False,
 ) -> str:
     return stage_config_source_generation_input(
         tmp_path / "uploaded",
@@ -179,6 +186,10 @@ def _stage_controlled_input(
         generation_mode=generation_mode,
         source_id=source.source_id,
         source_revision=source.source_revision,
+        sync_to_question_bank=sync_to_question_bank,
+        curriculum_volume_id=(
+            "bnu24-math-g7-upper" if sync_to_question_bank else None
+        ),
         decisions=(
             []
             if generation_mode == "whole_document"
@@ -602,6 +613,7 @@ def test_complete_generation_enqueues_persisted_question_bank_sync(
         source,
         old_paths,
         generation_mode="batched",
+        sync_to_question_bank=True,
     )
     base_context, store = _job_context(
         db.db_path,
@@ -2501,3 +2513,520 @@ def test_refine_job_rejects_same_path_old_revision_before_model_call(tmp_path: P
             llm_client_factory=factory,
         )
     assert called is False
+
+
+def _deferred_taxonomy_contract() -> dict[str, Any]:
+    return {
+        "taxonomy_revision": 2,
+        "allowed_dimensions": ["knowledge", "ability", "curriculum"],
+        "candidates": {
+            "knowledge": [
+                {
+                    "id": "kp_alg_linear_equation",
+                    "name": "一元一次方程",
+                    "aliases": ["一次方程"],
+                }
+            ],
+            "ability": [
+                {
+                    "id": "ability-calculation",
+                    "name": "运算能力",
+                    "aliases": [],
+                }
+            ],
+        },
+        "curriculum_volume": {
+            "id": "bnu24-math-g7-upper",
+            "sections": [
+                {
+                    "id": "synthetic-linear-equation-section",
+                    "chapter_name": "一元一次方程",
+                }
+            ],
+        },
+    }
+
+
+def test_config_analysis_keeps_multiple_images_for_one_question_role() -> None:
+    encoded = base64.b64encode(b"\x89PNG\r\n\x1a\nsynthetic").decode("ascii")
+
+    images = _config_analysis_images(
+        {"question": [encoded, encoded], "answer": encoded}
+    )
+
+    assert [image.role for image in images] == ["question", "question", "answer"]
+
+
+def _deferred_combined_item(question_id: int) -> dict[str, Any]:
+    return {
+        "question_id": question_id,
+        "tag_analysis": {
+            "knowledge_points": ["一元一次方程"],
+            "method_tags": [],
+            "ability_tags": ["运算能力"],
+            "math_model_tags": [],
+            "special_type_tags": [],
+            "difficulty": 3,
+            "error_prone_points": ["运算化简错误"],
+            "prerequisite_points": [],
+            "textbook_chapters": [],
+            "curriculum_sections": ["synthetic-linear-equation-section"],
+            "suitable_student_level": "",
+            "canonical_knowledge_id": "kp_alg_linear_equation",
+            "taxonomy_revision": 2,
+            "proposed_tags": [],
+            "reason": "合成分析。",
+            "confidence": 0.95,
+        },
+        "solution_evidence": {
+            "schema_version": "question-solution-evidence-v1",
+            "question_id": question_id,
+            "parts": [
+                {
+                    "part_id": f"part-{question_id}",
+                    "label": f"第{question_id}题",
+                    "response_mode": "process_required",
+                    "canonical_answer": "x=1",
+                    "accepted_forms": ["x=1"],
+                    "full_answer": "移项并化简得 x=1。",
+                    "proof_obligations": [],
+                    "visual_requirements": [],
+                    "deduction_policy": ["缺少关键变形时该步未达成"],
+                    "allow_alternative_methods": True,
+                    "evidence_points": [
+                        {
+                            "evidence_point_id": f"step-{question_id}",
+                            "target": "完成等价变形",
+                            "observable_evidence": "写出正确的移项和化简过程",
+                            "fine_term_links": [
+                                {
+                                    "fine_term_id": "kp_alg_linear_equation",
+                                    "fine_term_name": "一元一次方程",
+                                    "role": "direct",
+                                }
+                            ],
+                            "equivalent_rules": [],
+                            "counterexamples": ["移项后未变号"],
+                        },
+                        {
+                            "evidence_point_id": f"result-{question_id}",
+                            "target": "得出方程的解",
+                            "observable_evidence": "写出 x=1 并作为最终结论",
+                            "fine_term_links": [
+                                {
+                                    "fine_term_id": "kp_alg_linear_equation",
+                                    "fine_term_name": "一元一次方程",
+                                    "role": "direct",
+                                }
+                            ],
+                            "equivalent_rules": ["1=x"],
+                            "counterexamples": ["只写中间式未给出解"],
+                        }
+                    ],
+                }
+            ],
+            "auxiliary_rules": [],
+            "rationale": "按可观察步骤拆分。",
+            "confidence": 0.95,
+        },
+    }
+
+
+class _DeferredProtocolResponse:
+    def __init__(self, question_ids: list[int]) -> None:
+        self.output_text = json.dumps(
+            {
+                "results": [
+                    _deferred_combined_item(question_id)
+                    for question_id in question_ids
+                ]
+            },
+            ensure_ascii=False,
+        )
+        self.usage = {
+            "input_tokens": 100,
+            "output_tokens": 50,
+            "total_tokens": 150,
+        }
+
+
+class _DeferredProtocol:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+
+    def responses(self, **kwargs: Any) -> _DeferredProtocolResponse:
+        self.calls.append(kwargs)
+        prompt = kwargs["kwargs"]["input"][1]["content"][0]["text"]
+        questions = json.loads(prompt)["questions"]
+        return _DeferredProtocolResponse(
+            [int(item["question_id"]) for item in questions]
+        )
+
+
+class _InterruptingDeferredProtocol(_DeferredProtocol):
+    def responses(self, **kwargs: Any) -> _DeferredProtocolResponse:
+        self.calls.append(kwargs)
+        raise KeyboardInterrupt()
+
+
+class _DeferredTaggingService:
+    model = "synthetic-combined-v3"
+
+    def __init__(self, protocol: _DeferredProtocol) -> None:
+        self.protocol = protocol
+
+    def _protocol_adapter(self) -> _DeferredProtocol:
+        return self.protocol
+
+    def taxonomy_contracts(
+        self,
+        contexts: dict[int, object],
+    ) -> dict[int, dict[str, Any]]:
+        return {
+            question_id: _deferred_taxonomy_contract()
+            for question_id in contexts
+        }
+
+
+class _DeferredScoreClient:
+    def __init__(self, *, valid_six_question_score: bool) -> None:
+        self.valid_six_question_score = valid_six_question_score
+        self.calls: list[str] = []
+        self.settings = SimpleNamespace(config_model="synthetic-score-only")
+
+    def json_from_text_once(
+        self,
+        prompt: str,
+        **_kwargs: Any,
+    ) -> dict[str, Any]:
+        self.calls.append(prompt)
+        structure = json.loads(prompt.split("待分值结构：\n", 1)[1])
+        if self.valid_six_question_score:
+            assert len(structure) == 6
+            scores = [17, 17, 17, 17, 17, 15]
+        else:
+            assert len(structure) == 1
+            # Deliberately violates the existing 18-point cap.  The job must
+            # checkpoint the finished analysis and leave only scoring pending.
+            scores = [100]
+        return {
+            "question_scores": [
+                {
+                    "question_id": item["question_id"],
+                    "max_score": score,
+                    "parts": [
+                        {
+                            "part_id": part["part_id"],
+                            "part_score": score,
+                            "steps": [
+                                {
+                                    "step_id": step["step_id"],
+                                    "step_score": (
+                                        score // len(part["steps"])
+                                        + (
+                                            1
+                                            if step_index
+                                            < score % len(part["steps"])
+                                            else 0
+                                        )
+                                    ),
+                                }
+                                for step_index, step in enumerate(part["steps"])
+                            ],
+                        }
+                        for part in item["parts"]
+                    ],
+                }
+                for item, score in zip(structure, scores, strict=True)
+            ]
+        }
+
+
+def test_evidence_analysis_checkpoint_is_reused_by_score_retry_without_model_replay(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db, session_id, old_paths = _db_with_session(tmp_path)
+    _source_service, source = _controlled_source(
+        tmp_path,
+        session_id,
+        text="1. 解方程 x+1=2。\n答案：x=1",
+    )
+    input_id = _stage_controlled_input(
+        tmp_path,
+        _source_service,
+        source,
+        old_paths,
+        generation_mode="batched",
+        sync_to_question_bank=True,
+    )
+    first_context, store = _job_context(
+        db.db_path,
+        {
+            "session_id": session_id,
+            "mode": "generate",
+            "generation_mode": "batched",
+            "input_id": input_id,
+            "source_id": source.source_id,
+            "source_revision": source.source_revision,
+            "sync_to_question_bank": True,
+        },
+    )
+    protocol = _DeferredProtocol()
+    tagging_service = _DeferredTaggingService(protocol)
+    tagging_factory_calls = 0
+
+    def tagging_factory() -> _DeferredTaggingService:
+        nonlocal tagging_factory_calls
+        tagging_factory_calls += 1
+        return tagging_service
+
+    monkeypatch.setattr(
+        "backend.jobs.config_generation.generate_grading_config_from_confirmed_blocks",
+        lambda *_args, **_kwargs: pytest.fail(
+            "the legacy structure generator must not run"
+        ),
+    )
+    score_client = _DeferredScoreClient(valid_six_question_score=False)
+
+    first = run_config_generation_job(
+        context=first_context,
+        db=db,
+        upload_config_dir=tmp_path / "uploaded",
+        data_root=tmp_path / "data",
+        llm_client_factory=lambda: score_client,
+        tagging_ai_service_factory=tagging_factory,
+        taxonomy_governance=object(),
+    )
+
+    assert first["outcome"] == "partial"
+    assert first["score_allocation_pending"] is True
+    assert len(protocol.calls) == 1
+    assert len(score_client.calls) == 1
+    assert "SCORE_QUESTION_IDS_JSON" in score_client.calls[0]
+    assert "BATCH_QUESTION_IDS_JSON" not in score_client.calls[0]
+    assert tagging_factory_calls == 1
+    store.finish(first_context.job_id, "succeeded", result=first)
+    completed_first = store.get_job(first_context.job_id)
+    assert completed_first is not None
+    assert completed_first.status == "succeeded"
+    artifact_files = list(
+        (tmp_path / "uploaded").glob("deferred_question_analysis_*.json")
+    )
+    assert len(artifact_files) == 1
+
+    retry_context, _retry_store = _job_context(
+        db.db_path,
+        {
+            "session_id": session_id,
+            "mode": "retry",
+            "generation_mode": "batched",
+            "source_job_id": first_context.job_id,
+            "source_id": source.source_id,
+            "source_revision": source.source_revision,
+            "sync_to_question_bank": True,
+        },
+    )
+    retried = run_config_generation_job(
+        context=retry_context,
+        db=db,
+        upload_config_dir=tmp_path / "uploaded",
+        data_root=tmp_path / "data",
+        llm_client_factory=lambda: score_client,
+        tagging_ai_service_factory=tagging_factory,
+        taxonomy_governance=object(),
+    )
+
+    assert retried["outcome"] == "partial"
+    assert len(protocol.calls) == 1
+    assert tagging_factory_calls == 1
+    assert len(score_client.calls) == 2
+
+
+def test_interrupted_evidence_request_is_reported_uncertain_without_model_replay(
+    tmp_path: Path,
+) -> None:
+    db, session_id, old_paths = _db_with_session(tmp_path)
+    source_service, source = _controlled_source(
+        tmp_path,
+        session_id,
+        text="1. 解方程 x+1=2。\n答案：x=1",
+    )
+    input_id = _stage_controlled_input(
+        tmp_path,
+        source_service,
+        source,
+        old_paths,
+        generation_mode="batched",
+        sync_to_question_bank=True,
+    )
+    first_context, store = _job_context(
+        db.db_path,
+        {
+            "session_id": session_id,
+            "mode": "generate",
+            "generation_mode": "batched",
+            "input_id": input_id,
+            "source_id": source.source_id,
+            "source_revision": source.source_revision,
+            "sync_to_question_bank": True,
+        },
+    )
+    interrupted_protocol = _InterruptingDeferredProtocol()
+
+    with pytest.raises(KeyboardInterrupt):
+        _run_config_generation_job_impl(
+            context=first_context,
+            db=db,
+            upload_config_dir=tmp_path / "uploaded",
+            data_root=tmp_path / "data",
+            llm_client_factory=lambda: pytest.fail("scoring must not start"),
+            tagging_ai_service_factory=lambda: _DeferredTaggingService(
+                interrupted_protocol
+            ),
+            taxonomy_governance=object(),
+        )
+
+    # Calling the implementation directly models a hard process exit: the normal
+    # wrapper cannot run cleanup, so both the durable artifact and input survive.
+    staged = load_config_generation_input(tmp_path / "uploaded", input_id)
+    assert staged["analysis_artifact_id"]
+    assert len(interrupted_protocol.calls) == 1
+    assert preserve_interrupted_config_generation_checkpoints(
+        tmp_path / "uploaded",
+        store,
+    ) == {input_id}
+    interrupted_job = store.get_job(first_context.job_id)
+    assert interrupted_job is not None
+    assert interrupted_job.result["outcome"] == "partial"
+    assert interrupted_job.result["uncertain_question_ids"] == ["Q1"]
+    assert interrupted_job.result["needs_teacher_resolution"] is True
+    assert interrupted_job.result["retryable"] is False
+
+    replay_protocol = _DeferredProtocol()
+    resume_context, _resume_store = _job_context(
+        db.db_path,
+        {
+            "session_id": session_id,
+            "mode": "generate",
+            "generation_mode": "batched",
+            "input_id": input_id,
+            "source_id": source.source_id,
+            "source_revision": source.source_revision,
+            "sync_to_question_bank": True,
+        },
+    )
+    resumed = run_config_generation_job(
+        context=resume_context,
+        db=db,
+        upload_config_dir=tmp_path / "uploaded",
+        data_root=tmp_path / "data",
+        llm_client_factory=lambda: pytest.fail("scoring must not start"),
+        tagging_ai_service_factory=lambda: _DeferredTaggingService(replay_protocol),
+        taxonomy_governance=object(),
+    )
+    assert resumed["outcome"] == "partial"
+    assert resumed["uncertain_question_ids"] == ["Q1"]
+    assert resumed["retryable"] is False
+    assert replay_protocol.calls == []
+
+
+def test_complete_evidence_first_generation_queues_exact_artifact_identity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db, session_id, old_paths = _db_with_session(tmp_path)
+    lines = [f"{index}. 解方程 x+{index}={index + 1}。" for index in range(1, 7)]
+    lines.extend(
+        ["答案", *[f"{index}. x=1" for index in range(1, 7)]]
+    )
+    _source_service, source = _controlled_source(
+        tmp_path,
+        session_id,
+        text="\n".join(lines),
+    )
+    assert len(source.questions) == 6
+    input_id = stage_config_source_generation_input(
+        tmp_path / "uploaded",
+        session_id=session_id,
+        expected_rubric_path=old_paths[0],
+        expected_answer_key_path=old_paths[1],
+        generation_mode="batched",
+        source_id=source.source_id,
+        source_revision=source.source_revision,
+        sync_to_question_bank=True,
+        curriculum_volume_id="bnu24-math-g7-upper",
+        decisions=[
+            {
+                "question_id": question.question_id,
+                "question_type": "calculation",
+                "excluded": False,
+            }
+            for question in source.questions
+        ],
+    )
+    base_context, store = _job_context(
+        db.db_path,
+        {
+            "session_id": session_id,
+            "mode": "generate",
+            "generation_mode": "batched",
+            "input_id": input_id,
+            "source_id": source.source_id,
+            "source_revision": source.source_revision,
+            "sync_to_question_bank": True,
+        },
+    )
+    submitted: list[dict[str, object]] = []
+    context = JobContext(
+        job_id=base_context.job_id,
+        job_type=base_context.job_type,
+        payload=base_context.payload,
+        store=store,
+        question_bank_sync_submitter=lambda payload: (
+            submitted.append(payload)
+            or SimpleNamespace(id=193, status="queued"),
+            True,
+        ),
+    )
+    protocol = _DeferredProtocol()
+    score_client = _DeferredScoreClient(valid_six_question_score=True)
+    monkeypatch.setattr(
+        "backend.jobs.config_generation.generate_grading_config_from_confirmed_blocks",
+        lambda *_args, **_kwargs: pytest.fail(
+            "the legacy structure generator must not run"
+        ),
+    )
+
+    result = run_config_generation_job(
+        context=context,
+        db=db,
+        upload_config_dir=tmp_path / "uploaded",
+        data_root=tmp_path / "data",
+        llm_client_factory=lambda: score_client,
+        tagging_ai_service_factory=lambda: _DeferredTaggingService(protocol),
+        taxonomy_governance=object(),
+    )
+
+    assert result["outcome"] == "complete", json.dumps(
+        result,
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+    assert len(score_client.calls) == 1
+    assert len(submitted) == 1
+    queued = submitted[0]
+    assert queued["analysis_source_id"] == source.source_id
+    assert queued["analysis_source_revision"] == source.source_revision
+    artifact = DeferredAnalysisArtifactStore(tmp_path / "uploaded").load(
+        str(queued["analysis_artifact_id"]),
+        session_id=session_id,
+        source_id=source.source_id,
+        source_revision=source.source_revision,
+        curriculum_volume_id="bnu24-math-g7-upper",
+        expected_content_hash=str(queued["analysis_artifact_hash"]),
+    )
+    assert artifact.bundle.status == "succeeded"
+    assert [item.source_question_ref for item in artifact.bundle.items] == [
+        f"Q{index}" for index in range(1, 7)
+    ]

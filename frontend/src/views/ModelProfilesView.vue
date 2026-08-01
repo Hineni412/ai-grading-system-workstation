@@ -37,6 +37,8 @@ interface ModelProfileDraft {
   configApiKey: string
   hasConfigApiKey: boolean
   configModel: string
+  teachingPrepModel: string
+  classTeacherModel: string
   requestSpeedMode: RequestSpeedMode
   maxConcurrentRequests: number
   requestsPerMinute: number
@@ -77,6 +79,8 @@ const draft = reactive<ModelProfileDraft>({
   configApiKey: '',
   hasConfigApiKey: false,
   configModel: '',
+  teachingPrepModel: '',
+  classTeacherModel: '',
   requestSpeedMode: 'automatic',
   maxConcurrentRequests: 20,
   requestsPerMinute: 1000,
@@ -93,6 +97,8 @@ function draftSnapshot(): string {
     configBaseUrl: draft.configBaseUrl,
     configApiKey: draft.configApiKey,
     configModel: draft.configModel,
+    teachingPrepModel: draft.teachingPrepModel,
+    classTeacherModel: draft.classTeacherModel,
     requestSpeedMode: draft.requestSpeedMode,
     maxConcurrentRequests: draft.maxConcurrentRequests,
     requestsPerMinute: draft.requestsPerMinute,
@@ -125,6 +131,8 @@ const editStatus = computed(() => {
 const hasAdvancedConfiguration = computed(() => (
   draft.configBaseUrl !== ''
   || draft.configModel !== ''
+  || draft.teachingPrepModel !== ''
+  || draft.classTeacherModel !== ''
   || draft.hasConfigApiKey
 ))
 const requestSpeedSummary = computed(() => {
@@ -202,6 +210,8 @@ function applyProfile(profile: ModelProfile): void {
     configApiKey: '',
     hasConfigApiKey: profile.has_config_api_key,
     configModel: profile.config_model,
+    teachingPrepModel: profile.teaching_prep_model,
+    classTeacherModel: profile.class_teacher_model,
     requestSpeedMode: profile.request_speed_mode,
     maxConcurrentRequests: profile.max_concurrent_requests,
     requestsPerMinute: profile.requests_per_minute,
@@ -223,6 +233,8 @@ function applyBlankProfile(): void {
     configApiKey: '',
     hasConfigApiKey: false,
     configModel: '',
+    teachingPrepModel: '',
+    classTeacherModel: '',
     requestSpeedMode: 'automatic',
     maxConcurrentRequests: 20,
     requestsPerMinute: 1000,
@@ -274,6 +286,8 @@ function toUpsertInput(): ModelProfileUpsertInput {
     config_base_url: draft.configBaseUrl,
     config_api_key: draft.configApiKey,
     config_model: draft.configModel,
+    teaching_prep_model: draft.teachingPrepModel,
+    class_teacher_model: draft.classTeacherModel,
     request_speed_mode: draft.requestSpeedMode,
     max_concurrent_requests: draft.maxConcurrentRequests,
     requests_per_minute: draft.requestsPerMinute,
@@ -905,6 +919,32 @@ onBeforeUnmount(() => {
                 autocomplete="off"
                 :maxlength="MODEL_PROFILE_LIMITS.model"
                 placeholder="用于考试配置与题库标注的模型"
+                :disabled="isBusy"
+              >
+            </label>
+
+            <label class="model-profile-field">
+              <span>备课工作台模型</span>
+              <input
+                v-model="draft.teachingPrepModel"
+                name="teaching-prep-model"
+                type="text"
+                autocomplete="off"
+                :maxlength="MODEL_PROFILE_LIMITS.model"
+                placeholder="留空时沿用上方模型"
+                :disabled="isBusy"
+              >
+            </label>
+
+            <label class="model-profile-field">
+              <span>班主任工作台模型</span>
+              <input
+                v-model="draft.classTeacherModel"
+                name="class-teacher-model"
+                type="text"
+                autocomplete="off"
+                :maxlength="MODEL_PROFILE_LIMITS.model"
+                placeholder="留空时沿用上方模型"
                 :disabled="isBusy"
               >
             </label>

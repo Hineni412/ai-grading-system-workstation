@@ -21,6 +21,8 @@ export interface ModelProfile {
   config_base_url: string
   has_config_api_key: boolean
   config_model: string
+  teaching_prep_model: string
+  class_teacher_model: string
   request_speed_mode: RequestSpeedMode
   max_concurrent_requests: number
   requests_per_minute: number
@@ -58,6 +60,8 @@ export interface ModelProfileUpsertInput {
   config_base_url: string
   config_api_key?: string
   config_model: string
+  teaching_prep_model?: string
+  class_teacher_model?: string
   request_speed_mode: RequestSpeedMode
   max_concurrent_requests: number
   requests_per_minute: number
@@ -84,6 +88,8 @@ const PROFILE_KEYS = [
   'config_base_url',
   'has_config_api_key',
   'config_model',
+  'teaching_prep_model',
+  'class_teacher_model',
   'request_speed_mode',
   'max_concurrent_requests',
   'requests_per_minute',
@@ -160,6 +166,8 @@ function isModelProfile(value: unknown): value is ModelProfile {
     && isHttpUrl(value.config_base_url, true)
     && typeof value.has_config_api_key === 'boolean'
     && isBoundedText(value.config_model, 0, MODEL_PROFILE_LIMITS.model)
+    && isBoundedText(value.teaching_prep_model, 0, MODEL_PROFILE_LIMITS.model)
+    && isBoundedText(value.class_teacher_model, 0, MODEL_PROFILE_LIMITS.model)
     && (
       value.request_speed_mode === 'automatic'
       || value.request_speed_mode === 'conservative'
@@ -403,6 +411,18 @@ export function normalizeModelProfileInput(
       MODEL_PROFILE_LIMITS.model,
       false,
     ),
+    teaching_prep_model: normalizeBoundedText(
+      input.teaching_prep_model ?? '',
+      '备课工作台模型',
+      MODEL_PROFILE_LIMITS.model,
+      false,
+    ),
+    class_teacher_model: normalizeBoundedText(
+      input.class_teacher_model ?? '',
+      '班主任工作台模型',
+      MODEL_PROFILE_LIMITS.model,
+      false,
+    ),
     request_speed_mode: requestSpeedMode,
     max_concurrent_requests: normalizeInteger(
       input.max_concurrent_requests,
@@ -453,6 +473,8 @@ export const modelProfilesApi = {
       grading_model: normalized.grading_model,
       config_base_url: normalized.config_base_url,
       config_model: normalized.config_model,
+      teaching_prep_model: normalized.teaching_prep_model ?? '',
+      class_teacher_model: normalized.class_teacher_model ?? '',
       request_speed_mode: normalized.request_speed_mode,
       max_concurrent_requests: normalized.max_concurrent_requests,
       requests_per_minute: normalized.requests_per_minute,

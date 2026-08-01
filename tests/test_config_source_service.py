@@ -20,6 +20,7 @@ from docx.shared import Inches
 from PIL import Image
 
 from backend.config_workspace.sources import (
+    AmbiguousAssetDecision,
     ConfigAssetNotFoundError,
     ConfigSourceChangedError,
     ConfigSourceInvalidError,
@@ -125,6 +126,31 @@ def _docx_with_multiline_proof_answer() -> bytes:
     return output.getvalue()
 
 
+def _docx_with_ambiguous_floating_image() -> bytes:
+    document = Document()
+    document.add_paragraph("1. 第一题")
+    document.add_paragraph().add_run().add_picture(
+        io.BytesIO(_png_bytes()), width=Inches(0.25)
+    )
+    document.add_paragraph("2. 第二题")
+    document.add_paragraph().add_run().add_picture(
+        io.BytesIO(_png_bytes()), width=Inches(0.25)
+    )
+    document.add_paragraph("3. 第三题")
+    original = io.BytesIO()
+    document.save(original)
+    rewritten = io.BytesIO()
+    with zipfile.ZipFile(io.BytesIO(original.getvalue()), "r") as source:
+        with zipfile.ZipFile(rewritten, "w", zipfile.ZIP_DEFLATED) as target:
+            for info in source.infolist():
+                content = source.read(info.filename)
+                if info.filename == "word/document.xml":
+                    content = content.replace(b"<wp:inline", b"<wp:anchor", 1)
+                    content = content.replace(b"</wp:inline>", b"</wp:anchor>", 1)
+                target.writestr(info, content)
+    return rewritten.getvalue()
+
+
 def _pdf_bytes(*, question: bool = True, answer: bool = True, pages: int = 1) -> bytes:
     document = fitz.open()
     for index in range(pages):
@@ -222,6 +248,154 @@ def test_docx_rich_text_and_image_are_kept_in_controlled_source_dir(tmp_path: Pa
     )
     assert content == _png_bytes()
     assert media_type == "image/png"
+
+
+def test_ambiguous_floating_image_waits_for_one_manual_adjacent_binding(
+    tmp_path: Path,
+) -> None:
+    source_service = service(tmp_path)
+    record = asyncio.run(
+        source_service.stage_and_parse(
+            session_id=7,
+            filename="ambiguous.docx",
+            chunks=chunks(_docx_with_ambiguous_floating_image()),
+        )
+    )
+
+    candidate = record.public_snapshot()["ambiguous_assets"][0]
+    assert candidate["previous_question_id"] == "Q1"
+    assert candidate["next_question_id"] == "Q2"
+    assert "filename" not in candidate
+    content, media_type = source_service.read_ambiguous_asset(
+        session_id=7,
+        source_id=record.source_id,
+        candidate_id=candidate["candidate_id"],
+    )
+    assert content == _png_bytes()
+    assert media_type == "image/png"
+
+    unresolved = source_service.apply_teacher_decisions(record, [])
+    assert [item["question_id"] for item in unresolved.confirmed_blocks] == ["Q3"]
+
+    bound = source_service.apply_teacher_decisions(
+        record,
+        [],
+        [
+            AmbiguousAssetDecision(
+                candidate_id=candidate["candidate_id"],
+                action="bind",
+                question_id="Q2",
+                asset_kind="question",
+            )
+        ],
+    )
+    assert [item["question_id"] for item in bound.confirmed_blocks] == [
+        "Q1", "Q2", "Q3",
+    ]
+    assert isinstance(bound.question_images["Q2"]["question"], list)
+    assert len(bound.question_images["Q2"]["question"]) == 2
+    ignored = source_service.apply_teacher_decisions(
+        record,
+        [],
+        [
+            AmbiguousAssetDecision(
+                candidate_id=candidate["candidate_id"],
+                action="ignore",
+            )
+        ],
+    )
+    assert [item["question_id"] for item in ignored.confirmed_blocks] == [
+        "Q1", "Q2", "Q3",
+    ]
+    moved_beyond_adjacent = source_service.apply_teacher_decisions(
+        record,
+        [],
+        [
+            AmbiguousAssetDecision(
+                candidate_id=candidate["candidate_id"],
+                action="bind",
+                question_id="Q3",
+                asset_kind="question",
+            )
+        ],
+    )
+    assert moved_beyond_adjacent.question_images["Q3"]["question"] is not None
+    with pytest.raises(ValueError, match="target is invalid"):
+        source_service.apply_teacher_decisions(
+            record,
+            [],
+            [
+                AmbiguousAssetDecision(
+                    candidate_id=candidate["candidate_id"],
+                    action="bind",
+                    question_id="missing",
+                    asset_kind="question",
+                )
+            ],
+        )
+
+
+def test_automatic_image_can_be_moved_from_question_to_answer(tmp_path: Path) -> None:
+    source_service = service(tmp_path)
+    record = asyncio.run(
+        source_service.stage_and_parse(
+            session_id=7,
+            filename="rich.docx",
+            chunks=chunks(_docx_bytes(with_image=True)),
+        )
+    )
+    automatic = next(
+        item
+        for item in record.public_snapshot()["assets"]
+        if item["assignment_state"] == "automatic"
+    )
+
+    moved = source_service.apply_teacher_decisions(
+        record,
+        [],
+        [
+            AmbiguousAssetDecision(
+                candidate_id=automatic["asset_id"],
+                action="bind",
+                question_id=automatic["question_id"],
+                asset_kind="answer",
+            )
+        ],
+    )
+
+    assert moved.question_images[automatic["question_id"]]["question"] is None
+    assert moved.question_images[automatic["question_id"]]["answer"] is not None
+
+
+def test_ambiguous_asset_binding_rejects_tampered_candidate_file(
+    tmp_path: Path,
+) -> None:
+    source_service = service(tmp_path)
+    record = asyncio.run(
+        source_service.stage_and_parse(
+            session_id=7,
+            filename="ambiguous.docx",
+            chunks=chunks(_docx_with_ambiguous_floating_image()),
+        )
+    )
+    candidate = record.public_snapshot()["ambiguous_assets"][0]
+    private_candidate = record.private_blocks[0]["_ambiguous_assets"][0]
+    candidate_path = record.manifest_path.parent / private_candidate["filename"]
+    candidate_path.write_bytes(_png_bytes() + b"tampered")
+
+    with pytest.raises(ConfigSourceInvalidError):
+        source_service.apply_teacher_decisions(
+            record,
+            [],
+            [
+                AmbiguousAssetDecision(
+                    candidate_id=candidate["candidate_id"],
+                    action="bind",
+                    question_id="Q2",
+                    asset_kind="question",
+                )
+            ],
+        )
 
 
 def test_docx_public_preview_keeps_short_answer_and_complete_solution(
@@ -620,9 +794,12 @@ def test_public_projection_has_no_paths_text_or_base64(tmp_path: Path) -> None:
         "suffix",
         "size_bytes",
         "sha256_prefix",
-        "parse_state",
-        "questions",
-    }
+            "parse_state",
+            "questions",
+            "ambiguous_assets",
+            "assets",
+        }
+    assert body["ambiguous_assets"] == []
     assert body["sha256_prefix"] == record.sha256[:12]
     assert "document_text" not in encoded
     assert "private_" not in encoded
@@ -1535,7 +1712,7 @@ def test_cleanup_retains_referenced_old_source_and_removes_exact_owned_files_onl
     assert not first.manifest_path.exists()
 
 
-def test_teacher_decisions_filter_and_override_only_known_questions(tmp_path: Path) -> None:
+def test_teacher_decisions_only_exclude_known_questions(tmp_path: Path) -> None:
     record = asyncio.run(
         service(tmp_path).stage_and_parse(
             session_id=7,
@@ -1549,8 +1726,8 @@ def test_teacher_decisions_filter_and_override_only_known_questions(tmp_path: Pa
         [QuestionDecision(question_id="Q1", question_type="proof", excluded=False)],
     )
 
-    assert prepared.confirmed_blocks[0]["question_type"] == "proof"
-    assert prepared.confirmed_blocks[0]["question_type_confirmed"] is True
+    assert prepared.confirmed_blocks[0]["question_type"] != "proof"
+    assert prepared.confirmed_blocks[0]["question_type_confirmed"] is False
     assert prepared.document_text == record.private_document_text
     assert prepared.question_images["Q1"]["question"]
     with pytest.raises(ValueError, match="unknown question"):
@@ -1560,7 +1737,7 @@ def test_teacher_decisions_filter_and_override_only_known_questions(tmp_path: Pa
         )
 
 
-def test_teacher_can_confirm_or_replace_the_answer_used_for_generation(
+def test_legacy_teacher_type_and_answer_fields_do_not_freeze_model_analysis(
     tmp_path: Path,
 ) -> None:
     document = Document()
@@ -1593,7 +1770,7 @@ def test_teacher_can_confirm_or_replace_the_answer_used_for_generation(
     )
 
     block = prepared.confirmed_blocks[0]
-    assert block["canonical_answer"] == "72°"
-    assert block["answer_text"] == "72°"
-    assert block["local_answer_trusted"] is True
-    assert block["answer_confirmed_by_teacher"] is True
+    assert block["canonical_answer"] != "72°"
+    assert block["answer_text"] == record.private_blocks[0]["answer_text"]
+    assert block["question_type_confirmed"] is False
+    assert "answer_confirmed_by_teacher" not in block

@@ -5,12 +5,16 @@ from backend.workspaces.contracts import (
 )
 
 from .api import create_router
+from .configured_model import create_active_profile_model_gateway
 from .encrypted_database import EncryptedDatabase
 from .vault_service import VaultService
 
 
 def _create_service(context: WorkspaceContext) -> VaultService:
-    return VaultService(context)
+    return VaultService(
+        context,
+        model_gateway=create_active_profile_model_gateway(context),
+    )
 
 
 def _migration_plan(

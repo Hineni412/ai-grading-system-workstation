@@ -12,7 +12,7 @@ const manifest: WorkspaceManifest = {
   dataClassifications: ['restricted'],
   featureFlags: ['vault'],
   title: '班主任工作台',
-  description: '默认锁定的班主任行动、事务与学生支持空间',
+  description: '普通工作免解锁，具体学生信息单独保护',
   breadcrumb: '班主任工作台',
 }
 

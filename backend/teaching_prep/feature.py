@@ -29,7 +29,7 @@ _A00_GATE_PASSED = True
 
 
 def _enabled(_paths: object) -> bool:
-    raw = os.environ.get("AI_GRADING_TEACHING_PREP_ENABLED", "0")
+    raw = os.environ.get("AI_GRADING_TEACHING_PREP_ENABLED", "1")
     value = raw.strip().casefold()
     if value in {"1", "true", "yes", "on"}:
         return True

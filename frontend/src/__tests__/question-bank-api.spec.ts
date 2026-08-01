@@ -466,10 +466,17 @@ describe('question bank API contracts', () => {
         status: 202,
         headers: { 'content-type': 'application/json' },
       }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(queued(44, 'tagging_sync')), {
+        status: 202,
+        headers: { 'content-type': 'application/json' },
+      }))
 
     await questionBankApi.submitTagging([17, 17, 18])
     await questionBankApi.retryTagging(41, [18, 18])
     await questionBankApi.retryImport(31)
+    await questionBankApi.submitTagging(
+      [17, 18], undefined, undefined, true, 'a'.repeat(32),
+    )
 
     expect(String(fetchSpy.mock.calls[0]?.[0])).toBe('/api/question-bank/tagging-jobs')
     expect(JSON.parse(String(fetchSpy.mock.calls[0]?.[1]?.body))).toEqual({
@@ -484,6 +491,11 @@ describe('question bank API contracts', () => {
     expect(String(fetchSpy.mock.calls[2]?.[0])).toBe(
       '/api/question-bank/question-import-jobs/31/retry',
     )
+    expect(JSON.parse(String(fetchSpy.mock.calls[3]?.[1]?.body))).toEqual({
+      question_ids: [17, 18],
+      force_retag: true,
+      client_request_token: 'a'.repeat(32),
+    })
   })
 
   it('projects partial failures into a spreadsheet-safe CSV without internal fields', async () => {

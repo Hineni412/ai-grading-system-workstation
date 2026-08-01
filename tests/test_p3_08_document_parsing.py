@@ -198,3 +198,33 @@ def test_production_source_uses_parser_module_and_parser_has_no_model_dependency
     assert "backend.llm" not in package_sources
     assert "LLMClient" not in package_sources
     assert "session_manager" not in package_sources
+
+
+def test_floating_image_between_adjacent_questions_becomes_manual_candidate() -> None:
+    from question_bank.importers.batch_importer import (
+        partition_ambiguous_floating_images,
+    )
+
+    paragraphs = [
+        {"text": "4. 第一题"},
+        {
+            "text": "[[IMAGE:C:/controlled/floating.png]]",
+            "xml": "<w:p><wp:anchor /></w:p>",
+        },
+        {"text": "5. 第二题"},
+        {"text": "[[IMAGE:C:/controlled/inline.png]]", "xml": "<w:p />"},
+    ]
+
+    retained, candidates = partition_ambiguous_floating_images(paragraphs)
+
+    assert [item["text"] for item in retained] == [
+        "4. 第一题",
+        "5. 第二题",
+        "[[IMAGE:C:/controlled/inline.png]]",
+    ]
+    assert candidates == [{
+        "path": "C:/controlled/floating.png",
+        "previous_question_id": "Q4",
+        "next_question_id": "Q5",
+        "source_section": "question",
+    }]

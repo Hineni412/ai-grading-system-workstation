@@ -9,6 +9,7 @@ import type {
 } from '../../../api/config-workspace'
 import type { JobResponse } from '../../../api/jobs'
 import { ApiError } from '../../../api/errors'
+import type { CurriculumCatalog } from '../../../api/question-bank'
 import { useConfigWorkspaceStore } from '../../../stores/config-workspace'
 import { useJobStore } from '../../../stores/jobs'
 import ConfigGenerationPanel from '../ConfigGenerationPanel.vue'
@@ -57,6 +58,24 @@ function deferred<T>() {
   return { promise, resolve }
 }
 
+function curriculum(): CurriculumCatalog {
+  return {
+    schema_version: 1,
+    catalog_id: 'test-catalog',
+    publisher: '北京师范大学出版社',
+    subject: '数学',
+    edition: '2024',
+    volumes: [{
+      id: 'bnu24-math-g7-upper',
+      label: '七年级数学上册',
+      grade: '七年级',
+      semester: '上册',
+      textbook_version: '北师大版',
+      chapters: [],
+    }],
+  }
+}
+
 async function settle(): Promise<void> {
   await Promise.resolve()
   await nextTick()
@@ -65,17 +84,23 @@ async function settle(): Promise<void> {
 }
 
 async function mountPanel(options: {
+  sessionName?: string
   submitter?: (sessionId: number, request: ConfigGenerationRequest) => Promise<JobResponse>
   retryer?: (sessionId: number, jobId: number, questionIds: string[], requestToken: string) => Promise<JobResponse>
   editorLoader?: (sessionId: number) => Promise<ConfigEditorResponse>
   generationLoader?: (sessionId: number, requestToken: string) => Promise<JobResponse>
   requestAbandoner?: (sessionId: number, requestToken: string) => Promise<void>
+  curriculumLoader?: () => Promise<CurriculumCatalog>
 } = {}) {
   const host = document.createElement('div')
   document.body.append(host)
-  const app = createApp(ConfigGenerationPanel, options)
+  const app = createApp(ConfigGenerationPanel, {
+    sessionName: '七年级数学上册测试',
+    curriculumLoader: async () => curriculum(),
+    ...options,
+  })
   app.mount(host)
-  await nextTick()
+  await settle()
   return { host, unmount: () => app.unmount() }
 }
 
@@ -102,9 +127,11 @@ describe('ConfigGenerationPanel', () => {
 
     expect(option).toBeNull()
     expect(mounted.host.textContent).not.toContain('评分标准生成后，将这份试卷入库并打标签')
+    expect(mounted.host.textContent).toContain('选择教材册别')
+    expect(mounted.host.textContent).not.toContain('确认教材范围')
   })
 
-  it('keeps question-bank sync off in the generation request', async () => {
+  it('automatically continues into question-bank analysis after generation', async () => {
     const submitter = vi.fn(async (
       _sessionId: number,
       _request: ConfigGenerationRequest,
@@ -118,11 +145,12 @@ describe('ConfigGenerationPanel', () => {
     await settle()
 
     expect(submitter.mock.calls[0]?.[1]).toMatchObject({
-      sync_to_question_bank: false,
+      sync_to_question_bank: true,
+      curriculum_volume_id: 'bnu24-math-g7-upper',
     })
   })
 
-  it('explains small batches and submits a write only once while disabled', async () => {
+  it('offers one evidence-first flow and submits a write only once while disabled', async () => {
     const pending = deferred<JobResponse>()
     const submitter = vi.fn((_sessionId: number, _request: ConfigGenerationRequest) => {
       void _sessionId
@@ -131,10 +159,12 @@ describe('ConfigGenerationPanel', () => {
     })
     const mounted = await mountPanel({ submitter })
 
-    expect(mounted.host.textContent).toContain('按拆题结果生成')
-    expect(mounted.host.textContent).toContain('每批最多 3 题')
-    expect(mounted.host.textContent).toContain('失败批次可单独重试')
-    expect(mounted.host.textContent).not.toContain('整卷单次生成')
+    expect(mounted.host.textContent).toContain('一次完成题目分析与评分依据')
+    expect(mounted.host.textContent).toContain('召回少量候选词')
+    expect(mounted.host.textContent).toContain('提取小问与踩分点证据')
+    expect(mounted.host.textContent).toContain('失败时只重试失败题')
+    expect(mounted.host.querySelectorAll('input[type="radio"]')).toHaveLength(0)
+    expect(mounted.host.textContent).not.toContain('整卷生成评分标准')
     const submit = mounted.host.querySelector<HTMLButtonElement>('button[name="开始生成"]')!
     submit.click()
     submit.click()

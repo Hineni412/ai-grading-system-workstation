@@ -36,6 +36,7 @@ from backend.api.schemas.question_bank import (
     QuestionPaperPermanentDeleteResponse,
     QuestionPaperStateChangeRequest,
     QuestionPaperStateWriteResponse,
+    QuestionSolutionEvidenceResponse,
     QuestionImportRequestCreate,
     QuestionImportRequestResponse,
     QuestionImportUploadResponse,
@@ -97,6 +98,7 @@ from backend.file_access import (
 from backend.jobs.manager import JobManager, UnsupportedJobTypeError
 from backend.jobs.store import (
     JobRecord,
+    TaggingSyncJobRequestConflictError,
     TaxonomySuggestionJobBusyError,
     TaxonomySuggestionJobRequestConflictError,
 )
@@ -140,6 +142,10 @@ from question_bank.training_criteria import (
     QuestionAnalysisInput,
     QuestionAnalysisInputLoader,
     TrainingCriterionModule,
+    solution_evidence_source_content_hash,
+)
+from question_bank.solution_evidence.repository import (
+    SolutionEvidenceRepository,
 )
 
 
@@ -918,9 +924,29 @@ def submit_tagging_sync_job(
                 "Question IDs are not available from the import job",
             )
     payload: dict[str, object] = {"question_ids": question_ids}
+    if body.force_retag:
+        payload["force_retag_question_ids"] = question_ids
     if body.source_job_id is not None:
         payload["source_job_id"] = int(body.source_job_id)
-    return _submit_question_bank_job(manager, "tagging_sync", payload)
+    if body.client_request_token is None:
+        return _submit_question_bank_job(manager, "tagging_sync", payload)
+    payload["client_request_token"] = body.client_request_token
+    try:
+        job, _created = manager.submit_idempotent_tagging_sync(payload)
+    except TaggingSyncJobRequestConflictError as exc:
+        raise ApiError(
+            409,
+            "question_tagging_request_conflict",
+            "This tagging request token was already used for other questions",
+        ) from exc
+    except UnsupportedJobTypeError as exc:
+        raise ApiError(
+            503,
+            "job_type_not_supported",
+            "Question bank job type is unavailable",
+            {"job_type": "tagging_sync"},
+        ) from exc
+    return _job_response(job)
 
 
 @router.post(
@@ -944,7 +970,10 @@ def retry_tagging_sync_job(
         available = _unique_positive_ids(source.payload.get("question_ids", []))
     elif source.status == "succeeded" and bool(source.result.get("retryable")):
         available = _unique_positive_ids(
-            source.result.get("failed_question_ids", [])
+            [
+                *source.result.get("failed_question_ids", []),
+                *source.result.get("relation_governance_failed_question_ids", []),
+            ]
         )
     else:
         available = []
@@ -967,6 +996,30 @@ def retry_tagging_sync_job(
         "question_ids": selected,
         "retry_of_job_id": source.id,
     }
+    raw_evidence_failed = source.result.get("evidence_failed_question_ids")
+    evidence_failed = (
+        set(_unique_positive_ids(raw_evidence_failed))
+        if raw_evidence_failed
+        else set()
+    )
+    retry_evidence_ids = [
+        question_id for question_id in selected if question_id in evidence_failed
+    ]
+    if retry_evidence_ids:
+        payload["retry_evidence_question_ids"] = retry_evidence_ids
+    raw_relation_failed = source.result.get(
+        "relation_governance_failed_question_ids"
+    )
+    relation_failed = (
+        set(_unique_positive_ids(raw_relation_failed))
+        if raw_relation_failed
+        else set()
+    )
+    retry_relation_ids = [
+        question_id for question_id in selected if question_id in relation_failed
+    ]
+    if retry_relation_ids:
+        payload["retry_relation_question_ids"] = retry_relation_ids
     if source.payload.get("source_job_id") is not None:
         payload["source_job_id"] = int(source.payload["source_job_id"])
     return _submit_question_bank_job(manager, "tagging_sync", payload)
@@ -1780,6 +1833,65 @@ def list_similar_questions(
     return SimilarQuestionListResponse(
         question_id=int(question_id),
         items=[SimilarQuestionItem(**item) for item in items],
+    )
+
+
+@router.get(
+    "/questions/{question_id}/solution-evidence",
+    response_model=QuestionSolutionEvidenceResponse,
+    responses={404: {"model": ErrorResponse}},
+)
+def get_question_solution_evidence(
+    question_id: int,
+    service: QuestionBankReadService = Depends(get_question_bank_read_service),
+    question_bank_db_path: Path = Depends(get_question_bank_db_path),
+    data_root: Path = Depends(get_data_root),
+) -> QuestionSolutionEvidenceResponse:
+    try:
+        question = service.get_question(question_id)
+    except QuestionBankSnapshotError as exc:
+        _raise_question_snapshot_api_error(exc)
+    if question is None:
+        raise ApiError(
+            404,
+            "question_not_found",
+            "Question not found",
+            {"question_id": int(question_id)},
+        )
+    try:
+        current_question = QuestionAnalysisInputLoader(
+            db_path=question_bank_db_path,
+            data_root=data_root,
+        ).load((question_id,))[0]
+        current_source_hash = solution_evidence_source_content_hash(
+            current_question
+        )
+    except (KeyError, OSError, TypeError, ValueError):
+        # If the current content cannot be reconstructed safely, an old
+        # evidence body must never be presented as current.
+        current_source_hash = "current-content-unavailable"
+    latest = SolutionEvidenceRepository(question_bank_db_path).latest(
+        question_id,
+        current_source_content_hash=current_source_hash,
+    )
+    if latest is None:
+        return QuestionSolutionEvidenceResponse(
+            question_id=int(question_id),
+            available=False,
+        )
+    if latest["evidence"] is None:
+        return QuestionSolutionEvidenceResponse(
+            question_id=int(question_id),
+            available=False,
+            evidence_version_id=str(latest["evidence_version_id"]),
+            status=str(latest["status"]),
+        )
+    return QuestionSolutionEvidenceResponse(
+        question_id=int(question_id),
+        available=True,
+        evidence_version_id=str(latest["evidence_version_id"]),
+        status=str(latest["status"]),
+        evidence=dict(latest["evidence"]),
     )
 
 

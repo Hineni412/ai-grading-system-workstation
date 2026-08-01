@@ -90,6 +90,7 @@ class _ActiveProfileRuntime:
             )
         )
         model = _first_text(
+            profile.get("teaching_prep_model"),
             profile.get("config_model"),
             profile.get("grading_model"),
             os.environ.get("LLM_CONFIG_MODEL"),

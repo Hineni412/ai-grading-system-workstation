@@ -105,13 +105,7 @@ beforeEach(() => {
 })
 
 describe('SessionConfigView source replacement guard', () => {
-  it.each([
-    ['分批重新生成', 'batched'],
-    ['整卷重新生成', 'whole_document'],
-  ] as const)('starts %s beside blocking validation without leaving the editor', async (
-    buttonName,
-    generationMode,
-  ) => {
+  it('reanalyses only blocked questions without offering generation modes', async () => {
     const pinia = createPinia()
     setActivePinia(pinia)
     const sessions = useSessionStore(pinia)
@@ -171,12 +165,10 @@ describe('SessionConfigView source replacement guard', () => {
       }],
     })
     const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true)
-    if (generationMode === 'batched') {
-      workspace.updateEditor({
-        row_id: 'row-q1-p1-s1',
-        standard_answer: '尚未保存的教师修改',
-      })
-    }
+    workspace.updateEditor({
+      row_id: 'row-q1-p1-s1',
+      standard_answer: '尚未保存的教师修改',
+    })
     const pending = deferred<JobResponse>()
     const generationSubmitter = vi.fn((
       sessionId: number,
@@ -211,41 +203,34 @@ describe('SessionConfigView source replacement guard', () => {
     app.mount(host)
     await settle()
 
-    const button = host.querySelector<HTMLButtonElement>(`button[name="${buttonName}"]`)!
+    const button = host.querySelector<HTMLButtonElement>('button[name="重新分析被拦题目"]')!
     expect(button).not.toBeNull()
     expect(host.querySelectorAll('.rubric-unit-card')).toHaveLength(1)
     button.click()
     button.click()
     await nextTick()
 
-    expect(confirm).toHaveBeenCalledTimes(generationMode === 'batched' ? 1 : 0)
+    expect(confirm).toHaveBeenCalledTimes(1)
     expect(generationSubmitter).toHaveBeenCalledExactlyOnceWith(7, expect.objectContaining({
       source_id: 'a'.repeat(32),
       source_revision: 'b'.repeat(64),
-      generation_mode: generationMode,
+      generation_mode: 'batched',
       client_request_token: expect.stringMatching(/^[0-9a-f]{32}$/),
-      ...(generationMode === 'batched' ? {
-        regenerate_question_ids: ['Q1'],
-        base_revision: 'd'.repeat(64),
-      } : {}),
+      regenerate_question_ids: ['Q1'],
+      base_revision: 'd'.repeat(64),
     }))
     expect(host.querySelectorAll('.rubric-unit-card')).toHaveLength(1)
-    expect(host.querySelector<HTMLButtonElement>('button[name="分批重新生成"]')?.disabled)
-      .toBe(true)
-    expect(host.querySelector<HTMLButtonElement>('button[name="整卷重新生成"]')?.disabled)
+    expect(host.querySelector<HTMLButtonElement>('button[name="重新分析被拦题目"]')?.disabled)
       .toBe(true)
     expect(button.textContent).toContain('正在提交')
-    const inactiveButtonName = generationMode === 'batched' ? '整卷重新生成' : '分批重新生成'
-    expect(host.querySelector<HTMLButtonElement>(
-      `button[name="${inactiveButtonName}"]`,
-    )?.textContent).toContain(inactiveButtonName)
+    expect(host.querySelectorAll('.rubric-ledger__regeneration-actions button')).toHaveLength(1)
 
     pending.resolve({
       ...activeJob(),
       payload: {
         session_id: 7,
         mode: 'generate',
-        generation_mode: generationMode,
+        generation_mode: 'batched',
         source_id: 'a'.repeat(32),
         source_revision: 'b'.repeat(64),
       },
@@ -265,8 +250,7 @@ describe('SessionConfigView source replacement guard', () => {
     expect(editorLoader).toHaveBeenCalledWith(7)
     expect(workspace.editor?.revision).toBe('e'.repeat(64))
     expect(host.textContent).toContain('新评分依据已更新')
-    expect(host.querySelector('button[name="分批重新生成"]')).toBeNull()
-    expect(host.querySelector('button[name="整卷重新生成"]')).toBeNull()
+    expect(host.querySelector('button[name="重新分析被拦题目"]')).toBeNull()
     app.unmount()
   })
 

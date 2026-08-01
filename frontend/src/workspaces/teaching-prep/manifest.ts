@@ -8,7 +8,7 @@ const manifest: WorkspaceManifest = {
   routePrefix: '/teaching-prep',
   page: () => import('./views/TeachingPrepHomeView.vue'),
   icon: 'teaching-prep',
-  enabled: () => import.meta.env.VITE_TEACHING_PREP_ENABLED === '1',
+  enabled: () => import.meta.env.VITE_TEACHING_PREP_ENABLED !== '0',
   dataClassifications: ['internal', 'confidential'],
   featureFlags: ['teaching-prep-shell'],
   title: '备课工作台',

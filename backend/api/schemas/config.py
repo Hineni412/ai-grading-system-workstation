@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import re
 from typing import Any, Literal
 
 from pydantic import (
@@ -89,6 +90,35 @@ class ConfigQuestionPreviewResponse(BaseModel):
     rich_content: ConfigRichContentResponse
 
 
+class ConfigAmbiguousAssetResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    candidate_id: str = Field(pattern=r"^A[1-9]\d{0,3}$")
+    previous_question_id: str = Field(pattern=r"^[A-Za-z0-9_-]{1,100}$")
+    next_question_id: str = Field(pattern=r"^[A-Za-z0-9_-]{1,100}$")
+    source_section: Literal["question", "answer"]
+    asset_url: str = Field(pattern=r"^/api/sessions/[1-9]\d*/config/sources/[0-9a-f]{32}/ambiguous-assets/A[1-9]\d{0,3}$")
+
+
+class ConfigSourceAssetResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    asset_id: str = Field(pattern=r"^[AP][1-9]\d{0,3}$")
+    asset_url: str = Field(
+        pattern=(
+            r"^/api/sessions/[1-9]\d*/config/sources/[0-9a-f]{32}/"
+            r"(?:ambiguous-assets/A[1-9]\d{0,3}|questions/[A-Za-z0-9_-]{1,100}/assets/(?:question|answer)(?:/\d+)?)$"
+        )
+    )
+    assignment_state: Literal["automatic", "uncertain"]
+    question_id: str | None = Field(
+        default=None,
+        pattern=r"^[A-Za-z0-9_-]{1,100}$",
+    )
+    asset_kind: Literal["question", "answer"]
+    candidate_question_ids: list[str] = Field(max_length=500)
+
+
 class ConfigSourceResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -101,6 +131,14 @@ class ConfigSourceResponse(BaseModel):
     sha256_prefix: str = Field(pattern=r"^[0-9a-f]{12}$")
     parse_state: Literal["ready"]
     questions: list[ConfigQuestionPreviewResponse] = Field(max_length=500)
+    ambiguous_assets: list[ConfigAmbiguousAssetResponse] = Field(
+        default_factory=list,
+        max_length=5_000,
+    )
+    assets: list[ConfigSourceAssetResponse] = Field(
+        default_factory=list,
+        max_length=5_000,
+    )
 
 
 class ConfigSourceSubmissionResponse(BaseModel):
@@ -120,7 +158,7 @@ class ConfigSourceQuestionDecisionRequest(BaseModel):
         "calculation",
         "proof",
         "comprehensive",
-    ]
+    ] | None = None
     excluded: bool
     answer_confirmed: bool = False
     answer_override: str | None = Field(default=None, max_length=20_000)
@@ -133,6 +171,27 @@ class ConfigSourceQuestionDecisionRequest(BaseModel):
                 raise ValueError("answer_override must be nonblank")
             if not self.answer_confirmed:
                 raise ValueError("answer_override requires answer_confirmed=true")
+        return self
+
+
+class ConfigAmbiguousAssetDecisionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    candidate_id: str = Field(pattern=r"^[AP][1-9]\d{0,3}$")
+    action: Literal["bind", "ignore"]
+    question_id: str | None = Field(
+        default=None,
+        pattern=r"^[A-Za-z0-9_-]{1,100}$",
+    )
+    asset_kind: Literal["question", "answer"] | None = None
+
+    @model_validator(mode="after")
+    def _validate_binding(self) -> "ConfigAmbiguousAssetDecisionRequest":
+        if self.action == "ignore":
+            if self.question_id is not None or self.asset_kind is not None:
+                raise ValueError("ignored asset cannot have a binding target")
+        elif self.question_id is None or self.asset_kind is None:
+            raise ValueError("bound asset requires a question and role")
         return self
 
 
@@ -153,7 +212,12 @@ class ConfigSourceGenerationRequest(BaseModel):
         default_factory=list,
         max_length=500,
     )
+    asset_decisions: list[ConfigAmbiguousAssetDecisionRequest] = Field(
+        default_factory=list,
+        max_length=5_000,
+    )
     sync_to_question_bank: bool = False
+    curriculum_volume_id: str | None = Field(default=None, max_length=80)
     regenerate_question_ids: list[str] | None = Field(
         default=None,
         min_length=1,
@@ -188,6 +252,18 @@ class ConfigSourceGenerationRequest(BaseModel):
             )
         return normalized
 
+    @field_validator("curriculum_volume_id")
+    @classmethod
+    def _normalize_curriculum_volume_id(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        if not normalized:
+            return None
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", normalized):
+            raise ValueError("curriculum_volume_id is invalid")
+        return normalized
+
     @model_validator(mode="after")
     def _validate_targeted_regeneration(self) -> "ConfigSourceGenerationRequest":
         targeted = self.regenerate_question_ids is not None
@@ -201,6 +277,10 @@ class ConfigSourceGenerationRequest(BaseModel):
         ):
             raise ValueError(
                 "targeted regeneration must be batched and cannot sync to question bank"
+            )
+        if self.sync_to_question_bank and self.curriculum_volume_id is None:
+            raise ValueError(
+                "curriculum_volume_id is required before question analysis"
             )
         return self
 

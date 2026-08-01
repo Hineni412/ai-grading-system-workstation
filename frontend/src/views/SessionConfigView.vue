@@ -25,7 +25,6 @@ import {
   type ConfigEditorSaveRequest,
   type ConfigEditorSaveResponse,
   type ConfigGenerationRequest,
-  type GenerationMode,
   type ManualPartInput,
 } from '../api/config-workspace'
 import type { JobResponse } from '../api/jobs'
@@ -65,7 +64,7 @@ const selectedScoringQuestion = ref('')
 const refining = ref(false)
 const refineError = ref('')
 const regenerationSubmitting = ref(false)
-const activeRegenerationMode = ref<GenerationMode | null>(null)
+const activeRegenerationMode = ref<'batched' | null>(null)
 const regenerationMessage = ref('')
 const regenerationError = ref('')
 const inlineRegenerationJobId = ref<number | null>(null)
@@ -90,7 +89,6 @@ const regenerationBusy = computed(() => regenerationSubmitting.value
   || configJobActive.value || submissionPending.value)
 const canRegenerateBatched = computed(() => configStore.canGenerate
   && blockingQualityQuestionIds.value.length > 0)
-const canRegenerateWholeDocument = computed(() => configStore.canGenerateWholeDocument)
 const templateReadinessTrigger = computed(() => {
   const current = configStore.jobId === null ? null : jobStore.jobs[configStore.jobId]
   if (current?.job_type !== 'config_generation'
@@ -371,7 +369,6 @@ function attachInlineRegeneration(
   next: JobResponse,
   generationContext: number,
   sessionId: number,
-  mode: GenerationMode,
 ): void {
   jobStore.track(next)
   if (!configStore.attachJob(next.id, generationContext)) return
@@ -381,9 +378,7 @@ function attachInlineRegeneration(
     generationContext,
     sessionId,
   }
-  regenerationMessage.value = mode === 'whole_document'
-    ? '整卷重新生成已经开始，当前正式评分依据继续保留。'
-    : '分批重新生成已经开始，当前正式评分依据继续保留。'
+  regenerationMessage.value = '被拦题目重新分析已经开始，当前正式评分依据继续保留。'
 }
 
 async function abandonMissingRegeneration(
@@ -400,50 +395,39 @@ async function abandonMissingRegeneration(
   }
 }
 
-async function regenerateBlockedEditor(mode: GenerationMode): Promise<void> {
-  const modeAvailable = mode === 'whole_document'
-    ? canRegenerateWholeDocument.value
-    : canRegenerateBatched.value
-  if (!modeAvailable || regenerationBusy.value || saving.value || refining.value
+async function regenerateBlockedEditor(): Promise<void> {
+  if (!canRegenerateBatched.value || regenerationBusy.value || saving.value || refining.value
     || configStore.sessionId === null) return
-  const targetedQuestionIds = mode === 'batched'
-    ? blockingQualityQuestionIds.value
-    : []
-  if (mode === 'batched' && targetedQuestionIds.length === 0) return
+  const targetedQuestionIds = blockingQualityQuestionIds.value
+  if (targetedQuestionIds.length === 0) return
   if (configStore.hasDirtyEditor && !window.confirm(
-    mode === 'batched'
-      ? `评分依据还有未保存修改。${targetedQuestionIds.join('、')} 重新生成成功后会发布新版本，未保存修改不会保留。是否继续？`
-      : '评分依据还有未保存修改。整卷生成完整成功后会替换当前正式版本，未保存修改不会保留。是否继续？',
+    `评分依据还有未保存修改。${targetedQuestionIds.join('、')} 重新分析成功后会发布新版本，未保存修改不会保留。是否继续？`,
   )) return
 
   const sessionId = configStore.sessionId
   const generationContext = configStore.captureGenerationContext()
   const requestToken = createClientRequestToken()
   const request: ConfigGenerationRequest = {
-    ...configStore.sourceRequest(mode, false),
+    ...configStore.sourceRequest('batched', false),
     client_request_token: requestToken,
   }
-  if (mode === 'batched') {
-    request.regenerate_question_ids = [...targetedQuestionIds]
-    request.base_revision = configStore.editor?.revision
-    request.sync_to_question_bank = false
-  }
-  if (!configStore.markJobSubmissionPending(requestToken, 'generate', mode)) return
-  activeRegenerationMode.value = mode
+  request.regenerate_question_ids = [...targetedQuestionIds]
+  request.base_revision = configStore.editor?.revision
+  request.sync_to_question_bank = false
+  if (!configStore.markJobSubmissionPending(requestToken, 'generate', 'batched')) return
+  activeRegenerationMode.value = 'batched'
   regenerationSubmitting.value = true
-  regenerationMessage.value = mode === 'batched'
-    ? `正在提交 ${targetedQuestionIds.join('、')} 的重新生成任务…`
-    : '正在提交整卷重新生成任务…'
+  regenerationMessage.value = `正在提交 ${targetedQuestionIds.join('、')} 的重新分析任务…`
   regenerationError.value = ''
   try {
     const next = await props.generationSubmitter(sessionId, request)
-    attachInlineRegeneration(next, generationContext, sessionId, mode)
+    attachInlineRegeneration(next, generationContext, sessionId)
   } catch (error) {
     if (isAmbiguousWriteError(error)) {
       regenerationMessage.value = '请求结果未知，正在核对这一次任务…'
       try {
         const reconciled = await props.generationLoader(sessionId, requestToken)
-        attachInlineRegeneration(reconciled, generationContext, sessionId, mode)
+        attachInlineRegeneration(reconciled, generationContext, sessionId)
       } catch (reconciliationError) {
         regenerationMessage.value = ''
         if (isAuthoritativeNotFoundError(
@@ -459,7 +443,7 @@ async function regenerateBlockedEditor(mode: GenerationMode): Promise<void> {
       configStore.clearGenerationSubmissionPending()
       activeRegenerationMode.value = null
       regenerationMessage.value = ''
-      regenerationError.value = '重新生成没有开始，当前正式评分依据未改变，可以再次提交。'
+      regenerationError.value = '重新分析没有开始，当前正式评分依据未改变，可以再次提交。'
     }
   } finally {
     regenerationSubmitting.value = false
@@ -487,7 +471,7 @@ watch(
     if (current.status === 'failed') {
       activeRegenerationMode.value = null
       regenerationMessage.value = ''
-      regenerationError.value = '重新生成失败，当前正式评分依据仍然保留，可以再次选择生成方式。'
+      regenerationError.value = '重新分析失败，当前正式评分依据仍然保留，可以再次提交。'
       return
     }
     if (current.status === 'cancelled') {
@@ -498,7 +482,7 @@ watch(
     if (current.status !== 'succeeded') return
     if (current.result.outcome !== 'complete') {
       activeRegenerationMode.value = null
-      regenerationMessage.value = '分批生成只完成了一部分，当前正式评分依据未替换；可以再次选择生成方式。'
+      regenerationMessage.value = '题目分析只完成了一部分，当前正式评分依据未替换；可以再次提交失败题。'
       return
     }
     if (loadedInlineRegenerationJobs.has(current.id)) return
@@ -579,11 +563,14 @@ watch(
                 :before-upload="confirmSourceUpload"
                 @uploaded="configStore.acceptUploadedSource"
               />
+              <div v-if="configStore.source" id="config-curriculum-volume-slot" />
               <QuestionBlockReview
                 v-if="configStore.source"
                 :source="configStore.source"
                 :decisions="configStore.decisions"
+                :asset-decisions="configStore.assetDecisions"
                 @update:decisions="configStore.updateDecisions"
+                @update:asset-decisions="configStore.updateAssetDecisions"
               />
             </div>
             <div
@@ -592,6 +579,7 @@ watch(
               tabindex="-1"
             >
               <ConfigGenerationPanel
+                :session-name="sessionStore.currentSession.name"
                 @continue="selectStage('editor')"
               />
             </div>
@@ -622,7 +610,6 @@ watch(
             :disabled="saving || refining || configJobActive || submissionPending"
             :show-regeneration-actions="saveBlocked"
             :can-regenerate-batched="canRegenerateBatched"
-            :can-regenerate-whole-document="canRegenerateWholeDocument"
             :regeneration-busy="regenerationBusy"
             :regeneration-mode="activeRegenerationMode"
             :regeneration-submitting="regenerationSubmitting"

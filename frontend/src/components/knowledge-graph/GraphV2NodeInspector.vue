@@ -52,7 +52,7 @@ const relations = computed(() => {
       } else if (edge.relation_type === 'prerequisite') {
         description = outgoing ? '学习本知识点前通常需要先掌握它' : '本知识点是该目标知识点的先修'
       } else {
-        description = '两个知识点经教师确认相关'
+        description = '两个知识点经治理后确认为相关'
       }
       return {
         ...edge,
@@ -92,14 +92,11 @@ const activeMasteryLabel = computed(() => masteryLabel(
     : props.node?.mastery_v1,
 ))
 const missingReasons = computed(() => {
-  const result = [...(props.node?.missing_reasons ?? [])]
-  if (props.node?.mastery_v2.status === 'unavailable') result.push('mastery_v2_not_enabled')
-  return [...new Set(result)]
+  return [...new Set(props.node?.missing_reasons ?? [])]
 })
 
 function missingReasonLabel(reason: string): string {
   if (reason === 'no_evidence_in_scope') return '当前考试和学生范围内没有题目证据'
-  if (reason === 'mastery_v2_not_enabled') return '掌握度 v2 尚未启用，当前仍显示 v1 证据结果'
   return reason
 }
 
@@ -122,15 +119,12 @@ function scoreRateLabel(value: number | null): string {
     <template v-else>
       <section class="knowledge-graph-inspector__facts" aria-labelledby="knowledge-node-facts-title">
         <h3 id="knowledge-node-facts-title">{{ node.display_name }}</h3>
-        <p class="knowledge-graph-stable-key">{{ node.stable_key }} · 身份版本 {{ node.identity_revision }}</p>
+        <p class="knowledge-graph-stable-key">稳定知识标识 {{ node.stable_key }}</p>
         <dl>
-          <div><dt>当前结果</dt><dd>{{ activeMasteryLabel }} · {{ stateLabel }}</dd></div>
-          <div><dt>v1 对照</dt><dd>{{ masteryLabel(node.mastery_v1) }}</dd></div>
-          <div><dt>v2 对照</dt><dd>{{ masteryLabel(node.mastery_v2) }}</dd></div>
+          <div><dt>当前掌握证据</dt><dd>{{ activeMasteryLabel }} · {{ stateLabel }}</dd></div>
           <div><dt>样本数量</dt><dd>{{ (masteryMode === 'v2' ? node.mastery_v2 : node.mastery_v1).evidence_count }} 条</dd></div>
           <div><dt>涉及学生</dt><dd>{{ node.evidence.student_count }} 名</dd></div>
           <div><dt>扣分记录</dt><dd>{{ node.evidence.deduction_count }} 次</dd></div>
-          <div><dt>计算口径</dt><dd>掌握度 {{ masteryMode }}{{ parameterVersion ? ` · ${parameterVersion.slice(0, 8)}` : '' }}</dd></div>
         </dl>
       </section>
 

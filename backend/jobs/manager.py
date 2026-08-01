@@ -341,6 +341,35 @@ class JobManager:
         )
         return job, True
 
+    def submit_idempotent_tagging_sync(
+        self,
+        payload: dict[str, Any],
+    ) -> tuple[JobRecord, bool]:
+        handler = self._handlers.get("tagging_sync")
+        if handler is None:
+            raise UnsupportedJobTypeError("unsupported job type: tagging_sync")
+        with self._lock:
+            if self._shutdown:
+                raise RuntimeError("JobManager has shut down")
+            job, created = self.store.create_idempotent_tagging_sync_job(payload)
+            if not created:
+                return job, False
+            try:
+                future = self._executor.submit(self._run_job, job.id, handler)
+            except Exception as exc:
+                self.store.finish(job.id, "failed", "job scheduling failed")
+                raise RuntimeError(
+                    "tagging sync job could not be scheduled"
+                ) from exc
+            self._futures[job.id] = future
+        future.add_done_callback(
+            lambda completed, job_id=job.id: self._discard_completed_future(
+                job_id,
+                completed,
+            )
+        )
+        return job, True
+
     def submit_config_retry(self, payload: dict[str, Any]) -> JobRecord:
         handler = self._handlers.get("config_generation")
         if handler is None:

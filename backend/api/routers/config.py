@@ -33,6 +33,7 @@ from backend.api.schemas.config import (
     SessionConfigResponse,
 )
 from backend.config_workspace.sources import (
+    AmbiguousAssetDecision,
     ConfigAssetNotFoundError,
     ConfigSourceChangedError,
     ConfigSourceActivationBusyError,
@@ -391,6 +392,33 @@ def get_indexed_config_source_asset(
             question_id=question_id,
             asset_kind=asset_kind,
             asset_index=asset_index,
+        )
+    except ConfigSourceError as exc:
+        raise _source_api_error(exc) from None
+    return Response(
+        content,
+        media_type=media_type,
+        headers={"Cache-Control": "private, no-store"},
+    )
+
+
+@router.get(
+    "/sessions/{session_id}/config/sources/{source_id}/ambiguous-assets/{candidate_id}",
+    responses=CONFIG_SOURCE_ERROR_RESPONSES,
+)
+def get_config_source_ambiguous_asset(
+    session_id: int,
+    source_id: str,
+    candidate_id: str,
+    db: GradingRepositoryAccess = Depends(get_grading_db),
+    source_service: ConfigSourceService = Depends(get_config_source_service),
+) -> Response:
+    _require_session(db, session_id)
+    try:
+        content, media_type = source_service.read_ambiguous_asset(
+            session_id=session_id,
+            source_id=source_id,
+            candidate_id=candidate_id,
         )
     except ConfigSourceError as exc:
         raise _source_api_error(exc) from None
@@ -974,10 +1002,15 @@ def generate_session_config_from_source(
             QuestionDecision(**decision.model_dump(exclude_defaults=True))
             for decision in request.decisions
         ]
+        asset_decisions = [
+            AmbiguousAssetDecision(**decision.model_dump(exclude_defaults=True))
+            for decision in request.asset_decisions
+        ]
         prepared = source_service.prepare_generation_input(
             record,
             decisions,
             request.generation_mode,
+            asset_decisions,
         )
     except ConfigSourceError as exc:
         raise _source_api_error(exc) from None
@@ -1031,7 +1064,12 @@ def generate_session_config_from_source(
             decision.model_dump(exclude_defaults=True)
             for decision in request.decisions
         ],
+        asset_decisions=[
+            decision.model_dump(exclude_defaults=True)
+            for decision in request.asset_decisions
+        ],
         sync_to_question_bank=bool(request.sync_to_question_bank),
+        curriculum_volume_id=request.curriculum_volume_id,
         existing_payload=(
             loaded_regeneration.payload
             if loaded_regeneration is not None

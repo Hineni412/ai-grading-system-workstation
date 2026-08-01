@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -395,6 +396,39 @@ def test_environment_and_dedicated_tagging_clients_keep_default_policies() -> No
     assert service.llm_client.settings.policy_profile is None
     assert service.review_llm_client is not None
     assert service.review_llm_client.settings.policy_profile is None
+
+
+def test_saved_config_profile_is_forwarded_to_combined_analysis_adapter(monkeypatch) -> None:
+    from question_bank.services import ai_tagging_service
+
+    configured_client = object()
+    fake_llm = SimpleNamespace(
+        settings=SimpleNamespace(
+            api_key="grading-key",
+            base_url="https://grading.example/v1",
+            config_api_key="config-key",
+            config_base_url="https://config.example/v1",
+            config_model="config-model",
+            policy_profile={"llm_config_generation_timeout_seconds": 90},
+        ),
+        config_client=configured_client,
+    )
+    captured: dict[str, object] = {}
+
+    class CapturingAdapter:
+        def __init__(self, api_key, base_url, **kwargs):
+            captured.update(api_key=api_key, base_url=base_url, **kwargs)
+
+    monkeypatch.setattr(ai_tagging_service, "LLMProtocolAdapter", CapturingAdapter)
+    service = ai_tagging_service.AITaggingService(env={}, llm_client=fake_llm)
+
+    adapter = service._protocol_adapter()
+
+    assert isinstance(adapter, CapturingAdapter)
+    assert captured["api_key"] == "config-key"
+    assert captured["base_url"] == "https://config.example/v1"
+    assert captured["client"] is configured_client
+    assert service.model == "config-model"
 
 
 def test_updates_do_not_copy_api_keys_into_data_backups() -> None:

@@ -29,6 +29,7 @@ from backend.config_workspace.publish import (
     remove_published_config,
 )
 from backend.config_workspace.sources import (
+    AmbiguousAssetDecision,
     ConfigSourceRecord,
     ConfigSourceService,
     QuestionDecision,
@@ -43,6 +44,7 @@ from question_bank.services.source_paper_archive_service import (
     source_archive_sha_lock,
 )
 from backend.config_generation.compat import (
+    allocate_grading_config_scores,
     failed_grading_config_batches,
     failed_grading_config_question_ids,
     generate_grading_config_in_batches,
@@ -51,7 +53,19 @@ from backend.config_generation.compat import (
     refine_grading_config_from_manual_structure,
 )
 from question_bank.taxonomy.curriculum_catalog import (
+    curriculum_volume,
     infer_curriculum_volume_from_text,
+)
+from question_bank.training_criteria import (
+    ConfigQuestionAnalysisSource,
+    DeferredCombinedAnalysisBundle,
+    InMemoryCombinedQuestionAnalysisModule,
+    OpenAICombinedAnalysisGateway,
+    QuestionAnalysisImage,
+    question_analysis_input_from_config_source,
+)
+from backend.config_workspace.deferred_analysis import (
+    DeferredAnalysisArtifactStore,
 )
 from backend.config_generation.normalization import (
     normalize_generated_config_schema,
@@ -180,12 +194,19 @@ def stage_config_source_generation_input(
     source_id: str,
     source_revision: str,
     decisions: list[dict[str, Any]],
+    asset_decisions: list[dict[str, Any]] | None = None,
     sync_to_question_bank: bool = False,
+    curriculum_volume_id: str | None = None,
     existing_payload: dict[str, Any] | None = None,
     regenerate_question_ids: list[str] | None = None,
     expected_revision: str | None = None,
 ) -> str:
     input_id = uuid.uuid4().hex
+    analysis_artifact_id = (
+        DeferredAnalysisArtifactStore.new_artifact_id()
+        if sync_to_question_bank
+        else ""
+    )
     payload: dict[str, Any] = {
             "session_id": int(session_id),
             "expected_rubric_path": str(expected_rubric_path),
@@ -194,7 +215,10 @@ def stage_config_source_generation_input(
             "source_id": str(source_id),
             "source_revision": str(source_revision),
             "decisions": list(decisions),
+            "asset_decisions": list(asset_decisions or []),
             "sync_to_question_bank": bool(sync_to_question_bank),
+            "curriculum_volume_id": str(curriculum_volume_id or "").strip(),
+            "analysis_artifact_id": analysis_artifact_id,
         }
     if regenerate_question_ids is not None:
         if existing_payload is None or expected_revision is None:
@@ -281,6 +305,9 @@ def run_config_generation_job(
     llm_client_factory: Callable[[], Any],
     data_root: Path | None = None,
     mapping_output_dir: Path | None = None,
+    question_bank_db_path: Path | None = None,
+    tagging_ai_service_factory: Callable[[], Any] | None = None,
+    taxonomy_governance: Any | None = None,
 ) -> dict[str, object]:
     input_id = str(context.payload.get("input_id") or "")
     mode = str(context.payload.get("mode") or "").strip()
@@ -292,6 +319,9 @@ def run_config_generation_job(
             llm_client_factory=llm_client_factory,
             data_root=data_root,
             mapping_output_dir=mapping_output_dir,
+            question_bank_db_path=question_bank_db_path,
+            tagging_ai_service_factory=tagging_ai_service_factory,
+            taxonomy_governance=taxonomy_governance,
         )
     except JobCancellationRequested:
         draft = _draft_path(upload_config_dir, context.job_id)
@@ -376,6 +406,9 @@ def _run_config_generation_job_impl(
     llm_client_factory: Callable[[], Any],
     data_root: Path | None = None,
     mapping_output_dir: Path | None = None,
+    question_bank_db_path: Path | None = None,
+    tagging_ai_service_factory: Callable[[], Any] | None = None,
+    taxonomy_governance: Any | None = None,
 ) -> dict[str, object]:
     session_id = _required_int(context.payload, "session_id")
     session = db.get_grading_session(session_id)
@@ -433,6 +466,16 @@ def _run_config_generation_job_impl(
         context.payload.get("sync_to_question_bank")
         or inputs.get("sync_to_question_bank")
     )
+    curriculum_volume_id = str(
+        inputs.get("curriculum_volume_id") or ""
+    ).strip()
+    if sync_to_question_bank:
+        volume = curriculum_volume(volume_id=curriculum_volume_id)
+        if volume is None:
+            raise ValueError(
+                "curriculum volume must be confirmed before question analysis"
+            )
+        curriculum_volume_id = str(volume["id"])
     expected_rubric_path = str(inputs.get("expected_rubric_path") or "")
     expected_answer_key_path = str(inputs.get("expected_answer_key_path") or "")
     if (
@@ -504,8 +547,12 @@ def _run_config_generation_job_impl(
             decisions.append(
                 QuestionDecision(
                     question_id=str(item.get("question_id") or ""),
-                    question_type=str(item.get("question_type") or ""),
                     excluded=bool(item.get("excluded")),
+                    question_type=(
+                        str(item.get("question_type"))
+                        if item.get("question_type") is not None
+                        else None
+                    ),
                     answer_confirmed=item.get("answer_confirmed") is True,
                     answer_override=(
                         str(item.get("answer_override"))
@@ -514,8 +561,31 @@ def _run_config_generation_job_impl(
                     ),
                 )
             )
+        raw_asset_decisions = inputs.get("asset_decisions", [])
+        if not isinstance(raw_asset_decisions, list):
+            raise ValueError("config ambiguous asset decisions are invalid")
+        asset_decisions: list[AmbiguousAssetDecision] = []
+        for item in raw_asset_decisions:
+            if not isinstance(item, dict):
+                raise ValueError("config ambiguous asset decisions are invalid")
+            asset_decisions.append(
+                AmbiguousAssetDecision(
+                    candidate_id=str(item.get("candidate_id") or ""),
+                    action=str(item.get("action") or ""),  # type: ignore[arg-type]
+                    question_id=(
+                        str(item.get("question_id"))
+                        if item.get("question_id") is not None
+                        else None
+                    ),
+                    asset_kind=(
+                        str(item.get("asset_kind"))
+                        if item.get("asset_kind") is not None
+                        else None
+                    ),  # type: ignore[arg-type]
+                )
+            )
         prepared = source_service.prepare_generation_input(
-            source_record, decisions, generation_mode
+            source_record, decisions, generation_mode, asset_decisions
         )
         confirmed_blocks = list(prepared.confirmed_blocks)
         question_images = prepared.question_images
@@ -537,7 +607,6 @@ def _run_config_generation_job_impl(
 
     context.raise_if_cancelled()
     context.report(0.05, "config_generation", "starting")
-    client = llm_client_factory()
 
     def report(progress: float, stage: str, detail: str = "") -> None:
         context.report(progress, stage, detail)
@@ -562,7 +631,128 @@ def _run_config_generation_job_impl(
             _write_json_atomic(_draft_path(upload_config_dir, context.job_id), value)
         context.raise_if_cancelled()
 
-    if mode == "regenerate_questions":
+    evidence_artifact_hash = ""
+    evidence_flow = (
+        sync_to_question_bank
+        and source_record is not None
+        and generation_mode == "batched"
+        and mode in {"generate", "retry"}
+        and tagging_ai_service_factory is not None
+        and taxonomy_governance is not None
+    )
+    if evidence_flow:
+        analysis_artifact_id = str(
+            inputs.get("analysis_artifact_id") or ""
+        ).strip().casefold()
+        if not _INPUT_ID.fullmatch(analysis_artifact_id):
+            raise ValueError("deferred question analysis identity is invalid")
+        artifact_store = DeferredAnalysisArtifactStore(Path(upload_config_dir))
+        previous_artifact = (
+            artifact_store.load(
+                analysis_artifact_id,
+                session_id=session_id,
+                source_id=source_id,
+                source_revision=source_revision,
+                curriculum_volume_id=curriculum_volume_id,
+            )
+            if artifact_store.exists(analysis_artifact_id)
+            else None
+        )
+
+        def evidence_checkpoint(bundle: DeferredCombinedAnalysisBundle) -> None:
+            nonlocal evidence_artifact_hash
+            artifact = artifact_store.save(
+                artifact_id=analysis_artifact_id,
+                session_id=session_id,
+                source_id=source_id,
+                source_revision=source_revision,
+                curriculum_volume_id=curriculum_volume_id,
+                bundle=bundle,
+            )
+            evidence_artifact_hash = artifact.content_hash
+            checkpoint(
+                _deferred_analysis_draft(
+                    bundle,
+                    exam_title=str(session.get("name") or "待命名试卷"),
+                )
+            )
+
+        if previous_artifact is not None and previous_artifact.bundle.status == "succeeded":
+            analysis_bundle = previous_artifact.bundle
+            evidence_artifact_hash = previous_artifact.content_hash
+        else:
+            tagging_service = tagging_ai_service_factory()
+            sources = _config_analysis_sources(
+                confirmed_blocks,
+                question_images or {},
+                curriculum_volume_id=curriculum_volume_id,
+                tagging_service=tagging_service,
+                volume=volume,
+            )
+            gateway = OpenAICombinedAnalysisGateway(
+                protocol_adapter=tagging_service._protocol_adapter(),
+                model_name=str(tagging_service.model),
+            )
+            analysis_module = InMemoryCombinedQuestionAnalysisModule(gateway=gateway)
+        if previous_artifact is None:
+            context.report(0.08, "question_analysis", "analyzing_evidence")
+            analysis_bundle = analysis_module.analyze(
+                operation_id=f"config:{session_id}:{analysis_artifact_id}",
+                curriculum_volume_id=curriculum_volume_id,
+                sources=sources,
+                checkpoint=evidence_checkpoint,
+            )
+        elif previous_artifact.bundle.running_source_refs:
+            context.report(0.08, "question_analysis", "resolving_interrupted_evidence")
+            analysis_bundle = analysis_module.resume_interrupted(
+                previous_artifact.bundle,
+                sources=sources,
+                curriculum_volume_id=curriculum_volume_id,
+                checkpoint=evidence_checkpoint,
+            )
+        elif previous_artifact.bundle.status != "succeeded":
+            retry_source_refs = _retry_source_refs(context.payload)
+            context.report(0.08, "question_analysis", "retrying_evidence")
+            analysis_bundle = analysis_module.retry_failed(
+                previous_artifact.bundle,
+                sources=sources,
+                curriculum_volume_id=curriculum_volume_id,
+                retry_source_refs=retry_source_refs,
+                checkpoint=evidence_checkpoint,
+            )
+        if analysis_bundle.status != "succeeded":
+            payload = _deferred_analysis_draft(
+                analysis_bundle,
+                exam_title=str(session.get("name") or "待命名试卷"),
+            )
+            checkpoint(payload)
+        else:
+            artifact = artifact_store.save(
+                artifact_id=analysis_artifact_id,
+                session_id=session_id,
+                source_id=source_id,
+                source_revision=source_revision,
+                curriculum_volume_id=curriculum_volume_id,
+                bundle=analysis_bundle,
+            )
+            evidence_artifact_hash = artifact.content_hash
+            structure = analysis_bundle.compose_generated_config(
+                exam_title=str(session.get("name") or "待命名试卷"),
+            )
+            context.raise_if_cancelled()
+            client = llm_client_factory()
+            payload = allocate_grading_config_scores(
+                structure,
+                confirmed_blocks,
+                document_text,
+                llm_client=client,
+                model_name=_config_model(client),
+                report=report,
+                q_images=question_images or None,
+                checkpoint=checkpoint,
+            )
+    elif mode == "regenerate_questions":
+        client = llm_client_factory()
         raw_regenerate_ids = inputs.get("regenerate_question_ids")
         if not isinstance(raw_regenerate_ids, list):
             raise ValueError("targeted regeneration question ids are invalid")
@@ -583,6 +773,7 @@ def _run_config_generation_job_impl(
             checkpoint=checkpoint,
         )
     elif existing_payload is not None:
+        client = llm_client_factory()
         raw_retry_ids = context.payload.get("retry_question_ids")
         retry_ids = (
             [str(qid).strip() for qid in raw_retry_ids if str(qid).strip()]
@@ -601,6 +792,7 @@ def _run_config_generation_job_impl(
             checkpoint=checkpoint,
         )
     elif generation_mode == "batched":
+        client = llm_client_factory()
         payload = generate_grading_config_from_confirmed_blocks(
             confirmed_blocks,
             document_text,
@@ -611,6 +803,7 @@ def _run_config_generation_job_impl(
             checkpoint=checkpoint,
         )
     elif source_suffix == ".docx":
+        client = llm_client_factory()
         payload = generate_grading_config_from_text(
             document_text,
             llm_client=client,
@@ -623,6 +816,7 @@ def _run_config_generation_job_impl(
             ),
         )
     else:
+        client = llm_client_factory()
         payload = generate_grading_config_from_images(
             whole_page_images,
             "",
@@ -660,12 +854,14 @@ def _run_config_generation_job_impl(
             meta["batches"] = [failure]
     context.raise_if_cancelled()
     failed_ids = failed_grading_config_question_ids(payload)
+    uncertain_ids = _deferred_uncertain_question_ids(payload)
     score_allocation = _score_allocation_summary(payload)
     total_questions = _question_count(payload, confirmed_blocks)
     summary = _summary(
         session_id,
         total_questions,
         failed_ids,
+        uncertain_ids=uncertain_ids,
         total_batch_count=_batch_count(payload),
         failed_batches=failed_grading_config_batches(payload),
         local_json_repairs=_local_json_repairs(payload),
@@ -677,7 +873,11 @@ def _run_config_generation_job_impl(
     summary["question_bank_sync_state"] = (
         "waiting_for_config" if sync_to_question_bank else "not_requested"
     )
-    if failed_ids or bool(score_allocation["score_allocation_pending"]):
+    if (
+        failed_ids
+        or uncertain_ids
+        or bool(score_allocation["score_allocation_pending"])
+    ):
         with session_config_lock(Path(upload_config_dir), session_id):
             current_session = db.get_grading_session(session_id)
             if (
@@ -784,6 +984,17 @@ def _run_config_generation_job_impl(
                             final_source.safe_filename
                             if final_source is not None
                             else ""
+                        ),
+                        curriculum_volume_id=curriculum_volume_id,
+                        analysis_artifact_id=(
+                            str(inputs.get("analysis_artifact_id") or "")
+                            if evidence_flow
+                            else ""
+                        ),
+                        analysis_artifact_hash=evidence_artifact_hash,
+                        analysis_source_id=source_id if evidence_flow else "",
+                        analysis_source_revision=(
+                            source_revision if evidence_flow else ""
                         ),
                         summary=summary,
                     )
@@ -938,6 +1149,11 @@ def _submit_automatic_question_bank_sync(
     source_paper_sha256: str,
     summary: dict[str, object],
     source_safe_filename: str = "",
+    curriculum_volume_id: str = "",
+    analysis_artifact_id: str = "",
+    analysis_artifact_hash: str = "",
+    analysis_source_id: str = "",
+    analysis_source_revision: str = "",
 ) -> None:
     source_sha = str(source_paper_sha256 or "").strip().lower()
     if not re.fullmatch(r"[0-9a-f]{64}", source_sha):
@@ -951,16 +1167,18 @@ def _submit_automatic_question_bank_sync(
         loaded = load_editor_config(db, session_id)
         if not loaded.configured:
             raise ValueError("published grading config is unavailable")
-        volume = infer_curriculum_volume_from_text(
-            " ".join(
-                item
-                for item in (
-                    str(loaded.session.get("name") or ""),
-                    str(source_safe_filename or ""),
+        volume = curriculum_volume(volume_id=curriculum_volume_id)
+        if volume is None and not str(curriculum_volume_id or "").strip():
+            volume = infer_curriculum_volume_from_text(
+                " ".join(
+                    item
+                    for item in (
+                        str(loaded.session.get("name") or ""),
+                        str(source_safe_filename or ""),
+                    )
+                    if item
                 )
-                if item
             )
-        )
         if volume is None:
             summary["question_bank_sync_state"] = "awaiting_metadata"
             summary["question_bank_sync_error"] = (
@@ -975,6 +1193,28 @@ def _submit_automatic_question_bank_sync(
             "source_paper_sha256": source_sha,
             "curriculum_volume_id": str(volume["id"]),
         }
+        deferred_identity = (
+            str(analysis_artifact_id or "").strip().casefold(),
+            str(analysis_artifact_hash or "").strip().casefold(),
+            str(analysis_source_id or "").strip().casefold(),
+            str(analysis_source_revision or "").strip().casefold(),
+        )
+        if any(deferred_identity):
+            if not (
+                _INPUT_ID.fullmatch(deferred_identity[0])
+                and re.fullmatch(r"[0-9a-f]{64}", deferred_identity[1])
+                and _INPUT_ID.fullmatch(deferred_identity[2])
+                and re.fullmatch(r"[0-9a-f]{64}", deferred_identity[3])
+            ):
+                raise ValueError("deferred question analysis hand-off is invalid")
+            identity.update(
+                {
+                    "analysis_artifact_id": deferred_identity[0],
+                    "analysis_artifact_hash": deferred_identity[1],
+                    "analysis_source_id": deferred_identity[2],
+                    "analysis_source_revision": deferred_identity[3],
+                }
+            )
         clean_filename = Path(str(source_safe_filename or "")).name
         if clean_filename:
             identity["source_safe_filename"] = clean_filename
@@ -1012,6 +1252,173 @@ def _submit_automatic_question_bank_sync(
     summary["question_bank_sync_job_id"] = int(job.id)
     summary["config_revision"] = str(loaded.revision)
     summary["source_paper_sha256"] = source_sha
+
+
+def _config_analysis_sources(
+    confirmed_blocks: list[dict[str, Any]],
+    question_images: dict[str, Any],
+    *,
+    curriculum_volume_id: str,
+    tagging_service: Any,
+    volume: dict[str, Any],
+) -> tuple[ConfigQuestionAnalysisSource, ...]:
+    provisional: list[ConfigQuestionAnalysisSource] = []
+    normalized_blocks: list[dict[str, Any]] = []
+    for index, raw_block in enumerate(confirmed_blocks, start=1):
+        if not isinstance(raw_block, dict):
+            raise ValueError("confirmed question block is invalid")
+        source_ref = str(raw_block.get("question_id") or "").strip()
+        if not source_ref:
+            raise ValueError("confirmed question id is missing")
+        block = dict(raw_block)
+        block.setdefault("grade", str(volume.get("grade") or ""))
+        block.setdefault("semester", str(volume.get("semester") or ""))
+        block.setdefault(
+            "textbook_version",
+            str(volume.get("textbook_version") or ""),
+        )
+        images = _config_analysis_images(question_images.get(source_ref))
+        if not any(
+            str(block.get(key) or "").strip()
+            for key in ("question_text", "text", "content", "stem")
+        ) and any(image.role == "question" for image in images):
+            block["question_text"] = "题目内容见随附图像"
+        question = question_analysis_input_from_config_source(
+            block,
+            question_id=index,
+            curriculum_volume_id=curriculum_volume_id,
+            images=images,
+        )
+        normalized_blocks.append(block)
+        provisional.append(ConfigQuestionAnalysisSource(source_ref, question))
+    if len({item.source_question_ref for item in provisional}) != len(provisional):
+        raise ValueError("confirmed question ids are duplicated")
+    contracts = tagging_service.taxonomy_contracts(
+        {item.question.question_id: item.question.tagging_context for item in provisional}
+    )
+    resolved: list[ConfigQuestionAnalysisSource] = []
+    for item, block in zip(provisional, normalized_blocks, strict=True):
+        contract = contracts.get(item.question.question_id)
+        if not isinstance(contract, dict):
+            raise ValueError("question taxonomy shortlist is unavailable")
+        question = question_analysis_input_from_config_source(
+            block,
+            question_id=item.question.question_id,
+            curriculum_volume_id=curriculum_volume_id,
+            taxonomy_contract=contract,
+            images=item.question.images,
+        )
+        resolved.append(
+            ConfigQuestionAnalysisSource(item.source_question_ref, question)
+        )
+    return tuple(resolved)
+
+
+def _config_analysis_images(value: Any) -> tuple[QuestionAnalysisImage, ...]:
+    if value is None:
+        return ()
+    if not isinstance(value, dict):
+        raise ValueError("question image bundle is invalid")
+    result: list[QuestionAnalysisImage] = []
+    for role in ("question", "answer"):
+        raw_encoded = value.get(role)
+        if raw_encoded is None:
+            continue
+        encoded_values = (
+            [raw_encoded]
+            if isinstance(raw_encoded, str)
+            else raw_encoded
+            if isinstance(raw_encoded, list)
+            else None
+        )
+        if (
+            not isinstance(encoded_values, list)
+            or not encoded_values
+            or len(encoded_values) > 32
+            or any(not isinstance(item, str) or not item for item in encoded_values)
+        ):
+            raise ValueError("question image body is invalid")
+        for encoded in encoded_values:
+            try:
+                content = base64.b64decode(encoded, validate=True)
+            except (binascii.Error, ValueError):
+                raise ValueError("question image body is invalid") from None
+            result.append(
+                QuestionAnalysisImage(
+                    role=role,  # type: ignore[arg-type]
+                    mime_type=_image_mime_type(content),
+                    content=content,
+                )
+            )
+    return tuple(result)
+
+
+def _image_mime_type(content: bytes) -> str:
+    if content.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if content.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if content.startswith((b"GIF87a", b"GIF89a")):
+        return "image/gif"
+    if len(content) >= 12 and content[:4] == b"RIFF" and content[8:12] == b"WEBP":
+        return "image/webp"
+    raise ValueError("question image type is unsupported")
+
+
+def _deferred_analysis_draft(
+    bundle: DeferredCombinedAnalysisBundle,
+    *,
+    exam_title: str,
+) -> dict[str, Any]:
+    failed_refs = list(bundle.failed_source_refs)
+    uncertain_refs = list(bundle.uncertain_source_refs)
+    warnings: list[str] = []
+    if failed_refs:
+        warnings.append("部分题目的拆分点分析失败")
+    if uncertain_refs:
+        warnings.append("部分模型请求结果未知，需要教师决定是否重新发起新分析")
+    return {
+        "rubric": {
+            "exam_title": str(exam_title or "待命名试卷"),
+            "total_score": 0,
+            "questions": [],
+        },
+        "answer_key": {"questions": []},
+        "meta": {
+            "warnings": warnings,
+            "generation_mode": "solution_evidence_structure",
+            "structure_source": "solution_evidence",
+            "structure_generation_model_requests": len(
+                {item.request_id for item in bundle.requests}
+            ),
+            "failed_question_ids": failed_refs,
+            "failed_batches": [
+                {
+                    "batch_id": "解题证据分析",
+                    "question_ids": failed_refs,
+                    "status": "failed",
+                    "category": "question_analysis",
+                    "error": "部分题目的拆分点分析失败，可只重试失败题目",
+                }
+            ] if failed_refs else [],
+            "analysis_total_questions": len(bundle.source_fingerprints),
+            "uncertain_question_ids": uncertain_refs,
+            "needs_teacher_resolution": bool(uncertain_refs),
+            "score_allocation_pending": False,
+        },
+    }
+
+
+def _retry_source_refs(payload: dict[str, Any]) -> list[str] | None:
+    raw = payload.get("retry_question_ids")
+    if raw is None:
+        return None
+    if not isinstance(raw, list):
+        raise ValueError("retry question ids are invalid")
+    values = [str(item or "").strip() for item in raw]
+    if not values or any(not item for item in values):
+        raise ValueError("retry question ids are invalid")
+    return values
 
 
 def _refresh_mapping_and_finalize_job(
@@ -1170,6 +1577,7 @@ def _summary(
     total_questions: int,
     failed_ids: list[str],
     *,
+    uncertain_ids: list[str] | None = None,
     total_batch_count: int = 0,
     failed_batches: list[dict[str, Any]] | None = None,
     local_json_repairs: list[dict[str, Any]] | None = None,
@@ -1181,13 +1589,17 @@ def _summary(
     retryable_mode: bool = True,
 ) -> dict[str, object]:
     failed_count = len(failed_ids)
+    clean_uncertain = list(uncertain_ids or [])
     clean_batches = list(failed_batches or [])
-    is_partial = bool(failed_count or score_allocation_pending)
-    return {
+    is_partial = bool(failed_count or clean_uncertain or score_allocation_pending)
+    result: dict[str, object] = {
         "session_id": session_id,
         "outcome": "partial" if is_partial else "complete",
         "total_questions": total_questions,
-        "generated_questions": max(0, total_questions - failed_count),
+        "generated_questions": max(
+            0,
+            total_questions - failed_count - len(clean_uncertain),
+        ),
         "total_batch_count": max(0, int(total_batch_count)),
         "failed_count": failed_count,
         "failed_question_ids": failed_ids,
@@ -1201,8 +1613,19 @@ def _summary(
         "score_allocation_failure_category": str(
             score_allocation_failure_category or ""
         )[:80],
-        "retryable": bool(is_partial and retryable_mode),
+        "retryable": bool(
+            retryable_mode and (failed_count or score_allocation_pending)
+        ),
     }
+    if clean_uncertain:
+        result.update(
+            {
+                "uncertain_count": len(clean_uncertain),
+                "uncertain_question_ids": clean_uncertain,
+                "needs_teacher_resolution": True,
+            }
+        )
+    return result
 
 
 def _score_allocation_summary(payload: dict[str, Any]) -> dict[str, object]:
@@ -1293,16 +1716,38 @@ def _summary_from_batch_draft(
     payload: dict[str, Any],
 ) -> dict[str, object]:
     failed_ids = failed_grading_config_question_ids(payload)
+    uncertain_ids = _deferred_uncertain_question_ids(payload)
+    meta = payload.get("meta") if isinstance(payload, dict) else None
+    total_questions = (
+        int(meta.get("analysis_total_questions") or 0)
+        if isinstance(meta, dict)
+        else 0
+    )
     return _summary(
         session_id,
-        _question_count(payload, []),
+        total_questions or _question_count(payload, []),
         failed_ids,
+        uncertain_ids=uncertain_ids,
         total_batch_count=_batch_count(payload),
         failed_batches=failed_grading_config_batches(payload),
         local_json_repairs=_local_json_repairs(payload),
         local_structure_repairs=_local_structure_repairs(payload),
         **_score_allocation_summary(payload),
         retryable_mode=True,
+    )
+
+
+def _deferred_uncertain_question_ids(payload: dict[str, Any]) -> list[str]:
+    meta = payload.get("meta") if isinstance(payload, dict) else None
+    raw = meta.get("uncertain_question_ids") if isinstance(meta, dict) else None
+    if not isinstance(raw, list):
+        return []
+    return list(
+        dict.fromkeys(
+            str(item or "").strip()
+            for item in raw
+            if str(item or "").strip()
+        )
     )
 
 

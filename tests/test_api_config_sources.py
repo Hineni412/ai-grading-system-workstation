@@ -4,6 +4,7 @@ import asyncio
 import io
 import json
 import warnings
+import zipfile
 from pathlib import Path
 from urllib.parse import quote
 
@@ -57,6 +58,29 @@ def _docx_with_inline_main_question_marker_bytes() -> bytes:
     output = io.BytesIO()
     document.save(output)
     return output.getvalue()
+
+
+def _docx_with_ambiguous_floating_image_bytes() -> bytes:
+    image = io.BytesIO()
+    Image.new("RGB", (24, 18), "navy").save(image, format="PNG")
+    document = Document()
+    document.add_paragraph("1. First question.")
+    document.add_paragraph().add_run().add_picture(
+        io.BytesIO(image.getvalue()), width=Inches(0.25)
+    )
+    document.add_paragraph("2. Second question.")
+    original = io.BytesIO()
+    document.save(original)
+    rewritten = io.BytesIO()
+    with zipfile.ZipFile(io.BytesIO(original.getvalue()), "r") as source:
+        with zipfile.ZipFile(rewritten, "w", zipfile.ZIP_DEFLATED) as target:
+            for info in source.infolist():
+                content = source.read(info.filename)
+                if info.filename == "word/document.xml":
+                    content = content.replace(b"<wp:inline", b"<wp:anchor")
+                    content = content.replace(b"</wp:inline>", b"</wp:anchor>")
+                target.writestr(info, content)
+    return rewritten.getvalue()
 
 
 def _docx_with_inline_question_after_breaks_bytes() -> bytes:
@@ -656,6 +680,27 @@ def test_controlled_question_and_answer_assets_are_private_no_store(tmp_path: Pa
     )
     assert missing.status_code == 404
     assert missing.json()["error"]["code"] == "config_asset_not_found"
+
+
+def test_ambiguous_asset_candidate_is_private_no_store(tmp_path: Path) -> None:
+    client, db, _upload_root = _client(tmp_path)
+    session_id = _session(db, tmp_path)
+    uploaded = client.post(
+        f"/api/sessions/{session_id}/config/sources",
+        content=_docx_with_ambiguous_floating_image_bytes(),
+        headers={
+            "content-type": "application/octet-stream",
+            "x-upload-filename": quote("ambiguous.docx"),
+        },
+    ).json()
+    candidate = uploaded["ambiguous_assets"][0]
+
+    response = client.get(candidate["asset_url"])
+
+    assert response.status_code == 200
+    assert response.headers["cache-control"] == "private, no-store"
+    assert response.headers["content-type"].startswith("image/")
+    assert response.content
 
 
 def test_replaced_source_get_fails_closed_but_new_source_remains_available(tmp_path: Path) -> None:

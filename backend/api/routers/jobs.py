@@ -180,6 +180,7 @@ def public_job_result(job: JobRecord) -> dict[str, Any]:
             "failure_category",
             "failures",
             "retryable",
+            "relation_governance_failed_question_ids",
         )
         return sanitize_public_mapping(
             {key: job.result[key] for key in allowed if key in job.result}
@@ -237,6 +238,9 @@ def public_job_result(job: JobRecord) -> dict[str, Any]:
             "failed_question_ids",
             "failed_batch_count",
             "failed_batches",
+            "uncertain_count",
+            "uncertain_question_ids",
+            "needs_teacher_resolution",
             "local_json_repairs",
             "local_structure_repairs",
             "score_allocation_pending",
@@ -326,7 +330,15 @@ def public_job_payload(job: JobRecord) -> dict[str, Any]:
             {key: job.payload[key] for key in allowed if key in job.payload}
         )
     if job.job_type == "tagging_sync":
-        allowed = ("question_ids", "source_job_id", "retry_of_job_id")
+        allowed = (
+            "question_ids",
+            "source_job_id",
+            "retry_of_job_id",
+            "retry_evidence_question_ids",
+            "retry_relation_question_ids",
+            "force_retag_question_ids",
+            "client_request_token",
+        )
         return sanitize_public_mapping(
             {key: job.payload[key] for key in allowed if key in job.payload}
         )

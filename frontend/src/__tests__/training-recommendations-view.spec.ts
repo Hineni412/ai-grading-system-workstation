@@ -261,20 +261,107 @@ describe('training recommendations view', () => {
 
     expect(host.querySelector('h1')?.textContent).toBe('训练推荐')
     expect(host.textContent).toContain('精确标签口径')
-    expect(host.textContent).toContain('请明确选择要训练的学生')
-    expect(trainingApiMock.diagnose).not.toHaveBeenCalled()
+    expect(host.textContent).toContain('范围变化后自动刷新')
+    await vi.waitFor(() => expect(trainingApiMock.diagnose).toHaveBeenCalledOnce())
+  })
+
+  it('cancels an in-flight diagnosis and publishes only the latest class scope', async () => {
+    let resolveFirst!: (value: TrainingDiagnosis) => void
+    const first = new Promise<TrainingDiagnosis>((resolve) => { resolveFirst = resolve })
+    const secondDiagnosis: TrainingDiagnosis = {
+      ...diagnosis,
+      scope: { mode: 'class', class_id: '七年级二班', student_ids: ['22'] },
+      students: [{
+        ...diagnosis.students[0]!,
+        student_id: '22',
+        student_code: 'S022',
+        student_name: '匿名学生乙',
+        class_id: '七年级二班',
+      }],
+    }
+    fetchStudentsMock.mockResolvedValue([
+      {
+        id: 12,
+        student_code: 'S012',
+        name: '匿名学生甲',
+        class_name: '七年级一班',
+        created_at: null,
+      },
+      {
+        id: 22,
+        student_code: 'S022',
+        name: '匿名学生乙',
+        class_name: '七年级二班',
+        created_at: null,
+      },
+    ])
+    trainingApiMock.diagnose
+      .mockImplementationOnce(() => first)
+      .mockResolvedValueOnce(secondDiagnosis)
+
+    const { host } = await mountView()
+    await vi.waitFor(() => expect(trainingApiMock.diagnose).toHaveBeenCalledTimes(1))
+    selectValue(
+      host.querySelector<HTMLSelectElement>('.training-filter-inline select')!,
+      '七年级二班',
+    )
+    await vi.waitFor(() => expect(trainingApiMock.diagnose).toHaveBeenCalledTimes(2))
+    resolveFirst(diagnosis)
+    await vi.waitFor(() => expect(host.textContent).toContain('匿名学生乙'))
+
+    expect(host.textContent).not.toContain('匿名学生甲55%')
+    expect(trainingApiMock.diagnose.mock.calls[1]?.[0]).toMatchObject({
+      scope: { mode: 'class', class_id: '七年级二班', student_ids: ['22'] },
+    })
+  })
+
+  it('keeps selected students across multiple searches in the same class', async () => {
+    fetchStudentsMock.mockResolvedValue([
+      {
+        id: 12,
+        student_code: 'S012',
+        name: '匿名学生甲',
+        class_name: '七年级一班',
+        created_at: null,
+      },
+      {
+        id: 22,
+        student_code: 'S022',
+        name: '匿名学生乙',
+        class_name: '七年级一班',
+        created_at: null,
+      },
+    ])
+    const { host } = await mountView()
+    await vi.waitFor(() => expect(trainingApiMock.diagnose).toHaveBeenCalledTimes(1))
+
+    const selectedMode = [...host.querySelectorAll<HTMLButtonElement>('button')]
+      .find((item) => item.textContent?.trim() === '指定学生')!
+    selectedMode.click()
+    await settle()
+    const search = host.querySelector<HTMLInputElement>('input[aria-label="搜索学生"]')!
+
+    search.value = '甲'
+    search.dispatchEvent(new Event('input', { bubbles: true }))
+    await nextTick()
+    host.querySelector<HTMLInputElement>('[data-testid="training-student"] input')!.click()
+    await vi.waitFor(() => expect(trainingApiMock.diagnose).toHaveBeenCalledTimes(2))
+
+    search.value = '乙'
+    search.dispatchEvent(new Event('input', { bubbles: true }))
+    await nextTick()
+    host.querySelector<HTMLInputElement>('[data-testid="training-student"] input')!.click()
+    await vi.waitFor(() => expect(trainingApiMock.diagnose).toHaveBeenCalledTimes(3))
+
+    expect(trainingApiMock.diagnose.mock.calls[2]?.[0]).toMatchObject({
+      scope: { mode: 'selected', student_ids: ['12', '22'] },
+    })
+    expect(host.querySelector('.training-section-heading')?.textContent).toContain('2 名学生')
   })
 
   it('connects diagnosis evidence to the recommendation path and teacher confirmation', async () => {
     const { host } = await mountView()
     await vi.waitFor(() => expect(host.textContent).toContain('匿名学生甲'))
-    selectValue(
-      host.querySelector<HTMLSelectElement>('[data-testid="training-student"]')!,
-      '12',
-    )
-    await settle()
-    host.querySelector<HTMLButtonElement>('[data-testid="analyze-training"]')!.click()
-
     await vi.waitFor(() => expect(host.textContent).toContain('55%'))
     expect(host.textContent).toContain('1 条证据')
     expect(host.textContent).toContain('Q2：题目尚未关联题库来源')

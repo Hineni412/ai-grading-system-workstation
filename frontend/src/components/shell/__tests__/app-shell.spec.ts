@@ -107,6 +107,7 @@ describe('AppShell', () => {
       ['组卷工作台', '/question-assembly'],
       ['知识图谱', '/knowledge-graph'],
       ['训练推荐', '/training'],
+      ['备课工作台', '/teaching-prep'],
       ['班主任工作台', '/class-teacher'],
     ])
     expect(
@@ -130,6 +131,7 @@ describe('AppShell', () => {
       '组卷工作台',
       '知识图谱',
       '训练推荐',
+      '备课工作台',
       '班主任工作台',
       '学生管理',
       '大模型 API',

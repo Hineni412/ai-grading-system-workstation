@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 
 import {
   abandonConfigGenerationRequest,
@@ -15,23 +15,33 @@ import {
 import { jobApi, type JobResponse } from '../../api/jobs'
 import { isAmbiguousWriteError, isAuthoritativeNotFoundError } from '../../api/errors'
 import {
+  questionBankApi,
+  type CurriculumCatalog,
+  type CurriculumVolume,
+} from '../../api/question-bank'
+import { inferCurriculumVolumeId } from '../../domain/curriculum-volume-selection'
+import {
   useConfigWorkspaceStore,
   type ConfigGenerationSummary,
 } from '../../stores/config-workspace'
 import { useJobStore } from '../../stores/jobs'
 
 const props = withDefaults(defineProps<{
+  sessionName?: string
   submitter?: (sessionId: number, request: ConfigGenerationRequest) => Promise<JobResponse>
   retryer?: (sessionId: number, jobId: number, questionIds: string[], requestToken: string) => Promise<JobResponse>
   editorLoader?: (sessionId: number) => Promise<ConfigEditorResponse>
   generationLoader?: (sessionId: number, requestToken: string) => Promise<JobResponse>
   requestAbandoner?: (sessionId: number, requestToken: string) => Promise<void>
+  curriculumLoader?: () => Promise<CurriculumCatalog>
 }>(), {
+  sessionName: '',
   submitter: submitConfigGeneration,
   retryer: retryConfigGeneration,
   editorLoader: fetchConfigEditor,
   generationLoader: fetchConfigGenerationJobByToken,
   requestAbandoner: abandonConfigGenerationRequest,
+  curriculumLoader: () => questionBankApi.getCurriculum(),
 })
 const emit = defineEmits<{
   continue: []
@@ -39,17 +49,52 @@ const emit = defineEmits<{
 
 const configStore = useConfigWorkspaceStore()
 const jobStore = useJobStore()
-const mode = ref<GenerationMode>('batched')
 const submitting = ref(false)
 const requestError = ref('')
 const editorError = ref('')
 const selectedFailed = ref<string[]>([])
+const curriculum = ref<CurriculumCatalog | null>(null)
+const selectedVolumeId = ref('')
+const curriculumLoading = ref(true)
+const curriculumError = ref('')
+const volumeTeleportTarget = ref<HTMLElement | null>(null)
 const editorLoads = new Set<number>()
 const submissionUnknown = computed(() => configStore.pendingJobRequestToken !== null)
 const workspacePending = computed(() => configStore.hasPendingSubmission)
-const generationAvailable = computed(() => mode.value === 'whole_document'
-  ? configStore.canGenerateWholeDocument
-  : configStore.canGenerate)
+const generationAvailable = computed(() => configStore.canGenerate)
+const selectedVolume = computed<CurriculumVolume | null>(() =>
+  curriculum.value?.volumes.find((item) => item.id === selectedVolumeId.value) ?? null)
+const generationBlockReason = computed(() => {
+  if (workspacePending.value) return '正在核对上一项请求，请稍候。'
+  const source = configStore.source
+  if (source === null || source.questions.length === 0) return '请先上传并完成试卷拆题。'
+  const resolved = new Set(configStore.assetDecisions.map((item) => item.candidate_id))
+  const uncertainIds = source.assets === undefined
+    ? (source.ambiguous_assets ?? []).map((item) => item.candidate_id)
+    : source.assets.filter((item) => item.assignment_state === 'uncertain')
+      .map((item) => item.asset_id)
+  const unresolved = uncertainIds.filter((item) => !resolved.has(item)).length
+  if (unresolved > 0) return `还有 ${unresolved} 张黄色图片没有归属，请先拖到题目或答案区域。`
+  if (curriculumLoading.value) return '正在读取教材目录。'
+  if (selectedVolume.value === null) return '请先选择这份试卷对应的教材册别。'
+  if (!generationAvailable.value) return '拆题结果尚未达到整卷生成条件。'
+  return ''
+})
+
+onMounted(async () => {
+  volumeTeleportTarget.value = document.querySelector<HTMLElement>('#config-curriculum-volume-slot')
+  try {
+    curriculum.value = await props.curriculumLoader()
+    selectedVolumeId.value = inferCurriculumVolumeId(
+      props.sessionName,
+      curriculum.value.volumes,
+    )
+  } catch {
+    curriculumError.value = '本地教材目录暂时无法读取，当前不会调用题目分析模型。'
+  } finally {
+    curriculumLoading.value = false
+  }
+})
 
 const job = computed(() => configStore.jobId === null ? null : jobStore.jobs[configStore.jobId] ?? null)
 const syncError = computed(() => configStore.jobId === null
@@ -237,9 +282,9 @@ function continueToEditor(): void {
   emit('continue')
 }
 
-async function restartWholeDocument(): Promise<void> {
+async function restartAnalysis(): Promise<void> {
   prepareFreshGeneration()
-  await startGeneration('whole_document')
+  await startGeneration('batched')
 }
 
 function returnToEditor(): void {
@@ -274,12 +319,16 @@ async function abandonMissingRequest(
   }
 }
 
-async function startGeneration(requestedMode: GenerationMode = mode.value): Promise<void> {
+async function startGeneration(requestedMode: GenerationMode = 'batched'): Promise<void> {
   const ready = requestedMode === 'whole_document'
     ? configStore.canGenerateWholeDocument
     : configStore.canGenerate
   if (!ready || submitting.value || active.value || workspacePending.value
     || configStore.sessionId === null) return
+  if (selectedVolume.value === null) {
+    requestError.value = '请先选择这份试卷对应的年级和上下册；选择前不会调用模型。'
+    return
+  }
   if (configStore.hasDirtyEditor && !window.confirm(
     '评分依据还有未保存修改。新一轮完整生成成功后会用新结果替换当前正式版本，未保存修改不会保留。是否继续？',
   )) return
@@ -287,7 +336,7 @@ async function startGeneration(requestedMode: GenerationMode = mode.value): Prom
   const sessionId = configStore.sessionId
   const requestToken = createClientRequestToken()
   const request = {
-    ...configStore.sourceRequest(requestedMode, false),
+    ...configStore.sourceRequest(requestedMode, true, selectedVolume.value.id),
     client_request_token: requestToken,
   }
   if (!configStore.markJobSubmissionPending(requestToken, 'generate', requestedMode)) return
@@ -434,7 +483,7 @@ watch(job, (current, previous) => {
     <header class="config-section-heading">
       <div>
         <h2 id="config-generation-title">生成评分依据</h2>
-        <p>可按拆题结果分批生成，也可让 AI 直接阅读整卷并一次生成完整评分标准。</p>
+        <p>系统按题自动分析解题证据，完成后统一赋分；无需选择整卷或分批模式。</p>
       </div>
     </header>
 
@@ -448,22 +497,37 @@ watch(job, (current, previous) => {
       替换成功后，样卷题框和扫描预检需要重新确认，历史批改结果不会删除。
     </p>
 
-    <div v-if="job === null" class="config-generation__modes" role="radiogroup" aria-label="评分依据生成方式">
-      <label :class="{ 'is-selected': mode === 'batched' }">
-        <input v-model="mode" type="radio" value="batched">
-        <span>
-          <strong>按拆题结果生成</strong>
-          <small>适合拆题准确时使用。每批最多 3 题，失败批次可单独重试。</small>
-        </span>
-      </label>
-      <label :class="{ 'is-selected': mode === 'whole_document' }">
-        <input v-model="mode" type="radio" value="whole_document">
-        <span>
-          <strong>整卷生成评分标准</strong>
-          <small>不依赖当前拆题和答案片段。整份 Word 文本或 PDF 页面只发送一次；失败不自动重试，也不会发布半成品。</small>
-        </span>
-      </label>
+    <div v-if="job === null" class="config-generation__flow" role="note">
+      <strong>一次完成题目分析与评分依据</strong>
+      <span>先核对拆题结果；系统会按题从所选教材范围召回少量候选词，提取小问与踩分点证据，再对整卷统一赋分。失败时只重试失败题，不重做已完成题目。</span>
     </div>
+
+    <Teleport :to="volumeTeleportTarget ?? 'body'" :disabled="volumeTeleportTarget === null">
+      <div
+        v-if="job === null"
+        class="config-generation__metadata config-generation__metadata--volume"
+        role="group"
+        aria-labelledby="config-generation-volume-title"
+      >
+        <div>
+          <strong id="config-generation-volume-title">选择教材册别</strong>
+          <p>上传完成后先选教材；系统只召回与本题相关的精细词条，改变选项立即生效。</p>
+        </div>
+        <label>
+          年级与学期
+          <select v-model="selectedVolumeId" :disabled="curriculumLoading" @change="requestError = ''">
+            <option value="">请选择</option>
+            <option v-for="volume in curriculum?.volumes ?? []" :key="volume.id" :value="volume.id">
+              {{ volume.label }} · {{ volume.textbook_version }}
+            </option>
+          </select>
+        </label>
+        <span v-if="selectedVolume" class="config-generation__volume-ready">已选择</span>
+        <p v-if="curriculumError" class="config-generation__error" role="alert">
+          {{ curriculumError }}
+        </p>
+      </div>
+    </Teleport>
 
     <p
       v-if="job !== null && questionBankSyncCopy"
@@ -473,14 +537,20 @@ watch(job, (current, previous) => {
       {{ questionBankSyncCopy }}
     </p>
 
-    <button
-      v-if="job === null"
-      type="button"
-      name="开始生成"
-      class="config-generation__primary"
-      :disabled="!generationAvailable || submitting || workspacePending"
-      @click="startGeneration()"
-    >{{ submitting ? '正在提交…' : mode === 'whole_document' ? '整卷生成评分标准' : '开始分批生成' }}</button>
+    <template v-if="job === null">
+      <button
+        type="button"
+        name="开始生成"
+        class="config-generation__primary"
+        :disabled="!generationAvailable || curriculumLoading || selectedVolume === null || submitting || workspacePending"
+        @click="startGeneration()"
+      >{{ submitting ? '正在提交…' : '分析试卷并生成评分依据' }}</button>
+      <p
+        v-if="generationBlockReason"
+        class="config-generation__blocking-reason"
+        role="status"
+      >{{ generationBlockReason }}</p>
+    </template>
 
     <div v-else class="config-generation__job" aria-live="polite">
       <div class="config-generation__status-line">
@@ -539,8 +609,8 @@ watch(job, (current, previous) => {
           <button v-if="retryable" type="button" name="重试所选批次" :disabled="submitting || workspacePending || selectedFailed.length === 0" @click="retrySelected()">
             重试所选失败题
           </button>
-          <button type="button" name="整卷重新生成" class="config-generation__secondary" :disabled="submitting || workspacePending" @click="restartWholeDocument">
-            整卷重新生成
+          <button type="button" name="重新分析全部题目" class="config-generation__secondary" :disabled="submitting || workspacePending" @click="restartAnalysis">
+            重新分析全部题目
           </button>
         </div>
       </div>
@@ -628,17 +698,22 @@ watch(job, (current, previous) => {
 
 <style scoped>
 .config-generation { min-width: 0; margin-block-start: var(--space-6); border-block-start: var(--border-width) solid var(--color-border-default); }
-.config-generation__modes { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-3); margin: 0 0 var(--space-3); padding: var(--space-4); border: var(--border-width) solid var(--color-border-default); background: var(--color-bg-subtle); }
+.config-generation__flow { display: grid; gap: var(--space-1); margin: 0 0 var(--space-3); padding: var(--space-3) var(--space-4); border: var(--border-width) solid var(--color-border-default); border-inline-start: var(--border-selected-width) solid var(--color-accent); background: var(--color-bg-subtle); }
+.config-generation__flow span { color: var(--color-text-secondary); line-height: var(--line-height-relaxed); }
+.config-generation__blocking-reason { margin: var(--space-2) 0 0; color: #8a5a0a; font-size: var(--font-size-caption); }
+.config-generation__volume,
+.config-generation__metadata { margin: 0 0 var(--space-3); padding: var(--space-3) var(--space-4); border: var(--border-width) solid var(--color-border-default); background: var(--color-bg-surface); }
+.config-generation__volume { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); color: var(--color-text-secondary); }
+.config-generation__metadata { display: grid; grid-template-columns: minmax(0, 1fr) minmax(16rem, 0.65fr) auto; align-items: end; gap: var(--space-3); }
+.config-generation__metadata--volume { margin-block: var(--space-4); }
+.config-generation__volume-ready { align-self: end; padding-block: var(--space-2); color: var(--color-success); font-weight: var(--font-weight-medium); }
+.config-generation__metadata p { margin: var(--space-1) 0 0; color: var(--color-text-secondary); }
+.config-generation__metadata label { display: grid; gap: var(--space-1); }
+.config-generation__metadata select { min-height: var(--control-height-default); padding-inline: var(--space-2); border: var(--border-width) solid var(--color-border-default); border-radius: var(--radius-control); background: var(--color-bg-surface); color: var(--color-text-primary); }
+.config-generation__link { min-height: auto; padding: 0; border: 0; background: transparent; color: var(--color-accent); }
 .config-generation__candidate-note { margin: 0 0 var(--space-3); padding: var(--space-3) var(--space-4); border-inline-start: var(--border-selected-width) solid var(--color-accent); background: var(--color-accent-subtle); color: var(--color-text-secondary); }
 .config-generation__candidate-note strong { color: var(--color-text-primary); }
 .config-generation__failure-actions { display: flex; flex-wrap: wrap; gap: var(--space-3); }
-.config-generation__modes legend { padding-inline: var(--space-1); font-weight: var(--font-weight-medium); }
-.config-generation__modes label { display: flex; align-items: flex-start; min-width: 0; gap: var(--space-3); padding: var(--space-3); border: var(--border-width) solid var(--color-border-default); border-radius: var(--radius-control); background: var(--color-bg-surface); cursor: pointer; }
-.config-generation__modes label.is-selected { border-color: var(--color-accent); box-shadow: inset var(--border-selected-width) 0 0 var(--color-accent); }
-.config-generation__modes label:focus-within { outline: 2px solid var(--color-accent); outline-offset: 2px; }
-.config-generation__modes input { flex: 0 0 auto; margin-block-start: 3px; accent-color: var(--color-accent); }
-.config-generation__modes span { display: grid; gap: var(--space-1); }
-.config-generation__modes small { color: var(--color-text-secondary); line-height: var(--line-height-relaxed); }
 .config-generation__primary,
 .config-generation__secondary,
 .config-generation__partial button,
@@ -658,5 +733,7 @@ button:disabled { cursor: not-allowed; opacity: var(--opacity-disabled); }
 .config-generation__error { margin: var(--space-3) 0 0; padding: var(--space-3) var(--space-4); }
 .config-generation__warning { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); background: var(--color-warning-subtle); }
 .config-generation__error { background: var(--color-danger-subtle); color: var(--color-danger); }
-@media (max-width: 720px) { .config-generation__modes { grid-template-columns: minmax(0, 1fr); } }
+@media (max-width: 820px) {
+  .config-generation__metadata { grid-template-columns: 1fr; align-items: stretch; }
+}
 </style>
