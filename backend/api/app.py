@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, nullcontext
@@ -31,6 +32,8 @@ class HealthResponse(BaseModel):
     status: str = "ok"
     service: str = "ai-grading-api"
     version: str
+    preview_instance_id: str | None = None
+    preview_head: str | None = None
 
 
 class ErrorPayload(BaseModel):
@@ -133,6 +136,8 @@ def create_app(
     app_version = getattr(paths, "version", None)
     if app_version is None:
         app_version = get_default_path_manager().version
+    preview_instance_id = os.getenv("AI_GRADING_PREVIEW_INSTANCE_ID") or None
+    preview_head = os.getenv("AI_GRADING_PREVIEW_HEAD") or None
     api = FastAPI(
         lifespan=_lifespan,
         title="AI 阅卷系统 API",
@@ -240,10 +245,22 @@ def create_app(
             ).model_dump(),
         )
 
-    @api.get("/healthz", response_model=HealthResponse)
-    @api.get("/api/healthz", response_model=HealthResponse)
+    @api.get(
+        "/healthz",
+        response_model=HealthResponse,
+        response_model_exclude_none=True,
+    )
+    @api.get(
+        "/api/healthz",
+        response_model=HealthResponse,
+        response_model_exclude_none=True,
+    )
     def healthz() -> HealthResponse:
-        return HealthResponse(version=app_version)
+        return HealthResponse(
+            version=app_version,
+            preview_instance_id=preview_instance_id,
+            preview_head=preview_head,
+        )
 
     from backend.api.routers import (
         ai_diagnostics_router,

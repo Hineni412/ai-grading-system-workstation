@@ -7,6 +7,15 @@ set "PYTHON_EXE=%~dp0runtime\python\python.exe"
 if not exist "%PYTHON_EXE%" set "PYTHON_EXE=%~dp0..\..\runtime\python\python.exe"
 if not exist "%PYTHON_EXE%" goto missing_runtime
 if "%API_PORT%"=="" set "API_PORT=8035"
+set "AI_GRADING_WORKTREE_DATA_DIR=%~dp0user_data"
+set "AI_GRADING_DATA_DIR=%AI_GRADING_WORKTREE_DATA_DIR%"
+set "AI_GRADING_OPS_STATE_DIR=%~dp0user_data\runtime_state\ops"
+set "AI_GRADING_API_PROFILES_PATH=%~dp0user_data\config\api_profiles.json"
+set "AI_GRADING_PREVIEW_INSTANCE_ID=teacher-platform-integration"
+set "AI_GRADING_PREVIEW_HEAD="
+for /f "delims=" %%I in ('git -C "%~dp0" rev-parse HEAD 2^>nul') do set "AI_GRADING_PREVIEW_HEAD=%%I"
+if not defined AI_GRADING_PREVIEW_HEAD goto preview_not_ready
+set "PYTHONUTF8=1"
 
 "%PYTHON_EXE%" "%~dp0tools\teacher_platform_preview.py" ensure
 if errorlevel 1 goto preview_not_ready
