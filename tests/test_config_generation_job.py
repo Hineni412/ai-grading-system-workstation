@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import copy
 import io
 import json
 import sqlite3
@@ -2841,6 +2842,150 @@ def test_evidence_analysis_checkpoint_is_reused_by_score_retry_without_model_rep
     assert len(protocol.calls) == 1
     assert tagging_factory_calls == 1
     assert len(score_client.calls) == 2
+
+
+def test_local_quality_failed_question_retry_reanalyzes_question_before_scoring(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db, session_id, old_paths = _db_with_session(tmp_path)
+    source_service, source = _controlled_source(
+        tmp_path,
+        session_id,
+        text="1. 说明解方程 x+1=2 的每一步。\n答案：x=1",
+    )
+    input_id = _stage_controlled_input(
+        tmp_path,
+        source_service,
+        source,
+        old_paths,
+        generation_mode="batched",
+        sync_to_question_bank=True,
+    )
+    first_context, store = _job_context(
+        db.db_path,
+        {
+            "session_id": session_id,
+            "mode": "generate",
+            "generation_mode": "batched",
+            "input_id": input_id,
+            "source_id": source.source_id,
+            "source_revision": source.source_revision,
+            "sync_to_question_bank": True,
+        },
+    )
+    protocol = _DeferredProtocol()
+    allocation_calls: list[dict[str, Any]] = []
+
+    def allocate_with_first_result_too_shallow(
+        structure: dict[str, Any],
+        *_args: Any,
+        **_kwargs: Any,
+    ) -> dict[str, Any]:
+        payload = copy.deepcopy(structure)
+        allocation_calls.append(payload)
+        question = payload["rubric"]["questions"][0]
+        question["question_type"] = "comprehensive"
+        question["max_score"] = 100
+        part = question["parts"][0]
+        part["part_score"] = 100
+        steps = part["steps"]
+        if len(allocation_calls) == 1:
+            del steps[1:]
+            steps[0]["core_goal"] = "合理的推理过程"
+        for index, step in enumerate(steps):
+            step["step_score"] = 100 / len(steps)
+            step["step_id"] = f"S{index + 1}"
+        payload["rubric"]["total_score"] = 100
+        scoring_pending = len(allocation_calls) > 1
+        payload["meta"].update(
+            {
+                "score_allocation_mode": "dedicated_ai_scoring",
+                "score_allocation_ai_success": not scoring_pending,
+                "score_allocation_pending": scoring_pending,
+                "score_allocation_failed": scoring_pending,
+            }
+        )
+        return payload
+
+    monkeypatch.setattr(
+        "backend.jobs.config_generation.allocate_grading_config_scores",
+        allocate_with_first_result_too_shallow,
+    )
+    first = run_config_generation_job(
+        context=first_context,
+        db=db,
+        upload_config_dir=tmp_path / "uploaded",
+        data_root=tmp_path / "data",
+        llm_client_factory=lambda: object(),
+        tagging_ai_service_factory=lambda: _DeferredTaggingService(protocol),
+        taxonomy_governance=object(),
+    )
+
+    assert first["failed_question_ids"] == ["Q1"]
+    assert first["failed_batches"][0]["category"] == "local_validation"
+    assert len(protocol.calls) == 1
+    assert len(allocation_calls) == 1
+    store.finish(first_context.job_id, "succeeded", result=first)
+
+    artifact_path = next(
+        (tmp_path / "uploaded").glob("deferred_question_analysis_*.json")
+    )
+    artifact_bytes = artifact_path.read_bytes()
+    artifact_path.unlink()
+    missing_context, _missing_store = _job_context(
+        db.db_path,
+        {
+            "session_id": session_id,
+            "mode": "retry",
+            "generation_mode": "batched",
+            "source_job_id": first_context.job_id,
+            "source_id": source.source_id,
+            "source_revision": source.source_revision,
+            "sync_to_question_bank": True,
+            "retry_question_ids": ["Q1"],
+        },
+    )
+    with pytest.raises(ValueError, match="分析断点已丢失"):
+        _run_config_generation_job_impl(
+            context=missing_context,
+            db=db,
+            upload_config_dir=tmp_path / "uploaded",
+            data_root=tmp_path / "data",
+            llm_client_factory=lambda: object(),
+            tagging_ai_service_factory=lambda: _DeferredTaggingService(protocol),
+            taxonomy_governance=object(),
+        )
+    assert len(protocol.calls) == 1
+    assert len(allocation_calls) == 1
+    artifact_path.write_bytes(artifact_bytes)
+
+    retry_context, _retry_store = _job_context(
+        db.db_path,
+        {
+            "session_id": session_id,
+            "mode": "retry",
+            "generation_mode": "batched",
+            "source_job_id": first_context.job_id,
+            "source_id": source.source_id,
+            "source_revision": source.source_revision,
+            "sync_to_question_bank": True,
+            "retry_question_ids": ["Q1"],
+        },
+    )
+    retried = run_config_generation_job(
+        context=retry_context,
+        db=db,
+        upload_config_dir=tmp_path / "uploaded",
+        data_root=tmp_path / "data",
+        llm_client_factory=lambda: object(),
+        tagging_ai_service_factory=lambda: _DeferredTaggingService(protocol),
+        taxonomy_governance=object(),
+    )
+
+    assert len(protocol.calls) == 2
+    assert len(allocation_calls) == 2
+    assert retried["failed_question_ids"] == []
 
 
 def test_interrupted_evidence_request_is_reported_uncertain_without_model_replay(

@@ -88,7 +88,7 @@ def _has_independently_scorable_steps(
     steps: list[dict[str, Any]],
     generic_goals: set[str],
 ) -> bool:
-    if len(steps) < 2:
+    if not steps:
         return False
     for step in steps:
         goal = str(step.get("core_goal") or "").strip()

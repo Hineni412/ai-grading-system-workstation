@@ -694,6 +694,15 @@ def _run_config_generation_job_impl(
             if artifact_store.exists(analysis_artifact_id)
             else None
         )
+        retry_source_refs = (
+            _retry_source_refs(context.payload)
+            if mode == "retry"
+            else None
+        )
+        local_quality_retry_refs = _local_quality_retry_source_refs(
+            existing_payload,
+            retry_source_refs,
+        )
 
         def evidence_checkpoint(bundle: DeferredCombinedAnalysisBundle) -> None:
             nonlocal evidence_artifact_hash, evidence_reported_count
@@ -742,7 +751,11 @@ def _run_config_generation_job_impl(
                     ),
                 )
 
-        if previous_artifact is not None and previous_artifact.bundle.status == "succeeded":
+        if (
+            previous_artifact is not None
+            and previous_artifact.bundle.status == "succeeded"
+            and not local_quality_retry_refs
+        ):
             analysis_bundle = previous_artifact.bundle
             evidence_artifact_hash = previous_artifact.content_hash
         else:
@@ -763,6 +776,11 @@ def _run_config_generation_job_impl(
                 taxonomy_governance=taxonomy_governance,
             )
         if previous_artifact is None:
+            if mode == "retry" and existing_payload is not None:
+                raise ValueError(
+                    "题目分析断点已丢失；为避免重复调用模型，"
+                    "本次未自动重新分析全部题目。"
+                )
             context.report(
                 0.08,
                 "question_analysis",
@@ -786,8 +804,20 @@ def _run_config_generation_job_impl(
                 curriculum_volume_id=curriculum_volume_id,
                 checkpoint=evidence_checkpoint,
             )
+        elif local_quality_retry_refs:
+            context.report(
+                0.08,
+                "question_analysis",
+                "正在重新分析本地结构检查未通过的题目。",
+            )
+            analysis_bundle = analysis_module.reanalyze_selected(
+                previous_artifact.bundle,
+                sources=sources,
+                curriculum_volume_id=curriculum_volume_id,
+                source_refs=local_quality_retry_refs,
+                checkpoint=evidence_checkpoint,
+            )
         elif previous_artifact.bundle.status != "succeeded":
-            retry_source_refs = _retry_source_refs(context.payload)
             context.report(
                 0.08,
                 "question_analysis",
@@ -1587,6 +1617,33 @@ def _retry_source_refs(payload: dict[str, Any]) -> list[str] | None:
     if not values or any(not item for item in values):
         raise ValueError("retry question ids are invalid")
     return values
+
+
+def _local_quality_retry_source_refs(
+    payload: dict[str, Any] | None,
+    requested_refs: list[str] | None,
+) -> tuple[str, ...]:
+    if not isinstance(payload, dict):
+        return ()
+    failed_refs = failed_grading_config_question_ids(payload)
+    if not failed_refs:
+        return ()
+    selected = list(failed_refs if requested_refs is None else requested_refs)
+    meta = payload.get("meta")
+    failed_batches = meta.get("failed_batches") if isinstance(meta, dict) else None
+    if not isinstance(failed_batches, list):
+        return ()
+    local_refs = {
+        str(question_id).strip()
+        for batch in failed_batches
+        if isinstance(batch, dict)
+        and str(batch.get("category") or "") == "local_validation"
+        for question_id in batch.get("question_ids") or []
+        if str(question_id).strip()
+    }
+    if not selected or not set(selected).issubset(local_refs):
+        return ()
+    return tuple(dict.fromkeys(selected))
 
 
 def _refresh_mapping_and_finalize_job(
