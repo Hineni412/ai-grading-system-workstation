@@ -97,3 +97,63 @@ def test_workspace_label_check_requires_both_new_workspaces(
 
     bundle.write_text("备课工作台 班主任工作台", encoding="utf-8")
     preview._assert_workspace_labels()
+
+
+def test_open_running_preview_reuses_the_current_healthy_service(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    opened: list[str] = []
+    monkeypatch.setattr(
+        preview,
+        "check_preview",
+        lambda: {"preview_head": "84c2e183" + "0" * 32},
+    )
+    monkeypatch.setattr(
+        preview,
+        "_fetch_preview_health",
+        lambda _port: {"status": "ok", "service": "ai-grading-api"},
+    )
+
+    assert preview.open_running_preview(
+        port=8035,
+        browser_open=lambda url: opened.append(url) or True,
+    ) is True
+    assert opened == ["http://127.0.0.1:8035/teaching-prep?preview=84c2e183"]
+
+
+def test_open_running_preview_distinguishes_stopped_and_wrong_services(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        preview,
+        "check_preview",
+        lambda: {"preview_head": "84c2e183" + "0" * 32},
+    )
+    monkeypatch.setattr(preview, "_fetch_preview_health", lambda _port: None)
+    assert preview.open_running_preview(
+        port=8035,
+        browser_open=lambda _url: pytest.fail("browser should stay closed"),
+    ) is False
+
+    monkeypatch.setattr(
+        preview,
+        "_fetch_preview_health",
+        lambda _port: {"status": "ok", "service": "another-service"},
+    )
+    with pytest.raises(preview.PreviewGuardError, match="不是三合一预览服务"):
+        preview.open_running_preview(
+            port=8035,
+            browser_open=lambda _url: pytest.fail("browser should stay closed"),
+        )
+
+
+def test_preview_launcher_reuses_a_running_service_before_starting_another() -> None:
+    launcher = (preview.PROJECT_ROOT / "运行三合一预览.bat").read_text(
+        encoding="utf-8",
+    )
+
+    probe = launcher.index("open-running")
+    start = launcher.index('call "%~dp0运行.bat"')
+    assert probe < start
+    assert 'if "%RUNNING_STATUS%"=="0" goto done' in launcher
+    assert 'if not "%RUNNING_STATUS%"=="3" goto preview_not_ready' in launcher

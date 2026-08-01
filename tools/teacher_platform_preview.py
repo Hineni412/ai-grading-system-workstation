@@ -8,12 +8,16 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import subprocess
 import sys
+import urllib.error
+import urllib.request
+import webbrowser
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -212,15 +216,85 @@ def ensure_preview() -> dict[str, Any]:
         return build_preview()
 
 
+def _api_port() -> int:
+    raw_port = os.environ.get("API_PORT", "8035")
+    try:
+        port = int(raw_port)
+    except ValueError as exc:
+        raise PreviewGuardError(f"API_PORT 不是有效端口：{raw_port}") from exc
+    if not 1 <= port <= 65535:
+        raise PreviewGuardError(f"API_PORT 超出有效范围：{raw_port}")
+    return port
+
+
+def _fetch_preview_health(port: int) -> dict[str, Any] | None:
+    request = urllib.request.Request(
+        f"http://127.0.0.1:{port}/api/healthz",
+        headers={"Accept": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=0.75) as response:
+            payload = json.loads(response.read(4096).decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        raise PreviewGuardError(
+            f"端口 {port} 已被其他服务占用，健康检查返回 {exc.code}。"
+        ) from exc
+    except urllib.error.URLError:
+        return None
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise PreviewGuardError(
+            f"端口 {port} 返回的健康状态无法识别。"
+        ) from exc
+    if not isinstance(payload, dict):
+        raise PreviewGuardError(f"端口 {port} 返回的健康状态格式无效。")
+    return payload
+
+
+def open_running_preview(
+    *,
+    port: int | None = None,
+    browser_open: Callable[[str], bool] = webbrowser.open,
+) -> bool:
+    stamp = check_preview()
+    selected_port = _api_port() if port is None else port
+    health = _fetch_preview_health(selected_port)
+    if health is None:
+        return False
+    if health.get("status") != "ok" or health.get("service") != "ai-grading-api":
+        raise PreviewGuardError(
+            f"端口 {selected_port} 上的程序不是三合一预览服务。"
+        )
+
+    version = str(stamp["preview_head"])[:8]
+    url = (
+        f"http://127.0.0.1:{selected_port}/teaching-prep"
+        f"?preview={version}"
+    )
+    if not browser_open(url):
+        raise PreviewGuardError(
+            "三合一预览正在运行，但未能打开浏览器；请手动访问 " + url
+        )
+    print(f"已复用正在运行的三合一预览：{url}")
+    return True
+
+
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="三合一组合预览页面守卫")
-    parser.add_argument("action", choices=("build", "check", "ensure"))
+    parser.add_argument(
+        "action",
+        choices=("build", "check", "ensure", "open-running"),
+    )
     return parser.parse_args()
 
 
 def main() -> int:
     args = _parse_args()
     try:
+        if args.action == "open-running":
+            if open_running_preview():
+                return 0
+            print("当前没有正在运行的三合一预览服务。")
+            return 3
         if args.action == "build":
             stamp = build_preview()
         elif args.action == "check":
