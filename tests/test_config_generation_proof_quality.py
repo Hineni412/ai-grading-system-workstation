@@ -212,6 +212,33 @@ def test_quality_allows_one_specific_scoring_step_for_a_multi_point_subpart() ->
     assert not any("缺少具体扣分证据" in warning for warning in warnings)
 
 
+def test_quality_blocks_generic_rewordings_in_a_one_step_multi_point_proof() -> None:
+    payload = _proof_payload(
+        score=6,
+        proof_obligations=["完成证明"],
+        deduction_policy=[
+            {
+                "rule_id": "generic_deduction",
+                "description": "酌情扣分",
+            }
+        ],
+        steps=[
+            {
+                "step_id": "S1",
+                "step_score": 6,
+                "core_goal": "完成本题证明过程",
+                "required_elements": ["写出必要过程"],
+            }
+        ],
+    )
+
+    warnings = collect_generated_config_quality_warnings(payload)
+
+    assert any("可独立评分的逻辑步骤" in warning for warning in warnings)
+    assert any("缺少具体证明义务" in warning for warning in warnings)
+    assert any("缺少具体扣分证据" in warning for warning in warnings)
+
+
 def test_quality_accepts_a_detailed_nontrivial_proof() -> None:
     payload = _proof_payload(
         score=6,
