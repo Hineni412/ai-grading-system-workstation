@@ -44,6 +44,16 @@ class SemesterMappingModelAdapter(Protocol):
         """Generate one reviewable lesson-tree and page-range proposal."""
 
 
+class ExerciseSuggestionModelAdapter(Protocol):
+    def generate(
+        self,
+        *,
+        operation_id: str,
+        reference_snapshot: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Locate reviewable exercises inside one frozen reference snapshot."""
+
+
 class WpsAdapter(Protocol):
     def execute(
         self,
