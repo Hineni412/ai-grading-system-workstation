@@ -143,6 +143,22 @@ describe('AppShell', () => {
     app.unmount()
   })
 
+  it.each(['/teaching-prep', '/class-teacher'])(
+    'lets the workspace own its topbar context at %s',
+    async (path) => {
+      const { app, host } = await mountShell({ path })
+
+      const topbar = host.querySelector('[data-testid="app-topbar"]')
+      expect(topbar?.classList.contains('app-topbar--workspace-context')).toBe(true)
+      expect(topbar?.querySelector('.app-topbar__session')).toBeNull()
+      expect(topbar?.querySelector('label[for="current-session"]')).toBeNull()
+      expect(topbar?.querySelector('#current-session')).toBeNull()
+      expect(topbar?.textContent).not.toContain('当前考试')
+
+      app.unmount()
+    },
+  )
+
   it('navigates between truthful destinations and updates the current page', async () => {
     const { app, host, router } = await mountShell()
     const workbenchLink = host.querySelector<HTMLAnchorElement>(
