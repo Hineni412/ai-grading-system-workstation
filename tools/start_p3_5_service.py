@@ -40,11 +40,19 @@ def _taxonomy_state_path() -> Path:
     return PathManager().taxonomy_state_path
 
 
+def _runtime_python_candidates(project_root: Path = PROJECT_ROOT) -> tuple[Path, ...]:
+    candidates = [project_root / "runtime" / "python" / "python.exe"]
+    if len(project_root.parents) > 1:
+        shared_runtime = (
+            project_root.parents[1] / "runtime" / "python" / "python.exe"
+        )
+        if shared_runtime not in candidates:
+            candidates.append(shared_runtime)
+    return tuple(candidates)
+
+
 def _runtime_python() -> Path:
-    candidates = (
-        PROJECT_ROOT / "runtime" / "python" / "python.exe",
-        PROJECT_ROOT.parents[1] / "runtime" / "python" / "python.exe",
-    )
+    candidates = _runtime_python_candidates()
     for candidate in candidates:
         if candidate.is_file():
             return candidate.resolve()
