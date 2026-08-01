@@ -111,7 +111,12 @@ def test_open_running_preview_reuses_the_current_healthy_service(
     monkeypatch.setattr(
         preview,
         "_fetch_preview_health",
-        lambda _port: {"status": "ok", "service": "ai-grading-api"},
+        lambda _port: {
+            "status": "ok",
+            "service": "ai-grading-api",
+            "preview_instance_id": "teacher-platform-integration",
+            "preview_head": "84c2e183" + "0" * 32,
+        },
     )
 
     assert preview.open_running_preview(
@@ -147,6 +152,84 @@ def test_open_running_preview_distinguishes_stopped_and_wrong_services(
         )
 
 
+def test_open_running_preview_rejects_an_old_preview_process(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        preview,
+        "check_preview",
+        lambda: {"preview_head": "84c2e183" + "0" * 32},
+    )
+    monkeypatch.setattr(
+        preview,
+        "_fetch_preview_health",
+        lambda _port: {
+            "status": "ok",
+            "service": "ai-grading-api",
+            "preview_instance_id": "teacher-platform-integration",
+            "preview_head": "older-head",
+        },
+    )
+
+    with pytest.raises(preview.PreviewGuardError, match="旧版三合一预览"):
+        preview.open_running_preview(
+            port=8035,
+            browser_open=lambda _url: pytest.fail("browser should stay closed"),
+        )
+
+
+@pytest.mark.parametrize(
+    "variable",
+    [
+        "AI_GRADING_WORKTREE_DATA_DIR",
+        "AI_GRADING_DATA_DIR",
+        "AI_GRADING_OPS_STATE_DIR",
+        "AI_GRADING_API_PROFILES_PATH",
+    ],
+)
+def test_preview_guard_rejects_external_runtime_paths(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+    variable: str,
+) -> None:
+    project_root = tmp_path / ".worktrees" / "preview"
+    project_root.mkdir(parents=True)
+    monkeypatch.setattr(preview, "PROJECT_ROOT", project_root)
+    for environment_name in (
+        "AI_GRADING_WORKTREE_DATA_DIR",
+        "AI_GRADING_DATA_DIR",
+        "AI_GRADING_OPS_STATE_DIR",
+        "AI_GRADING_API_PROFILES_PATH",
+    ):
+        monkeypatch.delenv(environment_name, raising=False)
+    monkeypatch.setenv(variable, str(tmp_path / "user_data"))
+
+    with pytest.raises(preview.PreviewGuardError, match=variable):
+        preview._assert_local_data_boundary()
+
+
+def test_preview_guard_accepts_its_forced_isolated_runtime_paths(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    project_root = tmp_path / ".worktrees" / "preview"
+    local_data = project_root / "user_data"
+    project_root.mkdir(parents=True)
+    monkeypatch.setattr(preview, "PROJECT_ROOT", project_root)
+    monkeypatch.setenv("AI_GRADING_WORKTREE_DATA_DIR", str(local_data))
+    monkeypatch.setenv("AI_GRADING_DATA_DIR", str(local_data))
+    monkeypatch.setenv(
+        "AI_GRADING_OPS_STATE_DIR",
+        str(local_data / "runtime_state" / "ops"),
+    )
+    monkeypatch.setenv(
+        "AI_GRADING_API_PROFILES_PATH",
+        str(local_data / "config" / "api_profiles.json"),
+    )
+
+    preview._assert_local_data_boundary()
+
+
 def test_preview_launcher_reuses_a_running_service_before_starting_another() -> None:
     launcher = (preview.PROJECT_ROOT / "运行三合一预览.bat").read_text(
         encoding="utf-8",
@@ -157,3 +240,6 @@ def test_preview_launcher_reuses_a_running_service_before_starting_another() -> 
     assert probe < start
     assert 'if "%RUNNING_STATUS%"=="0" goto done' in launcher
     assert 'if not "%RUNNING_STATUS%"=="3" goto preview_not_ready' in launcher
+    assert 'set "AI_GRADING_WORKTREE_DATA_DIR=%~dp0user_data"' in launcher
+    assert 'set "AI_GRADING_PREVIEW_INSTANCE_ID=teacher-platform-integration"' in launcher
+    assert 'set "AI_GRADING_PREVIEW_HEAD="' in launcher

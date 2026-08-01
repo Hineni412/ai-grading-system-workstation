@@ -46,6 +46,25 @@ def test_api_healthz_alias_matches_root_healthz() -> None:
     assert client.get("/api/healthz").json() == client.get("/healthz").json()
 
 
+def test_healthz_identifies_an_opted_in_preview_process(monkeypatch) -> None:
+    from backend.api.app import create_app
+
+    monkeypatch.setenv(
+        "AI_GRADING_PREVIEW_INSTANCE_ID",
+        "teacher-platform-integration",
+    )
+    monkeypatch.setenv("AI_GRADING_PREVIEW_HEAD", "a72e32d1" + "0" * 32)
+    client = TestClient(create_app())
+
+    assert client.get("/api/healthz").json() == {
+        "status": "ok",
+        "service": "ai-grading-api",
+        "version": "v1.5.0",
+        "preview_instance_id": "teacher-platform-integration",
+        "preview_head": "a72e32d1" + "0" * 32,
+    }
+
+
 def test_api_error_uses_unified_error_body() -> None:
     from backend.api.app import ApiError, create_app
 

@@ -25,6 +25,7 @@ FRONTEND_DIR = PROJECT_ROOT / "frontend"
 DIST_DIR = FRONTEND_DIR / "dist"
 STAMP_PATH = DIST_DIR / "teacher-platform-preview-build.json"
 EXPECTED_BRANCH = "codex/teacher-platform-integration"
+EXPECTED_PREVIEW_INSTANCE_ID = "teacher-platform-integration"
 SOURCE_BRANCHES = (
     "codex/grading-system-iteration",
     "codex/teaching-prep-iteration",
@@ -136,6 +137,24 @@ def _assert_local_data_boundary() -> None:
     real_data = repository_root / "user_data"
     if local_data.exists() and local_data.resolve() == real_data.resolve():
         raise PreviewGuardError("组合预览不能连接根目录的真实 user_data。")
+
+    expected_paths = {
+        "AI_GRADING_WORKTREE_DATA_DIR": local_data,
+        "AI_GRADING_DATA_DIR": local_data,
+        "AI_GRADING_OPS_STATE_DIR": local_data / "runtime_state" / "ops",
+        "AI_GRADING_API_PROFILES_PATH": local_data / "config" / "api_profiles.json",
+    }
+    for variable, expected in expected_paths.items():
+        raw_value = os.environ.get(variable)
+        if not raw_value:
+            continue
+        candidate = Path(raw_value).expanduser()
+        if not candidate.is_absolute():
+            candidate = PROJECT_ROOT / candidate
+        if candidate.resolve() != expected.resolve():
+            raise PreviewGuardError(
+                f"{variable} 指向组合预览之外，已拒绝继续。"
+            )
 
 
 def _assert_workspace_labels() -> None:
@@ -264,8 +283,18 @@ def open_running_preview(
         raise PreviewGuardError(
             f"端口 {selected_port} 上的程序不是三合一预览服务。"
         )
+    if health.get("preview_instance_id") != EXPECTED_PREVIEW_INSTANCE_ID:
+        raise PreviewGuardError(
+            f"端口 {selected_port} 上的程序不是三合一预览服务。"
+        )
+    expected_head = str(stamp["preview_head"])
+    if health.get("preview_head") != expected_head:
+        raise PreviewGuardError(
+            f"端口 {selected_port} 上运行的是旧版三合一预览；"
+            "请先关闭旧服务窗口，再重新打开预览。"
+        )
 
-    version = str(stamp["preview_head"])[:8]
+    version = expected_head[:8]
     url = (
         f"http://127.0.0.1:{selected_port}/teaching-prep"
         f"?preview={version}"
