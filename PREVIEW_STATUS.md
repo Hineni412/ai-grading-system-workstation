@@ -5,9 +5,9 @@
 - 分支：`codex/teacher-platform-integration`
 - 工作区：`.worktrees/teacher-platform-integration`
 - 稳定基线：`e63136c6c5471f358cfaf11065f5b92b0f46ca10`
-- 当前阅卷检查点：`44e6d3a8`（`codex/grading-system-iteration`）
-- 当前备课检查点：`440527e6`（`codex/teaching-prep-iteration`）
-- 当前班主任检查点：`7df93baa`（`codex/class-teacher-iteration`）
+- 当前阅卷检查点：`a3758098`（`codex/grading-system-iteration`）
+- 当前备课检查点：`862436f2`（`codex/teaching-prep-iteration`）
+- 当前班主任检查点：`2249346d`（`codex/class-teacher-iteration`）
 - 风险等级：中。它组合未最终验收的本地迭代，只能用于快速页面与操作路径预览。
 
 本工作区只解决一个问题：让用户始终打开一份程序、占用一个端口，同时查看阅卷系统、备课工作台和班主任工作台的最新可查看检查点。它不是第四条产品线，也不是发布候选。
