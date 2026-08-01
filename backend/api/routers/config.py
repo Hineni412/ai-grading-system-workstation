@@ -1136,6 +1136,28 @@ def retry_session_config_generation(
         and isinstance(source_failed_batches, list)
         and bool(source_failed_batches)
     )
+    raw_uncertain_ids = source.result.get("uncertain_question_ids")
+    uncertain_ids = [
+        str(item).strip()
+        for item in raw_uncertain_ids
+        if str(item).strip()
+    ] if isinstance(raw_uncertain_ids, list) else []
+    retry_uncertain_results = (
+        source.result.get("outcome") == "partial"
+        and bool(uncertain_ids)
+        and request.confirm_uncertain_retry
+        and request.retry_question_ids is not None
+    )
+    if request.confirm_uncertain_retry and (
+        request.retry_question_ids is None
+        or set(request.retry_question_ids) != set(uncertain_ids)
+    ):
+        raise ApiError(
+            409,
+            "config_generation_retry_not_available",
+            "All uncertain questions must be retried together after confirmation",
+            {"source_job_id": int(request.source_job_id)},
+        )
     retry_score_allocation = (
         source.result.get("outcome") == "partial"
         and bool(source.result.get("score_allocation_pending"))
@@ -1153,6 +1175,7 @@ def retry_session_config_generation(
         or source.status not in {"succeeded", "failed", "cancelled"}
         or not (
             retry_failed_batches
+            or retry_uncertain_results
             or retry_score_allocation
             or resume_complete_draft
         )
@@ -1168,34 +1191,37 @@ def retry_session_config_generation(
         )
     failed_ids = [str(item) for item in source.result.get("failed_question_ids") or []]
     if request.retry_question_ids is not None:
-        unknown = [item for item in request.retry_question_ids if item not in failed_ids]
-        if unknown:
+        selected = set(request.retry_question_ids)
+        if (
+            not request.confirm_uncertain_retry
+            and any(item not in failed_ids for item in request.retry_question_ids)
+        ):
             raise ApiError(
                 409,
                 "config_generation_retry_not_available",
                 "Requested questions are not currently failed",
                 {"source_job_id": int(request.source_job_id)},
             )
-        raw_batches = source_failed_batches
-        failed_batches = [item for item in raw_batches or [] if isinstance(item, dict)]
-        selected = set(request.retry_question_ids)
-        complete_selection = {
-            str(qid)
-            for item in failed_batches
-            if {
-                str(value)
-                for value in item.get("question_ids") or []
-                if str(value).strip()
-            }.issubset(selected)
-            for qid in item.get("question_ids") or []
-        }
-        if failed_batches and selected != complete_selection:
-            raise ApiError(
-                409,
-                "config_generation_retry_not_available",
-                "Requested questions must contain complete failed batches",
-                {"source_job_id": int(request.source_job_id)},
-            )
+        if not request.confirm_uncertain_retry:
+            raw_batches = source_failed_batches
+            failed_batches = [item for item in raw_batches or [] if isinstance(item, dict)]
+            complete_selection = {
+                str(qid)
+                for item in failed_batches
+                if {
+                    str(value)
+                    for value in item.get("question_ids") or []
+                    if str(value).strip()
+                }.issubset(selected)
+                for qid in item.get("question_ids") or []
+            }
+            if failed_batches and selected != complete_selection:
+                raise ApiError(
+                    409,
+                    "config_generation_retry_not_available",
+                    "Requested questions must contain complete failed batches",
+                    {"source_job_id": int(request.source_job_id)},
+                )
     payload: dict[str, object] = {
         "session_id": int(session_id),
         "mode": "retry",
@@ -1214,6 +1240,8 @@ def retry_session_config_generation(
         payload["source_revision"] = source_revision
     if request.retry_question_ids is not None:
         payload["retry_question_ids"] = request.retry_question_ids
+    if request.confirm_uncertain_retry:
+        payload["confirm_uncertain_retry"] = True
     try:
         if request.client_request_token:
             job, _created = manager.submit_idempotent_config_retry(payload)

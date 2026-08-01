@@ -335,6 +335,7 @@ class ConfigGenerationRetryRequest(BaseModel):
 
     source_job_id: int = Field(gt=0)
     retry_question_ids: list[str] | None = Field(default=None, min_length=1, max_length=500)
+    confirm_uncertain_retry: bool = False
     client_request_token: str | None = Field(
         default=None,
         pattern=r"^[0-9a-f]{32}$",

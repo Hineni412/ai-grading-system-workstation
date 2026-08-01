@@ -918,6 +918,7 @@ class InMemoryCombinedQuestionAnalysisModule:
         sources: Sequence[ConfigQuestionAnalysisSource],
         curriculum_volume_id: str,
         retry_source_refs: Sequence[str] | None = None,
+        retry_uncertain: bool = False,
         checkpoint: Callable[[DeferredCombinedAnalysisBundle], None] | None = None,
     ) -> DeferredCombinedAnalysisBundle:
         clean_operation, volume_id, normalized = _normalize_sources(
@@ -947,6 +948,8 @@ class InMemoryCombinedQuestionAnalysisModule:
         ):
             raise ValueError("deferred retry input changed")
         failed_refs = set(previous.failed_source_refs)
+        uncertain_refs = set(previous.uncertain_source_refs)
+        available_refs = uncertain_refs if retry_uncertain else failed_refs
         selected_refs: set[str] | None = None
         if retry_source_refs is not None:
             requested = tuple(
@@ -961,14 +964,18 @@ class InMemoryCombinedQuestionAnalysisModule:
                     "retry_source_refs must be a non-empty unique sequence"
                 )
             selected_refs = set(requested)
-            if not selected_refs.issubset(failed_refs):
+            if retry_uncertain and selected_refs != uncertain_refs:
+                raise ValueError(
+                    "retry_source_refs must contain all uncertain sources"
+                )
+            if not retry_uncertain and not selected_refs.issubset(failed_refs):
                 raise ValueError(
                     "retry_source_refs must be a subset of previous failures"
                 )
         selected = tuple(
             item
             for item in normalized
-            if item.source_question_ref in failed_refs
+            if item.source_question_ref in available_refs
             and (
                 selected_refs is None
                 or item.source_question_ref in selected_refs
@@ -977,6 +984,31 @@ class InMemoryCombinedQuestionAnalysisModule:
         if not selected:
             return previous
         pending_refs = {item.source_question_ref for item in selected}
+        base_requests = previous.requests
+        if retry_uncertain:
+            latest: dict[str, AnalysisRequestCheckpoint] = {}
+            for request in previous.requests:
+                latest[request.request_id] = request
+            closed_unknown = tuple(
+                AnalysisRequestCheckpoint(
+                    request_id=request.request_id,
+                    request_fingerprint=request.request_fingerprint,
+                    batch_hash=request.batch_hash,
+                    source_question_refs=request.source_question_refs,
+                    # Keep the durable checkpoint readable by older builds.
+                    # The new request gets its own id, while this local
+                    # unknown outcome is explicitly closed as failed only
+                    # after the teacher authorizes another paid call.
+                    status="failed",
+                    model_name=request.model_name,
+                )
+                for request in latest.values()
+                if request.status in {"running", "outcome_unknown"}
+                and set(request.source_question_refs).issubset(pending_refs)
+            )
+            if not closed_unknown:
+                raise ValueError("uncertain request checkpoint is unavailable")
+            base_requests = (*previous.requests, *closed_unknown)
         return self._run(
             operation_id=clean_operation,
             curriculum_volume_id=volume_id,
@@ -989,7 +1021,7 @@ class InMemoryCombinedQuestionAnalysisModule:
                 for item in previous.failures
                 if item.source_question_ref not in pending_refs
             ),
-            base_requests=previous.requests,
+            base_requests=base_requests,
             checkpoint=checkpoint,
         )
 

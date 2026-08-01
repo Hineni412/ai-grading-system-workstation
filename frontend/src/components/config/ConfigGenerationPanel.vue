@@ -29,7 +29,13 @@ import { useJobStore } from '../../stores/jobs'
 const props = withDefaults(defineProps<{
   sessionName?: string
   submitter?: (sessionId: number, request: ConfigGenerationRequest) => Promise<JobResponse>
-  retryer?: (sessionId: number, jobId: number, questionIds: string[], requestToken: string) => Promise<JobResponse>
+  retryer?: (
+    sessionId: number,
+    jobId: number,
+    questionIds: string[],
+    requestToken: string,
+    confirmUncertainRetry?: boolean,
+  ) => Promise<JobResponse>
   editorLoader?: (sessionId: number) => Promise<ConfigEditorResponse>
   generationLoader?: (sessionId: number, requestToken: string) => Promise<JobResponse>
   requestAbandoner?: (sessionId: number, requestToken: string) => Promise<void>
@@ -128,6 +134,25 @@ const failedBatches = computed<FailedBatch[]>(() => {
     }] : []
   })
 })
+const uncertainQuestionIds = computed<string[]>(() => {
+  const raw = job.value?.result.uncertain_question_ids
+  if (!Array.isArray(raw)) return []
+  return [...new Set(raw.filter(
+    (item): item is string => typeof item === 'string' && item.trim().length > 0,
+  ).map((item) => item.trim()))]
+})
+const uncertainRetryAvailable = computed(() => (
+  job.value?.result.uncertain_retry_available === true
+  || (
+    job.value?.result.uncertain_retry_available !== false
+    && uncertainQuestionIds.value.length > 0
+    && job.value?.payload.generation_mode !== 'whole_document'
+  )
+))
+const uncertainCount = computed(() => Math.max(
+  safeCount(job.value?.result.uncertain_count),
+  uncertainQuestionIds.value.length,
+))
 const localJsonRepairs = computed<LocalJsonRepair[]>(() => {
   const raw = job.value?.result.local_json_repairs
   if (!Array.isArray(raw)) return []
@@ -191,6 +216,9 @@ const questionBankSyncCopy = computed(() => {
   if (questionBankSyncState.value === 'submission_failed'
     || questionBankSyncState.value === 'blocked') {
     return '评分依据已发布，但题库任务没有启动；进入评分编辑页后可以重新提交，评分依据不受影响。'
+  }
+  if (outcome.value === 'partial' && uncertainQuestionIds.value.length > 0) {
+    return '已保存“完成后入库并打标签”的选择；处理结果不确定的题目后会自动继续。'
   }
   if (outcome.value === 'partial') {
     return '已保存“完成后入库并打标签”的选择；当前等待评分依据完整生成，通过重试后会自动继续。'
@@ -278,6 +306,9 @@ function statusCopy(value: JobResponse): string {
   if (value.status === 'paused') return '生成已暂停'
   if (value.status === 'cancelled') return '已取消'
   if (value.status === 'failed') return '生成失败'
+  if (outcome.value === 'partial' && uncertainQuestionIds.value.length > 0) {
+    return '部分题目等待处理'
+  }
   return outcome.value === 'partial' ? '评分标准生成失败' : '评分标准生成成功'
 }
 
@@ -400,31 +431,46 @@ async function reconcileUnknownSubmission(): Promise<void> {
   }
 }
 
-async function retrySelected(resumeComplete = false): Promise<void> {
+async function retrySelected(
+  resumeComplete = false,
+  confirmUncertainRetry = false,
+): Promise<void> {
   const current = job.value
   if (current === null || submitting.value || workspacePending.value
     || configStore.sessionId === null) return
   const selectedBatches = failedBatches.value.filter((item) => selectedFailed.value.includes(item.batch_id))
-  const ids = resumeComplete ? [] : [...new Set(selectedBatches.flatMap((item) => item.question_ids))]
+  const ids = resumeComplete
+    ? []
+    : confirmUncertainRetry
+      ? uncertainQuestionIds.value
+      : [...new Set(selectedBatches.flatMap((item) => item.question_ids))]
   if (!resumeComplete && ids.length === 0) return
   const context = configStore.captureGenerationContext()
   const authoritativeTotal = includedSourceQuestionCount.value
     || safeCount(current.result.total_questions)
-  const authoritativeFailed = Math.min(
+  const authoritativeIncomplete = Math.min(
     authoritativeTotal,
-    safeCount(current.result.failed_count),
+    safeCount(current.result.failed_count) + uncertainCount.value,
   )
   const retainedSummary: ConfigGenerationSummary = {
     totalQuestions: authoritativeTotal,
-    succeededQuestions: Math.max(0, authoritativeTotal - authoritativeFailed),
-    failedQuestions: authoritativeFailed,
+    succeededQuestions: Math.max(0, authoritativeTotal - authoritativeIncomplete),
+    failedQuestions: authoritativeIncomplete,
   }
   const requestToken = createClientRequestToken()
   if (!configStore.markJobSubmissionPending(requestToken, 'retry', null, retainedSummary)) return
   submitting.value = true
   requestError.value = ''
   try {
-    const next = await props.retryer(configStore.sessionId, current.id, ids, requestToken)
+    const next = confirmUncertainRetry
+      ? await props.retryer(
+        configStore.sessionId,
+        current.id,
+        ids,
+        requestToken,
+        true,
+      )
+      : await props.retryer(configStore.sessionId, current.id, ids, requestToken)
     jobStore.track(next)
     configStore.attachJob(next.id, context, retainedSummary)
   } catch (error) {
@@ -596,6 +642,28 @@ watch(job, (current, previous) => {
         class="config-generation__primary"
         @click="continueToEditor"
       >进入下一步：检查评分标准</button>
+
+      <div
+        v-if="terminal && outcome === 'partial' && uncertainQuestionIds.length > 0"
+        class="config-generation__partial"
+      >
+        <p>
+          <strong>已完成 {{ generatedCount }} / {{ totalQuestionCount }} 道题。</strong>
+          {{ uncertainQuestionIds.join('、') }} 的请求发生超时或连接中断，本机无法确认最终结果。
+        </p>
+        <p>
+          这次请求可能已经在模型服务端完成。已有成功题目均保存在本机；确认后只会重新分析
+          {{ uncertainQuestionIds.join('、') }}，但极端情况下可能产生一次重复调用费用。
+        </p>
+        <button
+          v-if="uncertainRetryAvailable"
+          type="button"
+          name="确认重新分析结果不确定题"
+          class="config-generation__primary"
+          :disabled="submitting || workspacePending"
+          @click="retrySelected(false, true)"
+        >确认重新分析 {{ uncertainQuestionIds.join('、') }}</button>
+      </div>
 
       <div v-if="['succeeded', 'failed', 'cancelled'].includes(job.status) && outcome === 'partial' && failedBatches.length > 0" class="config-generation__partial">
         <p>
