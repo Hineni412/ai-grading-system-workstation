@@ -75,6 +75,17 @@ def _source_heads() -> dict[str, str]:
     return {branch: _git("rev-parse", branch) for branch in SOURCE_BRANCHES}
 
 
+def _tracked_code_changes() -> str:
+    return _git(
+        "status",
+        "--porcelain",
+        "--untracked-files=no",
+        "--",
+        ".",
+        ":(exclude)user_data/**",
+    )
+
+
 def _assert_preview_workspace() -> tuple[str, dict[str, str]]:
     branch = _current_branch()
     if branch != EXPECTED_BRANCH:
@@ -82,7 +93,7 @@ def _assert_preview_workspace() -> tuple[str, dict[str, str]]:
             f"当前分支是 {branch or '未知'}，必须在 {EXPECTED_BRANCH} 中运行。"
         )
 
-    tracked_changes = _git("status", "--porcelain", "--untracked-files=no")
+    tracked_changes = _tracked_code_changes()
     if tracked_changes:
         raise PreviewGuardError(
             "组合预览区存在尚未形成检查点的代码改动，请先处理后再构建。"

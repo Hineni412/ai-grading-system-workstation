@@ -1,8 +1,57 @@
 from __future__ import annotations
 
+import subprocess
+
 import pytest
 
 from tools import teacher_platform_preview as preview
+
+
+def _git_repo(repo, *args: str) -> None:
+    subprocess.run(
+        ["git", *args],
+        cwd=repo,
+        check=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
+
+def test_tracked_code_changes_ignore_preview_data_but_not_source(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    database = tmp_path / "user_data" / "databases" / "preview.db"
+    database.parent.mkdir(parents=True)
+    database.write_text("baseline", encoding="utf-8")
+    source = tmp_path / "app.py"
+    source.write_text("baseline", encoding="utf-8")
+    _git_repo(tmp_path, "init", "--quiet")
+    _git_repo(tmp_path, "config", "user.email", "preview-test@example.invalid")
+    _git_repo(tmp_path, "config", "user.name", "Preview Test")
+    _git_repo(tmp_path, "add", "--", "app.py", "user_data/databases/preview.db")
+    _git_repo(tmp_path, "commit", "--quiet", "-m", "baseline")
+    monkeypatch.setattr(preview, "PROJECT_ROOT", tmp_path)
+
+    def preview_git(*args: str) -> str:
+        completed = subprocess.run(
+            ["git", *args],
+            cwd=tmp_path,
+            check=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            capture_output=True,
+        )
+        return completed.stdout.strip()
+
+    monkeypatch.setattr(preview, "_git", preview_git)
+
+    database.write_text("runtime change", encoding="utf-8")
+    assert preview._tracked_code_changes() == ""
+
+    source.write_text("source change", encoding="utf-8")
+    assert "app.py" in preview._tracked_code_changes()
 
 
 def test_check_preview_rejects_a_build_from_an_older_preview_head(
