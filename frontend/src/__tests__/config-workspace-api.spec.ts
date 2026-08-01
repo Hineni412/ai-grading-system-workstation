@@ -173,6 +173,21 @@ describe('configuration workspace API', () => {
     })
   })
 
+  it('marks an uncertain-question retry as explicitly teacher confirmed', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(response(job, 202))
+
+    await expect(
+      retryConfigGeneration(7, 31, ['Q10'], '7'.repeat(32), true),
+    ).resolves.toEqual(job)
+
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toEqual({
+      source_job_id: 31,
+      retry_question_ids: ['Q10'],
+      confirm_uncertain_retry: true,
+      client_request_token: '7'.repeat(32),
+    })
+  })
+
   it('never retries a raw upload write failure', async () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockRejectedValue(new TypeError('offline'))
     await expect(uploadConfigSource(7, new File(['x'], 'a.pdf'))).rejects.toMatchObject({

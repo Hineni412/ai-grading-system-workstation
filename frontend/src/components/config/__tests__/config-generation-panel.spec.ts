@@ -86,7 +86,13 @@ async function settle(): Promise<void> {
 async function mountPanel(options: {
   sessionName?: string
   submitter?: (sessionId: number, request: ConfigGenerationRequest) => Promise<JobResponse>
-  retryer?: (sessionId: number, jobId: number, questionIds: string[], requestToken: string) => Promise<JobResponse>
+  retryer?: (
+    sessionId: number,
+    jobId: number,
+    questionIds: string[],
+    requestToken: string,
+    confirmUncertainRetry?: boolean,
+  ) => Promise<JobResponse>
   editorLoader?: (sessionId: number) => Promise<ConfigEditorResponse>
   generationLoader?: (sessionId: number, requestToken: string) => Promise<JobResponse>
   requestAbandoner?: (sessionId: number, requestToken: string) => Promise<void>
@@ -475,6 +481,61 @@ describe('ConfigGenerationPanel', () => {
     expect(mounted.host.textContent).toContain('2 道题的知识标签需要稍后重试或人工归并')
     expect(mounted.host.textContent).toContain('未知词尚未写入正式标签')
     expect(mounted.host.textContent).not.toContain('失败 2 道题')
+  })
+
+  it('explains an uncertain model outcome and retries only those questions after teacher confirmation', async () => {
+    const pending = deferred<JobResponse>()
+    const retryer = vi.fn((
+      _sessionId: number,
+      _jobId: number,
+      _questionIds: string[],
+      _requestToken: string,
+      _confirmUncertainRetry?: boolean,
+    ) => {
+      void _sessionId
+      void _jobId
+      void _questionIds
+      void _requestToken
+      void _confirmUncertainRetry
+      return pending.promise
+    })
+    const configStore = useConfigWorkspaceStore()
+    useJobStore().track(job({
+      status: 'succeeded', progress: 1, result: {
+        outcome: 'partial', total_questions: 12, generated_questions: 11,
+        failed_count: 0, failed_question_ids: [], failed_batches: [],
+        uncertain_question_ids: ['Q10'], needs_teacher_resolution: true,
+        retryable: false, question_bank_sync_requested: true,
+        question_bank_sync_state: 'waiting_for_config',
+      }, finished_at: '2026-07-15T00:01:00Z',
+    }))
+    configStore.attachJob(31, configStore.captureGenerationContext())
+    const mounted = await mountPanel({ retryer })
+
+    expect(mounted.host.textContent).toContain('部分题目等待处理')
+    expect(mounted.host.textContent).toContain('已完成 11 / 12 道题')
+    expect(mounted.host.textContent).toContain('Q10')
+    expect(mounted.host.textContent).toContain('可能已经在模型服务端完成')
+    expect(mounted.host.textContent).not.toContain('评分标准生成失败')
+
+    const retry = mounted.host.querySelector<HTMLButtonElement>(
+      'button[name="确认重新分析结果不确定题"]',
+    )!
+    retry.click()
+    retry.click()
+    await nextTick()
+
+    expect(retryer).toHaveBeenCalledExactlyOnceWith(
+      7,
+      31,
+      ['Q10'],
+      expect.stringMatching(/^[0-9a-f]{32}$/),
+      true,
+    )
+    expect(retry.disabled).toBe(true)
+
+    pending.resolve(job({ id: 32, status: 'queued', progress: 0 }))
+    await settle()
   })
 
   it('unlocks an ambiguous retry when its exact lookup confirms 404', async () => {
