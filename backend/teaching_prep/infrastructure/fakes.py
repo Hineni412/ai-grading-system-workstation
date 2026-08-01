@@ -79,6 +79,34 @@ class FakeLessonModelAdapter:
         return deepcopy(self.result)
 
 
+class FakeExerciseSuggestionModelAdapter:
+    def __init__(
+        self,
+        result: dict[str, Any] | None = None,
+        *,
+        failure: Exception | None = None,
+    ) -> None:
+        self.result = deepcopy(result or {"suggestions": []})
+        self.failure = failure
+        self.calls: list[dict[str, Any]] = []
+
+    def generate(
+        self,
+        *,
+        operation_id: str,
+        reference_snapshot: dict[str, Any],
+    ) -> dict[str, Any]:
+        self.calls.append(
+            {
+                "operation_id": operation_id,
+                "reference_snapshot": deepcopy(reference_snapshot),
+            }
+        )
+        if self.failure is not None:
+            raise self.failure
+        return deepcopy(self.result)
+
+
 class FakeWpsAdapter:
     def __init__(
         self,
