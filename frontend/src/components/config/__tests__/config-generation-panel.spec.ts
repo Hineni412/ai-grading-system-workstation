@@ -483,7 +483,9 @@ describe('ConfigGenerationPanel', () => {
     expect(mounted.host.textContent).not.toContain('失败 2 道题')
   })
 
-  it('explains an uncertain model outcome and retries only those questions after teacher confirmation', async () => {
+  it.each(['succeeded', 'failed'] as const)(
+    'explains an uncertain model outcome from a %s job and retries only those questions after teacher confirmation',
+    async (terminalStatus) => {
     const pending = deferred<JobResponse>()
     const retryer = vi.fn((
       _sessionId: number,
@@ -501,7 +503,7 @@ describe('ConfigGenerationPanel', () => {
     })
     const configStore = useConfigWorkspaceStore()
     useJobStore().track(job({
-      status: 'succeeded', progress: 1, result: {
+      status: terminalStatus, progress: 1, result: {
         outcome: 'partial', total_questions: 12, generated_questions: 11,
         failed_count: 0, failed_question_ids: [], failed_batches: [],
         uncertain_question_ids: ['Q10'], needs_teacher_resolution: true,
@@ -536,7 +538,8 @@ describe('ConfigGenerationPanel', () => {
 
     pending.resolve(job({ id: 32, status: 'queued', progress: 0 }))
     await settle()
-  })
+    },
+  )
 
   it('unlocks an ambiguous retry when its exact lookup confirms 404', async () => {
     const timeout = new ApiError({ kind: 'timeout', status: null, code: 'request_timeout',

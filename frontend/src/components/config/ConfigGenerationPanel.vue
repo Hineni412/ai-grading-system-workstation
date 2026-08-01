@@ -305,10 +305,10 @@ function statusCopy(value: JobResponse): string {
   if (value.status === 'running') return '正在生成'
   if (value.status === 'paused') return '生成已暂停'
   if (value.status === 'cancelled') return '已取消'
-  if (value.status === 'failed') return '生成失败'
   if (outcome.value === 'partial' && uncertainQuestionIds.value.length > 0) {
     return '部分题目等待处理'
   }
+  if (value.status === 'failed') return '生成失败'
   return outcome.value === 'partial' ? '评分标准生成失败' : '评分标准生成成功'
 }
 
