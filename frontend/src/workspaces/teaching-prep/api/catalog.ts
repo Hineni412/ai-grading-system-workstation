@@ -1925,6 +1925,26 @@ export const teachingPrepCatalogApi = {
       {
         method: 'POST',
         signal,
+        timeoutMs: 10 * 60_000,
+        decode: (payload) => {
+          assertNoPathLikeKeys(payload)
+          if (!isRecord(payload) || !Array.isArray(payload.items)) {
+            throw new Error('Invalid material unit response')
+          }
+          return payload.items.map(materialUnit)
+        },
+      },
+    )
+  },
+
+  listMaterialUnits(
+    materialVersionId: string,
+    signal?: AbortSignal,
+  ): Promise<MaterialUnit[]> {
+    return apiClient.request(
+      `/api/teaching-prep/materials/${encodeURIComponent(materialVersionId)}/units`,
+      {
+        signal,
         decode: (payload) => {
           assertNoPathLikeKeys(payload)
           if (!isRecord(payload) || !Array.isArray(payload.items)) {

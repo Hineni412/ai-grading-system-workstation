@@ -424,14 +424,15 @@ export const useTeachingPrepCatalogStore = defineStore(
       loadState.value = 'loading'
       errorMessage.value = ''
       try {
-        const nextUnits = await teachingPrepCatalogApi.parseMaterial(
-          material.id,
-        )
+        const nextUnits = (material.unit_count ?? 0) > 0
+          ? await teachingPrepCatalogApi.listMaterialUnits(material.id)
+          : await teachingPrepCatalogApi.parseMaterial(material.id)
         if (
           generation !== materialFlowGeneration
           || selectedMaterialId.value !== material.id
         ) return
         materialUnits.value = nextUnits
+        materials.value = await teachingPrepCatalogApi.listMaterials()
         if (selectedSemester.value) {
           semesterMaterials.value = await (
             teachingPrepCatalogApi.listSemesterMaterials(
