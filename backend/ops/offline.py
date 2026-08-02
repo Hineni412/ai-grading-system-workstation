@@ -18,6 +18,7 @@ from update_tools.migrate_db import run_migrations
 from .archive import OpsArchivePolicy, extract_validated_zip, inspect_zip
 from .jobs import create_safety_backup
 from .database_validation import (
+    DATABASE_MEMBERS,
     validate_archive_databases,
     validate_live_databases,
     validate_staged_databases,
@@ -172,10 +173,7 @@ def _apply_overlay(*, paths: Any, manifest: OpsOperationManifest, journal: OpsOp
             archive_name=archive_name,
             existed=target.is_file(),
         )
-        if archive_name in {
-            "user_data/databases/grading_system.db",
-            "user_data/databases/question_bank.db",
-        }:
+        if archive_name in DATABASE_MEMBERS:
             _prepare_database_target(
                 target=target,
                 archive_name=archive_name,
@@ -270,10 +268,7 @@ def _manifest_touches_databases(manifest: OpsOperationManifest) -> bool:
     staging = Path(manifest.staging_root)
     return any(
         (staging / Path(name)).is_file()
-        for name in (
-            "user_data/databases/grading_system.db",
-            "user_data/databases/question_bank.db",
-        )
+        for name in DATABASE_MEMBERS
     )
 
 
@@ -281,10 +276,7 @@ def _state_touches_databases(state: dict[str, Any]) -> bool:
     replacements = state.get("replacements")
     if not isinstance(replacements, list):
         return False
-    canonical = {
-        "user_data/databases/grading_system.db",
-        "user_data/databases/question_bank.db",
-    }
+    canonical = set(DATABASE_MEMBERS)
     return any(
         isinstance(item, dict)
         and str(item.get("archive_name") or "") in canonical
@@ -336,10 +328,7 @@ def _rollback(*, paths: Any, state: dict[str, Any]) -> None:
                 raise ValueError("replacement target is outside controlled roots")
             if bool(item["existed"]):
                 archive_name = str(item["archive_name"])
-                if target.resolve(strict=False) in {
-                    Path(paths.db_path).resolve(strict=False),
-                    Path(paths.qb_db_path).resolve(strict=False),
-                }:
+                if str(item["archive_name"]) in DATABASE_MEMBERS:
                     _restore_database_member(archive, archive_name, target)
                     continue
                 with archive.open(archive_name, "r") as source:
@@ -375,6 +364,8 @@ def _restore_database_member(
         with closing(sqlite3.connect(candidate)) as source_connection:
             with closing(sqlite3.connect(target)) as target_connection:
                 source_connection.backup(target_connection)
+        _checkpoint_database(target)
+        _remove_database_companions(target)
 
 
 def _target_for_archive_name(paths: Any, archive_name: str) -> Path:

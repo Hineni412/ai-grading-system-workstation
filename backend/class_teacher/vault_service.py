@@ -129,10 +129,22 @@ class _RestorePreview:
 
 
 class VaultService:
-    def __init__(self, context: WorkspaceContext, *, protection_provider=None, model_gateway=None) -> None:
+    _PLAINTEXT_KEY = b"class-teacher-plaintext-debug-key"
+
+    def __init__(
+        self,
+        context: WorkspaceContext,
+        *,
+        protection_provider=None,
+        model_gateway=None,
+        protection_enabled: bool = True,
+    ) -> None:
         self._operation_lock = asyncio.Lock()
+        self.protection_enabled = bool(protection_enabled)
         self.database = EncryptedDatabase(context)
-        self.repository = EncryptedObjectRepository()
+        self.repository = EncryptedObjectRepository(
+            plaintext=not self.protection_enabled,
+        )
         from .ordinary_database import OrdinaryWorkDatabase
         from .model_approval import ModelApproval
         from .protection import PinProtection
@@ -254,6 +266,34 @@ class VaultService:
 
     def status(self, token: str | None = None) -> dict[str, object]:
         with self._lock:
+            if not self.protection_enabled:
+                if self._plaintext_migration_required():
+                    return {
+                        "initialized": True,
+                        "locked": True,
+                        "idle_timeout_seconds": 0,
+                        "retry_after_seconds": 0,
+                        "format_version": FORMAT_VERSION,
+                        "protection_mode": "legacy_migration_required",
+                        "protection_state": None,
+                        "legacy_upgrade_available": False,
+                        "session_expires_in_seconds": 0,
+                        "status_observed_at": _iso(),
+                        "lock_reason": "legacy_migration_required",
+                    }
+                return {
+                    "initialized": True,
+                    "locked": False,
+                    "idle_timeout_seconds": 0,
+                    "retry_after_seconds": 0,
+                    "format_version": FORMAT_VERSION,
+                    "protection_mode": "plaintext_debug_v1",
+                    "protection_state": None,
+                    "legacy_upgrade_available": False,
+                    "session_expires_in_seconds": 0,
+                    "status_observed_at": _iso(),
+                    "lock_reason": None,
+                }
             self._prune()
             observed_at = _iso()
             if not self.database.exists:
@@ -892,7 +932,27 @@ class VaultService:
 
     def session_key(self, token: str) -> bytes:
         with self._lock:
+            if not self.protection_enabled:
+                if self._plaintext_migration_required():
+                    raise VaultError(
+                        "vault_plaintext_migration_required",
+                        "检测到旧加密班主任数据库，已停止读取和写入；请先执行授权迁移",
+                        status_code=409,
+                    )
+                if not self.database.exists:
+                    self.database.initialize_schema()
+                return self._PLAINTEXT_KEY
             return bytes(self._require_session(token).vmk)
+
+    def _plaintext_migration_required(self) -> bool:
+        if not self.database.exists:
+            return False
+        try:
+            uri = self.database.database_path.resolve().as_uri() + "?mode=ro"
+            with closing(sqlite3.connect(uri, uri=True)) as connection:
+                return self.repository.requires_plaintext_migration(connection)
+        except (OSError, sqlite3.DatabaseError):
+            return True
 
     def change_password(
         self,

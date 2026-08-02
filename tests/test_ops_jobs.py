@@ -368,7 +368,7 @@ def test_ops_transfer_export_allows_job_store_updates_inside_data_root(
         manager.shutdown()
 
 
-def test_ops_backup_allows_its_job_store_updates_and_excludes_workspaces(
+def test_ops_backup_allows_job_store_updates_and_includes_class_teacher_workspace(
     tmp_path: Path,
 ) -> None:
     from backend.jobs.manager import JobManager
@@ -377,7 +377,16 @@ def test_ops_backup_allows_its_job_store_updates_and_excludes_workspaces(
     paths = _paths(tmp_path, migration_current=True)
     protected = paths.data_root / "workspaces" / "class-teacher" / "student_affairs.db"
     protected.parent.mkdir(parents=True)
-    protected.write_bytes(b"protected-workspace-data")
+    with sqlite3.connect(protected) as connection:
+        connection.execute("CREATE TABLE synthetic_student (name TEXT NOT NULL)")
+        connection.execute("INSERT INTO synthetic_student VALUES ('合成学生')")
+        for table in (
+            "schema_migrations",
+            "vault_metadata",
+            "encrypted_objects",
+            "access_audit",
+        ):
+            connection.execute(f"CREATE TABLE {table} (id INTEGER PRIMARY KEY)")
     manager = JobManager(
         JobStore(paths.db_path),
         max_workers=1,
@@ -406,7 +415,12 @@ def test_ops_backup_allows_its_job_store_updates_and_excludes_workspaces(
             names = set(archive.namelist())
         assert "user_data/databases/grading_system.db" in names
         assert "user_data/databases/question_bank.db" in names
-        assert not any(name.startswith("user_data/workspaces/") for name in names)
+        assert "user_data/workspaces/class-teacher/student_affairs.db" in names
+        assert not any(
+            name.startswith("user_data/workspaces/")
+            and not name.startswith("user_data/workspaces/class-teacher/")
+            for name in names
+        )
     finally:
         manager.shutdown()
 

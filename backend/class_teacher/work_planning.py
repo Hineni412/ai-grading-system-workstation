@@ -88,6 +88,21 @@ class WorkPlanningGateway(Protocol):
     ) -> str: ...
 
 
+def _physical_request_count(
+    gateway: object,
+    operation_id: str,
+    *,
+    default: int,
+) -> int:
+    lookup = getattr(gateway, "physical_request_count", None)
+    if callable(lookup):
+        try:
+            return max(0, int(lookup(operation_id)))
+        except (TypeError, ValueError):
+            pass
+    return max(0, int(default))
+
+
 class DisabledWorkPlanningGateway:
     model_name = "未启用真实模型"
 
@@ -136,6 +151,7 @@ class FakeWorkPlanningGateway:
         model_provider: str = "synthetic.invalid",
         model_endpoint: str = "https://synthetic.invalid/v1",
         model: str = "synthetic-work-planner",
+        request_count: int = 1,
     ) -> None:
         self.result = result
         self.available = available
@@ -143,7 +159,13 @@ class FakeWorkPlanningGateway:
         self.model_provider = model_provider
         self.model_endpoint = model_endpoint
         self.model = model
+        self.request_count = max(0, int(request_count))
         self.calls: list[dict[str, object]] = []
+
+    def physical_request_count(self, operation_id: str) -> int:
+        return self.request_count if any(
+            call["operation_id"] == operation_id for call in self.calls
+        ) else 0
 
     def is_available(self) -> bool:
         return self.available
@@ -191,12 +213,13 @@ class FakeWorkPlanningGateway:
 
 
 class WorkPlanning:
-    """Exact-preview, one-call, validated planning module.
+    """Validated ordinary-work planning module.
 
     Local code resolves only explicit dates, blocks sensitive text, validates
-    the returned graph and records an idempotent call receipt.  It never
-    invents workflow steps.  A valid plan is still only a proposal; WorkGraph
-    persists it after a separate teacher confirmation.
+    the returned graph and records an idempotent call receipt. It never
+    invents workflow steps. Ordinary text is dispatched directly from the
+    generate action; a valid plan still needs teacher confirmation before
+    WorkGraph persists it.
     """
 
     def __init__(
@@ -283,7 +306,6 @@ class WorkPlanning:
             "destination_fingerprint": destination_fingerprint,
             "expires_at": _iso(expires_at),
             "local_context": dict(local_context or {}),
-            "claimed_operation_id": None,
             "in_flight": False,
         }
         with self._lock:
@@ -302,7 +324,7 @@ class WorkPlanning:
             "model_name": destination.get("model") or "未启用真实模型",
             "destination_fingerprint": destination_fingerprint,
             "model_enabled": bool(destination.get("available")),
-            "max_physical_requests": 1,
+            "max_physical_requests": None,
             "physical_request_count": 0,
         }
 
@@ -329,20 +351,12 @@ class WorkPlanning:
                     "发送内容已经变化，请重新预览",
                     status_code=409,
                 )
-            claimed = preview.get("claimed_operation_id")
-            if claimed is not None and str(claimed) != operation_id:
-                raise VaultError(
-                    "class_teacher_work_plan_preview_already_confirmed",
-                    "这份发送预览已经确认，不能再次调用 AI",
-                    status_code=409,
-                )
             if bool(preview.get("in_flight")):
                 raise VaultError(
                     "class_teacher_work_plan_in_progress",
                     "AI 正在处理这份方案，请等待当前请求返回",
                     status_code=409,
                 )
-            preview["claimed_operation_id"] = operation_id
             preview["in_flight"] = True
 
         existing = self._receipt(operation_id)
@@ -425,29 +439,42 @@ class WorkPlanning:
                 result = {
                     **receipt,
                     "state": "destination_changed",
+                    "physical_request_count": _physical_request_count(
+                        self.gateway, operation_id, default=0
+                    ),
                     "error_category": "destination_changed",
                 }
             except ModelDispatchDisabled:
                 result = {
                     **receipt,
                     "state": "unavailable",
+                    "physical_request_count": _physical_request_count(
+                        self.gateway, operation_id, default=0
+                    ),
                     "error_category": "model_disabled",
                 }
             except ModelResultUnknown:
                 result = {
                     **receipt,
                     "state": "result_unknown",
-                    "physical_request_count": 1,
+                    "physical_request_count": _physical_request_count(
+                        self.gateway, operation_id, default=1
+                    ),
                     "error_category": "result_unknown",
                 }
             except Exception:
                 result = {
                     **receipt,
                     "state": "result_unknown",
-                    "physical_request_count": 1,
+                    "physical_request_count": _physical_request_count(
+                        self.gateway, operation_id, default=1
+                    ),
                     "error_category": "result_unknown",
                 }
             else:
+                physical_request_count = _physical_request_count(
+                    self.gateway, operation_id, default=1
+                )
                 try:
                     parsed = self._validate_result(
                         raw_result,
@@ -462,7 +489,7 @@ class WorkPlanning:
                     result = {
                         **receipt,
                         "state": "invalid_result",
-                        "physical_request_count": 1,
+                        "physical_request_count": physical_request_count,
                         "error_category": exc.code,
                     }
                 else:
@@ -472,7 +499,7 @@ class WorkPlanning:
                         result = {
                             **receipt,
                             "state": "needs_information",
-                            "physical_request_count": 1,
+                            "physical_request_count": physical_request_count,
                             "questions": questions,
                             "assumptions": assumptions,
                         }
@@ -488,7 +515,7 @@ class WorkPlanning:
                         result = {
                             **receipt,
                             "state": "succeeded",
-                            "physical_request_count": 1,
+                            "physical_request_count": physical_request_count,
                             "plan": plan,
                             "plan_fingerprint": plan_fingerprint,
                             "assumptions": assumptions,

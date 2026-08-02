@@ -8,7 +8,7 @@ export interface VaultStatus {
   idle_timeout_seconds: number
   retry_after_seconds: number
   format_version: number
-  protection_mode?: 'uninitialized' | 'legacy_password_v1' | 'pin_dpapi_current_user_v2'
+  protection_mode?: 'uninitialized' | 'legacy_password_v1' | 'pin_dpapi_current_user_v2' | 'plaintext_debug_v1' | 'legacy_migration_required'
   protection_state?: 'pending' | 'active' | null
   legacy_upgrade_available?: boolean
   session_expires_in_seconds?: number
@@ -93,7 +93,7 @@ function status(payload: unknown): VaultStatus {
   const protectionMode = value.protection_mode === undefined
     ? fallbackMode
     : text(value.protection_mode)
-  if (!['uninitialized', 'legacy_password_v1', 'pin_dpapi_current_user_v2'].includes(
+  if (!['uninitialized', 'legacy_password_v1', 'pin_dpapi_current_user_v2', 'plaintext_debug_v1', 'legacy_migration_required'].includes(
     protectionMode,
   )) throw new Error('contract')
   const protectionState = value.protection_state === undefined || value.protection_state === null

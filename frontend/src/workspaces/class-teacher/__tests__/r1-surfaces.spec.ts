@@ -24,6 +24,7 @@ import AcademicAnalysisPanel from '../students/AcademicAnalysisPanel.vue'
 import SecurityPanel from '../students/SecurityPanel.vue'
 import StudentDirectoryPanel from '../students/StudentDirectoryPanel.vue'
 import SupportReviewPanel from '../students/SupportReviewPanel.vue'
+import ClassTeacherWorkbenchView from '../views/ClassTeacherWorkbenchView.vue'
 
 const apps: App[] = []
 async function mount(component: Component, props: Record<string, unknown>) {
@@ -37,9 +38,44 @@ function clickByText(host: HTMLElement, text: string) {
   if (!button) throw new Error(`button not found: ${text}`)
   button.dispatchEvent(new MouseEvent('click', { bubbles: true })); return button
 }
-afterEach(() => { apps.splice(0).forEach((app) => app.unmount()); document.body.innerHTML=''; vi.restoreAllMocks(); chartOptions.length=0 })
+afterEach(() => { apps.splice(0).forEach((app) => app.unmount()); document.body.innerHTML=''; window.history.replaceState({}, '', '/'); vi.restoreAllMocks(); chartOptions.length=0 })
 
 describe('B UI R1 surfaces', () => {
+  it('opens student work directly in plaintext debug mode without a PIN prompt', async () => {
+    window.history.replaceState({}, '', '/class-teacher?surface=students&panel=directory')
+    vi.spyOn(vaultApi, 'status').mockResolvedValue({
+      initialized:true, locked:false, idle_timeout_seconds:0, retry_after_seconds:0,
+      format_version:1, protection_mode:'plaintext_debug_v1', protection_state:null,
+      legacy_upgrade_available:false, session_expires_in_seconds:0,
+      status_observed_at:'2026-08-02T00:00:00Z', lock_reason:null,
+    })
+    vi.spyOn(studentR1Api, 'directory').mockResolvedValue({ items:[], cursor:null, total:0, page_size:20 })
+
+    const host = await mount(ClassTeacherWorkbenchView, {})
+
+    expect(host.textContent).toContain('调试直开')
+    expect(host.textContent).toContain('学生目录')
+    expect(host.textContent).not.toContain('输入 6 位 PIN')
+    expect(host.textContent).not.toContain('建立敏感保险箱')
+  })
+
+  it('stops before mounting student content when an old encrypted vault needs migration', async () => {
+    window.history.replaceState({}, '', '/class-teacher?surface=students&panel=directory')
+    vi.spyOn(vaultApi, 'status').mockResolvedValue({
+      initialized:true, locked:true, idle_timeout_seconds:0, retry_after_seconds:0,
+      format_version:1, protection_mode:'legacy_migration_required', protection_state:null,
+      legacy_upgrade_available:false, session_expires_in_seconds:0,
+      status_observed_at:'2026-08-02T00:00:00Z', lock_reason:'legacy_migration_required',
+    })
+    const directory = vi.spyOn(studentR1Api, 'directory')
+
+    const host = await mount(ClassTeacherWorkbenchView, {})
+
+    expect(host.textContent).toContain('旧库待迁移')
+    expect(host.textContent).toContain('已停止读写')
+    expect(directory).not.toHaveBeenCalled()
+  })
+
   it('opens a restricted work item only through the protected projection command', async () => {
     const node: WorkNode = { node_id:'n1', kind:'restricted_projection', classification:'restricted_projection', title:'学生事项待复查', details:null, status:'pending', due_date:'2026-08-02', revision:1, created_at:'2026-08-01', updated_at:'2026-08-01', projection_type:'attention_followup' }
     const snapshot = ref<WorkSnapshot | null>({ as_of:'2026-08-01', start_date:'2026-08-01', end_date:'2026-08-01', nodes:[node], edges:[], today:[node], overdue:[], waiting:[], review_due:[node], summary:{today:1,overdue:0,waiting:0,review_due:1}, view:'today', cursor:null, source_version:'v1' })
@@ -217,15 +253,38 @@ describe('B UI R1 surfaces', () => {
     expect(subjectDeleted).toHaveBeenCalledOnce()
   })
 
-  it('quick capture stops at exact preview until the teacher confirms dispatch', async () => {
+  it('quick capture sends ordinary work directly and explains an invalid AI result', async () => {
     vi.spyOn(workApi, 'previewPlan').mockResolvedValue({ preview_id:'p1', source_text:'普通班务', final_due_date:'2026-08-03', date_semantics:'date-only', exact_payload:{text:'普通班务'}, fingerprint:'f', expires_at:'2026-08-01', model_provider:'fake', model_endpoint:null, model_name:'fake', destination_fingerprint:'d', model_enabled:true, max_physical_requests:1, physical_request_count:0 })
-    const invoke = vi.spyOn(workApi, 'invokePlan')
+    const invoke = vi.spyOn(workApi, 'invokePlan').mockResolvedValue({
+      preview_id:'p1', operation_id:'op1', state:'invalid_result', physical_request_count:1,
+      error_category:'class_teacher_work_plan_invalid_result', questions:[], assumptions:[],
+      plan:null, plan_fingerprint:null, teacher_confirmation_required:false, local_context:{},
+    })
     const host = await mount(QuickWorkCapture, { module:{ load:vi.fn() } })
     const input = host.querySelector<HTMLInputElement>('input[placeholder]')!
     input.value='普通班务'; input.dispatchEvent(new Event('input',{bubbles:true}))
-    clickByText(host, '生成匿名发送预览'); await new Promise((resolve)=>setTimeout(resolve,0)); await nextTick()
-    expect(host.textContent).toContain('发送前逐字核对')
-    expect(invoke).not.toHaveBeenCalled()
+    clickByText(host, '生成 AI 草案'); await new Promise((resolve)=>setTimeout(resolve,0)); await nextTick()
+    expect(invoke).toHaveBeenCalledOnce()
+    expect(host.textContent).not.toContain('发送前逐字核对')
+    expect(host.textContent).toContain('AI 返回内容未通过校验')
+    expect(host.textContent).toContain('已请求 1 次')
+    expect(host.textContent).toContain('原因：class_teacher_work_plan_invalid_result')
+  })
+
+  it('shows a complete zero-request receipt when the model destination changed', async () => {
+    vi.spyOn(workApi, 'previewPlan').mockResolvedValue({ preview_id:'p1', source_text:'普通班务', final_due_date:'2026-08-03', date_semantics:'date-only', exact_payload:{text:'普通班务'}, fingerprint:'f', expires_at:'2026-08-01', model_provider:'fake', model_endpoint:null, model_name:'fake', destination_fingerprint:'d', model_enabled:true, max_physical_requests:null, physical_request_count:0 })
+    vi.spyOn(workApi, 'invokePlan').mockResolvedValue({
+      preview_id:'p1', operation_id:'op1', state:'destination_changed', physical_request_count:0,
+      error_category:'destination_changed', questions:[], assumptions:[], plan:null,
+      plan_fingerprint:null, teacher_confirmation_required:false, local_context:{},
+    })
+    const host = await mount(QuickWorkCapture, { module:{ load:vi.fn() } })
+    const input = host.querySelector<HTMLInputElement>('input[placeholder]')!
+    input.value='普通班务'; input.dispatchEvent(new Event('input',{bubbles:true}))
+    clickByText(host, '生成 AI 草案'); await new Promise((resolve)=>setTimeout(resolve,0)); await nextTick()
+
+    expect(host.textContent).toContain('原因：destination_changed')
+    expect(host.textContent).toContain('已请求 0 次')
   })
 
   it('saving a support record locally makes zero AI requests', async () => {

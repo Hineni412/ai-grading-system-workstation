@@ -498,6 +498,17 @@ class _FakeGateway:
         return self.chat_completions(**kwargs)
 
 
+class _ThreeAttemptGateway(_FakeGateway):
+    def chat_completions(self, **kwargs):
+        self.calls.append(kwargs)
+        next_attempt = kwargs["_next_attempt"]
+        assert callable(next_attempt)
+        next_attempt()
+        next_attempt()
+        next_attempt()
+        return {"usage": {"total_tokens": 0}}
+
+
 def test_workspace_model_policy_requires_metadata_and_allows_one_request(
     tmp_path: Path,
 ) -> None:
@@ -543,6 +554,33 @@ def test_workspace_model_policy_requires_metadata_and_allows_one_request(
             kwargs={},
         )
     assert len(gateway.calls) == 1
+
+
+def test_workspace_model_policy_counts_each_physical_retry_attempt(
+    tmp_path: Path,
+) -> None:
+    paths = _paths(tmp_path)
+    gateway = _ThreeAttemptGateway()
+    policy = WorkspaceModelGateway(
+        context=_context(paths, "class-teacher"),
+        gateway=gateway,
+        metadata_only=False,
+        claim_operations=False,
+        allow_retry=True,
+    )
+
+    policy.chat_completions(
+        request=WorkspaceModelRequest(
+            purpose="ordinary_work_plan",
+            data_classification="ordinary",
+            operation_id="three-attempts-001",
+        ),
+        client=object(),
+        model="safe-model",
+        kwargs={},
+    )
+
+    assert policy.physical_request_count == 3
 
 
 def test_workspace_model_operation_claim_survives_new_gateway_instance(
