@@ -86,7 +86,13 @@ class PinProtection:
             return "active"
         return "pending" if self._pending_row() is not None else None
 
-    def stage(self, *, pin: str, secret: str) -> None:
+    def stage(
+        self,
+        *,
+        pin: str,
+        secret: str,
+        operation_id: str | None = None,
+    ) -> None:
         self.validate_pin(pin)
         salt = random_salt()
         wrapped = seal(derive_key(pin, salt), secret.encode("utf-8"), _PIN_AAD)
@@ -104,15 +110,23 @@ class PinProtection:
                     """
                     INSERT INTO sensitive_protection_pending (
                         singleton_id, mode, pin_salt, protected_secret,
-                        created_at, updated_at
-                    ) VALUES (1, ?, ?, ?, ?, ?)
+                        created_at, updated_at, operation_id
+                    ) VALUES (1, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(singleton_id) DO UPDATE SET
                         mode = excluded.mode,
                         pin_salt = excluded.pin_salt,
                         protected_secret = excluded.protected_secret,
+                        operation_id = excluded.operation_id,
                         updated_at = excluded.updated_at
                     """,
-                    (PIN_DPAPI_V2, salt, protected, timestamp, timestamp),
+                    (
+                        PIN_DPAPI_V2,
+                        salt,
+                        protected,
+                        timestamp,
+                        timestamp,
+                        operation_id,
+                    ),
                 )
 
     def activate(self) -> None:

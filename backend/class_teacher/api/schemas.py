@@ -18,6 +18,9 @@ class VaultStatusResponse(BaseModel):
     ]
     protection_state: Literal["pending", "active"] | None = None
     legacy_upgrade_available: bool = False
+    session_expires_in_seconds: int = 0
+    status_observed_at: str
+    lock_reason: str | None = None
 
 
 class InitializeRequest(BaseModel):
@@ -53,6 +56,12 @@ class PinRecoverRequest(BaseModel):
 
 class PinUpgradeRequest(BaseModel):
     current_password: SecretStr
+    new_pin: SecretStr
+    operation_id: str = Field(min_length=8, max_length=128)
+
+
+class PinChangeRequest(BaseModel):
+    current_pin: SecretStr
     new_pin: SecretStr
     operation_id: str = Field(min_length=8, max_length=128)
 
@@ -118,6 +127,16 @@ class RestorePreviewResponse(BackupSummaryResponse):
     preview_token: str
     expires_in_seconds: int
     requires_complete_replacement: bool
+    source_relation: Literal["same_instance", "other_instance"]
+    backup_schema_version: int
+    current_schema_version: int
+    migration_required: bool
+    backup_scope_counts: dict[str, int]
+    current_scope_counts: dict[str, int]
+    mode: Literal["complete_replace"]
+    will_replace_current: bool
+    will_lock_after_confirm: bool
+    confirmation_phrase: str
 
 
 class RestoreConfirmRequest(BaseModel):
@@ -140,6 +159,8 @@ class OperationResponse(BaseModel):
 class TouchResponse(BaseModel):
     active: bool
     idle_timeout_seconds: int
+    session_expires_in_seconds: int
+    status_observed_at: str
 
 
 __all__ = [
@@ -154,6 +175,7 @@ __all__ = [
     "InitializeResponse",
     "OperationResponse",
     "PinInitializeRequest",
+    "PinChangeRequest",
     "PinRecoverRequest",
     "PinUpgradeRequest",
     "PinUnlockRequest",

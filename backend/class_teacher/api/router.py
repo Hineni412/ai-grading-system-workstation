@@ -17,6 +17,7 @@ from .schemas import (
     InitializeResponse,
     OperationResponse,
     PinInitializeRequest,
+    PinChangeRequest,
     PinRecoverRequest,
     PinUpgradeRequest,
     PinUnlockRequest,
@@ -32,9 +33,6 @@ from .schemas import (
 
 
 _CLIENT_HEADER = "class-teacher-browser-v1"
-_RESTORE_PHRASE = "确认恢复班主任工作台"
-
-
 def _api_error(
     status_code: int,
     code: str,
@@ -227,6 +225,27 @@ def create_router() -> APIRouter:
             )
         )
 
+    @protected_router.post("/vault/pin/change", response_model=OperationResponse)
+    def change_pin(
+        request: Request,
+        body: PinChangeRequest,
+        response: Response,
+        session_token: str | None = Header(
+            default=None,
+            alias="x-class-teacher-session",
+        ),
+    ):
+        _require_trusted_mutation(request)
+        _no_store(response)
+        return _call(
+            lambda: _service(request).change_pin(
+                token=_token(session_token),
+                current_pin=body.current_pin.get_secret_value(),
+                new_pin=body.new_pin.get_secret_value(),
+                operation_id=body.operation_id,
+            )
+        )
+
     @protected_router.post("/vault/lock", response_model=OperationResponse)
     def lock(
         request: Request,
@@ -270,6 +289,24 @@ def create_router() -> APIRouter:
         return _call(
             lambda: _service(request).acknowledge_recovery_key(
                 token=_token(session_token),
+            )
+        )
+
+    @protected_router.get("/protected-work/{projection_id}")
+    def resolve_protected_work(
+        projection_id: str,
+        request: Request,
+        response: Response,
+        session_token: str | None = Header(
+            default=None,
+            alias="x-class-teacher-session",
+        ),
+    ):
+        _no_store(response)
+        return _call(
+            lambda: _service(request).projections.resolve(
+                token=_token(session_token),
+                projection_id=projection_id,
             )
         )
 
@@ -380,17 +417,12 @@ def create_router() -> APIRouter:
     ):
         _require_trusted_mutation(request)
         _no_store(response)
-        if body.confirmation_phrase != _RESTORE_PHRASE:
-            raise _api_error(
-                422,
-                "vault_restore_confirmation_required",
-                f"请输入“{_RESTORE_PHRASE}”后再恢复",
-            )
         return _call(
             lambda: _service(request).confirm_restore(
                 token=_token(session_token),
                 preview_token=body.preview_token,
                 operation_id=body.operation_id,
+                confirmation_phrase=body.confirmation_phrase,
             )
         )
 
