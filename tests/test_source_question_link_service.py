@@ -70,6 +70,29 @@ def test_suggested_link_is_not_used_for_exclusion(
     assert link_service.exclusion_warning(14)
 
 
+def test_prepublish_match_requires_explicit_id_or_unique_question_number(
+    link_service: SourceQuestionLinkService,
+) -> None:
+    result = link_service.match_imported_questions(
+        source_questions=[
+            {"question_id": "Q17"},
+            {"question_id": "Q18"},
+            {"question_id": "Q19"},
+            {"question_id": "Q20", "bank_question_id": 301},
+        ],
+        imported_bank_questions=[
+            {"id": 201, "question_number": "17"},
+            {"id": 202, "question_number": "18"},
+            {"id": 301, "question_number": "17"},
+        ],
+    )
+
+    assert result["matches"] == {"Q18": 202, "Q20": 301}
+    assert result["confirmed"] == 2
+    assert result["unresolved"] == 2
+    assert result["unresolved_question_ids"] == ["Q17", "Q19"]
+
+
 def test_exact_text_match_confirms_but_similarity_only_suggests(
     link_service: SourceQuestionLinkService,
 ) -> None:

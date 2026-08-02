@@ -14,6 +14,7 @@ from backend.config_workspace.deferred_analysis import DeferredAnalysisArtifactS
 from backend.jobs.manager import JobCancellationRequested, JobContext, JobManager
 from backend.jobs.question_bank_sync import (
     StaleQuestionBankSyncError,
+    run_deferred_question_bank_intake,
     run_session_question_bank_sync_job,
 )
 from backend.jobs.store import (
@@ -25,10 +26,13 @@ from db_manager import DBManager
 from question_bank.database.schema import connect, initialize_database
 from question_bank.services.question_write_service import QuestionBankWriteService
 from question_bank.services.question_service import QuestionService
+from question_bank.services.source_question_link_service import SourceQuestionLinkService
 from question_bank.solution_evidence import SolutionEvidenceRepository
 from question_bank.taxonomy.governance import TaxonomyGovernance
 from question_bank.training_criteria import (
     ConfigQuestionAnalysisSource,
+    DeferredAnalysisFailure,
+    DeferredCombinedAnalysisBundle,
     GatewayBatchResponse,
     InMemoryCombinedQuestionAnalysisModule,
     question_analysis_input_from_config_source,
@@ -1113,6 +1117,10 @@ def _run_deferred_adoption(
     empty_links: bool = False,
     analysis_governance: Any | None = None,
     adoption_governance: Any | None = None,
+    prepublish_intake: bool = False,
+    repeat_prepublish_intake: bool = False,
+    partial_analysis: bool = False,
+    cancel_after_import: bool = False,
 ) -> tuple[
     dict[str, object],
     _DeferredSyncGateway,
@@ -1148,6 +1156,26 @@ def _run_deferred_adoption(
         curriculum_volume_id="bnu24-math-g7-upper",
         sources=(ConfigQuestionAnalysisSource("Q1", source_question),),
     )
+    if partial_analysis:
+        bundle = DeferredCombinedAnalysisBundle(
+            operation_id=bundle.operation_id,
+            curriculum_volume_id=bundle.curriculum_volume_id,
+            items=bundle.items,
+            failures=(
+                DeferredAnalysisFailure(
+                    source_question_ref="Q2",
+                    analysis_question_id=2,
+                    request_id="d" * 64,
+                    batch_hash="e" * 64,
+                    category="model",
+                ),
+            ),
+            requests=bundle.requests,
+            source_fingerprints=(
+                *bundle.source_fingerprints,
+                ("Q2", "f" * 64),
+            ),
+        )
     artifact_id = "a" * 32
     source_id = "b" * 32
     source_revision = "c" * 64
@@ -1185,21 +1213,36 @@ def _run_deferred_adoption(
     imported_ids: list[int] = []
 
     def import_runner(**_kwargs: Any) -> dict[str, object]:
+        if imported_ids:
+            return {
+                "outcome": "complete",
+                "successful_question_ids": [imported_ids[0]],
+                "failed_question_ids": [],
+                "failed_count": 0,
+                "retryable": False,
+            }
         with connect(question_bank_db) as connection:
-            question_id = int(
-                connection.execute(
-                    """
-                    INSERT INTO questions (
-                        question_number, question_type, question_text,
-                        answer_text, source_file
-                    ) VALUES ('1', 'choice', '1 + 1 = ?', 'B', 'paper.docx')
-                    """
-                ).lastrowid
-            )
-        imported_ids.append(question_id)
+            numbers = ("1", "2") if partial_analysis else ("1",)
+            question_ids = [
+                int(
+                    connection.execute(
+                        """
+                        INSERT INTO questions (
+                            question_number, question_type, question_text,
+                            answer_text, source_file
+                        ) VALUES (?, 'choice', ?, 'B', 'paper.docx')
+                        """,
+                        (number, f"{number} + 1 = ?"),
+                    ).lastrowid
+                )
+                for number in numbers
+            ]
+        imported_ids.extend(question_ids)
+        if cancel_after_import:
+            assert store.request_cancel(job.id)
         return {
             "outcome": "complete",
-            "successful_question_ids": [question_id],
+            "successful_question_ids": question_ids,
             "failed_question_ids": [],
             "failed_count": 0,
             "retryable": False,
@@ -1210,21 +1253,57 @@ def _run_deferred_adoption(
 
     governance = adoption_governance or _PassThroughTaxonomyGovernance()
 
-    result = run_session_question_bank_sync_job(
-        context=context,
-        grading_db=db,
-        question_bank_db_path=question_bank_db,
-        data_root=tmp_path / "data",
-        write_service=QuestionBankWriteService(
-            question_bank_db,
+    if prepublish_intake:
+        try:
+            result = run_deferred_question_bank_intake(
+                context=context,
+                session_id=session_id,
+                artifact=artifact,
+                source_filename="paper.docx",
+                source_content=b"controlled source paper",
+                question_bank_db_path=question_bank_db,
+                data_root=tmp_path / "data",
+                question_import_runner=import_runner,
+                ai_service_factory=lambda: _DeferredAdoptionTaggingService(
+                    governance
+                ),
+                taxonomy_governance=governance,
+            )
+        except JobCancellationRequested:
+            if not cancel_after_import:
+                raise
+            result = {"outcome": "cancelled"}
+        if repeat_prepublish_intake:
+            result = run_deferred_question_bank_intake(
+                context=context,
+                session_id=session_id,
+                artifact=artifact,
+                source_filename="paper.docx",
+                source_content=b"controlled source paper",
+                question_bank_db_path=question_bank_db,
+                data_root=tmp_path / "data",
+                question_import_runner=import_runner,
+                ai_service_factory=lambda: _DeferredAdoptionTaggingService(
+                    governance
+                ),
+                taxonomy_governance=governance,
+            )
+    else:
+        result = run_session_question_bank_sync_job(
+            context=context,
+            grading_db=db,
+            question_bank_db_path=question_bank_db,
             data_root=tmp_path / "data",
-        ),
-        question_import_runner=import_runner,
-        tagging_sync_runner=unexpected_tagging_runner,
-        ai_service_factory=lambda: _DeferredAdoptionTaggingService(governance),
-        taxonomy_governance=governance,
-        analysis_artifact_root=artifact_root,
-    )
+            write_service=QuestionBankWriteService(
+                question_bank_db,
+                data_root=tmp_path / "data",
+            ),
+            question_import_runner=import_runner,
+            tagging_sync_runner=unexpected_tagging_runner,
+            ai_service_factory=lambda: _DeferredAdoptionTaggingService(governance),
+            taxonomy_governance=governance,
+            analysis_artifact_root=artifact_root,
+        )
 
     return (
         result,
@@ -1263,6 +1342,103 @@ def test_sync_adopts_deferred_tags_and_evidence_without_tagging_model(
         "fine_term_links"
     ][0]["role"] == "direct"
     assert not artifact_path.exists()
+
+
+def test_score_pending_intake_imports_tags_and_evidence_without_grading_links(
+    tmp_path: Path,
+) -> None:
+    result, gateway, imported_ids, question_bank_db, artifact_path = (
+        _run_deferred_adoption(tmp_path, prepublish_intake=True)
+    )
+
+    assert result["outcome"] == "complete", result
+    assert result["imported_count"] == 1
+    assert result["tagged_count"] == 1
+    assert result["evidence_count"] == 1
+    assert result["linked_count"] == 0
+    assert result["provisional_match_count"] == 1
+    assert result["config_link_pending"] is True
+    assert SourceQuestionLinkService(question_bank_db).list_links() == []
+    saved = QuestionService(question_bank_db).get_question(imported_ids[0])
+    assert saved is not None
+    assert any(
+        tag["tag_type"] == "knowledge_point"
+        and tag["tag_value"] == "一元一次方程"
+        for tag in saved["tags"]
+    )
+    assert SolutionEvidenceRepository(question_bank_db).latest(imported_ids[0])
+    assert gateway.calls == [(1,)]
+    assert artifact_path.exists()
+
+
+def test_score_pending_intake_retry_reuses_question_tags_and_evidence(
+    tmp_path: Path,
+) -> None:
+    result, gateway, imported_ids, question_bank_db, artifact_path = (
+        _run_deferred_adoption(
+            tmp_path,
+            prepublish_intake=True,
+            repeat_prepublish_intake=True,
+        )
+    )
+
+    assert result["outcome"] == "complete", result
+    assert result["imported_count"] == 1
+    assert result["tagged_count"] == 1
+    assert result["evidence_count"] == 1
+    assert imported_ids == [1]
+    assert gateway.calls == [(1,)]
+    assert artifact_path.exists()
+    with connect(question_bank_db) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM questions").fetchone()[0] == 1
+        assert connection.execute(
+            "SELECT COUNT(*) FROM question_solution_evidence_versions"
+        ).fetchone()[0] == 1
+
+
+def test_partial_analysis_intake_keeps_paper_and_tags_only_successful_questions(
+    tmp_path: Path,
+) -> None:
+    result, gateway, imported_ids, question_bank_db, artifact_path = (
+        _run_deferred_adoption(
+            tmp_path,
+            prepublish_intake=True,
+            partial_analysis=True,
+        )
+    )
+
+    assert result["outcome"] == "partial", result
+    assert result["imported_count"] == 2
+    assert result["tagged_count"] == 1
+    assert result["evidence_count"] == 1
+    assert result["analysis_incomplete_count"] == 1
+    assert result["failed_count"] == 1
+    assert len(imported_ids) == 2
+    assert gateway.calls == [(1,)]
+    assert artifact_path.exists()
+    assert QuestionService(question_bank_db).get_question(imported_ids[0])["tags"]
+    assert QuestionService(question_bank_db).get_question(imported_ids[1])["tags"] == []
+
+
+def test_score_pending_intake_cancelled_after_import_does_not_start_adoption(
+    tmp_path: Path,
+) -> None:
+    result, gateway, imported_ids, question_bank_db, artifact_path = (
+        _run_deferred_adoption(
+            tmp_path,
+            prepublish_intake=True,
+            cancel_after_import=True,
+        )
+    )
+
+    assert result == {"outcome": "cancelled"}
+    assert imported_ids == [1]
+    assert gateway.calls == [(1,)]
+    assert artifact_path.exists()
+    saved = QuestionService(question_bank_db).get_question(imported_ids[0])
+    assert saved is not None
+    assert saved["tags"] == []
+    assert SolutionEvidenceRepository(question_bank_db).latest(imported_ids[0]) is None
 
 
 def test_sync_keeps_taxonomy_review_artifact_for_local_retry(

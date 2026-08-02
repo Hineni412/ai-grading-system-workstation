@@ -1714,15 +1714,21 @@ def _score_completed_batch_draft_once(
                     raw_score_repair.get("response_sha256") or ""
                 ),
             }
+        score_value_repairs = _normalize_score_allocation_payload(
+            score_data,
+            structure_summary,
+        )
         _validate_exact_score_allocation_payload(score_data, structure_summary)
         _apply_score_allocation(payload, score_data)
     except Exception as exc:
         meta["score_allocation_failed"] = True
-        meta["score_allocation_failure_category"] = (
-            "transient_network"
-            if _is_transient_config_generation_error(exc)
-            else "model_request"
-        )
+        if _is_transient_config_generation_error(exc):
+            failure_category = "transient_network"
+        elif isinstance(exc, ValueError):
+            failure_category = "local_validation"
+        else:
+            failure_category = "model_request"
+        meta["score_allocation_failure_category"] = failure_category
         meta["score_allocation_error"] = _safe_score_allocation_failure_message(exc)
         if report:
             report(
@@ -1749,6 +1755,12 @@ def _score_completed_batch_draft_once(
         meta["score_allocation_local_json_repair"] = score_repair
     else:
         meta.pop("score_allocation_local_json_repair", None)
+    if score_value_repairs:
+        meta["score_allocation_local_score_repairs"] = list(
+            dict.fromkeys(score_value_repairs)
+        )
+    else:
+        meta.pop("score_allocation_local_score_repairs", None)
     if checkpoint:
         checkpoint(copy.deepcopy(payload))
     return payload

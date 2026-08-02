@@ -15,6 +15,7 @@ from .orchestration import ConfigGenerationPolicy
 from .quality import refresh_generated_config_quality_warnings
 from .score_allocation import (
     apply_score_allocation,
+    normalize_score_allocation_payload,
     score_allocation_structure_summary,
     validate_score_allocation_payload,
 )
@@ -56,6 +57,7 @@ def build_config_generation_policy(
         score_structure_summary=score_allocation_structure_summary,
         validate_score_payload=validate_score_allocation_payload,
         apply_score_allocation=apply_score_allocation,
+        normalize_score_payload=normalize_score_allocation_payload,
         word_block_image_assets=word_block_image_assets,
     )
 

@@ -2797,19 +2797,38 @@ def test_evidence_analysis_checkpoint_is_reused_by_score_retry_without_model_rep
         ),
     )
     score_client = _DeferredScoreClient(valid_six_question_score=False)
+    intake_calls: list[dict[str, Any]] = []
+
+    def intake_runner(**kwargs: Any) -> dict[str, object]:
+        intake_calls.append(kwargs)
+        return {
+            "outcome": "complete",
+            "imported_count": 1,
+            "tagged_count": 1,
+            "evidence_count": 1,
+            "failed_count": 0,
+        }
 
     first = run_config_generation_job(
         context=first_context,
         db=db,
         upload_config_dir=tmp_path / "uploaded",
         data_root=tmp_path / "data",
+        question_bank_db_path=tmp_path / "data" / "databases" / "question_bank.db",
         llm_client_factory=lambda: score_client,
         tagging_ai_service_factory=tagging_factory,
         taxonomy_governance=object(),
+        question_bank_intake_runner=intake_runner,
     )
 
     assert first["outcome"] == "partial"
     assert first["score_allocation_pending"] is True
+    assert first["question_bank_sync_state"] == "ready_for_config_link"
+    assert first["question_bank_imported_count"] == 1
+    assert first["question_bank_tagged_count"] == 1
+    assert first["question_bank_evidence_count"] == 1
+    assert len(intake_calls) == 1
+    assert intake_calls[0]["artifact"].bundle.status == "succeeded"
     assert len(protocol.calls) == 1
     assert len(score_client.calls) == 1
     assert "SCORE_QUESTION_IDS_JSON" in score_client.calls[0]
@@ -2841,15 +2860,18 @@ def test_evidence_analysis_checkpoint_is_reused_by_score_retry_without_model_rep
         db=db,
         upload_config_dir=tmp_path / "uploaded",
         data_root=tmp_path / "data",
+        question_bank_db_path=tmp_path / "data" / "databases" / "question_bank.db",
         llm_client_factory=lambda: score_client,
         tagging_ai_service_factory=tagging_factory,
         taxonomy_governance=object(),
+        question_bank_intake_runner=intake_runner,
     )
 
     assert retried["outcome"] == "partial"
     assert len(protocol.calls) == 1
     assert tagging_factory_calls == 1
     assert len(score_client.calls) == 2
+    assert len(intake_calls) == 2
 
 
 def test_structural_evidence_retry_reanalyzes_before_first_score_allocation(
@@ -3053,6 +3075,18 @@ def test_interrupted_evidence_request_is_reported_uncertain_without_model_replay
     assert interrupted_job.result["retryable"] is False
 
     replay_protocol = _DeferredProtocol()
+    partial_intake_calls: list[dict[str, Any]] = []
+
+    def partial_intake_runner(**kwargs: Any) -> dict[str, object]:
+        partial_intake_calls.append(kwargs)
+        return {
+            "outcome": "partial",
+            "imported_count": 1,
+            "tagged_count": 0,
+            "evidence_count": 0,
+            "failed_count": 1,
+        }
+
     resume_context, resume_store = _job_context(
         db.db_path,
         {
@@ -3070,13 +3104,20 @@ def test_interrupted_evidence_request_is_reported_uncertain_without_model_replay
         db=db,
         upload_config_dir=tmp_path / "uploaded",
         data_root=tmp_path / "data",
+        question_bank_db_path=tmp_path / "data" / "databases" / "question_bank.db",
         llm_client_factory=lambda: pytest.fail("scoring must not start"),
         tagging_ai_service_factory=lambda: _DeferredTaggingService(replay_protocol),
         taxonomy_governance=object(),
+        question_bank_intake_runner=partial_intake_runner,
     )
     assert resumed["outcome"] == "partial"
     assert resumed["uncertain_question_ids"] == ["Q1"]
     assert resumed["retryable"] is False
+    assert resumed["question_bank_sync_state"] == "partial"
+    assert resumed["question_bank_imported_count"] == 1
+    assert resumed["question_bank_tagged_count"] == 0
+    assert len(partial_intake_calls) == 1
+    assert partial_intake_calls[0]["artifact"].bundle.status == "needs_resolution"
     assert replay_protocol.calls == []
 
     resume_store.finish(resume_context.job_id, "succeeded", result=resumed)

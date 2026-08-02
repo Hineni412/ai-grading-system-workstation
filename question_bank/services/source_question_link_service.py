@@ -342,6 +342,50 @@ class SourceQuestionLinkService:
             result["_rollback_changes"] = changes
         return result
 
+    def match_imported_questions(
+        self,
+        *,
+        source_questions: Iterable[Mapping[str, Any]],
+        imported_bank_questions: Iterable[Mapping[str, Any]],
+    ) -> dict[str, object]:
+        """Match only explicit ids or unique paper-local question numbers without writing links."""
+
+        candidates = [dict(item) for item in imported_bank_questions]
+        valid_ids = {
+            candidate_id
+            for candidate in candidates
+            if (candidate_id := _optional_int(candidate.get("id"))) is not None
+        }
+        matches: dict[str, int] = {}
+        unresolved_ids: list[str] = []
+        for source in source_questions:
+            source_id = _source_question_id(source)
+            if not source_id:
+                unresolved_ids.append("")
+                continue
+            explicit_bank_id = _optional_int(source.get("bank_question_id"))
+            if explicit_bank_id in valid_ids:
+                matches[source_id] = int(explicit_bank_id)
+                continue
+            source_number = _normalize_question_number(source_id)
+            number_matches = [
+                item
+                for item in candidates
+                if source_number
+                and _normalize_question_number(item.get("question_number"))
+                == source_number
+            ]
+            if len(number_matches) == 1:
+                matches[source_id] = int(number_matches[0]["id"])
+            else:
+                unresolved_ids.append(source_id)
+        return {
+            "matches": matches,
+            "confirmed": len(matches),
+            "unresolved": len(unresolved_ids),
+            "unresolved_question_ids": unresolved_ids,
+        }
+
     def rollback_imported_question_links(
         self,
         *,
