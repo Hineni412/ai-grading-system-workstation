@@ -603,7 +603,7 @@ def test_normalization_recovers_image_mode_aliases_and_nested_knowledge() -> Non
     assert {"72°", "54°"}.issubset(set(answer["accepted_forms"]))
 
 
-def test_normalization_prefers_specific_desc_over_generic_core_goal() -> None:
+def test_normalization_preserves_existing_model_step_without_phrase_rewrite() -> None:
     payload = {
         "rubric": {
             "questions": [
@@ -616,7 +616,12 @@ def test_normalization_prefers_specific_desc_over_generic_core_goal() -> None:
                             "part_id": "Q12",
                             "part_score": 4,
                             "response_mode": "process_required",
-                            "steps": [{"core_goal": "完成必要的推理或计算步骤"}],
+                            "steps": [
+                                {
+                                    "core_goal": "完成必要的推理或计算步骤",
+                                    "required_elements": ["合理的推理过程"],
+                                }
+                            ],
                             "score_points": [
                                 {
                                     "desc": "先证明两个三角形全等",
@@ -639,13 +644,12 @@ def test_normalization_prefers_specific_desc_over_generic_core_goal() -> None:
 
     session_manager.normalize_generated_config_schema(payload)
 
-    assert [step["core_goal"] for step in payload["rubric"]["questions"][0]["parts"][0]["steps"]] == [
-        "先证明两个三角形全等",
-        "再由全等得到对应边相等",
-    ]
+    steps = payload["rubric"]["questions"][0]["parts"][0]["steps"]
+    assert [step["core_goal"] for step in steps] == ["完成必要的推理或计算步骤"]
+    assert steps[0]["required_elements"] == ["合理的推理过程"]
 
 
-def test_normalization_recovers_answer_parts_and_visual_requirements() -> None:
+def test_normalization_recovers_answers_without_rewriting_visual_steps() -> None:
     payload = {
         "rubric": {
             "questions": [
@@ -690,6 +694,9 @@ def test_normalization_recovers_answer_parts_and_visual_requirements() -> None:
     question = payload["rubric"]["questions"][0]
     answer = payload["answer_key"]["questions"][0]
     assert [step["core_goal"] for step in question["parts"][0]["steps"]] == [
+        "完成必要的推理或计算步骤"
+    ]
+    assert question["parts"][0]["visual_requirements"] == [
         "作出A、B、C关于直线l的对称点",
         "顺次连接对应点",
     ]
@@ -1244,7 +1251,7 @@ def test_quality_warnings_flag_overly_broad_knowledge_and_serialized_answer_list
     assert any("列表字符串" in warning for warning in warnings)
 
 
-def test_quality_warnings_block_generic_subjective_steps_and_missing_visual_requirements() -> None:
+def test_quality_warnings_do_not_semantically_classify_generic_subjective_steps() -> None:
     payload = {
         "rubric": {
             "questions": [
@@ -1289,8 +1296,8 @@ def test_quality_warnings_block_generic_subjective_steps_and_missing_visual_requ
 
     warnings = session_manager.collect_generated_config_quality_warnings(payload)
 
-    assert any("Q10" in warning and "缺少具体作图要求" in warning for warning in warnings)
-    assert any("Q12" in warning and "评分点全部为通用描述" in warning for warning in warnings)
+    assert not any("Q10" in warning for warning in warnings)
+    assert not any("Q12" in warning for warning in warnings)
 
 
 @pytest.mark.parametrize(

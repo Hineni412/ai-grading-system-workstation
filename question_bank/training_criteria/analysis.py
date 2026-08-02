@@ -1083,7 +1083,16 @@ def rubric_skeleton_from_solution_evidence(
                     {
                         "step_id": point.evidence_point_id,
                         "core_goal": point.target,
-                        "required_elements": [point.observable_evidence],
+                        "required_elements": list(
+                            _text_tuple(
+                                (
+                                    point.justification,
+                                    point.answer_anchor,
+                                    point.observable_evidence,
+                                )
+                            )
+                        ),
+                        "depends_on": list(point.depends_on),
                         "equivalent_rules": list(point.equivalent_rules),
                         "counterexamples": list(point.counterexamples),
                     }
@@ -1118,8 +1127,12 @@ def answer_key_skeleton_from_solution_evidence(
                 "step_milestones": [
                     {
                         "step_id": point.evidence_point_id,
+                        "step_index": point.step_index,
                         "target": point.target,
+                        "justification": point.justification,
+                        "answer_anchor": point.answer_anchor,
                         "observable_evidence": point.observable_evidence,
+                        "depends_on": list(point.depends_on),
                         "equivalent_rules": list(point.equivalent_rules),
                     }
                     for point in part.evidence_points
@@ -1322,8 +1335,16 @@ def _solution_evidence_schema() -> dict[str, Any]:
     }
     evidence_point_properties = {
         "evidence_point_id": machine_identifier,
+        "step_index": {"type": "integer", "minimum": 1},
         "target": non_empty_text,
+        "justification": non_empty_text,
+        "answer_anchor": non_empty_text,
         "observable_evidence": non_empty_text,
+        "depends_on": {
+            "type": "array",
+            "uniqueItems": True,
+            "items": machine_identifier,
+        },
         "fine_term_links": {
             "type": "array",
             "items": fine_term_link,
@@ -1375,7 +1396,7 @@ def _solution_evidence_schema() -> dict[str, Any]:
     properties = {
         "schema_version": {
             "type": "string",
-            "enum": ["question-solution-evidence-v1"],
+            "enum": ["question-solution-evidence-v2"],
         },
         "question_id": {"type": "integer"},
         "parts": {"type": "array", "minItems": 1, "items": part},

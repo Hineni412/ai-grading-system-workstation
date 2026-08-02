@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import copy
 import io
 import json
 import sqlite3
@@ -2579,7 +2580,7 @@ def _deferred_combined_item(question_id: int) -> dict[str, Any]:
             "confidence": 0.95,
         },
         "solution_evidence": {
-            "schema_version": "question-solution-evidence-v1",
+            "schema_version": "question-solution-evidence-v2",
             "question_id": question_id,
             "parts": [
                 {
@@ -2596,8 +2597,12 @@ def _deferred_combined_item(question_id: int) -> dict[str, Any]:
                     "evidence_points": [
                         {
                             "evidence_point_id": f"step-{question_id}",
+                            "step_index": 1,
                             "target": "完成等价变形",
+                            "justification": "依据等式性质移项并化简",
+                            "answer_anchor": "移项并化简",
                             "observable_evidence": "写出正确的移项和化简过程",
+                            "depends_on": [],
                             "fine_term_links": [
                                 {
                                     "fine_term_id": "kp_alg_linear_equation",
@@ -2610,8 +2615,12 @@ def _deferred_combined_item(question_id: int) -> dict[str, Any]:
                         },
                         {
                             "evidence_point_id": f"result-{question_id}",
+                            "step_index": 2,
                             "target": "得出方程的解",
+                            "justification": "由前一步的等价方程求解未知数",
+                            "answer_anchor": "x=1",
                             "observable_evidence": "写出 x=1 并作为最终结论",
+                            "depends_on": [f"step-{question_id}"],
                             "fine_term_links": [
                                 {
                                     "fine_term_id": "kp_alg_linear_equation",
@@ -2841,6 +2850,149 @@ def test_evidence_analysis_checkpoint_is_reused_by_score_retry_without_model_rep
     assert len(protocol.calls) == 1
     assert tagging_factory_calls == 1
     assert len(score_client.calls) == 2
+
+
+def test_structural_evidence_retry_reanalyzes_before_first_score_allocation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db, session_id, old_paths = _db_with_session(tmp_path)
+    source_service, source = _controlled_source(
+        tmp_path,
+        session_id,
+        text=(
+            "1. 在直角三角形中，AD=AC，按步骤求出y与x的关系。\n"
+            "答案：先求∠B，再求∠ACD，最后得到y=x/2。"
+        ),
+    )
+    input_id = _stage_controlled_input(
+        tmp_path,
+        source_service,
+        source,
+        old_paths,
+        generation_mode="batched",
+        sync_to_question_bank=True,
+    )
+
+    class GranularityRetryProtocol(_DeferredProtocol):
+        def responses(self, **kwargs: Any) -> Any:
+            self.calls.append(kwargs)
+            prompt = kwargs["kwargs"]["input"][1]["content"][0]["text"]
+            question_id = int(json.loads(prompt)["questions"][0]["question_id"])
+            item = _deferred_combined_item(question_id)
+            if len(self.calls) == 1:
+                part = item["solution_evidence"]["parts"][0]
+                part["evidence_points"] = [
+                    {
+                        "evidence_point_id": f"step-{question_id}",
+                        "step_index": 2,
+                        "target": "完成全部角度推导并推出y=x/2",
+                        "justification": "综合使用内角和与等腰三角形性质",
+                        "answer_anchor": "y=x/2",
+                        "observable_evidence": "写出完整推导",
+                        "depends_on": [],
+                        "fine_term_links": [],
+                        "equivalent_rules": [],
+                        "counterexamples": [],
+                    }
+                ]
+            return SimpleNamespace(
+                output_text=json.dumps({"results": [item]}, ensure_ascii=False),
+                usage={
+                    "input_tokens": 100,
+                    "output_tokens": 50,
+                    "total_tokens": 150,
+                },
+            )
+
+    protocol = GranularityRetryProtocol()
+    allocation_calls: list[dict[str, Any]] = []
+
+    def allocate_after_valid_analysis(
+        structure: dict[str, Any],
+        *_args: Any,
+        **_kwargs: Any,
+    ) -> dict[str, Any]:
+        payload = copy.deepcopy(structure)
+        allocation_calls.append(payload)
+        question = payload["rubric"]["questions"][0]
+        question["question_type"] = "comprehensive"
+        question["max_score"] = 100
+        part = question["parts"][0]
+        part["part_score"] = 100
+        steps = part["steps"]
+        for index, step in enumerate(steps):
+            step["step_score"] = 50
+            step["step_id"] = str(step["step_id"])
+        payload["rubric"]["total_score"] = 100
+        payload["meta"].update(
+            {
+                "score_allocation_mode": "dedicated_ai_scoring",
+                "score_allocation_ai_success": False,
+                "score_allocation_pending": True,
+                "score_allocation_failed": True,
+            }
+        )
+        return payload
+
+    monkeypatch.setattr(
+        "backend.jobs.config_generation.allocate_grading_config_scores",
+        allocate_after_valid_analysis,
+    )
+    first_context, store = _job_context(
+        db.db_path,
+        {
+            "session_id": session_id,
+            "mode": "generate",
+            "generation_mode": "batched",
+            "input_id": input_id,
+            "source_id": source.source_id,
+            "source_revision": source.source_revision,
+            "sync_to_question_bank": True,
+        },
+    )
+    first = run_config_generation_job(
+        context=first_context,
+        db=db,
+        upload_config_dir=tmp_path / "uploaded",
+        data_root=tmp_path / "data",
+        llm_client_factory=lambda: object(),
+        tagging_ai_service_factory=lambda: _DeferredTaggingService(protocol),
+        taxonomy_governance=object(),
+    )
+
+    assert first["failed_question_ids"] == ["Q1"]
+    assert first["failed_batches"][0]["category"] == "model_output_contract"
+    assert len(protocol.calls) == 1
+    assert allocation_calls == []
+    store.finish(first_context.job_id, "succeeded", result=first)
+
+    retry_context, _retry_store = _job_context(
+        db.db_path,
+        {
+            "session_id": session_id,
+            "mode": "retry",
+            "generation_mode": "batched",
+            "source_job_id": first_context.job_id,
+            "source_id": source.source_id,
+            "source_revision": source.source_revision,
+            "sync_to_question_bank": True,
+            "retry_question_ids": ["Q1"],
+        },
+    )
+    retried = run_config_generation_job(
+        context=retry_context,
+        db=db,
+        upload_config_dir=tmp_path / "uploaded",
+        data_root=tmp_path / "data",
+        llm_client_factory=lambda: object(),
+        tagging_ai_service_factory=lambda: _DeferredTaggingService(protocol),
+        taxonomy_governance=object(),
+    )
+
+    assert len(protocol.calls) == 2
+    assert len(allocation_calls) == 1
+    assert retried["failed_question_ids"] == []
 
 
 def test_interrupted_evidence_request_is_reported_uncertain_without_model_replay(

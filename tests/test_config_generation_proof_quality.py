@@ -144,7 +144,7 @@ def test_batch_prompt_lists_type_enums_and_rejects_choice_response_aliases() -> 
     assert "不得写入 response_mode" in prompt
 
 
-def test_quality_blocks_nontrivial_proof_with_one_shallow_step() -> None:
+def test_quality_does_not_semantically_reject_structurally_complete_proof() -> None:
     payload = _proof_payload(
         score=6,
         steps=[
@@ -159,11 +159,28 @@ def test_quality_blocks_nontrivial_proof_with_one_shallow_step() -> None:
 
     warnings = collect_generated_config_quality_warnings(payload)
 
-    assert any(
-        warning.startswith("[质量检查-阻断] Q12")
-        and "可独立评分的逻辑步骤" in warning
-        for warning in warnings
+    assert not any("可独立评分的逻辑步骤" in warning for warning in warnings)
+    assert not any("缺少具体证明义务" in warning for warning in warnings)
+    assert not any("缺少具体扣分证据" in warning for warning in warnings)
+
+
+def test_quality_does_not_block_generic_wording_after_structural_validation() -> None:
+    payload = _proof_payload(
+        score=6,
+        steps=[
+            {
+                "step_id": "S1",
+                "step_score": 6,
+                "core_goal": "正确的结论",
+                "required_elements": ["完成必要的推理或计算步骤"],
+            }
+        ],
     )
+
+    warnings = collect_generated_config_quality_warnings(payload)
+
+    assert not any("通用描述" in warning for warning in warnings)
+    assert not any("可独立评分的逻辑步骤" in warning for warning in warnings)
 
 
 def test_quality_allows_a_one_point_proof_to_have_one_specific_step() -> None:
@@ -183,6 +200,35 @@ def test_quality_allows_a_one_point_proof_to_have_one_specific_step() -> None:
 
     assert not any("可独立评分的逻辑步骤" in warning for warning in warnings)
     assert not any("证明义务或扣分证据" in warning for warning in warnings)
+
+
+def test_quality_allows_one_specific_scoring_step_for_a_multi_point_subpart() -> None:
+    payload = _proof_payload(
+        score=6,
+        proof_obligations=["证明△ABC≡△DEF 并得到 AB=DE"],
+        deduction_policy=[
+            {
+                "rule_id": "missing_congruence_chain",
+                "description": "未写出判定条件或全等结论时，该评分点不得分",
+            }
+        ],
+        steps=[
+            {
+                "step_id": "S1",
+                "step_score": 6,
+                "core_goal": "完成 SAS 全等判定并由对应边得出 AB=DE",
+                "required_elements": [
+                    "写出 SAS 判定链并由对应边相等得出 AB=DE",
+                ],
+            }
+        ],
+    )
+
+    warnings = collect_generated_config_quality_warnings(payload)
+
+    assert not any("可独立评分的逻辑步骤" in warning for warning in warnings)
+    assert not any("缺少具体证明义务" in warning for warning in warnings)
+    assert not any("缺少具体扣分证据" in warning for warning in warnings)
 
 
 def test_quality_accepts_a_detailed_nontrivial_proof() -> None:
