@@ -114,6 +114,7 @@ function clearSensitiveInputs(): void {
 }
 
 function resetIdleTimer(): void {
+  if (vaultStatus.value?.protection_mode === 'plaintext_debug_v1') return
   if (!unlocked.value) return
   if (idleHandle) clearTimeout(idleHandle)
   idleHandle = setTimeout(() => {
@@ -124,7 +125,11 @@ function resetIdleTimer(): void {
 async function refreshStatus(): Promise<void> {
   try {
     const status = await vaultApi.status(sessionToken.value || undefined)
-    vaultSession.setStatus(status)
+    if (status.protection_mode === 'plaintext_debug_v1') {
+      vaultSession.setSession('plaintext-debug', status)
+    } else {
+      vaultSession.setStatus(status)
+    }
     if (status.locked && sessionToken.value) {
       vaultSession.clearImmediately()
       clearSensitiveInputs()
@@ -288,6 +293,10 @@ async function lockVault(reason = '敏感保险箱已锁定，普通工作区仍
 }
 
 async function selectSurface(surface: ClassTeacherSurface): Promise<void> {
+  if (vaultStatus.value?.protection_mode === 'plaintext_debug_v1') {
+    await navigate({ surface })
+    return
+  }
   const leavingSensitive = ['affairs', 'students'].includes(routeState.value.surface)
     && ['today', 'calendar'].includes(surface)
   if (leavingSensitive) {
@@ -310,6 +319,7 @@ function onActivity(): void {
 }
 
 function onPageHide(): void {
+  if (vaultStatus.value?.protection_mode === 'plaintext_debug_v1') return
   const token = vaultSession.clearImmediately()
   recoveryKey.value = ''
   clearSensitiveInputs()
@@ -334,19 +344,19 @@ onBeforeUnmount(() => {
   <main class="class-teacher">
     <header class="workspace-heading">
       <div>
-        <p class="workspace-heading__eyebrow">普通工作随时可用 · 学生事项单独保护</p>
+        <p class="workspace-heading__eyebrow">调试模式 · 所有工作面直接打开</p>
         <h1>班主任工作台</h1>
-        <p>先安排每天的事；需要具体学生信息时，再进入页面底部的敏感保险箱。</p>
+        <p>学生内容以明文保存在本机；只有向真实模型发送学生内容前，仍会先匿名预览并要求确认。</p>
       </div>
       <div class="vault-state" :data-state="unlocked ? 'open' : 'locked'" role="status">
         <span aria-hidden="true">{{ unlocked ? '●' : '◆' }}</span>
-        {{ unlocked ? '敏感区已解锁' : '敏感区已锁定' }}
+        {{ vaultStatus?.protection_mode === 'plaintext_debug_v1' ? '调试直开' : (vaultStatus?.protection_mode === 'legacy_migration_required' ? '旧库待迁移' : (unlocked ? '敏感区已解锁' : '敏感区已锁定')) }}
       </div>
     </header>
 
     <ClassTeacherSurfaceTabs
       :active="routeState.surface"
-      :locked="!unlocked"
+      :locked="vaultStatus?.protection_mode === 'plaintext_debug_v1' ? false : !unlocked"
       @select="selectSurface"
     />
 
@@ -368,13 +378,35 @@ onBeforeUnmount(() => {
     <div class="sensitive-divider">
       <div>
         <p class="section-kicker">班级名单与具体学生事项</p>
-        <h2>进入本机敏感保险箱</h2>
-        <p>{{ routeState.surface === 'affairs' ? '解锁后处理受保护的连续事务与学校流程。' : '解锁后查看学生名单、支持记录、学业证据和高级数据安全。' }}</p>
+        <h2>学生与事务工作区</h2>
+        <p>{{ routeState.surface === 'affairs' ? '直接处理连续事务与学校流程。' : '直接查看学生名单、支持记录、学业证据和数据管理。' }}</p>
       </div>
-      <span>锁定时不会挂载或读取学生组件</span>
+      <span>当前不设 PIN、密码或自动锁定</span>
     </div>
 
-    <section v-if="loading" class="vault-sheet vault-sheet--loading" aria-live="polite">
+    <template v-if="!loading && vaultStatus?.protection_mode === 'plaintext_debug_v1'">
+      <AffairsSurface
+        v-if="routeState.surface === 'affairs'"
+        :token="sessionToken"
+        :target-id="protectedTarget?.target_kind === 'affair' ? protectedTarget.target_id : null"
+      />
+      <StudentSurface
+        v-else
+        :token="sessionToken"
+        :panel="routeState.panel"
+        :status="vaultStatus"
+        :subject-id="protectedTarget?.subject_id ?? null"
+        @navigate="selectStudentPanel"
+      />
+    </template>
+
+    <section v-else-if="!loading && vaultStatus?.protection_mode === 'legacy_migration_required'" class="vault-sheet vault-sheet--single" role="alert">
+      <p class="section-kicker">已停止读写</p>
+      <h2>检测到旧加密班主任数据库</h2>
+      <p>调试明文模式不会直接打开或改写旧加密内容。请先完成已授权的数据迁移；迁移前现有数据库保持不变。</p>
+    </section>
+
+    <section v-else-if="loading" class="vault-sheet vault-sheet--loading" aria-live="polite">
       正在确认敏感保险箱状态…
     </section>
 

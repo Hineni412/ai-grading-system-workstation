@@ -347,6 +347,14 @@ def _backup_entries(paths: Any, staging_root: Path) -> list[ExportEntry]:
             Path(paths.qb_db_path),
             staging_root / "question_bank.db",
         ),
+        "user_data/workspaces/class-teacher/student_affairs.db": (
+            Path(paths.data_root) / "workspaces" / "class-teacher" / "student_affairs.db",
+            staging_root / "student_affairs.db",
+        ),
+        "user_data/workspaces/class-teacher/class_teacher_work.db": (
+            Path(paths.data_root) / "workspaces" / "class-teacher" / "class_teacher_work.db",
+            staging_root / "class_teacher_work.db",
+        ),
     }
     for arc_name in preview["files"]:
         name = str(arc_name)

@@ -35,6 +35,7 @@ class _RecordingWorkspaceGateway:
     def __init__(self, **construction: object) -> None:
         self.construction = construction
         self.calls: list[dict[str, object]] = []
+        self.physical_request_count = 3
 
     def chat_completions(self, **call: object) -> dict[str, object]:
         self.calls.append(call)
@@ -161,8 +162,12 @@ def test_active_profile_gateway_sends_only_confirmed_canonical_payload(
     result = gateway.invoke(payload=payload, operation_id="model-op-001")
 
     assert json.loads(result) == {"kind": "follow_up", "questions": ["哪一天？"]}
+    assert gateway.physical_request_count("model-op-001") == 3
     assert clients == [("synthetic-key", "https://model.invalid/v1")]
     assert len(constructed) == 1
+    assert constructed[0].construction["metadata_only"] is False
+    assert constructed[0].construction["claim_operations"] is False
+    assert constructed[0].construction["allow_retry"] is True
     call = constructed[0].calls[0]
     request = call["request"]
     assert isinstance(request, WorkspaceModelRequest)

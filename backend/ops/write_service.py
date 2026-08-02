@@ -228,7 +228,7 @@ class OpsWriteService:
             "file_count": int(preview["file_count"]),
             "total_size_bytes": int(preview["total_size"]),
             "database_count": sum(
-                name in {"user_data/databases/grading_system.db", "user_data/databases/question_bank.db"}
+                str(name).casefold().endswith(".db")
                 for name in preview["files"]
             ),
             "skipped_count": len(preview["skipped"]),

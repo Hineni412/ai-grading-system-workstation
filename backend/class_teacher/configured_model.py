@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import threading
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any, Protocol
@@ -37,12 +38,11 @@ class _ResolvedModel:
 
 
 class ActiveProfileApprovedModelGateway:
-    """Resolve the current machine-local model only after teacher approval.
+    """Resolve the current machine-local model at invocation time.
 
-    Construction and preview are network-free.  ``invoke`` reuses the shared
-    workspace gateway, which claims the operation durably and forces exactly
-    zero automatic retries.  The only model message is the canonical form of
-    the payload already displayed to the teacher.
+    Construction is network-free. Class-teacher debug mode uses the shared
+    retry and diagnostic behavior. Restricted student content still reaches
+    this seam only after the separate anonymous-preview confirmation flow.
     """
 
     def __init__(
@@ -57,6 +57,8 @@ class ActiveProfileApprovedModelGateway:
         self.profile_store = profile_store
         self.gateway_factory = gateway_factory
         self.client_factory = client_factory
+        self._request_counts: dict[str, int] = {}
+        self._request_counts_lock = threading.Lock()
 
     @property
     def model_name(self) -> str:
@@ -106,31 +108,43 @@ class ActiveProfileApprovedModelGateway:
             context=self.context,
             profile=resolved.policy_profile,
             config_key=gateway_config_key(resolved.api_key, resolved.base_url),
+            metadata_only=False,
+            claim_operations=False,
+            allow_retry=True,
         )
         client = self.client_factory(resolved.api_key, resolved.base_url)
         request = getattr(gateway, "chat_completions", None)
         if not callable(request):
             raise ModelDispatchDisabled("workspace model gateway is unavailable")
-        response = request(
-            request=WorkspaceModelRequest(
-                purpose=purpose,
-                data_classification=data_classification,
-                operation_id=operation_id,
-            ),
-            client=client,
-            model=resolved.model,
-            kwargs={
-                "messages": [
-                    {
-                        "role": "user",
-                        "content": canonical_json(payload).decode("utf-8"),
-                    }
-                ],
-                "response_format": {"type": "json_object"},
-            },
-            timeout_override_seconds=110,
-        )
+        try:
+            response = request(
+                request=WorkspaceModelRequest(
+                    purpose=purpose,
+                    data_classification=data_classification,
+                    operation_id=operation_id,
+                ),
+                client=client,
+                model=resolved.model,
+                kwargs={
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": canonical_json(payload).decode("utf-8"),
+                        }
+                    ],
+                    "response_format": {"type": "json_object"},
+                },
+                timeout_override_seconds=110,
+            )
+        finally:
+            count = max(1, int(getattr(gateway, "physical_request_count", 0) or 0))
+            with self._request_counts_lock:
+                self._request_counts[operation_id] = count
         return _response_text(response)
+
+    def physical_request_count(self, operation_id: str) -> int:
+        with self._request_counts_lock:
+            return int(self._request_counts.get(str(operation_id), 0))
 
     def _resolve(self) -> _ResolvedModel:
         try:
