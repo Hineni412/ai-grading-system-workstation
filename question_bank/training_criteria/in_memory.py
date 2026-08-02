@@ -4,7 +4,7 @@ import hashlib
 import json
 import re
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Callable, Literal, Mapping, Sequence
 
 from question_bank.models.tag_schema import TagAnalysis
@@ -448,6 +448,8 @@ class DeferredAnalysisFailure:
     request_id: str
     batch_hash: str
     category: str
+    validation_error: str = ""
+    rejected_result: Mapping[str, Any] | None = None
 
     def __post_init__(self) -> None:
         if not str(self.source_question_ref or "").strip():
@@ -458,6 +460,24 @@ class DeferredAnalysisFailure:
         _sha256_text(self.batch_hash, "batch_hash")
         if not str(self.category or "").strip():
             raise ValueError("failure category must not be empty")
+        validation_error = " ".join(
+            str(self.validation_error or "").split()
+        )[:1000]
+        rejected_result = self.rejected_result
+        if rejected_result is not None:
+            if not isinstance(rejected_result, Mapping):
+                raise ValueError("failure rejected_result must be an object")
+            serialized = json.dumps(
+                rejected_result,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            if len(serialized) > 60_000:
+                raise ValueError("failure rejected_result exceeds the size limit")
+            rejected_result = json.loads(serialized)
+        object.__setattr__(self, "validation_error", validation_error)
+        object.__setattr__(self, "rejected_result", rejected_result)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -466,6 +486,12 @@ class DeferredAnalysisFailure:
             "request_id": self.request_id,
             "batch_hash": self.batch_hash,
             "category": self.category,
+            "validation_error": self.validation_error,
+            "rejected_result": (
+                None
+                if self.rejected_result is None
+                else dict(self.rejected_result)
+            ),
         }
 
 
@@ -697,7 +723,7 @@ class DeferredCombinedAnalysisBundle:
 
     def to_dict(self) -> dict[str, Any]:
         payload = {
-            "schema_version": "deferred-combined-analysis-v3",
+            "schema_version": "deferred-combined-analysis-v4",
             "operation_id": self.operation_id,
             "curriculum_volume_id": self.curriculum_volume_id,
             "status": self.status,
@@ -738,6 +764,7 @@ class DeferredCombinedAnalysisBundle:
         if payload.get("schema_version") not in {
             "deferred-combined-analysis-v2",
             "deferred-combined-analysis-v3",
+            "deferred-combined-analysis-v4",
         }:
             raise ValueError("deferred analysis checkpoint version is invalid")
         submitted_hash = _sha256_text(payload.get("content_hash"), "content_hash")
@@ -766,6 +793,7 @@ class DeferredCombinedAnalysisBundle:
             for item in source_fingerprints_raw
         ):
             raise ValueError("deferred source fingerprint is invalid")
+        bundle_version = str(payload.get("schema_version") or "")
         for item in raw_failures:
             if isinstance(item, Mapping):
                 _require_exact_keys(
@@ -776,6 +804,11 @@ class DeferredCombinedAnalysisBundle:
                         "request_id",
                         "batch_hash",
                         "category",
+                        *(
+                            {"validation_error", "rejected_result"}
+                            if bundle_version == "deferred-combined-analysis-v4"
+                            else set()
+                        ),
                     },
                     "deferred failure",
                 )
@@ -818,6 +851,14 @@ class DeferredCombinedAnalysisBundle:
                     request_id=str(item.get("request_id") or ""),
                     batch_hash=str(item.get("batch_hash") or ""),
                     category=str(item.get("category") or "unknown"),
+                    validation_error=str(
+                        item.get("validation_error") or ""
+                    ),
+                    rejected_result=(
+                        dict(item["rejected_result"])
+                        if isinstance(item.get("rejected_result"), Mapping)
+                        else None
+                    ),
                 )
                 for item in raw_failures
                 if isinstance(item, Mapping)
@@ -983,6 +1024,17 @@ class InMemoryCombinedQuestionAnalysisModule:
         )
         if not selected:
             return previous
+        failure_by_ref = {
+            item.source_question_ref: item
+            for item in previous.failures
+        }
+        selected = tuple(
+            _source_with_repair_context(
+                item,
+                failure_by_ref.get(item.source_question_ref),
+            )
+            for item in selected
+        )
         pending_refs = {item.source_question_ref for item in selected}
         base_requests = previous.requests
         if retry_uncertain:
@@ -1367,6 +1419,7 @@ class InMemoryCombinedQuestionAnalysisModule:
                     for question in batch.questions:
                         source = by_question_id[question.question_id]
                         validation_category = "combined_item_contract"
+                        raw: object = None
                         try:
                             raw = raw_items[question.question_id]
                             raw_tag = raw.get("tag_analysis")
@@ -1406,6 +1459,12 @@ class InMemoryCombinedQuestionAnalysisModule:
                                     request_id=request_id,
                                     batch_hash=batch.batch_hash,
                                     category=validation_category,
+                                    validation_error=_safe_validation_error(exc),
+                                    rejected_result=(
+                                        dict(raw)
+                                        if isinstance(raw, Mapping)
+                                        else None
+                                    ),
                                 )
                             )
                             continue
@@ -2206,9 +2265,40 @@ def _validate_model_tag_payload(payload: Mapping[str, Any]) -> None:
 
 
 class _DeferredAnalysisValidationError(ValueError):
-    def __init__(self, category: str) -> None:
-        super().__init__(category)
+    def __init__(self, category: str, detail: str = "") -> None:
+        clean_detail = " ".join(str(detail or "").split())[:1000]
+        super().__init__(clean_detail or category)
         self.category = str(category or "combined_item_contract")
+        self.detail = clean_detail
+
+
+def _safe_validation_error(exc: BaseException) -> str:
+    if isinstance(exc, _DeferredAnalysisValidationError):
+        return exc.detail
+    return " ".join(str(exc or "").split())[:1000]
+
+
+def _source_with_repair_context(
+    source: ConfigQuestionAnalysisSource,
+    failure: DeferredAnalysisFailure | None,
+) -> ConfigQuestionAnalysisSource:
+    if failure is None or failure.rejected_result is None:
+        return source
+    validation_error = (
+        failure.validation_error
+        or f"上一轮未通过 {failure.category} 校验"
+    )
+    return replace(
+        source,
+        question=replace(
+            source.question,
+            repair_context={
+                "mode": "repair_previous_rejected_result",
+                "validation_error": validation_error,
+                "previous_result": dict(failure.rejected_result),
+            },
+        ),
+    )
 
 
 def _govern_deferred_analysis_item(
@@ -2237,11 +2327,15 @@ def _govern_deferred_analysis_item(
                 raise ValueError("combined response tag_analysis is invalid")
             _validate_model_tag_payload(raw_tag)
         except Exception as exc:
-            raise _DeferredAnalysisValidationError("tag_contract") from exc
+            raise _DeferredAnalysisValidationError(
+                "tag_contract", str(exc)
+            ) from exc
         try:
             normalized_tag = TagAnalysis.from_dict(dict(raw_tag)).to_dict()
         except Exception as exc:
-            raise _DeferredAnalysisValidationError("tag_normalization") from exc
+            raise _DeferredAnalysisValidationError(
+                "tag_normalization", str(exc)
+            ) from exc
         normalized_evidence = _normalize_model_solution_evidence(
             raw_evidence,
             question.taxonomy_contract,
@@ -2255,13 +2349,13 @@ def _govern_deferred_analysis_item(
             )
         except Exception as exc:
             raise _DeferredAnalysisValidationError(
-                "solution_evidence_contract"
+                "solution_evidence_contract", str(exc)
             ) from exc
         try:
             validate_evidence_fine_terms(evidence, question.taxonomy_contract)
         except Exception as exc:
             raise _DeferredAnalysisValidationError(
-                "solution_evidence_terms"
+                "solution_evidence_terms", str(exc)
             ) from exc
         try:
             candidates = _minimal_candidate_snapshot(
@@ -2270,7 +2364,7 @@ def _govern_deferred_analysis_item(
             )
         except Exception as exc:
             raise _DeferredAnalysisValidationError(
-                "solution_evidence_candidates"
+                "solution_evidence_candidates", str(exc)
             ) from exc
         return (
             normalized_tag,

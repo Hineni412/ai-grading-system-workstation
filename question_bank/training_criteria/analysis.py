@@ -94,6 +94,7 @@ class QuestionAnalysisInput:
     rich_answer_blocks: tuple[Mapping[str, Any], ...] = ()
     images: tuple[QuestionAnalysisImage, ...] = ()
     taxonomy_contract: Mapping[str, Any] = field(default_factory=dict)
+    repair_context: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if isinstance(self.question_id, bool) or int(self.question_id) <= 0:
@@ -117,6 +118,32 @@ class QuestionAnalysisInput:
             "taxonomy_contract",
             dict(self.taxonomy_contract),
         )
+        repair_context = dict(self.repair_context)
+        if repair_context:
+            if set(repair_context) != {
+                "mode",
+                "validation_error",
+                "previous_result",
+            }:
+                raise ValueError("repair_context fields are invalid")
+            if repair_context.get("mode") != "repair_previous_rejected_result":
+                raise ValueError("repair_context mode is invalid")
+            validation_error = str(
+                repair_context.get("validation_error") or ""
+            ).strip()
+            previous_result = repair_context.get("previous_result")
+            if not validation_error or not isinstance(previous_result, Mapping):
+                raise ValueError("repair_context is incomplete")
+            serialized = json.dumps(
+                repair_context,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            if len(serialized) > 60_000:
+                raise ValueError("repair_context exceeds the size limit")
+            repair_context = json.loads(serialized)
+        object.__setattr__(self, "repair_context", repair_context)
 
     @property
     def has_required_images(self) -> bool:
@@ -336,6 +363,12 @@ class PlannedAnalysisBatch:
                 "question_ids": self.question_ids,
                 "source_hashes": [
                     item.source_content_hash for item in self.questions
+                ],
+                "repair_context_hashes": [
+                    _hash_payload(item.repair_context)
+                    if item.repair_context
+                    else ""
+                    for item in self.questions
                 ],
                 "input": self.estimated_input_tokens,
                 "output": self.estimated_output_tokens,
@@ -1496,6 +1529,7 @@ def _token_estimate(
                 "question_blocks": question.rich_question_blocks,
                 "answer_blocks": question.rich_answer_blocks,
                 "taxonomy_contract": question.taxonomy_contract,
+                "repair_context": question.repair_context,
             },
             ensure_ascii=False,
             default=str,
