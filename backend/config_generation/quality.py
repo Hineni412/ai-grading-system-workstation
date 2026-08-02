@@ -49,7 +49,18 @@ _GENERIC_SCORING_FRAGMENTS = tuple(
             "推理",
             "计算",
             "解题",
+            "解答",
             "作答",
+            "作答思路",
+            "思路",
+            "小题",
+            "题目",
+            "命题",
+            "呈现",
+            "展示",
+            "论证",
+            "规范",
+            "清晰",
             "必要",
             "正确",
             "合理",
@@ -82,7 +93,12 @@ _GENERIC_SCORING_FRAGMENTS = tuple(
             "未写出",
             "未给出",
             "酌情",
+            "视情况",
+            "情况",
+            "扣除",
             "扣分",
+            "给分",
+            "分数",
             "不得分",
             "未达成",
             "成立",
@@ -113,24 +129,142 @@ _GENERIC_SCORING_FRAGMENTS = tuple(
 )
 
 
-def _has_specific_scoring_content(value: Any) -> bool:
-    """Return whether scoring text still names question-specific evidence.
+_QUESTION_REFERENCE_ID = re.compile(
+    r"\bq\d+(?:\s*\(?p\d+\)?)?(?:\s*[-_/]\s*s\d+)?\b",
+    re.IGNORECASE,
+)
+_INTRINSIC_MATH_EVIDENCE = re.compile(
+    r"(?:\\(?:frac|sqrt|angle|triangle|parallel|perp|equiv|cong)\b|"
+    r"[=≠≤≥<>≈≡≌∽∥⊥∠△□○⊙√π°])",
+    re.IGNORECASE,
+)
+_DEDUCTION_FAILURE_TRIGGER = re.compile(
+    r"(?:缺少|遗漏|漏(?:写|答|算|证)?|错误|错(?:写|答|算|证)?|跳步|"
+    r"未(?:写|答|算|证|给|列|说明|推出|得到|满足|完成)?|"
+    r"不(?:成立|正确|完整|符合|等价|满足))"
+)
 
-    Model wording varies, so exact phrase blacklists are insufficient.  Strip the
-    small vocabulary that merely says "finish/write/reason/deduct points" and
-    require a concrete mathematical object, relation, result, or operation to
-    remain.
+
+def _evidence_anchor_tokens(value: Any) -> set[str]:
+    """Extract comparable anchors after discarding process-only wording.
+
+    The discarded fragments are stop words, not the decision rule.  A novel
+    synonym that is absent here still cannot pass unless it overlaps evidence
+    from this question.
     """
 
-    remaining = re.sub(r"[^\w]+", "", str(value or "").strip()).lower()
-    if not remaining:
-        return False
+    text = _QUESTION_REFERENCE_ID.sub(" ", str(value or "").strip().lower())
+    text = re.sub(r"[^a-z0-9\u4e00-\u9fff]+", " ", text)
     for fragment in _GENERIC_SCORING_FRAGMENTS:
-        remaining = remaining.replace(fragment, "")
-    return bool(remaining)
+        text = text.replace(fragment, " ")
+
+    anchors: set[str] = set()
+    for token in re.findall(r"[a-z]+|[\u4e00-\u9fff]+", text):
+        if token.isascii():
+            anchors.add(token)
+            continue
+        for size in range(2, min(4, len(token)) + 1):
+            anchors.update(
+                token[index : index + size]
+                for index in range(0, len(token) - size + 1)
+            )
+    return anchors
 
 
-def _meaningful_proof_obligations(node: dict[str, Any]) -> list[Any]:
+def _question_evidence_anchors(
+    question: dict[str, Any],
+    answer_item: dict[str, Any],
+    answer_parts: list[Any],
+) -> set[str]:
+    reference_texts: list[Any] = [
+        question.get("stem_summary"),
+        question.get("stem"),
+        question.get("question_text"),
+        question.get("knowledge_name"),
+        *_quality_answer_texts(answer_item),
+    ]
+    for answer_part in answer_parts:
+        if isinstance(answer_part, dict):
+            reference_texts.extend(_quality_answer_texts(answer_part))
+
+    anchors: set[str] = set()
+    for value in reference_texts:
+        anchors.update(_evidence_anchor_tokens(value))
+    return anchors
+
+
+def _has_specific_scoring_content(
+    value: Any,
+    question_evidence_anchors: set[str],
+) -> bool:
+    """Require intrinsic math notation or overlap with this question's evidence."""
+
+    text = str(value or "").strip()
+    if not text:
+        return False
+    if _INTRINSIC_MATH_EVIDENCE.search(text):
+        return True
+    return bool(_evidence_anchor_tokens(text) & question_evidence_anchors)
+
+
+def _specific_step_anchors(
+    step: dict[str, Any],
+    generic_goals: set[str],
+    question_evidence_anchors: set[str],
+) -> set[str]:
+    goal = str(step.get("core_goal") or "").strip()
+    required = [
+        item
+        for item in _string_list(step.get("required_elements"))
+        if item not in generic_goals
+    ]
+    goal_anchors = _evidence_anchor_tokens(goal)
+    required_anchors = {
+        anchor
+        for item in required
+        for anchor in _evidence_anchor_tokens(item)
+    }
+    goal_has_content = bool(goal_anchors) or bool(
+        _INTRINSIC_MATH_EVIDENCE.search(goal)
+    )
+    required_has_content = bool(required_anchors) or any(
+        _INTRINSIC_MATH_EVIDENCE.search(item)
+        for item in required
+    )
+    points_to_question = _has_specific_scoring_content(
+        goal,
+        question_evidence_anchors,
+    ) or any(
+        _has_specific_scoring_content(item, question_evidence_anchors)
+        for item in required
+    )
+    if (
+        not goal
+        or goal in generic_goals
+        or not goal_has_content
+        or not required_has_content
+        or not points_to_question
+    ):
+        return set()
+    return goal_anchors | required_anchors
+
+
+def _has_specific_deduction_text(
+    value: Any,
+    evidence_anchors: set[str],
+) -> bool:
+    text = str(value or "").strip()
+    return bool(
+        text
+        and _DEDUCTION_FAILURE_TRIGGER.search(text)
+        and _has_specific_scoring_content(text, evidence_anchors)
+    )
+
+
+def _meaningful_proof_obligations(
+    node: dict[str, Any],
+    question_evidence_anchors: set[str],
+) -> list[Any]:
     obligations = node.get("proof_obligations")
     if not isinstance(obligations, list):
         return []
@@ -148,10 +282,14 @@ def _meaningful_proof_obligations(node: dict[str, Any]) -> list[Any]:
             and _has_specific_scoring_content(
                 item.get("description")
                 or item.get("obligation")
-                or item.get("core_goal")
+                or item.get("core_goal"),
+                question_evidence_anchors,
             )
         )
-        or (not isinstance(item, dict) and _has_specific_scoring_content(item))
+        or (
+            not isinstance(item, dict)
+            and _has_specific_scoring_content(item, question_evidence_anchors)
+        )
     ]
 
 
@@ -159,14 +297,27 @@ def _has_specific_deduction_evidence(
     question: dict[str, Any],
     part: dict[str, Any],
     steps: list[dict[str, Any]],
+    question_evidence_anchors: set[str],
 ) -> bool:
     generic_policy_ids = {
         "answer_only_process_missing",
         "core_process_missing",
     }
+    step_evidence_anchors = set(question_evidence_anchors)
+    for step in steps:
+        step_evidence_anchors.update(
+            _specific_step_anchors(
+                step,
+                set(),
+                question_evidence_anchors,
+            )
+        )
     for node in (part, question):
         policies = node.get("deduction_policy")
-        if isinstance(policies, str) and _has_specific_scoring_content(policies):
+        if isinstance(policies, str) and _has_specific_deduction_text(
+            policies,
+            step_evidence_anchors,
+        ):
             return True
         if not isinstance(policies, list):
             continue
@@ -181,13 +332,19 @@ def _has_specific_deduction_evidence(
                 ).strip()
                 if (
                     policy_id not in generic_policy_ids
-                    and _has_specific_scoring_content(detail)
+                    and _has_specific_deduction_text(
+                        detail,
+                        step_evidence_anchors,
+                    )
                 ):
                     return True
-            elif _has_specific_scoring_content(policy):
+            elif _has_specific_deduction_text(
+                policy,
+                step_evidence_anchors,
+            ):
                 return True
     return any(
-        _has_specific_scoring_content(rule)
+        _has_specific_deduction_text(rule, step_evidence_anchors)
         for step in steps
         for rule in _string_list(step.get("deduction_rules"))
     )
@@ -196,24 +353,18 @@ def _has_specific_deduction_evidence(
 def _has_independently_scorable_steps(
     steps: list[dict[str, Any]],
     generic_goals: set[str],
+    question_evidence_anchors: set[str],
 ) -> bool:
     if not steps:
         return False
-    for step in steps:
-        goal = str(step.get("core_goal") or "").strip()
-        required = [
-            item
-            for item in _string_list(step.get("required_elements"))
-            if item not in generic_goals and _has_specific_scoring_content(item)
-        ]
-        if (
-            not goal
-            or goal in generic_goals
-            or not _has_specific_scoring_content(goal)
-            or not required
-        ):
-            return False
-    return True
+    return all(
+        _specific_step_anchors(
+            step,
+            generic_goals,
+            question_evidence_anchors,
+        )
+        for step in steps
+    )
 
 
 def collect_generated_config_quality_warnings(payload: dict[str, Any]) -> list[str]:
@@ -243,6 +394,11 @@ def collect_generated_config_quality_warnings(payload: dict[str, Any]) -> list[s
         answer_parts = answer_item.get("parts") if isinstance(answer_item, dict) else []
         if not isinstance(answer_parts, list):
             answer_parts = []
+        question_evidence_anchors = _question_evidence_anchors(
+            question,
+            answer_item if isinstance(answer_item, dict) else {},
+            answer_parts,
+        )
 
         text_fields: list[Any] = [stem, *answer_texts]
         parts = question.get("parts")
@@ -303,13 +459,23 @@ def collect_generated_config_quality_warnings(payload: dict[str, Any]) -> list[s
                     and part_score > 1
                 ):
                     part_id = str(part.get("part_id") or f"第{index + 1}问")
-                    if not _has_independently_scorable_steps(steps, generic_goals):
+                    if not _has_independently_scorable_steps(
+                        steps,
+                        generic_goals,
+                        question_evidence_anchors,
+                    ):
                         warnings.append(
                             f"[质量检查-阻断] {qid}/{part_id} 缺少可独立评分的逻辑步骤和具体得分证据"
                         )
                     if qtype == "proof" and not (
-                        _meaningful_proof_obligations(part)
-                        or _meaningful_proof_obligations(question)
+                        _meaningful_proof_obligations(
+                            part,
+                            question_evidence_anchors,
+                        )
+                        or _meaningful_proof_obligations(
+                            question,
+                            question_evidence_anchors,
+                        )
                     ):
                         warnings.append(
                             f"[质量检查-阻断] {qid}/{part_id} 缺少具体证明义务"
@@ -318,6 +484,7 @@ def collect_generated_config_quality_warnings(payload: dict[str, Any]) -> list[s
                         question,
                         part,
                         steps,
+                        question_evidence_anchors,
                     ):
                         warnings.append(
                             f"[质量检查-阻断] {qid}/{part_id} 缺少具体扣分证据"
