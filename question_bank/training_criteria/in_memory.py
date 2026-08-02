@@ -33,6 +33,7 @@ from question_bank.training_criteria.analysis import (
 
 
 _MODEL_IDENTIFIER = re.compile(r"^[a-z][a-z0-9_-]{1,127}$")
+_MAX_REJECTED_RESULT_CHARS = 50_000
 
 
 class UnmappedFineTermResolver:
@@ -467,15 +468,21 @@ class DeferredAnalysisFailure:
         if rejected_result is not None:
             if not isinstance(rejected_result, Mapping):
                 raise ValueError("failure rejected_result must be an object")
-            serialized = json.dumps(
-                rejected_result,
-                ensure_ascii=False,
-                sort_keys=True,
-                separators=(",", ":"),
-            )
-            if len(serialized) > 60_000:
-                raise ValueError("failure rejected_result exceeds the size limit")
-            rejected_result = json.loads(serialized)
+            try:
+                serialized = json.dumps(
+                    rejected_result,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+            except (TypeError, ValueError):
+                rejected_result = None
+            else:
+                rejected_result = (
+                    json.loads(serialized)
+                    if len(serialized) <= _MAX_REJECTED_RESULT_CHARS
+                    else None
+                )
         object.__setattr__(self, "validation_error", validation_error)
         object.__setattr__(self, "rejected_result", rejected_result)
 
@@ -603,6 +610,7 @@ class DeferredCombinedAnalysisBundle:
         selected = {
             item.source_question_ref for item in self.failures
         } | set(self.missing_source_refs)
+        selected.difference_update(self.uncertain_source_refs)
         return tuple(
             reference
             for reference, _fingerprint in self.source_fingerprints
@@ -1068,11 +1076,11 @@ class InMemoryCombinedQuestionAnalysisModule:
             source_fingerprints=current_fingerprints,
             input_fingerprint=current_input_fingerprint,
             base_items=previous.items,
-            base_failures=tuple(
-                item
-                for item in previous.failures
-                if item.source_question_ref not in pending_refs
-            ),
+            # Keep the previous rejected result until the newly authorized
+            # request has a definite replacement. If the request becomes
+            # uncertain, a later teacher-confirmed retry still has the exact
+            # repair context after restart.
+            base_failures=previous.failures,
             base_requests=base_requests,
             checkpoint=checkpoint,
         )
@@ -1217,6 +1225,43 @@ class InMemoryCombinedQuestionAnalysisModule:
             reference: index
             for index, (reference, _fingerprint) in enumerate(source_fingerprints)
         }
+
+        def prior_failure(
+            source_question_ref: str,
+        ) -> DeferredAnalysisFailure | None:
+            return next(
+                (
+                    item
+                    for item in reversed(failures)
+                    if item.source_question_ref == source_question_ref
+                ),
+                None,
+            )
+
+        def remove_failure(source_question_ref: str) -> None:
+            failures[:] = [
+                item
+                for item in failures
+                if item.source_question_ref != source_question_ref
+            ]
+
+        def replace_failure(item: DeferredAnalysisFailure) -> None:
+            previous_failure = prior_failure(item.source_question_ref)
+            remove_failure(item.source_question_ref)
+            if (
+                item.rejected_result is None
+                and previous_failure is not None
+                and previous_failure.rejected_result is not None
+            ):
+                item = replace(
+                    item,
+                    validation_error=(
+                        item.validation_error
+                        or previous_failure.validation_error
+                    ),
+                    rejected_result=previous_failure.rejected_result,
+                )
+            failures.append(item)
 
         def snapshot() -> DeferredCombinedAnalysisBundle:
             bundle = DeferredCombinedAnalysisBundle(
@@ -1385,18 +1430,19 @@ class InMemoryCombinedQuestionAnalysisModule:
                         if category == "cancelled":
                             stop_scheduling = True
                     else:
-                        failures.extend(
-                            DeferredAnalysisFailure(
+                        for question_id in batch.question_ids:
+                            source_ref = by_question_id[
+                                question_id
+                            ].source_question_ref
+                            replace_failure(DeferredAnalysisFailure(
                                 source_question_ref=(
-                                    by_question_id[question_id].source_question_ref
+                                    source_ref
                                 ),
                                 analysis_question_id=question_id,
                                 request_id=request_id,
                                 batch_hash=batch.batch_hash,
                                 category=category,
-                            )
-                            for question_id in batch.question_ids
-                        )
+                            ))
                         requests.append(
                             AnalysisRequestCheckpoint(
                                 request_id=request_id,
@@ -1452,7 +1498,7 @@ class InMemoryCombinedQuestionAnalysisModule:
                         except Exception as exc:
                             if isinstance(exc, _DeferredAnalysisValidationError):
                                 validation_category = exc.category
-                            failures.append(
+                            replace_failure(
                                 DeferredAnalysisFailure(
                                     source_question_ref=source.source_question_ref,
                                     analysis_question_id=question.question_id,
@@ -1468,6 +1514,7 @@ class InMemoryCombinedQuestionAnalysisModule:
                                 )
                             )
                             continue
+                        remove_failure(source.source_question_ref)
                         result.append(
                             DeferredCombinedAnalysisItem(
                                 source_question_ref=source.source_question_ref,
