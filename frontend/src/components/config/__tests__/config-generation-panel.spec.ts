@@ -541,6 +541,67 @@ describe('ConfigGenerationPanel', () => {
     },
   )
 
+  it('reports that a fully analysed paper entered the question bank before score allocation succeeds', async () => {
+    const configStore = useConfigWorkspaceStore()
+    useJobStore().track(job({
+      status: 'succeeded', progress: 1, result: {
+        outcome: 'partial', total_questions: 12, generated_questions: 12,
+        failed_count: 0, failed_question_ids: [], failed_batches: [],
+        retryable: true, score_allocation_pending: true,
+        question_bank_sync_requested: true,
+        question_bank_sync_state: 'ready_for_config_link',
+        question_bank_imported_count: 12,
+        question_bank_tagged_count: 12,
+      }, finished_at: '2026-08-02T00:01:00Z',
+    }))
+    configStore.attachJob(31, configStore.captureGenerationContext())
+    const mounted = await mountPanel()
+
+    expect(mounted.host.textContent).toContain('试卷已先收入题库')
+    expect(mounted.host.textContent).toContain('共入库 12 题、已有完整标签 12 题')
+    expect(mounted.host.textContent).toContain('不会重复建卷或重复打标签')
+  })
+
+  it('shows imported and tagged counts separately when only some questions analysed successfully', async () => {
+    const configStore = useConfigWorkspaceStore()
+    useJobStore().track(job({
+      status: 'succeeded', progress: 1, result: {
+        outcome: 'partial', total_questions: 12, generated_questions: 9,
+        failed_count: 3, failed_question_ids: ['Q10', 'Q11', 'Q12'],
+        failed_batches: [], retryable: true,
+        question_bank_sync_requested: true,
+        question_bank_sync_state: 'partial',
+        question_bank_imported_count: 12,
+        question_bank_tagged_count: 9,
+      }, finished_at: '2026-08-02T00:01:00Z',
+    }))
+    configStore.attachJob(31, configStore.captureGenerationContext())
+    const mounted = await mountPanel()
+
+    expect(mounted.host.textContent).toContain('试卷已先收入题库')
+    expect(mounted.host.textContent).toContain('当前入库 12 题、已有完整标签 9 题')
+    expect(mounted.host.textContent).toContain('未完成题可稍后继续处理')
+  })
+
+  it('explains a recoverable question-bank intake failure without claiming reanalysis', async () => {
+    const configStore = useConfigWorkspaceStore()
+    useJobStore().track(job({
+      status: 'succeeded', progress: 1, result: {
+        outcome: 'partial', total_questions: 12, generated_questions: 12,
+        failed_count: 0, failed_question_ids: [], failed_batches: [],
+        retryable: true, score_allocation_pending: true,
+        question_bank_sync_requested: true,
+        question_bank_sync_state: 'intake_failed',
+      }, finished_at: '2026-08-02T00:01:00Z',
+    }))
+    configStore.attachJob(31, configStore.captureGenerationContext())
+    const mounted = await mountPanel()
+
+    expect(mounted.host.textContent).toContain('试卷暂时未能写入题库')
+    expect(mounted.host.textContent).toContain('不会重新分析题目')
+    expect(mounted.host.textContent).not.toContain('标签已保存在本机')
+  })
+
   it('unlocks an ambiguous retry when its exact lookup confirms 404', async () => {
     const timeout = new ApiError({ kind: 'timeout', status: null, code: 'request_timeout',
       message: 'timeout', details: {}, requestId: 'safe', retryable: false })
