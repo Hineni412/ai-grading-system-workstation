@@ -17,6 +17,7 @@ from .support_schemas import (
     AffairProjectionRequest,
     AiDraftConfirmRequest,
     AttentionCreateRequest,
+    AttentionDecisionRequest,
     AttentionResolveRequest,
     EvidenceBatchRequest,
     EvidenceLinkRequest,
@@ -32,6 +33,9 @@ from .support_schemas import (
     SubjectCreateRequest,
     SubjectDeleteRequest,
     SubjectUpdateRequest,
+    SupportAIReviewApplyRequest,
+    SupportAIReviewConfirmRequest,
+    SupportAIReviewPreviewRequest,
     SupportPlanCompleteRequest,
     SupportPlanCreateRequest,
 )
@@ -39,6 +43,162 @@ from .support_schemas import (
 
 def create_support_router() -> APIRouter:
     router = APIRouter()
+
+    @router.get("/support/directory")
+    def directory(
+        request: Request,
+        response: Response,
+        q: str | None = None,
+        class_label: str | None = None,
+        state: str | None = None,
+        sort: str = "last_confirmed_desc",
+        cursor: str | None = None,
+        page_size: int = 20,
+        session_token: str | None = Header(None, alias="x-class-teacher-session"),
+    ):
+        _no_store(response)
+        return _call(
+            lambda: _service(request).student_directory.search(
+                token=session(session_token),
+                q=q,
+                class_label=class_label,
+                state=state,
+                sort=sort,
+                cursor=cursor,
+                page_size=page_size,
+            )
+        )
+
+    @router.get("/support/subjects/{subject_id}/workspace-header")
+    def workspace_header(
+        subject_id: str,
+        request: Request,
+        response: Response,
+        session_token: str | None = Header(None, alias="x-class-teacher-session"),
+    ):
+        _no_store(response)
+        return _call(
+            lambda: _service(request).student_directory.open(
+                token=session(session_token),
+                subject_id=subject_id,
+            )
+        )
+
+    @router.get("/support/subjects/{subject_id}/academic-analysis")
+    def academic_analysis(
+        subject_id: str,
+        request: Request,
+        response: Response,
+        time_range: str = "all",
+        comparison_series: str | None = None,
+        subject_name: str | None = None,
+        comparable_only: bool = False,
+        session_token: str | None = Header(None, alias="x-class-teacher-session"),
+    ):
+        _no_store(response)
+        return _call(lambda: _service(request).academic.read(
+            token=session(session_token),
+            subject_id=subject_id,
+            time_range=time_range,
+            comparison_series=comparison_series,
+            subject_name=subject_name,
+            comparable_only=comparable_only,
+        ))
+
+    @router.get("/evidence/{evidence_version_id}/snapshot")
+    def evidence_snapshot(
+        evidence_version_id: str,
+        request: Request,
+        response: Response,
+        session_token: str | None = Header(None, alias="x-class-teacher-session"),
+    ):
+        _no_store(response)
+        return _call(lambda: _service(request).academic.snapshot(
+            token=session(session_token), evidence_version_id=evidence_version_id
+        ))
+
+    @router.post("/support/records/{record_id}/ai-reviews/previews")
+    def prepare_support_ai_review(
+        record_id: str,
+        request: Request,
+        body: SupportAIReviewPreviewRequest,
+        response: Response,
+        session_token: str | None = Header(None, alias="x-class-teacher-session"),
+    ):
+        _require_trusted_mutation(request)
+        _no_store(response)
+        return _call(lambda: _service(request).support_ai_reviews.prepare(
+            token=session(session_token), record_id=record_id, **body.model_dump()
+        ))
+
+    @router.post("/support/ai-reviews/{review_id}/previews/{preview_id}/confirm")
+    def confirm_support_ai_review(
+        review_id: str,
+        preview_id: str,
+        request: Request,
+        body: SupportAIReviewConfirmRequest,
+        response: Response,
+        session_token: str | None = Header(None, alias="x-class-teacher-session"),
+    ):
+        _require_trusted_mutation(request)
+        _no_store(response)
+        return _call(lambda: _service(request).support_ai_reviews.confirm(
+            token=session(session_token), review_id=review_id,
+            preview_id=preview_id, **body.model_dump()
+        ))
+
+    @router.get("/support/ai-reviews/operations/{operation_id}")
+    def read_support_ai_operation(
+        operation_id: str,
+        request: Request,
+        response: Response,
+        session_token: str | None = Header(None, alias="x-class-teacher-session"),
+    ):
+        _no_store(response)
+        return _call(lambda: _service(request).support_ai_reviews.read(
+            token=session(session_token), operation_id=operation_id
+        ))
+
+    @router.get("/support/ai-reviews/{review_id}")
+    def read_support_ai_review(
+        review_id: str,
+        request: Request,
+        response: Response,
+        session_token: str | None = Header(None, alias="x-class-teacher-session"),
+    ):
+        _no_store(response)
+        return _call(lambda: _service(request).support_ai_reviews.read(
+            token=session(session_token), review_id=review_id
+        ))
+
+    @router.post("/support/ai-reviews/{review_id}/apply")
+    def apply_support_ai_review(
+        review_id: str,
+        request: Request,
+        body: SupportAIReviewApplyRequest,
+        response: Response,
+        session_token: str | None = Header(None, alias="x-class-teacher-session"),
+    ):
+        _require_trusted_mutation(request)
+        _no_store(response)
+        return _call(lambda: _service(request).support_ai_reviews.apply(
+            token=session(session_token), review_id=review_id, **body.model_dump()
+        ))
+
+    @router.post("/support/ai-reviews/{review_id}/reject")
+    def reject_support_ai_review(
+        review_id: str,
+        request: Request,
+        body: OperationRequest,
+        response: Response,
+        session_token: str | None = Header(None, alias="x-class-teacher-session"),
+    ):
+        _require_trusted_mutation(request)
+        _no_store(response)
+        return _call(lambda: _service(request).support_ai_reviews.reject(
+            token=session(session_token), review_id=review_id,
+            operation_id=body.operation_id
+        ))
 
     def session(value: str | None) -> str:
         return _token(value)
@@ -516,6 +676,21 @@ def create_support_router() -> APIRouter:
             token=session(session_token),
             attention_card_id=attention_card_id,
             **body.model_dump(),
+        ))
+
+    @router.post("/attention-cards/{attention_card_id}/decide")
+    def decide_attention(
+        attention_card_id: str,
+        request: Request,
+        body: AttentionDecisionRequest,
+        response: Response,
+        session_token: str | None = Header(None, alias="x-class-teacher-session"),
+    ):
+        _require_trusted_mutation(request)
+        _no_store(response)
+        return _call(lambda: _service(request).academic.decide(
+            token=session(session_token), attention_card_id=attention_card_id,
+            **body.model_dump()
         ))
 
     return router

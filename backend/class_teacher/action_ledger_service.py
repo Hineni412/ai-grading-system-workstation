@@ -67,11 +67,49 @@ class ActionLedgerService:
         final_deadline: str | None,
     ) -> dict[str, object]:
         vmk = self._key_provider(token)
+        with closing(self.database.connect()) as connection:
+            with connection:
+                return self.create_plan_in_transaction(
+                    connection,
+                    vmk=vmk,
+                    operation_id=operation_id,
+                    title=title,
+                    description=description,
+                    final_deadline=final_deadline,
+                )
+
+    def create_plan_in_transaction(
+        self,
+        connection: Any,
+        *,
+        vmk: bytes,
+        operation_id: str,
+        title: str,
+        description: str | None,
+        final_deadline: str | None,
+    ) -> dict[str, object]:
         clean_title = self._required_text(title, "目标名称")
         deadline = _normalize_datetime(final_deadline, "最终截止时间")
-        replay = self._idempotent(operation_id, "action.plan.create")
+        replay = self._idempotent_in_connection(
+            connection,
+            operation_id,
+            "action.plan.create",
+        )
         if replay is not None:
-            return self.get_plan(token=token, plan_id=str(replay["plan_id"]))
+            row = connection.execute(
+                """
+                SELECT plan_id, payload_object_id, created_at, updated_at
+                FROM work_plans WHERE plan_id = ?
+                """,
+                (str(replay["plan_id"]),),
+            ).fetchone()
+            if row is None:
+                raise VaultError(
+                    "work_plan_not_found",
+                    "工作目标不存在",
+                    status_code=404,
+                )
+            return self._plan_from_row(connection, vmk, row)
         plan_id = uuid4().hex
         object_id = f"plan-{plan_id}"
         timestamp = _iso()
@@ -80,36 +118,34 @@ class ActionLedgerService:
             "description": str(description or "").strip() or None,
             "final_deadline": deadline,
         }
-        with closing(self.database.connect()) as connection:
-            with connection:
-                self.repository.put(
-                    connection,
-                    vmk=vmk,
-                    object_id=object_id,
-                    object_type="work_plan",
-                    payload=payload,
-                )
-                connection.execute(
-                    """
-                    INSERT INTO work_plans (
-                        plan_id, payload_object_id, created_at, updated_at
-                    ) VALUES (?, ?, ?, ?)
-                    """,
-                    (plan_id, object_id, timestamp, timestamp),
-                )
-                result = {
-                    "plan_id": plan_id,
-                    "revision": 1,
-                    **payload,
-                    "created_at": timestamp,
-                    "updated_at": timestamp,
-                }
-                self._remember(
-                    connection,
-                    operation_id,
-                    "action.plan.create",
-                    {"plan_id": plan_id},
-                )
+        self.repository.put(
+            connection,
+            vmk=vmk,
+            object_id=object_id,
+            object_type="work_plan",
+            payload=payload,
+        )
+        connection.execute(
+            """
+            INSERT INTO work_plans (
+                plan_id, payload_object_id, created_at, updated_at
+            ) VALUES (?, ?, ?, ?)
+            """,
+            (plan_id, object_id, timestamp, timestamp),
+        )
+        result = {
+            "plan_id": plan_id,
+            "revision": 1,
+            **payload,
+            "created_at": timestamp,
+            "updated_at": timestamp,
+        }
+        self._remember(
+            connection,
+            operation_id,
+            "action.plan.create",
+            {"plan_id": plan_id},
+        )
         return result
 
     def get_plan(self, *, token: str, plan_id: str) -> dict[str, object]:
@@ -244,11 +280,53 @@ class ActionLedgerService:
         depends_on_action_ids: list[str],
     ) -> dict[str, object]:
         vmk = self._key_provider(token)
+        with closing(self.database.connect()) as connection:
+            with connection:
+                return self.create_action_in_transaction(
+                    connection,
+                    vmk=vmk,
+                    operation_id=operation_id,
+                    plan_id=plan_id,
+                    title=title,
+                    details=details,
+                    due_at=due_at,
+                    depends_on_action_ids=depends_on_action_ids,
+                )
+
+    def create_action_in_transaction(
+        self,
+        connection: Any,
+        *,
+        vmk: bytes,
+        operation_id: str,
+        plan_id: str,
+        title: str,
+        details: str | None,
+        due_at: str | None,
+        depends_on_action_ids: list[str],
+    ) -> dict[str, object]:
         clean_title = self._required_text(title, "行动名称")
         normalized_due = _normalize_datetime(due_at, "截止时间")
-        replay = self._idempotent(operation_id, "action.create")
+        replay = self._idempotent_in_connection(
+            connection,
+            operation_id,
+            "action.create",
+        )
         if replay is not None:
-            return self.get_action(token=token, action_id=str(replay["action_id"]))
+            row = connection.execute(
+                """
+                SELECT action_id, plan_id, payload_object_id, created_at, updated_at
+                FROM actions WHERE action_id = ?
+                """,
+                (str(replay["action_id"]),),
+            ).fetchone()
+            if row is None:
+                raise VaultError(
+                    "action_not_found",
+                    "行动不存在",
+                    status_code=404,
+                )
+            return self._action_from_row(connection, vmk, row)
         action_id = uuid4().hex
         object_id = f"action-{action_id}"
         timestamp = _iso()
@@ -278,68 +356,73 @@ class ActionLedgerService:
                 "行动不能依赖自身",
                 status_code=422,
             )
-        with closing(self.database.connect()) as connection:
-            with connection:
-                if connection.execute(
-                    "SELECT 1 FROM work_plans WHERE plan_id = ?",
-                    (plan_id,),
-                ).fetchone() is None:
-                    raise VaultError(
-                        "work_plan_not_found",
-                        "工作目标不存在",
-                        status_code=404,
-                    )
-                if dependencies:
-                    found = {
-                        str(row[0])
-                        for row in connection.execute(
-                            f"""
-                            SELECT action_id FROM actions
-                            WHERE action_id IN ({','.join('?' for _ in dependencies)})
-                            """,
-                            dependencies,
-                        )
-                    }
-                    if found != set(dependencies):
-                        raise VaultError(
-                            "action_dependency_invalid",
-                            "依赖的行动不存在",
-                            status_code=422,
-                        )
-                self.repository.put(
-                    connection,
-                    vmk=vmk,
-                    object_id=object_id,
-                    object_type="action_item",
-                    payload=payload,
-                )
-                connection.execute(
-                    """
-                    INSERT INTO actions (
-                        action_id, plan_id, payload_object_id, created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?)
+        if connection.execute(
+            "SELECT 1 FROM work_plans WHERE plan_id = ?",
+            (plan_id,),
+        ).fetchone() is None:
+            raise VaultError(
+                "work_plan_not_found",
+                "工作目标不存在",
+                status_code=404,
+            )
+        if dependencies:
+            found = {
+                str(row[0])
+                for row in connection.execute(
+                    f"""
+                    SELECT action_id FROM actions
+                    WHERE action_id IN ({','.join('?' for _ in dependencies)})
                     """,
-                    (action_id, plan_id, object_id, timestamp, timestamp),
+                    dependencies,
                 )
-                connection.executemany(
-                    """
-                    INSERT INTO action_dependencies (
-                        action_id, depends_on_action_id, created_at
-                    ) VALUES (?, ?, ?)
-                    """,
-                    [
-                        (action_id, dependency, timestamp)
-                        for dependency in dependencies
-                    ],
+            }
+            if found != set(dependencies):
+                raise VaultError(
+                    "action_dependency_invalid",
+                    "依赖的行动不存在",
+                    status_code=422,
                 )
-                self._event(connection, action_id, "created")
-                self._remember(
-                    connection,
-                    operation_id,
-                    "action.create",
-                    {"action_id": action_id},
-                )
-        return self.get_action(token=token, action_id=action_id)
+        self.repository.put(
+            connection,
+            vmk=vmk,
+            object_id=object_id,
+            object_type="action_item",
+            payload=payload,
+        )
+        connection.execute(
+            """
+            INSERT INTO actions (
+                action_id, plan_id, payload_object_id, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?)
+            """,
+            (action_id, plan_id, object_id, timestamp, timestamp),
+        )
+        connection.executemany(
+            """
+            INSERT INTO action_dependencies (
+                action_id, depends_on_action_id, created_at
+            ) VALUES (?, ?, ?)
+            """,
+            [
+                (action_id, dependency, timestamp)
+                for dependency in dependencies
+            ],
+        )
+        self._event(connection, action_id, "created")
+        self._remember(
+            connection,
+            operation_id,
+            "action.create",
+            {"action_id": action_id},
+        )
+        row = connection.execute(
+            """
+            SELECT action_id, plan_id, payload_object_id, created_at, updated_at
+            FROM actions WHERE action_id = ?
+            """,
+            (action_id,),
+        ).fetchone()
+        return self._action_from_row(connection, vmk, row)
 
     def get_action(self, *, token: str, action_id: str) -> dict[str, object]:
         vmk = self._key_provider(token)
@@ -765,13 +848,25 @@ class ActionLedgerService:
         operation_type: str,
     ) -> dict[str, object] | None:
         with closing(self.database.connect()) as connection:
-            row = connection.execute(
-                """
-                SELECT operation_type, result_json
-                FROM idempotency_ledger WHERE operation_id = ?
-                """,
-                (operation_id,),
-            ).fetchone()
+            return self._idempotent_in_connection(
+                connection,
+                operation_id,
+                operation_type,
+            )
+
+    @staticmethod
+    def _idempotent_in_connection(
+        connection: Any,
+        operation_id: str,
+        operation_type: str,
+    ) -> dict[str, object] | None:
+        row = connection.execute(
+            """
+            SELECT operation_type, result_json
+            FROM idempotency_ledger WHERE operation_id = ?
+            """,
+            (operation_id,),
+        ).fetchone()
         if row is None:
             return None
         if str(row["operation_type"]) != operation_type:
