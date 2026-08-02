@@ -1522,6 +1522,10 @@ def _deferred_analysis_draft(
             "model_output_contract",
             "模型已返回，但拆分点字段或标识不符合约定。",
         ),
+        "evidence_granularity_insufficient": (
+            "evidence_granularity_insufficient",
+            "模型已返回，但把多个可独立给分的推导步骤合并成了一个评分点；重试会重新分析本题。",
+        ),
         "solution_evidence_terms": (
             "model_output_contract",
             "模型已返回，但拆分点引用了本题候选范围外的知识词。",
