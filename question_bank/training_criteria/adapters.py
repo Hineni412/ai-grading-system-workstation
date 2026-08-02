@@ -502,7 +502,11 @@ def _combined_prompt(
         "response_mode the answer source is full_answer. Process anchors must occur in "
         "evidence-point order. "
         "depends_on may reference only earlier evidence_point_id values in the same "
-        "part. Before returning, complete every item in pre_output_checklist. Every "
+        "part. Each part starts a fresh dependency namespace: never put an "
+        "evidence_point_id from another part in depends_on. If a later part uses an "
+        "earlier part's conclusion, describe that fact in justification or "
+        "auxiliary_rules instead. Before returning, complete every item in "
+        "pre_output_checklist. Every "
         "part_id and evidence_point_id must be a unique lowercase ASCII machine "
         "identifier matching ^[a-z][a-z0-9_-]{1,127}$; prefer part-1 and "
         "part-1-step-1 style IDs, and keep evidence_point_id unique across the "
@@ -525,27 +529,37 @@ def _combined_prompt(
         "response_mode, full_answer must be non-empty. Keep "
         "keys present even when a type-specific list or answer is empty. "
         "Solution evidence must never contain score fields. "
-        "Do not invent content hidden by a missing image."
+        "Do not invent content hidden by a missing image. When repair_context is "
+        "present, this is a teacher-authorized targeted repair. Use its exact "
+        "validation_error and previous_result, retain content that is already "
+        "correct, but return one complete replacement result for that question. "
+        "Do not copy the rejected structure blindly. Re-audit every full_answer: "
+        "each standalone intermediate equality, angle relation, equation, or "
+        "mathematical result that is used by a later step must have its own "
+        "evidence point. For the Q11-style example, if full_answer contains "
+        "∠B=90°-x, ∠ACD=90°-x/2, and y=x/2, omitting any one of those three "
+        "placeholders is invalid."
     )
     questions = []
     for item in batch.questions:
         context = item.tagging_context.to_dict()
         context.pop("existing_tags", None)
         context.pop("existing_tags_by_dimension", None)
-        questions.append(
-            {
-                "question_id": item.question_id,
-                "question": context,
-                "rich_question_blocks": list(
-                    item.rich_question_blocks
-                ),
-                "rich_answer_blocks": list(
-                    item.rich_answer_blocks
-                ),
-                "candidate_contract": dict(item.taxonomy_contract),
-                "expected_projection": projection,
-            }
-        )
+        question_payload = {
+            "question_id": item.question_id,
+            "question": context,
+            "rich_question_blocks": list(
+                item.rich_question_blocks
+            ),
+            "rich_answer_blocks": list(
+                item.rich_answer_blocks
+            ),
+            "candidate_contract": dict(item.taxonomy_contract),
+            "expected_projection": projection,
+        }
+        if item.repair_context:
+            question_payload["repair_context"] = dict(item.repair_context)
+        questions.append(question_payload)
     content: list[dict[str, Any]] = [
         {
             "type": "input_text",

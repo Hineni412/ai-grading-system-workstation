@@ -188,6 +188,76 @@ def _combined_payload(question_id: int, *, invented_term: bool = False) -> dict[
     }
 
 
+def _cross_part_dependency_payload(
+    question_id: int,
+    *,
+    repaired: bool = False,
+) -> dict[str, Any]:
+    payload = _combined_payload(question_id)
+    payload["results"][0]["solution_evidence"] = {
+        "schema_version": "question-solution-evidence-v2",
+        "question_id": question_id,
+        "parts": [
+            {
+                "part_id": "part-1",
+                "label": "第(1)问",
+                "response_mode": "process_required",
+                "canonical_answer": "",
+                "accepted_forms": [],
+                "full_answer": "先得到∠B=90°-x。",
+                "proof_obligations": [],
+                "visual_requirements": [],
+                "deduction_policy": ["缺少该关系则本步未达成"],
+                "allow_alternative_methods": True,
+                "evidence_points": [
+                    {
+                        "evidence_point_id": "part-1-step-1",
+                        "step_index": 1,
+                        "target": "得到∠B的表达式",
+                        "justification": "直角三角形两锐角互余",
+                        "answer_anchor": "∠B=90°-x",
+                        "observable_evidence": "写出∠B=90°-x",
+                        "depends_on": [],
+                        "fine_term_links": [],
+                        "equivalent_rules": [],
+                        "counterexamples": [],
+                    }
+                ],
+            },
+            {
+                "part_id": "part-2",
+                "label": "第(2)问",
+                "response_mode": "process_required",
+                "canonical_answer": "",
+                "accepted_forms": [],
+                "full_answer": "利用上一问结论，得到y=x/2。",
+                "proof_obligations": [],
+                "visual_requirements": [],
+                "deduction_policy": ["缺少该关系则本步未达成"],
+                "allow_alternative_methods": True,
+                "evidence_points": [
+                    {
+                        "evidence_point_id": "part-2-step-1",
+                        "step_index": 1,
+                        "target": "推出y与x的关系",
+                        "justification": "利用上一问结论和角的和差关系",
+                        "answer_anchor": "y=x/2",
+                        "observable_evidence": "写出y=x/2",
+                        "depends_on": [] if repaired else ["part-1-step-1"],
+                        "fine_term_links": [],
+                        "equivalent_rules": ["x=2y"],
+                        "counterexamples": [],
+                    }
+                ],
+            },
+        ],
+        "auxiliary_rules": ["第(2)问可使用第(1)问结论"],
+        "rationale": "按小问拆分独立判分证据。",
+        "confidence": 0.9,
+    }
+    return payload
+
+
 def _assert_no_score_fields(value: object) -> None:
     banned = {
         "score",
@@ -714,27 +784,133 @@ def test_in_memory_failures_keep_safe_validation_stage_for_retry_ui() -> None:
         "solution_evidence_contract",
         "solution_evidence_terms",
     ]
-    assert "solution evidence" not in json.dumps(bundle.to_dict(), ensure_ascii=False)
+    serialized = json.dumps(bundle.to_dict(), ensure_ascii=False)
+    assert "rejected_result" in serialized
+    assert "image_paths" not in serialized
+    assert "C:/" not in serialized and "C:\\" not in serialized
 
     from backend.jobs.config_generation import _deferred_analysis_draft
 
     draft = _deferred_analysis_draft(bundle, exam_title="合成测试")
-    assert draft["meta"]["failed_batches"] == [
+    failed_batches = draft["meta"]["failed_batches"]
+    assert [item["question_ids"] for item in failed_batches] == [["Q1"], ["Q2"]]
+    assert all(item["category"] == "model_output_contract" for item in failed_batches)
+    assert "target must not be empty" in failed_batches[0]["error"]
+    assert "outside the question contract" in failed_batches[1]["error"]
+
+
+def test_teacher_retry_carries_rejected_result_and_exact_validation_error() -> None:
+    source = ConfigQuestionAnalysisSource(
+        "Q11",
+        _question(11, source_ref="Q11"),
+    )
+    rejected = _cross_part_dependency_payload(11)
+    initial = InMemoryCombinedQuestionAnalysisModule(
+        gateway=QueueGateway([rejected]),
+        resolver=Resolver(),
+    ).analyze(
+        operation_id="config-source-analysis:targeted-repair",
+        curriculum_volume_id=VOLUME_ID,
+        sources=(source,),
+    )
+
+    assert initial.status == "failed"
+    failure = initial.failures[0]
+    assert failure.rejected_result == rejected["results"][0]
+    assert "part-2" in failure.validation_error
+    assert "part-2-step-1" in failure.validation_error
+    assert "part-1-step-1" in failure.validation_error
+
+    restored = DeferredCombinedAnalysisBundle.from_dict(
+        initial.to_dict(),
+        resolver=Resolver(),
+    )
+
+    class CapturingRepairGateway(QueueGateway):
+        def __init__(self) -> None:
+            super().__init__([_cross_part_dependency_payload(11, repaired=True)])
+            self.repair_contexts: list[Mapping[str, Any]] = []
+
+        def analyze(self, batch, **kwargs):
+            self.repair_contexts.append(batch.questions[0].repair_context)
+            return super().analyze(batch, **kwargs)
+
+    retry_gateway = CapturingRepairGateway()
+    repaired = InMemoryCombinedQuestionAnalysisModule(
+        gateway=retry_gateway,
+        resolver=Resolver(),
+    ).retry_failed(
+        restored,
+        sources=(source,),
+        curriculum_volume_id=VOLUME_ID,
+        retry_source_refs=("Q11",),
+    )
+
+    assert repaired.status == "succeeded"
+    assert retry_gateway.calls == [(11,)]
+    assert retry_gateway.repair_contexts == [
         {
-            "batch_id": "解题证据分析-1",
-            "question_ids": ["Q1"],
-            "status": "failed",
-            "category": "model_output_contract",
-            "error": "模型已返回，但拆分点字段或标识不符合约定。",
-        },
-        {
-            "batch_id": "解题证据分析-2",
-            "question_ids": ["Q2"],
-            "status": "failed",
-            "category": "model_output_contract",
-            "error": "模型已返回，但拆分点引用了本题候选范围外的知识词。",
-        },
+            "mode": "repair_previous_rejected_result",
+            "validation_error": failure.validation_error,
+            "previous_result": rejected["results"][0],
+        }
     ]
+
+    from backend.jobs.config_generation import _deferred_analysis_draft
+
+    draft = _deferred_analysis_draft(initial, exam_title="定向修复测试")
+    display_error = draft["meta"]["failed_batches"][0]["error"]
+    assert "part-2" in display_error
+    assert "part-1-step-1" in display_error
+
+
+def test_legacy_v3_failure_retries_without_unavailable_repair_context() -> None:
+    source = ConfigQuestionAnalysisSource(
+        "Q11",
+        _question(11, source_ref="Q11"),
+    )
+    initial = InMemoryCombinedQuestionAnalysisModule(
+        gateway=QueueGateway([_cross_part_dependency_payload(11)]),
+        resolver=Resolver(),
+    ).analyze(
+        operation_id="config-source-analysis:legacy-retry",
+        curriculum_volume_id=VOLUME_ID,
+        sources=(source,),
+    )
+    legacy = copy.deepcopy(initial.to_dict())
+    legacy.pop("content_hash")
+    legacy["schema_version"] = "deferred-combined-analysis-v3"
+    for failure in legacy["failures"]:
+        failure.pop("validation_error")
+        failure.pop("rejected_result")
+    legacy["content_hash"] = _checkpoint_hash(legacy)
+    restored = DeferredCombinedAnalysisBundle.from_dict(
+        legacy,
+        resolver=Resolver(),
+    )
+
+    class LegacyRetryGateway(QueueGateway):
+        def __init__(self) -> None:
+            super().__init__([_cross_part_dependency_payload(11, repaired=True)])
+            self.repair_contexts: list[Mapping[str, Any]] = []
+
+        def analyze(self, batch, **kwargs):
+            self.repair_contexts.append(batch.questions[0].repair_context)
+            return super().analyze(batch, **kwargs)
+
+    gateway = LegacyRetryGateway()
+    retried = InMemoryCombinedQuestionAnalysisModule(
+        gateway=gateway,
+        resolver=Resolver(),
+    ).retry_failed(
+        restored,
+        sources=(source,),
+        curriculum_volume_id=VOLUME_ID,
+    )
+
+    assert retried.status == "succeeded"
+    assert gateway.calls == [(11,)]
+    assert gateway.repair_contexts == [{}]
 
 
 def test_in_memory_normalizes_machine_ids_candidate_names_and_duplicate_links() -> None:
@@ -802,7 +978,7 @@ def test_deferred_v2_checkpoint_loads_without_replaying_successful_analysis() ->
     assert gateway.calls == [(1,)]
     assert restored.status == "succeeded"
     assert restored.get("Q1").taxonomy_audit["status"] == "legacy_unrecorded"
-    assert restored.to_dict()["schema_version"] == "deferred-combined-analysis-v3"
+    assert restored.to_dict()["schema_version"] == "deferred-combined-analysis-v4"
     assert restored.to_dict()["items"][0]["schema_version"] == (
         "deferred-combined-analysis-item-v3"
     )

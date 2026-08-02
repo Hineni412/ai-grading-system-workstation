@@ -622,9 +622,21 @@ def _validate_v2_step_sequence(part: QuestionPart) -> None:
         if point.step_index != expected_index:
             raise ValueError("step_index must be contiguous and match array order")
         if point.evidence_point_id in point.depends_on:
-            raise ValueError("evidence point cannot depend on itself")
-        if any(dependency not in prior_ids for dependency in point.depends_on):
-            raise ValueError("depends_on must reference an earlier evidence point")
+            raise ValueError(
+                f"位置 {part.part_id}/{point.evidence_point_id}："
+                "评分点不能依赖自身"
+            )
+        invalid_dependencies = tuple(
+            dependency
+            for dependency in point.depends_on
+            if dependency not in prior_ids
+        )
+        if invalid_dependencies:
+            raise ValueError(
+                f"位置 {part.part_id}/{point.evidence_point_id}：depends_on "
+                "只能引用同一小问内更早的评分点，发现 "
+                + "、".join(invalid_dependencies)
+            )
         prior_ids.add(point.evidence_point_id)
 
 

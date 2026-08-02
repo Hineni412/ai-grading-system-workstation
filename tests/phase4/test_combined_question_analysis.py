@@ -929,6 +929,63 @@ def test_gateway_keeps_each_questions_candidate_contract_isolated() -> None:
     assert "exact_objective" in rules and "canonical_answer" in rules
 
 
+def test_gateway_prompt_turns_teacher_retry_into_targeted_repair() -> None:
+    base = _question(11)
+    rejected_result = {
+        "question_id": 11,
+        "tag_analysis": {"knowledge_points": ["三角形内角和定理"]},
+        "solution_evidence": {
+            "parts": [
+                {
+                    "part_id": "part-3",
+                    "evidence_points": [
+                        {
+                            "evidence_point_id": "part3-step1",
+                            "depends_on": ["part2-step1"],
+                        }
+                    ],
+                }
+            ]
+        },
+    }
+    question = QuestionAnalysisInput(
+        question_id=base.question_id,
+        tagging_context=base.tagging_context,
+        taxonomy_contract=base.taxonomy_contract,
+        repair_context={
+            "mode": "repair_previous_rejected_result",
+            "validation_error": (
+                "part-3/part3-step1 的 depends_on 不能引用其他小问的 "
+                "part2-step1"
+            ),
+            "previous_result": rejected_result,
+        },
+    )
+    protocol = CapturingProtocolAdapter({"results": []})
+    gateway = OpenAICombinedAnalysisGateway(
+        protocol_adapter=protocol,
+        model_name="synthetic-model",
+    )
+
+    gateway.analyze(
+        plan_analysis_batches((question,))[0],
+        projection="both",
+        operation_id="targeted-repair-prompt",
+        request_id="c" * 64,
+    )
+
+    prompt = json.loads(
+        protocol.calls[0]["kwargs"]["input"][1]["content"][0]["text"]
+    )
+    repair = prompt["questions"][0]["repair_context"]
+    assert repair["previous_result"] == rejected_result
+    assert "part2-step1" in repair["validation_error"]
+    assert "repair" in prompt["rules"].casefold()
+    assert "fresh dependency namespace" in prompt["rules"]
+    assert "full_answer" in prompt["rules"]
+    assert "standalone intermediate" in prompt["rules"]
+
+
 def test_input_loader_includes_rich_text_and_controlled_actual_images(
     tmp_path: Path,
 ) -> None:
