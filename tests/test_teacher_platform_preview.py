@@ -269,6 +269,7 @@ def test_preview_launcher_does_not_misreport_all_failures_as_stale() -> None:
     read_head = launcher.index("teacher_platform_preview.py\" print-head")
     assert ensure < read_head
     assert "git -C" not in launcher
+    assert "in ('call \"%PYTHON_EXE%\"" in launcher
     assert "goto preview_prepare_error" in launcher
     assert "goto running_probe_error" in launcher
     assert "The three-workspace preview is not current." not in launcher

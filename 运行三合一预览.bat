@@ -19,7 +19,7 @@ set "PYTHONUTF8=1"
 "%PYTHON_EXE%" "%~dp0tools\teacher_platform_preview.py" ensure
 if errorlevel 1 goto preview_prepare_error
 
-for /f "usebackq delims=" %%I in (`"%PYTHON_EXE%" "%~dp0tools\teacher_platform_preview.py" print-head`) do set "AI_GRADING_PREVIEW_HEAD=%%I"
+for /f "delims=" %%I in ('call "%PYTHON_EXE%" "%~dp0tools\teacher_platform_preview.py" print-head') do set "AI_GRADING_PREVIEW_HEAD=%%I"
 if not defined AI_GRADING_PREVIEW_HEAD goto preview_prepare_error
 
 "%PYTHON_EXE%" "%~dp0tools\teacher_platform_preview.py" open-running
