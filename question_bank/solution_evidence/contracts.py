@@ -24,30 +24,6 @@ _BANNED_SCORE_KEYS = frozenset(
         "full_score",
     }
 )
-_CONCRETE_MATH_CONTENT = re.compile(
-    r"(?:[A-Za-z0-9]|[=≠≤≥<>≈≡≌∽∥⊥∠△□○⊙√π°]|"
-    r"三角形|全等|相似|平行|垂直|中点|中线|角平分线|垂直平分线|"
-    r"辅助线|方程|函数|代数式|不等式|因式|分式|根式|坐标|面积|"
-    r"周长|体积|概率|统计|半径|直径|切线|圆弧|比例|比值|斜率|"
-    r"解集|未知数|移项|化简|展开|分类讨论|度数)"
-)
-_STAGE_MARKER = re.compile(
-    r"(?:^|[，,；;。\n])\s*(?:"
-    r"先|首先|第一步|其一|"
-    r"再|然后|接着|其次|第二步|其二|"
-    r"最后|最终|第三步|其三"
-    r")"
-)
-_INITIAL_STAGE_MARKER = re.compile(r"(?:^|[，,；;。\n])\s*(?:先|首先|第一步|其一)")
-_NUMBERED_STAGE = re.compile(
-    r"(?:^|[；;。\n])\s*(?:\d+[.、)]|第[一二三四五六七八九十]+步)"
-)
-
-
-class EvidenceGranularityError(ValueError):
-    """The response merged multiple independently scorable steps into one."""
-
-
 class FineTermResolver(Protocol):
     def resolve(self, fine_term_id: str) -> "CoreResolution": ...
 
@@ -355,7 +331,6 @@ class QuestionPart:
         if schema_version == "question-solution-evidence-v2":
             _validate_v2_step_sequence(result)
             _validate_v2_answer_anchors(result)
-            _validate_v2_process_granularity(result)
         return result
 
     def __post_init__(self) -> None:
@@ -654,48 +629,24 @@ def _validate_v2_step_sequence(part: QuestionPart) -> None:
 
 
 def _validate_v2_answer_anchors(part: QuestionPart) -> None:
+    source = (
+        part.canonical_answer
+        if part.response_mode == "exact_objective"
+        else part.full_answer
+    )
     cursor = 0
     seen: set[str] = set()
     for point in part.evidence_points:
         anchor = point.answer_anchor.strip()
-        if not _CONCRETE_MATH_CONTENT.search(anchor):
-            raise ValueError("answer_anchor lacks concrete mathematical content")
         if anchor in seen:
             raise ValueError("answer_anchor must be unique within a question part")
-        position = part.full_answer.find(anchor, cursor)
+        position = source.find(anchor, cursor)
         if position < 0:
             raise ValueError(
-                "answer_anchor must occur in full_answer in evidence point order"
+                "answer_anchor must occur in its answer source in evidence point order"
             )
         seen.add(anchor)
         cursor = position + len(anchor)
-
-
-def _validate_v2_process_granularity(part: QuestionPart) -> None:
-    if part.response_mode != "process_required":
-        return
-    explicit_stages = _explicit_stage_count(part.full_answer)
-    if explicit_stages > len(part.evidence_points):
-        raise EvidenceGranularityError(
-            "process answer contains more explicit mathematical stages than evidence points"
-        )
-    for point in part.evidence_points:
-        point_text = "；".join(
-            (point.target, point.justification, point.observable_evidence)
-        )
-        if _explicit_stage_count(point_text) > 1:
-            raise EvidenceGranularityError(
-                "one evidence point contains multiple explicit mathematical stages"
-            )
-
-
-def _explicit_stage_count(value: str) -> int:
-    text = str(value or "")
-    numbered = len(_NUMBERED_STAGE.findall(text))
-    markers = len(_STAGE_MARKER.findall(text))
-    if markers and not _INITIAL_STAGE_MARKER.search(text):
-        markers += 1
-    return max(numbered, markers)
 
 
 def validate_evidence_fine_terms(
@@ -812,7 +763,6 @@ def _hash_payload(payload: Mapping[str, Any]) -> str:
 __all__ = [
     "CoreResolution",
     "CoreResolutionStatus",
-    "EvidenceGranularityError",
     "FineTermLink",
     "FineTermResolver",
     "FineTermRole",

@@ -491,15 +491,18 @@ def _combined_prompt(
         "intermediate results, return one evidence point for each result instead "
         "of placing the whole derivation inside one target or observable_evidence. "
         "Do not split trivial algebraic typography or restate the same result. "
-        "A genuinely atomic answer may contain one evidence point. For every point, "
+        "A genuinely atomic answer may contain one evidence point. Follow the "
+        "complete positive and negative evidence_examples supplied with this task; "
+        "the negative example is explicitly forbidden. For every point, "
         "step_index must start at 1 and follow array order, justification must name "
         "the condition, theorem, property, or operation supporting that step, and "
-        "answer_anchor must copy a unique, concrete mathematical result or operation "
-        "verbatim from full_answer; anchors must occur in evidence-point order. "
+        "answer_anchor must copy the shortest unique result or operation that identifies "
+        "the milestone verbatim from the answer source. For exact_objective the answer "
+        "source is canonical_answer and full_answer may be empty; for every other "
+        "response_mode the answer source is full_answer. Process anchors must occur in "
+        "evidence-point order. "
         "depends_on may reference only earlier evidence_point_id values in the same "
-        "part. Q11-style example: derive angle B, then use an isosceles condition "
-        "to derive angle ACD, then conclude y=x/2; these are three evidence points, "
-        "not one combined point. Every "
+        "part. Before returning, complete every item in pre_output_checklist. Every "
         "part_id and evidence_point_id must be a unique lowercase ASCII machine "
         "identifier matching ^[a-z][a-z0-9_-]{1,127}$; prefer part-1 and "
         "part-1-step-1 style IDs, and keep evidence_point_id unique across the "
@@ -550,6 +553,7 @@ def _combined_prompt(
                 {
                     "task": "combined-v3 question analysis",
                     "rules": instructions,
+                    "evidence_examples": _combined_evidence_examples(),
                     "questions": questions,
                 },
                 ensure_ascii=False,
@@ -588,6 +592,174 @@ def _combined_prompt(
         },
         {"role": "user", "content": content},
     ]
+
+
+def _combined_evidence_examples() -> dict[str, Any]:
+    """Give the model one authoritative set of evidence-splitting examples."""
+
+    return {
+        "q11_process_positive": {
+            "why_correct": (
+                "Three independently checkable intermediate mathematical results "
+                "become three unscored placeholders for later score allocation."
+            ),
+            "part_id": "part-1",
+            "label": "第1问",
+            "response_mode": "process_required",
+            "canonical_answer": "y=x/2",
+            "accepted_forms": ["y=x/2", "x=2y"],
+            "full_answer": (
+                "由直角三角形内角和得到∠B=90°-x；"
+                "由AD=AC及等腰三角形性质得到∠ACD=90°-x/2；"
+                "代入角度关系化简得到y=x/2。"
+            ),
+            "proof_obligations": [],
+            "visual_requirements": [],
+            "deduction_policy": ["缺少某一台阶时，只影响该台阶及依赖它的后续台阶"],
+            "allow_alternative_methods": True,
+            "evidence_points": [
+                {
+                    "evidence_point_id": "part-1-step-1",
+                    "step_index": 1,
+                    "target": "得到∠B=90°-x",
+                    "justification": "直角三角形内角和",
+                    "answer_anchor": "∠B=90°-x",
+                    "observable_evidence": "作答中写出∠B=90°-x",
+                    "depends_on": [],
+                    "fine_term_links": [],
+                    "equivalent_rules": [],
+                    "counterexamples": [],
+                },
+                {
+                    "evidence_point_id": "part-1-step-2",
+                    "step_index": 2,
+                    "target": "得到∠ACD=90°-x/2",
+                    "justification": "AD=AC及等腰三角形性质",
+                    "answer_anchor": "∠ACD=90°-x/2",
+                    "observable_evidence": "作答中写出∠ACD=90°-x/2",
+                    "depends_on": ["part-1-step-1"],
+                    "fine_term_links": [],
+                    "equivalent_rules": [],
+                    "counterexamples": [],
+                },
+                {
+                    "evidence_point_id": "part-1-step-3",
+                    "step_index": 3,
+                    "target": "推出y=x/2",
+                    "justification": "代入角度关系并化简",
+                    "answer_anchor": "y=x/2",
+                    "observable_evidence": "作答中写出y=x/2",
+                    "depends_on": ["part-1-step-2"],
+                    "fine_term_links": [],
+                    "equivalent_rules": ["x=2y"],
+                    "counterexamples": [],
+                },
+            ],
+        },
+        "q11_process_negative": {
+            "do_not_return": (
+                "This incorrectly merges three independently scorable milestones "
+                "into one evidence point."
+            ),
+            "part_id": "part-1",
+            "label": "第1问",
+            "response_mode": "process_required",
+            "canonical_answer": "y=x/2",
+            "accepted_forms": ["y=x/2", "x=2y"],
+            "full_answer": (
+                "由直角三角形内角和得到∠B=90°-x；"
+                "由AD=AC及等腰三角形性质得到∠ACD=90°-x/2；"
+                "代入角度关系化简得到y=x/2。"
+            ),
+            "proof_obligations": [],
+            "visual_requirements": [],
+            "deduction_policy": ["缺少某一台阶时，只影响该台阶及依赖它的后续台阶"],
+            "allow_alternative_methods": True,
+            "evidence_points": [
+                {
+                    "evidence_point_id": "part-1-step-1",
+                    "step_index": 1,
+                    "target": "完成所有角度推导并得到y=x/2",
+                    "justification": "综合使用题目条件和几何性质",
+                    "answer_anchor": "y=x/2",
+                    "observable_evidence": "写出从∠B到y=x/2的完整过程",
+                    "depends_on": [],
+                    "fine_term_links": [],
+                    "equivalent_rules": [],
+                    "counterexamples": [],
+                }
+            ],
+        },
+        "atomic_process_positive": {
+            "why_correct": (
+                "Moving one term and obtaining the only required result is one "
+                "independently scorable milestone; do not split typography."
+            ),
+            "part_id": "part-1",
+            "label": "第1问",
+            "response_mode": "process_required",
+            "canonical_answer": "x=1",
+            "accepted_forms": ["x=1"],
+            "full_answer": "由x+1=2移项得到x=1。",
+            "proof_obligations": [],
+            "visual_requirements": [],
+            "deduction_policy": ["没有得到x=1则该证据点不得分"],
+            "allow_alternative_methods": False,
+            "evidence_points": [
+                {
+                    "evidence_point_id": "part-1-step-1",
+                    "step_index": 1,
+                    "target": "得到x=1",
+                    "justification": "依据等式性质移项",
+                    "answer_anchor": "x=1",
+                    "observable_evidence": "作答中写出x=1",
+                    "depends_on": [],
+                    "fine_term_links": [],
+                    "equivalent_rules": [],
+                    "counterexamples": [],
+                }
+            ],
+        },
+        "objective_positive": {
+            "why_correct": (
+                "An exact objective item is graded from canonical_answer alone; "
+                "full_answer may be empty."
+            ),
+            "part_id": "part-1",
+            "label": "",
+            "response_mode": "exact_objective",
+            "canonical_answer": "B",
+            "accepted_forms": ["B"],
+            "full_answer": "",
+            "proof_obligations": [],
+            "visual_requirements": [],
+            "deduction_policy": ["答案不是B则该证据点不得分"],
+            "allow_alternative_methods": False,
+            "evidence_points": [
+                {
+                    "evidence_point_id": "part-1-step-1",
+                    "step_index": 1,
+                    "target": "选择B",
+                    "justification": "与标准答案一致",
+                    "answer_anchor": "B",
+                    "observable_evidence": "作答为B",
+                    "depends_on": [],
+                    "fine_term_links": [],
+                    "equivalent_rules": [],
+                    "counterexamples": [],
+                }
+            ],
+        },
+        "pre_output_checklist": [
+            "Every meaningful intermediate result that could earn partial credit has its own evidence_point.",
+            "No evidence_point combines multiple independently scorable milestones.",
+            "No trivial algebraic typography or repeated conclusion was split into a separate point.",
+            "Each process answer_anchor is copied verbatim from full_answer and follows answer order.",
+            "Each exact_objective answer_anchor is copied verbatim from canonical_answer; full_answer may be empty.",
+            "step_index is contiguous and each depends_on entry names only an earlier point in the same part.",
+            "No score or point-value field appears anywhere in solution_evidence.",
+        ],
+    }
 
 
 def _stored_paths(value: object) -> list[str]:

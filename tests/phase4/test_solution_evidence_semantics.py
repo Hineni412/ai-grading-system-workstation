@@ -21,7 +21,6 @@ from question_bank.services.question_service import QuestionService
 from question_bank.taxonomy.governance import TaxonomyGovernance
 from question_bank.solution_evidence import (
     CoreResolution,
-    EvidenceGranularityError,
     FineTermCoreMappingRepository,
     QuestionSolutionEvidence,
     SolutionEvidenceProjectionWriter,
@@ -906,7 +905,7 @@ def _v2_process_evidence_payload(
     return payload
 
 
-def test_v2_rejects_q11_style_compound_process_as_insufficient_granularity() -> None:
+def test_v2_accepts_q11_style_compound_process_when_structure_is_valid() -> None:
     question = _question(
         1,
         text="在直角三角形中，AD=AC，按步骤求出y与x的关系。",
@@ -937,8 +936,8 @@ def test_v2_rejects_q11_style_compound_process_as_insufficient_granularity() -> 
         sources=(ConfigQuestionAnalysisSource("Q11", question),),
     )
 
-    assert bundle.status == "failed"
-    assert bundle.failures[0].category == "evidence_granularity_insufficient"
+    assert bundle.status == "succeeded"
+    assert bundle.failures == ()
 
 
 @pytest.mark.parametrize("atomic", [False, True])
@@ -1037,7 +1036,7 @@ def test_v1_evidence_checkpoint_remains_readable_without_v2_fields() -> None:
     assert "depends_on" not in point
 
 
-def test_v2_rejects_two_points_when_one_still_merges_explicit_stages() -> None:
+def test_v2_accepts_model_chosen_milestone_granularity_when_structure_is_valid() -> None:
     question = _question(1)
     payload = _v2_process_evidence_payload(1, split_steps=True)
     part = payload["parts"][0]
@@ -1055,25 +1054,26 @@ def test_v2_rejects_two_points_when_one_still_merges_explicit_stages() -> None:
         },
     ]
 
-    with pytest.raises(EvidenceGranularityError):
-        QuestionSolutionEvidence.from_model_dict(
-            payload,
-            question_id=1,
-            source_content_hash=(
-                __import__(
-                    "question_bank.training_criteria.analysis",
-                    fromlist=["solution_evidence_source_content_hash"],
-                ).solution_evidence_source_content_hash(question)
-            ),
-            resolver=Resolver(),
-        )
+    evidence = QuestionSolutionEvidence.from_model_dict(
+        payload,
+        question_id=1,
+        source_content_hash=(
+            __import__(
+                "question_bank.training_criteria.analysis",
+                fromlist=["solution_evidence_source_content_hash"],
+            ).solution_evidence_source_content_hash(question)
+        ),
+        resolver=Resolver(),
+    )
+
+    assert len(evidence.parts[0].evidence_points) == 2
 
 
-def test_v2_rejects_pure_chinese_explicit_stages_and_generic_anchors() -> None:
+def test_v2_does_not_semantically_reject_generic_but_structurally_valid_text() -> None:
     question = _question(1)
     payload = _v2_process_evidence_payload(1, split_steps=False, atomic=True)
     part = payload["parts"][0]
-    part["full_answer"] = "先作辅助线；再证明两个图形全等；最后推出线段相等。"
+    part["full_answer"] = "完成本题推导。"
     point = part["evidence_points"][0]
     point.update(
         {
@@ -1084,18 +1084,62 @@ def test_v2_rejects_pure_chinese_explicit_stages_and_generic_anchors() -> None:
         }
     )
 
-    with pytest.raises(ValueError, match="answer_anchor"):
-        QuestionSolutionEvidence.from_model_dict(
-            payload,
-            question_id=1,
-            source_content_hash=(
-                __import__(
-                    "question_bank.training_criteria.analysis",
-                    fromlist=["solution_evidence_source_content_hash"],
-                ).solution_evidence_source_content_hash(question)
-            ),
-            resolver=Resolver(),
-        )
+    evidence = QuestionSolutionEvidence.from_model_dict(
+        payload,
+        question_id=1,
+        source_content_hash=(
+            __import__(
+                "question_bank.training_criteria.analysis",
+                fromlist=["solution_evidence_source_content_hash"],
+            ).solution_evidence_source_content_hash(question)
+        ),
+        resolver=Resolver(),
+    )
+
+    assert evidence.parts[0].evidence_points[0].target == "完成本题推导"
+
+
+def test_v2_exact_objective_uses_canonical_answer_when_full_answer_is_empty() -> None:
+    question = _question(1)
+    payload = _v2_process_evidence_payload(1, split_steps=False, atomic=True)
+    part = payload["parts"][0]
+    part.update(
+        {
+            "response_mode": "exact_objective",
+            "canonical_answer": "B",
+            "full_answer": "",
+            "proof_obligations": [],
+        }
+    )
+    part["evidence_points"] = [
+        {
+            "evidence_point_id": "step-1",
+            "step_index": 1,
+            "target": "选择B",
+            "justification": "与标准答案一致",
+            "answer_anchor": "B",
+            "observable_evidence": "作答为B",
+            "depends_on": [],
+            "fine_term_links": [],
+            "equivalent_rules": [],
+            "counterexamples": [],
+        }
+    ]
+
+    evidence = QuestionSolutionEvidence.from_model_dict(
+        payload,
+        question_id=1,
+        source_content_hash=(
+            __import__(
+                "question_bank.training_criteria.analysis",
+                fromlist=["solution_evidence_source_content_hash"],
+            ).solution_evidence_source_content_hash(question)
+        ),
+        resolver=Resolver(),
+    )
+
+    assert evidence.parts[0].canonical_answer == "B"
+    assert evidence.parts[0].full_answer == ""
 
 
 def test_v2_keeps_a_true_atomic_step_with_two_math_sentences() -> None:
