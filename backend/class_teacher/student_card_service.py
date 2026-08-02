@@ -11,6 +11,7 @@ from .errors import VaultError
 from .model_approval import ModelApproval
 from .secure_repository import EncryptedObjectRepository
 from .support_record_service import SupportRecordService
+from .sensitive_work_projection import SensitiveWorkProjection
 from .work_graph import WorkGraph
 
 
@@ -45,6 +46,7 @@ class StudentCardService:
         support: SupportRecordService,
         model_approval: ModelApproval,
         work: WorkGraph,
+        projections: SensitiveWorkProjection,
     ) -> None:
         self.database = database
         self.repository = repository
@@ -52,10 +54,12 @@ class StudentCardService:
         self.support = support
         self.model_approval = model_approval
         self.work = work
+        self.projections = projections
 
     def list_cards(self, *, token: str) -> dict[str, object]:
         vmk = self._key_provider(token)
         self.drain_projection_outbox()
+        self.projections.drain(token=token)
         subjects = self.support.list_subjects(token=token)["items"]
         cards: list[dict[str, object]] = []
         for subject in subjects:
@@ -92,11 +96,8 @@ class StudentCardService:
                             "revision": revision,
                             "model_operation_id": str(row["model_operation_id"]),
                             **payload,
-                            "projection_state": (
-                                "applied"
-                                if projection_rows
-                                and all(str(item["state"]) == "applied" for item in projection_rows)
-                                else "pending"
+                            "projection_state": self._projection_state(
+                                connection, str(row["entry_id"]), projection_rows
                             ),
                             "created_at": str(row["created_at"]),
                         }
@@ -165,10 +166,6 @@ class StudentCardService:
             "model_draft": model_draft,
             "teacher_confirmed_at": timestamp,
         }
-        projection_specs = [
-            ("task", clean_sop.get("review_date")),
-            ("sop", clean_sop.get("review_date")),
-        ]
         with closing(self.database.connect()) as connection:
             with connection:
                 existing_model = connection.execute(
@@ -207,25 +204,13 @@ class StudentCardService:
                         timestamp,
                     ),
                 )
-                for projection_kind, due_date in projection_specs:
-                    connection.execute(
-                        """
-                        INSERT INTO student_card_projection_outbox (
-                            event_id, entry_id, projection_id, projection_kind,
-                            due_date, state, attempts, created_at, updated_at
-                        ) VALUES (?, ?, ?, ?, ?, 'pending', 0, ?, ?)
-                        """,
-                        (
-                            uuid4().hex,
-                            entry_id,
-                            uuid4().hex,
-                            projection_kind,
-                            due_date,
-                            timestamp,
-                            timestamp,
-                        ),
-                    )
-        self.drain_projection_outbox()
+        self.projections.upsert(
+            token=token,
+            source_kind="student_support",
+            source_id=entry_id,
+            state="pending",
+            due_date=clean_sop.get("review_date"),
+        )
         entry = self._entry(token=token, entry_id=entry_id)
         return {"saved": True, **entry}
 
@@ -314,19 +299,36 @@ class StudentCardService:
                 """,
                 (entry_id,),
             ).fetchall()
+            projection_state = self._projection_state(connection, entry_id, states)
         return {
             "entry_id": entry_id,
             "subject_id": str(row["subject_id"]),
             "revision": revision,
             "model_operation_id": str(row["model_operation_id"]),
             **payload,
-            "projection_state": (
-                "applied"
-                if states and all(str(item["state"]) == "applied" for item in states)
-                else "pending"
-            ),
+            "projection_state": projection_state,
             "created_at": str(row["created_at"]),
         }
+
+    @staticmethod
+    def _projection_state(connection: Any, entry_id: str, legacy_states: list[Any]) -> str:
+        group = connection.execute(
+            """
+            SELECT g.group_id,
+                   (SELECT COUNT(*) FROM sensitive_work_projection_outbox o
+                    WHERE o.group_id = g.group_id AND o.state = 'pending') AS pending_count
+            FROM sensitive_work_groups g
+            WHERE g.source_kind = 'student_support' AND g.source_id = ?
+            """,
+            (entry_id,),
+        ).fetchone()
+        if group is not None:
+            return "pending" if int(group["pending_count"]) else "applied"
+        return (
+            "applied"
+            if legacy_states and all(str(item["state"]) == "applied" for item in legacy_states)
+            else "pending"
+        )
 
     @staticmethod
     def _portrait(value: dict[str, object]) -> dict[str, object]:

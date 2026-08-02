@@ -4,6 +4,8 @@ from fastapi import APIRouter, Query, Request, Response
 
 from .work_schemas import (
     WorkNodeResponse,
+    WorkNodeDetailResponse,
+    WorkCommandRequest,
     WorkNodeUpdateRequest,
     WorkPlanConfirmRequest,
     WorkPlanConfirmResponse,
@@ -30,13 +32,45 @@ def create_work_router() -> APIRouter:
         start_date: str | None = Query(default=None),
         end_date: str | None = Query(default=None),
         as_of: str | None = Query(default=None),
+        view: str | None = Query(default=None),
+        anchor: str | None = Query(default=None),
+        cursor: str | None = Query(default=None),
     ):
         _no_store(response)
         return _call(
-            lambda: _service(request).work.query(
-                start_date=start_date,
-                end_date=end_date,
-                as_of=as_of,
+            lambda: (
+                _service(request).work.read(
+                    view=view,
+                    anchor=anchor,
+                    cursor=cursor,
+                )
+                if view is not None
+                else _service(request).work.query(
+                    start_date=start_date,
+                    end_date=end_date,
+                    as_of=as_of,
+                )
+            )
+        )
+
+    @router.get("/nodes/{node_id}", response_model=WorkNodeDetailResponse)
+    def node_detail(node_id: str, request: Request, response: Response):
+        _no_store(response)
+        return _call(lambda: _service(request).work.detail(node_id=node_id))
+
+    @router.post("/nodes/{node_id}/commands")
+    def node_command(
+        node_id: str,
+        request: Request,
+        body: WorkCommandRequest,
+        response: Response,
+    ):
+        _require_trusted_mutation(request)
+        _no_store(response)
+        return _call(
+            lambda: _service(request).work.command(
+                node_id=node_id,
+                **body.model_dump(),
             )
         )
 

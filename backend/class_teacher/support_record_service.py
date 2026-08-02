@@ -15,6 +15,7 @@ from zoneinfo import ZoneInfo
 from .encrypted_database import EncryptedDatabase
 from .errors import VaultError
 from .secure_repository import EncryptedObjectRepository
+from .sensitive_work_projection import SensitiveWorkProjection
 
 
 _RECORD_KINDS = {
@@ -56,10 +57,12 @@ class SupportRecordService:
         database: EncryptedDatabase,
         repository: EncryptedObjectRepository,
         key_provider: Callable[[str], bytes],
+        projections: SensitiveWorkProjection | None = None,
     ) -> None:
         self.database = database
         self.repository = repository
         self._key_provider = key_provider
+        self.projections = projections
 
     def create_subject(
         self,
@@ -1127,7 +1130,7 @@ class SupportRecordService:
                 str(identity.get("source_student_id") or ""),
                 str(identity.get("display_name") or ""),
             } - {""}
-            shared = [
+            shared = sorted([
                 {
                     "object_id": str(row["object_id"]),
                     "object_type": str(row["object_type"]),
@@ -1138,7 +1141,29 @@ class SupportRecordService:
                     vmk=vmk,
                     markers=markers,
                 )
-            ]
+            ], key=lambda item: (item["object_type"], item["object_id"]))
+            counts = {
+                "support_records": connection.execute("SELECT COUNT(*) FROM support_records WHERE subject_id = ?", (subject_id,)).fetchone()[0],
+                "student_cards": connection.execute("SELECT COUNT(*) FROM student_card_entries WHERE subject_id = ?", (subject_id,)).fetchone()[0],
+                "academic_evidence": connection.execute("SELECT COUNT(*) FROM subject_results WHERE subject_id = ?", (subject_id,)).fetchone()[0],
+                "ai_reviews": connection.execute("SELECT COUNT(*) FROM support_ai_review_sessions WHERE subject_id = ?", (subject_id,)).fetchone()[0],
+                "attention_cards": connection.execute("SELECT COUNT(*) FROM attention_cards WHERE subject_id = ?", (subject_id,)).fetchone()[0],
+                "support_plans": connection.execute("SELECT COUNT(*) FROM support_plans WHERE subject_id = ?", (subject_id,)).fetchone()[0],
+            }
+            projection_ids = sorted(
+                str(row[0])
+                for row in connection.execute(
+                    """
+                    SELECT g.group_id FROM sensitive_work_groups g
+                    WHERE (g.source_kind = 'attention_followup' AND g.source_id IN (
+                        SELECT attention_card_id FROM attention_cards WHERE subject_id = ?
+                    )) OR (g.source_kind = 'student_support' AND g.source_id IN (
+                        SELECT entry_id FROM student_card_entries WHERE subject_id = ?
+                    ))
+                    """,
+                    (subject_id, subject_id),
+                ).fetchall()
+            )
         backups = [
             {
                 "file_name": path.name,
@@ -1146,12 +1171,25 @@ class SupportRecordService:
             }
             for path in self.database.backup_dir.glob("*.ctbackup")
         ]
+        version_payload = {
+            "subject_id": subject_id,
+            "affected_backups": sorted(item["file_name"] for item in backups),
+            "shared_objects": [item["object_id"] for item in shared],
+            "counts": counts,
+            "projection_ids": projection_ids,
+        }
+        preview_version = hashlib.sha256(
+            json.dumps(version_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
         return {
             "subject_id": subject_id,
             "affected_backups": backups,
             "affected_backup_count": len(backups),
             "shared_objects": shared,
             "shared_object_count": len(shared),
+            "impact_counts": counts,
+            "projection_count": len(projection_ids),
+            "preview_version": preview_version,
             "requires_backup_confirmation": bool(backups),
             "backup_confirmation_phrase": (
                 "确认销毁受影响的班主任专用备份"
@@ -1168,6 +1206,7 @@ class SupportRecordService:
         operation_id: str,
         confirmation_phrase: str,
         backup_confirmation_phrase: str | None = None,
+        preview_version: str | None = None,
     ) -> dict[str, object]:
         self._key_provider(token)
         if re.fullmatch(r"[A-Za-z0-9_-]{8,128}", operation_id) is None:
@@ -1187,6 +1226,13 @@ class SupportRecordService:
             token=token,
             subject_id=subject_id,
         )
+        if preview_version is not None and preview_version != preview["preview_version"]:
+            raise VaultError(
+                "support_delete_preview_changed",
+                "删除影响已经变化，请重新查看并确认",
+                status_code=409,
+                details=preview,
+            )
         if preview["requires_backup_confirmation"] and (
             backup_confirmation_phrase
             != "确认销毁受影响的班主任专用备份"
@@ -1222,6 +1268,7 @@ class SupportRecordService:
             finally:
                 self.database = live_database
         transaction: Path | None = None
+        tombstoned: list[dict[str, object]] = []
         try:
             current_backup_names = {
                 path.name
@@ -1241,6 +1288,22 @@ class SupportRecordService:
                 live_database.backup_dir / name
                 for name in sorted(current_backup_names)
             ]
+            if self.projections is not None:
+                with closing(live_database.connect()) as connection:
+                    rows = connection.execute(
+                        """
+                        SELECT g.* FROM sensitive_work_groups g
+                        WHERE (g.source_kind = 'attention_followup' AND g.source_id IN (
+                            SELECT attention_card_id FROM attention_cards WHERE subject_id = ?
+                        )) OR (g.source_kind = 'student_support' AND g.source_id IN (
+                            SELECT entry_id FROM student_card_entries WHERE subject_id = ?
+                        ))
+                        """,
+                        (subject_id, subject_id),
+                    ).fetchall()
+                    tombstoned = [dict(row) for row in rows]
+                for group in tombstoned:
+                    self.projections.tombstone(token=token, group_id=str(group["group_id"]))
             transaction = live_database.create_subject_delete_transaction(
                 operation_id=operation_id,
                 database_snapshot=snapshot,
@@ -1256,6 +1319,19 @@ class SupportRecordService:
         except Exception:
             if transaction is not None and transaction.exists():
                 live_database.recover_interrupted_operations()
+            if self.projections is not None:
+                for group in tombstoned:
+                    try:
+                        self.projections.upsert(
+                            token=token,
+                            source_kind=str(group["source_kind"]),
+                            source_id=str(group["source_id"]),
+                            occurrence_id=str(group["occurrence_id"] or "") or None,
+                            state=str(group["state"]),
+                            due_date=None if group["due_date"] is None else str(group["due_date"]),
+                        )
+                    except Exception:
+                        pass
             raise
 
     def _recover_pending_backup_deletions(self) -> None:
@@ -1355,6 +1431,27 @@ class SupportRecordService:
                         (subject_id,),
                     ).fetchall()
                 )
+                projection_groups = connection.execute(
+                    """
+                    SELECT group_id FROM sensitive_work_groups g
+                    WHERE (g.source_kind = 'attention_followup' AND g.source_id IN (
+                        SELECT attention_card_id FROM attention_cards WHERE subject_id = ?
+                    )) OR (g.source_kind = 'student_support' AND g.source_id IN (
+                        SELECT entry_id FROM student_card_entries WHERE subject_id = ?
+                    ))
+                    """,
+                    (subject_id, subject_id),
+                ).fetchall()
+                projection_group_ids = [str(row[0]) for row in projection_groups]
+                if projection_group_ids:
+                    placeholders = ",".join("?" for _ in projection_group_ids)
+                    object_ids.update(
+                        str(row[0])
+                        for row in connection.execute(
+                            f"SELECT envelope_object_id FROM sensitive_work_projection_outbox WHERE group_id IN ({placeholders})",
+                            projection_group_ids,
+                        ).fetchall()
+                    )
                 object_ids.update(
                     str(row[0])
                     for row in connection.execute(
@@ -1513,6 +1610,11 @@ class SupportRecordService:
                         (subject_id,),
                     ).fetchone()[0]
                 )
+                if projection_group_ids:
+                    connection.executemany(
+                        "DELETE FROM sensitive_work_groups WHERE group_id = ?",
+                        [(group_id,) for group_id in projection_group_ids],
+                    )
                 connection.execute(
                     "DELETE FROM student_subject_links WHERE subject_id = ?",
                     (subject_id,),

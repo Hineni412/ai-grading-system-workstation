@@ -223,6 +223,7 @@ def test_restore_is_previewed_then_replaces_and_locks(tmp_path: Path) -> None:
         token=token,
         preview_token=str(preview["preview_token"]),
         operation_id="restore-confirm-001",
+        confirmation_phrase=str(preview["confirmation_phrase"]),
     )
 
     assert result["locked"] is True

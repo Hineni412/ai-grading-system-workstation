@@ -24,6 +24,7 @@ class SubjectUpdateRequest(OperationRequest):
 class SubjectDeleteRequest(OperationRequest):
     confirmation_phrase: str
     backup_confirmation_phrase: str | None = None
+    preview_version: str | None = Field(default=None, min_length=64, max_length=64)
 
 
 class RecordFields(BaseModel):
@@ -73,6 +74,21 @@ class RecordStateRequest(OperationRequest):
 
 class AiDraftConfirmRequest(OperationRequest):
     confirmed_kind: str
+
+
+class SupportAIReviewPreviewRequest(BaseModel):
+    expected_revision: int = Field(ge=1)
+    teacher_supplement: str | None = Field(default=None, max_length=4000)
+
+
+class SupportAIReviewConfirmRequest(OperationRequest):
+    fingerprint: str = Field(min_length=16, max_length=256)
+
+
+class SupportAIReviewApplyRequest(OperationRequest):
+    model_operation_id: str = Field(min_length=8, max_length=128)
+    expected_revision: int = Field(ge=1)
+    teacher_result: dict[str, Any]
 
 
 class EvidenceLinkRequest(OperationRequest):
@@ -157,10 +173,15 @@ class AttentionResolveRequest(OperationRequest):
     review_at: str | None = None
 
 
+class AttentionDecisionRequest(AttentionResolveRequest):
+    source_version: str = Field(min_length=64, max_length=64)
+
+
 __all__ = [
     "AffairProjectionRequest",
     "AiDraftConfirmRequest",
     "AttentionCreateRequest",
+    "AttentionDecisionRequest",
     "AttentionResolveRequest",
     "EvidenceBatchRequest",
     "EvidenceLinkRequest",
@@ -176,6 +197,9 @@ __all__ = [
     "SubjectCreateRequest",
     "SubjectDeleteRequest",
     "SubjectUpdateRequest",
+    "SupportAIReviewApplyRequest",
+    "SupportAIReviewConfirmRequest",
+    "SupportAIReviewPreviewRequest",
     "SupportPlanCompleteRequest",
     "SupportPlanCreateRequest",
 ]
