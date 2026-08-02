@@ -285,6 +285,7 @@ def run_session_question_bank_sync_job(
                 link_service=link_service,
                 ai_service_factory=ai_service_factory,
                 taxonomy_governance=taxonomy_governance,
+                cancel_check=context.raise_if_cancelled,
             )
 
         result = _result(
@@ -607,12 +608,38 @@ def _adopt_deferred_analysis(
     link_service: SourceQuestionLinkService,
     ai_service_factory: Callable[[], Any],
     taxonomy_governance: Any,
+    cancel_check: Callable[[], None] | None = None,
 ) -> dict[str, object]:
     links = {
         str(item.get("source_question_id") or "").strip(): item
         for item in link_service.list_links(session_id)
         if str(item.get("status") or "") == "confirmed"
     }
+    return _adopt_deferred_analysis_with_links(
+        artifact=artifact,
+        session_id=session_id,
+        question_bank_db_path=question_bank_db_path,
+        data_root=data_root,
+        links=links,
+        ai_service_factory=ai_service_factory,
+        taxonomy_governance=taxonomy_governance,
+        cancel_check=cancel_check,
+    )
+
+
+def _adopt_deferred_analysis_with_links(
+    *,
+    artifact: DeferredAnalysisArtifact,
+    session_id: int,
+    question_bank_db_path: Path,
+    data_root: Path,
+    links: dict[str, dict[str, Any]],
+    ai_service_factory: Callable[[], Any],
+    taxonomy_governance: Any,
+    cancel_check: Callable[[], None] | None = None,
+) -> dict[str, object]:
+    if cancel_check is not None:
+        cancel_check()
     linked_items = [
         (item, links.get(item.source_question_ref))
         for item in artifact.bundle.items
@@ -679,6 +706,8 @@ def _adopt_deferred_analysis(
     adoption_results: list[dict[str, Any]] = []
     missing_links = 0
     for item, raw_link in linked_items:
+        if cancel_check is not None:
+            cancel_check()
         if not isinstance(raw_link, dict):
             missing_links += 1
             continue
@@ -812,6 +841,120 @@ def _adopt_deferred_analysis(
         "mapping_baseline": baseline_result,
         "adoption_results": adoption_results,
     }
+
+
+def run_deferred_question_bank_intake(
+    *,
+    context: JobContext,
+    session_id: int,
+    artifact: DeferredAnalysisArtifact,
+    source_filename: str,
+    source_content: bytes,
+    question_bank_db_path: Path,
+    data_root: Path,
+    ai_service_factory: Callable[[], Any],
+    taxonomy_governance: Any,
+    question_import_runner: QuestionImportRunner = run_question_import_job,
+) -> dict[str, object]:
+    """Import and adopt completed analysis before score publication, without grading links."""
+
+    if not artifact.bundle.source_fingerprints:
+        raise ValueError("deferred question analysis has no source questions")
+    clean_filename = Path(str(source_filename or "")).name
+    if Path(clean_filename).suffix.casefold() not in {".docx", ".pdf"}:
+        raise ValueError("question-bank intake source type is unsupported")
+    content = bytes(source_content)
+    if not content:
+        raise ValueError("question-bank intake source is empty")
+    volume = curriculum_volume(volume_id=artifact.curriculum_volume_id)
+    if volume is None:
+        raise ValueError("question-bank intake requires a valid curriculum volume")
+
+    write_service = QuestionBankWriteService(
+        Path(question_bank_db_path),
+        data_root=Path(data_root),
+    )
+    upload = write_service.stage_upload(filename=clean_filename, content=content)
+    request = write_service.create_import_request(upload_id=upload.upload_id)
+    import_context = _ChildJobContext(
+        parent=context,
+        payload={
+            "request_id": request.request_id,
+            "paper_defaults": {
+                "year": str(datetime.now().astimezone().year),
+                "exam_type": "阶段练习",
+                "grade": str(volume["grade"]),
+                "semester": str(volume["semester"]),
+                "textbook_version": str(volume["textbook_version"]),
+            },
+        },
+        progress_start=0.91,
+        progress_end=0.95,
+        stage="question_bank_intake",
+    )
+    import_result = question_import_runner(
+        context=import_context,
+        question_bank_db_path=Path(question_bank_db_path),
+        data_root=Path(data_root),
+        write_service=write_service,
+    )
+    context.raise_if_cancelled()
+    question_ids = _question_ids(
+        import_result.get("successful_question_ids"),
+        allow_empty=True,
+    )
+    candidates = _bank_questions(Path(question_bank_db_path), question_ids)
+    matcher = SourceQuestionLinkService(Path(question_bank_db_path))
+    match_result = matcher.match_imported_questions(
+        source_questions=[
+            {"question_id": item.source_question_ref}
+            for item in artifact.bundle.items
+        ],
+        imported_bank_questions=candidates,
+    )
+    raw_matches = match_result.get("matches")
+    matches = {
+        str(source_ref): {"bank_question_id": int(bank_question_id)}
+        for source_ref, bank_question_id in (
+            raw_matches.items() if isinstance(raw_matches, dict) else []
+        )
+    }
+    tagging_result = _adopt_deferred_analysis_with_links(
+        artifact=artifact,
+        session_id=session_id,
+        question_bank_db_path=Path(question_bank_db_path),
+        data_root=Path(data_root),
+        links=matches,
+        ai_service_factory=ai_service_factory,
+        taxonomy_governance=taxonomy_governance,
+        cancel_check=context.raise_if_cancelled,
+    )
+    result = _result(
+        session_id=session_id,
+        mode="sync",
+        import_result=import_result,
+        tagging_result=tagging_result,
+        link_result=match_result,
+    )
+    result["linked_count"] = 0
+    result["provisional_match_count"] = int(match_result.get("confirmed") or 0)
+    result["config_link_pending"] = True
+    analysis_incomplete_count = max(
+        0,
+        len(artifact.bundle.source_fingerprints) - len(artifact.bundle.items),
+    )
+    result["analysis_incomplete_count"] = analysis_incomplete_count
+    if analysis_incomplete_count:
+        result["failed_count"] = max(
+            int(result.get("failed_count") or 0),
+            analysis_incomplete_count,
+        )
+        result["outcome"] = (
+            "partial"
+            if int(result.get("imported_count") or 0) > 0
+            else "failed"
+        )
+    return result
 
 
 def _transition_owned_sync_state(

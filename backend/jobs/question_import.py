@@ -32,12 +32,18 @@ def run_question_import_job(
     importer: ImportRunner = import_scanned_papers,
 ) -> dict[str, object]:
     request_id = str(context.payload.get("request_id") or "").strip().casefold()
-    lock_key = (
-        f"question-import:{Path(question_bank_db_path).resolve(strict=False)}:"
-        f"{request_id}"
-    )
+    context.raise_if_cancelled()
+    try:
+        resource = write_service.load_import_resource(request_id)
+    except QuestionImportUploadNotFound:
+        raise ValueError("question import request is unavailable") from None
+    database_identity = Path(question_bank_db_path).resolve(strict=False)
+    lock_keys = [
+        f"question-import:{database_identity}:{request_id}",
+        f"question-import-content:{database_identity}:{resource.sha256}",
+    ]
     with keyed_execution_locks(
-        [lock_key],
+        lock_keys,
         cancel_check=context.raise_if_cancelled,
     ):
         return _run_question_import_job_locked(
@@ -93,7 +99,15 @@ def _run_question_import_job_locked(
         for item in result.files
         if item.status != "failed" and str(item.source_file or "").strip()
     ]
-    question_ids = _active_question_ids(Path(question_bank_db_path), successful_sources)
+    question_ids = sorted(
+        set(_active_question_ids(Path(question_bank_db_path), successful_sources))
+        | set(
+            _active_question_ids_by_content_fingerprint(
+                Path(question_bank_db_path),
+                resource.sha256,
+            )
+        )
+    )
     context.report(0.9, "question_import", "indexing")
     failed_count = int(result.failed_files)
     outcome = "complete" if failed_count == 0 else (
@@ -127,6 +141,29 @@ def _active_question_ids(db_path: Path, source_files: list[str]) -> list[int]:
             ORDER BY id
             """,
             clean_sources,
+        ).fetchall()
+    return [int(row["id"]) for row in rows]
+
+
+def _active_question_ids_by_content_fingerprint(
+    db_path: Path,
+    content_fingerprint: str,
+) -> list[int]:
+    clean_fingerprint = str(content_fingerprint or "").strip().casefold()
+    if len(clean_fingerprint) != 64 or not db_path.exists():
+        return []
+    with connect(db_path) as conn:
+        rows = conn.execute(
+            """
+            SELECT questions.id
+            FROM questions
+            JOIN papers ON papers.id = questions.paper_id
+            WHERE COALESCE(questions.is_deleted, 0) = 0
+              AND COALESCE(papers.import_status, '') <> 'deleted'
+              AND papers.content_fingerprint = ?
+            ORDER BY questions.id
+            """,
+            (clean_fingerprint,),
         ).fetchall()
     return [int(row["id"]) for row in rows]
 

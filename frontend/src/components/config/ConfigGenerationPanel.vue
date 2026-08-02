@@ -207,6 +207,19 @@ const questionBankSyncState = computed(() => {
 })
 const questionBankSyncCopy = computed(() => {
   if (!questionBankSyncRequested.value) return ''
+  if (questionBankSyncState.value === 'ready_for_config_link') {
+    const imported = safeCount(job.value?.result.question_bank_imported_count)
+    const tagged = safeCount(job.value?.result.question_bank_tagged_count)
+    return `试卷已先收入题库，共入库 ${imported} 题、已有完整标签 ${tagged} 题；统一赋分修正成功后只补齐评分配置关联，不会重复建卷或重复打标签。`
+  }
+  if (questionBankSyncState.value === 'partial') {
+    const imported = safeCount(job.value?.result.question_bank_imported_count)
+    const tagged = safeCount(job.value?.result.question_bank_tagged_count)
+    return `试卷已先收入题库，当前入库 ${imported} 题、已有完整标签 ${tagged} 题；未完成题可稍后继续处理，统一赋分不影响这些已保存结果。`
+  }
+  if (questionBankSyncState.value === 'intake_failed') {
+    return '题目分析结果已保存在本机，但试卷暂时未能写入题库；重新进行统一赋分时会按同一来源继续入库，不会重新分析题目。'
+  }
   if (questionBankSyncState.value === 'queued') {
     return '评分依据已发布，题库入库与 AI 打标签任务已经排队。'
   }

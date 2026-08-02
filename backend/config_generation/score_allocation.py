@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import copy
 from typing import Any
 
-from score_policy import MAX_QUESTION_SCORE
+from score_policy import MAX_QUESTION_SCORE, enforce_integer_scores_by_type
 
 from .contract import is_simple_objective_question
 
@@ -113,6 +114,42 @@ def _validate_exact_score_allocation_payload(
     score_data: dict[str, Any],
     structure_summary: list[dict[str, Any]],
 ) -> None:
+    rows = _validated_score_allocation_rows(score_data, structure_summary)
+    total_score = 0
+    objective_scores: dict[str, int] = {}
+    for expected, actual in rows:
+        question_score = _strict_positive_score(actual.get("max_score"))
+        total_score += question_score
+        question_type = str(expected.get("question_type") or "").strip()
+        if is_simple_objective_question(expected):
+            previous = objective_scores.setdefault(question_type, question_score)
+            if previous != question_score:
+                raise ValueError("AI 统一配分未保持同类型客观题同分。")
+
+        part_total = 0
+        for actual_part in actual["parts"]:
+            part_score = _strict_positive_score(actual_part.get("part_score"))
+            part_total += part_score
+            step_total = sum(
+                _strict_positive_score(item.get("step_score"))
+                for item in actual_part["steps"]
+            )
+            if step_total != part_score:
+                raise ValueError("AI 统一配分的步骤分之和不等于分问分。")
+        if part_total != question_score:
+            raise ValueError("AI 统一配分的分问分之和不等于题目分。")
+    if total_score != 100:
+        raise ValueError("AI 统一配分总分不是 100。")
+
+
+def _validated_score_allocation_rows(
+    score_data: dict[str, Any],
+    structure_summary: list[dict[str, Any]],
+    *,
+    enforce_question_cap: bool = True,
+) -> list[tuple[dict[str, Any], dict[str, Any]]]:
+    """Validate identities and positive integer score fields without policy totals."""
+
     if not isinstance(score_data, dict):
         raise ValueError("AI 统一配分结果顶层不是 JSON 对象。")
     raw_scores = score_data.get("question_scores")
@@ -126,20 +163,13 @@ def _validate_exact_score_allocation_payload(
     if actual_ids != expected_ids or len(set(actual_ids)) != len(actual_ids):
         raise ValueError("AI 统一配分的题号缺失、重复、越界或顺序不一致。")
 
-    total_score = 0
-    objective_scores: dict[str, int] = {}
+    rows: list[tuple[dict[str, Any], dict[str, Any]]] = []
     for expected, actual in zip(structure_summary, raw_scores):
         if not isinstance(actual, dict):
             raise ValueError("AI 统一配分的题目结构无效。")
         question_score = _strict_positive_score(actual.get("max_score"))
-        if question_score > MAX_QUESTION_SCORE:
+        if enforce_question_cap and question_score > MAX_QUESTION_SCORE:
             raise ValueError("AI 统一配分存在超过单题上限的分值。")
-        total_score += question_score
-        question_type = str(expected.get("question_type") or "").strip()
-        if is_simple_objective_question(expected):
-            previous = objective_scores.setdefault(question_type, question_score)
-            if previous != question_score:
-                raise ValueError("AI 统一配分未保持同类型客观题同分。")
 
         expected_parts = expected.get("parts")
         actual_parts = actual.get("parts")
@@ -156,12 +186,10 @@ def _validate_exact_score_allocation_payload(
         if actual_part_ids != expected_part_ids:
             raise ValueError("AI 统一配分改变了分问结构。")
 
-        part_total = 0
         for expected_part, actual_part in zip(expected_parts, actual_parts):
             if not isinstance(expected_part, dict) or not isinstance(actual_part, dict):
                 raise ValueError("AI 统一配分的分问结构无效。")
-            part_score = _strict_positive_score(actual_part.get("part_score"))
-            part_total += part_score
+            _strict_positive_score(actual_part.get("part_score"))
             expected_steps = expected_part.get("steps")
             actual_steps = actual_part.get("steps")
             if not isinstance(expected_steps, list) or not isinstance(actual_steps, list):
@@ -176,17 +204,74 @@ def _validate_exact_score_allocation_payload(
             ]
             if actual_step_ids != expected_step_ids:
                 raise ValueError("AI 统一配分改变了评分步骤结构。")
-            step_total = sum(
+            for item in actual_steps:
+                if not isinstance(item, dict):
+                    raise ValueError("AI 统一配分的步骤结构无效。")
                 _strict_positive_score(item.get("step_score"))
-                for item in actual_steps
-                if isinstance(item, dict)
-            )
-            if step_total != part_score:
-                raise ValueError("AI 统一配分的步骤分之和不等于分问分。")
-        if part_total != question_score:
-            raise ValueError("AI 统一配分的分问分之和不等于题目分。")
-    if total_score != 100:
-        raise ValueError("AI 统一配分总分不是 100。")
+        rows.append((expected, actual))
+    return rows
+
+
+def normalize_score_allocation_payload(
+    score_data: dict[str, Any],
+    structure_summary: list[dict[str, Any]],
+    *,
+    target_total: int = 100,
+) -> list[str]:
+    """Safely converge score values after structure identity has been proven."""
+
+    working = copy.deepcopy(score_data)
+    rows = _validated_score_allocation_rows(
+        working,
+        structure_summary,
+        enforce_question_cap=False,
+    )
+    questions: list[dict[str, Any]] = []
+    before: dict[str, int] = {}
+    for expected, actual in rows:
+        question_id = str(expected.get("question_id") or "")
+        before[question_id] = _strict_positive_score(actual.get("max_score"))
+        questions.append(
+            {
+                "question_id": question_id,
+                "question_type": str(expected.get("question_type") or ""),
+                "max_score": actual["max_score"],
+                "parts": copy.deepcopy(actual["parts"]),
+            }
+        )
+
+    enforce_integer_scores_by_type(
+        questions,
+        target_total=int(target_total),
+        max_question_score=MAX_QUESTION_SCORE,
+    )
+    for (_expected, actual), normalized in zip(rows, questions, strict=True):
+        actual["max_score"] = int(normalized["max_score"])
+        for actual_part, normalized_part in zip(
+            actual["parts"],
+            normalized["parts"],
+            strict=True,
+        ):
+            actual_part["part_score"] = int(normalized_part["part_score"])
+            for actual_step, normalized_step in zip(
+                actual_part["steps"],
+                normalized_part["steps"],
+                strict=True,
+            ):
+                actual_step["step_score"] = int(normalized_step["step_score"])
+
+    _validate_exact_score_allocation_payload(working, structure_summary)
+    score_data.clear()
+    score_data.update(working)
+    repairs = []
+    for question in questions:
+        question_id = str(question.get("question_id") or "")
+        previous = before[question_id]
+        current = int(question["max_score"])
+        if previous != current:
+            repairs.append(f"{question_id}: {previous}→{current}")
+    return repairs
+
 
 def _strict_positive_score(value: Any) -> int:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
@@ -195,6 +280,7 @@ def _strict_positive_score(value: Any) -> int:
     if float(value) != float(score) or score <= 0:
         raise ValueError("AI 统一配分包含非正整数分值。")
     return score
+
 
 def _score_allocation_structure_summary(
     payload: dict[str, Any],
@@ -324,6 +410,7 @@ SESSION_MANAGER_COMPAT_EXPORTS = (
     "_apply_score_allocation",
     "collect_score_consistency_issues",
     "_score_allocation_structure_summary",
+    "_normalize_score_allocation_payload",
     "_strict_positive_score",
     "_validate_exact_score_allocation_payload",
 )
@@ -331,10 +418,12 @@ SESSION_MANAGER_COMPAT_EXPORTS = (
 apply_score_allocation = _apply_score_allocation
 score_allocation_structure_summary = _score_allocation_structure_summary
 validate_score_allocation_payload = _validate_exact_score_allocation_payload
+_normalize_score_allocation_payload = normalize_score_allocation_payload
 
 __all__ = [
     "apply_score_allocation",
     "collect_score_consistency_issues",
+    "normalize_score_allocation_payload",
     "score_allocation_structure_summary",
     "validate_score_allocation_payload",
 ]
