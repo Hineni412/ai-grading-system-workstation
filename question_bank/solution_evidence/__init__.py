@@ -1,5 +1,6 @@
 from question_bank.solution_evidence.contracts import (
     CoreResolution,
+    EvidenceGranularityError,
     FineTermLink,
     QuestionPart,
     QuestionSolutionEvidence,
@@ -19,6 +20,7 @@ from question_bank.solution_evidence.baseline import (
 
 __all__ = [
     "CoreResolution",
+    "EvidenceGranularityError",
     "FineTermCoreMappingRepository",
     "FineTermBaselineEntry",
     "FineTermMappingBaseline",

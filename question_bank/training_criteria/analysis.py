@@ -1085,6 +1085,7 @@ def rubric_skeleton_from_solution_evidence(
                         "core_goal": point.target,
                         "required_elements": [
                             point.justification,
+                            point.answer_anchor,
                             point.observable_evidence,
                         ],
                         "depends_on": list(point.depends_on),
@@ -1125,6 +1126,7 @@ def answer_key_skeleton_from_solution_evidence(
                         "step_index": point.step_index,
                         "target": point.target,
                         "justification": point.justification,
+                        "answer_anchor": point.answer_anchor,
                         "observable_evidence": point.observable_evidence,
                         "depends_on": list(point.depends_on),
                         "equivalent_rules": list(point.equivalent_rules),
@@ -1332,6 +1334,7 @@ def _solution_evidence_schema() -> dict[str, Any]:
         "step_index": {"type": "integer", "minimum": 1},
         "target": non_empty_text,
         "justification": non_empty_text,
+        "answer_anchor": non_empty_text,
         "observable_evidence": non_empty_text,
         "depends_on": {
             "type": "array",

@@ -655,6 +655,7 @@ def test_combined_schema_is_strict_and_tag_only_v1_adapter_stays_separate() -> N
     assert point["properties"]["target"]["minLength"] == 1
     assert point["properties"]["step_index"]["minimum"] == 1
     assert point["properties"]["justification"]["minLength"] == 1
+    assert point["properties"]["answer_anchor"]["minLength"] == 1
     assert point["properties"]["depends_on"]["items"]["pattern"] == expected_identifier
     assert point["properties"]["observable_evidence"]["minLength"] == 1
     assert evidence["properties"]["schema_version"]["enum"] == [

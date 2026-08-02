@@ -21,6 +21,7 @@ from question_bank.services.question_service import QuestionService
 from question_bank.taxonomy.governance import TaxonomyGovernance
 from question_bank.solution_evidence import (
     CoreResolution,
+    EvidenceGranularityError,
     FineTermCoreMappingRepository,
     QuestionSolutionEvidence,
     SolutionEvidenceProjectionWriter,
@@ -853,7 +854,7 @@ def _v2_process_evidence_payload(
     if atomic:
         part["full_answer"] = "由 x+1=2 移项得到 x=1。"
         milestones = [
-            ("step-1", "得到 x=1", "依据等式性质移项", "写出 x=1", []),
+            ("step-1", "得到 x=1", "依据等式性质移项", "x=1", "写出 x=1", []),
         ]
     elif split_steps:
         part["full_answer"] = (
@@ -861,9 +862,9 @@ def _v2_process_evidence_payload(
             "再由AD=AC得到∠ACD=90°-x/2；最后推出y=x/2。"
         )
         milestones = [
-            ("step-1", "得到∠B=90°-x", "直角三角形内角和", "写出∠B=90°-x", []),
-            ("step-2", "得到∠ACD=90°-x/2", "AD=AC及等腰三角形性质", "写出∠ACD=90°-x/2", ["step-1"]),
-            ("step-3", "推出y=x/2", "角度关系代入化简", "写出y=x/2", ["step-2"]),
+            ("step-1", "得到∠B=90°-x", "直角三角形内角和", "∠B=90°-x", "写出∠B=90°-x", []),
+            ("step-2", "得到∠ACD=90°-x/2", "AD=AC及等腰三角形性质", "∠ACD=90°-x/2", "写出∠ACD=90°-x/2", ["step-1"]),
+            ("step-3", "推出y=x/2", "角度关系代入化简", "y=x/2", "写出y=x/2", ["step-2"]),
         ]
     else:
         part["full_answer"] = (
@@ -875,6 +876,7 @@ def _v2_process_evidence_payload(
                 "step-1",
                 "完成全部角度推导并推出y=x/2",
                 "综合使用直角三角形内角和与等腰三角形性质",
+                "y=x/2",
                 "写出从∠B到y=x/2的完整推导",
                 [],
             ),
@@ -885,6 +887,7 @@ def _v2_process_evidence_payload(
             "step_index": index,
             "target": target,
             "justification": justification,
+            "answer_anchor": answer_anchor,
             "observable_evidence": observable,
             "depends_on": depends_on,
             "fine_term_links": [],
@@ -895,6 +898,7 @@ def _v2_process_evidence_payload(
             point_id,
             target,
             justification,
+            answer_anchor,
             observable,
             depends_on,
         ) in enumerate(milestones, start=1)
@@ -1031,6 +1035,89 @@ def test_v1_evidence_checkpoint_remains_readable_without_v2_fields() -> None:
     assert evidence.schema_version == "question-solution-evidence-v1"
     assert "step_index" not in point
     assert "depends_on" not in point
+
+
+def test_v2_rejects_two_points_when_one_still_merges_explicit_stages() -> None:
+    question = _question(1)
+    payload = _v2_process_evidence_payload(1, split_steps=True)
+    part = payload["parts"][0]
+    part["evidence_points"] = [
+        {
+            **part["evidence_points"][0],
+            "target": "先求∠B，再求∠ACD",
+            "observable_evidence": "先写∠B，再写∠ACD",
+            "answer_anchor": "∠B=90°-x",
+        },
+        {
+            **part["evidence_points"][2],
+            "step_index": 2,
+            "depends_on": ["step-1"],
+        },
+    ]
+
+    with pytest.raises(EvidenceGranularityError):
+        QuestionSolutionEvidence.from_model_dict(
+            payload,
+            question_id=1,
+            source_content_hash=(
+                __import__(
+                    "question_bank.training_criteria.analysis",
+                    fromlist=["solution_evidence_source_content_hash"],
+                ).solution_evidence_source_content_hash(question)
+            ),
+            resolver=Resolver(),
+        )
+
+
+def test_v2_rejects_pure_chinese_explicit_stages_and_generic_anchors() -> None:
+    question = _question(1)
+    payload = _v2_process_evidence_payload(1, split_steps=False, atomic=True)
+    part = payload["parts"][0]
+    part["full_answer"] = "先作辅助线；再证明两个图形全等；最后推出线段相等。"
+    point = part["evidence_points"][0]
+    point.update(
+        {
+            "target": "完成本题推导",
+            "justification": "依据相关数学知识",
+            "answer_anchor": "完成本题推导",
+            "observable_evidence": "写出必要过程",
+        }
+    )
+
+    with pytest.raises(ValueError, match="answer_anchor"):
+        QuestionSolutionEvidence.from_model_dict(
+            payload,
+            question_id=1,
+            source_content_hash=(
+                __import__(
+                    "question_bank.training_criteria.analysis",
+                    fromlist=["solution_evidence_source_content_hash"],
+                ).solution_evidence_source_content_hash(question)
+            ),
+            resolver=Resolver(),
+        )
+
+
+def test_v2_keeps_a_true_atomic_step_with_two_math_sentences() -> None:
+    question = _question(1)
+    payload = _v2_process_evidence_payload(1, split_steps=False, atomic=True)
+    part = payload["parts"][0]
+    part["full_answer"] = "由 x+1=2。解得 x=1。"
+    part["evidence_points"][0]["answer_anchor"] = "x=1"
+
+    evidence = QuestionSolutionEvidence.from_model_dict(
+        payload,
+        question_id=1,
+        source_content_hash=(
+            __import__(
+                "question_bank.training_criteria.analysis",
+                fromlist=["solution_evidence_source_content_hash"],
+            ).solution_evidence_source_content_hash(question)
+        ),
+        resolver=Resolver(),
+    )
+
+    assert len(evidence.parts[0].evidence_points) == 1
 
 
 def test_in_memory_empty_shortlist_uses_full_vocabulary_without_blocking(

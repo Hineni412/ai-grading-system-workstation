@@ -2600,6 +2600,7 @@ def _deferred_combined_item(question_id: int) -> dict[str, Any]:
                             "step_index": 1,
                             "target": "完成等价变形",
                             "justification": "依据等式性质移项并化简",
+                            "answer_anchor": "移项并化简",
                             "observable_evidence": "写出正确的移项和化简过程",
                             "depends_on": [],
                             "fine_term_links": [
@@ -2617,6 +2618,7 @@ def _deferred_combined_item(question_id: int) -> dict[str, Any]:
                             "step_index": 2,
                             "target": "得出方程的解",
                             "justification": "由前一步的等价方程求解未知数",
+                            "answer_anchor": "x=1",
                             "observable_evidence": "写出 x=1 并作为最终结论",
                             "depends_on": [f"step-{question_id}"],
                             "fine_term_links": [
@@ -3033,6 +3035,7 @@ def test_evidence_granularity_retry_reanalyzes_before_first_score_allocation(
                         "step_index": 1,
                         "target": "完成全部角度推导并推出y=x/2",
                         "justification": "综合使用内角和与等腰三角形性质",
+                        "answer_anchor": "y=x/2",
                         "observable_evidence": "写出完整推导",
                         "depends_on": [],
                         "fine_term_links": [],

@@ -494,6 +494,8 @@ def _combined_prompt(
         "A genuinely atomic answer may contain one evidence point. For every point, "
         "step_index must start at 1 and follow array order, justification must name "
         "the condition, theorem, property, or operation supporting that step, and "
+        "answer_anchor must copy a unique, concrete mathematical result or operation "
+        "verbatim from full_answer; anchors must occur in evidence-point order. "
         "depends_on may reference only earlier evidence_point_id values in the same "
         "part. Q11-style example: derive angle B, then use an isosceles condition "
         "to derive angle ACD, then conclude y=x/2; these are three evidence points, "
