@@ -2874,28 +2874,14 @@ def test_structural_evidence_retry_reanalyzes_before_first_score_allocation(
         sync_to_question_bank=True,
     )
 
-    class GranularityRetryProtocol(_DeferredProtocol):
+    class IdentityRetryProtocol(_DeferredProtocol):
         def responses(self, **kwargs: Any) -> Any:
             self.calls.append(kwargs)
             prompt = kwargs["kwargs"]["input"][1]["content"][0]["text"]
             question_id = int(json.loads(prompt)["questions"][0]["question_id"])
             item = _deferred_combined_item(question_id)
             if len(self.calls) == 1:
-                part = item["solution_evidence"]["parts"][0]
-                part["evidence_points"] = [
-                    {
-                        "evidence_point_id": f"step-{question_id}",
-                        "step_index": 2,
-                        "target": "完成全部角度推导并推出y=x/2",
-                        "justification": "综合使用内角和与等腰三角形性质",
-                        "answer_anchor": "y=x/2",
-                        "observable_evidence": "写出完整推导",
-                        "depends_on": [],
-                        "fine_term_links": [],
-                        "equivalent_rules": [],
-                        "counterexamples": [],
-                    }
-                ]
+                item["solution_evidence"]["question_id"] = question_id + 100
             return SimpleNamespace(
                 output_text=json.dumps({"results": [item]}, ensure_ascii=False),
                 usage={
@@ -2905,7 +2891,7 @@ def test_structural_evidence_retry_reanalyzes_before_first_score_allocation(
                 },
             )
 
-    protocol = GranularityRetryProtocol()
+    protocol = IdentityRetryProtocol()
     allocation_calls: list[dict[str, Any]] = []
 
     def allocate_after_valid_analysis(
@@ -2963,7 +2949,7 @@ def test_structural_evidence_retry_reanalyzes_before_first_score_allocation(
 
     assert first["failed_question_ids"] == ["Q1"]
     assert first["failed_batches"][0]["category"] == "model_output_contract"
-    assert "step_index" in first["failed_batches"][0]["error"]
+    assert "another question" in first["failed_batches"][0]["error"]
     assert first["question_bank_sync_state"] == "waiting_for_config"
     assert len(protocol.calls) == 1
     assert allocation_calls == []
@@ -2997,11 +2983,10 @@ def test_structural_evidence_retry_reanalyzes_before_first_score_allocation(
         protocol.calls[1]["kwargs"]["input"][1]["content"][0]["text"]
     )
     repair_context = retry_prompt["questions"][0]["repair_context"]
-    assert "step_index" in repair_context["validation_error"]
+    assert "another question" in repair_context["validation_error"]
     assert (
-        repair_context["previous_result"]["solution_evidence"]["parts"][0]
-        ["evidence_points"][0]["step_index"]
-        == 2
+        repair_context["previous_result"]["solution_evidence"]["question_id"]
+        == 101
     )
     assert len(allocation_calls) == 1
     assert retried["failed_question_ids"] == []

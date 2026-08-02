@@ -24,6 +24,9 @@ _BANNED_SCORE_KEYS = frozenset(
         "full_score",
     }
 )
+_BANNED_SCORE_TOKENS = frozenset(
+    re.sub(r"[^a-z0-9]+", "", key) for key in _BANNED_SCORE_KEYS
+)
 class FineTermResolver(Protocol):
     def resolve(self, fine_term_id: str) -> "CoreResolution": ...
 
@@ -330,7 +333,6 @@ class QuestionPart:
         )
         if schema_version == "question-solution-evidence-v2":
             _validate_v2_step_sequence(result)
-            _validate_v2_answer_anchors(result)
         return result
 
     def __post_init__(self) -> None:
@@ -640,27 +642,6 @@ def _validate_v2_step_sequence(part: QuestionPart) -> None:
         prior_ids.add(point.evidence_point_id)
 
 
-def _validate_v2_answer_anchors(part: QuestionPart) -> None:
-    source = (
-        part.canonical_answer
-        if part.response_mode == "exact_objective"
-        else part.full_answer
-    )
-    cursor = 0
-    seen: set[str] = set()
-    for point in part.evidence_points:
-        anchor = point.answer_anchor.strip()
-        if anchor in seen:
-            raise ValueError("answer_anchor must be unique within a question part")
-        position = source.find(anchor, cursor)
-        if position < 0:
-            raise ValueError(
-                "answer_anchor must occur in its answer source in evidence point order"
-            )
-        seen.add(anchor)
-        cursor = position + len(anchor)
-
-
 def validate_evidence_fine_terms(
     evidence: QuestionSolutionEvidence,
     taxonomy_contract: Mapping[str, Any],
@@ -754,7 +735,8 @@ def _reject_score_fields(value: object, *, path: str = "root") -> None:
     if isinstance(value, Mapping):
         for raw_key, child in value.items():
             key = str(raw_key).strip().casefold()
-            if key in _BANNED_SCORE_KEYS:
+            token = re.sub(r"[^a-z0-9]+", "", key)
+            if key in _BANNED_SCORE_KEYS or token in _BANNED_SCORE_TOKENS:
                 raise ValueError(f"score field is forbidden at {path}.{key}")
             _reject_score_fields(child, path=f"{path}.{key}")
     elif isinstance(value, (list, tuple)):

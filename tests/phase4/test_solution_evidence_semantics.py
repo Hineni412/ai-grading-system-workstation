@@ -190,7 +190,7 @@ def _combined_payload(question_id: int, *, invented_term: bool = False) -> dict[
     }
 
 
-def _cross_part_dependency_payload(
+def _repairable_identity_mismatch_payload(
     question_id: int,
     *,
     repaired: bool = False,
@@ -198,7 +198,7 @@ def _cross_part_dependency_payload(
     payload = _combined_payload(question_id)
     payload["results"][0]["solution_evidence"] = {
         "schema_version": "question-solution-evidence-v2",
-        "question_id": question_id,
+        "question_id": question_id if repaired else question_id + 100,
         "parts": [
             {
                 "part_id": "part-1",
@@ -756,6 +756,9 @@ def test_in_memory_failures_keep_safe_validation_stage_for_retry_ui() -> None:
     first_payload["results"][0]["solution_evidence"]["parts"][0][
         "evidence_points"
     ][0]["target"] = ""
+    first_payload["results"][0]["solution_evidence"]["parts"][0][
+        "evidence_points"
+    ][0]["observable_evidence"] = ""
     sources = (
         ConfigQuestionAnalysisSource(
             "Q1",
@@ -806,7 +809,7 @@ def test_teacher_retry_carries_rejected_result_and_exact_validation_error() -> N
         "Q11",
         _question(11, source_ref="Q11"),
     )
-    rejected = _cross_part_dependency_payload(11)
+    rejected = _repairable_identity_mismatch_payload(11)
     initial = InMemoryCombinedQuestionAnalysisModule(
         gateway=QueueGateway([rejected]),
         resolver=Resolver(),
@@ -819,9 +822,7 @@ def test_teacher_retry_carries_rejected_result_and_exact_validation_error() -> N
     assert initial.status == "failed"
     failure = initial.failures[0]
     assert failure.rejected_result == rejected["results"][0]
-    assert "part-2" in failure.validation_error
-    assert "part-2-step-1" in failure.validation_error
-    assert "part-1-step-1" in failure.validation_error
+    assert "another question" in failure.validation_error
 
     restored = DeferredCombinedAnalysisBundle.from_dict(
         initial.to_dict(),
@@ -830,7 +831,9 @@ def test_teacher_retry_carries_rejected_result_and_exact_validation_error() -> N
 
     class CapturingRepairGateway(QueueGateway):
         def __init__(self) -> None:
-            super().__init__([_cross_part_dependency_payload(11, repaired=True)])
+            super().__init__(
+                [_repairable_identity_mismatch_payload(11, repaired=True)]
+            )
             self.repair_contexts: list[Mapping[str, Any]] = []
 
         def analyze(self, batch, **kwargs):
@@ -862,8 +865,7 @@ def test_teacher_retry_carries_rejected_result_and_exact_validation_error() -> N
 
     draft = _deferred_analysis_draft(initial, exam_title="定向修复测试")
     display_error = draft["meta"]["failed_batches"][0]["error"]
-    assert "part-2" in display_error
-    assert "part-1-step-1" in display_error
+    assert "another question" in display_error
 
 
 def test_legacy_v3_failure_retries_without_unavailable_repair_context() -> None:
@@ -872,7 +874,7 @@ def test_legacy_v3_failure_retries_without_unavailable_repair_context() -> None:
         _question(11, source_ref="Q11"),
     )
     initial = InMemoryCombinedQuestionAnalysisModule(
-        gateway=QueueGateway([_cross_part_dependency_payload(11)]),
+        gateway=QueueGateway([_repairable_identity_mismatch_payload(11)]),
         resolver=Resolver(),
     ).analyze(
         operation_id="config-source-analysis:legacy-retry",
@@ -893,7 +895,9 @@ def test_legacy_v3_failure_retries_without_unavailable_repair_context() -> None:
 
     class LegacyRetryGateway(QueueGateway):
         def __init__(self) -> None:
-            super().__init__([_cross_part_dependency_payload(11, repaired=True)])
+            super().__init__(
+                [_repairable_identity_mismatch_payload(11, repaired=True)]
+            )
             self.repair_contexts: list[Mapping[str, Any]] = []
 
         def analyze(self, batch, **kwargs):
@@ -920,7 +924,7 @@ def test_targeted_repair_context_survives_uncertain_retry_and_restart() -> None:
         "Q11",
         _question(11, source_ref="Q11"),
     )
-    rejected = _cross_part_dependency_payload(11)
+    rejected = _repairable_identity_mismatch_payload(11)
     initial = InMemoryCombinedQuestionAnalysisModule(
         gateway=QueueGateway([rejected]),
         resolver=Resolver(),
@@ -951,7 +955,9 @@ def test_targeted_repair_context_survives_uncertain_retry_and_restart() -> None:
 
     class ConfirmedRepairGateway(QueueGateway):
         def __init__(self) -> None:
-            super().__init__([_cross_part_dependency_payload(11, repaired=True)])
+            super().__init__(
+                [_repairable_identity_mismatch_payload(11, repaired=True)]
+            )
             self.repair_contexts: list[Mapping[str, Any]] = []
 
         def analyze(self, batch, **kwargs):
@@ -986,7 +992,7 @@ def test_oversized_rejected_result_degrades_to_exact_error_only() -> None:
         "Q11",
         _question(11, source_ref="Q11"),
     )
-    oversized = _cross_part_dependency_payload(11)
+    oversized = _repairable_identity_mismatch_payload(11)
     oversized["results"][0]["solution_evidence"]["rationale"] = "证" * 55_000
     initial = InMemoryCombinedQuestionAnalysisModule(
         gateway=QueueGateway([oversized]),
@@ -999,7 +1005,7 @@ def test_oversized_rejected_result_degrades_to_exact_error_only() -> None:
 
     assert initial.status == "failed"
     assert initial.failures[0].rejected_result is None
-    assert "part-2" in initial.failures[0].validation_error
+    assert "another question" in initial.failures[0].validation_error
     restored = DeferredCombinedAnalysisBundle.from_dict(
         initial.to_dict(),
         resolver=Resolver(),
@@ -1007,7 +1013,9 @@ def test_oversized_rejected_result_degrades_to_exact_error_only() -> None:
 
     class OversizedFallbackGateway(QueueGateway):
         def __init__(self) -> None:
-            super().__init__([_cross_part_dependency_payload(11, repaired=True)])
+            super().__init__(
+                [_repairable_identity_mismatch_payload(11, repaired=True)]
+            )
             self.repair_contexts: list[Mapping[str, Any]] = []
 
         def analyze(self, batch, **kwargs):
@@ -1034,7 +1042,7 @@ def test_new_oversized_rejection_does_not_pair_old_json_with_new_error() -> None
         "Q11",
         _question(11, source_ref="Q11"),
     )
-    first_rejected = _cross_part_dependency_payload(11)
+    first_rejected = _repairable_identity_mismatch_payload(11)
     initial = InMemoryCombinedQuestionAnalysisModule(
         gateway=QueueGateway([first_rejected]),
         resolver=Resolver(),
@@ -1046,7 +1054,7 @@ def test_new_oversized_rejection_does_not_pair_old_json_with_new_error() -> None
     first_error = initial.failures[0].validation_error
     assert initial.failures[0].rejected_result == first_rejected["results"][0]
 
-    oversized_rejected = _cross_part_dependency_payload(11)
+    oversized_rejected = _repairable_identity_mismatch_payload(11)
     oversized_rejected["results"][0]["solution_evidence"]["rationale"] = (
         "新" * 55_000
     )
@@ -1069,7 +1077,9 @@ def test_new_oversized_rejection_does_not_pair_old_json_with_new_error() -> None
 
     class OrdinaryRetryGateway(QueueGateway):
         def __init__(self) -> None:
-            super().__init__([_cross_part_dependency_payload(11, repaired=True)])
+            super().__init__(
+                [_repairable_identity_mismatch_payload(11, repaired=True)]
+            )
             self.repair_contexts: list[Mapping[str, Any]] = []
 
         def analyze(self, batch, **kwargs):
@@ -1100,7 +1110,7 @@ def test_received_invalid_json_does_not_preserve_old_repair_context() -> None:
         _question(11, source_ref="Q11"),
     )
     initial = InMemoryCombinedQuestionAnalysisModule(
-        gateway=QueueGateway([_cross_part_dependency_payload(11)]),
+        gateway=QueueGateway([_repairable_identity_mismatch_payload(11)]),
         resolver=Resolver(),
     ).analyze(
         operation_id="config-source-analysis:received-invalid-json",
@@ -1166,6 +1176,33 @@ def test_in_memory_normalizes_machine_ids_candidate_names_and_duplicate_links() 
         resolver=Resolver(),
     )
     assert rebound.to_dict() == bundle.to_dict()
+
+
+def test_in_memory_without_governance_marks_discarded_invalid_link_for_review() -> None:
+    payload = copy.deepcopy(_combined_payload(1))
+    point = payload["results"][0]["solution_evidence"]["parts"][0][
+        "evidence_points"
+    ][0]
+    point["fine_term_links"].append(
+        {
+            "fine_term_id": "knowledge-fine-missing-name",
+            "role": "direct",
+        }
+    )
+
+    bundle = InMemoryCombinedQuestionAnalysisModule(
+        gateway=QueueGateway([payload]),
+        resolver=Resolver(),
+    ).analyze(
+        operation_id="config-source-analysis:no-governance-invalid-link-review",
+        curriculum_volume_id=VOLUME_ID,
+        sources=(ConfigQuestionAnalysisSource("Q1", _question(1)),),
+    )
+
+    assert bundle.status == "succeeded"
+    assert bundle.failed_source_refs == ()
+    assert bundle.taxonomy_review_source_refs == ("Q1",)
+    assert bundle.get("Q1").taxonomy_audit["status"] == "needs_review"
 
 
 def test_deferred_v2_checkpoint_loads_without_replaying_successful_analysis() -> None:
