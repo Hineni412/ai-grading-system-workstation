@@ -38,6 +38,27 @@ from backend.teaching_prep.domain.models import (
 from backend.teaching_prep.domain.states import LessonPreparationState
 
 
+class MaterialParseJobResponse(BaseModel):
+    id: int
+    job_type: str
+    payload: dict[str, Any]
+    result: dict[str, Any]
+    status: str
+    progress: float
+    stage: str
+    detail: str
+    error: str | None = None
+    cancel_requested: bool
+    created_at: str
+    started_at: str | None = None
+    updated_at: str
+    finished_at: str | None = None
+
+
+class MaterialParseJobListResponse(BaseModel):
+    items: list[MaterialParseJobResponse]
+
+
 class TeachingPrepStatusResponse(BaseModel):
     module: str
     enabled: bool

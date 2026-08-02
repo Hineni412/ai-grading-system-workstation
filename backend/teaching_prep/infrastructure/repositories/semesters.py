@@ -592,9 +592,15 @@ class SemesterWorkspaceRepository:
             parsed = connection.execute(
                 """
                 SELECT 1
-                FROM material_units
-                WHERE material_version_id = ?
-                LIMIT 1
+                FROM material_versions AS version
+                WHERE version.id = ?
+                  AND version.unit_count > 0
+                  AND version.inspection_status IN ('ready', 'scanned_no_text')
+                  AND version.unit_count = (
+                      SELECT COUNT(*)
+                      FROM material_units AS unit
+                      WHERE unit.material_version_id = version.id
+                  )
                 """,
                 (material_version_id,),
             ).fetchone() is not None

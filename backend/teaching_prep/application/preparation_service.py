@@ -6,11 +6,12 @@ import math
 import os
 import re
 import shutil
+import threading
 from copy import deepcopy
 from dataclasses import asdict, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from uuid import uuid4
 
 from PIL import Image
@@ -254,6 +255,8 @@ class TeachingPrepService:
         self.teaching_delivery = TeachingDeliveryRepository(self.database)
         self.workbench = WorkbenchIterationRepository(self.database)
         self.material_parser = material_parser or MaterialParser()
+        self._material_parse_lock = threading.Lock()
+        self._active_material_parses: set[str] = set()
         self.question_evidence_reader = question_evidence_reader
         self.assessment_evidence_reader = assessment_evidence_reader
         self.lesson_model_adapter = lesson_model_adapter
@@ -1333,6 +1336,9 @@ class TeachingPrepService:
             availability=clean_availability,
         )
 
+    def get_material_version(self, version_id: str) -> MaterialVersion:
+        return self.catalog.get_material_version(_clean_entity_id(version_id))
+
     def refresh_material_availability(
         self,
         version_id: str,
@@ -1378,9 +1384,18 @@ class TeachingPrepService:
     def parse_material_version(
         self,
         version_id: str,
+        *,
+        progress_callback: Callable[[str, int, int], None] | None = None,
+        cancel_check: Callable[[], None] | None = None,
     ) -> tuple[MaterialUnit, ...]:
         clean_id = _clean_entity_id(version_id)
         version = self.catalog.get_material_version(clean_id)
+        with self._material_parse_lock:
+            if clean_id in self._active_material_parses:
+                raise TeachingPrepConflictError(
+                    "material parsing is already in progress"
+                )
+            self._active_material_parses.add(clean_id)
         try:
             source_path = self.catalog.get_material_location(clean_id)
             if not source_path.is_file():
@@ -1394,13 +1409,45 @@ class TeachingPrepService:
                 raise TeachingPrepConflictError(
                     "material file changed; register a new version"
                 )
-            parsed = self.material_parser.parse(
+            total_units = self.material_parser.unit_count(
                 source_path,
                 material_type=version.material_type,
             )
-            relative_paths: list[str] = []
-            preview_hashes: list[str] = []
-            for unit in parsed:
+            if total_units <= 0:
+                raise TeachingPrepValidationError(
+                    "material contains no previewable units"
+                )
+            existing = self.material_units.list_units(clean_id)
+            reusable_indexes: set[int] = set()
+            for item in existing:
+                try:
+                    record = self.material_units.preview_record(item.id)
+                except Exception:
+                    continue
+                target = (self.root / record.preview_relpath).resolve(strict=False)
+                if (
+                    record.source_version_sha256 == version.content_sha256
+                    and target.is_file()
+                    and 1 <= item.unit_index <= total_units
+                ):
+                    reusable_indexes.add(item.unit_index)
+            completed_previews = len(reusable_indexes)
+            if progress_callback is not None:
+                progress_callback(
+                    "preview",
+                    completed_previews,
+                    total_units,
+                )
+            missing_indexes = (
+                set(range(1, total_units + 1)) - reusable_indexes
+            )
+            for unit in self.material_parser.iter_preview_units(
+                source_path,
+                material_type=version.material_type,
+                unit_indexes=missing_indexes,
+            ):
+                if cancel_check is not None:
+                    cancel_check()
                 relative = (
                     Path("previews")
                     / clean_id
@@ -1413,22 +1460,86 @@ class TeachingPrepService:
                 )
                 temporary.write_bytes(unit.preview_png)
                 temporary.replace(target)
-                relative_paths.append(relative.as_posix())
-                preview_hashes.append(
-                    hashlib.sha256(unit.preview_png).hexdigest()
+                self.material_units.save_partial_unit(
+                    clean_id,
+                    source_version_sha256=version.content_sha256,
+                    unit=unit,
+                    preview_relpath=relative.as_posix(),
+                    preview_sha256=hashlib.sha256(unit.preview_png).hexdigest(),
                 )
-            units = self.material_units.save_parsed_units(
+                completed_previews += 1
+                if progress_callback is not None:
+                    progress_callback(
+                        "preview",
+                        completed_previews,
+                        total_units,
+                    )
+            self.material_units.publish_preview_count(
                 clean_id,
                 source_version_sha256=version.content_sha256,
-                units=parsed,
-                preview_relpaths=tuple(relative_paths),
-                preview_hashes=tuple(preview_hashes),
+                unit_count=total_units,
+            )
+            units = self.material_units.list_units(clean_id)
+            ocr_candidates = [
+                item
+                for item in units
+                if (
+                    item.unit_kind == "pdf_page"
+                    and item.text_status != "manual"
+                    and not item.text_excerpt.strip()
+                    and bool(item.object_summary.get("has_page_images"))
+                    and item.object_summary.get("ocr_status") != "completed"
+                )
+            ]
+            ocr_total = len(ocr_candidates)
+            if progress_callback is not None:
+                progress_callback("ocr", 0, ocr_total)
+            ocr_engine: object | None = None
+            if ocr_candidates:
+                try:
+                    ocr_engine = self.material_parser.create_ocr_engine()
+                except Exception:
+                    ocr_engine = None
+            for completed_ocr, item in enumerate(ocr_candidates, start=1):
+                if cancel_check is not None:
+                    cancel_check()
+                if ocr_engine is not None:
+                    record = self.material_units.preview_record(item.id)
+                    preview = self.root / record.preview_relpath
+                    parsed_text = self.material_parser.ocr_preview(
+                        preview.read_bytes(),
+                        ocr_engine,
+                    )
+                    self.material_units.update_local_ocr(
+                        item.id,
+                        source_version_sha256=version.content_sha256,
+                        extracted_text=parsed_text.extracted_text,
+                        formula_review_required=(
+                            parsed_text.formula_review_required
+                        ),
+                        printed_page_number=(
+                            parsed_text.printed_page_number
+                        ),
+                    )
+                if progress_callback is not None:
+                    progress_callback("ocr", completed_ocr, ocr_total)
+            if cancel_check is not None:
+                cancel_check()
+            if progress_callback is not None:
+                progress_callback("publishing", total_units, total_units)
+            units = self.material_units.complete_parse(
+                clean_id,
+                source_version_sha256=version.content_sha256,
+                unit_count=total_units,
             )
             self.semesters.mark_version_parsed(clean_id)
             return units
         except Exception:
             self.semesters.mark_version_parse_failed(clean_id)
             raise
+        finally:
+            with self._material_parse_lock:
+                self._active_material_parses.discard(clean_id)
 
     def list_material_units(
         self,

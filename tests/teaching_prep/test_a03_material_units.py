@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+import threading
 import zipfile
 from pathlib import Path
 
@@ -14,6 +15,7 @@ from backend.teaching_prep.api import create_router
 from backend.teaching_prep.application import TeachingPrepService
 from backend.teaching_prep.domain.errors import TeachingPrepConflictError
 from backend.teaching_prep.infrastructure.materials import MaterialParser
+from backend.jobs import JobManager, JobStore
 
 from .test_a01_foundation import _migrated_service
 from .test_a02_catalog import _lesson_tree
@@ -131,6 +133,105 @@ def test_pdf_pages_render_extract_text_and_keep_formula_review_flag(
     assert all(unit.preview_url.startswith("/api/teaching-prep/") for unit in units)
     preview = service.material_preview_path(units[0].id)
     assert preview.read_bytes().startswith(b"\x89PNG")
+    assert service.get_material_version(version.id).unit_count == 2
+
+
+def test_interrupted_parse_keeps_page_previews_and_resumes_missing_pages(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _paths_value, service = _migrated_service(tmp_path, monkeypatch)
+    source = _pdf(
+        tmp_path / "synthetic-resume.pdf",
+        ["Page one", "Page two", "Page three"],
+    )
+    version = _register(
+        service,
+        source,
+        token="material-a03-resume",
+        name="合成可恢复资料",
+    )
+
+    def interrupt_after_first_preview(
+        phase: str,
+        completed: int,
+        _total: int,
+    ) -> None:
+        if phase == "preview" and completed == 1:
+            raise RuntimeError("synthetic interruption")
+
+    with pytest.raises(RuntimeError, match="synthetic interruption"):
+        service.parse_material_version(
+            version.id,
+            progress_callback=interrupt_after_first_preview,
+        )
+
+    partial = service.list_material_units(version.id)
+    assert [unit.unit_index for unit in partial] == [1]
+    assert service.material_preview_path(partial[0].id).is_file()
+    assert service.get_material_version(version.id).unit_count is None
+    curriculum, semester, _created = service.create_semester_workspace(
+        request_token="material-a03-resume-semester",
+        title="合成八年级上册",
+        grade_level=8,
+        volume="first",
+        publisher=None,
+        edition_label=None,
+        school_year="2026-2027",
+        term="first",
+        planned_new_lesson_count=48,
+    )
+    assert curriculum.id == semester.curriculum_id
+    attached, _created = service.attach_semester_material(
+        semester.id,
+        request_token="material-a03-resume-attach",
+        material_version_id=version.id,
+        material_role="exercise_workbook",
+    )
+    assert attached.parse_status == "not_started"
+    _curriculum_id, _chapter_id, _section_id, lesson_ids = _lesson_tree(
+        service
+    )
+    with pytest.raises(
+        TeachingPrepConflictError,
+        match="finish parsing",
+    ):
+        service.create_material_link(
+            request_token="material-a03-partial-link",
+            lesson_node_id=lesson_ids[0],
+            material_version_id=version.id,
+            start_unit=1,
+            end_unit=1,
+            crop=None,
+            purpose="exercise",
+            teacher_note=None,
+            confirmation_status="confirmed",
+        )
+
+    resumed_progress: list[tuple[str, int, int]] = []
+    completed = service.parse_material_version(
+        version.id,
+        progress_callback=lambda phase, done, total: resumed_progress.append(
+            (phase, done, total)
+        ),
+    )
+
+    assert [unit.unit_index for unit in completed] == [1, 2, 3]
+    assert ("preview", 1, 3) in resumed_progress
+    assert service.get_material_version(version.id).unit_count == 3
+    assert service.list_semester_materials(semester.id)[0].parse_status == "parsed"
+    linked, _created = service.create_material_link(
+        request_token="material-a03-complete-link",
+        lesson_node_id=lesson_ids[0],
+        material_version_id=version.id,
+        start_unit=1,
+        end_unit=1,
+        crop=None,
+        purpose="exercise",
+        teacher_note=None,
+        confirmation_status="confirmed",
+    )
+    assert (linked.start_unit, linked.end_unit) == (1, 1)
 
 
 def test_scanned_pdf_uses_local_ocr_without_a_model_call(
@@ -186,6 +287,39 @@ def test_scanned_pdf_uses_local_ocr_without_a_model_call(
     assert unit.object_summary["printed_page_number_source"] == (
         "local_ocr_footer_or_header"
     )
+
+
+def test_empty_ocr_result_is_persisted_and_not_repeated(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class EmptyOcr:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def __call__(self, _image):
+            self.calls += 1
+            return ([], 0.01)
+
+    _paths_value, service = _migrated_service(tmp_path, monkeypatch)
+    empty_ocr = EmptyOcr()
+    service.material_parser = MaterialParser(
+        ocr_engine_factory=lambda: empty_ocr
+    )
+    version = _register(
+        service,
+        _scanned_pdf(tmp_path / "synthetic-empty-ocr.pdf"),
+        token="material-a03-empty-ocr",
+        name="合成空白识别页",
+    )
+
+    first = service.parse_material_version(version.id)[0]
+    second = service.parse_material_version(version.id)[0]
+
+    assert first.text_excerpt == ""
+    assert first.object_summary["ocr_status"] == "completed"
+    assert second.object_summary["ocr_status"] == "completed"
+    assert empty_ocr.calls == 1
 
 
 def test_blank_page_accepts_manual_label_and_preview_cache_rebuilds(
@@ -381,3 +515,57 @@ def test_material_unit_api_uses_controlled_preview_url_not_local_path(
     preview = client.get(payload["items"][0]["preview_url"])
     assert preview.status_code == 200
     assert preview.headers["content-type"] == "image/png"
+
+
+def test_material_parse_job_endpoint_reuses_the_active_job(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _paths_value, service = _migrated_service(tmp_path, monkeypatch)
+    version = _register(
+        service,
+        _pdf(tmp_path / "synthetic-job.pdf", ["Safe preview"]),
+        token="material-a03-job",
+        name="合成后台资料",
+    )
+    manager = JobManager(
+        JobStore(tmp_path / "jobs.db"),
+        cleanup_interrupted=False,
+    )
+    started = threading.Event()
+    release = threading.Event()
+
+    def blocking_parse(context):
+        context.report(0.25, "preview", "正在生成原页预览：0/1 页")
+        started.set()
+        if not release.wait(timeout=5):
+            raise RuntimeError("synthetic job timed out")
+        return {"material_version_id": version.id, "unit_count": 1}
+
+    manager.register("teaching_prep.material_parse", blocking_parse)
+    api = FastAPI()
+    api.state.workspace_services = {"teaching-prep": service}
+    api.state.job_manager = manager
+    api.include_router(create_router(), prefix="/api/teaching-prep")
+    client = TestClient(api)
+    try:
+        first = client.post(
+            f"/api/teaching-prep/materials/{version.id}/parse-job"
+        )
+        assert first.status_code == 202
+        assert started.wait(timeout=2)
+        second = client.post(
+            f"/api/teaching-prep/materials/{version.id}/parse-job"
+        )
+
+        assert second.status_code == 202
+        assert second.json()["id"] == first.json()["id"]
+        assert second.json()["payload"] == {"material_version_id": version.id}
+        listed = client.get("/api/teaching-prep/material-parse-jobs")
+        assert listed.status_code == 200
+        assert [item["id"] for item in listed.json()["items"]] == [
+            first.json()["id"]
+        ]
+    finally:
+        release.set()
+        manager.shutdown()
