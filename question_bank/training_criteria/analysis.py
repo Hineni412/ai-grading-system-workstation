@@ -1083,11 +1083,15 @@ def rubric_skeleton_from_solution_evidence(
                     {
                         "step_id": point.evidence_point_id,
                         "core_goal": point.target,
-                        "required_elements": [
-                            point.justification,
-                            point.answer_anchor,
-                            point.observable_evidence,
-                        ],
+                        "required_elements": list(
+                            _text_tuple(
+                                (
+                                    point.justification,
+                                    point.answer_anchor,
+                                    point.observable_evidence,
+                                )
+                            )
+                        ),
                         "depends_on": list(point.depends_on),
                         "equivalent_rules": list(point.equivalent_rules),
                         "counterexamples": list(point.counterexamples),

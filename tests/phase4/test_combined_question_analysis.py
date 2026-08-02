@@ -915,8 +915,18 @@ def test_gateway_keeps_each_questions_candidate_contract_isolated() -> None:
     assert "part-1-step-1" in rules
     assert "one independently scorable mathematical milestone" in rules
     assert "one evidence point" in rules
-    assert "Q11-style example" in rules
-    assert "exact_objective" in rules and "canonical_answer must be non-empty" in rules
+    examples = prompt["evidence_examples"]
+    assert len(examples["q11_process_positive"]["evidence_points"]) == 3
+    assert len(examples["q11_process_negative"]["evidence_points"]) == 1
+    assert "do_not_return" in examples["q11_process_negative"]
+    assert len(examples["atomic_process_positive"]["evidence_points"]) == 1
+    objective = examples["objective_positive"]
+    assert objective["response_mode"] == "exact_objective"
+    assert objective["canonical_answer"] == "B"
+    assert objective["full_answer"] == ""
+    assert objective["evidence_points"][0]["answer_anchor"] == "B"
+    assert len(examples["pre_output_checklist"]) >= 5
+    assert "exact_objective" in rules and "canonical_answer" in rules
 
 
 def test_input_loader_includes_rich_text_and_controlled_actual_images(

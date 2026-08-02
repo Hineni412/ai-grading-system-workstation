@@ -144,7 +144,7 @@ def test_batch_prompt_lists_type_enums_and_rejects_choice_response_aliases() -> 
     assert "不得写入 response_mode" in prompt
 
 
-def test_quality_blocks_nontrivial_proof_without_proof_or_deduction_evidence() -> None:
+def test_quality_does_not_semantically_reject_structurally_complete_proof() -> None:
     payload = _proof_payload(
         score=6,
         steps=[
@@ -160,8 +160,27 @@ def test_quality_blocks_nontrivial_proof_without_proof_or_deduction_evidence() -
     warnings = collect_generated_config_quality_warnings(payload)
 
     assert not any("可独立评分的逻辑步骤" in warning for warning in warnings)
-    assert any("缺少具体证明义务" in warning for warning in warnings)
-    assert any("缺少具体扣分证据" in warning for warning in warnings)
+    assert not any("缺少具体证明义务" in warning for warning in warnings)
+    assert not any("缺少具体扣分证据" in warning for warning in warnings)
+
+
+def test_quality_does_not_block_generic_wording_after_structural_validation() -> None:
+    payload = _proof_payload(
+        score=6,
+        steps=[
+            {
+                "step_id": "S1",
+                "step_score": 6,
+                "core_goal": "正确的结论",
+                "required_elements": ["完成必要的推理或计算步骤"],
+            }
+        ],
+    )
+
+    warnings = collect_generated_config_quality_warnings(payload)
+
+    assert not any("通用描述" in warning for warning in warnings)
+    assert not any("可独立评分的逻辑步骤" in warning for warning in warnings)
 
 
 def test_quality_allows_a_one_point_proof_to_have_one_specific_step() -> None:

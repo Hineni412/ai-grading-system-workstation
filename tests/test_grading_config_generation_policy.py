@@ -1244,7 +1244,7 @@ def test_quality_warnings_flag_overly_broad_knowledge_and_serialized_answer_list
     assert any("列表字符串" in warning for warning in warnings)
 
 
-def test_quality_warnings_block_generic_subjective_steps_and_missing_visual_requirements() -> None:
+def test_quality_warnings_do_not_semantically_classify_generic_subjective_steps() -> None:
     payload = {
         "rubric": {
             "questions": [
@@ -1289,8 +1289,8 @@ def test_quality_warnings_block_generic_subjective_steps_and_missing_visual_requ
 
     warnings = session_manager.collect_generated_config_quality_warnings(payload)
 
-    assert any("Q10" in warning and "缺少具体作图要求" in warning for warning in warnings)
-    assert any("Q12" in warning and "评分点全部为通用描述" in warning for warning in warnings)
+    assert not any("Q10" in warning for warning in warnings)
+    assert not any("Q12" in warning for warning in warnings)
 
 
 @pytest.mark.parametrize(

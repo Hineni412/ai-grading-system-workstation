@@ -12,7 +12,6 @@ from question_bank.services.ai_tagging_service import converge_tag_analysis
 from question_bank.solution_evidence.convergence import converge_evidence_terms
 from question_bank.solution_evidence.contracts import (
     CoreResolution,
-    EvidenceGranularityError,
     FineTermResolver,
     QuestionSolutionEvidence,
     validate_evidence_fine_terms,
@@ -2254,10 +2253,6 @@ def _govern_deferred_analysis_item(
                 source_content_hash=source_content_hash,
                 resolver=resolver,
             )
-        except EvidenceGranularityError as exc:
-            raise _DeferredAnalysisValidationError(
-                "evidence_granularity_insufficient"
-            ) from exc
         except Exception as exc:
             raise _DeferredAnalysisValidationError(
                 "solution_evidence_contract"
@@ -2383,17 +2378,12 @@ def _govern_deferred_analysis_item(
             "本地完整词表暂时不可用；评分依据已保留，标签等待本地重试。"
         )
 
-    try:
-        evidence = QuestionSolutionEvidence.from_model_dict(
-            normalized_evidence,
-            question_id=question.question_id,
-            source_content_hash=source_content_hash,
-            resolver=resolver,
-        )
-    except EvidenceGranularityError as exc:
-        raise _DeferredAnalysisValidationError(
-            "evidence_granularity_insufficient"
-        ) from exc
+    evidence = QuestionSolutionEvidence.from_model_dict(
+        normalized_evidence,
+        question_id=question.question_id,
+        source_content_hash=source_content_hash,
+        resolver=resolver,
+    )
     validate_evidence_fine_terms(
         evidence,
         question.taxonomy_contract,
