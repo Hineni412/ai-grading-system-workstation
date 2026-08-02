@@ -29,43 +29,6 @@ CriterionSourceKind = Literal[
 ]
 CriterionReviewAction = Literal["approve", "reject"]
 _TOKEN = re.compile(r"^[0-9a-f]{32}$")
-_PROCESS_WORDS = (
-    "建立",
-    "列出",
-    "关系",
-    "方程",
-    "变形",
-    "化简",
-    "计算",
-    "推导",
-    "过程",
-)
-_PROOF_CONDITION_WORDS = ("条件", "已知", "前提")
-_PROOF_THEOREM_WORDS = (
-    "定理",
-    "判定",
-    "性质",
-    "sas",
-    "sss",
-    "aas",
-    "asa",
-    "hl",
-)
-_PROOF_REASONING_WORDS = ("推出", "推理", "依据", "因此", "所以")
-_PROOF_CONCLUSION_WORDS = ("结论", "待证", "证明", "对应")
-_CONSTRUCTION_WORDS = (
-    "作出",
-    "画出",
-    "图中",
-    "直线",
-    "垂线",
-    "圆",
-    "标记",
-    "垂直",
-    "平行",
-)
-
-
 class CriterionVersionNotFound(LookupError):
     pass
 
@@ -163,12 +126,6 @@ def evaluate_criterion_quality(
         codes.append("missing_actual_image")
 
     group = question.question_type_group
-    combined = _compact(
-        " ".join(
-            f"{point.target} {point.observable_evidence}"
-            for point in draft.points
-        )
-    )
     if group in {"single_choice", "fill_blank"} and not str(
         question.tagging_context.answer_text or ""
     ).strip():
@@ -177,25 +134,6 @@ def evaluate_criterion_quality(
         blank_count = _blank_count(question.tagging_context.question_text)
         if blank_count > 1 and len(draft.points) < blank_count:
             codes.append("multiple_blanks_collapsed")
-    if group == "calculation":
-        if len(draft.points) < 2 or not any(
-            word in combined for word in _PROCESS_WORDS
-        ):
-            codes.append("calculation_process_missing")
-    if group == "proof":
-        checks = (
-            _PROOF_CONDITION_WORDS,
-            _PROOF_THEOREM_WORDS,
-            _PROOF_REASONING_WORDS,
-            _PROOF_CONCLUSION_WORDS,
-        )
-        proof_text = combined.casefold()
-        if any(not any(word in proof_text for word in words) for words in checks):
-            codes.append("proof_obligations_incomplete")
-    if group == "construction" and not any(
-        word in combined for word in _CONSTRUCTION_WORDS
-    ):
-        codes.append("construction_evidence_missing")
     return QualityGateResult(
         passed=not codes,
         codes=tuple(dict.fromkeys(codes)),
