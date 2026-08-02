@@ -14,11 +14,26 @@ from .archive import OpsArchiveInspection, OpsArchiveInvalid
 DATABASE_MEMBERS = {
     "user_data/databases/grading_system.db": "grading",
     "user_data/databases/question_bank.db": "question_bank",
+    "user_data/workspaces/class-teacher/student_affairs.db": "student_affairs",
+    "user_data/workspaces/class-teacher/class_teacher_work.db": "class_teacher_work",
 }
+
+REQUIRED_SAFETY_DATABASE_MEMBERS = frozenset(
+    {
+        "user_data/databases/grading_system.db",
+        "user_data/databases/question_bank.db",
+    }
+)
 
 REQUIRED_TABLES = {
     "grading": frozenset({"students", "grading_sessions", "exam_papers"}),
     "question_bank": frozenset({"papers", "questions", "question_tags"}),
+    "student_affairs": frozenset(
+        {"schema_migrations", "vault_metadata", "encrypted_objects", "access_audit"}
+    ),
+    "class_teacher_work": frozenset(
+        {"schema_migrations", "work_nodes", "work_edges", "work_operations"}
+    ),
 }
 
 
@@ -66,14 +81,14 @@ def validate_archive_databases(
         if member.is_dir:
             continue
         normalized = "/".join(member.parts)
-        if member.parts[:2] != ("user_data", "databases"):
+        if not _looks_like_database_candidate(normalized):
             continue
         target = DATABASE_MEMBERS.get(normalized)
         if target is None:
             raise OpsArchiveInvalid("unexpected_database_candidate")
         found.add(normalized)
         selected.append((member.archive_name, target))
-    if require_all and found != set(DATABASE_MEMBERS):
+    if require_all and not REQUIRED_SAFETY_DATABASE_MEMBERS <= found:
         raise OpsArchiveInvalid("safety_backup_databases_missing")
     if not selected:
         return
@@ -95,15 +110,13 @@ def validate_archive_databases(
 
 
 def validate_staged_databases(staging_root: Path) -> None:
-    database_root = Path(staging_root) / "user_data" / "databases"
-    if not database_root.exists():
-        return
-    if database_root.is_symlink() or not database_root.is_dir():
-        raise OpsArchiveInvalid("invalid_database_candidate")
-    for candidate in database_root.iterdir():
-        if candidate.is_dir():
-            raise OpsArchiveInvalid("unexpected_database_candidate")
-        normalized = f"user_data/databases/{candidate.name}"
+    root = Path(staging_root)
+    for candidate in root.rglob("*"):
+        if not candidate.is_file():
+            continue
+        normalized = candidate.relative_to(root).as_posix()
+        if not _looks_like_database_candidate(normalized):
+            continue
         target = DATABASE_MEMBERS.get(normalized)
         if target is None:
             raise OpsArchiveInvalid("unexpected_database_candidate")
@@ -111,6 +124,22 @@ def validate_staged_databases(staging_root: Path) -> None:
             validate_database_file(candidate, target)
         except OpsDatabaseInvalid as exc:
             raise OpsArchiveInvalid("invalid_database_candidate") from exc
+
+
+def _looks_like_database_candidate(normalized: str) -> bool:
+    clean = str(normalized).replace("\\", "/")
+    if clean.startswith("user_data/databases/"):
+        return True
+    prefix = "user_data/workspaces/class-teacher/"
+    if not clean.startswith(prefix):
+        return False
+    name = clean.rsplit("/", 1)[-1].casefold()
+    return (
+        name.endswith((".db", ".sqlite", ".sqlite3"))
+        or ".db-" in name
+        or ".sqlite-" in name
+        or ".sqlite3-" in name
+    )
 
 
 def validate_live_databases(
@@ -138,6 +167,7 @@ def _reject_database_companions(targets: tuple[tuple[Path, str], ...]) -> None:
 
 
 __all__ = [
+    "DATABASE_MEMBERS",
     "OpsDatabaseInvalid",
     "validate_archive_databases",
     "validate_database_file",

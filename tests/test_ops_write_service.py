@@ -165,6 +165,17 @@ def test_preview_backup_excludes_case_variant_api_profiles(tmp_path: Path) -> No
     assert preview["skipped_sensitive"] == ["user_data/config/API_PROFILES.JSON"]
 
 
+def test_preview_backup_includes_class_teacher_workspace_in_debug_mode(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    database = paths.data_root / "workspaces" / "class-teacher" / "student_affairs.db"
+    database.parent.mkdir(parents=True)
+    database.write_bytes(b"synthetic-plaintext-workspace")
+
+    preview = preview_backup(path_manager=paths)
+
+    assert "user_data/workspaces/class-teacher/student_affairs.db" in preview["files"]
+
+
 def test_restore_preflight_accepts_only_controlled_backup_name(tmp_path: Path) -> None:
     paths = _paths(tmp_path)
     archive = _write_zip(

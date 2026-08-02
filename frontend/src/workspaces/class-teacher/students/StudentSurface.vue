@@ -29,7 +29,7 @@ onMounted(() => { void restoreSelection() })
   <section class="students">
     <p v-if="notice" class="notice" role="status">{{ notice }}</p>
     <nav class="subnav" aria-label="学生工作区页面">
-      <button v-for="item in ([['directory','学生目录'],['support','支持与 AI 复核'],['academic','学业证据'],['security','数据安全']] as const)" :key="item[0]" type="button" :aria-current="panel===item[0]?'page':undefined" @click="emit('navigate', item[0])">{{ item[1] }}</button>
+      <button v-for="item in ([['directory','学生目录'],['support','支持与 AI 复核'],['academic','学业证据'],['security','数据管理']] as const)" :key="item[0]" type="button" :aria-current="panel===item[0]?'page':undefined" @click="emit('navigate', item[0])">{{ item[1] }}</button>
       <span v-if="selected">当前学生：<strong>{{ selected.display_name }}</strong></span>
       <span v-else>当前学生只保存在页面内存中</span>
     </nav>

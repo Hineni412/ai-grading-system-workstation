@@ -119,7 +119,7 @@ class WorkPlanPreviewResponse(BaseModel):
     model_name: str
     destination_fingerprint: str
     model_enabled: bool
-    max_physical_requests: Literal[1]
+    max_physical_requests: int | None
     physical_request_count: int
 
 

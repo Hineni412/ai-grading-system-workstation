@@ -15,6 +15,8 @@ class VaultStatusResponse(BaseModel):
         "uninitialized",
         "legacy_password_v1",
         "pin_dpapi_current_user_v2",
+        "plaintext_debug_v1",
+        "legacy_migration_required",
     ]
     protection_state: Literal["pending", "active"] | None = None
     legacy_upgrade_available: bool = False

@@ -23,7 +23,7 @@ class _SilentMigrationLogger:
 
 
 class EncryptedDatabase:
-    """Owns the B vault SQLite file without ever storing sensitive plaintext."""
+    """Owns the class-teacher SQLite file and its atomic recovery helpers."""
 
     def __init__(self, context: WorkspaceContext) -> None:
         self.root = context.root

@@ -14,6 +14,7 @@ def _create_service(context: WorkspaceContext) -> VaultService:
     return VaultService(
         context,
         model_gateway=create_active_profile_model_gateway(context),
+        protection_enabled=False,
     )
 
 
