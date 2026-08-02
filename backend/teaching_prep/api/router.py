@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import threading
 from urllib.parse import unquote
 from uuid import uuid4
 
@@ -15,6 +16,11 @@ from fastapi import (
 )
 from fastapi.responses import FileResponse, JSONResponse
 
+from backend.jobs import JobManager, JobRecord
+from backend.public_data import (
+    sanitize_public_diagnostic_text,
+    sanitize_public_mapping,
+)
 from backend.teaching_prep.application import TeachingPrepService
 from backend.teaching_prep.domain.errors import (
     TeachingPrepConflictError,
@@ -71,6 +77,8 @@ from .schemas import (
     MaterialVersionResponse,
     MaterialLinkListResponse,
     MaterialLinkResponse,
+    MaterialParseJobListResponse,
+    MaterialParseJobResponse,
     MaterialUnitListResponse,
     MaterialUnitResponse,
     PreparationListResponse,
@@ -132,6 +140,82 @@ from .schemas import (
 )
 
 _MAX_MATERIAL_UPLOAD_BYTES = 256 * 1024 * 1024
+_MATERIAL_PARSE_JOB_TYPE = "teaching_prep.material_parse"
+_MATERIAL_PARSE_SUBMIT_LOCK = threading.Lock()
+
+
+def _material_parse_job_response(job: JobRecord) -> MaterialParseJobResponse:
+    public_error = None
+    if job.error:
+        public_error = (
+            "资料处理没有完成，可保留已生成的预览后重试。"
+            if job.status == "failed"
+            else "资料处理意外结束，可重新打开资料继续。"
+        )
+    return MaterialParseJobResponse(
+        id=job.id,
+        job_type=job.job_type,
+        payload=sanitize_public_mapping(job.payload),
+        result=sanitize_public_mapping(job.result),
+        status=job.status,
+        progress=job.progress,
+        stage=job.stage,
+        detail=sanitize_public_diagnostic_text(job.detail) or "",
+        error=public_error,
+        cancel_requested=job.cancel_requested,
+        created_at=job.created_at,
+        started_at=job.started_at,
+        updated_at=job.updated_at,
+        finished_at=job.finished_at,
+    )
+
+
+def _active_material_parse_job(
+    manager: JobManager,
+    material_version_id: str,
+) -> JobRecord | None:
+    offset = 0
+    while True:
+        jobs, total = manager.list(
+            job_types=(_MATERIAL_PARSE_JOB_TYPE,),
+            statuses=("queued", "running", "paused"),
+            limit=100,
+            offset=offset,
+        )
+        active = next(
+            (
+                job
+                for job in jobs
+                if job.payload.get("material_version_id")
+                == material_version_id
+            ),
+            None,
+        )
+        if active is not None:
+            return active
+        offset += len(jobs)
+        if not jobs or offset >= total:
+            return None
+
+
+def _latest_material_parse_jobs(manager: JobManager) -> tuple[JobRecord, ...]:
+    latest: dict[str, JobRecord] = {}
+    offset = 0
+    while True:
+        jobs, total = manager.list(
+            job_types=(_MATERIAL_PARSE_JOB_TYPE,),
+            limit=100,
+            offset=offset,
+        )
+        for job in jobs:
+            material_id = str(
+                job.payload.get("material_version_id") or ""
+            ).strip()
+            if len(material_id) == 32 and material_id not in latest:
+                latest[material_id] = job
+        offset += len(jobs)
+        if not jobs or offset >= total:
+            return tuple(latest.values())
 
 
 def get_teaching_prep_service(request: Request) -> TeachingPrepService:
@@ -144,6 +228,17 @@ def get_teaching_prep_service(request: Request) -> TeachingPrepService:
             "Teaching preparation workspace is unavailable",
         )
     return service
+
+
+def get_teaching_prep_job_manager(request: Request) -> JobManager:
+    manager = getattr(request.app.state, "job_manager", None)
+    if not isinstance(manager, JobManager):
+        raise _new_api_error(
+            503,
+            "job_manager_unavailable",
+            "Background job manager is unavailable",
+        )
+    return manager
 
 
 def create_router() -> APIRouter:
@@ -734,6 +829,43 @@ def create_router() -> APIRouter:
         return MaterialUnitListResponse(
             material_version_id=material_version_id,
             items=[MaterialUnitResponse.from_domain(item) for item in units],
+        )
+
+    @router.post(
+        "/materials/{material_version_id}/parse-job",
+        response_model=MaterialParseJobResponse,
+        status_code=status.HTTP_202_ACCEPTED,
+    )
+    def start_material_parse_job(
+        material_version_id: str,
+        service: TeachingPrepService = Depends(get_teaching_prep_service),
+        manager: JobManager = Depends(get_teaching_prep_job_manager),
+    ) -> MaterialParseJobResponse:
+        try:
+            material = service.get_material_version(material_version_id)
+            with _MATERIAL_PARSE_SUBMIT_LOCK:
+                job = _active_material_parse_job(manager, material.id)
+                if job is None:
+                    job = manager.submit(
+                        _MATERIAL_PARSE_JOB_TYPE,
+                        {"material_version_id": material.id},
+                    )
+        except Exception as exc:
+            raise _api_error(exc) from exc
+        return _material_parse_job_response(job)
+
+    @router.get(
+        "/material-parse-jobs",
+        response_model=MaterialParseJobListResponse,
+    )
+    def list_material_parse_jobs(
+        manager: JobManager = Depends(get_teaching_prep_job_manager),
+    ) -> MaterialParseJobListResponse:
+        return MaterialParseJobListResponse(
+            items=[
+                _material_parse_job_response(job)
+                for job in _latest_material_parse_jobs(manager)
+            ]
         )
 
     @router.get(

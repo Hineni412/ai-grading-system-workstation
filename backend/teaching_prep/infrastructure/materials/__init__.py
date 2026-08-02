@@ -1,3 +1,3 @@
-from .parser import MaterialParser, ParsedMaterialUnit
+from .parser import MaterialParser, ParsedMaterialText, ParsedMaterialUnit
 
-__all__ = ["MaterialParser", "ParsedMaterialUnit"]
+__all__ = ["MaterialParser", "ParsedMaterialText", "ParsedMaterialUnit"]

@@ -125,6 +125,65 @@ describe('teaching preparation delivery API', () => {
     )
   })
 
+  it('starts page parsing as a background job', async () => {
+    const job = {
+      id: 17,
+      job_type: 'teaching_prep.material_parse',
+      payload: { material_version_id: materialPayload.id },
+      result: {},
+      status: 'queued',
+      progress: 0,
+      stage: 'queued',
+      detail: '等待后台处理',
+      error: null,
+      cancel_requested: false,
+      created_at: '2026-08-02T00:00:00Z',
+      started_at: null,
+      updated_at: '2026-08-02T00:00:00Z',
+      finished_at: null,
+    }
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValue(response(job, 202))
+
+    await expect(
+      teachingPrepCatalogApi.startMaterialParse(materialPayload.id),
+    ).resolves.toEqual(job)
+
+    expect(fetchMock).toHaveBeenCalledExactlyOnceWith(
+      `/api/teaching-prep/materials/${materialPayload.id}/parse-job`,
+      expect.objectContaining({ method: 'POST' }),
+    )
+  })
+
+  it('restores persisted material parse jobs after a page refresh', async () => {
+    const job = {
+      id: 18,
+      job_type: 'teaching_prep.material_parse',
+      payload: { material_version_id: materialPayload.id },
+      result: {},
+      status: 'running',
+      progress: 0.42,
+      stage: 'ocr',
+      detail: '正在本机识别扫描文字：24/67 页',
+      error: null,
+      cancel_requested: false,
+      created_at: '2026-08-02T00:00:00Z',
+      started_at: '2026-08-02T00:00:01Z',
+      updated_at: '2026-08-02T00:01:00Z',
+      finished_at: null,
+    }
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValue(response({ items: [job] }))
+
+    await expect(teachingPrepCatalogApi.listMaterialParseJobs())
+      .resolves.toEqual([job])
+
+    expect(fetchMock).toHaveBeenCalledExactlyOnceWith(
+      '/api/teaching-prep/material-parse-jobs',
+      expect.objectContaining({ method: 'GET' }),
+    )
+  })
+
   it('creates a final package once with explicit confirmation', async () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch')
       .mockResolvedValue(response(packagePayload, 201))

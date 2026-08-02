@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, reactive, ref, watch } from 'vue'
 
+import type { JobResponse } from '../../../api/jobs'
 import type {
   MaterialLinkPurpose,
   MaterialVersion,
@@ -57,13 +58,20 @@ const LINK_PURPOSES: Array<{ value: MaterialLinkPurpose; label: string }> = [
   { value: 'supplement', label: '补充资料' },
 ]
 
-type PendingImportState = 'pending' | 'importing' | 'done' | 'failed'
+type PendingImportState =
+  | 'pending'
+  | 'uploading'
+  | 'processing'
+  | 'done'
+  | 'failed'
+  | 'cancelled'
 
 interface PendingMaterialImport {
   id: string
   file: File
   role: SemesterMaterialRole
   state: PendingImportState
+  materialId: string | null
   error: string
 }
 
@@ -100,9 +108,18 @@ const eligibleSemesterMaterials = computed(
 const activeSemesterRecord = computed(() => (
   activeMaterial.value ? semesterRecordFor(activeMaterial.value) : null
 ))
+const activeMaterialReadyForMapping = computed(() => (
+  activeMaterial.value !== null
+  && activeSemesterRecord.value?.parse_status === 'parsed'
+  && !activeSemesterRecord.value.has_unparsed_update
+  && ['ready', 'scanned_no_text'].includes(
+    activeMaterial.value.inspection_status,
+  )
+))
 const pendingImportCount = computed(
   () => pendingImports.value.filter(item => (
     item.state === 'pending' || item.state === 'failed'
+    || item.state === 'cancelled'
   )).length,
 )
 
@@ -181,12 +198,51 @@ function fileSizeLabel(size: number): string {
 }
 
 function importStateLabel(item: PendingMaterialImport): string {
+  const job = parseJobFor(item)
+  if (item.state === 'processing' && job) {
+    if (job.status === 'queued') return '等待解析'
+    if (job.cancel_requested) return '正在安全停止'
+    return job.detail || '正在逐页处理'
+  }
   return {
     pending: '等待导入',
-    importing: '正在复制并解析',
+    uploading: '正在复制到本机资料库',
+    processing: '正在逐页处理',
     done: '已完成',
     failed: '未完成，可重试',
+    cancelled: '已停止，可继续',
   }[item.state]
+}
+
+function parseJobFor(item: PendingMaterialImport): JobResponse | null {
+  return item.materialId
+    ? workbench.catalog.materialParseJobs[item.materialId] ?? null
+    : null
+}
+
+function progressPercent(item: PendingMaterialImport): number {
+  if (item.state === 'done') return 100
+  const job = parseJobFor(item)
+  if (job) return Math.max(0, Math.min(100, Math.round(job.progress * 100)))
+  return item.state === 'uploading' ? 2 : 0
+}
+
+function parseJobForMaterial(material: MaterialVersion): JobResponse | null {
+  return workbench.catalog.materialParseJobs[material.id] ?? null
+}
+
+function materialProgressLabel(material: MaterialVersion): string {
+  const job = parseJobForMaterial(material)
+  if (!job) return ''
+  if (job.status === 'succeeded') return '逐页处理完成'
+  if (job.status === 'failed') return '处理未完成，可重新打开后继续'
+  if (job.status === 'cancelled') return '已停止，可重新打开后继续'
+  return job.detail || (job.status === 'queued' ? '等待后台处理' : '正在逐页处理')
+}
+
+function failureMessage(error: unknown): string {
+  if (error instanceof Error && error.message.trim()) return error.message
+  return workbench.catalog.errorMessage || '资料处理没有完成，可保留进度后重试。'
 }
 
 async function openMaterial(item: MaterialVersion): Promise<void> {
@@ -217,6 +273,7 @@ function queueFiles(event: Event): void {
       file,
       role: suggestedRole(file.name),
       state: 'pending',
+      materialId: null,
       error: '',
     })
   }
@@ -238,28 +295,61 @@ async function importQueuedFiles(): Promise<void> {
   importBatchRunning.value = true
   let completed = 0
   let failed = 0
+  const parseTasks: Promise<void>[] = []
   try {
     for (const item of pendingImports.value) {
-      if (item.state !== 'pending' && item.state !== 'failed') continue
-      item.state = 'importing'
+      if (
+        item.state !== 'pending'
+        && item.state !== 'failed'
+        && item.state !== 'cancelled'
+      ) continue
+      item.state = 'uploading'
       item.error = ''
-      mappingMessage.value = `正在导入并解析“${item.file.name}”…`
+      mappingMessage.value = `正在复制“${item.file.name}”，复制后会在后台逐页处理…`
       try {
-        await workbench.catalog.importMaterialCopy(item.file, item.role)
-        item.state = 'done'
-        completed += 1
-      } catch {
+        const material = item.materialId
+          ? workbench.catalog.materials.find(value => value.id === item.materialId)
+          : await workbench.catalog.importMaterialCopy(item.file, item.role)
+        if (!material) throw new Error('没有找到可继续处理的资料副本。')
+        item.materialId = material.id
+        item.state = 'processing'
+        parseTasks.push(
+          workbench.catalog.parseMaterialInBackground(material)
+            .then(() => {
+              item.state = 'done'
+              completed += 1
+            })
+            .catch((error: unknown) => {
+              const job = parseJobFor(item)
+              item.state = job?.status === 'cancelled' ? 'cancelled' : 'failed'
+              item.error = failureMessage(error)
+              failed += 1
+            }),
+        )
+      } catch (error) {
         item.state = 'failed'
-        item.error = workbench.catalog.errorMessage || '导入或解析没有完成'
+        item.error = failureMessage(error)
         failed += 1
       }
     }
+    importBatchRunning.value = false
+    await Promise.allSettled(parseTasks)
     await workbench.refreshCurrentWorkspace()
     mappingMessage.value = failed > 0
       ? `已完成 ${completed} 份，${failed} 份未完成；其余资料已保留，可单独重试失败项。`
       : `已完成 ${completed} 份资料的受控复制、角色登记和页级解析。`
   } finally {
     importBatchRunning.value = false
+  }
+}
+
+async function cancelImport(item: PendingMaterialImport): Promise<void> {
+  if (!item.materialId || item.state !== 'processing') return
+  try {
+    await workbench.catalog.cancelMaterialParse(item.materialId)
+    mappingMessage.value = `正在安全停止“${item.file.name}”；已完成的预览会保留。`
+  } catch (error) {
+    item.error = failureMessage(error)
   }
 }
 
@@ -377,7 +467,13 @@ async function saveManualMapping(): Promise<void> {
     item => item.id === manualMapping.lessonId && item.node_type === 'lesson',
   )
   const maximum = workbench.catalog.materialUnits.at(-1)?.unit_index ?? 0
-  if (!material || !record || !lesson || maximum === 0) {
+  if (
+    !material
+    || !record
+    || !activeMaterialReadyForMapping.value
+    || !lesson
+    || maximum === 0
+  ) {
     mappingMessage.value = '请先打开已加入本学期且解析完成的资料，并选择现有课时。'
     return
   }
@@ -444,7 +540,7 @@ async function saveManualMapping(): Promise<void> {
       <div class="tp-section-heading">
         <div>
           <h2>待导入资料</h2>
-          <p>每份资料单独选择角色；开始后按顺序复制和解析，单份失败不会影响其余文件。</p>
+          <p>先逐份复制，再由后台并行处理；每一页的预览和文字识别进度都会保留。</p>
         </div>
         <div class="tp-inline-actions">
           <button
@@ -460,7 +556,7 @@ async function saveManualMapping(): Promise<void> {
             :disabled="importBatchRunning || pendingImportCount === 0"
             @click="importQueuedFiles"
           >
-            {{ importBatchRunning ? '正在逐份处理…' : `开始导入 ${pendingImportCount} 份` }}
+            {{ importBatchRunning ? '正在复制资料…' : `开始导入 ${pendingImportCount} 份` }}
           </button>
         </div>
       </div>
@@ -471,26 +567,51 @@ async function saveManualMapping(): Promise<void> {
           class="tp-import-row"
           :class="`is-${item.state}`"
         >
-          <div>
+          <div class="tp-import-row__identity">
             <strong>{{ item.file.name }}</strong>
             <small>{{ fileSizeLabel(item.file.size) }} · {{ importStateLabel(item) }}</small>
             <small v-if="item.error" class="tp-error-text">{{ item.error }}</small>
+            <div
+              v-if="item.state !== 'pending'"
+              class="tp-import-row__progress"
+            >
+              <progress
+                :value="progressPercent(item)"
+                max="100"
+                :aria-label="`${item.file.name}：${importStateLabel(item)}`"
+              />
+              <span>{{ progressPercent(item) }}%</span>
+            </div>
           </div>
           <label class="tp-field">
             资料角色
-            <select v-model="item.role" :disabled="item.state === 'importing' || item.state === 'done'">
+            <select
+              v-model="item.role"
+              :disabled="item.state === 'uploading' || item.state === 'processing' || item.state === 'done'"
+            >
               <option v-for="role in MATERIAL_ROLES" :key="role.value" :value="role.value">
                 {{ role.label }}
               </option>
             </select>
           </label>
-          <button
-            type="button"
-            :disabled="item.state === 'importing'"
-            @click="removePendingImport(item.id)"
-          >
-            移除
-          </button>
+          <div class="tp-import-row__actions">
+            <button
+              v-if="item.state === 'processing'"
+              type="button"
+              :disabled="parseJobFor(item)?.cancel_requested"
+              @click="cancelImport(item)"
+            >
+              {{ parseJobFor(item)?.cancel_requested ? '正在停止…' : '停止' }}
+            </button>
+            <button
+              v-else
+              type="button"
+              :disabled="item.state === 'uploading'"
+              @click="removePendingImport(item.id)"
+            >
+              移除
+            </button>
+          </div>
         </article>
       </div>
     </section>
@@ -583,6 +704,16 @@ async function saveManualMapping(): Promise<void> {
             <span v-if="semesterRecordFor(item)" class="tp-source-tag">
               {{ roleLabel(semesterRecordFor(item)!.material_role) }} · 已加入本学期
             </span>
+            <span
+              v-if="parseJobForMaterial(item)"
+              class="tp-material-card__progress"
+            >
+              <progress
+                :value="Math.round((parseJobForMaterial(item)?.progress ?? 0) * 100)"
+                max="100"
+              />
+              <small>{{ materialProgressLabel(item) }}</small>
+            </span>
           </button>
           <div v-if="!semesterRecordFor(item) && workbench.catalog.selectedSemester" class="tp-material-card__attach">
             <select v-model="existingRoleDrafts[item.id]">
@@ -659,6 +790,12 @@ async function saveManualMapping(): Promise<void> {
           <p v-if="!activeSemesterRecord" class="tp-error-text">
             当前资料尚未加入本学期，请先在左侧选择角色并加入。
           </p>
+          <p
+            v-else-if="!activeMaterialReadyForMapping"
+            class="tp-error-text"
+          >
+            当前资料仍在处理或需要续跑；完整发布前不能保存正式课时关联。
+          </p>
           <p v-if="!workbench.catalog.lessonNodes.some(item => item.node_type === 'lesson' && item.is_active)" class="tp-error-text">
             还没有可关联课时，请先返回“个人课时树”建立课时。
           </p>
@@ -695,7 +832,7 @@ async function saveManualMapping(): Promise<void> {
             class="tp-button tp-button--primary"
             type="button"
             :disabled="(
-              !activeSemesterRecord
+              !activeMaterialReadyForMapping
               || !manualMapping.lessonId
               || workbench.catalog.materialUnits.length === 0
               || workbench.catalog.saveState === 'saving'
