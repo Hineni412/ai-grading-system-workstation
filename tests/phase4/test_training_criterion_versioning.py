@@ -9,7 +9,6 @@ from question_bank.database.schema import connect, initialize_database
 from question_bank.models.tag_schema import TaggingContext
 from question_bank.training_criteria import (
     ApprovedCriterionMissing,
-    CriterionQualityError,
     CriterionRequestConflict,
     CriterionReviewCommand,
     CriterionRevisionConflict,
@@ -155,7 +154,7 @@ def test_five_question_types_pass_the_frozen_quality_gate() -> None:
         assert result.passed, (sample["id"], result.codes)
 
 
-def test_quality_gate_rejects_collapsed_process_proof_and_missing_image() -> None:
+def test_quality_gate_trusts_model_granularity_but_requires_actual_image() -> None:
     calculation = _question(1)
     proof = _question(2, question_type="证明题")
     image = _question(3, question_type="作图题", has_images=True)
@@ -213,8 +212,8 @@ def test_quality_gate_rejects_collapsed_process_proof_and_missing_image() -> Non
         ),
     )
 
-    assert "calculation_process_missing" in calculation_result.codes
-    assert "proof_obligations_incomplete" in proof_result.codes
+    assert "calculation_process_missing" not in calculation_result.codes
+    assert "proof_obligations_incomplete" not in proof_result.codes
     assert "missing_actual_image" in image_result.codes
 
 
@@ -402,7 +401,7 @@ def test_revision_and_request_tokens_prevent_duplicate_or_stale_writes(
         )
 
 
-def test_failed_quality_version_can_be_rejected_but_not_approved(
+def test_structurally_valid_atomic_calculation_can_be_approved(
     tmp_path: Path,
 ) -> None:
     database = tmp_path / "question-bank.db"
@@ -438,22 +437,10 @@ def test_failed_quality_version_can_be_rejected_but_not_approved(
         "错误批准",
     )
 
-    with pytest.raises(CriterionQualityError) as exc:
-        module.review(command, question=question)
-    assert "calculation_process_missing" in exc.value.quality_codes
-    rejected = module.review(
-        CriterionReviewCommand(
-            1,
-            version_id,
-            workspace["revision"],
-            "reject",
-            "local_teacher",
-            "退回修改",
-        ),
-        question=question,
-    )
-    assert rejected["current_version"]["status"] == "rejected"
-    assert rejected["available"] is False
+    approved = module.review(command, question=question)
+
+    assert approved["current_version"]["status"] == "approved"
+    assert approved["available"] is True
 
 
 def test_backfill_run_is_explicit_idempotent_and_recovers_interruption(

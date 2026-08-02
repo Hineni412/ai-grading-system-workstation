@@ -841,6 +841,329 @@ def test_in_memory_unknown_taxonomy_does_not_block_scoring_evidence(
     }
 
 
+def _v2_process_evidence_payload(
+    question_id: int,
+    *,
+    split_steps: bool,
+    atomic: bool = False,
+) -> dict[str, Any]:
+    payload = _evidence_payload(question_id)
+    payload["schema_version"] = "question-solution-evidence-v2"
+    part = payload["parts"][0]
+    if atomic:
+        part["full_answer"] = "由 x+1=2 移项得到 x=1。"
+        milestones = [
+            ("step-1", "得到 x=1", "依据等式性质移项", "x=1", "写出 x=1", []),
+        ]
+    elif split_steps:
+        part["full_answer"] = (
+            "先由直角三角形内角和得到∠B=90°-x；"
+            "再由AD=AC得到∠ACD=90°-x/2；最后推出y=x/2。"
+        )
+        milestones = [
+            ("step-1", "得到∠B=90°-x", "直角三角形内角和", "∠B=90°-x", "写出∠B=90°-x", []),
+            ("step-2", "得到∠ACD=90°-x/2", "AD=AC及等腰三角形性质", "∠ACD=90°-x/2", "写出∠ACD=90°-x/2", ["step-1"]),
+            ("step-3", "推出y=x/2", "角度关系代入化简", "y=x/2", "写出y=x/2", ["step-2"]),
+        ]
+    else:
+        part["full_answer"] = (
+            "先由直角三角形内角和得到∠B=90°-x；"
+            "再由AD=AC得到∠ACD=90°-x/2；最后推出y=x/2。"
+        )
+        milestones = [
+            (
+                "step-1",
+                "完成全部角度推导并推出y=x/2",
+                "综合使用直角三角形内角和与等腰三角形性质",
+                "y=x/2",
+                "写出从∠B到y=x/2的完整推导",
+                [],
+            ),
+        ]
+    part["evidence_points"] = [
+        {
+            "evidence_point_id": point_id,
+            "step_index": index,
+            "target": target,
+            "justification": justification,
+            "answer_anchor": answer_anchor,
+            "observable_evidence": observable,
+            "depends_on": depends_on,
+            "fine_term_links": [],
+            "equivalent_rules": [],
+            "counterexamples": [],
+        }
+        for index, (
+            point_id,
+            target,
+            justification,
+            answer_anchor,
+            observable,
+            depends_on,
+        ) in enumerate(milestones, start=1)
+    ]
+    return payload
+
+
+def test_v2_accepts_q11_style_compound_process_when_structure_is_valid() -> None:
+    question = _question(
+        1,
+        text="在直角三角形中，AD=AC，按步骤求出y与x的关系。",
+    )
+    gateway = QueueGateway(
+        [
+            {
+                "results": [
+                    {
+                        "question_id": 1,
+                        "tag_analysis": _tag_payload(),
+                        "solution_evidence": _v2_process_evidence_payload(
+                            1,
+                            split_steps=False,
+                        ),
+                    }
+                ]
+            }
+        ]
+    )
+
+    bundle = InMemoryCombinedQuestionAnalysisModule(
+        gateway=gateway,
+        resolver=Resolver(),
+    ).analyze(
+        operation_id="config-source-analysis:q11-granularity",
+        curriculum_volume_id=VOLUME_ID,
+        sources=(ConfigQuestionAnalysisSource("Q11", question),),
+    )
+
+    assert bundle.status == "succeeded"
+    assert bundle.failures == ()
+
+
+@pytest.mark.parametrize("atomic", [False, True])
+def test_v2_accepts_split_process_milestones_and_true_atomic_step(
+    atomic: bool,
+) -> None:
+    question = _question(1)
+    evidence = QuestionSolutionEvidence.from_model_dict(
+        _v2_process_evidence_payload(
+            1,
+            split_steps=not atomic,
+            atomic=atomic,
+        ),
+        question_id=1,
+        source_content_hash=(
+            __import__(
+                "question_bank.training_criteria.analysis",
+                fromlist=["solution_evidence_source_content_hash"],
+            ).solution_evidence_source_content_hash(question)
+        ),
+        resolver=Resolver(),
+    )
+
+    expected_count = 1 if atomic else 3
+    assert evidence.schema_version == "question-solution-evidence-v2"
+    assert len(evidence.parts[0].evidence_points) == expected_count
+    if not atomic:
+        assert evidence.parts[0].evidence_points[-1].depends_on == ("step-2",)
+    serialized = evidence.to_dict()
+    model_payload = {
+        key: serialized[key]
+        for key in (
+            "schema_version",
+            "question_id",
+            "parts",
+            "auxiliary_rules",
+            "rationale",
+            "confidence",
+        )
+    }
+    assert QuestionSolutionEvidence.from_model_dict(
+        model_payload,
+        question_id=1,
+        source_content_hash=evidence.source_content_hash,
+        resolver=Resolver(),
+    ).to_dict() == evidence.to_dict()
+
+
+@pytest.mark.parametrize("invalid_field", ["step_index", "future_dependency"])
+def test_v2_rejects_noncontiguous_or_forward_step_dependencies(
+    invalid_field: str,
+) -> None:
+    question = _question(1)
+    payload = _v2_process_evidence_payload(1, split_steps=True)
+    points = payload["parts"][0]["evidence_points"]
+    if invalid_field == "step_index":
+        points[1]["step_index"] = 3
+    else:
+        points[1]["depends_on"] = ["step-3"]
+
+    with pytest.raises(
+        ValueError,
+        match="step_index|depends_on",
+    ):
+        QuestionSolutionEvidence.from_model_dict(
+            payload,
+            question_id=1,
+            source_content_hash=(
+                __import__(
+                    "question_bank.training_criteria.analysis",
+                    fromlist=["solution_evidence_source_content_hash"],
+                ).solution_evidence_source_content_hash(question)
+            ),
+            resolver=Resolver(),
+        )
+
+
+def test_v1_evidence_checkpoint_remains_readable_without_v2_fields() -> None:
+    question = _question(1)
+    evidence = QuestionSolutionEvidence.from_model_dict(
+        _evidence_payload(1),
+        question_id=1,
+        source_content_hash=(
+            __import__(
+                "question_bank.training_criteria.analysis",
+                fromlist=["solution_evidence_source_content_hash"],
+            ).solution_evidence_source_content_hash(question)
+        ),
+        resolver=Resolver(),
+    )
+
+    serialized = evidence.to_dict()
+    point = serialized["parts"][0]["evidence_points"][0]
+    assert evidence.schema_version == "question-solution-evidence-v1"
+    assert "step_index" not in point
+    assert "depends_on" not in point
+
+
+def test_v2_accepts_model_chosen_milestone_granularity_when_structure_is_valid() -> None:
+    question = _question(1)
+    payload = _v2_process_evidence_payload(1, split_steps=True)
+    part = payload["parts"][0]
+    part["evidence_points"] = [
+        {
+            **part["evidence_points"][0],
+            "target": "先求∠B，再求∠ACD",
+            "observable_evidence": "先写∠B，再写∠ACD",
+            "answer_anchor": "∠B=90°-x",
+        },
+        {
+            **part["evidence_points"][2],
+            "step_index": 2,
+            "depends_on": ["step-1"],
+        },
+    ]
+
+    evidence = QuestionSolutionEvidence.from_model_dict(
+        payload,
+        question_id=1,
+        source_content_hash=(
+            __import__(
+                "question_bank.training_criteria.analysis",
+                fromlist=["solution_evidence_source_content_hash"],
+            ).solution_evidence_source_content_hash(question)
+        ),
+        resolver=Resolver(),
+    )
+
+    assert len(evidence.parts[0].evidence_points) == 2
+
+
+def test_v2_does_not_semantically_reject_generic_but_structurally_valid_text() -> None:
+    question = _question(1)
+    payload = _v2_process_evidence_payload(1, split_steps=False, atomic=True)
+    part = payload["parts"][0]
+    part["full_answer"] = "完成本题推导。"
+    point = part["evidence_points"][0]
+    point.update(
+        {
+            "target": "完成本题推导",
+            "justification": "依据相关数学知识",
+            "answer_anchor": "完成本题推导",
+            "observable_evidence": "写出必要过程",
+        }
+    )
+
+    evidence = QuestionSolutionEvidence.from_model_dict(
+        payload,
+        question_id=1,
+        source_content_hash=(
+            __import__(
+                "question_bank.training_criteria.analysis",
+                fromlist=["solution_evidence_source_content_hash"],
+            ).solution_evidence_source_content_hash(question)
+        ),
+        resolver=Resolver(),
+    )
+
+    assert evidence.parts[0].evidence_points[0].target == "完成本题推导"
+
+
+def test_v2_exact_objective_uses_canonical_answer_when_full_answer_is_empty() -> None:
+    question = _question(1)
+    payload = _v2_process_evidence_payload(1, split_steps=False, atomic=True)
+    part = payload["parts"][0]
+    part.update(
+        {
+            "response_mode": "exact_objective",
+            "canonical_answer": "B",
+            "full_answer": "",
+            "proof_obligations": [],
+        }
+    )
+    part["evidence_points"] = [
+        {
+            "evidence_point_id": "step-1",
+            "step_index": 1,
+            "target": "选择B",
+            "justification": "与标准答案一致",
+            "answer_anchor": "B",
+            "observable_evidence": "作答为B",
+            "depends_on": [],
+            "fine_term_links": [],
+            "equivalent_rules": [],
+            "counterexamples": [],
+        }
+    ]
+
+    evidence = QuestionSolutionEvidence.from_model_dict(
+        payload,
+        question_id=1,
+        source_content_hash=(
+            __import__(
+                "question_bank.training_criteria.analysis",
+                fromlist=["solution_evidence_source_content_hash"],
+            ).solution_evidence_source_content_hash(question)
+        ),
+        resolver=Resolver(),
+    )
+
+    assert evidence.parts[0].canonical_answer == "B"
+    assert evidence.parts[0].full_answer == ""
+
+
+def test_v2_keeps_a_true_atomic_step_with_two_math_sentences() -> None:
+    question = _question(1)
+    payload = _v2_process_evidence_payload(1, split_steps=False, atomic=True)
+    part = payload["parts"][0]
+    part["full_answer"] = "由 x+1=2。解得 x=1。"
+    part["evidence_points"][0]["answer_anchor"] = "x=1"
+
+    evidence = QuestionSolutionEvidence.from_model_dict(
+        payload,
+        question_id=1,
+        source_content_hash=(
+            __import__(
+                "question_bank.training_criteria.analysis",
+                fromlist=["solution_evidence_source_content_hash"],
+            ).solution_evidence_source_content_hash(question)
+        ),
+        resolver=Resolver(),
+    )
+
+    assert len(evidence.parts[0].evidence_points) == 1
+
+
 def test_in_memory_empty_shortlist_uses_full_vocabulary_without_blocking(
     tmp_path: Path,
 ) -> None:
@@ -1141,6 +1464,59 @@ def test_in_memory_bundle_checkpoints_round_trips_and_retries_only_failed() -> N
     unknown["unknown_path"] = "C:/secret"
     with pytest.raises(ValueError, match="fields"):
         DeferredCombinedAnalysisBundle.from_dict(unknown, resolver=Resolver())
+
+
+def test_in_memory_reanalysis_replaces_only_the_teacher_selected_success() -> None:
+    sources = (
+        ConfigQuestionAnalysisSource(
+            "Q1",
+            _question(1, source_ref="Q1", text="证明第一个等式成立。"),
+        ),
+        ConfigQuestionAnalysisSource(
+            "Q2",
+            _question(2, source_ref="Q2", text="证明第二个等式成立。"),
+        ),
+    )
+    initial_gateway = QueueGateway(
+        [_combined_payload(1), _combined_payload(2)]
+    )
+    initial = InMemoryCombinedQuestionAnalysisModule(
+        gateway=initial_gateway,
+        resolver=Resolver(),
+    ).analyze(
+        operation_id="config-source-analysis:quality-retry",
+        curriculum_volume_id=VOLUME_ID,
+        sources=sources,
+    )
+    q1_before = initial.get("Q1").to_checkpoint_dict()
+    old_request_ids = {request.request_id for request in initial.requests}
+
+    retry_gateway = QueueGateway([_combined_payload(2)])
+    retried = InMemoryCombinedQuestionAnalysisModule(
+        gateway=retry_gateway,
+        resolver=Resolver(),
+    ).reanalyze_selected(
+        initial,
+        sources=sources,
+        curriculum_volume_id=VOLUME_ID,
+        source_refs=("Q2",),
+    )
+
+    assert retried.status == "succeeded"
+    assert retry_gateway.calls == [(2,)]
+    assert retried.get("Q1").to_checkpoint_dict() == q1_before
+    assert [item.source_question_ref for item in retried.items] == ["Q1", "Q2"]
+    assert retried.requests[-1].request_id not in old_request_ids
+    with pytest.raises(ValueError, match="successful analyses"):
+        InMemoryCombinedQuestionAnalysisModule(
+            gateway=QueueGateway([]),
+            resolver=Resolver(),
+        ).reanalyze_selected(
+            retried,
+            sources=sources,
+            curriculum_volume_id=VOLUME_ID,
+            source_refs=("Q3",),
+        )
 
 
 def test_in_memory_unknown_request_outcome_is_durable_and_never_normally_retried() -> None:

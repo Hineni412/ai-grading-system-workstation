@@ -293,6 +293,7 @@ function failureCategoryCopy(category: string): string {
   if (category === 'model_transport') return '模型服务或网络请求失败'
   if (category === 'model_response_parse') return '模型已返回，但 JSON 无法解析'
   if (category === 'model_output_contract') return '模型已返回，但题目结构不符合约定'
+  if (category === 'evidence_granularity_insufficient') return '模型已返回，但评分点粒度不足'
   if (category === 'local_validation') return '模型已返回，但本地业务校验未通过'
   return '模型请求或结果处理失败'
 }
