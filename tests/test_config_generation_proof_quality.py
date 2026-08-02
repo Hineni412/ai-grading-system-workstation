@@ -239,6 +239,55 @@ def test_quality_blocks_generic_rewordings_in_a_one_step_multi_point_proof() -> 
     assert any("缺少具体扣分证据" in warning for warning in warnings)
 
 
+def test_quality_blocks_unseen_generic_rewordings_without_question_evidence() -> None:
+    variants = [
+        {
+            "core_goal": "完整解答本小题",
+            "required": "呈现解答",
+            "obligation": "完成论证",
+            "deduction": "视情况扣除分数",
+        },
+        {
+            "core_goal": "规范呈现本小题的论证",
+            "required": "清晰展示作答思路",
+            "obligation": "论证题目所述命题",
+            "deduction": "视完成情况给分",
+        },
+        {
+            "core_goal": "阐述求解脉络",
+            "required": "交代推演详情",
+            "obligation": "建立说理链条",
+            "deduction": "按表现酌定分值",
+        },
+    ]
+
+    for variant in variants:
+        payload = _proof_payload(
+            score=6,
+            proof_obligations=[variant["obligation"]],
+            deduction_policy=[
+                {
+                    "rule_id": "generic_rewording",
+                    "description": variant["deduction"],
+                }
+            ],
+            steps=[
+                {
+                    "step_id": "S1",
+                    "step_score": 6,
+                    "core_goal": variant["core_goal"],
+                    "required_elements": [variant["required"]],
+                }
+            ],
+        )
+
+        warnings = collect_generated_config_quality_warnings(payload)
+
+        assert any("可独立评分的逻辑步骤" in warning for warning in warnings), variant
+        assert any("缺少具体证明义务" in warning for warning in warnings), variant
+        assert any("缺少具体扣分证据" in warning for warning in warnings), variant
+
+
 def test_quality_accepts_a_detailed_nontrivial_proof() -> None:
     payload = _proof_payload(
         score=6,
