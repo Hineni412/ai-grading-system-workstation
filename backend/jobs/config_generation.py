@@ -65,6 +65,7 @@ from question_bank.training_criteria import (
     question_analysis_input_from_config_source,
 )
 from backend.config_workspace.deferred_analysis import (
+    DeferredAnalysisArtifact,
     DeferredAnalysisArtifactStore,
 )
 from backend.config_generation.normalization import (
@@ -82,6 +83,7 @@ from session_manager import (
 )
 
 from .manager import JobCancellationRequested, JobContext
+from .question_bank_sync import run_deferred_question_bank_intake
 
 
 # Compatibility names for older callers/tests. Both execute the new batched
@@ -308,6 +310,7 @@ def run_config_generation_job(
     question_bank_db_path: Path | None = None,
     tagging_ai_service_factory: Callable[[], Any] | None = None,
     taxonomy_governance: Any | None = None,
+    question_bank_intake_runner: Callable[..., dict[str, object]] | None = None,
 ) -> dict[str, object]:
     input_id = str(context.payload.get("input_id") or "")
     mode = str(context.payload.get("mode") or "").strip()
@@ -322,6 +325,7 @@ def run_config_generation_job(
             question_bank_db_path=question_bank_db_path,
             tagging_ai_service_factory=tagging_ai_service_factory,
             taxonomy_governance=taxonomy_governance,
+            question_bank_intake_runner=question_bank_intake_runner,
         )
     except JobCancellationRequested:
         draft = _draft_path(upload_config_dir, context.job_id)
@@ -409,6 +413,7 @@ def _run_config_generation_job_impl(
     question_bank_db_path: Path | None = None,
     tagging_ai_service_factory: Callable[[], Any] | None = None,
     taxonomy_governance: Any | None = None,
+    question_bank_intake_runner: Callable[..., dict[str, object]] | None = None,
 ) -> dict[str, object]:
     session_id = _required_int(context.payload, "session_id")
     session = db.get_grading_session(session_id)
@@ -667,6 +672,7 @@ def _run_config_generation_job_impl(
         context.raise_if_cancelled()
 
     evidence_artifact_hash = ""
+    analysis_artifact: DeferredAnalysisArtifact | None = None
     evidence_flow = (
         sync_to_question_bank
         and source_record is not None
@@ -758,6 +764,7 @@ def _run_config_generation_job_impl(
         ):
             analysis_bundle = previous_artifact.bundle
             evidence_artifact_hash = previous_artifact.content_hash
+            analysis_artifact = previous_artifact
         else:
             tagging_service = tagging_ai_service_factory()
             sources = _config_analysis_sources(
@@ -833,6 +840,16 @@ def _run_config_generation_job_impl(
                 ),
                 checkpoint=evidence_checkpoint,
             )
+        artifact = artifact_store.save(
+            artifact_id=analysis_artifact_id,
+            session_id=session_id,
+            source_id=source_id,
+            source_revision=source_revision,
+            curriculum_volume_id=curriculum_volume_id,
+            bundle=analysis_bundle,
+        )
+        evidence_artifact_hash = artifact.content_hash
+        analysis_artifact = artifact
         if analysis_bundle.status != "succeeded":
             payload = _deferred_analysis_draft(
                 analysis_bundle,
@@ -840,15 +857,6 @@ def _run_config_generation_job_impl(
             )
             checkpoint(payload)
         else:
-            artifact = artifact_store.save(
-                artifact_id=analysis_artifact_id,
-                session_id=session_id,
-                source_id=source_id,
-                source_revision=source_revision,
-                curriculum_volume_id=curriculum_volume_id,
-                bundle=analysis_bundle,
-            )
-            evidence_artifact_hash = artifact.content_hash
             structure = analysis_bundle.compose_generated_config(
                 exam_title=str(session.get("name") or "待命名试卷"),
             )
@@ -994,6 +1002,74 @@ def _run_config_generation_job_impl(
         or uncertain_ids
         or bool(score_allocation["score_allocation_pending"])
     ):
+        if (
+            sync_to_question_bank
+            and analysis_artifact is not None
+            and source_record is not None
+            and question_bank_db_path is not None
+            and tagging_ai_service_factory is not None
+            and taxonomy_governance is not None
+        ):
+            resolved_data_root = (
+                Path(data_root)
+                if data_root is not None
+                else _infer_data_root(Path(db.db_path))
+            )
+            intake_runner = (
+                question_bank_intake_runner
+                or run_deferred_question_bank_intake
+            )
+            try:
+                intake_result = intake_runner(
+                    context=context,
+                    session_id=session_id,
+                    artifact=analysis_artifact,
+                    source_filename=source_record.safe_filename,
+                    source_content=source_record.private_source_bytes,
+                    question_bank_db_path=Path(question_bank_db_path),
+                    data_root=resolved_data_root,
+                    ai_service_factory=tagging_ai_service_factory,
+                    taxonomy_governance=taxonomy_governance,
+                )
+            except JobCancellationRequested:
+                raise
+            except Exception:
+                summary["question_bank_sync_state"] = "intake_failed"
+                summary["question_bank_sync_error"] = (
+                    "题目分析结果已保留，但试卷暂时没有写入题库；"
+                    "评分依据草稿已保留，重试时会按原来源继续收敛。"
+                )
+            else:
+                imported_count = max(
+                    0,
+                    int(intake_result.get("imported_count") or 0),
+                )
+                tagged_count = max(
+                    0,
+                    int(intake_result.get("tagged_count") or 0),
+                )
+                evidence_count = max(
+                    0,
+                    int(intake_result.get("evidence_count") or 0),
+                )
+                summary.update(
+                    {
+                        "question_bank_sync_state": (
+                            "ready_for_config_link"
+                            if str(intake_result.get("outcome") or "")
+                            == "complete"
+                            else "partial"
+                        ),
+                        "question_bank_imported_count": imported_count,
+                        "question_bank_tagged_count": tagged_count,
+                        "question_bank_evidence_count": evidence_count,
+                        "question_bank_failed_count": max(
+                            0,
+                            int(intake_result.get("failed_count") or 0),
+                        ),
+                        "question_bank_config_link_pending": True,
+                    }
+                )
         with session_config_lock(Path(upload_config_dir), session_id):
             current_session = db.get_grading_session(session_id)
             if (

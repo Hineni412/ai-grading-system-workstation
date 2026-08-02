@@ -1750,7 +1750,8 @@ class DeferredCombinedProjectionWriter:
                 source_kind="combined_model",
                 source_reference=(
                     f"deferred-linked:{item.operation_id}:"
-                    f"{item.source_question_ref}:{item.source_content_hash}"
+                    f"{item.source_question_ref}:"
+                    f"{binding.evidence.content_hash}"
                 ),
                 created_by=(
                     f"model:{item.model_name or 'unknown'};"

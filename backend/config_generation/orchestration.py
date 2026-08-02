@@ -71,6 +71,9 @@ class ConfigGenerationPolicy:
         ]
         | None
     ) = None
+    normalize_score_payload: (
+        Callable[[dict[str, Any], list[dict[str, Any]]], list[str]] | None
+    ) = None
 
 
 class _BatchSchemaMismatch(ValueError):
@@ -687,6 +690,7 @@ class ConfigGenerationOrchestrator:
         meta.pop("score_allocation_error", None)
         meta.pop("score_allocation_failure_category", None)
         meta.pop("score_allocation_local_structure_repairs", None)
+        meta.pop("score_allocation_local_score_repairs", None)
         if checkpoint:
             checkpoint(copy.deepcopy(payload))
 
@@ -721,6 +725,7 @@ class ConfigGenerationOrchestrator:
             )
         score_repair: dict[str, Any] | None = None
         score_structure_repairs: list[str] = []
+        score_value_repairs: list[str] = []
         try:
             score_data = self._gateway.request_text(prompt)
             score_meta = (
@@ -751,6 +756,11 @@ class ConfigGenerationOrchestrator:
                 score_data,
                 structure_summary,
             )
+            if self._policy.normalize_score_payload is not None:
+                score_value_repairs = self._policy.normalize_score_payload(
+                    score_data,
+                    structure_summary,
+                )
             self._policy.validate_score_payload(
                 score_data,
                 structure_summary,
@@ -785,6 +795,10 @@ class ConfigGenerationOrchestrator:
                 meta["score_allocation_local_structure_repairs"] = list(
                     dict.fromkeys(score_structure_repairs)
                 )
+            if score_value_repairs:
+                meta["score_allocation_local_score_repairs"] = list(
+                    dict.fromkeys(score_value_repairs)
+                )
             if self._report:
                 self._report(
                     0.91,
@@ -811,6 +825,12 @@ class ConfigGenerationOrchestrator:
             meta["score_allocation_local_json_repair"] = score_repair
         else:
             meta.pop("score_allocation_local_json_repair", None)
+        if score_value_repairs:
+            meta["score_allocation_local_score_repairs"] = list(
+                dict.fromkeys(score_value_repairs)
+            )
+        else:
+            meta.pop("score_allocation_local_score_repairs", None)
         if score_structure_repairs:
             meta["score_allocation_local_structure_repairs"] = list(
                 dict.fromkeys(score_structure_repairs)
