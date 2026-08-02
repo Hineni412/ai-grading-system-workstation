@@ -1245,11 +1245,16 @@ class InMemoryCombinedQuestionAnalysisModule:
                 if item.source_question_ref != source_question_ref
             ]
 
-        def replace_failure(item: DeferredAnalysisFailure) -> None:
+        def replace_failure(
+            item: DeferredAnalysisFailure,
+            *,
+            preserve_previous_context: bool = False,
+        ) -> None:
             previous_failure = prior_failure(item.source_question_ref)
             remove_failure(item.source_question_ref)
             if (
-                item.rejected_result is None
+                preserve_previous_context
+                and item.rejected_result is None
                 and previous_failure is not None
                 and previous_failure.rejected_result is not None
             ):
@@ -1411,8 +1416,10 @@ class InMemoryCombinedQuestionAnalysisModule:
                 request_id = planned.request_id
                 request_fingerprint = planned.request_fingerprint
                 source_refs = planned.source_refs
+                response_received = False
                 try:
                     response = future.result()
+                    response_received = True
                     raw_items = _response_items(response, batch.question_ids)
                 except Exception as exc:
                     category = _analysis_error_category(exc)
@@ -1434,15 +1441,18 @@ class InMemoryCombinedQuestionAnalysisModule:
                             source_ref = by_question_id[
                                 question_id
                             ].source_question_ref
-                            replace_failure(DeferredAnalysisFailure(
-                                source_question_ref=(
-                                    source_ref
+                            replace_failure(
+                                DeferredAnalysisFailure(
+                                    source_question_ref=source_ref,
+                                    analysis_question_id=question_id,
+                                    request_id=request_id,
+                                    batch_hash=batch.batch_hash,
+                                    category=category,
                                 ),
-                                analysis_question_id=question_id,
-                                request_id=request_id,
-                                batch_hash=batch.batch_hash,
-                                category=category,
-                            ))
+                                preserve_previous_context=(
+                                    not response_received
+                                ),
+                            )
                         requests.append(
                             AnalysisRequestCheckpoint(
                                 request_id=request_id,
