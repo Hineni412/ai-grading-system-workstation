@@ -59,6 +59,21 @@ class ApprovedModelGateway(Protocol):
     ) -> str: ...
 
 
+def _physical_request_count(
+    gateway: object,
+    operation_id: str,
+    *,
+    default: int,
+) -> int:
+    lookup = getattr(gateway, "physical_request_count", None)
+    if callable(lookup):
+        try:
+            return max(0, int(lookup(operation_id)))
+        except (TypeError, ValueError):
+            pass
+    return max(0, int(default))
+
+
 class DisabledModelGateway:
     model_name = "未启用真实模型"
 
@@ -331,13 +346,28 @@ class ModelApproval:
                 operation_id=operation_id,
             )
         except ModelDispatchDisabled:
-            self._set_state(preview_id, "failed_before_send", "model_disabled", 0)
+            self._set_state(
+                preview_id,
+                "failed_before_send",
+                "model_disabled",
+                _physical_request_count(self.gateway, operation_id, default=0),
+            )
             return self.status(token=token, operation_id=operation_id)
         except ModelResultUnknown:
-            self._set_state(preview_id, "result_unknown", "result_unknown", 1)
+            self._set_state(
+                preview_id,
+                "result_unknown",
+                "result_unknown",
+                _physical_request_count(self.gateway, operation_id, default=1),
+            )
             return self.status(token=token, operation_id=operation_id)
         except Exception:
-            self._set_state(preview_id, "result_unknown", "dispatch_error", 1)
+            self._set_state(
+                preview_id,
+                "result_unknown",
+                "dispatch_error",
+                _physical_request_count(self.gateway, operation_id, default=1),
+            )
             return self.status(token=token, operation_id=operation_id)
 
         result_object_id = f"model-result-{preview_id}"
@@ -364,10 +394,15 @@ class ModelApproval:
                     """
                     UPDATE model_approval_operations
                     SET state = 'succeeded', result_object_id = ?,
-                        physical_request_count = 1, updated_at = ?
+                        physical_request_count = ?, updated_at = ?
                     WHERE preview_id = ?
                     """,
-                    (result_object_id, _iso(), preview_id),
+                    (
+                        result_object_id,
+                        _physical_request_count(self.gateway, operation_id, default=1),
+                        _iso(),
+                        preview_id,
+                    ),
                 )
         return self.status(token=token, operation_id=operation_id)
 

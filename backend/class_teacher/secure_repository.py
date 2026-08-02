@@ -20,7 +20,35 @@ def _aad(object_type: str, object_id: str, field: str) -> bytes:
 
 
 class EncryptedObjectRepository:
-    """The only persistence boundary allowed to handle protected payloads."""
+    """Compatibility repository for legacy encrypted and debug plaintext rows."""
+
+    _PLAINTEXT_MARKER = b"plaintext-json-v1"
+
+    def __init__(self, *, plaintext: bool = False) -> None:
+        self.plaintext = bool(plaintext)
+
+    @classmethod
+    def requires_plaintext_migration(cls, connection: sqlite3.Connection) -> bool:
+        """Fail closed when a debug plaintext service sees a legacy vault."""
+
+        try:
+            tables = {
+                str(row[0])
+                for row in connection.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table'"
+                )
+            }
+            if "vault_metadata" not in tables or "encrypted_objects" not in tables:
+                return True
+            if connection.execute("SELECT 1 FROM vault_metadata LIMIT 1").fetchone():
+                return True
+            row = connection.execute(
+                "SELECT 1 FROM encrypted_objects WHERE payload_nonce <> ? LIMIT 1",
+                (cls._PLAINTEXT_MARKER,),
+            ).fetchone()
+            return row is not None
+        except sqlite3.DatabaseError:
+            return True
 
     def put(
         self,
@@ -59,18 +87,29 @@ class EncryptedObjectRepository:
                 (object_id,),
             ).fetchone()["created_at"]
 
-        cek = random_key()
-        wrapped_cek = seal(vmk, cek, _aad(object_type, object_id, "cek"))
-        protected = seal(
-            cek,
-            json.dumps(
-                payload,
-                ensure_ascii=False,
-                sort_keys=True,
-                separators=(",", ":"),
-            ).encode("utf-8"),
-            _aad(object_type, object_id, "payload"),
-        )
+        serialized = json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        if self.plaintext:
+            cek_nonce = b""
+            wrapped_cek_bytes = b""
+            payload_nonce = self._PLAINTEXT_MARKER
+            payload_bytes = serialized
+        else:
+            cek = random_key()
+            wrapped_cek = seal(vmk, cek, _aad(object_type, object_id, "cek"))
+            protected = seal(
+                cek,
+                serialized,
+                _aad(object_type, object_id, "payload"),
+            )
+            cek_nonce = wrapped_cek.nonce
+            wrapped_cek_bytes = wrapped_cek.ciphertext
+            payload_nonce = protected.nonce
+            payload_bytes = protected.ciphertext
         connection.execute(
             """
             INSERT INTO encrypted_objects (
@@ -91,10 +130,10 @@ class EncryptedObjectRepository:
                 object_id,
                 object_type,
                 FORMAT_VERSION,
-                wrapped_cek.nonce,
-                wrapped_cek.ciphertext,
-                protected.nonce,
-                protected.ciphertext,
+                cek_nonce,
+                wrapped_cek_bytes,
+                payload_nonce,
+                payload_bytes,
                 revision,
                 created_at,
                 _now(),
@@ -120,18 +159,21 @@ class EncryptedObjectRepository:
                 status_code=404,
             )
         object_type = str(row["object_type"])
-        cek = open_sealed(
-            vmk,
-            bytes(row["cek_nonce"]),
-            bytes(row["wrapped_cek"]),
-            _aad(object_type, object_id, "cek"),
-        )
-        payload = open_sealed(
-            cek,
-            bytes(row["payload_nonce"]),
-            bytes(row["payload_ciphertext"]),
-            _aad(object_type, object_id, "payload"),
-        )
+        if bytes(row["payload_nonce"]) == self._PLAINTEXT_MARKER:
+            payload = bytes(row["payload_ciphertext"])
+        else:
+            cek = open_sealed(
+                vmk,
+                bytes(row["cek_nonce"]),
+                bytes(row["wrapped_cek"]),
+                _aad(object_type, object_id, "cek"),
+            )
+            payload = open_sealed(
+                cek,
+                bytes(row["payload_nonce"]),
+                bytes(row["payload_ciphertext"]),
+                _aad(object_type, object_id, "payload"),
+            )
         try:
             decoded = json.loads(payload.decode("utf-8"))
             if not isinstance(decoded, dict):

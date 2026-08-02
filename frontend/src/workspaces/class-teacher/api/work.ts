@@ -56,7 +56,7 @@ export interface WorkPlanPreview {
   model_name: string
   destination_fingerprint: string
   model_enabled: boolean
-  max_physical_requests: 1
+  max_physical_requests: number | null
   physical_request_count: number
 }
 
@@ -202,7 +202,9 @@ function planPreview(value: unknown): WorkPlanPreview {
     model_name: string(item.model_name),
     destination_fingerprint: string(item.destination_fingerprint),
     model_enabled: boolean(item.model_enabled),
-    max_physical_requests: number(item.max_physical_requests) as 1,
+    max_physical_requests: item.max_physical_requests === null
+      ? null
+      : number(item.max_physical_requests),
     physical_request_count: number(item.physical_request_count),
   }
 }

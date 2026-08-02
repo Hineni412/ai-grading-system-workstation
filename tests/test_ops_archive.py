@@ -55,7 +55,7 @@ def test_inspect_zip_rejects_workspace_data_in_ordinary_packages(
 ) -> None:
     archive = _zip_with_member(
         tmp_path / "workspace.zip",
-        "user_data/workspaces/class-teacher/private.db",
+        "user_data/workspaces/teaching-prep/private.db",
         b"private",
     )
 
@@ -65,6 +65,24 @@ def test_inspect_zip_rejects_workspace_data_in_ordinary_packages(
             policy=OpsArchivePolicy(),
             allowed_roots={"user_data", "config"},
         )
+
+
+def test_inspect_zip_allows_class_teacher_workspace_in_ordinary_packages(
+    tmp_path: Path,
+) -> None:
+    archive = _zip_with_member(
+        tmp_path / "class-teacher-workspace.zip",
+        "user_data/workspaces/class-teacher/student_affairs.db",
+        b"synthetic",
+    )
+
+    inspection = inspect_zip(
+        archive,
+        policy=OpsArchivePolicy(),
+        allowed_roots={"user_data", "config"},
+    )
+
+    assert inspection.file_count == 1
 
 
 def test_inspect_zip_rejects_symlink_member(tmp_path: Path) -> None:

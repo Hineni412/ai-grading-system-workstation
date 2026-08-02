@@ -29,6 +29,20 @@ def _create_database(path: Path, value: str) -> None:
             connection.execute(f"CREATE TABLE {table} (id INTEGER PRIMARY KEY)")
 
 
+def _create_class_teacher_database(path: Path, value: str, *, kind: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    required = (
+        ("schema_migrations", "vault_metadata", "encrypted_objects", "access_audit")
+        if kind == "student_affairs"
+        else ("schema_migrations", "work_nodes", "work_edges", "work_operations")
+    )
+    with sqlite3.connect(path) as connection:
+        connection.execute("CREATE TABLE sample (value TEXT)")
+        connection.execute("INSERT INTO sample(value) VALUES (?)", (value,))
+        for table in required:
+            connection.execute(f"CREATE TABLE {table} (id INTEGER PRIMARY KEY)")
+
+
 def _paths(tmp_path: Path) -> SimpleNamespace:
     project_root = tmp_path / "project"
     data_root = project_root / "user_data"
@@ -219,6 +233,31 @@ def test_restore_clears_preexisting_database_companions_and_rolls_back_safely(
     assert journal.load_public(OPERATION_ID)["status"] == (
         "rolled_back" if fail_apply else "applied"
     )
+
+
+def test_restore_validates_and_replaces_class_teacher_database_as_sqlite(
+    tmp_path: Path,
+) -> None:
+    paths = _paths(tmp_path)
+    target = paths.data_root / "workspaces" / "class-teacher" / "student_affairs.db"
+    source = tmp_path / "restored-student-affairs.db"
+    _create_class_teacher_database(target, "before", kind="student_affairs")
+    _create_class_teacher_database(source, "restored", kind="student_affairs")
+    journal = _prepare_restore(
+        paths,
+        {"user_data/workspaces/class-teacher/student_affairs.db": source.read_bytes()},
+    )
+    Path(f"{target}-wal").write_bytes(b"stale-wal")
+    Path(f"{target}-shm").write_bytes(b"stale-shm")
+
+    assert apply_pending_operation(paths=paths) == 0
+
+    with sqlite3.connect(target) as connection:
+        assert connection.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+        assert connection.execute("SELECT value FROM sample").fetchone()[0] == "restored"
+    assert not Path(f"{target}-wal").exists()
+    assert not Path(f"{target}-shm").exists()
+    assert journal.load_public(OPERATION_ID)["status"] == "applied"
 
 
 def test_companion_cleanup_failure_already_has_main_database_rollback_record(
