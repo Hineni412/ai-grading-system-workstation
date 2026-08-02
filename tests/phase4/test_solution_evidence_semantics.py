@@ -1027,6 +1027,71 @@ def test_oversized_rejected_result_degrades_to_exact_error_only() -> None:
     assert gateway.repair_contexts == [{}]
 
 
+def test_new_oversized_rejection_does_not_pair_old_json_with_new_error() -> None:
+    source = ConfigQuestionAnalysisSource(
+        "Q11",
+        _question(11, source_ref="Q11"),
+    )
+    first_rejected = _cross_part_dependency_payload(11)
+    initial = InMemoryCombinedQuestionAnalysisModule(
+        gateway=QueueGateway([first_rejected]),
+        resolver=Resolver(),
+    ).analyze(
+        operation_id="config-source-analysis:replacement-too-large",
+        curriculum_volume_id=VOLUME_ID,
+        sources=(source,),
+    )
+    first_error = initial.failures[0].validation_error
+    assert initial.failures[0].rejected_result == first_rejected["results"][0]
+
+    oversized_rejected = _cross_part_dependency_payload(11)
+    oversized_rejected["results"][0]["solution_evidence"]["rationale"] = (
+        "新" * 55_000
+    )
+    replaced = InMemoryCombinedQuestionAnalysisModule(
+        gateway=QueueGateway([oversized_rejected]),
+        resolver=Resolver(),
+    ).retry_failed(
+        initial,
+        sources=(source,),
+        curriculum_volume_id=VOLUME_ID,
+    )
+
+    assert replaced.status == "failed"
+    replacement_failure = replaced.failures[0]
+    assert replacement_failure.rejected_result is None
+    assert replacement_failure.validation_error
+    assert replacement_failure.validation_error != first_error or (
+        replacement_failure.request_id != initial.failures[0].request_id
+    )
+
+    class OrdinaryRetryGateway(QueueGateway):
+        def __init__(self) -> None:
+            super().__init__([_cross_part_dependency_payload(11, repaired=True)])
+            self.repair_contexts: list[Mapping[str, Any]] = []
+
+        def analyze(self, batch, **kwargs):
+            self.repair_contexts.append(batch.questions[0].repair_context)
+            return super().analyze(batch, **kwargs)
+
+    gateway = OrdinaryRetryGateway()
+    completed = InMemoryCombinedQuestionAnalysisModule(
+        gateway=gateway,
+        resolver=Resolver(),
+    ).retry_failed(
+        DeferredCombinedAnalysisBundle.from_dict(
+            replaced.to_dict(),
+            resolver=Resolver(),
+        ),
+        sources=(source,),
+        curriculum_volume_id=VOLUME_ID,
+    )
+
+    assert completed.status == "succeeded"
+    assert gateway.calls == [(11,)]
+    assert gateway.repair_contexts == [{}]
+
+
 def test_in_memory_normalizes_machine_ids_candidate_names_and_duplicate_links() -> None:
     payload = copy.deepcopy(_combined_payload(1))
     part = payload["results"][0]["solution_evidence"]["parts"][0]
