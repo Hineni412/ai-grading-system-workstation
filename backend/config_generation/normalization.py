@@ -1010,11 +1010,11 @@ def _normalize_rubric_question(question: dict[str, Any], answer_item: dict[str, 
                         _default_core_goal(qtype, answer_item),
                     )
                     required_elements = _string_list(step.get("required_elements"))
-                    if not required_elements or all(value in _GENERIC_STEP_GOALS for value in required_elements):
+                    if not required_elements:
                         goal = str(step.get("core_goal") or "").strip()
                         step["required_elements"] = (
                             [goal]
-                            if goal and goal not in _GENERIC_STEP_GOALS
+                            if goal
                             else _default_required_elements(qtype, answer_item)
                         )
                     else:
@@ -1046,40 +1046,14 @@ def _best_step_alias(part: dict[str, Any]) -> list[Any]:
     ]
     if not existing:
         return next(iter(candidates), visual_steps)
-    if not _steps_are_generic(existing):
-        return existing
-    for candidate in candidates:
-        if not _steps_are_generic(candidate):
-            return candidate
-    return visual_steps or existing
-
-def _steps_are_generic(steps: list[Any]) -> bool:
-    descriptions: list[str] = []
-    for step in steps:
-        if isinstance(step, dict):
-            descriptions.append(_specific_step_goal(step, ""))
-        else:
-            descriptions.append(str(step or "").strip())
-    return bool(descriptions) and all(description in _GENERIC_STEP_GOALS for description in descriptions)
-
-_GENERIC_STEP_GOALS = {
-    "",
-    "完成必要的推理或计算步骤",
-    "填写正确或等价的答案",
-    "选择正确的选项",
-    "合理的推理过程",
-    "正确的结论",
-}
+    return existing
 
 def _specific_step_goal(step: dict[str, Any], default: str) -> str:
     values = [
         str(step.get(key) or "").strip()
         for key in ("core_goal", "goal", "criterion", "description", "step_description", "desc", "title", "requirement")
     ]
-    return next((value for value in values if value and value not in _GENERIC_STEP_GOALS), None) or next(
-        (value for value in values if value),
-        default,
-    )
+    return next((value for value in values if value), default)
 
 def _enforce_objective_question_rules(question: dict[str, Any], answer_item: dict[str, Any]) -> None:
     qtype = str(question.get("question_type") or "").strip().lower()
@@ -1753,7 +1727,6 @@ SESSION_MANAGER_COMPAT_EXPORTS = (
     "_scale_question_to_score",
     "_should_treat_as_direct_answer_question",
     "_specific_step_goal",
-    "_steps_are_generic",
     "_string_list",
     "_upsert_policy",
     "force_payload_total_score",

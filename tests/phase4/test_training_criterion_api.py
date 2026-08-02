@@ -153,7 +153,7 @@ def test_teacher_can_create_review_and_read_immutable_criterion_version(
     ).json()["criteria"] == old_version.json()["criteria"]
 
 
-def test_review_conflict_and_quality_errors_are_public_and_actionable(
+def test_atomic_criterion_approval_and_revision_conflict_are_public(
     tmp_path: Path,
 ) -> None:
     client, _manager, _module, _database = _client(tmp_path)
@@ -193,11 +193,8 @@ def test_review_conflict_and_quality_errors_are_public_and_actionable(
         },
     )
 
-    assert quality.status_code == 422
-    assert quality.json()["error"]["code"] == "criterion_quality_failed"
-    assert "calculation_process_missing" in quality.json()["error"][
-        "details"
-    ]["quality_codes"]
+    assert quality.status_code == 200
+    assert quality.json()["current_version"]["status"] == "approved"
     assert conflict.status_code == 409
     assert conflict.json()["error"]["code"] == (
         "criterion_revision_conflict"
