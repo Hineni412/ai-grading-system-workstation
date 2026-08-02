@@ -44,6 +44,12 @@ class ProjectionValidationError(ValueError):
     pass
 
 
+class GatewayResponseParseError(ValueError):
+    """A physical model response arrived but its payload was unusable."""
+
+    pass
+
+
 class TaxonomyProjectionReviewRequired(ValueError):
     """The scoring payload is usable but its tag projection needs a teacher."""
 

@@ -6,6 +6,7 @@ import json
 import threading
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Mapping
 
 import pytest
@@ -36,6 +37,7 @@ from question_bank.training_criteria import (
     DeferredCombinedAnalysisBundle,
     GatewayBatchResponse,
     InMemoryCombinedQuestionAnalysisModule,
+    OpenAICombinedAnalysisGateway,
     QuestionAnalysisInput,
     TaxonomyProjectionReviewRequired,
     DeferredCombinedProjectionWriter,
@@ -1090,6 +1092,43 @@ def test_new_oversized_rejection_does_not_pair_old_json_with_new_error() -> None
     assert completed.status == "succeeded"
     assert gateway.calls == [(11,)]
     assert gateway.repair_contexts == [{}]
+
+
+def test_received_invalid_json_does_not_preserve_old_repair_context() -> None:
+    source = ConfigQuestionAnalysisSource(
+        "Q11",
+        _question(11, source_ref="Q11"),
+    )
+    initial = InMemoryCombinedQuestionAnalysisModule(
+        gateway=QueueGateway([_cross_part_dependency_payload(11)]),
+        resolver=Resolver(),
+    ).analyze(
+        operation_id="config-source-analysis:received-invalid-json",
+        curriculum_volume_id=VOLUME_ID,
+        sources=(source,),
+    )
+    assert initial.failures[0].rejected_result is not None
+
+    class InvalidJsonProtocol:
+        def responses(self, **_kwargs):
+            return SimpleNamespace(output_text="{not-json", usage={})
+
+    failed = InMemoryCombinedQuestionAnalysisModule(
+        gateway=OpenAICombinedAnalysisGateway(
+            protocol_adapter=InvalidJsonProtocol(),
+            model_name="synthetic-model",
+        ),
+        resolver=Resolver(),
+    ).retry_failed(
+        initial,
+        sources=(source,),
+        curriculum_volume_id=VOLUME_ID,
+    )
+
+    assert failed.status == "failed"
+    assert failed.failures[0].category == "parse"
+    assert failed.failures[0].rejected_result is None
+    assert failed.failures[0].validation_error == ""
 
 
 def test_in_memory_normalizes_machine_ids_candidate_names_and_duplicate_links() -> None:

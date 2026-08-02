@@ -22,6 +22,7 @@ from question_bank.solution_evidence.repository import (
 )
 from question_bank.training_criteria.analysis import (
     GatewayBatchResponse,
+    GatewayResponseParseError,
     PlannedAnalysisBatch,
     QuestionAnalysisGateway,
     QuestionAnalysisInput,
@@ -1422,6 +1423,10 @@ class InMemoryCombinedQuestionAnalysisModule:
                     response_received = True
                     raw_items = _response_items(response, batch.question_ids)
                 except Exception as exc:
+                    response_received = response_received or isinstance(
+                        exc,
+                        GatewayResponseParseError,
+                    )
                     category = _analysis_error_category(exc)
                     if _analysis_outcome_is_unknown(exc):
                         requests.append(
