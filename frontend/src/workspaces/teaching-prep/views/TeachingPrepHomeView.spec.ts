@@ -41,6 +41,7 @@ function mockEmptyCatalog(): void {
   vi.spyOn(teachingPrepCatalogApi, 'listCurricula').mockResolvedValue([])
   vi.spyOn(teachingPrepCatalogApi, 'listSemesters').mockResolvedValue([])
   vi.spyOn(teachingPrepCatalogApi, 'listMaterials').mockResolvedValue([])
+  vi.spyOn(teachingPrepCatalogApi, 'listMaterialParseJobs').mockResolvedValue([])
 }
 
 async function mountAt(query = '') {
@@ -88,7 +89,7 @@ describe('TeachingPrepHomeView workbench shell', () => {
     mockEmptyCatalog()
     const { app, host, router } = await mountAt('?workspace=materials&stage=materials')
 
-    expect(host.textContent).toContain('资料对应哪些课时和原页？')
+    expect(host.textContent).toContain('建立可复用的学期资料目录')
     expect(router.currentRoute.value.query).toMatchObject({
       workspace: 'materials',
       stage: 'materials',

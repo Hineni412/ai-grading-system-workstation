@@ -4,7 +4,7 @@ import io
 import re
 import zipfile
 from collections import Counter
-from collections.abc import Callable
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -44,6 +44,13 @@ class ParsedMaterialUnit:
     preview_png: bytes
 
 
+@dataclass(frozen=True, slots=True)
+class ParsedMaterialText:
+    extracted_text: str
+    formula_review_required: bool
+    printed_page_number: int | None
+
+
 class MaterialParser:
     def __init__(
         self,
@@ -67,6 +74,127 @@ class MaterialParser:
         if material_type == "image":
             return self._parse_image(path)
         raise TeachingPrepValidationError("material type is unsupported")
+
+    def unit_count(self, path: Path, *, material_type: str) -> int:
+        if material_type == "pdf":
+            import fitz
+
+            try:
+                with fitz.open(path) as document:
+                    return int(document.page_count)
+            except Exception as exc:
+                raise TeachingPrepValidationError(
+                    "PDF could not be opened"
+                ) from exc
+        if material_type == "pptx":
+            try:
+                with zipfile.ZipFile(path) as archive:
+                    count = sum(
+                        1
+                        for name in archive.namelist()
+                        if _SLIDE_FILE.fullmatch(name)
+                    )
+            except (OSError, zipfile.BadZipFile) as exc:
+                raise TeachingPrepValidationError(
+                    "PPTX could not be opened"
+                ) from exc
+            if count <= 0:
+                raise TeachingPrepValidationError(
+                    "PPTX contains no readable slides"
+                )
+            return count
+        if material_type == "image":
+            return 1
+        raise TeachingPrepValidationError("material type is unsupported")
+
+    def iter_preview_units(
+        self,
+        path: Path,
+        *,
+        material_type: str,
+        unit_indexes: Iterable[int] | None = None,
+    ) -> Iterator[ParsedMaterialUnit]:
+        requested = (
+            None
+            if unit_indexes is None
+            else {int(index) for index in unit_indexes if int(index) > 0}
+        )
+        if material_type == "pdf":
+            yield from self._iter_pdf_preview_units(path, requested=requested)
+            return
+        units = self.parse(path, material_type=material_type)
+        for unit in units:
+            if requested is None or unit.unit_index in requested:
+                yield unit
+
+    def create_ocr_engine(self) -> object:
+        return self._ocr_engine_factory()
+
+    @staticmethod
+    def ocr_preview(
+        preview_png: bytes,
+        ocr_engine: object,
+    ) -> ParsedMaterialText:
+        text, printed_page_number = _ocr_page(preview_png, ocr_engine)
+        return ParsedMaterialText(
+            extracted_text=text,
+            formula_review_required=bool(text and _FORMULA_HINT.search(text)),
+            printed_page_number=printed_page_number,
+        )
+
+    @staticmethod
+    def _iter_pdf_preview_units(
+        path: Path,
+        *,
+        requested: set[int] | None,
+    ) -> Iterator[ParsedMaterialUnit]:
+        import fitz
+
+        try:
+            document = fitz.open(path)
+        except Exception as exc:
+            raise TeachingPrepValidationError(
+                "PDF could not be opened"
+            ) from exc
+        try:
+            for index, page in enumerate(document, start=1):
+                if requested is not None and index not in requested:
+                    continue
+                text = str(page.get_text() or "").strip()
+                pixmap = page.get_pixmap(
+                    matrix=fitz.Matrix(1.5, 1.5),
+                    alpha=False,
+                )
+                printed_page_number = _visible_printed_page_number(page)
+                object_summary: dict[str, object] = {
+                    "preview_kind": "rendered",
+                    "width": int(pixmap.width),
+                    "height": int(pixmap.height),
+                    "has_page_images": bool(page.get_images(full=True)),
+                }
+                if printed_page_number is not None:
+                    object_summary.update(
+                        {
+                            "printed_page_number": printed_page_number,
+                            "printed_page_number_source": (
+                                "visible_footer_or_header"
+                            ),
+                        }
+                    )
+                yield ParsedMaterialUnit(
+                    unit_kind="pdf_page",
+                    unit_index=index,
+                    title=_first_line(text),
+                    extracted_text=text,
+                    text_status="embedded" if text else "empty",
+                    formula_review_required=bool(
+                        text and _FORMULA_HINT.search(text)
+                    ),
+                    object_summary=object_summary,
+                    preview_png=pixmap.tobytes("png"),
+                )
+        finally:
+            document.close()
 
     def _parse_pdf(self, path: Path) -> tuple[ParsedMaterialUnit, ...]:
         import fitz
