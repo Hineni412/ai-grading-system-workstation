@@ -913,6 +913,120 @@ def test_legacy_v3_failure_retries_without_unavailable_repair_context() -> None:
     assert gateway.repair_contexts == [{}]
 
 
+def test_targeted_repair_context_survives_uncertain_retry_and_restart() -> None:
+    source = ConfigQuestionAnalysisSource(
+        "Q11",
+        _question(11, source_ref="Q11"),
+    )
+    rejected = _cross_part_dependency_payload(11)
+    initial = InMemoryCombinedQuestionAnalysisModule(
+        gateway=QueueGateway([rejected]),
+        resolver=Resolver(),
+    ).analyze(
+        operation_id="config-source-analysis:repair-timeout",
+        curriculum_volume_id=VOLUME_ID,
+        sources=(source,),
+    )
+    original_failure = initial.failures[0]
+
+    uncertain = InMemoryCombinedQuestionAnalysisModule(
+        gateway=QueueGateway([TimeoutError("synthetic timeout after send")]),
+        resolver=Resolver(),
+    ).retry_failed(
+        initial,
+        sources=(source,),
+        curriculum_volume_id=VOLUME_ID,
+    )
+
+    assert uncertain.status == "needs_resolution"
+    assert uncertain.failed_source_refs == ()
+    assert uncertain.uncertain_source_refs == ("Q11",)
+    assert uncertain.failures == (original_failure,)
+    restored = DeferredCombinedAnalysisBundle.from_dict(
+        uncertain.to_dict(),
+        resolver=Resolver(),
+    )
+
+    class ConfirmedRepairGateway(QueueGateway):
+        def __init__(self) -> None:
+            super().__init__([_cross_part_dependency_payload(11, repaired=True)])
+            self.repair_contexts: list[Mapping[str, Any]] = []
+
+        def analyze(self, batch, **kwargs):
+            self.repair_contexts.append(batch.questions[0].repair_context)
+            return super().analyze(batch, **kwargs)
+
+    gateway = ConfirmedRepairGateway()
+    completed = InMemoryCombinedQuestionAnalysisModule(
+        gateway=gateway,
+        resolver=Resolver(),
+    ).retry_failed(
+        restored,
+        sources=(source,),
+        curriculum_volume_id=VOLUME_ID,
+        retry_source_refs=("Q11",),
+        retry_uncertain=True,
+    )
+
+    assert completed.status == "succeeded"
+    assert completed.failures == ()
+    assert gateway.calls == [(11,)]
+    assert gateway.repair_contexts[0]["previous_result"] == (
+        rejected["results"][0]
+    )
+    assert gateway.repair_contexts[0]["validation_error"] == (
+        original_failure.validation_error
+    )
+
+
+def test_oversized_rejected_result_degrades_to_exact_error_only() -> None:
+    source = ConfigQuestionAnalysisSource(
+        "Q11",
+        _question(11, source_ref="Q11"),
+    )
+    oversized = _cross_part_dependency_payload(11)
+    oversized["results"][0]["solution_evidence"]["rationale"] = "证" * 55_000
+    initial = InMemoryCombinedQuestionAnalysisModule(
+        gateway=QueueGateway([oversized]),
+        resolver=Resolver(),
+    ).analyze(
+        operation_id="config-source-analysis:oversized-repair",
+        curriculum_volume_id=VOLUME_ID,
+        sources=(source,),
+    )
+
+    assert initial.status == "failed"
+    assert initial.failures[0].rejected_result is None
+    assert "part-2" in initial.failures[0].validation_error
+    restored = DeferredCombinedAnalysisBundle.from_dict(
+        initial.to_dict(),
+        resolver=Resolver(),
+    )
+
+    class OversizedFallbackGateway(QueueGateway):
+        def __init__(self) -> None:
+            super().__init__([_cross_part_dependency_payload(11, repaired=True)])
+            self.repair_contexts: list[Mapping[str, Any]] = []
+
+        def analyze(self, batch, **kwargs):
+            self.repair_contexts.append(batch.questions[0].repair_context)
+            return super().analyze(batch, **kwargs)
+
+    gateway = OversizedFallbackGateway()
+    completed = InMemoryCombinedQuestionAnalysisModule(
+        gateway=gateway,
+        resolver=Resolver(),
+    ).retry_failed(
+        restored,
+        sources=(source,),
+        curriculum_volume_id=VOLUME_ID,
+    )
+
+    assert completed.status == "succeeded"
+    assert gateway.calls == [(11,)]
+    assert gateway.repair_contexts == [{}]
+
+
 def test_in_memory_normalizes_machine_ids_candidate_names_and_duplicate_links() -> None:
     payload = copy.deepcopy(_combined_payload(1))
     part = payload["results"][0]["solution_evidence"]["parts"][0]
