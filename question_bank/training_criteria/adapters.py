@@ -27,6 +27,7 @@ from question_bank.services.rich_content_service import (
 from question_bank.training_criteria.analysis import (
     AnalysisProjection,
     GatewayBatchResponse,
+    GatewayResponseParseError,
     GatewayUsage,
     PlannedAnalysisBatch,
     QuestionAnalysisImage,
@@ -236,9 +237,16 @@ class OpenAICombinedAnalysisGateway:
         output_text = str(
             getattr(response, "output_text", "") or ""
         ).strip()
-        payload = json.loads(output_text)
+        try:
+            payload = json.loads(output_text)
+        except (TypeError, ValueError) as exc:
+            raise GatewayResponseParseError(
+                "combined model response JSON parsing failed"
+            ) from exc
         if not isinstance(payload, Mapping):
-            raise ValueError("combined model response must be an object")
+            raise GatewayResponseParseError(
+                "combined model response JSON must be an object"
+            )
         normalized_usage = usage_fields(response)
         return GatewayBatchResponse(
             payload=dict(payload),
