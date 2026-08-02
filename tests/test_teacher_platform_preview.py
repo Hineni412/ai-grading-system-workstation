@@ -230,6 +230,21 @@ def test_preview_guard_accepts_its_forced_isolated_runtime_paths(
     preview._assert_local_data_boundary()
 
 
+def test_git_executable_falls_back_to_the_standard_windows_install(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    git_executable = tmp_path / "Git" / "cmd" / "git.exe"
+    git_executable.parent.mkdir(parents=True)
+    git_executable.write_bytes(b"")
+    monkeypatch.setattr(preview.shutil, "which", lambda _command: None)
+    monkeypatch.setenv("ProgramFiles", str(tmp_path))
+    monkeypatch.delenv("ProgramFiles(x86)", raising=False)
+    monkeypatch.delenv("LOCALAPPDATA", raising=False)
+
+    assert preview._git_executable() == str(git_executable)
+
+
 def test_preview_launcher_reuses_a_running_service_before_starting_another() -> None:
     launcher = (preview.PROJECT_ROOT / "运行三合一预览.bat").read_text(
         encoding="utf-8",
@@ -239,10 +254,24 @@ def test_preview_launcher_reuses_a_running_service_before_starting_another() -> 
     start = launcher.index('call "%~dp0运行.bat"')
     assert probe < start
     assert 'if "%RUNNING_STATUS%"=="0" goto done' in launcher
-    assert 'if not "%RUNNING_STATUS%"=="3" goto preview_not_ready' in launcher
+    assert 'if not "%RUNNING_STATUS%"=="3" goto running_probe_error' in launcher
     assert 'set "AI_GRADING_WORKTREE_DATA_DIR=%~dp0user_data"' in launcher
     assert 'set "AI_GRADING_PREVIEW_INSTANCE_ID=teacher-platform-integration"' in launcher
     assert 'set "AI_GRADING_PREVIEW_HEAD="' in launcher
+
+
+def test_preview_launcher_does_not_misreport_all_failures_as_stale() -> None:
+    launcher = (preview.PROJECT_ROOT / "运行三合一预览.bat").read_text(
+        encoding="utf-8",
+    )
+
+    ensure = launcher.index("teacher_platform_preview.py\" ensure")
+    read_head = launcher.index("teacher_platform_preview.py\" print-head")
+    assert ensure < read_head
+    assert "git -C" not in launcher
+    assert "goto preview_prepare_error" in launcher
+    assert "goto running_probe_error" in launcher
+    assert "The three-workspace preview is not current." not in launcher
 
 
 def test_preview_launcher_uses_windows_crlf_line_endings() -> None:
