@@ -243,3 +243,10 @@ def test_preview_launcher_reuses_a_running_service_before_starting_another() -> 
     assert 'set "AI_GRADING_WORKTREE_DATA_DIR=%~dp0user_data"' in launcher
     assert 'set "AI_GRADING_PREVIEW_INSTANCE_ID=teacher-platform-integration"' in launcher
     assert 'set "AI_GRADING_PREVIEW_HEAD="' in launcher
+
+
+def test_preview_launcher_uses_windows_crlf_line_endings() -> None:
+    launcher = (preview.PROJECT_ROOT / "运行三合一预览.bat").read_bytes()
+
+    assert b"\r\n" in launcher
+    assert b"\n" not in launcher.replace(b"\r\n", b"")
