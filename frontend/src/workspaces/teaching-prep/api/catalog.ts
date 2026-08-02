@@ -1,4 +1,5 @@
 import { apiClient } from '../../../api/client'
+import { decodeJobResponse, type JobResponse } from '../../../api/jobs'
 import {
   assertNoPathLikeKeys,
   isRecord,
@@ -1935,6 +1936,27 @@ export const teachingPrepCatalogApi = {
         },
       },
     )
+  },
+
+  startMaterialParse(
+    materialVersionId: string,
+    signal?: AbortSignal,
+  ): Promise<JobResponse> {
+    return apiClient.request(
+      `/api/teaching-prep/materials/${encodeURIComponent(materialVersionId)}/parse-job`,
+      {
+        method: 'POST',
+        signal,
+        decode: decodeJobResponse,
+      },
+    )
+  },
+
+  listMaterialParseJobs(signal?: AbortSignal): Promise<JobResponse[]> {
+    return apiClient.request('/api/teaching-prep/material-parse-jobs', {
+      signal,
+      decode: payload => itemList(payload, decodeJobResponse),
+    })
   },
 
   listMaterialUnits(
