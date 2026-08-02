@@ -11,6 +11,9 @@ export interface VaultStatus {
   protection_mode?: 'uninitialized' | 'legacy_password_v1' | 'pin_dpapi_current_user_v2'
   protection_state?: 'pending' | 'active' | null
   legacy_upgrade_available?: boolean
+  session_expires_in_seconds?: number
+  status_observed_at?: string
+  lock_reason?: string | null
 }
 
 export interface VaultSession {
@@ -42,6 +45,16 @@ export interface VaultRestorePreview {
   preview_token: string
   expires_in_seconds: number
   requires_complete_replacement: boolean
+  source_relation: 'same_instance' | 'other_instance'
+  backup_schema_version: number
+  current_schema_version: number
+  migration_required: boolean
+  backup_scope_counts: Record<string, number>
+  current_scope_counts: Record<string, number>
+  mode: 'complete_replace'
+  will_replace_current: boolean
+  will_lock_after_confirm: boolean
+  confirmation_phrase: string
 }
 
 function object(value: unknown): Record<string, unknown> {
@@ -62,6 +75,15 @@ function number(value: unknown): number {
 function boolean(value: unknown): boolean {
   if (typeof value !== 'boolean') throw new Error('contract')
   return value
+}
+
+function nullableText(value: unknown): string | null {
+  return value === null || value === undefined ? null : text(value)
+}
+
+function numberRecord(value: unknown): Record<string, number> {
+  const source = object(value)
+  return Object.fromEntries(Object.entries(source).map(([key, item]) => [key, number(item)]))
 }
 
 function status(payload: unknown): VaultStatus {
@@ -91,6 +113,13 @@ function status(payload: unknown): VaultStatus {
     legacy_upgrade_available: value.legacy_upgrade_available === undefined
       ? protectionMode === 'legacy_password_v1'
       : boolean(value.legacy_upgrade_available),
+    session_expires_in_seconds: value.session_expires_in_seconds === undefined
+      ? (boolean(value.locked) ? 0 : number(value.idle_timeout_seconds))
+      : number(value.session_expires_in_seconds),
+    status_observed_at: value.status_observed_at === undefined
+      ? new Date().toISOString()
+      : text(value.status_observed_at),
+    lock_reason: nullableText(value.lock_reason),
   }
 }
 
@@ -151,6 +180,16 @@ function restorePreview(payload: unknown): VaultRestorePreview {
     preview_token: text(value.preview_token),
     expires_in_seconds: number(value.expires_in_seconds),
     requires_complete_replacement: boolean(value.requires_complete_replacement),
+    source_relation: text(value.source_relation) as VaultRestorePreview['source_relation'],
+    backup_schema_version: number(value.backup_schema_version),
+    current_schema_version: number(value.current_schema_version),
+    migration_required: boolean(value.migration_required),
+    backup_scope_counts: numberRecord(value.backup_scope_counts),
+    current_scope_counts: numberRecord(value.current_scope_counts),
+    mode: text(value.mode) as 'complete_replace',
+    will_replace_current: boolean(value.will_replace_current),
+    will_lock_after_confirm: boolean(value.will_lock_after_confirm),
+    confirmation_phrase: text(value.confirmation_phrase),
   }
 }
 
@@ -240,6 +279,18 @@ export const vaultApi = {
       decode: object,
     })
   },
+  changePin(token: string, currentPin: string, newPin: string) {
+    return apiClient.request('/api/class-teacher/vault/pin/change', {
+      method: 'POST',
+      headers: headers(token),
+      body: {
+        current_pin: currentPin,
+        new_pin: newPin,
+        operation_id: operationId(),
+      },
+      decode: object,
+    })
+  },
   lock(token: string) {
     return apiClient.request('/api/class-teacher/vault/lock', {
       method: 'POST',
@@ -308,14 +359,14 @@ export const vaultApi = {
       timeoutMs: 60_000,
     })
   },
-  confirmRestore(token: string, previewToken: string) {
+  confirmRestore(token: string, previewToken: string, confirmationPhrase: string) {
     return apiClient.request('/api/class-teacher/vault/restore/confirm', {
       method: 'POST',
       headers: headers(token),
       body: {
         preview_token: previewToken,
         operation_id: operationId(),
-        confirmation_phrase: '确认恢复班主任工作台',
+        confirmation_phrase: confirmationPhrase,
       },
       decode: object,
       timeoutMs: 60_000,

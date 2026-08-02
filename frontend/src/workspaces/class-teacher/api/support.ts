@@ -82,6 +82,9 @@ export interface SubjectDeletionPreview {
   shared_objects: Array<{ object_id: string; object_type: string }>
   delete_confirmation_phrase: string
   backup_confirmation_phrase: string | null
+  impact_counts?: Record<string, number>
+  projection_count?: number
+  preview_version?: string
 }
 
 export interface AssessmentEvidence {
@@ -212,16 +215,18 @@ export const supportApi = {
   deleteSubject(
     token: string,
     subjectId: string,
-    confirmationPhrase: string,
+    preview: SubjectDeletionPreview,
     backupConfirmationPhrase: string | null,
+    operationIdValue: string,
   ) {
     return apiClient.request(`/api/class-teacher/support/subjects/${subjectId}`, {
       method: 'DELETE',
       headers: headers(token),
       body: {
-        operation_id: operationId(),
-        confirmation_phrase: confirmationPhrase,
+        operation_id: operationIdValue,
+        confirmation_phrase: preview.delete_confirmation_phrase,
         backup_confirmation_phrase: backupConfirmationPhrase,
+        preview_version: preview.preview_version ?? null,
       },
       decode: record,
     })

@@ -1,17 +1,42 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 
 import { ApiError } from '../../../api/errors'
-import { vaultApi, type VaultStatus } from '../api/vault'
-import SensitiveStudentWorkspace from '../components/SensitiveStudentWorkspace.vue'
-import UnifiedWorkBoard from '../components/UnifiedWorkBoard.vue'
+import { vaultApi } from '../api/vault'
+import { projectionR1Api } from '../api/r1'
+import AffairsSurface from '../affairs/AffairsSurface.vue'
+import CalendarSurface from '../ordinary/CalendarSurface.vue'
+import { createOrdinaryWorkModule } from '../ordinary/createOrdinaryWorkModule'
+import TodaySurface from '../ordinary/TodaySurface.vue'
+import { createVaultSessionModule } from '../security/createVaultSessionModule'
+import { provideVaultSession } from '../security/sensitiveSessionContext'
+import ClassTeacherSurfaceTabs from '../shell/ClassTeacherSurfaceTabs.vue'
+import StudentSurface from '../students/StudentSurface.vue'
+import {
+  useClassTeacherRouteState,
+  type ClassTeacherSurface,
+} from '../shell/useClassTeacherRouteState'
 
-const vaultStatus = ref<VaultStatus | null>(null)
+const vaultSession = createVaultSessionModule()
+provideVaultSession(vaultSession)
+const vaultStatus = vaultSession.status
+const sessionToken = vaultSession.token
+const { state: routeState, navigate } = useClassTeacherRouteState()
+const ordinaryWork = createOrdinaryWorkModule()
+const pendingProjectionId = ref('')
+interface ProtectedTarget {
+  gone?: boolean
+  surface: ClassTeacherSurface
+  panel?: 'directory' | 'support' | 'academic' | 'security'
+  target_kind?: string
+  target_id?: string
+  subject_id?: string
+}
+const protectedTarget = ref<ProtectedTarget | null>(null)
 const loading = ref(true)
 const busy = ref(false)
 const message = ref('')
 const errorMessage = ref('')
-const sessionToken = ref('')
 const recoveryKey = ref('')
 const recoveryAcknowledged = ref(false)
 const showRecoveryForm = ref(false)
@@ -35,7 +60,7 @@ let lastServerTouch = 0
 const idleEvents = ['pointerdown', 'keydown', 'scroll'] as const
 
 const initialized = computed(() => vaultStatus.value?.initialized === true)
-const unlocked = computed(() => initialized.value && Boolean(sessionToken.value))
+const unlocked = computed(() => initialized.value && vaultSession.unlocked.value)
 const usesPin = computed(() => (
   vaultStatus.value?.protection_mode === 'pin_dpapi_current_user_v2'
   || vaultStatus.value?.protection_mode === 'uninitialized'
@@ -99,9 +124,9 @@ function resetIdleTimer(): void {
 async function refreshStatus(): Promise<void> {
   try {
     const status = await vaultApi.status(sessionToken.value || undefined)
-    vaultStatus.value = status
+    vaultSession.setStatus(status)
     if (status.locked && sessionToken.value) {
-      sessionToken.value = ''
+      vaultSession.clearImmediately()
       clearSensitiveInputs()
     }
   } catch (error) {
@@ -120,9 +145,9 @@ async function initializeVault(): Promise<void> {
     const result = pinMode
       ? await vaultApi.initializePin(pin.value)
       : await vaultApi.initialize(password.value)
-    sessionToken.value = result.session_token
+    vaultSession.setSession(result.session_token)
     recoveryKey.value = result.recovery_key
-    vaultStatus.value = {
+    vaultSession.setStatus({
       initialized: true,
       locked: false,
       idle_timeout_seconds: result.idle_timeout_seconds,
@@ -131,7 +156,10 @@ async function initializeVault(): Promise<void> {
       protection_mode: pinMode ? 'pin_dpapi_current_user_v2' : 'legacy_password_v1',
       protection_state: pinMode ? 'active' : null,
       legacy_upgrade_available: !pinMode,
-    }
+      session_expires_in_seconds: result.idle_timeout_seconds,
+      status_observed_at: new Date().toISOString(),
+      lock_reason: null,
+    })
     clearSensitiveInputs()
     resetIdleTimer()
   } catch (error) {
@@ -149,16 +177,45 @@ async function unlockVault(): Promise<void> {
     const result = usesPin.value
       ? await vaultApi.unlockPin(pin.value)
       : await vaultApi.unlock(password.value)
-    sessionToken.value = result.session_token
+    vaultSession.setSession(result.session_token)
     if (result.recovery_key) recoveryKey.value = result.recovery_key
     clearSensitiveInputs()
     await refreshStatus()
+    await resolvePendingProjection()
     resetIdleTimer()
   } catch (error) {
     errorMessage.value = errorText(error)
   } finally {
     busy.value = false
   }
+}
+
+async function openRestricted(projectionId: string, projectionType: string | null): Promise<void> {
+  pendingProjectionId.value = projectionId
+  protectedTarget.value = null
+  const affairs = projectionType === 'sensitive_affair'
+  await navigate({ surface: affairs ? 'affairs' : 'students', panel: projectionType === 'attention_followup' ? 'academic' : 'support' })
+  if (unlocked.value) await resolvePendingProjection()
+}
+
+async function resolvePendingProjection(): Promise<void> {
+  if (!pendingProjectionId.value || !sessionToken.value) return
+  const target = await projectionR1Api.resolve(sessionToken.value, pendingProjectionId.value) as unknown as ProtectedTarget
+  protectedTarget.value = target
+  pendingProjectionId.value = ''
+  if (target.gone) {
+    message.value = '这项受保护工作已经不存在，匿名待办已清理。'
+    await navigate({ surface: 'today' })
+    return
+  }
+  await navigate({
+    surface: target.surface,
+    panel: target.panel ?? 'directory',
+  })
+}
+
+async function selectStudentPanel(panel: 'directory' | 'support' | 'academic' | 'security'): Promise<void> {
+  await navigate({ surface: 'students', panel })
 }
 
 async function recoverVault(): Promise<void> {
@@ -172,7 +229,7 @@ async function recoverVault(): Promise<void> {
     const result = usesPin.value
       ? await vaultApi.recoverPin(recoveryInput.value, recoveryNewPin.value)
       : await vaultApi.recover(recoveryInput.value, recoveryNewPassword.value)
-    sessionToken.value = result.session_token
+    vaultSession.setSession(result.session_token)
     showRecoveryForm.value = false
     clearSensitiveInputs()
     await refreshStatus()
@@ -207,7 +264,7 @@ async function upgradeLegacyPin(): Promise<void> {
       upgradeCurrentPassword.value,
       upgradePin.value,
     )
-    sessionToken.value = ''
+    vaultSession.clearImmediately()
     showPinUpgrade.value = false
     clearSensitiveInputs()
     if (idleHandle) clearTimeout(idleHandle)
@@ -221,33 +278,39 @@ async function upgradeLegacyPin(): Promise<void> {
 }
 
 async function lockVault(reason = '敏感保险箱已锁定，普通工作区仍可使用。'): Promise<void> {
-  const token = sessionToken.value
-  sessionToken.value = ''
   recoveryKey.value = ''
   clearSensitiveInputs()
   clearNotices()
   if (idleHandle) clearTimeout(idleHandle)
-  try {
-    if (token) await vaultApi.lock(token)
-  } catch {
-    // The server independently expires the same short-lived session.
-  }
+  await vaultSession.lock(reason)
   message.value = reason
   await refreshStatus()
+}
+
+async function selectSurface(surface: ClassTeacherSurface): Promise<void> {
+  const leavingSensitive = ['affairs', 'students'].includes(routeState.value.surface)
+    && ['today', 'calendar'].includes(surface)
+  if (leavingSensitive) {
+    const locking = lockVault('已离开敏感工作面，学生信息已卸载。')
+    await nextTick()
+    await navigate({ surface })
+    await locking
+    return
+  }
+  await navigate({ surface })
 }
 
 function onActivity(): void {
   resetIdleTimer()
   if (!sessionToken.value || Date.now() - lastServerTouch < 30_000) return
   lastServerTouch = Date.now()
-  void vaultApi.touch(sessionToken.value).catch((error: unknown) => {
+  void vaultSession.touch().catch((error: unknown) => {
     if (error instanceof ApiError && error.code === 'vault_locked') void lockVault()
   })
 }
 
 function onPageHide(): void {
-  const token = sessionToken.value
-  sessionToken.value = ''
+  const token = vaultSession.clearImmediately()
   recoveryKey.value = ''
   clearSensitiveInputs()
   if (token) void vaultApi.lock(token)
@@ -281,16 +344,32 @@ onBeforeUnmount(() => {
       </div>
     </header>
 
-    <UnifiedWorkBoard />
+    <ClassTeacherSurfaceTabs
+      :active="routeState.surface"
+      :locked="!unlocked"
+      @select="selectSurface"
+    />
+
+    <TodaySurface
+      v-if="routeState.surface === 'today'"
+      :module="ordinaryWork"
+      @open-restricted="openRestricted"
+    />
+    <CalendarSurface
+      v-else-if="routeState.surface === 'calendar'"
+      :module="ordinaryWork"
+      @open-restricted="openRestricted"
+    />
 
     <p v-if="message" class="notice notice--success" role="status">{{ message }}</p>
     <p v-if="errorMessage" class="notice notice--danger" role="alert">{{ errorMessage }}</p>
 
+    <template v-if="routeState.surface === 'affairs' || routeState.surface === 'students'">
     <div class="sensitive-divider">
       <div>
         <p class="section-kicker">班级名单与具体学生事项</p>
         <h2>进入本机敏感保险箱</h2>
-        <p>解锁后可配置班级学生名单，或与 AI 讨论并形成经教师确认的学生摘要。</p>
+        <p>{{ routeState.surface === 'affairs' ? '解锁后处理受保护的连续事务与学校流程。' : '解锁后查看学生名单、支持记录、学业证据和高级数据安全。' }}</p>
       </div>
       <span>锁定时不会挂载或读取学生组件</span>
     </div>
@@ -442,11 +521,21 @@ onBeforeUnmount(() => {
           </div>
         </form>
       </section>
-      <SensitiveStudentWorkspace
-        :session-token="sessionToken"
-        @activity="resetIdleTimer"
-        @locked="lockVault($event)"
+      <AffairsSurface
+        v-if="routeState.surface === 'affairs'"
+        :token="sessionToken"
+        :target-id="protectedTarget?.target_kind === 'affair' ? protectedTarget.target_id : null"
       />
+      <StudentSurface
+        v-else
+        :token="sessionToken"
+        :panel="routeState.panel"
+        :status="vaultStatus"
+        :subject-id="protectedTarget?.subject_id ?? null"
+        @navigate="selectStudentPanel"
+        @locked="lockVault"
+      />
+    </template>
     </template>
   </main>
 </template>
