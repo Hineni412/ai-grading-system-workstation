@@ -16,6 +16,9 @@ from question_bank.solution_evidence.contracts import (
     QuestionSolutionEvidence,
     validate_evidence_fine_terms,
 )
+from question_bank.solution_evidence.normalization import (
+    normalize_model_solution_evidence,
+)
 from question_bank.solution_evidence.repository import (
     FineTermCoreMappingRepository,
     SolutionEvidenceRepository,
@@ -33,7 +36,6 @@ from question_bank.training_criteria.analysis import (
 )
 
 
-_MODEL_IDENTIFIER = re.compile(r"^[a-z][a-z0-9_-]{1,127}$")
 _MAX_REJECTED_RESULT_CHARS = 50_000
 
 
@@ -2383,6 +2385,13 @@ def _govern_deferred_analysis_item(
 ]:
     """Validate scoring structure and audit taxonomy on independent axes."""
 
+    evidence_normalization = normalize_model_solution_evidence(
+        raw_evidence,
+        question_id=question.question_id,
+        question_type=question.question_type_group,
+        taxonomy_contract=question.taxonomy_contract,
+    )
+
     if taxonomy_governance is None:
         try:
             if not isinstance(raw_tag, Mapping):
@@ -2398,10 +2407,7 @@ def _govern_deferred_analysis_item(
             raise _DeferredAnalysisValidationError(
                 "tag_normalization", str(exc)
             ) from exc
-        normalized_evidence = _normalize_model_solution_evidence(
-            raw_evidence,
-            question.taxonomy_contract,
-        )
+        normalized_evidence = evidence_normalization.payload
         try:
             evidence = QuestionSolutionEvidence.from_model_dict(
                 normalized_evidence,
@@ -2438,9 +2444,13 @@ def _govern_deferred_analysis_item(
                 "taxonomy_revision": _taxonomy_contract_revision(
                     question.taxonomy_contract
                 ),
-                "status": "accepted",
+                "status": (
+                    "needs_review"
+                    if evidence_normalization.requires_review
+                    else "accepted"
+                ),
                 "tag_quality_status": "not_checked",
-                "quality_notes": [],
+                "quality_notes": list(evidence_normalization.notes),
                 "retrieval_misses": [],
                 "proposals": [],
                 "secondary_matches": [],
@@ -2488,7 +2498,8 @@ def _govern_deferred_analysis_item(
         tag_quality_notes = ["标签字段未通过本地规范化，已保留评分依据并转待处理。"]
         normalized_tag_analysis = _safe_fallback_tag_analysis(raw_tag)
 
-    structure_only = _normalize_model_solution_evidence(raw_evidence, {})
+    structure_only = evidence_normalization.payload
+    tag_quality_notes.extend(evidence_normalization.notes)
     governance_unavailable = False
     evidence_proposals: list[dict[str, Any]] = []
     evidence_retrieval_misses: list[dict[str, Any]] = []
@@ -2570,6 +2581,7 @@ def _govern_deferred_analysis_item(
             or proposals
             or unresolved_links
             or missing_term_links
+            or evidence_normalization.requires_review
         )
         else "accepted"
     )
@@ -2672,112 +2684,6 @@ def _taxonomy_contract_revision(contract: Mapping[str, Any]) -> int:
         return max(0, int(contract.get("taxonomy_revision") or 0))
     except (TypeError, ValueError):
         return 0
-
-
-def _normalize_model_solution_evidence(
-    payload: Mapping[str, Any],
-    taxonomy_contract: Mapping[str, Any],
-) -> dict[str, Any]:
-    """Repair only machine identities and governed candidate display names."""
-
-    normalized = dict(payload)
-    raw_parts = payload.get("parts")
-    if not isinstance(raw_parts, list):
-        return normalized
-    candidate_names = _knowledge_candidate_names(taxonomy_contract)
-    used_part_ids: set[str] = set()
-    used_point_ids: set[str] = set()
-    parts: list[object] = []
-    for part_index, raw_part in enumerate(raw_parts, start=1):
-        if not isinstance(raw_part, Mapping):
-            parts.append(raw_part)
-            continue
-        part = dict(raw_part)
-        part_id = _stable_model_identifier(
-            part.get("part_id"),
-            fallback=f"part-{part_index}",
-            used=used_part_ids,
-        )
-        part["part_id"] = part_id
-        raw_points = part.get("evidence_points")
-        if isinstance(raw_points, list):
-            points: list[object] = []
-            for point_index, raw_point in enumerate(raw_points, start=1):
-                if not isinstance(raw_point, Mapping):
-                    points.append(raw_point)
-                    continue
-                point = dict(raw_point)
-                point["evidence_point_id"] = _stable_model_identifier(
-                    point.get("evidence_point_id"),
-                    fallback=f"{part_id}-step-{point_index}",
-                    used=used_point_ids,
-                )
-                raw_links = point.get("fine_term_links")
-                if isinstance(raw_links, list):
-                    links: list[object] = []
-                    seen_links: set[tuple[str, str]] = set()
-                    for raw_link in raw_links:
-                        if not isinstance(raw_link, Mapping):
-                            links.append(raw_link)
-                            continue
-                        link = dict(raw_link)
-                        term_id = str(link.get("fine_term_id") or "").strip()
-                        role = str(link.get("role") or "").strip().casefold()
-                        if term_id in candidate_names:
-                            link["fine_term_id"] = term_id
-                            link["fine_term_name"] = candidate_names[term_id]
-                        signature = (term_id, role)
-                        if term_id and role and signature in seen_links:
-                            continue
-                        if term_id and role:
-                            seen_links.add(signature)
-                        links.append(link)
-                    point["fine_term_links"] = links
-                points.append(point)
-            part["evidence_points"] = points
-        parts.append(part)
-    normalized["parts"] = parts
-    return normalized
-
-
-def _stable_model_identifier(
-    value: object,
-    *,
-    fallback: str,
-    used: set[str],
-) -> str:
-    candidate = str(value or "").strip().casefold()
-    if not _MODEL_IDENTIFIER.fullmatch(candidate) or candidate in used:
-        candidate = fallback
-    suffix = 2
-    base = candidate
-    while candidate in used:
-        candidate = f"{base}-{suffix}"
-        suffix += 1
-    used.add(candidate)
-    return candidate
-
-
-def _knowledge_candidate_names(
-    taxonomy_contract: Mapping[str, Any],
-) -> dict[str, str]:
-    candidates = taxonomy_contract.get("candidates")
-    knowledge = (
-        candidates.get("knowledge")
-        if isinstance(candidates, Mapping)
-        else None
-    )
-    if not isinstance(knowledge, list):
-        return {}
-    result: dict[str, str] = {}
-    for raw in knowledge:
-        if not isinstance(raw, Mapping):
-            continue
-        term_id = str(raw.get("id") or "").strip()
-        term_name = str(raw.get("name") or "").strip()
-        if term_id and term_name:
-            result.setdefault(term_id, term_name)
-    return result
 
 
 def _governed_candidate_snapshot(
