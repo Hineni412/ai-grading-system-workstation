@@ -653,7 +653,13 @@ def test_combined_schema_is_strict_and_tag_only_v1_adapter_stays_separate() -> N
         == expected_identifier
     )
     assert point["properties"]["target"]["minLength"] == 1
+    assert point["properties"]["step_index"]["minimum"] == 1
+    assert point["properties"]["justification"]["minLength"] == 1
+    assert point["properties"]["depends_on"]["items"]["pattern"] == expected_identifier
     assert point["properties"]["observable_evidence"]["minLength"] == 1
+    assert evidence["properties"]["schema_version"]["enum"] == [
+        "question-solution-evidence-v2"
+    ]
     assert link["properties"]["fine_term_id"]["minLength"] == 1
     assert link["properties"]["fine_term_name"]["minLength"] == 1
     assert part["properties"]["deduction_policy"]["items"]["minLength"] == 1
@@ -906,6 +912,9 @@ def test_gateway_keeps_each_questions_candidate_contract_isolated() -> None:
     assert "candidate_contract.candidates.knowledge only" in rules
     assert "Copy the id and name together, verbatim" in rules
     assert "part-1-step-1" in rules
+    assert "one independently scorable mathematical milestone" in rules
+    assert "one evidence point" in rules
+    assert "Q11-style example" in rules
     assert "exact_objective" in rules and "canonical_answer must be non-empty" in rules
 
 

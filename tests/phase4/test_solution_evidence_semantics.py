@@ -841,6 +841,198 @@ def test_in_memory_unknown_taxonomy_does_not_block_scoring_evidence(
     }
 
 
+def _v2_process_evidence_payload(
+    question_id: int,
+    *,
+    split_steps: bool,
+    atomic: bool = False,
+) -> dict[str, Any]:
+    payload = _evidence_payload(question_id)
+    payload["schema_version"] = "question-solution-evidence-v2"
+    part = payload["parts"][0]
+    if atomic:
+        part["full_answer"] = "由 x+1=2 移项得到 x=1。"
+        milestones = [
+            ("step-1", "得到 x=1", "依据等式性质移项", "写出 x=1", []),
+        ]
+    elif split_steps:
+        part["full_answer"] = (
+            "先由直角三角形内角和得到∠B=90°-x；"
+            "再由AD=AC得到∠ACD=90°-x/2；最后推出y=x/2。"
+        )
+        milestones = [
+            ("step-1", "得到∠B=90°-x", "直角三角形内角和", "写出∠B=90°-x", []),
+            ("step-2", "得到∠ACD=90°-x/2", "AD=AC及等腰三角形性质", "写出∠ACD=90°-x/2", ["step-1"]),
+            ("step-3", "推出y=x/2", "角度关系代入化简", "写出y=x/2", ["step-2"]),
+        ]
+    else:
+        part["full_answer"] = (
+            "先由直角三角形内角和得到∠B=90°-x；"
+            "再由AD=AC得到∠ACD=90°-x/2；最后推出y=x/2。"
+        )
+        milestones = [
+            (
+                "step-1",
+                "完成全部角度推导并推出y=x/2",
+                "综合使用直角三角形内角和与等腰三角形性质",
+                "写出从∠B到y=x/2的完整推导",
+                [],
+            ),
+        ]
+    part["evidence_points"] = [
+        {
+            "evidence_point_id": point_id,
+            "step_index": index,
+            "target": target,
+            "justification": justification,
+            "observable_evidence": observable,
+            "depends_on": depends_on,
+            "fine_term_links": [],
+            "equivalent_rules": [],
+            "counterexamples": [],
+        }
+        for index, (
+            point_id,
+            target,
+            justification,
+            observable,
+            depends_on,
+        ) in enumerate(milestones, start=1)
+    ]
+    return payload
+
+
+def test_v2_rejects_q11_style_compound_process_as_insufficient_granularity() -> None:
+    question = _question(
+        1,
+        text="在直角三角形中，AD=AC，按步骤求出y与x的关系。",
+    )
+    gateway = QueueGateway(
+        [
+            {
+                "results": [
+                    {
+                        "question_id": 1,
+                        "tag_analysis": _tag_payload(),
+                        "solution_evidence": _v2_process_evidence_payload(
+                            1,
+                            split_steps=False,
+                        ),
+                    }
+                ]
+            }
+        ]
+    )
+
+    bundle = InMemoryCombinedQuestionAnalysisModule(
+        gateway=gateway,
+        resolver=Resolver(),
+    ).analyze(
+        operation_id="config-source-analysis:q11-granularity",
+        curriculum_volume_id=VOLUME_ID,
+        sources=(ConfigQuestionAnalysisSource("Q11", question),),
+    )
+
+    assert bundle.status == "failed"
+    assert bundle.failures[0].category == "evidence_granularity_insufficient"
+
+
+@pytest.mark.parametrize("atomic", [False, True])
+def test_v2_accepts_split_process_milestones_and_true_atomic_step(
+    atomic: bool,
+) -> None:
+    question = _question(1)
+    evidence = QuestionSolutionEvidence.from_model_dict(
+        _v2_process_evidence_payload(
+            1,
+            split_steps=not atomic,
+            atomic=atomic,
+        ),
+        question_id=1,
+        source_content_hash=(
+            __import__(
+                "question_bank.training_criteria.analysis",
+                fromlist=["solution_evidence_source_content_hash"],
+            ).solution_evidence_source_content_hash(question)
+        ),
+        resolver=Resolver(),
+    )
+
+    expected_count = 1 if atomic else 3
+    assert evidence.schema_version == "question-solution-evidence-v2"
+    assert len(evidence.parts[0].evidence_points) == expected_count
+    if not atomic:
+        assert evidence.parts[0].evidence_points[-1].depends_on == ("step-2",)
+    serialized = evidence.to_dict()
+    model_payload = {
+        key: serialized[key]
+        for key in (
+            "schema_version",
+            "question_id",
+            "parts",
+            "auxiliary_rules",
+            "rationale",
+            "confidence",
+        )
+    }
+    assert QuestionSolutionEvidence.from_model_dict(
+        model_payload,
+        question_id=1,
+        source_content_hash=evidence.source_content_hash,
+        resolver=Resolver(),
+    ).to_dict() == evidence.to_dict()
+
+
+@pytest.mark.parametrize("invalid_field", ["step_index", "future_dependency"])
+def test_v2_rejects_noncontiguous_or_forward_step_dependencies(
+    invalid_field: str,
+) -> None:
+    question = _question(1)
+    payload = _v2_process_evidence_payload(1, split_steps=True)
+    points = payload["parts"][0]["evidence_points"]
+    if invalid_field == "step_index":
+        points[1]["step_index"] = 3
+    else:
+        points[1]["depends_on"] = ["step-3"]
+
+    with pytest.raises(
+        ValueError,
+        match="step_index|depends_on",
+    ):
+        QuestionSolutionEvidence.from_model_dict(
+            payload,
+            question_id=1,
+            source_content_hash=(
+                __import__(
+                    "question_bank.training_criteria.analysis",
+                    fromlist=["solution_evidence_source_content_hash"],
+                ).solution_evidence_source_content_hash(question)
+            ),
+            resolver=Resolver(),
+        )
+
+
+def test_v1_evidence_checkpoint_remains_readable_without_v2_fields() -> None:
+    question = _question(1)
+    evidence = QuestionSolutionEvidence.from_model_dict(
+        _evidence_payload(1),
+        question_id=1,
+        source_content_hash=(
+            __import__(
+                "question_bank.training_criteria.analysis",
+                fromlist=["solution_evidence_source_content_hash"],
+            ).solution_evidence_source_content_hash(question)
+        ),
+        resolver=Resolver(),
+    )
+
+    serialized = evidence.to_dict()
+    point = serialized["parts"][0]["evidence_points"][0]
+    assert evidence.schema_version == "question-solution-evidence-v1"
+    assert "step_index" not in point
+    assert "depends_on" not in point
+
+
 def test_in_memory_empty_shortlist_uses_full_vocabulary_without_blocking(
     tmp_path: Path,
 ) -> None:

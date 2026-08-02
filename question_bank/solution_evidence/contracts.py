@@ -24,6 +24,11 @@ _BANNED_SCORE_KEYS = frozenset(
         "full_score",
     }
 )
+_PROCESS_MILESTONE = re.compile(r"[=≠≤≥<>≈≡≌∽∥⊥∠△√π°]")
+
+
+class EvidenceGranularityError(ValueError):
+    """The response merged multiple independently scorable steps into one."""
 
 
 class FineTermResolver(Protocol):
@@ -118,8 +123,11 @@ class FineTermLink:
 @dataclass(frozen=True, slots=True)
 class SolutionEvidencePoint:
     evidence_point_id: str
+    step_index: int
     target: str
+    justification: str
     observable_evidence: str
+    depends_on: tuple[str, ...]
     fine_term_links: tuple[FineTermLink, ...]
     equivalent_rules: tuple[str, ...] = ()
     counterexamples: tuple[str, ...] = ()
@@ -130,17 +138,23 @@ class SolutionEvidencePoint:
         payload: Mapping[str, Any],
         *,
         resolver: FineTermResolver,
+        schema_version: str,
+        expected_step_index: int,
     ) -> "SolutionEvidencePoint":
+        v2 = schema_version == "question-solution-evidence-v2"
+        required_keys = {
+            "evidence_point_id",
+            "target",
+            "observable_evidence",
+            "fine_term_links",
+            "equivalent_rules",
+            "counterexamples",
+        }
+        if v2:
+            required_keys.update({"step_index", "justification", "depends_on"})
         _require_exact_keys(
             payload,
-            {
-                "evidence_point_id",
-                "target",
-                "observable_evidence",
-                "fine_term_links",
-                "equivalent_rules",
-                "counterexamples",
-            },
+            required_keys,
             "solution_evidence_point",
         )
         raw_links = payload.get("fine_term_links")
@@ -153,10 +167,32 @@ class SolutionEvidencePoint:
         )
         if len(links) != len(raw_links):
             raise ValueError("fine term link is invalid")
+        raw_dependencies = payload.get("depends_on") if v2 else []
+        if v2 and (
+            not isinstance(raw_dependencies, list)
+            or not all(isinstance(item, str) for item in raw_dependencies)
+            or len(raw_dependencies) != len(set(raw_dependencies))
+        ):
+            raise ValueError("depends_on must be an array of unique identifiers")
         return cls(
             evidence_point_id=str(payload.get("evidence_point_id") or ""),
+            step_index=(
+                payload.get("step_index")
+                if v2
+                else expected_step_index
+            ),  # type: ignore[arg-type]
             target=str(payload.get("target") or ""),
+            justification=(
+                str(payload.get("justification") or "")
+                if v2
+                else str(payload.get("observable_evidence") or "")
+            ),
             observable_evidence=str(payload.get("observable_evidence") or ""),
+            depends_on=(
+                _unique_text(raw_dependencies, casefold=True)
+                if v2
+                else ()
+            ),
             fine_term_links=links,
             equivalent_rules=_unique_text(payload.get("equivalent_rules")),
             counterexamples=_unique_text(payload.get("counterexamples")),
@@ -166,21 +202,34 @@ class SolutionEvidencePoint:
         point_id = str(self.evidence_point_id or "").strip().casefold()
         if not _IDENTIFIER.fullmatch(point_id):
             raise ValueError("evidence_point_id is invalid")
+        if (
+            isinstance(self.step_index, bool)
+            or not isinstance(self.step_index, int)
+            or self.step_index <= 0
+        ):
+            raise ValueError("step_index must be positive")
         target = _required_text(self.target, "target")
+        justification = _required_text(self.justification, "justification")
         evidence = _required_text(self.observable_evidence, "observable_evidence")
+        depends_on = _unique_text(self.depends_on, casefold=True)
+        if any(not _IDENTIFIER.fullmatch(item) for item in depends_on):
+            raise ValueError("depends_on contains an invalid evidence_point_id")
         links = tuple(self.fine_term_links)
         signatures = [(item.fine_term_id, item.role) for item in links]
         if len(signatures) != len(set(signatures)):
             raise ValueError("fine term link is duplicated in an evidence point")
         object.__setattr__(self, "evidence_point_id", point_id)
+        object.__setattr__(self, "step_index", int(self.step_index))
         object.__setattr__(self, "target", target)
+        object.__setattr__(self, "justification", justification)
         object.__setattr__(self, "observable_evidence", evidence)
+        object.__setattr__(self, "depends_on", depends_on)
         object.__setattr__(self, "fine_term_links", links)
         object.__setattr__(self, "equivalent_rules", _unique_text(self.equivalent_rules))
         object.__setattr__(self, "counterexamples", _unique_text(self.counterexamples))
 
-    def to_dict(self) -> dict[str, Any]:
-        return {
+    def to_dict(self, *, schema_version: str) -> dict[str, Any]:
+        payload = {
             "evidence_point_id": self.evidence_point_id,
             "target": self.target,
             "observable_evidence": self.observable_evidence,
@@ -188,6 +237,19 @@ class SolutionEvidencePoint:
             "equivalent_rules": list(self.equivalent_rules),
             "counterexamples": list(self.counterexamples),
         }
+        if schema_version == "question-solution-evidence-v2":
+            payload = {
+                "evidence_point_id": self.evidence_point_id,
+                "step_index": self.step_index,
+                "target": self.target,
+                "justification": self.justification,
+                "observable_evidence": self.observable_evidence,
+                "depends_on": list(self.depends_on),
+                "fine_term_links": [item.to_dict() for item in self.fine_term_links],
+                "equivalent_rules": list(self.equivalent_rules),
+                "counterexamples": list(self.counterexamples),
+            }
+        return payload
 
 
 @dataclass(frozen=True, slots=True)
@@ -215,6 +277,7 @@ class QuestionPart:
         payload: Mapping[str, Any],
         *,
         resolver: FineTermResolver,
+        schema_version: str,
     ) -> "QuestionPart":
         _require_exact_keys(
             payload,
@@ -237,13 +300,18 @@ class QuestionPart:
         if not isinstance(raw_points, list) or not raw_points:
             raise ValueError("question part must contain evidence points")
         points = tuple(
-            SolutionEvidencePoint.from_model_dict(item, resolver=resolver)
-            for item in raw_points
+            SolutionEvidencePoint.from_model_dict(
+                item,
+                resolver=resolver,
+                schema_version=schema_version,
+                expected_step_index=index,
+            )
+            for index, item in enumerate(raw_points, start=1)
             if isinstance(item, Mapping)
         )
         if len(points) != len(raw_points):
             raise ValueError("solution evidence point is invalid")
-        return cls(
+        result = cls(
             part_id=str(payload.get("part_id") or ""),
             label=str(payload.get("label") or ""),
             response_mode=str(payload.get("response_mode") or ""),  # type: ignore[arg-type]
@@ -256,6 +324,18 @@ class QuestionPart:
             allow_alternative_methods=payload.get("allow_alternative_methods"),  # type: ignore[arg-type]
             evidence_points=points,
         )
+        if schema_version == "question-solution-evidence-v2":
+            _validate_v2_step_sequence(result)
+            if (
+                result.response_mode == "process_required"
+                and len(result.evidence_points) == 1
+                and _process_milestone_count(result.full_answer) > 1
+            ):
+                raise EvidenceGranularityError(
+                    "process answer contains multiple mathematical milestones "
+                    "but only one evidence point"
+                )
+        return result
 
     def __post_init__(self) -> None:
         part_id = str(self.part_id or "").strip().casefold()
@@ -297,7 +377,7 @@ class QuestionPart:
         object.__setattr__(self, "deduction_policy", deduction_policy)
         object.__setattr__(self, "evidence_points", points)
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self, *, schema_version: str) -> dict[str, Any]:
         return {
             "part_id": self.part_id,
             "label": self.label,
@@ -309,13 +389,19 @@ class QuestionPart:
             "visual_requirements": list(self.visual_requirements),
             "deduction_policy": list(self.deduction_policy),
             "allow_alternative_methods": self.allow_alternative_methods,
-            "evidence_points": [item.to_dict() for item in self.evidence_points],
+            "evidence_points": [
+                item.to_dict(schema_version=schema_version)
+                for item in self.evidence_points
+            ],
         }
 
 
 @dataclass(frozen=True, slots=True)
 class QuestionSolutionEvidence:
-    schema_version: Literal["question-solution-evidence-v1"]
+    schema_version: Literal[
+        "question-solution-evidence-v1",
+        "question-solution-evidence-v2",
+    ]
     question_id: int
     source_content_hash: str
     parts: tuple[QuestionPart, ...]
@@ -347,7 +433,11 @@ class QuestionSolutionEvidence:
             },
             "question_solution_evidence",
         )
-        if payload.get("schema_version") != "question-solution-evidence-v1":
+        schema_version = str(payload.get("schema_version") or "")
+        if schema_version not in {
+            "question-solution-evidence-v1",
+            "question-solution-evidence-v2",
+        }:
             raise ValueError("solution evidence schema version is invalid")
         try:
             submitted_question_id = int(payload.get("question_id"))
@@ -359,7 +449,11 @@ class QuestionSolutionEvidence:
         if not isinstance(raw_parts, list) or not raw_parts:
             raise ValueError("solution evidence must contain question parts")
         parts = tuple(
-            QuestionPart.from_model_dict(item, resolver=resolver)
+            QuestionPart.from_model_dict(
+                item,
+                resolver=resolver,
+                schema_version=schema_version,
+            )
             for item in raw_parts
             if isinstance(item, Mapping)
         )
@@ -370,7 +464,7 @@ class QuestionSolutionEvidence:
         except (TypeError, ValueError) as exc:
             raise ValueError("solution evidence confidence is invalid") from exc
         return cls(
-            schema_version="question-solution-evidence-v1",
+            schema_version=schema_version,  # type: ignore[arg-type]
             question_id=int(question_id),
             source_content_hash=str(source_content_hash or ""),
             parts=parts,
@@ -380,7 +474,10 @@ class QuestionSolutionEvidence:
         )
 
     def __post_init__(self) -> None:
-        if self.schema_version != "question-solution-evidence-v1":
+        if self.schema_version not in {
+            "question-solution-evidence-v1",
+            "question-solution-evidence-v2",
+        }:
             raise ValueError("solution evidence schema version is invalid")
         if isinstance(self.question_id, bool) or int(self.question_id) <= 0:
             raise ValueError("question_id must be positive")
@@ -506,7 +603,10 @@ class QuestionSolutionEvidence:
             "schema_version": self.schema_version,
             "question_id": self.question_id,
             "source_content_hash": self.source_content_hash,
-            "parts": [item.to_dict() for item in self.parts],
+            "parts": [
+                item.to_dict(schema_version=self.schema_version)
+                for item in self.parts
+            ],
             "auxiliary_rules": list(self.auxiliary_rules),
             "rationale": self.rationale,
             "confidence": self.confidence,
@@ -518,6 +618,27 @@ def _required_text(value: object, field_name: str) -> str:
     if not text:
         raise ValueError(f"{field_name} must not be empty")
     return text
+
+
+def _validate_v2_step_sequence(part: QuestionPart) -> None:
+    prior_ids: set[str] = set()
+    for expected_index, point in enumerate(part.evidence_points, start=1):
+        if point.step_index != expected_index:
+            raise ValueError("step_index must be contiguous and match array order")
+        if point.evidence_point_id in point.depends_on:
+            raise ValueError("evidence point cannot depend on itself")
+        if any(dependency not in prior_ids for dependency in point.depends_on):
+            raise ValueError("depends_on must reference an earlier evidence point")
+        prior_ids.add(point.evidence_point_id)
+
+
+def _process_milestone_count(value: str) -> int:
+    clauses = [
+        item.strip()
+        for item in re.split(r"[；;。\n]+", str(value or ""))
+        if item.strip()
+    ]
+    return sum(bool(_PROCESS_MILESTONE.search(item)) for item in clauses)
 
 
 def validate_evidence_fine_terms(
@@ -634,6 +755,7 @@ def _hash_payload(payload: Mapping[str, Any]) -> str:
 __all__ = [
     "CoreResolution",
     "CoreResolutionStatus",
+    "EvidenceGranularityError",
     "FineTermLink",
     "FineTermResolver",
     "FineTermRole",
