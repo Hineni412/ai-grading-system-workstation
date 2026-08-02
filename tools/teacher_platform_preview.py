@@ -55,10 +55,34 @@ def _run(
     )
 
 
+def _git_executable() -> str:
+    located = shutil.which("git")
+    if located:
+        return located
+
+    candidates: list[Path] = []
+    for environment_name in ("ProgramFiles", "ProgramFiles(x86)"):
+        install_root = os.environ.get(environment_name)
+        if install_root:
+            candidates.append(Path(install_root) / "Git" / "cmd" / "git.exe")
+    local_app_data = os.environ.get("LOCALAPPDATA")
+    if local_app_data:
+        candidates.append(
+            Path(local_app_data) / "Programs" / "Git" / "cmd" / "git.exe"
+        )
+
+    for candidate in candidates:
+        if candidate.is_file():
+            return str(candidate)
+    raise PreviewGuardError(
+        "未找到 Git。请重新打开资源管理器后再试，或重新安装 Git for Windows。"
+    )
+
+
 def _git(*args: str) -> str:
     completed = _run(
         [
-            "git",
+            _git_executable(),
             "-c",
             f"safe.directory={PROJECT_ROOT.as_posix()}",
             *args,
@@ -109,7 +133,7 @@ def _assert_preview_workspace() -> tuple[str, dict[str, str]]:
     for source_branch, source_head in source_heads.items():
         ancestor = subprocess.run(
             [
-                "git",
+                _git_executable(),
                 "-c",
                 f"safe.directory={PROJECT_ROOT.as_posix()}",
                 "merge-base",
@@ -311,7 +335,7 @@ def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="三合一组合预览页面守卫")
     parser.add_argument(
         "action",
-        choices=("build", "check", "ensure", "open-running"),
+        choices=("build", "check", "ensure", "open-running", "print-head"),
     )
     return parser.parse_args()
 
@@ -319,6 +343,9 @@ def _parse_args() -> argparse.Namespace:
 def main() -> int:
     args = _parse_args()
     try:
+        if args.action == "print-head":
+            print(check_preview()["preview_head"])
+            return 0
         if args.action == "open-running":
             if open_running_preview():
                 return 0
@@ -330,7 +357,7 @@ def main() -> int:
             stamp = check_preview()
         else:
             stamp = ensure_preview()
-    except (PreviewGuardError, subprocess.CalledProcessError) as exc:
+    except (PreviewGuardError, subprocess.CalledProcessError, OSError) as exc:
         print(f"组合预览未就绪：{exc}", file=sys.stderr)
         return 2
 

@@ -1,5 +1,6 @@
 @echo off
 setlocal
+chcp 65001 >nul
 cd /d "%~dp0"
 title AI Grading - Teacher Platform Preview
 
@@ -13,17 +14,18 @@ set "AI_GRADING_OPS_STATE_DIR=%~dp0user_data\runtime_state\ops"
 set "AI_GRADING_API_PROFILES_PATH=%~dp0user_data\config\api_profiles.json"
 set "AI_GRADING_PREVIEW_INSTANCE_ID=teacher-platform-integration"
 set "AI_GRADING_PREVIEW_HEAD="
-for /f "delims=" %%I in ('git -C "%~dp0" rev-parse HEAD 2^>nul') do set "AI_GRADING_PREVIEW_HEAD=%%I"
-if not defined AI_GRADING_PREVIEW_HEAD goto preview_not_ready
 set "PYTHONUTF8=1"
 
 "%PYTHON_EXE%" "%~dp0tools\teacher_platform_preview.py" ensure
-if errorlevel 1 goto preview_not_ready
+if errorlevel 1 goto preview_prepare_error
+
+for /f "usebackq delims=" %%I in (`"%PYTHON_EXE%" "%~dp0tools\teacher_platform_preview.py" print-head`) do set "AI_GRADING_PREVIEW_HEAD=%%I"
+if not defined AI_GRADING_PREVIEW_HEAD goto preview_prepare_error
 
 "%PYTHON_EXE%" "%~dp0tools\teacher_platform_preview.py" open-running
 set "RUNNING_STATUS=%ERRORLEVEL%"
 if "%RUNNING_STATUS%"=="0" goto done
-if not "%RUNNING_STATUS%"=="3" goto preview_not_ready
+if not "%RUNNING_STATUS%"=="3" goto running_probe_error
 
 call "%~dp0运行.bat"
 set "EXIT_CODE=%ERRORLEVEL%"
@@ -33,10 +35,16 @@ endlocal & exit /b %EXIT_CODE%
 echo Portable Python runtime was not found.
 goto failed
 
-:preview_not_ready
+:preview_prepare_error
 echo.
-echo The three-workspace preview is not current.
-echo Ask Codex to merge the latest checkpoints, then try again.
+echo 三合一预览检查或前端更新失败。
+echo 请查看上方的具体原因；这不等于“三合一不是最新”。
+goto failed
+
+:running_probe_error
+echo.
+echo 无法判断端口 %API_PORT% 上的程序能否复用。
+echo 请查看上方的具体原因，并把完整窗口截图发给 Codex。
 goto failed
 
 :failed
