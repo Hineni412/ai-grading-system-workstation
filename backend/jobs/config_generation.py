@@ -1489,18 +1489,28 @@ def _deferred_analysis_draft(
     failed_refs = list(bundle.failed_source_refs)
     uncertain_refs = list(bundle.uncertain_source_refs)
     taxonomy_review_refs = list(bundle.taxonomy_review_source_refs)
-    internal_category_by_ref: dict[str, str] = {}
+    internal_failure_by_ref: dict[str, Any] = {}
     for failure in bundle.failures:
-        internal_category_by_ref.setdefault(
+        internal_failure_by_ref.setdefault(
             failure.source_question_ref,
-            failure.category,
+            failure,
         )
     for reference in failed_refs:
-        internal_category_by_ref.setdefault(reference, "analysis_incomplete")
-    grouped_refs: dict[str, list[str]] = {}
+        internal_failure_by_ref.setdefault(reference, None)
+    grouped_refs: dict[tuple[str, str], list[str]] = {}
     for reference in failed_refs:
-        category = internal_category_by_ref[reference]
-        grouped_refs.setdefault(category, []).append(reference)
+        failure = internal_failure_by_ref[reference]
+        category = (
+            str(failure.category)
+            if failure is not None
+            else "analysis_incomplete"
+        )
+        detail = (
+            str(failure.validation_error or "")
+            if failure is not None
+            else ""
+        )
+        grouped_refs.setdefault((category, detail), []).append(reference)
     category_copy = {
         "combined_response_contract": (
             "model_response_parse",
@@ -1560,7 +1570,7 @@ def _deferred_analysis_draft(
         ),
     }
     failed_batches = []
-    for index, (internal_category, question_ids) in enumerate(
+    for index, ((internal_category, detail), question_ids) in enumerate(
         grouped_refs.items(),
         start=1,
     ):
@@ -1577,7 +1587,11 @@ def _deferred_analysis_draft(
                 "question_ids": question_ids,
                 "status": "failed",
                 "category": public_category,
-                "error": error,
+                "error": (
+                    f"{error} 具体位置：{detail}"
+                    if detail
+                    else error
+                )[:600],
             }
         )
     warnings: list[str] = []
