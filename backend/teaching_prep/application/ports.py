@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any, Protocol
 
 
@@ -40,6 +41,7 @@ class SemesterMappingModelAdapter(Protocol):
         *,
         operation_id: str,
         semester_snapshot: dict[str, Any],
+        dispatch_callback: Callable[[], None] | None = None,
     ) -> dict[str, Any]:
         """Generate one reviewable lesson-tree and page-range proposal."""
 

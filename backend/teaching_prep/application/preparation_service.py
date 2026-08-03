@@ -64,6 +64,7 @@ from backend.teaching_prep.application.up_class_packages import (
 )
 from backend.teaching_prep.domain.errors import (
     TeachingPrepConflictError,
+    TeachingPrepModelResponseError,
     TeachingPrepNotFoundError,
     TeachingPrepRetryAvailableError,
     TeachingPrepStateError,
@@ -1069,33 +1070,77 @@ class TeachingPrepService:
                 "semester_mapping_stopped_before_model_call",
             )
             raise
-        self.semester_mapping.mark_generation_model_call_started(
-            clean_operation_id
-        )
-        try:
-            report("calling_model")
-            if cancel_check is not None:
-                cancel_check()
-        except Exception:
-            self.semester_mapping.mark_generation_result_unknown(
-                clean_operation_id,
-                "semester_mapping_stopped_at_model_dispatch",
+        model_call_started = False
+        pre_dispatch_closed = False
+
+        def mark_physical_request_started() -> None:
+            nonlocal model_call_started, pre_dispatch_closed
+            try:
+                if cancel_check is not None:
+                    cancel_check()
+            except Exception:
+                self.semester_mapping.fail_generation(
+                    clean_operation_id,
+                    "semester_mapping_stopped_before_model_call",
+                )
+                pre_dispatch_closed = True
+                raise
+            self.semester_mapping.mark_generation_model_call_started(
+                clean_operation_id
             )
-            raise
+            model_call_started = True
+            report("calling_model")
+
         try:
             raw = self.semester_mapping_model_adapter.generate(
                 operation_id=clean_operation_id,
                 semester_snapshot=snapshot,
+                dispatch_callback=mark_physical_request_started,
             )
+            if not model_call_started:
+                self.semester_mapping.mark_generation_result_unknown(
+                    clean_operation_id,
+                    "semester_mapping_model_dispatch_not_reported",
+                )
+                raise TeachingPrepStateError(
+                    "semester mapping model dispatch could not be verified; "
+                    "automatic retry is blocked"
+                )
+        except TeachingPrepModelResponseError as exc:
+            self.semester_mapping.fail_generation(
+                clean_operation_id,
+                exc.error_code,
+            )
+            raise TeachingPrepRetryAvailableError(str(exc)) from exc
         except TeachingPrepValidationError as exc:
             self.semester_mapping.fail_generation(
                 clean_operation_id,
-                "semester_mapping_model_response_invalid",
+                (
+                    "semester_mapping_model_response_invalid"
+                    if model_call_started
+                    else "semester_mapping_model_configuration_invalid"
+                ),
             )
             raise TeachingPrepRetryAvailableError(
-                "semester mapping model response was invalid; the teacher may retry"
+                (
+                    "semester mapping model response was invalid; "
+                    "the teacher may retry"
+                    if model_call_started
+                    else "semester mapping model configuration is unavailable"
+                )
             ) from exc
         except Exception as exc:
+            if not model_call_started:
+                if pre_dispatch_closed:
+                    raise
+                self.semester_mapping.fail_generation(
+                    clean_operation_id,
+                    "semester_mapping_model_dispatch_failed",
+                )
+                raise TeachingPrepRetryAvailableError(
+                    "semester mapping model request did not start; "
+                    "the teacher may retry"
+                ) from exc
             self.semester_mapping.mark_generation_result_unknown(
                 clean_operation_id,
                 "semester_mapping_model_result_unknown",
@@ -1132,6 +1177,14 @@ class TeachingPrepService:
             )
             report("completed")
             return proposal, True
+        except TeachingPrepValidationError as exc:
+            self.semester_mapping.fail_generation(
+                clean_operation_id,
+                "semester_mapping_response_failed_local_validation",
+            )
+            raise TeachingPrepRetryAvailableError(
+                "semester mapping response failed local validation"
+            ) from exc
         except Exception as exc:
             self.semester_mapping.fail_generation(
                 clean_operation_id,
