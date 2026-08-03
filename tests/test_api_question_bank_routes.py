@@ -33,6 +33,7 @@ from question_bank.training_criteria import (
     QuestionAnalysisInputLoader,
     solution_evidence_source_content_hash,
 )
+from tests.current_knowledge_support import install_current_knowledge
 
 
 @pytest.fixture
@@ -41,6 +42,7 @@ def question_bank_fixture(
 ) -> tuple[QuestionBankReadService, Path, bytes]:
     db_path = tmp_path / "question_bank.db"
     initialize_database(db_path)
+    install_current_knowledge(db_path)
 
     with sqlite3.connect(db_path) as conn:
         conn.executemany(
@@ -71,7 +73,7 @@ def question_bank_fixture(
             VALUES (?, ?, ?)
             """,
             [
-                (1, "knowledge_point", "Algebra"),
+                (1, "knowledge_point", "一次函数"),
                 (2, "ability", "Deleted tag"),
             ],
         )
@@ -459,6 +461,7 @@ def test_question_facets_exclude_their_own_dimension_but_keep_other_filters(
 ) -> None:
     db_path = tmp_path / "question_bank.db"
     initialize_database(db_path)
+    install_current_knowledge(db_path)
     with sqlite3.connect(db_path) as conn:
         conn.execute(
             """
@@ -482,12 +485,12 @@ def test_question_facets_exclude_their_own_dimension_but_keep_other_filters(
             ],
         )
         tags_by_question = {
-            1: ("知识点甲", "能力甲", "章节甲", "小节甲"),
-            2: ("知识点乙", "能力甲", "章节甲", "小节甲"),
-            3: ("知识点丙", "能力乙", "章节甲", "小节甲"),
-            4: ("知识点丁", "能力甲", "章节乙", "小节乙"),
-            5: ("知识点戊", "能力甲", "章节甲", "小节甲"),
-            6: ("知识点甲", "能力甲", "章节甲", "小节甲"),
+            1: ("一次函数", "运算能力", "八年级上册", "小节甲"),
+            2: ("二次函数", "运算能力", "八年级上册", "小节甲"),
+            3: ("一元一次方程", "推理能力", "八年级上册", "小节甲"),
+            4: ("实数", "运算能力", "九年级上册", "小节乙"),
+            5: ("整式", "运算能力", "八年级上册", "小节甲"),
+            6: ("一次函数", "运算能力", "八年级上册", "小节甲"),
         }
         conn.executemany(
             """
@@ -514,9 +517,9 @@ def test_question_facets_exclude_their_own_dimension_but_keep_other_filters(
     response = _question_bank_client(QuestionBankReadService(db_path)).get(
         "/api/question-bank/facets",
         params=[
-            ("knowledge_points", "知识点甲"),
-            ("abilities", "能力甲"),
-            ("exam_scopes", "章节甲"),
+            ("knowledge_points", "一次函数"),
+            ("abilities", "运算能力"),
+            ("exam_scopes", "八年级上册"),
             ("curriculum_sections", "小节甲"),
             ("question_types", "选择题"),
         ],
@@ -525,8 +528,8 @@ def test_question_facets_exclude_their_own_dimension_but_keep_other_filters(
     assert response.status_code == 200
     payload = response.json()
     assert payload["knowledge_points"] == [
-        {"value": "知识点乙", "count": 1},
-        {"value": "知识点甲", "count": 1},
+        {"value": "一次函数", "count": 1},
+        {"value": "二次函数", "count": 1},
     ]
     assert payload["question_types"] == [
         {"value": "填空题", "count": 1},
@@ -1088,6 +1091,7 @@ def _seed_combination_filter_questions(db_path: Path) -> None:
 def test_questions_combined_filters_and_public_projection(tmp_path: Path) -> None:
     db_path = tmp_path / "question_bank.db"
     initialize_database(db_path)
+    install_current_knowledge(db_path)
     _seed_combination_filter_questions(db_path)
     client = _question_bank_client(QuestionBankReadService(db_path))
 
@@ -1146,6 +1150,7 @@ def test_questions_combined_filters_and_public_projection(tmp_path: Path) -> Non
 def test_questions_filter_unsafe_tag_rows_from_public_projection(tmp_path: Path) -> None:
     db_path = tmp_path / "question_bank.db"
     initialize_database(db_path)
+    install_current_knowledge(db_path)
     with sqlite3.connect(db_path) as conn:
         conn.execute(
             """
@@ -1178,7 +1183,7 @@ def test_questions_filter_unsafe_tag_rows_from_public_projection(tmp_path: Path)
                     "[[IMAGE:file:///C:/private/ability-tag.png]]",
                     0.3,
                 ),
-                ("knowledge_point", "一次函数（综合）", 0.95),
+                ("knowledge_point", "一次函数", 0.95),
             ],
         )
         conn.commit()
@@ -1190,7 +1195,7 @@ def test_questions_filter_unsafe_tag_rows_from_public_projection(tmp_path: Path)
     assert response.json()["items"][0]["tags"] == [
         {
             "tag_type": "knowledge_point",
-            "tag_value": "一次函数（综合）",
+            "tag_value": "一次函数",
             "confidence": 0.95,
         }
     ]
@@ -1414,6 +1419,7 @@ def test_question_detail_preserves_long_text_and_redacts_rich_preview_paths(
     db_path = tmp_path / "question_bank.db"
     data_root = tmp_path / "injected-data-root"
     initialize_database(db_path)
+    install_current_knowledge(db_path)
     private_root = tmp_path / "detail-private"
     question_marker = str(private_root / "question-marker.png")
     rich_question_asset = str(private_root / "rich-question.png")
@@ -1477,7 +1483,7 @@ def test_question_detail_preserves_long_text_and_redacts_rich_preview_paths(
             ) VALUES (10, ?, ?, ?)
             """,
             [
-                ("knowledge_point", "Algebra", 0.9),
+                ("knowledge_point", "一次函数", 0.9),
                 ("method", "C:/detail-private/malicious-tag.txt", 0.1),
                 ("ability", "Reasoning", None),
                 (
@@ -1633,7 +1639,7 @@ def test_question_detail_preserves_long_text_and_redacts_rich_preview_paths(
     assert payload["tags"] == [
         {
             "tag_type": "knowledge_point",
-            "tag_value": "Algebra",
+            "tag_value": "一次函数",
             "confidence": 0.9,
         },
         {
@@ -1727,6 +1733,7 @@ def test_question_text_projection_preserves_whitespace_and_incomplete_markers(
     db_path = tmp_path / "question_bank.db"
     data_root = tmp_path / "injected-data-root"
     initialize_database(db_path)
+    install_current_knowledge(db_path)
     question_text = (
         " \tQuestion [[IMAGE:C:/private/complete-question.png]] middle "
         "[[IMAGE:unfinished-question  \n"
@@ -1761,7 +1768,7 @@ def test_question_text_projection_preserves_whitespace_and_incomplete_markers(
                 question_id, tag_type, tag_value, confidence
             ) VALUES (
                 20, 'knowledge_point',
-                '  Safe [[IMAGE:relative/tag.png]]  ', 0.75
+                '  一次函数 [[IMAGE:relative/tag.png]]  ', 0.75
             )
             """
         )
@@ -1801,7 +1808,7 @@ def test_question_text_projection_preserves_whitespace_and_incomplete_markers(
     assert list_item["tags"] == [
         {
             "tag_type": "knowledge_point",
-            "tag_value": "Safe",
+            "tag_value": "一次函数",
             "confidence": 0.75,
         }
     ]
@@ -2927,6 +2934,7 @@ def test_question_tags_reject_embedded_filesystem_tokens_without_false_positives
 ) -> None:
     db_path = tmp_path / "question_bank.db"
     initialize_database(db_path)
+    install_current_knowledge(db_path)
     with closing(sqlite3.connect(db_path)) as conn:
         conn.execute(
             "INSERT INTO papers (id, title, import_status) VALUES (1, 'Paper', 'success')"
@@ -2953,7 +2961,7 @@ def test_question_tags_reject_embedded_filesystem_tokens_without_false_positives
                     "共享 //server/share/source.txt",
                     0.5,
                 ),
-                ("knowledge_point", "A/B 测试（中文，标点）", 0.9),
+                ("knowledge_point", "一次函数", 0.9),
                 ("student_level", "中等/提升", 0.8),
                 ("teaching_stage", "初中阶段：函数/图象", 0.7),
                 ("supporting_skill_name", "profile:///函数画像", 0.65),
@@ -2973,23 +2981,13 @@ def test_question_tags_reject_embedded_filesystem_tokens_without_false_positives
     expected_tags = [
         {
             "tag_type": "knowledge_point",
-            "tag_value": "A/B 测试（中文，标点）",
+            "tag_value": "一次函数",
             "confidence": 0.9,
         },
         {
             "tag_type": "student_level",
             "tag_value": "中等/提升",
             "confidence": 0.8,
-        },
-        {
-            "tag_type": "teaching_stage",
-            "tag_value": "初中阶段：函数/图象",
-            "confidence": 0.7,
-        },
-        {
-            "tag_type": "supporting_skill_name",
-            "tag_value": "profile:///函数画像",
-            "confidence": 0.65,
         },
         {
             "tag_type": "error_type",

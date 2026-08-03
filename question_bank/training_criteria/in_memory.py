@@ -151,6 +151,8 @@ class DeferredCombinedAnalysisItem:
     taxonomy_audit: Mapping[str, Any]
     model_name: str
     operation_id: str
+    reference_assessment: str = "insufficient"
+    reference_assessment_reason: str = ""
 
     def __post_init__(self) -> None:
         reference = str(self.source_question_ref or "").strip()
@@ -184,6 +186,9 @@ class DeferredCombinedAnalysisItem:
             _candidate_contract(candidates),
         )
         audit = _normalize_taxonomy_audit(self.taxonomy_audit)
+        assessment = str(self.reference_assessment or "").strip().casefold()
+        if assessment not in {"consistent", "conflict", "insufficient"}:
+            raise ValueError("reference assessment is invalid")
         object.__setattr__(self, "source_question_ref", reference)
         object.__setattr__(self, "analysis_question_id", int(self.analysis_question_id))
         object.__setattr__(self, "source_content_hash", source_hash)
@@ -194,6 +199,12 @@ class DeferredCombinedAnalysisItem:
         object.__setattr__(self, "operation_id", operation)
         object.__setattr__(self, "tag_analysis", dict(self.tag_analysis))
         object.__setattr__(self, "taxonomy_audit", audit)
+        object.__setattr__(self, "reference_assessment", assessment)
+        object.__setattr__(
+            self,
+            "reference_assessment_reason",
+            str(self.reference_assessment_reason or "").strip()[:500],
+        )
         object.__setattr__(
             self,
             "solution_evidence_payload",
@@ -334,7 +345,7 @@ class DeferredCombinedAnalysisItem:
 
     def to_dict(self) -> dict[str, Any]:
         payload = {
-            "schema_version": "deferred-combined-analysis-item-v3",
+            "schema_version": "deferred-combined-analysis-item-v4",
             "source_question_ref": self.source_question_ref,
             "analysis_question_id": self.analysis_question_id,
             "source_content_hash": self.source_content_hash,
@@ -346,6 +357,8 @@ class DeferredCombinedAnalysisItem:
             "tag_analysis": dict(self.tag_analysis),
             "solution_evidence_payload": dict(self.solution_evidence_payload),
             "taxonomy_audit": dict(self.taxonomy_audit),
+            "reference_assessment": self.reference_assessment,
+            "reference_assessment_reason": self.reference_assessment_reason,
             "model_name": self.model_name,
             "operation_id": self.operation_id,
         }
@@ -377,11 +390,31 @@ class DeferredCombinedAnalysisItem:
             "content_hash",
         }
         if version == "deferred-combined-analysis-item-v2":
-            _require_exact_keys(payload, common_keys, "deferred analysis item")
+            submitted_keys = {str(key) for key in payload}
+            if submitted_keys not in {
+                frozenset(common_keys),
+                frozenset({
+                    *common_keys,
+                    "reference_assessment",
+                    "reference_assessment_reason",
+                }),
+            }:
+                raise ValueError("deferred analysis item fields do not match the contract")
         elif version == "deferred-combined-analysis-item-v3":
             _require_exact_keys(
                 payload,
                 {*common_keys, "taxonomy_audit"},
+                "deferred analysis item",
+            )
+        elif version == "deferred-combined-analysis-item-v4":
+            _require_exact_keys(
+                payload,
+                {
+                    *common_keys,
+                    "taxonomy_audit",
+                    "reference_assessment",
+                    "reference_assessment_reason",
+                },
                 "deferred analysis item",
             )
         else:
@@ -412,7 +445,7 @@ class DeferredCombinedAnalysisItem:
         )
         taxonomy_audit = (
             _normalize_taxonomy_audit(payload.get("taxonomy_audit"))
-            if version == "deferred-combined-analysis-item-v3"
+            if version in {"deferred-combined-analysis-item-v3", "deferred-combined-analysis-item-v4"}
             else _legacy_taxonomy_audit(normalized_tag)
         )
         return cls(
@@ -432,6 +465,16 @@ class DeferredCombinedAnalysisItem:
             solution_evidence_payload=dict(raw_evidence),
             solution_evidence=evidence,
             taxonomy_audit=taxonomy_audit,
+            reference_assessment=(
+                str(payload.get("reference_assessment") or "insufficient")
+                if version == "deferred-combined-analysis-item-v4"
+                else "insufficient"
+            ),
+            reference_assessment_reason=(
+                str(payload.get("reference_assessment_reason") or "")
+                if version == "deferred-combined-analysis-item-v4"
+                else ""
+            ),
             model_name=str(payload.get("model_name") or ""),
             operation_id=str(payload.get("operation_id") or ""),
         )
@@ -731,6 +774,20 @@ class DeferredCombinedAnalysisBundle:
             self.taxonomy_review_source_refs
         )
         meta["taxonomy_review_count"] = len(self.taxonomy_review_source_refs)
+        assessments = [
+            {
+                "question_id": item.source_question_ref,
+                "assessment": item.reference_assessment,
+                "reason": item.reference_assessment_reason,
+            }
+            for item in self.items
+        ]
+        meta["reference_assessments"] = assessments
+        for item in assessments:
+            if item["assessment"] == "conflict":
+                meta.setdefault("warnings", []).append(
+                    f"[来源提醒] {item['question_id']} 来源解析存在冲突，请教师核对"
+                )
         return payload
 
     def to_dict(self) -> dict[str, Any]:
@@ -1556,6 +1613,16 @@ class InMemoryCombinedQuestionAnalysisModule:
                             source_hash = solution_evidence_source_content_hash(
                                 question
                             )
+                            reference_assessment = str(
+                                raw.get("reference_assessment") or "insufficient"
+                            ).strip().casefold()
+                            if reference_assessment not in {
+                                "consistent", "conflict", "insufficient"
+                            }:
+                                raise ValueError("reference assessment is invalid")
+                            reference_assessment_reason = str(
+                                raw.get("reference_assessment_reason") or ""
+                            ).strip()
                             validation_category = "solution_evidence_contract"
                             (
                                 normalized_tag,
@@ -1608,6 +1675,8 @@ class InMemoryCombinedQuestionAnalysisModule:
                                 solution_evidence_payload=normalized_evidence,
                                 solution_evidence=evidence,
                                 taxonomy_audit=taxonomy_audit,
+                                reference_assessment=reference_assessment,
+                                reference_assessment_reason=reference_assessment_reason,
                                 model_name=response.model_name,
                                 operation_id=operation_id,
                             )
@@ -1617,6 +1686,8 @@ class InMemoryCombinedQuestionAnalysisModule:
                                 "question_id": question.question_id,
                                 "tag_analysis": normalized_tag,
                                 "solution_evidence": normalized_evidence,
+                                "reference_assessment": reference_assessment,
+                                "reference_assessment_reason": reference_assessment_reason,
                             }
                         )
                         parsed_count += 1
@@ -1674,7 +1745,7 @@ class DeferredCombinedProjectionWriter:
         self,
         *,
         tag_writer: Any,
-        mapping_repository: FineTermCoreMappingRepository,
+        mapping_repository: FineTermResolver,
         evidence_repository: SolutionEvidenceRepository,
         taxonomy_governance: Any | None = None,
     ) -> None:

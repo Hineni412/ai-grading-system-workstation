@@ -77,6 +77,13 @@ export interface ConfigSourceSubmission {
   source: ConfigSource | null
 }
 
+export interface ConfigQuestionGenerationState {
+  question_id: string
+  state: 'pending' | 'running' | 'passed' | 'blocked' | 'failed'
+  reason: string
+  retryable: boolean
+}
+
 export interface ConfigGenerationRequest {
   source_id: string
   source_revision: string
@@ -471,6 +478,35 @@ export async function fetchLatestConfigGenerationJob(
   return apiClient.request(`/api/sessions/${id}/config/generation-jobs/latest?${query}`, {
     decode: decodeStrictJob,
   })
+}
+
+export async function fetchConfigGenerationQuestionStates(
+  sessionId: number,
+  jobId: number,
+): Promise<ConfigQuestionGenerationState[]> {
+  const id = requireSessionId(sessionId)
+  if (!isPositiveInteger(jobId)) throw new Error('Invalid job id')
+  return apiClient.request(
+    `/api/sessions/${id}/config/generation-jobs/${jobId}/question-states`,
+    {
+      decode: (value) => {
+        assertNoPathLikeKeys(value)
+        if (!isRecord(value) || !hasExactKeys(value, ['job_id', 'questions'])
+          || value.job_id !== jobId || !Array.isArray(value.questions)) {
+          throw new Error('Invalid config question states response')
+        }
+        const questions = value.questions
+        if (!questions.every((item) => isRecord(item)
+          && hasExactKeys(item, ['question_id', 'state', 'reason', 'retryable'])
+          && typeof item.question_id === 'string'
+          && ['pending', 'running', 'passed', 'blocked', 'failed'].includes(String(item.state))
+          && typeof item.reason === 'string' && typeof item.retryable === 'boolean')) {
+          throw new Error('Invalid config question states response')
+        }
+        return questions as ConfigQuestionGenerationState[]
+      },
+    },
+  )
 }
 
 export async function fetchConfigGenerationJobByToken(

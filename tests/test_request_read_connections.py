@@ -517,7 +517,7 @@ def test_route_validation_error_cleans_request_read_context(
     app.dependency_overrides[get_path_manager] = lambda: paths
 
     response = TestClient(app).post(
-        "/api/graph/rows",
+        "/api/graph/query",
         json={"scope": {"mode": "student", "student_ids": []}},
     )
 

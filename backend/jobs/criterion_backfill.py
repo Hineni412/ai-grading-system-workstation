@@ -5,13 +5,11 @@ from pathlib import Path
 from typing import Any
 
 from question_bank.services.ai_tagging_service import AITaggingService
+from question_bank.current_knowledge import CurrentFineTermResolver
 from question_bank.services.question_service import QuestionService
 from question_bank.solution_evidence import (
-    FineTermCoreMappingRepository,
     SolutionEvidenceProjectionWriter,
     SolutionEvidenceRepository,
-    build_fine_term_mapping_baseline,
-    install_fine_term_mapping_baseline,
 )
 from question_bank.training_criteria import (
     CombinedAnalysisRepository,
@@ -130,11 +128,8 @@ def run_criterion_backfill_job(
                 ),
                 context,
             )
-            mapping_repository = FineTermCoreMappingRepository(db_path)
-            install_fine_term_mapping_baseline(
-                mapping_repository,
-                build_fine_term_mapping_baseline(),
-                actor_ref="system:taxonomy-baseline-v1",
+            mapping_repository = CurrentFineTermResolver.from_active_database(
+                db_path
             )
             analysis_module = CombinedQuestionAnalysisModule(
                 repository=CombinedAnalysisRepository(db_path),

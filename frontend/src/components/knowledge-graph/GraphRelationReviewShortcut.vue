@@ -5,8 +5,8 @@ import {
   fetchRelationReviewQueue,
   reviewRelationExceptions,
   type RelationReviewQueueResponse,
-} from '../../api/graph-v2'
-import { relationTypeLabel } from '../../features/knowledge-graph/v2-model'
+} from '../../api/graph'
+import { relationTypeLabel } from '../../features/knowledge-graph/model'
 
 const queue = ref<RelationReviewQueueResponse | null>(null)
 const state = ref<'loading' | 'ready' | 'error'>('loading')

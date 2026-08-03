@@ -32,8 +32,7 @@ EXPECTED_NAMES = {
     "training.plan.preview",
     "training.tasks",
     "training.task.detail",
-    "graph.profiles",
-    "graph.rows",
+    "graph.query",
     "graph.evidence",
     "ops.self_check",
     "ops.backups",
@@ -150,23 +149,13 @@ SCENARIO_CONTRACTS = (
         1,
     ),
     (
-        "graph.profiles",
+        "graph.query",
         "POST",
-        "/api/graph/profiles",
-        "/api/graph/profiles",
+        "/api/graph/query",
+        "/api/graph/query",
         (),
         TRAINING_BODY,
-        {"students": [{}, {}]},
-        2,
-    ),
-    (
-        "graph.rows",
-        "POST",
-        "/api/graph/rows",
-        "/api/graph/rows",
-        (),
-        TRAINING_BODY,
-        {"rows": [{}, {}, {}, {}]},
+        {"nodes": [{}, {}, {}, {}]},
         4,
     ),
     (
@@ -177,7 +166,7 @@ SCENARIO_CONTRACTS = (
         (),
         {
             **TRAINING_BODY,
-            "knowledge_key": "knowledge_point:knowledge-01",
+            "stable_key": "kp_alg_linear_equation",
             "page": 1,
             "page_size": 100,
         },
@@ -236,9 +225,9 @@ def _contains_field_named(value: object, forbidden: str) -> bool:
 def test_build_scenarios_has_unique_real_route_contract(micro_dataset) -> None:
     scenarios = build_scenarios(micro_dataset)
 
-    assert len(scenarios) == 16
+    assert len(scenarios) == 15
     assert {scenario.name for scenario in scenarios} == EXPECTED_NAMES
-    assert len({scenario.name for scenario in scenarios}) == 16
+    assert len({scenario.name for scenario in scenarios}) == 15
     assert all(scenario.method in {"GET", "POST"} for scenario in scenarios)
     assert all(scenario.route_template.startswith("/") for scenario in scenarios)
 

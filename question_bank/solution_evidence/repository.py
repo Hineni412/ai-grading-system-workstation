@@ -11,6 +11,7 @@ from question_bank.knowledge_graph_release.contracts import stable_record_hash
 from question_bank.knowledge_graph_release.repository import active_release_id
 from question_bank.solution_evidence.contracts import (
     CoreResolution,
+    FineTermResolver,
     QuestionSolutionEvidence,
     validate_evidence_fine_terms,
 )
@@ -523,7 +524,7 @@ class SolutionEvidenceProjectionWriter:
     def __init__(
         self,
         *,
-        mapping_repository: FineTermCoreMappingRepository,
+        mapping_repository: FineTermResolver,
         evidence_repository: SolutionEvidenceRepository,
         taxonomy_governance: Any | None = None,
     ) -> None:

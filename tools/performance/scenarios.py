@@ -170,25 +170,14 @@ def build_scenarios(
             "training_tasks",
         ),
         BenchmarkScenario(
-            "graph.profiles",
+            "graph.query",
             "POST",
-            "/api/graph/profiles",
+            "/api/graph/query",
             lambda _dataset: ScenarioRequest(
-                "/api/graph/profiles",
+                "/api/graph/query",
                 json_body=dict(training_body),
             ),
-            _collection("students"),
-            "students",
-        ),
-        BenchmarkScenario(
-            "graph.rows",
-            "POST",
-            "/api/graph/rows",
-            lambda _dataset: ScenarioRequest(
-                "/api/graph/rows",
-                json_body=dict(training_body),
-            ),
-            _collection("rows"),
+            _collection("nodes"),
             "session_details",
         ),
         BenchmarkScenario(
@@ -199,7 +188,7 @@ def build_scenarios(
                 "/api/graph/evidence",
                 json_body={
                     **training_body,
-                    "knowledge_key": dataset.knowledge_key,
+                    "stable_key": "kp_alg_linear_equation",
                     "page": 1,
                     "page_size": 100,
                 },

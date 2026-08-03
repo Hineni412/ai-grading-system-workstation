@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type {
   ConfigAmbiguousAssetDecision,
+  ConfigQuestionGenerationState,
   ConfigSource,
   QuestionDecision,
 } from '../../../api/config-workspace'
@@ -37,6 +38,7 @@ async function mountReview(options: {
   assetDecisions?: ConfigAmbiguousAssetDecision[]
   onUpdate?: (value: QuestionDecision[]) => void
   onAssetUpdate?: (value: ConfigAmbiguousAssetDecision[]) => void
+  questionStates?: ConfigQuestionGenerationState[]
 } = {}) {
   const host = document.createElement('div')
   document.body.append(host)
@@ -49,28 +51,32 @@ async function mountReview(options: {
       state, onUpdate, onAssetUpdate,
       decisions: options.decisions ?? [],
       assetDecisions: options.assetDecisions ?? [],
+      questionStates: options.questionStates ?? [],
     }),
-    template: '<QuestionBlockReview :source="state.value" :decisions="decisions" :asset-decisions="assetDecisions" @update:decisions="onUpdate" @update:asset-decisions="onAssetUpdate" />',
+    template: '<QuestionBlockReview :source="state.value" :decisions="decisions" :asset-decisions="assetDecisions" :question-states="questionStates" @update:decisions="onUpdate" @update:asset-decisions="onAssetUpdate" />',
   })
   app.mount(host)
   await nextTick()
   return { host, state, onUpdate, onAssetUpdate, unmount: () => app.unmount() }
 }
 
-function change(
-  element: HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement,
-  value: string | boolean,
-): void {
-  if (element instanceof HTMLInputElement && element.type === 'checkbox') {
-    element.checked = Boolean(value)
-  }
-  else element.value = String(value)
-  element.dispatchEvent(new Event('change', { bubbles: true }))
-}
-
 beforeEach(() => { document.body.innerHTML = '' })
 
 describe('QuestionBlockReview', () => {
+  it('collapses passed questions and keeps exceptions expanded', async () => {
+    const mounted = await mountReview({
+      questionStates: [
+        { question_id: 'Q1', state: 'passed', reason: '', retryable: false },
+        { question_id: 'Q2', state: 'blocked', reason: 'local_validation', retryable: true },
+      ],
+    })
+    const q1 = mounted.host.querySelector<HTMLElement>('[data-question-row="Q1"]')!
+    const q2 = mounted.host.querySelector<HTMLElement>('[data-question-row="Q2"]')!
+    expect(q1.classList.contains('is-collapsed')).toBe(true)
+    expect(q1.querySelector('.question-review__pair')).toBeNull()
+    expect(q2.classList.contains('is-exception')).toBe(true)
+    expect(q2.querySelector('.question-review__pair')).not.toBeNull()
+  })
   it('shows preview only without question exclusion controls', async () => {
     const onUpdate = vi.fn()
     const mounted = await mountReview({
@@ -134,12 +140,13 @@ describe('QuestionBlockReview', () => {
       }],
     })
     const mounted = await mountReview({ value: reviewSource, onAssetUpdate })
-    const selector = mounted.host.querySelector<HTMLSelectElement>('[aria-label="A1 图片归属"]')!
+    const candidate = mounted.host.querySelector<HTMLElement>('.question-review__asset-between')!
 
-    expect(mounted.host.querySelectorAll('.question-review__asset-candidate')).toHaveLength(1)
-    expect(mounted.host.textContent).toContain('本地程序不猜测')
-    expect(selector.querySelector<HTMLOptionElement>('option[value="Q2:question"]')?.disabled).toBe(false)
-    change(selector, 'Q2:question')
+    expect(mounted.host.querySelectorAll('.question-review__asset-between')).toHaveLength(1)
+    expect(candidate.textContent).toContain('Q1 / Q2')
+    const buttons = candidate.querySelectorAll<HTMLButtonElement>('button')
+    expect([...buttons].map((item) => item.textContent)).toEqual(['放入前题', '放入后题', '忽略'])
+    buttons[1]!.click()
     await nextTick()
 
     expect(onAssetUpdate).toHaveBeenLastCalledWith([{
@@ -203,16 +210,14 @@ describe('QuestionBlockReview', () => {
       },
       onAssetUpdate,
     })
-    const selector = mounted.host.querySelector<HTMLSelectElement>(
-      '.question-review__placed-asset select',
-    )!
-    expect(selector.value).toBe('Q1:question')
-
-    change(selector, 'Q2:answer')
+    const moveToAnswer = [...mounted.host.querySelectorAll<HTMLButtonElement>(
+      '.question-review__placed-asset button',
+    )].find((item) => item.textContent === '移到答案')!
+    moveToAnswer.click()
     await nextTick()
 
     expect(onAssetUpdate).toHaveBeenLastCalledWith([{
-      candidate_id: 'P1', action: 'bind', question_id: 'Q2', asset_kind: 'answer',
+      candidate_id: 'P1', action: 'bind', question_id: 'Q1', asset_kind: 'answer',
     }])
   })
 

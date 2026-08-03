@@ -14,13 +14,11 @@ from backend.training_assessment.contracts import (
     stable_hash,
 )
 from question_bank.database.schema import connect
-from question_bank.mastery.comparison import build_profile_comparison_cases
-from question_bank.mastery.rollout import MasteryRolloutRepository
-from question_bank.mastery.v2 import (
-    MasteryV2Parameters,
-    TrainingEvidence,
-    compute_mastery_v2,
+from question_bank.current_knowledge import (
+    CurrentKnowledgeResolver,
+    CurrentKnowledgeUnavailable,
 )
+from question_bank.mastery.current import CurrentMasteryCalculator
 from question_bank.recommendation.personalized import (
     PersonalizedRecommendationConfig,
     PersonalizedRecommendationModule,
@@ -154,6 +152,14 @@ class TrainingEvidencePublisher:
         self.outcome_loader = outcome_loader
         self.sink = sink or SQLiteTrainingEvidenceSink(self.db_path)
         self.clock = clock or (lambda: datetime.now().astimezone())
+        try:
+            self.current_knowledge = (
+                CurrentKnowledgeResolver.from_active_database(self.db_path)
+            )
+        except CurrentKnowledgeUnavailable as exc:
+            raise TrainingEvidenceError(
+                "current knowledge standard is unavailable"
+            ) from exc
 
     def sync(
         self,
@@ -426,14 +432,13 @@ class TrainingEvidencePublisher:
                 or any(state not in {"met", "not_met"} for state in states)
             ):
                 continue
-            stable_key = _stable_key(item["matched_key"])
+            resolved_targets = self.current_knowledge.resolve(
+                item["matched_key"]
+            )
+            if not resolved_targets:
+                continue
             total_points = len(review_points)
             achieved_points = sum(state == "met" for state in states)
-            evidence_id = _evidence_id(
-                outcome.submission_id,
-                outcome.submission_revision,
-                task_item_code,
-            )
             final_points = [
                 {
                     "point_id": str(point["point_id"]),
@@ -454,56 +459,66 @@ class TrainingEvidencePublisher:
                 for point in review_points
                 if point["teacher_locked"]
             ]
-            payload = {
-                "schema_version": "training-evidence-v1",
-                "action": "publish",
-                "evidence_id": evidence_id,
-                "submission_id": outcome.submission_id,
-                "submission_revision": outcome.submission_revision,
-                "task_item_code": task_item_code,
-                "source_review_revision": outcome.review_revision,
-                "student_id": str(context["student_id"]),
-                "stable_key": stable_key,
-                "occurred_at": occurred_at,
-                "achieved_points": achieved_points,
-                "total_points": total_points,
-                "coverage_ratio": round(
-                    achieved_points / total_points, 6
-                ),
-                "difficulty_weight": _difficulty_weight(
-                    item["difficulty"]
-                ),
-                "evidence_weight": 1.0,
-                "expected_minutes": _positive_minutes(
-                    item["estimated_minutes"]
-                ),
-                "criterion_version_id": str(
-                    item["criterion_version_id"]
-                ),
-                "criterion_hash": str(item["criterion_hash"]),
-                "final_points": final_points,
-                "teacher_corrections": teacher_corrections,
-                "source": {
-                    "assessment_run_id": outcome.run_id,
-                    "paper_instance_id": str(
-                        context["paper_instance_id"]
+            for target in resolved_targets:
+                payload = {
+                    "schema_version": "training-evidence-v1",
+                    "action": "publish",
+                    "evidence_id": _evidence_id(
+                        outcome.submission_id,
+                        outcome.submission_revision,
+                        task_item_code,
+                        target.stable_key,
                     ),
-                    "draft_id": str(context["draft_id"]),
-                    "draft_result_version": str(
-                        context["draft_result_version"]
+                    "submission_id": outcome.submission_id,
+                    "submission_revision": outcome.submission_revision,
+                    "task_item_code": task_item_code,
+                    "source_review_revision": outcome.review_revision,
+                    "student_id": str(context["student_id"]),
+                    "stable_key": target.stable_key,
+                    "occurred_at": occurred_at,
+                    "achieved_points": achieved_points,
+                    "total_points": total_points,
+                    "coverage_ratio": round(
+                        achieved_points / total_points, 6
                     ),
-                    "bank_question_id": item["bank_question_id"],
-                    "matched_name": str(item["matched_name"]),
-                    "source_paper": str(item["source_paper"]),
+                    "difficulty_weight": _difficulty_weight(
+                        item["difficulty"]
+                    ),
+                    "evidence_weight": 1.0,
+                    "expected_minutes": _positive_minutes(
+                        item["estimated_minutes"]
+                    ),
                     "criterion_version_id": str(
                         item["criterion_version_id"]
                     ),
-                },
-            }
-            payload["payload_hash"] = stable_hash(payload)
-            payloads.append(payload)
-        published_tasks = {
-            str(payload["task_item_code"]) for payload in payloads
+                    "criterion_hash": str(item["criterion_hash"]),
+                    "final_points": final_points,
+                    "teacher_corrections": teacher_corrections,
+                    "source": {
+                        "assessment_run_id": outcome.run_id,
+                        "paper_instance_id": str(
+                            context["paper_instance_id"]
+                        ),
+                        "draft_id": str(context["draft_id"]),
+                        "draft_result_version": str(
+                            context["draft_result_version"]
+                        ),
+                        "bank_question_id": item["bank_question_id"],
+                        "matched_name": target.display_name,
+                        "source_paper": str(item["source_paper"]),
+                        "criterion_version_id": str(
+                            item["criterion_version_id"]
+                        ),
+                    },
+                }
+                payload["payload_hash"] = stable_hash(payload)
+                payloads.append(payload)
+        published_identities = {
+            (
+                str(payload["task_item_code"]),
+                str(payload["stable_key"]),
+            )
+            for payload in payloads
         }
         with connect(self.db_path) as connection:
             stale_rows = connection.execute(
@@ -516,7 +531,10 @@ class TrainingEvidencePublisher:
                 (outcome.submission_id, outcome.submission_revision),
             ).fetchall()
         for row in stale_rows:
-            if str(row["task_item_code"]) not in published_tasks:
+            if (
+                str(row["task_item_code"]),
+                str(row["stable_key"]),
+            ) not in published_identities:
                 payloads.append(
                     self._withdraw_payload(
                         row,
@@ -871,7 +889,7 @@ class TrainingEvidencePublisher:
             ],
             "safety": {
                 "is_exam_score": False,
-                "changes_v1": False,
+                "changes_exam_score": False,
                 "auto_paper_created": False,
                 "auto_printed": False,
             },
@@ -916,86 +934,55 @@ class TrainingEvidencePublisher:
         submission_revision: int,
     ) -> list[dict[str, Any]]:
         diagnosis = context.get("diagnosis")
-        base_cases = (
-            build_profile_comparison_cases(diagnosis)
-            if isinstance(diagnosis, Mapping)
-            else ()
-        )
+        profile = diagnosis if isinstance(diagnosis, Mapping) else {}
         student_id = str(context["student_id"])
-        case_by_key = {
-            case.stable_key: case
-            for case in base_cases
-            if case.student_id == student_id
-        }
         with connect(self.db_path) as connection:
             rows = connection.execute(
                 """
-                SELECT * FROM training_evidence_records
+                SELECT evidence_id
+                FROM training_evidence_records
                 WHERE student_id = ? AND status = 'active'
-                ORDER BY stable_key, occurred_at, evidence_id
+                  AND submission_id = ? AND submission_revision = ?
+                ORDER BY evidence_id
                 """,
-                (student_id,),
+                (student_id, submission_id, submission_revision),
             ).fetchall()
-            identities = {
-                str(row["stable_key"]): str(row["display_name"])
-                for row in connection.execute(
-                    """
-                    SELECT stable_key, display_name
-                    FROM knowledge_tag_identities
-                    WHERE status = 'active'
-                    """
-                ).fetchall()
-            }
-        evidence_by_key: dict[str, list[TrainingEvidence]] = {}
-        current_ids: set[str] = set()
-        for row in rows:
-            evidence = _training_evidence(row)
-            evidence_by_key.setdefault(evidence.stable_key, []).append(
-                evidence
-            )
-            if (
-                str(row["submission_id"]) == submission_id
-                and int(row["submission_revision"])
-                == submission_revision
-            ):
-                current_ids.add(evidence.evidence_id)
-        context_keys = {
-            _stable_key(item["matched_key"])
-            for item in context["items"]
-        }
-        keys = sorted(context_keys | set(evidence_by_key))
-        rollout = MasteryRolloutRepository(self.db_path)
-        state = rollout.get_state()
-        parameters = (
-            rollout.select_parameters() or MasteryV2Parameters()
+        current_ids = frozenset(str(row["evidence_id"]) for row in rows)
+        calculator = CurrentMasteryCalculator(
+            self.db_path,
+            self.current_knowledge,
+            clock=self.clock,
         )
-        as_of = self._now().astimezone(UTC)
+        after_all = calculator.calculate(profile)
+        before_all = calculator.calculate(
+            profile,
+            exclude_training_evidence_ids=current_ids,
+        )
+        after = {
+            key: value
+            for (owner, key), value in after_all.items()
+            if owner == student_id
+        }
+        before = {
+            key: value
+            for (owner, key), value in before_all.items()
+            if owner == student_id
+        }
+        context_keys = {
+            resolved.stable_key
+            for item in context["items"]
+            for resolved in self.current_knowledge.resolve(item["matched_key"])
+        }
+        keys = sorted(context_keys | set(after) | set(before))
         changes = []
         for stable_key in keys:
-            case = case_by_key.get(stable_key)
-            all_training = tuple(evidence_by_key.get(stable_key, ()))
-            before_training = tuple(
-                item
-                for item in all_training
-                if item.evidence_id not in current_ids
-            )
-            exam_evidence = () if case is None else case.exam_evidence
-            before = compute_mastery_v2(
-                stable_key=stable_key,
-                as_of=as_of,
-                exam_evidence=exam_evidence,
-                training_evidence=before_training,
-                parameters=parameters,
-            )
-            after = compute_mastery_v2(
-                stable_key=stable_key,
-                as_of=as_of,
-                exam_evidence=exam_evidence,
-                training_evidence=all_training,
-                parameters=parameters,
-            )
-            before_value = before.value
-            after_value = after.value
+            node = self.current_knowledge.node(stable_key)
+            if node is None:
+                continue
+            before_item = before.get(stable_key)
+            after_item = after.get(stable_key)
+            before_value = None if before_item is None else before_item.value
+            after_value = None if after_item is None else after_item.value
             delta = (
                 None
                 if before_value is None or after_value is None
@@ -1004,31 +991,21 @@ class TrainingEvidencePublisher:
             changes.append(
                 {
                     "stable_key": stable_key,
-                    "display_name": (
-                        identities.get(stable_key)
-                        or (
-                            case.display_name
-                            if case is not None
-                            else stable_key
-                        )
+                    "display_name": node.display_name,
+                    "mastery_before": (
+                        _missing_current_mastery()
+                        if before_item is None
+                        else before_item.to_dict()
                     ),
-                    "active_mode": state.active_mode,
-                    "applied_to_active_mode": bool(state.enabled),
-                    "v1_value_unchanged": (
-                        None if case is None else case.mastery_v1
+                    "mastery_after": (
+                        _missing_current_mastery()
+                        if after_item is None
+                        else after_item.to_dict()
                     ),
-                    "v2_before": before.to_dict(),
-                    "v2_after": after.to_dict(),
-                    "v2_delta": delta,
-                    "reason": _mastery_reason(
-                        state.enabled,
+                    "mastery_delta": delta,
+                    "reason": _current_mastery_reason(
                         delta=delta,
-                        current_evidence_count=len(current_ids.intersection(
-                            {
-                                item.evidence_id
-                                for item in all_training
-                            }
-                        )),
+                        current_evidence_count=len(current_ids),
                     ),
                 }
             )
@@ -1146,7 +1123,7 @@ class TrainingEvidencePublisher:
             {
                 "type": "mastery",
                 "stable_key": item["stable_key"],
-                "v2_delta": item["v2_delta"],
+                "mastery_delta": item["mastery_delta"],
                 "reason": item["reason"],
             }
             for item in mastery_changes
@@ -1403,23 +1380,11 @@ def _record_values(
     )
 
 
-def _training_evidence(row: Mapping[str, Any]) -> TrainingEvidence:
-    occurred_at = datetime.fromisoformat(str(row["occurred_at"]))
-    return TrainingEvidence(
-        evidence_id=str(row["evidence_id"]),
-        stable_key=str(row["stable_key"]),
-        occurred_at=occurred_at,
-        achieved_points=int(row["achieved_points"]),
-        total_points=int(row["total_points"]),
-        difficulty_weight=float(row["difficulty_weight"]),
-        evidence_weight=float(row["evidence_weight"]),
-    )
-
-
 def _evidence_id(
     submission_id: str,
     submission_revision: int,
     task_item_code: str,
+    stable_key: str,
 ) -> str:
     return stable_hash(
         {
@@ -1427,6 +1392,7 @@ def _evidence_id(
             "submission_id": submission_id,
             "submission_revision": submission_revision,
             "task_item_code": task_item_code,
+            "stable_key": stable_key,
         }
     )
 
@@ -1536,26 +1502,30 @@ def _feedback_message(
     )
 
 
-def _mastery_reason(
-    enabled: bool,
+def _current_mastery_reason(
     *,
     delta: float | None,
     current_evidence_count: int,
 ) -> str:
-    if not enabled:
-        return (
-            "训练证据已保存并进入 v2 预览，但当前开关为 v1，"
-            "因此不会改写 v1。"
-        )
     if current_evidence_count == 0:
-        return "本次没有可计入的确定训练证据，活动 v2 保持原证据结果。"
+        return "本次没有可计入当前知识标准的确定训练证据。"
     if delta is None:
-        return "本次逐题训练证据使 v2 从缺失状态获得可解释结果。"
+        return "本次逐题训练证据使当前掌握度从缺失状态获得结果。"
     direction = "提高" if delta > 0 else "降低" if delta < 0 else "保持"
     return (
-        f"活动 v2 按每题覆盖比例和题目权重重算，结果{direction}；"
+        f"当前掌握度按每题覆盖比例和题目权重重算，结果{direction}；"
         "未跨题累加判定点。"
     )
+
+
+def _missing_current_mastery() -> dict[str, object]:
+    return {
+        "status": "missing",
+        "value": None,
+        "evidence_count": 0,
+        "parameter_version": None,
+        "reason": "current_mastery_evidence_missing",
+    }
 
 
 def _json(value: object) -> str:

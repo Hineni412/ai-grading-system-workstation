@@ -67,8 +67,7 @@ EXPECTED_OPERATIONS = {
     ("GET", "/api/training/tasks/{task_id}"),
     ("POST", "/api/training/tasks/{task_id}/exports"),
     ("POST", "/api/training/exports/jobs/{job_id}/retry"),
-    ("POST", "/api/graph/profiles"),
-    ("POST", "/api/graph/rows"),
+    ("POST", "/api/graph/query"),
     ("POST", "/api/graph/evidence"),
     ("GET", "/api/ops/self-check"),
     ("GET", "/api/ops/backups"),
@@ -491,8 +490,7 @@ def test_graph_openapi_declares_strict_tag_only_operations() -> None:
 
     schema = create_app().openapi()
     graph_operations = {
-        ("post", "/api/graph/profiles"),
-        ("post", "/api/graph/rows"),
+        ("post", "/api/graph/query"),
         ("post", "/api/graph/evidence"),
     }
     for method, path in graph_operations:

@@ -8,6 +8,7 @@ import {
 import {
   TAXONOMY_DIMENSIONS,
   type TaxonomyDimension,
+  type TaxonomyBatchManualDecision,
   type TaxonomyProposal,
   type TaxonomySuggestion,
   type TaxonomyTerm,
@@ -20,7 +21,7 @@ interface CandidateDraft {
   mergeSearch: string
   targetTermIds: string[]
   selectedQuestionIds: number[]
-  adoptedSuggestion: TaxonomySuggestion['decision'] | null
+  adoptedSuggestion: TaxonomySuggestion['relation_kind'] | null
   approvalExpanded: boolean
 }
 
@@ -54,28 +55,15 @@ const dimensionLabels: Record<TaxonomyDimension, string> = {
   special_type: '特殊题型/考法',
 }
 
-const graphDispositionLabels: Record<string, string> = {
-  maps_to_many: '映射多个核心',
-  retrieval_only: '仅用于检索',
-  wrong_dimension: '移出知识维度',
-  retired: '退役',
-}
-
-function graphDispositionLabel(value: string): string {
-  return graphDispositionLabels[value] ?? value
-}
-
 const pendingProposals = computed(() => (
   store.proposals.filter(({ status, actionable }) => (
     status === 'pending' && actionable
   ))
 ))
 
-const historicalProposals = computed(() => (
-  store.proposals.filter(({ status, actionable }) => (
-    status === 'pending' && !actionable
-  ))
-))
+const batchDrafts = reactive<Record<string, { decision: TaxonomyBatchManualDecision['decision']; targetTermId: string }>>({})
+const manualBatchItems = computed(() => store.batchPreview?.items.filter((item) => !item.automatic) ?? [])
+const automaticBatchItems = computed(() => store.batchPreview?.items.filter((item) => item.automatic) ?? [])
 
 const suggestionIsActive = computed(() => (
   store.suggestionRun !== null
@@ -290,15 +278,15 @@ function adoptSuggestion(proposal: TaxonomyProposal): void {
   const item = store.suggestionFor(proposal.id)
   const suggestion = item?.suggestion
   if (!suggestion || store.suggestionRun?.stale) return
-  if (!['merge', 'map_many', 'approve'].includes(suggestion.decision)) return
+  if (!['exact', 'new_core_candidate'].includes(suggestion.relation_kind)) return
   const draft = draftFor(proposal)
-  draft.adoptedSuggestion = suggestion.decision
-  if (suggestion.decision === 'merge' || suggestion.decision === 'map_many') {
+  draft.adoptedSuggestion = suggestion.relation_kind
+  if (suggestion.relation_kind === 'exact') {
     draft.targetTermIds = suggestion.target_term_ids.filter(
       (termId) => termFor(proposal, termId) !== null,
     )
     draft.mergeSearch = ''
-  } else if (suggestion.decision === 'approve') {
+  } else if (suggestion.relation_kind === 'new_core_candidate') {
     draft.editedName = proposal.proposed_name
     draft.approvalExpanded = true
   }
@@ -306,28 +294,31 @@ function adoptSuggestion(proposal: TaxonomyProposal): void {
 
 function suggestionLabel(suggestion: TaxonomySuggestion): string {
   return {
-    merge: '归并到 1 个现有词',
-    map_many: '归并到多个现有词',
-    approve: '保留为新规范词',
+    exact: '严格同义',
+    broader: '候选范围更宽',
+    narrower: '候选范围更细',
+    related: '相关但不同义',
+    new_core_candidate: '可能是缺失的新词',
+    wrong_dimension: '标签维度不合适',
     reject: '不纳入规范词表',
     uncertain: '证据不足，建议人工判断',
-  }[suggestion.decision]
+  }[suggestion.relation_kind]
 }
 
 function suggestionCanPrefill(suggestion: TaxonomySuggestion): boolean {
-  return ['merge', 'map_many', 'approve'].includes(suggestion.decision)
+  return ['exact', 'new_core_candidate'].includes(suggestion.relation_kind)
 }
 
 function suggestionActionLabel(proposal: TaxonomyProposal): string {
   const draft = draftFor(proposal)
   if (!draft.adoptedSuggestion) return '采用并预填'
-  return draft.adoptedSuggestion === 'approve'
+  return draft.adoptedSuggestion === 'new_core_candidate'
     ? '已预填规范名，仍需确认'
     : '已预填归并目标，仍需确认'
 }
 
 function suggestionManualHint(suggestion: TaxonomySuggestion): string {
-  return suggestion.decision === 'reject'
+  return suggestion.relation_kind === 'reject'
     ? '如你认同，请在卡片底部人工点击“拒绝这个新词”。'
     : '这项没有可自动预填的结论，请结合题目预览人工判断。'
 }
@@ -337,6 +328,32 @@ async function startSuggestions(): Promise<void> {
     pendingProposals.value.slice(0, 200).map(({ id }) => id),
   )
   if (started) scheduleSuggestionRefresh()
+}
+
+function batchDraft(proposalId: string, targetIds: string[]) {
+  batchDrafts[proposalId] ??= {
+    decision: 'defer',
+    targetTermId: targetIds[0] ?? '',
+  }
+  return batchDrafts[proposalId]!
+}
+
+function batchTerms(dimension: TaxonomyDimension): TaxonomyTerm[] {
+  return store.termsFor(dimension)
+}
+
+async function saveBatch(): Promise<void> {
+  const decisions: TaxonomyBatchManualDecision[] = manualBatchItems.value.map((item) => {
+    const draft = batchDraft(item.proposal_id, item.suggestion.target_term_ids)
+    return {
+      proposal_id: item.proposal_id,
+      decision: draft.decision,
+      target_term_ids: draft.decision === 'merge' && draft.targetTermId
+        ? [draft.targetTermId]
+        : [],
+    }
+  })
+  await store.applySuggestionBatch(decisions)
 }
 
 function clearSuggestionTimer(): void {
@@ -403,18 +420,6 @@ function closeQuestionPreview(): void {
   if (returnTarget) void nextTick(() => returnTarget.focus())
 }
 
-async function confirmGraphRelease(): Promise<void> {
-  const release = store.graphRelease
-  if (!release || release.current_release_id === release.release_id) return
-  const confirmed = window.confirm(
-    `确认整体启用新版知识图谱吗？\n\n`
-    + `将一次启用 ${release.fine_term_count} 个规范词的映射、`
-    + `${release.node_count} 个节点资料和 ${release.relation_count} 条关系。`
-    + `已有历史记录不会被改写。`,
-  )
-  if (confirmed) await store.activateGraphRelease()
-}
-
 function onKeydown(event: KeyboardEvent): void {
   if (!props.open || event.key !== 'Escape') return
   if (previewState.value !== 'idle') closeQuestionPreview()
@@ -471,9 +476,6 @@ onBeforeUnmount(() => {
             <small v-else>
               已达到集中治理建议数量；单批最多处理 200 个
             </small>
-            <small v-if="store.historicalUnavailableCount">
-              另有 {{ store.historicalUnavailableCount }} 个历史候选暂无当前题目
-            </small>
           </div>
           <div class="taxonomy-review__toolbar-actions">
             <button
@@ -516,66 +518,10 @@ onBeforeUnmount(() => {
           </div>
         </div>
 
-        <section
-          v-if="store.graphRelease"
-          class="taxonomy-review__graph-release"
-          aria-live="polite"
-        >
-          <div>
-            <p class="qb-eyebrow">KNOWLEDGE GRAPH 2.1</p>
-            <h3>294 词权威映射包</h3>
-            <p>
-              已处置 {{ store.graphRelease.fine_term_count }} 个规范知识词，
-              包含 {{ store.graphRelease.node_count }} 个节点资料、
-              {{ store.graphRelease.relation_count }} 条有依据的关系；
-              {{ store.graphRelease.high_impact_count }} 项属于集中确认范围。
-            </p>
-            <p>{{ store.graphReleaseMessage }}</p>
-            <ul v-if="store.graphRelease.issues.length">
-              <li v-for="issue in store.graphRelease.issues" :key="issue.code">
-                {{ issue.message }}
-              </li>
-            </ul>
-            <details
-              v-if="store.graphRelease.high_impact_items.length"
-              class="taxonomy-review__graph-details"
-            >
-              <summary>
-                查看 {{ store.graphRelease.high_impact_items.length }} 项集中确认清单
-              </summary>
-              <ul>
-                <li
-                  v-for="item in store.graphRelease.high_impact_items"
-                  :key="item.fine_term_id"
-                >
-                  <strong>{{ item.display_name }}</strong>：
-                  {{ graphDispositionLabel(item.disposition) }}
-                  <template v-if="item.target_names.length">
-                    → {{ item.target_names.join('、') }}
-                  </template>
-                </li>
-              </ul>
-            </details>
-          </div>
-          <span
-            v-if="store.graphRelease.current_release_id === store.graphRelease.release_id"
-            class="taxonomy-review__graph-status is-active"
-          >
-            已整体启用
-          </span>
-          <button
-            v-else
-            type="button"
-            class="qb-button is-primary"
-            :disabled="
-              !store.graphRelease.can_activate
-              || store.graphReleaseState === 'activating'
-            "
-            @click="confirmGraphRelease"
-          >
-            {{ store.graphReleaseState === 'activating' ? '正在安全启用…' : '核对并整体启用' }}
-          </button>
-        </section>
+        <p class="taxonomy-review__standard-summary" role="status">
+          当前知识标准 · 词表修订 {{ store.revision }} ·
+          {{ Object.values(store.dimensions).reduce((total, terms) => total + terms.length, 0) }} 个活动规范词
+        </p>
 
         <section
           v-if="store.suggestionRun || store.suggestionMessage"
@@ -594,7 +540,91 @@ onBeforeUnmount(() => {
           <p>{{ store.suggestionMessage }}</p>
         </section>
 
-        <nav class="taxonomy-review__dimensions" aria-label="按标签维度筛选">
+        <section v-if="store.batchPreview" class="taxonomy-ai-results" aria-labelledby="taxonomy-ai-results-title">
+          <header>
+            <div>
+              <p class="qb-eyebrow">AI 归并结果</p>
+              <h3 id="taxonomy-ai-results-title">先核对疑难项，再一次保存</h3>
+            </div>
+            <p>
+              自动归并 {{ store.batchPreview.counts.automatic }} ｜
+              需人工 {{ store.batchPreview.counts.manual }}
+            </p>
+          </header>
+
+          <div class="taxonomy-ai-results__manual">
+            <h4>需人工确认</h4>
+            <article v-for="item in manualBatchItems" :key="item.proposal_id">
+              <div>
+                <strong>{{ item.proposed_name }}</strong>
+                <span>{{ suggestionLabel(item.suggestion) }} · {{ Math.round(item.suggestion.confidence * 100) }}%</span>
+                <p>{{ item.suggestion.reason }}</p>
+              </div>
+              <label>
+                <span>本批决定</span>
+                <select v-model="batchDraft(item.proposal_id, item.suggestion.target_term_ids).decision">
+                  <option value="defer">暂缓</option>
+                  <option value="merge">归并到现有词</option>
+                  <option value="approve">保留为新词</option>
+                  <option value="reject">拒绝</option>
+                </select>
+              </label>
+              <label v-if="batchDraft(item.proposal_id, item.suggestion.target_term_ids).decision === 'merge'">
+                <span>目标词</span>
+                <select v-model="batchDraft(item.proposal_id, item.suggestion.target_term_ids).targetTermId">
+                  <option value="">请选择</option>
+                  <option v-for="term in batchTerms(item.dimension)" :key="term.id" :value="term.id">
+                    {{ term.name }}
+                  </option>
+                </select>
+              </label>
+              <details>
+                <summary>查看证据</summary>
+                <button
+                  v-for="questionId in item.question_ids"
+                  :key="questionId"
+                  type="button"
+                  class="taxonomy-question-link"
+                  @click="openQuestionPreview(questionId, $event)"
+                >
+                  题目 #{{ questionId }}
+                </button>
+              </details>
+            </article>
+          </div>
+
+          <details class="taxonomy-ai-results__automatic">
+            <summary>已自动处理（{{ automaticBatchItems.length }}，默认折叠）</summary>
+            <article v-for="item in automaticBatchItems" :key="item.proposal_id">
+              <strong>{{ item.proposed_name }}</strong>
+              <span>{{ suggestionLabel(item.suggestion) }} · {{ Math.round(item.suggestion.confidence * 100) }}%</span>
+              <p>{{ item.suggestion.reason }}</p>
+            </article>
+          </details>
+
+          <footer>
+            <p aria-live="polite">{{ store.batchMessage }}</p>
+            <button type="button" class="qb-button" @click="store.batchPreview = null">返回候选</button>
+            <button
+              v-if="store.reviewOperation?.undo_status === 'available'"
+              type="button"
+              class="qb-button"
+              @click="store.undoLastBatch()"
+            >
+              撤销上一批
+            </button>
+            <button
+              type="button"
+              class="qb-button is-primary"
+              :disabled="store.batchState === 'saving'"
+              @click="saveBatch"
+            >
+              {{ store.batchState === 'saving' ? '正在保存…' : '保存本批决定' }}
+            </button>
+          </footer>
+        </section>
+
+        <nav v-if="!store.batchPreview" class="taxonomy-review__dimensions" aria-label="按标签维度筛选">
           <button
             type="button"
             :class="{ 'is-active': activeDimension === 'all' }"
@@ -626,46 +656,24 @@ onBeforeUnmount(() => {
           {{ store.message }}
         </p>
 
-        <details
-          v-if="historicalProposals.length"
-          class="taxonomy-review__historical"
-        >
-          <summary>
-            历史失联候选（{{ historicalProposals.length }}）
-          </summary>
-          <p>
-            这些候选仍保留历史审核证据，但当前题库中已没有可核对的关联题目。
-            恢复原试卷后会重新进入待处理清单；系统不会自动删除或交给 AI 判断。
-          </p>
-          <ul>
-            <li v-for="proposal in historicalProposals" :key="proposal.id">
-              <strong>{{ proposal.proposed_name }}</strong>
-              <span>
-                {{ dimensionLabels[proposal.dimension] }} ·
-                {{ proposal.unavailable_question_ref_count }} 个历史题目引用
-              </span>
-            </li>
-          </ul>
-        </details>
-
-        <div v-if="store.loadState === 'loading' && !store.proposals.length" class="taxonomy-review__state">
+        <div v-if="!store.batchPreview && store.loadState === 'loading' && !store.proposals.length" class="taxonomy-review__state">
           正在读取新词候选…
         </div>
-        <div v-else-if="store.loadState === 'error' && !store.proposals.length" class="taxonomy-review__state is-error">
+        <div v-else-if="!store.batchPreview && store.loadState === 'error' && !store.proposals.length" class="taxonomy-review__state is-error">
           <strong>候选清单暂时无法读取</strong>
           <p>可以保留当前窗口，稍后重新读取。</p>
           <button type="button" class="qb-button" @click="store.load()">重新读取</button>
         </div>
-        <div v-else-if="store.loadState === 'empty' || pendingProposals.length === 0" class="taxonomy-review__state">
+        <div v-else-if="!store.batchPreview && (store.loadState === 'empty' || pendingProposals.length === 0)" class="taxonomy-review__state">
           <strong>当前没有待审核新词</strong>
           <p>AI 继续使用现有规范词；以后出现新候选时会在这里集中显示。</p>
         </div>
-        <div v-else-if="visibleGroups.length === 0" class="taxonomy-review__state">
+        <div v-else-if="!store.batchPreview && visibleGroups.length === 0" class="taxonomy-review__state">
           <strong>这个维度暂时没有候选</strong>
           <button type="button" class="qb-link" @click="activeDimension = 'all'">查看全部候选</button>
         </div>
 
-        <div v-else class="taxonomy-review__groups">
+        <div v-else-if="!store.batchPreview" class="taxonomy-review__groups">
           <section
             v-for="group in visibleGroups"
             :key="group.dimension"

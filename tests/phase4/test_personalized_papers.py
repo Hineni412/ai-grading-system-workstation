@@ -21,7 +21,6 @@ from question_bank.personalized_papers import (
     PaperInvalid,
     PaperRenderUnavailable,
     PaperRevisionConflict,
-    PaperSourceChanged,
     PersonalizedPaperModule,
 )
 from question_bank.personalized_papers.rendering import (
@@ -37,6 +36,7 @@ from tests.phase4.test_personalized_recommendation import (
     _diagnosis,
     _seed_recommendation_sources,
 )
+from tests.current_knowledge_support import install_current_knowledge
 
 
 class SyntheticPdfConverter:
@@ -67,6 +67,7 @@ def paper_workspace(
     db_path = tmp_path / "question_bank.db"
     data_root = tmp_path / "data"
     initialize_database(db_path)
+    install_current_knowledge(db_path)
     _seed_recommendation_sources(db_path, data_root)
     recommendation = PersonalizedRecommendationModule(
         db_path=db_path,
@@ -181,11 +182,11 @@ def test_create_review_docx_is_idempotent_versioned_and_immutable(
         connection.execute(
             "UPDATE knowledge_relations SET revision = revision + 1"
         )
-    with pytest.raises(PaperSourceChanged):
-        module.create_review_instance(
-            str(draft["draft_id"]),
-            _create_command("4", draft),
-        )
+    after_legacy_change = module.create_review_instance(
+        str(draft["draft_id"]),
+        _create_command("4", draft),
+    )
+    assert after_legacy_change["series_version"] == 3
     assert hashlib.sha256(review_path.read_bytes()).hexdigest() == review_hash
 
 

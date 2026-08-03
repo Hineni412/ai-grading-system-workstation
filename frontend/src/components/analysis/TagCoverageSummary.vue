@@ -4,16 +4,17 @@ import { RouterLink } from 'vue-router'
 
 import {
   fetchGraphEvidence,
+  graphQueryForClass,
   type GraphEvidenceResponse,
   type GraphNode,
-  type GraphRowsResponse,
+  type GraphResponse,
 } from '../../api/graph'
 import type { ResourceState } from '../../stores/workbench'
 
 const props = defineProps<{
   sessionId: number | null
   className: string | null
-  graph: GraphRowsResponse | null
+  graph: GraphResponse | null
   state: ResourceState
   updatedAt: string | null
 }>()
@@ -48,32 +49,30 @@ async function selectNode(node: GraphNode): Promise<void> {
 
 async function loadEvidence(node: GraphNode, page: number, append: boolean): Promise<void> {
   if (props.sessionId === null || props.className === null) return
-  const keepPrevious = (append || selectedNodeKey.value === node.knowledge_key) && evidence.value !== null
+  const keepPrevious = (append || selectedNodeKey.value === node.stable_key) && evidence.value !== null
   controller?.abort()
   const requestController = new AbortController()
   controller = requestController
   const requestGeneration = ++generation
-  selectedNodeKey.value = node.knowledge_key
+  selectedNodeKey.value = node.stable_key
   if (!keepPrevious) evidence.value = null
   evidenceState.value = 'loading'
   try {
     const loaded = page === 1
       ? await fetchGraphEvidence(
-          props.sessionId,
-          props.className,
-          node.knowledge_key,
+          graphQueryForClass(props.sessionId, props.className),
+          node.stable_key,
           requestController.signal,
         )
       : await fetchGraphEvidence(
-          props.sessionId,
-          props.className,
-          node.knowledge_key,
+          graphQueryForClass(props.sessionId, props.className),
+          node.stable_key,
           requestController.signal,
           page,
         )
     if (requestGeneration !== generation) return
     if (
-      loaded.knowledge_key !== node.knowledge_key ||
+      loaded.stable_key !== node.stable_key ||
       loaded.scope.mode !== 'class' ||
       loaded.scope.class_id !== props.className ||
       loaded.exam_scope.mode !== 'current' ||
@@ -102,14 +101,14 @@ async function loadEvidence(node: GraphNode, page: number, append: boolean): Pro
 }
 
 function loadMoreEvidence(): void {
-  const node = props.graph?.nodes.find((item) => item.knowledge_key === selectedNodeKey.value)
+  const node = props.graph?.nodes.find((item) => item.stable_key === selectedNodeKey.value)
   if (node && evidence.value && evidence.value.page < evidence.value.total_pages) {
     void loadEvidence(node, evidence.value.page + 1, true)
   }
 }
 
 function retryEvidence(): void {
-  const node = props.graph?.nodes.find((item) => item.knowledge_key === selectedNodeKey.value)
+  const node = props.graph?.nodes.find((item) => item.stable_key === selectedNodeKey.value)
   if (node) void selectNode(node)
 }
 
@@ -167,15 +166,15 @@ function displayTime(value: string | null): string {
           : '当前班级没有知识标签记录' }}
       </p>
       <ul v-else class="tag-node-list">
-        <li v-for="node in graph.nodes" :key="node.knowledge_key">
+        <li v-for="node in graph.nodes" :key="node.stable_key">
           <button
             type="button"
             class="tag-node"
-            :aria-pressed="node.knowledge_key === selectedNodeKey"
+            :aria-pressed="node.stable_key === selectedNodeKey"
             @click="selectNode(node)"
           >
-            <strong>{{ node.knowledge_label }}</strong>
-            <span>{{ node.item_count }} 份作答 · {{ node.deduction_count }} 条失分记录</span>
+            <strong>{{ node.display_name }}</strong>
+            <span>{{ node.evidence.item_count }} 份作答 · {{ node.evidence.deduction_count }} 条失分记录</span>
           </button>
         </li>
       </ul>

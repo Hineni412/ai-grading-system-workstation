@@ -38,9 +38,9 @@ FORBIDDEN_KEY = re.compile(
 
 def _summary(*, scale_driver_count: int, select_median: int) -> ScenarioSummary:
     return ScenarioSummary(
-        name="graph.rows",
+        name="graph.query",
         method="POST",
-        route_template="/api/graph/rows",
+        route_template="/api/graph/query",
         status_code=200,
         sample_count=20,
         latency_ms=TimingSummary(1.0, 2.0, 3.0, 4.0),

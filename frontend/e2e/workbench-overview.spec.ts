@@ -194,8 +194,10 @@ function paginatedStudentAnalysis(
   }
 }
 
-function graphRows(sessionId: number, className: string) {
+function graphResponse(sessionId: number, className: string) {
   return {
+    response_schema_version: 'knowledge-graph-current',
+    response_version: 'a'.repeat(64),
     scope: {
       mode: 'class',
       student_ids: Array.from({ length: 101 }, (_, index) => String(index + 1)),
@@ -206,37 +208,46 @@ function graphRows(sessionId: number, className: string) {
       session_ids: [sessionId],
       sessions: [{ session_id: sessionId, session_name: sessions.find((item) => item.id === sessionId)!.name }],
     },
-    rows: [],
+    current_standard: { release_id: 'current', content_hash: 'c'.repeat(64), taxonomy_revision: 1 },
     nodes: [{
-      knowledge_key: 'knowledge_point:fraction',
-      knowledge_label: '分数运算',
-      student_count: 12,
-      item_count: 18,
-      deduction_count: 5,
-      average_mastery: 0.78,
-      tag_context: { 章节: ['数与代数'] },
-      error_counts: {},
+      stable_key: 'kp_fraction',
+      display_name: '分数运算',
+      definition: '分数的四则运算。',
+      include_scope: '分数运算',
+      exclude_scope: '小数运算',
+      curriculum_anchors: ['课程标准'],
+      observable_evidence: '能正确完成分数运算',
+      rationale: '课程内容',
+      evidence_source_ids: ['standard'],
+      mastery: { status: 'available', value: 0.78, evidence_count: 18, parameter_version: 'd'.repeat(64), reason: null },
+      evidence: { student_count: 12, item_count: 18, deduction_count: 5, tag_context: { 章节: ['数与代数'] }, error_counts: {} },
+      missing_reasons: [],
     }],
     edges: [],
     coverage: { covered_items: 18, total_items: 20, missing_items: {} },
     warnings: ['2 份作答未关联知识标签'],
-    diagnosis_identity: 'question_tag',
+    missing: [],
+    counts: { node_count: 1, edge_count: 0, evidence_row_count: 18, missing_count: 0 },
   }
 }
 
 function graphEvidence(sessionId: number, className: string) {
-  const common = graphRows(sessionId, className)
+  const common = graphResponse(sessionId, className)
   return {
+    response_schema_version: 'knowledge-graph-evidence-current',
+    response_version: 'b'.repeat(64),
     scope: common.scope,
     exam_scope: common.exam_scope,
-    knowledge_key: 'knowledge_point:fraction',
-    knowledge_label: '分数运算',
+    current_standard: common.current_standard,
+    stable_key: 'kp_fraction',
+    display_name: '分数运算',
     items: [{
       student_id: sessionId * 10 + 7,
       student_code: `S-${sessionId}-17`,
       student_name: '匿名学生甲',
       class_id: className,
-      knowledge_key: 'knowledge_point:fraction',
+      knowledge_key: 'kp_fraction',
+      stable_key: 'kp_fraction',
       knowledge_label: '分数运算',
       session_id: sessionId,
       session_name: sessions.find((item) => item.id === sessionId)!.name,
@@ -254,8 +265,6 @@ function graphEvidence(sessionId: number, className: string) {
     page_size: 20,
     total_pages: 1,
     coverage: common.coverage,
-    warnings: [],
-    diagnosis_identity: 'question_tag',
   }
 }
 
@@ -452,8 +461,8 @@ async function installSyntheticApi(
       await fulfillJson(route, { items: [], total: 0, page: 1, page_size: 20, total_pages: 0 })
       return
     }
-    if (pathname === '/api/graph/rows') {
-      await fulfillJson(route, graphRows(sessionIdFromGraphRequest(request), classNameFrom(request)))
+    if (pathname === '/api/graph/query') {
+      await fulfillJson(route, graphResponse(sessionIdFromGraphRequest(request), classNameFrom(request)))
       return
     }
     if (pathname === '/api/graph/evidence') {
@@ -508,7 +517,7 @@ function expectReadOnlyRequests(requests: RequestLog[]): void {
   expect(requests.length).toBeGreaterThan(0)
   for (const request of requests) {
     const allowedGraphPost = request.method === 'POST' && (
-      request.pathname === '/api/graph/rows' || request.pathname === '/api/graph/evidence'
+      request.pathname === '/api/graph/query' || request.pathname === '/api/graph/evidence'
     )
     expect(request.method === 'GET' || allowedGraphPost, `${request.method} ${request.pathname}`).toBe(true)
     expect(request.pathname).not.toMatch(/(?:submit|confirm|cancel|score|grading\/jobs)/)
@@ -621,10 +630,10 @@ test('loads Graph only after class selection and supports question, student, ano
   const { requests } = await installSyntheticApi(page)
   await openWorkbench(page)
 
-  expect(requests.filter((request) => request.pathname === '/api/graph/rows')).toEqual([])
+  expect(requests.filter((request) => request.pathname === '/api/graph/query')).toEqual([])
   await page.getByRole('combobox', { name: '班级' }).selectOption('七年级一班')
   await expect(page.getByText('已覆盖 18 / 20 份')).toBeVisible()
-  expect(requests.filter((request) => request.pathname === '/api/graph/rows')).toHaveLength(1)
+  expect(requests.filter((request) => request.pathname === '/api/graph/query')).toHaveLength(1)
   await expect(page.getByTestId('open-knowledge-graph')).toHaveAttribute(
     'href',
     `/knowledge-graph?session=7&class=${encodeURIComponent('七年级一班')}`,
