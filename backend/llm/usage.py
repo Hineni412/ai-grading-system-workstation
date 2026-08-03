@@ -204,7 +204,9 @@ def response_diagnostics(response: object) -> dict[str, object]:
     finish_reason = normalized_reason
     output_truncated = is_truncation_finish_reason(
         normalized_reason
-    ) or looks_like_truncated_json_object(text)
+    ) or (
+        not normalized_reason and looks_like_truncated_json_object(text)
+    )
     return {
         "finish_reason": finish_reason,
         "output_truncated": output_truncated,

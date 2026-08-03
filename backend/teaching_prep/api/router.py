@@ -266,6 +266,10 @@ def _semester_mapping_job_response(
             public_error = (
                 "当前备课模型配置不可用，请先检查“大模型 API”设置。"
             )
+        elif "request parameter is incompatible" in normalized_error:
+            public_error = (
+                "当前模型不接受目录请求参数，请检查模型配置后手动生成。"
+            )
         elif job.stage in {"queued", "checking", "snapshotting", "claiming_operation"}:
             public_error = (
                 "目录建议任务在模型请求前停止，未自动发出新的模型请求。"
