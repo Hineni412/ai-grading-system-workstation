@@ -1049,7 +1049,7 @@ class TeachingPrepService:
             self.semester_mapping_model_adapter
         ):
             raise TeachingPrepValidationError(
-                "semester mapping model is unavailable"
+                "semester mapping model configuration is unavailable"
             )
         if cancel_check is not None:
             cancel_check()
