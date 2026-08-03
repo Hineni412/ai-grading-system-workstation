@@ -100,6 +100,7 @@ function copyFilters(filters: QuestionBankFilters): QuestionBankFilters {
     knowledgePoints: [...(filters.knowledgePoints ?? [])],
     abilities: [...(filters.abilities ?? [])],
     methods: [...(filters.methods ?? [])],
+    thoughts: [...(filters.thoughts ?? [])],
     models: [...(filters.models ?? [])],
     specialTypes: [...(filters.specialTypes ?? [])],
     studentLevels: [...(filters.studentLevels ?? [])],

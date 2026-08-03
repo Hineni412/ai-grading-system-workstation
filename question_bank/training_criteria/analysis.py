@@ -1267,6 +1267,7 @@ def _tag_schema() -> dict[str, Any]:
     properties = {
         "knowledge_points": array,
         "method_tags": array,
+        "thought_tags": array,
         "ability_tags": array,
         "math_model_tags": array,
         "special_type_tags": array,
@@ -1302,7 +1303,7 @@ def _proposal_schema() -> dict[str, Any]:
     }
     return {
         "type": "array",
-        "maxItems": 2,
+        "maxItems": 1,
         "items": {
             "type": "object",
             "properties": properties,

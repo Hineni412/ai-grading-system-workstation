@@ -563,9 +563,10 @@ def _mock_analysis(context: TaggingContext) -> TagAnalysis:
     )
     payload = {
         "knowledge_points": ["几何综合"],
-        "method_tags": ["角度转化"] if "角" in context.question_text else ["方程思想"],
+        "method_tags": ["角度转化法"] if "角" in context.question_text else [],
+        "thought_tags": [] if "角" in context.question_text else ["方程思想"],
         "ability_tags": ["推理能力"] if context.has_answer else ["阅读理解"],
-        "math_model_tags": ["平行线角度模型"] if "平行" in context.question_text else [],
+        "math_model_tags": ["三平行模型"] if "平行" in context.question_text else [],
         "special_type_tags": [],
         "difficulty": 3 if context.has_answer else 2,
         "error_prone_points": ["条件转化不完整"],
@@ -679,7 +680,7 @@ def _system_prompt(
     You analyze junior middle-school math questions.
     Return one JSON object only with the requested schema.
     The local taxonomy contract below is the only source for curriculum,
-    knowledge, ability, method, model, and special-type tags:
+    knowledge, ability, method, thought, model, and special-type tags:
     {contract_json}
 
     Allowed student levels (choose exactly one): {", ".join(STUDENT_LEVELS)}
@@ -689,9 +690,13 @@ def _system_prompt(
     Controlled output rules:
     - taxonomy_revision must exactly echo {int(_taxonomy_revision(contract))}.
     - knowledge_points, prerequisite_points, ability_tags, method_tags,
-      math_model_tags and special_type_tags may contain only exact approved
+      thought_tags, math_model_tags and special_type_tags may contain only exact approved
       names from the matching contract dimension. Never place a newly coined
       or approximate term there.
+    - method_tags answers "what concrete procedure was used"; thought_tags
+      answers "what reusable reasoning strategy guided the solution";
+      math_model_tags names a stable structure whose defining relations are
+      actually present. Never copy a term across these three fields.
     - When curriculum_volume is present in the contract, curriculum_sections
       must contain only exact stable section IDs from that volume. Return the
       smallest accurate section set. Leave textbook_chapters empty because the
@@ -700,9 +705,11 @@ def _system_prompt(
       curriculum names.
     - canonical_knowledge_id must be the approved ID corresponding to the first
       knowledge_points value. If no approved knowledge term fits, return "".
-    - If no approved term accurately fits, add it to proposed_tags instead.
-      Each proposal must state dimension
-      (curriculum/knowledge/ability/method/model/special_type),
+    - Only when no approved knowledge term accurately fits may you add one
+      knowledge item to proposed_tags. Method, thought, model, ability,
+      curriculum and special-type fields are closed vocabularies: leave an
+      optional field empty instead of inventing a label. Each knowledge
+      proposal must state dimension (knowledge),
       name, definition, reason, nearest_id, and why_not_reuse. Also leave that
       unapproved value out of every normal field.
     - proposed_tags is always present, contains at most 2 items per question,
@@ -725,6 +732,7 @@ def _plain_output_schema(taxonomy_revision: int = 0) -> dict[str, object]:
     return {
         "knowledge_points": [],
         "method_tags": [],
+        "thought_tags": [],
         "ability_tags": [],
         "math_model_tags": [],
         "special_type_tags": [],
@@ -763,7 +771,7 @@ def _proposal_response_schema() -> dict[str, object]:
     }
     return {
         "type": "array",
-        "maxItems": 2,
+        "maxItems": 1,
         "items": {
             "type": "object",
             "properties": properties,
@@ -780,6 +788,7 @@ def _tag_analysis_response_format() -> dict[str, Any]:
     properties = {
         "knowledge_points": array_field,
         "method_tags": array_field,
+        "thought_tags": array_field,
         "ability_tags": array_field,
         "math_model_tags": array_field,
         "special_type_tags": array_field,
@@ -1229,6 +1238,7 @@ def _batch_tag_analysis_response_format() -> dict[str, Any]:
         "question_id": {"type": "integer"},
         "knowledge_points": array_field,
         "method_tags": array_field,
+        "thought_tags": array_field,
         "ability_tags": array_field,
         "math_model_tags": array_field,
         "special_type_tags": array_field,
@@ -1808,6 +1818,7 @@ def _analysis_from_constraint(
             "knowledge_points",
             "prerequisite_points",
             "method_tags",
+            "thought_tags",
             "ability_tags",
             "math_model_tags",
             "special_type_tags",
@@ -1827,6 +1838,7 @@ def _analysis_from_constraint(
             field_by_dimension = {
                 "knowledge": "knowledge_points",
                 "method": "method_tags",
+                "thought": "thought_tags",
                 "ability": "ability_tags",
                 "model": "math_model_tags",
                 "special_type": "special_type_tags",
@@ -1838,6 +1850,7 @@ def _analysis_from_constraint(
         else:
             payload["knowledge_points"] = []
             payload["method_tags"] = []
+            payload["thought_tags"] = []
             payload["ability_tags"] = []
             payload["math_model_tags"] = []
             payload["special_type_tags"] = []
@@ -2007,6 +2020,7 @@ def _merge_agreed_analyses(primary: TagAnalysis, review: TagAnalysis) -> TagAnal
     for field_name in (
         "knowledge_points",
         "method_tags",
+        "thought_tags",
         "ability_tags",
         "math_model_tags",
         "special_type_tags",

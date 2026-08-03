@@ -1,8 +1,10 @@
-"""Build the immutable P3.5 junior-math controlled vocabulary.
+"""Build the governed junior-math controlled vocabulary.
 
-The source snapshot is retained verbatim. This builder only promotes terms
-whose dimension can be determined conservatively; everything else stays in
-``reference_candidates`` and is never sent to the model as an approved term.
+The external snapshot is discovery material, never the runtime vocabulary.
+Only stable concept-level knowledge nodes and explicitly curated methods,
+thoughts, models, abilities and special question types are promoted.  Fine
+source leaves and historical names stay as hidden legacy lookup keys so an old
+tag can converge to a new canonical term without being offered to the model.
 """
 
 from __future__ import annotations
@@ -12,8 +14,9 @@ import json
 import re
 import sys
 import unicodedata
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -27,6 +30,16 @@ SOURCE_PATH = CATALOG_DIR / "xkw_junior_math_taxonomy_2026-07-26.source.json"
 CURRICULUM_PATH = CATALOG_DIR / "bnu_math_2024.json"
 OUTPUT_PATH = CATALOG_DIR / "tag_vocabulary_v2.json"
 
+DIMENSIONS = (
+    "curriculum",
+    "knowledge",
+    "ability",
+    "method",
+    "thought",
+    "model",
+    "special_type",
+)
+
 ABILITY_TERMS = (
     "运算能力",
     "几何直观",
@@ -39,558 +52,132 @@ ABILITY_TERMS = (
     "创新意识",
     "阅读理解",
 )
-METHOD_TERMS = (
-    "方程思想",
-    "数形结合",
-    "分类讨论",
-    "转化与化归",
-    "整体思想",
-    "待定系数法",
-    "配方法",
-    "换元法",
-    "构造辅助线",
-    "构造全等",
-    "构造相似",
-    "角度转化",
-    "面积法",
-    "反证法",
-    "函数思想",
-    "模型思想",
-)
-MODEL_TERMS = (
-    "平行线角度模型",
-    "角平分线模型",
-    "中点模型",
-    "倍长中线模型",
-    "中位线模型",
-    "一线三等角模型",
-    "一线三垂直模型",
-    "手拉手模型",
-    "半角模型",
-    "倍角模型",
-    "旋转模型",
-    "折叠模型",
-    "将军饮马模型",
-    "费马点模型",
-    "隐圆模型",
-    "胡不归模型",
-    "阿氏圆模型",
-    "瓜豆模型",
-    "弦图模型",
-    "相似三角形模型",
-    "面积等积模型",
+
+THOUGHT_SPECS = (
+    ("数学建模思想", ("模型思想", "模型化思想")),
+    ("方程思想", ("方程建模思想",)),
+    ("函数思想", ("函数观点",)),
+    ("数形结合思想", ("数形结合",)),
+    ("分类讨论思想", ("分类讨论", "分类讨论法", "分情况讨论")),
+    ("转化与化归思想", ("转化与化归", "转化思想", "化归思想")),
+    ("整体思想", ("整体处理思想",)),
+    ("归纳与猜想思想", ("归纳与猜想", "归纳猜想", "观察归纳")),
+    ("类比思想", ("类比推理",)),
+    ("推理与证明思想", ("推理与证明", "演绎推理")),
+    ("特殊与一般思想", ("特殊化思想", "一般化思想", "从特殊到一般")),
+    ("程序化思想", ("算法思想", "步骤化思想")),
+    ("统计推断思想", ("统计思想", "用样本估计总体")),
 )
 
-TERM_RETRIEVAL_HINTS = {
-    "kp_alg_real_numbers": ("数轴",),
-    "kp_alg_letter_number": ("科学记数法", "科学记数"),
-    "kp_alg_equation_system": ("代入消元法", "加减消元法"),
-    "kp_alg_quadratic_equation": ("配方法",),
-    "kp_geo_construction": ("尺规作角平分线", "作线段", "作垂线"),
-    "kp_syn_reading": ("阅读理解题", "新定义问题"),
-}
-
-CURATED_TERM_SPECS = (
+METHOD_SPECS = (
+    ("代入消元法", ("代入法",)),
+    ("加减消元法", ("加减法消元",)),
+    ("换元法", ("设元代换", "整体换元")),
+    ("待定系数法", ("设系数法",)),
+    ("配方法", ("完全平方配方",)),
+    ("公式法", ("求根公式法",)),
+    ("直接开平方法", ("开平方法",)),
+    ("因式分解法", ("分解因式法", "十字相乘法", "分组分解法")),
+    ("反证法", ("反证",)),
+    ("特殊值法", ("取特殊值", "特例法")),
+    ("枚举法", ("列举法", "穷举法")),
+    ("举反例法", ("举反例", "反例法")),
     (
-        "knowledge",
-        "数轴的概念与画法",
-        ("数轴的三要素及其画法",),
-        (("数与式", "有理数", "数轴", "数轴的三要素及其画法"),),
-    ),
-    (
-        "knowledge",
-        "代数式的规范书写",
-        ("代数式书写方法",),
+        "构造辅助线法",
         (
-            (
-                "数与式",
-                "代数式",
-                "代数式及其应用",
-                "代数式的概念及意义",
-                "代数式书写方法",
-            ),
+            "构造辅助线",
+            "作辅助线",
+            "作垂线法",
+            "作平行线法",
+            "倍长中线",
+            "截长补短",
+            "补全图形法",
         ),
     ),
-    (
-        "knowledge",
-        "科学记数法的乘除运算",
-        ("用科学记数法表示数的乘法", "用科学记数法表示数的除法"),
-        (
-            (
-                "数与式",
-                "代数式",
-                "整式的乘除",
-                "同底数幂的乘法",
-                "用科学记数法表示数的乘法",
-            ),
-            (
-                "数与式",
-                "代数式",
-                "整式的乘除",
-                "单项式除以单项式",
-                "用科学记数法表示数的除法",
-            ),
-        ),
-    ),
-    (
-        "knowledge",
-        "(x+p)(x+q)型多项式乘法",
-        ("（x+p）（x+q）型多项式乘法",),
-        (
-            (
-                "数与式",
-                "代数式",
-                "整式的乘除",
-                "多项式乘多项式",
-                "（x+p）（x+q）型多项式乘法",
-            ),
-        ),
-    ),
-    (
-        "knowledge",
-        "分式的乘法",
-        ("分式乘法",),
-        (("数与式", "分式", "分式的运算", "分式的乘除", "分式乘法"),),
-    ),
-    (
-        "knowledge",
-        "分式的除法",
-        ("分式除法",),
-        (("数与式", "分式", "分式的运算", "分式的乘除", "分式除法"),),
-    ),
-    (
-        "knowledge",
-        "同分母分式加减法",
-        (),
-        (
-            (
-                "数与式",
-                "分式",
-                "分式的运算",
-                "分式的加减法则",
-                "同分母分式加减法",
-            ),
-        ),
-    ),
-    (
-        "knowledge",
-        "异分母分式加减法",
-        (),
-        (
-            (
-                "数与式",
-                "分式",
-                "分式的运算",
-                "分式的加减法则",
-                "异分母分式加减法",
-            ),
-        ),
-    ),
-    (
-        "knowledge",
-        "二次根式的乘法",
-        (),
-        (("数与式", "二次根式", "二次根式的乘除", "二次根式的乘法"),),
-    ),
-    (
-        "knowledge",
-        "二次根式的除法",
-        (),
-        (("数与式", "二次根式", "二次根式的乘除", "二次根式的除法"),),
-    ),
-    (
-        "knowledge",
-        "函数的三种表示方法",
-        (),
-        (("函数", "函数基础知识", "函数的三种表示方法"),),
-    ),
-    (
-        "knowledge",
-        "角的表示方法",
-        (),
-        (("图形的性质", "几何图形初步", "角", "角的概念", "角的表示方法"),),
-    ),
-    (
-        "knowledge",
-        "勾股定理的证明",
-        ("勾股定理的证明方法",),
-        (
-            (
-                "图形的性质",
-                "三角形",
-                "勾股定理及逆定理",
-                "勾股定理",
-                "勾股定理的证明方法",
-            ),
-        ),
-    ),
-    (
-        "knowledge",
-        "尺规确定圆心",
-        ("确定圆心(尺规作图)",),
-        (
-            (
-                "图形的性质",
-                "圆",
-                "点、直线、圆的位置关系",
-                "确定圆的条件",
-                "确定圆心(尺规作图)",
-            ),
-        ),
-    ),
-    (
-        "knowledge",
-        "尺规作线段",
-        ("作线段(尺规作图)", "作线段"),
-        (("图形的性质", "限定工具作图", "作线段(尺规作图)"),),
-    ),
-    (
-        "knowledge",
-        "尺规作三角形",
-        ("尺规作图——作三角形",),
-        (("图形的性质", "限定工具作图", "尺规作图——作三角形"),),
-    ),
-    (
-        "knowledge",
-        "尺规作角平分线",
-        ("作角平分线(尺规作图)",),
-        (("图形的性质", "限定工具作图", "作角平分线(尺规作图)"),),
-    ),
-    (
-        "knowledge",
-        "尺规作垂线",
-        ("作垂线(尺规作图)", "作垂线"),
-        (("图形的性质", "限定工具作图", "作垂线(尺规作图)"),),
-    ),
-    (
-        "knowledge",
-        "尺规作等腰三角形",
-        ("作等腰三角形(尺规作图)",),
-        (("图形的性质", "限定工具作图", "作等腰三角形(尺规作图)"),),
-    ),
-    (
-        "knowledge",
-        "尺规作圆",
-        ("画圆(尺规作图)",),
-        (("图形的性质", "限定工具作图", "画圆(尺规作图)"),),
-    ),
-    (
-        "knowledge",
-        "尺规作圆的切线",
-        ("过圆外一点作圆的切线(尺规作图)",),
-        (
-            (
-                "图形的性质",
-                "限定工具作图",
-                "过圆外一点作圆的切线(尺规作图)",
-            ),
-        ),
-    ),
-    (
-        "knowledge",
-        "尺规作正多边形",
-        ("尺规作图——正多边形",),
-        (("图形的性质", "限定工具作图", "尺规作图——正多边形"),),
-    ),
-    (
-        "method",
-        "十字相乘法",
-        (),
-        (("数与式", "因式分解", "十字相乘法"),),
-    ),
-    (
-        "method",
-        "分组分解法",
-        (),
-        (("数与式", "因式分解", "分组分解法"),),
-    ),
-    (
-        "method",
-        "代入消元法",
-        (),
-        (("方程与不等式", "二元一次方程组", "解二元一次方程组", "代入消元法"),),
-    ),
-    (
-        "method",
-        "加减消元法",
-        (),
-        (("方程与不等式", "二元一次方程组", "解二元一次方程组", "加减消元法"),),
-    ),
-    (
-        "method",
-        "直接开平方法",
-        ("解一元二次方程——直接开平方法",),
-        (
-            (
-                "方程与不等式",
-                "一元二次方程",
-                "解一元二次方程",
-                "解一元二次方程——直接开平方法",
-            ),
-        ),
-    ),
-    (
-        "method",
-        "构造直角三角形法",
-        (
-            "用勾股定理构造图形解决问题",
-            "构造直角三角形求不规则图形的边长或面积",
-        ),
-        (
-            (
-                "图形的性质",
-                "三角形",
-                "勾股定理及逆定理",
-                "勾股定理",
-                "用勾股定理构造图形解决问题",
-            ),
-            (
-                "图形的变化",
-                "锐角三角函数",
-                "解直角三角形及其应用",
-                "解直角三角形",
-                "构造直角三角形求不规则图形的边长或面积",
-            ),
-        ),
-    ),
-    (
-        "model",
-        "圆外切四边形模型",
-        (),
-        (
-            (
-                "图形的性质",
-                "圆",
-                "点、直线、圆的位置关系",
-                "三角形内切圆",
-                "圆外切四边形模型",
-            ),
-        ),
-    ),
-    (
-        "special_type",
-        "实验操作题",
-        ("实验操作类",),
-        (("压轴题", "实验操作类"),),
-    ),
-    (
-        "special_type",
-        "猜想证明题",
-        ("猜想证明",),
-        (("压轴题", "猜想证明"),),
-    ),
-    (
-        "special_type",
-        "动态几何题",
-        ("动态几何",),
-        (("压轴题", "动态几何"),),
-    ),
-    (
-        "special_type",
-        "数学阅读理解题",
-        ("阅读理解", "阅读理解题"),
-        (("压轴题", "阅读理解"),),
-    ),
-    (
-        "special_type",
-        "开放探究题",
-        ("开放探究",),
-        (("压轴题", "开放探究"),),
-    ),
-    (
-        "special_type",
-        "新定义题",
-        ("新定义问题",),
-        (("压轴题", "新定义问题"),),
-    ),
-    (
-        "special_type",
-        "作图与证明综合题",
-        ("结合尺规作图的全等问题（全等三角形的判定综合）",),
-        (
-            (
-                "图形的性质",
-                "三角形",
-                "全等三角形",
-                "三角形全等的判定",
-                "结合尺规作图的全等问题（全等三角形的判定综合）",
-            ),
-        ),
-    ),
-    (
-        "special_type",
-        "线段和差证明题",
-        ("证一条线段等于两条线段和差（全等三角形的辅助线问题）",),
-        (
-            (
-                "图形的性质",
-                "三角形",
-                "全等三角形",
-                "三角形全等的判定",
-                "证一条线段等于两条线段和差（全等三角形的辅助线问题）",
-            ),
-        ),
-    ),
-    (
-        "special_type",
-        "格点作图题",
-        (),
-        (("图形的性质", "限定工具作图", "格点作图题"),),
-    ),
-    (
-        "special_type",
-        "无刻度直尺作图题",
-        ("无刻度直尺作图",),
-        (("图形的性质", "限定工具作图", "无刻度直尺作图"),),
-    ),
-    (
-        "special_type",
-        "立体模型制作实践题",
-        ("课题学习制作立体模型",),
-        (("图形的变化", "投影与视图", "三视图", "课题学习制作立体模型"),),
-    ),
+    ("构造全等三角形法", ("构造全等",)),
+    ("构造相似三角形法", ("构造相似",)),
+    ("构造直角三角形法", ()),
+    ("几何变换法", ("平移法", "旋转法", "对称法", "平移对角线法")),
+    ("面积法", ("面积关系法",)),
+    ("角度转化法", ("角度转化",)),
+    ("证明切线法", ("证明切线的方法",)),
+    ("坐标法", ("坐标系法",)),
+    ("图象法", ("图像法",)),
+    ("割补法", ("割补图形法",)),
 )
 
-REVIEWED_MAPPING_SPECS = (
-    {
-        "source_path": ("数与式", "分式", "分式的概念及性质", "分式的定义", "按要求构造分式"),
-        "targets": (
-            {"kind": "taxonomy", "dimension": "knowledge", "name": "分式"},
-            {
-                "kind": "taxonomy",
-                "dimension": "special_type",
-                "name": "开放探究题",
-            },
+MODEL_SPECS = (
+    ("方程模型", ()),
+    ("不等式模型", ("不等关系模型",)),
+    ("函数模型", ()),
+    ("统计推断模型", ("抽样估计模型",)),
+    ("概率试验模型", ("随机试验模型",)),
+    ("行程模型", ("路程速度时间模型", "相遇追及模型")),
+    ("工程模型", ("工作效率模型",)),
+    ("销售与利润模型", ("利润模型",)),
+    ("浓度与配比模型", ("浓度模型",)),
+    ("几何测量模型", ("测高模型", "梯子模型", "风吹树折")),
+    ("一线三等角模型", ("一线三等角",)),
+    ("一线三垂直模型", ("一线三垂直", "与正方形有关的三垂线")),
+    ("手拉手模型", ("手拉手",)),
+    ("半角模型", ("半角",)),
+    ("将军饮马模型", ("将军饮马", "最短路径模型", "蚂蚁爬行")),
+    ("胡不归模型", ("胡不归",)),
+    ("阿氏圆模型", ("阿氏圆",)),
+    ("费马点模型", ("费马点",)),
+    ("隐圆模型", ("隐圆",)),
+    ("瓜豆模型", ("瓜豆原理", "瓜豆")),
+    ("弦图模型", ("弦图",)),
+    ("一点一垂线模型", ("一点一垂线",)),
+    ("一点两垂线模型", ("一点两垂线",)),
+    ("两点一垂线模型", ("两点一垂线",)),
+    ("两点两垂线模型", ("两点两垂线",)),
+    ("三平行模型", ("三平行",)),
+    ("中点模型", ()),
+    ("角平分线模型", ()),
+    ("倍长中线模型", ()),
+    ("对角互补模型", ("对角互补",)),
+    ("圆外切四边形模型", ()),
+    ("面积等积模型", ("等积模型",)),
+    (
+        "相似三角形模型",
+        (
+            "A字型",
+            "8字型",
+            "K字型相似",
+            "母子型相似",
+            "（双）A字型相似",
+            "（双）8型相似",
+            "背靠背型",
+            "拥抱型",
         ),
-    },
-    {
-        "source_path": (
-            "方程与不等式",
-            "二元一次方程组",
-            "解二元一次方程组",
-            "解二元一次方程组的应用",
-            "构造二元一次方程组求解",
-        ),
-        "targets": (
-            {
-                "kind": "taxonomy",
-                "dimension": "knowledge",
-                "name": "二元一次方程组应用",
-            },
-            {"kind": "taxonomy", "dimension": "method", "name": "方程思想"},
-        ),
-    },
-    {
-        "source_path": (
-            "方程与不等式",
-            "一元二次方程",
-            "解一元二次方程",
-            "解一元二次方程——配方法",
-        ),
-        "targets": (
-            {"kind": "taxonomy", "dimension": "method", "name": "配方法"},
-        ),
-    },
-    {
-        "source_path": (
-            "图形的性质",
-            "三角形",
-            "全等三角形",
-            "三角形全等的判定",
-            "连接两点构造全等三角形（全等三角形的辅助线问题）",
-        ),
-        "targets": (
-            {"kind": "taxonomy", "dimension": "method", "name": "构造全等"},
-        ),
-    },
-    {
-        "source_path": (
-            "图形的性质",
-            "三角形",
-            "全等三角形",
-            "三角形全等的判定",
-            "倍长中线模型(全等三角形的辅助线问题)",
-        ),
-        "targets": (
-            {"kind": "taxonomy", "dimension": "model", "name": "倍长中线模型"},
-        ),
-    },
-    {
-        "source_path": (
-            "图形的性质",
-            "三角形",
-            "全等三角形",
-            "三角形全等的判定",
-            "旋转模型(全等三角形的辅助线问题)",
-        ),
-        "targets": (
-            {"kind": "taxonomy", "dimension": "model", "name": "旋转模型"},
-        ),
-    },
-    {
-        "source_path": (
-            "图形的性质",
-            "三角形",
-            "全等三角形",
-            "三角形全等的判定",
-            "垂线模型(全等三角形的辅助线问题)",
-        ),
-        "targets": (
-            {"kind": "taxonomy", "dimension": "model", "name": "垂直模型"},
-        ),
-    },
-    {
-        "source_path": ("图形的变化", "平移", "平移(作图)"),
-        "targets": (
-            {"kind": "taxonomy", "dimension": "knowledge", "name": "图形的平移"},
-        ),
-    },
-    {
-        "source_path": (
-            "统计与概率",
-            "数据的收集与整理",
-            "统计调查",
-            "调查收集数据的过程与方法",
-        ),
-        "targets": (
-            {
-                "kind": "taxonomy",
-                "dimension": "knowledge",
-                "name": "数据的收集与整理",
-            },
-        ),
-    },
-    {
-        "source_path": ("压轴题", "综合运用"),
-        "targets": (
-            {
-                "kind": "field",
-                "field": "question_type",
-                "value": "comprehensive",
-            },
-        ),
-    },
+    ),
+    ("全等三角形模型", ("公共边模型", "公共角模型", "x模型")),
+    (
+        "旋转模型",
+        ("等腰旋转", "双等腰旋转", "互补型旋转", "旋转相似"),
+    ),
+    ("折叠模型", ("与三角形有关的折叠", "线段的（折叠，动点）模型")),
+    ("中点四边形模型", ("中点四边形",)),
+    ("垂美四边形模型", ("垂美四边形",)),
+    ("线段分点模型", ()),
+    ("角等分模型", ("角n等分模型",)),
+    ("定弦定角模型", ("定弦定角",)),
 )
 
-DEFERRED_SOURCE_REASONS = {
-    (
-        "方程与不等式",
-        "二元一次方程组",
-        "解二元一次方程组",
-        "二元一次方程组的特殊解法",
-    ): "暂缓收录：名称过于笼统，暂不能形成稳定的方法标签",
-    (
-        "方程与不等式",
-        "二元二次方程组及其解法",
-    ): "暂缓收录：超出当前七至九年级常规教学范围",
-    (
-        "图形的性质",
-        "三角形",
-        "全等三角形",
-        "三角形全等的判定",
-        "其他模型(全等三角形的辅助线问题)",
-    ): "暂缓收录：“其他模型”无法形成稳定、可复用的模型标签",
-}
+SPECIAL_TYPE_SPECS = (
+    ("实验操作题", ("实验操作类",)),
+    ("猜想证明题", ("猜想证明",)),
+    ("动态几何题", ("动态几何",)),
+    ("数学阅读理解题", ("阅读理解", "阅读理解题")),
+    ("开放探究题", ("开放探究",)),
+    ("新定义题", ("新定义问题",)),
+    ("作图与证明综合题", ()),
+    ("线段和差证明题", ()),
+    ("格点作图题", ()),
+    ("无刻度直尺作图题", ("无刻度直尺作图",)),
+    ("立体模型制作实践题", ()),
+)
 
 CORE_KNOWLEDGE_ROOTS = {
     "数与式",
@@ -618,8 +205,20 @@ KNOWLEDGE_EXCLUDED_TOKENS = (
     "构造",
     "作图",
     "猜想规律",
+    "根据",
+    "利用",
+    "进行",
+    "解决",
+    "求解",
+    "计算",
+    "判断",
+    "探究",
+    "综合",
+    "问题情境",
+    "应用题",
 )
-METHOD_HINTS = (
+
+OLD_METHOD_HINTS = (
     "法",
     "思想",
     "数形结合",
@@ -636,6 +235,75 @@ METHOD_HINTS = (
     "辅助圆",
     "面积",
 )
+
+MODEL_LEGACY_MAP = {
+    '"骨折"型': "相似三角形模型",
+    '"鸡翅"型': "相似三角形模型",
+    "(叠合式)子母型": "相似三角形模型",
+    "12345型": "几何测量模型",
+    "378和578模型": "几何测量模型",
+    "M型(含锯齿型)": "三平行模型",
+    "笔尖型": "三平行模型",
+    "燕尾角": "角平分线模型",
+    "双角平分线型": "角平分线模型",
+    "边边角模型(胖瘦模型)": "全等三角形模型",
+    "十字架模型": "中点模型",
+    "正方形与45°角的基本图": "一线三垂直模型",
+    "周期型": "函数模型",
+    "递推型": "函数模型",
+    "固定累加型": "函数模型",
+    "渐变累加型": "函数模型",
+    "婆罗摩笈多": "圆外切四边形模型",
+}
+
+KNOWLEDGE_RETRIEVAL_HINTS = {
+    "kp_alg_real_numbers": ("数轴",),
+    "kp_alg_letter_number": ("科学记数法", "科学记数"),
+    "kp_alg_equation_system": ("代入消元法", "加减消元法"),
+    "kp_alg_quadratic_equation": ("配方法",),
+    "kp_geo_construction": ("尺规作角平分线", "作线段", "作垂线"),
+    "kp_syn_reading": ("阅读理解题", "新定义问题"),
+}
+
+# 来源目录里这些名称表达同一知识身份。左侧仍保留为隐藏旧词，
+# 右侧才是新任务可见的规范词；其中优先复用现有核心知识稳定身份。
+KNOWLEDGE_CANONICAL_NAME_MAP = {
+    "一元一次不等式的应用": "一元一次不等式应用",
+    "一元一次不等式组的应用": "一元一次不等式应用",
+    "实际问题与一元一次方程": "一元一次方程应用",
+    "一次函数的实际应用": "一次函数应用",
+    "实际问题与二元一次方程组": "二元一次方程组应用",
+    "二元一次方程组的应用": "二元一次方程组应用",
+    "解二元一次方程组的应用": "二元一次方程组应用",
+    "函数的图象": "函数图像",
+    "一次函数的图象": "函数图像",
+    "图形的相似": "图形相似",
+    "图形的变换": "图形变换",
+    "三角形全等的判定": "三角形全等",
+    "全等三角形的概念及性质": "三角形全等",
+    "分式方程的实际应用": "分式方程的应用",
+    "解直角三角形的应用": "解直角三角形及其应用",
+}
+
+# 这些来源节点描述“做一个动作”，应由知识父节点与方法/思想组合表达，
+# 不再单独成为知识规范词。旧名称和旧 ID 仍会映射到安全的知识父节点。
+KNOWLEDGE_PROCEDURE_NAMES = {
+    "举反例",
+    "分析图案的形成过程",
+    "列二元一次方程组",
+    "求一次函数解析式",
+    "求反比例函数解析式",
+    "画三视图",
+    "画旋转图形",
+    "画轴对称图形",
+    "解一元一次不等式",
+    "解一元一次不等式组",
+    "解二元一次方程组",
+    "解二元一次方程组的应用",
+    "解分式方程（化为一元一次）",
+    "解分式方程（化为一元二次）",
+    "设计轴对称图案",
+}
 
 
 def _normalized(value: object) -> str:
@@ -657,6 +325,18 @@ def _read_json(path: Path) -> dict[str, Any]:
     return payload
 
 
+def _unique(values: Iterable[object]) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        text = str(value or "").strip()
+        key = _normalized(text)
+        if text and key and key not in seen:
+            seen.add(key)
+            result.append(text)
+    return result
+
+
 def _term(
     term_id: str,
     dimension: str,
@@ -664,64 +344,70 @@ def _term(
     *,
     aliases: Iterable[str] = (),
     retrieval_hints: Iterable[str] = (),
+    legacy_names: Iterable[str] = (),
+    legacy_ids: Iterable[str] = (),
     origin: str,
     source_paths: Iterable[Iterable[str]] = (),
 ) -> dict[str, Any]:
-    term = {
+    result: dict[str, Any] = {
         "id": term_id,
         "dimension": dimension,
         "name": name,
-        "aliases": list(aliases),
+        "aliases": _unique(aliases),
         "status": "approved",
         "origin": origin,
         "source_paths": [list(path) for path in source_paths],
     }
-    hints = list(retrieval_hints)
-    if hints:
-        term["retrieval_hints"] = hints
-    return term
+    for field, values in (
+        ("retrieval_hints", retrieval_hints),
+        ("legacy_names", legacy_names),
+        ("legacy_ids", legacy_ids),
+    ):
+        items = _unique(values)
+        if items:
+            result[field] = items
+    return result
 
 
-def _dedupe_aliases(terms: list[dict[str, Any]]) -> None:
-    owners: dict[tuple[str, str], str] = {}
-    for term in terms:
-        dimension = term["dimension"]
-        term_id = term["id"]
-        for value in (term_id, term["name"]):
-            key = (dimension, _normalized(value))
-            owner = owners.get(key)
-            if owner is not None and owner != term_id:
-                raise ValueError(f"Duplicate approved term identity: {value}")
-            owners[key] = term_id
-        kept: list[str] = []
-        for alias in term["aliases"]:
-            key = (dimension, _normalized(alias))
-            owner = owners.get(key)
-            if not key[1] or owner not in (None, term_id):
-                continue
-            owners[key] = term_id
-            if _normalized(alias) != _normalized(term["name"]):
-                kept.append(alias)
-        term["aliases"] = kept
+def _add_metadata(
+    term: dict[str, Any],
+    *,
+    source_path: Iterable[str] = (),
+    legacy_name: str = "",
+    legacy_id: str = "",
+) -> None:
+    path = [str(item).strip() for item in source_path if str(item).strip()]
+    if path and path not in term["source_paths"]:
+        term["source_paths"].append(path)
+    if legacy_name and _normalized(legacy_name) not in {
+        _normalized(term["name"]),
+        *(_normalized(value) for value in term["aliases"]),
+    }:
+        term.setdefault("legacy_names", [])
+        term["legacy_names"] = _unique([*term["legacy_names"], legacy_name])
+    if legacy_id and legacy_id != term["id"]:
+        term.setdefault("legacy_ids", [])
+        term["legacy_ids"] = _unique([*term["legacy_ids"], legacy_id])
 
 
 def _curriculum_terms(payload: dict[str, Any]) -> list[dict[str, Any]]:
-    terms: list[dict[str, Any]] = []
+    result: list[dict[str, Any]] = []
     for volume in payload.get("volumes", []):
         volume_label = str(volume.get("label") or "").strip()
         for chapter in volume.get("chapters", []):
-            if str(chapter.get("kind") or "").strip() != "chapter":
-                continue
             chapter_id = str(chapter.get("id") or "").strip()
             chapter_label = str(chapter.get("label") or "").strip()
             if (
-                not volume_label
+                str(chapter.get("kind") or "").strip() != "chapter"
+                or not volume_label
                 or not chapter_id
-                or not re.match(r"^第[一二三四五六七八九十百0-9]+章(?:\s|$)", chapter_label)
+                or not re.match(
+                    r"^第[一二三四五六七八九十百0-9]+章(?:\s|$)", chapter_label
+                )
             ):
                 continue
             name = f"{volume_label} {chapter_label}"
-            terms.append(
+            result.append(
                 _term(
                     chapter_id,
                     "curriculum",
@@ -731,314 +417,283 @@ def _curriculum_terms(payload: dict[str, Any]) -> list[dict[str, Any]]:
                     source_paths=((volume_label, chapter_label),),
                 )
             )
-    return terms
+    return result
 
 
-def _seed_terms() -> list[dict[str, Any]]:
-    terms = [
+def _controlled_terms() -> list[dict[str, Any]]:
+    result = [
         _term(
             item.canonical_id.casefold(),
             "knowledge",
             item.canonical_name,
             aliases=item.aliases,
-            retrieval_hints=TERM_RETRIEVAL_HINTS.get(
-                item.canonical_id.casefold(),
-                (),
+            retrieval_hints=KNOWLEDGE_RETRIEVAL_HINTS.get(
+                item.canonical_id.casefold(), ()
             ),
             origin="p3_registry",
         )
         for item in CANONICAL_KNOWLEDGE
     ]
-    for dimension, names in (
-        ("ability", ABILITY_TERMS),
-        ("method", METHOD_TERMS),
-        ("model", MODEL_TERMS),
+    for dimension, specs in (
+        ("ability", ((name, ()) for name in ABILITY_TERMS)),
+        ("method", METHOD_SPECS),
+        ("thought", THOUGHT_SPECS),
+        ("model", MODEL_SPECS),
+        ("special_type", SPECIAL_TYPE_SPECS),
     ):
-        terms.extend(
+        result.extend(
             _term(
                 _stable_id(dimension, name),
                 dimension,
                 name,
-                origin="p3_controlled_options",
+                aliases=aliases,
+                origin="teacher_governed_2026_08",
             )
-            for name in names
+            for name, aliases in specs
         )
-    return terms
+    return result
 
 
-def _curated_terms() -> list[dict[str, Any]]:
-    terms = [
-        _term(
-            _stable_id(dimension, name),
-            dimension,
-            name,
-            aliases=aliases,
-            origin="p3_5_teacher_curated",
-            source_paths=source_paths,
-        )
-        for dimension, name, aliases, source_paths in CURATED_TERM_SPECS
-    ]
-    if len(terms) != 40:
-        raise ValueError(f"Expected 40 curated terms, got {len(terms)}")
-    return terms
+def _knowledge_node_is_canonical(node: dict[str, Any]) -> bool:
+    path = [str(item).strip() for item in node.get("path", []) if str(item).strip()]
+    name = str(node.get("name") or "").strip()
+    level = int(node.get("level") or len(path))
+    return bool(
+        path
+        and path[0] in CORE_KNOWLEDGE_ROOTS
+        and (level in (2, 3) or (level == 4 and not bool(node.get("leaf"))))
+        and name
+        and len(name) <= 24
+        and name not in KNOWLEDGE_PROCEDURE_NAMES
+        and not name.endswith("法")
+        and not any(token in name for token in KNOWLEDGE_EXCLUDED_TOKENS)
+    )
 
 
-def _reviewed_source_decisions() -> dict[tuple[str, ...], dict[str, str]]:
-    decisions: dict[tuple[str, ...], dict[str, str]] = {}
-
-    def add(path: Iterable[str], action: str, reason: str = "") -> None:
-        key = tuple(path)
-        if key in decisions:
-            raise ValueError(f"Duplicate reviewed source path: {' > '.join(key)}")
-        decisions[key] = {
-            "action": action,
-            "source_name": key[-1],
-            "reason": reason,
-        }
-
-    for _dimension, _name, _aliases, source_paths in CURATED_TERM_SPECS:
-        for path in source_paths:
-            add(path, "added_term")
-    for mapping in REVIEWED_MAPPING_SPECS:
-        add(mapping["source_path"], "mapped")
-    for path, reason in DEFERRED_SOURCE_REASONS.items():
-        add(path, "deferred", reason)
-
-    counts: dict[str, int] = {}
-    for decision in decisions.values():
-        action = decision["action"]
-        counts[action] = counts.get(action, 0) + 1
-    expected = {"added_term": 42, "mapped": 10, "deferred": 3}
-    if counts != expected:
-        raise ValueError(f"Unexpected reviewed source counts: {counts}")
-    return decisions
-
-
-def _apply_reviewed_mappings(
-    terms: list[dict[str, Any]],
-) -> list[dict[str, Any]]:
-    terms_by_name: dict[tuple[str, str], dict[str, Any]] = {}
+def _identity_index(
+    terms: Iterable[dict[str, Any]], *, dimension: str | None = None
+) -> dict[str, dict[str, Any]]:
+    result: dict[str, dict[str, Any]] = {}
     for term in terms:
-        key = (term["dimension"], _normalized(term["name"]))
-        if key in terms_by_name:
-            raise ValueError(
-                f"Duplicate canonical target before reviewed mappings: {term['name']}"
+        if dimension is not None and term["dimension"] != dimension:
+            continue
+        for value in (term["name"], *term.get("aliases", [])):
+            key = _normalized(value)
+            owner = result.get(key)
+            if key and owner is not None and owner["id"] != term["id"]:
+                raise ValueError(f"Ambiguous canonical identity: {value}")
+            if key:
+                result[key] = term
+    return result
+
+
+def _govern_knowledge(
+    source: dict[str, Any], terms: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    nodes = [
+        node
+        for node in source.get("knowledge", {}).get("nodes", [])
+        if isinstance(node, dict)
+    ]
+    selected = sorted(
+        (node for node in nodes if _knowledge_node_is_canonical(node)),
+        key=lambda item: tuple(item.get("path", [])),
+    )
+    knowledge_index = _identity_index(terms, dimension="knowledge")
+    path_targets: dict[tuple[str, ...], dict[str, Any]] = {}
+    for node in selected:
+        path = tuple(str(item).strip() for item in node.get("path", []))
+        source_name = str(node.get("name") or "").strip()
+        name = KNOWLEDGE_CANONICAL_NAME_MAP.get(source_name, source_name)
+        term = knowledge_index.get(_normalized(name))
+        if term is None:
+            term = _term(
+                (
+                    _stable_id("xkw-knowledge-canonical", name)
+                    if name != source_name
+                    else _stable_id("xkw-knowledge", *path)
+                ),
+                "knowledge",
+                name,
+                origin="xkw_2026_governed_concept",
+                source_paths=(path,),
             )
-        terms_by_name[key] = term
+            terms.append(term)
+            knowledge_index[_normalized(name)] = term
+        else:
+            _add_metadata(term, source_path=path)
+        path_targets[path] = term
 
-    records: list[dict[str, Any]] = []
-    for mapping in REVIEWED_MAPPING_SPECS:
-        source_path = tuple(mapping["source_path"])
-        source_name = source_path[-1]
-        resolved_targets: list[dict[str, str]] = []
-        for target in mapping["targets"]:
-            if target["kind"] == "field":
-                resolved_targets.append(
-                    {
-                        "kind": "field",
-                        "field": target["field"],
-                        "value": target["value"],
-                    }
-                )
-                continue
-
-            key = (target["dimension"], _normalized(target["name"]))
-            term = terms_by_name.get(key)
-            if term is None:
-                raise ValueError(
-                    "Reviewed mapping target was not found: "
-                    f"{target['dimension']} / {target['name']}"
-                )
-            if source_name not in term["aliases"]:
-                term["aliases"].append(source_name)
-            source_path_list = list(source_path)
-            if source_path_list not in term["source_paths"]:
-                term["source_paths"].append(source_path_list)
-            resolved_targets.append(
+    reference_candidates: list[dict[str, Any]] = []
+    for node in nodes:
+        path = tuple(str(item).strip() for item in node.get("path", []) if str(item).strip())
+        name = str(node.get("name") or "").strip()
+        if not path or not name:
+            continue
+        if path[0] in EXCLUDED_ROOTS or path[0] not in CORE_KNOWLEDGE_ROOTS:
+            reference_candidates.append(
                 {
-                    "kind": "taxonomy",
-                    "id": term["id"],
-                    "dimension": term["dimension"],
-                    "name": term["name"],
+                    "name": name,
+                    "source_path": list(path),
+                    "reason": "超出当前七至九年级正式词表范围",
                 }
             )
-        records.append(
-            {
-                "source_name": source_name,
-                "source_path": list(source_path),
-                "targets": resolved_targets,
-            }
+            continue
+        canonical_name = KNOWLEDGE_CANONICAL_NAME_MAP.get(name, name)
+        term = knowledge_index.get(_normalized(canonical_name))
+        if term is None:
+            for length in range(len(path) - 1, 0, -1):
+                term = path_targets.get(path[:length])
+                if term is not None:
+                    break
+        if term is None:
+            reference_candidates.append(
+                {
+                    "name": name,
+                    "source_path": list(path),
+                    "reason": "没有可安全归并的规范知识点",
+                }
+            )
+            continue
+        _add_metadata(
+            term,
+            source_path=path if path in path_targets else (),
+            legacy_name=name,
+            legacy_id=_stable_id("xkw-knowledge", *path),
         )
-    if len(records) != 10:
-        raise ValueError(f"Expected 10 reviewed mappings, got {len(records)}")
-    return records
+        if path not in path_targets:
+            reference_candidates.append(
+                {
+                    "name": name,
+                    "source_path": list(path),
+                    "reason": f"已归并至规范知识点：{term['name']}",
+                }
+            )
+    return reference_candidates
 
 
-def _source_terms(
-    source: dict[str, Any],
-    terms: list[dict[str, Any]],
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    approved_names = {
-        (term["dimension"], _normalized(value))
-        for term in terms
-        for value in (term["id"], term["name"], *term["aliases"])
+def _legacy_target(
+    terms: list[dict[str, Any]], name: str, root: str
+) -> dict[str, Any] | None:
+    by_dimension = {
+        dimension: _identity_index(terms, dimension=dimension)
+        for dimension in ("method", "thought", "model", "special_type", "knowledge")
     }
-    promoted: list[dict[str, Any]] = []
+    if root == "压轴题":
+        return by_dimension["special_type"].get(_normalized(name))
+    for dimension in ("method", "thought", "model", "knowledge"):
+        term = by_dimension[dimension].get(_normalized(name))
+        if term is not None:
+            return term
+    mapped_name = MODEL_LEGACY_MAP.get(name)
+    if mapped_name:
+        return by_dimension["model"].get(_normalized(mapped_name))
+    return None
+
+
+def _govern_methods_source(
+    source: dict[str, Any], terms: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
     candidates: list[dict[str, Any]] = []
-    reviewed_decisions = _reviewed_source_decisions()
-    reviewed_seen: dict[tuple[str, ...], int] = {}
-
-    def add_candidate(node: dict[str, Any], reason: str) -> None:
-        path = [str(item).strip() for item in node.get("path", []) if str(item).strip()]
-        name = str(node.get("name") or "").strip()
-        if name and path:
-            candidates.append(
-                {"name": name, "source_path": path, "reason": reason}
-            )
-
-    def handle_reviewed(path: list[str], name: str, node: dict[str, Any]) -> bool:
-        key = tuple(path)
-        decision = reviewed_decisions.get(key)
-        if decision is None:
-            return False
-        if name != decision["source_name"]:
-            raise ValueError(
-                f"Reviewed source name changed at {' > '.join(path)}: {name}"
-            )
-        reviewed_seen[key] = reviewed_seen.get(key, 0) + 1
-        if decision["action"] == "deferred":
-            add_candidate(node, decision["reason"])
-        return True
-
-    for node in source.get("knowledge", {}).get("nodes", []):
-        path = [str(item).strip() for item in node.get("path", []) if str(item).strip()]
-        name = str(node.get("name") or "").strip()
-        if handle_reviewed(path, name, node):
-            continue
-        root = path[0] if path else ""
-        if root in EXCLUDED_ROOTS:
-            add_candidate(node, "超出当前七至九年级常规教学范围")
-            continue
-        if root not in CORE_KNOWLEDGE_ROOTS or not bool(node.get("leaf")):
-            add_candidate(node, "来源层级节点，仅保留作分类参考")
-            continue
-        if (
-            not name
-            or len(name) > 36
-            or any(token in name for token in KNOWLEDGE_EXCLUDED_TOKENS)
-            or name.endswith("法")
-        ):
-            add_candidate(node, "维度或粒度仍需教师确认")
-            continue
-        key = ("knowledge", _normalized(name))
-        if key in approved_names:
-            continue
-        term = _term(
-            _stable_id("xkw-knowledge", *path),
-            "knowledge",
-            name,
-            origin="xkw_2026_snapshot",
-            source_paths=(path,),
-        )
-        promoted.append(term)
-        approved_names.add(key)
-
     for node in source.get("methods", {}).get("nodes", []):
-        path = [str(item).strip() for item in node.get("path", []) if str(item).strip()]
+        if not isinstance(node, dict) or not bool(node.get("leaf")):
+            continue
+        path = tuple(str(item).strip() for item in node.get("path", []) if str(item).strip())
         name = str(node.get("name") or "").strip()
-        if handle_reviewed(path, name, node):
+        if not path or not name:
             continue
-        if not path or not name or not bool(node.get("leaf")):
-            add_candidate(node, "来源层级节点，仅保留作分类参考")
-            continue
-        if path[0] == "压轴题" or "压轴" in name or len(name) > 36:
-            add_candidate(node, "题型范围或粒度仍需教师确认")
-            continue
-        dimension = (
+        target = _legacy_target(terms, name, path[0])
+        old_dimension = (
             "method"
-            if path[0] == "数学方法" or any(token in name for token in METHOD_HINTS)
+            if path[0] == "数学方法" or any(token in name for token in OLD_METHOD_HINTS)
             else "model"
         )
-        key = (dimension, _normalized(name))
-        if key in approved_names:
+        if target is None:
+            candidates.append(
+                {
+                    "name": name,
+                    "source_path": list(path),
+                    "reason": "网络叫法缺少稳定定义，未进入正式词表",
+                }
+            )
             continue
-        term = _term(
-            _stable_id(f"xkw-{dimension}", *path),
-            dimension,
-            name,
-            origin="xkw_2026_snapshot",
-            source_paths=(path,),
+        _add_metadata(
+            target,
+            source_path=path,
+            legacy_name=name,
+            legacy_id=_stable_id(f"xkw-{old_dimension}", *path),
         )
-        promoted.append(term)
-        approved_names.add(key)
+    return candidates
 
-    missing = set(reviewed_decisions) - set(reviewed_seen)
-    repeated = {path: count for path, count in reviewed_seen.items() if count != 1}
-    if missing or repeated:
-        missing_text = [" > ".join(path) for path in sorted(missing)]
-        repeated_text = {
-            " > ".join(path): count for path, count in sorted(repeated.items())
+
+def _validate_terms(terms: list[dict[str, Any]]) -> None:
+    ids: set[str] = set()
+    identities: dict[tuple[str, str], str] = {}
+    for term in terms:
+        if term["id"] in ids:
+            raise ValueError(f"Duplicate term id: {term['id']}")
+        ids.add(term["id"])
+        term["aliases"] = _unique(term.get("aliases", []))
+        for field in ("retrieval_hints", "legacy_names", "legacy_ids"):
+            if field in term:
+                term[field] = _unique(term[field])
+                if not term[field]:
+                    term.pop(field)
+        term["source_paths"] = sorted(
+            {tuple(path) for path in term.get("source_paths", [])}
+        )
+        term["source_paths"] = [list(path) for path in term["source_paths"]]
+        for value in (term["id"], term["name"], *term["aliases"]):
+            key = (term["dimension"], _normalized(value))
+            owner = identities.get(key)
+            if owner is not None and owner != term["id"]:
+                raise ValueError(f"Ambiguous term identity: {value}")
+            identities[key] = term["id"]
+
+    separated: dict[str, set[str]] = {}
+    for dimension in ("method", "thought", "model"):
+        separated[dimension] = {
+            _normalized(value)
+            for term in terms
+            if term["dimension"] == dimension
+            for value in (term["name"], *term["aliases"])
         }
-        raise ValueError(
-            "Reviewed source coverage changed: "
-            f"missing={missing_text}, repeated={repeated_text}"
-        )
-
-    unique_candidates: list[dict[str, Any]] = []
-    seen_candidates: set[tuple[str, tuple[str, ...], str]] = set()
-    for candidate in candidates:
-        key = (
-            _normalized(candidate["name"]),
-            tuple(candidate["source_path"]),
-            candidate["reason"],
-        )
-        if key not in seen_candidates:
-            seen_candidates.add(key)
-            unique_candidates.append(candidate)
-    return promoted, unique_candidates
+    for left, right in (("method", "thought"), ("method", "model"), ("thought", "model")):
+        overlap = separated[left] & separated[right]
+        if overlap:
+            raise ValueError(f"Cross-dimension identities overlap: {left}/{right}: {overlap}")
 
 
 def build() -> dict[str, Any]:
     source = _read_json(SOURCE_PATH)
     curriculum = _read_json(CURRICULUM_PATH)
-    terms = [*_curriculum_terms(curriculum), *_seed_terms(), *_curated_terms()]
-    promoted, reference_candidates = _source_terms(source, terms)
-    terms.extend(promoted)
-    reviewed_mappings = _apply_reviewed_mappings(terms)
-    _dedupe_aliases(terms)
-    terms.sort(key=lambda item: (item["dimension"], item["name"], item["id"]))
-
-    counts: dict[str, int] = {}
-    for term in terms:
-        counts[term["dimension"]] = counts.get(term["dimension"], 0) + 1
-    expected_counts = {
-        "curriculum": 25,
-        "knowledge": 1121,
-        "ability": 10,
-        "method": 31,
-        "model": 90,
-        "special_type": 11,
-    }
-    if counts != expected_counts:
-        raise ValueError(f"Unexpected catalog dimension counts: {counts}")
-    if len(reference_candidates) != 618:
-        raise ValueError(
-            "Expected 618 unresolved reference candidates, "
-            f"got {len(reference_candidates)}"
-        )
-
-    dimensions = [
-        "curriculum",
-        "knowledge",
-        "ability",
-        "method",
-        "model",
-        "special_type",
+    terms = [*_curriculum_terms(curriculum), *_controlled_terms()]
+    reference_candidates = [
+        *_govern_knowledge(source, terms),
+        *_govern_methods_source(source, terms),
     ]
+    _validate_terms(terms)
+    terms.sort(key=lambda item: (DIMENSIONS.index(item["dimension"]), item["name"], item["id"]))
+    reference_candidates.sort(
+        key=lambda item: (tuple(item["source_path"]), item["name"], item["reason"])
+    )
+
+    counts = {dimension: 0 for dimension in DIMENSIONS}
+    for term in terms:
+        counts[term["dimension"]] += 1
+    if counts["curriculum"] != 25 or counts["ability"] != 10 or counts["special_type"] != 11:
+        raise ValueError(f"Protected dimensions changed unexpectedly: {counts}")
+    if not 250 <= counts["knowledge"] <= 450:
+        raise ValueError(f"Knowledge governance produced an unsafe count: {counts}")
+    if not 15 <= counts["method"] <= 35 or not 10 <= counts["thought"] <= 20:
+        raise ValueError(f"Method/thought governance produced an unsafe count: {counts}")
+    if not 25 <= counts["model"] <= 50:
+        raise ValueError(f"Model governance produced an unsafe count: {counts}")
+
     return {
         "schema_version": 2,
         "catalog_id": "junior-math-controlled-vocabulary-v2",
-        "revision": 2,
+        "revision": 3,
         "source_snapshot": {
             "file": SOURCE_PATH.name,
             "observed_at": source.get("source", {}).get("observed_at"),
@@ -1047,42 +702,39 @@ def build() -> dict[str, Any]:
             "runtime_refresh": False,
         },
         "classification_policy": {
-            "dimensions": dimensions,
+            "dimensions": list(DIMENSIONS),
+            "protected_dimensions": ["curriculum", "ability", "special_type"],
+            "governed_dimensions": ["knowledge", "method", "thought", "model"],
             "excluded_branches": sorted(EXCLUDED_ROOTS),
-            "legacy_free_text_dimensions": [
-                "sub_skill",
-                "measured_skill",
-                "supporting_skill",
-            ],
             "rule": (
-                "本地先从正式词表筛出相关范围，大模型优先匹配正式标签；"
-                "确实无法匹配时允许少量自由标签，再回到完整词表复核，"
-                "仍无法匹配的项目进入定期整理。"
+                "来源快照只提供检索素材；正式知识点只保留稳定概念层级，"
+                "细粒度旧词归并为隐藏检索键。解题方法、数学思想和数学模型"
+                "必须分类明确，模型只选择本题候选中的正式名称。"
             ),
-            "reviewed_source_summary": {
-                "reviewed": 55,
-                "added_term_source_paths": 42,
-                "mapped_source_paths": 10,
-                "deferred_source_paths": 3,
-                "removed_from_reference_candidates": 52,
+            "dimension_definitions": {
+                "knowledge": "题目直接考查的概念、性质、定理、公式或运算规则。",
+                "method": "可重复执行的具体解题程序或构造办法。",
+                "thought": "跨主题复用的通用思考策略。",
+                "model": "具有明确条件和关系、可重复识别的稳定结构。",
             },
             "retrieval_hints": {
-                "prefilter_dimensions": dimensions,
                 "match_fields": [
                     "id",
                     "name",
                     "aliases",
                     "retrieval_hints",
+                    "legacy_names",
+                    "legacy_ids",
                     "source_paths",
                 ],
                 "preferred_model_output": "approved_term_id",
+                "legacy_values_are_model_candidates": False,
                 "free_text_fallback": {
                     "allowed": True,
-                    "scope": "少量",
+                    "maximum_per_question": 1,
                     "local_full_vocabulary_rematch": True,
                     "unmatched_destination": "periodic_review",
                 },
-                "reviewed_source_mappings": reviewed_mappings,
             },
         },
         "terms": terms,
@@ -1093,8 +745,7 @@ def build() -> dict[str, Any]:
 def main() -> None:
     payload = build()
     OUTPUT_PATH.write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
+        json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )
     counts: dict[str, int] = {}
     for term in payload["terms"]:

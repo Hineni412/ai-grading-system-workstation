@@ -11,6 +11,7 @@ from question_bank.taxonomy.registry import canonicalize_error_type
 LIST_FIELDS = (
     "knowledge_points",
     "method_tags",
+    "thought_tags",
     "ability_tags",
     "math_model_tags",
     "special_type_tags",
@@ -23,6 +24,7 @@ PROPOSABLE_TAG_DIMENSIONS = (
     "knowledge",
     "ability",
     "method",
+    "thought",
     "model",
     "special_type",
 )
@@ -110,6 +112,7 @@ class TaggingContext:
 class TagAnalysis:
     knowledge_points: list[str]
     method_tags: list[str]
+    thought_tags: list[str]
     ability_tags: list[str]
     math_model_tags: list[str]
     difficulty: int | None
@@ -140,6 +143,7 @@ class TagAnalysis:
         return cls(
             knowledge_points=_normalize_tags(payload.get("knowledge_points")),
             method_tags=_normalize_tags(payload.get("method_tags")),
+            thought_tags=_normalize_tags(payload.get("thought_tags")),
             ability_tags=_normalize_tags(payload.get("ability_tags")),
             math_model_tags=_normalize_tags(payload.get("math_model_tags")),
             difficulty=_normalize_score(payload.get("difficulty")),
@@ -165,6 +169,7 @@ class TagAnalysis:
         return {
             "knowledge_points": self.knowledge_points,
             "method_tags": self.method_tags,
+            "thought_tags": self.thought_tags,
             "ability_tags": self.ability_tags,
             "math_model_tags": self.math_model_tags,
             "difficulty": self.difficulty,

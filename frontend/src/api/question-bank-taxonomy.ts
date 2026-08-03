@@ -7,6 +7,7 @@ export const TAXONOMY_DIMENSIONS = [
   'knowledge',
   'ability',
   'method',
+  'thought',
   'model',
   'special_type',
 ] as const

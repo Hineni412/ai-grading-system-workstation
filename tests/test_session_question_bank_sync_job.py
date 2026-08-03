@@ -916,6 +916,7 @@ def _deferred_sync_result(question_id: int) -> dict[str, Any]:
                 "tag_analysis": {
                     "knowledge_points": ["一元一次方程"],
                     "method_tags": [],
+                    "thought_tags": ["方程思想"],
                     "ability_tags": ["运算能力"],
                     "math_model_tags": [],
                     "special_type_tags": [],
@@ -993,6 +994,7 @@ class _DeferredSyncGateway:
             result["tag_analysis"]["canonical_knowledge_id"] = ""
             for field in (
                 "method_tags",
+                "thought_tags",
                 "ability_tags",
                 "math_model_tags",
                 "special_type_tags",
@@ -1068,6 +1070,7 @@ class _PassThroughTaxonomyGovernance:
                 "knowledge_points",
                 "prerequisite_points",
                 "method_tags",
+                "thought_tags",
                 "ability_tags",
                 "math_model_tags",
                 "special_type_tags",

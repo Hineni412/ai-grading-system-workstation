@@ -35,6 +35,7 @@ const facets = ref<QuestionBankFacets>({
   knowledge_points: [],
   abilities: [],
   methods: [],
+  thoughts: [],
   models: [],
   special_types: [],
   student_levels: [],
@@ -52,6 +53,7 @@ const baseFacets = ref<QuestionBankFacets>({
   knowledge_points: [],
   abilities: [],
   methods: [],
+  thoughts: [],
   models: [],
   special_types: [],
   student_levels: [],
@@ -80,6 +82,7 @@ const filters = reactive({
   knowledgePoints: [] as string[],
   abilities: [] as string[],
   methods: [] as string[],
+  thoughts: [] as string[],
   models: [] as string[],
   specialTypes: [] as string[],
   difficultyMin: 1,
@@ -103,6 +106,7 @@ type TagArrayFilterKey =
   | 'knowledgePoints'
   | 'abilities'
   | 'methods'
+  | 'thoughts'
   | 'models'
   | 'specialTypes'
 
@@ -198,8 +202,14 @@ const primaryTagRows = computed<TagFilterRow[]>(() => [
   },
   {
     key: 'methods',
-    label: '方法',
+    label: '解题方法',
     items: facets.value.methods,
+    visibleLimit: 10,
+  },
+  {
+    key: 'thoughts',
+    label: '数学思想',
+    items: facets.value.thoughts,
     visibleLimit: 10,
   },
   {
@@ -226,6 +236,7 @@ const activeFilterLabels: Record<TagArrayFilterKey, string> = {
   knowledgePoints: '知识点',
   abilities: '能力',
   methods: '方法',
+  thoughts: '数学思想',
   models: '模型',
   specialTypes: '特殊题型/考法',
 }
@@ -324,6 +335,7 @@ function queryFilters(): QuestionBankFilters {
     knowledgePoints: [...filters.knowledgePoints],
     abilities: [...filters.abilities],
     methods: [...filters.methods],
+    thoughts: [...filters.thoughts],
     models: [...filters.models],
     specialTypes: [...filters.specialTypes],
     difficultyMin: filters.difficultyMin === 1 && filters.difficultyMax === 10
@@ -545,6 +557,7 @@ function resetFilters(): void {
     knowledgePoints: [],
     abilities: [],
     methods: [],
+    thoughts: [],
     models: [],
     specialTypes: [],
     difficultyMin: 1,

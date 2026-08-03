@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import unicodedata
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -14,6 +15,7 @@ from question_bank.parsers.type_detector import detect_question_type
 TAG_ANALYSIS_MAP = {
     "knowledge_points": "knowledge_point",
     "method_tags": "method",
+    "thought_tags": "thought",
     "ability_tags": "ability",
     "math_model_tags": "model",
     "special_type_tags": "special_type",
@@ -25,6 +27,15 @@ TAG_ANALYSIS_MAP = {
 ANSWERED_AI_CONFIDENCE = 0.8
 ANSWERLESS_AI_CONFIDENCE = 0.55
 CORE_ANALYSIS_TAG_TYPES = ("knowledge_point", "ability", "exam_scope")
+TAG_TYPE_DIMENSIONS = {
+    "knowledge_point": "knowledge",
+    "method": "method",
+    "thought": "thought",
+    "ability": "ability",
+    "model": "model",
+    "special_type": "special_type",
+    "exam_scope": "curriculum",
+}
 
 
 def build_question_filter_query(
@@ -112,18 +123,32 @@ def build_question_filter_query(
         if not cleaned_values:
             continue
         placeholders = ", ".join("?" for _ in cleaned_values)
-        where.append(
-            f"""
-            EXISTS (
-                SELECT 1
-                FROM question_tags tf
-                WHERE tf.question_id = q.id
-                  AND tf.tag_type = ?
-                  AND tf.tag_value IN ({placeholders})
+        if tag_type == "thought":
+            where.append(
+                f"""
+                EXISTS (
+                    SELECT 1
+                    FROM question_tags tf
+                    WHERE tf.question_id = q.id
+                      AND tf.tag_type IN ('thought', 'method')
+                      AND tf.tag_value IN ({placeholders})
+                )
+                """
             )
-            """
-        )
-        params.extend([tag_type, *cleaned_values])
+            params.extend(cleaned_values)
+        else:
+            where.append(
+                f"""
+                EXISTS (
+                    SELECT 1
+                    FROM question_tags tf
+                    WHERE tf.question_id = q.id
+                      AND tf.tag_type = ?
+                      AND tf.tag_value IN ({placeholders})
+                )
+                """
+            )
+            params.extend([tag_type, *cleaned_values])
 
     if _clean_optional(tag_status) and tag_status != "全部":
         if tag_status == "已打标签":
@@ -1057,6 +1082,9 @@ def _resolve_canonical_id(analysis: TagAnalysis) -> str:
 
 
 def _analysis_from_tagged_question(question: Mapping[str, Any]) -> tuple[TagAnalysis, str | None]:
+    from question_bank.taxonomy.governance import get_taxonomy_governance
+
+    identity_lookup = get_taxonomy_governance().identity_lookup()
     grouped: dict[str, list[str]] = {}
     model_name = None
     confidences: list[float] = []
@@ -1066,6 +1094,19 @@ def _analysis_from_tagged_question(question: Mapping[str, Any]) -> tuple[TagAnal
         tag_type = _clean_optional(tag.get("tag_type"))
         tag_value = _clean_optional(tag.get("tag_value"))
         if tag_type and tag_value:
+            dimension = TAG_TYPE_DIMENSIONS.get(tag_type)
+            normalized = _stored_taxonomy_key(tag_value)
+            if tag_type == "method":
+                thought_value = identity_lookup["thought"].get(normalized)
+                if thought_value:
+                    tag_type = "thought"
+                    tag_value = thought_value
+                    dimension = "thought"
+            if dimension:
+                tag_value = identity_lookup[dimension].get(
+                    normalized,
+                    tag_value,
+                )
             grouped.setdefault(tag_type, [])
             if tag_value not in grouped[tag_type]:
                 grouped[tag_type].append(tag_value)
@@ -1080,6 +1121,7 @@ def _analysis_from_tagged_question(question: Mapping[str, Any]) -> tuple[TagAnal
         {
             "knowledge_points": grouped.get("knowledge_point", []),
             "method_tags": grouped.get("method", []),
+            "thought_tags": grouped.get("thought", []),
             "ability_tags": grouped.get("ability", []),
             "math_model_tags": grouped.get("model", []),
             "special_type_tags": grouped.get("special_type", []),
@@ -1099,6 +1141,11 @@ def _analysis_from_tagged_question(question: Mapping[str, Any]) -> tuple[TagAnal
         }
     )
     return analysis, model_name
+
+
+def _stored_taxonomy_key(value: object) -> str:
+    text = unicodedata.normalize("NFKC", str(value or "")).casefold()
+    return re.sub(r"[\s\W_]+", "", text)
 
 
 def has_complete_analysis_tags(question: Mapping[str, Any]) -> bool:
@@ -1151,7 +1198,12 @@ def _normalize_confidence(value: object) -> float:
 
 def _analysis_frequency_tags(analysis: TagAnalysis) -> tuple[str, ...]:
     values: list[str] = []
-    for field_name in ("knowledge_points", "method_tags", "math_model_tags"):
+    for field_name in (
+        "knowledge_points",
+        "method_tags",
+        "thought_tags",
+        "math_model_tags",
+    ):
         for tag_value in analysis.to_dict().get(field_name, []):
             cleaned = _clean_optional(tag_value)
             if cleaned and cleaned not in values:

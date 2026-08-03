@@ -2310,6 +2310,7 @@ def _validate_model_tag_payload(payload: Mapping[str, Any]) -> None:
         {
             "knowledge_points",
             "method_tags",
+            "thought_tags",
             "ability_tags",
             "math_model_tags",
             "special_type_tags",

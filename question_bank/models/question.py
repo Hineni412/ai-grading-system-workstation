@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 ALLOWED_TAG_TYPES = {
     "knowledge_point",
     "method",
+    "thought",
     "ability",
     "error_type",
     "model",

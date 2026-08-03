@@ -490,6 +490,7 @@ function questionFacets() {
     knowledge_points: [{ value: '有理数', count: 2 }],
     abilities: [],
     methods: [],
+    thoughts: [],
     models: [],
     special_types: [{ value: '动态几何题', count: 1 }],
     student_levels: [],
