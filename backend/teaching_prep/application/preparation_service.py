@@ -890,6 +890,8 @@ class TeachingPrepService:
         request_token: str,
         material_version_id: str,
         material_role: str,
+        workbook_series: str | None = None,
+        workbook_volume: str | None = None,
     ) -> tuple[SemesterMaterialRecord, bool]:
         clean_role = str(material_role or "").strip()
         if clean_role not in _SEMESTER_MATERIAL_ROLES:
@@ -899,6 +901,8 @@ class TeachingPrepService:
             request_token=_clean_token(request_token),
             material_version_id=_clean_entity_id(material_version_id),
             material_role=clean_role,
+            workbook_series=_clean_optional_text(workbook_series, "workbook_series", maximum=120),
+            workbook_volume=_clean_workbook_volume(workbook_volume),
         )
 
     def list_semester_materials(
@@ -917,6 +921,8 @@ class TeachingPrepService:
         material_role: str,
         mapping_status: str,
         is_active: bool,
+        workbook_series: str | None = None,
+        workbook_volume: str | None = None,
     ) -> SemesterMaterialRecord:
         clean_role = str(material_role or "").strip()
         if clean_role not in _SEMESTER_MATERIAL_ROLES:
@@ -932,6 +938,8 @@ class TeachingPrepService:
             material_role=clean_role,
             mapping_status=clean_mapping,
             is_active=bool(is_active),
+            workbook_series=_clean_optional_text(workbook_series, "workbook_series", maximum=120),
+            workbook_volume=_clean_workbook_volume(workbook_volume),
         )
 
     def semester_mapping_preflight(
@@ -1319,6 +1327,7 @@ class TeachingPrepService:
         search: str | None = None,
         material_type: str | None = None,
         availability: str | None = None,
+        include_archived: bool = False,
     ) -> tuple[MaterialVersion, ...]:
         clean_type = str(material_type or "").strip() or None
         if clean_type is not None and clean_type not in _MATERIAL_TYPES:
@@ -1334,6 +1343,23 @@ class TeachingPrepService:
             search=_clean_optional_text(search, "search", maximum=120),
             material_type=clean_type,
             availability=clean_availability,
+            include_archived=bool(include_archived),
+        )
+
+    def update_material_source(
+        self,
+        source_id: str,
+        *,
+        expected_revision: int,
+        display_name: str | None,
+        archived: bool | None,
+    ) -> MaterialVersion:
+        clean_name = _clean_optional_text(display_name, "display_name", maximum=120)
+        return self.catalog.update_material_source(
+            _clean_entity_id(source_id),
+            expected_revision=_clean_revision(expected_revision),
+            display_name=clean_name,
+            archived=archived,
         )
 
     def get_material_version(self, version_id: str) -> MaterialVersion:
@@ -1417,6 +1443,11 @@ class TeachingPrepService:
                 raise TeachingPrepValidationError(
                     "material contains no previewable units"
                 )
+            self.material_units.set_parse_expected_count(
+                clean_id,
+                source_version_sha256=version.content_sha256,
+                unit_count=total_units,
+            )
             existing = self.material_units.list_units(clean_id)
             reusable_indexes: set[int] = set()
             for item in existing:
@@ -4055,6 +4086,13 @@ def _clean_choice(value: str, allowed: set[str], field: str) -> str:
     clean = str(value or "").strip()
     if clean not in allowed:
         raise TeachingPrepValidationError(f"{field} is invalid")
+    return clean
+
+
+def _clean_workbook_volume(value: str | None) -> str | None:
+    clean = str(value or "").strip().upper() or None
+    if clean is not None and clean not in {"A", "B"}:
+        raise TeachingPrepValidationError("workbook_volume is invalid")
     return clean
 
 

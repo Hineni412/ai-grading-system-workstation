@@ -134,6 +134,7 @@ from .schemas import (
     UpdateMaterialLinkRequest,
     UpdateExerciseCandidateRequest,
     UpdateMaterialUnitRequest,
+    UpdateMaterialSourceRequest,
     UpdatePreparationRequest,
     UpClassPackageListResponse,
     UpClassPackageResponse,
@@ -556,6 +557,8 @@ def create_router() -> APIRouter:
                 request_token=payload.request_token,
                 material_version_id=payload.material_version_id,
                 material_role=payload.material_role,
+                workbook_series=payload.workbook_series,
+                workbook_volume=payload.workbook_volume,
             )
         except Exception as exc:
             raise _api_error(exc) from exc
@@ -579,6 +582,8 @@ def create_router() -> APIRouter:
                 material_role=payload.material_role,
                 mapping_status=payload.mapping_status,
                 is_active=payload.is_active,
+                workbook_series=payload.workbook_series,
+                workbook_volume=payload.workbook_volume,
             )
         except Exception as exc:
             raise _api_error(exc) from exc
@@ -758,6 +763,7 @@ def create_router() -> APIRouter:
         search: str | None = Query(default=None, max_length=120),
         material_type: str | None = Query(default=None),
         availability: str | None = Query(default=None),
+        include_archived: bool = Query(default=False),
         service: TeachingPrepService = Depends(get_teaching_prep_service),
     ) -> MaterialVersionListResponse:
         try:
@@ -765,6 +771,7 @@ def create_router() -> APIRouter:
                 search=search,
                 material_type=material_type,
                 availability=availability,
+                include_archived=include_archived,
             )
         except Exception as exc:
             raise _api_error(exc) from exc
@@ -774,6 +781,26 @@ def create_router() -> APIRouter:
                 for item in items
             ]
         )
+
+    @router.patch(
+        "/material-sources/{source_id}",
+        response_model=MaterialVersionResponse,
+    )
+    def update_material_source(
+        source_id: str,
+        payload: UpdateMaterialSourceRequest,
+        service: TeachingPrepService = Depends(get_teaching_prep_service),
+    ) -> MaterialVersionResponse:
+        try:
+            item = service.update_material_source(
+                source_id,
+                expected_revision=payload.expected_revision,
+                display_name=payload.display_name,
+                archived=payload.archived,
+            )
+        except Exception as exc:
+            raise _api_error(exc) from exc
+        return MaterialVersionResponse.from_domain(item)
 
     @router.post(
         "/materials/import-copy",

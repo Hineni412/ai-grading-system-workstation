@@ -427,7 +427,9 @@ def _capture_local_payload(
             version.created_at AS material_version_created_at,
             source.display_name AS material_name,
             source.material_type,
-            semester_material.material_role
+            CASE WHEN semester_material.is_daily_workbook = 1
+                 THEN 'homework_workbook'
+                 ELSE semester_material.material_role END AS material_role
         FROM lesson_material_links AS link
         JOIN material_versions AS version
             ON version.id = link.material_version_id
@@ -621,7 +623,9 @@ def _capture_local_payload(
                 unit.material_version_id,
                 unit.unit_index,
                 source.display_name AS material_name,
-                semester_material.material_role
+                CASE WHEN semester_material.is_daily_workbook = 1
+                     THEN 'homework_workbook'
+                     ELSE semester_material.material_role END AS material_role
             FROM exercise_regions AS region
             JOIN material_units AS unit
                 ON unit.id = region.material_unit_id
@@ -739,20 +743,8 @@ def _capture_local_payload(
                 ],
             }
         )
-        if answer_status != "teacher_verified":
-            missing.append(
-                {
-                    "code": "exercise_answer_not_verified",
-                    "candidate_id": str(candidate["id"]),
-                    "question_number": item["question_number"],
-                }
-            )
     if not any(item["purpose"] == "textbook" for item in materials):
         missing.append({"code": "textbook_material_missing"})
-    if not any(item["purpose"] == "reference_ppt" for item in materials):
-        missing.append({"code": "reference_ppt_missing"})
-    if not exercises:
-        missing.append({"code": "exercise_candidates_missing"})
     for material in materials:
         for unit in material["units"]:
             if unit["formula_review_required"]:

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, reactive, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 
 import type { JobResponse } from '../../../api/jobs'
 import type {
@@ -20,6 +20,9 @@ const selectedSemesterMaterialId = ref<string | null>(null)
 const importBatchRunning = ref(false)
 const attachingMaterialId = ref<string | null>(null)
 const existingRoleDrafts = reactive<Record<string, SemesterMaterialRole>>({})
+const workbookSeriesDrafts = reactive<Record<string, string>>({})
+const workbookVolumeDrafts = reactive<Record<string, 'A' | 'B'>>({})
+const pageInput = ref(1)
 const mappingEdits = reactive<Record<string, {
   lessonRef: string
   startUnit: number
@@ -70,6 +73,8 @@ interface PendingMaterialImport {
   id: string
   file: File
   role: SemesterMaterialRole
+  workbookSeries: string
+  workbookVolume: 'A' | 'B'
   state: PendingImportState
   materialId: string | null
   error: string
@@ -82,6 +87,13 @@ const activeUnit = computed(
     ?? workbench.catalog.materialUnits[0]
     ?? null,
 )
+const totalPages = computed(() => workbench.catalog.materialUnits.length)
+const printedPageNumber = computed(() => {
+  const value = activeUnit.value?.object_summary.printed_page_number
+  return typeof value === 'number' && Number.isInteger(value) ? value : null
+})
+const activeMaterials = computed(() => workbench.catalog.materials.filter(item => !item.source_archived_at))
+const archivedMaterials = computed(() => workbench.catalog.materials.filter(item => Boolean(item.source_archived_at)))
 const activeMaterial = computed(
   () => workbench.catalog.materials.find(
     item => item.id === workbench.catalog.selectedMaterialId,
@@ -140,6 +152,34 @@ watch(
   },
   { immediate: true },
 )
+
+watch(activeUnit, unit => { pageInput.value = unit?.unit_index ?? 1 }, { immediate: true })
+
+function goToPage(value = pageInput.value): void {
+  const target = Math.max(1, Math.min(totalPages.value || 1, Math.round(Number(value) || 1)))
+  pageInput.value = target
+  activeUnitId.value = workbench.catalog.materialUnits.find(item => item.unit_index === target)?.id ?? null
+}
+
+function stepPage(offset: number): void {
+  goToPage((activeUnit.value?.unit_index ?? 1) + offset)
+}
+
+function handlePageKey(event: KeyboardEvent): void {
+  const target = event.target as HTMLElement | null
+  if (target?.closest('input, textarea, select, button, summary, [contenteditable="true"]')) return
+  if (event.key === 'ArrowLeft') {
+    event.preventDefault()
+    stepPage(-1)
+  }
+  if (event.key === 'ArrowRight') {
+    event.preventDefault()
+    stepPage(1)
+  }
+}
+
+onMounted(() => window.addEventListener('keydown', handlePageKey))
+onBeforeUnmount(() => window.removeEventListener('keydown', handlePageKey))
 
 watch(
   () => eligibleSemesterMaterials.value.map(item => item.id),
@@ -233,11 +273,25 @@ function parseJobForMaterial(material: MaterialVersion): JobResponse | null {
 
 function materialProgressLabel(material: MaterialVersion): string {
   const job = parseJobForMaterial(material)
-  if (!job) return ''
+  const expected = material.parse_expected_unit_count ?? material.unit_count ?? 0
+  const checkpoint = expected > 0
+    ? `已保存：预览 ${material.preview_completed_count ?? 0}/${expected} · 文字 ${material.ocr_completed_count ?? 0}/${material.ocr_total_count ?? 0}`
+    : ''
+  if (!job) return checkpoint
   if (job.status === 'succeeded') return '逐页处理完成'
-  if (job.status === 'failed') return '处理未完成，可重新打开后继续'
-  if (job.status === 'cancelled') return '已停止，可重新打开后继续'
+  if (job.status === 'failed') return `${checkpoint} · 处理未完成，可继续`
+  if (job.status === 'cancelled') return `${checkpoint} · 已停止，可继续`
   return job.detail || (job.status === 'queued' ? '等待后台处理' : '正在逐页处理')
+}
+
+function materialNeedsContinue(material: MaterialVersion): boolean {
+  const job = parseJobForMaterial(material)
+  if (job && ['queued', 'running'].includes(job.status)) return false
+  const expected = material.parse_expected_unit_count ?? material.unit_count
+  return expected === null || expected === undefined
+    ? material.inspection_status === 'uninspected'
+    : (material.preview_completed_count ?? 0) < expected
+      || !['ready', 'scanned_no_text'].includes(material.inspection_status)
 }
 
 function failureMessage(error: unknown): string {
@@ -263,6 +317,17 @@ async function openMaterial(item: MaterialVersion): Promise<void> {
   }
 }
 
+async function continueMaterial(item: MaterialVersion): Promise<void> {
+  mappingMessage.value = '正在从已保存的检查点继续，只补未完成页面…'
+  try {
+    await workbench.catalog.parseMaterialInBackground(item)
+    await openMaterial(item)
+  } catch {
+    mappingMessage.value = workbench.catalog.errorMessage
+      || '续跑没有完成，已经保存的页面仍然保留。'
+  }
+}
+
 function queueFiles(event: Event): void {
   const input = event.target as HTMLInputElement
   const files = Array.from(input.files ?? [])
@@ -272,6 +337,8 @@ function queueFiles(event: Event): void {
       id: globalThis.crypto.randomUUID(),
       file,
       role: suggestedRole(file.name),
+      workbookSeries: file.name.replace(/\.[^.]+$/, '').replace(/[（(]?\s*[AB]\s*本?[）)]?$/i, '').trim(),
+      workbookVolume: /(?:^|[^a-z])b\s*本?(?:[^a-z]|$)/i.test(file.name) ? 'B' : 'A',
       state: 'pending',
       materialId: null,
       error: '',
@@ -309,7 +376,13 @@ async function importQueuedFiles(): Promise<void> {
       try {
         const material = item.materialId
           ? workbench.catalog.materials.find(value => value.id === item.materialId)
-          : await workbench.catalog.importMaterialCopy(item.file, item.role)
+          : await workbench.catalog.importMaterialCopy(
+              item.file,
+              item.role,
+              item.role === 'homework_workbook'
+                ? { series: item.workbookSeries.trim() || item.file.name, volume: item.workbookVolume }
+                : undefined,
+            )
         if (!material) throw new Error('没有找到可继续处理的资料副本。')
         item.materialId = material.id
         item.state = 'processing'
@@ -358,7 +431,13 @@ async function attachExistingMaterial(item: MaterialVersion): Promise<void> {
   attachingMaterialId.value = item.id
   try {
     const role = existingRoleDrafts[item.id] ?? suggestedRole(item.safe_filename)
-    await workbench.catalog.attachSemesterMaterial(item, role)
+    const workbook = role === 'homework_workbook'
+      ? {
+          series: workbookSeriesDrafts[item.id]?.trim() || item.display_name,
+          volume: workbookVolumeDrafts[item.id] ?? 'A' as const,
+        }
+      : undefined
+    await workbench.catalog.attachSemesterMaterial(item, role, workbook)
     manualMapping.purpose = rolePurpose(role)
     mappingMessage.value = `已把“${item.display_name}”作为${roleLabel(role)}加入本学期。`
   } catch {
@@ -366,6 +445,53 @@ async function attachExistingMaterial(item: MaterialVersion): Promise<void> {
   } finally {
     attachingMaterialId.value = null
   }
+}
+
+async function updateExistingRole(item: MaterialVersion): Promise<void> {
+  const record = semesterRecordFor(item)
+  if (!record) return
+  const role = existingRoleDrafts[item.id] ?? record.material_role
+  await workbench.catalog.updateSemesterMaterial(record, {
+    materialRole: role,
+    workbookSeries: role === 'homework_workbook'
+      ? workbookSeriesDrafts[item.id]?.trim() || record.workbook_series || item.display_name
+      : null,
+    workbookVolume: role === 'homework_workbook'
+      ? workbookVolumeDrafts[item.id] ?? record.workbook_volume ?? 'A'
+      : null,
+  })
+  mappingMessage.value = '资料角色已更新。'
+}
+
+async function removeFromSemester(item: MaterialVersion): Promise<void> {
+  const record = semesterRecordFor(item)
+  if (!record) return
+  await workbench.catalog.updateSemesterMaterial(record, { isActive: false })
+  mappingMessage.value = '已移出本学期，历史课时和版本记录仍保留。'
+}
+
+async function restoreToSemester(item: MaterialVersion): Promise<void> {
+  const record = semesterRecordFor(item)
+  if (!record) return
+  await workbench.catalog.updateSemesterMaterial(record, { isActive: true })
+  mappingMessage.value = '已恢复到本学期。'
+}
+
+async function renameMaterial(item: MaterialVersion): Promise<void> {
+  const name = window.prompt('资料名称', item.display_name)?.trim()
+  if (!name || name === item.display_name) return
+  await workbench.catalog.updateMaterialSource(item, { displayName: name })
+  mappingMessage.value = '资料名称已更新。'
+}
+
+async function archiveMaterial(item: MaterialVersion): Promise<void> {
+  await workbench.catalog.updateMaterialSource(item, { archived: true })
+  mappingMessage.value = '资料已移入回收区，可随时恢复；原文件和历史引用没有删除。'
+}
+
+async function restoreMaterial(item: MaterialVersion): Promise<void> {
+  await workbench.catalog.updateMaterialSource(item, { archived: false })
+  mappingMessage.value = '资料已从回收区恢复。'
 }
 
 async function prepareSemesterMapping(): Promise<void> {
@@ -594,6 +720,19 @@ async function saveManualMapping(): Promise<void> {
               </option>
             </select>
           </label>
+          <template v-if="item.role === 'homework_workbook'">
+            <label class="tp-field">
+              教辅套组
+              <input v-model="item.workbookSeries" type="text" placeholder="例如：全品学练考">
+            </label>
+            <label class="tp-field">
+              分册
+              <select v-model="item.workbookVolume">
+                <option value="A">A 本</option>
+                <option value="B">B 本</option>
+              </select>
+            </label>
+          </template>
           <div class="tp-import-row__actions">
             <button
               v-if="item.state === 'processing'"
@@ -688,11 +827,11 @@ async function saveManualMapping(): Promise<void> {
     >
       <template #rail>
         <h2>资料版本</h2>
-        <p v-if="workbench.catalog.materials.length === 0" class="tp-muted">
+        <p v-if="activeMaterials.length === 0" class="tp-muted">
           尚未导入教材、教辅或课件。
         </p>
         <article
-          v-for="item in workbench.catalog.materials"
+          v-for="item in activeMaterials"
           :key="item.id"
           class="tp-material-card"
           :class="{ 'is-selected': item.id === workbench.catalog.selectedMaterialId }"
@@ -702,10 +841,14 @@ async function saveManualMapping(): Promise<void> {
             <small>{{ item.material_type.toUpperCase() }} · {{ item.unit_count ?? 0 }} 页/张</small>
             <span>{{ item.availability === 'available' ? '可用' : '需重新定位' }}</span>
             <span v-if="semesterRecordFor(item)" class="tp-source-tag">
-              {{ roleLabel(semesterRecordFor(item)!.material_role) }} · 已加入本学期
+              {{ roleLabel(semesterRecordFor(item)!.material_role) }}
+              <template v-if="semesterRecordFor(item)!.workbook_volume">
+                · {{ semesterRecordFor(item)!.workbook_series }} {{ semesterRecordFor(item)!.workbook_volume }} 本
+              </template>
+              · {{ semesterRecordFor(item)!.is_active ? '已加入本学期' : '未加入本学期' }}
             </span>
             <span
-              v-if="parseJobForMaterial(item)"
+              v-if="parseJobForMaterial(item) || item.parse_expected_unit_count"
               class="tp-material-card__progress"
             >
               <progress
@@ -715,6 +858,14 @@ async function saveManualMapping(): Promise<void> {
               <small>{{ materialProgressLabel(item) }}</small>
             </span>
           </button>
+          <button
+            v-if="materialNeedsContinue(item)"
+            class="tp-material-card__continue"
+            type="button"
+            @click="continueMaterial(item)"
+          >
+            继续处理未完成页面
+          </button>
           <div v-if="!semesterRecordFor(item) && workbench.catalog.selectedSemester" class="tp-material-card__attach">
             <select v-model="existingRoleDrafts[item.id]">
               <option :value="undefined">选择资料角色</option>
@@ -722,6 +873,12 @@ async function saveManualMapping(): Promise<void> {
                 {{ role.label }}
               </option>
             </select>
+            <template v-if="existingRoleDrafts[item.id] === 'homework_workbook'">
+              <input v-model="workbookSeriesDrafts[item.id]" type="text" placeholder="教辅套组名称">
+              <select v-model="workbookVolumeDrafts[item.id]">
+                <option value="A">A 本</option><option value="B">B 本</option>
+              </select>
+            </template>
             <button
               type="button"
               :disabled="!existingRoleDrafts[item.id] || attachingMaterialId === item.id"
@@ -730,19 +887,72 @@ async function saveManualMapping(): Promise<void> {
               {{ attachingMaterialId === item.id ? '正在加入…' : '加入本学期' }}
             </button>
           </div>
+          <details class="tp-material-card__manage">
+            <summary>管理资料</summary>
+            <template v-if="semesterRecordFor(item)">
+              <select v-model="existingRoleDrafts[item.id]">
+                <option :value="undefined">{{ roleLabel(semesterRecordFor(item)!.material_role) }}</option>
+                <option v-for="role in MATERIAL_ROLES" :key="role.value" :value="role.value">{{ role.label }}</option>
+              </select>
+              <template v-if="(existingRoleDrafts[item.id] ?? semesterRecordFor(item)!.material_role) === 'homework_workbook'">
+                <input v-model="workbookSeriesDrafts[item.id]" type="text" :placeholder="semesterRecordFor(item)!.workbook_series ?? '教辅套组名称'">
+                <select v-model="workbookVolumeDrafts[item.id]">
+                  <option value="A">A 本</option><option value="B">B 本</option>
+                </select>
+              </template>
+            </template>
+            <div class="tp-inline-actions">
+              <button type="button" @click="renameMaterial(item)">重命名</button>
+              <button v-if="semesterRecordFor(item)" type="button" @click="updateExistingRole(item)">保存角色</button>
+              <button v-if="semesterRecordFor(item)?.is_active" type="button" @click="removeFromSemester(item)">移出本学期</button>
+              <button v-else-if="semesterRecordFor(item)" type="button" @click="restoreToSemester(item)">恢复到本学期</button>
+              <button v-if="!semesterRecordFor(item)?.is_active" class="is-danger" type="button" @click="archiveMaterial(item)">移入回收区</button>
+            </div>
+          </details>
         </article>
+        <details v-if="archivedMaterials.length" class="tp-archive-list">
+          <summary>回收区（{{ archivedMaterials.length }}）</summary>
+          <article v-for="item in archivedMaterials" :key="item.id" class="tp-material-card is-archived">
+            <strong>{{ item.display_name }}</strong>
+            <small>保留原文件与历史引用</small>
+            <button type="button" @click="restoreMaterial(item)">恢复资料</button>
+          </article>
+        </details>
       </template>
       <template #toolbar>
         <div class="tp-page-picker" aria-label="原页导航">
           <button
-            v-for="unit in workbench.catalog.materialUnits"
-            :key="unit.id"
             type="button"
-            :class="{ 'is-selected': unit.id === activeUnit?.id }"
-            @click="activeUnitId = unit.id"
+            aria-label="上一页"
+            :disabled="!activeUnit || activeUnit.unit_index <= 1"
+            @click="stepPage(-1)"
           >
-            {{ unit.unit_index }}
+            ←
           </button>
+          <label>
+            第
+            <input
+              v-model.number="pageInput"
+              type="number"
+              min="1"
+              :max="totalPages || 1"
+              aria-label="当前页码"
+              @change="goToPage()"
+              @keydown.enter.prevent="goToPage()"
+            >
+            页 / 共 {{ totalPages }} 页
+          </label>
+          <button
+            type="button"
+            aria-label="下一页"
+            :disabled="!activeUnit || activeUnit.unit_index >= totalPages"
+            @click="stepPage(1)"
+          >
+            →
+          </button>
+          <span v-if="printedPageNumber" class="tp-printed-page">
+            书上页码 {{ printedPageNumber }}
+          </span>
         </div>
       </template>
       <template #inspector>

@@ -31,6 +31,27 @@ class MaterialUnitRepository:
     def __init__(self, database: TeachingPrepDatabase) -> None:
         self._database = database
 
+    def set_parse_expected_count(
+        self,
+        material_version_id: str,
+        *,
+        source_version_sha256: str,
+        unit_count: int,
+    ) -> None:
+        with self._database.connect(immediate=True) as connection:
+            cursor = connection.execute(
+                """
+                UPDATE material_versions
+                SET parse_expected_unit_count = ?
+                WHERE id = ? AND content_sha256 = ?
+                """,
+                (int(unit_count), material_version_id, source_version_sha256),
+            )
+            if cursor.rowcount != 1:
+                raise TeachingPrepConflictError(
+                    "material source version changed before parsing"
+                )
+
     def save_parsed_units(
         self,
         material_version_id: str,
@@ -196,8 +217,15 @@ class MaterialUnitRepository:
         preview_relpath: str,
         preview_sha256: str,
     ) -> MaterialUnit:
+        summary = dict(unit.object_summary)
+        summary["ocr_required"] = bool(
+            unit.unit_kind == "pdf_page"
+            and unit.text_status != "manual"
+            and not unit.extracted_text.strip()
+            and bool(summary.get("has_page_images"))
+        )
         object_summary = json.dumps(
-            unit.object_summary,
+            summary,
             ensure_ascii=False,
             sort_keys=True,
             separators=(",", ":"),
