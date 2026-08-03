@@ -139,9 +139,20 @@ def test_response_diagnostics_distinguishes_unclosed_from_mismatched_json():
             ]
         }
     )
+    stopped_unclosed = response_diagnostics(
+        {
+            "choices": [
+                {
+                    "finish_reason": "stop",
+                    "message": {"content": '{"rubric":{"questions":['},
+                }
+            ]
+        }
+    )
 
     assert unclosed["output_truncated"] is True
     assert mismatched["output_truncated"] is False
+    assert stopped_unclosed["output_truncated"] is False
 
 
 def test_failed_request_event_defaults_to_zero_usage():
