@@ -14,6 +14,8 @@ from backend.class_teacher.model_approval import (
     ModelDestinationChanged,
     ModelDispatchDisabled,
 )
+from backend.class_teacher.ordinary_database import OrdinaryWorkDatabase
+from backend.class_teacher.work_graph import WorkGraph
 from backend.workspaces.contracts import WorkspaceContext
 from backend.workspaces.model_policy import WorkspaceModelRequest
 
@@ -48,6 +50,29 @@ class _RecordingWorkspaceGateway:
                 }
             ]
         }
+
+
+class _JsonKeywordEnforcingWorkspaceGateway(_RecordingWorkspaceGateway):
+    """Model the provider rule shown by the integration-preview failure."""
+
+    def chat_completions(self, **call: object) -> dict[str, object]:
+        kwargs = call["kwargs"]
+        assert isinstance(kwargs, dict)
+        messages = kwargs["messages"]
+        assert isinstance(messages, list)
+        combined = " ".join(
+            str(message.get("content", ""))
+            for message in messages
+            if isinstance(message, dict)
+        )
+        if (
+            kwargs.get("response_format") == {"type": "json_object"}
+            and "json" not in combined
+        ):
+            raise ValueError(
+                "messages must contain the word 'json' to use json_object"
+            )
+        return super().chat_completions(**call)
 
 
 def _context(tmp_path: Path) -> WorkspaceContext:
@@ -187,6 +212,53 @@ def test_active_profile_gateway_sends_only_confirmed_canonical_payload(
         ],
         "response_format": {"type": "json_object"},
     }
+
+
+def test_json_object_request_explicitly_instructs_the_model_to_return_json(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clear_model_environment(monkeypatch)
+    constructed: list[_JsonKeywordEnforcingWorkspaceGateway] = []
+
+    def gateway_factory(**kwargs: object) -> _JsonKeywordEnforcingWorkspaceGateway:
+        gateway = _JsonKeywordEnforcingWorkspaceGateway(**kwargs)
+        constructed.append(gateway)
+        return gateway
+
+    gateway = ActiveProfileApprovedModelGateway(
+        context=_context(tmp_path),
+        profile_store=_ProfileStore(
+            [
+                {
+                    "name": "synthetic",
+                    "config_api_key": "synthetic-key",
+                    "config_base_url": "https://model.invalid/v1",
+                    "config_model": "synthetic-model",
+                }
+            ]
+        ),
+        gateway_factory=gateway_factory,
+        client_factory=lambda _key, _url: object(),
+    )
+
+    graph = WorkGraph(
+        OrdinaryWorkDatabase(_context(tmp_path)),
+        model_gateway=gateway,
+    )
+    preview = graph.prepare_plan(
+        text="整理家长会准备事项",
+        due_date="2026-08-07",
+    )
+
+    result = graph.invoke_plan(
+        preview_id=str(preview["preview_id"]),
+        fingerprint=str(preview["fingerprint"]),
+        operation_id="model-json-contract-001",
+    )
+
+    assert result["state"] == "needs_information"
+    assert len(constructed[0].calls) == 1
 
 
 def test_destination_snapshot_is_safe_and_invoke_reuses_one_resolve(
