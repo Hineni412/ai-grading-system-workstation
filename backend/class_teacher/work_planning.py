@@ -259,8 +259,12 @@ class WorkPlanning:
             "parent_context": parent_context,
             "instructions": [
                 "根据教师这一次输入的真实语境拆解任务，不使用任何预置业务模板。",
-                "识别完成目标所需的具体节点、依赖关系，并从最终日期向前倒排；只有缺少的信息会阻止形成安全且有用的方案时才追问，不得猜测。",
-                "追问只问最少必要的 1—3 个问题；每个问题必须指出缺失的是目标成果、参与角色、时间、范围数量、约束资源或待确认事实中的哪一方面，并结合原文给出可选示例，不得只说‘请补充具体信息’。",
+                "识别完成目标所需的具体节点、依赖关系，并从最终日期向前倒排。",
+                (
+                    "这是首页首轮：必须基于现有信息形成可执行 plan；缺失信息写入 assumptions，不能只返回 follow_up。"
+                    if mode == "new_work"
+                    else "只有缺少的信息确实阻止形成安全且有用的进展方案时才追问，且只问最少必要的 1—3 项。"
+                ),
                 "不得重复询问 task_text 或 final_due_date 中已经明确的信息，也不得索要完成当前方案不需要的姓名、电话、地址等敏感信息。",
                 "kind 是必填字段且不得为空；返回 questions 时 kind 必须为 follow_up，nodes 和 edges 必须为空数组。",
                 "优先只返回有效的 json 对象；若更适合连续事务或学生支持则只给出建议去向，不得自动创建。",
@@ -518,14 +522,46 @@ class WorkPlanning:
                     assumptions = parsed["assumptions"]
                     parsed_kind = str(parsed["kind"])
                     if parsed_kind == "follow_up" or questions:
-                        result = {
-                            **receipt,
-                            "state": "needs_information",
-                            "physical_request_count": physical_request_count,
-                            "result_kind": "follow_up",
-                            "questions": questions,
-                            "assumptions": assumptions,
-                        }
+                        if str(preview["mode"]) == "new_work":
+                            plan = self._first_round_fallback_plan(
+                                source_text=str(
+                                    dict(receipt.get("local_context") or {}).get(
+                                        "source_text"
+                                    )
+                                    or "教师工作"
+                                ),
+                                final_due_date=(
+                                    None
+                                    if preview["final_due_date"] is None
+                                    else str(preview["final_due_date"])
+                                ),
+                                questions=questions,
+                                assumptions=assumptions,
+                            )
+                            plan_fingerprint = hashlib.sha256(
+                                canonical_json(plan)
+                            ).hexdigest()
+                            result = {
+                                **receipt,
+                                "state": "succeeded",
+                                "physical_request_count": physical_request_count,
+                                "result_kind": "ordinary_plan",
+                                "result": plan,
+                                "plan": plan,
+                                "plan_fingerprint": plan_fingerprint,
+                                "questions": questions,
+                                "assumptions": plan["assumptions"],
+                                "teacher_confirmation_required": True,
+                            }
+                        else:
+                            result = {
+                                **receipt,
+                                "state": "needs_information",
+                                "physical_request_count": physical_request_count,
+                                "result_kind": "follow_up",
+                                "questions": questions,
+                                "assumptions": assumptions,
+                            }
                     elif parsed_kind in {
                         "affair_recommendation",
                         "student_support_recommendation",
@@ -645,6 +681,63 @@ class WorkPlanning:
                 receipt.get("teacher_confirmation_required")
             ),
             "local_context": dict(receipt.get("local_context") or {}),
+        }
+
+    @staticmethod
+    def _first_round_fallback_plan(
+        *,
+        source_text: str,
+        final_due_date: str | None,
+        questions: list[str],
+        assumptions: list[str],
+    ) -> dict[str, object]:
+        """Turn an exclusive model follow-up into a confirmable broad draft."""
+        title = " ".join(str(source_text or "教师工作").split())[:160]
+        verification = [f"待核对：{item}" for item in questions]
+        nodes = [
+            {
+                "draft_key": "goal",
+                "kind": "goal",
+                "title": title,
+                "details": "先按当前信息形成工作目标，缺失信息在执行中核对。",
+                "rationale": "避免因边缘信息缺失而阻塞工作安排。",
+                "status": "pending",
+                "due_date": final_due_date,
+            },
+            {
+                "draft_key": "prepare",
+                "kind": "task",
+                "title": "确认必要范围并准备",
+                "details": "只核对会改变执行方式、负责人或时限的必要信息。",
+                "rationale": "先确定可执行边界。",
+                "status": "pending",
+                "due_date": final_due_date,
+            },
+            {
+                "draft_key": "execute",
+                "kind": "task",
+                "title": "执行并记录结果",
+                "details": "按已确认范围执行，记录完成情况和仍待处理事项。",
+                "rationale": "让工作形成可追踪闭环。",
+                "status": "waiting",
+                "due_date": final_due_date,
+            },
+        ]
+        return {
+            "nodes": nodes,
+            "edges": [
+                {
+                    "source_draft_key": "goal",
+                    "target_draft_key": "prepare",
+                    "relation": "contains",
+                },
+                {
+                    "source_draft_key": "prepare",
+                    "target_draft_key": "execute",
+                    "relation": "blocks",
+                },
+            ],
+            "assumptions": list(dict.fromkeys([*assumptions, *verification]))[:8],
         }
 
     def _validate_result(

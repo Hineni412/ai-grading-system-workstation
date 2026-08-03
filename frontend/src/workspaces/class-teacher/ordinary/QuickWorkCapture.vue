@@ -3,15 +3,13 @@ import { computed, nextTick, ref } from 'vue'
 
 import {
   homeIntakeApi,
-  type HomeIntakeHandoff,
   type HomeIntakeOperation,
   type HomeIntakePreview,
-  type HomeIntakeRecommendation,
 } from '../api/homeIntake'
 import type { OrdinaryWorkModule } from './createOrdinaryWorkModule'
+import { studentR1Api, type CurrentRosterStudent } from '../api/r1'
 
 const props = defineProps<{ module: OrdinaryWorkModule; token?: string }>()
-const emit = defineEmits<{ handoff: [value: HomeIntakeHandoff] }>()
 const text = ref('')
 const submittedSourceText = ref('')
 const preview = ref<HomeIntakePreview | null>(null)
@@ -24,6 +22,12 @@ const submittedManualTitle = ref('')
 const followUpAnswer = ref('')
 const manualTitle = ref('')
 const statusRegion = ref<HTMLElement | null>(null)
+const selectedStepKeys = ref<string[]>([])
+const selectedCalendarKeys = ref<string[]>([])
+const selectedStepRoots = ref<string[]>([])
+const selectedCalendarRoots = ref<string[]>([])
+const roster = ref<CurrentRosterStudent[]>([])
+const selectedSubjectIds = ref<string[]>([])
 
 const unresolvedOperation = computed(() => ['result_unknown', 'in_progress'].includes(operation.value?.state ?? ''))
 const unresolvedRequest = computed(() => Boolean(requestOperationId.value) && (!operation.value || unresolvedOperation.value))
@@ -61,6 +65,11 @@ function resetResultAfterEdit(): void {
   manualFallbackOperationId.value = ''
   submittedManualTitle.value = ''
   followUpAnswer.value = ''
+  selectedStepKeys.value = []
+  selectedCalendarKeys.value = []
+  selectedStepRoots.value = []
+  selectedCalendarRoots.value = []
+  selectedSubjectIds.value = []
   manualTitle.value = text.value.slice(0, 240)
   message.value = ''
 }
@@ -76,6 +85,11 @@ function clearAll(receipt: string): void {
   followUpAnswer.value = ''
   manualTitle.value = ''
   message.value = receipt
+  selectedStepKeys.value = []
+  selectedCalendarKeys.value = []
+  selectedStepRoots.value = []
+  selectedCalendarRoots.value = []
+  selectedSubjectIds.value = []
   focusStatus()
 }
 
@@ -107,10 +121,75 @@ async function dispatchPreview(value: HomeIntakePreview): Promise<void> {
   try {
     operation.value = await homeIntakeApi.dispatch(value, requestOperationId.value, props.token)
     message.value = resultMessage(operation.value)
+    await prepareDraftControls()
   } catch {
     message.value = '发送响应未能确认。原文仍保留；请查看刚才这次调用，不要重新发送。'
   }
   focusStatus()
+}
+
+function downstream(start: string, kind: 'step' | 'calendar'): string[] {
+  if (!recommendation.value) return [start]
+  const items = kind === 'step' ? recommendation.value.steps : recommendation.value.calendar_items
+  const children = new Map<string, string[]>()
+  for (const item of items) for (const parent of item.depends_on) children.set(parent, [...(children.get(parent) || []), item.key])
+  const found = new Set([start]); const queue = [start]
+  while (queue.length) for (const child of children.get(queue.shift() as string) || []) if (!found.has(child)) { found.add(child); queue.push(child) }
+  return [...found]
+}
+
+function toggleStep(key: string): void {
+  const roots = new Set(selectedStepRoots.value)
+  if (roots.has(key)) roots.delete(key); else roots.add(key)
+  selectedStepRoots.value = [...roots]
+  const selected = new Set<string>()
+  for (const root of roots) downstream(root, 'step').forEach((item) => selected.add(item))
+  selectedStepKeys.value = [...selected]
+  recomputeCalendars()
+}
+
+function toggleCalendar(key: string): void {
+  const roots = new Set(selectedCalendarRoots.value)
+  if (roots.has(key)) roots.delete(key); else roots.add(key)
+  selectedCalendarRoots.value = [...roots]
+  recomputeCalendars()
+}
+
+function recomputeCalendars(): void {
+  const selected = new Set<string>()
+  for (const step of selectedStepKeys.value) selected.add(`calendar.${step}`)
+  for (const root of selectedCalendarRoots.value) downstream(root, 'calendar').forEach((item) => selected.add(item))
+  selectedCalendarKeys.value = [...selected]
+}
+
+async function prepareDraftControls(): Promise<void> {
+  selectedStepKeys.value = []
+  selectedCalendarKeys.value = []
+  selectedStepRoots.value = []
+  selectedCalendarRoots.value = []
+  if (!recommendation.value || !props.token) return
+  const current = await studentR1Api.currentRoster(props.token)
+  roster.value = current.items.filter((item) => item.state === 'active')
+  const counts = new Map<string, number>()
+  for (const item of roster.value) counts.set(item.display_name, (counts.get(item.display_name) || 0) + 1)
+  const occupied: Array<[number, number]> = []
+  const matched: string[] = []
+  const candidates = roster.value
+    .filter((item) => counts.get(item.display_name) === 1)
+    .sort((left, right) => right.display_name.length - left.display_name.length)
+  for (const item of candidates) {
+    let start = submittedSourceText.value.indexOf(item.display_name)
+    while (start >= 0) {
+      const end = start + item.display_name.length
+      if (!occupied.some(([usedStart, usedEnd]) => start < usedEnd && end > usedStart)) {
+        occupied.push([start, end])
+        matched.push(item.subject_id)
+        break
+      }
+      start = submittedSourceText.value.indexOf(item.display_name, start + 1)
+    }
+  }
+  selectedSubjectIds.value = matched
 }
 
 async function start(): Promise<void> {
@@ -180,7 +259,7 @@ async function submitFollowUp(): Promise<void> {
   if (!operation.value?.can_follow_up || !followUpAnswer.value.trim() || busy.value) return
   busy.value = true
   try {
-    preview.value = await homeIntakeApi.followUpPreview(operation.value.operation_id, followUpAnswer.value, props.token)
+    preview.value = await homeIntakeApi.followUpPreview(operation.value.operation_id, followUpAnswer.value, props.token, undefined, selectedStepKeys.value, selectedCalendarKeys.value)
     submittedSourceText.value = preview.value.source_text ?? submittedSourceText.value
     operation.value = null
     requestOperationId.value = ''
@@ -198,6 +277,19 @@ async function submitFollowUp(): Promise<void> {
     }
   } catch {
     message.value = '下一轮预览未能准备，原文和补充内容均未写入。'
+  } finally { busy.value = false; focusStatus() }
+}
+
+async function adoptRecommendation(): Promise<void> {
+  if (!operation.value || !recommendation.value || !props.token || !selectedSubjectIds.value.length || busy.value) return
+  const stableOperationId = `adopt-${operation.value.operation_id}`.slice(0, 128)
+  busy.value = true
+  try {
+    await homeIntakeApi.adopt(operation.value, stableOperationId, selectedSubjectIds.value, props.token)
+    await props.module.load('today')
+    clearAll('方案、学生档案关联和日历安排已经保存。')
+  } catch {
+    message.value = '保存尚未全部确认；同一按钮会只续做未完成阶段，不会重复创建事务、日历或模型请求。'
   } finally { busy.value = false; focusStatus() }
 }
 
@@ -242,18 +334,6 @@ function preserveManualTitle(): void {
   if (unresolvedManualFallback.value) manualTitle.value = submittedManualTitle.value
 }
 
-function handoff(): void {
-  if (!operation.value || !recommendation.value) return
-  const destination = operation.value.result_kind === 'affair_recommendation' ? 'affair' : 'student_support'
-  emit('handoff', {
-    id: globalThis.crypto.randomUUID(),
-    destination,
-    sourceText: submittedSourceText.value,
-    aiReference: recommendation.value as HomeIntakeRecommendation,
-    route: operation.value.route,
-    interpretedDate: preview.value?.final_due_date ?? null,
-  })
-}
 </script>
 
 <template>
@@ -295,18 +375,17 @@ function handoff(): void {
       </section>
 
       <section v-if="preview && preview.route !== 'ordinary' && preview.exact_payload && !operation" class="exact-preview">
-        <p><strong>敏感内容匿名逐字预览</strong><span>草案，尚未写入 · 当前轮请求 0 次</span></p>
-        <pre>{{ JSON.stringify(preview.exact_payload, null, 2) }}</pre>
+        <p><strong>匿名发送确认</strong><span>尚未调用模型 · 确认后仅调用 1 次</span></p>
+        <p>学生姓名等身份信息已在本机替换为匿名代号。发送内容的技术格式不在此展示；下一步将直接展示模型返回的 SOP 卡片、流程关系和日历初排。</p>
         <p v-if="preview.removed_categories.length">已移除：{{ preview.removed_categories.join('、') }}</p>
         <p v-if="preview.student_aliases.length">匿名代号：{{ preview.student_aliases.join('、') }}</p>
         <dl class="destination-receipt" aria-label="本轮模型目的地">
           <div><dt>提供方</dt><dd>{{ preview.model_provider || '未提供' }}</dd></div>
           <div><dt>模型</dt><dd>{{ preview.model_name || '未提供' }}</dd></div>
           <div><dt>服务地址（不含凭据）</dt><dd>{{ preview.model_endpoint || '未提供' }}</dd></div>
-          <div><dt>目的地指纹</dt><dd><code>{{ preview.destination_fingerprint || '未提供' }}</code></dd></div>
         </dl>
-        <p class="destination-note">以上目的地与本次匿名逐字预览绑定；目的地变化后必须重新预览。</p>
-        <button type="button" :disabled="busy" @click="confirmSensitiveDispatch">教师已核对，确认发送这一轮</button>
+        <p class="destination-note">若模型目的地在点击前变化，系统会停止发送并要求重新确认。</p>
+        <button type="button" :disabled="busy" @click="confirmSensitiveDispatch">确认匿名发送并生成方案</button>
       </section>
 
       <template v-if="operation">
@@ -333,23 +412,37 @@ function handoff(): void {
         </section>
 
         <section v-else-if="recommendation" class="recommendation">
-          <h3>{{ recommendation.kind === 'affair_recommendation' ? '事务处理建议' : '学生支持建议' }}</h3>
+          <h3>{{ recommendation.title }}</h3>
           <p>{{ recommendation.summary || 'AI 未提供摘要，请仅把现有内容作为参考。' }}</p>
           <ul v-if="recommendation.reasons.length"><li v-for="reason in recommendation.reasons" :key="reason">{{ reason }}</li></ul>
           <p v-if="recommendation.assumptions.length">假设：{{ recommendation.assumptions.join('；') }}</p>
-          <p class="reference-note">AI 建议仅供参考，不会自动创建事务、学生记录或外发消息。</p>
-          <button type="button" :disabled="busy" @click="handoff">{{ recommendation.kind === 'affair_recommendation' ? '转到事务创建预填' : '选择学生并预填支持记录' }}</button>
+          <section v-if="recommendation.emergency_prompt" class="safety-note"><strong>安全提醒</strong><p>{{ recommendation.emergency_prompt }}</p></section>
+          <h4>SOP 流程卡片</h4>
+          <p class="selection-help">单击不合适的步骤，会自动选中它以及所有后续步骤；安全必做步骤只能调整做法、负责人或时间，不能删除。</p>
+          <div class="workflow-cards">
+            <button v-for="(step, index) in recommendation.steps" :key="step.key" type="button" :class="{ selected: selectedStepKeys.includes(step.key) }" :aria-pressed="selectedStepKeys.includes(step.key)" @click="toggleStep(step.key)">
+              <span>{{ index + 1 }}</span><strong>{{ step.title }}</strong><small>{{ step.details }}</small><em v-if="step.safety_required">安全必做</em>
+            </button>
+          </div>
+          <h4>初步日历安排</h4>
+          <div class="calendar-list">
+            <button v-for="item in recommendation.calendar_items" :key="item.key" type="button" :class="{ selected: selectedCalendarKeys.includes(item.key) }" :aria-pressed="selectedCalendarKeys.includes(item.key)" @click="toggleCalendar(item.key)"><time>{{ item.due_date || '日期待定' }}</time><span>{{ item.title }}</span></button>
+          </div>
+          <section v-if="recommendation.to_verify.length" class="verify"><h4>后续核对（不阻止先采用方案）</h4><ul><li v-for="item in recommendation.to_verify" :key="item">{{ item }}</li></ul></section>
+          <fieldset class="student-links"><legend>关联到学生档案</legend><p>姓名在当前我班名单中唯一匹配时已自动勾选；重名、未匹配或不确定时请手动选择。</p><label v-for="student in roster" :key="student.subject_id"><input v-model="selectedSubjectIds" type="checkbox" :value="student.subject_id">{{ student.display_name }} · {{ student.class_label || '未分班' }}</label><p v-if="!roster.length">当前还没有设置“我班学生”，请先到学生目录从现有学生库设置。</p></fieldset>
+          <p class="reference-note">当前仍是草案，不会自动外发、作欺凌认定、决定惩戒或结案。</p>
+          <button class="primary" type="button" :disabled="busy || !selectedSubjectIds.length" @click="adoptRecommendation">采用并保存方案</button>
         </section>
 
         <section v-else-if="plainText" class="plain-text">
           <h3>安全纯文本说明</h3><p>{{ plainText }}</p><p>这段文字不会自动写入任何记录。</p>
         </section>
 
-        <section v-if="operation.follow_up_questions.length || operation.can_follow_up" class="follow-up">
-          <h3>明确开始下一轮</h3>
-          <ul v-if="operation.follow_up_questions.length"><li v-for="question in operation.follow_up_questions" :key="question">{{ question }}</li></ul>
-          <label>教师补充<textarea v-model="followUpAnswer" rows="3" maxlength="4000"></textarea></label>
-          <button type="button" :disabled="busy || !followUpAnswer.trim()" @click="submitFollowUp">提交补充，开始下一轮</button>
+        <section v-if="operation.can_follow_up && recommendation" class="follow-up">
+          <h3>让 AI 只调整选中部分</h3>
+          <p>未选内容将锁定不变。只选日历时，仅调整该项及后续日期，不改 SOP 内容。</p>
+          <label>补充你认为不合适的原因或新信息<textarea v-model="followUpAnswer" rows="3" maxlength="4000"></textarea></label>
+          <button type="button" :disabled="busy || !followUpAnswer.trim() || (!selectedStepKeys.length && !selectedCalendarKeys.length)" @click="submitFollowUp">发送标记和补充，重新调整</button>
         </section>
 
         <button v-if="unresolvedOperation || requestOperationId" v-show="unresolvedOperation || message.includes('响应未能确认')" type="button" :disabled="busy || !requestOperationId" @click="querySameOperation">查看刚才这次调用（不会再次调用 AI）</button>
@@ -372,4 +465,5 @@ function handoff(): void {
 
 <style scoped>
 .capture{padding:var(--space-5);border-bottom:1px solid var(--color-border-default);background:var(--color-bg-subtle)}.capture__input{display:grid;gap:var(--space-2)}label{display:grid;gap:var(--space-1);font-size:var(--font-size-dense);font-weight:650}textarea,input,button{box-sizing:border-box;border:1px solid var(--color-border-default);border-radius:var(--radius-control);background:var(--color-bg-surface);font:inherit}.capture__input textarea{width:100%;min-height:128px;padding:var(--space-3);line-height:1.6;resize:vertical;overflow-wrap:anywhere}.capture__actions{display:flex;align-items:center;justify-content:flex-end;gap:var(--space-3)}.capture__actions span{color:var(--color-text-muted);font-size:var(--font-size-caption)}button{min-height:40px;padding:0 var(--space-3)}.capture__actions button,.primary{border-color:var(--color-accent);background:var(--color-accent);color:white}.progress{display:grid;gap:var(--space-3);margin-top:var(--space-4);outline:2px solid transparent;outline-offset:var(--space-1)}.progress:focus{outline-color:var(--color-accent)}.date-status,.receipt{display:flex;flex-wrap:wrap;gap:var(--space-2) var(--space-4);padding:var(--space-3);border-left:3px solid var(--color-accent);background:var(--color-bg-surface)}.date-status[data-state="conflict"]{border-color:var(--color-danger)}.date-status[data-state="pending"]{border-color:var(--color-warning)}.emergency{padding:var(--space-4);border:2px solid var(--color-danger);border-radius:var(--radius-control);background:var(--color-danger-subtle)}.emergency h3{margin-top:0}.exact-preview,.plan,.recommendation,.plain-text,.follow-up,.fallback{padding:var(--space-4);border:1px solid var(--color-border-default);border-radius:var(--radius-control);background:var(--color-bg-surface);overflow-wrap:anywhere}.exact-preview>p:first-child{display:flex;justify-content:space-between;gap:var(--space-3)}.exact-preview pre{max-height:320px;overflow:auto;padding:var(--space-3);white-space:pre-wrap;overflow-wrap:anywhere;background:var(--color-bg-subtle)}.destination-receipt{display:grid;gap:var(--space-2);margin:var(--space-3) 0;padding:var(--space-3);background:var(--color-bg-subtle)}.destination-receipt div{display:grid;grid-template-columns:minmax(7rem,auto) minmax(0,1fr);gap:var(--space-2)}.destination-receipt dt{color:var(--color-text-secondary)}.destination-receipt dd{min-width:0;margin:0;overflow-wrap:anywhere;font-weight:650}.destination-note{color:var(--color-text-secondary);font-size:var(--font-size-dense)}.draft-label{width:max-content;padding:var(--space-1) var(--space-2);border:1px dashed var(--color-warning);border-radius:var(--radius-tag);color:var(--color-warning);font-weight:700}.receipt{margin:0}.receipt div{display:flex;gap:var(--space-1)}.receipt dt{color:var(--color-text-secondary)}.receipt dd{margin:0;font-weight:700}.plan h3,.recommendation h3,.plain-text h3,.follow-up h3,.fallback h3{margin-top:0}.plan-nodes{display:grid;gap:var(--space-3);padding-left:var(--space-5)}.plan-nodes li{padding:var(--space-3);border-left:3px solid var(--color-accent);background:var(--color-bg-subtle)}.plan-nodes div{display:flex;flex-wrap:wrap;justify-content:space-between;gap:var(--space-2)}.plan-nodes span{color:var(--color-text-secondary);font-size:var(--font-size-dense)}.plan-nodes p{margin-bottom:0;white-space:pre-wrap}.assumptions,.relations,.reference-note{color:var(--color-text-secondary)}.follow-up label,.fallback label{margin:var(--space-3) 0}.follow-up textarea,.fallback input{width:100%;padding:var(--space-2)}.message{margin:0;color:var(--color-accent-active);overflow-wrap:anywhere}.discard{justify-self:start;border-color:transparent;background:transparent;color:var(--color-text-secondary);text-decoration:underline}button:disabled{cursor:not-allowed;opacity:var(--opacity-disabled)}@media(max-width:700px){.exact-preview>p:first-child,.plan-nodes div{flex-direction:column}.capture{padding:var(--space-4)}}
+.selection-help,.student-links>p{color:var(--color-text-secondary);font-size:var(--font-size-dense)}.workflow-cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:var(--space-2)}.workflow-cards button{display:grid;grid-template-columns:auto 1fr;gap:var(--space-1) var(--space-2);min-height:120px;padding:var(--space-3);text-align:left}.workflow-cards button>span{grid-row:1/4;display:grid;place-items:center;width:28px;height:28px;border-radius:50%;background:var(--color-accent-subtle);color:var(--color-accent-active);font-weight:750}.workflow-cards small{color:var(--color-text-secondary);line-height:1.45}.workflow-cards em{color:var(--color-danger);font-size:var(--font-size-caption);font-style:normal;font-weight:700}.workflow-cards button.selected,.calendar-list button.selected{border-color:var(--color-warning);background:var(--color-warning-subtle);box-shadow:inset 0 0 0 1px var(--color-warning)}.calendar-list{display:grid;gap:var(--space-2)}.calendar-list button{display:grid;grid-template-columns:110px 1fr;gap:var(--space-3);align-items:center;padding:var(--space-2) var(--space-3);text-align:left}.calendar-list time{font-weight:700;color:var(--color-accent-active)}.verify,.safety-note{margin:var(--space-3) 0;padding:var(--space-3);border-left:3px solid var(--color-warning);background:var(--color-warning-subtle)}.verify h4,.safety-note p{margin:0}.student-links{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:var(--space-2);margin:var(--space-4) 0;padding:var(--space-3);border:1px solid var(--color-border-default);border-radius:var(--radius-control)}.student-links legend{font-weight:750}.student-links>p{grid-column:1/-1;margin:0}.student-links label{display:flex;align-items:center;gap:var(--space-2);font-weight:500}.student-links input{min-height:auto}
 </style>

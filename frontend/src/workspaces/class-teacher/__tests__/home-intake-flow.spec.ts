@@ -75,10 +75,28 @@ function intakeOperation(overrides: Partial<HomeIntakeOperation> = {}): HomeInta
     physical_request_count: 1, teacher_confirmation_required: true, result_fingerprint: null, local_context: {}, ...overrides,
   }
 }
+function workflowRecommendation() {
+  return {
+    kind: 'affair_recommendation' as const,
+    transaction_type: '学生事务', template_key: 'baseline.student_conflict', title: '学生矛盾处理初稿',
+    summary: '先确保安全，再分别记录和核实。', reasons: [], assumptions: [],
+    to_verify: ['是否有人受伤'], student_aliases: ['学生A', '学生B'], risk_level: 'elevated',
+    emergency_prompt: '如有迫近危险，先人工处置。',
+    steps: [
+      { key: 'safety_check', title: '确认安全', details: '先确认冲突已经停止。', depends_on: [], required: true, waivable: false, safety_required: true },
+      { key: 'fact_check', title: '核实事实', details: '分别记录并核对。', depends_on: ['safety_check'], required: true, waivable: false, safety_required: false },
+    ],
+    edges: [{ source_key: 'safety_check', target_key: 'fact_check', relation: 'depends_on' }],
+    calendar_items: [
+      { key: 'calendar.safety_check', step_key: 'safety_check', title: '确认安全', due_date: '2026-08-03', depends_on: [] },
+      { key: 'calendar.fact_check', step_key: 'fact_check', title: '核实事实', due_date: '2026-08-04', depends_on: ['calendar.safety_check'] },
+    ],
+  }
+}
 const moduleStub = () => ({ load: vi.fn() })
 const handoff: HomeIntakeHandoff = {
   id: 'handoff-1', destination: 'affair', sourceText: '教师原始记录，保持原样。', route: 'sensitive', interpretedDate: null,
-  aiReference: { kind: 'affair_recommendation', summary: '建议按学校流程核对事实', reasons: ['先核实'], assumptions: [] },
+  aiReference: { ...workflowRecommendation(), summary: '建议按学校流程核对事实', reasons: ['先核实'] },
 }
 const directorySubject: DirectorySubject = {
   subject_id: 's1', display_name: '合成学生', source_student_id: 'S1', class_label: '一班',
@@ -168,6 +186,26 @@ describe('homepage intake flow', () => {
     expect(source.value).toBe('')
   })
 
+  it('filters the existing student library and replaces the current homeroom roster', async () => {
+    vi.spyOn(studentR1Api, 'directory').mockResolvedValue({ items: [], cursor: null, total: 0, page_size: 20 })
+    const source = vi.spyOn(studentR1Api, 'rosterSource').mockResolvedValue({
+      items: [{ source_key: '1', student_code: 'A001', display_name: '王明', class_label: '一班', subject_id: null, roster_state: 'available' }],
+      classes: ['一班', '二班'], source_revision: 'r'.repeat(64), total: 1, cursor: null,
+    })
+    const replace = vi.spyOn(studentR1Api, 'replaceCurrentRoster').mockResolvedValue({
+      items: [{ source_key: '1', subject_id: 's1', display_name: '王明', class_label: '一班', state: 'active' }],
+      active_count: 1, historical_count: 2, replayed: false,
+    })
+    const host = await mount(StudentSurface, { token: 'token', panel: 'directory', status: null })
+    const select = labeledControl<HTMLSelectElement>(host, '按班级筛选')
+    select.value = '一班'; select.dispatchEvent(new Event('change', { bubbles: true }))
+    click(host, '查看筛选结果'); await flush()
+    click(host, '将筛选结果设为我班学生'); await flush()
+    expect(source).toHaveBeenLastCalledWith('token', { q: '', classLabel: '一班', pageSize: 100 })
+    expect(replace).toHaveBeenCalledWith('token', expect.objectContaining({ expectedSourceRevision: 'r'.repeat(64), classLabel: '一班' }))
+    expect(host.textContent).toContain('旧档案不会删除')
+  })
+
   it('shows emergency guidance and exact anonymous preview with zero requests before teacher confirmation', async () => {
     vi.spyOn(homeIntakeApi, 'preview').mockResolvedValue(intakePreview({
       route: 'emergency', recommended_route: 'affair', exact_payload: { task_text: '学生A和学生B正在打架' },
@@ -183,49 +221,54 @@ describe('homepage intake flow', () => {
     await flush()
 
     expect(host.textContent).toContain('先处理现场安全，不要等待 AI')
-    expect(host.textContent).toContain('学生A和学生B正在打架')
-    expect(host.textContent).toContain('当前轮请求 0 次')
+    expect(host.textContent).not.toContain('学生A和学生B正在打架')
+    expect(host.textContent).toContain('确认后仅调用 1 次')
     const destination = host.querySelector<HTMLElement>('.destination-receipt')!
     const confirmButton = [...host.querySelectorAll<HTMLButtonElement>('button')]
-      .find((button) => button.textContent?.includes('教师已核对，确认发送这一轮'))!
+      .find((button) => button.textContent?.includes('确认匿名发送并生成方案'))!
     expect(destination.textContent).toContain('提供方synthetic.invalid')
     expect(destination.textContent).toContain('模型synthetic-safe-model')
     expect(destination.textContent).toContain('服务地址（不含凭据）https://synthetic.invalid/v1')
-    expect(destination.textContent).toContain(`目的地指纹${'d'.repeat(64)}`)
+    expect(destination.textContent).not.toContain('目的地指纹')
     expect(destination.compareDocumentPosition(confirmButton) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
-    expect(host.textContent).toContain('以上目的地与本次匿名逐字预览绑定')
+    expect(host.textContent).toContain('若模型目的地在点击前变化')
     expect(dispatch).not.toHaveBeenCalled()
     expect(document.activeElement).toBe(host.querySelector('.progress'))
     expect(host.querySelector('.progress')?.getAttribute('aria-live')).toBe('polite')
 
-    click(host, '教师已核对，确认发送这一轮')
+    click(host, '确认匿名发送并生成方案')
     await flush()
     expect(dispatch).toHaveBeenCalledOnce()
   })
 
-  it('starts follow-up only on an explicit answer and never auto-repeats a request', async () => {
-    vi.spyOn(homeIntakeApi, 'preview').mockResolvedValue(intakePreview())
+  it('revises only after the teacher selects an unsuitable card and supplies feedback', async () => {
+    vi.spyOn(homeIntakeApi, 'preview').mockResolvedValue(intakePreview({ route: 'sensitive', recommended_route: 'affair' }))
+    vi.spyOn(studentR1Api, 'currentRoster').mockResolvedValue({ items: [], active_count: 0, historical_count: 0, replayed: false })
     const dispatch = vi.spyOn(homeIntakeApi, 'dispatch')
-      .mockResolvedValueOnce(intakeOperation({ state: 'needs_information', result_kind: 'follow_up', result: { kind: 'follow_up', value: null }, follow_up_questions: ['具体是哪一天？'], can_follow_up: true, teacher_confirmation_required: false }))
-      .mockResolvedValueOnce(intakeOperation({ operation_id: 'operation-2', round_number: 2, cumulative_physical_request_count: 2 }))
-    const follow = vi.spyOn(homeIntakeApi, 'followUpPreview').mockResolvedValue(intakePreview({ preview_id: 'preview-2', round_number: 2, prior_operations: ['operation-1'], cumulative_physical_request_count: 1 }))
-    const host = await mount(QuickWorkCapture, { module: moduleStub() })
+      .mockResolvedValueOnce(intakeOperation({ route: 'sensitive', result_kind: 'affair_recommendation', result: { kind: 'affair_recommendation', value: workflowRecommendation() }, follow_up_questions: ['是否有人受伤'], can_follow_up: true, result_fingerprint: 'r'.repeat(64) }))
+      .mockResolvedValueOnce(intakeOperation({ operation_id: 'operation-2', route: 'sensitive', result_kind: 'affair_recommendation', result: { kind: 'affair_recommendation', value: workflowRecommendation() }, round_number: 2, cumulative_physical_request_count: 2, result_fingerprint: 's'.repeat(64) }))
+    const follow = vi.spyOn(homeIntakeApi, 'followUpPreview').mockResolvedValue(intakePreview({ preview_id: 'preview-2', route: 'sensitive', recommended_route: 'affair', round_number: 2, prior_operations: ['operation-1'], cumulative_physical_request_count: 1 }))
+    const host = await mount(QuickWorkCapture, { module: moduleStub(), token: 'token' })
     enter(host.querySelector<HTMLTextAreaElement>('#home-intake-text')!, '安排活动')
     click(host, '交给 AI 整理')
     await flush()
+    click(host, '确认匿名发送并生成方案')
+    await flush()
 
     expect(follow).not.toHaveBeenCalled()
-    expect(host.textContent).toContain('具体是哪一天？')
+    expect(host.textContent).toContain('学生矛盾处理初稿')
     expect(host.textContent).not.toContain('AI 返回内容未通过校验')
     expect(host.textContent).not.toContain('写入单节点工作')
+    click(host, '确认安全')
+    await nextTick()
+    expect(host.querySelectorAll('.workflow-cards button.selected')).toHaveLength(2)
     const answer = host.querySelector<HTMLTextAreaElement>('.follow-up textarea')!
-    enter(answer, '下周五')
+    enter(answer, '安全步骤已经完成，请调整后续安排')
     expect(follow).not.toHaveBeenCalled()
-    click(host, '提交补充，开始下一轮')
+    click(host, '发送标记和补充，重新调整')
     await flush()
-    expect(follow).toHaveBeenCalledWith('operation-1', '下周五', undefined)
-    expect(dispatch).toHaveBeenCalledTimes(2)
-    expect(host.textContent).toContain('累计物理请求2 次')
+    expect(follow).toHaveBeenCalledWith('operation-1', '安全步骤已经完成，请调整后续安排', 'token', undefined, ['safety_check', 'fact_check'], ['calendar.safety_check', 'calendar.fact_check'])
+    expect(dispatch).toHaveBeenCalledTimes(1)
   })
 
   it('locks source editing while busy, response-lost, result-unknown, and in-progress while querying only the same handle', async () => {
@@ -298,40 +341,42 @@ describe('homepage intake flow', () => {
     expect(host.querySelector('.progress')).toBeNull()
   })
 
-  it('binds recommendation handoff to the submitted preview source despite a busy edit event', async () => {
+  it('keeps source locked during generation and saves the reviewed plan directly', async () => {
     const preview = intakePreview({
       route: 'sensitive', recommended_route: 'affair',
-      source_text: '绑定到本轮操作的教师原文',
+      source_text: '王小明：绑定到本轮操作的教师原文',
       exact_payload: { task_text: '匿名预览内容' },
     })
     vi.spyOn(homeIntakeApi, 'preview').mockResolvedValue(preview)
     const pendingDispatch = deferred<HomeIntakeOperation>()
     vi.spyOn(homeIntakeApi, 'dispatch').mockReturnValue(pendingDispatch.promise)
-    const onHandoff = vi.fn()
-    const host = await mount(QuickWorkCapture, { module: moduleStub(), onHandoff })
+    vi.spyOn(studentR1Api, 'currentRoster').mockResolvedValue({ items: [
+      { source_key: '1', subject_id: 's1', display_name: '王小明', class_label: '一班', state: 'active' },
+      { source_key: '2', subject_id: 's2', display_name: '王明', class_label: '一班', state: 'active' },
+    ], active_count: 2, historical_count: 0, replayed: false })
+    const adopt = vi.spyOn(homeIntakeApi, 'adopt').mockResolvedValue({})
+    const host = await mount(QuickWorkCapture, { module: moduleStub(), token: 'token' })
     const source = host.querySelector<HTMLTextAreaElement>('#home-intake-text')!
-    enter(source, '绑定到本轮操作的教师原文')
+    enter(source, '王小明：绑定到本轮操作的教师原文')
     click(host, '交给 AI 整理')
     await flush()
 
-    click(host, '教师已核对，确认发送这一轮')
+    click(host, '确认匿名发送并生成方案')
     await nextTick()
     expect(source.disabled).toBe(true)
     enter(source, '不应混入交接的新文本')
     await nextTick()
-    expect(source.value).toBe('绑定到本轮操作的教师原文')
+    expect(source.value).toBe('王小明：绑定到本轮操作的教师原文')
 
     pendingDispatch.resolve(intakeOperation({
       route: 'sensitive', result_kind: 'affair_recommendation',
-      result: { kind: 'affair_recommendation', value: {
-        kind: 'affair_recommendation', summary: '建议先核对事实', reasons: [], assumptions: [],
-      } },
+      result: { kind: 'affair_recommendation', value: workflowRecommendation() }, result_fingerprint: 'r'.repeat(64),
     }))
     await flush()
-    click(host, '转到事务创建预填')
-    expect(onHandoff).toHaveBeenCalledWith(expect.objectContaining({
-      sourceText: '绑定到本轮操作的教师原文',
-    }))
+    expect(labeledControl<HTMLInputElement>(host, '王小明').checked).toBe(true)
+    click(host, '采用并保存方案')
+    await flush()
+    expect(adopt).toHaveBeenCalledWith(expect.objectContaining({ operation_id: 'operation-1' }), expect.any(String), ['s1'], 'token')
   })
 
   it('reuses one manual-fallback operation id after an uncertain write response', async () => {

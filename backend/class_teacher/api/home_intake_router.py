@@ -3,6 +3,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, Header, Request, Response
 
 from .home_intake_schemas import (
+    HomeIntakeAdoptRequest,
     HomeIntakeDispatchRequest,
     HomeIntakeFollowUpRequest,
     HomeIntakeManualFallbackRequest,
@@ -105,6 +106,8 @@ def create_home_intake_router() -> APIRouter:
                 operation_id=operation_id,
                 answer=body.answer,
                 reference_date=body.reference_date,
+                selected_step_keys=body.selected_step_keys,
+                selected_calendar_keys=body.selected_calendar_keys,
             )
         )
 
@@ -127,6 +130,21 @@ def create_home_intake_router() -> APIRouter:
                 operation_id=body.operation_id,
                 title=body.title,
                 due_date=body.due_date,
+            )
+        )
+
+    @router.post("/adopt")
+    def adopt(
+        request: Request,
+        body: HomeIntakeAdoptRequest,
+        response: Response,
+        session_token: str | None = Header(default=None, alias="x-class-teacher-session"),
+    ):
+        _require_trusted_mutation(request)
+        _no_store(response)
+        return _call(
+            lambda: _service(request).home_intake_finalizer.adopt(
+                token=_token(session_token), **body.model_dump()
             )
         )
 
