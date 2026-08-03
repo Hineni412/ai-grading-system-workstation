@@ -30,6 +30,7 @@ from question_bank.training_criteria import (
     plan_analysis_batches,
 )
 from question_bank.services.question_service import QuestionService
+from tests.current_knowledge_support import install_current_knowledge
 
 
 FIXTURE = (
@@ -634,6 +635,8 @@ def test_combined_schema_is_strict_and_tag_only_v1_adapter_stays_separate() -> N
     assert item["additionalProperties"] is False
     assert set(item["required"]) == {
         "question_id",
+        "reference_assessment",
+        "reference_assessment_reason",
         "tag_analysis",
         "solution_evidence",
     }
@@ -727,6 +730,7 @@ def test_existing_tag_writer_reuses_quality_gate_and_question_save_seam(
 ) -> None:
     database = tmp_path / "question-bank.db"
     _seed_questions(database)
+    install_current_knowledge(database)
     payload = _tag_payload()
     payload["textbook_chapters"] = ["七年级上册 一元一次方程"]
     writer = ExistingTagProjectionWriter(
@@ -984,7 +988,8 @@ def test_gateway_prompt_turns_teacher_retry_into_targeted_repair() -> None:
     assert "repair" in prompt["rules"].casefold()
     assert "fresh dependency namespace" in prompt["rules"]
     assert "full_answer" in prompt["rules"]
-    assert "standalone intermediate" in prompt["rules"]
+    assert "at least two distinct non-empty evidence points" in prompt["rules"]
+    assert "Do not infer an exact evidence point count" in prompt["rules"]
 
 
 def test_input_loader_includes_rich_text_and_controlled_actual_images(

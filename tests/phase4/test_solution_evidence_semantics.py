@@ -1254,7 +1254,7 @@ def test_deferred_v2_checkpoint_loads_without_replaying_successful_analysis() ->
     assert restored.get("Q1").taxonomy_audit["status"] == "legacy_unrecorded"
     assert restored.to_dict()["schema_version"] == "deferred-combined-analysis-v4"
     assert restored.to_dict()["items"][0]["schema_version"] == (
-        "deferred-combined-analysis-item-v3"
+        "deferred-combined-analysis-item-v4"
     )
 
 

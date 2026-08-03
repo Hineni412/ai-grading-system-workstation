@@ -7,6 +7,7 @@ from question_bank.relations.evidence_governance import (
     EvidenceRelationGovernanceService,
 )
 from question_bank.relations.repository import KnowledgeRelationRepository
+from tests.current_knowledge_support import install_current_knowledge
 
 
 def _hint(
@@ -28,6 +29,7 @@ def _hint(
 def test_high_confidence_repeated_evidence_enters_active_graph(tmp_path: Path) -> None:
     database = tmp_path / "question-bank.db"
     initialize_database(database)
+    install_current_knowledge(database)
     service = EvidenceRelationGovernanceService(database)
 
     result = service.govern(
@@ -46,6 +48,7 @@ def test_high_confidence_repeated_evidence_enters_active_graph(tmp_path: Path) -
 def test_single_or_ambiguous_evidence_only_creates_exception(tmp_path: Path) -> None:
     database = tmp_path / "question-bank.db"
     initialize_database(database)
+    install_current_knowledge(database)
     service = EvidenceRelationGovernanceService(database)
     ambiguous = _hint(102, "point-2")
     ambiguous["target_keys"] = [
@@ -70,6 +73,7 @@ def test_single_or_ambiguous_evidence_only_creates_exception(tmp_path: Path) -> 
 def test_two_points_from_one_question_do_not_auto_confirm(tmp_path: Path) -> None:
     database = tmp_path / "question-bank.db"
     initialize_database(database)
+    install_current_knowledge(database)
     service = EvidenceRelationGovernanceService(database)
 
     result = service.govern(
@@ -87,6 +91,7 @@ def test_separate_tagging_operations_accumulate_cross_question_support(
 ) -> None:
     database = tmp_path / "question-bank.db"
     initialize_database(database)
+    install_current_knowledge(database)
     service = EvidenceRelationGovernanceService(database)
 
     first = service.govern([_hint(101, "point-1")], operation_id="operation-1")
@@ -100,6 +105,7 @@ def test_separate_tagging_operations_accumulate_cross_question_support(
 def test_low_confidence_relation_is_visible_as_an_exception(tmp_path: Path) -> None:
     database = tmp_path / "question-bank.db"
     initialize_database(database)
+    install_current_knowledge(database)
     service = EvidenceRelationGovernanceService(database)
 
     result = service.govern(
@@ -117,6 +123,7 @@ def test_retry_reuses_the_confirmed_relation_without_duplicate_write(
 ) -> None:
     database = tmp_path / "question-bank.db"
     initialize_database(database)
+    install_current_knowledge(database)
     service = EvidenceRelationGovernanceService(database)
     hints = [_hint(101, "point-1"), _hint(102, "point-2")]
     service.govern(hints, operation_id="synthetic-tagging-operation")

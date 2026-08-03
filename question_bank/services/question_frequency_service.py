@@ -7,11 +7,15 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
+from question_bank.current_knowledge import (
+    CurrentKnowledgeResolver,
+    CurrentKnowledgeUnavailable,
+)
 from question_bank.database.schema import connect, initialize_database
 from question_bank.services.question_service import CORE_ANALYSIS_TAG_TYPES
 
 
-FINGERPRINT_VERSION = 4
+FINGERPRINT_VERSION = 5
 FORMAL_EXAM_TYPES = ("期中", "期末", "中考")
 PRACTICE_EXAM_MARKERS = (
     "同步练习",
@@ -74,7 +78,10 @@ class FrequencyMetrics:
         return asdict(self)
 
 
-def _load_all_active_questions(conn) -> dict[int, dict[str, Any]]:
+def _load_all_active_questions(
+    conn,
+    resolver: CurrentKnowledgeResolver | None = None,
+) -> dict[int, dict[str, Any]]:
     # Get all active questions with their tags
     rows = conn.execute(
         """
@@ -84,19 +91,16 @@ def _load_all_active_questions(conn) -> dict[int, dict[str, Any]]:
         """
     ).fetchall()
     qids = [int(r["id"]) for r in rows]
-    return _batch_load_questions(conn, qids)
+    return _batch_load_questions(conn, qids, resolver=resolver)
 
 
 def _precompute_parents(questions: dict[int, dict[str, Any]]) -> dict[int, set[str]]:
-    from question_bank.taxonomy.registry import get_parent_knowledge_category
     parents_by_qid = {}
     for qid, q in questions.items():
         q_grouped = _group_tags(q.get("tags", []))
-        q_kps = _dedup_sorted([
-            *_filtered(q_grouped.get("canonical_knowledge_id")),
-            *_filtered(q_grouped.get("knowledge_point")),
-        ])
-        parents_by_qid[qid] = set(get_parent_knowledge_category(kp) for kp in q_kps if kp)
+        parents_by_qid[qid] = set(
+            _filtered(q_grouped.get("current_knowledge_key"))
+        )
     return parents_by_qid
 
 
@@ -106,12 +110,9 @@ def _global_similar_match_count(
     parents_by_qid: dict[int, set[str]],
 ) -> int:
     target_grouped = _group_tags(target.get("tags", []))
-    target_kps = _dedup_sorted([
-        *_filtered(target_grouped.get("canonical_knowledge_id")),
-        *_filtered(target_grouped.get("knowledge_point")),
-    ])
-    from question_bank.taxonomy.registry import get_parent_knowledge_category
-    target_parents = set(get_parent_knowledge_category(kp) for kp in target_kps if kp)
+    target_parents = set(
+        _filtered(target_grouped.get("current_knowledge_key"))
+    )
     if not target_parents:
         return 0
         
@@ -171,60 +172,13 @@ _SKILL_MATCH_THRESHOLD = 0.3
 
 
 def _canonical_overlap(target_grouped: dict, candidate_grouped: dict) -> float:
-    # If the first knowledge points are exactly equal, they match
-    t_kps = target_grouped.get("knowledge_point") or []
-    c_kps = candidate_grouped.get("knowledge_point") or []
-    if t_kps and c_kps and t_kps[0] == c_kps[0]:
-        return 1.0
-
-    # canonical 知识点重合度：相同 canonical_id → 1.0；不同但父类相同 → 0.4；都不同 → 0.0。
-    from question_bank.taxonomy.registry import canonicalize_knowledge, get_parent_knowledge_category
-
-    target_canonical = _first_canonical(target_grouped)
-    candidate_canonical = _first_canonical(candidate_grouped)
-
-    # 双方都没有 canonical 时，fallback 到 knowledge_point 父类比对
-    if not target_canonical and not candidate_canonical:
-        t_kp = _first(target_grouped.get("knowledge_point"))
-        c_kp = _first(candidate_grouped.get("knowledge_point"))
-        if not t_kp or not c_kp:
-            return 0.0
-        if t_kp == c_kp:
-            return 1.0
-        t_parent = get_parent_knowledge_category(t_kp)
-        c_parent = get_parent_knowledge_category(c_kp)
-        return 1.0 if t_parent and t_parent == c_parent else 0.0
-
-    if not target_canonical or not candidate_canonical:
-        return 0.0
-
-    # 同一个 canonical → 完全匹配
-    if target_canonical == candidate_canonical:
-        return 1.0
-
-    # 不同 canonical → 检查父类是否相同（如"一元二次方程"和"二次函数"共享"二次函数"主题）
-    t_parent = get_parent_knowledge_category(target_canonical.canonical_name)
-    c_parent = get_parent_knowledge_category(candidate_canonical.canonical_name)
-    return 0.4 if t_parent and t_parent == c_parent else 0.0
-
-
-def _first_canonical(grouped: dict):
-    # 从标签组中找到第一个能匹配到 canonical 表的知识点。
-    from question_bank.taxonomy.registry import canonicalize_knowledge
-
-    for value in grouped.get("canonical_knowledge_id") or []:
-        compacted = _compact(value)
-        if compacted:
-            result = canonicalize_knowledge(compacted)
-            if result is not None:
-                return result
-    for value in grouped.get("knowledge_point") or []:
-        compacted = _compact(value)
-        if compacted:
-            result = canonicalize_knowledge(compacted)
-            if result is not None:
-                return result
-    return None
+    target_keys = set(
+        _filtered(target_grouped.get("current_knowledge_key"))
+    )
+    candidate_keys = set(
+        _filtered(candidate_grouped.get("current_knowledge_key"))
+    )
+    return _jaccard(target_keys, candidate_keys)
 
 
 def _jaccard(a: set[str], b: set[str]) -> float:
@@ -350,21 +304,13 @@ def build_question_fingerprint(question: dict[str, Any] | Mapping[str, Any]) -> 
     grouped = _group_tags(question.get("tags", []))
     question_type = _normalize_question_type(question.get("question_type"))
     # 知识点：取所有标签去重排序后拼接（消除标签顺序敏感），避免多知识点题漏配。
-    knowledge_tags = _dedup_sorted([
-        *_filtered(grouped.get("canonical_knowledge_id")),
-        *_filtered(grouped.get("knowledge_point")),
-    ])
+    knowledge_tags = _dedup_sorted(
+        _filtered(grouped.get("current_knowledge_key"))
+    )
     if not question_type or not knowledge_tags:
         return ""
 
-    from question_bank.taxonomy.registry import get_parent_knowledge_category
-    parent_categories = sorted(list(set(
-        get_parent_knowledge_category(tag) for tag in knowledge_tags
-    )))
-    parent_categories = [p for p in parent_categories if p]
-    if not parent_categories:
-        return ""
-    knowledge = "+".join(parent_categories)
+    knowledge = "+".join(knowledge_tags)
 
     parts = [question_type, knowledge]
 
@@ -410,11 +356,23 @@ class QuestionFrequencyService:
     ) -> None:
         self.db_path = Path(db_path)
         self.external_connection = external_connection
+        try:
+            self.current_knowledge = (
+                CurrentKnowledgeResolver.from_active_database(self.db_path)
+            )
+        except CurrentKnowledgeUnavailable:
+            self.current_knowledge = None
 
     def initialize_database(self) -> None:
         initialize_database(self.db_path)
 
     def metrics_for_questions(self, question_ids: list[int] | tuple[int, ...]) -> dict[int, FrequencyMetrics]:
+        deduped = list(dict.fromkeys(int(value) for value in question_ids))
+        if self.current_knowledge is None:
+            return {
+                question_id: FrequencyMetrics(available=False)
+                for question_id in deduped
+            }
         if self.external_connection is None:
             self.initialize_database()
         with connect(
@@ -422,12 +380,17 @@ class QuestionFrequencyService:
             external_connection=self.external_connection,
         ) as conn:
             result: dict[int, FrequencyMetrics] = {}
-            deduped = list(dict.fromkeys(int(value) for value in question_ids))
             # 批量加载目标题目，避免逐题 _load_question 的 2N 次查询。
-            targets = _batch_load_questions(conn, deduped)
+            targets = _batch_load_questions(
+                conn,
+                deduped,
+                resolver=self.current_knowledge,
+            )
             
             # 批量加载全局题目以计算全局相似度考频，避免N+1次扫描数据库
-            all_active = _load_all_active_questions(conn)
+            all_active = _load_all_active_questions(
+                conn, self.current_knowledge
+            )
             parents_by_qid = _precompute_parents(all_active)
             
             eligible_cache: dict[tuple, list[int]] = {}
@@ -449,16 +412,25 @@ class QuestionFrequencyService:
             return result
 
     def metrics_for_question(self, question_id: int) -> FrequencyMetrics:
+        if self.current_knowledge is None:
+            return FrequencyMetrics(available=False)
         self.initialize_database()
         with connect(self.db_path) as conn:
             target = _load_question(conn, int(question_id))
             if target is None:
                 return FrequencyMetrics(available=False)
-            all_active = _load_all_active_questions(conn)
+            target = _project_current_knowledge(
+                target, self.current_knowledge
+            )
+            all_active = _load_all_active_questions(
+                conn, self.current_knowledge
+            )
             parents_by_qid = _precompute_parents(all_active)
             return _metrics_for_target(conn, target, all_active=all_active, parents_by_qid=parents_by_qid)
 
     def update_frequency_cache_for_all(self) -> None:
+        if self.current_knowledge is None:
+            return
         self.initialize_database()
         with connect(self.db_path) as conn:
             rows = conn.execute(
@@ -468,11 +440,15 @@ class QuestionFrequencyService:
             self._update_frequency_cache_internal(conn, qids)
 
     def _update_frequency_cache_internal(self, conn, qids: list[int]) -> None:
-        if not qids:
+        if not qids or self.current_knowledge is None:
             return
-        targets = _batch_load_questions(conn, qids)
+        targets = _batch_load_questions(
+            conn, qids, resolver=self.current_knowledge
+        )
         
-        all_active = _load_all_active_questions(conn)
+        all_active = _load_all_active_questions(
+            conn, self.current_knowledge
+        )
         parents_by_qid = _precompute_parents(all_active)
         
         candidates_cache: dict[tuple[int, ...], dict[int, dict[str, Any]]] = {}
@@ -510,6 +486,8 @@ class QuestionFrequencyService:
         conn.commit()
 
     def backfill_all_fingerprints(self) -> None:
+        if self.current_knowledge is None:
+            return
         self.initialize_database()
         with connect(self.db_path) as conn:
             rows = conn.execute(
@@ -525,6 +503,9 @@ class QuestionFrequencyService:
                 qid = int(row["id"])
                 target = _load_question(conn, qid)
                 if target is not None:
+                    target = _project_current_knowledge(
+                        target, self.current_knowledge
+                    )
                     fingerprint = build_question_fingerprint(target)
                     if fingerprint:
                         _cache_fingerprint(conn, qid, fingerprint, _style_features(target))
@@ -543,11 +524,16 @@ class QuestionFrequencyService:
                 self._update_frequency_cache_internal(conn, qids)
 
     def invalidate_frequency_cache_for_question(self, question_id: int) -> None:
+        if self.current_knowledge is None:
+            return
         self.initialize_database()
         with connect(self.db_path) as conn:
             target = _load_question(conn, question_id)
             if target is None:
                 return
+            target = _project_current_knowledge(
+                target, self.current_knowledge
+            )
             exam_type = normalize_exam_type(target.get("exam_type"))
             if not exam_type:
                 # 阶段练习、小测和无法确认类型的试卷不是正式考频样本。
@@ -606,7 +592,11 @@ def _matching_count_by_similarity(conn, target: Mapping[str, Any], paper_ids: li
         candidates = cache.get(key)
     if candidates is None:
         candidate_ids = _question_ids_in_papers(conn, paper_ids)
-        candidates = _batch_load_questions(conn, candidate_ids)
+        candidates = _batch_load_questions(
+            conn,
+            candidate_ids,
+            resolver=_resolver_from_question(target),
+        )
         if cache is not None:
             cache[key] = candidates
             
@@ -629,7 +619,11 @@ def _matching_similarity_stats(conn, target: Mapping[str, Any], paper_ids: list[
         candidates = cache.get(key)
     if candidates is None:
         candidate_ids = _question_ids_in_papers(conn, paper_ids)
-        candidates = _batch_load_questions(conn, candidate_ids)
+        candidates = _batch_load_questions(
+            conn,
+            candidate_ids,
+            resolver=_resolver_from_question(target),
+        )
         if cache is not None:
             cache[key] = candidates
             
@@ -733,7 +727,12 @@ def _metrics_for_target(
     )
 
 
-def _batch_load_questions(conn, question_ids: list[int]) -> dict[int, dict[str, Any]]:
+def _batch_load_questions(
+    conn,
+    question_ids: list[int],
+    *,
+    resolver: CurrentKnowledgeResolver | None = None,
+) -> dict[int, dict[str, Any]]:
     # 批量加载多道题目及其标签，用 2 次 SQL 替代逐题 _load_question 的 2N 次查询。
     if not question_ids:
         return {}
@@ -767,8 +766,56 @@ def _batch_load_questions(conn, question_ids: list[int]) -> dict[int, dict[str, 
     for row in rows:
         item = dict(row)
         item["tags"] = tags_by_q.get(int(item["id"]), [])
+        if resolver is not None:
+            item = _project_current_knowledge(item, resolver)
         result[int(item["id"])] = item
     return result
+
+
+def _project_current_knowledge(
+    question: Mapping[str, Any],
+    resolver: CurrentKnowledgeResolver,
+) -> dict[str, Any]:
+    projected = dict(question)
+    raw_tags = question.get("tags")
+    tags = [
+        dict(item)
+        for item in (raw_tags if isinstance(raw_tags, list) else [])
+        if isinstance(item, Mapping)
+        and str(item.get("tag_type") or "")
+        not in {
+            "knowledge_point",
+            "canonical_knowledge_id",
+            "current_knowledge_key",
+        }
+    ]
+    seen: set[str] = set()
+    for item in raw_tags if isinstance(raw_tags, list) else []:
+        if not isinstance(item, Mapping) or str(item.get("tag_type") or "") not in {
+            "knowledge_point",
+            "canonical_knowledge_id",
+        }:
+            continue
+        for resolved in resolver.resolve(item.get("tag_value")):
+            if resolved.stable_key in seen:
+                continue
+            seen.add(resolved.stable_key)
+            tags.append(
+                {
+                    "tag_type": "current_knowledge_key",
+                    "tag_value": resolved.stable_key,
+                }
+            )
+    projected["tags"] = tags
+    projected["_current_knowledge_resolver"] = resolver
+    return projected
+
+
+def _resolver_from_question(
+    question: Mapping[str, Any],
+) -> CurrentKnowledgeResolver | None:
+    resolver = question.get("_current_knowledge_resolver")
+    return resolver if isinstance(resolver, CurrentKnowledgeResolver) else None
 
 
 def _metrics_for_target_cached(
@@ -1018,7 +1065,11 @@ def _shenzhen_fit(
     scored: list[tuple[float, int, list[str]]] = []
     
     candidate_ids = [int(row["id"]) for row in rows]
-    candidates = _batch_load_questions(conn, candidate_ids)
+    candidates = _batch_load_questions(
+        conn,
+        candidate_ids,
+        resolver=_resolver_from_question(target),
+    )
     
     for qid, candidate in candidates.items():
         if calculate_question_similarity(target, candidate) < QUESTION_SIMILARITY_MATCH_THRESHOLD:

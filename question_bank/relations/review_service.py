@@ -60,6 +60,7 @@ class RelationReviewService:
         page: int = 1,
         page_size: int = 50,
     ) -> dict[str, object]:
+        self.repository.current_release_id()
         normalized_status = RelationStatus(status)
         normalized_page = int(page)
         normalized_page_size = int(page_size)
@@ -73,8 +74,11 @@ class RelationReviewService:
                 connection.execute(
                     """
                     SELECT COUNT(*)
-                    FROM knowledge_relations
-                    WHERE status = ?
+                    FROM knowledge_relations relation
+                    JOIN knowledge_graph_releases current_release
+                      ON current_release.release_id = relation.graph_release_id
+                     AND current_release.status = 'active'
+                    WHERE relation.status = ?
                     """,
                     (normalized_status.value,),
                 ).fetchone()[0]
@@ -90,6 +94,9 @@ class RelationReviewService:
                   ON source_identity.stable_key = relation.source_key
                 JOIN knowledge_tag_identities target_identity
                   ON target_identity.stable_key = relation.target_key
+                JOIN knowledge_graph_releases current_release
+                  ON current_release.release_id = relation.graph_release_id
+                 AND current_release.status = 'active'
                 WHERE relation.status = ?
                 ORDER BY relation.updated_at, relation.relation_id
                 LIMIT ? OFFSET ?
@@ -142,7 +149,7 @@ class RelationReviewService:
         action: str,
         amended_relation: KnowledgeRelation | None = None,
     ) -> dict[str, object]:
-        current = self.repository.get_relation(relation_id)
+        current = self.repository.get_current_relation(relation_id)
         normalized_action = str(action or "").strip().casefold()
         candidate = (
             amended_relation
@@ -193,17 +200,15 @@ class RelationReviewService:
                 conflict.value for conflict in conflicts
             ],
             "activity_effect": (
-                "add_to_active_graph"
+                "include_in_next_standard_candidate"
                 if normalized_action in {"confirm", "restore"}
-                else "remove_from_active_graph"
+                else "exclude_from_next_standard_candidate"
                 if normalized_action == "retire"
-                else "no_active_graph_change"
+                else "no_current_graph_change"
             ),
             "recommendation_effect": (
-                "available_after_confirmation"
-                if normalized_action in {"confirm", "restore"}
-                else "unavailable_immediately"
-                if normalized_action == "retire"
+                "unchanged_until_next_standard"
+                if normalized_action in {"confirm", "restore", "retire"}
                 else "none"
             ),
             "revision": current.revision,
@@ -353,6 +358,7 @@ class RelationReviewService:
         self,
         relation_id: str,
     ) -> tuple[dict[str, object], ...]:
+        self.repository.get_current_relation(relation_id)
         events: list[dict[str, object]] = []
         for event in self.repository.audit_events(relation_id):
             events.append(
@@ -407,7 +413,9 @@ class RelationReviewService:
             if command.action not in {"confirm", "restore"}:
                 continue
             try:
-                record = self.repository.get_relation(command.relation_id)
+                record = self.repository.get_current_relation(
+                    command.relation_id
+                )
             except KnowledgeRelationNotFound:
                 continue
             confirm_records.append(record)

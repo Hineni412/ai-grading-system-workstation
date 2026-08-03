@@ -239,6 +239,152 @@ def activate_release(
     )
 
 
+def bootstrap_release(
+    db_path: Path,
+    release: KnowledgeGraphRelease | None = None,
+    *,
+    actor_ref: str,
+    source_reference: str,
+    reason: str,
+    taxonomy_catalog: Mapping[str, Any] | None = None,
+) -> str:
+    """Atomically install the first immutable current standard.
+
+    Legacy live mappings and relations are deliberately neither read nor
+    changed.  Runtime current-graph consumers read the release payload, while
+    the old governance rows remain available as historical records.
+    """
+
+    candidate = release or load_release()
+    catalog = dict(taxonomy_catalog or load_taxonomy_catalog())
+    validation = validate_release(candidate, catalog)
+    validation.raise_for_errors()
+    actor = _required(actor_ref, "actor_ref")
+    source = _required(source_reference, "source_reference")
+    activation_reason = _required(reason, "reason")
+
+    with connect(Path(db_path)) as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        active_row = connection.execute(
+            """
+            SELECT release_id, payload_json
+            FROM knowledge_graph_releases
+            WHERE status = 'active'
+            """
+        ).fetchone()
+        if active_row is not None:
+            active = KnowledgeGraphRelease.from_mapping(
+                json.loads(str(active_row["payload_json"]))
+            )
+            active_validation = validate_release(active, catalog)
+            if not active_validation.valid:
+                raise KnowledgeGraphReleaseConflict(
+                    "当前活动图谱无法通过结构校验"
+                )
+            return active.release_id
+
+        predecessor = _optional(candidate.payload.get("predecessor_release_id"))
+        if predecessor is not None:
+            raise KnowledgeGraphReleaseConflict(
+                "首次安装的知识标准不能指定前序版本"
+            )
+
+        row = connection.execute(
+            "SELECT * FROM knowledge_graph_releases WHERE release_id = ?",
+            (candidate.release_id,),
+        ).fetchone()
+        if row is not None and str(row["content_hash"]) != candidate.content_hash:
+            raise KnowledgeGraphReleaseConflict(
+                "同一发布编号对应了不同内容，已拒绝覆盖"
+            )
+        hash_owner = connection.execute(
+            "SELECT release_id FROM knowledge_graph_releases WHERE content_hash = ?",
+            (candidate.content_hash,),
+        ).fetchone()
+        if (
+            hash_owner is not None
+            and str(hash_owner["release_id"]) != candidate.release_id
+        ):
+            raise KnowledgeGraphReleaseConflict(
+                "同一发布内容使用了另一个发布编号"
+            )
+
+        if row is None:
+            _ensure_identities(connection, candidate.payload)
+            connection.execute(
+                """
+                INSERT INTO knowledge_graph_releases (
+                    release_id, schema_version, taxonomy_revision, content_hash,
+                    payload_json, status, predecessor_release_id,
+                    source_reference, created_by
+                ) VALUES (?, ?, ?, ?, ?, 'candidate', NULL, ?, ?)
+                """,
+                (
+                    candidate.release_id,
+                    candidate.schema_version,
+                    candidate.taxonomy_revision,
+                    candidate.content_hash,
+                    candidate.canonical_json(),
+                    source,
+                    actor,
+                ),
+            )
+            _insert_release_rows(connection, candidate)
+            connection.execute(
+                """
+                INSERT INTO knowledge_graph_release_events (
+                    release_id, event_type, actor_ref, reason,
+                    resulting_revision
+                ) VALUES (?, 'staged', ?, ?, 1)
+                """,
+                (candidate.release_id, actor, activation_reason),
+            )
+            target_revision = 2
+        else:
+            if str(row["status"]) != "candidate":
+                raise KnowledgeGraphReleaseConflict(
+                    "已有同版本记录，但它不是可启用的候选版本"
+                )
+            persisted = KnowledgeGraphRelease.from_mapping(
+                json.loads(str(row["payload_json"]))
+            )
+            persisted_validation = validate_release(persisted, catalog)
+            if (
+                not persisted_validation.valid
+                or persisted.content_hash != candidate.content_hash
+            ):
+                raise KnowledgeGraphReleaseConflict(
+                    "已有候选版本无法通过结构校验"
+                )
+            target_revision = int(row["revision"]) + 1
+
+        connection.execute(
+            """
+            UPDATE knowledge_graph_releases
+            SET status = 'active', activated_by = ?, activation_note = ?,
+                activated_at = datetime('now','localtime'), retired_at = NULL,
+                revision = ?, updated_at = datetime('now','localtime')
+            WHERE release_id = ? AND status = 'candidate'
+            """,
+            (actor, activation_reason, target_revision, candidate.release_id),
+        )
+        connection.execute(
+            """
+            INSERT INTO knowledge_graph_release_events (
+                release_id, event_type, actor_ref, reason,
+                from_release_id, resulting_revision
+            ) VALUES (?, 'activated', ?, ?, NULL, ?)
+            """,
+            (
+                candidate.release_id,
+                actor,
+                activation_reason,
+                target_revision,
+            ),
+        )
+    return candidate.release_id
+
+
 def rollback_release(
     db_path: Path,
     target_release_id: str,
@@ -1156,6 +1302,7 @@ __all__ = [
     "KnowledgeGraphReleaseNotFound",
     "active_release_id",
     "activate_release",
+    "bootstrap_release",
     "preview_install",
     "rollback_release",
     "stage_release",

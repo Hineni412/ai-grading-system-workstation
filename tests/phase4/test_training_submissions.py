@@ -37,6 +37,7 @@ from tests.phase4.test_personalized_recommendation import (
     _diagnosis,
     _seed_recommendation_sources,
 )
+from tests.current_knowledge_support import install_current_knowledge
 
 
 class VariablePagePdfConverter:
@@ -65,15 +66,22 @@ def test_five_mixed_papers_with_different_page_counts_group_correctly(
     db_path = tmp_path / "question_bank.db"
     data_root = tmp_path / "data"
     initialize_database(db_path)
+    install_current_knowledge(db_path)
     _seed_recommendation_sources(db_path, data_root)
     recommendation = PersonalizedRecommendationModule(
         db_path=db_path,
         data_root=data_root,
         clock=lambda: NOW,
     )
+    diagnosis = _diagnosis()
+    students = diagnosis["students"]
+    assert isinstance(students, list)
+    reference_weak_points = students[0]["weak_points"]
+    for student in students:
+        student["weak_points"] = reference_weak_points
     draft = recommendation.create(
         request_token="1" * 32,
-        diagnosis=_diagnosis(),
+        diagnosis=diagnosis,
         config=PersonalizedRecommendationConfig(
             question_count=8,
             expected_minutes=120,

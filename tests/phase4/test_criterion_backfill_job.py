@@ -8,6 +8,7 @@ from backend.jobs.manager import JobContext
 from backend.jobs.store import JobStore
 from question_bank.database.schema import connect, initialize_database
 from question_bank.training_criteria import TrainingCriterionModule
+from tests.current_knowledge_support import install_current_knowledge
 
 
 class FakeResponse:
@@ -79,6 +80,7 @@ class FakeTaggingService:
 
 def _seed(database: Path) -> None:
     initialize_database(database)
+    install_current_knowledge(database)
     with connect(database) as connection:
         paper_id = connection.execute(
             """

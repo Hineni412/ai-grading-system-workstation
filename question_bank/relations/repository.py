@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Iterator
 from uuid import uuid4
 
+from question_bank.current_knowledge import CurrentKnowledgeUnavailable
 from question_bank.database.schema import connect
 from question_bank.relations.contracts import (
     KnowledgeRelation,
@@ -101,6 +102,7 @@ class KnowledgeRelationRecord:
     revision: int
     created_at: str
     updated_at: str
+    graph_release_id: str | None
 
     def as_contract(self) -> KnowledgeRelation:
         return KnowledgeRelation(
@@ -176,6 +178,26 @@ class KnowledgeRelationRepository:
             raise KnowledgeRelationNotFound(clean_id)
         return _relation_record(row)
 
+    def current_release_id(self) -> str:
+        with connect(self.db_path) as connection:
+            return self._current_release_id(connection)
+
+    def get_current_relation(self, relation_id: str) -> KnowledgeRelationRecord:
+        clean_id = _required_text(relation_id, "relation_id")
+        with connect(self.db_path) as connection:
+            current_release_id = self._current_release_id(connection)
+            row = connection.execute(
+                """
+                SELECT *
+                FROM knowledge_relations
+                WHERE relation_id = ? AND graph_release_id = ?
+                """,
+                (clean_id, current_release_id),
+            ).fetchone()
+        if row is None:
+            raise KnowledgeRelationNotFound(clean_id)
+        return _relation_record(row)
+
     def list_relations(
         self,
         *,
@@ -203,9 +225,30 @@ class KnowledgeRelationRepository:
         with connect(self.db_path) as connection:
             rows = connection.execute(
                 """
-                SELECT *
-                FROM knowledge_active_relations
-                ORDER BY relation_type, source_key, target_key
+                SELECT
+                    relation.relation_id,
+                    relation.source_key,
+                    source_identity.display_name AS source_name,
+                    relation.target_key,
+                    target_identity.display_name AS target_name,
+                    relation.relation_type,
+                    relation.rationale,
+                    relation.revision,
+                    relation.updated_at
+                FROM knowledge_relations relation
+                JOIN knowledge_tag_identities source_identity
+                  ON source_identity.stable_key = relation.source_key
+                JOIN knowledge_tag_identities target_identity
+                  ON target_identity.stable_key = relation.target_key
+                JOIN knowledge_graph_releases current_release
+                  ON current_release.release_id = relation.graph_release_id
+                 AND current_release.status = 'active'
+                WHERE relation.status = 'confirmed'
+                  AND source_identity.status = 'active'
+                  AND target_identity.status = 'active'
+                ORDER BY relation.relation_type,
+                         relation.source_key,
+                         relation.target_key
                 """
             ).fetchall()
         return tuple(
@@ -268,6 +311,7 @@ class KnowledgeRelationRepository:
         with self._transaction() as connection:
             self._require_active_identity(connection, candidate.source_key)
             self._require_active_identity(connection, candidate.target_key)
+            current_release_id = self._current_release_id(connection)
             existing = connection.execute(
                 """
                 SELECT *
@@ -275,11 +319,13 @@ class KnowledgeRelationRepository:
                 WHERE source_key = ?
                   AND target_key = ?
                   AND relation_type = ?
+                  AND graph_release_id = ?
                 """,
                 (
                     candidate.source_key,
                     candidate.target_key,
                     candidate.relation_type.value,
+                    current_release_id,
                 ),
             ).fetchone()
             if existing is not None:
@@ -311,8 +357,9 @@ class KnowledgeRelationRepository:
                     model_version,
                     prompt_version,
                     confidence,
-                    conflict_codes_json
-                ) VALUES (?, ?, ?, ?, 'suggested', ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    conflict_codes_json,
+                    graph_release_id
+                ) VALUES (?, ?, ?, ?, 'suggested', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     relation_id,
@@ -332,6 +379,7 @@ class KnowledgeRelationRepository:
                         ensure_ascii=False,
                         separators=(",", ":"),
                     ),
+                    current_release_id,
                 ),
             )
             self._append_audit(
@@ -375,9 +423,13 @@ class KnowledgeRelationRepository:
             raise ValueError("expected_revision must be a positive integer")
 
         with self._transaction() as connection:
+            current_release_id = self._current_release_id(connection)
             row = connection.execute(
-                "SELECT * FROM knowledge_relations WHERE relation_id = ?",
-                (clean_id,),
+                """
+                SELECT * FROM knowledge_relations
+                WHERE relation_id = ? AND graph_release_id = ?
+                """,
+                (clean_id, current_release_id),
             ).fetchone()
             if row is None:
                 raise KnowledgeRelationNotFound(clean_id)
@@ -491,9 +543,13 @@ class KnowledgeRelationRepository:
             )
         )
         with self._transaction() as connection:
+            current_release_id = self._current_release_id(connection)
             row = connection.execute(
-                "SELECT * FROM knowledge_relations WHERE relation_id = ?",
-                (clean_id,),
+                """
+                SELECT * FROM knowledge_relations
+                WHERE relation_id = ? AND graph_release_id = ?
+                """,
+                (clean_id, current_release_id),
             ).fetchone()
             if row is None:
                 raise KnowledgeRelationNotFound(clean_id)
@@ -581,9 +637,13 @@ class KnowledgeRelationRepository:
             raise ValueError("expected_revision must be a positive integer")
 
         with self._transaction() as connection:
+            current_release_id = self._current_release_id(connection)
             row = connection.execute(
-                "SELECT * FROM knowledge_relations WHERE relation_id = ?",
-                (clean_id,),
+                """
+                SELECT * FROM knowledge_relations
+                WHERE relation_id = ? AND graph_release_id = ?
+                """,
+                (clean_id, current_release_id),
             ).fetchone()
             if row is None:
                 raise KnowledgeRelationNotFound(clean_id)
@@ -608,12 +668,14 @@ class KnowledgeRelationRepository:
                   AND target_key = ?
                   AND relation_type = ?
                   AND relation_id <> ?
+                  AND graph_release_id = ?
                 """,
                 (
                     amended.source_key,
                     amended.target_key,
                     amended.relation_type.value,
                     clean_id,
+                    current_release_id,
                 ),
             ).fetchone()
             if duplicate is not None:
@@ -738,6 +800,22 @@ class KnowledgeRelationRepository:
             raise KnowledgeIdentityRetired(stable_key)
 
     @staticmethod
+    def _current_release_id(connection: sqlite3.Connection) -> str:
+        rows = connection.execute(
+            """
+            SELECT release_id
+            FROM knowledge_graph_releases
+            WHERE status = 'active'
+            ORDER BY release_id
+            """
+        ).fetchall()
+        if len(rows) != 1:
+            raise CurrentKnowledgeUnavailable(
+                "current_knowledge_release_missing"
+            )
+        return str(rows[0]["release_id"])
+
+    @staticmethod
     def _confirmation_conflicts(
         connection: sqlite3.Connection,
         candidate: KnowledgeRelationRecord,
@@ -748,9 +826,10 @@ class KnowledgeRelationRepository:
             FROM knowledge_relations
             WHERE status = 'confirmed'
               AND relation_id <> ?
+              AND graph_release_id = ?
             ORDER BY relation_id
             """,
-            (candidate.relation_id,),
+            (candidate.relation_id, candidate.graph_release_id),
         ).fetchall()
         active = tuple(
             KnowledgeRelation(
@@ -878,6 +957,11 @@ def _relation_record(row: sqlite3.Row) -> KnowledgeRelationRecord:
         revision=int(row["revision"]),
         created_at=str(row["created_at"]),
         updated_at=str(row["updated_at"]),
+        graph_release_id=(
+            None
+            if row["graph_release_id"] is None
+            else str(row["graph_release_id"])
+        ),
     )
 
 

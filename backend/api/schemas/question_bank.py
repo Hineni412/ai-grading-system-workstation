@@ -11,49 +11,6 @@ class _QuestionBankModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
-class KnowledgeGraphReleaseIssue(_QuestionBankModel):
-    code: str
-    message: str
-    blocking: bool
-
-
-class KnowledgeGraphHighImpactItem(_QuestionBankModel):
-    fine_term_id: str
-    display_name: str
-    disposition: str
-    target_names: list[str]
-
-
-class KnowledgeGraphReleasePreviewResponse(_QuestionBankModel):
-    release_id: str
-    content_hash: str
-    current_release_id: str | None = None
-    node_count: int = Field(ge=0)
-    fine_term_count: int = Field(ge=0)
-    mapping_count: int = Field(ge=0)
-    relation_count: int = Field(ge=0)
-    high_impact_count: int = Field(ge=0)
-    high_impact_items: list[KnowledgeGraphHighImpactItem]
-    can_activate: bool
-    issues: list[KnowledgeGraphReleaseIssue]
-
-
-class KnowledgeGraphReleaseStageRequest(_QuestionBankModel):
-    reason: str = Field(min_length=2, max_length=300)
-
-
-class KnowledgeGraphReleaseActivateRequest(_QuestionBankModel):
-    expected_active_release_id: str | None = Field(default=None, max_length=100)
-    confirmation_phrase: Literal["启用知识图谱"]
-    reason: str = Field(min_length=2, max_length=300)
-
-
-class KnowledgeGraphReleaseRollbackRequest(_QuestionBankModel):
-    expected_active_release_id: str = Field(min_length=1, max_length=100)
-    confirmation_phrase: Literal["回退知识图谱"]
-    reason: str = Field(min_length=2, max_length=300)
-
-
 class QuestionPaperListItem(_QuestionBankModel):
     id: int
     title: str | None = None
@@ -640,6 +597,7 @@ class TaxonomyProposalCounts(_QuestionBankModel):
 
 class TaxonomyProposalListResponse(_QuestionBankModel):
     revision: int = Field(ge=0)
+    evidence_revision: int = Field(default=0, ge=0)
     items: list[TaxonomyProposalResponse]
     counts: TaxonomyProposalCounts
 
@@ -717,10 +675,13 @@ class TaxonomySuggestionRetryRequest(_QuestionBankModel):
 
 
 class TaxonomySuggestionDecision(_QuestionBankModel):
-    decision: Literal[
-        "merge",
-        "map_many",
-        "approve",
+    relation_kind: Literal[
+        "exact",
+        "broader",
+        "narrower",
+        "related",
+        "new_core_candidate",
+        "wrong_dimension",
         "reject",
         "uncertain",
     ]
@@ -728,6 +689,10 @@ class TaxonomySuggestionDecision(_QuestionBankModel):
     reason: str = ""
     confidence: float = Field(ge=0.0, le=1.0)
     source: Literal["local_exact", "ai"]
+    legacy_format: bool = False
+    evidence_question_ids: list[int] = Field(default_factory=list)
+    taxonomy_revision: int = Field(default=0, ge=0)
+    graph_release_id: str = ""
 
 
 class TaxonomySuggestionError(_QuestionBankModel):
@@ -749,6 +714,9 @@ class TaxonomySuggestionItem(_QuestionBankModel):
         "stale",
     ]
     attempts: int = Field(ge=0)
+    taxonomy_revision: int = Field(default=0, ge=0)
+    evidence_revision: int = Field(default=0, ge=0)
+    graph_release_id: str = ""
     suggestion: TaxonomySuggestionDecision | None = None
     error: TaxonomySuggestionError | None = None
 
@@ -775,6 +743,8 @@ class TaxonomySuggestionRunResponse(_QuestionBankModel):
         "stale",
     ]
     taxonomy_revision: int = Field(ge=0)
+    evidence_revision: int = Field(default=0, ge=0)
+    graph_release_id: str = ""
     stale: bool
     created_at: str
     updated_at: str
@@ -786,3 +756,57 @@ class TaxonomySuggestionRunResponse(_QuestionBankModel):
 class TaxonomySuggestionStartResponse(_QuestionBankModel):
     job: JobResponse
     run: TaxonomySuggestionRunResponse
+
+
+class TaxonomySuggestionBatchPreviewRequest(_QuestionBankModel):
+    base_revision: int = Field(ge=0)
+    policy_version: str = Field(default="strict-exact-v1", max_length=80)
+
+
+class TaxonomySuggestionBatchManualDecision(_QuestionBankModel):
+    proposal_id: str
+    decision: Literal["merge", "approve", "reject", "defer"]
+    target_term_ids: list[str] = Field(default_factory=list, max_length=12)
+    edited_name: str | None = Field(default=None, max_length=36)
+
+
+class TaxonomySuggestionBatchApplyRequest(_QuestionBankModel):
+    base_revision: int = Field(ge=0)
+    request_token: str = Field(pattern=r"^[0-9a-fA-F]{32}$")
+    policy_version: str = Field(default="strict-exact-v1", max_length=80)
+    accepted_manual_decisions: list[TaxonomySuggestionBatchManualDecision] = Field(
+        default_factory=list,
+        max_length=200,
+    )
+
+
+class TaxonomySuggestionBatchPreviewResponse(_QuestionBankModel):
+    run_id: str
+    base_revision: int = Field(ge=0)
+    evidence_revision: int = Field(ge=0)
+    graph_release_id: str = ""
+    policy_version: str
+    policy_fingerprint: str
+    items: list[dict[str, Any]]
+    counts: dict[str, int]
+
+
+class TaxonomyReviewOperationResponse(_QuestionBankModel):
+    operation_id: str
+    request_token: str
+    status: str
+    base_revision: int = Field(ge=0)
+    taxonomy_revision: int = Field(ge=0)
+    automated_proposal_ids: list[str] = Field(default_factory=list)
+    teacher_confirmed_proposal_ids: list[str] = Field(default_factory=list)
+    skipped: list[dict[str, str]] = Field(default_factory=list)
+    remaining_count: int = Field(default=0, ge=0)
+    outbox: list[dict[str, Any]] = Field(default_factory=list)
+    undo_status: str
+    application: dict[str, Any] | None = None
+    undo_taxonomy_revision: int | None = Field(default=None, ge=0)
+
+
+class TaxonomyReviewOperationUndoRequest(_QuestionBankModel):
+    expected_revision: int = Field(ge=0)
+    request_token: str = Field(pattern=r"^[0-9a-fA-F]{32}$")

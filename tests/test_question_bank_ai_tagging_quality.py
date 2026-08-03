@@ -28,6 +28,7 @@ from question_bank.services.ai_tagging_service import (
 )
 from question_bank.services.question_service import QuestionService, has_complete_analysis_tags
 from question_bank.taxonomy.governance import TaxonomyGovernance
+from tests.current_knowledge_support import install_current_knowledge
 
 
 CATALOG_PATH = (
@@ -873,6 +874,7 @@ def test_save_tag_analysis_persists_model_name_and_confidence(tmp_path: Path) ->
     question_id = service.add_question(
         QuestionCreate(question_number="1", question_text="计算 a^2 · a^3。", answer_text="a^5")
     )
+    install_current_knowledge(db_path)
 
     assert service.save_tag_analysis(
         question_id,
@@ -920,6 +922,7 @@ def test_exact_duplicate_complete_tags_can_be_reused_with_confidence_cap(tmp_pat
     target_id = service.add_question(
         QuestionCreate(question_number="2", question_text=" 计算 a^2 · a^3。 ", answer_text=" a^5 ")
     )
+    install_current_knowledge(service.db_path)
     assert service.save_tag_analysis(source_id, _analysis(confidence=0.97), model_name="doubao-main", confidence=0.97)
 
     duplicate = service.find_exact_duplicate_tag_analysis(target_id)

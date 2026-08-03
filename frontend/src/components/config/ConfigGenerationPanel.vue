@@ -6,6 +6,7 @@ import {
   createClientRequestToken,
   fetchConfigEditor,
   fetchConfigGenerationJobByToken,
+  fetchConfigGenerationQuestionStates,
   retryConfigGeneration,
   submitConfigGeneration,
   type ConfigEditorResponse,
@@ -106,6 +107,17 @@ const job = computed(() => configStore.jobId === null ? null : jobStore.jobs[con
 const syncError = computed(() => configStore.jobId === null
   ? null : jobStore.syncErrors[configStore.jobId] ?? null)
 const progress = computed(() => Math.min(1, Math.max(0, job.value?.progress ?? 0)))
+const questionStates = computed(() => {
+  const states = new Map(configStore.questionStates.map((item) => [item.question_id, item]))
+  return (configStore.source?.questions ?? []).map((question) => states.get(question.question_id) ?? {
+    question_id: question.question_id,
+    state: 'pending' as const,
+    reason: '',
+    retryable: false,
+  })
+})
+const passedStateCount = computed(() => questionStates.value.filter((item) => item.state === 'passed').length)
+const redStateCount = computed(() => questionStates.value.filter((item) => ['blocked', 'failed'].includes(item.state)).length)
 const outcome = computed(() => job.value?.result.outcome === 'partial'
   ? 'partial' : job.value?.result.outcome === 'complete' ? 'complete' : '')
 interface FailedBatch {
@@ -330,6 +342,29 @@ function continueToEditor(): void {
   emit('continue')
 }
 
+function locateQuestion(questionId: string): void {
+  document.querySelector<HTMLElement>(`[data-question-row="${CSS.escape(questionId)}"]`)
+    ?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+}
+
+async function retryRedQuestions(): Promise<void> {
+  selectedFailed.value = failedBatches.value
+    .filter((batch) => batch.question_ids.some((id) => questionStates.value
+      .some((item) => item.question_id === id && ['blocked', 'failed'].includes(item.state))))
+    .map((batch) => batch.batch_id)
+  await retrySelected()
+}
+
+async function refreshQuestionStates(): Promise<void> {
+  if (configStore.sessionId === null || job.value === null) return
+  try {
+    configStore.setQuestionStates(await fetchConfigGenerationQuestionStates(
+      configStore.sessionId,
+      job.value.id,
+    ))
+  } catch { /* keep the last durable projection */ }
+}
+
 async function restartAnalysis(): Promise<void> {
   prepareFreshGeneration()
   await startGeneration('batched')
@@ -539,6 +574,11 @@ watch(job, (current, previous) => {
     void reloadEditor(current)
   }
 }, { immediate: true })
+watch(
+  () => job.value === null ? '' : `${job.value.id}:${job.value.status}:${job.value.updated_at}`,
+  () => { void refreshQuestionStates() },
+  { immediate: true },
+)
 </script>
 
 <template>
@@ -567,17 +607,12 @@ watch(job, (current, previous) => {
 
     <Teleport :to="volumeTeleportTarget ?? 'body'" :disabled="volumeTeleportTarget === null">
       <div
-        v-if="job === null"
-        class="config-generation__metadata config-generation__metadata--volume"
+        class="config-generation__console"
         role="group"
         aria-labelledby="config-generation-volume-title"
       >
-        <div>
-          <strong id="config-generation-volume-title">选择教材册别</strong>
-          <p>上传完成后先选教材；系统只召回与本题相关的精细词条，改变选项立即生效。</p>
-        </div>
-        <label>
-          年级与学期
+        <label class="config-generation__console-volume">
+          <span id="config-generation-volume-title">选择教材册别</span>
           <select v-model="selectedVolumeId" :disabled="curriculumLoading" @change="requestError = ''">
             <option value="">请选择</option>
             <option v-for="volume in curriculum?.volumes ?? []" :key="volume.id" :value="volume.id">
@@ -585,10 +620,32 @@ watch(job, (current, previous) => {
             </option>
           </select>
         </label>
-        <span v-if="selectedVolume" class="config-generation__volume-ready">已选择</span>
-        <p v-if="curriculumError" class="config-generation__error" role="alert">
-          {{ curriculumError }}
-        </p>
+        <nav v-if="configStore.source" class="config-generation__lights" aria-label="逐题生成状态">
+          <button
+            v-for="item in questionStates"
+            :key="item.question_id"
+            type="button"
+            :class="`is-${item.state}`"
+            :aria-label="`${item.question_id}：${item.state === 'passed' ? '结构通过' : ['blocked', 'failed'].includes(item.state) ? '需要处理' : '尚未返回'}`"
+            @click="locateQuestion(item.question_id)"
+          ><span aria-hidden="true">●</span>{{ item.question_id }}</button>
+        </nav>
+        <span class="config-generation__console-count">通过 {{ passedStateCount }} / 异常 {{ redStateCount }}</span>
+        <button
+          v-if="job === null"
+          type="button"
+          name="开始生成"
+          class="config-generation__primary"
+          :disabled="!generationAvailable || curriculumLoading || selectedVolume === null || submitting || workspacePending"
+          @click="startGeneration()"
+        >{{ submitting ? '正在提交…' : '开始生成' }}</button>
+        <button
+          v-else-if="terminal && redStateCount > 0 && retryable"
+          type="button"
+          class="config-generation__primary"
+          :disabled="submitting || workspacePending"
+          @click="retryRedQuestions"
+        >重试红灯题</button>
       </div>
     </Teleport>
 
@@ -601,13 +658,6 @@ watch(job, (current, previous) => {
     </p>
 
     <template v-if="job === null">
-      <button
-        type="button"
-        name="开始生成"
-        class="config-generation__primary"
-        :disabled="!generationAvailable || curriculumLoading || selectedVolume === null || submitting || workspacePending"
-        @click="startGeneration()"
-      >{{ submitting ? '正在提交…' : '分析试卷并生成评分依据' }}</button>
       <p
         v-if="generationBlockReason"
         class="config-generation__blocking-reason"
@@ -618,9 +668,9 @@ watch(job, (current, previous) => {
     <div v-else class="config-generation__job" aria-live="polite">
       <div class="config-generation__status-line">
         <strong>{{ statusCopy(job) }}</strong>
-        <span>{{ Math.round(progress * 100) }}%</span>
+        <span>{{ passedStateCount }} 题通过 · {{ redStateCount }} 题需处理 · {{ questionStates.length - passedStateCount - redStateCount }} 题处理中</span>
       </div>
-      <progress :value="progress" max="1" aria-label="评分依据生成进度" />
+      <progress class="sr-only" :value="progress" max="1" aria-label="评分依据生成进度" />
       <p v-if="waitingForCancel">
         已收到取消请求，正在等待已经发出的模型请求返回；服务器确认前任务仍未取消。
       </p>
@@ -814,7 +864,16 @@ watch(job, (current, previous) => {
 button:disabled { cursor: not-allowed; opacity: var(--opacity-disabled); }
 .config-generation__job { padding: var(--space-4); border: var(--border-width) solid var(--color-border-default); border-inline-start: var(--border-selected-width) solid var(--color-accent); }
 .config-generation__status-line { display: flex; justify-content: space-between; gap: var(--space-3); }
-.config-generation__job progress { width: 100%; margin-block: var(--space-3); accent-color: var(--color-accent); }
+.config-generation__console { position: sticky; z-index: 7; top: 0; display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); margin-block: var(--space-3); padding: var(--space-2) var(--space-3); border: var(--border-width) solid var(--color-border-default); border-radius: var(--radius-control); background: color-mix(in srgb, var(--color-bg-surface) 94%, transparent); box-shadow: 0 4px 16px rgb(16 44 56 / 8%); backdrop-filter: blur(8px); }
+.config-generation__console-volume { display: inline-flex; align-items: center; gap: var(--space-2); font-size: var(--font-size-caption); font-weight: var(--font-weight-medium); }
+.config-generation__console-volume select { min-height: 34px; max-width: 180px; }
+.config-generation__lights { display: flex; min-width: 160px; flex: 1 1 280px; gap: 2px; overflow-x: auto; }
+.config-generation__lights button { display: inline-flex; min-height: 32px; align-items: center; gap: 3px; padding-inline: 6px; border: 0; border-radius: var(--radius-sm); background: transparent; color: var(--color-text-secondary); font-size: var(--font-size-caption); white-space: nowrap; }
+.config-generation__lights button span { color: #9aa7ab; }
+.config-generation__lights button.is-passed span { color: var(--color-success); }
+.config-generation__lights button.is-blocked span, .config-generation__lights button.is-failed span { color: var(--color-danger); }
+.config-generation__lights button:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 1px; }
+.config-generation__console-count { color: var(--color-text-secondary); font-size: var(--font-size-caption); white-space: nowrap; }
 .config-generation__job p { margin: 0 0 var(--space-3); color: var(--color-text-secondary); }
 .config-generation__job .config-generation__retained { padding: var(--space-3); background: var(--color-success-subtle); color: var(--color-text-primary); }
 .config-generation__partial { padding-block: var(--space-3); border-block-start: var(--border-width) solid var(--color-border-subtle); }

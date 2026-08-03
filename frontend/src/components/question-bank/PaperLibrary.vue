@@ -1392,9 +1392,11 @@ async function confirmPermanentDelete(): Promise<void> {
   font: inherit;
   font-size: 12px;
   font-weight: 650;
-  height: 34px;
+  min-height: 34px;
   justify-content: center;
   padding: 0 13px;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .paper-button:disabled {

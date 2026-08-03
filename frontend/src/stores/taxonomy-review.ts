@@ -5,11 +5,13 @@ import {
   questionBankTaxonomyApi,
   TAXONOMY_DIMENSIONS,
   type TaxonomyDimension,
-  type KnowledgeGraphReleasePreview,
+  type TaxonomyBatchManualDecision,
   type TaxonomyProposal,
   type TaxonomyReviewDecision,
   type TaxonomySuggestionItem,
   type TaxonomySuggestionRun,
+  type TaxonomySuggestionBatchPreview,
+  type TaxonomyReviewOperation,
   type TaxonomyTerm,
 } from '../api/question-bank-taxonomy'
 import { ApiError, isAmbiguousWriteError } from '../api/errors'
@@ -22,12 +24,6 @@ export const TAXONOMY_SUGGESTION_COMMAND_STORAGE_KEY =
 export type TaxonomyReviewLoadState = 'idle' | 'loading' | 'ready' | 'empty' | 'error'
 export type TaxonomyReviewWriteState = 'idle' | 'saving' | 'conflict' | 'error'
 export type TaxonomySuggestionState = 'idle' | 'starting' | 'running' | 'error'
-export type KnowledgeGraphReleaseState =
-  | 'idle'
-  | 'loading'
-  | 'activating'
-  | 'ready'
-  | 'error'
 
 export interface TaxonomyReviewAction {
   decision: TaxonomyReviewDecision
@@ -110,7 +106,6 @@ export const useTaxonomyReviewStore = defineStore('taxonomy-review', () => {
   const dimensions = ref<Record<TaxonomyDimension, TaxonomyTerm[]>>(emptyDimensions())
   const proposals = ref<TaxonomyProposal[]>([])
   const pendingCount = ref(0)
-  const historicalUnavailableCount = ref(0)
   const loadState = ref<TaxonomyReviewLoadState>('idle')
   const writeState = ref<TaxonomyReviewWriteState>('idle')
   const busyProposalId = ref<string | null>(null)
@@ -120,9 +115,11 @@ export const useTaxonomyReviewStore = defineStore('taxonomy-review', () => {
   const suggestionState = ref<TaxonomySuggestionState>('idle')
   const suggestionMessage = ref('')
   const suggestionJobId = ref<number | null>(null)
-  const graphRelease = ref<KnowledgeGraphReleasePreview | null>(null)
-  const graphReleaseState = ref<KnowledgeGraphReleaseState>('idle')
-  const graphReleaseMessage = ref('')
+  const batchPreview = ref<TaxonomySuggestionBatchPreview | null>(null)
+  const reviewOperation = ref<TaxonomyReviewOperation | null>(null)
+  const batchState = ref<'idle' | 'loading' | 'saving' | 'error'>('idle')
+  const batchMessage = ref('')
+  let batchRequestToken: string | null = null
 
   let loadGeneration = 0
   let loadController: AbortController | null = null
@@ -160,12 +157,8 @@ export const useTaxonomyReviewStore = defineStore('taxonomy-review', () => {
       dimensions.value = catalog.dimensions
       proposals.value = proposalList.items
       pendingCount.value = proposalList.counts.actionable
-      historicalUnavailableCount.value = (
-        proposalList.counts.historical_unavailable
-      )
       revision.value = proposalList.revision
       loadState.value = proposalList.counts.actionable === 0 ? 'empty' : 'ready'
-      await loadGraphRelease(api, controller.signal)
       if (!suggestionRun.value) await restoreSuggestions(api)
       return true
     } catch {
@@ -175,66 +168,6 @@ export const useTaxonomyReviewStore = defineStore('taxonomy-review', () => {
       return false
     } finally {
       if (loadController === controller) loadController = null
-    }
-  }
-
-  async function loadGraphRelease(
-    api: TaxonomyReviewApi = questionBankTaxonomyApi,
-    signal?: AbortSignal,
-  ): Promise<boolean> {
-    graphReleaseState.value = 'loading'
-    try {
-      graphRelease.value = await api.getKnowledgeGraphReleasePreview(signal)
-      graphReleaseState.value = 'ready'
-      graphReleaseMessage.value = graphRelease.value.current_release_id
-        === graphRelease.value.release_id
-        ? '新版知识图谱已启用。'
-        : '新版知识图谱已准备好，需由老师确认后才会启用。'
-      return true
-    } catch {
-      if (signal?.aborted) return false
-      graphReleaseState.value = 'error'
-      graphReleaseMessage.value = '知识图谱发布状态暂时无法读取。'
-      return false
-    }
-  }
-
-  async function activateGraphRelease(
-    api: TaxonomyReviewApi = questionBankTaxonomyApi,
-  ): Promise<boolean> {
-    if (!graphRelease.value || graphReleaseState.value === 'activating') return false
-    graphReleaseState.value = 'activating'
-    graphReleaseMessage.value = ''
-    try {
-      let preview = await api.stageKnowledgeGraphRelease(
-        '教师从新词审核页确认候选知识图谱发布包',
-      )
-      if (!preview.can_activate) {
-        graphRelease.value = preview
-        graphReleaseState.value = 'error'
-        graphReleaseMessage.value = preview.issues
-          .filter(({ blocking }) => blocking)
-          .map(({ message }) => message)
-          .join('；') || '存在需要先处理的图谱冲突。'
-        return false
-      }
-      preview = await api.activateKnowledgeGraphRelease(
-        preview.release_id,
-        preview.current_release_id,
-        '教师已核对 294 个词的映射摘要并确认启用',
-      )
-      graphRelease.value = preview
-      graphReleaseState.value = 'ready'
-      graphReleaseMessage.value = '新版知识图谱已整体启用；以后新生成的证据会记录这个版本。'
-      return true
-    } catch (error) {
-      const failureMessage = error instanceof ApiError && error.status === 409
-        ? '图谱状态或教师确认关系刚刚发生变化，请刷新后重新核对。'
-        : '新版知识图谱没有启用，现有图谱保持不变。'
-      await loadGraphRelease(api)
-      graphReleaseState.value = 'error'
-      graphReleaseMessage.value = failureMessage
-      return false
     }
   }
 
@@ -339,6 +272,11 @@ export const useTaxonomyReviewStore = defineStore('taxonomy-review', () => {
       suggestionMessage.value = suggestionRun.value.stale
         ? '已恢复上次记录；词表已经变化，这批建议不能再采用。'
         : '已恢复上次 AI 建议进度，已完成的结果仍然保留。'
+      if (
+        !suggestionRun.value.stale
+        && suggestionRun.value.progress.completed > 0
+        && suggestionRun.value.progress.pending === 0
+      ) await prepareSuggestionBatch(api)
       return true
     } catch (error) {
       if (error instanceof ApiError && error.status === 404) {
@@ -408,6 +346,9 @@ export const useTaxonomyReviewStore = defineStore('taxonomy-review', () => {
         ? 'running'
         : 'idle'
       if (run.stale) suggestionMessage.value = '词表已经变化，这批建议已失效，请重新判断。'
+      if (!run.stale && run.progress.completed > 0 && run.progress.pending === 0) {
+        await prepareSuggestionBatch(api)
+      }
       return true
     } catch {
       suggestionState.value = 'error'
@@ -473,12 +414,85 @@ export const useTaxonomyReviewStore = defineStore('taxonomy-review', () => {
     }
   }
 
+  async function prepareSuggestionBatch(
+    api: TaxonomyReviewApi = questionBankTaxonomyApi,
+  ): Promise<boolean> {
+    if (!suggestionRun.value || suggestionRun.value.stale) return false
+    batchState.value = 'loading'
+    try {
+      batchPreview.value = await api.previewSuggestionBatch(
+        suggestionRun.value.run_id,
+        revision.value,
+      )
+      batchState.value = 'idle'
+      batchMessage.value = ''
+      return true
+    } catch {
+      batchState.value = 'error'
+      batchMessage.value = 'AI 结果与当前题目或词表不一致，请刷新后重新判断。'
+      return false
+    }
+  }
+
+  async function applySuggestionBatch(
+    decisions: TaxonomyBatchManualDecision[],
+    api: TaxonomyReviewApi = questionBankTaxonomyApi,
+  ): Promise<boolean> {
+    if (!suggestionRun.value || !batchPreview.value || batchState.value === 'saving') return false
+    batchRequestToken ??= globalThis.crypto.randomUUID().replace(/-/g, '')
+    batchState.value = 'saving'
+    try {
+      reviewOperation.value = await api.applySuggestionBatch(
+        suggestionRun.value.run_id,
+        {
+          base_revision: batchPreview.value.base_revision,
+          request_token: batchRequestToken,
+          accepted_manual_decisions: decisions,
+        },
+      )
+      batchRequestToken = null
+      revision.value = reviewOperation.value.taxonomy_revision
+      batchState.value = 'idle'
+      batchMessage.value = reviewOperation.value.application?.failures.length
+        ? '本批决定已保存；部分题目标签将在恢复后继续补写。'
+        : '本批决定已保存，并生成了可核对的操作收据。'
+      await load(api)
+      return true
+    } catch (error) {
+      batchState.value = 'error'
+      batchMessage.value = isAmbiguousWriteError(error)
+        ? '保存结果尚未确认；再次保存会核对同一收据，不会重复写入。'
+        : '本批决定没有保存，请保留当前选择后重试。'
+      return false
+    }
+  }
+
+  async function undoLastBatch(
+    api: TaxonomyReviewApi = questionBankTaxonomyApi,
+  ): Promise<boolean> {
+    if (!reviewOperation.value || reviewOperation.value.undo_status !== 'available') return false
+    try {
+      reviewOperation.value = await api.undoReviewOperation(
+        reviewOperation.value.operation_id,
+        reviewOperation.value.taxonomy_revision,
+        globalThis.crypto.randomUUID().replace(/-/g, ''),
+      )
+      revision.value = reviewOperation.value.undo_taxonomy_revision
+        ?? reviewOperation.value.taxonomy_revision
+      batchMessage.value = '上一批决定已撤销；原先已有的题目标签没有删除。'
+      await load(api)
+      return true
+    } catch {
+      batchMessage.value = '后续已有修改，无法自动撤销，请人工核对。'
+      return false
+    }
+  }
+
   return {
     revision,
     dimensions,
     proposals,
     pendingCount,
-    historicalUnavailableCount,
     loadState,
     writeState,
     busyProposalId,
@@ -488,14 +502,13 @@ export const useTaxonomyReviewStore = defineStore('taxonomy-review', () => {
     suggestionState,
     suggestionMessage,
     suggestionJobId,
-    graphRelease,
-    graphReleaseState,
-    graphReleaseMessage,
+    batchPreview,
+    reviewOperation,
+    batchState,
+    batchMessage,
     hasCatalog,
     termsFor,
     load,
-    loadGraphRelease,
-    activateGraphRelease,
     review,
     suggestionFor,
     restoreSuggestions,
@@ -503,6 +516,9 @@ export const useTaxonomyReviewStore = defineStore('taxonomy-review', () => {
     refreshSuggestions,
     cancelSuggestions,
     retrySuggestions,
+    prepareSuggestionBatch,
+    applySuggestionBatch,
+    undoLastBatch,
     clearMessage,
   }
 })

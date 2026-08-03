@@ -5,20 +5,20 @@ import json
 import math
 from collections.abc import Callable, Mapping, Sequence
 from copy import deepcopy
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Literal
 
-from question_bank.database.schema import connect
-from question_bank.mastery.comparison import (
-    build_profile_comparison_cases,
-    compare_mastery_v1_v2,
+from question_bank.current_knowledge import (
+    CurrentKnowledgeResolver,
+    CurrentKnowledgeUnavailable,
 )
-from question_bank.mastery.rollout import MasteryRolloutRepository
-from question_bank.mastery.v2 import TrainingEvidence
-from question_bank.relations.bootstrap import normalize_knowledge_alias
-from question_bank.taxonomy.registry import canonicalize_knowledge_exact
+from question_bank.database.schema import connect
+from question_bank.mastery.current import (
+    CURRENT_MASTERY_PARAMETERS,
+    CurrentMasteryCalculator,
+)
 from question_bank.training_criteria import (
     QuestionAnalysisInputLoader,
     TrainingCriterionModule,
@@ -168,6 +168,14 @@ class PersonalizedRecommendationModule:
         self.db_path = Path(db_path)
         self.data_root = Path(data_root)
         self.clock = clock or (lambda: datetime.now(UTC))
+        try:
+            self.current_knowledge = (
+                CurrentKnowledgeResolver.from_active_database(self.db_path)
+            )
+        except CurrentKnowledgeUnavailable as exc:
+            raise PersonalizedRecommendationError(
+                "current knowledge standard is unavailable"
+            ) from exc
 
     def create(
         self,
@@ -319,48 +327,16 @@ class PersonalizedRecommendationModule:
         )
         if not names:
             return ()
-        normalized = tuple(normalize_knowledge_alias(value) for value in names)
-        placeholders = ",".join("?" for _ in normalized)
-        with connect(self.db_path) as connection:
-            rows = connection.execute(
-                f"""
-                SELECT alias.normalized_alias, alias.stable_key
-                FROM knowledge_tag_aliases alias
-                JOIN knowledge_tag_identities identity
-                  ON identity.stable_key = alias.stable_key
-                WHERE alias.normalized_alias IN ({placeholders})
-                  AND identity.status = 'active'
-                ORDER BY alias.normalized_alias, alias.stable_key
-                """,
-                normalized,
-            ).fetchall()
-            identity_rows = connection.execute(
-                """
-                SELECT stable_key, display_name
-                FROM knowledge_tag_identities
-                WHERE status = 'active'
-                ORDER BY stable_key
-                """
-            ).fetchall()
-        by_alias: dict[str, list[str]] = {}
-        for row in rows:
-            by_alias.setdefault(str(row["normalized_alias"]), []).append(
-                str(row["stable_key"])
-            )
-        for row in identity_rows:
-            by_alias.setdefault(
-                normalize_knowledge_alias(row["display_name"]),
-                [],
-            ).append(str(row["stable_key"]))
         result: list[str] = []
-        for name, alias in zip(names, normalized, strict=True):
-            matches = tuple(dict.fromkeys(by_alias.get(alias, ())))
-            if len(matches) != 1:
+        for name in names:
+            matches = self.current_knowledge.resolve(name)
+            if not matches:
                 raise ValueError(
                     f"training target is not uniquely governed: {name}"
                 )
-            if matches[0] not in result:
-                result.append(matches[0])
+            for match in matches:
+                if match.stable_key not in result:
+                    result.append(match.stable_key)
         return tuple(result)
 
     def get(self, draft_id: str) -> dict[str, Any]:
@@ -803,35 +779,27 @@ class PersonalizedRecommendationModule:
                 ORDER BY q.id
                 """
             ).fetchall()
-            mapping_rows = connection.execute(
+            knowledge_rows = connection.execute(
                 """
-                SELECT qt.question_id, mapping.stable_key,
-                       identity.display_name
+                SELECT qt.question_id, qt.tag_value
                 FROM question_tags qt
-                JOIN knowledge_tag_identity_mappings mapping
-                  ON mapping.question_tag_id = qt.id
-                JOIN knowledge_tag_identities identity
-                  ON identity.stable_key = mapping.stable_key
-                WHERE identity.status = 'active'
-                ORDER BY qt.question_id, mapping.stable_key
-                """
-            ).fetchall()
-            relation_rows = connection.execute(
-                """
-                SELECT relation_id, source_key, target_key,
-                       relation_type, rationale, revision
-                FROM knowledge_active_relations
-                ORDER BY relation_type, source_key, target_key, relation_id
+                WHERE qt.tag_type IN (
+                    'knowledge_point', 'canonical_knowledge_id'
+                )
+                  AND TRIM(COALESCE(qt.tag_value, '')) <> ''
+                ORDER BY qt.question_id, qt.id
                 """
             ).fetchall()
         stable_by_question: dict[int, list[dict[str, str]]] = {}
-        for row in mapping_rows:
-            stable_by_question.setdefault(int(row["question_id"]), []).append(
-                {
-                    "stable_key": str(row["stable_key"]),
-                    "display_name": str(row["display_name"]),
+        for row in knowledge_rows:
+            bucket = stable_by_question.setdefault(int(row["question_id"]), [])
+            for resolved in self.current_knowledge.resolve(row["tag_value"]):
+                item = {
+                    "stable_key": resolved.stable_key,
+                    "display_name": resolved.display_name,
                 }
-            )
+                if item not in bucket:
+                    bucket.append(item)
         loader = QuestionAnalysisInputLoader(
             db_path=self.db_path,
             data_root=self.data_root,
@@ -888,7 +856,24 @@ class PersonalizedRecommendationModule:
                     "question_revision": str(row["updated_at"] or ""),
                 }
             )
-        relations = tuple(dict(row) for row in relation_rows)
+        relations = tuple(
+            {
+                "relation_id": relation.relation_key,
+                "relation_key": relation.relation_key,
+                "source_key": relation.source_key,
+                "target_key": relation.target_key,
+                "relation_type": relation.relation_type,
+                "rationale": relation.rationale,
+                "basis_kind": relation.basis_kind,
+                "strength": relation.strength,
+                "evidence_source_ids": list(
+                    relation.evidence_source_ids
+                ),
+                "source_locator": relation.source_locator,
+                "revision": 1,
+            }
+            for relation in self.current_knowledge.relations
+        )
         normalized_candidates = tuple(
             sorted(candidates, key=lambda item: int(item["question_id"]))
         )
@@ -898,7 +883,7 @@ class PersonalizedRecommendationModule:
                 "time_estimate_version": TIME_ESTIMATE_VERSION,
                 "candidates": normalized_candidates,
                 "relations": relations,
-                "mastery_rollout": self._mastery_rollout_version(),
+                "current_mastery": self._current_mastery_version(),
             }
         )
         return normalized_candidates, relations, source_version
@@ -907,104 +892,29 @@ class PersonalizedRecommendationModule:
         self,
         diagnosis: dict[str, Any],
     ) -> dict[tuple[str, str], dict[str, Any]]:
-        cases = build_profile_comparison_cases(diagnosis)
-        parameters = MasteryRolloutRepository(
-            self.db_path
-        ).select_parameters()
-        if parameters is None or not cases:
-            return _v1_mastery(diagnosis)
-        published = self._published_training_evidence(cases)
-        cases = tuple(
-            replace(
-                item,
-                training_evidence=published.get(
-                    (item.student_id, item.stable_key),
-                    (),
-                ),
-            )
-            for item in cases
-        )
-        as_of = max(
-            (
-                evidence.occurred_at
-                for case in cases
-                for evidence in case.training_evidence
-            ),
-            default=_day_clock(self.clock()),
-        )
-        as_of = max(as_of, _day_clock(self.clock()))
-        report = compare_mastery_v1_v2(
-            cases,
-            as_of=as_of,
-            parameters=parameters,
-        )
-        result: dict[tuple[str, str], dict[str, Any]] = {}
-        for item in report.items:
-            v2 = item.mastery_v2
-            result[(item.student_id, item.stable_key)] = {
+        calculated = CurrentMasteryCalculator(
+            self.db_path,
+            self.current_knowledge,
+            clock=self.clock,
+        ).calculate(diagnosis)
+        return {
+            identity: {
                 "stable_key": item.stable_key,
                 "display_name": item.display_name,
-                "mode": "v2",
-                "status": v2.status.value,
-                "value": v2.value,
-                "evidence_count": v2.direct_evidence_count,
-                "parameter_version": v2.parameter_version,
+                "mode": "current",
+                "status": item.status,
+                "value": item.value,
+                "evidence_count": item.evidence_count,
+                "parameter_version": item.parameter_version,
                 "source_question_refs": [],
-                "explanations": list(v2.explanations),
+                "explanations": (
+                    [] if item.reason is None else [item.reason]
+                ),
             }
-        return result
-
-    def _published_training_evidence(
-        self,
-        cases: Sequence[Any],
-    ) -> dict[tuple[str, str], tuple[TrainingEvidence, ...]]:
-        student_ids = tuple(
-            sorted({str(item.student_id) for item in cases})
-        )
-        stable_keys = tuple(
-            sorted({str(item.stable_key) for item in cases})
-        )
-        if not student_ids or not stable_keys:
-            return {}
-        student_placeholders = ",".join("?" for _ in student_ids)
-        key_placeholders = ",".join("?" for _ in stable_keys)
-        with connect(self.db_path) as connection:
-            rows = connection.execute(
-                f"""
-                SELECT evidence_id, student_id, stable_key, occurred_at,
-                       achieved_points, total_points, difficulty_weight,
-                       evidence_weight
-                FROM training_evidence_records
-                WHERE status = 'active'
-                  AND student_id IN ({student_placeholders})
-                  AND stable_key IN ({key_placeholders})
-                ORDER BY student_id, stable_key, occurred_at, evidence_id
-                """,
-                (*student_ids, *stable_keys),
-            ).fetchall()
-        grouped: dict[tuple[str, str], list[TrainingEvidence]] = {}
-        for row in rows:
-            occurred_at = datetime.fromisoformat(str(row["occurred_at"]))
-            evidence = TrainingEvidence(
-                evidence_id=str(row["evidence_id"]),
-                stable_key=str(row["stable_key"]),
-                occurred_at=occurred_at,
-                achieved_points=int(row["achieved_points"]),
-                total_points=int(row["total_points"]),
-                difficulty_weight=float(row["difficulty_weight"]),
-                evidence_weight=float(row["evidence_weight"]),
-            )
-            grouped.setdefault(
-                (str(row["student_id"]), evidence.stable_key),
-                [],
-            ).append(evidence)
-        return {
-            identity: tuple(items)
-            for identity, items in grouped.items()
+            for identity, item in calculated.items()
         }
 
-    def _mastery_rollout_version(self) -> dict[str, Any]:
-        state = MasteryRolloutRepository(self.db_path).get_state()
+    def _current_mastery_version(self) -> dict[str, Any]:
         with connect(self.db_path) as connection:
             evidence_rows = [
                 (
@@ -1023,9 +933,9 @@ class PersonalizedRecommendationModule:
                 ).fetchall()
             ]
         return {
-            "mode": state.active_mode,
-            "parameter_version": state.active_parameter_version,
-            "revision": state.revision,
+            "formula": CURRENT_MASTERY_PARAMETERS.formula_version,
+            "parameter_version": CURRENT_MASTERY_PARAMETERS.version,
+            "graph_release_id": self.current_knowledge.release_id,
             "training_evidence_version": _hash_payload(evidence_rows),
         }
 
@@ -1336,46 +1246,6 @@ def _normalize_diagnosis(value: Mapping[str, Any]) -> dict[str, Any]:
             else {}
         ),
     }
-
-
-def _v1_mastery(
-    diagnosis: Mapping[str, Any],
-) -> dict[tuple[str, str], dict[str, Any]]:
-    result: dict[tuple[str, str], dict[str, Any]] = {}
-    for student in diagnosis["students"]:
-        for weak in student["weak_points"]:
-            canonical = canonicalize_knowledge_exact(
-                weak.get("knowledge_point")
-            )
-            if canonical is None:
-                continue
-            stable_key = canonical.canonical_id.casefold()
-            refs = weak.get("source_question_refs")
-            result[(student["student_id"], stable_key)] = {
-                "stable_key": stable_key,
-                "display_name": canonical.canonical_name,
-                "mode": "v1",
-                "status": "available",
-                "value": _rate(weak.get("mastery")),
-                "evidence_count": int(weak.get("evidence_count") or 0),
-                "parameter_version": None,
-                "source_question_refs": [
-                    {
-                        "session_id": int(item.get("session_id") or 0),
-                        "question_id": str(item.get("question_id") or ""),
-                    }
-                    for item in (
-                        refs if isinstance(refs, list) else []
-                    )
-                    if isinstance(item, Mapping)
-                ],
-                "explanations": [
-                    str(item)
-                    for item in weak.get("actionable_reasons", [])
-                    if str(item).strip()
-                ],
-            }
-    return result
 
 
 def _student_targets(
