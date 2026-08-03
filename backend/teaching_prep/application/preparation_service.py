@@ -16,6 +16,7 @@ from uuid import uuid4
 
 from PIL import Image
 
+from backend.llm.errors import LLMErrorCategory, classify_llm_error
 from backend.teaching_prep.application.ports import (
     AssessmentEvidenceReader,
     ExerciseSuggestionModelAdapter,
@@ -1140,6 +1141,17 @@ class TeachingPrepService:
                 raise TeachingPrepRetryAvailableError(
                     "semester mapping model request did not start; "
                     "the teacher may retry"
+                ) from exc
+            if (
+                classify_llm_error(exc)
+                is LLMErrorCategory.PARAMETER_INCOMPATIBLE
+            ):
+                self.semester_mapping.fail_generation(
+                    clean_operation_id,
+                    "semester_mapping_model_parameter_incompatible",
+                )
+                raise TeachingPrepRetryAvailableError(
+                    "semester mapping model request parameter is incompatible"
                 ) from exc
             self.semester_mapping.mark_generation_result_unknown(
                 clean_operation_id,
