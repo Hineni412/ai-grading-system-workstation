@@ -2,6 +2,7 @@ import type { Component } from 'vue'
 
 export type WorkspaceModuleId = 'teaching-prep' | 'class-teacher'
 export type WorkspaceModuleIcon = WorkspaceModuleId
+export type WorkspaceTopbarContext = 'current-exam' | 'workspace'
 export type WorkspaceDataClassification =
   | 'public'
   | 'internal'
@@ -22,6 +23,7 @@ export interface WorkspaceManifest {
   title: string
   description: string
   breadcrumb: string
+  topbarContext: WorkspaceTopbarContext
 }
 
 export interface WorkspaceManifestModule {

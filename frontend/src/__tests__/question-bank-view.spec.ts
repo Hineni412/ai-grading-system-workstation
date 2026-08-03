@@ -374,6 +374,44 @@ describe('question bank workspace', () => {
     expect(document.body.textContent).toContain('取消请求未能同步，任务可能仍在继续。')
   })
 
+  it('tells the teacher to restore an identical paper from the trash', async () => {
+    const host = document.createElement('div')
+    document.body.append(host)
+    const pinia = createPinia()
+    const app = createApp(QuestionImportJobs)
+    app.use(pinia)
+    app.mount(host)
+    mounted.push(app)
+
+    useJobStore(pinia).track({
+      id: 42,
+      job_type: 'question_import',
+      payload: {},
+      result: {
+        outcome: 'failed',
+        failure_category: 'duplicate_in_trash',
+        restore_required: true,
+        restore_paper_id: 7,
+        retryable: false,
+      },
+      status: 'succeeded',
+      progress: 1,
+      stage: 'question_import',
+      detail: '',
+      error: null,
+      cancel_requested: false,
+      created_at: '2026-08-03T10:00:00Z',
+      started_at: '2026-08-03T10:00:01Z',
+      updated_at: '2026-08-03T10:00:02Z',
+      finished_at: '2026-08-03T10:00:02Z',
+    })
+    await nextTick()
+
+    expect(host.textContent).toContain('相同试卷已在回收站')
+    expect(host.textContent).toContain('恢复原试卷')
+    expect(host.textContent).not.toContain('重试允许的失败项')
+  })
+
   it('edits paper metadata from its card and shows the saved values immediately', async () => {
     const host = document.createElement('div')
     document.body.append(host)

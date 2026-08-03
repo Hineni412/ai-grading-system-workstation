@@ -213,6 +213,133 @@ def test_archived_import_uses_original_title_for_legacy_duplicate_detection(
     assert result.status == "duplicate"
 
 
+def test_exact_fingerprint_in_trash_requires_restore_instead_of_reimport(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    db_path = tmp_path / "question_bank.db"
+    initialize_database(db_path)
+    archived = tmp_path / "paper.docx"
+    archived.write_bytes(b"paper-content")
+    fingerprint = batch_importer._file_fingerprint(archived)
+    with connect(db_path) as conn:
+        cursor = conn.execute(
+            """
+            INSERT INTO papers (
+                title, source_file, content_fingerprint, import_status
+            ) VALUES (?, ?, ?, 'deleted')
+            """,
+            ("paper", "old.docx", fingerprint),
+        )
+        paper_id = int(cursor.lastrowid)
+    monkeypatch.setattr(
+        batch_importer,
+        "_extract_paper",
+        lambda _path: (_ for _ in ()).throw(
+            AssertionError("trash collision should skip parsing")
+        ),
+    )
+
+    result = batch_importer._import_scanned_paper(
+        archived,
+        db_path,
+        stored_source_file="question_bank/raw_papers/paper.docx",
+        source_title="paper",
+        metadata=PaperMetadata(),
+        question_range=None,
+    )
+
+    assert result.status == "duplicate_in_trash"
+    assert result.paper_id == paper_id
+    with connect(db_path) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM papers").fetchone()[0] == 1
+
+
+def test_exact_fingerprint_in_active_bank_reuses_existing_paper_identity(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    db_path = tmp_path / "question_bank.db"
+    initialize_database(db_path)
+    archived = tmp_path / "paper.docx"
+    archived.write_bytes(b"paper-content")
+    fingerprint = batch_importer._file_fingerprint(archived)
+    with connect(db_path) as conn:
+        paper_id = int(
+            conn.execute(
+                """
+                INSERT INTO papers (
+                    title, source_file, content_fingerprint, import_status
+                ) VALUES (?, ?, ?, 'imported')
+                """,
+                ("已有试卷", "old.docx", fingerprint),
+            ).lastrowid
+        )
+    monkeypatch.setattr(
+        batch_importer,
+        "_extract_paper",
+        lambda _path: (_ for _ in ()).throw(
+            AssertionError("active fingerprint collision should skip parsing")
+        ),
+    )
+
+    result = batch_importer._import_scanned_paper(
+        archived,
+        db_path,
+        stored_source_file="question_bank/raw_papers/renamed.docx",
+        source_title="另一名称",
+        metadata=PaperMetadata(),
+        question_range=None,
+    )
+
+    assert result.status == "duplicate"
+    assert result.paper_id == paper_id
+
+
+def test_same_title_with_different_fingerprint_imports_as_a_new_paper(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    db_path = tmp_path / "question_bank.db"
+    initialize_database(db_path)
+    with connect(db_path) as conn:
+        original_id = int(
+            conn.execute(
+                """
+                INSERT INTO papers (
+                    title, source_file, content_fingerprint, import_status
+                ) VALUES (?, ?, ?, 'imported')
+                """,
+                ("同名试卷", "old.docx", "a" * 64),
+            ).lastrowid
+        )
+    archived = tmp_path / "同名试卷.docx"
+    archived.write_bytes(b"different-paper-content")
+    monkeypatch.setattr(
+        batch_importer,
+        "_extract_paper",
+        lambda path: ExtractedDocument(
+            source_file=str(path),
+            page_range="document",
+            text="1. 这是另一份内容不同的测试题目",
+        ),
+    )
+
+    result = batch_importer._import_scanned_paper(
+        archived,
+        db_path,
+        stored_source_file="question_bank/raw_papers/同名试卷.docx",
+        source_title="同名试卷",
+        metadata=PaperMetadata(),
+        question_range=None,
+    )
+
+    assert result.status == "needs_review"
+    assert result.paper_id != original_id
+    with connect(db_path) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM papers").fetchone()[0] == 2
+
+
 def test_infer_semester_from_parenthesized_filename_marker() -> None:
     metadata = infer_metadata_from_filename("2024-2025学年深圳市七年级（下）期末数学试卷.docx")
 

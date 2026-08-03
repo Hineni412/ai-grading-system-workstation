@@ -67,6 +67,7 @@ const outcome = computed(() => String(job.value?.result.outcome ?? ''))
 const terminal = computed(() => job.value !== null
   && ['succeeded', 'failed', 'cancelled'].includes(job.value.status))
 const canRetry = computed(() => terminal.value
+  && job.value?.result.restore_required !== true
   && (
     job.value?.status === 'failed'
     || job.value?.result.retryable === true
@@ -267,6 +268,12 @@ watch(
         <template v-if="reviewRefs(job.result.taxonomy_review_source_refs)">
           · 待处理：{{ reviewRefs(job.result.taxonomy_review_source_refs) }}
         </template>
+      </p>
+      <p
+        v-if="terminal && job.result.restore_required === true"
+        class="question-bank-sync__warning"
+      >
+        相同试卷已在题库回收站。请先恢复原试卷，系统不会重复入库或自动再次调用 AI。
       </p>
       <button v-if="canRetry" type="button" :disabled="submitting" @click="retry">
         {{ submitting

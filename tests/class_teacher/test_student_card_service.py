@@ -146,10 +146,7 @@ def test_teacher_confirmation_persists_card_and_only_anonymous_projections(
     assert entry["teacher_quote"] == "合成学生甲说最近作业安排有困难"
     assert entry["portrait"]["summary"] == "需要先核实作业安排"
     assert entry["sop"]["steps"] == ["教师核实情况", "共同拆分任务", "约定复查"]
-    assert {node["title"] for node in ordinary["nodes"]} == {
-        "学生事项待跟进",
-        "敏感 SOP 待复查",
-    }
+    assert {node["title"] for node in ordinary["nodes"]} == {"学生支持待跟进"}
     assert all(node["classification"] == "restricted_projection" for node in ordinary["nodes"])
     ordinary_bytes = service.ordinary_database.database_path.read_bytes()
     assert "合成学生甲".encode() not in ordinary_bytes
@@ -189,12 +186,12 @@ def test_sensitive_outbox_recovers_after_ordinary_projection_failure(
     service, token, subject_id = _unlocked(tmp_path, _proposal())
     model = _model_result(service, token, subject_id)
     structure = _proposal()["proposal"]
-    original = service.work.enqueue_sensitive_projection
+    original = service.work.apply_projection_envelope
 
     def fail_projection(**_kwargs):
         raise RuntimeError("synthetic ordinary store unavailable")
 
-    monkeypatch.setattr(service.work, "enqueue_sensitive_projection", fail_projection)
+    monkeypatch.setattr(service.work, "apply_projection_envelope", fail_projection)
     saved = service.student_cards.confirm_structure(
         token=token,
         subject_id=subject_id,
@@ -206,13 +203,13 @@ def test_sensitive_outbox_recovers_after_ordinary_projection_failure(
     assert saved["projection_state"] == "pending"
     assert service.work.query(as_of="2026-08-10")["nodes"] == []
 
-    monkeypatch.setattr(service.work, "enqueue_sensitive_projection", original)
+    monkeypatch.setattr(service.work, "apply_projection_envelope", original)
     cards = service.student_cards.list_cards(token=token)
 
     assert cards["items"][0]["entries"][0]["projection_state"] == "applied"
     with closing(service.database.connect()) as connection:
         rows = connection.execute(
-            "SELECT state, attempts FROM student_card_projection_outbox"
+            "SELECT state, attempts FROM sensitive_work_projection_outbox"
         ).fetchall()
     assert all(str(row["state"]) == "applied" for row in rows)
     assert all(int(row["attempts"]) == 2 for row in rows)

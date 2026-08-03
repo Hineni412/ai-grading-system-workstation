@@ -157,6 +157,40 @@ class AffairListResponse(BaseModel):
     items: list[AffairResponse]
 
 
+class AffairDraftResponse(BaseModel):
+    draft_id: str
+    step_instance_id: str
+    draft_kind: Literal["fact", "communication"]
+    revision: int
+    text: str
+    updated_at: str
+    expires_at: str
+
+
+class AffairSummaryResponse(BaseModel):
+    affair_id: str
+    title: str
+    summary: str | None
+    state: Literal["active", "closed"]
+    revision: int
+    occurrence_id: str
+    occurrence_sequence: int
+    current_step_count: int
+    completed_step_count: int
+    updated_at: str
+    projection_state: Literal["pending", "applied"]
+
+
+class AffairWorkspaceListResponse(BaseModel):
+    items: list[AffairSummaryResponse]
+    cursor: str | None = None
+
+
+class AffairWorkspaceResponse(AffairResponse):
+    drafts: list[AffairDraftResponse] = Field(default_factory=list)
+    projection_state: Literal["pending", "applied"]
+
+
 class StepCompleteRequest(BaseModel):
     operation_id: str = Field(min_length=8, max_length=128)
     revision: int = Field(ge=1)
@@ -185,12 +219,38 @@ class AffairReopenRequest(BaseModel):
     reason: str = Field(min_length=1, max_length=4000)
 
 
+class AffairDraftRequest(BaseModel):
+    draft_kind: Literal["fact", "communication"]
+    text: str = Field(min_length=1, max_length=8000)
+    expected_revision: int | None = Field(default=None, ge=1)
+    operation_id: str = Field(min_length=8, max_length=128)
+
+
+class AffairCommandRequest(BaseModel):
+    command: Literal["complete_step", "teacher_decision", "close", "reopen"]
+    operation_id: str = Field(min_length=8, max_length=128)
+    expected_revision: int = Field(ge=1)
+    step_instance_id: str | None = None
+    outcome: Literal["completed", "waived"] | None = None
+    result: str | None = None
+    decision_kind: Literal["teacher", "school", "ai_suggestion"] | None = None
+    summary: str | None = None
+    decision_key: str | None = None
+    selected_option: str | None = None
+    reason: str | None = None
+
+
 __all__ = [
     "AffairCloseRequest",
+    "AffairCommandRequest",
     "AffairCreateRequest",
+    "AffairDraftRequest",
+    "AffairDraftResponse",
     "AffairListResponse",
     "AffairReopenRequest",
     "AffairResponse",
+    "AffairWorkspaceListResponse",
+    "AffairWorkspaceResponse",
     "DecisionRecordRequest",
     "SopTemplateListResponse",
     "SopBaselineResponse",

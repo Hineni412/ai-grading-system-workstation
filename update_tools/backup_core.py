@@ -10,8 +10,11 @@ import json
 import os
 import re
 import shutil
+import sqlite3
 import sys
+import tempfile
 import zipfile
+from contextlib import closing
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -137,6 +140,10 @@ def preview_backup(
         (pm.data_root / "annotated", "user_data/annotated"),
         (pm.data_root / "reports", "user_data/reports"),
         (pm.data_root / "snapshots", "user_data/snapshots"),
+        (
+            pm.data_root / "workspaces" / "class-teacher",
+            "user_data/workspaces/class-teacher",
+        ),
         (pm.project_root / "config", "config"),
     ]
     if include_logs:
@@ -162,6 +169,9 @@ def preview_backup(
                 continue
             full_rel = Path(prefix) / rel
             public_name = full_rel.as_posix()
+            if public_name.endswith((".db-wal", ".db-shm", ".db-journal")):
+                skipped.append(public_name)
+                continue
             if prefix == "user_data/databases" and public_name not in {
                 "user_data/databases/grading_system.db",
                 "user_data/databases/question_bank.db",
@@ -202,7 +212,8 @@ def _safe_restore_destination(
 
     if parts[0] == "user_data":
         if len(parts) > 1 and parts[1].casefold() == "workspaces":
-            return None
+            if len(parts) < 4 or parts[2].casefold() != "class-teacher":
+                return None
         dest = data_root.joinpath(*parts[1:])
         return dest if _is_relative_to(dest, data_root) else None
     if parts[0] == "config":
@@ -281,6 +292,10 @@ def create_backup(
         (pm.data_root / "annotated", "user_data/annotated"),
         (pm.data_root / "reports", "user_data/reports"),
         (pm.data_root / "snapshots", "user_data/snapshots"),
+        (
+            pm.data_root / "workspaces" / "class-teacher",
+            "user_data/workspaces/class-teacher",
+        ),
         (pm.project_root / "config", "config"),
     ]
     if include_logs:
@@ -300,6 +315,10 @@ def create_backup(
             except ValueError:
                 continue
             full_rel = Path(prefix) / rel
+
+            if full_rel.as_posix().endswith((".db-wal", ".db-shm", ".db-journal")):
+                result["skipped"].append(str(full_rel))
+                continue
 
             if _should_skip(full_rel):
                 result["skipped"].append(str(full_rel))
@@ -331,13 +350,22 @@ def create_backup(
     # 创建 zip
     logger.info("开始备份: %s (原因: %s)", zip_name, reason)
     try:
-        with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
-            for abs_path, arcname in files_to_add:
-                try:
-                    zf.write(abs_path, arcname)
-                except Exception as exc:
-                    logger.warning("跳过文件 %s: %s", arcname, exc)
-                    result["skipped"].append(f"{arcname} (写入失败: {exc})")
+        with tempfile.TemporaryDirectory(prefix="ordinary-backup-") as temp_value:
+            snapshot_root = Path(temp_value)
+            with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
+                for index, (abs_path, arcname) in enumerate(files_to_add):
+                    try:
+                        source = abs_path
+                        if abs_path.suffix.casefold() == ".db":
+                            source = snapshot_root / f"{index}.db"
+                            with closing(sqlite3.connect(abs_path)) as current, closing(
+                                sqlite3.connect(source)
+                            ) as snapshot:
+                                current.backup(snapshot)
+                        zf.write(source, arcname)
+                    except Exception as exc:
+                        logger.warning("跳过文件 %s: %s", arcname, exc)
+                        result["skipped"].append(f"{arcname} (写入失败: {exc})")
 
         result["zip_path"] = str(zip_path)
         zip_size = zip_path.stat().st_size

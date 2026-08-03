@@ -11,6 +11,7 @@ from backend.teaching_prep.infrastructure.evidence import (
     ReadOnlyQuestionEvidenceReader,
 )
 from backend.teaching_prep.infrastructure.llm import (
+    ActiveProfileExerciseSuggestionModelAdapter,
     ActiveProfileLessonModelAdapter,
     ActiveProfileSemesterMappingModelAdapter,
 )
@@ -116,6 +117,13 @@ def _service(context: WorkspaceContext) -> TeachingPrepService:
             )
         ),
         semester_mapping_model_label="当前启用的模型配置",
+        exercise_suggestion_model_adapter=(
+            ActiveProfileExerciseSuggestionModelAdapter(
+                context=context,
+                profile_store=profile_store,
+            )
+        ),
+        exercise_suggestion_model_label="当前启用的模型配置",
         wps_adapter=helper,
         wps_adapter_is_real=real_wps_enabled,
     )

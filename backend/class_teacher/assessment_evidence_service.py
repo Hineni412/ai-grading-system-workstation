@@ -591,6 +591,11 @@ class AssessmentEvidenceService:
             "assessment_nature": str(
                 assessment.get("assessment_nature") or ""
             ) or None,
+            "rank_origin": str(assessment.get("rank_origin") or "") or None,
+            "cohort_key": str(assessment.get("cohort_key") or "") or None,
+            "ranking_rule_version": str(
+                assessment.get("ranking_rule_version") or ""
+            ) or None,
         }
         self.repository.put(
             connection,
@@ -608,14 +613,41 @@ class AssessmentEvidenceService:
             """,
             (assessment_id, import_id, object_id, occurred_on, _iso()),
         )
+        session_id = self._ensure_session(
+            connection,
+            vmk=vmk,
+            assessment=assessment,
+            fallback_title=title,
+            fallback_date=occurred_on,
+        )
+        measure_role = str(assessment.get("measure_role") or "subject_score")
+        if measure_role not in {"subject_score", "total_score"}:
+            raise VaultError("assessment_measure_role_invalid", "学业指标类型无效", status_code=422)
+        measure_key = hmac.new(
+            vmk,
+            f"academic-measure|{subject_name}".encode("utf-8"),
+            hashlib.sha256,
+        ).digest()
         for result in results:
-            self._insert_result(
+            evidence_id = self._insert_result(
                 connection,
                 vmk=vmk,
                 assessment_id=assessment_id,
                 assessment_payload=assessment_payload,
                 occurred_on=occurred_on,
+                session_id=session_id,
+                measure_role=measure_role,
+                measure_key=measure_key,
                 result=dict(result),
+            )
+            connection.execute(
+                """
+                INSERT INTO assessment_session_members (
+                    session_id, evidence_version_id, measure_role,
+                    measure_key, created_at
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                (session_id, evidence_id, measure_role, measure_key, _iso()),
             )
         return len(results)
 
@@ -627,8 +659,11 @@ class AssessmentEvidenceService:
         assessment_id: str,
         assessment_payload: dict[str, object],
         occurred_on: str,
+        session_id: str,
+        measure_role: str,
+        measure_key: bytes,
         result: dict[str, object],
-    ) -> None:
+    ) -> str:
         subject_id = str(result.get("subject_id") or "")
         self._subject_exists(connection, subject_id)
         result_state = str(result.get("result_state") or "")
@@ -696,6 +731,21 @@ class AssessmentEvidenceService:
                     "participant_count": assessment_payload[
                         "participant_count"
                     ],
+                    "rank_origin": str(
+                        result.get("rank_origin")
+                        or assessment_payload.get("rank_origin")
+                        or ""
+                    ) or None,
+                    "cohort_key": str(
+                        result.get("cohort_key")
+                        or assessment_payload.get("cohort_key")
+                        or ""
+                    ) or None,
+                    "ranking_rule_version": str(
+                        result.get("ranking_rule_version")
+                        or assessment_payload.get("ranking_rule_version")
+                        or ""
+                    ) or None,
                 },
             )
             connection.execute(
@@ -718,6 +768,24 @@ class AssessmentEvidenceService:
                 **assessment_payload,
                 **result_payload,
                 "occurred_on": occurred_on,
+                "session_id": session_id,
+                "measure_role": measure_role,
+                "measure_key": measure_key.hex(),
+                "source_version": hmac.new(
+                    vmk,
+                    json.dumps(
+                        {
+                            "assessment": assessment_payload,
+                            "result": result_payload,
+                            "occurred_on": occurred_on,
+                        },
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ).encode("utf-8"),
+                    hashlib.sha256,
+                ).hexdigest(),
+                "teacher_confirmed_at": _iso(),
                 "source_snapshot": True,
                 "source_write_back": False,
             },
@@ -731,6 +799,69 @@ class AssessmentEvidenceService:
             """,
             (evidence_id, result_id, evidence_object_id, _iso()),
         )
+        return evidence_id
+
+    def _ensure_session(
+        self,
+        connection: Any,
+        *,
+        vmk: bytes,
+        assessment: dict[str, object],
+        fallback_title: str,
+        fallback_date: str,
+    ) -> str:
+        supplied = dict(assessment.get("session") or {})
+        required = (
+            "title",
+            "academic_year",
+            "term",
+            "grade",
+            "exam_type",
+            "comparison_series",
+            "occurred_on",
+            "source_reference",
+        )
+        metadata_complete = all(str(supplied.get(key) or "").strip() for key in required)
+        payload = {
+            "title": str(supplied.get("title") or fallback_title),
+            "academic_year": supplied.get("academic_year"),
+            "term": supplied.get("term"),
+            "grade": supplied.get("grade"),
+            "exam_type": supplied.get("exam_type"),
+            "comparison_series": supplied.get("comparison_series"),
+            "occurred_on": str(supplied.get("occurred_on") or fallback_date),
+            "source_reference": supplied.get("source_reference"),
+            "teacher_confirmed_at": str(supplied.get("teacher_confirmed_at") or _iso()),
+            "raw_file_retained": False,
+            "metadata_complete": metadata_complete,
+        }
+        signature = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        fingerprint = hmac.new(vmk, f"assessment-session|{signature}".encode("utf-8"), hashlib.sha256).digest()
+        row = connection.execute(
+            "SELECT session_id FROM assessment_sessions WHERE source_fingerprint = ?",
+            (fingerprint,),
+        ).fetchone()
+        if row is not None:
+            return str(row["session_id"])
+        session_id = uuid4().hex
+        object_id = f"assessment-session-{session_id}"
+        self.repository.put(
+            connection,
+            vmk=vmk,
+            object_id=object_id,
+            object_type="assessment_session",
+            payload=payload,
+        )
+        connection.execute(
+            """
+            INSERT INTO assessment_sessions (
+                session_id, payload_object_id, source_fingerprint, state,
+                metadata_complete, created_at, updated_at
+            ) VALUES (?, ?, ?, 'active', ?, ?, ?)
+            """,
+            (session_id, object_id, fingerprint, int(metadata_complete), _iso(), _iso()),
+        )
+        return session_id
 
     def _evidence_from_row(
         self,

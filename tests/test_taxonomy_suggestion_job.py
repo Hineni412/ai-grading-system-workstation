@@ -102,6 +102,19 @@ def _proposal(
     return dict(result["proposals"][0])
 
 
+def _question_loader(question_ids):
+    return [
+        {
+            "id": int(question_id),
+            "question_number": f"Q{question_id}",
+            "question_type": "解答题",
+            "question_text": "用于核对归并建议的当前题目。",
+            "answer_text": "当前题目的答案摘要。",
+        }
+        for question_id in question_ids
+    ]
+
+
 def _context(
     tmp_path: Path,
     payload: dict[str, object],
@@ -134,6 +147,7 @@ def test_process_job_reports_counts_and_returns_only_a_safe_summary(
     service = TaxonomySuggestionService(
         state_path=state_path,
         governance=governance,
+        question_loader=_question_loader,
     )
     run = service.create_run(
         proposal_ids=[str(proposal["id"])],
@@ -155,7 +169,7 @@ def test_process_job_reports_counts_and_returns_only_a_safe_summary(
         context=context,
         suggestion_state_path=state_path,
         taxonomy_governance=governance,
-        question_loader=lambda _ids: [],
+        question_loader=_question_loader,
         ai_service_factory=lambda: gateway,
         batch_size=1,
     )
@@ -168,6 +182,7 @@ def test_process_job_reports_counts_and_returns_only_a_safe_summary(
         "taxonomy_revision": run["taxonomy_revision"],
         "progress": {
             "total": 1,
+            "processed": 1,
             "completed": 1,
             "failed": 0,
             "pending": 0,
@@ -175,6 +190,7 @@ def test_process_job_reports_counts_and_returns_only_a_safe_summary(
         },
         "stale": False,
         "total_count": 1,
+        "processed_count": 1,
         "completed_count": 1,
         "failed_count": 0,
         "pending_count": 0,
@@ -208,6 +224,7 @@ def test_retry_job_only_reprocesses_the_service_run_failures(
     service = TaxonomySuggestionService(
         state_path=state_path,
         governance=governance,
+        question_loader=_question_loader,
     )
     run = service.create_run(
         proposal_ids=[str(proposal["id"])],
@@ -235,7 +252,7 @@ def test_retry_job_only_reprocesses_the_service_run_failures(
         context=context,
         suggestion_state_path=state_path,
         taxonomy_governance=governance,
-        question_loader=lambda _ids: [],
+        question_loader=_question_loader,
         ai_service_factory=SuggestionGateway,
         batch_size=1,
     )
@@ -267,6 +284,7 @@ def test_cancelled_job_stops_before_the_next_model_batch(
     service = TaxonomySuggestionService(
         state_path=state_path,
         governance=governance,
+        question_loader=_question_loader,
     )
     run = service.create_run(
         proposal_ids=[str(item["id"]) for item in proposals],
@@ -291,7 +309,7 @@ def test_cancelled_job_stops_before_the_next_model_batch(
             context=context,
             suggestion_state_path=state_path,
             taxonomy_governance=governance,
-            question_loader=lambda _ids: [],
+            question_loader=_question_loader,
             ai_service_factory=lambda: gateway,
             batch_size=1,
         )

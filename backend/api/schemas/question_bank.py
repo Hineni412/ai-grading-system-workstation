@@ -580,6 +580,9 @@ class TaxonomyProposalResponse(_QuestionBankModel):
     nearest_id: str = ""
     why_not_reuse: str = ""
     question_refs: list[int] = Field(default_factory=list)
+    active_question_refs: list[int] = Field(default_factory=list)
+    unavailable_question_ref_count: int = Field(default=0, ge=0)
+    actionable: bool = True
     resolved_term_ids: list[str] = Field(default_factory=list)
     status: Literal["pending", "approved", "merged", "rejected", "retired"]
     created_at: str | None = None
@@ -588,6 +591,8 @@ class TaxonomyProposalResponse(_QuestionBankModel):
 
 class TaxonomyProposalCounts(_QuestionBankModel):
     pending: int = Field(ge=0)
+    actionable: int = Field(default=0, ge=0)
+    historical_unavailable: int = Field(default=0, ge=0)
 
 
 class TaxonomyProposalListResponse(_QuestionBankModel):
@@ -707,6 +712,7 @@ class TaxonomySuggestionItem(_QuestionBankModel):
 
 class TaxonomySuggestionProgress(_QuestionBankModel):
     total: int = Field(ge=0)
+    processed: int = Field(ge=0)
     completed: int = Field(ge=0)
     failed: int = Field(ge=0)
     pending: int = Field(ge=0)

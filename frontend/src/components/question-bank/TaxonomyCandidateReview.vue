@@ -55,7 +55,15 @@ const dimensionLabels: Record<TaxonomyDimension, string> = {
 }
 
 const pendingProposals = computed(() => (
-  store.proposals.filter(({ status }) => status === 'pending')
+  store.proposals.filter(({ status, actionable }) => (
+    status === 'pending' && actionable
+  ))
+))
+
+const historicalProposals = computed(() => (
+  store.proposals.filter(({ status, actionable }) => (
+    status === 'pending' && !actionable
+  ))
 ))
 
 const suggestionIsActive = computed(() => (
@@ -66,16 +74,22 @@ const suggestionIsActive = computed(() => (
 const suggestionProgressLabel = computed(() => {
   const run = store.suggestionRun
   if (!run) return ''
-  const { total, completed, failed, pending, cancelled } = run.progress
+  const {
+    total,
+    processed,
+    completed,
+    failed,
+    pending,
+    cancelled,
+  } = run.progress
   if (run.stale) return '词表已变化，这批建议已失效'
-  if (suggestionIsActive.value) {
-    return `已完成 ${completed}/${total}，待处理 ${pending}`
-  }
-  const additions = [
+  const details = [
+    `已生成建议 ${completed}`,
     failed ? `失败 ${failed}` : '',
+    pending ? `待处理 ${pending}` : '',
     cancelled ? `未继续 ${cancelled}` : '',
   ].filter(Boolean).join('，')
-  return `已完成 ${completed}/${total}${additions ? `，${additions}` : ''}`
+  return `已处理 ${processed}/${total}，${details}`
 })
 
 const dimensionCounts = computed<Record<TaxonomyDimension, number>>(() => (
@@ -428,6 +442,9 @@ onBeforeUnmount(() => {
             <strong>{{ store.pendingCount }}</strong>
             <span>个词等待教师确认</span>
             <small>词表版本 {{ store.revision }}</small>
+            <small v-if="store.historicalUnavailableCount">
+              另有 {{ store.historicalUnavailableCount }} 个历史候选暂无当前题目
+            </small>
           </div>
           <div class="taxonomy-review__toolbar-actions">
             <button
@@ -482,7 +499,7 @@ onBeforeUnmount(() => {
           <progress
             v-if="store.suggestionRun"
             :max="Math.max(1, store.suggestionRun.progress.total)"
-            :value="store.suggestionRun.progress.completed"
+            :value="store.suggestionRun.progress.processed"
           />
           <p>{{ store.suggestionMessage }}</p>
         </section>
@@ -518,6 +535,28 @@ onBeforeUnmount(() => {
         >
           {{ store.message }}
         </p>
+
+        <details
+          v-if="historicalProposals.length"
+          class="taxonomy-review__historical"
+        >
+          <summary>
+            历史失联候选（{{ historicalProposals.length }}）
+          </summary>
+          <p>
+            这些候选仍保留历史审核证据，但当前题库中已没有可核对的关联题目。
+            恢复原试卷后会重新进入待处理清单；系统不会自动删除或交给 AI 判断。
+          </p>
+          <ul>
+            <li v-for="proposal in historicalProposals" :key="proposal.id">
+              <strong>{{ proposal.proposed_name }}</strong>
+              <span>
+                {{ dimensionLabels[proposal.dimension] }} ·
+                {{ proposal.unavailable_question_ref_count }} 个历史题目引用
+              </span>
+            </li>
+          </ul>
+        </details>
 
         <div v-if="store.loadState === 'loading' && !store.proposals.length" class="taxonomy-review__state">
           正在读取新词候选…

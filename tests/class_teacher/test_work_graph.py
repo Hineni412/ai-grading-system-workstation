@@ -302,6 +302,44 @@ def test_invalid_model_dates_and_cycles_never_reach_work_graph(
     assert graph.query(as_of="2026-08-07")["nodes"] == []
 
 
+def test_ordinary_preview_can_be_requested_again_with_a_new_operation(
+    tmp_path: Path,
+) -> None:
+    graph, gateway = _graph(tmp_path, result="not-json")
+    preview = graph.prepare_plan(text="周五前完成任务", due_date="2026-08-07")
+
+    first = graph.invoke_plan(
+        preview_id=str(preview["preview_id"]),
+        fingerprint=str(preview["fingerprint"]),
+        operation_id="work-model-retry-001",
+    )
+    gateway.result = _proposal(due_date="2026-08-07")
+    second = graph.invoke_plan(
+        preview_id=str(preview["preview_id"]),
+        fingerprint=str(preview["fingerprint"]),
+        operation_id="work-model-retry-002",
+    )
+
+    assert first["state"] == "invalid_result"
+    assert second["state"] == "succeeded"
+    assert len(gateway.calls) == 2
+
+
+def test_work_plan_receipt_reports_all_gateway_retry_attempts(tmp_path: Path) -> None:
+    graph, gateway = _graph(tmp_path, result=_proposal(due_date="2026-08-07"))
+    gateway.request_count = 3
+    preview = graph.prepare_plan(text="周五前完成任务", due_date="2026-08-07")
+
+    result = graph.invoke_plan(
+        preview_id=str(preview["preview_id"]),
+        fingerprint=str(preview["fingerprint"]),
+        operation_id="work-model-three-attempts-001",
+    )
+
+    assert result["state"] == "succeeded"
+    assert result["physical_request_count"] == 3
+
+
 def test_follow_up_and_unknown_result_do_not_fabricate_or_retry(tmp_path: Path) -> None:
     follow_up = {
         "kind": "follow_up",

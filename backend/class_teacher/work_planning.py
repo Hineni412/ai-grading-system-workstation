@@ -88,6 +88,21 @@ class WorkPlanningGateway(Protocol):
     ) -> str: ...
 
 
+def _physical_request_count(
+    gateway: object,
+    operation_id: str,
+    *,
+    default: int,
+) -> int:
+    lookup = getattr(gateway, "physical_request_count", None)
+    if callable(lookup):
+        try:
+            return max(0, int(lookup(operation_id)))
+        except (TypeError, ValueError):
+            pass
+    return max(0, int(default))
+
+
 class DisabledWorkPlanningGateway:
     model_name = "未启用真实模型"
 
@@ -136,6 +151,7 @@ class FakeWorkPlanningGateway:
         model_provider: str = "synthetic.invalid",
         model_endpoint: str = "https://synthetic.invalid/v1",
         model: str = "synthetic-work-planner",
+        request_count: int = 1,
     ) -> None:
         self.result = result
         self.available = available
@@ -143,7 +159,13 @@ class FakeWorkPlanningGateway:
         self.model_provider = model_provider
         self.model_endpoint = model_endpoint
         self.model = model
+        self.request_count = max(0, int(request_count))
         self.calls: list[dict[str, object]] = []
+
+    def physical_request_count(self, operation_id: str) -> int:
+        return self.request_count if any(
+            call["operation_id"] == operation_id for call in self.calls
+        ) else 0
 
     def is_available(self) -> bool:
         return self.available
@@ -191,12 +213,13 @@ class FakeWorkPlanningGateway:
 
 
 class WorkPlanning:
-    """Exact-preview, one-call, validated planning module.
+    """Validated ordinary-work planning module.
 
     Local code resolves only explicit dates, blocks sensitive text, validates
-    the returned graph and records an idempotent call receipt.  It never
-    invents workflow steps.  A valid plan is still only a proposal; WorkGraph
-    persists it after a separate teacher confirmation.
+    the returned graph and records an idempotent call receipt. It never
+    invents workflow steps. Ordinary text is dispatched directly from the
+    generate action; a valid plan still needs teacher confirmation before
+    WorkGraph persists it.
     """
 
     def __init__(
@@ -236,20 +259,36 @@ class WorkPlanning:
             "parent_context": parent_context,
             "instructions": [
                 "根据教师这一次输入的真实语境拆解任务，不使用任何预置业务模板。",
-                "识别完成目标所需的具体节点、依赖关系，并从最终日期向前倒排；信息不足时返回 questions，不得猜测。",
-                "只返回 JSON；不得诊断、认定、惩戒、自动外发、自动完成或自动结案。",
+                "识别完成目标所需的具体节点、依赖关系，并从最终日期向前倒排；只有缺少的信息会阻止形成安全且有用的方案时才追问，不得猜测。",
+                "追问只问最少必要的 1—3 个问题；每个问题必须指出缺失的是目标成果、参与角色、时间、范围数量、约束资源或待确认事实中的哪一方面，并结合原文给出可选示例，不得只说‘请补充具体信息’。",
+                "不得重复询问 task_text 或 final_due_date 中已经明确的信息，也不得索要完成当前方案不需要的姓名、电话、地址等敏感信息。",
+                "kind 是必填字段且不得为空；返回 questions 时 kind 必须为 follow_up，nodes 和 edges 必须为空数组。",
+                "优先只返回 JSON；若更适合连续事务或学生支持则只给出建议去向，不得自动创建。",
+                "不得诊断、认定欺凌、惩戒、自动外发、自动完成或自动结案。",
                 "没有最终日期时不得编造节点日期；所有日期只能是 YYYY-MM-DD，且不能晚于 final_due_date。",
             ],
             "output_contract": {
-                "kind": "plan 或 follow_up",
-                "questions": ["需要教师补充的问题；没有则为空数组"],
+                "kind": "必填枚举：plan、follow_up、affair_recommendation 或 student_support_recommendation",
+                "questions": ["最多 3 个具体问题；没有则为空数组"],
                 "assumptions": ["模型采用且需教师复核的假设；没有则为空数组"],
+                "summary": "建议去向的中性说明；仅 recommendation 类型需要",
+                "reasons": ["建议该去向的理由；没有则为空数组"],
+                "follow_up_example": {
+                    "kind": "follow_up",
+                    "questions": [
+                        "你希望围绕这件事完成哪类成果？例如流程安排、材料准备、通知回执或事实核对。"
+                    ],
+                    "assumptions": [],
+                    "nodes": [],
+                    "edges": [],
+                },
                 "nodes": [
                     {
                         "id": "本次方案内唯一编号",
                         "kind": sorted(_NODE_KINDS),
                         "title": "节点标题",
                         "details": "具体说明或 null",
+                        "rationale": "为什么这样安排；没有则为 null",
                         "status": sorted(_INITIAL_STATUSES),
                         "due_date": "YYYY-MM-DD 或 null",
                     }
@@ -283,7 +322,6 @@ class WorkPlanning:
             "destination_fingerprint": destination_fingerprint,
             "expires_at": _iso(expires_at),
             "local_context": dict(local_context or {}),
-            "claimed_operation_id": None,
             "in_flight": False,
         }
         with self._lock:
@@ -302,7 +340,7 @@ class WorkPlanning:
             "model_name": destination.get("model") or "未启用真实模型",
             "destination_fingerprint": destination_fingerprint,
             "model_enabled": bool(destination.get("available")),
-            "max_physical_requests": 1,
+            "max_physical_requests": None,
             "physical_request_count": 0,
         }
 
@@ -329,20 +367,12 @@ class WorkPlanning:
                     "发送内容已经变化，请重新预览",
                     status_code=409,
                 )
-            claimed = preview.get("claimed_operation_id")
-            if claimed is not None and str(claimed) != operation_id:
-                raise VaultError(
-                    "class_teacher_work_plan_preview_already_confirmed",
-                    "这份发送预览已经确认，不能再次调用 AI",
-                    status_code=409,
-                )
             if bool(preview.get("in_flight")):
                 raise VaultError(
                     "class_teacher_work_plan_in_progress",
                     "AI 正在处理这份方案，请等待当前请求返回",
                     status_code=409,
                 )
-            preview["claimed_operation_id"] = operation_id
             preview["in_flight"] = True
 
         existing = self._receipt(operation_id)
@@ -368,6 +398,10 @@ class WorkPlanning:
             "local_context": preview["local_context"],
             "plan": None,
             "plan_fingerprint": None,
+            "result_kind": None,
+            "result": None,
+            "assistant_message": None,
+            "validation_issue": None,
             "questions": [],
             "assumptions": [],
             "teacher_confirmation_required": False,
@@ -425,29 +459,42 @@ class WorkPlanning:
                 result = {
                     **receipt,
                     "state": "destination_changed",
+                    "physical_request_count": _physical_request_count(
+                        self.gateway, operation_id, default=0
+                    ),
                     "error_category": "destination_changed",
                 }
             except ModelDispatchDisabled:
                 result = {
                     **receipt,
                     "state": "unavailable",
+                    "physical_request_count": _physical_request_count(
+                        self.gateway, operation_id, default=0
+                    ),
                     "error_category": "model_disabled",
                 }
             except ModelResultUnknown:
                 result = {
                     **receipt,
                     "state": "result_unknown",
-                    "physical_request_count": 1,
+                    "physical_request_count": _physical_request_count(
+                        self.gateway, operation_id, default=1
+                    ),
                     "error_category": "result_unknown",
                 }
             except Exception:
                 result = {
                     **receipt,
                     "state": "result_unknown",
-                    "physical_request_count": 1,
+                    "physical_request_count": _physical_request_count(
+                        self.gateway, operation_id, default=1
+                    ),
                     "error_category": "result_unknown",
                 }
             else:
+                physical_request_count = _physical_request_count(
+                    self.gateway, operation_id, default=1
+                )
                 try:
                     parsed = self._validate_result(
                         raw_result,
@@ -462,19 +509,37 @@ class WorkPlanning:
                     result = {
                         **receipt,
                         "state": "invalid_result",
-                        "physical_request_count": 1,
+                        "physical_request_count": physical_request_count,
                         "error_category": exc.code,
+                        "validation_issue": exc.message,
                     }
                 else:
                     questions = parsed["questions"]
                     assumptions = parsed["assumptions"]
-                    if parsed["kind"] == "follow_up" or questions:
+                    parsed_kind = str(parsed["kind"])
+                    if parsed_kind == "follow_up" or questions:
                         result = {
                             **receipt,
                             "state": "needs_information",
-                            "physical_request_count": 1,
+                            "physical_request_count": physical_request_count,
+                            "result_kind": "follow_up",
                             "questions": questions,
                             "assumptions": assumptions,
+                        }
+                    elif parsed_kind in {
+                        "affair_recommendation",
+                        "student_support_recommendation",
+                        "plain_text",
+                    }:
+                        result = {
+                            **receipt,
+                            "state": "succeeded",
+                            "physical_request_count": physical_request_count,
+                            "result_kind": parsed_kind,
+                            "result": parsed.get("result"),
+                            "assistant_message": parsed.get("assistant_message"),
+                            "assumptions": assumptions,
+                            "teacher_confirmation_required": True,
                         }
                     else:
                         plan = {
@@ -488,7 +553,9 @@ class WorkPlanning:
                         result = {
                             **receipt,
                             "state": "succeeded",
-                            "physical_request_count": 1,
+                            "physical_request_count": physical_request_count,
+                            "result_kind": "ordinary_plan",
+                            "result": plan,
                             "plan": plan,
                             "plan_fingerprint": plan_fingerprint,
                             "assumptions": assumptions,
@@ -570,6 +637,10 @@ class WorkPlanning:
             "assumptions": list(receipt.get("assumptions") or []),
             "plan": receipt.get("plan"),
             "plan_fingerprint": receipt.get("plan_fingerprint"),
+            "result_kind": receipt.get("result_kind"),
+            "result": receipt.get("result"),
+            "assistant_message": receipt.get("assistant_message"),
+            "validation_issue": receipt.get("validation_issue"),
             "teacher_confirmation_required": bool(
                 receipt.get("teacher_confirmation_required")
             ),
@@ -583,21 +654,77 @@ class WorkPlanning:
         mode: str,
         final_due_date: str | None,
     ) -> dict[str, object]:
+        clean_result = str(raw_result or "").strip()
+        fenced = re.fullmatch(
+            r"```(?:json)?\s*(.*?)\s*```",
+            clean_result,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        if fenced is not None:
+            clean_result = fenced.group(1).strip()
         try:
-            decoded = json.loads(raw_result)
+            decoded = json.loads(clean_result)
         except (json.JSONDecodeError, TypeError) as exc:
+            readable = " ".join(clean_result.split())
+            if (
+                8 <= len(readable) <= 800
+                and re.search(r"[一-鿿]", readable)
+            ):
+                self._assert_safe_model_text([readable])
+                return {
+                    "kind": "plain_text",
+                    "questions": [],
+                    "assumptions": [],
+                    "nodes": [],
+                    "edges": [],
+                    "assistant_message": readable,
+                    "result": {"text": readable},
+                }
             raise self._invalid("AI 返回的内容不是有效 JSON") from exc
         if not isinstance(decoded, dict):
             raise self._invalid("AI 返回的方案结构无效")
-        kind = str(decoded.get("kind") or "").strip()
-        if kind not in {"plan", "follow_up"}:
+        raw_kind = decoded.get("kind")
+        if raw_kind is not None and not isinstance(raw_kind, str):
             raise self._invalid("AI 返回了不支持的方案类型")
-        questions = self._string_list(decoded.get("questions"), label="追问")
-        assumptions = self._string_list(decoded.get("assumptions"), label="假设")
+        kind = raw_kind.strip() if isinstance(raw_kind, str) else ""
+        questions = self._string_list(
+            decoded.get("questions", []),
+            label="追问",
+            maximum_items=3,
+        )
+        assumptions = self._string_list(decoded.get("assumptions", []), label="假设")
+        raw_nodes = decoded.get("nodes", [])
+        raw_edges = decoded.get("edges", [])
+        recommendation_payload_empty = all(
+            decoded.get(key) in (None, "", [])
+            for key in ("summary", "reasons", "text")
+        )
+        if (
+            not kind
+            and questions
+            and raw_nodes == []
+            and raw_edges == []
+            and recommendation_payload_empty
+        ):
+            kind = "follow_up"
+        if kind not in {
+            "plan",
+            "follow_up",
+            "affair_recommendation",
+            "student_support_recommendation",
+            "plain_text",
+        }:
+            raise self._invalid("AI 返回了不支持的方案类型")
         self._assert_safe_model_text([*questions, *assumptions])
         if kind == "follow_up":
             if not questions:
                 raise self._invalid("AI 表示信息不足但没有返回追问")
+            if (
+                raw_nodes != []
+                or raw_edges != []
+                or not recommendation_payload_empty
+            ):
+                raise self._invalid("AI 追问结果不能混入方案节点或建议内容")
             return {
                 "kind": kind,
                 "questions": questions,
@@ -605,9 +732,49 @@ class WorkPlanning:
                 "nodes": [],
                 "edges": [],
             }
+        if questions:
+            raise self._invalid("AI 返回追问时必须使用 follow_up 类型")
+        if kind == "plain_text":
+            message = self._bounded_text(
+                decoded.get("text"),
+                label="安全说明",
+                maximum=800,
+            )
+            self._assert_safe_model_text([message])
+            return {
+                "kind": kind,
+                "questions": [],
+                "assumptions": assumptions,
+                "nodes": [],
+                "edges": [],
+                "assistant_message": message,
+                "result": {"text": message},
+            }
+        if kind in {
+            "affair_recommendation",
+            "student_support_recommendation",
+        }:
+            summary = self._bounded_text(
+                decoded.get("summary"),
+                label="建议说明",
+                maximum=800,
+            )
+            reasons = self._string_list(decoded.get("reasons", []), label="建议理由")
+            self._assert_safe_model_text([summary, *reasons])
+            return {
+                "kind": kind,
+                "questions": [],
+                "assumptions": assumptions,
+                "nodes": [],
+                "edges": [],
+                "assistant_message": summary,
+                "result": {
+                    "kind": kind,
+                    "summary": summary,
+                    "reasons": reasons,
+                },
+            }
 
-        raw_nodes = decoded.get("nodes")
-        raw_edges = decoded.get("edges")
         if not isinstance(raw_nodes, list) or not raw_nodes or len(raw_nodes) > 24:
             raise self._invalid("AI 方案节点数量无效")
         if not isinstance(raw_edges, list) or len(raw_edges) > 64:
@@ -633,6 +800,12 @@ class WorkPlanning:
                 if details_raw is None
                 else self._bounded_text(details_raw, label="节点说明", maximum=800)
             )
+            rationale_raw = raw.get("rationale")
+            rationale = (
+                None
+                if rationale_raw is None
+                else self._bounded_text(rationale_raw, label="安排理由", maximum=800)
+            )
             due_date = self._plan_date(raw.get("due_date"), final_due_date)
             nodes.append(
                 {
@@ -640,6 +813,7 @@ class WorkPlanning:
                     "kind": node_kind,
                     "title": title,
                     "details": details,
+                    "rationale": rationale,
                     "status": status,
                     "due_date": due_date,
                 }
@@ -703,6 +877,7 @@ class WorkPlanning:
             [
                 *(str(node["title"]) for node in nodes),
                 *(str(node.get("details") or "") for node in nodes),
+                *(str(node.get("rationale") or "") for node in nodes),
                 *questions,
                 *assumptions,
             ]
@@ -735,8 +910,15 @@ class WorkPlanning:
             raise WorkPlanning._invalid("AI 方案关系形成了循环")
 
     @staticmethod
-    def _string_list(value: object, *, label: str) -> list[str]:
-        if not isinstance(value, list) or len(value) > 8:
+    def _string_list(
+        value: object,
+        *,
+        label: str,
+        maximum_items: int = 8,
+    ) -> list[str]:
+        if not isinstance(value, list) or len(value) > maximum_items:
+            raise WorkPlanning._invalid(f"AI 返回的{label}列表无效")
+        if any(not isinstance(item, str) for item in value):
             raise WorkPlanning._invalid(f"AI 返回的{label}列表无效")
         return [
             WorkPlanning._bounded_text(item, label=label, maximum=240)

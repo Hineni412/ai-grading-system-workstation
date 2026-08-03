@@ -25,6 +25,7 @@ function manifest(
     title: moduleId === 'teaching-prep' ? '备课工作台' : '班主任工作台',
     description: '模块说明',
     breadcrumb: moduleId === 'teaching-prep' ? '备课工作台' : '班主任工作台',
+    topbarContext: 'workspace',
     ...changes,
   } as WorkspaceManifest
 }
@@ -39,6 +40,10 @@ describe('workspace registry', () => {
     expect(registry.navigationItems.map(({ id, path }) => [id, path])).toEqual([
       ['teaching-prep', '/teaching-prep'],
       ['class-teacher', '/class-teacher'],
+    ])
+    expect(registry.modules.map(({ route }) => route.topbarContext)).toEqual([
+      'workspace',
+      'workspace',
     ])
   })
 
@@ -72,6 +77,12 @@ describe('workspace registry', () => {
         'Workspace class-teacher feature flags are invalid',
       ),
     )
+  })
+
+  it('rejects an undeclared topbar context', () => {
+    expect(() => createWorkspaceRegistry([
+      manifest('teaching-prep', { topbarContext: 'unknown' as 'workspace' }),
+    ])).toThrow(/Workspace teaching-prep topbar context is invalid/)
   })
 
   it('rejects conflicts with existing application routes', () => {

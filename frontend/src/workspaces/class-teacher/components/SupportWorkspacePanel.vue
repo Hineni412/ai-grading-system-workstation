@@ -836,13 +836,13 @@ async function deleteSubject(): Promise<void> {
   saving.value = true
   try {
     const deletedSubjectId = selectedSubjectId.value
+    if (!deletionPreview.value) return
     await supportApi.deleteSubject(
       props.sessionToken,
       deletedSubjectId,
-      deletePhrase.value,
-      deletionPreview.value?.affected_backup_count
-        ? backupDeletePhrase.value
-        : null,
+      deletionPreview.value,
+      backupDeletePhrase.value || null,
+      globalThis.crypto.randomUUID(),
     )
     subjects.value = subjects.value.filter((item) => item.subject_id !== deletedSubjectId)
     selectedSubjectId.value = subjects.value[0]?.subject_id ?? ''

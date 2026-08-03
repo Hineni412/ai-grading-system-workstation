@@ -17,6 +17,7 @@ from backend.workspaces.contracts import WorkspaceContext
 from backend.workspaces.model_policy import WorkspaceModelGateway
 
 from .lesson_model import WorkspaceLessonModelAdapter
+from .exercise_suggestions import WorkspaceExerciseSuggestionModelAdapter
 from .semester_mapping import WorkspaceSemesterMappingModelAdapter
 
 
@@ -67,6 +68,17 @@ class _ActiveProfileRuntime:
         resolved = self._resolve()
         gateway, client = self._gateway_and_client(resolved)
         return WorkspaceSemesterMappingModelAdapter(
+            gateway=gateway,
+            client=client,
+            model=resolved.model,
+        )
+
+    def exercise_suggestion_adapter(
+        self,
+    ) -> WorkspaceExerciseSuggestionModelAdapter:
+        resolved = self._resolve()
+        gateway, client = self._gateway_and_client(resolved)
+        return WorkspaceExerciseSuggestionModelAdapter(
             gateway=gateway,
             client=client,
             model=resolved.model,
@@ -181,6 +193,33 @@ class ActiveProfileSemesterMappingModelAdapter:
         )
 
 
+class ActiveProfileExerciseSuggestionModelAdapter:
+    def __init__(
+        self,
+        *,
+        context: WorkspaceContext,
+        profile_store: ApiProfileStore,
+    ) -> None:
+        self._runtime = _ActiveProfileRuntime(
+            context=context,
+            profile_store=profile_store,
+        )
+
+    def is_available(self) -> bool:
+        return self._runtime.is_available()
+
+    def generate(
+        self,
+        *,
+        operation_id: str,
+        reference_snapshot: dict[str, Any],
+    ) -> dict[str, Any]:
+        return self._runtime.exercise_suggestion_adapter().generate(
+            operation_id=operation_id,
+            reference_snapshot=reference_snapshot,
+        )
+
+
 def _first_text(*values: object) -> str:
     for value in values:
         clean = str(value or "").strip()
@@ -190,6 +229,7 @@ def _first_text(*values: object) -> str:
 
 
 __all__ = [
+    "ActiveProfileExerciseSuggestionModelAdapter",
     "ActiveProfileLessonModelAdapter",
     "ActiveProfileSemesterMappingModelAdapter",
 ]

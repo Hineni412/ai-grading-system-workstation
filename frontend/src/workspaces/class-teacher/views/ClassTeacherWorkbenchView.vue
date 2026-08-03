@@ -1,17 +1,45 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
 import { ApiError } from '../../../api/errors'
-import { vaultApi, type VaultStatus } from '../api/vault'
-import SensitiveStudentWorkspace from '../components/SensitiveStudentWorkspace.vue'
-import UnifiedWorkBoard from '../components/UnifiedWorkBoard.vue'
+import type { HomeIntakeHandoff } from '../api/homeIntake'
+import { vaultApi } from '../api/vault'
+import { projectionR1Api } from '../api/r1'
+import AffairsSurface from '../affairs/AffairsSurface.vue'
+import CalendarSurface from '../ordinary/CalendarSurface.vue'
+import { createOrdinaryWorkModule } from '../ordinary/createOrdinaryWorkModule'
+import TodaySurface from '../ordinary/TodaySurface.vue'
+import { createVaultSessionModule } from '../security/createVaultSessionModule'
+import { provideVaultSession } from '../security/sensitiveSessionContext'
+import ClassTeacherSurfaceTabs from '../shell/ClassTeacherSurfaceTabs.vue'
+import StudentSurface from '../students/StudentSurface.vue'
+import {
+  useClassTeacherRouteState,
+  type ClassTeacherSurface,
+} from '../shell/useClassTeacherRouteState'
 
-const vaultStatus = ref<VaultStatus | null>(null)
+const vaultSession = createVaultSessionModule()
+provideVaultSession(vaultSession)
+const vaultStatus = vaultSession.status
+const sessionToken = vaultSession.token
+const { state: routeState, navigate } = useClassTeacherRouteState()
+const ordinaryWork = createOrdinaryWorkModule()
+const pendingProjectionId = ref('')
+interface ProtectedTarget {
+  gone?: boolean
+  surface: ClassTeacherSurface
+  panel?: 'directory' | 'support' | 'academic' | 'security'
+  target_kind?: string
+  target_id?: string
+  subject_id?: string
+}
+const protectedTarget = ref<ProtectedTarget | null>(null)
+const homeIntakeHandoff = ref<HomeIntakeHandoff | null>(null)
+let preserveNextHandoffNavigation = false
 const loading = ref(true)
 const busy = ref(false)
 const message = ref('')
 const errorMessage = ref('')
-const sessionToken = ref('')
 const recoveryKey = ref('')
 const recoveryAcknowledged = ref(false)
 const showRecoveryForm = ref(false)
@@ -35,7 +63,7 @@ let lastServerTouch = 0
 const idleEvents = ['pointerdown', 'keydown', 'scroll'] as const
 
 const initialized = computed(() => vaultStatus.value?.initialized === true)
-const unlocked = computed(() => initialized.value && Boolean(sessionToken.value))
+const unlocked = computed(() => initialized.value && vaultSession.unlocked.value)
 const usesPin = computed(() => (
   vaultStatus.value?.protection_mode === 'pin_dpapi_current_user_v2'
   || vaultStatus.value?.protection_mode === 'uninitialized'
@@ -89,6 +117,7 @@ function clearSensitiveInputs(): void {
 }
 
 function resetIdleTimer(): void {
+  if (vaultStatus.value?.protection_mode === 'plaintext_debug_v1') return
   if (!unlocked.value) return
   if (idleHandle) clearTimeout(idleHandle)
   idleHandle = setTimeout(() => {
@@ -99,9 +128,13 @@ function resetIdleTimer(): void {
 async function refreshStatus(): Promise<void> {
   try {
     const status = await vaultApi.status(sessionToken.value || undefined)
-    vaultStatus.value = status
+    if (status.protection_mode === 'plaintext_debug_v1') {
+      vaultSession.setSession('plaintext-debug', status)
+    } else {
+      vaultSession.setStatus(status)
+    }
     if (status.locked && sessionToken.value) {
-      sessionToken.value = ''
+      vaultSession.clearImmediately()
       clearSensitiveInputs()
     }
   } catch (error) {
@@ -120,9 +153,9 @@ async function initializeVault(): Promise<void> {
     const result = pinMode
       ? await vaultApi.initializePin(pin.value)
       : await vaultApi.initialize(password.value)
-    sessionToken.value = result.session_token
+    vaultSession.setSession(result.session_token)
     recoveryKey.value = result.recovery_key
-    vaultStatus.value = {
+    vaultSession.setStatus({
       initialized: true,
       locked: false,
       idle_timeout_seconds: result.idle_timeout_seconds,
@@ -131,7 +164,10 @@ async function initializeVault(): Promise<void> {
       protection_mode: pinMode ? 'pin_dpapi_current_user_v2' : 'legacy_password_v1',
       protection_state: pinMode ? 'active' : null,
       legacy_upgrade_available: !pinMode,
-    }
+      session_expires_in_seconds: result.idle_timeout_seconds,
+      status_observed_at: new Date().toISOString(),
+      lock_reason: null,
+    })
     clearSensitiveInputs()
     resetIdleTimer()
   } catch (error) {
@@ -149,10 +185,11 @@ async function unlockVault(): Promise<void> {
     const result = usesPin.value
       ? await vaultApi.unlockPin(pin.value)
       : await vaultApi.unlock(password.value)
-    sessionToken.value = result.session_token
+    vaultSession.setSession(result.session_token)
     if (result.recovery_key) recoveryKey.value = result.recovery_key
     clearSensitiveInputs()
     await refreshStatus()
+    await resolvePendingProjection()
     resetIdleTimer()
   } catch (error) {
     errorMessage.value = errorText(error)
@@ -160,6 +197,72 @@ async function unlockVault(): Promise<void> {
     busy.value = false
   }
 }
+
+async function openRestricted(projectionId: string, projectionType: string | null): Promise<void> {
+  pendingProjectionId.value = projectionId
+  protectedTarget.value = null
+  const affairs = projectionType === 'sensitive_affair'
+  await navigate({ surface: affairs ? 'affairs' : 'students', panel: projectionType === 'attention_followup' ? 'academic' : 'support' })
+  if (unlocked.value) await resolvePendingProjection()
+}
+
+async function resolvePendingProjection(): Promise<void> {
+  if (!pendingProjectionId.value || !sessionToken.value) return
+  const target = await projectionR1Api.resolve(sessionToken.value, pendingProjectionId.value) as unknown as ProtectedTarget
+  protectedTarget.value = target
+  pendingProjectionId.value = ''
+  if (target.gone) {
+    message.value = '这项受保护工作已经不存在，匿名待办已清理。'
+    await navigate({ surface: 'today' })
+    return
+  }
+  await navigate({
+    surface: target.surface,
+    panel: target.panel ?? 'directory',
+  })
+}
+
+function clearHomeIntakeHandoff(): void {
+  homeIntakeHandoff.value = null
+  preserveNextHandoffNavigation = false
+}
+
+async function receiveHomeIntakeHandoff(value: HomeIntakeHandoff): Promise<void> {
+  protectedTarget.value = null
+  pendingProjectionId.value = ''
+  homeIntakeHandoff.value = value
+  await navigate({
+    surface: value.destination === 'affair' ? 'affairs' : 'students',
+    panel: value.destination === 'student_support' ? 'directory' : undefined,
+  })
+}
+
+async function selectStudentPanel(
+  panel: 'directory' | 'support' | 'academic' | 'security',
+  preserveHandoff = false,
+): Promise<void> {
+  if (!preserveHandoff) clearHomeIntakeHandoff()
+  else preserveNextHandoffNavigation = true
+  await navigate({ surface: 'students', panel })
+}
+
+watch(
+  () => [routeState.value.surface, routeState.value.panel] as const,
+  ([surface, panel], previous) => {
+    if (!homeIntakeHandoff.value) return
+    const expected = homeIntakeHandoff.value.destination === 'affair' ? 'affairs' : 'students'
+    if (surface !== expected) {
+      clearHomeIntakeHandoff()
+      return
+    }
+    if (homeIntakeHandoff.value.destination !== 'student_support' || panel === previous?.[1]) return
+    if (preserveNextHandoffNavigation) {
+      preserveNextHandoffNavigation = false
+      return
+    }
+    clearHomeIntakeHandoff()
+  },
+)
 
 async function recoverVault(): Promise<void> {
   const replacementValid = usesPin.value
@@ -172,7 +275,7 @@ async function recoverVault(): Promise<void> {
     const result = usesPin.value
       ? await vaultApi.recoverPin(recoveryInput.value, recoveryNewPin.value)
       : await vaultApi.recover(recoveryInput.value, recoveryNewPassword.value)
-    sessionToken.value = result.session_token
+    vaultSession.setSession(result.session_token)
     showRecoveryForm.value = false
     clearSensitiveInputs()
     await refreshStatus()
@@ -207,7 +310,7 @@ async function upgradeLegacyPin(): Promise<void> {
       upgradeCurrentPassword.value,
       upgradePin.value,
     )
-    sessionToken.value = ''
+    vaultSession.clearImmediately()
     showPinUpgrade.value = false
     clearSensitiveInputs()
     if (idleHandle) clearTimeout(idleHandle)
@@ -221,33 +324,47 @@ async function upgradeLegacyPin(): Promise<void> {
 }
 
 async function lockVault(reason = '敏感保险箱已锁定，普通工作区仍可使用。'): Promise<void> {
-  const token = sessionToken.value
-  sessionToken.value = ''
+  clearHomeIntakeHandoff()
   recoveryKey.value = ''
   clearSensitiveInputs()
   clearNotices()
   if (idleHandle) clearTimeout(idleHandle)
-  try {
-    if (token) await vaultApi.lock(token)
-  } catch {
-    // The server independently expires the same short-lived session.
-  }
+  await vaultSession.lock(reason)
   message.value = reason
   await refreshStatus()
+}
+
+async function selectSurface(surface: ClassTeacherSurface): Promise<void> {
+  clearHomeIntakeHandoff()
+  if (vaultStatus.value?.protection_mode === 'plaintext_debug_v1') {
+    await navigate({ surface })
+    return
+  }
+  const leavingSensitive = ['affairs', 'students'].includes(routeState.value.surface)
+    && ['today', 'calendar'].includes(surface)
+  if (leavingSensitive) {
+    const locking = lockVault('已离开敏感工作面，学生信息已卸载。')
+    await nextTick()
+    await navigate({ surface })
+    await locking
+    return
+  }
+  await navigate({ surface })
 }
 
 function onActivity(): void {
   resetIdleTimer()
   if (!sessionToken.value || Date.now() - lastServerTouch < 30_000) return
   lastServerTouch = Date.now()
-  void vaultApi.touch(sessionToken.value).catch((error: unknown) => {
+  void vaultSession.touch().catch((error: unknown) => {
     if (error instanceof ApiError && error.code === 'vault_locked') void lockVault()
   })
 }
 
 function onPageHide(): void {
-  const token = sessionToken.value
-  sessionToken.value = ''
+  clearHomeIntakeHandoff()
+  if (vaultStatus.value?.protection_mode === 'plaintext_debug_v1') return
+  const token = vaultSession.clearImmediately()
   recoveryKey.value = ''
   clearSensitiveInputs()
   if (token) void vaultApi.lock(token)
@@ -271,31 +388,77 @@ onBeforeUnmount(() => {
   <main class="class-teacher">
     <header class="workspace-heading">
       <div>
-        <p class="workspace-heading__eyebrow">普通工作随时可用 · 学生事项单独保护</p>
+        <p class="workspace-heading__eyebrow">调试模式 · 所有工作面直接打开</p>
         <h1>班主任工作台</h1>
-        <p>先安排每天的事；需要具体学生信息时，再进入页面底部的敏感保险箱。</p>
+        <p>学生内容以明文保存在本机；只有向真实模型发送学生内容前，仍会先匿名预览并要求确认。</p>
       </div>
       <div class="vault-state" :data-state="unlocked ? 'open' : 'locked'" role="status">
         <span aria-hidden="true">{{ unlocked ? '●' : '◆' }}</span>
-        {{ unlocked ? '敏感区已解锁' : '敏感区已锁定' }}
+        {{ vaultStatus?.protection_mode === 'plaintext_debug_v1' ? '调试直开' : (vaultStatus?.protection_mode === 'legacy_migration_required' ? '旧库待迁移' : (unlocked ? '敏感区已解锁' : '敏感区已锁定')) }}
       </div>
     </header>
 
-    <UnifiedWorkBoard />
+    <ClassTeacherSurfaceTabs
+      :active="routeState.surface"
+      :locked="vaultStatus?.protection_mode === 'plaintext_debug_v1' ? false : !unlocked"
+      @select="selectSurface"
+    />
+
+    <TodaySurface
+      v-if="routeState.surface === 'today'"
+      :module="ordinaryWork"
+      :token="sessionToken || undefined"
+      @open-restricted="openRestricted"
+      @handoff="receiveHomeIntakeHandoff"
+    />
+    <CalendarSurface
+      v-else-if="routeState.surface === 'calendar'"
+      :module="ordinaryWork"
+      @open-restricted="openRestricted"
+    />
 
     <p v-if="message" class="notice notice--success" role="status">{{ message }}</p>
     <p v-if="errorMessage" class="notice notice--danger" role="alert">{{ errorMessage }}</p>
 
+    <template v-if="routeState.surface === 'affairs' || routeState.surface === 'students'">
     <div class="sensitive-divider">
       <div>
         <p class="section-kicker">班级名单与具体学生事项</p>
-        <h2>进入本机敏感保险箱</h2>
-        <p>解锁后可配置班级学生名单，或与 AI 讨论并形成经教师确认的学生摘要。</p>
+        <h2>学生与事务工作区</h2>
+        <p>{{ routeState.surface === 'affairs' ? '直接处理连续事务与学校流程。' : '直接查看学生名单、支持记录、学业证据和数据管理。' }}</p>
       </div>
-      <span>锁定时不会挂载或读取学生组件</span>
+      <span>当前不设 PIN、密码或自动锁定</span>
     </div>
 
-    <section v-if="loading" class="vault-sheet vault-sheet--loading" aria-live="polite">
+    <template v-if="!loading && vaultStatus?.protection_mode === 'plaintext_debug_v1'">
+      <AffairsSurface
+        v-if="routeState.surface === 'affairs'"
+        :token="sessionToken"
+        :target-id="protectedTarget?.target_kind === 'affair' ? protectedTarget.target_id : null"
+        :handoff="homeIntakeHandoff?.destination === 'affair' ? homeIntakeHandoff : null"
+        @handoff-persisted="clearHomeIntakeHandoff"
+        @handoff-discarded="clearHomeIntakeHandoff"
+      />
+      <StudentSurface
+        v-else
+        :token="sessionToken"
+        :panel="routeState.panel"
+        :status="vaultStatus"
+        :subject-id="protectedTarget?.subject_id ?? null"
+        :handoff="homeIntakeHandoff?.destination === 'student_support' ? homeIntakeHandoff : null"
+        @navigate="selectStudentPanel"
+        @handoff-persisted="clearHomeIntakeHandoff"
+        @handoff-discarded="clearHomeIntakeHandoff"
+      />
+    </template>
+
+    <section v-else-if="!loading && vaultStatus?.protection_mode === 'legacy_migration_required'" class="vault-sheet vault-sheet--single" role="alert">
+      <p class="section-kicker">已停止读写</p>
+      <h2>检测到旧加密班主任数据库</h2>
+      <p>调试明文模式不会直接打开或改写旧加密内容。请先完成已授权的数据迁移；迁移前现有数据库保持不变。</p>
+    </section>
+
+    <section v-else-if="loading" class="vault-sheet vault-sheet--loading" aria-live="polite">
       正在确认敏感保险箱状态…
     </section>
 
@@ -442,11 +605,27 @@ onBeforeUnmount(() => {
           </div>
         </form>
       </section>
-      <SensitiveStudentWorkspace
-        :session-token="sessionToken"
-        @activity="resetIdleTimer"
-        @locked="lockVault($event)"
+      <AffairsSurface
+        v-if="routeState.surface === 'affairs'"
+        :token="sessionToken"
+        :target-id="protectedTarget?.target_kind === 'affair' ? protectedTarget.target_id : null"
+        :handoff="homeIntakeHandoff?.destination === 'affair' ? homeIntakeHandoff : null"
+        @handoff-persisted="clearHomeIntakeHandoff"
+        @handoff-discarded="clearHomeIntakeHandoff"
       />
+      <StudentSurface
+        v-else
+        :token="sessionToken"
+        :panel="routeState.panel"
+        :status="vaultStatus"
+        :subject-id="protectedTarget?.subject_id ?? null"
+        :handoff="homeIntakeHandoff?.destination === 'student_support' ? homeIntakeHandoff : null"
+        @navigate="selectStudentPanel"
+        @handoff-persisted="clearHomeIntakeHandoff"
+        @handoff-discarded="clearHomeIntakeHandoff"
+        @locked="lockVault"
+      />
+    </template>
     </template>
   </main>
 </template>

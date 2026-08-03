@@ -8,7 +8,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Protocol
 from uuid import uuid4
 
-from .content_policy import SensitiveContentPolicy
+from .content_policy import RedactionResult, SensitiveContentPolicy
 from .crypto import canonical_json
 from .encrypted_database import EncryptedDatabase
 from .errors import VaultError
@@ -57,6 +57,21 @@ class ApprovedModelGateway(Protocol):
         data_classification: str = "restricted_anonymized",
         expected_destination_fingerprint: str | None = None,
     ) -> str: ...
+
+
+def _physical_request_count(
+    gateway: object,
+    operation_id: str,
+    *,
+    default: int,
+) -> int:
+    lookup = getattr(gateway, "physical_request_count", None)
+    if callable(lookup):
+        try:
+            return max(0, int(lookup(operation_id)))
+        except (TypeError, ValueError):
+            pass
+    return max(0, int(default))
 
 
 class DisabledModelGateway:
@@ -143,6 +158,9 @@ class ModelApproval:
         source_text: str,
         context: dict[str, object] | None = None,
         identity_terms: tuple[str, ...] = (),
+        redaction: RedactionResult | None = None,
+        route_hint: str | None = None,
+        output_contract: dict[str, object] | None = None,
     ) -> dict[str, object]:
         if _SAFE_TOKEN.fullmatch(str(purpose or "")) is None:
             raise VaultError(
@@ -151,7 +169,7 @@ class ModelApproval:
                 status_code=422,
             )
         vmk = self.session_key(token)
-        redaction = SensitiveContentPolicy.prepare_model_text(
+        redaction = redaction or SensitiveContentPolicy.prepare_model_text(
             source_text,
             identity_terms=identity_terms,
         )
@@ -171,14 +189,21 @@ class ModelApproval:
         preview_id = uuid4().hex
         payload_object_id = f"model-preview-{preview_id}"
         expires_at = _now() + timedelta(seconds=_PREVIEW_SECONDS)
+        alias_labels = [alias for _term, alias in redaction.identity_aliases]
         exact_payload: dict[str, object] = {
             "purpose": purpose,
-            "student_alias": "学生A",
+            "student_alias": alias_labels[0] if alias_labels else "学生A",
             "task_text": redaction.outbound_text,
             "instructions": (
                 "只生成待教师复核的中性草稿；不得诊断、认定、惩戒、外发或结案。"
             ),
         }
+        if alias_labels:
+            exact_payload["student_aliases"] = alias_labels
+        if route_hint is not None:
+            exact_payload["route_hint"] = str(route_hint)
+        if output_contract is not None:
+            exact_payload["output_contract"] = dict(output_contract)
         fingerprint = hashlib.sha256(canonical_json(exact_payload)).hexdigest()
         with closing(self.sensitive_database.connect()) as connection:
             with connection:
@@ -254,6 +279,7 @@ class ModelApproval:
         preview_id: str,
         fingerprint: str,
         operation_id: str,
+        expected_destination_fingerprint: str | None = None,
     ) -> dict[str, object]:
         self._validate_operation_id(operation_id)
         vmk = self.session_key(token)
@@ -329,15 +355,41 @@ class ModelApproval:
             result_text = self.gateway.invoke(
                 payload=exact_payload,
                 operation_id=operation_id,
+                purpose=str(row["purpose"]),
+                data_classification="restricted_anonymized",
+                expected_destination_fingerprint=expected_destination_fingerprint,
             )
+        except ModelDestinationChanged:
+            self._set_state(
+                preview_id,
+                "failed_before_send",
+                "destination_changed",
+                0,
+            )
+            return self.status(token=token, operation_id=operation_id)
         except ModelDispatchDisabled:
-            self._set_state(preview_id, "failed_before_send", "model_disabled", 0)
+            self._set_state(
+                preview_id,
+                "failed_before_send",
+                "model_disabled",
+                _physical_request_count(self.gateway, operation_id, default=0),
+            )
             return self.status(token=token, operation_id=operation_id)
         except ModelResultUnknown:
-            self._set_state(preview_id, "result_unknown", "result_unknown", 1)
+            self._set_state(
+                preview_id,
+                "result_unknown",
+                "result_unknown",
+                _physical_request_count(self.gateway, operation_id, default=1),
+            )
             return self.status(token=token, operation_id=operation_id)
         except Exception:
-            self._set_state(preview_id, "result_unknown", "dispatch_error", 1)
+            self._set_state(
+                preview_id,
+                "result_unknown",
+                "dispatch_error",
+                _physical_request_count(self.gateway, operation_id, default=1),
+            )
             return self.status(token=token, operation_id=operation_id)
 
         result_object_id = f"model-result-{preview_id}"
@@ -364,10 +416,15 @@ class ModelApproval:
                     """
                     UPDATE model_approval_operations
                     SET state = 'succeeded', result_object_id = ?,
-                        physical_request_count = 1, updated_at = ?
+                        physical_request_count = ?, updated_at = ?
                     WHERE preview_id = ?
                     """,
-                    (result_object_id, _iso(), preview_id),
+                    (
+                        result_object_id,
+                        _physical_request_count(self.gateway, operation_id, default=1),
+                        _iso(),
+                        preview_id,
+                    ),
                 )
         return self.status(token=token, operation_id=operation_id)
 
@@ -376,6 +433,11 @@ class ModelApproval:
         self.session_key(token)
         row = self._operation(operation_id)
         state = str(row["state"])
+        if (
+            state == "failed_before_send"
+            and row["error_category"] == "destination_changed"
+        ):
+            state = "destination_changed"
         if state == "claimed":
             # A restarted process cannot prove whether the external provider
             # received the request.  Fail closed and never retry automatically.
@@ -417,6 +479,20 @@ class ModelApproval:
             "proposal": proposal,
             "teacher_confirmation_required": state == "succeeded",
         }
+
+    def operation_context(self, *, token: str, operation_id: str) -> dict[str, object]:
+        """Return protected orchestration context without resending a request."""
+
+        vmk = self.session_key(token)
+        row = self._operation(operation_id)
+        with closing(self.sensitive_database.connect()) as connection:
+            preview_payload, _revision = self.repository.get(
+                connection,
+                vmk=vmk,
+                object_id=str(row["payload_object_id"]),
+            )
+        context = preview_payload.get("context")
+        return dict(context) if isinstance(context, dict) else {}
 
     def result_context(self, *, token: str, operation_id: str) -> dict[str, object]:
         """Return encrypted workflow context only after one successful result."""

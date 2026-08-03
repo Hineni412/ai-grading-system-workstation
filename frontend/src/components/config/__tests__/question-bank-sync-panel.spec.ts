@@ -146,6 +146,42 @@ describe('QuestionBankSyncPanel', () => {
     app.unmount()
   })
 
+  it('requires restoring an identical trashed paper instead of retrying the sync', async () => {
+    useJobStore().track(job({
+      status: 'succeeded',
+      progress: 1,
+      result: {
+        outcome: 'failed',
+        imported_count: 0,
+        tagged_count: 0,
+        linked_count: 0,
+        failed_count: 1,
+        retryable: false,
+        restore_required: true,
+        restore_paper_id: 17,
+      },
+    }))
+    const retryer = vi.fn(async () => job({ id: 85 }))
+    const host = document.createElement('div')
+    document.body.append(host)
+    const app = createApp(QuestionBankSyncPanel, {
+      sessionId: 7,
+      sessionName: '七年级上册阶段练习',
+      configRevision: 'd'.repeat(64),
+      retryer,
+      curriculumLoader: vi.fn(async () => curriculum),
+    })
+
+    app.mount(host)
+    await nextTick()
+
+    expect(host.textContent).toContain('相同试卷已在题库回收站')
+    expect(host.textContent).toContain('恢复原试卷')
+    expect(host.textContent).not.toContain('只重试未完成的题库流程')
+    expect(retryer).not.toHaveBeenCalled()
+    app.unmount()
+  })
+
   it('offers recovery when an interrupted job has no structured result', async () => {
     useJobStore().track(job({
       status: 'failed',

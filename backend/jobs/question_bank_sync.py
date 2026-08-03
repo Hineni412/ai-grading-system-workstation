@@ -531,7 +531,7 @@ def _result(
         int(import_result.get("failed_count") or 0),
         int(tagging_result.get("failed_count") or 0),
     )
-    return {
+    result: dict[str, object] = {
         "session_id": session_id,
         "outcome": outcome,
         "imported_count": len(imported_ids),
@@ -565,6 +565,13 @@ def _result(
             )
         ),
     }
+    if import_result.get("restore_required") is True:
+        result.update(
+            failure_category="duplicate_in_trash",
+            restore_required=True,
+            restore_paper_id=import_result.get("restore_paper_id"),
+        )
+    return result
 
 
 def _load_deferred_artifact(
