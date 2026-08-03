@@ -48,11 +48,28 @@ _SEMESTER_MAPPING_PUBLIC_DETAILS = {
     "checking": "正在核对学期、资料和模型配置。",
     "snapshotting": "正在固定本次发送范围。",
     "claiming_operation": "正在取得防重复调用权。",
-    "calling_model": "已发送唯一一次模型请求，正在等待返回。",
+    "calling_model": "模型请求已开始，正在等待返回",
     "validating_response": "正在校验模型返回的目录和页码。",
     "persisting_proposal": "正在保存待确认建议。",
     "recovered": "已恢复此前保存的待确认建议。",
     "completed": "待确认建议已保存。",
+}
+_SEMESTER_MAPPING_PUBLIC_ERRORS = {
+    "response text is unavailable": (
+        "模型已返回，但没有可读取的正文；可重新检查后手动生成。"
+    ),
+    "returned invalid json": (
+        "模型已返回，但目录格式不是有效 JSON；可重新检查后手动生成。"
+    ),
+    "response must be an object": (
+        "模型已返回，但目录顶层结构不是对象；可重新检查后手动生成。"
+    ),
+    "response failed local validation": (
+        "模型目录未通过页码和结构校验；可重新检查后手动生成。"
+    ),
+    "model configuration is unavailable": (
+        "当前备课模型配置不可用，请先检查“大模型 API”设置。"
+    ),
 }
 _CONFIG_TRUNCATION_PUBLIC_ERRORS = {
     "模型因输出长度上限停止": (
@@ -315,9 +332,12 @@ def public_job_error(job: JobRecord) -> str | None:
             if job.error.startswith(prefix):
                 return public_error
     if job.job_type == "teaching_prep.semester_mapping":
+        lowered = job.error.lower()
+        for marker, public_error in _SEMESTER_MAPPING_PUBLIC_ERRORS.items():
+            if marker in lowered:
+                return public_error
         if job.stage in {"queued", "checking", "snapshotting", "claiming_operation"}:
             return "目录建议任务在模型请求前停止，未自动发出新的模型请求。"
-        lowered = job.error.lower()
         if "restart" in lowered or "interrupted" in lowered or "result is unknown" in lowered:
             return "应用重启时模型结果可能未知，系统已阻止自动重发。"
         return "目录建议没有完成，系统未自动重试模型请求。"

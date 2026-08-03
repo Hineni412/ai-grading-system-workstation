@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
+from types import SimpleNamespace
 from typing import Any
 
-from backend.teaching_prep.domain.errors import TeachingPrepValidationError
+from backend.teaching_prep.domain.errors import (
+    TeachingPrepModelResponseError,
+    TeachingPrepValidationError,
+)
 from backend.teaching_prep.infrastructure.llm.lesson_model import (
     _response_text,
 )
@@ -49,14 +53,19 @@ class WorkspaceSemesterMappingModelAdapter:
         *,
         operation_id: str,
         semester_snapshot: dict[str, Any],
+        dispatch_callback: Callable[[], None] | None = None,
     ) -> dict[str, Any]:
+        client = _client_with_dispatch_callback(
+            self.client,
+            dispatch_callback,
+        )
         response = self.gateway.chat_completions(
             request=WorkspaceModelRequest(
                 purpose="semester_mapping",
                 data_classification="teaching_material_aggregate",
                 operation_id=operation_id,
             ),
-            client=self.client,
+            client=client,
             model=self.model,
             kwargs={
                 "messages": [
@@ -76,16 +85,67 @@ class WorkspaceSemesterMappingModelAdapter:
             timeout_override_seconds=600,
         )
         try:
-            payload = json.loads(_response_text(response))
+            response_text = _response_text(response)
+        except TeachingPrepValidationError as exc:
+            raise TeachingPrepModelResponseError(
+                "semester mapping model response text is unavailable",
+                error_code=(
+                    "semester_mapping_model_response_text_unavailable"
+                ),
+            ) from exc
+        try:
+            payload = json.loads(response_text)
         except json.JSONDecodeError as exc:
-            raise TeachingPrepValidationError(
-                "semester mapping model returned invalid JSON"
+            raise TeachingPrepModelResponseError(
+                "semester mapping model returned invalid JSON",
+                error_code="semester_mapping_model_response_invalid_json",
             ) from exc
         if not isinstance(payload, Mapping):
-            raise TeachingPrepValidationError(
-                "semester mapping model response must be an object"
+            raise TeachingPrepModelResponseError(
+                "semester mapping model response must be an object",
+                error_code="semester_mapping_model_response_invalid_type",
             )
         return dict(payload)
+
+
+class _DispatchAwareCompletions:
+    def __init__(
+        self,
+        target: object,
+        callback: Callable[[], None],
+    ) -> None:
+        self._target = target
+        self._callback = callback
+        self._dispatched = False
+
+    def create(self, **kwargs: object) -> object:
+        if self._dispatched:
+            raise TeachingPrepValidationError(
+                "semester mapping attempted more than one physical request"
+            )
+        create = getattr(self._target, "create", None)
+        if not callable(create):
+            raise TeachingPrepValidationError(
+                "semester mapping model client is unavailable"
+            )
+        self._dispatched = True
+        self._callback()
+        return create(**kwargs)
+
+
+def _client_with_dispatch_callback(
+    client: object,
+    callback: Callable[[], None] | None,
+) -> object:
+    if callback is None:
+        return client
+    chat = getattr(client, "chat", None)
+    completions = getattr(chat, "completions", None)
+    return SimpleNamespace(
+        chat=SimpleNamespace(
+            completions=_DispatchAwareCompletions(completions, callback)
+        )
+    )
 
 
 __all__ = ["WorkspaceSemesterMappingModelAdapter"]
