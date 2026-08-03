@@ -312,6 +312,29 @@ class SensitiveContentPolicy:
         return tuple(dict.fromkeys(findings))
 
     @staticmethod
+    def sensitive_model_output_findings(value: str) -> tuple[str, ...]:
+        """Check anonymized sensitive drafts without re-running name guessing."""
+
+        # Input names were already replaced with stable aliases. Re-running the
+        # broad name heuristic over generated prose creates false positives such
+        # as “暂按普通学生矛盾处理”. Concrete identifiers and forbidden decisions
+        # remain blocked.
+        findings = [
+            label
+            for label, pattern in _DIRECT_IDENTIFIER_PATTERNS
+            if pattern.search(value)
+        ]
+        findings.extend(term for term in _RESTRICTED_CONTEXT_TERMS if term in value)
+        if _PARENT_PHONE_LABEL_PATTERN.search(value):
+            findings.append("家长电话")
+        findings.extend(
+            label
+            for label, pattern in _MODEL_DECISION_PATTERNS
+            if pattern.search(value)
+        )
+        return tuple(dict.fromkeys(findings))
+
+    @staticmethod
     def prepare_model_text(
         value: str,
         *,

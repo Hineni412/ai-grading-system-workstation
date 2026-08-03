@@ -397,9 +397,9 @@ function preserveManualTitle(): void {
         </dl>
 
         <section v-if="plan" class="plan">
-          <h3>普通工作方案</h3>
+          <h3>AI 初步执行方案</h3>
           <p v-if="preview?.final_due_date">解释后的日期：{{ preview.final_due_date }}</p>
-          <ul v-if="plan.assumptions.length" class="assumptions"><li v-for="item in plan.assumptions" :key="item">假设：{{ item }}</li></ul>
+          <ul v-if="plan.assumptions.length" class="assumptions"><li v-for="item in plan.assumptions" :key="item">{{ item.startsWith('待核实：') ? item : `假设：${item}` }}</li></ul>
           <ol class="plan-nodes">
             <li v-for="node in plan.nodes" :key="node.draft_key">
               <div><strong>{{ node.title }}</strong><span>{{ node.kind }} · {{ node.status }} · {{ node.due_date || '日期待定' }}</span></div>
@@ -408,7 +408,7 @@ function preserveManualTitle(): void {
             </li>
           </ol>
           <div v-if="plan.edges.length" class="relations"><strong>节点关系</strong><ul><li v-for="edge in plan.edges" :key="`${edge.source_draft_key}-${edge.target_draft_key}-${edge.relation}`">{{ edge.source_draft_key }} → {{ edge.target_draft_key }}（{{ edge.relation }}）</li></ul></div>
-          <button class="primary" type="button" :disabled="busy" @click="confirmPlan">教师确认，写入工作图</button>
+          <button class="primary" type="button" :disabled="busy" @click="confirmPlan">确认方案，写入工作图与日历</button>
         </section>
 
         <section v-else-if="recommendation" class="recommendation">
