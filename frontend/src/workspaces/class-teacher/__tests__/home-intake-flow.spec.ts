@@ -179,7 +179,8 @@ describe('homepage intake flow', () => {
     expect(host.textContent).toContain('goal → task（contains）')
     expect(source.value).toBe('开展防欺凌主题班会')
 
-    click(host, '教师确认，写入工作图')
+    expect(host.textContent).toContain('AI 初步执行方案')
+    click(host, '确认方案，写入工作图与日历')
     await flush()
     expect(confirm).toHaveBeenCalledOnce()
     expect(workModule.load).toHaveBeenCalledWith('today')
