@@ -126,11 +126,21 @@ class QuestionAnalysisInput:
         )
         repair_context = dict(self.repair_context)
         if repair_context:
-            if set(repair_context) != {
+            required_fields = {
                 "mode",
                 "validation_error",
                 "previous_result",
-            }:
+            }
+            optional_fields = {
+                "attempt",
+                "failure_signature",
+                "validation_issues",
+                "immutable_fields",
+                "allowed_changes",
+            }
+            if not required_fields.issubset(repair_context) or not set(
+                repair_context
+            ).issubset(required_fields | optional_fields):
                 raise ValueError("repair_context fields are invalid")
             if repair_context.get("mode") != "repair_previous_rejected_result":
                 raise ValueError("repair_context mode is invalid")
@@ -140,6 +150,25 @@ class QuestionAnalysisInput:
             previous_result = repair_context.get("previous_result")
             if not validation_error or not isinstance(previous_result, Mapping):
                 raise ValueError("repair_context is incomplete")
+            issues = repair_context.get("validation_issues", [])
+            if not isinstance(issues, list) or len(issues) > 20 or any(
+                not isinstance(item, Mapping) for item in issues
+            ):
+                raise ValueError("repair_context validation_issues are invalid")
+            if "attempt" in repair_context:
+                attempt = repair_context.get("attempt")
+                if isinstance(attempt, bool) or not isinstance(attempt, int) or not 1 <= attempt <= 3:
+                    raise ValueError("repair_context attempt is invalid")
+            if "failure_signature" in repair_context:
+                signature = str(repair_context.get("failure_signature") or "")
+                if not re.fullmatch(r"[0-9a-f]{64}", signature):
+                    raise ValueError("repair_context failure_signature is invalid")
+            for field_name in ("immutable_fields", "allowed_changes"):
+                values = repair_context.get(field_name, [])
+                if not isinstance(values, list) or len(values) > 20 or any(
+                    not str(item or "").strip() for item in values
+                ):
+                    raise ValueError(f"repair_context {field_name} is invalid")
             serialized = json.dumps(
                 repair_context,
                 ensure_ascii=False,

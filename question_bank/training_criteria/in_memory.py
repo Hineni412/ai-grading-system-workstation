@@ -24,6 +24,7 @@ from question_bank.solution_evidence.repository import (
     SolutionEvidenceRepository,
 )
 from question_bank.training_criteria.analysis import (
+    AnalysisProjection,
     GatewayBatchResponse,
     GatewayResponseParseError,
     PlannedAnalysisBatch,
@@ -1095,6 +1096,10 @@ class InMemoryCombinedQuestionAnalysisModule:
         sources: Sequence[ConfigQuestionAnalysisSource],
         curriculum_volume_id: str,
         source_refs: Sequence[str],
+        validation_issues_by_ref: Mapping[
+            str, Sequence[Mapping[str, Any]]
+        ],
+        repair_attempts_by_ref: Mapping[str, int] | None = None,
         checkpoint: Callable[[DeferredCombinedAnalysisBundle], None] | None = None,
     ) -> DeferredCombinedAnalysisBundle:
         """Replace selected successful analyses after downstream quality fails.
@@ -1151,6 +1156,43 @@ class InMemoryCombinedQuestionAnalysisModule:
         )
         if len(selected) != len(selected_refs):
             raise ValueError("selected analysis source is unavailable")
+        issue_map = {
+            str(reference): tuple(
+                dict(issue)
+                for issue in validation_issues_by_ref.get(reference, ())
+                if isinstance(issue, Mapping)
+            )
+            for reference in selected_refs
+        }
+        if any(not issue_map.get(reference) for reference in selected_refs):
+            raise ValueError("selected reanalysis requires exact validation issues")
+        previous_items = {
+            item.source_question_ref: item
+            for item in previous.items
+            if item.source_question_ref in selected_refs
+        }
+        repair_failures = tuple(
+            _local_quality_repair_failure(
+                previous_items[reference],
+                issue_map[reference],
+                attempt=max(
+                    1,
+                    int((repair_attempts_by_ref or {}).get(reference, 1)),
+                ),
+                operation_id=clean_operation,
+            )
+            for reference in requested
+        )
+        failure_by_ref = {
+            item.source_question_ref: item for item in repair_failures
+        }
+        selected = tuple(
+            _source_with_repair_context(
+                item,
+                failure_by_ref.get(item.source_question_ref),
+            )
+            for item in selected
+        )
         return self._run(
             operation_id=clean_operation,
             curriculum_volume_id=volume_id,
@@ -1162,13 +1204,15 @@ class InMemoryCombinedQuestionAnalysisModule:
                 for item in previous.items
                 if item.source_question_ref not in selected_refs
             ),
-            base_failures=tuple(
+            base_failures=(*tuple(
                 item
                 for item in previous.failures
                 if item.source_question_ref not in selected_refs
-            ),
+            ), *repair_failures),
             base_requests=previous.requests,
             checkpoint=checkpoint,
+            projection="training_criteria",
+            preserved_items_by_ref=previous_items,
         )
 
     def resume_interrupted(
@@ -1220,6 +1264,10 @@ class InMemoryCombinedQuestionAnalysisModule:
         base_failures: tuple[DeferredAnalysisFailure, ...],
         base_requests: tuple[AnalysisRequestCheckpoint, ...],
         checkpoint: Callable[[DeferredCombinedAnalysisBundle], None] | None,
+        projection: AnalysisProjection = "both",
+        preserved_items_by_ref: Mapping[
+            str, DeferredCombinedAnalysisItem
+        ] | None = None,
     ) -> DeferredCombinedAnalysisBundle:
         result = list(base_items)
         failures = list(base_failures)
@@ -1297,7 +1345,7 @@ class InMemoryCombinedQuestionAnalysisModule:
         }
         batches = plan_analysis_batches(
             tuple(item.question for item in selected_sources),
-            projection="both",
+            projection=projection,
         )
         prior_attempts = len({item.request_id for item in requests})
         planned_requests: list[_DeferredAnalysisRequest] = []
@@ -1392,7 +1440,7 @@ class InMemoryCombinedQuestionAnalysisModule:
             future = executor.submit(
                 self.gateway.analyze,
                 planned.batch,
-                projection="both",
+                projection=projection,
                 operation_id=operation_id,
                 request_id=planned.request_id,
             )
@@ -1485,7 +1533,18 @@ class InMemoryCombinedQuestionAnalysisModule:
                         raw: object = None
                         try:
                             raw = raw_items[question.question_id]
-                            raw_tag = raw.get("tag_analysis")
+                            preserved_item = (preserved_items_by_ref or {}).get(
+                                source.source_question_ref
+                            )
+                            raw_tag = (
+                                raw.get("tag_analysis")
+                                if projection in {"both", "tag"}
+                                else (
+                                    dict(preserved_item.tag_analysis)
+                                    if preserved_item is not None
+                                    else None
+                                )
+                            )
                             raw_evidence = raw.get("solution_evidence")
                             if not isinstance(raw_evidence, Mapping):
                                 raise ValueError(
@@ -2344,25 +2403,111 @@ def _safe_validation_error(exc: BaseException) -> str:
     return " ".join(str(exc or "").split())[:1000]
 
 
+def _local_quality_repair_failure(
+    item: DeferredCombinedAnalysisItem,
+    issues: Sequence[Mapping[str, Any]],
+    *,
+    attempt: int,
+    operation_id: str,
+) -> DeferredAnalysisFailure:
+    normalized_issues = [
+        {
+            key: str(issue.get(key) or "").strip()[:500]
+            for key in (
+                "code",
+                "path",
+                "expected",
+                "actual",
+                "message",
+            )
+        }
+        for issue in issues
+        if isinstance(issue, Mapping)
+    ][:20]
+    if not normalized_issues or any(
+        not issue["code"] or not issue["path"] for issue in normalized_issues
+    ):
+        raise ValueError("local quality repair issues are incomplete")
+    signature = _hash_payload(
+        {
+            "source_question_ref": item.source_question_ref,
+            "issues": normalized_issues,
+        }
+    )
+    ticket = {
+        "attempt": max(1, min(3, int(attempt))),
+        "failure_signature": signature,
+        "validation_issues": normalized_issues,
+        "immutable_fields": ["question_id", "tag_analysis"],
+        "allowed_changes": ["solution_evidence.parts", "solution_evidence.auxiliary_rules"],
+    }
+    rejected_result = {
+        "question_id": item.analysis_question_id,
+        "tag_analysis": dict(item.tag_analysis),
+        "solution_evidence": dict(item.solution_evidence_payload),
+        "_repair_ticket": ticket,
+    }
+    return DeferredAnalysisFailure(
+        source_question_ref=item.source_question_ref,
+        analysis_question_id=item.analysis_question_id,
+        request_id=_hash_payload(
+            {
+                "operation_id": operation_id,
+                "source_question_ref": item.source_question_ref,
+                "repair_ticket": signature,
+            }
+        ),
+        batch_hash=_hash_payload(
+            {
+                "source_question_ref": item.source_question_ref,
+                "source_content_hash": item.source_content_hash,
+                "repair_ticket": signature,
+            }
+        ),
+        category="local_validation",
+        validation_error="；".join(
+            issue["message"] or issue["code"] for issue in normalized_issues
+        )[:1000],
+        rejected_result=rejected_result,
+    )
+
+
 def _source_with_repair_context(
     source: ConfigQuestionAnalysisSource,
     failure: DeferredAnalysisFailure | None,
 ) -> ConfigQuestionAnalysisSource:
-    if failure is None or failure.rejected_result is None:
+    if failure is None:
         return source
     validation_error = (
         failure.validation_error
         or f"上一轮未通过 {failure.category} 校验"
     )
+    previous_result = (
+        dict(failure.rejected_result)
+        if isinstance(failure.rejected_result, Mapping)
+        else {}
+    )
+    ticket = previous_result.pop("_repair_ticket", None)
+    repair_context: dict[str, Any] = {
+        "mode": "repair_previous_rejected_result",
+        "validation_error": validation_error,
+        "previous_result": previous_result,
+    }
+    if isinstance(ticket, Mapping):
+        for field_name in (
+            "attempt",
+            "failure_signature",
+            "validation_issues",
+            "immutable_fields",
+            "allowed_changes",
+        ):
+            if field_name in ticket:
+                repair_context[field_name] = ticket[field_name]
     return replace(
         source,
         question=replace(
             source.question,
-            repair_context={
-                "mode": "repair_previous_rejected_result",
-                "validation_error": validation_error,
-                "previous_result": dict(failure.rejected_result),
-            },
+            repair_context=repair_context,
         ),
     )
 
