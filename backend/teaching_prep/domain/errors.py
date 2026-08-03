@@ -20,3 +20,11 @@ class TeachingPrepRetryAvailableError(TeachingPrepError):
 
 class TeachingPrepValidationError(TeachingPrepError):
     pass
+
+
+class TeachingPrepModelResponseError(TeachingPrepValidationError):
+    """A safe, classified failure while reading a model response."""
+
+    def __init__(self, message: str, *, error_code: str) -> None:
+        super().__init__(message)
+        self.error_code = str(error_code)

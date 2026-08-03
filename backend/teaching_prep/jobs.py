@@ -85,7 +85,7 @@ def register_jobs(
             "checking": (0.05, "正在核对学期、资料和模型配置"),
             "snapshotting": (0.12, "正在固定本次发送范围"),
             "claiming_operation": (0.20, "正在取得防重复调用权"),
-            "calling_model": (0.35, "已发送唯一一次模型请求，正在等待返回"),
+            "calling_model": (0.35, "模型请求已开始，正在等待返回"),
             "validating_response": (0.75, "正在校验模型返回的目录和页码"),
             "persisting_proposal": (0.90, "正在保存待确认建议"),
             "recovered": (1.0, "已恢复此前保存的待确认建议"),
