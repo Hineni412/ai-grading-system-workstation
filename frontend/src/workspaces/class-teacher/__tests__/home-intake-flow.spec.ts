@@ -215,6 +215,9 @@ describe('homepage intake flow', () => {
     await flush()
 
     expect(follow).not.toHaveBeenCalled()
+    expect(host.textContent).toContain('具体是哪一天？')
+    expect(host.textContent).not.toContain('AI 返回内容未通过校验')
+    expect(host.textContent).not.toContain('写入单节点工作')
     const answer = host.querySelector<HTMLTextAreaElement>('.follow-up textarea')!
     enter(answer, '下周五')
     expect(follow).not.toHaveBeenCalled()
