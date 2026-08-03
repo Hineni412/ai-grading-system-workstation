@@ -1616,6 +1616,8 @@
 }
 
 .tp-safe-note { margin-inline-start: auto; }
+.tp-context-progress { color: var(--tp-teal-dark); font-weight: 750; }
+.tp-context-optional { color: var(--tp-muted); }
 
 .tp-stage-ruler {
   display: grid;
@@ -1767,9 +1769,11 @@ button:disabled { cursor: not-allowed; opacity: 0.46; }
 .tp-rail-item.is-selected,
 .tp-version-rail button.is-selected { color: var(--tp-teal-dark); background: #dbece8; }
 
-.tp-page-picker { display: flex; flex-wrap: wrap; gap: 0.3rem; }
-.tp-page-picker button { min-block-size: 1.8rem; padding: 0.2rem 0.45rem; }
-.tp-page-picker button.is-selected { border-color: var(--tp-teal); color: white; background: var(--tp-teal); }
+.tp-page-picker { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; }
+.tp-page-picker button { min-inline-size: 2.25rem; min-block-size: 2rem; padding: 0.2rem 0.55rem; }
+.tp-page-picker label { display: flex; gap: 0.35rem; align-items: center; font-weight: 700; }
+.tp-page-picker input { inline-size: 4.25rem; padding: 0.35rem; border: 1px solid var(--tp-line); border-radius: 0.4rem; text-align: center; }
+.tp-printed-page { color: var(--tp-muted); font-size: 0.78rem; }
 
 .tp-field { display: grid; gap: 0.3rem; color: var(--tp-muted); font-size: 0.83rem; }
 .tp-field input,
@@ -1922,6 +1926,7 @@ button:disabled { cursor: not-allowed; opacity: 0.46; }
   accent-color: var(--tp-teal);
 }
 .tp-material-card__progress small { color: var(--tp-ink-soft); }
+.tp-material-card__continue { margin: 0 0.65rem 0.55rem; color: var(--tp-teal-dark); font-weight: 750; }
 
 .tp-material-card__attach {
   display: grid;
@@ -1936,6 +1941,23 @@ button:disabled { cursor: not-allowed; opacity: 0.46; }
   border-radius: 0.4rem;
   background: white;
 }
+
+.tp-material-card__attach input,
+.tp-material-card__manage input,
+.tp-material-card__manage select {
+  inline-size: 100%;
+  padding: 0.45rem;
+  border: 1px solid var(--tp-line);
+  border-radius: 0.4rem;
+  background: white;
+}
+
+.tp-material-card__manage { padding: 0 0.65rem 0.65rem; }
+.tp-material-card__manage summary,
+.tp-archive-list summary { cursor: pointer; color: var(--tp-teal-dark); font-weight: 700; }
+.tp-material-card__manage[open] { display: grid; gap: 0.45rem; }
+.tp-archive-list { margin-block-start: 0.8rem; padding-block-start: 0.7rem; border-block-start: 1px solid var(--tp-line); }
+.tp-material-card.is-archived { display: grid; gap: 0.35rem; margin-block-start: 0.45rem; padding: 0.65rem; background: #f4f5f4; }
 
 .tp-manual-mapping {
   margin-block-start: 0.5rem;

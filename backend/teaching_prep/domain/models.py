@@ -67,6 +67,12 @@ class MaterialVersion:
     inspection_status: str
     availability: str
     created_at: str
+    parse_expected_unit_count: int | None = None
+    preview_completed_count: int = 0
+    ocr_completed_count: int = 0
+    ocr_total_count: int = 0
+    source_revision: int = 1
+    source_archived_at: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -124,6 +130,9 @@ class SemesterMaterialRecord:
     revision: int
     created_at: str
     updated_at: str
+    is_daily_workbook: bool = False
+    workbook_series: str | None = None
+    workbook_volume: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

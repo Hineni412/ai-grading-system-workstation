@@ -309,6 +309,8 @@ class AttachSemesterMaterialRequest(BaseModel):
         "answer_book",
         "supplement",
     ]
+    workbook_series: str | None = Field(default=None, max_length=120)
+    workbook_volume: Literal["A", "B"] | None = None
 
 
 class UpdateSemesterMaterialRequest(BaseModel):
@@ -332,6 +334,8 @@ class UpdateSemesterMaterialRequest(BaseModel):
         "conflict",
     ]
     is_active: bool
+    workbook_series: str | None = Field(default=None, max_length=120)
+    workbook_volume: Literal["A", "B"] | None = None
 
 
 class SemesterMaterialResponse(BaseModel):
@@ -340,6 +344,9 @@ class SemesterMaterialResponse(BaseModel):
     material_source_id: str
     display_name: str
     material_role: str
+    is_daily_workbook: bool
+    workbook_series: str | None
+    workbook_volume: str | None
     parse_status: str
     mapping_status: str
     current_material_version_id: str
@@ -491,8 +498,14 @@ class MaterialVersionResponse(BaseModel):
     size_bytes: int
     modified_ns: str | None
     unit_count: int | None
+    parse_expected_unit_count: int | None
+    preview_completed_count: int
+    ocr_completed_count: int
+    ocr_total_count: int
     inspection_status: str
     availability: str
+    source_revision: int
+    source_archived_at: str | None
     created_at: str
 
     @classmethod
@@ -507,6 +520,14 @@ class MaterialVersionResponse(BaseModel):
 
 class MaterialVersionListResponse(BaseModel):
     items: list[MaterialVersionResponse]
+
+
+class UpdateMaterialSourceRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    expected_revision: int = Field(gt=0)
+    display_name: str | None = Field(default=None, min_length=1, max_length=120)
+    archived: bool | None = None
 
 
 class MaterialUnitResponse(BaseModel):

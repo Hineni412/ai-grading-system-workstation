@@ -4,6 +4,7 @@ import hashlib
 import json
 import zipfile
 from copy import deepcopy
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -12,6 +13,7 @@ from fastapi.testclient import TestClient
 
 from backend.teaching_prep.api import create_router
 from backend.teaching_prep.application import TeachingPrepService
+from backend.teaching_prep.application.up_class_packages import build_up_class_package
 from backend.teaching_prep.domain.errors import TeachingPrepConflictError
 from backend.teaching_prep.infrastructure.fakes import (
     FakeAssessmentEvidenceReader,
@@ -131,6 +133,44 @@ def test_complete_up_class_package_is_atomic_offline_and_idempotent(
             ensure_ascii=False,
         )
         assert str(tmp_path) not in serialized
+
+
+def test_question_only_package_omits_teacher_answer_without_blocking(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _paths, service = _migrated_service(tmp_path, monkeypatch)
+    version = _published_pptx(service, tmp_path)
+    plan = service.get_slide_plan(version.slide_plan_id)
+    draft = service.get_lesson_draft(plan.lesson_draft_id)
+    pack = service.get_resource_pack(draft.resource_pack_id)
+    payload = deepcopy(pack.payload)
+    assert payload["exercises"]
+    for exercise in payload["exercises"]:
+        exercise["formal_answer_usable"] = False
+        exercise["answer_status"] = "missing"
+        exercise["answer_regions"] = []
+    question_only_pack = replace(pack, payload=payload)
+    pptx_path, _name = service.pptx_download(version.id)
+
+    archive, _manifest, _sha = build_up_class_package(
+        tmp_path / "question-only-package",
+        pptx_path=pptx_path,
+        pptx_version=version,
+        plan=plan,
+        draft=draft,
+        pack=question_only_pack,
+        resolve_region=service.exercise_region_preview_path,
+    )
+
+    with zipfile.ZipFile(archive) as bundle:
+        names = tuple(bundle.namelist())
+        assert "class-exercise.pdf" in names
+        assert "teacher-answer.pdf" not in names
+        preflight = json.loads(bundle.read("preflight.json"))
+        assert preflight["complete"] is True
+        assert preflight["all_answers_available_and_frozen"] is False
+        assert preflight["answer_output_optional"] is True
 
 
 def test_class_variants_isolate_class_evidence_and_selected_reviews(

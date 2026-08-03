@@ -72,15 +72,15 @@ afterEach(() => {
 })
 
 describe('TeachingPrepHomeView workbench shell', () => {
-  it('shows one entry, four internal workspaces, and five clickable stages', async () => {
+  it('shows four compact workspaces without the redundant stage ruler', async () => {
     mockEmptyCatalog()
     const { app, host } = await mountAt()
 
     expect(host.textContent).toContain('初中数学备课')
     expect([...host.querySelectorAll('.tp-workspace-tabs button')].map(
       item => item.textContent?.trim(),
-    )).toEqual(['个人课时树', '资料库', '本节备课', '课件版本'])
-    expect(host.querySelectorAll('.tp-stage-ruler__step')).toHaveLength(5)
+    )).toEqual(['课时', '资料库', '备课', '课件'])
+    expect(host.querySelectorAll('.tp-stage-ruler__step')).toHaveLength(0)
     expect(host.textContent).toContain('下一节新授课是什么？')
     app.unmount()
   })

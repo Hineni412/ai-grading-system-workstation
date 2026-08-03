@@ -9,6 +9,12 @@ const props = withDefaults(defineProps<{ compact?: boolean }>(), {
 const workbench = useTeachingPrepWorkbenchContext()
 const lesson = computed(() => workbench.catalog.selectedLesson)
 const semester = computed(() => workbench.catalog.selectedSemester)
+const progressLabel = computed(() => {
+  const status = workbench.selectedStatus.value
+  if (!status) return '先选择课时'
+  const labels = { select: '选课时', materials: '核资料', plan: '备课中', slides: '课件可选', package: '可上课' }
+  return labels[status.preparation_stage]
+})
 </script>
 
 <template>
@@ -17,6 +23,8 @@ const semester = computed(() => workbench.catalog.selectedSemester)
     <strong>{{ lesson?.title ?? '尚未选择课时' }}</strong>
     <span v-if="lesson">{{ lesson.duration_minutes ?? 45 }} 分钟</span>
     <span v-if="semester">{{ semester.school_year }} · {{ semester.term === 'first' ? '第一学期' : '第二学期' }}</span>
+    <span class="tp-context-progress">当前进度：{{ progressLabel }}</span>
+    <span class="tp-context-optional">答案、参考课件均可选</span>
     <span class="tp-safe-note">原课件不会被覆盖</span>
   </div>
 </template>
