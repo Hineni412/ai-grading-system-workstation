@@ -241,14 +241,35 @@ def _semester_mapping_job_response(
     )
     public_error = None
     if job.error:
-        if job.stage in {"queued", "checking", "snapshotting", "claiming_operation"}:
+        normalized_error = job.error.lower()
+        if "response text is unavailable" in normalized_error:
+            public_error = (
+                "模型已返回，但没有可读取的正文；可重新检查后手动生成。"
+            )
+        elif "returned invalid json" in normalized_error:
+            public_error = (
+                "模型已返回，但目录格式不是有效 JSON；可重新检查后手动生成。"
+            )
+        elif "response must be an object" in normalized_error:
+            public_error = (
+                "模型已返回，但目录顶层结构不是对象；可重新检查后手动生成。"
+            )
+        elif "response failed local validation" in normalized_error:
+            public_error = (
+                "模型目录未通过页码和结构校验；可重新检查后手动生成。"
+            )
+        elif "model configuration is unavailable" in normalized_error:
+            public_error = (
+                "当前备课模型配置不可用，请先检查“大模型 API”设置。"
+            )
+        elif job.stage in {"queued", "checking", "snapshotting", "claiming_operation"}:
             public_error = (
                 "目录建议任务在模型请求前停止，未自动发出新的模型请求。"
             )
         elif (
-            "restart" in job.error.lower()
-            or "interrupted" in job.error.lower()
-            or "result is unknown" in job.error.lower()
+            "restart" in normalized_error
+            or "interrupted" in normalized_error
+            or "result is unknown" in normalized_error
         ):
             public_error = (
                 "应用重启时模型结果可能未知，系统已阻止自动重发。"
