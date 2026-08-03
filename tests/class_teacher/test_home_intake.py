@@ -139,6 +139,122 @@ def test_named_fight_is_anonymized_exactly_before_any_request(tmp_path: Path) ->
     assert gateway.calls == []
 
 
+def test_named_conflict_with_classroom_context_is_anonymized_before_any_request(
+    tmp_path: Path,
+) -> None:
+    service, token, gateway = _service(
+        tmp_path,
+        result={"kind": "affair_recommendation", "summary": "先核对已确认事实"},
+    )
+
+    preview = service.home_intake.prepare(
+        token=token,
+        text="钱肖白和张立璞今天上信息课又发生了矛盾",
+        reference_date="2026-08-03",
+    )
+
+    payload = json.dumps(preview["exact_payload"], ensure_ascii=False)
+    assert preview["route"] == "sensitive"
+    assert preview["recommended_route"] == "affair"
+    assert preview["student_aliases"] == ["学生A", "学生B"]
+    assert preview["exact_payload"]["task_text"] == (
+        "学生A和学生B今天上信息课又发生了矛盾"
+    )
+    assert "钱肖白" not in payload
+    assert "张立璞" not in payload
+    assert preview["physical_request_count"] == 0
+    assert gateway.calls == []
+
+
+def test_two_character_incident_names_keep_context_and_stable_aliases(
+    tmp_path: Path,
+) -> None:
+    service, token, gateway = _service(
+        tmp_path,
+        result={
+            "kind": "follow_up",
+            "questions": ["双方目前是否仍在接触？"],
+        },
+    )
+    preview = service.home_intake.prepare(
+        token=token,
+        text="王明和张伟今天上信息课又发生了矛盾",
+        reference_date="2026-08-03",
+    )
+
+    assert preview["exact_payload"]["task_text"] == (
+        "学生A和学生B今天上信息课又发生了矛盾"
+    )
+    assert preview["student_aliases"] == ["学生A", "学生B"]
+    first = service.home_intake.dispatch(
+        token=token,
+        preview_id=str(preview["preview_id"]),
+        fingerprint=str(preview["fingerprint"]),
+        operation_id="home-two-character-follow-up-001",
+    )
+    assert first["result_kind"] == "follow_up"
+
+    second_preview = service.home_intake.prepare_follow_up(
+        token=token,
+        operation_id="home-two-character-follow-up-001",
+        answer="张伟仍在现场，王明已经离开",
+        reference_date="2026-08-03",
+    )
+    second_payload = json.dumps(second_preview["exact_payload"], ensure_ascii=False)
+    assert "王明" not in second_payload
+    assert "张伟" not in second_payload
+    assert "学生B仍在现场，学生A已经离开" in second_payload
+    assert second_preview["student_aliases"] == ["学生A", "学生B"]
+    assert len(gateway.calls) == 1
+
+
+def test_named_incident_detection_has_no_short_context_cutoff(tmp_path: Path) -> None:
+    service, token, gateway = _service(tmp_path)
+    preview = service.home_intake.prepare(
+        token=token,
+        text=(
+            "钱肖白和张立璞今天上午在学校计算机教室上信息技术课程"
+            "并完成小组合作练习时发生了矛盾"
+        ),
+        reference_date="2026-08-03",
+    )
+
+    payload = json.dumps(preview["exact_payload"], ensure_ascii=False)
+    assert preview["route"] == "sensitive"
+    assert preview["recommended_route"] == "affair"
+    assert preview["student_aliases"] == ["学生A", "学生B"]
+    assert "钱肖白" not in payload
+    assert "张立璞" not in payload
+    assert gateway.calls == []
+
+
+@pytest.mark.parametrize(
+    "incident",
+    (
+        "出现了冲突",
+        "产生了冲突",
+        "发生了争执",
+        "出现了争执",
+        "产生了争执",
+    ),
+)
+def test_named_dispute_variants_recommend_affair(
+    tmp_path: Path,
+    incident: str,
+) -> None:
+    service, token, gateway = _service(tmp_path)
+    preview = service.home_intake.prepare(
+        token=token,
+        text=f"王小明和张立璞{incident}",
+        reference_date="2026-08-03",
+    )
+
+    assert preview["route"] == "sensitive"
+    assert preview["recommended_route"] == "affair"
+    assert preview["student_aliases"] == ["学生A", "学生B"]
+    assert gateway.calls == []
+
+
 def test_prevention_theme_stays_ordinary(tmp_path: Path) -> None:
     service, token, gateway = _service(tmp_path)
 
@@ -301,6 +417,132 @@ def test_emergency_guidance_is_local_and_precedes_ai(tmp_path: Path) -> None:
     assert "不要等待 AI" in preview["emergency_guidance"]["title"]
     assert any("110 或 120" in step for step in preview["emergency_guidance"]["steps"])
     assert gateway.calls == []
+
+
+def test_empty_kind_question_only_result_becomes_specific_follow_up(
+    tmp_path: Path,
+) -> None:
+    question = (
+        "你希望围绕9月1日开学完成哪类成果？"
+        "例如报到流程、物资准备、家长通知或开学班会。"
+    )
+    service, token, gateway = _service(
+        tmp_path,
+        result={
+            "kind": "",
+            "questions": [question],
+            "assumptions": [],
+            "nodes": [],
+            "edges": [],
+            "summary": "",
+            "reasons": [],
+        },
+    )
+    preview = service.home_intake.prepare(
+        token=token,
+        text="9月1日学生开学",
+        reference_date="2026-08-03",
+    )
+
+    result = service.home_intake.dispatch(
+        token=token,
+        preview_id=str(preview["preview_id"]),
+        fingerprint=str(preview["fingerprint"]),
+        operation_id="home-empty-kind-follow-up-001",
+    )
+
+    assert result["state"] == "needs_information"
+    assert result["result_kind"] == "follow_up"
+    assert result["follow_up_questions"] == [question]
+    assert result["teacher_confirmation_required"] is False
+    assert result["physical_request_count"] == 1
+    assert len(gateway.calls) == 1
+    payload = gateway.calls[0]["payload"]
+    assert any("最少必要的 1—3 个问题" in item for item in payload["instructions"])
+    assert any("kind 是必填字段" in item for item in payload["instructions"])
+    assert payload["output_contract"]["follow_up_example"]["kind"] == "follow_up"
+
+
+def test_empty_kind_mixed_plan_and_questions_remains_invalid(tmp_path: Path) -> None:
+    service, token, gateway = _service(
+        tmp_path,
+        result={
+            "kind": "",
+            "questions": ["希望形成哪类成果？"],
+            "assumptions": [],
+            "nodes": _plan()["nodes"],
+            "edges": [],
+        },
+    )
+    preview = service.home_intake.prepare(
+        token=token,
+        text="安排开学工作",
+        reference_date="2026-08-03",
+    )
+
+    result = service.home_intake.dispatch(
+        token=token,
+        preview_id=str(preview["preview_id"]),
+        fingerprint=str(preview["fingerprint"]),
+        operation_id="home-empty-kind-mixed-001",
+    )
+
+    assert result["state"] == "invalid_result"
+    assert result["result_kind"] is None
+    assert len(gateway.calls) == 1
+
+
+@pytest.mark.parametrize(
+    "model_result",
+    (
+        {
+            "kind": False,
+            "questions": ["希望形成哪类成果？"],
+            "nodes": [],
+            "edges": [],
+        },
+        {
+            "kind": "",
+            "questions": [123],
+            "nodes": [],
+            "edges": [],
+        },
+        {
+            "kind": "follow_up",
+            "questions": ["希望形成哪类成果？"],
+            "nodes": [],
+            "edges": [],
+            "summary": "同时建议转入事务",
+        },
+        {
+            "kind": "follow_up",
+            "questions": ["问题一", "问题二", "问题三", "问题四"],
+            "nodes": [],
+            "edges": [],
+        },
+    ),
+)
+def test_malformed_or_mixed_follow_up_results_remain_invalid(
+    tmp_path: Path,
+    model_result: dict[str, object],
+) -> None:
+    service, token, gateway = _service(tmp_path, result=model_result)
+    preview = service.home_intake.prepare(
+        token=token,
+        text="安排开学工作",
+        reference_date="2026-08-03",
+    )
+
+    result = service.home_intake.dispatch(
+        token=token,
+        preview_id=str(preview["preview_id"]),
+        fingerprint=str(preview["fingerprint"]),
+        operation_id=f"home-invalid-follow-up-{abs(hash(json.dumps(model_result, default=str)))}",
+    )
+
+    assert result["state"] == "invalid_result"
+    assert result["result_kind"] is None
+    assert len(gateway.calls) == 1
 
 
 def test_markdown_fenced_plan_needs_no_repair_request(tmp_path: Path) -> None:
@@ -614,6 +856,84 @@ def test_nonmeaningful_non_json_sensitive_results_are_invalid(
     assert dispatched["state"] == "invalid_result"
     assert dispatched["result_kind"] is None
     assert dispatched["error_category"] == "nonmeaningful_plain_text"
+
+
+def test_sensitive_empty_kind_question_only_result_becomes_follow_up(
+    tmp_path: Path,
+) -> None:
+    question = "请补充已经确认的现场事实，例如双方是否仍在接触、是否有人受伤。"
+    service, token, gateway = _service(
+        tmp_path,
+        result={
+            "kind": "",
+            "questions": [question],
+            "assumptions": [],
+            "nodes": [],
+            "edges": [],
+            "summary": "",
+            "reasons": [],
+        },
+    )
+
+    result = _dispatch_sensitive(
+        service,
+        token,
+        text="王小明和张伟发生冲突",
+        operation_id="home-sensitive-empty-kind-001",
+    )
+
+    assert result["state"] == "needs_information"
+    assert result["result_kind"] == "follow_up"
+    assert result["follow_up_questions"] == [question]
+    assert result["teacher_confirmation_required"] is False
+    assert len(gateway.calls) == 1
+    contract = gateway.calls[0]["payload"]["output_contract"]
+    assert contract["follow_up_example"]["kind"] == "follow_up"
+    assert any("最少 1—3 项信息" in rule for rule in contract["rules"])
+
+
+@pytest.mark.parametrize(
+    "model_result",
+    (
+        {
+            "kind": False,
+            "questions": ["双方目前是否仍在接触？"],
+            "nodes": [],
+            "edges": [],
+        },
+        {
+            "kind": "follow_up",
+            "questions": ["双方目前是否仍在接触？"],
+            "nodes": [],
+            "edges": [],
+            "summary": "同时建议转入事务",
+        },
+        {
+            "kind": "follow_up",
+            "questions": ["问题一", "问题二", "问题三", "问题四"],
+            "nodes": [],
+            "edges": [],
+        },
+    ),
+)
+def test_sensitive_malformed_or_mixed_follow_up_remains_invalid(
+    tmp_path: Path,
+    model_result: dict[str, object],
+) -> None:
+    service, token, gateway = _service(tmp_path, result=model_result)
+    result = _dispatch_sensitive(
+        service,
+        token,
+        text="王小明和张立璞发生冲突",
+        operation_id=(
+            "home-sensitive-invalid-follow-up-"
+            f"{abs(hash(json.dumps(model_result, default=str)))}"
+        ),
+    )
+
+    assert result["state"] == "invalid_result"
+    assert result["result_kind"] is None
+    assert len(gateway.calls) == 1
 
 
 def test_follow_up_starts_next_round_only_on_explicit_call(tmp_path: Path) -> None:
