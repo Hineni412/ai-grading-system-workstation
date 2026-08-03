@@ -171,6 +171,7 @@ def _run_tagging_sync_job_locked(
     service = QuestionService(db_path)
     governance = taxonomy_governance
     taxonomy_revision = 0
+    knowledge_graph_release_id = ""
     taxonomy_contracts: dict[int, dict[str, Any]] = {}
     if ai_service is not None:
         if governance is None and isinstance(ai_service, AITaggingService):
@@ -179,6 +180,9 @@ def _run_tagging_sync_job_locked(
             ai_service,
             governance,
             contexts=contexts,
+        )
+        knowledge_graph_release_id = _planned_graph_release_id(
+            taxonomy_contracts
         )
     if (
         pending_ids
@@ -196,6 +200,7 @@ def _run_tagging_sync_job_locked(
             unavailable_ids=unavailable_ids,
             taxonomy_contracts=taxonomy_contracts,
             taxonomy_revision=taxonomy_revision,
+            knowledge_graph_release_id=knowledge_graph_release_id,
             requested_ids=question_ids,
             retry_relation_question_ids=retry_relation_question_ids,
             taxonomy_governance=governance,
@@ -270,6 +275,7 @@ def _run_tagging_sync_job_locked(
                         question_id=question_id,
                         job_id=context.job_id,
                         expected_revision=int(result.taxonomy_revision or 0),
+                        knowledge_graph_release_id=knowledge_graph_release_id,
                     )
                 except Exception:  # noqa: BLE001
                     failures.append(_failure(question_id, "save"))
@@ -317,6 +323,7 @@ def _run_tagging_sync_job_locked(
         "failed_question_ids": failed_ids,
         "failures": failures,
         "taxonomy_revision": taxonomy_revision,
+        "knowledge_graph_release_id": knowledge_graph_release_id,
         "retrieval_miss_count": retrieval_miss_count,
         "retrieval_miss_question_ids": retrieval_miss_question_ids,
         "review_count": len(proposal_keys),
@@ -354,6 +361,7 @@ def _run_unified_tagging_analysis(
     unavailable_ids: list[int],
     taxonomy_contracts: Mapping[int, Mapping[str, Any]],
     taxonomy_revision: int,
+    knowledge_graph_release_id: str,
     requested_ids: list[int],
     retry_relation_question_ids: list[int],
     taxonomy_governance: Any | None,
@@ -390,6 +398,7 @@ def _run_unified_tagging_analysis(
             "failed_question_ids": failed_ids,
             "failures": input_failures,
             "taxonomy_revision": taxonomy_revision,
+            "knowledge_graph_release_id": knowledge_graph_release_id,
             "retrieval_miss_count": 0,
             "retrieval_miss_question_ids": [],
             "review_count": 0,
@@ -570,6 +579,7 @@ def _run_unified_tagging_analysis(
         "failed_question_ids": failed_ids,
         "failures": failures,
         "taxonomy_revision": taxonomy_revision,
+        "knowledge_graph_release_id": knowledge_graph_release_id,
         "retrieval_miss_count": len(audits["retrieval_misses"]),
         "retrieval_miss_question_ids": audits["retrieval_miss_question_ids"],
         "review_count": len(audits["proposals"]),
@@ -872,6 +882,21 @@ def _plan_taxonomy(
     return contracts, next(iter(revisions), 0)
 
 
+def _planned_graph_release_id(
+    contracts: Mapping[int, Mapping[str, Any]],
+) -> str:
+    release_ids = {
+        str(contract.get("knowledge_graph_release_id") or "").strip()
+        for contract in contracts.values()
+        if str(contract.get("knowledge_graph_release_id") or "").strip()
+    }
+    if len(release_ids) > 1:
+        raise ValueError(
+            "per-question taxonomy plans do not share one graph release"
+        )
+    return next(iter(release_ids), "")
+
+
 def _persist_proposals(
     governance: Any,
     result: AITaggingResult,
@@ -879,6 +904,7 @@ def _persist_proposals(
     question_id: int,
     job_id: str,
     expected_revision: int,
+    knowledge_graph_release_id: str,
 ) -> list[dict[str, Any]]:
     assert result.analysis is not None
     payload = result.analysis.to_dict()
@@ -892,7 +918,7 @@ def _persist_proposals(
         "model": str(result.model_name or ""),
         "request_token": (
             f"tagging-sync:{job_id}:question:{question_id}:"
-            f"taxonomy:{expected_revision}"
+            f"taxonomy:{expected_revision}:graph:{knowledge_graph_release_id or 'none'}"
         ),
     }
     constrained = governance.constrain(payload, context=proposal_context)

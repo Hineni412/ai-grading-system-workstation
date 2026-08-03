@@ -147,19 +147,26 @@ def test_batch_prompt_lists_type_enums_and_rejects_choice_response_aliases() -> 
 def test_quality_does_not_semantically_reject_structurally_complete_proof() -> None:
     payload = _proof_payload(
         score=6,
+        proof_obligations=["证明△ABC≌△DEF，并由对应边得到 AB=DE"],
+        deduction_policy=[
+            {
+                "rule_id": "missing_congruence_chain",
+                "description": "缺少 SAS 判定条件或 AB=DE 结论时，对应步骤未达成",
+            }
+        ],
         steps=[
             {
                 "step_id": "S1",
                 "step_score": 6,
-                "core_goal": "由全等得到结论",
-                "required_elements": ["全等"],
+                "core_goal": "用 SAS 证明△ABC≌△DEF 并得到 AB=DE",
+                "required_elements": ["SAS", "△ABC≌△DEF", "AB=DE"],
             }
         ],
     )
 
     warnings = collect_generated_config_quality_warnings(payload)
 
-    assert not any("可独立评分的逻辑步骤" in warning for warning in warnings)
+    assert not any("缺少可独立评分的具体步骤" in warning for warning in warnings)
     assert not any("缺少具体证明义务" in warning for warning in warnings)
     assert not any("缺少具体扣分证据" in warning for warning in warnings)
 

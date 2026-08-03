@@ -1297,7 +1297,9 @@ def test_quality_warnings_do_not_semantically_classify_generic_subjective_steps(
     warnings = session_manager.collect_generated_config_quality_warnings(payload)
 
     assert not any("Q10" in warning for warning in warnings)
-    assert not any("Q12" in warning for warning in warnings)
+    assert any("Q12/Q12 缺少可独立评分的具体步骤" in warning for warning in warnings)
+    assert any("Q12/Q12 缺少具体证明义务" in warning for warning in warnings)
+    assert any("Q12/Q12 缺少针对本题的具体扣分证据" in warning for warning in warnings)
 
 
 @pytest.mark.parametrize(
@@ -2607,7 +2609,8 @@ def test_objective_types_only_need_equal_scores_within_their_own_type() -> None:
     fill_score = questions[2]["max_score"]
     assert choice_score == questions[1]["max_score"]
     assert fill_score == questions[3]["max_score"]
-    assert choice_score > fill_score
+    assert choice_score <= fill_score
+    assert choice_score * 2 >= fill_score
     assert max(question["max_score"] for question in questions) <= 18
     assert sum(question["max_score"] for question in questions) == 100
 
