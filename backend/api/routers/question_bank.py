@@ -22,6 +22,10 @@ from backend.api.routers.jobs import _job_response
 from backend.api.schemas.jobs import JobResponse
 from backend.api.schemas.question_bank import (
     CurriculumCatalog,
+    KnowledgeGraphReleaseActivateRequest,
+    KnowledgeGraphReleasePreviewResponse,
+    KnowledgeGraphReleaseRollbackRequest,
+    KnowledgeGraphReleaseStageRequest,
     QuestionDetailResponse,
     QuestionFacetsResponse,
     QuestionListItem,
@@ -64,6 +68,15 @@ from backend.api.schemas.question_bank import (
     TrainingCriterionReviewRequest,
     TrainingCriterionVersionResponse,
     TrainingCriterionWorkspaceResponse,
+)
+from question_bank.knowledge_graph_release import (
+    KnowledgeGraphReleaseConflict,
+    KnowledgeGraphReleaseNotFound,
+    activate_release,
+    load_release,
+    preview_install,
+    rollback_release,
+    stage_release,
 )
 from question_bank.taxonomy.curriculum_catalog import (
     CurriculumCatalogError,
@@ -235,6 +248,118 @@ def get_taxonomy_catalog() -> TaxonomyCatalogResponse:
     except (TaxonomyStorageError, OSError, TimeoutError) as exc:
         _raise_taxonomy_storage_api_error(exc)
     return TaxonomyCatalogResponse(**payload)
+
+
+@router.get(
+    "/knowledge-graph/release-preview",
+    response_model=KnowledgeGraphReleasePreviewResponse,
+)
+def get_knowledge_graph_release_preview(
+    question_bank_db_path: Path = Depends(get_question_bank_db_path),
+) -> KnowledgeGraphReleasePreviewResponse:
+    preview = preview_install(question_bank_db_path, load_release())
+    return KnowledgeGraphReleasePreviewResponse(**preview.to_dict())
+
+
+@router.post(
+    "/knowledge-graph/releases/stage",
+    response_model=KnowledgeGraphReleasePreviewResponse,
+)
+def stage_knowledge_graph_release(
+    body: KnowledgeGraphReleaseStageRequest,
+    question_bank_db_path: Path = Depends(get_question_bank_db_path),
+) -> KnowledgeGraphReleasePreviewResponse:
+    release = load_release()
+    try:
+        stage_release(
+            question_bank_db_path,
+            release,
+            actor_ref="local_teacher",
+            source_reference=(
+                "question_bank/taxonomy/catalogs/knowledge_graph_release_v1.json"
+            ),
+            reason=body.reason,
+        )
+    except KnowledgeGraphReleaseConflict as exc:
+        raise ApiError(
+            409,
+            "knowledge_graph_release_conflict",
+            str(exc),
+        ) from exc
+    except (OSError, ValueError) as exc:
+        raise ApiError(
+            422,
+            "knowledge_graph_release_invalid",
+            "知识图谱发布包未通过校验",
+        ) from exc
+    preview = preview_install(question_bank_db_path, release)
+    return KnowledgeGraphReleasePreviewResponse(**preview.to_dict())
+
+
+@router.post(
+    "/knowledge-graph/releases/{release_id}/activate",
+    response_model=KnowledgeGraphReleasePreviewResponse,
+)
+def activate_knowledge_graph_release(
+    release_id: str,
+    body: KnowledgeGraphReleaseActivateRequest,
+    question_bank_db_path: Path = Depends(get_question_bank_db_path),
+) -> KnowledgeGraphReleasePreviewResponse:
+    try:
+        activate_release(
+            question_bank_db_path,
+            release_id,
+            expected_active_release_id=body.expected_active_release_id,
+            actor_ref="local_teacher",
+            reason=body.reason,
+        )
+    except KnowledgeGraphReleaseNotFound as exc:
+        raise ApiError(
+            404,
+            "knowledge_graph_release_not_found",
+            "知识图谱候选版本不存在",
+        ) from exc
+    except KnowledgeGraphReleaseConflict as exc:
+        raise ApiError(
+            409,
+            "knowledge_graph_release_conflict",
+            str(exc),
+        ) from exc
+    preview = preview_install(question_bank_db_path, load_release())
+    return KnowledgeGraphReleasePreviewResponse(**preview.to_dict())
+
+
+@router.post(
+    "/knowledge-graph/releases/{release_id}/rollback",
+    response_model=KnowledgeGraphReleasePreviewResponse,
+)
+def rollback_knowledge_graph_release(
+    release_id: str,
+    body: KnowledgeGraphReleaseRollbackRequest,
+    question_bank_db_path: Path = Depends(get_question_bank_db_path),
+) -> KnowledgeGraphReleasePreviewResponse:
+    try:
+        rollback_release(
+            question_bank_db_path,
+            release_id,
+            expected_active_release_id=body.expected_active_release_id,
+            actor_ref="local_teacher",
+            reason=body.reason,
+        )
+    except KnowledgeGraphReleaseNotFound as exc:
+        raise ApiError(
+            404,
+            "knowledge_graph_release_not_found",
+            "要回退到的知识图谱版本不存在",
+        ) from exc
+    except KnowledgeGraphReleaseConflict as exc:
+        raise ApiError(
+            409,
+            "knowledge_graph_release_conflict",
+            str(exc),
+        ) from exc
+    preview = preview_install(question_bank_db_path, load_release())
+    return KnowledgeGraphReleasePreviewResponse(**preview.to_dict())
 
 
 @router.get(

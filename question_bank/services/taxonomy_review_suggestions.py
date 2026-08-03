@@ -89,6 +89,10 @@ class TaxonomySuggestionService:
             raise TaxonomySuggestionInvalid(
                 "At least one pending proposal must be selected"
             )
+        if len(selected) > 200:
+            raise TaxonomySuggestionInvalid(
+                "A suggestion run can contain at most 200 proposals"
+            )
         command = {
             "proposal_ids": sorted(selected),
             "expected_revision": int(expected_revision),

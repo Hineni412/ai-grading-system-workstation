@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
@@ -8,11 +9,23 @@ from fastapi.testclient import TestClient
 def _path_manager(tmp_path):
     data_root = tmp_path / "user_data"
     return SimpleNamespace(
+        project_root=Path(__file__).resolve().parents[1],
+        version="test",
         data_root=data_root,
         db_path=data_root / "databases" / "grading_system.db",
+        qb_db_path=data_root / "databases" / "question_bank.db",
         reports_dir=data_root / "reports",
         exams_dir=data_root / "exams",
         templates_dir=data_root / "templates",
+        upload_config_dir=data_root / "config" / "uploaded",
+        outputs_dir=data_root / "outputs",
+        backups_dir=data_root / "backups",
+        ops_state_dir=data_root / "ops",
+        api_profiles_path=tmp_path / "config" / "api_profiles.json",
+        legacy_api_profiles_paths=(),
+        workspace_dir=lambda workspace_id, *, create=False: (
+            data_root / "workspaces" / workspace_id
+        ),
     )
 
 

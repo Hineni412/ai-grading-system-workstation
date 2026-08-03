@@ -11,6 +11,49 @@ class _QuestionBankModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class KnowledgeGraphReleaseIssue(_QuestionBankModel):
+    code: str
+    message: str
+    blocking: bool
+
+
+class KnowledgeGraphHighImpactItem(_QuestionBankModel):
+    fine_term_id: str
+    display_name: str
+    disposition: str
+    target_names: list[str]
+
+
+class KnowledgeGraphReleasePreviewResponse(_QuestionBankModel):
+    release_id: str
+    content_hash: str
+    current_release_id: str | None = None
+    node_count: int = Field(ge=0)
+    fine_term_count: int = Field(ge=0)
+    mapping_count: int = Field(ge=0)
+    relation_count: int = Field(ge=0)
+    high_impact_count: int = Field(ge=0)
+    high_impact_items: list[KnowledgeGraphHighImpactItem]
+    can_activate: bool
+    issues: list[KnowledgeGraphReleaseIssue]
+
+
+class KnowledgeGraphReleaseStageRequest(_QuestionBankModel):
+    reason: str = Field(min_length=2, max_length=300)
+
+
+class KnowledgeGraphReleaseActivateRequest(_QuestionBankModel):
+    expected_active_release_id: str | None = Field(default=None, max_length=100)
+    confirmation_phrase: Literal["启用知识图谱"]
+    reason: str = Field(min_length=2, max_length=300)
+
+
+class KnowledgeGraphReleaseRollbackRequest(_QuestionBankModel):
+    expected_active_release_id: str = Field(min_length=1, max_length=100)
+    confirmation_phrase: Literal["回退知识图谱"]
+    reason: str = Field(min_length=2, max_length=300)
+
+
 class QuestionPaperListItem(_QuestionBankModel):
     id: int
     title: str | None = None
@@ -664,7 +707,7 @@ class TaxonomyProposalApplicationRetryRequest(_QuestionBankModel):
 
 
 class TaxonomySuggestionCreateRequest(_QuestionBankModel):
-    proposal_ids: list[str] = Field(min_length=1, max_length=500)
+    proposal_ids: list[str] = Field(min_length=1, max_length=200)
     expected_revision: int = Field(ge=0)
     request_token: str = Field(pattern=r"^[0-9a-fA-F]{32}$")
 

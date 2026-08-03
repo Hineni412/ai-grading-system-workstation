@@ -725,10 +725,11 @@ def _system_prompt(
 
     Controlled output rules:
     - taxonomy_revision must exactly echo {int(_taxonomy_revision(contract))}.
-    - knowledge_points, prerequisite_points, ability_tags, method_tags,
-      thought_tags, math_model_tags and special_type_tags may contain only exact approved
-      names from the matching contract dimension. Never place a newly coined
-      or approximate term there.
+    - knowledge_points and prerequisite_points may contain only exact approved
+      names from shared_knowledge_catalog when it is present, otherwise from
+      the knowledge candidates. The other controlled fields may contain only
+      exact approved names from their matching contract dimension. Never place
+      a newly coined or approximate term there.
     - method_tags answers "what concrete procedure was used"; thought_tags
       answers "what reusable reasoning strategy guided the solution";
       math_model_tags names a stable structure whose defining relations are
@@ -741,6 +742,11 @@ def _system_prompt(
       curriculum names.
     - canonical_knowledge_id must be the approved ID corresponding to the first
       knowledge_points value. If no approved knowledge term fits, return "".
+    - A shared knowledge entry marked usage=do_not_use_as_knowledge describes a
+      method, ability or question style that was historically put in the wrong
+      dimension; never select it as a knowledge point. An entry marked
+      retrieval_only may describe the question for search, but cannot be the
+      canonical_knowledge_id used for mastery.
     - Only when no approved knowledge term accurately fits may you add one
       knowledge item to proposed_tags. Method, thought, model, ability,
       curriculum and special-type fields are closed vocabularies: leave an
@@ -748,7 +754,7 @@ def _system_prompt(
       proposal must state dimension (knowledge),
       name, definition, reason, nearest_id, and why_not_reuse. Also leave that
       unapproved value out of every normal field.
-    - proposed_tags is always present, contains at most 2 items per question,
+    - proposed_tags is always present, contains at most 1 item per question,
       and uses [] when every value is approved.
     - Do not output teaching_stage, sub_skills, measured_skills, or supporting_skills.
 
@@ -840,6 +846,9 @@ def _contract_candidates(
             "id": str(raw.get("id") or "").strip(),
             "name": str(raw.get("name") or "").strip(),
         }
+        usage = str(raw.get("usage") or "").strip()
+        if usage:
+            item["usage"] = usage
         key = (item["id"], item["name"])
         if not item["name"] or key in seen:
             continue
@@ -854,7 +863,11 @@ def _controlled_array_schema(
 ) -> dict[str, Any]:
     if contract is None:
         return {"type": "array", "items": {"type": "string"}}
-    names = [item["name"] for item in _contract_candidates(contract, dimension)]
+    names = [
+        item["name"]
+        for item in _contract_candidates(contract, dimension)
+        if item.get("usage") != "do_not_use_as_knowledge"
+    ]
     if not names:
         return {
             "type": "array",
@@ -925,7 +938,9 @@ def _controlled_field_violation_notes(
     notes: list[str] = []
     for field_name, dimension in field_dimensions.items():
         allowed = {
-            item["name"] for item in _contract_candidates(contract, dimension)
+            item["name"]
+            for item in _contract_candidates(contract, dimension)
+            if item.get("usage") != "do_not_use_as_knowledge"
         }
         values = getattr(analysis, field_name, [])
         if any(str(value or "").strip() not in allowed for value in values):
@@ -938,7 +953,10 @@ def _controlled_field_violation_notes(
         notes.append("controlled_field_violation:curriculum_sections")
     canonical_id = str(analysis.canonical_knowledge_id or "").strip()
     allowed_knowledge_ids = {
-        item["id"] for item in _contract_candidates(contract, "knowledge")
+        item["id"]
+        for item in _contract_candidates(contract, "knowledge")
+        if item.get("usage")
+        not in {"do_not_use_as_knowledge", "retrieval_only"}
     }
     if canonical_id and canonical_id not in allowed_knowledge_ids:
         notes.append("controlled_field_violation:canonical_knowledge_id")
@@ -956,7 +974,14 @@ def _tag_analysis_response_format(
     )
     canonical_ids = [
         "",
-        *_ordered_unique([item["id"] for item in knowledge_candidates]),
+        *_ordered_unique(
+            [
+                item["id"]
+                for item in knowledge_candidates
+                if item.get("usage")
+                not in {"do_not_use_as_knowledge", "retrieval_only"}
+            ]
+        ),
     ]
     properties = {
         "knowledge_points": _controlled_array_schema(
@@ -1348,9 +1373,10 @@ def _batch_system_prompt(
     CRITICAL: You are analyzing a BATCH of junior middle-school math questions.
     You must analyze each question in the batch and return the list of analyses under the "results" key in your JSON response.
     Each analysis object in "results" must include the exact "question_id" that was provided in the input.
-    Every batch input contains its own candidate_contract. For that question,
-    only that contract's candidates may be placed in normal controlled fields.
-    Do not borrow a candidate from another question in the same batch.
+    The shared_knowledge_catalog is sent exactly once for the whole batch and
+    is the only knowledge vocabulary for every question. Every batch input also
+    contains its own candidate_contract for curriculum and the other dimensions.
+    Do not borrow those per-question candidates from another question.
     """.strip()
 
 
@@ -1370,15 +1396,26 @@ def _batch_shared_contract(
     if len(revisions) > 1:
         raise ValueError("Per-question taxonomy contracts must share one revision")
     first = contracts[0] if contracts else {}
+    first_candidates = first.get("candidates")
+    shared_knowledge_catalog = (
+        list(first_candidates.get("knowledge") or [])
+        if isinstance(first_candidates, Mapping)
+        else []
+    )
     return {
         "schema_version": 1,
         "taxonomy_revision": next(iter(revisions), 0),
+        "knowledge_graph_release_id": str(
+            first.get("knowledge_graph_release_id") or ""
+        ),
+        "shared_knowledge_catalog": shared_knowledge_catalog,
         "allowed_dimensions": list(first.get("allowed_dimensions", [])),
         "rules": {
             "selection": (
-                "Use only the candidate_contract attached to the current question."
+                "Knowledge uses shared_knowledge_catalog; every other dimension "
+                "uses only the candidate_contract attached to the current question."
             ),
-            "unknown": "Return at most 2 proposed_tags for the current question.",
+            "unknown": "Return at most 1 knowledge proposal for the current question.",
         },
     }
 
@@ -1404,6 +1441,22 @@ def _normalize_batch_contracts(
     }
 
 
+def _batch_question_contract(
+    contract: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Remove the batch-shared knowledge catalog from a per-question payload."""
+
+    compact = dict(contract)
+    for field in ("candidates", "allowed_term_ids", "truncated"):
+        raw = compact.get(field)
+        if not isinstance(raw, Mapping):
+            continue
+        values = dict(raw)
+        values.pop("knowledge", None)
+        compact[field] = values
+    return compact
+
+
 def _batch_prompt_input(
     batch_contexts: list[tuple[int, TaggingContext]],
     taxonomy_contracts: Mapping[int, Mapping[str, Any]]
@@ -1420,7 +1473,9 @@ def _batch_prompt_input(
         input_payloads.append({
             "question_id": question_id,
             "input": _prompt_question_input(context),
-            "candidate_contract": dict(taxonomy_contracts[question_id]),
+            "candidate_contract": _batch_question_contract(
+                taxonomy_contracts[question_id]
+            ),
         })
         
     user_payload = {
@@ -1573,7 +1628,9 @@ def _analyze_one_batch(
                 {
                     "question_id": qid,
                     "input": _prompt_question_input(ctx),
-                    "candidate_contract": dict(taxonomy_contracts[qid]),
+                    "candidate_contract": _batch_question_contract(
+                        taxonomy_contracts[qid]
+                    ),
                 }
                 for qid, ctx in batch_items
             ]

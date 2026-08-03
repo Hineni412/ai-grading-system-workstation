@@ -730,24 +730,34 @@ def test_mapping_refresh_keeps_job_running_and_session_claimed(
         "backend.jobs.config_generation.refresh_template_mapping_from_session",
         blocked_mapping,
     )
-    manager = JobManager(JobStore(db.db_path), max_workers=1, cleanup_interrupted=False)
+    context, store = _job_context(
+        db.db_path,
+        {"session_id": session_id, "mode": "generate", "input_id": input_id},
+    )
+    manager = JobManager(store, max_workers=1, cleanup_interrupted=False)
     manager.register(
         "config_generation",
-        lambda context: run_config_generation_job(
-            context=context,
-            db=db,
-            upload_config_dir=tmp_path / "uploaded",
-            mapping_output_dir=tmp_path / "mapping-output",
-            llm_client_factory=lambda: object(),
-        ),
+        lambda _context: {},
     )
+    worker_errors: list[BaseException] = []
+
+    def run_job() -> None:
+        try:
+            run_config_generation_job(
+                context=context,
+                db=db,
+                upload_config_dir=tmp_path / "uploaded",
+                mapping_output_dir=tmp_path / "mapping-output",
+                llm_client_factory=lambda: object(),
+            )
+        except BaseException as exc:
+            worker_errors.append(exc)
+
+    worker = threading.Thread(target=run_job, daemon=True)
     try:
-        job = manager.submit(
-            "config_generation",
-            {"session_id": session_id, "mode": "generate", "input_id": input_id},
-        )
-        assert mapping_started.wait(timeout=5)
-        during_mapping = manager.get(job.id)
+        worker.start()
+        assert mapping_started.wait(timeout=5), worker_errors
+        during_mapping = store.get_job(context.job_id)
         assert during_mapping is not None
         assert during_mapping.status == "running"
         assert during_mapping.stage == "config_mapping"
@@ -757,13 +767,16 @@ def test_mapping_refresh_keeps_job_running_and_session_claimed(
                 {"session_id": session_id, "mode": "generate", "input_id": input_id},
             )
         release_mapping.set()
-        manager.wait(job.id, timeout=5)
-        completed = manager.get(job.id)
+        worker.join(timeout=5)
+        assert not worker.is_alive()
+        assert worker_errors == []
+        completed = store.get_job(context.job_id)
         assert completed is not None
         assert completed.status == "succeeded"
         assert completed.result["mapping_status"] == "refreshed"
     finally:
         release_mapping.set()
+        worker.join(timeout=5)
         manager.shutdown()
 
 
@@ -1029,13 +1042,13 @@ def test_concurrent_same_sha_failed_job_cannot_delete_successful_binding(
 ) -> None:
     db, jobs = _two_same_sha_source_jobs(tmp_path)
     success_entry, failure_entry = jobs
-    _force_concurrent_archive_reuse_checks(monkeypatch)
     real_archive = archive_source_bytes
     real_finish = JobStore.finish_config_generation_and_bind
     archive_results: list[tuple[int, str, bool]] = []
     results_guard = threading.Lock()
-    both_archived = threading.Event()
-    failure_finished = threading.Event()
+    success_archive_started = threading.Event()
+    success_bound = threading.Event()
+    success_thread_id: list[int] = []
 
     def record_archive(**kwargs: object):
         result = real_archive(**kwargs)
@@ -1043,17 +1056,17 @@ def test_concurrent_same_sha_failed_job_cannot_delete_successful_binding(
             archive_results.append(
                 (threading.get_ident(), result.stored_path, result.reused)
             )
-            if len(archive_results) == 2:
-                both_archived.set()
+        if success_thread_id and threading.get_ident() == success_thread_id[0]:
+            success_archive_started.set()
         return result
 
     def controlled_finish(store: JobStore, job_id: int, **kwargs: object) -> bool:
         if int(job_id) == failure_entry[3].job_id:
-            both_archived.wait(timeout=0.5)
+            assert success_bound.wait(timeout=3)
             raise sqlite3.IntegrityError("injected concurrent bind failure")
-        if both_archived.wait(timeout=0.1):
-            assert failure_finished.wait(timeout=3)
-        return real_finish(store, job_id, **kwargs)
+        result = real_finish(store, job_id, **kwargs)
+        success_bound.set()
+        return result
 
     monkeypatch.setattr(
         "backend.jobs.config_generation.archive_source_bytes",
@@ -1070,6 +1083,7 @@ def test_concurrent_same_sha_failed_job_cannot_delete_successful_binding(
     )
 
     def run_success() -> dict[str, object]:
+        success_thread_id.append(threading.get_ident())
         return run_config_generation_job(
             context=success_entry[3],
             db=db,
@@ -1079,20 +1093,18 @@ def test_concurrent_same_sha_failed_job_cannot_delete_successful_binding(
         )
 
     def run_failure() -> None:
-        try:
-            with pytest.raises(
-                sqlite3.IntegrityError,
-                match="injected concurrent bind failure",
-            ):
-                run_config_generation_job(
-                    context=failure_entry[3],
-                    db=db,
-                    upload_config_dir=tmp_path / "uploaded",
-                    data_root=tmp_path,
-                    llm_client_factory=lambda: object(),
-                )
-        finally:
-            failure_finished.set()
+        assert success_archive_started.wait(timeout=3)
+        with pytest.raises(
+            sqlite3.IntegrityError,
+            match="injected concurrent bind failure",
+        ):
+            run_config_generation_job(
+                context=failure_entry[3],
+                db=db,
+                upload_config_dir=tmp_path / "uploaded",
+                data_root=tmp_path,
+                llm_client_factory=lambda: object(),
+            )
 
     with ThreadPoolExecutor(max_workers=2) as executor:
         success_future = executor.submit(run_success)
@@ -2592,13 +2604,15 @@ def _deferred_combined_item(question_id: int) -> dict[str, Any]:
                     "full_answer": "移项并化简得 x=1。",
                     "proof_obligations": [],
                     "visual_requirements": [],
-                    "deduction_policy": ["缺少关键变形时该步未达成"],
+                    "deduction_policy": [
+                        "未写出移项化简过程或 x=1 结论时，对应证据点未达成"
+                    ],
                     "allow_alternative_methods": True,
                     "evidence_points": [
                         {
                             "evidence_point_id": f"step-{question_id}",
                             "step_index": 1,
-                            "target": "完成等价变形",
+                            "target": "移项并化简得到 x=1",
                             "justification": "依据等式性质移项并化简",
                             "answer_anchor": "移项并化简",
                             "observable_evidence": "写出正确的移项和化简过程",
@@ -2616,7 +2630,7 @@ def _deferred_combined_item(question_id: int) -> dict[str, Any]:
                         {
                             "evidence_point_id": f"result-{question_id}",
                             "step_index": 2,
-                            "target": "得出方程的解",
+                            "target": "解得 x=1",
                             "justification": "由前一步的等价方程求解未知数",
                             "answer_anchor": "x=1",
                             "observable_evidence": "写出 x=1 并作为最终结论",
