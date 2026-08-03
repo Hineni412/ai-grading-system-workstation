@@ -4,6 +4,9 @@ from pathlib import Path
 
 import pytest
 
+from question_bank.importers import batch_importer
+from question_bank.importers.batch_importer import PaperMetadata
+from question_bank.importers.types import ExtractedDocument
 from question_bank.database.schema import connect, initialize_database
 from question_bank.services.question_read_service import QuestionBankReadService
 from question_bank.services.question_write_service import (
@@ -104,6 +107,92 @@ def test_restoring_a_trashed_paper_only_restores_questions_moved_with_it(
     assert reader.get_question(1)["tags"][0]["tag_value"] == "全等三角形"
     assert reader.get_question(3) is None
     assert source_path.read_bytes() == b"source-stays"
+
+
+def test_import_collision_restores_original_identity_and_allows_reimport_only_after_permanent_delete(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    writer, _reader, paper_id, version, source_path = _seed_paper(tmp_path)
+    fingerprint = batch_importer._file_fingerprint(source_path)
+    with connect(writer.db_path) as conn:
+        conn.execute(
+            "UPDATE papers SET content_fingerprint = ? WHERE id = ?",
+            (fingerprint, paper_id),
+        )
+    upload_copy = tmp_path / "same-paper.docx"
+    upload_copy.write_bytes(source_path.read_bytes())
+    monkeypatch.setattr(
+        batch_importer,
+        "_extract_paper",
+        lambda _path: (_ for _ in ()).throw(
+            AssertionError("fingerprint collision should skip parsing")
+        ),
+    )
+
+    trashed = writer.set_paper_deleted(
+        paper_id,
+        expected_updated_at=version,
+        deleted=True,
+    )
+    collision = batch_importer._import_scanned_paper(
+        upload_copy,
+        writer.db_path,
+        stored_source_file="question_bank/raw_papers/same-paper.docx",
+        source_title="same-paper",
+        metadata=PaperMetadata(),
+        question_range=None,
+    )
+    restored = writer.set_paper_deleted(
+        paper_id,
+        expected_updated_at=trashed.updated_at,
+        deleted=False,
+    )
+    active_collision = batch_importer._import_scanned_paper(
+        upload_copy,
+        writer.db_path,
+        stored_source_file="question_bank/raw_papers/same-paper.docx",
+        source_title="same-paper",
+        metadata=PaperMetadata(),
+        question_range=None,
+    )
+
+    assert collision.status == "duplicate_in_trash"
+    assert collision.paper_id == paper_id
+    assert active_collision.status == "duplicate"
+    assert active_collision.paper_id == paper_id
+
+    trashed_again = writer.set_paper_deleted(
+        paper_id,
+        expected_updated_at=restored.updated_at,
+        deleted=True,
+    )
+    writer.permanently_delete_papers(
+        [PaperPermanentDeleteSelection(paper_id, trashed_again.updated_at)],
+        confirmation_phrase="彻底删除 1 份试卷",
+        request_token="b" * 32,
+    )
+    monkeypatch.setattr(
+        batch_importer,
+        "_extract_paper",
+        lambda path: ExtractedDocument(
+            source_file=str(path),
+            page_range="document",
+            text="1. 永久删除后允许重新导入同一份测试题目",
+        ),
+    )
+
+    reimported = batch_importer._import_scanned_paper(
+        upload_copy,
+        writer.db_path,
+        stored_source_file="question_bank/raw_papers/same-paper.docx",
+        source_title="same-paper",
+        metadata=PaperMetadata(),
+        question_range=None,
+    )
+
+    assert reimported.status == "needs_review"
+    assert reimported.paper_id != paper_id
 
 
 def test_permanent_delete_removes_owned_file_tags_and_statistic_links(

@@ -4,7 +4,7 @@ import json
 import hashlib
 from contextlib import closing
 from datetime import UTC, datetime
-from typing import Callable
+from typing import Any, Callable
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
@@ -274,10 +274,8 @@ class AttentionService:
         reason: str | None,
         plan_id: str | None,
         review_at: str | None,
+        transaction_hook: Callable[[Any, bytes], None] | None = None,
     ) -> dict[str, object]:
-        replay = self._idempotent(operation_id, "attention.resolve")
-        if replay is not None:
-            return replay
         if decision not in {"follow_up", "observe", "no_action"}:
             raise VaultError(
                 "attention_decision_invalid",
@@ -298,71 +296,17 @@ class AttentionService:
                 "无需处理必须记录教师原因",
                 status_code=422,
             )
-        card = self.get(
-            token=token,
-            attention_card_id=attention_card_id,
-        )
-        if card["state"] != "draft":
-            raise VaultError(
-                "attention_not_draft",
-                "关注卡已处置或已失效",
-                status_code=409,
-            )
-        if int(card["revision"]) != revision:
-            raise VaultError(
-                "vault_revision_conflict",
-                "关注卡已经变化，请刷新后再操作",
-                status_code=409,
-            )
-        claim = self._claim_resolution(
-            attention_card_id=attention_card_id,
-            operation_id=operation_id,
-            decision=decision,
-        )
-        action_id = (
-            str(claim["target_id"])
-            if claim.get("state") == "target_created"
-            and claim.get("target_id")
-            else None
-        )
-        if decision in {"follow_up", "observe"} and action_id is None:
-            if not plan_id:
-                raise VaultError(
-                    "attention_plan_required",
-                    "创建跟进行动前必须选择工作目标",
-                    status_code=422,
-                )
-            action = self.actions.create_action(
-                token=token,
-                operation_id=(
-                    "attention-target-"
-                    + hashlib.sha256(
-                        attention_card_id.encode("utf-8")
-                    ).hexdigest()[:32]
-                ),
-                plan_id=plan_id,
-                title=(
-                    "了解近期情况"
-                    if decision == "follow_up"
-                    else "复查近期情况"
-                ),
-                details=(
-                    f"{card['observed_fact']}\n"
-                    f"核实问题：{card['verification_question']}\n"
-                    f"建议：{card['low_risk_next_step']}"
-                ),
-                due_at=normalized_review,
-                depends_on_action_ids=[],
-            )
-            action_id = str(action["action_id"])
-            self._mark_resolution_target(
-                attention_card_id=attention_card_id,
-                operation_id=operation_id,
-                action_id=action_id,
-            )
         vmk = self._key_provider(token)
         with closing(self.database.connect()) as connection:
             with connection:
+                connection.execute("BEGIN IMMEDIATE")
+                replay = self._idempotent_in_connection(
+                    connection,
+                    operation_id,
+                    "attention.resolve",
+                )
+                if replay is not None:
+                    return replay
                 row = self._row(connection, attention_card_id)
                 if str(row["state"]) != "draft":
                     raise VaultError(
@@ -380,6 +324,105 @@ class AttentionService:
                         "vault_revision_conflict",
                         "关注卡已经变化，请刷新后再操作",
                         status_code=409,
+                    )
+                claim = connection.execute(
+                    """
+                    SELECT operation_id, state, target_kind, target_id
+                    FROM confirmation_claims
+                    WHERE entity_kind = 'attention' AND entity_id = ?
+                    """,
+                    (attention_card_id,),
+                ).fetchone()
+                action_id: str | None = None
+                if claim is not None:
+                    if str(claim["state"]) == "completed":
+                        raise VaultError(
+                            "attention_resolution_claimed",
+                            "关注卡已经处置，请刷新后查看",
+                            status_code=409,
+                        )
+                    claimed_decision = str(claim["target_kind"] or "")
+                    if claimed_decision and claimed_decision != decision:
+                        raise VaultError(
+                            "attention_decision_changed",
+                            "恢复处置时不能更改原决定，请刷新后按原决定继续",
+                            status_code=409,
+                        )
+                    if claim["target_id"]:
+                        action_id = str(claim["target_id"])
+                    connection.execute(
+                        """
+                        UPDATE confirmation_claims
+                        SET operation_id = ?, updated_at = ?
+                        WHERE entity_kind = 'attention' AND entity_id = ?
+                        """,
+                        (operation_id, _iso(), attention_card_id),
+                    )
+                else:
+                    connection.execute(
+                        """
+                        INSERT INTO confirmation_claims (
+                            entity_kind, entity_id, operation_id,
+                            state, target_kind, created_at, updated_at
+                        ) VALUES ('attention', ?, ?, 'claimed', ?, ?, ?)
+                        """,
+                        (
+                            attention_card_id,
+                            operation_id,
+                            decision,
+                            _iso(),
+                            _iso(),
+                        ),
+                    )
+                resolved_plan_id = plan_id
+                if decision in {"follow_up", "observe"} and action_id is None:
+                    if not resolved_plan_id:
+                        plan = self.actions.create_plan_in_transaction(
+                            connection,
+                            vmk=vmk,
+                            operation_id=(
+                                "academic-plan-"
+                                + hashlib.sha256(
+                                    attention_card_id.encode("utf-8")
+                                ).hexdigest()[:32]
+                            ),
+                            title="学业关注跟进",
+                            description="由教师在学业证据页确认的低风险复查行动",
+                            final_deadline=normalized_review,
+                        )
+                        resolved_plan_id = str(plan["plan_id"])
+                    action = self.actions.create_action_in_transaction(
+                        connection,
+                        vmk=vmk,
+                        operation_id=(
+                            "attention-target-"
+                            + hashlib.sha256(
+                                attention_card_id.encode("utf-8")
+                            ).hexdigest()[:32]
+                        ),
+                        plan_id=resolved_plan_id,
+                        title=(
+                            "了解近期情况"
+                            if decision == "follow_up"
+                            else "复查近期情况"
+                        ),
+                        details=(
+                            f"{payload['observed_fact']}\n"
+                            f"核实问题：{payload['verification_question']}\n"
+                            f"建议：{payload['low_risk_next_step']}"
+                        ),
+                        due_at=normalized_review,
+                        depends_on_action_ids=[],
+                    )
+                    action_id = str(action["action_id"])
+                    connection.execute(
+                        """
+                        UPDATE confirmation_claims
+                        SET state = 'target_created', target_id = ?, updated_at = ?
+                        WHERE entity_kind = 'attention'
+                          AND entity_id = ? AND operation_id = ?
+                        """,
+                        (action_id, _iso(), attention_card_id, operation_id),
                     )
                 payload["teacher_decision_reason"] = clean_reason
                 payload["review_at"] = normalized_review
@@ -422,6 +465,8 @@ class AttentionService:
                     """,
                     (_iso(), attention_card_id, operation_id),
                 )
+                if transaction_hook is not None:
+                    transaction_hook(connection, vmk)
         return result
 
     def _claim_resolution(
@@ -532,13 +577,25 @@ class AttentionService:
         operation_type: str,
     ) -> dict[str, object] | None:
         with closing(self.database.connect()) as connection:
-            row = connection.execute(
-                """
-                SELECT operation_type, result_json FROM idempotency_ledger
-                WHERE operation_id = ?
-                """,
-                (operation_id,),
-            ).fetchone()
+            return self._idempotent_in_connection(
+                connection,
+                operation_id,
+                operation_type,
+            )
+
+    @staticmethod
+    def _idempotent_in_connection(
+        connection: Any,
+        operation_id: str,
+        operation_type: str,
+    ) -> dict[str, object] | None:
+        row = connection.execute(
+            """
+            SELECT operation_type, result_json FROM idempotency_ledger
+            WHERE operation_id = ?
+            """,
+            (operation_id,),
+        ).fetchone()
         if row is None:
             return None
         if str(row["operation_type"]) != operation_type:

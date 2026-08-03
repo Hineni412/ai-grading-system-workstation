@@ -100,8 +100,29 @@ _NAME_CONTEXT_SUFFIX = (
     r"安排(?:任务|工作|值日)?|，|。|；|、|\s|$)"
 )
 
+_MOBILE_PHONE_TEXT = (
+    r"(?<!\d)(?:(?:\+?86|0086)[\s-]*)?1[3-9]\d(?:[\s-]*\d){8}(?!\d)"
+)
+_LANDLINE_PHONE_TEXT = (
+    r"(?<!\d)(?:\(\s*0\d{2,3}\s*\)|0\d{2,3})[\s-]*"
+    r"\d(?:[\s-]*\d){6,7}(?:[\s-]*(?:转|ext\.?\s*)?\d{1,6})?(?!\d)"
+)
+_MOBILE_PHONE_PATTERN = re.compile(_MOBILE_PHONE_TEXT, re.IGNORECASE)
+_LANDLINE_PHONE_PATTERN = re.compile(_LANDLINE_PHONE_TEXT, re.IGNORECASE)
+_PARENT_PHONE_LABEL_TEXT = (
+    r"(?:家长|父亲|母亲|爸爸|妈妈|监护人)(?:的)?"
+    r"(?:联系电话|电话号码|电话|手机号|手机|联系方式)"
+)
+_PARENT_PHONE_LABEL_PATTERN = re.compile(_PARENT_PHONE_LABEL_TEXT)
+_PARENT_PHONE_VALUE_PATTERN = re.compile(
+    rf"{_PARENT_PHONE_LABEL_TEXT}\s*(?:是|为|：|:)?\s*"
+    rf"(?:{_MOBILE_PHONE_TEXT}|{_LANDLINE_PHONE_TEXT})",
+    re.IGNORECASE,
+)
+
 _DIRECT_IDENTIFIER_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
-    ("手机号", re.compile(r"(?<!\d)1[3-9]\d{9}(?!\d)")),
+    ("手机号", _MOBILE_PHONE_PATTERN),
+    ("座机号", _LANDLINE_PHONE_PATTERN),
     ("身份证号", re.compile(r"(?<!\d)\d{17}[\dXx](?!\d)")),
     ("邮箱", re.compile(r"\b[^\s@]+@[^\s@]+\.[^\s@]+\b")),
 )
@@ -125,6 +146,40 @@ _CONTEXTUAL_NAME_PATTERNS = (
         rf"(?={_NAME_CONTEXT_SUFFIX})"
     ),
 )
+_CLASS_NAME_PATTERNS = (
+    re.compile(
+        rf"(?P<class>(?:[一二三四五六七八九十百\d]+年级\s*)?"
+        rf"[一二三四五六七八九十百\d]+\s*班(?:\s*的)?\s*(?:学生|同学)?\s*)"
+        rf"(?P<name>{_NAME_BODY})(?={_NAME_CONTEXT_SUFFIX})"
+    ),
+)
+_INCIDENT_EVENT = (
+    r"(?:发生(?:了)?(?:矛盾|冲突|争执)|出现(?:了)?(?:矛盾|冲突|争执)|"
+    r"产生(?:了)?(?:矛盾|冲突|争执)|闹(?:了)?矛盾|打架|斗殴|推搡|受伤)"
+)
+_INCIDENT_CONTEXT_START = (
+    r"(?:今天|明天|后天|昨天|当时|刚才|最近|本周|这周|下周|上午|中午|下午|"
+    r"晚上|早上|课间|午休|放学|返校|到校|在|于|因|因为|由于|上|下|参加|"
+    r"进行|完成|做|又|刚|突然|期间|过程中|\d)"
+)
+_INCIDENT_CONTEXT_AND_EVENT = (
+    rf"(?:{_INCIDENT_CONTEXT_START}[^，。；\n]*?)?{_INCIDENT_EVENT}"
+)
+_INCIDENT_NAME_PATTERNS = (
+    re.compile(
+        rf"(?P<name>{_NAME_BODY})(?:同学|学生)?"
+        rf"(?=\s*(?:和|与|、)\s*{_NAME_BODY}(?:同学|学生)?"
+        rf"\s*{_INCIDENT_CONTEXT_AND_EVENT})"
+    ),
+    re.compile(
+        rf"(?:和|与|、)\s*(?P<name>{_NAME_BODY})(?:同学|学生)?"
+        rf"(?=\s*{_INCIDENT_CONTEXT_AND_EVENT})"
+    ),
+    re.compile(
+        rf"(?:^|(?<=[，。；]))\s*(?P<name>{_NAME_BODY})(?:同学|学生)?"
+        rf"(?=\s*{_INCIDENT_CONTEXT_AND_EVENT})"
+    ),
+)
 
 
 def _mask_non_person_references(value: str) -> str:
@@ -143,6 +198,8 @@ def _name_findings(value: str) -> bool:
     return bool(
         _DIRECT_NAME_PATTERN.search(masked)
         or any(pattern.search(masked) for pattern in _CONTEXTUAL_NAME_PATTERNS)
+        or any(pattern.search(value) for pattern in _CLASS_NAME_PATTERNS)
+        or any(pattern.search(masked) for pattern in _INCIDENT_NAME_PATTERNS)
     )
 
 
@@ -156,9 +213,35 @@ def _replace_spans(
     return value
 
 _MODEL_DECISION_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
-    ("诊断结论", re.compile(r"(?:诊断为|确诊为?|心理诊断|判定为[^，。；]{0,12}(?:障碍|疾病))")),
-    ("欺凌认定", re.compile(r"(?:认定|判定|确认|属于)[^，。；]{0,10}欺凌")),
-    ("惩戒决定", re.compile(r"(?:决定|应当|必须|建议)?[^，。；]{0,8}(?:惩戒|处分|处罚|开除)")),
+    (
+        "诊断结论",
+        re.compile(
+            r"(?:诊断为|确诊为?|心理诊断|判定为[^，。；]{0,12}(?:障碍|疾病)|"
+            r"(?:患有|罹患|得了|就是)[^，。；]{0,8}"
+            r"(?:抑郁症|焦虑症|双相情感障碍|精神障碍|心理障碍|人格障碍|"
+            r"注意缺陷多动障碍|自闭症|孤独症|心理疾病|精神疾病)|"
+            r"(?:该生|该学生|这个学生|当事学生|学生[A-Z]{0,2})\s*(?:是|有)\s*"
+            r"(?:轻度|中度|重度)?(?:抑郁症|焦虑症|双相情感障碍|精神障碍|"
+            r"心理障碍|人格障碍|注意缺陷多动障碍|自闭症|孤独症|心理疾病|精神疾病))"
+        ),
+    ),
+    (
+        "欺凌认定",
+        re.compile(
+            r"(?:认定|判定|确认|属于|构成)[^，。；]{0,10}欺凌|"
+            r"(?:这是|此事是|该行为是)\s*(?:一起|一宗|一种|典型的|明确的|严重的)?\s*"
+            r"(?:校园|网络)?欺凌(?:行为|事件)"
+        ),
+    ),
+    (
+        "惩戒决定",
+        re.compile(
+            r"(?:决定|应当|应该|必须|建议|要求|责令|予以|给予)"
+            r"[^，。；]{0,10}(?:惩戒|处分|处罚|警告|记过|留校察看|停课|停学|"
+            r"禁止返校|转学|劝退|退学|开除)|"
+            r"(?:停课|停学)\s*[一二三四五六七八九十两\d]+\s*(?:天|周|月|个月)"
+        ),
+    ),
     ("自动外发", re.compile(r"自动(?:发送|通知|外发|联系)")),
     ("自动完成", re.compile(r"自动(?:标记)?完成")),
     ("自动结案", re.compile(r"自动结案|已结案")),
@@ -198,6 +281,7 @@ class RedactionResult:
     outbound_text: str
     removed_categories: tuple[str, ...]
     blocked_categories: tuple[str, ...]
+    identity_aliases: tuple[tuple[str, str], ...] = ()
 
 
 class SensitiveContentPolicy:
@@ -211,6 +295,8 @@ class SensitiveContentPolicy:
             if pattern.search(value)
         ]
         findings.extend(term for term in _RESTRICTED_CONTEXT_TERMS if term in value)
+        if _PARENT_PHONE_LABEL_PATTERN.search(value):
+            findings.append("家长电话")
         if _name_findings(value):
             findings.append("可能的具体姓名")
         return tuple(dict.fromkeys(findings))
@@ -274,6 +360,142 @@ class SensitiveContentPolicy:
             removed_categories=tuple(dict.fromkeys(removed)),
             blocked_categories=tuple(dict.fromkeys(blocked)),
         )
+
+    @staticmethod
+    def prepare_stable_model_text(
+        value: str,
+        *,
+        existing_aliases: tuple[tuple[str, str], ...] = (),
+    ) -> RedactionResult:
+        """Create a deterministic multi-student preview without exposing names.
+
+        Existing mappings are supplied only from encrypted workflow context. New
+        names are assigned in first-appearance order, so later logical rounds
+        keep the same student aliases without a student-record lookup. Direct
+        contact identifiers and address details are removed from the exact
+        outbound preview instead of forcing the teacher to retype the incident.
+        """
+
+        blocked = [
+            term
+            for term in _MODEL_HARD_BLOCK_TERMS
+            if term in value and term not in {"家庭住址", "家长电话"}
+        ]
+        aliases: list[tuple[str, str]] = []
+        seen_terms: set[str] = set()
+        outbound = value.strip()
+        removed: list[str] = []
+        parent_phone_values = list(_PARENT_PHONE_VALUE_PATTERN.finditer(outbound))
+        if parent_phone_values:
+            for match in parent_phone_values:
+                matched_value = match.group(0)
+                removed.append(
+                    "座机号"
+                    if _LANDLINE_PHONE_PATTERN.search(matched_value)
+                    else "手机号"
+                )
+            outbound = _PARENT_PHONE_VALUE_PATTERN.sub("[已移除联系电话]", outbound)
+            removed.append("家长电话")
+        for label, pattern in _DIRECT_IDENTIFIER_PATTERNS:
+            if pattern.search(outbound):
+                outbound = pattern.sub(f"[已移除{label}]", outbound)
+                removed.append(label)
+        if _PARENT_PHONE_LABEL_PATTERN.search(outbound):
+            blocked.append("家长电话")
+        address_pattern = re.compile(
+            r"(?:(?:家庭住址|住址|地址)\s*(?:是|为|：|:)?\s*|"
+            r"(?:家住|住在)\s*)[^，。；\n]{2,80}"
+        )
+        if address_pattern.search(outbound):
+            outbound = address_pattern.sub("[已移除住址]", outbound)
+            removed.append("家庭住址")
+        known_spans: list[tuple[int, int, str]] = []
+        for raw_term, raw_alias in existing_aliases:
+            term = re.sub(r"(?:同学|学生)$", "", str(raw_term).strip())
+            alias = str(raw_alias).strip()
+            if (
+                term
+                and term not in seen_terms
+                and re.fullmatch(r"学生[A-Z]{1,2}", alias)
+            ):
+                aliases.append((term, alias))
+                seen_terms.add(term)
+                known_spans.extend(
+                    (match.start(), match.end(), term)
+                    for match in re.finditer(re.escape(term), outbound)
+                )
+
+        masked = _mask_non_person_references(outbound)
+        spans: list[tuple[int, int, str]] = list(known_spans)
+        class_matches = [
+            match
+            for pattern in _CLASS_NAME_PATTERNS
+            for match in pattern.finditer(outbound)
+        ]
+        class_spans = [match.span("class") for match in class_matches]
+        for match in _DIRECT_NAME_PATTERN.finditer(masked):
+            start, end = match.span()
+            if any(
+                start < class_end and class_start < end
+                for class_start, class_end in class_spans
+            ):
+                continue
+            term = re.sub(r"(?:同学|学生|家长)$", "", match.group(0)).strip()
+            spans.append((start, end, term))
+        for pattern in (*_CONTEXTUAL_NAME_PATTERNS, *_INCIDENT_NAME_PATTERNS):
+            for match in pattern.finditer(masked):
+                start, end = match.span("name")
+                term = re.sub(r"(?:同学|学生)$", "", match.group("name")).strip()
+                spans.append((start, end, term))
+        for match in class_matches:
+            start, end = match.span("name")
+            spans.append((start, end, match.group("name").strip()))
+
+        occupied: list[tuple[int, int]] = []
+        replacements: list[tuple[int, int, str]] = []
+        for start, end, term in sorted(set(spans), key=lambda item: (item[0], -item[1])):
+            if any(start < prior_end and prior_start < end for prior_start, prior_end in occupied):
+                continue
+            alias = next((label for name, label in aliases if name == term), None)
+            if alias is None:
+                alias = SensitiveContentPolicy._student_alias(len(aliases))
+                aliases.append((term, alias))
+                seen_terms.add(term)
+            replacements.append((start, end, alias))
+            occupied.append((start, end))
+        combined_replacements = [
+            *replacements,
+            *((start, end, "[已移除班级]") for start, end in class_spans),
+        ]
+        for start, end, replacement in sorted(
+            set(combined_replacements),
+            key=lambda item: item[0],
+            reverse=True,
+        ):
+            outbound = outbound[:start] + replacement + outbound[end:]
+        if replacements:
+            removed.append("姓名或称呼")
+        if class_spans:
+            removed.append("班级")
+
+        score_pattern = re.compile(r"(?<!\d)\d{1,3}(?:\.\d+)?\s*(?:分|名)(?!\d)")
+        if score_pattern.search(outbound):
+            outbound = score_pattern.sub("[已移除具体数值]", outbound)
+            removed.append("具体分数或名次")
+
+        return RedactionResult(
+            outbound_text=outbound,
+            removed_categories=tuple(dict.fromkeys(removed)),
+            blocked_categories=tuple(dict.fromkeys(blocked)),
+            identity_aliases=tuple(aliases),
+        )
+
+    @staticmethod
+    def _student_alias(index: int) -> str:
+        if index < 26:
+            return f"学生{chr(ord('A') + index)}"
+        first, second = divmod(index, 26)
+        return f"学生{chr(ord('A') + first - 1)}{chr(ord('A') + second)}"
 
     @staticmethod
     def _identity_aliases(identity_terms: tuple[str, ...]) -> set[str]:

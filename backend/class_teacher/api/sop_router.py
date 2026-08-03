@@ -11,10 +11,15 @@ from .router import (
 )
 from .sop_schemas import (
     AffairCloseRequest,
+    AffairCommandRequest,
     AffairCreateRequest,
+    AffairDraftRequest,
+    AffairDraftResponse,
     AffairListResponse,
     AffairReopenRequest,
     AffairResponse,
+    AffairWorkspaceListResponse,
+    AffairWorkspaceResponse,
     DecisionRecordRequest,
     SopTemplateListResponse,
     SopBaselineResponse,
@@ -87,7 +92,7 @@ def create_sop_router() -> APIRouter:
             )
         )
 
-    @router.post("/sop/affairs", response_model=AffairResponse)
+    @router.post("/sop/affairs", response_model=AffairWorkspaceResponse)
     def create_affair(
         request: Request,
         body: AffairCreateRequest,
@@ -100,7 +105,7 @@ def create_sop_router() -> APIRouter:
         _require_trusted_mutation(request)
         _no_store(response)
         return _call(
-            lambda: _service(request).sop.create_affair(
+            lambda: _service(request).affairs.create(
                 token=_token(session_token),
                 operation_id=body.operation_id,
                 template_version_id=body.template_version_id,
@@ -110,7 +115,7 @@ def create_sop_router() -> APIRouter:
             )
         )
 
-    @router.get("/sop/affairs", response_model=AffairListResponse)
+    @router.get("/sop/affairs", response_model=AffairWorkspaceListResponse)
     def list_affairs(
         request: Request,
         response: Response,
@@ -118,15 +123,21 @@ def create_sop_router() -> APIRouter:
             default=None,
             alias="x-class-teacher-session",
         ),
+        state: str | None = None,
+        template: str | None = None,
+        cursor: str | None = None,
     ):
         _no_store(response)
         return _call(
-            lambda: _service(request).sop.list_affairs(
+            lambda: _service(request).affairs.list(
                 token=_token(session_token),
+                state=state,
+                template=template,
+                cursor=cursor,
             )
         )
 
-    @router.get("/sop/affairs/{affair_id}", response_model=AffairResponse)
+    @router.get("/sop/affairs/{affair_id}", response_model=AffairWorkspaceResponse)
     def get_affair(
         affair_id: str,
         request: Request,
@@ -138,9 +149,59 @@ def create_sop_router() -> APIRouter:
     ):
         _no_store(response)
         return _call(
-            lambda: _service(request).sop.get_affair(
+            lambda: _service(request).affairs.read(
                 token=_token(session_token),
                 affair_id=affair_id,
+            )
+        )
+
+    @router.put(
+        "/sop/affairs/{affair_id}/steps/{step_instance_id}/draft",
+        response_model=AffairDraftResponse,
+    )
+    def save_step_draft(
+        affair_id: str,
+        step_instance_id: str,
+        request: Request,
+        body: AffairDraftRequest,
+        response: Response,
+        session_token: str | None = Header(
+            default=None,
+            alias="x-class-teacher-session",
+        ),
+    ):
+        _require_trusted_mutation(request)
+        _no_store(response)
+        return _call(
+            lambda: _service(request).affairs.save_draft(
+                token=_token(session_token),
+                affair_id=affair_id,
+                step_instance_id=step_instance_id,
+                **body.model_dump(),
+            )
+        )
+
+    @router.post(
+        "/sop/affairs/{affair_id}/commands",
+        response_model=AffairWorkspaceResponse,
+    )
+    def affair_command(
+        affair_id: str,
+        request: Request,
+        body: AffairCommandRequest,
+        response: Response,
+        session_token: str | None = Header(
+            default=None,
+            alias="x-class-teacher-session",
+        ),
+    ):
+        _require_trusted_mutation(request)
+        _no_store(response)
+        return _call(
+            lambda: _service(request).affairs.advance(
+                token=_token(session_token),
+                affair_id=affair_id,
+                **body.model_dump(),
             )
         )
 

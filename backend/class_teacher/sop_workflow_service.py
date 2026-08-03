@@ -215,6 +215,7 @@ class SopWorkflowService:
         title: str,
         summary: str | None,
         participant_refs: list[str],
+        transaction_hook: Callable[[Any, bytes, str, str], None] | None = None,
     ) -> dict[str, object]:
         vmk = self._key_provider(token)
         replay = self._idempotent(operation_id, "sop.affair.create")
@@ -495,6 +496,7 @@ class SopWorkflowService:
         revision: int,
         outcome: str,
         result: str,
+        transaction_hook: Callable[[Any, bytes], None] | None = None,
     ) -> dict[str, object]:
         vmk = self._key_provider(token)
         replay = self._idempotent(operation_id, "sop.step.complete")
@@ -607,6 +609,8 @@ class SopWorkflowService:
                         "step_instance_id": step_instance_id,
                     },
                 )
+                if transaction_hook is not None:
+                    transaction_hook(connection, vmk)
         return self.get_affair(token=token, affair_id=affair_id)
 
     def record_decision(
@@ -620,6 +624,8 @@ class SopWorkflowService:
         step_instance_id: str | None,
         decision_key: str | None = None,
         selected_option: str | None = None,
+        expected_workspace_revision: int | None = None,
+        transaction_hook: Callable[[Any, bytes], None] | None = None,
     ) -> dict[str, object]:
         vmk = self._key_provider(token)
         replay = self._idempotent(operation_id, "sop.decision.record")
@@ -648,6 +654,18 @@ class SopWorkflowService:
             )
         with closing(self.database.connect()) as connection:
             with connection:
+                connection.execute("BEGIN IMMEDIATE")
+                if expected_workspace_revision is not None:
+                    current_workspace_revision = int(connection.execute(
+                        "SELECT COUNT(*) FROM affair_events WHERE affair_id = ?",
+                        (affair_id,),
+                    ).fetchone()[0])
+                    if current_workspace_revision != int(expected_workspace_revision):
+                        raise VaultError(
+                            "sop_affair_revision_conflict",
+                            "事务已经变化，请刷新后再继续",
+                            status_code=409,
+                        )
                 self._affair(connection, affair_id)
                 if step_instance_id and connection.execute(
                     """
@@ -732,6 +750,8 @@ class SopWorkflowService:
                     "sop.decision.record",
                     {"affair_id": affair_id, "decision_id": decision_id},
                 )
+                if transaction_hook is not None:
+                    transaction_hook(connection, vmk)
         return self.get_affair(token=token, affair_id=affair_id)
 
     def close_affair(
@@ -742,6 +762,7 @@ class SopWorkflowService:
         operation_id: str,
         revision: int,
         closure_summary: str,
+        transaction_hook: Callable[[Any, bytes], None] | None = None,
     ) -> dict[str, object]:
         vmk = self._key_provider(token)
         replay = self._idempotent(operation_id, "sop.affair.close")
@@ -832,6 +853,15 @@ class SopWorkflowService:
                     "sop.affair.close",
                     {"affair_id": affair_id},
                 )
+                if transaction_hook is not None:
+                    transaction_hook(
+                        connection,
+                        vmk,
+                        affair_id,
+                        occurrence_id,
+                    )
+                if transaction_hook is not None:
+                    transaction_hook(connection, vmk)
         return self.get_affair(token=token, affair_id=affair_id)
 
     def reopen_affair(
@@ -842,6 +872,7 @@ class SopWorkflowService:
         operation_id: str,
         revision: int,
         reason: str,
+        transaction_hook: Callable[[Any, bytes], None] | None = None,
     ) -> dict[str, object]:
         vmk = self._key_provider(token)
         replay = self._idempotent(operation_id, "sop.affair.reopen")
@@ -945,6 +976,8 @@ class SopWorkflowService:
                     "sop.affair.reopen",
                     {"affair_id": affair_id, "occurrence_id": occurrence_id},
                 )
+                if transaction_hook is not None:
+                    transaction_hook(connection, vmk)
         return self.get_affair(token=token, affair_id=affair_id)
 
     def _instantiate_steps(

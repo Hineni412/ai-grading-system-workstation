@@ -1,4 +1,5 @@
 import { apiClient } from '../../../api/client'
+import { decodeJobResponse, type JobResponse } from '../../../api/jobs'
 import {
   assertNoPathLikeKeys,
   isRecord,
@@ -13,6 +14,7 @@ export interface TeachingPrepModuleStatus {
   schema_version: string
   real_model_enabled: boolean
   semester_mapping_model_available: boolean
+  exercise_suggestion_model_available: boolean
   real_wps_enabled: boolean
   wps_execution_available: boolean
 }
@@ -91,6 +93,9 @@ export interface SemesterMaterialRecord {
   material_source_id: string
   display_name: string
   material_role: SemesterMaterialRole
+  is_daily_workbook?: boolean
+  workbook_series?: string | null
+  workbook_volume?: 'A' | 'B' | null
   parse_status: 'not_started' | 'parsed' | 'needs_review' | 'failed'
   mapping_status: SemesterMaterialMappingStatus
   current_material_version_id: string
@@ -138,11 +143,19 @@ export interface SemesterMappingProposalChapter {
 }
 
 export interface SemesterMappingProposalRange {
+  mapping_id: string
   material_record_id: string
   lesson_ref: string
   start_unit: number
   end_unit: number
   purpose: 'textbook' | 'reference_ppt' | 'exercise' | 'answer' | 'supplement'
+  decision: 'pending' | 'accepted' | 'modified' | 'rejected'
+  teacher_revision: {
+    lesson_ref: string
+    start_unit: number
+    end_unit: number
+  } | null
+  decision_reason: string | null
 }
 
 export interface SemesterMappingProposal {
@@ -188,8 +201,14 @@ export interface MaterialVersion {
   size_bytes: number
   modified_ns: string | null
   unit_count: number | null
+  parse_expected_unit_count?: number | null
+  preview_completed_count?: number
+  ocr_completed_count?: number
+  ocr_total_count?: number
   inspection_status: string
   availability: 'available' | 'missing' | 'needs_relocation'
+  source_revision?: number
+  source_archived_at?: string | null
   created_at: string
 }
 
@@ -393,6 +412,8 @@ export interface FreezeResourcePackInput {
   assessment_ids: number[]
   knowledge_scope: string[]
   preparation_preferences: TeachingPreferencesPayload
+  selected_material_link_ids?: string[] | null
+  selected_exercise_candidate_ids?: string[] | null
 }
 
 export interface DraftClaim {
@@ -559,6 +580,8 @@ export interface PptxExecution {
   verification_report: Record<string, unknown> | null
   error_code: string | null
   published_version_id: string | null
+  phase: 'copying' | 'executing' | 'verifying' | 'publishing' | 'done'
+  cancel_requested: boolean
   staging_retained: boolean
   recovery_actions: string[]
   created_at: string
@@ -797,6 +820,14 @@ function semesterLessonProgress(value: unknown): SemesterLessonProgress {
 }
 
 function semesterMaterial(value: unknown): SemesterMaterialRecord {
+  if (isRecord(value)) {
+    value = {
+      is_daily_workbook: false,
+      workbook_series: null,
+      workbook_volume: null,
+      ...value,
+    }
+  }
   if (
     !isRecord(value)
     || !text(value.id)
@@ -811,6 +842,9 @@ function semesterMaterial(value: unknown): SemesterMaterialRecord {
       'answer_book',
       'supplement',
     ].includes(String(value.material_role))
+    || typeof value.is_daily_workbook !== 'boolean'
+    || !nullableText(value.workbook_series)
+    || !(value.workbook_volume === null || ['A', 'B'].includes(String(value.workbook_volume)))
     || !['not_started', 'parsed', 'needs_review', 'failed'].includes(
       String(value.parse_status),
     )
@@ -940,6 +974,17 @@ function lessonNode(value: unknown): LessonNode {
 }
 
 function material(value: unknown): MaterialVersion {
+  if (isRecord(value)) {
+    value = {
+      parse_expected_unit_count: null,
+      preview_completed_count: 0,
+      ocr_completed_count: 0,
+      ocr_total_count: 0,
+      source_revision: 1,
+      source_archived_at: null,
+      ...value,
+    }
+  }
   if (
     !isRecord(value)
     || !text(value.id)
@@ -957,10 +1002,16 @@ function material(value: unknown): MaterialVersion {
       )
     )
     || !(value.unit_count === null || integer(value.unit_count))
+    || !(value.parse_expected_unit_count === null || integer(value.parse_expected_unit_count))
+    || !integer(value.preview_completed_count)
+    || !integer(value.ocr_completed_count)
+    || !integer(value.ocr_total_count)
     || !text(value.inspection_status)
     || !['available', 'missing', 'needs_relocation'].includes(
       String(value.availability),
     )
+    || !integer(value.source_revision, 1)
+    || !nullableText(value.source_archived_at)
     || !text(value.created_at)
   ) throw new Error('Invalid material response')
   return value as unknown as MaterialVersion
@@ -1318,6 +1369,7 @@ function moduleStatus(value: unknown): TeachingPrepModuleStatus {
     || !text(value.schema_version)
     || typeof value.real_model_enabled !== 'boolean'
     || typeof value.semester_mapping_model_available !== 'boolean'
+    || typeof value.exercise_suggestion_model_available !== 'boolean'
     || typeof value.real_wps_enabled !== 'boolean'
     || typeof value.wps_execution_available !== 'boolean'
   ) throw new Error('Invalid teaching prep status response')
@@ -1346,6 +1398,10 @@ function pptxExecution(value: unknown): PptxExecution {
     || !(value.verification_report === null || isRecord(value.verification_report))
     || !nullableText(value.error_code)
     || !nullableText(value.published_version_id)
+    || !['copying', 'executing', 'verifying', 'publishing', 'done'].includes(
+      String(value.phase),
+    )
+    || typeof value.cancel_requested !== 'boolean'
     || typeof value.staging_retained !== 'boolean'
     || !stringArray(value.recovery_actions)
     || !text(value.created_at)
@@ -1666,6 +1722,8 @@ export const teachingPrepCatalogApi = {
       request_token: string
       material_version_id: string
       material_role: SemesterMaterialRole
+      workbook_series?: string | null
+      workbook_volume?: 'A' | 'B' | null
     },
   ): Promise<SemesterMaterialRecord> {
     return apiClient.request(
@@ -1687,6 +1745,8 @@ export const teachingPrepCatalogApi = {
       material_role: SemesterMaterialRole
       mapping_status: SemesterMaterialMappingStatus
       is_active: boolean
+      workbook_series?: string | null
+      workbook_volume?: 'A' | 'B' | null
     },
   ): Promise<SemesterMaterialRecord> {
     return apiClient.request(
@@ -1851,11 +1911,29 @@ export const teachingPrepCatalogApi = {
     )
   },
 
-  listMaterials(signal?: AbortSignal): Promise<MaterialVersion[]> {
-    return apiClient.request('/api/teaching-prep/materials', {
+  listMaterials(signal?: AbortSignal, includeArchived = false): Promise<MaterialVersion[]> {
+    const suffix = includeArchived ? '?include_archived=true' : ''
+    return apiClient.request(`/api/teaching-prep/materials${suffix}`, {
       signal,
       decode: (payload) => itemList(payload, material),
     })
+  },
+
+  updateMaterialSource(
+    current: MaterialVersion,
+    input: { display_name?: string; archived?: boolean },
+  ): Promise<MaterialVersion> {
+    return apiClient.request(
+      `/api/teaching-prep/material-sources/${encodeURIComponent(current.source_id)}`,
+      {
+        method: 'PATCH',
+        body: { expected_revision: current.source_revision ?? 1, ...input },
+        decode: (payload) => {
+          assertNoPathLikeKeys(payload)
+          return material(payload)
+        },
+      },
+    )
   },
 
   importMaterialCopy(
@@ -1906,6 +1984,47 @@ export const teachingPrepCatalogApi = {
       `/api/teaching-prep/materials/${encodeURIComponent(materialVersionId)}/parse`,
       {
         method: 'POST',
+        signal,
+        timeoutMs: 10 * 60_000,
+        decode: (payload) => {
+          assertNoPathLikeKeys(payload)
+          if (!isRecord(payload) || !Array.isArray(payload.items)) {
+            throw new Error('Invalid material unit response')
+          }
+          return payload.items.map(materialUnit)
+        },
+      },
+    )
+  },
+
+  startMaterialParse(
+    materialVersionId: string,
+    signal?: AbortSignal,
+  ): Promise<JobResponse> {
+    return apiClient.request(
+      `/api/teaching-prep/materials/${encodeURIComponent(materialVersionId)}/parse-job`,
+      {
+        method: 'POST',
+        signal,
+        decode: decodeJobResponse,
+      },
+    )
+  },
+
+  listMaterialParseJobs(signal?: AbortSignal): Promise<JobResponse[]> {
+    return apiClient.request('/api/teaching-prep/material-parse-jobs', {
+      signal,
+      decode: payload => itemList(payload, decodeJobResponse),
+    })
+  },
+
+  listMaterialUnits(
+    materialVersionId: string,
+    signal?: AbortSignal,
+  ): Promise<MaterialUnit[]> {
+    return apiClient.request(
+      `/api/teaching-prep/materials/${encodeURIComponent(materialVersionId)}/units`,
+      {
         signal,
         decode: (payload) => {
           assertNoPathLikeKeys(payload)

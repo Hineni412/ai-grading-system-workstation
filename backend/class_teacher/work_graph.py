@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import re
 from contextlib import closing
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 from uuid import uuid4
 
@@ -205,6 +206,398 @@ class WorkGraph:
             and str(row["target_node_id"]) in node_ids
         ]
         return self._snapshot(nodes, edges, today=today, start=start, end=end)
+
+    def read(
+        self,
+        *,
+        view: str = "all",
+        anchor: str | None = None,
+        cursor: str | None = None,
+    ) -> dict[str, object]:
+        if view not in {"today", "week", "timeline", "all"}:
+            raise VaultError(
+                "class_teacher_work_view_invalid",
+                "工作视图无效",
+                status_code=422,
+            )
+        anchor_date = date.fromisoformat(
+            _iso_date(anchor, label="查看日期") or date.today().isoformat()
+        )
+        start: str | None = None
+        end: str | None = None
+        if view == "today":
+            start = end = anchor_date.isoformat()
+        elif view == "week":
+            monday = anchor_date - timedelta(days=anchor_date.weekday())
+            start = monday.isoformat()
+            end = (monday + timedelta(days=6)).isoformat()
+        snapshot = self.query(start_date=start, end_date=end, as_of=anchor_date.isoformat())
+        nodes = list(snapshot["nodes"])
+        summary = {
+            "today": len(snapshot["today"]),
+            "overdue": len(snapshot["overdue"]),
+            "waiting": len(snapshot["waiting"]),
+            "review_due": sum(
+                1
+                for item in nodes
+                if item.get("due_date") is not None
+                and str(item["due_date"]) <= anchor_date.isoformat()
+                and item.get("status") not in {"completed", "cancelled"}
+            ),
+        }
+        source_version = hashlib.sha256(
+            "|".join(
+                f"{item['node_id']}:{item['revision']}" for item in nodes
+            ).encode("utf-8")
+        ).hexdigest()
+        return {
+            **snapshot,
+            "summary": summary,
+            "view": view,
+            "cursor": cursor,
+            "source_version": source_version,
+        }
+
+    def detail(self, *, node_id: str) -> dict[str, object]:
+        row = self._require_node(node_id)
+        with closing(self.database.connect()) as connection:
+            return self._detail_from_connection(connection, row)
+
+    def _detail_from_connection(
+        self,
+        connection: Any,
+        row: Any,
+    ) -> dict[str, object]:
+        node_id = str(row["node_id"])
+        linked = connection.execute(
+                """
+                SELECT e.source_node_id, e.target_node_id, e.relation,
+                       n.*
+                FROM work_edges e
+                JOIN work_nodes n ON n.node_id = CASE
+                    WHEN e.source_node_id = ? THEN e.target_node_id
+                    ELSE e.source_node_id
+                END
+                WHERE e.source_node_id = ? OR e.target_node_id = ?
+                ORDER BY e.created_at, e.source_node_id, e.target_node_id
+                """,
+                (node_id, node_id, node_id),
+        ).fetchall()
+        events = connection.execute(
+                """
+                SELECT event_id, event_type, summary, created_at
+                FROM work_node_events WHERE node_id = ?
+                ORDER BY created_at, event_id
+                """,
+                (node_id,),
+        ).fetchall()
+        collection = connection.execute(
+            "SELECT * FROM work_collection_snapshots WHERE node_id = ?",
+            (node_id,),
+        ).fetchone()
+        pending_ai_branches = self._pending_ai_branches(
+            connection,
+            node_id=node_id,
+        )
+        restricted = str(row["classification"]) == "restricted_projection"
+        upstream = [self._node(item) for item in linked if str(item["target_node_id"]) == node_id]
+        downstream = [self._node(item) for item in linked if str(item["source_node_id"]) == node_id]
+        return {
+            "node": self._node(row),
+            "upstream": upstream,
+            "downstream": downstream,
+            "progress_events": [
+                {
+                    "event_id": str(item["event_id"]),
+                    "event_type": str(item["event_type"]),
+                    "summary": None if item["summary"] is None else str(item["summary"]),
+                    "created_at": str(item["created_at"]),
+                }
+                for item in events
+            ],
+            "collection_summary": (
+                None
+                if collection is None
+                else {
+                    "expected_count": int(collection["expected_count"]),
+                    "received_count": int(collection["received_count"]),
+                    "needs_review_count": int(collection["needs_review_count"]),
+                    "revision": int(collection["revision"]),
+                }
+            ),
+            "pending_ai_branches": pending_ai_branches,
+            "allowed_commands": (
+                ["open_restricted_projection"]
+                if restricted
+                else [
+                    "update_status",
+                    "reschedule",
+                    "record_progress",
+                    *( ["update_collection_summary"] if str(row["kind"]) == "collection" else [] ),
+                ]
+            ),
+            "projection_id": (
+                str(row["source_projection_id"])
+                if restricted and row["source_projection_id"] is not None
+                else None
+            ),
+        }
+
+    @staticmethod
+    def _pending_ai_branches(
+        connection: Any,
+        *,
+        node_id: str,
+    ) -> list[dict[str, object]]:
+        confirmed: set[str] = set()
+        rows = connection.execute(
+            "SELECT operation_id, operation_type, result_json FROM work_operations"
+        ).fetchall()
+        for item in rows:
+            if str(item["operation_type"]) != "work.plan.confirm":
+                continue
+            try:
+                result = json.loads(str(item["result_json"]))
+            except json.JSONDecodeError:
+                continue
+            if isinstance(result, dict) and result.get("model_operation_id"):
+                confirmed.add(str(result["model_operation_id"]))
+
+        branches: list[dict[str, object]] = []
+        for item in rows:
+            if str(item["operation_type"]) != "work.plan.invoke":
+                continue
+            try:
+                result = json.loads(str(item["result_json"]))
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(result, dict):
+                continue
+            operation_id = str(item["operation_id"])
+            local_context = result.get("local_context")
+            if (
+                operation_id in confirmed
+                or str(result.get("state") or "") != "succeeded"
+                or not isinstance(local_context, dict)
+                or str(local_context.get("parent_node_id") or "") != node_id
+            ):
+                continue
+            plan = result.get("plan")
+            if not isinstance(plan, dict) or not isinstance(plan.get("nodes"), list):
+                continue
+            branches.append(
+                {
+                    "operation_id": operation_id,
+                    "assumptions": list(result.get("assumptions") or []),
+                    "nodes": [
+                        {
+                            "title": str(raw.get("title") or ""),
+                            "due_date": raw.get("due_date"),
+                        }
+                        for raw in plan["nodes"]
+                        if isinstance(raw, dict)
+                    ],
+                }
+            )
+        return branches
+
+    def command(
+        self,
+        *,
+        node_id: str,
+        command: str,
+        expected_revision: int,
+        operation_id: str,
+        status: str | None = None,
+        due_date: str | None = None,
+        progress: str | None = None,
+        expected_count: int | None = None,
+        received_count: int | None = None,
+        needs_review_count: int | None = None,
+    ) -> dict[str, object]:
+        self._validate_operation_id(operation_id)
+        command_operation_type: str | None = None
+        normalized_command_due: str | None = None
+        if command in {"update_status", "reschedule"}:
+            if command == "reschedule":
+                normalized_command_due = _iso_date(due_date, label="任务日期")
+            command_operation_type = self._mutation_operation_type(
+                f"work.node.command.{command}",
+                node_id=node_id,
+                payload={
+                    "expected_revision": expected_revision,
+                    "status": status if command == "update_status" else None,
+                    "due_date": (
+                        normalized_command_due
+                        if command == "reschedule"
+                        else None
+                    ),
+                },
+            )
+            if self.database.exists:
+                with closing(self.database.connect()) as connection:
+                    replay = self._replay(
+                        connection,
+                        operation_id,
+                        command_operation_type,
+                    )
+                if replay is not None:
+                    return replay
+        row = self._require_node(node_id)
+        restricted = str(row["classification"]) == "restricted_projection"
+        if restricted:
+            if command != "open_restricted_projection":
+                raise VaultError(
+                    "open_required",
+                    "受保护事项只能解锁后打开处理",
+                    status_code=409,
+                )
+            return {
+                "opened": True,
+                "projection_id": str(row["source_projection_id"]),
+                "node": self._node(row),
+            }
+        if command in {"update_status", "reschedule"}:
+            next_status = status or str(row["status"])
+            next_due = normalized_command_due if command == "reschedule" else (
+                None if row["due_date"] is None else str(row["due_date"])
+            )
+            return self.update_node(
+                node_id=node_id,
+                revision=expected_revision,
+                status=next_status,
+                due_date=next_due,
+                operation_id=operation_id,
+                _operation_type=command_operation_type,
+            )
+        timestamp = _now()
+        if command == "record_progress":
+            clean = self._ordinary_title(progress or "")
+            operation_type = self._mutation_operation_type(
+                "work.node.progress",
+                node_id=node_id,
+                payload={"expected_revision": expected_revision, "progress": clean},
+            )
+            with closing(self.database.connect()) as connection:
+                with connection:
+                    replay = self._replay(connection, operation_id, operation_type)
+                    if replay is not None:
+                        return replay
+                    current = connection.execute(
+                        "SELECT * FROM work_nodes WHERE node_id = ?",
+                        (node_id,),
+                    ).fetchone()
+                    if current is None:
+                        raise VaultError(
+                            "class_teacher_work_node_not_found",
+                            "普通工作项不存在",
+                            status_code=404,
+                        )
+                    if int(current["revision"]) != expected_revision:
+                        raise VaultError(
+                            "class_teacher_work_revision_conflict",
+                            "任务已经变化，请刷新后再保存",
+                            status_code=409,
+                        )
+                    connection.execute(
+                        "INSERT INTO work_node_events VALUES (?, ?, 'progress', ?, ?)",
+                        (uuid4().hex, node_id, clean, timestamp),
+                    )
+                    connection.execute(
+                        "UPDATE work_nodes SET revision = revision + 1, updated_at = ? WHERE node_id = ?",
+                        (timestamp, node_id),
+                    )
+                    changed = connection.execute(
+                        "SELECT * FROM work_nodes WHERE node_id = ?",
+                        (node_id,),
+                    ).fetchone()
+                    result = self._detail_from_connection(connection, changed)
+                    self._remember(connection, operation_id, operation_type, result)
+                    return result
+        if command == "update_collection_summary":
+            if str(row["kind"]) != "collection":
+                raise VaultError(
+                    "class_teacher_collection_node_required",
+                    "只有收集任务可以更新收集汇总",
+                    status_code=422,
+                )
+            counts = (
+                int(expected_count or 0),
+                int(received_count or 0),
+                int(needs_review_count or 0),
+            )
+            if counts[1] > counts[0] or counts[2] > counts[1]:
+                raise VaultError(
+                    "class_teacher_collection_counts_invalid",
+                    "收集汇总数量互相矛盾，请核对后重试",
+                    status_code=422,
+                )
+            operation_type = self._mutation_operation_type(
+                "work.node.collection",
+                node_id=node_id,
+                payload={
+                    "expected_revision": expected_revision,
+                    "expected_count": counts[0],
+                    "received_count": counts[1],
+                    "needs_review_count": counts[2],
+                },
+            )
+            with closing(self.database.connect()) as connection:
+                with connection:
+                    replay = self._replay(connection, operation_id, operation_type)
+                    if replay is not None:
+                        return replay
+                    current = connection.execute(
+                        "SELECT * FROM work_nodes WHERE node_id = ?",
+                        (node_id,),
+                    ).fetchone()
+                    if current is None:
+                        raise VaultError(
+                            "class_teacher_work_node_not_found",
+                            "普通工作项不存在",
+                            status_code=404,
+                        )
+                    if int(current["revision"]) != expected_revision:
+                        raise VaultError(
+                            "class_teacher_work_revision_conflict",
+                            "任务已经变化，请刷新后再保存",
+                            status_code=409,
+                        )
+                    connection.execute(
+                        """
+                        INSERT INTO work_collection_snapshots (
+                            node_id, expected_count, received_count,
+                            needs_review_count, revision, updated_at
+                        ) VALUES (?, ?, ?, ?, 1, ?)
+                        ON CONFLICT(node_id) DO UPDATE SET
+                            expected_count = excluded.expected_count,
+                            received_count = excluded.received_count,
+                            needs_review_count = excluded.needs_review_count,
+                            revision = work_collection_snapshots.revision + 1,
+                            updated_at = excluded.updated_at
+                        """,
+                        (node_id, *counts, timestamp),
+                    )
+                    connection.execute(
+                        "INSERT INTO work_node_events VALUES (?, ?, 'collection', NULL, ?)",
+                        (uuid4().hex, node_id, timestamp),
+                    )
+                    connection.execute(
+                        "UPDATE work_nodes SET revision = revision + 1, updated_at = ? WHERE node_id = ?",
+                        (timestamp, node_id),
+                    )
+                    changed = connection.execute(
+                        "SELECT * FROM work_nodes WHERE node_id = ?",
+                        (node_id,),
+                    ).fetchone()
+                    result = self._detail_from_connection(connection, changed)
+                    self._remember(connection, operation_id, operation_type, result)
+                    return result
+        raise VaultError(
+            "class_teacher_work_command_invalid",
+            "工作命令无效",
+            status_code=422,
+        )
 
     @staticmethod
     def _connected_range_node_ids(
@@ -501,6 +894,70 @@ class WorkGraph:
                 connection.rollback()
                 raise
 
+    def create_manual_fallback(
+        self,
+        *,
+        source_operation_id: str,
+        title: str,
+        due_date: str | None,
+        operation_id: str,
+    ) -> dict[str, object]:
+        """Persist one teacher-confirmed ordinary node without model dispatch."""
+
+        self._validate_operation_id(source_operation_id)
+        self._validate_operation_id(operation_id)
+        clean_title = self._ordinary_title(title)
+        normalized_due = _iso_date(due_date, label="任务日期")
+        operation_type = self._mutation_operation_type(
+            "work.manual_fallback",
+            node_id=source_operation_id,
+            payload={"title": clean_title, "due_date": normalized_due},
+        )
+        self.database.initialize_schema() if not self.database.exists else None
+        with closing(self.database.connect()) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                replay = self._replay(connection, operation_id, operation_type)
+                if replay is not None:
+                    connection.commit()
+                    return replay
+                prior = self._manual_fallback_for_source(
+                    connection,
+                    source_operation_id,
+                )
+                if prior is not None:
+                    self._remember(connection, operation_id, operation_type, prior)
+                    connection.commit()
+                    return prior
+                node_id = uuid4().hex
+                timestamp = _now()
+                connection.execute(
+                    """
+                    INSERT INTO work_nodes (
+                        node_id, kind, classification, title, details,
+                        status, due_date, revision, created_at, updated_at
+                    ) VALUES (?, 'goal', 'ordinary', ?, NULL, 'pending', ?, 1, ?, ?)
+                    """,
+                    (node_id, clean_title, normalized_due, timestamp, timestamp),
+                )
+                row = connection.execute(
+                    "SELECT * FROM work_nodes WHERE node_id = ?",
+                    (node_id,),
+                ).fetchone()
+                result = {
+                    "created": True,
+                    "manual_fallback": True,
+                    "source_operation_id": source_operation_id,
+                    "node": self._node(row),
+                    "physical_request_count": 0,
+                }
+                self._remember(connection, operation_id, operation_type, result)
+                connection.commit()
+                return result
+            except Exception:
+                connection.rollback()
+                raise
+
     def update_node(
         self,
         *,
@@ -509,6 +966,7 @@ class WorkGraph:
         status: str,
         due_date: str | None,
         operation_id: str,
+        _operation_type: str | None = None,
     ) -> dict[str, object]:
         self._validate_operation_id(operation_id)
         if status not in _STATUSES:
@@ -518,6 +976,15 @@ class WorkGraph:
                 status_code=422,
             )
         normalized_due = _iso_date(due_date, label="任务日期")
+        operation_type = _operation_type or self._mutation_operation_type(
+            "work.node.update",
+            node_id=node_id,
+            payload={
+                "revision": revision,
+                "status": status,
+                "due_date": normalized_due,
+            },
+        )
         if not self.database.exists:
             raise VaultError(
                 "class_teacher_work_node_not_found",
@@ -526,7 +993,7 @@ class WorkGraph:
             )
         with closing(self.database.connect()) as connection:
             with connection:
-                replay = self._replay(connection, operation_id, "work.node.update")
+                replay = self._replay(connection, operation_id, operation_type)
                 if replay is not None:
                     return replay
                 row = connection.execute(
@@ -538,6 +1005,12 @@ class WorkGraph:
                         "class_teacher_work_node_not_found",
                         "普通工作项不存在",
                         status_code=404,
+                    )
+                if str(row["classification"]) == "restricted_projection":
+                    raise VaultError(
+                        "open_required",
+                        "受保护事项只能解锁后打开处理",
+                        status_code=409,
                     )
                 if int(row["revision"]) != int(revision):
                     raise VaultError(
@@ -560,8 +1033,111 @@ class WorkGraph:
                     (node_id,),
                 ).fetchone()
                 result = self._node(changed)
-                self._remember(connection, operation_id, "work.node.update", result)
+                connection.execute(
+                    "INSERT INTO work_node_events VALUES (?, ?, 'status', NULL, ?)",
+                    (uuid4().hex, node_id, updated_at),
+                )
+                self._remember(connection, operation_id, operation_type, result)
                 return result
+
+    def apply_projection_envelope(self, envelope: dict[str, object]) -> dict[str, object]:
+        projection_id = str(envelope.get("projection_id") or "")
+        projection_type = str(envelope.get("projection_type") or "")
+        state = str(envelope.get("state") or "")
+        source_revision = int(envelope.get("source_revision") or 0)
+        fingerprint = str(envelope.get("envelope_fingerprint") or "")
+        if projection_type not in {
+            "sensitive_affair", "attention_followup", "student_support"
+        } or state not in {"pending", "in_progress", "waiting", "completed", "cancelled", "tombstoned"}:
+            raise VaultError(
+                "class_teacher_projection_invalid",
+                "敏感事项投影未通过安全合同校验",
+                status_code=422,
+            )
+        title = {
+            "sensitive_affair": "敏感事务待处理",
+            "attention_followup": "学生事项待复查",
+            "student_support": "学生支持待跟进",
+        }[projection_type]
+        self.database.initialize_schema() if not self.database.exists else None
+        with closing(self.database.connect()) as connection:
+            with connection:
+                receipt = connection.execute(
+                    "SELECT * FROM work_projection_receipts WHERE projection_id = ?",
+                    (projection_id,),
+                ).fetchone()
+                if receipt is not None:
+                    current_revision = int(receipt["source_revision"])
+                    current_fingerprint = str(receipt["envelope_fingerprint"])
+                    if source_revision < current_revision:
+                        return {"applied": False, "ignored": "older_revision"}
+                    if source_revision == current_revision:
+                        if fingerprint != current_fingerprint:
+                            raise VaultError(
+                                "class_teacher_projection_revision_conflict",
+                                "同一投影版本的内容不一致",
+                                status_code=409,
+                            )
+                        return {"applied": True, "replayed": True}
+                timestamp = _now()
+                if state == "tombstoned":
+                    connection.execute(
+                        "DELETE FROM work_nodes WHERE source_projection_id = ?",
+                        (projection_id,),
+                    )
+                else:
+                    connection.execute(
+                        """
+                        INSERT INTO work_nodes (
+                            node_id, kind, classification, title, details,
+                            status, due_date, source_projection_id, revision,
+                            created_at, updated_at, projection_type,
+                            projection_fingerprint
+                        ) VALUES (?, 'restricted_projection', 'restricted_projection',
+                            ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(source_projection_id) DO UPDATE SET
+                            title = excluded.title,
+                            status = excluded.status,
+                            due_date = excluded.due_date,
+                            revision = excluded.revision,
+                            updated_at = excluded.updated_at,
+                            projection_type = excluded.projection_type,
+                            projection_fingerprint = excluded.projection_fingerprint
+                        """,
+                        (
+                            uuid4().hex,
+                            title,
+                            state,
+                            envelope.get("due_date"),
+                            projection_id,
+                            source_revision,
+                            timestamp,
+                            timestamp,
+                            projection_type,
+                            fingerprint,
+                        ),
+                    )
+                connection.execute(
+                    """
+                    INSERT INTO work_projection_receipts (
+                        projection_id, source_revision, envelope_fingerprint,
+                        state, updated_at
+                    ) VALUES (?, ?, ?, ?, ?)
+                    ON CONFLICT(projection_id) DO UPDATE SET
+                        source_revision = excluded.source_revision,
+                        envelope_fingerprint = excluded.envelope_fingerprint,
+                        state = excluded.state,
+                        updated_at = excluded.updated_at
+                    """,
+                    (
+                        projection_id,
+                        source_revision,
+                        fingerprint,
+                        "tombstoned" if state == "tombstoned" else "active",
+                        timestamp,
+                    ),
+                )
+        return {"applied": True, "replayed": False}
 
     def enqueue_sensitive_projection(
         self,
@@ -776,6 +1352,11 @@ class WorkGraph:
             "revision": int(row["revision"]),
             "created_at": str(row["created_at"]),
             "updated_at": str(row["updated_at"]),
+            "projection_type": (
+                None
+                if "projection_type" not in row.keys() or row["projection_type"] is None
+                else str(row["projection_type"])
+            ),
         }
 
     @staticmethod
@@ -795,6 +1376,24 @@ class WorkGraph:
             if isinstance(node["due_date"], str) and node["due_date"] < today
         ]
         waiting = [node for node in active if node["status"] == "waiting"]
+        review_due = [
+            node
+            for node in active
+            if (
+                node["kind"] in {"decision", "collection"}
+                or (
+                    node.get("projection_type")
+                    in {"attention_followup", "student_support"}
+                    and (
+                        node.get("due_date") is None
+                        or str(node["due_date"]) <= today
+                    )
+                )
+            )
+        ]
+        source_version = hashlib.sha256(
+            "|".join(f"{item['node_id']}:{item['revision']}" for item in nodes).encode("utf-8")
+        ).hexdigest()
         return {
             "as_of": today,
             "start_date": start,
@@ -804,6 +1403,16 @@ class WorkGraph:
             "today": today_nodes,
             "overdue": overdue,
             "waiting": waiting,
+            "review_due": review_due,
+            "summary": {
+                "today": len(today_nodes),
+                "overdue": len(overdue),
+                "waiting": len(waiting),
+                "review_due": len(review_due),
+            },
+            "view": "all",
+            "cursor": None,
+            "source_version": source_version,
         }
 
     @staticmethod
@@ -814,6 +1423,54 @@ class WorkGraph:
                 "操作编号无效",
                 status_code=422,
             )
+
+    @staticmethod
+    def _mutation_operation_type(
+        prefix: str,
+        *,
+        node_id: str,
+        payload: dict[str, object],
+    ) -> str:
+        fingerprint = hashlib.sha256(
+            json.dumps(
+                {"node_id": node_id, **payload},
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        return f"{prefix}:{fingerprint}"
+
+    @staticmethod
+    def _manual_fallback_for_source(
+        connection: Any,
+        source_operation_id: str,
+    ) -> dict[str, object] | None:
+        rows = connection.execute(
+            """
+            SELECT result_json FROM work_operations
+            WHERE operation_type LIKE 'work.manual_fallback:%'
+            ORDER BY created_at, operation_id
+            """
+        ).fetchall()
+        for row in rows:
+            try:
+                decoded = json.loads(str(row["result_json"]))
+            except json.JSONDecodeError as exc:
+                raise VaultError(
+                    "class_teacher_work_integrity_error",
+                    "普通工作记录未通过完整性校验",
+                    status_code=409,
+                ) from exc
+            if not isinstance(decoded, dict) or decoded.get("manual_fallback") is not True:
+                raise VaultError(
+                    "class_teacher_work_integrity_error",
+                    "普通工作记录未通过完整性校验",
+                    status_code=409,
+                )
+            if str(decoded.get("source_operation_id") or "") == source_operation_id:
+                return decoded
+        return None
 
     @staticmethod
     def _replay(connection: Any, operation_id: str, operation_type: str):

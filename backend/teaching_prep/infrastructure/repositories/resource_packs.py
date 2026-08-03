@@ -55,6 +55,8 @@ class ResourcePackRepository:
         question_evidence: dict[str, object],
         assessment_evidence: dict[str, object],
         preparation_preferences: dict[str, object],
+        selected_material_link_ids: tuple[str, ...] | None = None,
+        selected_exercise_candidate_ids: tuple[str, ...] | None = None,
     ) -> tuple[ResourcePackVersion, bool]:
         with self._database.connect(immediate=True) as connection:
             existing = connection.execute(
@@ -75,6 +77,8 @@ class ResourcePackRepository:
                 connection,
                 lesson_node_id=lesson_node_id,
                 reference_ppt_intents=reference_ppt_intents,
+                selected_material_link_ids=selected_material_link_ids,
+                selected_exercise_candidate_ids=selected_exercise_candidate_ids,
             )
             missing = list(local_payload.pop("missing"))
             missing.extend(_evidence_missing("question", question_evidence))
@@ -97,6 +101,16 @@ class ResourcePackRepository:
                     "assessment": assessment_evidence,
                 },
                 "preparation_preferences": preparation_preferences,
+                "selection": {
+                    "material_link_ids": [
+                        str(item["link_id"])
+                        for item in local_payload["materials"]
+                    ],
+                    "exercise_candidate_ids": [
+                        str(item["candidate_id"])
+                        for item in local_payload["exercises"]
+                    ],
+                },
                 "missing_and_uncertain": missing,
             }
             payload_json = _canonical_json(payload)
@@ -252,6 +266,35 @@ class ResourcePackRepository:
             )
         return _pack(row)
 
+    def preflight_selection(
+        self,
+        *,
+        lesson_node_id: str,
+        reference_ppt_intents: Mapping[str, str],
+        selected_material_link_ids: tuple[str, ...] | None,
+        selected_exercise_candidate_ids: tuple[str, ...] | None,
+    ) -> dict[str, object]:
+        with self._database.connect() as connection:
+            payload, source_state = _capture_local_payload(
+                connection,
+                lesson_node_id=lesson_node_id,
+                reference_ppt_intents=reference_ppt_intents,
+                selected_material_link_ids=selected_material_link_ids,
+                selected_exercise_candidate_ids=selected_exercise_candidate_ids,
+            )
+        return {
+            "lesson_node_id": lesson_node_id,
+            "source_state_sha256": source_state,
+            "material_link_ids": [
+                str(item["link_id"]) for item in payload["materials"]
+            ],
+            "exercise_candidate_ids": [
+                str(item["candidate_id"]) for item in payload["exercises"]
+            ],
+            "missing_and_uncertain": list(payload["missing"]),
+            "ready_to_freeze": True,
+        }
+
     def list_for_lesson(
         self,
         lesson_node_id: str,
@@ -292,6 +335,8 @@ class ResourcePackRepository:
                 lesson_node_id=lesson_node_id,
                 reference_ppt_intents=_reference_intents_from_pack(latest),
                 require_reference_intents=False,
+                selected_material_link_ids=_selected_link_ids(latest),
+                selected_exercise_candidate_ids=_selected_exercise_ids(latest),
             )
         return {
             "lesson_node_id": lesson_node_id,
@@ -325,6 +370,8 @@ class ResourcePackRepository:
                     lesson_node_id=str(row["lesson_node_id"]),
                     reference_ppt_intents=_reference_intents_from_pack(row),
                     require_reference_intents=False,
+                    selected_material_link_ids=_selected_link_ids(row),
+                    selected_exercise_candidate_ids=_selected_exercise_ids(row),
                 )
             except (
                 TeachingPrepNotFoundError,
@@ -346,6 +393,8 @@ def _capture_local_payload(
     lesson_node_id: str,
     reference_ppt_intents: Mapping[str, str],
     require_reference_intents: bool = True,
+    selected_material_link_ids: tuple[str, ...] | None = None,
+    selected_exercise_candidate_ids: tuple[str, ...] | None = None,
 ) -> tuple[dict[str, object], str]:
     lesson = connection.execute(
         """
@@ -378,7 +427,9 @@ def _capture_local_payload(
             version.created_at AS material_version_created_at,
             source.display_name AS material_name,
             source.material_type,
-            semester_material.material_role
+            CASE WHEN semester_material.is_daily_workbook = 1
+                 THEN 'homework_workbook'
+                 ELSE semester_material.material_role END AS material_role
         FROM lesson_material_links AS link
         JOIN material_versions AS version
             ON version.id = link.material_version_id
@@ -397,6 +448,16 @@ def _capture_local_payload(
         """,
         (str(lesson["curriculum_id"]), lesson_node_id),
     ).fetchall()
+    if selected_material_link_ids is not None:
+        selected_links = set(selected_material_link_ids)
+        available_links = {str(row["id"]) for row in link_rows}
+        if selected_links - available_links:
+            raise TeachingPrepValidationError(
+                "selected material link is unavailable"
+            )
+        link_rows = [
+            row for row in link_rows if str(row["id"]) in selected_links
+        ]
     reference_link_ids = {
         str(row["id"])
         for row in link_rows
@@ -414,6 +475,7 @@ def _capture_local_payload(
         )
     materials: list[dict[str, object]] = []
     source_material_state: list[dict[str, object]] = []
+    allowed_selected_units: set[tuple[str, int]] = set()
     for link in link_rows:
         link_id = str(link["id"])
         purpose = str(link["purpose"])
@@ -490,6 +552,10 @@ def _capture_local_payload(
                 "keep",
             )
         materials.append(material_item)
+        allowed_selected_units.update(
+            (str(link["material_version_id"]), int(unit["unit_index"]))
+            for unit in units
+        )
         source_material_state.append(
             {
                 "link_id": link_id,
@@ -534,6 +600,18 @@ def _capture_local_payload(
         """,
         (lesson_node_id,),
     ).fetchall()
+    if selected_exercise_candidate_ids is not None:
+        selected_exercises = set(selected_exercise_candidate_ids)
+        available_exercises = {str(row["id"]) for row in exercise_rows}
+        if selected_exercises - available_exercises:
+            raise TeachingPrepValidationError(
+                "selected exercise candidate is unavailable"
+            )
+        exercise_rows = [
+            row
+            for row in exercise_rows
+            if str(row["id"]) in selected_exercises
+        ]
     exercises: list[dict[str, object]] = []
     source_exercise_state: list[dict[str, object]] = []
     missing: list[dict[str, object]] = []
@@ -545,7 +623,9 @@ def _capture_local_payload(
                 unit.material_version_id,
                 unit.unit_index,
                 source.display_name AS material_name,
-                semester_material.material_role
+                CASE WHEN semester_material.is_daily_workbook = 1
+                     THEN 'homework_workbook'
+                     ELSE semester_material.material_role END AS material_role
             FROM exercise_regions AS region
             JOIN material_units AS unit
                 ON unit.id = region.material_unit_id
@@ -564,6 +644,17 @@ def _capture_local_payload(
             """,
             (str(lesson["curriculum_id"]), str(candidate["id"])),
         ).fetchall()
+        if selected_material_link_ids is not None and any(
+            (
+                str(region["material_version_id"]),
+                int(region["unit_index"]),
+            )
+            not in allowed_selected_units
+            for region in regions
+        ):
+            raise TeachingPrepValidationError(
+                "selected exercise depends on a material range outside the pack"
+            )
         region_payload = [
             {
                 "region_id": str(region["id"]),
@@ -652,20 +743,8 @@ def _capture_local_payload(
                 ],
             }
         )
-        if answer_status != "teacher_verified":
-            missing.append(
-                {
-                    "code": "exercise_answer_not_verified",
-                    "candidate_id": str(candidate["id"]),
-                    "question_number": item["question_number"],
-                }
-            )
     if not any(item["purpose"] == "textbook" for item in materials):
         missing.append({"code": "textbook_material_missing"})
-    if not any(item["purpose"] == "reference_ppt" for item in materials):
-        missing.append({"code": "reference_ppt_missing"})
-    if not exercises:
-        missing.append({"code": "exercise_candidates_missing"})
     for material in materials:
         for unit in material["units"]:
             if unit["formula_review_required"]:
@@ -761,6 +840,34 @@ def _reference_intents_from_pack(
         and item.get("purpose") == "reference_ppt"
         and item.get("link_id")
     }
+
+
+def _selected_link_ids(
+    row: sqlite3.Row | None,
+) -> tuple[str, ...] | None:
+    if row is None:
+        return None
+    selection = _pack(row).payload.get("selection")
+    if not isinstance(selection, dict):
+        return None
+    values = selection.get("material_link_ids")
+    if not isinstance(values, list):
+        return None
+    return tuple(str(item) for item in values)
+
+
+def _selected_exercise_ids(
+    row: sqlite3.Row | None,
+) -> tuple[str, ...] | None:
+    if row is None:
+        return None
+    selection = _pack(row).payload.get("selection")
+    if not isinstance(selection, dict):
+        return None
+    values = selection.get("exercise_candidate_ids")
+    if not isinstance(values, list):
+        return None
+    return tuple(str(item) for item in values)
 
 
 def _pack(row: sqlite3.Row) -> ResourcePackVersion:

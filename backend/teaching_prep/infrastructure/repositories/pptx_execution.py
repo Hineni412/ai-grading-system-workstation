@@ -296,6 +296,8 @@ class PptxExecutionRepository:
                         'now'
                     ),
                     wps_invocation_count = 1,
+                    phase = 'executing',
+                    phase_started_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
                     updated_at = strftime(
                         '%Y-%m-%dT%H:%M:%fZ',
                         'now'
@@ -333,6 +335,8 @@ class PptxExecutionRepository:
                 """
                 UPDATE pptx_execution_runs
                 SET status = 'verifying',
+                    phase = 'verifying',
+                    phase_started_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
                     execution_report_json = ?,
                     updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
                 WHERE id = ? AND status = 'running'
@@ -416,6 +420,8 @@ class PptxExecutionRepository:
                 """
                 UPDATE pptx_execution_runs
                 SET status = 'publishing',
+                    phase = 'publishing',
+                    phase_started_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
                     verification_report_json = ?,
                     published_version_id = ?,
                     updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
@@ -456,6 +462,7 @@ class PptxExecutionRepository:
                 """
                 UPDATE pptx_execution_runs
                 SET status = 'published',
+                    phase = 'done',
                     error_code = NULL,
                     updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
                     finished_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
@@ -493,6 +500,46 @@ class PptxExecutionRepository:
                 raise TeachingPrepConflictError(
                     "PPTX publication state changed"
                 )
+            version = connection.execute(
+                "SELECT lesson_node_id FROM pptx_versions WHERE id = ?",
+                (version_id,),
+            ).fetchone()
+            if version is None:
+                raise RuntimeError("published PPTX lesson was not found")
+            lesson_id = str(version["lesson_node_id"])
+            current = connection.execute(
+                """
+                SELECT pptx_version_id, revision
+                FROM lesson_current_pptx_versions
+                WHERE lesson_node_id = ?
+                """,
+                (lesson_id,),
+            ).fetchone()
+            previous = (
+                str(current["pptx_version_id"]) if current is not None else None
+            )
+            revision = int(current["revision"]) + 1 if current is not None else 1
+            connection.execute(
+                """
+                INSERT INTO lesson_current_pptx_versions (
+                    lesson_node_id, pptx_version_id, revision
+                ) VALUES (?, ?, ?)
+                ON CONFLICT(lesson_node_id) DO UPDATE SET
+                    pptx_version_id = excluded.pptx_version_id,
+                    revision = excluded.revision,
+                    updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                """,
+                (lesson_id, version_id, revision),
+            )
+            connection.execute(
+                """
+                INSERT INTO pptx_version_activations (
+                    id, lesson_node_id, pptx_version_id,
+                    previous_pptx_version_id, resulting_revision
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                (uuid4().hex, lesson_id, version_id, previous, revision),
+            )
             row = connection.execute(
                 "SELECT * FROM pptx_versions WHERE id = ?",
                 (version_id,),
@@ -513,6 +560,7 @@ class PptxExecutionRepository:
                 """
                 UPDATE pptx_execution_runs
                 SET status = 'failed',
+                    phase = 'done',
                     error_code = ?,
                     updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
                     finished_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
@@ -575,6 +623,7 @@ class PptxExecutionRepository:
                 """
                 UPDATE pptx_execution_runs
                 SET status = 'failed',
+                    phase = 'done',
                     error_code = ?,
                     updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
                     finished_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
@@ -608,6 +657,35 @@ class PptxExecutionRepository:
                 raise TeachingPrepConflictError(
                     "published PPTX state changed before deadline recovery"
                 )
+            activation = connection.execute(
+                """
+                SELECT * FROM pptx_version_activations
+                WHERE pptx_version_id = ?
+                ORDER BY created_at DESC, id DESC LIMIT 1
+                """,
+                (version_id,),
+            ).fetchone()
+            if activation is not None:
+                lesson_id = str(activation["lesson_node_id"])
+                previous = activation["previous_pptx_version_id"]
+                if previous is None:
+                    connection.execute(
+                        """
+                        DELETE FROM lesson_current_pptx_versions
+                        WHERE lesson_node_id = ? AND pptx_version_id = ?
+                        """,
+                        (lesson_id, version_id),
+                    )
+                else:
+                    connection.execute(
+                        """
+                        UPDATE lesson_current_pptx_versions
+                        SET pptx_version_id = ?, revision = revision + 1,
+                            updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                        WHERE lesson_node_id = ? AND pptx_version_id = ?
+                        """,
+                        (str(previous), lesson_id, version_id),
+                    )
 
     def cancel(self, run_id: str) -> PptxExecutionRun:
         with self._database.connect(immediate=True) as connection:
@@ -627,6 +705,8 @@ class PptxExecutionRepository:
                 """
                 UPDATE pptx_execution_runs
                 SET status = 'cancelled',
+                    phase = 'done',
+                    cancel_requested = 1,
                     error_code = 'teacher_cancelled',
                     updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
                     finished_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
@@ -656,6 +736,7 @@ class PptxExecutionRepository:
                 """
                 UPDATE pptx_execution_runs
                 SET status = 'interrupted',
+                    phase = 'done',
                     error_code = 'application_restarted',
                     updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
                     finished_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
@@ -675,6 +756,108 @@ class PptxExecutionRepository:
                 "published PPTX version was not found"
             )
         return _version(row)
+
+    def list_versions_for_lesson(
+        self,
+        lesson_node_id: str,
+    ) -> tuple[tuple[PptxVersion, bool, int | None], ...]:
+        with self._database.connect() as connection:
+            if connection.execute(
+                "SELECT 1 FROM lesson_nodes WHERE id = ?",
+                (lesson_node_id,),
+            ).fetchone() is None:
+                raise TeachingPrepNotFoundError("lesson node was not found")
+            current = connection.execute(
+                """
+                SELECT pptx_version_id, revision
+                FROM lesson_current_pptx_versions
+                WHERE lesson_node_id = ?
+                """,
+                (lesson_node_id,),
+            ).fetchone()
+            rows = connection.execute(
+                """
+                SELECT * FROM pptx_versions
+                WHERE lesson_node_id = ? AND status = 'published'
+                ORDER BY version_number DESC
+                """,
+                (lesson_node_id,),
+            ).fetchall()
+        current_id = str(current["pptx_version_id"]) if current else None
+        revision = int(current["revision"]) if current else None
+        return tuple(
+            (_version(row), str(row["id"]) == current_id, revision)
+            for row in rows
+        )
+
+    def activate_version(
+        self,
+        version_id: str,
+        *,
+        expected_revision: int | None,
+    ) -> tuple[PptxVersion, int, bool]:
+        with self._database.connect(immediate=True) as connection:
+            row = connection.execute(
+                """
+                SELECT * FROM pptx_versions
+                WHERE id = ? AND status = 'published'
+                """,
+                (version_id,),
+            ).fetchone()
+            if row is None:
+                raise TeachingPrepNotFoundError(
+                    "published PPTX version was not found"
+                )
+            lesson_id = str(row["lesson_node_id"])
+            current = connection.execute(
+                """
+                SELECT pptx_version_id, revision
+                FROM lesson_current_pptx_versions
+                WHERE lesson_node_id = ?
+                """,
+                (lesson_id,),
+            ).fetchone()
+            if current is None:
+                if expected_revision is not None:
+                    raise TeachingPrepConflictError(
+                        "current PPTX selection changed; refresh before restoring"
+                    )
+                previous = None
+                revision = 1
+                changed = True
+            else:
+                current_revision = int(current["revision"])
+                if expected_revision != current_revision:
+                    raise TeachingPrepConflictError(
+                        "current PPTX selection changed; refresh before restoring"
+                    )
+                previous = str(current["pptx_version_id"])
+                if previous == version_id:
+                    return _version(row), current_revision, False
+                revision = current_revision + 1
+                changed = True
+            connection.execute(
+                """
+                INSERT INTO lesson_current_pptx_versions (
+                    lesson_node_id, pptx_version_id, revision
+                ) VALUES (?, ?, ?)
+                ON CONFLICT(lesson_node_id) DO UPDATE SET
+                    pptx_version_id = excluded.pptx_version_id,
+                    revision = excluded.revision,
+                    updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                """,
+                (lesson_id, version_id, revision),
+            )
+            connection.execute(
+                """
+                INSERT INTO pptx_version_activations (
+                    id, lesson_node_id, pptx_version_id,
+                    previous_pptx_version_id, resulting_revision
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                (uuid4().hex, lesson_id, version_id, previous, revision),
+            )
+        return _version(row), revision, changed
 
     def version_output_relpath(self, version_id: str) -> str:
         with self._database.connect() as connection:
@@ -743,6 +926,17 @@ def _run(row: sqlite3.Row) -> PptxExecutionRun:
             str(row["published_version_id"])
             if row["published_version_id"] is not None
             else None
+        ),
+        phase=(
+            str(row["phase"])
+            if "phase" in row.keys()
+            else "done" if status in {"published", "failed", "cancelled", "interrupted"}
+            else "copying"
+        ),
+        cancel_requested=(
+            bool(row["cancel_requested"])
+            if "cancel_requested" in row.keys()
+            else False
         ),
         staging_retained=False,
         recovery_actions=actions,

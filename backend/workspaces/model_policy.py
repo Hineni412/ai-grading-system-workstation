@@ -165,6 +165,9 @@ class WorkspaceModelGateway:
         gateway: LLMGateway | None = None,
         audit_sink: WorkspaceModelAuditSink | None = None,
         clock: Callable[[], float] = time.monotonic,
+        metadata_only: bool = True,
+        claim_operations: bool = True,
+        allow_retry: bool = False,
     ) -> None:
         if not isinstance(context, WorkspaceContext):
             raise WorkspaceModelPolicyError(
@@ -188,22 +191,33 @@ class WorkspaceModelGateway:
                 "workspace context path is not controlled"
             )
         self.module_id = clean_module_id
-        self._operation_claims = _WorkspaceOperationClaimStore(
-            controlled_root
+        self._operation_claims = (
+            _WorkspaceOperationClaimStore(controlled_root)
+            if claim_operations
+            else None
         )
         self.gateway = gateway or LLMGateway(
             profile=profile,
             config_key=config_key,
-            diagnostic_sink=NullDiagnosticSink(),
-            trace_sink=NullCallTraceSink(),
-            usage_sink=NullUsageSink(),
+            **(
+                {
+                    "diagnostic_sink": NullDiagnosticSink(),
+                    "trace_sink": NullCallTraceSink(),
+                    "usage_sink": NullUsageSink(),
+                }
+                if metadata_only
+                else {}
+            ),
         )
-        # A supplied gateway is also forced onto the metadata-only policy.
-        self.gateway.diagnostic_sink = NullDiagnosticSink()
-        self.gateway.trace_sink = NullCallTraceSink()
-        self.gateway.usage_sink = NullUsageSink()
+        if metadata_only:
+            # A supplied gateway is also forced onto the metadata-only policy.
+            self.gateway.diagnostic_sink = NullDiagnosticSink()
+            self.gateway.trace_sink = NullCallTraceSink()
+            self.gateway.usage_sink = NullUsageSink()
+        self.allow_retry = bool(allow_retry)
         self.audit_sink = audit_sink or LoggingWorkspaceModelAuditSink()
         self.clock = clock
+        self.physical_request_count = 0
 
     def chat_completions(
         self,
@@ -255,9 +269,18 @@ class WorkspaceModelGateway:
         safe_model = safe_trace_label(model)
         if not safe_model:
             raise WorkspaceModelPolicyError("model is required")
-        self._operation_claims.claim(operation_id)
+        if self._operation_claims is not None:
+            self._operation_claims.claim(operation_id)
 
         started = self.clock()
+        physical_request_count = 0
+
+        def next_attempt() -> int:
+            nonlocal physical_request_count
+            physical_request_count += 1
+            self.physical_request_count = physical_request_count
+            return physical_request_count
+
         try:
             call = (
                 self.gateway.chat_completions
@@ -271,8 +294,9 @@ class WorkspaceModelGateway:
                 kwargs=dict(kwargs),
                 request_id=operation_id,
                 operation_id=operation_id,
-                allow_retry=False,
+                allow_retry=self.allow_retry,
                 timeout_override_seconds=timeout_override_seconds,
+                _next_attempt=next_attempt,
             )
         except Exception as exc:
             try:

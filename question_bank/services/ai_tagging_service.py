@@ -17,8 +17,17 @@ from backend.llm import (
     execution_snapshot_from_profile,
     policy_overrides_from_profile,
 )
-from llm_client import LLMClient, LLMSettings, normalize_openai_base_url
+from llm_client import (
+    LLMClient,
+    LLMOutputTruncatedError,
+    LLMResponseFormatError,
+    LLMSettings,
+    normalize_openai_base_url,
+)
 from question_bank.models.tag_schema import ERROR_PRONE_CATEGORIES, TagAnalysis, TaggingContext
+from question_bank.services.taxonomy_review_suggestions import (
+    TaxonomySuggestionModelResponseError,
+)
 from question_bank.taxonomy.governance import get_taxonomy_governance
 from question_bank.taxonomy.curriculum_catalog import curriculum_volume_contract
 from question_bank.taxonomy.registry import canonical_knowledge_options
@@ -275,6 +284,9 @@ class AITaggingService:
                     _prompt_text(context, taxonomy_contract),
                     model=_model_for_llm_client(self.llm_client, self.model),
                     extra_kwargs=extra_kwargs,
+                    response_format=_chat_response_format(
+                        _tag_analysis_response_format(taxonomy_contract)
+                    ),
                 )
                 result = AITaggingResult(
                     ok=True,
@@ -292,7 +304,11 @@ class AITaggingService:
                 request_kind=LLMRequestKind.TAGGING,
                 model=self.model,
                 kwargs={
-                    "text": {"format": _tag_analysis_response_format()},
+                    "text": {
+                        "format": _tag_analysis_response_format(
+                            taxonomy_contract
+                        )
+                    },
                     "input": _prompt_input(context, taxonomy_contract),
                 },
             )
@@ -331,11 +347,24 @@ class AITaggingService:
             prompt = "\n\n".join(
                 item["content"] for item in prompt_input
             )
-            payload = _json_from_text_once_compat(
-                self.llm_client,
-                prompt,
-                model=_model_for_llm_client(self.llm_client, self.model),
-            )
+            try:
+                payload = _json_from_text_once_compat(
+                    self.llm_client,
+                    prompt,
+                    model=_model_for_llm_client(
+                        self.llm_client, self.model
+                    ),
+                    response_format=_chat_response_format(
+                        _taxonomy_suggestion_response_format()
+                    ),
+                )
+            except (
+                LLMOutputTruncatedError,
+                LLMResponseFormatError,
+            ) as exc:
+                raise TaxonomySuggestionModelResponseError(
+                    "AI 归并建议返回格式无效"
+                ) from exc
         else:
             response = self._protocol_adapter().responses(
                 request_kind=LLMRequestKind.TAGGING,
@@ -351,11 +380,18 @@ class AITaggingService:
             output_text = str(
                 getattr(response, "output_text", "") or ""
             ).strip()
-            payload = json.loads(output_text)
+            try:
+                payload = json.loads(output_text)
+            except json.JSONDecodeError as exc:
+                raise TaxonomySuggestionModelResponseError(
+                    "AI 归并建议返回格式无效"
+                ) from exc
         if not isinstance(payload, Mapping) or not isinstance(
             payload.get("results"), list
         ):
-            raise ValueError("AI 归并建议返回缺少 results 列表")
+            raise TaxonomySuggestionModelResponseError(
+                "AI 归并建议返回缺少 results 列表"
+            )
         return [
             dict(item)
             for item in payload["results"]
@@ -781,24 +817,183 @@ def _proposal_response_schema() -> dict[str, object]:
     }
 
 
-def _tag_analysis_response_format() -> dict[str, Any]:
+def _contract_candidates(
+    contract: Mapping[str, Any] | None,
+    dimension: str,
+) -> list[dict[str, str]]:
+    if contract is None:
+        return []
+    candidates = contract.get("candidates")
+    if not isinstance(candidates, Mapping):
+        return []
+    raw_items = candidates.get(dimension)
+    if not isinstance(raw_items, Sequence) or isinstance(
+        raw_items, (str, bytes, bytearray)
+    ):
+        return []
+    result: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for raw in raw_items:
+        if not isinstance(raw, Mapping):
+            continue
+        item = {
+            "id": str(raw.get("id") or "").strip(),
+            "name": str(raw.get("name") or "").strip(),
+        }
+        key = (item["id"], item["name"])
+        if not item["name"] or key in seen:
+            continue
+        seen.add(key)
+        result.append(item)
+    return result
+
+
+def _controlled_array_schema(
+    contract: Mapping[str, Any] | None,
+    dimension: str,
+) -> dict[str, Any]:
+    if contract is None:
+        return {"type": "array", "items": {"type": "string"}}
+    names = [item["name"] for item in _contract_candidates(contract, dimension)]
+    if not names:
+        return {
+            "type": "array",
+            "items": {"type": "string"},
+            "maxItems": 0,
+        }
+    return {
+        "type": "array",
+        "items": {"type": "string", "enum": names},
+    }
+
+
+def _curriculum_section_ids(
+    contract: Mapping[str, Any] | None,
+) -> list[str]:
+    if contract is None:
+        return []
+    volume = contract.get("curriculum_volume")
+    if not isinstance(volume, Mapping):
+        return []
+    sections = volume.get("sections")
+    if not isinstance(sections, Sequence) or isinstance(
+        sections, (str, bytes, bytearray)
+    ):
+        return []
+    return _ordered_unique(
+        [
+            str(item.get("id") or "").strip()
+            for item in sections
+            if isinstance(item, Mapping)
+        ]
+    )
+
+
+def _controlled_section_schema(
+    contract: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    if contract is None:
+        return {"type": "array", "items": {"type": "string"}}
+    section_ids = _curriculum_section_ids(contract)
+    if not section_ids:
+        return {
+            "type": "array",
+            "items": {"type": "string"},
+            "maxItems": 0,
+        }
+    return {
+        "type": "array",
+        "items": {"type": "string", "enum": section_ids},
+    }
+
+
+def _controlled_field_violation_notes(
+    analysis: TagAnalysis,
+    contract: Mapping[str, Any],
+) -> list[str]:
+    if not isinstance(contract.get("candidates"), Mapping):
+        return []
+    field_dimensions = {
+        "knowledge_points": "knowledge",
+        "prerequisite_points": "knowledge",
+        "method_tags": "method",
+        "ability_tags": "ability",
+        "math_model_tags": "model",
+        "special_type_tags": "special_type",
+        "textbook_chapters": "curriculum",
+    }
+    notes: list[str] = []
+    for field_name, dimension in field_dimensions.items():
+        allowed = {
+            item["name"] for item in _contract_candidates(contract, dimension)
+        }
+        values = getattr(analysis, field_name, [])
+        if any(str(value or "").strip() not in allowed for value in values):
+            notes.append(f"controlled_field_violation:{field_name}")
+    section_ids = set(_curriculum_section_ids(contract))
+    if any(
+        str(value or "").strip() not in section_ids
+        for value in analysis.curriculum_sections
+    ):
+        notes.append("controlled_field_violation:curriculum_sections")
+    canonical_id = str(analysis.canonical_knowledge_id or "").strip()
+    allowed_knowledge_ids = {
+        item["id"] for item in _contract_candidates(contract, "knowledge")
+    }
+    if canonical_id and canonical_id not in allowed_knowledge_ids:
+        notes.append("controlled_field_violation:canonical_knowledge_id")
+    return notes
+
+
+def _tag_analysis_response_format(
+    taxonomy_contract: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
     array_field = {"type": "array", "items": {"type": "string"}}
     score_field = {"type": "integer", "minimum": 1, "maximum": 10}
     text_field = {"type": "string"}
+    knowledge_candidates = _contract_candidates(
+        taxonomy_contract, "knowledge"
+    )
+    canonical_ids = [
+        "",
+        *_ordered_unique([item["id"] for item in knowledge_candidates]),
+    ]
     properties = {
-        "knowledge_points": array_field,
-        "method_tags": array_field,
-        "thought_tags": array_field,
-        "ability_tags": array_field,
-        "math_model_tags": array_field,
-        "special_type_tags": array_field,
+        "knowledge_points": _controlled_array_schema(
+            taxonomy_contract, "knowledge"
+        ),
+        "method_tags": _controlled_array_schema(
+            taxonomy_contract, "method"
+        ),
+        "thought_tags": _controlled_array_schema(
+            taxonomy_contract, "thought"
+        ),
+        "ability_tags": _controlled_array_schema(
+            taxonomy_contract, "ability"
+        ),
+        "math_model_tags": _controlled_array_schema(
+            taxonomy_contract, "model"
+        ),
+        "special_type_tags": _controlled_array_schema(
+            taxonomy_contract, "special_type"
+        ),
         "difficulty": score_field,
         "error_prone_points": array_field,
-        "prerequisite_points": array_field,
-        "textbook_chapters": array_field,
-        "curriculum_sections": array_field,
+        "prerequisite_points": _controlled_array_schema(
+            taxonomy_contract, "knowledge"
+        ),
+        "textbook_chapters": _controlled_array_schema(
+            taxonomy_contract, "curriculum"
+        ),
+        "curriculum_sections": _controlled_section_schema(
+            taxonomy_contract
+        ),
         "suitable_student_level": text_field,
-        "canonical_knowledge_id": text_field,
+        "canonical_knowledge_id": (
+            {"type": "string", "enum": canonical_ids}
+            if taxonomy_contract is not None
+            else text_field
+        ),
         "taxonomy_revision": {"type": "integer"},
         "proposed_tags": _proposal_response_schema(),
         "reason": text_field,
@@ -948,6 +1143,21 @@ def _taxonomy_suggestion_response_format() -> dict[str, Any]:
     }
 
 
+def _chat_response_format(
+    responses_format: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Convert a Responses API text format to Chat Completions format."""
+
+    return {
+        "type": "json_schema",
+        "json_schema": {
+            "name": str(responses_format["name"]),
+            "strict": bool(responses_format.get("strict", False)),
+            "schema": dict(responses_format["schema"]),
+        },
+    }
+
+
 def _limited_text(value: object, limit: int) -> str:
     return " ".join(str(value or "").split())[:limit]
 
@@ -1034,10 +1244,12 @@ def _json_from_text_compat(
     *,
     model: str | None = None,
     extra_kwargs: dict[str, Any] | None = None,
+    response_format: Mapping[str, Any] | None = None,
 ) -> Any:
     call_kwargs: dict[str, Any] = {
         "model": model,
         "request_kind": LLMRequestKind.TAGGING,
+        "response_format": response_format,
     }
     if extra_kwargs is not None:
         call_kwargs["extra_kwargs"] = extra_kwargs
@@ -1065,6 +1277,7 @@ def _json_from_text_once_compat(
     prompt: str,
     *,
     model: str | None = None,
+    response_format: Mapping[str, Any] | None = None,
 ) -> Any:
     """Use the strict one-request interface; never fall back to AI repair."""
 
@@ -1074,6 +1287,7 @@ def _json_from_text_once_compat(
     call_kwargs: dict[str, Any] = {
         "model": model,
         "request_kind": LLMRequestKind.TAGGING,
+        "response_format": response_format,
     }
     try:
         return method(prompt, **call_kwargs)
@@ -1230,31 +1444,71 @@ def _batch_prompt_input(
     ]
 
 
-def _batch_tag_analysis_response_format() -> dict[str, Any]:
-    array_field = {"type": "array", "items": {"type": "string"}}
-    score_field = {"type": "number"}
-    text_field = {"type": "string"}
+def _batch_contract_union(
+    taxonomy_contracts: Mapping[Any, Mapping[str, Any]]
+    | Mapping[str, Any]
+    | None,
+) -> dict[str, Any] | None:
+    if taxonomy_contracts is None:
+        return None
+    if "candidates" in taxonomy_contracts:
+        contracts = [taxonomy_contracts]
+    else:
+        contracts = [
+            value
+            for value in taxonomy_contracts.values()
+            if isinstance(value, Mapping)
+        ]
+    if not contracts:
+        return None
+    dimensions = (
+        "curriculum",
+        "knowledge",
+        "ability",
+        "method",
+        "model",
+        "special_type",
+    )
+    merged_candidates: dict[str, list[dict[str, str]]] = {}
+    for dimension in dimensions:
+        items: list[dict[str, str]] = []
+        seen: set[tuple[str, str]] = set()
+        for contract in contracts:
+            for item in _contract_candidates(contract, dimension):
+                key = (item["id"], item["name"])
+                if key in seen:
+                    continue
+                seen.add(key)
+                items.append(item)
+        merged_candidates[dimension] = items
+    sections: list[dict[str, str]] = []
+    seen_sections: set[str] = set()
+    for contract in contracts:
+        for section_id in _curriculum_section_ids(contract):
+            if section_id in seen_sections:
+                continue
+            seen_sections.add(section_id)
+            sections.append({"id": section_id})
+    result: dict[str, Any] = {"candidates": merged_candidates}
+    if sections:
+        result["curriculum_volume"] = {"sections": sections}
+    return result
+
+
+def _batch_tag_analysis_response_format(
+    taxonomy_contracts: Mapping[Any, Mapping[str, Any]]
+    | Mapping[str, Any]
+    | None = None,
+) -> dict[str, Any]:
+    union_contract = _batch_contract_union(taxonomy_contracts)
+    single_properties = _tag_analysis_response_format(union_contract)[
+        "schema"
+    ]["properties"]
     question_analysis_properties = {
         "question_id": {"type": "integer"},
-        "knowledge_points": array_field,
-        "method_tags": array_field,
-        "thought_tags": array_field,
-        "ability_tags": array_field,
-        "math_model_tags": array_field,
-        "special_type_tags": array_field,
-        "difficulty": score_field,
-        "error_prone_points": array_field,
-        "prerequisite_points": array_field,
-        "textbook_chapters": array_field,
-        "curriculum_sections": array_field,
-        "suitable_student_level": text_field,
-        "canonical_knowledge_id": text_field,
-        "taxonomy_revision": {"type": "integer"},
-        "proposed_tags": _proposal_response_schema(),
-        "reason": text_field,
-        "confidence": {"type": "number"},
+        **single_properties,
     }
-    
+
     return {
         "type": "json_schema",
         "name": "question_bank_batch_tag_analysis",
@@ -1354,6 +1608,9 @@ def _analyze_one_batch(
                 prompt,
                 model=_model_for_llm_client(service.llm_client, service.model),
                 extra_kwargs=extra_kwargs,
+                response_format=_chat_response_format(
+                    _batch_tag_analysis_response_format(taxonomy_contracts)
+                ),
             )
             if not isinstance(payload.get("results"), list):
                 raise ValueError("LLM response did not include a batch results list")
@@ -1388,7 +1645,11 @@ def _analyze_one_batch(
             request_kind=LLMRequestKind.TAGGING,
             model=service.model,
             kwargs={
-                "text": {"format": _batch_tag_analysis_response_format()},
+                "text": {
+                    "format": _batch_tag_analysis_response_format(
+                        taxonomy_contracts
+                    )
+                },
                 "input": _batch_prompt_input(batch_items, taxonomy_contracts),
             },
         )
@@ -1606,6 +1867,10 @@ def _with_quality(
             taxonomy_revision=revision or int(result.taxonomy_revision or 0),
         )
     taxonomy = governance or get_taxonomy_governance()
+    violation_notes = _controlled_field_violation_notes(
+        result.analysis,
+        contract,
+    )
     scoped_analysis, curriculum_notes = _normalize_scoped_curriculum(
         result.analysis,
         contract,
@@ -1634,7 +1899,11 @@ def _with_quality(
             fallback_revision=revision,
         )
     )
-    governance_notes = [*curriculum_notes, *governance_notes]
+    governance_notes = [
+        *violation_notes,
+        *curriculum_notes,
+        *governance_notes,
+    ]
     status, notes, confidence = _evaluate_analysis_quality(
         normalized_analysis,
         context,

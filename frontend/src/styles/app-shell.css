@@ -260,6 +260,11 @@
   background: var(--color-bg-surface);
 }
 
+.app-topbar--workspace-context {
+  grid-template-areas: 'page';
+  grid-template-columns: minmax(0, 1fr);
+}
+
 .app-topbar__skip-link {
   position: fixed;
   inset-block-start: var(--space-2);

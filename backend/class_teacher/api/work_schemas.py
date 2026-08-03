@@ -36,6 +36,9 @@ class WorkNodeResponse(BaseModel):
     revision: int
     created_at: str
     updated_at: str
+    projection_type: Literal[
+        "sensitive_affair", "attention_followup", "student_support"
+    ] | None = None
 
 
 class WorkEdgeResponse(BaseModel):
@@ -53,6 +56,40 @@ class WorkSnapshotResponse(BaseModel):
     today: list[WorkNodeResponse]
     overdue: list[WorkNodeResponse]
     waiting: list[WorkNodeResponse]
+    review_due: list[WorkNodeResponse]
+    summary: dict[str, int] = Field(default_factory=dict)
+    view: Literal["today", "week", "timeline", "all"] = "all"
+    cursor: str | None = None
+    source_version: str = "empty"
+
+
+class WorkCommandRequest(BaseModel):
+    command: Literal[
+        "update_status",
+        "reschedule",
+        "record_progress",
+        "update_collection_summary",
+        "open_restricted_projection",
+    ]
+    expected_revision: int = Field(ge=1)
+    operation_id: str = Field(min_length=8, max_length=128)
+    status: WorkStatus | None = None
+    due_date: str | None = None
+    progress: str | None = Field(default=None, max_length=240)
+    expected_count: int | None = Field(default=None, ge=0)
+    received_count: int | None = Field(default=None, ge=0)
+    needs_review_count: int | None = Field(default=None, ge=0)
+
+
+class WorkNodeDetailResponse(BaseModel):
+    node: WorkNodeResponse
+    upstream: list[WorkNodeResponse]
+    downstream: list[WorkNodeResponse]
+    progress_events: list[dict[str, object]]
+    collection_summary: dict[str, int] | None = None
+    pending_ai_branches: list[dict[str, object]] = Field(default_factory=list)
+    allowed_commands: list[str]
+    projection_id: str | None = None
 
 
 class PlanNodeResponse(BaseModel):
@@ -82,7 +119,7 @@ class WorkPlanPreviewResponse(BaseModel):
     model_name: str
     destination_fingerprint: str
     model_enabled: bool
-    max_physical_requests: Literal[1]
+    max_physical_requests: int | None
     physical_request_count: int
 
 
@@ -156,6 +193,8 @@ class WorkProgressPlanPreviewRequest(BaseModel):
 
 __all__ = [
     "WorkNodeResponse",
+    "WorkNodeDetailResponse",
+    "WorkCommandRequest",
     "WorkNodeUpdateRequest",
     "WorkPlanConfirmRequest",
     "WorkPlanConfirmResponse",

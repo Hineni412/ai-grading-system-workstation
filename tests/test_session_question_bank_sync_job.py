@@ -14,6 +14,7 @@ from backend.config_workspace.deferred_analysis import DeferredAnalysisArtifactS
 from backend.jobs.manager import JobCancellationRequested, JobContext, JobManager
 from backend.jobs.question_bank_sync import (
     StaleQuestionBankSyncError,
+    _result,
     run_deferred_question_bank_intake,
     run_session_question_bank_sync_job,
 )
@@ -906,6 +907,36 @@ def _deferred_sync_contract() -> dict[str, Any]:
             ],
         },
     }
+
+
+def test_sync_result_preserves_restore_required_import_collision() -> None:
+    result = _result(
+        session_id=7,
+        mode="sync",
+        import_result={
+            "outcome": "failed",
+            "successful_question_ids": [],
+            "failed_count": 1,
+            "retryable": False,
+            "failure_category": "duplicate_in_trash",
+            "restore_required": True,
+            "restore_paper_id": 17,
+        },
+        tagging_result={
+            "outcome": "failed",
+            "successful_question_ids": [],
+            "failed_question_ids": [],
+            "failed_count": 0,
+            "retryable": False,
+        },
+        link_result={"confirmed": 0, "unresolved": 0},
+    )
+
+    assert result["outcome"] == "failed"
+    assert result["retryable"] is False
+    assert result["failure_category"] == "duplicate_in_trash"
+    assert result["restore_required"] is True
+    assert result["restore_paper_id"] == 17
 
 
 def _deferred_sync_result(question_id: int) -> dict[str, Any]:

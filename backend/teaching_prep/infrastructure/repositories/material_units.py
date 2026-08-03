@@ -31,6 +31,27 @@ class MaterialUnitRepository:
     def __init__(self, database: TeachingPrepDatabase) -> None:
         self._database = database
 
+    def set_parse_expected_count(
+        self,
+        material_version_id: str,
+        *,
+        source_version_sha256: str,
+        unit_count: int,
+    ) -> None:
+        with self._database.connect(immediate=True) as connection:
+            cursor = connection.execute(
+                """
+                UPDATE material_versions
+                SET parse_expected_unit_count = ?
+                WHERE id = ? AND content_sha256 = ?
+                """,
+                (int(unit_count), material_version_id, source_version_sha256),
+            )
+            if cursor.rowcount != 1:
+                raise TeachingPrepConflictError(
+                    "material source version changed before parsing"
+                )
+
     def save_parsed_units(
         self,
         material_version_id: str,
@@ -185,6 +206,325 @@ class MaterialUnitRepository:
                 (material_version_id, len(units)),
             )
             rows = self._unit_rows(connection, material_version_id)
+        return tuple(_unit(row) for row in rows)
+
+    def save_partial_unit(
+        self,
+        material_version_id: str,
+        *,
+        source_version_sha256: str,
+        unit: ParsedMaterialUnit,
+        preview_relpath: str,
+        preview_sha256: str,
+    ) -> MaterialUnit:
+        summary = dict(unit.object_summary)
+        summary["ocr_required"] = bool(
+            unit.unit_kind == "pdf_page"
+            and unit.text_status != "manual"
+            and not unit.extracted_text.strip()
+            and bool(summary.get("has_page_images"))
+        )
+        object_summary = json.dumps(
+            summary,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        with self._database.connect(immediate=True) as connection:
+            version = connection.execute(
+                """
+                SELECT content_sha256
+                FROM material_versions
+                WHERE id = ?
+                """,
+                (material_version_id,),
+            ).fetchone()
+            if version is None:
+                raise TeachingPrepNotFoundError(
+                    "material version was not found"
+                )
+            if str(version["content_sha256"]) != source_version_sha256:
+                raise TeachingPrepConflictError(
+                    "material source version changed before parsing"
+                )
+            existing = connection.execute(
+                """
+                SELECT id
+                FROM material_units
+                WHERE material_version_id = ? AND unit_index = ?
+                """,
+                (material_version_id, unit.unit_index),
+            ).fetchone()
+            if existing is None:
+                unit_id = uuid4().hex
+                connection.execute(
+                    """
+                    INSERT INTO material_units (
+                        id,
+                        material_version_id,
+                        unit_kind,
+                        unit_index,
+                        title,
+                        extracted_text,
+                        text_status,
+                        formula_review_required,
+                        object_summary_json,
+                        preview_relpath,
+                        preview_sha256,
+                        source_version_sha256
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        unit_id,
+                        material_version_id,
+                        unit.unit_kind,
+                        unit.unit_index,
+                        unit.title,
+                        unit.extracted_text,
+                        unit.text_status,
+                        int(unit.formula_review_required),
+                        object_summary,
+                        preview_relpath,
+                        preview_sha256,
+                        source_version_sha256,
+                    ),
+                )
+            else:
+                unit_id = str(existing["id"])
+                connection.execute(
+                    """
+                    UPDATE material_units
+                    SET unit_kind = ?,
+                        title = CASE
+                            WHEN text_status = 'manual' THEN title
+                            ELSE ?
+                        END,
+                        extracted_text = CASE
+                            WHEN text_status = 'manual' THEN extracted_text
+                            ELSE ?
+                        END,
+                        text_status = CASE
+                            WHEN text_status = 'manual' THEN text_status
+                            ELSE ?
+                        END,
+                        formula_review_required = CASE
+                            WHEN text_status = 'manual'
+                                THEN formula_review_required
+                            ELSE ?
+                        END,
+                        object_summary_json = ?,
+                        preview_relpath = ?,
+                        preview_sha256 = ?,
+                        source_version_sha256 = ?,
+                        revision = revision + 1,
+                        updated_at = strftime(
+                            '%Y-%m-%dT%H:%M:%fZ',
+                            'now'
+                        )
+                    WHERE id = ?
+                    """,
+                    (
+                        unit.unit_kind,
+                        unit.title,
+                        unit.extracted_text,
+                        unit.text_status,
+                        int(unit.formula_review_required),
+                        object_summary,
+                        preview_relpath,
+                        preview_sha256,
+                        source_version_sha256,
+                        unit_id,
+                    ),
+                )
+            row = connection.execute(
+                "SELECT * FROM material_units WHERE id = ?",
+                (unit_id,),
+            ).fetchone()
+        if row is None:
+            raise RuntimeError("parsed material unit could not be loaded")
+        return _unit(row)
+
+    def publish_preview_count(
+        self,
+        material_version_id: str,
+        *,
+        source_version_sha256: str,
+        unit_count: int,
+    ) -> None:
+        with self._database.connect(immediate=True) as connection:
+            version = connection.execute(
+                """
+                SELECT content_sha256
+                FROM material_versions
+                WHERE id = ?
+                """,
+                (material_version_id,),
+            ).fetchone()
+            if version is None:
+                raise TeachingPrepNotFoundError(
+                    "material version was not found"
+                )
+            if str(version["content_sha256"]) != source_version_sha256:
+                raise TeachingPrepConflictError(
+                    "material source version changed before parsing"
+                )
+            actual_count = int(
+                connection.execute(
+                    """
+                    SELECT COUNT(*)
+                    FROM material_units
+                    WHERE material_version_id = ?
+                      AND unit_index BETWEEN 1 AND ?
+                    """,
+                    (material_version_id, int(unit_count)),
+                ).fetchone()[0]
+            )
+            if actual_count != int(unit_count):
+                raise TeachingPrepConflictError(
+                    "material preview set is incomplete"
+                )
+            connection.execute(
+                """
+                UPDATE material_versions
+                SET unit_count = ?
+                WHERE id = ?
+                """,
+                (int(unit_count), material_version_id),
+            )
+
+    def update_local_ocr(
+        self,
+        unit_id: str,
+        *,
+        source_version_sha256: str,
+        extracted_text: str,
+        formula_review_required: bool,
+        printed_page_number: int | None,
+    ) -> MaterialUnit:
+        with self._database.connect(immediate=True) as connection:
+            row = connection.execute(
+                "SELECT * FROM material_units WHERE id = ?",
+                (unit_id,),
+            ).fetchone()
+            if row is None:
+                raise TeachingPrepNotFoundError(
+                    "material unit was not found"
+                )
+            if str(row["source_version_sha256"]) != source_version_sha256:
+                raise TeachingPrepConflictError(
+                    "material source version changed during OCR"
+                )
+            if str(row["text_status"]) == "manual":
+                return _unit(row)
+            summary = json.loads(str(row["object_summary_json"] or "{}"))
+            summary["ocr_status"] = "completed"
+            if extracted_text:
+                summary["text_source"] = "local_ocr"
+            if printed_page_number is not None:
+                summary.update(
+                    {
+                        "printed_page_number": int(printed_page_number),
+                        "printed_page_number_source": (
+                            "local_ocr_footer_or_header"
+                        ),
+                    }
+                )
+            title = next(
+                (
+                    line.strip()
+                    for line in str(extracted_text or "").splitlines()
+                    if line.strip()
+                ),
+                None,
+            )
+            connection.execute(
+                """
+                UPDATE material_units
+                SET title = ?,
+                    extracted_text = ?,
+                    formula_review_required = ?,
+                    object_summary_json = ?,
+                    revision = revision + 1,
+                    updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                WHERE id = ? AND text_status <> 'manual'
+                """,
+                (
+                    title,
+                    str(extracted_text or ""),
+                    int(formula_review_required),
+                    json.dumps(
+                        summary,
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ),
+                    unit_id,
+                ),
+            )
+            updated = connection.execute(
+                "SELECT * FROM material_units WHERE id = ?",
+                (unit_id,),
+            ).fetchone()
+        if updated is None:
+            raise RuntimeError("OCR material unit could not be loaded")
+        return _unit(updated)
+
+    def complete_parse(
+        self,
+        material_version_id: str,
+        *,
+        source_version_sha256: str,
+        unit_count: int,
+    ) -> tuple[MaterialUnit, ...]:
+        with self._database.connect(immediate=True) as connection:
+            version = connection.execute(
+                """
+                SELECT content_sha256
+                FROM material_versions
+                WHERE id = ?
+                """,
+                (material_version_id,),
+            ).fetchone()
+            if version is None:
+                raise TeachingPrepNotFoundError(
+                    "material version was not found"
+                )
+            if str(version["content_sha256"]) != source_version_sha256:
+                raise TeachingPrepConflictError(
+                    "material source version changed before publishing"
+                )
+            highest_linked = connection.execute(
+                """
+                SELECT MAX(end_unit)
+                FROM lesson_material_links
+                WHERE material_version_id = ? AND is_active = 1
+                """,
+                (material_version_id,),
+            ).fetchone()[0]
+            if highest_linked is not None and int(highest_linked) > int(unit_count):
+                raise TeachingPrepConflictError(
+                    "parsed unit count conflicts with confirmed links"
+                )
+            rows = self._unit_rows(connection, material_version_id)
+            if len(rows) != int(unit_count):
+                raise TeachingPrepConflictError(
+                    "material parse did not produce every unit"
+                )
+            has_text = any(str(row["extracted_text"] or "").strip() for row in rows)
+            connection.execute(
+                """
+                UPDATE material_versions
+                SET unit_count = ?,
+                    inspection_status = ?
+                WHERE id = ?
+                """,
+                (
+                    int(unit_count),
+                    "ready" if has_text else "scanned_no_text",
+                    material_version_id,
+                ),
+            )
         return tuple(_unit(row) for row in rows)
 
     def list_units(
@@ -534,6 +874,8 @@ def _require_valid_range(
         """
         SELECT
             version.content_sha256,
+            version.unit_count AS expected_unit_count,
+            version.inspection_status,
             COUNT(unit.id) AS unit_count
         FROM material_versions AS version
         LEFT JOIN material_units AS unit
@@ -546,6 +888,20 @@ def _require_valid_range(
     if row is None:
         raise TeachingPrepNotFoundError("material version was not found")
     count = int(row["unit_count"])
+    expected_count = (
+        int(row["expected_unit_count"])
+        if row["expected_unit_count"] is not None
+        else 0
+    )
+    if (
+        str(row["inspection_status"])
+        not in {"ready", "scanned_no_text"}
+        or expected_count <= 0
+        or count != expected_count
+    ):
+        raise TeachingPrepConflictError(
+            "material must finish parsing before linking units"
+        )
     if start_unit < 1 or end_unit < start_unit or end_unit > count:
         raise TeachingPrepValidationError("material unit range is invalid")
     return str(row["content_sha256"])

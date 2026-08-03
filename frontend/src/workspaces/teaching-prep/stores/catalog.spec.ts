@@ -2,6 +2,7 @@ import { createPinia, setActivePinia } from 'pinia'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { ApiError } from '../../../api/errors'
+import { jobApi, type JobResponse } from '../../../api/jobs'
 import {
   teachingPrepCatalogApi,
   type CurriculumEdition,
@@ -398,6 +399,93 @@ describe('semester workflow idempotency', () => {
 })
 
 describe('teaching preparation selection consistency', () => {
+  it('opens saved partial pages without implicitly restarting parsing', async () => {
+    const incomplete: MaterialVersion = {
+      ...material('c'.repeat(32)),
+      unit_count: null,
+      inspection_status: 'uninspected',
+      parse_expected_unit_count: 3,
+      preview_completed_count: 1,
+    }
+    const partial = materialUnit('3'.repeat(32), incomplete.id)
+    vi.spyOn(teachingPrepCatalogApi, 'listMaterialUnits').mockResolvedValue([partial])
+    vi.spyOn(teachingPrepCatalogApi, 'listMaterials').mockResolvedValue([incomplete])
+    const start = vi.spyOn(teachingPrepCatalogApi, 'startMaterialParse')
+    const store = useTeachingPrepCatalogStore()
+
+    await store.openMaterial(incomplete)
+
+    expect(store.materialUnits).toEqual([partial])
+    expect(start).not.toHaveBeenCalled()
+  })
+
+  it('restores and continues polling a persisted material parse job', async () => {
+    vi.useFakeTimers()
+    const materialItem = material('a'.repeat(32))
+    const runningJob: JobResponse = {
+      id: 91,
+      job_type: 'teaching_prep.material_parse',
+      payload: { material_version_id: materialItem.id },
+      result: {},
+      status: 'running',
+      progress: 0.42,
+      stage: 'ocr',
+      detail: '正在本机识别扫描文字：24/67 页',
+      error: null,
+      cancel_requested: false,
+      created_at: '2026-08-02T00:00:00Z',
+      started_at: '2026-08-02T00:00:01Z',
+      updated_at: '2026-08-02T00:01:00Z',
+      finished_at: null,
+    }
+    const succeededJob: JobResponse = {
+      ...runningJob,
+      status: 'succeeded',
+      progress: 1,
+      stage: 'completed',
+      detail: '已完成 67 页/张',
+      updated_at: '2026-08-02T00:02:00Z',
+      finished_at: '2026-08-02T00:02:00Z',
+    }
+    vi.spyOn(teachingPrepCatalogApi, 'status').mockResolvedValue({
+      module: 'teaching-prep',
+      enabled: true,
+      schema_version: '013_workbench_iteration',
+      real_model_enabled: false,
+      semester_mapping_model_available: false,
+      exercise_suggestion_model_available: false,
+      real_wps_enabled: false,
+      wps_execution_available: false,
+    })
+    vi.spyOn(teachingPrepCatalogApi, 'getTeachingPreferences')
+      .mockResolvedValue({
+        revision: 1,
+        payload: preferences,
+        updated_at: '2026-08-02T00:00:00Z',
+      })
+    vi.spyOn(teachingPrepCatalogApi, 'listCurricula').mockResolvedValue([])
+    vi.spyOn(teachingPrepCatalogApi, 'listSemesters').mockResolvedValue([])
+    vi.spyOn(teachingPrepCatalogApi, 'listMaterials')
+      .mockResolvedValue([materialItem])
+    vi.spyOn(teachingPrepCatalogApi, 'listMaterialParseJobs')
+      .mockResolvedValue([runningJob])
+    vi.spyOn(jobApi, 'getJob').mockResolvedValue(succeededJob)
+    const store = useTeachingPrepCatalogStore()
+
+    try {
+      await store.load()
+      expect(store.materialParseJobs[materialItem.id]).toEqual(runningJob)
+
+      await vi.advanceTimersByTimeAsync(350)
+      await Promise.resolve()
+
+      expect(store.materialParseJobs[materialItem.id]).toEqual(succeededJob)
+      expect(jobApi.getJob).toHaveBeenCalledWith(runningJob.id)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('does not let a slower old lesson response replace the current lesson', async () => {
     const lessonA = lesson('a'.repeat(32), '课时 A')
     const lessonB = lesson('b'.repeat(32), '课时 B')
@@ -451,12 +539,14 @@ describe('teaching preparation selection consistency', () => {
     const materialAResponse = new Promise<MaterialUnit[]>((resolve) => {
       releaseMaterialA = resolve
     })
-    vi.spyOn(teachingPrepCatalogApi, 'parseMaterial')
+    vi.spyOn(teachingPrepCatalogApi, 'listMaterialUnits')
       .mockImplementation((materialId) => (
         materialId === materialA.id
           ? materialAResponse
           : Promise.resolve([unitB])
       ))
+    vi.spyOn(teachingPrepCatalogApi, 'listMaterials')
+      .mockResolvedValue([materialA, materialB])
     const store = useTeachingPrepCatalogStore()
 
     const openA = store.openMaterial(materialA)

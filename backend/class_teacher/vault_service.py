@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import hmac
 import json
 import os
 import re
 import secrets
+import sqlite3
 import threading
 import time
 from contextlib import asynccontextmanager, closing
@@ -51,6 +54,38 @@ def _now() -> datetime:
     return datetime.now(UTC)
 
 
+def _snapshot_content_digest(payload: bytes) -> str:
+    """Hash durable vault meaning, excluding append-only access audit noise."""
+    digest = hashlib.sha256()
+    with closing(sqlite3.connect(":memory:")) as connection:
+        connection.deserialize(payload)
+        tables = connection.execute(
+            """
+            SELECT name, sql FROM sqlite_master
+            WHERE type = 'table' AND name NOT LIKE 'sqlite_%'
+              AND name != 'access_audit'
+            ORDER BY name
+            """
+        ).fetchall()
+        for table_name, schema in tables:
+            name = str(table_name)
+            digest.update(canonical_json({"table": name, "schema": str(schema or "")}))
+            quoted = '"' + name.replace('"', '""') + '"'
+            encoded_rows: list[bytes] = []
+            for row in connection.execute(f"SELECT * FROM {quoted}").fetchall():
+                values: list[object] = []
+                for value in row:
+                    if isinstance(value, bytes):
+                        values.append({"bytes": b64(value)})
+                    else:
+                        values.append(value)
+                encoded_rows.append(canonical_json({"row": values}))
+            for encoded in sorted(encoded_rows):
+                digest.update(len(encoded).to_bytes(8, "big"))
+                digest.update(encoded)
+    return digest.hexdigest()
+
+
 def _iso(value: datetime | None = None) -> str:
     return (value or _now()).isoformat()
 
@@ -89,13 +124,27 @@ class _RestorePreview:
     source_instance_id: str
     created_at: str
     expires_at: float
+    current_digest: str
+    confirmation_phrase: str
 
 
 class VaultService:
-    def __init__(self, context: WorkspaceContext, *, protection_provider=None, model_gateway=None) -> None:
+    _PLAINTEXT_KEY = b"class-teacher-plaintext-debug-key"
+
+    def __init__(
+        self,
+        context: WorkspaceContext,
+        *,
+        protection_provider=None,
+        model_gateway=None,
+        protection_enabled: bool = True,
+    ) -> None:
         self._operation_lock = asyncio.Lock()
+        self.protection_enabled = bool(protection_enabled)
         self.database = EncryptedDatabase(context)
-        self.repository = EncryptedObjectRepository()
+        self.repository = EncryptedObjectRepository(
+            plaintext=not self.protection_enabled,
+        )
         from .ordinary_database import OrdinaryWorkDatabase
         from .model_approval import ModelApproval
         from .protection import PinProtection
@@ -117,6 +166,21 @@ class VaultService:
             self.repository,
             self.session_key,
             model_gateway,
+        )
+        from .home_intake import HomeIntake
+
+        self.home_intake = HomeIntake(
+            self.ordinary_database,
+            self.work,
+            self.model_approval,
+        )
+        from .sensitive_work_projection import SensitiveWorkProjection
+
+        self.projections = SensitiveWorkProjection(
+            self.database,
+            self.repository,
+            self.session_key,
+            self.work,
         )
         from .action_ledger_service import ActionLedgerService
         from .planning_service import PlanningService
@@ -155,6 +219,7 @@ class VaultService:
             self.database,
             self.repository,
             self.session_key,
+            self.projections,
         )
         self.student_cards = StudentCardService(
             self.database,
@@ -163,6 +228,7 @@ class VaultService:
             self.support,
             self.model_approval,
             self.work,
+            self.projections,
         )
         self.quick_inbox = QuickInboxService(
             self.database,
@@ -184,6 +250,16 @@ class VaultService:
             self.evidence,
             self.actions,
         )
+        from .student_academic_analysis import StudentAcademicAnalysis
+
+        self.academic = StudentAcademicAnalysis(
+            self.database,
+            self.repository,
+            self.session_key,
+            self.evidence,
+            self.attention,
+            self.projections,
+        )
         self._lock = threading.RLock()
         self._sessions: dict[str, _Session] = {}
         self._previews: dict[str, _RestorePreview] = {}
@@ -197,7 +273,36 @@ class VaultService:
 
     def status(self, token: str | None = None) -> dict[str, object]:
         with self._lock:
+            if not self.protection_enabled:
+                if self._plaintext_migration_required():
+                    return {
+                        "initialized": True,
+                        "locked": True,
+                        "idle_timeout_seconds": 0,
+                        "retry_after_seconds": 0,
+                        "format_version": FORMAT_VERSION,
+                        "protection_mode": "legacy_migration_required",
+                        "protection_state": None,
+                        "legacy_upgrade_available": False,
+                        "session_expires_in_seconds": 0,
+                        "status_observed_at": _iso(),
+                        "lock_reason": "legacy_migration_required",
+                    }
+                return {
+                    "initialized": True,
+                    "locked": False,
+                    "idle_timeout_seconds": 0,
+                    "retry_after_seconds": 0,
+                    "format_version": FORMAT_VERSION,
+                    "protection_mode": "plaintext_debug_v1",
+                    "protection_state": None,
+                    "legacy_upgrade_available": False,
+                    "session_expires_in_seconds": 0,
+                    "status_observed_at": _iso(),
+                    "lock_reason": None,
+                }
             self._prune()
+            observed_at = _iso()
             if not self.database.exists:
                 return {
                     "initialized": False,
@@ -208,11 +313,25 @@ class VaultService:
                     "protection_mode": "uninitialized",
                     "protection_state": self.pin_protection.state(),
                     "legacy_upgrade_available": False,
+                    "session_expires_in_seconds": 0,
+                    "status_observed_at": observed_at,
+                    "lock_reason": "uninitialized",
                 }
             metadata = self._metadata()
             retry_after = self._retry_after(metadata["blocked_until"])
             session = self._sessions.get(str(token or ""))
             unlocked = session is not None and session.instance_id == metadata["instance_id"]
+            remaining = (
+                max(
+                    0,
+                    min(
+                        _SESSION_SECONDS,
+                        int(_SESSION_SECONDS - (time.monotonic() - session.last_activity)),
+                    ),
+                )
+                if unlocked and session is not None
+                else 0
+            )
             return {
                 "initialized": True,
                 "locked": not unlocked,
@@ -225,6 +344,9 @@ class VaultService:
                     self.pin_protection.mode(vault_exists=True)
                     == "legacy_password_v1"
                 ),
+                "session_expires_in_seconds": remaining,
+                "status_observed_at": observed_at,
+                "lock_reason": None if unlocked else "locked",
             }
 
     def initialize_pin(self, *, pin: str, operation_id: str) -> dict[str, object]:
@@ -615,7 +737,104 @@ class VaultService:
         with self._lock:
             session = self._require_session(token)
             self._cleanup_expired_drafts(bytes(session.vmk))
-            return {"active": True, "idle_timeout_seconds": _SESSION_SECONDS}
+            return {
+                "active": True,
+                "idle_timeout_seconds": _SESSION_SECONDS,
+                "session_expires_in_seconds": _SESSION_SECONDS,
+                "status_observed_at": _iso(),
+            }
+
+    def change_pin(
+        self,
+        *,
+        token: str,
+        current_pin: str,
+        new_pin: str,
+        operation_id: str,
+    ) -> dict[str, object]:
+        self.pin_protection.validate_pin(current_pin)
+        self.pin_protection.validate_pin(new_pin)
+        self._validate_operation_id(operation_id)
+        if current_pin == new_pin:
+            raise VaultError(
+                "vault_pin_unchanged",
+                "新 PIN 不能与当前 PIN 相同",
+                status_code=422,
+            )
+        with self._lock:
+            session = self._require_session(token)
+            if self.pin_protection.mode(vault_exists=self.database.exists) != (
+                "pin_dpapi_current_user_v2"
+            ):
+                raise VaultError(
+                    "vault_pin_change_unavailable",
+                    "旧版保险箱请先升级为 6 位 PIN",
+                    status_code=409,
+                )
+            internal_secret = self.pin_protection.secret(pin=current_pin)
+            fingerprint = hmac.new(
+                bytes(session.vmk),
+                f"pin_change|{new_pin}".encode("utf-8"),
+                hashlib.sha256,
+            ).hexdigest()
+            with closing(self.ordinary_database.connect()) as connection:
+                existing = connection.execute(
+                    "SELECT * FROM protection_change_operations WHERE operation_id = ?",
+                    (operation_id,),
+                ).fetchone()
+            if existing is not None:
+                if str(existing["request_fingerprint"]) != fingerprint:
+                    raise VaultError(
+                        "vault_operation_conflict",
+                        "同一操作编号不能用于不同的 PIN 修改",
+                        status_code=409,
+                    )
+                if str(existing["state"]) == "completed":
+                    return {"completed": True, "locked": True}
+            timestamp = _iso()
+            self.pin_protection.stage(
+                pin=new_pin,
+                secret=internal_secret,
+                operation_id=operation_id,
+            )
+            with closing(self.ordinary_database.connect()) as connection:
+                with connection:
+                    connection.execute(
+                        """
+                        INSERT INTO protection_change_operations (
+                            operation_id, change_kind, request_fingerprint,
+                            state, result_json, created_at, updated_at
+                        ) VALUES (?, 'pin_change', ?, 'staged', NULL, ?, ?)
+                        ON CONFLICT(operation_id) DO UPDATE SET
+                            state = 'staged', updated_at = excluded.updated_at
+                        """,
+                        (operation_id, fingerprint, timestamp, timestamp),
+                    )
+            self.pin_protection.activate()
+            with closing(self.ordinary_database.connect()) as connection:
+                with connection:
+                    connection.execute(
+                        """
+                        UPDATE protection_change_operations
+                        SET state = 'activated', updated_at = ?
+                        WHERE operation_id = ?
+                        """,
+                        (_iso(), operation_id),
+                    )
+            self._invalidate_sessions()
+            self._discard_previews()
+            result = {"completed": True, "locked": True}
+            with closing(self.ordinary_database.connect()) as connection:
+                with connection:
+                    connection.execute(
+                        """
+                        UPDATE protection_change_operations
+                        SET state = 'completed', result_json = ?, updated_at = ?
+                        WHERE operation_id = ?
+                        """,
+                        (json.dumps(result, sort_keys=True), _iso(), operation_id),
+                    )
+            return result
 
     def _cleanup_expired_drafts(self, vmk: bytes) -> None:
         attention_cutoff = _iso(_now() - timedelta(days=30))
@@ -720,7 +939,27 @@ class VaultService:
 
     def session_key(self, token: str) -> bytes:
         with self._lock:
+            if not self.protection_enabled:
+                if self._plaintext_migration_required():
+                    raise VaultError(
+                        "vault_plaintext_migration_required",
+                        "检测到旧加密班主任数据库，已停止读取和写入；请先执行授权迁移",
+                        status_code=409,
+                    )
+                if not self.database.exists:
+                    self.database.initialize_schema()
+                return self._PLAINTEXT_KEY
             return bytes(self._require_session(token).vmk)
+
+    def _plaintext_migration_required(self) -> bool:
+        if not self.database.exists:
+            return False
+        try:
+            uri = self.database.database_path.resolve().as_uri() + "?mode=ro"
+            with closing(sqlite3.connect(uri, uri=True)) as connection:
+                return self.repository.requires_plaintext_migration(connection)
+        except (OSError, sqlite3.DatabaseError):
+            return True
 
     def change_password(
         self,
@@ -942,7 +1181,20 @@ class VaultService:
             session = self._require_session(token)
             package, payload = self._open_backup(file_name, secret, secret_kind)
             EncryptedDatabase.validate_snapshot(payload)
+            current_snapshot = self.database.snapshot_bytes()
+            current_digest = _snapshot_content_digest(current_snapshot)
+            backup_counts = self._snapshot_scope_counts(payload)
+            current_counts = self._snapshot_scope_counts(current_snapshot)
+            backup_schema_version = self._snapshot_schema_version(payload)
+            current_schema_version = self._snapshot_schema_version(current_snapshot)
+            if backup_schema_version > current_schema_version:
+                raise VaultError(
+                    "vault_restore_schema_too_new",
+                    "这份备份来自更新版本，请先升级应用后再恢复",
+                    status_code=409,
+                )
             preview_token = secrets.token_urlsafe(32)
+            confirmation_phrase = "确认完整替换班主任工作台"
             preview = _RestorePreview(
                 token=preview_token,
                 payload=bytearray(payload),
@@ -950,6 +1202,8 @@ class VaultService:
                 source_instance_id=str(package["source_instance_id"]),
                 created_at=str(package["created_at"]),
                 expires_at=time.monotonic() + _PREVIEW_SECONDS,
+                current_digest=current_digest,
+                confirmation_phrase=confirmation_phrase,
             )
             self._previews[preview_token] = preview
             with closing(self.database.connect()) as connection:
@@ -967,6 +1221,20 @@ class VaultService:
                 "requires_complete_replacement": (
                     preview.source_instance_id != session.instance_id
                 ),
+                "source_relation": (
+                    "same_instance"
+                    if preview.source_instance_id == session.instance_id
+                    else "other_instance"
+                ),
+                "backup_schema_version": backup_schema_version,
+                "current_schema_version": current_schema_version,
+                "migration_required": backup_schema_version < current_schema_version,
+                "backup_scope_counts": backup_counts,
+                "current_scope_counts": current_counts,
+                "mode": "complete_replace",
+                "will_replace_current": True,
+                "will_lock_after_confirm": True,
+                "confirmation_phrase": confirmation_phrase,
             }
 
     def confirm_restore(
@@ -975,6 +1243,7 @@ class VaultService:
         token: str,
         preview_token: str,
         operation_id: str,
+        confirmation_phrase: str | None = None,
     ) -> dict[str, object]:
         self._validate_operation_id(operation_id)
         with self._lock:
@@ -989,6 +1258,21 @@ class VaultService:
                 raise VaultError(
                     "vault_restore_preview_expired",
                     "恢复预览已失效，请重新验证备份",
+                    status_code=409,
+                )
+            if confirmation_phrase != preview.confirmation_phrase:
+                self._previews[preview_token] = preview
+                raise VaultError(
+                    "vault_restore_confirmation_required",
+                    f"请输入“{preview.confirmation_phrase}”后再恢复",
+                    status_code=422,
+                )
+            current_digest = _snapshot_content_digest(self.database.snapshot_bytes())
+            if current_digest != preview.current_digest:
+                wipe(preview.payload)
+                raise VaultError(
+                    "vault_restore_preview_stale",
+                    "保险箱在预览后已经变化，请重新核对恢复影响",
                     status_code=409,
                 )
             payload = bytes(preview.payload)
@@ -1019,6 +1303,46 @@ class VaultService:
             self._invalidate_sessions()
             self._discard_previews()
             return result
+
+    @staticmethod
+    def _snapshot_schema_version(payload: bytes) -> int:
+        import sqlite3
+
+        with closing(sqlite3.connect(":memory:")) as connection:
+            connection.deserialize(payload)
+            row = connection.execute(
+                "SELECT COUNT(*) FROM schema_migrations WHERE success = 1"
+            ).fetchone()
+            return int(row[0] if row is not None else 0)
+
+    @staticmethod
+    def _snapshot_scope_counts(payload: bytes) -> dict[str, int]:
+        import sqlite3
+
+        table_names = {
+            "subjects": "student_subject_links",
+            "support_records": "support_records",
+            "student_cards": "student_card_entries",
+            "academic_evidence": "evidence_versions",
+            "attention_cards": "attention_cards",
+            "affairs": "affairs",
+        }
+        counts: dict[str, int] = {}
+        with closing(sqlite3.connect(":memory:")) as connection:
+            connection.deserialize(payload)
+            present = {
+                str(row[0])
+                for row in connection.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table'"
+                )
+            }
+            for key, table in table_names.items():
+                counts[key] = (
+                    int(connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
+                    if table in present
+                    else 0
+                )
+        return counts
 
     def _metadata(self) -> Any:
         if not self.database.exists:
@@ -1054,6 +1378,34 @@ class VaultService:
             instance_id=instance_id,
             last_activity=time.monotonic(),
         )
+        from .support_ai_review import SupportRecordAIReview
+
+        self.support_ai_reviews = SupportRecordAIReview(
+            self.database,
+            self.repository,
+            self.session_key,
+            self.support,
+            self.model_approval,
+            self.projections,
+        )
+        from .student_directory import StudentDirectory
+
+        self.student_directory = StudentDirectory(
+            self.database,
+            self.repository,
+            self.session_key,
+        )
+        from .affair_workspace import AffairWorkspace
+
+        self.affairs = AffairWorkspace(
+            self.database,
+            self.repository,
+            self.session_key,
+            self.sop,
+            self.projections,
+        )
+        if hasattr(self, "projections"):
+            self.projections.drain(token=token)
         return token
 
     def _require_session(self, token: str) -> _Session:

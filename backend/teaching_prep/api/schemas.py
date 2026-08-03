@@ -12,6 +12,8 @@ from backend.teaching_prep.domain.models import (
     ClassVariant,
     CurriculumEdition,
     ExerciseCandidate,
+    ExerciseSuggestion,
+    ExerciseSuggestionRun,
     LessonDraftVersion,
     LessonGenerationPerformance,
     LessonMaterialLink,
@@ -20,6 +22,8 @@ from backend.teaching_prep.domain.models import (
     MaterialUnit,
     MaterialVersion,
     ResourcePackVersion,
+    ReferenceSelectionDraft,
+    ReferenceSelectionSnapshot,
     SemesterLessonProgress,
     SemesterMappingProposal,
     SemesterMaterialRecord,
@@ -34,10 +38,36 @@ from backend.teaching_prep.domain.models import (
 from backend.teaching_prep.domain.states import LessonPreparationState
 
 
+class MaterialParseJobResponse(BaseModel):
+    id: int
+    job_type: str
+    payload: dict[str, Any]
+    result: dict[str, Any]
+    status: str
+    progress: float
+    stage: str
+    detail: str
+    error: str | None = None
+    cancel_requested: bool
+    created_at: str
+    started_at: str | None = None
+    updated_at: str
+    finished_at: str | None = None
+
+
+class MaterialParseJobListResponse(BaseModel):
+    items: list[MaterialParseJobResponse]
+
+
 class TeachingPrepStatusResponse(BaseModel):
     module: str
     enabled: bool
     schema_version: str
+    real_model_enabled: bool = False
+    semester_mapping_model_available: bool = False
+    exercise_suggestion_model_available: bool = False
+    real_wps_enabled: bool = False
+    wps_execution_available: bool = False
     real_model_enabled: bool
     semester_mapping_model_available: bool
     real_wps_enabled: bool
@@ -279,6 +309,8 @@ class AttachSemesterMaterialRequest(BaseModel):
         "answer_book",
         "supplement",
     ]
+    workbook_series: str | None = Field(default=None, max_length=120)
+    workbook_volume: Literal["A", "B"] | None = None
 
 
 class UpdateSemesterMaterialRequest(BaseModel):
@@ -302,6 +334,8 @@ class UpdateSemesterMaterialRequest(BaseModel):
         "conflict",
     ]
     is_active: bool
+    workbook_series: str | None = Field(default=None, max_length=120)
+    workbook_volume: Literal["A", "B"] | None = None
 
 
 class SemesterMaterialResponse(BaseModel):
@@ -310,6 +344,9 @@ class SemesterMaterialResponse(BaseModel):
     material_source_id: str
     display_name: str
     material_role: str
+    is_daily_workbook: bool
+    workbook_series: str | None
+    workbook_volume: str | None
     parse_status: str
     mapping_status: str
     current_material_version_id: str
@@ -461,8 +498,14 @@ class MaterialVersionResponse(BaseModel):
     size_bytes: int
     modified_ns: str | None
     unit_count: int | None
+    parse_expected_unit_count: int | None
+    preview_completed_count: int
+    ocr_completed_count: int
+    ocr_total_count: int
     inspection_status: str
     availability: str
+    source_revision: int
+    source_archived_at: str | None
     created_at: str
 
     @classmethod
@@ -477,6 +520,14 @@ class MaterialVersionResponse(BaseModel):
 
 class MaterialVersionListResponse(BaseModel):
     items: list[MaterialVersionResponse]
+
+
+class UpdateMaterialSourceRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    expected_revision: int = Field(gt=0)
+    display_name: str | None = Field(default=None, min_length=1, max_length=120)
+    archived: bool | None = None
 
 
 class MaterialUnitResponse(BaseModel):
@@ -751,6 +802,12 @@ class FreezeResourcePackRequest(BaseModel):
             DEFAULT_TEACHING_PREFERENCES
         )
     )
+    selected_material_link_ids: list[str] | None = Field(
+        default=None, max_length=200
+    )
+    selected_exercise_candidate_ids: list[str] | None = Field(
+        default=None, max_length=200
+    )
 
 
 class ResourcePackResponse(BaseModel):
@@ -781,6 +838,20 @@ class ResourcePackStatusResponse(BaseModel):
     latest_version_number: int | None
     latest_pack_id: str | None
     local_sources_changed: bool
+
+
+class ResourcePackSelectionPreflightRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    reference_ppt_intents: dict[
+        str, Literal["keep", "candidate_delete"]
+    ] = Field(default_factory=dict)
+    selected_material_link_ids: list[str] | None = Field(
+        default=None, max_length=200
+    )
+    selected_exercise_candidate_ids: list[str] | None = Field(
+        default=None, max_length=200
+    )
 
 
 class LessonDraftPreflightResponse(BaseModel):
@@ -966,6 +1037,8 @@ class PptxExecutionResponse(BaseModel):
     verification_report: dict[str, Any] | None
     error_code: str | None
     published_version_id: str | None
+    phase: Literal["copying", "executing", "verifying", "publishing", "done"]
+    cancel_requested: bool
     staging_retained: bool
     recovery_actions: list[str]
     created_at: str
@@ -1139,3 +1212,197 @@ class PostLessonReviewResponse(BaseModel):
 
 class PostLessonReviewListResponse(BaseModel):
     items: list[PostLessonReviewResponse]
+
+
+class LessonPreparationStatusResponse(BaseModel):
+    lesson_node_id: str
+    title: str
+    sort_order: int
+    duration_minutes: int
+    manual_progress: Literal[
+        "not_started", "preparing", "ready", "taught", "skipped"
+    ]
+    manual_progress_revision: int | None
+    preparation_stage: Literal["select", "materials", "plan", "slides", "package"]
+    next_action: str
+    blockers: list[str]
+    latest: dict[str, Any]
+
+
+class LessonPreparationStatusListResponse(BaseModel):
+    semester_id: str
+    items: list[LessonPreparationStatusResponse]
+
+
+class ReviewSemesterMappingRowRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    expected_revision: int = Field(ge=1)
+    decision: Literal["accepted", "modified", "rejected"]
+    lesson_ref: str | None = Field(default=None, max_length=128)
+    start_unit: int | None = Field(default=None, ge=1)
+    end_unit: int | None = Field(default=None, ge=1)
+    reason: str | None = Field(default=None, max_length=500)
+
+
+class RejectSemesterMappingProposalRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    expected_revision: int = Field(ge=1)
+
+
+class SaveReferenceSelectionDraftRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    expected_revision: int | None = Field(default=None, ge=1)
+    source_state_sha256: str = Field(min_length=64, max_length=64)
+    selection: dict[str, Any]
+
+
+class ReferenceSelectionDraftResponse(BaseModel):
+    lesson_node_id: str
+    payload: dict[str, Any]
+    source_state_sha256: str
+    revision: int
+    created_at: str
+    updated_at: str
+
+    @classmethod
+    def from_domain(
+        cls, item: ReferenceSelectionDraft
+    ) -> "ReferenceSelectionDraftResponse":
+        return cls.model_validate(asdict(item))
+
+
+class ReferenceSelectionPreflightResponse(BaseModel):
+    lesson_node_id: str
+    source_state_sha256: str
+    catalog: dict[str, Any]
+    draft: dict[str, Any] | None
+    model_available: bool
+    model_label: str | None
+    will_call_model: bool
+
+
+class FreezeReferenceSelectionSnapshotRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    request_token: str = Field(min_length=8, max_length=96)
+    expected_draft_revision: int = Field(ge=1)
+
+
+class ReferenceSelectionSnapshotResponse(BaseModel):
+    id: str
+    lesson_node_id: str
+    source_state_sha256: str
+    payload: dict[str, Any]
+    created_at: str
+
+    @classmethod
+    def from_domain(
+        cls, item: ReferenceSelectionSnapshot
+    ) -> "ReferenceSelectionSnapshotResponse":
+        return cls.model_validate(asdict(item))
+
+
+class ExerciseSuggestionPreflightResponse(BaseModel):
+    snapshot_id: str
+    lesson_node_id: str
+    source_state_sha256: str
+    model_available: bool
+    model_label: str | None
+    will_call_model: bool
+    automatic_retry_count: int
+    material_range_count: int
+
+
+class StartExerciseSuggestionRunRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    operation_id: str = Field(min_length=8, max_length=96)
+    confirmed: bool
+
+
+class ExerciseSuggestionResponse(BaseModel):
+    id: str
+    run_id: str
+    lesson_node_id: str
+    source_state_sha256: str
+    decision: Literal["pending", "accepted", "modified", "rejected"]
+    original_payload: dict[str, Any]
+    teacher_payload: dict[str, Any] | None
+    rejection_reason: str | None
+    exercise_candidate_id: str | None
+    revision: int
+    created_at: str
+    updated_at: str
+
+    @classmethod
+    def from_domain(
+        cls, item: ExerciseSuggestion
+    ) -> "ExerciseSuggestionResponse":
+        return cls.model_validate(asdict(item))
+
+
+class ExerciseSuggestionRunResponse(BaseModel):
+    id: str
+    snapshot_id: str
+    operation_id: str
+    status: Literal[
+        "running", "succeeded", "failed", "cancelled", "result_unknown"
+    ]
+    error_code: str | None
+    model_call_count: int
+    created_at: str
+    updated_at: str
+    finished_at: str | None
+    suggestions: list[ExerciseSuggestionResponse] = Field(default_factory=list)
+
+    @classmethod
+    def from_domain(
+        cls,
+        run: ExerciseSuggestionRun,
+        suggestions: list[ExerciseSuggestion] | tuple[ExerciseSuggestion, ...] = (),
+    ) -> "ExerciseSuggestionRunResponse":
+        payload = asdict(run)
+        payload["suggestions"] = [asdict(item) for item in suggestions]
+        return cls.model_validate(payload)
+
+
+class ReviewExerciseSuggestionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    expected_revision: int = Field(ge=1)
+    decision: Literal["accepted", "modified", "rejected"]
+    teacher_payload: dict[str, Any] | None = None
+    rejection_reason: str | None = Field(default=None, max_length=500)
+
+
+class LessonDraftCapacityPreviewRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    payload: dict[str, Any]
+
+
+class PptxVersionListItemResponse(PptxVersionResponse):
+    is_current: bool
+    current_revision: int | None
+    preview_url: str
+    file_verified: bool
+
+
+class PptxVersionListResponse(BaseModel):
+    lesson_node_id: str
+    items: list[PptxVersionListItemResponse]
+
+
+class ActivatePptxVersionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    expected_revision: int | None = Field(default=None, ge=1)
+
+
+class ActivatePptxVersionResponse(BaseModel):
+    version: PptxVersionResponse
+    current_revision: int
+    changed: bool

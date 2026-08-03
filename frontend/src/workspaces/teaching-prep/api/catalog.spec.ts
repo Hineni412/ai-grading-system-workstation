@@ -45,8 +45,14 @@ const materialPayload = {
   size_bytes: 18,
   modified_ns: '1760000000000000000',
   unit_count: null,
+  parse_expected_unit_count: null,
+  preview_completed_count: 0,
+  ocr_completed_count: 0,
+  ocr_total_count: 0,
   inspection_status: 'uninspected',
   availability: 'available',
+  source_revision: 1,
+  source_archived_at: null,
   created_at: '2026-07-30T00:00:00Z',
 }
 
@@ -122,6 +128,65 @@ describe('teaching preparation delivery API', () => {
           'x-request-token': 'material-import-0001',
         }),
       }),
+    )
+  })
+
+  it('starts page parsing as a background job', async () => {
+    const job = {
+      id: 17,
+      job_type: 'teaching_prep.material_parse',
+      payload: { material_version_id: materialPayload.id },
+      result: {},
+      status: 'queued',
+      progress: 0,
+      stage: 'queued',
+      detail: '等待后台处理',
+      error: null,
+      cancel_requested: false,
+      created_at: '2026-08-02T00:00:00Z',
+      started_at: null,
+      updated_at: '2026-08-02T00:00:00Z',
+      finished_at: null,
+    }
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValue(response(job, 202))
+
+    await expect(
+      teachingPrepCatalogApi.startMaterialParse(materialPayload.id),
+    ).resolves.toEqual(job)
+
+    expect(fetchMock).toHaveBeenCalledExactlyOnceWith(
+      `/api/teaching-prep/materials/${materialPayload.id}/parse-job`,
+      expect.objectContaining({ method: 'POST' }),
+    )
+  })
+
+  it('restores persisted material parse jobs after a page refresh', async () => {
+    const job = {
+      id: 18,
+      job_type: 'teaching_prep.material_parse',
+      payload: { material_version_id: materialPayload.id },
+      result: {},
+      status: 'running',
+      progress: 0.42,
+      stage: 'ocr',
+      detail: '正在本机识别扫描文字：24/67 页',
+      error: null,
+      cancel_requested: false,
+      created_at: '2026-08-02T00:00:00Z',
+      started_at: '2026-08-02T00:00:01Z',
+      updated_at: '2026-08-02T00:01:00Z',
+      finished_at: null,
+    }
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValue(response({ items: [job] }))
+
+    await expect(teachingPrepCatalogApi.listMaterialParseJobs())
+      .resolves.toEqual([job])
+
+    expect(fetchMock).toHaveBeenCalledExactlyOnceWith(
+      '/api/teaching-prep/material-parse-jobs',
+      expect.objectContaining({ method: 'GET' }),
     )
   })
 
@@ -274,6 +339,9 @@ describe('teaching preparation delivery API', () => {
       material_source_id: 'm'.repeat(32),
       display_name: '合成日常作业教辅',
       material_role: 'homework_workbook',
+      is_daily_workbook: true,
+      workbook_series: '合成日常作业教辅',
+      workbook_volume: 'A',
       parse_status: 'parsed',
       mapping_status: 'unmapped',
       current_material_version_id: 'v'.repeat(32),
