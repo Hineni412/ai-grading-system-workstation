@@ -1,22 +1,25 @@
 <script setup lang="ts">
-import { GraphChart, TreeChart } from 'echarts/charts'
-import { AriaComponent } from 'echarts/components'
+import { GraphChart } from 'echarts/charts'
+import { AriaComponent, TooltipComponent } from 'echarts/components'
 import { init, use } from 'echarts/core'
 import { CanvasRenderer } from 'echarts/renderers'
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
-import type { GraphCoverage, GraphNode, GraphRow } from '../../api/graph'
+import type {
+  GraphCoverage,
+  GraphEdge,
+  GraphNode,
+  GraphRelationType,
+} from '../../api/graph'
 import {
-  buildEvidenceLaneModel,
-  buildGroupingTree,
-  summarizeGraph,
-  type GroupingTreeNode,
-  type MasteryBand,
+  buildGraphDisplayNodes,
+  connectedNodeKeys,
+  findGraphPath,
+  relationTypeLabel,
+  relationVerb,
 } from '../../features/knowledge-graph/model'
 
-use([GraphChart, TreeChart, AriaComponent, CanvasRenderer])
-
-export type GraphDisplayMode = 'graph' | 'tree'
+use([GraphChart, AriaComponent, TooltipComponent, CanvasRenderer])
 
 export interface ChartLike {
   setOption(option: unknown, notMerge?: boolean): void
@@ -28,13 +31,14 @@ export interface ChartLike {
 }
 
 interface ChartClickEvent {
-  data?: { knowledgeKey?: unknown }
+  data?: { stableKey?: unknown }
 }
+
+type GraphViewMode = 'overview' | 'focus' | 'path'
 
 const props = withDefaults(defineProps<{
   nodes: GraphNode[]
-  rows: GraphRow[]
-  mode: GraphDisplayMode
+  edges: GraphEdge[]
   selectedKey: string | null
   scopeLabel: string
   coverage: GraphCoverage
@@ -43,29 +47,71 @@ const props = withDefaults(defineProps<{
   chartFactory: undefined,
 })
 
-const emit = defineEmits<{
-  selectNode: [knowledgeKey: string]
-  changeMode: [mode: GraphDisplayMode]
-}>()
-
+const emit = defineEmits<{ selectNode: [stableKey: string] }>()
 const chartElement = ref<HTMLElement | null>(null)
 const chartError = ref('')
+const viewMode = ref<GraphViewMode>('overview')
+const pathTargetKey = ref('')
+const enabledTypes = ref<GraphRelationType[]>(['parent', 'prerequisite', 'related'])
 let chart: ChartLike | null = null
 let observer: ResizeObserver | null = null
 let resizeFrame: number | null = null
-const chartUnavailableMessage = '图表暂时无法显示，文字目录和节点详情仍可使用。'
+const chartUnavailableMessage = '关系图暂时无法显示，文字目录和节点详情仍可使用。'
 
-const bandColourTokens: Record<MasteryBand, { fill: string; border: string }> = {
-  weak: { fill: '--color-danger-subtle', border: '--color-danger' },
-  review: { fill: '--color-warning-subtle', border: '--color-warning' },
-  slight: { fill: '--color-info-subtle', border: '--color-info' },
-  stable: { fill: '--color-success-subtle', border: '--color-success' },
+const stateTokens = {
+  missing: { fill: '--color-bg-subtle', border: '--color-border-strong', symbol: 'emptyRect' },
+  weak: { fill: '--color-danger-subtle', border: '--color-danger', symbol: 'diamond' },
+  review: { fill: '--color-warning-subtle', border: '--color-warning', symbol: 'rect' },
+  slight: { fill: '--color-info-subtle', border: '--color-info', symbol: 'roundRect' },
+  stable: { fill: '--color-success-subtle', border: '--color-success', symbol: 'circle' },
+} as const
+
+const relationTokens: Record<GraphRelationType, {
+  colour: string
+  type: 'solid' | 'dashed' | 'dotted'
+}> = {
+  parent: { colour: '--color-info', type: 'solid' },
+  prerequisite: { colour: '--color-warning', type: 'dashed' },
+  related: { colour: '--color-text-secondary', type: 'dotted' },
 }
 
-const graphSummary = computed(() => summarizeGraph(props.nodes))
+const typeSet = computed(() => new Set(enabledTypes.value))
+const filteredEdges = computed(() => props.edges.filter(
+  (edge) => typeSet.value.has(edge.relation_type),
+))
+const path = computed(() => (
+  viewMode.value === 'path' && props.selectedKey && pathTargetKey.value
+    ? findGraphPath(props.edges, props.selectedKey, pathTargetKey.value, typeSet.value)
+    : null
+))
+const visibleNodeKeys = computed(() => {
+  if (viewMode.value === 'focus' && props.selectedKey) {
+    return connectedNodeKeys(props.edges, props.selectedKey, typeSet.value)
+  }
+  if (viewMode.value === 'path' && props.selectedKey && pathTargetKey.value) {
+    return new Set(path.value?.nodeKeys ?? [props.selectedKey, pathTargetKey.value])
+  }
+  return new Set(props.nodes.map((node) => node.stable_key))
+})
+const visibleNodes = computed(() => props.nodes.filter(
+  (node) => visibleNodeKeys.value.has(node.stable_key),
+))
+const visibleEdges = computed(() => filteredEdges.value.filter((edge) => (
+  visibleNodeKeys.value.has(edge.source_key) &&
+  visibleNodeKeys.value.has(edge.target_key) &&
+  (viewMode.value !== 'path' || path.value?.edgeIds.includes(edge.relation_key))
+)))
 const selectedLabel = computed(() => props.nodes.find(
-  (node) => node.knowledge_key === props.selectedKey,
-)?.knowledge_label ?? '未选择')
+  (node) => node.stable_key === props.selectedKey,
+)?.display_name ?? '未选择')
+const pathDescription = computed(() => {
+  if (viewMode.value !== 'path') return ''
+  if (!props.selectedKey) return '请先选择路径起点。'
+  if (!pathTargetKey.value) return '请选择路径终点。'
+  if (!path.value) return '按当前关系筛选未找到有向路径，可调整关系类型或终点。'
+  const names = new Map(props.nodes.map((node) => [node.stable_key, node.display_name]))
+  return path.value.nodeKeys.map((key) => names.get(key) ?? key).join(' → ')
+})
 
 function themeColour(token: string): string {
   const element = chartElement.value ?? document.documentElement
@@ -77,96 +123,85 @@ function prefersReducedMotion(): boolean {
 }
 
 function graphOption(): Record<string, unknown> {
-  const laneNodes = buildEvidenceLaneModel(props.nodes)
+  const displayNodes = buildGraphDisplayNodes(visibleNodes.value)
+  const names = new Map(props.nodes.map((node) => [node.stable_key, node.display_name]))
+  const pathEdgeIds = new Set(path.value?.edgeIds ?? [])
   return {
-    animation: !prefersReducedMotion(),
-    aria: { enabled: true, description: '按四档得分率排列的知识标签图，知识标签之间没有关系连线。' },
+    animation: !prefersReducedMotion() && visibleNodes.value.length <= 200,
+    aria: {
+      enabled: true,
+      description: `已确认知识关系图，共 ${visibleNodes.value.length} 个知识点、${visibleEdges.value.length} 条关系。关系方向和类型另有文字图例。`,
+    },
+    tooltip: {
+      trigger: 'item',
+      formatter: (params: { dataType?: string; data?: Record<string, unknown> }) => {
+        const data = params.data ?? {}
+        if (params.dataType === 'edge') {
+          const type = data.relationType as GraphRelationType
+          return `${names.get(String(data.source)) ?? data.source} ${relationVerb(type)} ${names.get(String(data.target)) ?? data.target}<br>${String(data.rationale ?? '')}`
+        }
+        return `${String(data.name ?? '')}<br>${String(data.stateLabel ?? '')} · ${String(data.masteryLabel ?? '')}`
+      },
+    },
     series: [{
       type: 'graph',
       layout: 'none',
       roam: true,
-      links: [],
-      categories: [
-        { name: '重点薄弱' },
-        { name: '需要讲评' },
-        { name: '轻微欠缺' },
-        { name: '稳定' },
-      ],
-      data: laneNodes.map((node) => ({
-        name: node.label,
-        knowledgeKey: node.knowledgeKey,
-        value: node.mastery,
-        x: node.x,
-        y: node.y,
-        symbolSize: node.size,
-        category: node.bandIndex,
-        itemStyle: {
-          color: themeColour(bandColourTokens[node.band].fill),
-          borderColor: themeColour(bandColourTokens[node.band].border),
-          borderWidth: 1,
-        },
-        label: {
-          show: props.nodes.length <= 120,
-          color: themeColour('--color-text-primary'),
-          formatter: `${node.label}\n${node.percentLabel}`,
-          fontSize: 12,
-          lineHeight: 16,
-        },
-      })),
+      edgeSymbol: ['none', 'arrow'],
+      edgeSymbolSize: 8,
+      data: displayNodes.map((node) => {
+        const tokens = stateTokens[node.state]
+        return {
+          id: node.stableKey,
+          name: node.label,
+          stableKey: node.stableKey,
+          stateLabel: node.stateLabel,
+          masteryLabel: node.masteryLabel,
+          value: node.mastery,
+          x: node.x,
+          y: node.y,
+          symbol: tokens.symbol,
+          symbolSize: node.size,
+          category: node.stateIndex,
+          itemStyle: {
+            color: themeColour(tokens.fill),
+            borderColor: themeColour(tokens.border),
+            borderWidth: props.selectedKey === node.stableKey ? 3 : 1,
+          },
+          label: {
+            show: visibleNodes.value.length <= 100,
+            color: themeColour('--color-text-primary'),
+            formatter: `${node.label}\n${node.masteryLabel} · ${node.stateLabel}`,
+            fontSize: 12,
+            lineHeight: 16,
+          },
+        }
+      }),
+      links: visibleEdges.value.map((edge) => {
+        const tokens = relationTokens[edge.relation_type]
+        return {
+          id: edge.relation_key,
+          source: edge.source_key,
+          target: edge.target_key,
+          relationType: edge.relation_type,
+          rationale: edge.rationale,
+          symbol: edge.relation_type === 'related' ? ['none', 'none'] : ['none', 'arrow'],
+          lineStyle: {
+            color: themeColour(tokens.colour),
+            type: tokens.type,
+            width: pathEdgeIds.has(edge.relation_key) ? 4 : 2,
+            opacity: viewMode.value === 'path' && pathEdgeIds.has(edge.relation_key) ? 1 : 0.72,
+            curveness: edge.relation_type === 'related' ? 0.12 : 0.04,
+          },
+        }
+      }),
       emphasis: {
-        focus: 'self',
-        label: { show: true },
+        focus: 'adjacency',
         itemStyle: {
           borderColor: themeColour('--color-accent'),
           borderWidth: 3,
         },
-      },
-    }],
-  }
-}
-
-function treeData(node: GroupingTreeNode): Record<string, unknown> {
-  return {
-    name: node.name,
-    ...(node.knowledgeKey ? { knowledgeKey: node.knowledgeKey } : {}),
-    children: node.children.map(treeData),
-  }
-}
-
-function treeOption(): Record<string, unknown> {
-  return {
-    animation: !prefersReducedMotion(),
-    aria: {
-      enabled: true,
-      description: '筛选范围、学生与知识标签的临时分组树，不表示知识点父子、先修或相关关系。',
-    },
-    series: [{
-      type: 'tree',
-      data: [treeData(buildGroupingTree(props.rows, props.scopeLabel))],
-      top: 24,
-      left: 24,
-      bottom: 24,
-      right: 120,
-      orient: 'LR',
-      roam: true,
-      symbol: 'circle',
-      symbolSize: 12,
-      expandAndCollapse: true,
-      lineStyle: { color: themeColour('--color-border-strong'), width: 1, type: 'dotted' },
-      itemStyle: {
-        color: themeColour('--color-bg-surface'),
-        borderColor: themeColour('--color-text-secondary'),
-        borderWidth: 1,
-      },
-      label: { color: themeColour('--color-text-primary'), fontSize: 12, position: 'left' },
-      leaves: { label: { position: 'right', color: themeColour('--color-text-primary') } },
-      emphasis: {
-        focus: 'descendant',
-        itemStyle: {
-          color: themeColour('--color-accent-subtle'),
-          borderColor: themeColour('--color-accent'),
-          borderWidth: 3,
-        },
+        lineStyle: { width: 4, opacity: 1 },
       },
     }],
   }
@@ -175,64 +210,41 @@ function treeOption(): Record<string, unknown> {
 function renderChart(): void {
   if (!chart) return
   try {
-    chart.setOption(props.mode === 'graph' ? graphOption() : treeOption(), true)
+    chart.setOption(graphOption(), true)
     chartError.value = ''
     updateChartSelection()
   } catch {
-    markChartFailed()
+    chartError.value = chartUnavailableMessage
   }
-}
-
-function markChartFailed(): void {
-  chartError.value = chartUnavailableMessage
 }
 
 function updateChartSelection(): void {
   if (!chart) return
   try {
     chart.dispatchAction({ type: 'downplay', seriesIndex: 0 })
-    const selected = props.nodes.find((node) => node.knowledge_key === props.selectedKey)
-    if (selected) {
-      chart.dispatchAction({ type: 'highlight', seriesIndex: 0, name: selected.knowledge_label })
+    if (props.selectedKey) {
+      chart.dispatchAction({ type: 'highlight', seriesIndex: 0, dataId: props.selectedKey })
     }
   } catch {
-    markChartFailed()
+    chartError.value = chartUnavailableMessage
   }
 }
 
 function handleChartClick(event: ChartClickEvent): void {
-  const knowledgeKey = event.data?.knowledgeKey
-  if (typeof knowledgeKey === 'string' && knowledgeKey.startsWith('knowledge_point:')) {
-    emit('selectNode', knowledgeKey)
-  }
+  const stableKey = event.data?.stableKey
+  if (typeof stableKey === 'string') emit('selectNode', stableKey)
 }
 
 function queueResize(): void {
   if (resizeFrame !== null) cancelAnimationFrame(resizeFrame)
   resizeFrame = requestAnimationFrame(() => {
     resizeFrame = null
-    resizeChart()
+    try {
+      chart?.resize()
+    } catch {
+      chartError.value = chartUnavailableMessage
+    }
   })
-}
-
-function resizeChart(): boolean {
-  try {
-    chart?.resize()
-    return true
-  } catch {
-    markChartFailed()
-    return false
-  }
-}
-
-function restoreView(): void {
-  try {
-    chart?.dispatchAction({ type: 'restore' })
-  } catch {
-    markChartFailed()
-    return
-  }
-  renderChart()
 }
 
 function initializeChart(): void {
@@ -244,65 +256,64 @@ function initializeChart(): void {
       : init(element, undefined, { renderer: 'canvas' }) as unknown as ChartLike
     chart.on('click', handleChartClick)
     renderChart()
-    if (observer === null) {
-      observer = new ResizeObserver(queueResize)
-      observer.observe(element)
-    }
+    observer = new ResizeObserver(queueResize)
+    observer.observe(element)
   } catch {
-    try {
-      observer?.disconnect()
-    } catch {
-      // Resize observation cleanup remains inside the chart boundary.
-    }
+    try { observer?.disconnect() } catch { /* Keep failures inside this component. */ }
     observer = null
-    try {
-      chart?.dispose()
-    } catch {
-      // A broken third-party chart must not escape this component boundary.
-    }
+    try { chart?.dispose() } catch { /* Keep failures inside this component. */ }
     chart = null
-    markChartFailed()
+    chartError.value = chartUnavailableMessage
   }
 }
 
 function retryChart(): void {
-  if (chart) {
-    if (resizeChart()) renderChart()
+  if (!chart) {
+    initializeChart()
+    return
   }
-  else initializeChart()
+  try {
+    chart.resize()
+    renderChart()
+  } catch {
+    chartError.value = chartUnavailableMessage
+  }
+}
+
+function restoreView(): void {
+  try {
+    chart?.dispatchAction({ type: 'restore' })
+    renderChart()
+  } catch {
+    chartError.value = chartUnavailableMessage
+  }
+}
+
+function toggleRelation(type: GraphRelationType): void {
+  enabledTypes.value = enabledTypes.value.includes(type)
+    ? enabledTypes.value.filter((value) => value !== type)
+    : [...enabledTypes.value, type]
 }
 
 watch(
-  () => [props.nodes, props.rows, props.mode, props.scopeLabel, props.coverage],
+  () => [props.nodes, props.edges, props.scopeLabel, props.coverage],
   renderChart,
   { deep: true },
 )
-
-watch(() => props.selectedKey, updateChartSelection)
-
-onMounted(() => {
-  initializeChart()
+watch([viewMode, pathTargetKey, enabledTypes], renderChart, { deep: true })
+watch(() => props.selectedKey, () => {
+  if (viewMode.value === 'path' && pathTargetKey.value === props.selectedKey) pathTargetKey.value = ''
+  renderChart()
 })
 
+onMounted(initializeChart)
 onBeforeUnmount(() => {
-  try {
-    observer?.disconnect()
-  } catch {
-    // Resize cleanup must not prevent chart disposal.
-  }
+  try { observer?.disconnect() } catch { /* Keep failures inside this component. */ }
   observer = null
   if (resizeFrame !== null) cancelAnimationFrame(resizeFrame)
   resizeFrame = null
-  try {
-    chart?.off('click', handleChartClick)
-  } catch {
-    // Listener cleanup must not prevent chart disposal.
-  }
-  try {
-    chart?.dispose()
-  } catch {
-    // Component teardown remains isolated from third-party chart failures.
-  }
+  try { chart?.off('click', handleChartClick) } catch { /* Keep cleanup local. */ }
+  try { chart?.dispose() } catch { /* Keep cleanup local. */ }
   chart = null
 })
 </script>
@@ -311,59 +322,62 @@ onBeforeUnmount(() => {
   <section class="knowledge-graph-canvas-panel" aria-labelledby="knowledge-graph-canvas-title">
     <header class="knowledge-graph-canvas-toolbar">
       <div>
-        <h2 id="knowledge-graph-canvas-title">知识标签分布</h2>
+        <h2 id="knowledge-graph-canvas-title">已确认知识关系</h2>
         <p>{{ scopeLabel }}</p>
       </div>
-      <div class="knowledge-graph-canvas-actions" aria-label="图谱显示方式">
-        <button
-          type="button"
-          :class="{ 'is-active': mode === 'graph' }"
-          :aria-pressed="mode === 'graph'"
-          @click="emit('changeMode', 'graph')"
-        >
-          掌握度分区
-        </button>
-        <button
-          type="button"
-          :class="{ 'is-active': mode === 'tree' }"
-          :aria-pressed="mode === 'tree'"
-          @click="emit('changeMode', 'tree')"
-        >
-          学生分组树
-        </button>
+      <div class="knowledge-graph-canvas-actions" aria-label="图谱查看方式">
+        <button type="button" :class="{ 'is-active': viewMode === 'overview' }" :aria-pressed="viewMode === 'overview'" @click="viewMode = 'overview'">全部关系</button>
+        <button type="button" :class="{ 'is-active': viewMode === 'focus' }" :aria-pressed="viewMode === 'focus'" :disabled="!selectedKey" @click="viewMode = 'focus'">聚焦当前节点</button>
+        <button type="button" :class="{ 'is-active': viewMode === 'path' }" :aria-pressed="viewMode === 'path'" :disabled="!selectedKey" @click="viewMode = 'path'">查看路径</button>
         <button type="button" @click="restoreView">恢复视图</button>
       </div>
     </header>
 
-    <ul v-if="mode === 'graph'" class="knowledge-graph-lane-legend" aria-label="掌握度分档说明">
-      <li data-band="weak"><strong>重点薄弱</strong><span>低于 60%</span></li>
-      <li data-band="review"><strong>需要讲评</strong><span>60%–74.9%</span></li>
-      <li data-band="slight"><strong>轻微欠缺</strong><span>75%–89.9%</span></li>
-      <li data-band="stable"><strong>稳定</strong><span>90% 及以上</span></li>
-    </ul>
-    <p v-else class="knowledge-graph-grouping-note" role="note">
-      虚线仅表示筛选范围、学生与知识标签的分组归属；不是知识点父子、先修或相关关系。
-    </p>
+    <div class="knowledge-graph-controls">
+      <fieldset>
+        <legend>显示关系</legend>
+        <label v-for="type in (['parent', 'prerequisite', 'related'] as GraphRelationType[])" :key="type" :data-relation="type">
+          <input type="checkbox" :checked="enabledTypes.includes(type)" @change="toggleRelation(type)">
+          <span aria-hidden="true" />
+          <strong>{{ relationTypeLabel(type) }}</strong>
+        </label>
+      </fieldset>
+      <label v-if="viewMode === 'path'" class="knowledge-graph-path-target">
+        <span>路径终点</span>
+        <select v-model="pathTargetKey">
+          <option value="">请选择知识点</option>
+          <option v-for="node in nodes.filter((item) => item.stable_key !== selectedKey)" :key="node.stable_key" :value="node.stable_key">
+            {{ node.display_name }}
+          </option>
+        </select>
+      </label>
+    </div>
 
+    <ul class="knowledge-graph-state-legend" aria-label="掌握证据状态">
+      <li data-state="missing"><span aria-hidden="true">□</span><strong>当前无证据</strong></li>
+      <li data-state="weak"><span aria-hidden="true">◆</span><strong>重点薄弱</strong></li>
+      <li data-state="review"><span aria-hidden="true">■</span><strong>需要讲评</strong></li>
+      <li data-state="slight"><span aria-hidden="true">▰</span><strong>轻微欠缺</strong></li>
+      <li data-state="stable"><span aria-hidden="true">●</span><strong>稳定</strong></li>
+    </ul>
+
+    <p v-if="viewMode === 'path'" class="knowledge-graph-path-copy" role="status">{{ pathDescription }}</p>
     <p class="knowledge-graph-state-copy" role="status">
-      共 {{ graphSummary.total }} 个知识标签；重点薄弱 {{ graphSummary.weak }} 个，
-      需要讲评 {{ graphSummary.review }} 个，轻微欠缺 {{ graphSummary.slight }} 个，
-      稳定 {{ graphSummary.stable }} 个；覆盖 {{ coverage.covered_items }} / {{ coverage.total_items }} 份作答；
-      当前选择：{{ selectedLabel }}。
+      当前显示 {{ visibleNodes.length }} / {{ nodes.length }} 个知识点、
+      {{ visibleEdges.length }} / {{ edges.length }} 条已确认关系；覆盖
+      {{ coverage.covered_items }} / {{ coverage.total_items }} 份作答；当前选择：{{ selectedLabel }}。
     </p>
 
     <div v-if="chartError" class="knowledge-graph-inline-error" role="alert">
       <p>{{ chartError }}</p>
-      <button type="button" data-testid="retry-knowledge-chart" @click="retryChart">重新显示图表</button>
+      <button type="button" data-testid="retry-knowledge-chart" @click="retryChart">重新显示关系图</button>
     </div>
-
     <div
       ref="chartElement"
       class="knowledge-graph-canvas"
       role="img"
-      :aria-label="mode === 'graph'
-        ? '知识标签掌握度分区图。下方文字目录提供全部节点信息。'
-        : '学生与知识标签临时分组树。下方文字目录提供全部节点信息。'"
+      tabindex="0"
+      aria-label="已确认知识关系图。关系类型、方向和掌握状态可在上方文字图例中读取；下方文字目录可使用键盘浏览全部节点。"
     />
   </section>
 </template>

@@ -15,6 +15,7 @@ from question_bank.services.question_write_service import (
     PaperStateConflict,
     QuestionBankWriteService,
 )
+from tests.current_knowledge_support import install_current_knowledge
 
 
 def _seed_paper(
@@ -23,6 +24,7 @@ def _seed_paper(
     data_root = tmp_path / "data"
     db_path = data_root / "databases" / "question_bank.db"
     initialize_database(db_path)
+    install_current_knowledge(db_path)
     source_path = data_root / "question_bank" / "raw_papers" / "source.docx"
     source_path.parent.mkdir(parents=True, exist_ok=True)
     source_path.write_bytes(b"source-stays")

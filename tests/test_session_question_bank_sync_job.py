@@ -25,6 +25,7 @@ from backend.jobs.store import (
 )
 from db_manager import DBManager
 from question_bank.database.schema import connect, initialize_database
+from tests.current_knowledge_support import install_current_knowledge
 from question_bank.services.question_write_service import QuestionBankWriteService
 from question_bank.services.question_service import QuestionService
 from question_bank.services.source_question_link_service import SourceQuestionLinkService
@@ -403,6 +404,7 @@ def test_sync_runs_import_then_governed_tagging_and_links_without_touching_confi
     )
     question_bank_db = tmp_path / "data" / "databases" / "question_bank.db"
     initialize_database(question_bank_db)
+    install_current_knowledge(question_bank_db)
     store = JobStore(db.db_path)
     job = store.create_job(
         "question_bank_sync",
@@ -1167,6 +1169,7 @@ def _run_deferred_adoption(
     )
     question_bank_db = tmp_path / "data" / "databases" / "question_bank.db"
     initialize_database(question_bank_db)
+    install_current_knowledge(question_bank_db)
     source_question = question_analysis_input_from_config_source(
         {
             "question_id": "Q1",

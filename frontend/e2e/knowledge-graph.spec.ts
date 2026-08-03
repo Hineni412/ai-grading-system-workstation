@@ -22,7 +22,7 @@ const viewports = [
 ]
 
 interface RequestLog { method: string; pathname: string }
-interface GraphApiState { rows: 'ready' | 'empty' | 'error' }
+interface GraphApiState { query: 'ready' | 'empty' | 'error' }
 
 const PERFORMANCE_LIMITS_MS = {
   firstRender: 15_000,
@@ -65,64 +65,62 @@ function graphContext(body: {
   }
 }
 
-function graphRows(request: Request, nodeCount: number) {
+function graphResponse(request: Request, nodeCount: number) {
   const body = request.postDataJSON() as Parameters<typeof graphContext>[0]
   const context = graphContext(body)
   const nodes = Array.from({ length: nodeCount }, (_, index) => {
     const mastery = [0.48, 0.66, 0.81, 0.94][index % 4]!
     return {
-      knowledge_key: `knowledge_point:匿名知识点-${index}`,
-      knowledge_label: `匿名知识点 ${index}${index % 17 === 0 ? '（较长名称用于验证标签布局）' : ''}`,
-      student_count: 2,
-      item_count: index + 1,
-      deduction_count: index % 9,
-      average_mastery: mastery,
-      tag_context: index === 0 ? { prerequisite: ['题目支持标签甲'] } : {},
-      error_counts: { primary: index === 0 ? { 步骤不完整: 2 } : {}, secondary: {} },
+      stable_key: `kp_anonymous_${index}`,
+      display_name: `匿名知识点 ${index}${index % 17 === 0 ? '（较长名称用于验证标签布局）' : ''}`,
+      definition: `匿名知识点 ${index} 的定义`,
+      include_scope: '当前课程范围',
+      exclude_scope: '相邻课程范围',
+      curriculum_anchors: ['匿名课程标准'],
+      observable_evidence: '能够在作答中展示对应步骤',
+      rationale: '匿名课程依据',
+      evidence_source_ids: ['anonymous-standard'],
+      mastery: { status: 'available', value: mastery, evidence_count: index + 1, parameter_version: 'd'.repeat(64), reason: null },
+      evidence: {
+        student_count: 2,
+        item_count: index + 1,
+        deduction_count: index % 9,
+        tag_context: index === 0 ? { prerequisite: ['题目支持标签甲'] } : {},
+        error_counts: { primary: index === 0 ? { 步骤不完整: 2 } : {}, secondary: {} },
+      },
+      missing_reasons: [],
     }
   })
-  const rows = nodes.slice(0, 30).flatMap((node, index) => context.scope.student_ids.map((rawStudentId) => {
-    const studentId = Number(rawStudentId)
-    const student = students.find((candidate) => candidate.id === studentId)
-    return {
-    student_id: studentId,
-    student_code: student?.student_code ?? `S0${studentId}`,
-    student_name: student?.name ?? `匿名学生 ${studentId}`,
-    knowledge_key: node.knowledge_key,
-    knowledge_label: node.knowledge_label,
-    weighted_score_rate: Math.round(node.average_mastery * 1000) / 10,
-    deduction_count: node.deduction_count,
-    item_count: node.item_count,
-    sample_reasons: index === 0 ? '步骤不完整' : '',
-    source_question_refs: [],
-    tag_context: {},
-    error_counts: node.error_counts,
-    }
-  }))
   return {
+    response_schema_version: 'knowledge-graph-current',
+    response_version: 'a'.repeat(64),
     ...context,
-    rows,
+    current_standard: { release_id: 'current', content_hash: 'c'.repeat(64), taxonomy_revision: 1 },
     nodes,
     edges: [],
     coverage: { covered_items: nodeCount, total_items: nodeCount + 2, missing_items: { QX: '未标注' } },
     warnings: ['匿名数据中有 2 份作答未关联知识标签'],
-    diagnosis_identity: 'question_tag',
+    missing: [],
+    counts: { node_count: nodeCount, edge_count: 0, evidence_row_count: nodeCount, missing_count: 0 },
   }
 }
 
 function graphEvidence(request: Request) {
   const body = request.postDataJSON() as Parameters<typeof graphContext>[0] & {
-    knowledge_key: string
+    stable_key: string
     page: number
   }
   const context = graphContext(body)
   const start = body.page === 1 ? 1 : 21
   const count = body.page === 1 ? 20 : 1
-  const label = body.knowledge_key.replace('knowledge_point:', '')
+  const label = body.stable_key.replace('kp_anonymous_', '匿名知识点 ')
   return {
+    response_schema_version: 'knowledge-graph-evidence-current',
+    response_version: 'b'.repeat(64),
     ...context,
-    knowledge_key: body.knowledge_key,
-    knowledge_label: label,
+    current_standard: { release_id: 'current', content_hash: 'c'.repeat(64), taxonomy_revision: 1 },
+    stable_key: body.stable_key,
+    display_name: label,
     items: Array.from({ length: count }, (_, index) => {
       const itemOrdinal = start + index
       const rawStudentId = context.scope.student_ids[index % context.scope.student_ids.length]!
@@ -133,7 +131,8 @@ function graphEvidence(request: Request) {
         student_code: student?.student_code ?? `S${String(studentId).padStart(3, '0')}`,
         student_name: itemOrdinal === 21 ? '后续页匿名学生' : student?.name ?? `证据学生 ${studentId}`,
         class_id: context.scope.class_id ?? '七年级一班',
-        knowledge_key: body.knowledge_key,
+        knowledge_key: body.stable_key,
+        stable_key: body.stable_key,
         knowledge_label: label,
         session_id: context.exam_scope.session_ids[0]!,
         session_name: context.exam_scope.sessions[0]!.session_name,
@@ -152,8 +151,6 @@ function graphEvidence(request: Request) {
     page_size: 20,
     total_pages: 2,
     coverage: { covered_items: 20, total_items: 22, missing_items: { QX: '未标注' } },
-    warnings: [],
-    diagnosis_identity: 'question_tag',
   }
 }
 
@@ -190,7 +187,7 @@ function configEditor(sessionId: number) {
 async function installGraphApi(
   page: Page,
   nodeCount: number,
-  state: GraphApiState = { rows: 'ready' },
+  state: GraphApiState = { query: 'ready' },
 ): Promise<RequestLog[]> {
   const requests: RequestLog[] = []
   page.on('request', (request) => {
@@ -210,11 +207,11 @@ async function installGraphApi(
     if (request.method() === 'GET' && editorMatch) {
       return fulfillJson(route, configEditor(Number(editorMatch[1])))
     }
-    if (pathname === '/api/graph/rows') {
-      if (state.rows === 'error') {
+    if (pathname === '/api/graph/query') {
+      if (state.query === 'error') {
         return fulfillJson(route, { invalid: true })
       }
-      return fulfillJson(route, graphRows(request, state.rows === 'empty' ? 0 : nodeCount))
+      return fulfillJson(route, graphResponse(request, state.query === 'empty' ? 0 : nodeCount))
     }
     if (pathname === '/api/graph/evidence') return fulfillJson(route, graphEvidence(request))
     await route.fulfill({ status: 418, body: `unexpected anonymous request: ${request.method()} ${pathname}` })
@@ -283,7 +280,7 @@ async function expectNoHorizontalOverflow(page: Page): Promise<void> {
 function expectReadOnly(requests: RequestLog[]): void {
   expect(requests.length).toBeGreaterThan(0)
   for (const request of requests) {
-    const allowedPost = request.method === 'POST' && ['/api/graph/rows', '/api/graph/evidence'].includes(request.pathname)
+    const allowedPost = request.method === 'POST' && ['/api/graph/query', '/api/graph/evidence'].includes(request.pathname)
     expect(request.method === 'GET' || allowedPost).toBe(true)
   }
 }
@@ -305,7 +302,7 @@ for (const viewport of viewports) {
     const canvas = page.locator('.knowledge-graph-canvas canvas').first()
     await canvas.scrollIntoViewIfNeeded()
     expect(await nonBackgroundPixelCount(page)).toBeGreaterThan(100)
-    await expect(page.getByRole('heading', { name: '知识标签文字目录' })).toBeAttached()
+    await expect(page.getByRole('heading', { name: '知识点文字目录' })).toBeAttached()
     await expect(page.getByRole('heading', { name: '知识点详情' })).toBeAttached()
     await expectNoHorizontalOverflow(page)
     await captureViewportEvidence(page, testInfo, viewport.width)
@@ -356,17 +353,17 @@ test('supports zoom, grouping explanation, keyboard selection and paged evidence
 
 test('keeps no-tag and partial-failure states distinct and recoverable', async ({ page }) => {
   const errors = trackBrowserErrors(page)
-  const state: GraphApiState = { rows: 'empty' }
+  const state: GraphApiState = { query: 'empty' }
   const requests = await installGraphApi(page, 120, state)
   await page.addInitScript(([key]) => localStorage.setItem(key, '7'), [STORAGE_KEY])
   await page.goto('/knowledge-graph?session=7&class=七年级一班')
 
   await expect(page.getByText('当前范围没有可显示的知识标签')).toBeVisible()
-  state.rows = 'ready'
+  state.query = 'ready'
   await page.getByRole('button', { name: '应用范围' }).click()
   await expect(page.locator('.knowledge-graph-canvas canvas').first()).toBeVisible()
 
-  state.rows = 'error'
+  state.query = 'error'
   await page.getByRole('button', { name: '应用范围' }).click()
   await expect(page.getByText(/当前显示上次成功读取的知识图谱/)).toBeVisible()
   await expect(page.locator('.knowledge-graph-canvas canvas').first()).toBeVisible()

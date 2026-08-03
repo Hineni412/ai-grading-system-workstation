@@ -54,7 +54,19 @@ def _persist(
             "question_ref": str(question_id),
         },
     )
-    return result["proposals"][0]
+    proposal = result["proposals"][0]
+    generation_id = f"test:{token}"
+    governance.allocate_observation_sequences(
+        generation_id=generation_id,
+        question_ids=[str(question_id)],
+    )
+    governance.record_successful_observation(
+        question_id=str(question_id),
+        generation_id=generation_id,
+        proposal_ids=[proposal["id"]],
+        taxonomy_revision=int(result["taxonomy_revision"]),
+    )
+    return proposal
 
 
 def _question_loader(question_ids):
@@ -153,11 +165,15 @@ def test_legacy_composite_curriculum_gets_a_local_multi_target_suggestion(
     assert gateway.calls == []
     assert completed["status"] == "completed"
     assert completed["items"][0]["suggestion"] == {
-        "decision": "map_many",
+        "relation_kind": "related",
         "target_term_ids": [first["id"], second["id"]],
         "reason": "名称可安全拆分并精确匹配到多个现有教材章节。",
         "confidence": 1.0,
         "source": "local_exact",
+        "legacy_format": False,
+        "evidence_question_ids": [41],
+        "taxonomy_revision": 1,
+        "graph_release_id": completed["graph_release_id"],
     }
     assert governance.get_proposal(proposal["id"])["status"] == "pending"
 
@@ -427,12 +443,12 @@ def test_current_question_context_is_derived_without_rewriting_historical_refs(
     )
     item = page["items"][0]
 
-    assert item["question_refs"] == [111, 112]
+    assert item["question_refs"] == [112]
     assert item["active_question_refs"] == [112]
-    assert item["unavailable_question_ref_count"] == 1
+    assert item["unavailable_question_ref_count"] == 0
     assert item["actionable"] is True
     assert page["counts"]["actionable"] == 1
-    assert page["counts"]["historical_unavailable"] == 0
+    assert "historical_unavailable" not in page["counts"]
 
     run = service.create_run(
         proposal_ids=[proposal["id"]],
@@ -461,7 +477,7 @@ def test_unavailable_question_context_costs_no_request_and_can_retry_after_resto
         token="13" * 16,
         question_id=121,
     )
-    active_question_ids: set[int] = set()
+    active_question_ids: set[int] = {121}
 
     def load_current(question_ids):
         return _question_loader(
@@ -482,6 +498,7 @@ def test_unavailable_question_context_costs_no_request_and_can_retry_after_resto
         expected_revision=governance.list_proposals(status="pending")["revision"],
         request_token="14" * 16,
     )
+    active_question_ids.clear()
     first_gateway = RecordingGateway()
 
     blocked = service.process_run(run["run_id"], first_gateway, batch_size=1)
@@ -595,11 +612,15 @@ def test_interrupted_run_becomes_retryable_without_losing_finished_items(
     stored["status"] = "running"
     stored["items"][0]["status"] = "suggested"
     stored["items"][0]["suggestion"] = {
-        "decision": "uncertain",
+        "relation_kind": "uncertain",
         "target_term_ids": [],
         "reason": "证据不足",
         "confidence": 0.4,
         "source": "ai",
+        "legacy_format": False,
+        "evidence_question_ids": [91],
+        "taxonomy_revision": run["taxonomy_revision"],
+        "graph_release_id": run["graph_release_id"],
     }
     stored["items"][1]["status"] = "running"
     service.state_path.write_text(

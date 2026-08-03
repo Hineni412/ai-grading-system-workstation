@@ -1128,6 +1128,10 @@ class ConfigSourceService:
             # response form, and answer structure are determined by the combined
             # model analysis rather than being frozen by this review screen.
             block["question_type_confirmed"] = False
+            if decision is not None and decision.answer_confirmed:
+                if decision.answer_override is not None:
+                    block["answer_text"] = decision.answer_override
+                block["answer_confirmed"] = True
             confirmed.append(block)
             included_ids.add(question_id)
         return PreparedGenerationInput(

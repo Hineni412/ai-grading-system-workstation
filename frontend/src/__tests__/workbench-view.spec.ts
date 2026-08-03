@@ -10,7 +10,7 @@ import type { QuestionAnalysisResponse, StudentAnalysisResponse } from '../api/a
 import {
   fetchGraphEvidence,
   type GraphEvidenceResponse,
-  type GraphRowsResponse,
+  type GraphResponse,
 } from '../api/graph'
 import type { WorkbenchOverview } from '../api/workbench'
 import { createAppRouter } from '../router'
@@ -137,42 +137,59 @@ const students: StudentAnalysisResponse = {
   total_pages: 1,
 }
 
-const graph: GraphRowsResponse = {
+const graph: GraphResponse = {
+  response_schema_version: 'knowledge-graph-current',
+  response_version: 'a'.repeat(64),
   scope: { mode: 'class', student_ids: [], class_id: '七年级一班' },
   exam_scope: {
     mode: 'current',
     session_ids: [7],
     sessions: [{ session_id: 7, session_name: '七年级数学期末质量监测' }],
   },
-  rows: [],
+  current_standard: { release_id: 'current', content_hash: 'c'.repeat(64), taxonomy_revision: 1 },
   nodes: [{
-    knowledge_key: 'knowledge_point:fraction',
-    knowledge_label: '分数运算',
-    student_count: 12,
-    item_count: 18,
-    deduction_count: 5,
-    average_mastery: 0.78,
-    tag_context: { 章节: ['数与代数'] },
-    error_counts: {},
+    stable_key: 'kp_fraction',
+    display_name: '分数运算',
+    definition: '分数的四则运算。',
+    include_scope: '分数运算',
+    exclude_scope: '小数运算',
+    curriculum_anchors: ['课程标准'],
+    observable_evidence: '能正确完成分数运算',
+    rationale: '课程内容',
+    evidence_source_ids: ['standard'],
+    mastery: { status: 'available', value: 0.78, evidence_count: 18, parameter_version: 'd'.repeat(64), reason: null },
+    evidence: {
+      student_count: 12,
+      item_count: 18,
+      deduction_count: 5,
+      tag_context: { 章节: ['数与代数'] },
+      error_counts: {},
+    },
+    missing_reasons: [],
   }],
   edges: [],
   coverage: { covered_items: 18, total_items: 20, missing_items: {} },
   warnings: ['2 份作答未关联知识标签'],
-  diagnosis_identity: 'question_tag',
+  missing: [],
+  counts: { node_count: 1, edge_count: 0, evidence_row_count: 18, missing_count: 0 },
 }
 
 function graphEvidenceResponse(): GraphEvidenceResponse {
   return {
+    response_schema_version: 'knowledge-graph-evidence-current',
+    response_version: 'b'.repeat(64),
     scope: graph.scope,
     exam_scope: graph.exam_scope,
-    knowledge_key: 'knowledge_point:fraction',
-    knowledge_label: '分数运算',
+    current_standard: graph.current_standard,
+    stable_key: 'kp_fraction',
+    display_name: '分数运算',
     items: [{
       student_id: 17,
       student_code: 'S017',
       student_name: '学生甲',
       class_id: '七年级一班',
-      knowledge_key: 'knowledge_point:fraction',
+      knowledge_key: 'kp_fraction',
+      stable_key: 'kp_fraction',
       knowledge_label: '分数运算',
       session_id: 7,
       session_name: '七年级数学期末质量监测',
@@ -190,8 +207,6 @@ function graphEvidenceResponse(): GraphEvidenceResponse {
     page_size: 20,
     total_pages: 1,
     coverage: graph.coverage,
-    warnings: graph.warnings,
-    diagnosis_identity: 'question_tag',
   }
 }
 
@@ -204,7 +219,7 @@ interface MountOptions {
   overviewValue?: WorkbenchOverview | null
   questionValue?: QuestionAnalysisResponse
   studentValue?: StudentAnalysisResponse
-  graphValue?: GraphRowsResponse | null
+  graphValue?: GraphResponse | null
   questionUpdatedAt?: string | null
   graphUpdatedAt?: string | null
 }
@@ -297,11 +312,11 @@ async function mountView({
     })
   })
   const loadGraph = vi.spyOn(analysisStore, 'loadGraph').mockImplementation(async (id, className) => {
+    analysisStore.graph = graphValue === null
+      ? null
+      : { ...graphValue, scope: { ...graphValue.scope, class_id: className } }
     analysisStore.$patch({
       sessionId: id,
-      graph: graphValue === null
-        ? null
-        : { ...graphValue, scope: { ...graphValue.scope, class_id: className } },
       graphState,
       graphError: graphState === 'error' || graphState === 'stale-error'
         ? '标签覆盖暂时无法更新'
@@ -431,7 +446,13 @@ describe('workbench view', () => {
     clickButton(mounted.host, '加载更多证据')
     await settleUi()
     expect(fetchGraphEvidence).toHaveBeenLastCalledWith(
-      7, '七年级一班', 'knowledge_point:fraction', expect.any(AbortSignal), 2,
+      {
+        scope: { mode: 'class', class_id: '七年级一班' },
+        exam_scope: { mode: 'current', session_ids: [7] },
+      },
+      'kp_fraction',
+      expect.any(AbortSignal),
+      2,
     )
     const evidenceRows = mounted.host.querySelectorAll('.tag-evidence-list > li')
     expect(evidenceRows).toHaveLength(21)
@@ -585,9 +606,11 @@ describe('workbench view', () => {
     clickButton(host, '分数运算')
     await settleUi()
     expect(fetchGraphEvidence).toHaveBeenCalledWith(
-      7,
-      '七年级一班',
-      'knowledge_point:fraction',
+      {
+        scope: { mode: 'class', class_id: '七年级一班' },
+        exam_scope: { mode: 'current', session_ids: [7] },
+      },
+      'kp_fraction',
       expect.any(AbortSignal),
     )
     expect(host.textContent).toContain('计算过程漏写单位')
@@ -694,7 +717,7 @@ describe('workbench view', () => {
   })
 
   it('preserves the meaning of an empty successful tag snapshot when its refresh fails', async () => {
-    const emptyGraph: GraphRowsResponse = {
+    const emptyGraph: GraphResponse = {
       ...graph,
       nodes: [],
       coverage: { covered_items: 0, total_items: 0, missing_items: {} },
@@ -832,7 +855,7 @@ describe('workbench view', () => {
     'shows a retryable error instead of leaving %s-mismatched tag evidence loading',
     async (mismatch) => {
       const response = graphEvidenceResponse()
-      if (mismatch === 'knowledge') response.knowledge_key = 'knowledge_point:other'
+      if (mismatch === 'knowledge') response.stable_key = 'kp_other'
       if (mismatch === 'class') response.scope = { ...response.scope, class_id: 'other-class' }
       if (mismatch === 'session') {
         response.exam_scope = {

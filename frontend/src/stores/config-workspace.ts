@@ -15,6 +15,7 @@ import {
   type ConfigEditorSaveRequest,
   type ConfigEditorSaveResponse,
   type ConfigSource,
+  type ConfigQuestionGenerationState,
   type ConfigAmbiguousAssetDecision,
   type QuestionDecision,
 } from '../api/config-workspace'
@@ -229,6 +230,7 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
   const decisions = ref<QuestionDecision[]>([])
   const assetDecisions = ref<ConfigAmbiguousAssetDecision[]>([])
   const source = ref<ConfigSource | null>(null)
+  const questionStates = ref<ConfigQuestionGenerationState[]>([])
   const editor = ref<ConfigEditorResponse | null>(null)
   const editorEdits = ref<ConfigEditorEdit[]>([])
   const editorCommands = ref<ConfigEditorCommand[]>([])
@@ -330,6 +332,7 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
     generationContext += 1
     editorContextGeneration += 1
     source.value = null
+    questionStates.value = []
     generationSummary.value = null
     editor.value = null
     editorEdits.value = []
@@ -563,6 +566,7 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
       throw new Error('Invalid generation summary')
     }
     jobId.value = id
+    questionStates.value = []
     pendingGenerationMode.value = null
     pendingJobRequestToken.value = null
     pendingJobRequestKind.value = null
@@ -575,9 +579,14 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
   function detachJob(id?: number): void {
     if (id !== undefined && jobId.value !== id) return
     jobId.value = null
+    questionStates.value = []
     generationSummary.value = null
     phase.value = derivePhase()
     persistSafeIndex()
+  }
+
+  function setQuestionStates(value: ConfigQuestionGenerationState[]): void {
+    questionStates.value = value.map((item) => ({ ...item }))
   }
 
   function markJobSubmissionPending(
@@ -951,7 +960,7 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
 
   return {
     sessionId, phase, sourceId, sourceRevision, jobId, decisions, assetDecisions,
-    source, editor, editorEdits, editorCommands, serverIssues, generationSummary,
+    source, questionStates, editor, editorEdits, editorCommands, serverIssues, generationSummary,
     pendingGenerationMode, pendingJobRequestToken, pendingJobRequestKind,
     pendingUploadRequestToken, sourceLoading, sourceError,
     saveStatus, mappingStatus, hasDirtyEditor, hasPendingSubmission,
@@ -960,6 +969,7 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
     selectSession, selectSource, discardEditorDraft, setSource, acceptUploadedSource,
     updateDecisions, updateAssetDecisions, loadSource,
     setEditor, captureGenerationContext, attachJob, detachJob, sourceRequest,
+    setQuestionStates,
     markJobSubmissionPending, clearGenerationSubmissionPending,
     markUploadSubmissionPending, clearUploadSubmissionPending,
     reloadEditorForGeneration, loadSelectedSessionWorkspace,

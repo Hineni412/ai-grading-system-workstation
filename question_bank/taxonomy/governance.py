@@ -571,6 +571,151 @@ def _validate_operation(raw: object, *, index: int) -> dict[str, Any]:
     }
 
 
+def _empty_observation_lifecycle() -> dict[str, Any]:
+    return {
+        "next_source_sequence": 1,
+        "evidence_revision": 0,
+        "allocations": {},
+        "observations": [],
+    }
+
+
+def _validate_observation_lifecycle(raw: object) -> dict[str, Any]:
+    if raw is None:
+        return _empty_observation_lifecycle()
+    if not isinstance(raw, Mapping):
+        raise TaxonomyValidationError(
+            "State observation_lifecycle must be an object"
+        )
+    _require_exact_keys(
+        raw,
+        required=frozenset(
+            {
+                "next_source_sequence",
+                "evidence_revision",
+                "allocations",
+                "observations",
+            }
+        ),
+        label="state.observation_lifecycle",
+    )
+    next_sequence = raw.get("next_source_sequence")
+    evidence_revision = raw.get("evidence_revision")
+    allocations = raw.get("allocations")
+    observations = raw.get("observations")
+    if type(next_sequence) is not int or next_sequence < 1:
+        raise TaxonomyValidationError(
+            "State next_source_sequence must be a positive integer"
+        )
+    if type(evidence_revision) is not int or evidence_revision < 0:
+        raise TaxonomyValidationError(
+            "State evidence_revision must be a non-negative integer"
+        )
+    if not isinstance(allocations, Mapping) or not isinstance(observations, list):
+        raise TaxonomyValidationError("State observation lifecycle is invalid")
+    clean_allocations: dict[str, dict[str, int]] = {}
+    seen_sequences: set[int] = set()
+    for generation_id, by_question in allocations.items():
+        generation = _required_string(
+            generation_id, label="state.observation_lifecycle.generation_id"
+        )
+        if not isinstance(by_question, Mapping):
+            raise TaxonomyValidationError("Observation allocation must be an object")
+        clean_allocations[generation] = {}
+        for question_id, sequence in by_question.items():
+            question = _required_string(
+                question_id, label="state.observation_lifecycle.question_id"
+            )
+            if type(sequence) is not int or sequence < 1:
+                raise TaxonomyValidationError(
+                    "Observation source_sequence must be a positive integer"
+                )
+            if sequence in seen_sequences:
+                raise TaxonomyValidationError(
+                    "Observation source_sequence must be unique"
+                )
+            seen_sequences.add(sequence)
+            clean_allocations[generation][question] = sequence
+    clean_observations: list[dict[str, Any]] = []
+    current_questions: set[str] = set()
+    seen_observations: set[tuple[str, str]] = set()
+    for index, item in enumerate(observations):
+        label = f"state.observation_lifecycle.observations[{index}]"
+        if not isinstance(item, Mapping):
+            raise TaxonomyValidationError(f"{label} must be an object")
+        _require_exact_keys(
+            item,
+            required=frozenset(
+                {
+                    "question_id",
+                    "generation_id",
+                    "source_sequence",
+                    "proposal_ids",
+                    "completed_at",
+                    "taxonomy_revision",
+                    "graph_release_id",
+                    "is_current",
+                    "superseded_by_generation_id",
+                }
+            ),
+            label=label,
+        )
+        question_id = _required_string(
+            item.get("question_id"), label=f"{label}.question_id"
+        )
+        generation_id = _required_string(
+            item.get("generation_id"), label=f"{label}.generation_id"
+        )
+        key = (question_id, generation_id)
+        if key in seen_observations:
+            raise TaxonomyValidationError("Observation identity must be unique")
+        seen_observations.add(key)
+        sequence = item.get("source_sequence")
+        taxonomy_revision = item.get("taxonomy_revision")
+        if type(sequence) is not int or sequence < 1:
+            raise TaxonomyValidationError(f"{label}.source_sequence is invalid")
+        if type(taxonomy_revision) is not int or taxonomy_revision < 0:
+            raise TaxonomyValidationError(f"{label}.taxonomy_revision is invalid")
+        is_current = item.get("is_current")
+        if type(is_current) is not bool:
+            raise TaxonomyValidationError(f"{label}.is_current is invalid")
+        if is_current:
+            if question_id in current_questions:
+                raise TaxonomyValidationError(
+                    "Only one current observation is allowed per question"
+                )
+            current_questions.add(question_id)
+        superseded_by = item.get("superseded_by_generation_id")
+        if superseded_by is not None:
+            superseded_by = _required_string(
+                superseded_by,
+                label=f"{label}.superseded_by_generation_id",
+            )
+        clean_observations.append(
+            {
+                "question_id": question_id,
+                "generation_id": generation_id,
+                "source_sequence": sequence,
+                "proposal_ids": _string_list(
+                    item.get("proposal_ids"), label=f"{label}.proposal_ids"
+                ),
+                "completed_at": _required_string(
+                    item.get("completed_at"), label=f"{label}.completed_at"
+                ),
+                "taxonomy_revision": taxonomy_revision,
+                "graph_release_id": _text(item.get("graph_release_id")),
+                "is_current": is_current,
+                "superseded_by_generation_id": superseded_by,
+            }
+        )
+    return {
+        "next_source_sequence": next_sequence,
+        "evidence_revision": evidence_revision,
+        "allocations": clean_allocations,
+        "observations": clean_observations,
+    }
+
+
 def _empty_state(catalog: Mapping[str, Any]) -> dict[str, Any]:
     return {
         "schema_version": 1,
@@ -580,6 +725,7 @@ def _empty_state(catalog: Mapping[str, Any]) -> dict[str, Any]:
         "approved_terms": [],
         "proposals": [],
         "applied_operations": [],
+        "observation_lifecycle": _empty_observation_lifecycle(),
     }
 
 
@@ -604,6 +750,7 @@ def _validate_state(
                 "applied_operations",
             }
         ),
+        optional=frozenset({"observation_lifecycle"}),
         label="state",
     )
     if payload.get("schema_version") != 1:
@@ -666,6 +813,9 @@ def _validate_state(
         "approved_terms": approved_terms,
         "proposals": proposals,
         "applied_operations": operations,
+        "observation_lifecycle": _validate_observation_lifecycle(
+            payload.get("observation_lifecycle")
+        ),
     }
 
 
@@ -1090,6 +1240,34 @@ class TaxonomyGovernance:
             term = legacy_index.get(key)
         return _term_public(term) if term is not None else None
 
+    def resolve_teacher_term(
+        self, dimension: str, value: object
+    ) -> dict[str, Any] | None:
+        """Resolve only an active term explicitly created by teacher review."""
+
+        wanted_dimension = _text(dimension)
+        normalized = _normalized_name(value)
+        if wanted_dimension not in _DIMENSION_SET or not normalized:
+            return None
+        state = self._read_state()
+        for term in state["approved_terms"]:
+            if (
+                term.get("origin") != "teacher"
+                or term.get("status") != _ACTIVE_TERM_STATUS
+                or term.get("dimension") != wanted_dimension
+            ):
+                continue
+            if normalized in {
+                _normalized_name(term.get("id")),
+                _normalized_name(term.get("name")),
+                *(
+                    _normalized_name(alias)
+                    for alias in term.get("aliases", [])
+                ),
+            }:
+                return _term_public(term)
+        return None
+
     def identity_lookup(self) -> dict[str, dict[str, str]]:
         """Return internal same-dimension lookup values for stored tags.
 
@@ -1304,7 +1482,13 @@ class TaxonomyGovernance:
                     item for item in ranked if item[1]["id"] in allowed_chapter_ids
                 ]
             elif dimension == "knowledge":
-                eligible = ranked
+                release_term_ids = set(knowledge_release["terms"])
+                eligible = [
+                    item
+                    for item in ranked
+                    if item[1]["id"] in release_term_ids
+                    or item[1].get("origin") == "teacher"
+                ]
             elif dimension in {
                 "ability",
                 "method",
@@ -1923,6 +2107,202 @@ class TaxonomyGovernance:
             "taxonomy_revision": revision,
         }
 
+    def allocate_observation_sequences(
+        self,
+        *,
+        generation_id: str,
+        question_ids: Iterable[object],
+    ) -> dict[str, int]:
+        """Allocate immutable ordering before a full tag analysis starts."""
+
+        generation = _required_string(generation_id, label="generation_id")
+        questions = _unique_text(question_ids)
+        if not questions:
+            return {}
+        with _exclusive_state_lock(self.state_path):
+            state = self._read_state_unlocked()
+            lifecycle = state["observation_lifecycle"]
+            allocation = lifecycle["allocations"].setdefault(generation, {})
+            changed = False
+            for question_id in questions:
+                if question_id in allocation:
+                    continue
+                allocation[question_id] = lifecycle["next_source_sequence"]
+                lifecycle["next_source_sequence"] += 1
+                changed = True
+            if changed:
+                _write_state_atomic(
+                    self.state_path, state, catalog=self._catalog
+                )
+            return {
+                question_id: int(allocation[question_id])
+                for question_id in questions
+            }
+
+    def record_successful_observation(
+        self,
+        *,
+        question_id: object,
+        generation_id: str,
+        proposal_ids: Iterable[object],
+        taxonomy_revision: int,
+        graph_release_id: str = "",
+    ) -> dict[str, Any]:
+        """Publish one complete successful observation, including an empty one."""
+
+        question = _required_string(question_id, label="question_id")
+        generation = _required_string(generation_id, label="generation_id")
+        proposals = _unique_text(proposal_ids)
+        if type(taxonomy_revision) is not int or taxonomy_revision < 0:
+            raise TaxonomyValidationError(
+                "taxonomy_revision must be a non-negative integer"
+            )
+        with _exclusive_state_lock(self.state_path):
+            state = self._read_state_unlocked()
+            lifecycle = state["observation_lifecycle"]
+            sequence = (
+                lifecycle["allocations"].get(generation, {}).get(question)
+            )
+            if type(sequence) is not int:
+                raise TaxonomyValidationError(
+                    "Observation sequence must be allocated before analysis"
+                )
+            proposal_ids_in_state = {
+                str(item["id"]) for item in state["proposals"]
+            }
+            if not set(proposals).issubset(proposal_ids_in_state):
+                raise TaxonomyValidationError(
+                    "Observation contains an unknown proposal"
+                )
+            for observation in lifecycle["observations"]:
+                if (
+                    observation["question_id"] == question
+                    and observation["generation_id"] == generation
+                ):
+                    if (
+                        observation["proposal_ids"] != proposals
+                        or observation["taxonomy_revision"] != taxonomy_revision
+                        or observation["graph_release_id"]
+                        != _text(graph_release_id)
+                    ):
+                        raise TaxonomyValidationError(
+                            "Observation identity was reused with different content"
+                        )
+                    return copy.deepcopy(observation)
+
+            current = next(
+                (
+                    item
+                    for item in lifecycle["observations"]
+                    if item["question_id"] == question and item["is_current"]
+                ),
+                None,
+            )
+            becomes_current = (
+                current is None
+                or int(sequence) > int(current["source_sequence"])
+            )
+            if becomes_current and current is not None:
+                current["is_current"] = False
+                current["superseded_by_generation_id"] = generation
+            observation = {
+                "question_id": question,
+                "generation_id": generation,
+                "source_sequence": int(sequence),
+                "proposal_ids": proposals,
+                "completed_at": _now(),
+                "taxonomy_revision": taxonomy_revision,
+                "graph_release_id": _text(graph_release_id),
+                "is_current": becomes_current,
+                "superseded_by_generation_id": None,
+            }
+            lifecycle["observations"].append(observation)
+            if becomes_current:
+                lifecycle["evidence_revision"] += 1
+            _write_state_atomic(
+                self.state_path, state, catalog=self._catalog
+            )
+            return copy.deepcopy(observation)
+
+    def observation_snapshot(self) -> dict[str, Any]:
+        state = self._read_state()
+        lifecycle = state["observation_lifecycle"]
+        release = _knowledge_release_prompt_contract(
+            self.knowledge_graph_db_path
+        )
+        refs_by_proposal: dict[str, list[int]] = {}
+        for observation in lifecycle["observations"]:
+            if not observation["is_current"]:
+                continue
+            try:
+                question_id = int(observation["question_id"])
+            except (TypeError, ValueError):
+                continue
+            if question_id <= 0:
+                continue
+            for proposal_id in observation["proposal_ids"]:
+                refs_by_proposal.setdefault(proposal_id, []).append(question_id)
+        return {
+            "evidence_revision": int(lifecycle["evidence_revision"]),
+            "taxonomy_revision": int(state["revision"]),
+            "graph_release_id": str(release.get("release_id") or ""),
+            "current_question_refs": {
+                proposal_id: sorted(set(question_ids))
+                for proposal_id, question_ids in refs_by_proposal.items()
+            },
+        }
+
+    def read_audit_history(
+        self,
+        *,
+        question_id: object | None = None,
+    ) -> dict[str, Any]:
+        state = self._read_state()
+        wanted = _text(question_id)
+        observations = [
+            copy.deepcopy(item)
+            for item in state["observation_lifecycle"]["observations"]
+            if not wanted or item["question_id"] == wanted
+        ]
+        observations.sort(
+            key=lambda item: (item["source_sequence"], item["generation_id"]),
+            reverse=True,
+        )
+        return {
+            "evidence_revision": state["observation_lifecycle"][
+                "evidence_revision"
+            ],
+            "items": observations,
+        }
+
+    def legacy_observation_reconciliation_preview(self) -> dict[str, Any]:
+        """Keep unproven legacy refs in audit only; never guess current state."""
+
+        state = self._read_state()
+        observed = {
+            proposal_id
+            for item in state["observation_lifecycle"]["observations"]
+            for proposal_id in item["proposal_ids"]
+        }
+        items = [
+            {
+                "proposal_id": proposal["id"],
+                "historical_question_refs": _proposal_public(proposal)[
+                    "question_refs"
+                ],
+                "classification": "historical_unproven",
+            }
+            for proposal in state["proposals"]
+            if proposal["id"] not in observed and proposal["question_refs"]
+        ]
+        return {
+            "read_only": True,
+            "evidence_revision": state["observation_lifecycle"][
+                "evidence_revision"
+            ],
+            "items": items,
+        }
+
     def list_proposals(
         self,
         *,
@@ -1947,9 +2327,19 @@ class TaxonomyGovernance:
             ),
             reverse=True,
         )
+        observation = self.observation_snapshot()
+        public_items = []
+        for item in items:
+            public = _proposal_public(item)
+            current_refs = observation["current_question_refs"].get(
+                public["id"], []
+            )
+            public["active_question_refs"] = current_refs
+            public_items.append(public)
         return {
             "revision": state["revision"],
-            "items": [_proposal_public(item) for item in items],
+            "evidence_revision": observation["evidence_revision"],
+            "items": public_items,
             "counts": {
                 "pending": sum(
                     item["status"] == "pending"
@@ -2038,6 +2428,252 @@ class TaxonomyGovernance:
         if include_extended:
             response["approved_terms"] = approved_terms
         return response
+
+    def review_batch(
+        self,
+        *,
+        commands: Iterable[Mapping[str, Any]],
+        expected_revision: int,
+        request_token: str,
+    ) -> dict[str, Any]:
+        """Apply a frozen group of proposal decisions with one revision step."""
+
+        if type(expected_revision) is not int:
+            raise TaxonomyValidationError("expected_revision must be an integer")
+        token = _required_string(request_token, label="request_token")
+        normalized: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for raw in commands:
+            if not isinstance(raw, Mapping):
+                raise TaxonomyReviewInvalid("Batch decision must be an object")
+            proposal_id = _required_string(
+                raw.get("proposal_id"), label="proposal_id"
+            )
+            if proposal_id in seen:
+                raise TaxonomyReviewInvalid(
+                    "A proposal can only be decided once per batch"
+                )
+            seen.add(proposal_id)
+            decision = _required_string(raw.get("decision"), label="decision")
+            if decision not in {"merge", "approve", "reject"}:
+                raise TaxonomyReviewInvalid("Unsupported batch decision")
+            normalized.append(
+                {
+                    "proposal_id": proposal_id,
+                    "decision": decision,
+                    "target_term_ids": _unique_text(
+                        raw.get("target_term_ids", [])
+                    ),
+                    "edited_name": _text(raw.get("edited_name")),
+                }
+            )
+        if not normalized:
+            raise TaxonomyReviewInvalid("Batch has no decisions")
+        operation_payload = {
+            "kind": "review_batch",
+            "expected_revision": expected_revision,
+            "commands": normalized,
+        }
+        fingerprint = _fingerprint(operation_payload)
+        with _exclusive_state_lock(self.state_path):
+            state = self._read_state_unlocked()
+            replay = self._operation_replay(state, token, fingerprint)
+            if replay is not None:
+                return replay
+            if expected_revision != state["revision"]:
+                raise TaxonomyRevisionConflict(
+                    expected_revision, state["revision"]
+                )
+            terms, alias_index, _legacy_index = self._combined_terms(state)
+            terms_by_id = {term["id"]: term for term in terms}
+            proposals_by_id = {
+                proposal["id"]: proposal for proposal in state["proposals"]
+            }
+            for command in normalized:
+                proposal = proposals_by_id.get(command["proposal_id"])
+                if proposal is None or proposal["status"] != "pending":
+                    raise TaxonomyProposalNotFound(
+                        "Batch proposal is not currently pending"
+                    )
+                targets = [
+                    terms_by_id.get(target_id)
+                    for target_id in command["target_term_ids"]
+                ]
+                if command["decision"] == "merge":
+                    if len(targets) != 1:
+                        raise TaxonomyReviewInvalid(
+                            "Batch merge requires exactly one target"
+                        )
+                    target = targets[0]
+                    if (
+                        target is None
+                        or target["status"] != _ACTIVE_TERM_STATUS
+                        or target["dimension"] != proposal["dimension"]
+                    ):
+                        raise TaxonomyTargetTermNotFound(
+                            "Batch merge target must be active and in the same dimension"
+                        )
+                elif command["target_term_ids"]:
+                    raise TaxonomyReviewInvalid(
+                        "Only a merge decision may contain a target"
+                    )
+
+            before = {
+                "approved_terms": copy.deepcopy(state["approved_terms"]),
+                "proposals": copy.deepcopy(state["proposals"]),
+            }
+            now = _now()
+            results: list[dict[str, Any]] = []
+            for command in normalized:
+                proposal = proposals_by_id[command["proposal_id"]]
+                approved_terms: list[dict[str, Any]] = []
+                if command["decision"] == "merge":
+                    target_id = command["target_term_ids"][0]
+                    target = terms_by_id[target_id]
+                    overlay = copy.deepcopy(target)
+                    overlay["aliases"] = _unique_text(
+                        [
+                            *target["aliases"],
+                            proposal["proposed_name"],
+                            proposal["edited_name"],
+                            *proposal["aliases"],
+                        ]
+                    )
+                    overlay["origin"] = "teacher"
+                    overlay.setdefault("created_at", now)
+                    overlay["updated_at"] = now
+                    self._assert_aliases_available(
+                        overlay, alias_index, owner_id=target_id
+                    )
+                    self._upsert_overlay_term(state, overlay)
+                    for value in (overlay["name"], *overlay["aliases"]):
+                        alias_index[
+                            (overlay["dimension"], _normalized_name(value))
+                        ] = overlay
+                    proposal["status"] = "merged"
+                    proposal["resolved_term_id"] = target_id
+                    proposal["resolved_term_ids"] = [target_id]
+                    approved_terms = [_term_public(overlay)]
+                elif command["decision"] == "approve":
+                    approved_name = _required_string(
+                        command["edited_name"] or proposal["proposed_name"],
+                        label="approved_name",
+                    )
+                    if alias_index.get(
+                        (proposal["dimension"], _normalized_name(approved_name))
+                    ) is not None:
+                        raise TaxonomyReviewInvalid(
+                            "An active term already matches this name; use merge"
+                        )
+                    term = {
+                        "id": _stable_id(
+                            "local",
+                            proposal["dimension"],
+                            _normalized_name(approved_name),
+                        ),
+                        "dimension": proposal["dimension"],
+                        "name": approved_name,
+                        "aliases": [
+                            value
+                            for value in _unique_text(
+                                [proposal["proposed_name"], proposal["edited_name"]]
+                            )
+                            if _normalized_name(value)
+                            != _normalized_name(approved_name)
+                        ],
+                        "status": "approved",
+                        "origin": "teacher",
+                        "created_at": now,
+                        "updated_at": now,
+                    }
+                    self._assert_aliases_available(term, alias_index)
+                    self._upsert_overlay_term(state, term)
+                    terms_by_id[term["id"]] = term
+                    for value in (term["name"], *term["aliases"]):
+                        alias_index[
+                            (term["dimension"], _normalized_name(value))
+                        ] = term
+                    proposal["status"] = "approved"
+                    proposal["resolved_term_id"] = term["id"]
+                    proposal["resolved_term_ids"] = [term["id"]]
+                    approved_terms = [_term_public(term)]
+                else:
+                    proposal["status"] = "rejected"
+                    proposal["resolved_term_id"] = None
+                    proposal["resolved_term_ids"] = []
+                proposal["reviewed_at"] = now
+                proposal["updated_at"] = now
+                results.append(
+                    {
+                        "proposal": _proposal_public_extended(proposal),
+                        "approved_terms": approved_terms,
+                    }
+                )
+            state["revision"] += 1
+            state["base_catalog_revision"] = self._catalog["revision"]
+            operation_id = _stable_id("taxonomy-batch", token)
+            result = {
+                "operation_id": operation_id,
+                "taxonomy_revision": state["revision"],
+                "decisions": results,
+                "_undo": before,
+            }
+            self._remember_operation(state, token, fingerprint, result)
+            _write_state_atomic(self.state_path, state, catalog=self._catalog)
+            return copy.deepcopy(result)
+
+    def undo_review_batch(
+        self,
+        *,
+        operation_id: str,
+        expected_revision: int,
+        request_token: str,
+    ) -> dict[str, Any]:
+        wanted = _required_string(operation_id, label="operation_id")
+        token = _required_string(request_token, label="request_token")
+        fingerprint = _fingerprint(
+            {
+                "kind": "undo_review_batch",
+                "operation_id": wanted,
+                "expected_revision": expected_revision,
+            }
+        )
+        with _exclusive_state_lock(self.state_path):
+            state = self._read_state_unlocked()
+            replay = self._operation_replay(state, token, fingerprint)
+            if replay is not None:
+                return replay
+            source = next(
+                (
+                    item
+                    for item in state["applied_operations"]
+                    if item.get("result", {}).get("operation_id") == wanted
+                ),
+                None,
+            )
+            if source is None:
+                raise TaxonomyProposalNotFound("Batch operation does not exist")
+            if (
+                state["revision"] != expected_revision
+                or source["applied_revision"] != expected_revision
+            ):
+                raise TaxonomyRevisionConflict(
+                    expected_revision, state["revision"]
+                )
+            undo = source["result"].get("_undo")
+            if not isinstance(undo, Mapping):
+                raise TaxonomyReviewInvalid("Batch operation cannot be undone")
+            state["approved_terms"] = copy.deepcopy(undo["approved_terms"])
+            state["proposals"] = copy.deepcopy(undo["proposals"])
+            state["revision"] += 1
+            result = {
+                "operation_id": wanted,
+                "undone": True,
+                "taxonomy_revision": state["revision"],
+            }
+            self._remember_operation(state, token, fingerprint, result)
+            _write_state_atomic(self.state_path, state, catalog=self._catalog)
+            return copy.deepcopy(result)
 
     def review(
         self,

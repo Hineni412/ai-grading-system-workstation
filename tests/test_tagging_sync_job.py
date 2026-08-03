@@ -19,6 +19,7 @@ from question_bank.services.question_service import QuestionService
 from question_bank.solution_evidence import SolutionEvidenceRepository
 from question_bank.taxonomy.governance import TaxonomyGovernance
 from question_bank.training_criteria import GatewayBatchResponse
+from tests.current_knowledge_support import install_current_knowledge
 
 
 def _analysis(*, confidence: float = 0.88) -> TagAnalysis:
@@ -79,7 +80,7 @@ class FakeAI:
 
 def _seed(db_path: Path, count: int) -> list[int]:
     service = QuestionService(db_path)
-    return [
+    question_ids = [
         service.add_question(
             QuestionCreate(
                 question_number=str(index),
@@ -89,6 +90,8 @@ def _seed(db_path: Path, count: int) -> list[int]:
         )
         for index in range(1, count + 1)
     ]
+    install_current_knowledge(db_path)
+    return question_ids
 
 
 def _context(tmp_path: Path, payload: dict[str, object]) -> tuple[JobContext, JobStore]:
@@ -134,6 +137,7 @@ def test_production_tagging_uses_one_combined_call_and_persists_point_evidence(
             question_type="解答题",
         )
     )
+    install_current_knowledge(db_path)
     context, _store = _context(tmp_path, {"question_ids": [question_id]})
     gateway_calls: list[tuple[str, tuple[int, ...]]] = []
 

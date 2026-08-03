@@ -6,21 +6,21 @@ import type { GraphQueryInput } from '../api/graph'
 import { fetchStudents, type StudentSummary } from '../api/students'
 import GraphRelationReviewShortcut from '../components/knowledge-graph/GraphRelationReviewShortcut.vue'
 import GraphScopeFilters from '../components/knowledge-graph/GraphScopeFilters.vue'
-import GraphV2NodeInspector from '../components/knowledge-graph/GraphV2NodeInspector.vue'
-import GraphV2TextDirectory from '../components/knowledge-graph/GraphV2TextDirectory.vue'
-import KnowledgeGraphV2Canvas from '../components/knowledge-graph/KnowledgeGraphV2Canvas.vue'
-import { summarizeGraphV2 } from '../features/knowledge-graph/v2-model'
+import GraphNodeInspector from '../components/knowledge-graph/GraphNodeInspector.vue'
+import GraphTextDirectory from '../components/knowledge-graph/GraphTextDirectory.vue'
+import KnowledgeGraphCanvas from '../components/knowledge-graph/KnowledgeGraphCanvas.vue'
+import { summarizeGraph } from '../features/knowledge-graph/model'
 import {
   parseGraphRouteScope,
   serializeGraphRouteScope,
 } from '../features/knowledge-graph/route'
-import { useKnowledgeGraphV2Store } from '../stores/knowledge-graph-v2'
+import { useKnowledgeGraphStore } from '../stores/knowledge-graph'
 import { useSessionStore } from '../stores/session'
 
 const route = useRoute()
 const router = useRouter()
 const sessionStore = useSessionStore()
-const graphStore = useKnowledgeGraphV2Store()
+const graphStore = useKnowledgeGraphStore()
 
 const students = ref<StudentSummary[]>([])
 const studentsState = ref<'loading' | 'ready' | 'error'>('loading')
@@ -32,10 +32,9 @@ let routeInitialized = false
 const selectedNode = computed(() => graphStore.graph?.nodes.find(
   (node) => node.stable_key === graphStore.selectedNodeKey,
 ) ?? null)
-const summary = computed(() => summarizeGraphV2(
+const summary = computed(() => summarizeGraph(
   graphStore.graph?.nodes ?? [],
   graphStore.graph?.edges ?? [],
-  graphStore.graph?.mastery_mode ?? 'v1',
 ))
 const scopeLabel = computed(() => {
   const graph = graphStore.graph
@@ -44,13 +43,7 @@ const scopeLabel = computed(() => {
   if (graph.scope.mode === 'class') return `${exams} · ${graph.scope.class_id ?? '班级暂不可用'}`
   return `${exams} · ${graph.scope.student_ids.length} 名学生`
 })
-const visibleWarnings = computed(() => [...new Set(
-  (graphStore.graph?.warnings ?? []).map((warning) => (
-    /\bv[12]\b/i.test(warning)
-      ? '当前掌握证据使用系统已启用的正式计算口径。'
-      : warning
-  )),
-)])
+const visibleWarnings = computed(() => [...new Set(graphStore.graph?.warnings ?? [])])
 
 async function initializeFromRoute(): Promise<void> {
   if (routeInitialized || sessionStore.loadState !== 'ready' || studentsState.value !== 'ready') return
@@ -222,45 +215,37 @@ onBeforeUnmount(() => {
         当前范围没有可显示的已治理知识点。可调整考试或学生范围；未治理标签不会被伪装成关系节点。
       </p>
       <ul v-if="graphStore.graph.missing.length" class="knowledge-graph-missing-list" aria-label="未纳入图谱的项目">
-        <li v-for="item in graphStore.graph.missing" :key="item.kind === 'ungoverned_knowledge_label' ? item.label : item.stable_key">
-          <template v-if="item.kind === 'ungoverned_knowledge_label'">
-            “{{ item.label || '未命名标签' }}”尚未治理，{{ item.count }} 条证据未纳入关系图。
-          </template>
-          <template v-else>
-            稳定知识点 {{ item.stable_key }} 不存在，未显示。
-          </template>
+        <li v-for="(item, index) in graphStore.graph.missing" :key="`${String(item.stable_key ?? item.label ?? 'missing')}:${index}`">
+          {{ String(item.label ?? item.stable_key ?? '未识别知识项') }} 未纳入当前知识图谱。
         </li>
       </ul>
       <template v-if="graphStore.graph.nodes.length > 0">
         <div class="knowledge-graph-workspace">
-          <KnowledgeGraphV2Canvas
+          <KnowledgeGraphCanvas
             :nodes="graphStore.graph.nodes"
             :edges="graphStore.graph.edges"
             :selected-key="graphStore.selectedNodeKey"
             :scope-label="scopeLabel"
             :coverage="graphStore.graph.coverage"
-            :mastery-mode="graphStore.graph.mastery_mode"
             @select-node="selectNode"
           />
-          <GraphV2NodeInspector
+          <GraphNodeInspector
             :node="selectedNode"
             :nodes="graphStore.graph.nodes"
             :edges="graphStore.graph.edges"
+            :current-standard="graphStore.graph.current_standard"
             :evidence="graphStore.evidence"
             :evidence-state="graphStore.evidenceState"
             :evidence-error="graphStore.evidenceError"
-            :mastery-mode="graphStore.graph.mastery_mode"
-            :parameter-version="graphStore.graph.mastery_parameter_version"
             @select-node="selectNode"
             @load-more-evidence="graphStore.loadMoreEvidence()"
             @retry-evidence="graphStore.retryEvidence()"
           />
         </div>
-        <GraphV2TextDirectory
+        <GraphTextDirectory
           :nodes="graphStore.graph.nodes"
           :edges="graphStore.graph.edges"
           :selected-key="graphStore.selectedNodeKey"
-          :mastery-mode="graphStore.graph.mastery_mode"
           @select-node="selectNode"
         />
       </template>

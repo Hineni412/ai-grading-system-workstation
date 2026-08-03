@@ -70,6 +70,16 @@ def _client(
         },
     )
     proposal_id = str(created["proposals"][0]["id"])
+    governance.allocate_observation_sequences(
+        generation_id="api-test-generation",
+        question_ids=["41"],
+    )
+    governance.record_successful_observation(
+        question_id="41",
+        generation_id="api-test-generation",
+        proposal_ids=[proposal_id],
+        taxonomy_revision=int(created["taxonomy_revision"]),
+    )
     service = TaxonomySuggestionService(
         state_path=tmp_path / "taxonomy-suggestions.json",
         governance=governance,

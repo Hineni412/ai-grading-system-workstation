@@ -27,16 +27,15 @@ from backend.training_assessment import (
     SQLiteTrainingEvidenceSink,
     TrainingAssessmentModule,
 )
-from question_bank.mastery.rollout import MasteryRolloutRepository
-from question_bank.mastery.v2 import MasteryV2Parameters
 from question_bank.recommendation.personalized import (
     PersonalizedRecommendationConfig,
 )
 from question_bank.database.schema import connect, initialize_database
 from question_bank.relations.query_service import (
-    GraphV2Query,
-    KnowledgeGraphV2QueryService,
+    CurrentGraphQuery,
+    CurrentKnowledgeGraphQueryService,
 )
+from tests.current_knowledge_support import install_current_knowledge
 
 
 DRAFT_ID = "1" * 64
@@ -59,6 +58,7 @@ def assessment_workspace(tmp_path: Path) -> tuple[Path, Path]:
     db_path = tmp_path / "question_bank.db"
     data_root = tmp_path / "data"
     initialize_database(db_path)
+    install_current_knowledge(db_path)
     page_sha = hashlib.sha256(_PNG).hexdigest()
     relative_page = (
         Path(SCAN_BATCH_ID[:20])
@@ -1033,16 +1033,15 @@ def test_ready_questions_publish_independently_and_republish_after_review(
     assert "不作为未达成" in partial["questions"][1][
         "publication_reason"
     ]
-    assert partial["mastery_changes"][0]["v2_before"]["status"] == (
+    assert partial["mastery_changes"][0]["mastery_before"]["status"] == (
         "missing"
     )
-    assert partial["mastery_changes"][0]["v2_after"]["status"] == (
+    assert partial["mastery_changes"][0]["mastery_after"]["status"] == (
         "available"
     )
-    assert partial["mastery_changes"][0]["applied_to_active_mode"] is False
     assert partial["safety"] == {
         "is_exam_score": False,
-        "changes_v1": False,
+        "changes_exam_score": False,
         "auto_paper_created": False,
         "auto_printed": False,
     }
@@ -1309,7 +1308,7 @@ def test_correction_to_unreadable_withdraws_stale_evidence_and_recalculates(
     assert active_count == 0
 
 
-def test_published_training_changes_enabled_v2_and_next_draft_only(
+def test_published_training_changes_current_mastery_and_next_draft_only(
     assessment_workspace: tuple[Path, Path],
 ) -> None:
     from tests.phase4.test_personalized_recommendation import (
@@ -1352,11 +1351,6 @@ def test_published_training_changes_enabled_v2_and_next_draft_only(
         question_count=8,
         expected_minutes=120,
     )
-    parameters = MasteryV2Parameters()
-    parameter_version = MasteryRolloutRepository(
-        db_path
-    ).register_parameters(parameters)
-    evaluation_id = "a" * 64
     with connect(db_path) as connection:
         connection.execute(
             """
@@ -1401,27 +1395,6 @@ def test_published_training_changes_enabled_v2_and_next_draft_only(
                     task_code,
                 ),
             )
-        connection.execute(
-            """
-            INSERT INTO mastery_v2_evaluations (
-                evaluation_id, parameter_version, as_of, item_count,
-                required_review_count, max_absolute_delta
-            ) VALUES (?, ?, '2026-07-30T00:00:00+00:00', 1, 1, 0.2)
-            """,
-            (evaluation_id, parameter_version),
-        )
-        connection.execute(
-            """
-            UPDATE mastery_v2_rollout_state
-            SET enabled = 1, active_parameter_version = ?,
-                approved_evaluation_id = ?, revision = revision + 1,
-                updated_by = 'synthetic-teacher',
-                reason = '合成启用 v2'
-            WHERE singleton_id = 1
-            """,
-            (parameter_version, evaluation_id),
-        )
-
     module = TrainingAssessmentModule(
         db_path=db_path,
         data_root=data_root,
@@ -1459,14 +1432,13 @@ def test_published_training_changes_enabled_v2_and_next_draft_only(
         for item in feedback["mastery_changes"]
         if item["stable_key"] == "kp_alg_linear_equation"
     )
-    assert change["applied_to_active_mode"] is True
-    assert change["v2_after"]["value"] > change["v2_before"]["value"]
-    graph = KnowledgeGraphV2QueryService(
+    assert change["mastery_after"]["value"] > change["mastery_before"]["value"]
+    graph = CurrentKnowledgeGraphQueryService(
         db_path,
         clock=lambda: datetime(2026, 7, 30, 12, 0, tzinfo=UTC),
     ).query(
         diagnosis,
-        GraphV2Query(
+        CurrentGraphQuery(
             knowledge_keys=("kp_alg_linear_equation",),
             prerequisite_depth=0,
         ),
@@ -1476,16 +1448,15 @@ def test_published_training_changes_enabled_v2_and_next_draft_only(
         for node in graph["nodes"]
         if node["stable_key"] == "kp_alg_linear_equation"
     )
-    assert graph["mastery_mode"] == "v2"
-    assert graph_node["mastery_v2"]["value"] == change["v2_after"]["value"]
-    assert graph_node["mastery_v2"]["evidence_count"] == (
-        change["v2_after"]["direct_evidence_count"]
+    assert graph_node["mastery"]["value"] == change["mastery_after"]["value"]
+    assert graph_node["mastery"]["evidence_count"] == (
+        change["mastery_after"]["evidence_count"]
     )
     assert feedback["next_round"]["status"] == "draft", feedback[
         "next_round"
     ]
     assert feedback["next_round"]["draft_id"]
-    assert feedback["next_round"]["student"]["targets"][0]["mode"] == "v2"
+    assert feedback["next_round"]["student"]["targets"][0]["mode"] == "current"
     next_ids = {
         item["question_id"]
         for item in feedback["next_round"]["student"]["items"]

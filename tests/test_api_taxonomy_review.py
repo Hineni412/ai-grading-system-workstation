@@ -9,10 +9,8 @@ from fastapi.testclient import TestClient
 
 from backend.api.app import create_app
 from backend.api.dependencies import (
-    get_question_bank_db_path,
     get_taxonomy_review_service,
 )
-from question_bank.database.schema import initialize_database
 from question_bank.models.question import QuestionCreate
 from question_bank.services.question_service import QuestionService
 from question_bank.services.question_write_service import QuestionBankWriteService
@@ -32,50 +30,16 @@ CATALOG_PATH = (
 )
 
 
-def test_knowledge_graph_release_requires_explicit_teacher_activation(
-    tmp_path: Path,
-) -> None:
-    db_path = tmp_path / "question-bank.db"
-    initialize_database(db_path)
+def test_teacher_facing_knowledge_graph_release_switch_endpoints_are_removed() -> None:
     app = create_app()
-    app.dependency_overrides[get_question_bank_db_path] = lambda: db_path
     client = TestClient(app)
-
-    preview = client.get(
+    assert client.get(
         "/api/question-bank/knowledge-graph/release-preview"
-    )
-    assert preview.status_code == 200
-    assert preview.json()["current_release_id"] is None
-    assert preview.json()["can_activate"] is True
-    release_id = preview.json()["release_id"]
-
-    staged = client.post(
-        "/api/question-bank/knowledge-graph/releases/stage",
-        json={"reason": "教师准备核对候选图谱"},
-    )
-    assert staged.status_code == 200
-    assert staged.json()["current_release_id"] is None
-
-    rejected = client.post(
-        f"/api/question-bank/knowledge-graph/releases/{release_id}/activate",
-        json={
-            "expected_active_release_id": None,
-            "confirmation_phrase": "直接启用",
-            "reason": "错误确认短语",
-        },
-    )
-    assert rejected.status_code == 422
-
-    activated = client.post(
-        f"/api/question-bank/knowledge-graph/releases/{release_id}/activate",
-        json={
-            "expected_active_release_id": None,
-            "confirmation_phrase": "启用知识图谱",
-            "reason": "教师已核对关键分歧并确认启用",
-        },
-    )
-    assert activated.status_code == 200
-    assert activated.json()["current_release_id"] == release_id
+    ).status_code == 404
+    for action in ("stage", "demo-release/activate", "demo-release/rollback"):
+        assert client.post(
+            f"/api/question-bank/knowledge-graph/releases/{action}", json={}
+        ).status_code == 404
 
 
 def _client_with_curriculum_proposal(

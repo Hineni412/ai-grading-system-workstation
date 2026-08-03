@@ -11,7 +11,11 @@ import {
   type StudentAnalysisResponse,
 } from '../api/analysis'
 import { ApiError } from '../api/errors'
-import { fetchGraphRows, type GraphRowsResponse } from '../api/graph'
+import {
+  fetchGraph,
+  graphQueryForClass,
+  type GraphResponse,
+} from '../api/graph'
 import type { ResourceState } from './workbench'
 
 export type QuestionLoader = (
@@ -31,7 +35,15 @@ export type GraphLoader = (
   sessionId: number,
   className: string,
   signal: AbortSignal,
-) => Promise<GraphRowsResponse>
+) => Promise<GraphResponse>
+
+function fetchGraphForClass(
+  sessionId: number,
+  className: string,
+  signal: AbortSignal,
+): Promise<GraphResponse> {
+  return fetchGraph(graphQueryForClass(sessionId, className), signal)
+}
 
 function isCancelled(error: unknown): boolean {
   return (
@@ -45,7 +57,7 @@ export const useAnalysisStore = defineStore('analysis', () => {
   const questions = ref<QuestionAnalysisItem[]>([])
   const classes = ref<string[]>([])
   const students = ref<StudentAnalysisItem[]>([])
-  const graph = ref<GraphRowsResponse | null>(null)
+  const graph = ref<GraphResponse | null>(null)
   const questionsScope = ref<AnalysisScope | null>(null)
   const studentsScope = ref<AnalysisScope | null>(null)
   const questionsState = ref<ResourceState>('idle')
@@ -105,7 +117,7 @@ export const useAnalysisStore = defineStore('analysis', () => {
   }
 
   function matchesGraphScope(
-    response: GraphRowsResponse,
+    response: GraphResponse,
     expectedSessionId: number,
     expectedClassName: string,
   ): boolean {
@@ -321,7 +333,7 @@ export const useAnalysisStore = defineStore('analysis', () => {
   async function loadGraph(
     nextSessionId: number,
     className: string,
-    loader: GraphLoader = fetchGraphRows,
+    loader: GraphLoader = fetchGraphForClass,
   ): Promise<void> {
     resetForSession(nextSessionId)
     if (!className.trim()) {

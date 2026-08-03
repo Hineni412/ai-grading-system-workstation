@@ -98,6 +98,9 @@ _APPROVED_TABLE_REBUILDS = {
     ),
     "006_knowledge_ids_primary": frozenset({"session_details"}),
     "007_drop_legacy_knowledge_id": frozenset({"session_details"}),
+    "028_scope_knowledge_relations_to_release": frozenset(
+        {"knowledge_relations"}
+    ),
 }
 _APPROVED_TABLE_DROPS = {
     "008_drop_legacy_cli_tables": frozenset(

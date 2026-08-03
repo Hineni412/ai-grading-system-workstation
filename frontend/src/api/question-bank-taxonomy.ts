@@ -32,33 +32,6 @@ export interface TaxonomyCatalogResponse {
   dimensions: Record<TaxonomyDimension, TaxonomyTerm[]>
 }
 
-export interface KnowledgeGraphReleaseIssue {
-  code: string
-  message: string
-  blocking: boolean
-}
-
-export interface KnowledgeGraphHighImpactItem {
-  fine_term_id: string
-  display_name: string
-  disposition: string
-  target_names: string[]
-}
-
-export interface KnowledgeGraphReleasePreview {
-  release_id: string
-  content_hash: string
-  current_release_id: string | null
-  node_count: number
-  fine_term_count: number
-  mapping_count: number
-  relation_count: number
-  high_impact_count: number
-  high_impact_items: KnowledgeGraphHighImpactItem[]
-  can_activate: boolean
-  issues: KnowledgeGraphReleaseIssue[]
-}
-
 export interface TaxonomyProposal {
   id: string
   dimension: TaxonomyDimension
@@ -117,19 +90,26 @@ export interface TaxonomyReviewResponse {
   application: TaxonomyReviewApplication | null
 }
 
-export type TaxonomySuggestionDecision =
-  | 'merge'
-  | 'map_many'
-  | 'approve'
+export type TaxonomySuggestionRelation =
+  | 'exact'
+  | 'broader'
+  | 'narrower'
+  | 'related'
+  | 'new_core_candidate'
+  | 'wrong_dimension'
   | 'reject'
   | 'uncertain'
 
 export interface TaxonomySuggestion {
-  decision: TaxonomySuggestionDecision
+  relation_kind: TaxonomySuggestionRelation
   target_term_ids: string[]
   reason: string
   confidence: number
   source: 'local_exact' | 'ai'
+  legacy_format: boolean
+  evidence_question_ids: number[]
+  taxonomy_revision: number
+  graph_release_id: string
 }
 
 export type TaxonomySuggestionItemStatus =
@@ -168,6 +148,8 @@ export interface TaxonomySuggestionRun {
   run_id: string
   status: TaxonomySuggestionRunStatus
   taxonomy_revision: number
+  evidence_revision: number
+  graph_release_id: string
   stale: boolean
   retryable: boolean
   created_at: string
@@ -196,6 +178,53 @@ export interface TaxonomySuggestionRetryInput {
 export interface TaxonomySuggestionJobResponse {
   job: JobResponse
   run: TaxonomySuggestionRun
+}
+
+export interface TaxonomySuggestionBatchItem {
+  proposal_id: string
+  dimension: TaxonomyDimension
+  proposed_name: string
+  question_ids: number[]
+  suggestion: TaxonomySuggestion
+  automatic: boolean
+  reasons: string[]
+}
+
+export interface TaxonomySuggestionBatchPreview {
+  run_id: string
+  base_revision: number
+  evidence_revision: number
+  graph_release_id: string
+  policy_version: string
+  policy_fingerprint: string
+  items: TaxonomySuggestionBatchItem[]
+  counts: { automatic: number; manual: number; total: number }
+}
+
+export interface TaxonomyBatchManualDecision {
+  proposal_id: string
+  decision: 'merge' | 'approve' | 'reject' | 'defer'
+  target_term_ids?: string[]
+  edited_name?: string
+}
+
+export interface TaxonomyReviewOperation {
+  operation_id: string
+  request_token: string
+  status: string
+  base_revision: number
+  taxonomy_revision: number
+  undo_taxonomy_revision: number | null
+  automated_proposal_ids: string[]
+  teacher_confirmed_proposal_ids: string[]
+  skipped: Array<{ proposal_id: string; reason: string }>
+  remaining_count: number
+  undo_status: string
+  application: {
+    status: string
+    applied_question_ids: number[]
+    failures: Array<{ question_id: number; category: string; message: string }>
+  } | null
 }
 
 function requiredString(value: unknown): string {
@@ -420,10 +449,13 @@ const SUGGESTION_ITEM_STATUSES = [
   'cancelled',
   'stale',
 ] as const
-const SUGGESTION_DECISIONS = [
-  'merge',
-  'map_many',
-  'approve',
+const SUGGESTION_RELATIONS = [
+  'exact',
+  'broader',
+  'narrower',
+  'related',
+  'new_core_candidate',
+  'wrong_dimension',
   'reject',
   'uncertain',
 ] as const
@@ -452,15 +484,21 @@ function decodeSuggestion(value: unknown): TaxonomySuggestion {
     'taxonomy suggestion source',
   )
   return {
-    decision: oneOf(
-      value.decision,
-      SUGGESTION_DECISIONS,
-      'taxonomy suggestion decision',
+    relation_kind: oneOf(
+      value.relation_kind,
+      SUGGESTION_RELATIONS,
+      'taxonomy suggestion relation',
     ),
     target_term_ids: stringList(value.target_term_ids),
     reason: requiredString(value.reason),
     confidence,
     source,
+    legacy_format: value.legacy_format === true,
+    evidence_question_ids: optionalQuestionRefs(value.evidence_question_ids),
+    taxonomy_revision: revision(value.taxonomy_revision ?? 0),
+    graph_release_id: typeof value.graph_release_id === 'string'
+      ? value.graph_release_id
+      : '',
   }
 }
 
@@ -511,6 +549,10 @@ export function decodeTaxonomySuggestionRun(
       'taxonomy suggestion run status',
     ),
     taxonomy_revision: revision(value.taxonomy_revision),
+    evidence_revision: revision(value.evidence_revision ?? 0),
+    graph_release_id: typeof value.graph_release_id === 'string'
+      ? value.graph_release_id
+      : '',
     stale: value.stale,
     retryable: value.retryable === true,
     created_at: requiredString(value.created_at),
@@ -539,95 +581,86 @@ export function decodeTaxonomySuggestionJob(
   }
 }
 
-export function decodeKnowledgeGraphReleasePreview(
-  value: unknown,
-): KnowledgeGraphReleasePreview {
-  if (
-    !isRecord(value)
-    || !Array.isArray(value.issues)
-    || !Array.isArray(value.high_impact_items)
-    || typeof value.can_activate !== 'boolean'
-  ) throw new Error('Invalid knowledge graph release preview')
+function decodeBatchPreview(value: unknown): TaxonomySuggestionBatchPreview {
+  if (!isRecord(value) || !Array.isArray(value.items) || !isRecord(value.counts)) {
+    throw new Error('Invalid taxonomy batch preview')
+  }
   return {
-    release_id: stableId(value.release_id),
-    content_hash: requiredString(value.content_hash),
-    current_release_id: optionalString(value.current_release_id),
-    node_count: safeCount(value.node_count),
-    fine_term_count: safeCount(value.fine_term_count),
-    mapping_count: safeCount(value.mapping_count),
-    relation_count: safeCount(value.relation_count),
-    high_impact_count: safeCount(value.high_impact_count),
-    high_impact_items: value.high_impact_items.map((item) => {
-      if (!isRecord(item) || !Array.isArray(item.target_names)) {
-        throw new Error('Invalid knowledge graph high-impact item')
+    run_id: stableId(value.run_id),
+    base_revision: revision(value.base_revision),
+    evidence_revision: revision(value.evidence_revision),
+    graph_release_id: typeof value.graph_release_id === 'string' ? value.graph_release_id : '',
+    policy_version: requiredString(value.policy_version),
+    policy_fingerprint: requiredString(value.policy_fingerprint),
+    items: value.items.map((item) => {
+      if (!isRecord(item) || !Array.isArray(item.reasons)) {
+        throw new Error('Invalid taxonomy batch item')
       }
       return {
-        fine_term_id: stableId(item.fine_term_id),
-        display_name: requiredString(item.display_name),
-        disposition: requiredString(item.disposition),
-        target_names: item.target_names.map(requiredString),
+        proposal_id: stableId(item.proposal_id),
+        dimension: dimension(item.dimension),
+        proposed_name: requiredString(item.proposed_name),
+        question_ids: optionalQuestionRefs(item.question_ids),
+        suggestion: decodeSuggestion(item.suggestion),
+        automatic: item.automatic === true,
+        reasons: item.reasons.map(requiredString),
       }
     }),
-    can_activate: value.can_activate,
-    issues: value.issues.map((item) => {
-      if (!isRecord(item) || typeof item.blocking !== 'boolean') {
-        throw new Error('Invalid knowledge graph release issue')
-      }
-      return {
-        code: requiredString(item.code),
-        message: requiredString(item.message),
-        blocking: item.blocking,
-      }
+    counts: {
+      automatic: safeCount(value.counts.automatic),
+      manual: safeCount(value.counts.manual),
+      total: safeCount(value.counts.total),
+    },
+  }
+}
+
+function decodeReviewOperation(value: unknown): TaxonomyReviewOperation {
+  if (!isRecord(value) || !Array.isArray(value.automated_proposal_ids)
+    || !Array.isArray(value.teacher_confirmed_proposal_ids)
+    || !Array.isArray(value.skipped)) {
+    throw new Error('Invalid taxonomy review operation')
+  }
+  let application: TaxonomyReviewOperation['application'] = null
+  if (isRecord(value.application)) {
+    const failures = Array.isArray(value.application.failures)
+      ? value.application.failures
+      : []
+    application = {
+      status: requiredString(value.application.status),
+      applied_question_ids: optionalQuestionRefs(value.application.applied_question_ids),
+      failures: failures.map((item) => {
+        if (!isRecord(item)) throw new Error('Invalid application failure')
+        return {
+          question_id: questionRefs([item.question_id])[0]!,
+          category: requiredString(item.category),
+          message: requiredString(item.message),
+        }
+      }),
+    }
+  }
+  return {
+    operation_id: stableId(value.operation_id),
+    request_token: requiredString(value.request_token),
+    status: requiredString(value.status),
+    base_revision: revision(value.base_revision),
+    taxonomy_revision: revision(value.taxonomy_revision),
+    undo_taxonomy_revision: value.undo_taxonomy_revision === undefined
+      || value.undo_taxonomy_revision === null
+      ? null
+      : revision(value.undo_taxonomy_revision),
+    automated_proposal_ids: stringList(value.automated_proposal_ids),
+    teacher_confirmed_proposal_ids: stringList(value.teacher_confirmed_proposal_ids),
+    skipped: value.skipped.map((item) => {
+      if (!isRecord(item)) throw new Error('Invalid skipped decision')
+      return { proposal_id: stableId(item.proposal_id), reason: requiredString(item.reason) }
     }),
+    remaining_count: safeCount(value.remaining_count),
+    undo_status: requiredString(value.undo_status),
+    application,
   }
 }
 
 export const questionBankTaxonomyApi = {
-  getKnowledgeGraphReleasePreview(
-    signal?: AbortSignal,
-  ): Promise<KnowledgeGraphReleasePreview> {
-    return apiClient.request(
-      '/api/question-bank/knowledge-graph/release-preview',
-      {
-        decode: decodeKnowledgeGraphReleasePreview,
-        signal,
-      },
-    )
-  },
-
-  stageKnowledgeGraphRelease(
-    reason: string,
-    signal?: AbortSignal,
-  ): Promise<KnowledgeGraphReleasePreview> {
-    return apiClient.request('/api/question-bank/knowledge-graph/releases/stage', {
-      method: 'POST',
-      body: { reason },
-      decode: decodeKnowledgeGraphReleasePreview,
-      signal,
-    })
-  },
-
-  activateKnowledgeGraphRelease(
-    releaseId: string,
-    expectedActiveReleaseId: string | null,
-    reason: string,
-    signal?: AbortSignal,
-  ): Promise<KnowledgeGraphReleasePreview> {
-    return apiClient.request(
-      `/api/question-bank/knowledge-graph/releases/${encodeURIComponent(releaseId)}/activate`,
-      {
-        method: 'POST',
-        body: {
-          expected_active_release_id: expectedActiveReleaseId,
-          confirmation_phrase: '启用知识图谱',
-          reason,
-        },
-        decode: decodeKnowledgeGraphReleasePreview,
-        signal,
-      },
-    )
-  },
-
   getCatalog(signal?: AbortSignal): Promise<TaxonomyCatalogResponse> {
     return apiClient.request('/api/question-bank/taxonomy/catalog', {
       decode: decodeTaxonomyCatalog,
@@ -712,6 +745,69 @@ export const questionBankTaxonomyApi = {
         method: 'POST',
         body: input,
         decode: decodeTaxonomySuggestionJob,
+        signal,
+      },
+    )
+  },
+
+  previewSuggestionBatch(
+    runId: string,
+    baseRevision: number,
+    signal?: AbortSignal,
+  ): Promise<TaxonomySuggestionBatchPreview> {
+    return apiClient.request(
+      `/api/question-bank/taxonomy/suggestions/${encodeURIComponent(runId)}/batch-preview`,
+      {
+        method: 'POST',
+        body: { base_revision: baseRevision, policy_version: 'strict-exact-v1' },
+        decode: decodeBatchPreview,
+        signal,
+      },
+    )
+  },
+
+  applySuggestionBatch(
+    runId: string,
+    input: {
+      base_revision: number
+      request_token: string
+      accepted_manual_decisions: TaxonomyBatchManualDecision[]
+    },
+    signal?: AbortSignal,
+  ): Promise<TaxonomyReviewOperation> {
+    return apiClient.request(
+      `/api/question-bank/taxonomy/suggestions/${encodeURIComponent(runId)}/apply`,
+      {
+        method: 'POST',
+        body: { ...input, policy_version: 'strict-exact-v1' },
+        decode: decodeReviewOperation,
+        signal,
+      },
+    )
+  },
+
+  getReviewOperation(
+    operationId: string,
+    signal?: AbortSignal,
+  ): Promise<TaxonomyReviewOperation> {
+    return apiClient.request(
+      `/api/question-bank/taxonomy/review-operations/${encodeURIComponent(operationId)}`,
+      { decode: decodeReviewOperation, signal },
+    )
+  },
+
+  undoReviewOperation(
+    operationId: string,
+    expectedRevision: number,
+    requestToken: string,
+    signal?: AbortSignal,
+  ): Promise<TaxonomyReviewOperation> {
+    return apiClient.request(
+      `/api/question-bank/taxonomy/review-operations/${encodeURIComponent(operationId)}/undo`,
+      {
+        method: 'POST',
+        body: { expected_revision: expectedRevision, request_token: requestToken },
+        decode: decodeReviewOperation,
         signal,
       },
     )

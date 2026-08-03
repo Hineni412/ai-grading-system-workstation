@@ -99,7 +99,19 @@ def _proposal(
             "question_ref": str(question_id),
         },
     )
-    return dict(result["proposals"][0])
+    proposal = dict(result["proposals"][0])
+    generation_id = f"test:{token}"
+    governance.allocate_observation_sequences(
+        generation_id=generation_id,
+        question_ids=[str(question_id)],
+    )
+    governance.record_successful_observation(
+        question_id=str(question_id),
+        generation_id=generation_id,
+        proposal_ids=[str(proposal["id"])],
+        taxonomy_revision=int(result["taxonomy_revision"]),
+    )
+    return proposal
 
 
 def _question_loader(question_ids):

@@ -19,6 +19,7 @@ from question_bank.relations.suggestion_service import (
     RelationSuggestionService,
     evaluate_relation_predictions,
 )
+from tests.current_knowledge_support import install_current_knowledge
 
 
 GOLD_SET = (
@@ -64,6 +65,7 @@ def suggestion_store(
 ]:
     database = tmp_path / "question-bank.db"
     initialize_database(database)
+    install_current_knowledge(database)
     return (
         database,
         RelationSuggestionService(database),

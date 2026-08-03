@@ -115,13 +115,6 @@ def _collect_baseline_quality_warnings(payload: dict[str, Any]) -> list[str]:
                     text_fields.extend(required)
         for answer_part in answer_parts:
             text_fields.extend(_quality_answer_texts(answer_part))
-        if any(_looks_like_garbled_generated_text(value) for value in text_fields):
-            warnings.append(f"[质量检查-阻断] {qid} 的题干、公式、答案或踩分点中存在疑似乱码")
-        if any(_looks_like_serialized_answer_list(value) for value in text_fields):
-            warnings.append(
-                f"[质量检查-阻断] {qid} 的答案或评分点中混入列表字符串"
-            )
-
         if qtype in {"choice", "fill_blank", "judgement", "true_false", "direct_answer"}:
             if not answer_texts:
                 warnings.append(
@@ -136,11 +129,6 @@ def _collect_baseline_quality_warnings(payload: dict[str, Any]) -> list[str]:
             goals = [str(step.get("core_goal") or "").strip() for step in steps]
             if qtype in {"choice", "fill_blank", "judgement", "true_false", "direct_answer"} and mode == "process_required":
                 warnings.append(f"[质量检查-阻断] {qid} 客观题被错误设置为过程评分")
-            if mode == "visual_construction":
-                visual_requirements = _string_list(part.get("visual_requirements"))
-                meaningful_goals = [goal for goal in goals if goal]
-                if not visual_requirements and not meaningful_goals:
-                    warnings.append(f"[质量检查-阻断] {qid} 作图题缺少具体作图要求")
             if mode not in {"exact_objective", "short_answer_points", "visual_construction"}:
                 continue
             answer_part = answer_parts[index] if index < len(answer_parts) and isinstance(answer_parts[index], dict) else {}
@@ -397,12 +385,6 @@ def collect_generated_config_quality_issues(
             if isinstance(answer_item, dict) and isinstance(answer_item.get("parts"), list)
             else []
         )
-        evidence = _question_evidence_anchors(
-            question,
-            answer_item if isinstance(answer_item, dict) else {},
-            answer_parts,
-        )
-
         if qtype == "fill_blank":
             step_count = sum(
                 len(part.get("steps") or [])
@@ -429,57 +411,24 @@ def collect_generated_config_quality_issues(
             part_id = str(part.get("part_id") or f"第{index + 1}问")
             path = f"rubric.questions[{qid}].parts[{part_id}]"
             steps = [item for item in part.get("steps") or [] if isinstance(item, dict)]
-            if not steps or not all(_step_is_specific(step, evidence) for step in steps):
+            step_signatures = {
+                (
+                    str(step.get("core_goal") or "").strip(),
+                    tuple(_string_list(step.get("required_elements"))),
+                )
+                for step in steps
+                if str(step.get("core_goal") or "").strip()
+                and _string_list(step.get("required_elements"))
+            }
+            if len(step_signatures) < 2:
                 issues.append(
                     _quality_issue(
                         question_id=qid,
-                        code="generic_or_unscorable_step",
+                        code="process_requires_two_steps",
                         path=f"{path}.steps",
-                        expected="每个步骤都指向本题答案中的具体、可独立核验结果",
-                        actual="存在空泛或无法对应本题证据的步骤",
-                        message=f"[质量检查-阻断] {qid}/{part_id} 缺少可独立评分的具体步骤",
-                    )
-                )
-            answer_part = (
-                answer_parts[index]
-                if index < len(answer_parts) and isinstance(answer_parts[index], dict)
-                else {}
-            )
-            milestone_count = _answer_milestone_count(answer_part)
-            if milestone_count >= 2 and len(steps) < milestone_count:
-                issues.append(
-                    _quality_issue(
-                        question_id=qid,
-                        code="process_milestones_collapsed",
-                        path=f"{path}.steps",
-                        expected=f"至少{milestone_count}个与参考答案里独立结果对应的评分点",
-                        actual=f"只有{len(steps)}个评分点",
-                        message=f"[质量检查-阻断] {qid}/{part_id} 多个解题台阶被合并为单个评分点",
-                    )
-                )
-            if qtype == "proof" and not (
-                _meaningful_proof_obligations(part, evidence)
-                or _meaningful_proof_obligations(question, evidence)
-            ):
-                issues.append(
-                    _quality_issue(
-                        question_id=qid,
-                        code="missing_proof_obligation",
-                        path=f"{path}.proof_obligations",
-                        expected="与本题条件、定理或结论对应的具体证明义务",
-                        actual="缺失或只有通用描述",
-                        message=f"[质量检查-阻断] {qid}/{part_id} 缺少具体证明义务",
-                    )
-                )
-            if not _has_specific_deduction_evidence(question, part, steps, evidence):
-                issues.append(
-                    _quality_issue(
-                        question_id=qid,
-                        code="missing_deduction_trigger",
-                        path=f"{path}.deduction_policy",
-                        expected="说明缺少或写错哪个本题证据时该步骤未达成",
-                        actual="缺失或只有通用扣分说明",
-                        message=f"[质量检查-阻断] {qid}/{part_id} 缺少针对本题的具体扣分证据",
+                        expected="至少两个非空且互不重复的结构步骤",
+                        actual=f"只有{len(step_signatures)}个可区分步骤",
+                        message=f"[质量检查-阻断] {qid}/{part_id} 过程题需要至少两个可区分步骤",
                     )
                 )
 

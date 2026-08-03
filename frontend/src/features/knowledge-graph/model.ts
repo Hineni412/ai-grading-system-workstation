@@ -1,40 +1,40 @@
-import type { GraphNode, GraphRow } from '../../api/graph'
+import type { GraphEdge, GraphNode, GraphRelationType } from '../../api/graph'
 
 export type MasteryBand = 'stable' | 'slight' | 'review' | 'weak'
+export type GraphNodeState = MasteryBand | 'missing'
 
-export interface EvidenceLaneNode {
-  knowledgeKey: string
+export interface GraphDisplayNode {
+  stableKey: string
   label: string
-  mastery: number
-  percentLabel: string
-  band: MasteryBand
-  bandLabel: string
-  bandIndex: number
-  orderInBand: number
+  mastery: number | null
+  masteryLabel: string
+  state: GraphNodeState
+  stateLabel: string
+  stateIndex: number
   x: number
   y: number
   size: number
   studentCount: number
-  itemCount: number
+  evidenceCount: number
   deductionCount: number
-}
-
-export interface GroupingTreeNode {
-  name: string
-  knowledgeKey?: string
-  children: GroupingTreeNode[]
 }
 
 export interface GraphSummary {
   total: number
+  relationTotal: number
+  missing: number
   stable: number
   slight: number
   review: number
   weak: number
 }
 
-const BAND_ORDER: MasteryBand[] = ['weak', 'review', 'slight', 'stable']
+export interface GraphPath {
+  nodeKeys: string[]
+  edgeIds: string[]
+}
 
+const STATE_ORDER: GraphNodeState[] = ['missing', 'weak', 'review', 'slight', 'stable']
 const BAND_LABELS: Record<MasteryBand, string> = {
   stable: '稳定',
   slight: '轻微欠缺',
@@ -64,93 +64,144 @@ export function nodeEvidenceSize(itemCount: number): number {
   return Math.min(72, Math.max(28, 24 + Math.sqrt(count) * 6))
 }
 
-function percentLabel(rate: number): string {
-  const percent = Math.round(normalizedMastery(rate) * 1000) / 10
+function masteryLabel(value: number): string {
+  const percent = Math.round(value * 1000) / 10
   return `${Number.isInteger(percent) ? percent.toFixed(0) : percent.toFixed(1)}%`
 }
 
-export function buildEvidenceLaneModel(nodes: GraphNode[]): EvidenceLaneNode[] {
+export function graphNodeState(node: GraphNode): GraphNodeState {
+  return node.mastery.status === 'available' && node.mastery.value !== null
+    ? masteryBand(node.mastery.value)
+    : 'missing'
+}
+
+export function graphNodeStateLabel(state: GraphNodeState): string {
+  return state === 'missing' ? '当前无证据' : masteryBandLabel(state)
+}
+
+export function buildGraphDisplayNodes(nodes: GraphNode[]): GraphDisplayNode[] {
   const ordered = [...nodes].sort((left, right) => {
-    const leftBand = masteryBand(left.average_mastery)
-    const rightBand = masteryBand(right.average_mastery)
-    return (
-      BAND_ORDER.indexOf(leftBand) - BAND_ORDER.indexOf(rightBand) ||
-      left.average_mastery - right.average_mastery ||
-      left.knowledge_label.localeCompare(right.knowledge_label, 'zh-CN') ||
-      left.knowledge_key.localeCompare(right.knowledge_key)
-    )
+    const leftState = graphNodeState(left)
+    const rightState = graphNodeState(right)
+    return STATE_ORDER.indexOf(leftState) - STATE_ORDER.indexOf(rightState)
+      || (left.mastery.value ?? -1) - (right.mastery.value ?? -1)
+      || left.display_name.localeCompare(right.display_name, 'zh-CN')
+      || left.stable_key.localeCompare(right.stable_key)
   })
-  const bandTotals = new Map<MasteryBand, number>()
+  const totals = new Map<GraphNodeState, number>()
   for (const node of ordered) {
-    const band = masteryBand(node.average_mastery)
-    bandTotals.set(band, (bandTotals.get(band) ?? 0) + 1)
+    const state = graphNodeState(node)
+    totals.set(state, (totals.get(state) ?? 0) + 1)
   }
-  const bandStarts = new Map<MasteryBand, number>()
-  let nextBandStart = 64
-  for (const band of BAND_ORDER) {
-    bandStarts.set(band, nextBandStart)
-    const rows = Math.max(1, Math.ceil((bandTotals.get(band) ?? 0) / 10))
-    nextBandStart += rows * 88 + 60
+  const starts = new Map<GraphNodeState, number>()
+  let nextStart = 64
+  for (const state of STATE_ORDER) {
+    starts.set(state, nextStart)
+    nextStart += Math.max(1, Math.ceil((totals.get(state) ?? 0) / 9)) * 92 + 54
   }
-  const bandCounts = new Map<MasteryBand, number>()
+  const counts = new Map<GraphNodeState, number>()
   return ordered.map((node) => {
-    const band = masteryBand(node.average_mastery)
-    const orderInBand = bandCounts.get(band) ?? 0
-    bandCounts.set(band, orderInBand + 1)
+    const state = graphNodeState(node)
+    const order = counts.get(state) ?? 0
+    counts.set(state, order + 1)
+    const mastery = node.mastery.status === 'available' ? node.mastery.value : null
     return {
-      knowledgeKey: node.knowledge_key,
-      label: node.knowledge_label,
-      mastery: normalizedMastery(node.average_mastery),
-      percentLabel: percentLabel(node.average_mastery),
-      band,
-      bandLabel: masteryBandLabel(band),
-      bandIndex: BAND_ORDER.indexOf(band),
-      orderInBand,
-      x: 72 + (orderInBand % 10) * 112,
-      y: (bandStarts.get(band) ?? 64) + Math.floor(orderInBand / 10) * 88,
-      size: nodeEvidenceSize(node.item_count),
-      studentCount: node.student_count,
-      itemCount: node.item_count,
-      deductionCount: node.deduction_count,
+      stableKey: node.stable_key,
+      label: node.display_name,
+      mastery,
+      masteryLabel: mastery === null ? '暂无' : masteryLabel(mastery),
+      state,
+      stateLabel: graphNodeStateLabel(state),
+      stateIndex: STATE_ORDER.indexOf(state),
+      x: 76 + (order % 9) * 126,
+      y: (starts.get(state) ?? 64) + Math.floor(order / 9) * 92,
+      size: nodeEvidenceSize(node.evidence.item_count),
+      studentCount: node.evidence.student_count,
+      evidenceCount: node.evidence.item_count,
+      deductionCount: node.evidence.deduction_count,
     }
   })
 }
 
-export function buildGroupingTree(rows: GraphRow[], scopeLabel: string): GroupingTreeNode {
-  const students = new Map<string, {
-    studentId: number
-    name: string
-    tags: Map<string, string>
-  }>()
-  for (const row of rows) {
-    const key = String(row.student_id)
-    const student = students.get(key) ?? {
-      studentId: row.student_id,
-      name: `${row.student_code} ${row.student_name}`.trim(),
-      tags: new Map<string, string>(),
-    }
-    student.tags.set(row.knowledge_key, row.knowledge_label)
-    students.set(key, student)
+export function summarizeGraph(nodes: GraphNode[], edges: GraphEdge[]): GraphSummary {
+  const summary: GraphSummary = {
+    total: nodes.length,
+    relationTotal: edges.length,
+    missing: 0,
+    stable: 0,
+    slight: 0,
+    review: 0,
+    weak: 0,
   }
-
-  const children = [...students.values()]
-    .sort((left, right) => (
-      left.name.localeCompare(right.name, 'zh-CN') || left.studentId - right.studentId
-    ))
-    .map((student) => ({
-      name: student.name,
-      children: [...student.tags.entries()]
-        .sort(([leftKey, leftLabel], [rightKey, rightLabel]) => (
-          leftLabel.localeCompare(rightLabel, 'zh-CN') || leftKey.localeCompare(rightKey)
-        ))
-        .map(([knowledgeKey, name]) => ({ name, knowledgeKey, children: [] })),
-    }))
-
-  return { name: scopeLabel.trim() || '当前筛选范围', children }
+  for (const node of nodes) summary[graphNodeState(node)] += 1
+  return summary
 }
 
-export function summarizeGraph(nodes: GraphNode[]): GraphSummary {
-  const summary: GraphSummary = { total: nodes.length, stable: 0, slight: 0, review: 0, weak: 0 }
-  for (const node of nodes) summary[masteryBand(node.average_mastery)] += 1
-  return summary
+export function relationTypeLabel(type: GraphRelationType): string {
+  if (type === 'parent') return '子级 → 上位'
+  if (type === 'prerequisite') return '目标 → 先修'
+  return '相关（无方向）'
+}
+
+export function relationVerb(type: GraphRelationType): string {
+  if (type === 'parent') return '属于'
+  if (type === 'prerequisite') return '需要先掌握'
+  return '相关'
+}
+
+export function connectedNodeKeys(
+  edges: GraphEdge[],
+  selectedKey: string,
+  enabledTypes: Set<GraphRelationType>,
+): Set<string> {
+  const result = new Set([selectedKey])
+  for (const edge of edges) {
+    if (!enabledTypes.has(edge.relation_type)) continue
+    if (edge.source_key === selectedKey) result.add(edge.target_key)
+    if (edge.target_key === selectedKey) result.add(edge.source_key)
+  }
+  return result
+}
+
+export function findGraphPath(
+  edges: GraphEdge[],
+  sourceKey: string,
+  targetKey: string,
+  enabledTypes: Set<GraphRelationType>,
+): GraphPath | null {
+  if (sourceKey === targetKey) return { nodeKeys: [sourceKey], edgeIds: [] }
+  const adjacency = new Map<string, Array<{ nodeKey: string; edgeId: string }>>()
+  const add = (from: string, to: string, edgeId: string) => {
+    adjacency.set(from, [...(adjacency.get(from) ?? []), { nodeKey: to, edgeId }])
+  }
+  for (const edge of edges) {
+    if (!enabledTypes.has(edge.relation_type)) continue
+    add(edge.source_key, edge.target_key, edge.relation_key)
+    if (edge.relation_type === 'related') add(edge.target_key, edge.source_key, edge.relation_key)
+  }
+  const queue = [sourceKey]
+  const previous = new Map<string, { nodeKey: string; edgeId: string }>()
+  const visited = new Set([sourceKey])
+  while (queue.length > 0) {
+    const current = queue.shift()!
+    for (const next of adjacency.get(current) ?? []) {
+      if (visited.has(next.nodeKey)) continue
+      visited.add(next.nodeKey)
+      previous.set(next.nodeKey, { nodeKey: current, edgeId: next.edgeId })
+      if (next.nodeKey === targetKey) {
+        const nodeKeys = [targetKey]
+        const edgeIds: string[] = []
+        let cursor = targetKey
+        while (cursor !== sourceKey) {
+          const step = previous.get(cursor)!
+          edgeIds.unshift(step.edgeId)
+          nodeKeys.unshift(step.nodeKey)
+          cursor = step.nodeKey
+        }
+        return { nodeKeys, edgeIds }
+      }
+      queue.push(next.nodeKey)
+    }
+  }
+  return null
 }

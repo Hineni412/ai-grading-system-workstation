@@ -25,6 +25,7 @@ from backend.api.schemas.config import (
     ConfigSourceGenerationRequest,
     ConfigSourceResponse,
     ConfigSourceSubmissionResponse,
+    ConfigGenerationQuestionStatesResponse,
     ConfigEditorRefineRequest,
     ConfigEditorResponse,
     ConfigEditorSaveRequest,
@@ -53,7 +54,10 @@ from backend.jobs.config_generation import (
     stage_config_generation_input,
     stage_config_refine_input,
     stage_config_source_generation_input,
+    load_config_generation_input,
+    read_config_generation_draft,
 )
+from backend.config_generation.status_projection import project_question_states
 from backend.jobs.manager import JobManager, UnsupportedJobTypeError
 from backend.jobs.store import (
     ConfigRequestTokenConflictError,
@@ -860,6 +864,91 @@ def get_latest_config_generation_job(
             "Config generation job not found",
         )
     return _job_response(job)
+
+
+@router.get(
+    "/sessions/{session_id}/config/generation-jobs/{job_id}/question-states",
+    response_model=ConfigGenerationQuestionStatesResponse,
+    responses={404: {"model": ErrorResponse, "description": "Job not found"}},
+)
+def get_config_generation_question_states(
+    session_id: int,
+    job_id: int,
+    db: GradingRepositoryAccess = Depends(get_grading_db),
+    manager: JobManager = Depends(get_job_manager),
+    upload_config_dir: Path = Depends(get_upload_config_dir),
+    source_service: ConfigSourceService = Depends(get_config_source_service),
+) -> ConfigGenerationQuestionStatesResponse:
+    _require_active_session(db, session_id)
+    job = manager.store.get_job(job_id)
+    if (
+        job is None
+        or job.job_type != "config_generation"
+        or int(job.payload.get("session_id") or 0) != int(session_id)
+    ):
+        raise ApiError(404, "config_generation_job_not_found", "Config generation job not found")
+    draft = read_config_generation_draft(upload_config_dir, job.id)
+    question_ids: list[str] = []
+    if draft is not None:
+        meta = draft.get("meta") if isinstance(draft.get("meta"), dict) else {}
+        question_ids = [
+            str(item.get("question_id") or "").strip()
+            for item in meta.get("question_states") or []
+            if isinstance(item, dict) and str(item.get("question_id") or "").strip()
+        ]
+    input_id = str(job.payload.get("input_id") or "").strip()
+    if not question_ids and input_id:
+        try:
+            staged = load_config_generation_input(upload_config_dir, input_id)
+            blocks = staged.get("confirmed_blocks")
+            if isinstance(blocks, list):
+                question_ids = [
+                    str(item.get("question_id") or "").strip()
+                    for item in blocks
+                    if isinstance(item, dict) and str(item.get("question_id") or "").strip()
+                ]
+            if not question_ids and str(staged.get("source_id") or ""):
+                source = source_service.load_for_generation(
+                    session_id=session_id,
+                    source_id=str(staged.get("source_id") or ""),
+                    source_revision=str(staged.get("source_revision") or ""),
+                )
+                excluded = {
+                    str(item.get("question_id") or "")
+                    for item in staged.get("decisions") or []
+                    if isinstance(item, dict) and item.get("excluded") is True
+                }
+                question_ids = [
+                    item.question_id for item in source.questions
+                    if item.question_id not in excluded
+                ]
+        except Exception:
+            question_ids = []
+    result_questions = job.result.get("questions") if isinstance(job.result, dict) else None
+    if not question_ids and isinstance(result_questions, list):
+        question_ids = [
+            str(item.get("question_id") or "").strip()
+            for item in result_questions
+            if isinstance(item, dict) and str(item.get("question_id") or "").strip()
+        ]
+    projection_payload = draft or {
+        "meta": {
+            "question_states": result_questions or [],
+            "failed_question_ids": (
+                job.result.get("failed_question_ids", [])
+                if isinstance(job.result, dict)
+                else []
+            ),
+        }
+    }
+    return ConfigGenerationQuestionStatesResponse(
+        job_id=job.id,
+        questions=project_question_states(
+            question_ids,
+            projection_payload,
+            job_status=job.status,
+        ),
+    )
 
 
 @router.get(

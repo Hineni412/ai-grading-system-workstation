@@ -6,10 +6,10 @@ import unicodedata
 from pathlib import Path
 from typing import Any, Mapping
 
+from question_bank.current_knowledge import CurrentKnowledgeResolver
 from question_bank.database.schema import connect, initialize_database
 from question_bank.models.question import ALLOWED_TAG_TYPES, QuestionCreate, QuestionUpdate, TagCreate
 from question_bank.models.tag_schema import TagAnalysis
-from question_bank.taxonomy.registry import CANONICAL_KNOWLEDGE, canonicalize_knowledge_values
 from question_bank.parsers.type_detector import detect_question_type
 
 TAG_ANALYSIS_MAP = {
@@ -913,8 +913,10 @@ class QuestionService:
         edited_fields: set[str] | None = None,
         model_name: str | None = None,
         confidence: float | None = None,
+        taxonomy_governance: Any | None = None,
     ) -> bool:
         self.initialize_database()
+        resolver = CurrentKnowledgeResolver.from_active_database(self.db_path)
         with connect(self.db_path) as conn:
             question = conn.execute(
                 "SELECT id, answer_text FROM questions WHERE id = ? AND is_deleted = 0",
@@ -944,6 +946,8 @@ class QuestionService:
                 confidence=resolved_confidence,
                 edited_fields=edited_fields or set(),
                 model_name=_clean_optional(model_name),
+                resolver=resolver,
+                taxonomy_governance=taxonomy_governance,
             )
             conn.executemany(
                 """
@@ -1054,6 +1058,8 @@ def _tag_analysis_rows(
     confidence: float,
     edited_fields: set[str],
     model_name: str | None,
+    resolver: CurrentKnowledgeResolver,
+    taxonomy_governance: Any | None = None,
 ) -> list[tuple[int, str, str, float, str, str | None]]:
     rows: list[tuple[int, str, str, float, str, str | None]] = []
     payload = analysis.to_dict()
@@ -1062,23 +1068,42 @@ def _tag_analysis_rows(
         values = payload.get(field_name)
         if isinstance(values, str):
             values = [values] if values.strip() else []
+        if field_name == "knowledge_points":
+            governed_values: list[str] = []
+            for value in values or []:
+                term = resolver.canonical_term(value)
+                if term is not None:
+                    governed_values.append(term[1])
+                    continue
+                if taxonomy_governance is None:
+                    continue
+                approved = taxonomy_governance.resolve_teacher_term(
+                    "knowledge", value
+                )
+                if approved is not None:
+                    governed_values.append(str(approved["name"]))
+            values = list(dict.fromkeys(governed_values))
         rows.extend((question_id, tag_type, tag_value, confidence, source, model_name if source == "ai" else None) for tag_value in values or [])
-    # canonical_knowledge_id：优先采用 AI 受控产出（校验在 registry 中），无效则回退到派生匹配。
-    canonical_id = _resolve_canonical_id(analysis)
+    canonical_id = _resolve_canonical_id(analysis, resolver)
     if canonical_id:
         rows.append((question_id, "canonical_knowledge_id", canonical_id, confidence, "taxonomy", model_name))
     return rows
 
 
-def _resolve_canonical_id(analysis: TagAnalysis) -> str:
-    """优先用 AI 给的 canonical_knowledge_id（须在 registry 中），否则回退派生。"""
-    candidate = (analysis.canonical_knowledge_id or "").strip().casefold()
-    if candidate:
-        for item in CANONICAL_KNOWLEDGE:
-            if item.canonical_id.casefold() == candidate:
-                return item.canonical_id
-    derived = canonicalize_knowledge_values(analysis.knowledge_points)
-    return derived.canonical_id if derived is not None else ""
+def _resolve_canonical_id(
+    analysis: TagAnalysis,
+    resolver: CurrentKnowledgeResolver,
+) -> str:
+    """Return only a governed current fine-term ID; never use old registry."""
+
+    for value in (
+        analysis.canonical_knowledge_id,
+        *analysis.knowledge_points,
+    ):
+        term = resolver.canonical_term(value)
+        if term is not None:
+            return term[0]
+    return ""
 
 
 def _analysis_from_tagged_question(question: Mapping[str, Any]) -> tuple[TagAnalysis, str | None]:
