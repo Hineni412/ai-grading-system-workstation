@@ -1100,6 +1100,74 @@ def test_semester_mapping_configuration_removed_after_preflight_is_specific(
     assert "calling_model" not in stages
 
 
+def test_semester_mapping_parameter_rejection_allows_manual_new_request(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths, base_service = _migrated_service(tmp_path, monkeypatch)
+    semester, _lesson_ids = _semester(base_service)
+    version, _created = base_service.register_material_file(
+        request_token="mapping-parameter-file",
+        path=_pdf(tmp_path / "parameter-workbook.pdf", ["L1"]),
+        display_name="合成参数拒绝教辅",
+    )
+    record, _created = base_service.attach_semester_material(
+        semester.id,
+        request_token="mapping-parameter-attach",
+        material_version_id=version.id,
+        material_role="exercise_workbook",
+    )
+    base_service.parse_material_version(version.id)
+
+    class _ParameterFailureModel:
+        def is_available(self) -> bool:
+            return True
+
+        def generate(
+            self,
+            *,
+            operation_id: str,
+            semester_snapshot: dict[str, object],
+            dispatch_callback: Callable[[], None] | None = None,
+        ) -> dict[str, object]:
+            assert dispatch_callback is not None
+            dispatch_callback()
+            raise RuntimeError("unsupported parameter max_tokens")
+
+    service = TeachingPrepService(
+        paths.workspace_dir("teaching-prep"),
+        semester_mapping_model_adapter=_ParameterFailureModel(),
+    )
+    stages: list[str] = []
+
+    with pytest.raises(
+        TeachingPrepRetryAvailableError,
+        match="parameter is incompatible",
+    ):
+        service.generate_semester_mapping_proposal(
+            semester.id,
+            operation_id="semester-mapping-parameter-0001",
+            material_record_ids=[record.id],
+            progress_callback=stages.append,
+        )
+
+    assert "calling_model" in stages
+    with service.database.connect() as connection:
+        row = connection.execute(
+            """
+            SELECT status, error_code
+            FROM teaching_prep_operations
+            WHERE operation_id = ?
+            """,
+            ("semester-mapping-parameter-0001",),
+        ).fetchone()
+    assert row is not None
+    assert dict(row) == {
+        "status": "failed",
+        "error_code": "semester_mapping_model_parameter_incompatible",
+    }
+
+
 def test_indeterminate_semester_mapping_model_failure_blocks_a_new_call(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

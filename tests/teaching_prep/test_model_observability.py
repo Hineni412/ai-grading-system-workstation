@@ -195,6 +195,17 @@ def test_active_profile_mapping_call_is_visible_in_ai_diagnostics(
             "semester_mapping_model_response_truncated",
         ),
         (
+            {
+                "choices": [
+                    {
+                        "finish_reason": "stop",
+                        "message": {"content": '{"tree":['},
+                    }
+                ]
+            },
+            "semester_mapping_model_response_invalid_json",
+        ),
+        (
             {"choices": [{"message": {"content": "[]"}}]},
             "semester_mapping_model_response_invalid_type",
         ),
@@ -328,6 +339,35 @@ def test_mapping_validation_assigns_global_machine_keys_locally() -> None:
     ]
 
 
+def test_mapping_validation_rejects_empty_lesson_sections() -> None:
+    raw = {
+        "tree": [
+            {
+                "key": "chapter_1",
+                "title": "第一章",
+                "sections": [
+                    {
+                        "key": "section_1",
+                        "title": "第一节",
+                        "lessons": [],
+                    }
+                ],
+            }
+        ],
+        "mappings": [],
+        "uncertainties": ["资料不足"],
+    }
+
+    with pytest.raises(
+        TeachingPrepValidationError,
+        match="at least one lesson",
+    ):
+        validate_semester_mapping_payload(
+            raw,
+            snapshot={"lessons": [], "materials": []},
+        )
+
+
 def test_mapping_adapter_does_not_report_dispatch_without_client_transport() -> None:
     gateway = SimpleNamespace(
         chat_completions=lambda **kwargs: kwargs["client"].chat.completions.create()
@@ -375,6 +415,10 @@ def test_mapping_adapter_does_not_report_dispatch_without_client_transport() -> 
         (
             "semester mapping model configuration is unavailable",
             "当前备课模型配置不可用，请先检查“大模型 API”设置。",
+        ),
+        (
+            "semester mapping model request parameter is incompatible",
+            "当前模型不接受目录请求参数，请检查模型配置后手动生成。",
         ),
     ],
 )
