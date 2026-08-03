@@ -24,6 +24,10 @@ _NUMERIC_DATES = (
     re.compile(r"(?<!\d)(?:(?P<year>20\d{2})\s*年\s*)?(?P<month>\d{1,2})\s*月\s*(?P<day>\d{1,2})\s*(?:日|号)(?!\d)"),
     re.compile(r"(?<!\d)(?:(?P<year>20\d{2})[./-])?(?P<month>\d{1,2})[./-](?P<day>\d{1,2})(?!\d)"),
 )
+_CHINESE_DATE = re.compile(
+    r"(?P<month>[一二三四五六七八九十]{1,3})月"
+    r"(?P<day>[一二三四五六七八九十]{1,3})(?:日|号)"
+)
 _RELATIVE_DAY = re.compile(r"今天|明天|后天")
 _RELATIVE_WEEKDAY = re.compile(r"(本周|这周|下周)(?:周|星期)?([一二三四五六日天])")
 _INCOMPLETE_WEEK = re.compile(r"(本周|这周|下周)(?!\s*(?:周|星期)?[一二三四五六日天])")
@@ -58,6 +62,20 @@ def _clean_text(value: str, *, maximum: int = 4000) -> str:
     return clean
 
 
+def _chinese_number(value: str) -> int | None:
+    digits = {"一": 1, "二": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9}
+    if value in digits:
+        return digits[value]
+    if value == "十":
+        return 10
+    match = re.fullmatch(r"(?:(?P<tens>[二三])?十)(?P<ones>[一二三四五六七八九])?", value)
+    if match is None:
+        return None
+    tens = digits.get(str(match.group("tens") or ""), 1)
+    ones = digits.get(str(match.group("ones") or ""), 0)
+    return (tens * 10) + ones
+
+
 def interpret_local_date(
     text: str,
     *,
@@ -87,6 +105,22 @@ def interpret_local_date(
         try:
             value = date(year, month, day)
             if not year_text and selected is None and value < reference:
+                value = date(year + 1, month, day)
+        except ValueError as exc:
+            raise VaultError("home_intake_date_invalid", "文字中的日期不是有效年月日", status_code=422) from exc
+        candidates.append((value, "explicit_numeric"))
+
+    for match in _CHINESE_DATE.finditer(text):
+        month = _chinese_number(match.group("month"))
+        day = _chinese_number(match.group("day"))
+        if month is None or day is None:
+            raise VaultError("home_intake_date_invalid", "文字中的日期不是有效年月日", status_code=422)
+        year = reference.year
+        if selected and (selected.month, selected.day) == (month, day):
+            year = selected.year
+        try:
+            value = date(year, month, day)
+            if selected is None and value < reference:
                 value = date(year + 1, month, day)
         except ValueError as exc:
             raise VaultError("home_intake_date_invalid", "文字中的日期不是有效年月日", status_code=422) from exc
@@ -747,7 +781,7 @@ class HomeIntake:
         recommended_route: str,
     ) -> dict[str, object]:
         clean = draft_text.strip()
-        findings = SensitiveContentPolicy.model_output_findings(clean)
+        findings = SensitiveContentPolicy.sensitive_model_output_findings(clean)
         if findings:
             return HomeIntake._invalid_sensitive_result(
                 state="unsafe_output_suppressed",
@@ -779,7 +813,7 @@ class HomeIntake:
             return HomeIntake._invalid_sensitive_result(
                 error_category="unsupported_result_shape",
             )
-        decoded_findings = SensitiveContentPolicy.model_output_findings(
+        decoded_findings = SensitiveContentPolicy.sensitive_model_output_findings(
             json.dumps(decoded, ensure_ascii=False, sort_keys=True)
         )
         if decoded_findings:

@@ -427,6 +427,39 @@ def test_sensitive_or_decision_making_model_output_is_rejected(
     assert planned["plan"] is None
 
 
+def test_arbitrary_placeholder_year_is_not_repaired(tmp_path: Path) -> None:
+    graph, gateway = _graph(
+        tmp_path,
+        result={
+            "kind": "plan",
+            "questions": [],
+            "assumptions": [],
+            "nodes": [
+                {
+                    "id": "goal",
+                    "kind": "goal",
+                    "title": "完成开学准备",
+                    "details": None,
+                    "status": "pending",
+                    "due_date": "999X-08-25",
+                }
+            ],
+            "edges": [],
+        },
+    )
+    preview = graph.prepare_plan(text="九月一日开学", due_date="2026-09-01")
+
+    planned = graph.invoke_plan(
+        preview_id=str(preview["preview_id"]),
+        fingerprint=str(preview["fingerprint"]),
+        operation_id="work-invalid-placeholder-year-001",
+    )
+
+    assert planned["state"] == "invalid_result"
+    assert planned["plan"] is None
+    assert len(gateway.calls) == 1
+
+
 @pytest.mark.parametrize(
     "text",
     (
