@@ -63,6 +63,10 @@ def validate_semester_mapping_payload(
                 f"section_{chapter_index:03d}_{section_index:03d}"
             )
             lessons = _list(section.get("lessons"), "lessons")
+            if not lessons:
+                raise TeachingPrepValidationError(
+                    "a proposed section must contain at least one lesson"
+                )
             if len(lessons) > 30:
                 raise TeachingPrepValidationError(
                     "too many proposed lessons in a section"

@@ -73,6 +73,9 @@ _SEMESTER_MAPPING_PUBLIC_ERRORS = {
     "model configuration is unavailable": (
         "当前备课模型配置不可用，请先检查“大模型 API”设置。"
     ),
+    "request parameter is incompatible": (
+        "当前模型不接受目录请求参数，请检查模型配置后手动生成。"
+    ),
 }
 _CONFIG_TRUNCATION_PUBLIC_ERRORS = {
     "模型因输出长度上限停止": (
