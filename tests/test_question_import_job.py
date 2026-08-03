@@ -555,6 +555,57 @@ def test_question_import_job_new_upload_of_same_content_reuses_fingerprinted_pap
         assert conn.execute("SELECT COUNT(*) FROM questions").fetchone()[0] == 2
 
 
+def test_question_import_job_reports_trash_collision_as_restore_required(
+    tmp_path: Path,
+) -> None:
+    service, request = _service_and_request(tmp_path)
+    initialize_database(service.db_path)
+    with connect(service.db_path) as conn:
+        paper_id = int(
+            conn.execute(
+                """
+                INSERT INTO papers (title, source_file, import_status)
+                VALUES (?, ?, 'deleted')
+                """,
+                ("测试试卷", "question_bank/raw_papers/测试试卷.docx"),
+            ).lastrowid
+        )
+
+    def trash_collision_importer(scanned, _database_path, **_kwargs):
+        source = str(scanned[0].source_file)
+        return BatchImportResult(
+            [
+                PaperImportFileResult(
+                    source,
+                    "duplicate_in_trash",
+                    paper_id=paper_id,
+                )
+            ],
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+        )
+
+    context, _store = _context(tmp_path / "job", {"request_id": request.request_id})
+    result = run_question_import_job(
+        context=context,
+        question_bank_db_path=service.db_path,
+        data_root=service.data_root,
+        write_service=service,
+        importer=trash_collision_importer,
+    )
+
+    assert result["outcome"] == "failed"
+    assert result["failure_category"] == "duplicate_in_trash"
+    assert result["restore_required"] is True
+    assert result["restore_paper_id"] == paper_id
+    assert result["retryable"] is False
+    assert result["successful_question_ids"] == []
+
+
 def test_question_import_job_serializes_different_requests_for_same_content(
     tmp_path: Path,
 ) -> None:

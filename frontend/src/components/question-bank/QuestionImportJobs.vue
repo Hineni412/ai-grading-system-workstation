@@ -201,6 +201,12 @@ function downloadFailures(job: JobResponse): void {
             跳过 {{ safeCount(job.result, 'skipped_complete_count') }}，
             失败 {{ safeCount(job.result, 'failed_count') }}。
           </p>
+          <p
+            v-if="job.job_type === 'question_import' && job.result.restore_required === true"
+            class="qb-feedback is-warning"
+          >
+            相同试卷已在回收站，请从题库回收站恢复原试卷。系统没有重复创建题目，也不会自动调用 AI。
+          </p>
           <p v-if="job.error" class="qb-feedback is-error">{{ job.error }}</p>
           <p v-if="jobStore.syncErrors[job.id]" class="qb-feedback is-error" role="alert">
             {{ jobStore.syncErrors[job.id]?.message }}

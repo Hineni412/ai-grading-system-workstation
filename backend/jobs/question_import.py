@@ -97,7 +97,11 @@ def _run_question_import_job_locked(
     successful_sources = [
         item.source_file
         for item in result.files
-        if item.status != "failed" and str(item.source_file or "").strip()
+        if item.status not in {"failed", "duplicate_in_trash"}
+        and str(item.source_file or "").strip()
+    ]
+    trash_collisions = [
+        item for item in result.files if item.status == "duplicate_in_trash"
     ]
     question_ids = sorted(
         set(_active_question_ids(Path(question_bank_db_path), successful_sources))
@@ -109,12 +113,15 @@ def _run_question_import_job_locked(
         )
     )
     context.report(0.9, "question_import", "indexing")
-    failed_count = int(result.failed_files)
-    outcome = "complete" if failed_count == 0 else (
-        "partial" if question_ids else "failed"
-    )
+    failed_count = int(result.failed_files) + len(trash_collisions)
+    if trash_collisions:
+        outcome = "failed"
+    elif failed_count == 0:
+        outcome = "complete"
+    else:
+        outcome = "partial" if question_ids else "failed"
     context.report(1.0, "question_import", outcome)
-    return {
+    public_result: dict[str, object] = {
         "request_id": resource.request_id,
         "outcome": outcome,
         "imported_papers": int(result.imported_papers),
@@ -122,9 +129,19 @@ def _run_question_import_job_locked(
         "failed_count": failed_count,
         "successful_question_ids": question_ids,
         "failed_question_ids": [],
-        "failure_category": "import" if failed_count else "",
-        "retryable": bool(failed_count),
+        "failure_category": (
+            "duplicate_in_trash"
+            if trash_collisions
+            else ("import" if failed_count else "")
+        ),
+        "retryable": bool(failed_count) and not trash_collisions,
     }
+    if trash_collisions:
+        public_result.update(
+            restore_required=True,
+            restore_paper_id=trash_collisions[0].paper_id,
+        )
+    return public_result
 
 
 def _active_question_ids(db_path: Path, source_files: list[str]) -> list[int]:

@@ -57,6 +57,10 @@ class LLMSettings:
     policy_profile: Mapping[str, object] | None = None
 
 
+class LLMResponseFormatError(ValueError):
+    """The provider returned content that is not a usable JSON object."""
+
+
 class LLMOutputTruncatedError(ValueError):
     def __init__(
         self,
@@ -261,6 +265,7 @@ class LLMClient:
         prompt: str,
         model: str | None = None,
         extra_kwargs: dict[str, Any] | None = None,
+        response_format: Mapping[str, Any] | None = None,
         *,
         request_kind: LLMRequestKind = LLMRequestKind.CONFIG_GENERATION,
     ) -> dict[str, Any]:
@@ -273,6 +278,7 @@ class LLMClient:
             messages=[{"role": "user", "content": prompt}],
             expect_json=True,
             extra_kwargs=extra_kwargs,
+            response_format=response_format,
             request_kind=effective_request_kind,
             request_id=request_id,
             _next_attempt=next_attempt,
@@ -285,6 +291,7 @@ class LLMClient:
             retry_messages=retry_messages,
             client=self.config_client,
             extra_kwargs=extra_kwargs,
+            response_format=response_format,
             request_kind=effective_request_kind,
             request_id=request_id,
             _next_attempt=next_attempt,
@@ -295,6 +302,7 @@ class LLMClient:
         prompt: str,
         model: str | None = None,
         extra_kwargs: dict[str, Any] | None = None,
+        response_format: Mapping[str, Any] | None = None,
         *,
         request_kind: LLMRequestKind = LLMRequestKind.CONFIG_GENERATION,
     ) -> dict[str, Any]:
@@ -307,6 +315,7 @@ class LLMClient:
             messages=[{"role": "user", "content": prompt}],
             expect_json=False,
             extra_kwargs=strict_kwargs,
+            response_format=response_format,
             allow_parameter_fallback=False,
             request_kind=LLMRequestKind(request_kind),
             single_request=True,
@@ -383,6 +392,7 @@ class LLMClient:
         client: OpenAI | None = None,
         usage_callback = None,
         extra_kwargs: dict[str, Any] | None = None,
+        response_format: Mapping[str, Any] | None = None,
         request_kind: LLMRequestKind = LLMRequestKind.GRADING,
         request_id: str | None = None,
         _next_attempt: Callable[[], int] | None = None,
@@ -415,6 +425,7 @@ class LLMClient:
                     expect_json=True,
                     usage_callback=usage_callback,
                     extra_kwargs=extra_kwargs,
+                    response_format=response_format,
                     request_kind=request_kind,
                     request_id=logical_request_id,
                     _next_attempt=next_attempt,
@@ -443,6 +454,7 @@ class LLMClient:
                 expect_json=True,
                 usage_callback=usage_callback,
                 extra_kwargs=extra_kwargs,
+                response_format=response_format,
                 request_kind=request_kind,
                 request_id=logical_request_id,
                 _next_attempt=next_attempt,
@@ -461,6 +473,7 @@ class LLMClient:
         expect_json: bool,
         usage_callback = None,
         extra_kwargs: dict[str, Any] | None = None,
+        response_format: Mapping[str, Any] | None = None,
         *,
         allow_parameter_fallback: bool = True,
         request_kind: LLMRequestKind = LLMRequestKind.GRADING,
@@ -483,7 +496,9 @@ class LLMClient:
             if extra_kwargs
             else None
         )
-        if expect_json:
+        if response_format is not None:
+            kwargs["response_format"] = dict(response_format)
+        elif expect_json:
             kwargs["response_format"] = {"type": "json_object"}
             
         if extra_kwargs and extra_kwargs.get("thinking"):
@@ -538,7 +553,10 @@ class LLMClient:
                 allow_retry=allow_gateway_retry and not single_request,
                 planned_parameter_fallback=(
                     allow_parameter_fallback
-                    and ("max_tokens" in kwargs or expect_json)
+                    and (
+                        "max_tokens" in kwargs
+                        or "response_format" in kwargs
+                    )
                 ),
             )
         except Exception as exc:
@@ -553,13 +571,15 @@ class LLMClient:
                     return invoke(
                         "max_completion_tokens",
                         allow_retry=False,
-                        planned_parameter_fallback=expect_json,
+                        planned_parameter_fallback=(
+                            "response_format" in kwargs
+                        ),
                     )
                 except Exception as retry_exc:
                     if not _is_parameter_fallback_error(retry_exc):
                         raise
                     kwargs.pop("max_completion_tokens", None)
-            if expect_json:
+            if "response_format" in kwargs:
                 kwargs.pop("response_format", None)
                 return invoke(
                     "response_format",
@@ -779,7 +799,7 @@ def _parse_single_request_json(completion: Any) -> dict[str, Any]:
         parsed = parse_json_object_locally(text)
     except ValueError as exc:
         if not _looks_truncated_json(text):
-            raise
+            raise LLMResponseFormatError(str(exc)) from exc
         raise LLMOutputTruncatedError(
             finish_reason=str(diagnostics["finish_reason"]),
             response_chars=int(diagnostics["response_chars"]),

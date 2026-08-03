@@ -91,6 +91,7 @@ class PaperImportFileResult:
     answer_match_count: int = 0
     review_count: int = 0
     message: str | None = None
+    paper_id: int | None = None
 
 
 @dataclass(frozen=True)
@@ -293,16 +294,23 @@ def _import_scanned_paper(
     source_value = stored_source_file or str(path)
     fingerprint = _file_fingerprint(path)
     with connect(db_path) as conn:
-        if _paper_exists(
+        collision = _find_paper_collision(
             conn,
             fingerprint=fingerprint,
             source_file=source_value,
             source_title=source_title,
-        ):
+        )
+        if collision is not None:
+            paper_id, is_deleted = collision
             return PaperImportFileResult(
                 source_file=source_value,
-                status="duplicate",
-                message="paper already imported",
+                status="duplicate_in_trash" if is_deleted else "duplicate",
+                paper_id=paper_id,
+                message=(
+                    "matching paper is in trash; restore it instead of importing again"
+                    if is_deleted
+                    else "paper already imported"
+                ),
             )
 
     extracted = _extract_paper(path)
@@ -402,6 +410,7 @@ def _import_scanned_paper(
     return PaperImportFileResult(
         source_file=source_value,
         status=import_status,
+        paper_id=paper_id,
         question_count=len(parsed.questions),
         answer_match_count=parsed.answer_match_count,
         review_count=parsed.review_count,
@@ -435,6 +444,57 @@ def _extract_paper(path: Path):
     return import_docx(path)
 
 
+def _find_paper_collision(
+    conn,
+    *,
+    fingerprint: str | None,
+    source_file: str,
+    source_title: str | None = None,
+) -> tuple[int, bool] | None:
+    raw_title = source_title or Path(source_file).stem
+    clean_title = re.sub(r'_\d{8}_\d{6}$', '', raw_title).strip()
+    if fingerprint:
+        row = conn.execute(
+            """
+            SELECT id, COALESCE(import_status, '') AS import_status
+            FROM papers
+            WHERE content_fingerprint = ?
+            ORDER BY CASE WHEN COALESCE(import_status, '') = 'deleted' THEN 1 ELSE 0 END,
+                     id
+            LIMIT 1
+            """,
+            (fingerprint,),
+        ).fetchone()
+        if row is None:
+            row = conn.execute(
+                """
+                SELECT id, COALESCE(import_status, '') AS import_status
+                FROM papers
+                WHERE COALESCE(content_fingerprint, '') = ''
+                  AND (source_file = ? OR title = ? OR title LIKE ?)
+                ORDER BY CASE WHEN COALESCE(import_status, '') = 'deleted' THEN 1 ELSE 0 END,
+                         id
+                LIMIT 1
+                """,
+                (source_file, clean_title, f"{clean_title}_%"),
+            ).fetchone()
+    else:
+        row = conn.execute(
+            """
+            SELECT id, COALESCE(import_status, '') AS import_status
+            FROM papers
+            WHERE source_file = ? OR title = ? OR title LIKE ?
+            ORDER BY CASE WHEN COALESCE(import_status, '') = 'deleted' THEN 1 ELSE 0 END,
+                     id
+            LIMIT 1
+            """,
+            (source_file, clean_title, f"{clean_title}_%"),
+        ).fetchone()
+    if row is None:
+        return None
+    return int(row["id"]), str(row["import_status"]) == "deleted"
+
+
 def _paper_exists(
     conn,
     *,
@@ -442,19 +502,12 @@ def _paper_exists(
     source_file: str,
     source_title: str | None = None,
 ) -> bool:
-    raw_title = source_title or Path(source_file).stem
-    clean_title = re.sub(r'_\d{8}_\d{6}$', '', raw_title).strip()
-    if fingerprint:
-        row = conn.execute(
-            "SELECT id FROM papers WHERE (content_fingerprint = ? OR title = ? OR title LIKE ?) AND COALESCE(import_status, '') <> 'deleted' LIMIT 1",
-            (fingerprint, clean_title, f"{clean_title}_%"),
-        ).fetchone()
-    else:
-        row = conn.execute(
-            "SELECT id FROM papers WHERE (source_file = ? OR title = ? OR title LIKE ?) AND COALESCE(import_status, '') <> 'deleted' LIMIT 1",
-            (source_file, clean_title, f"{clean_title}_%"),
-        ).fetchone()
-    return row is not None
+    return _find_paper_collision(
+        conn,
+        fingerprint=fingerprint,
+        source_file=source_file,
+        source_title=source_title,
+    ) is not None
 
 
 def _file_fingerprint(path: Path) -> str | None:
