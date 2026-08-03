@@ -221,6 +221,18 @@ class VaultService:
             self.session_key,
             self.projections,
         )
+        from .class_roster_service import ClassRosterService
+        from .existing_student_roster import SqliteExistingStudentRosterSource
+
+        self.class_roster = ClassRosterService(
+            self.database,
+            self.repository,
+            self.session_key,
+            self.support,
+            SqliteExistingStudentRosterSource(
+                Path(getattr(context.paths, "db_path", context.root / "grading.db"))
+            ),
+        )
         self.student_cards = StudentCardService(
             self.database,
             self.repository,
@@ -1402,6 +1414,14 @@ class VaultService:
             self.repository,
             self.session_key,
             self.sop,
+            self.projections,
+        )
+        from .home_intake_finalizer import HomeIntakeFinalizer
+
+        self.home_intake_finalizer = HomeIntakeFinalizer(
+            self.home_intake,
+            self.sop_baselines,
+            self.affairs,
             self.projections,
         )
         if hasattr(self, "projections"):

@@ -80,54 +80,14 @@ class SupportRecordService:
                 token=token,
                 subject_id=str(replay["subject_id"]),
             )
-        source_id = self._text(source_student_id, "来源学生编号", 240)
-        clean_name = self._text(display_name, "显示名称", 240)
-        fingerprint = self._subject_fingerprint(vmk, source_id)
-        with closing(self.database.connect()) as connection:
-            existing = connection.execute(
-                """
-                SELECT subject_id FROM student_subject_links
-                WHERE source_fingerprint = ?
-                """,
-                (fingerprint,),
-            ).fetchone()
-        if existing is not None:
-            return self.get_subject(
-                token=token,
-                subject_id=str(existing["subject_id"]),
-            )
-        subject_id = uuid4().hex
-        object_id = f"student-subject-{subject_id}"
-        timestamp = _iso()
-        payload = {
-            "source_student_id": source_id,
-            "display_name": clean_name,
-            "class_label": str(class_label or "").strip() or None,
-            "identity_snapshot_at": timestamp,
-        }
         with closing(self.database.connect()) as connection:
             with connection:
-                self.repository.put(
+                subject_id = self.ensure_subject_in_connection(
                     connection,
                     vmk=vmk,
-                    object_id=object_id,
-                    object_type="student_subject",
-                    payload=payload,
-                )
-                connection.execute(
-                    """
-                    INSERT INTO student_subject_links (
-                        subject_id, source_fingerprint, payload_object_id,
-                        state, created_at, updated_at
-                    ) VALUES (?, ?, ?, 'active', ?, ?)
-                    """,
-                    (
-                        subject_id,
-                        fingerprint,
-                        object_id,
-                        timestamp,
-                        timestamp,
-                    ),
+                    source_student_id=source_student_id,
+                    display_name=display_name,
+                    class_label=class_label,
                 )
                 self._remember(
                     connection,
@@ -136,6 +96,52 @@ class SupportRecordService:
                     {"subject_id": subject_id},
                 )
         return self.get_subject(token=token, subject_id=subject_id)
+
+    def ensure_subject_in_connection(
+        self,
+        connection: Any,
+        *,
+        vmk: bytes,
+        source_student_id: str,
+        display_name: str,
+        class_label: str | None,
+    ) -> str:
+        """Return one identity while leaving commit/rollback to the caller."""
+        source_id = self._text(source_student_id, "来源学生编号", 240)
+        clean_name = self._text(display_name, "显示名称", 240)
+        fingerprint = self._subject_fingerprint(vmk, source_id)
+        existing = connection.execute(
+            "SELECT subject_id FROM student_subject_links WHERE source_fingerprint = ?",
+            (fingerprint,),
+        ).fetchone()
+        if existing is not None:
+            return str(existing["subject_id"])
+
+        subject_id = uuid4().hex
+        object_id = f"student-subject-{subject_id}"
+        timestamp = _iso()
+        self.repository.put(
+            connection,
+            vmk=vmk,
+            object_id=object_id,
+            object_type="student_subject",
+            payload={
+                "source_student_id": source_id,
+                "display_name": clean_name,
+                "class_label": str(class_label or "").strip() or None,
+                "identity_snapshot_at": timestamp,
+            },
+        )
+        connection.execute(
+            """
+            INSERT INTO student_subject_links (
+                subject_id, source_fingerprint, payload_object_id,
+                state, created_at, updated_at
+            ) VALUES (?, ?, ?, 'active', ?, ?)
+            """,
+            (subject_id, fingerprint, object_id, timestamp, timestamp),
+        )
+        return subject_id
 
     def get_subject(self, *, token: str, subject_id: str) -> dict[str, object]:
         vmk = self._key_provider(token)
@@ -1419,6 +1425,24 @@ class SupportRecordService:
                 object_ids = {
                     str(subject["payload_object_id"]),
                 }
+                linked_affair_participants = connection.execute(
+                    """
+                    SELECT p.participant_id, p.payload_object_id
+                    FROM affair_student_links l
+                    JOIN affair_participants p
+                      ON p.participant_id = l.participant_id
+                    WHERE l.subject_id = ?
+                    """,
+                    (subject_id,),
+                ).fetchall()
+                linked_affair_participant_ids = [
+                    str(row["participant_id"])
+                    for row in linked_affair_participants
+                ]
+                object_ids.update(
+                    str(row["payload_object_id"])
+                    for row in linked_affair_participants
+                )
                 object_ids.update(
                     str(row[0])
                     for row in connection.execute(
@@ -1615,6 +1639,22 @@ class SupportRecordService:
                         "DELETE FROM sensitive_work_groups WHERE group_id = ?",
                         [(group_id,) for group_id in projection_group_ids],
                     )
+                connection.execute(
+                    "DELETE FROM affair_student_links WHERE subject_id = ?",
+                    (subject_id,),
+                )
+                if linked_affair_participant_ids:
+                    connection.executemany(
+                        "DELETE FROM affair_participants WHERE participant_id = ?",
+                        [
+                            (participant_id,)
+                            for participant_id in linked_affair_participant_ids
+                        ],
+                    )
+                connection.execute(
+                    "DELETE FROM class_roster_memberships WHERE subject_id = ?",
+                    (subject_id,),
+                )
                 connection.execute(
                     "DELETE FROM student_subject_links WHERE subject_id = ?",
                     (subject_id,),

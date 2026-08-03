@@ -19,6 +19,8 @@ class HomeIntakeDispatchRequest(BaseModel):
 class HomeIntakeFollowUpRequest(BaseModel):
     answer: str = Field(min_length=1, max_length=4000)
     reference_date: str | None = None
+    selected_step_keys: list[str] = Field(default_factory=list, max_length=50)
+    selected_calendar_keys: list[str] = Field(default_factory=list, max_length=50)
 
 
 class HomeIntakeManualFallbackRequest(BaseModel):
@@ -26,6 +28,13 @@ class HomeIntakeManualFallbackRequest(BaseModel):
     operation_id: str = Field(min_length=8, max_length=128)
     title: str | None = Field(default=None, max_length=240)
     due_date: str | None = None
+
+
+class HomeIntakeAdoptRequest(BaseModel):
+    source_operation_id: str = Field(min_length=8, max_length=128)
+    operation_id: str = Field(min_length=8, max_length=128)
+    result_fingerprint: str = Field(min_length=64, max_length=64)
+    subject_ids: list[str] = Field(min_length=1, max_length=50)
 
 
 class HomeIntakePreviewResponse(BaseModel):
@@ -105,6 +114,7 @@ class HomeIntakeManualFallbackResponse(BaseModel):
 
 __all__ = [
     "HomeIntakeDispatchRequest",
+    "HomeIntakeAdoptRequest",
     "HomeIntakeFollowUpRequest",
     "HomeIntakeManualFallbackRequest",
     "HomeIntakeManualFallbackResponse",

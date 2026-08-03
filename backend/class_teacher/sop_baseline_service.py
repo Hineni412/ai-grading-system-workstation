@@ -446,6 +446,43 @@ class SopBaselineService:
     def __init__(self, sop: SopWorkflowService) -> None:
         self.sop = sop
 
+    @staticmethod
+    def preview(template_key: str) -> dict[str, Any]:
+        """Return a detached, local-only baseline for homepage drafting.
+
+        This deliberately does not initialize the vault or persist a template.
+        The homepage can therefore show a useful SOP before the teacher adopts
+        anything, while final save still uses the versioned SOP service.
+        """
+        for baseline in _baselines():
+            if str(baseline["template_key"]) == template_key:
+                return {
+                    **baseline,
+                    "steps": [
+                        {
+                            **step,
+                            "depends_on": list(step.get("depends_on") or []),
+                            "decision_options": list(step.get("decision_options") or []),
+                            "communication_templates": list(
+                                step.get("communication_templates") or []
+                            ),
+                        }
+                        for step in list(baseline.get("steps") or [])
+                    ],
+                    "school_config_gaps": list(
+                        baseline.get("school_config_gaps") or _SCHOOL_GAPS
+                    ),
+                    "workflow_scope": "personal_checklist",
+                }
+        raise KeyError(template_key)
+
+    @staticmethod
+    def previews() -> list[dict[str, Any]]:
+        return [
+            SopBaselineService.preview(str(item["template_key"]))
+            for item in _baselines()
+        ]
+
     def ensure_baselines(
         self,
         *,
