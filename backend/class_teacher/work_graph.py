@@ -894,6 +894,70 @@ class WorkGraph:
                 connection.rollback()
                 raise
 
+    def create_manual_fallback(
+        self,
+        *,
+        source_operation_id: str,
+        title: str,
+        due_date: str | None,
+        operation_id: str,
+    ) -> dict[str, object]:
+        """Persist one teacher-confirmed ordinary node without model dispatch."""
+
+        self._validate_operation_id(source_operation_id)
+        self._validate_operation_id(operation_id)
+        clean_title = self._ordinary_title(title)
+        normalized_due = _iso_date(due_date, label="任务日期")
+        operation_type = self._mutation_operation_type(
+            "work.manual_fallback",
+            node_id=source_operation_id,
+            payload={"title": clean_title, "due_date": normalized_due},
+        )
+        self.database.initialize_schema() if not self.database.exists else None
+        with closing(self.database.connect()) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                replay = self._replay(connection, operation_id, operation_type)
+                if replay is not None:
+                    connection.commit()
+                    return replay
+                prior = self._manual_fallback_for_source(
+                    connection,
+                    source_operation_id,
+                )
+                if prior is not None:
+                    self._remember(connection, operation_id, operation_type, prior)
+                    connection.commit()
+                    return prior
+                node_id = uuid4().hex
+                timestamp = _now()
+                connection.execute(
+                    """
+                    INSERT INTO work_nodes (
+                        node_id, kind, classification, title, details,
+                        status, due_date, revision, created_at, updated_at
+                    ) VALUES (?, 'goal', 'ordinary', ?, NULL, 'pending', ?, 1, ?, ?)
+                    """,
+                    (node_id, clean_title, normalized_due, timestamp, timestamp),
+                )
+                row = connection.execute(
+                    "SELECT * FROM work_nodes WHERE node_id = ?",
+                    (node_id,),
+                ).fetchone()
+                result = {
+                    "created": True,
+                    "manual_fallback": True,
+                    "source_operation_id": source_operation_id,
+                    "node": self._node(row),
+                    "physical_request_count": 0,
+                }
+                self._remember(connection, operation_id, operation_type, result)
+                connection.commit()
+                return result
+            except Exception:
+                connection.rollback()
+                raise
+
     def update_node(
         self,
         *,
@@ -1376,6 +1440,37 @@ class WorkGraph:
             ).encode("utf-8")
         ).hexdigest()
         return f"{prefix}:{fingerprint}"
+
+    @staticmethod
+    def _manual_fallback_for_source(
+        connection: Any,
+        source_operation_id: str,
+    ) -> dict[str, object] | None:
+        rows = connection.execute(
+            """
+            SELECT result_json FROM work_operations
+            WHERE operation_type LIKE 'work.manual_fallback:%'
+            ORDER BY created_at, operation_id
+            """
+        ).fetchall()
+        for row in rows:
+            try:
+                decoded = json.loads(str(row["result_json"]))
+            except json.JSONDecodeError as exc:
+                raise VaultError(
+                    "class_teacher_work_integrity_error",
+                    "普通工作记录未通过完整性校验",
+                    status_code=409,
+                ) from exc
+            if not isinstance(decoded, dict) or decoded.get("manual_fallback") is not True:
+                raise VaultError(
+                    "class_teacher_work_integrity_error",
+                    "普通工作记录未通过完整性校验",
+                    status_code=409,
+                )
+            if str(decoded.get("source_operation_id") or "") == source_operation_id:
+                return decoded
+        return None
 
     @staticmethod
     def _replay(connection: Any, operation_id: str, operation_type: str):
