@@ -191,6 +191,9 @@ def normalize_model_solution_evidence(
     if str(question_type or "").strip().casefold() == "single_choice":
         parts, collapsed_rules = _collapse_single_choice(parts, notes=notes)
         auxiliary_rules.extend(collapsed_rules)
+    elif str(question_type or "").strip().casefold() == "fill_blank":
+        parts, collapsed_rules = _collapse_fill_blank(parts, notes=notes)
+        auxiliary_rules.extend(collapsed_rules)
 
     _regenerate_identities_and_dependencies(parts, notes=notes)
     if schema_version == "question-solution-evidence-v1":
@@ -442,6 +445,62 @@ def _collapse_single_choice(
     ]
     if len(parts) > 1:
         notes.append("已按本地客观题身份合并模型额外生成的非计分小问")
+    return [collapsed], auxiliary
+
+
+def _collapse_fill_blank(
+    parts: Sequence[dict[str, Any]],
+    *,
+    notes: list[str],
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Keep a fill-in question as one objective scoring unit.
+
+    Multiple blanks remain represented by one ordered combined answer.  This
+    prevents a model explanation or intermediate calculation from becoming a
+    separately scored part while retaining every submitted answer fragment.
+    """
+
+    if not parts:
+        return [], []
+    canonical_answers = [
+        _text(part.get("canonical_answer"))
+        or next(iter(_text_list(part.get("accepted_forms"))), "")
+        for part in parts
+    ]
+    canonical_answers = [value for value in canonical_answers if value]
+    primary_source = next(
+        (
+            part
+            for part in parts
+            if _text(part.get("canonical_answer"))
+        ),
+        parts[0],
+    )
+    combined_answer = "；".join(canonical_answers)
+    explanations = _unique_text(
+        [
+            _text(part.get("full_answer"))
+            for part in parts
+            if _text(part.get("full_answer"))
+        ]
+    )
+    primary = dict(primary_source)
+    primary["canonical_answer"] = combined_answer
+    primary["accepted_forms"] = (
+        _text_list(primary_source.get("accepted_forms"))
+        if len(parts) == 1
+        else ([combined_answer] if combined_answer else [])
+    )
+    primary["full_answer"] = "；".join(explanations)
+    collapsed = _collapse_objective_part(primary, notes=notes)
+    auxiliary = [
+        value
+        for part in parts
+        if part is not primary_source
+        for value in _text_list(part.get("deduction_policy"))
+    ]
+    if len(parts) > 1:
+        notes.append("已把填空题的多个模型小问合并为一个最终答案评分单元")
     return [collapsed], auxiliary
 
 
@@ -702,7 +761,7 @@ def _response_mode(value: object, *, question_type: str) -> str:
     if group == "single_choice":
         return "exact_objective"
     if group == "fill_blank":
-        return "short_answer_points"
+        return "exact_objective"
     if group == "construction":
         return "visual_construction"
     if group in {"calculation", "proof"} and _MODE_ALIASES.get(clean) == (

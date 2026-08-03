@@ -75,6 +75,7 @@ from backend.config_generation.normalization import (
 )
 from backend.config_generation.quality import (
     blocking_quality_question_ids,
+    collect_generated_config_quality_issues,
     refresh_generated_config_quality_warnings,
 )
 from session_manager import (
@@ -673,6 +674,7 @@ def _run_config_generation_job_impl(
 
     evidence_artifact_hash = ""
     analysis_artifact: DeferredAnalysisArtifact | None = None
+    local_quality_retry_refs: tuple[str, ...] = ()
     evidence_flow = (
         sync_to_question_bank
         and source_record is not None
@@ -822,6 +824,14 @@ def _run_config_generation_job_impl(
                 sources=sources,
                 curriculum_volume_id=curriculum_volume_id,
                 source_refs=local_quality_retry_refs,
+                validation_issues_by_ref=_quality_issues_by_ref(
+                    existing_payload,
+                    local_quality_retry_refs,
+                ),
+                repair_attempts_by_ref=_quality_repair_attempts_by_ref(
+                    existing_payload,
+                    local_quality_retry_refs,
+                ),
                 checkpoint=evidence_checkpoint,
             )
         elif previous_artifact.bundle.status != "succeeded":
@@ -860,18 +870,27 @@ def _run_config_generation_job_impl(
             structure = analysis_bundle.compose_generated_config(
                 exam_title=str(session.get("name") or "待命名试卷"),
             )
-            context.raise_if_cancelled()
-            client = llm_client_factory()
-            payload = allocate_grading_config_scores(
-                structure,
-                confirmed_blocks,
-                document_text,
-                llm_client=client,
-                model_name=_config_model(client),
-                report=report,
-                q_images=question_images or None,
-                checkpoint=checkpoint,
-            )
+            normalize_new_generated_config_payload(structure)
+            refresh_generated_config_quality_warnings(structure)
+            if blocking_quality_question_ids(structure):
+                # Do not spend a second model request allocating scores for a
+                # structure that is already known to be invalid.  The exact
+                # evidence issues are persisted below and become the repair
+                # contract for the next targeted request.
+                payload = structure
+            else:
+                context.raise_if_cancelled()
+                client = llm_client_factory()
+                payload = allocate_grading_config_scores(
+                    structure,
+                    confirmed_blocks,
+                    document_text,
+                    llm_client=client,
+                    model_name=_config_model(client),
+                    report=report,
+                    q_images=question_images or None,
+                    checkpoint=checkpoint,
+                )
     elif mode == "regenerate_questions":
         client = llm_client_factory()
         raw_regenerate_ids = inputs.get("regenerate_question_ids")
@@ -947,6 +966,11 @@ def _run_config_generation_job_impl(
         )
     normalize_new_generated_config_payload(payload)
     refresh_generated_config_quality_warnings(payload)
+    _refresh_quality_repair_state(
+        payload,
+        previous_payload=existing_payload,
+        retried_refs=local_quality_retry_refs,
+    )
     quality_blocked_ids = blocking_quality_question_ids(payload)
     if quality_blocked_ids and not failed_grading_config_question_ids(payload):
         meta = payload.setdefault("meta", {})
@@ -997,6 +1021,15 @@ def _run_config_generation_job_impl(
     summary["question_bank_sync_state"] = (
         "waiting_for_config" if sync_to_question_bank else "not_requested"
     )
+    repair_meta = payload.get("meta") if isinstance(payload, dict) else None
+    stagnated_ids = (
+        list(repair_meta.get("quality_repair_stagnated_question_ids") or [])
+        if isinstance(repair_meta, dict)
+        else []
+    )
+    if stagnated_ids:
+        summary["quality_repair_stagnated_question_ids"] = stagnated_ids
+        summary["retryable"] = False
     if (
         failed_ids
         or uncertain_ids
@@ -1737,7 +1770,149 @@ def _local_quality_retry_source_refs(
     }
     if not selected or not set(selected).issubset(local_refs):
         return ()
+    repair_state = meta.get("quality_repair_state")
+    repair_state = repair_state if isinstance(repair_state, dict) else {}
+    blocked_refs = []
+    for reference in selected:
+        state = repair_state.get(reference)
+        if not isinstance(state, dict):
+            continue
+        attempts = int(state.get("attempts") or 0)
+        if bool(state.get("stagnated")) or attempts >= 2:
+            blocked_refs.append(reference)
+    if blocked_refs:
+        raise ValueError(
+            "以下题目的定向修复没有取得进展，系统已停止继续调用模型以避免重复费用："
+            + "、".join(blocked_refs)
+            + "。请先人工调整评分标准，再继续。"
+        )
     return tuple(dict.fromkeys(selected))
+
+
+def _quality_issues_by_ref(
+    payload: dict[str, Any] | None,
+    source_refs: tuple[str, ...],
+) -> dict[str, tuple[dict[str, str], ...]]:
+    if not isinstance(payload, dict):
+        raise ValueError("本地质量问题记录已丢失，未继续调用模型。")
+    meta = payload.get("meta")
+    raw_issues = meta.get("quality_issues") if isinstance(meta, dict) else None
+    if not isinstance(raw_issues, list):
+        raise ValueError("本地质量问题记录已丢失，未继续调用模型。")
+    selected = set(source_refs)
+    grouped: dict[str, list[dict[str, str]]] = {
+        reference: [] for reference in source_refs
+    }
+    allowed_fields = ("question_id", "code", "path", "expected", "actual", "message")
+    for raw_issue in raw_issues:
+        if not isinstance(raw_issue, dict):
+            continue
+        question_id = str(raw_issue.get("question_id") or "").strip()
+        if question_id not in selected:
+            continue
+        grouped[question_id].append(
+            {
+                field: str(raw_issue.get(field) or "")[:600]
+                for field in allowed_fields
+            }
+        )
+    missing = [reference for reference, issues in grouped.items() if not issues]
+    if missing:
+        raise ValueError(
+            "以下题目的具体质量问题记录已丢失，未继续调用模型："
+            + "、".join(missing)
+        )
+    return {
+        reference: tuple(issues)
+        for reference, issues in grouped.items()
+    }
+
+
+def _quality_repair_attempts_by_ref(
+    payload: dict[str, Any] | None,
+    source_refs: tuple[str, ...],
+) -> dict[str, int]:
+    meta = payload.get("meta") if isinstance(payload, dict) else None
+    raw_state = meta.get("quality_repair_state") if isinstance(meta, dict) else None
+    state = raw_state if isinstance(raw_state, dict) else {}
+    result: dict[str, int] = {}
+    for reference in source_refs:
+        item = state.get(reference)
+        previous_attempts = (
+            int(item.get("attempts") or 0)
+            if isinstance(item, dict)
+            else 0
+        )
+        result[reference] = previous_attempts + 1
+    return result
+
+
+def _quality_issue_signature(issues: list[dict[str, str]]) -> str:
+    stable = [
+        {
+            key: str(issue.get(key) or "")
+            for key in ("code", "path", "expected", "actual")
+        }
+        for issue in issues
+    ]
+    stable.sort(key=lambda item: json.dumps(item, ensure_ascii=False, sort_keys=True))
+    return hashlib.sha256(
+        json.dumps(stable, ensure_ascii=False, sort_keys=True).encode("utf-8")
+    ).hexdigest()
+
+
+def _refresh_quality_repair_state(
+    payload: dict[str, Any],
+    *,
+    previous_payload: dict[str, Any] | None,
+    retried_refs: tuple[str, ...],
+) -> None:
+    meta = payload.setdefault("meta", {})
+    if not isinstance(meta, dict):
+        return
+    previous_meta = (
+        previous_payload.get("meta")
+        if isinstance(previous_payload, dict)
+        else None
+    )
+    previous_state_raw = (
+        previous_meta.get("quality_repair_state")
+        if isinstance(previous_meta, dict)
+        else None
+    )
+    previous_state = (
+        previous_state_raw if isinstance(previous_state_raw, dict) else {}
+    )
+    grouped: dict[str, list[dict[str, str]]] = {}
+    for issue in collect_generated_config_quality_issues(payload):
+        question_id = str(issue.get("question_id") or "").strip()
+        if question_id:
+            grouped.setdefault(question_id, []).append(issue)
+    retried = set(retried_refs)
+    next_state: dict[str, dict[str, Any]] = {}
+    for question_id, issues in grouped.items():
+        signature = _quality_issue_signature(issues)
+        old = previous_state.get(question_id)
+        old = old if isinstance(old, dict) else {}
+        previous_attempts = int(old.get("attempts") or 0)
+        was_retried = question_id in retried
+        attempts = previous_attempts + 1 if was_retried else previous_attempts
+        stagnated = bool(
+            was_retried
+            and old.get("issue_signature")
+            and str(old.get("issue_signature")) == signature
+        )
+        next_state[question_id] = {
+            "attempts": attempts,
+            "issue_signature": signature,
+            "stagnated": stagnated,
+        }
+    meta["quality_repair_state"] = next_state
+    meta["quality_repair_stagnated_question_ids"] = [
+        question_id
+        for question_id, state in next_state.items()
+        if bool(state.get("stagnated"))
+    ]
 
 
 def _refresh_mapping_and_finalize_job(

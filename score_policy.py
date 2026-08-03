@@ -63,46 +63,168 @@ def _solve_global_question_scores(
         ideals = [score / raw_total * target_total for score in raw_scores]
 
     objective_indexes: "OrderedDict[str, list[int]]" = OrderedDict()
-    units: list[list[int]] = []
+    solution_units: list[list[int]] = []
     for index, question in enumerate(questions):
         normalized_type = _normalize_type(str(question.get("question_type") or "comprehensive"))
         if normalized_type in OBJECTIVE_TYPES:
             objective_indexes.setdefault(normalized_type, []).append(index)
         else:
-            units.append([index])
-    units = list(objective_indexes.values()) + units
+            solution_units.append([index])
+    # Building process questions from fewer to more independently scorable
+    # steps lets the search discard an imbalanced partial allocation early,
+    # instead of hoping it remains among the nearest 500 raw-model paths.
+    solution_units.sort(key=lambda indexes: _scorable_step_count(questions[indexes[0]]))
+    units = list(objective_indexes.values()) + solution_units
 
-    # total -> (cost, per-unit scores)
-    states: dict[int, tuple[float, list[int]]] = {0: (0.0, [])}
+    # Keep several candidates per total.  A numerically closest allocation can
+    # still violate the paper's teaching hierarchy, so retaining only one path
+    # would discard the closest valid alternative before the final check.
+    states: dict[int, list[tuple[float, list[int]]]] = {0: [(0.0, [])]}
     for indexes in units:
         weight = len(indexes)
-        next_states: dict[int, tuple[float, list[int]]] = {}
-        for total_so_far, (cost_so_far, path_so_far) in states.items():
-            for score in range(1, max_question_score + 1):
-                new_total = total_so_far + weight * score
-                if new_total > target_total:
-                    break
-                cost = cost_so_far + sum((score - ideals[index]) ** 2 for index in indexes)
-                current = next_states.get(new_total)
-                if current is None or cost < current[0]:
-                    next_states[new_total] = (cost, [*path_so_far, score])
-        states = next_states
+        next_states: dict[int, list[tuple[float, list[int]]]] = {}
+        for total_so_far, candidates in states.items():
+            for cost_so_far, path_so_far in candidates:
+                for score in range(1, max_question_score + 1):
+                    new_total = total_so_far + weight * score
+                    if new_total > target_total:
+                        break
+                    cost = cost_so_far + sum(
+                        (score - ideals[index]) ** 2 for index in indexes
+                    )
+                    next_path = [*path_so_far, score]
+                    if _partial_score_path_is_balanced(
+                        questions,
+                        units,
+                        next_path,
+                    ):
+                        next_states.setdefault(new_total, []).append(
+                            (cost, next_path)
+                        )
+        states = {
+            total: sorted(candidates, key=lambda item: item[0])[:500]
+            for total, candidates in next_states.items()
+        }
 
-    solved = states.get(target_total)
+    solved_candidates = states.get(target_total, [])
+    solved: tuple[float, list[int]] | None = None
+    for candidate in sorted(solved_candidates, key=lambda item: item[0]):
+        proposed = _scores_from_unit_path(
+            len(questions),
+            units,
+            candidate[1],
+        )
+        if _respects_paper_score_quality(questions, proposed):
+            solved = candidate
+            break
     if solved is None:
         counts = ", ".join(
             f"{qtype}:{len(indexes)}题" for qtype, indexes in objective_indexes.items()
         )
         raise ValueError(
-            f"Cannot allocate {target_total} integer points with same score per objective type "
-            f"and max {max_question_score} pts each. Objective groups: {counts or 'none'}."
+            f"Cannot allocate {target_total} integer points while preserving the paper score "
+            f"hierarchy, same score per objective type, and max {max_question_score} pts each. "
+            f"Objective groups: {counts or 'none'}."
         )
 
-    result = [0] * len(questions)
-    for indexes, score in zip(units, solved[1]):
+    return _scores_from_unit_path(len(questions), units, solved[1])
+
+
+def _scores_from_unit_path(
+    question_count: int,
+    units: list[list[int]],
+    path: list[int],
+) -> list[int]:
+    result = [0] * question_count
+    for indexes, score in zip(units, path, strict=True):
         for index in indexes:
-            result[index] = score
+            result[index] = int(score)
     return result
+
+
+def _partial_score_path_is_balanced(
+    questions: list[dict[str, Any]],
+    units: list[list[int]],
+    path: list[int],
+) -> bool:
+    objective_scores: list[int] = []
+    choice_score: int | None = None
+    fill_score: int | None = None
+    solution_rows: list[tuple[int, int]] = []
+    for indexes, score in zip(units, path):
+        question = questions[indexes[0]]
+        qtype = _normalize_type(str(question.get("question_type") or ""))
+        if qtype in OBJECTIVE_TYPES:
+            objective_scores.append(int(score))
+            if qtype == "choice":
+                choice_score = int(score)
+            elif qtype == "fill_blank":
+                fill_score = int(score)
+        else:
+            solution_rows.append((_scorable_step_count(question), int(score)))
+
+    if choice_score is not None and fill_score is not None:
+        if choice_score > fill_score or choice_score * 2 < fill_score:
+            return False
+    if objective_scores and solution_rows:
+        if any(score < max(objective_scores) for _count, score in solution_rows):
+            return False
+    for left_count, left_score in solution_rows:
+        for right_count, right_score in solution_rows:
+            if left_count > right_count and left_score < right_score:
+                return False
+    return True
+
+
+def _respects_paper_score_quality(
+    questions: list[dict[str, Any]],
+    scores: list[int],
+) -> bool:
+    type_scores: dict[str, list[int]] = {}
+    solution_rows: list[tuple[int, int]] = []
+    for question, score in zip(questions, scores, strict=True):
+        qtype = _normalize_type(str(question.get("question_type") or ""))
+        type_scores.setdefault(qtype, []).append(int(score))
+        if qtype in SOLUTION_TYPES or qtype not in OBJECTIVE_TYPES:
+            solution_rows.append((_scorable_step_count(question), int(score)))
+
+    choice = type_scores.get("choice", [])
+    fill = type_scores.get("fill_blank", [])
+    if choice and fill:
+        choice_score = choice[0]
+        fill_score = fill[0]
+        if choice_score > fill_score or choice_score * 2 < fill_score:
+            return False
+
+    objective_scores = [
+        score
+        for qtype, values in type_scores.items()
+        if qtype in OBJECTIVE_TYPES
+        for score in values
+    ]
+    solution_scores = [score for _count, score in solution_rows]
+    if objective_scores and solution_scores and max(objective_scores) > min(solution_scores):
+        return False
+
+    # More independently scorable work must not receive a lower question score.
+    # Equal step counts remain free to differ because mathematical difficulty is
+    # not reducible to a local step count.
+    for left_count, left_score in solution_rows:
+        for right_count, right_score in solution_rows:
+            if left_count > right_count and left_score < right_score:
+                return False
+    return True
+
+
+def _scorable_step_count(question: dict[str, Any]) -> int:
+    parts = question.get("parts")
+    if not isinstance(parts, list):
+        return 0
+    return sum(
+        len(part.get("steps") or [])
+        for part in parts
+        if isinstance(part, dict) and isinstance(part.get("steps"), list)
+    )
 
 
 def _apply_solution_group_scores(
@@ -244,7 +366,22 @@ def _solve_group_scores(
 
 
 def _respects_objective_solution_order(group_scores: dict[str, int]) -> bool:
-    return True
+    choice = _score_for_type(group_scores, "choice")
+    fill = _score_for_type(group_scores, "fill_blank")
+    if choice is not None and fill is not None:
+        if choice > fill or choice * 2 < fill:
+            return False
+    objective = [
+        score
+        for qtype, score in group_scores.items()
+        if _normalize_type(qtype) in OBJECTIVE_TYPES
+    ]
+    solution = [
+        score
+        for qtype, score in group_scores.items()
+        if _normalize_type(qtype) not in OBJECTIVE_TYPES
+    ]
+    return not objective or not solution or max(objective) <= min(solution)
 
 
 def _score_for_type(group_scores: dict[str, int], target_type: str) -> int | None:
