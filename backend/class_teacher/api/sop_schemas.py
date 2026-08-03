@@ -70,12 +70,14 @@ class AffairCreateRequest(BaseModel):
     template_version_id: str
     title: str = Field(min_length=1, max_length=240)
     summary: str | None = Field(default=None, max_length=8000)
-    participant_refs: list[str] = Field(min_length=1, max_length=50)
+    participant_refs: list[str] = Field(default_factory=list, max_length=50)
+    subject_ids: list[str] = Field(default_factory=list, max_length=50)
 
 
 class AffairParticipant(BaseModel):
     participant_id: str
     reference: str
+    subject_id: str | None = None
 
 
 class AffairStep(BaseModel):

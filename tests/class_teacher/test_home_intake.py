@@ -192,13 +192,15 @@ def test_two_character_incident_names_keep_context_and_stable_aliases(
         fingerprint=str(preview["fingerprint"]),
         operation_id="home-two-character-follow-up-001",
     )
-    assert first["result_kind"] == "follow_up"
+    assert first["result_kind"] == "affair_recommendation"
+    assert first["follow_up_questions"][0] == "双方目前是否仍在接触？"
 
     second_preview = service.home_intake.prepare_follow_up(
         token=token,
         operation_id="home-two-character-follow-up-001",
         answer="张伟仍在现场，王明已经离开",
         reference_date="2026-08-03",
+        selected_step_keys=[str(first["result"]["steps"][0]["key"])],
     )
     second_payload = json.dumps(second_preview["exact_payload"], ensure_ascii=False)
     assert "王明" not in second_payload
@@ -419,7 +421,7 @@ def test_emergency_guidance_is_local_and_precedes_ai(tmp_path: Path) -> None:
     assert gateway.calls == []
 
 
-def test_empty_kind_question_only_result_becomes_specific_follow_up(
+def test_empty_kind_question_only_result_becomes_confirmable_first_draft(
     tmp_path: Path,
 ) -> None:
     question = (
@@ -451,16 +453,15 @@ def test_empty_kind_question_only_result_becomes_specific_follow_up(
         operation_id="home-empty-kind-follow-up-001",
     )
 
-    assert result["state"] == "needs_information"
-    assert result["result_kind"] == "follow_up"
+    assert result["state"] == "succeeded"
+    assert result["result_kind"] == "ordinary_plan"
     assert result["follow_up_questions"] == [question]
-    assert result["teacher_confirmation_required"] is False
+    assert result["teacher_confirmation_required"] is True
+    assert len(result["result"]["nodes"]) == 3
     assert result["physical_request_count"] == 1
     assert len(gateway.calls) == 1
     payload = gateway.calls[0]["payload"]
-    assert any("最少必要的 1—3 个问题" in item for item in payload["instructions"])
     assert any("kind 是必填字段" in item for item in payload["instructions"])
-    assert payload["output_contract"]["follow_up_example"]["kind"] == "follow_up"
 
 
 def test_empty_kind_mixed_plan_and_questions_remains_invalid(tmp_path: Path) -> None:
@@ -678,7 +679,7 @@ def _dispatch_sensitive(
     )
 
 
-def test_safe_plain_text_continuation_is_preserved(tmp_path: Path) -> None:
+def test_safe_plain_text_is_wrapped_in_a_useful_sensitive_draft(tmp_path: Path) -> None:
     service, token, gateway = _service(
         tmp_path,
         result="先记录可核对事实并联系校内负责人，再由教师选择后续路径。",
@@ -692,8 +693,8 @@ def test_safe_plain_text_continuation_is_preserved(tmp_path: Path) -> None:
     )
 
     assert result["state"] == "succeeded"
-    assert result["result_kind"] == "plain_text"
-    assert result["result"]["text"].startswith("先记录可核对事实并联系校内负责人")
+    assert result["result_kind"] == "student_support_recommendation"
+    assert len(result["result"]["steps"]) >= 5
     assert len(gateway.calls) == 1
 
 
@@ -831,12 +832,11 @@ def test_sensitive_recommendation_is_normalized_server_side(tmp_path: Path) -> N
     )
 
     assert dispatched["state"] == "succeeded"
-    assert dispatched["result"] == {
-        "kind": "student_support_recommendation",
-        "summary": None,
-        "reasons": ["先核对 已知事实"],
-        "assumptions": ["不补全 未知信息"],
-    }
+    assert dispatched["result"]["kind"] == "student_support_recommendation"
+    assert dispatched["result"]["reasons"] == ["先核对 已知事实"]
+    assert dispatched["result"]["assumptions"] == ["不补全 未知信息"]
+    assert dispatched["result"]["template_key"] == "baseline.care_conversation"
+    assert dispatched["result"]["steps"]
 
 
 @pytest.mark.parametrize("result", ("", "ok", "abc12345", "。"))
@@ -858,7 +858,7 @@ def test_nonmeaningful_non_json_sensitive_results_are_invalid(
     assert dispatched["error_category"] == "nonmeaningful_plain_text"
 
 
-def test_sensitive_empty_kind_question_only_result_becomes_follow_up(
+def test_sensitive_empty_kind_question_only_result_becomes_sop_draft(
     tmp_path: Path,
 ) -> None:
     question = "请补充已经确认的现场事实，例如双方是否仍在接触、是否有人受伤。"
@@ -882,14 +882,16 @@ def test_sensitive_empty_kind_question_only_result_becomes_follow_up(
         operation_id="home-sensitive-empty-kind-001",
     )
 
-    assert result["state"] == "needs_information"
-    assert result["result_kind"] == "follow_up"
-    assert result["follow_up_questions"] == [question]
-    assert result["teacher_confirmation_required"] is False
+    assert result["state"] == "succeeded"
+    assert result["result_kind"] == "affair_recommendation"
+    assert result["follow_up_questions"][0] == question
+    assert result["teacher_confirmation_required"] is True
+    assert result["result"]["template_key"] == "baseline.student_conflict"
+    assert result["result"]["steps"]
     assert len(gateway.calls) == 1
     contract = gateway.calls[0]["payload"]["output_contract"]
-    assert contract["follow_up_example"]["kind"] == "follow_up"
-    assert any("最少 1—3 项信息" in rule for rule in contract["rules"])
+    assert "follow_up" not in contract["allowed_kinds"]
+    assert any("不得只追问" in rule for rule in contract["rules"])
 
 
 @pytest.mark.parametrize(
@@ -948,7 +950,7 @@ def test_follow_up_starts_next_round_only_on_explicit_call(tmp_path: Path) -> No
         operation_id="home-follow-up-round-001",
     )
 
-    assert first["result_kind"] == "follow_up"
+    assert first["result_kind"] == "affair_recommendation"
     assert first["round_number"] == 1
     assert first["cumulative_physical_request_count"] == 1
     assert len(gateway.calls) == 1
@@ -960,10 +962,19 @@ def test_follow_up_starts_next_round_only_on_explicit_call(tmp_path: Path) -> No
         operation_id="home-follow-up-round-001",
         answer="已经分开，目前没有继续接触",
         reference_date="2026-08-03",
+        selected_step_keys=[str(first["result"]["steps"][0]["key"])],
     )
     assert second_preview["round_number"] == 2
     assert second_preview["student_aliases"] == ["学生A", "学生B"]
     assert "学生A和学生B发生冲突" in second_preview["exact_payload"]["task_text"]
+    revision = second_preview["exact_payload"]["context"]["revision_context"]
+    assert set(revision["selected_step_keys"]) == {
+        item["key"] for item in first["result"]["steps"]
+    }
+    assert set(revision["selected_calendar_keys"]) == {
+        item["key"] for item in first["result"]["calendar_items"]
+    }
+    assert "王小明" not in json.dumps(revision, ensure_ascii=False)
     assert second_preview["physical_request_count"] == 0
     assert second_preview["cumulative_physical_request_count"] == 1
     assert len(gateway.calls) == 1

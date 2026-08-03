@@ -15,6 +15,7 @@ from .errors import VaultError
 from .model_approval import ModelApproval
 from .ordinary_database import OrdinaryWorkDatabase
 from .work_graph import WorkGraph
+from .intake_draft import compose_sensitive_draft, merge_revision, selected_with_downstream
 
 
 _OPERATION_ID = re.compile(r"[A-Za-z0-9_-]{8,128}")
@@ -166,6 +167,7 @@ class HomeIntake:
         prior_operations: list[str] | None = None,
         round_number: int = 1,
         existing_aliases: tuple[tuple[str, str], ...] = (),
+        revision_context: dict[str, object] | None = None,
     ) -> dict[str, object]:
         clean = _clean_text(text)
         date_info = interpret_local_date(
@@ -223,6 +225,7 @@ class HomeIntake:
             "source_text": clean,
             "final_due_date": date_info.get("resolved_date"),
             "date_interpretation": date_info,
+            "revision_context": dict(revision_context or {}),
         }
         if route == "ordinary":
             if SensitiveContentPolicy.ordinary_findings(clean):
@@ -263,6 +266,22 @@ class HomeIntake:
             redaction=redaction,
             route_hint=recommendation,
             output_contract=self._sensitive_output_contract(),
+            request_context=(
+                {
+                    "revision_context": {
+                        "base_draft": dict(revision_context.get("base_draft") or {}),
+                        "selected_step_keys": list(
+                            revision_context.get("selected_step_keys") or []
+                        ),
+                        "selected_calendar_keys": list(
+                            revision_context.get("selected_calendar_keys") or []
+                        ),
+                        "locked_rule": str(revision_context.get("locked_rule") or ""),
+                    }
+                }
+                if revision_context
+                else None
+            ),
         )
         destination = self._destination()
         home_fingerprint = hashlib.sha256(
@@ -464,6 +483,54 @@ class HomeIntake:
             str(model_result.get("draft_text") or ""),
             recommended_route=str(metadata.get("recommended_route") or "student_support"),
         )
+        if interpreted.get("kind") in {
+            "follow_up",
+            "plain_text",
+            "affair_recommendation",
+            "student_support_recommendation",
+        }:
+            model_context = self.model.operation_context(
+                token=token, operation_id=operation_id
+            )
+            aliases = [
+                str(item[1])
+                for item in list(model_context.get("identity_aliases") or [])
+                if isinstance(item, list) and len(item) == 2
+            ]
+            raw_result = interpreted.get("result")
+            payload = dict(raw_result) if isinstance(raw_result, dict) else {}
+            draft = compose_sensitive_draft(
+                source_text=str(model_context.get("source_text") or ""),
+                recommended_route=str(
+                    metadata.get("recommended_route") or "student_support"
+                ),
+                resolved_date=(
+                    str(model_context["final_due_date"])
+                    if model_context.get("final_due_date")
+                    else None
+                ),
+                model_payload=payload,
+                model_questions=list(interpreted.get("questions") or []),
+                student_aliases=aliases,
+            )
+            revision = model_context.get("revision_context")
+            if isinstance(revision, dict) and isinstance(
+                revision.get("base_draft"), dict
+            ):
+                draft = merge_revision(
+                    dict(revision["base_draft"]),
+                    draft,
+                    [str(item) for item in list(revision.get("selected_step_keys") or [])],
+                    [str(item) for item in list(revision.get("selected_calendar_keys") or [])],
+                )
+            interpreted = {
+                "state": "succeeded",
+                "kind": draft["kind"],
+                "result": draft,
+                "questions": list(draft.get("to_verify") or []),
+                "error_category": None,
+                "teacher_confirmation_required": True,
+            }
         return self._result(
             operation_id=operation_id,
             route=str(metadata["route"]),
@@ -477,6 +544,11 @@ class HomeIntake:
             cumulative_count=self._cumulative_count(token, prior) + round_count,
             teacher_confirmation_required=bool(interpreted.get("teacher_confirmation_required")),
             local_context={"prior_operations": prior},
+            result_fingerprint=(
+                hashlib.sha256(canonical_json(interpreted["result"])).hexdigest()
+                if isinstance(interpreted.get("result"), dict)
+                else None
+            ),
         )
 
     def prepare_follow_up(
@@ -486,15 +558,46 @@ class HomeIntake:
         operation_id: str,
         answer: str,
         reference_date: str | None = None,
+        selected_step_keys: list[str] | None = None,
+        selected_calendar_keys: list[str] | None = None,
     ) -> dict[str, object]:
         parent = self.status(token=token, operation_id=operation_id)
-        if parent.get("result_kind") not in {"follow_up", "plain_text"}:
+        if parent.get("result_kind") not in {
+            "follow_up",
+            "plain_text",
+            "ordinary_plan",
+            "affair_recommendation",
+            "student_support_recommendation",
+        }:
             raise VaultError(
                 "home_intake_follow_up_not_requested",
-                "只有模型追问或给出可继续补充的安全说明后才能开始下一轮",
+                "当前结果不能开始调整",
                 status_code=409,
             )
         clean_answer = _clean_text(answer)
+        revision_context: dict[str, object] = {}
+        if parent.get("result_kind") in {
+            "affair_recommendation",
+            "student_support_recommendation",
+        } and isinstance(parent.get("result"), dict):
+            selected_steps, selected_calendar = selected_with_downstream(
+                dict(parent["result"]),
+                [str(item) for item in list(selected_step_keys or [])],
+                [str(item) for item in list(selected_calendar_keys or [])],
+            )
+            if not selected_steps and not selected_calendar:
+                raise VaultError(
+                    "home_intake_revision_scope_required",
+                    "请先选择需要调整的流程卡片或日历安排",
+                    status_code=422,
+                )
+            revision_context = {
+                "base_draft": dict(parent["result"]),
+                "selected_step_keys": selected_steps,
+                "selected_calendar_keys": selected_calendar,
+                "teacher_feedback": clean_answer,
+                "locked_rule": "未选内容必须原样保留；安全必做步骤不得删除",
+            }
         row = self._work_operation(operation_id)
         if row is None:
             raise VaultError("home_intake_operation_not_found", "首页处理操作不存在", status_code=404)
@@ -528,6 +631,7 @@ class HomeIntake:
             prior_operations=prior,
             round_number=int(parent.get("round_number") or 1) + 1,
             existing_aliases=aliases,
+            revision_context=revision_context,
         )
 
     def confirm_manual_fallback(
@@ -617,7 +721,13 @@ class HomeIntake:
             "result_kind": result_kind,
             "result": result,
             "follow_up_questions": questions,
-            "can_follow_up": result_kind in {"follow_up", "plain_text"},
+            "can_follow_up": result_kind in {
+                "follow_up",
+                "plain_text",
+                "ordinary_plan",
+                "affair_recommendation",
+                "student_support_recommendation",
+            },
             "assistant_message": assistant_message,
             "validation_issue": validation_issue,
             "error_category": error_category,
@@ -784,10 +894,12 @@ class HomeIntake:
                 "state": "succeeded",
                 "kind": kind,
                 "result": {
+                    **decoded,
                     "kind": kind,
                     "summary": summary,
                     "reasons": reasons,
                     "assumptions": assumptions,
+                    "questions": [],
                 },
                 "questions": [],
                 "error_category": None,
@@ -864,22 +976,24 @@ class HomeIntake:
             "allowed_kinds": [
                 "affair_recommendation",
                 "student_support_recommendation",
-                "follow_up",
-                "plain_text",
             ],
             "rules": [
-                "kind 是必填字段且不得为空；信息不足时 kind 必须为 follow_up，只返回 questions，不得自行补全事实",
-                "只询问阻止形成安全建议的最少 1—3 项信息；每个问题必须点明缺少的是期望结果、参与角色、时间、范围、约束资源、已确认事实或即时安全状态中的哪一方面，并结合原文给出可选示例",
-                "不得只说‘请补充具体信息’，不得重复询问 task_text 中已有信息，也不得索要不必要的姓名、电话或地址",
+                "第一轮必须基于现有信息形成可执行初稿，不得只追问；缺失信息写入 to_verify，不能阻止输出",
+                "返回 template_key、title、summary、steps、calendar_items、assumptions 和 to_verify；steps 使用基线步骤 key，日历使用 calendar.<步骤key>",
+                "若 context 含 revision_context，只允许调整 selected_step_keys 和 selected_calendar_keys；其他内容原样保留，安全必做步骤不得删除",
+                "不得重复询问 task_text 中已有信息，不得索要不必要的姓名、电话或地址",
                 "建议只供教师复核，不创建事务、学生记录或外发消息",
                 "不得诊断、认定欺凌、决定惩戒、自动发送或自动结案",
             ],
-            "follow_up_example": {
-                "kind": "follow_up",
-                "questions": [
-                    "请补充已经确认的现场事实和当前安全状态，例如是否仍在接触、是否有人受伤。"
-                ],
-                "assumptions": [],
+            "draft_example": {
+                "kind": "affair_recommendation",
+                "template_key": "baseline.student_conflict",
+                "title": "学生矛盾处理初稿",
+                "summary": "先确保安全，再分别记录、核实并跟进。",
+                "steps": [],
+                "calendar_items": [],
+                "assumptions": ["暂按普通学生矛盾处理"],
+                "to_verify": ["是否有人受伤或仍存在即时风险"],
             },
         }
 
