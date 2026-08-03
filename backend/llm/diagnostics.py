@@ -18,6 +18,7 @@ from typing import Any, Mapping
 
 from .json_repair import parse_json_object_locally
 from .trace import safe_host_label, safe_trace_label, utc_timestamp
+from .usage import response_diagnostics
 
 
 DIAGNOSTIC_LOG_FILE = Path("logs/llm_diagnostics.jsonl")
@@ -292,9 +293,18 @@ def response_text(response: object) -> str:
 
 def _parse_response_text(
     raw_text: str,
+    *,
+    output_truncated: bool = False,
 ) -> tuple[str, Any, list[str], str]:
     if not raw_text:
         return "empty", None, [], ""
+    if output_truncated:
+        return (
+            "truncated_json",
+            None,
+            [],
+            "模型输出达到长度上限，JSON 没有完整结束。",
+        )
     try:
         parsed = json.loads(raw_text)
     except json.JSONDecodeError:
@@ -415,8 +425,14 @@ class JsonlDiagnosticJournal:
         elapsed_ms: int,
     ) -> None:
         raw_text = _sanitize_text(response_text(response))
+        diagnostics = response_diagnostics(response)
         parse_status, parsed_result, operations, parse_error = (
-            _parse_response_text(raw_text)
+            _parse_response_text(
+                raw_text,
+                output_truncated=bool(
+                    diagnostics.get("output_truncated")
+                ),
+            )
         )
         event = _base_event(
             event="response",

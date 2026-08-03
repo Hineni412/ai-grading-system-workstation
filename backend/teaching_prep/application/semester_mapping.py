@@ -41,38 +41,48 @@ def validate_semester_mapping_payload(
 
     normalized_tree: list[dict[str, object]] = []
     proposal_lesson_refs: set[str] = set()
-    all_keys: set[str] = set()
+    source_lesson_keys: set[str] = set()
+    normalized_lesson_refs: dict[str, str] = {}
     lesson_count = 0
     if len(tree) > 30:
         raise TeachingPrepValidationError("too many proposed chapters")
-    for chapter_raw in tree:
+    for chapter_index, chapter_raw in enumerate(tree, start=1):
         chapter = _mapping(chapter_raw, "chapter")
         _require_exact(chapter, {"key", "title", "sections"}, "chapter")
-        chapter_key = _proposal_key(chapter.get("key"), all_keys)
+        chapter_key = f"chapter_{chapter_index:03d}"
         sections = _list(chapter.get("sections"), "sections")
         if len(sections) > 30:
             raise TeachingPrepValidationError(
                 "too many proposed sections in a chapter"
             )
         normalized_sections: list[dict[str, object]] = []
-        for section_raw in sections:
+        for section_index, section_raw in enumerate(sections, start=1):
             section = _mapping(section_raw, "section")
             _require_exact(section, {"key", "title", "lessons"}, "section")
-            section_key = _proposal_key(section.get("key"), all_keys)
+            section_key = (
+                f"section_{chapter_index:03d}_{section_index:03d}"
+            )
             lessons = _list(section.get("lessons"), "lessons")
             if len(lessons) > 30:
                 raise TeachingPrepValidationError(
                     "too many proposed lessons in a section"
                 )
             normalized_lessons: list[dict[str, object]] = []
-            for lesson_raw in lessons:
+            for lesson_index, lesson_raw in enumerate(lessons, start=1):
                 lesson = _mapping(lesson_raw, "lesson")
                 _require_exact(
                     lesson,
                     {"key", "title", "duration_minutes"},
                     "lesson",
                 )
-                lesson_key = _proposal_key(lesson.get("key"), all_keys)
+                source_lesson_key = _source_lesson_key(
+                    lesson.get("key"),
+                    source_lesson_keys,
+                )
+                lesson_key = (
+                    f"lesson_{chapter_index:03d}_{section_index:03d}_"
+                    f"{lesson_index:03d}"
+                )
                 duration = lesson.get("duration_minutes")
                 if (
                     isinstance(duration, bool)
@@ -85,6 +95,9 @@ def validate_semester_mapping_payload(
                     )
                 lesson_ref = f"proposal:{lesson_key}"
                 proposal_lesson_refs.add(lesson_ref)
+                normalized_lesson_refs[
+                    f"proposal:{source_lesson_key}"
+                ] = lesson_ref
                 lesson_count += 1
                 normalized_lessons.append(
                     {
@@ -130,7 +143,11 @@ def validate_semester_mapping_payload(
             raise TeachingPrepValidationError(
                 "mapping refers to an unavailable semester material"
             )
-        lesson_ref = str(mapping.get("lesson_ref") or "")
+        raw_lesson_ref = str(mapping.get("lesson_ref") or "")
+        lesson_ref = normalized_lesson_refs.get(
+            raw_lesson_ref,
+            raw_lesson_ref,
+        )
         if lesson_ref not in valid_lesson_refs:
             raise TeachingPrepValidationError(
                 "mapping refers to an unavailable lesson"
@@ -210,11 +227,11 @@ def _require_exact(
         )
 
 
-def _proposal_key(value: object, seen: set[str]) -> str:
+def _source_lesson_key(value: object, seen: set[str]) -> str:
     key = str(value or "").strip()
     if not _KEY.fullmatch(key) or key in seen:
         raise TeachingPrepValidationError(
-            "proposal tree key is invalid or duplicated"
+            "proposal lesson key is invalid or duplicated"
         )
     seen.add(key)
     return key
