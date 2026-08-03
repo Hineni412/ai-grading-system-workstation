@@ -1008,6 +1008,9 @@ def test_semester_mapping_configuration_failure_stays_before_dispatch(
     base_service.parse_material_version(version.id)
 
     class _ConfigurationFailureModel:
+        def is_available(self) -> bool:
+            return True
+
         def generate(
             self,
             *,
@@ -1051,6 +1054,50 @@ def test_semester_mapping_configuration_failure_stays_before_dispatch(
         "status": "failed",
         "error_code": "semester_mapping_model_configuration_invalid",
     }
+
+
+def test_semester_mapping_configuration_removed_after_preflight_is_specific(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths, base_service = _migrated_service(tmp_path, monkeypatch)
+    semester, _lesson_ids = _semester(base_service)
+    version, _created = base_service.register_material_file(
+        request_token="mapping-config-removed-file",
+        path=_pdf(tmp_path / "config-removed-workbook.pdf", ["L1"]),
+        display_name="合成配置移除教辅",
+    )
+    record, _created = base_service.attach_semester_material(
+        semester.id,
+        request_token="mapping-config-removed-attach",
+        material_version_id=version.id,
+        material_role="exercise_workbook",
+    )
+    base_service.parse_material_version(version.id)
+
+    class _UnavailableModel:
+        def is_available(self) -> bool:
+            return False
+
+    service = TeachingPrepService(
+        paths.workspace_dir("teaching-prep"),
+        semester_mapping_model_adapter=_UnavailableModel(),
+    )
+    stages: list[str] = []
+
+    with pytest.raises(
+        TeachingPrepValidationError,
+        match="model configuration is unavailable",
+    ):
+        service.generate_semester_mapping_proposal(
+            semester.id,
+            operation_id="semester-mapping-config-removed-0001",
+            material_record_ids=[record.id],
+            progress_callback=stages.append,
+        )
+
+    assert stages[-1] == "claiming_operation"
+    assert "calling_model" not in stages
 
 
 def test_indeterminate_semester_mapping_model_failure_blocks_a_new_call(
