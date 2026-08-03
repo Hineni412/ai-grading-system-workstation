@@ -51,6 +51,7 @@ def test_save_tag_analysis_persists_reason(tmp_path: Path) -> None:
         {
             "knowledge_points": ["一次函数"],
             "method_tags": ["待定系数法"],
+            "thought_tags": ["函数思想"],
             "ability_tags": ["运算求解"],
             "math_model_tags": ["函数模型"],
             "difficulty": 6,
@@ -68,6 +69,10 @@ def test_save_tag_analysis_persists_reason(tmp_path: Path) -> None:
     saved = service.get_question(question_id)
     assert saved is not None
     assert saved["reason"] == "学生容易漏用截距条件。"
+    assert any(
+        tag["tag_type"] == "thought" and tag["tag_value"] == "函数思想"
+        for tag in saved["tags"]
+    )
 
 
 def test_save_tag_analysis_does_not_create_retired_free_text_dimensions(

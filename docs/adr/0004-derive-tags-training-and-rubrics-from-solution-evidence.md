@@ -2,6 +2,8 @@
 status: accepted
 ---
 
+> 词表规模与维度部分已由 ADR 0007 更新；本 ADR 的“解题证据作为共同来源”决定继续有效。
+
 # Derive tags, training criteria, and scoring steps from solution evidence
 
 Questions are modeled as parts containing versioned, unscored solution-evidence points. Each evidence point links to fine-grained controlled terms with `direct` or `supporting_prerequisite` roles; governed mappings resolve those terms to zero, one, or multiple stable core knowledge nodes. Whole-question knowledge is a local categorized union of its evidence points rather than a second model-generated truth.

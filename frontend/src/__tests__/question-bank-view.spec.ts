@@ -473,9 +473,16 @@ describe('question bank workspace', () => {
       .find((button) => button.textContent?.trim() === '重新打标签')!
     retag.click()
 
-    await vi.waitFor(() => expect(fetchSpy).toHaveBeenCalledTimes(2))
+    await vi.waitFor(() => expect(fetchSpy.mock.calls.some(
+      ([request, options]) => String(request) === '/api/question-bank/tagging-jobs'
+        && options?.method === 'POST',
+    )).toBe(true))
     expect(confirmSpy).toHaveBeenCalledWith(expect.stringContaining('1 道题'))
-    expect(JSON.parse(String(fetchSpy.mock.calls[1]?.[1]?.body))).toEqual({
+    const submitCall = fetchSpy.mock.calls.find(
+      ([request, options]) => String(request) === '/api/question-bank/tagging-jobs'
+        && options?.method === 'POST',
+    )
+    expect(JSON.parse(String(submitCall?.[1]?.body))).toEqual({
       question_ids: [17],
       force_retag: true,
       client_request_token: expect.stringMatching(/^[0-9a-f]{32}$/),
@@ -527,9 +534,16 @@ describe('question bank workspace', () => {
       .find((button) => button.textContent?.trim() === '补齐标签')!
     fill.click()
 
-    await vi.waitFor(() => expect(fetchSpy).toHaveBeenCalledTimes(2))
+    await vi.waitFor(() => expect(fetchSpy.mock.calls.some(
+      ([request, options]) => String(request) === '/api/question-bank/tagging-jobs'
+        && options?.method === 'POST',
+    )).toBe(true))
     expect(questionListUrl).toContain('tag_status=untagged')
-    expect(JSON.parse(String(fetchSpy.mock.calls[1]?.[1]?.body))).toEqual({
+    const submitCall = fetchSpy.mock.calls.find(
+      ([request, options]) => String(request) === '/api/question-bank/tagging-jobs'
+        && options?.method === 'POST',
+    )
+    expect(JSON.parse(String(submitCall?.[1]?.body))).toEqual({
       question_ids: [17],
       client_request_token: expect.stringMatching(/^[0-9a-f]{32}$/),
     })

@@ -25,7 +25,8 @@ def _analysis(*, confidence: float = 0.88) -> TagAnalysis:
     return TagAnalysis.from_dict(
         {
             "knowledge_points": ["整式运算"],
-            "method_tags": ["整体思想"],
+            "method_tags": [],
+            "thought_tags": ["整体思想"],
             "ability_tags": ["运算能力"],
             "math_model_tags": [],
             "difficulty": 3,
@@ -147,7 +148,11 @@ def test_production_tagging_uses_one_combined_call_and_persists_point_evidence(
             )
             item = batch.questions[0]
             candidates = item.taxonomy_contract["candidates"]
-            knowledge = candidates["knowledge"][0]
+            knowledge = next(
+                item
+                for item in candidates["knowledge"]
+                if item["name"] == "整式运算"
+            )
             ability = candidates["ability"][0]
             curriculum = candidates["curriculum"][0]
             tag_payload = _analysis().to_dict()
@@ -156,6 +161,7 @@ def test_production_tagging_uses_one_combined_call_and_persists_point_evidence(
                     "knowledge_points": [knowledge["name"]],
                     "ability_tags": [ability["name"]],
                     "method_tags": [],
+                    "thought_tags": [],
                     "textbook_chapter": curriculum["name"],
                     "textbook_chapters": [curriculum["name"]],
                     "canonical_knowledge_id": knowledge["id"],

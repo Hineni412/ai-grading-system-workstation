@@ -166,7 +166,8 @@ def _question(
 def _tag_payload() -> dict[str, Any]:
     return {
         "knowledge_points": ["一元一次方程"],
-        "method_tags": ["方程思想"],
+        "method_tags": [],
+        "thought_tags": ["方程思想"],
         "ability_tags": ["运算能力"],
         "math_model_tags": [],
         "special_type_tags": [],

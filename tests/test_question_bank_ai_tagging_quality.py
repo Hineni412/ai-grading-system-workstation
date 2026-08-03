@@ -30,7 +30,8 @@ from question_bank.services.question_service import QuestionService, has_complet
 def _analysis(**overrides) -> TagAnalysis:
     payload = {
         "knowledge_points": ["整式运算"],
-        "method_tags": ["整体思想"],
+        "method_tags": [],
+        "thought_tags": ["整体思想"],
         "ability_tags": ["运算能力"],
         "math_model_tags": [],
         "difficulty": 4,
@@ -258,8 +259,10 @@ def test_tagging_schema_supports_special_type_and_caps_free_proposals() -> None:
 
     assert "special_type_tags" in single_schema
     assert "special_type_tags" in batch_schema
-    assert single_schema["proposed_tags"]["maxItems"] == 2
-    assert batch_schema["proposed_tags"]["maxItems"] == 2
+    assert "thought_tags" in single_schema
+    assert "thought_tags" in batch_schema
+    assert single_schema["proposed_tags"]["maxItems"] == 1
+    assert batch_schema["proposed_tags"]["maxItems"] == 1
     assert analysis.special_type_tags == ["动态几何题"]
     assert [item["name"] for item in analysis.proposed_tags] == [
         "自由词一",

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 
@@ -22,6 +23,7 @@ from question_bank.taxonomy.curriculum_catalog import (
 from question_bank.models.tag_schema import TagAnalysis
 from question_bank.services.ai_tagging_service import _analysis_from_constraint
 from path_manager import PathManager
+from tools.build_taxonomy_catalog import build as build_taxonomy_catalog
 
 
 CATALOG_PATH = (
@@ -99,7 +101,7 @@ def _persist_unknown(
     )
 
 
-def test_catalog_and_prompt_expose_six_controlled_dimensions(
+def test_catalog_and_prompt_expose_seven_controlled_dimensions(
     governance: TaxonomyGovernance,
 ) -> None:
     catalog = governance.catalog()
@@ -119,7 +121,7 @@ def test_catalog_and_prompt_expose_six_controlled_dimensions(
         "supporting_skill",
     ]
     assert any(
-        item["name"] == "倍长中线"
+        item["name"] == "构造辅助线法"
         for item in contract["candidates"]["method"]
     )
     assert all(
@@ -134,6 +136,110 @@ def test_catalog_and_prompt_expose_six_controlled_dimensions(
     assert {
         item.name for item in response.dimensions.special_type
     } >= {"动态几何题", "新定义题", "数学阅读理解题"}
+
+
+def test_catalog_build_is_deterministic_and_keeps_protected_dimensions() -> None:
+    built = build_taxonomy_catalog()
+    checked_in = json.loads(CATALOG_PATH.read_text(encoding="utf-8"))
+
+    assert built == checked_in
+    counts = {
+        dimension: sum(
+            term["dimension"] == dimension for term in built["terms"]
+        )
+        for dimension in ALLOWED_DIMENSIONS
+    }
+    assert counts == {
+        "curriculum": 25,
+        "knowledge": 294,
+        "ability": 10,
+        "method": 23,
+        "thought": 13,
+        "model": 41,
+        "special_type": 11,
+    }
+    assert sum(
+        len(term.get("legacy_names", []))
+        for term in built["terms"]
+        if term["dimension"] == "knowledge"
+    ) >= 1000
+    model_names = {
+        term["name"]
+        for term in built["terms"]
+        if term["dimension"] == "model"
+    }
+    assert not model_names.intersection(
+        {'"鸡翅"型', '"骨折"型', "A字型", "8字型", "K字型相似"}
+    )
+    knowledge_names = {
+        term["name"]
+        for term in built["terms"]
+        if term["dimension"] == "knowledge"
+    }
+    assert not knowledge_names.intersection(
+        {
+            "一元一次不等式的应用",
+            "一次函数的实际应用",
+            "图形的相似",
+            "图形的变换",
+            "列二元一次方程组",
+            "画轴对称图形",
+        }
+    )
+
+
+def test_model_contract_only_allows_one_new_knowledge_proposal(
+    governance: TaxonomyGovernance,
+) -> None:
+    contract = governance.prompt_contract({"question_text": "一道未分类新题"})
+    constrained = governance.constrain(
+        {
+            "knowledge_points": ["新知识甲", "新知识乙"],
+            "method_tags": ["模型自由造的方法"],
+            "thought_tags": ["模型自由造的思想"],
+            "math_model_tags": ["模型自由造的模型"],
+        },
+        context={"allowed_term_ids": contract["allowed_term_ids"]},
+    )
+
+    assert constrained["accepted_analysis"]["method"] == []
+    assert constrained["accepted_analysis"]["thought"] == []
+    assert constrained["accepted_analysis"]["model"] == []
+    assert [item["proposed_name"] for item in constrained["proposals"]] == [
+        "新知识甲"
+    ]
+    assert any(
+        item["name"] == "数学建模思想"
+        for item in contract["candidates"]["thought"]
+    )
+
+
+def test_revision_two_state_remains_readable_with_revision_three_catalog(
+    tmp_path: Path,
+) -> None:
+    state_path = tmp_path / "taxonomy-state.json"
+    state_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "base_catalog_id": "junior-math-controlled-vocabulary-v2",
+                "base_catalog_revision": 2,
+                "revision": 0,
+                "approved_terms": [],
+                "proposals": [],
+                "applied_operations": [],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    snapshot = TaxonomyGovernance(
+        catalog_path=CATALOG_PATH,
+        state_path=state_path,
+    ).snapshot()
+
+    assert snapshot["base_catalog_revision"] == 3
 
 
 def test_per_question_candidates_share_revision_but_do_not_share_shortlist(
@@ -210,22 +316,65 @@ def test_historical_saved_tags_do_not_bias_the_new_candidate_contract(
     )
 
 
-def test_retrieval_hints_recall_broad_parent_without_becoming_alias(
+def test_legacy_fine_name_recalls_canonical_parent_without_becoming_candidate(
     governance: TaxonomyGovernance,
 ) -> None:
     contract = governance.prompt_contract(
-        {"question_text": "请在数轴上画出指定的点"}
+        {"question_text": "根据成轴对称图形的特征进行求解"}
     )
 
-    assert governance.resolve_term("knowledge", "数轴") is None
+    assert governance.resolve_term(
+        "knowledge", "根据成轴对称图形的特征进行求解"
+    )["name"] == "轴对称的性质"
     assert any(
-        item["id"] == "kp_alg_real_numbers"
+        item["name"] == "轴对称的性质"
         for item in contract["candidates"]["knowledge"]
     )
-    assert any(
-        item["name"] == "数轴的概念与画法"
+    assert all(
+        item["name"] != "根据成轴对称图形的特征进行求解"
         for item in contract["candidates"]["knowledge"]
     )
+
+
+def test_obvious_near_synonym_resolves_to_existing_core_identity(
+    governance: TaxonomyGovernance,
+) -> None:
+    resolved = governance.resolve_term("knowledge", "一次函数的实际应用")
+
+    assert resolved is not None
+    assert resolved["name"] == "一次函数应用"
+
+
+def test_dimension_resolution_is_strict_except_old_method_thought_field(
+    governance: TaxonomyGovernance,
+) -> None:
+    assert governance.resolve_term("method", "方程模型") is None
+    assert governance.resolve_term("knowledge", "方程思想") is None
+
+    contract = governance.prompt_contract({"question_text": "列方程求解"})
+    constrained = governance.constrain(
+        {
+            "knowledge_points": ["方程思想"],
+            "method_tags": ["方程思想"],
+        },
+        context={"allowed_term_ids": contract["allowed_term_ids"]},
+    )
+
+    assert constrained["accepted_analysis"]["knowledge"] == []
+    assert constrained["accepted_analysis"]["thought"] == ["方程思想"]
+    assert constrained["proposals"] == []
+
+
+def test_filter_expansion_includes_hidden_legacy_values(
+    governance: TaxonomyGovernance,
+) -> None:
+    expanded = governance.expand_filter_values(
+        "knowledge",
+        ["一次函数应用"],
+    )
+
+    assert "一次函数应用" in expanded
+    assert "一次函数的实际应用" in expanded
 
 
 def test_full_vocabulary_match_outside_shortlist_is_accepted_and_reported(
@@ -531,7 +680,7 @@ def test_unknown_formal_value_is_removed_before_analysis_can_be_saved(
     assert proposals[0]["proposed_name"] == "AI自由造的知识点"
     assert normalized.knowledge_points == []
     assert normalized.canonical_knowledge_id == ""
-    assert normalized.method_tags == ["倍长中线"]
+    assert normalized.method_tags == ["构造辅助线法"]
     assert normalized.ability_tags == ["推理能力"]
 
 

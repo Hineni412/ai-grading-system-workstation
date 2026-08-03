@@ -25,7 +25,7 @@ PRACTICE_EXAM_MARKERS = (
 SIMPLE_QUESTION_TYPES = ("选择", "填空", "choice", "blank", "fill")
 QUESTION_SIMILARITY_MATCH_THRESHOLD = 0.5
 
-# 极宽泛的"思想方法"标签——几乎覆盖所有综合题，参与指纹会让大量几何/函数综合题
+# 极宽泛的历史方法/思想标签——几乎覆盖所有综合题，参与指纹会让大量几何/函数综合题
 # 聚到同一个匹配桶里，把"宽泛"误判成"高频"。这些标签从指纹中排除，指纹只保留
 # 具体方法（如配方法、待定系数法、面积法）来区分技能。
 GENERIC_METHOD_TAGS = frozenset({

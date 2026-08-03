@@ -318,6 +318,69 @@ def test_questions_and_facets_support_special_type_filter(
     }["动态几何题"] == 1
 
 
+def test_legacy_knowledge_value_filters_and_facets_as_current_canonical_term(
+    question_bank_fixture,
+) -> None:
+    service, db_path, _ = question_bank_fixture
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO question_tags (question_id, tag_type, tag_value)
+            VALUES (1, 'knowledge_point', '一次函数的实际应用')
+            """
+        )
+        conn.commit()
+    client = _question_bank_client(service)
+
+    page = client.get(
+        "/api/question-bank/questions",
+        params=[("knowledge_points", "一次函数应用")],
+    )
+    facets = client.get("/api/question-bank/facets")
+
+    assert page.status_code == 200
+    assert [item["id"] for item in page.json()["items"]] == [1]
+    knowledge_facets = {
+        item["value"]: item["count"]
+        for item in facets.json()["knowledge_points"]
+    }
+    assert knowledge_facets["一次函数应用"] == 1
+    assert "一次函数的实际应用" not in knowledge_facets
+
+
+def test_legacy_method_thought_projects_to_thought_display_filter_and_facet(
+    question_bank_fixture,
+) -> None:
+    service, db_path, _ = question_bank_fixture
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO question_tags (question_id, tag_type, tag_value)
+            VALUES (1, 'method', '方程思想')
+            """
+        )
+        conn.commit()
+    client = _question_bank_client(service)
+
+    page = client.get(
+        "/api/question-bank/questions",
+        params=[("thoughts", "方程思想")],
+    )
+    facets = client.get("/api/question-bank/facets").json()
+    detail = client.get("/api/question-bank/questions/1").json()
+
+    assert page.status_code == 200
+    assert [item["id"] for item in page.json()["items"]] == [1]
+    assert {item["value"] for item in facets["thoughts"]} >= {"方程思想"}
+    assert "方程思想" not in {
+        item["value"] for item in facets["methods"]
+    }
+    assert {
+        (tag["tag_type"], tag["tag_value"])
+        for tag in detail["tags"]
+    } >= {("thought", "方程思想")}
+
+
 def test_question_facets_do_not_expand_empty_taxonomy_filters_repeatedly(
     question_bank_fixture,
     monkeypatch: pytest.MonkeyPatch,

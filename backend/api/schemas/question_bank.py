@@ -165,6 +165,7 @@ class QuestionTagResponse(_QuestionBankModel):
         "knowledge_point",
         "measured_skill_name",
         "method",
+        "thought",
         "model",
         "prerequisite",
         "special_type",
@@ -298,6 +299,7 @@ class QuestionFacetsResponse(_QuestionBankModel):
     curriculum_chapters: list[QuestionFacetItem]
     abilities: list[QuestionFacetItem]
     methods: list[QuestionFacetItem]
+    thoughts: list[QuestionFacetItem]
     models: list[QuestionFacetItem]
     special_types: list[QuestionFacetItem]
     student_levels: list[QuestionFacetItem]
@@ -537,6 +539,7 @@ TaxonomyDimension = Literal[
     "knowledge",
     "ability",
     "method",
+    "thought",
     "model",
     "special_type",
 ]
@@ -555,6 +558,7 @@ class TaxonomyDimensionsResponse(_QuestionBankModel):
     knowledge: list[TaxonomyTermResponse]
     ability: list[TaxonomyTermResponse]
     method: list[TaxonomyTermResponse]
+    thought: list[TaxonomyTermResponse]
     model: list[TaxonomyTermResponse]
     special_type: list[TaxonomyTermResponse]
 

@@ -157,7 +157,8 @@ def _evidence_payload(
 def _tag_payload() -> dict[str, Any]:
     return {
         "knowledge_points": ["一元一次方程"],
-        "method_tags": ["方程思想"],
+        "method_tags": [],
+        "thought_tags": ["方程思想"],
         "ability_tags": ["运算能力"],
         "math_model_tags": [],
         "special_type_tags": [],
@@ -398,34 +399,34 @@ def test_solution_evidence_skeletons_compose_into_current_config_contract() -> N
     ] == evidence_versions
 
 
-def test_fine_term_baseline_classifies_all_1121_without_forcing_procedures() -> None:
+def test_governed_fine_term_baseline_keeps_core_nodes_without_forcing_procedures() -> None:
     baseline = build_fine_term_mapping_baseline()
     coverage = baseline.coverage()
 
     assert coverage == {
-        "total": 1121,
+        "total": 294,
         "by_status": {
-            "resolved": 555,
-            "ambiguous": 90,
-            "unmapped": 476,
+            "resolved": 208,
+            "ambiguous": 8,
+            "unmapped": 78,
         },
         "by_term_kind": {
             "core_knowledge": 70,
-            "fine_knowledge": 673,
-            "procedure": 378,
+            "fine_knowledge": 193,
+            "procedure": 31,
         },
     }
     core = [item for item in baseline.entries if item.term_kind == "core_knowledge"]
     assert len(core) == 70
     assert all(item.status == "resolved" for item in core)
     fine = [item for item in baseline.entries if item.term_kind == "fine_knowledge"]
-    assert sum(item.status == "resolved" for item in fine) == 485
-    assert sum(item.status == "ambiguous" for item in fine) == 90
-    assert sum(item.status == "unmapped" for item in fine) == 98
+    assert sum(item.status == "resolved" for item in fine) == 138
+    assert sum(item.status == "ambiguous" for item in fine) == 8
+    assert sum(item.status == "unmapped" for item in fine) == 47
     procedures = [item for item in baseline.entries if item.term_kind == "procedure"]
-    assert len(procedures) == 378
+    assert len(procedures) == 31
     assert all(item.status != "resolved" for item in procedures)
-    assert sum(coverage["by_status"].values()) == 1121
+    assert sum(coverage["by_status"].values()) == 294
 
 
 def test_mapping_repository_requires_governed_confirmation_and_installs_baseline(
@@ -501,7 +502,7 @@ def test_mapping_repository_requires_governed_confirmation_and_installs_baseline
         baseline,
         actor_ref="system:reviewed-baseline-test",
     )
-    assert installed["total"] == 1121
+    assert installed["total"] == 294
     with connect(database) as connection:
         count = int(
             connection.execute(

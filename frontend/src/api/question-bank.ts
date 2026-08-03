@@ -17,6 +17,7 @@ export const QUESTION_BANK_TAG_TYPES = [
   'student_level',
   'sub_skill',
   'supporting_skill_name',
+  'thought',
   'teaching_stage',
 ] as const
 
@@ -273,6 +274,7 @@ export interface QuestionBankFacets {
   curriculum_chapters: QuestionBankFacet[]
   abilities: QuestionBankFacet[]
   methods: QuestionBankFacet[]
+  thoughts: QuestionBankFacet[]
   models: QuestionBankFacet[]
   special_types: QuestionBankFacet[]
   student_levels: QuestionBankFacet[]
@@ -412,6 +414,7 @@ export interface QuestionBankFilters {
   knowledgePoints?: string[]
   abilities?: string[]
   methods?: string[]
+  thoughts?: string[]
   models?: string[]
   specialTypes?: string[]
   studentLevels?: string[]
@@ -960,6 +963,7 @@ export function decodeQuestionBankFacets(value: unknown): QuestionBankFacets {
     'curriculum_chapters',
     'abilities',
     'methods',
+    'thoughts',
     'models',
     'special_types',
     'student_levels',
@@ -1374,6 +1378,7 @@ function questionListPath(filters: QuestionBankFilters): string {
   appendTexts(parameters, 'knowledge_points', filters.knowledgePoints)
   appendTexts(parameters, 'abilities', filters.abilities)
   appendTexts(parameters, 'methods', filters.methods)
+  appendTexts(parameters, 'thoughts', filters.thoughts)
   appendTexts(parameters, 'models', filters.models)
   appendTexts(parameters, 'special_types', filters.specialTypes)
   appendTexts(parameters, 'student_levels', filters.studentLevels)

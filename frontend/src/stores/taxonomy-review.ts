@@ -43,6 +43,7 @@ function emptyDimensions(): Record<TaxonomyDimension, TaxonomyTerm[]> {
     knowledge: [],
     ability: [],
     method: [],
+    thought: [],
     model: [],
     special_type: [],
   }

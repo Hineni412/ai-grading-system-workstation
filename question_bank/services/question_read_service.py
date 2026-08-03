@@ -40,6 +40,7 @@ from question_bank.taxonomy.governance import get_taxonomy_governance
 ANALYSIS_TAG_TYPES = (
     "knowledge_point",
     "method",
+    "thought",
     "ability",
     "model",
     "error_type",
@@ -210,6 +211,7 @@ class QuestionReadFilters:
     knowledge_points: tuple[str, ...] = ()
     abilities: tuple[str, ...] = ()
     methods: tuple[str, ...] = ()
+    thoughts: tuple[str, ...] = ()
     models: tuple[str, ...] = ()
     special_types: tuple[str, ...] = ()
     student_levels: tuple[str, ...] = ()
@@ -802,6 +804,7 @@ class QuestionBankReadService:
             "curriculum_chapters": facet_source(exam_scopes=()),
             "abilities": facet_source(abilities=()),
             "methods": facet_source(methods=()),
+            "thoughts": facet_source(thoughts=()),
             "models": facet_source(models=()),
             "special_types": facet_source(special_types=()),
             "student_levels": facet_source(student_levels=()),
@@ -816,7 +819,9 @@ class QuestionBankReadService:
         def source(name: str) -> tuple[str, list[Any]]:
             return sources[name]
 
-        taxonomy_snapshot = get_taxonomy_governance().snapshot()
+        taxonomy_governance = get_taxonomy_governance()
+        taxonomy_snapshot = taxonomy_governance.snapshot()
+        taxonomy_identity_lookup = taxonomy_governance.identity_lookup()
         with _read_connection(self.db_path) as conn:
             filtered_sql, params = source("exam_scopes")
             curriculum_section_sql, curriculum_section_params = source(
@@ -826,6 +831,7 @@ class QuestionBankReadService:
             chapter_sql, chapter_params = source("curriculum_chapters")
             ability_sql, ability_params = source("abilities")
             method_sql, method_params = source("methods")
+            thought_sql, thought_params = source("thoughts")
             model_sql, model_params = source("models")
             special_type_sql, special_type_params = source("special_types")
             student_level_sql, student_level_params = source(
@@ -861,6 +867,7 @@ class QuestionBankReadService:
                     tag_type="knowledge_point",
                     taxonomy_dimension="knowledge",
                     taxonomy_snapshot=taxonomy_snapshot,
+                    taxonomy_identity_lookup=taxonomy_identity_lookup,
                 ),
                 "curriculum_chapters": _curriculum_chapter_facet(
                     conn,
@@ -874,6 +881,7 @@ class QuestionBankReadService:
                     tag_type="ability",
                     taxonomy_dimension="ability",
                     taxonomy_snapshot=taxonomy_snapshot,
+                    taxonomy_identity_lookup=taxonomy_identity_lookup,
                 ),
                 "methods": _tag_facet(
                     conn,
@@ -882,6 +890,16 @@ class QuestionBankReadService:
                     tag_type="method",
                     taxonomy_dimension="method",
                     taxonomy_snapshot=taxonomy_snapshot,
+                    taxonomy_identity_lookup=taxonomy_identity_lookup,
+                ),
+                "thoughts": _tag_facet(
+                    conn,
+                    thought_sql,
+                    thought_params,
+                    tag_type="thought",
+                    taxonomy_dimension="thought",
+                    taxonomy_snapshot=taxonomy_snapshot,
+                    taxonomy_identity_lookup=taxonomy_identity_lookup,
                 ),
                 "models": _tag_facet(
                     conn,
@@ -890,6 +908,7 @@ class QuestionBankReadService:
                     tag_type="model",
                     taxonomy_dimension="model",
                     taxonomy_snapshot=taxonomy_snapshot,
+                    taxonomy_identity_lookup=taxonomy_identity_lookup,
                 ),
                 "special_types": _tag_facet(
                     conn,
@@ -898,6 +917,7 @@ class QuestionBankReadService:
                     tag_type="special_type",
                     taxonomy_dimension="special_type",
                     taxonomy_snapshot=taxonomy_snapshot,
+                    taxonomy_identity_lookup=taxonomy_identity_lookup,
                 ),
                 "student_levels": _tag_facet(
                     conn,
@@ -1357,6 +1377,10 @@ def _question_filter_parts(
                     expand("method", filters.methods),
                 ),
                 (
+                    "thought",
+                    expand("thought", filters.thoughts),
+                ),
+                (
                     "model",
                     expand("model", filters.models),
                 ),
@@ -1386,6 +1410,7 @@ def _taxonomy_filter_expansions(
             ("knowledge", filters.knowledge_points),
             ("ability", filters.abilities),
             ("method", filters.methods),
+            ("thought", filters.thoughts),
             ("model", filters.models),
             ("special_type", filters.special_types),
         )
@@ -1401,6 +1426,7 @@ def _tag_facet(
     tag_type: str,
     taxonomy_dimension: str | None = None,
     taxonomy_snapshot: dict[str, Any] | None = None,
+    taxonomy_identity_lookup: dict[str, dict[str, str]] | None = None,
 ) -> list[dict[str, Any]]:
     if tag_type not in {
         "ability",
@@ -1408,6 +1434,7 @@ def _tag_facet(
         "exam_scope",
         "knowledge_point",
         "method",
+        "thought",
         "model",
         "special_type",
         "student_level",
@@ -1423,6 +1450,7 @@ def _tag_facet(
             tag_type=tag_type,
             dimension=taxonomy_dimension,
             taxonomy_snapshot=taxonomy_snapshot,
+            taxonomy_identity_lookup=taxonomy_identity_lookup,
         )
     rows = conn.execute(
         f"""
@@ -1453,6 +1481,7 @@ def _controlled_taxonomy_facet(
     tag_type: str,
     dimension: str,
     taxonomy_snapshot: dict[str, Any] | None = None,
+    taxonomy_identity_lookup: dict[str, dict[str, str]] | None = None,
 ) -> list[dict[str, Any]]:
     snapshot = (
         taxonomy_snapshot
@@ -1460,19 +1489,30 @@ def _controlled_taxonomy_facet(
         else get_taxonomy_governance().snapshot()
     )
     terms = snapshot["terms_by_dimension"].get(dimension, [])
-    alias_index: dict[str, str] = {}
-    for term in terms:
-        canonical_name = str(term.get("name") or "").strip()
-        if not canonical_name:
-            continue
-        for value in (
-            term.get("id"),
-            canonical_name,
-            *term.get("aliases", []),
-        ):
-            key = _taxonomy_value_key(value)
-            if key:
-                alias_index[key] = canonical_name
+    alias_index = dict(
+        (taxonomy_identity_lookup or {}).get(dimension, {})
+    )
+    if not alias_index:
+        for term in terms:
+            canonical_name = str(term.get("name") or "").strip()
+            if not canonical_name:
+                continue
+            for value in (
+                term.get("id"),
+                canonical_name,
+                *term.get("aliases", []),
+            ):
+                key = _taxonomy_value_key(value)
+                if key:
+                    alias_index[key] = canonical_name
+    thought_index = dict(
+        (taxonomy_identity_lookup or {}).get("thought", {})
+    )
+    tag_type_sql = (
+        "facet.tag_type IN ('thought', 'method')"
+        if dimension == "thought"
+        else f"facet.tag_type = '{tag_type}'"
+    )
     rows = conn.execute(
         f"""
         WITH filtered_questions AS (
@@ -1480,11 +1520,12 @@ def _controlled_taxonomy_facet(
         )
         SELECT DISTINCT
             filtered_questions.id AS question_id,
+            facet.tag_type AS tag_type,
             facet.tag_value AS value
         FROM filtered_questions
         JOIN question_tags facet
           ON facet.question_id = filtered_questions.id
-         AND facet.tag_type = '{tag_type}'
+         AND {tag_type_sql}
         WHERE COALESCE(facet.tag_value, '') <> ''
         """,
         params,
@@ -1494,10 +1535,14 @@ def _controlled_taxonomy_facet(
         raw_value = str(row["value"] or "").strip()
         if not raw_value:
             continue
-        public_value = alias_index.get(
-            _taxonomy_value_key(raw_value),
-            raw_value,
-        )
+        key = _taxonomy_value_key(raw_value)
+        if dimension == "method" and key in thought_index:
+            continue
+        public_value = alias_index.get(key)
+        if public_value is None:
+            if dimension == "thought" and str(row["tag_type"]) == "method":
+                continue
+            public_value = raw_value
         questions_by_value.setdefault(public_value, set()).add(
             int(row["question_id"])
         )
@@ -1758,14 +1803,34 @@ def _load_page_tags(
         """,
         [*question_ids, *_PUBLIC_TAG_TYPES],
     ).fetchall()
+    identity_lookup = get_taxonomy_governance().identity_lookup()
     tags_by_question: dict[int, list[dict[str, Any]]] = {}
     for row in rows:
         tag_value = _public_tag_value(row["tag_value"])
         if tag_value is None:
             continue
+        tag_type = str(row["tag_type"])
+        dimension = {
+            "knowledge_point": "knowledge",
+            "method": "method",
+            "thought": "thought",
+            "ability": "ability",
+            "model": "model",
+            "special_type": "special_type",
+            "exam_scope": "curriculum",
+        }.get(tag_type)
+        key = _taxonomy_value_key(tag_value)
+        if tag_type == "method":
+            thought_value = identity_lookup["thought"].get(key)
+            if thought_value:
+                tag_type = "thought"
+                tag_value = thought_value
+                dimension = "thought"
+        if dimension:
+            tag_value = identity_lookup[dimension].get(key, tag_value)
         tags_by_question.setdefault(int(row["question_id"]), []).append(
             {
-                "tag_type": str(row["tag_type"]),
+                "tag_type": tag_type,
                 "tag_value": tag_value,
                 "confidence": (
                     float(row["confidence"])

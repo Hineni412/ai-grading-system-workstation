@@ -48,7 +48,8 @@ const dimensionLabels: Record<TaxonomyDimension, string> = {
   curriculum: '教材归属',
   knowledge: '知识点',
   ability: '能力',
-  method: '思想方法',
+  method: '解题方法',
+  thought: '数学思想',
   model: '数学模型',
   special_type: '特殊题型/考法',
 }

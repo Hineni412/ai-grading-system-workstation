@@ -33,6 +33,7 @@ ALLOWED_DIMENSIONS = (
     "knowledge",
     "ability",
     "method",
+    "thought",
     "model",
     "special_type",
 )
@@ -67,6 +68,11 @@ _RAW_FIELD_DIMENSIONS: dict[str, str] = {
     "method": "method",
     "method_tag": "method",
     "method_tags": "method",
+    "thought": "thought",
+    "thought_tag": "thought",
+    "thought_tags": "thought",
+    "math_thought": "thought",
+    "math_thought_tags": "thought",
     "model": "model",
     "math_model": "model",
     "math_models": "model",
@@ -74,6 +80,15 @@ _RAW_FIELD_DIMENSIONS: dict[str, str] = {
     "special_type": "special_type",
     "special_type_tag": "special_type",
     "special_type_tags": "special_type",
+}
+_DIMENSION_PRIMARY_FIELD: dict[str, str] = {
+    "curriculum": "textbook_chapters",
+    "knowledge": "knowledge_points",
+    "ability": "ability_tags",
+    "method": "method_tags",
+    "thought": "thought_tags",
+    "model": "math_model_tags",
+    "special_type": "special_type_tags",
 }
 _LEGACY_UNCONTROLLED_FIELDS = frozenset(
     {
@@ -213,7 +228,15 @@ def _validate_term(
     if not isinstance(raw, Mapping):
         raise TaxonomyValidationError(f"{label} must be an object")
     optional = (
-        frozenset({"origin", "source_paths", "retrieval_hints"})
+        frozenset(
+            {
+                "origin",
+                "source_paths",
+                "retrieval_hints",
+                "legacy_names",
+                "legacy_ids",
+            }
+        )
         if allow_metadata
         else frozenset({"origin", "created_at", "updated_at"})
     )
@@ -278,6 +301,17 @@ def _validate_term(
                 f"{_MAX_TERM_NAME_LENGTH} characters"
             )
         result["retrieval_hints"] = retrieval_hints
+    if allow_metadata:
+        for field in ("legacy_names", "legacy_ids"):
+            if field not in raw:
+                continue
+            values = _string_list(raw.get(field), label=f"{label}.{field}")
+            if any(len(value) > _MAX_TERM_NAME_LENGTH for value in values):
+                raise TaxonomyValidationError(
+                    f"{label}.{field} must not exceed "
+                    f"{_MAX_TERM_NAME_LENGTH} characters"
+                )
+            result[field] = values
     if not allow_metadata:
         for field in ("created_at", "updated_at"):
             if field in raw:
@@ -870,7 +904,11 @@ class TaxonomyGovernance:
 
     def _combined_terms(
         self, state: Mapping[str, Any]
-    ) -> tuple[list[dict[str, Any]], dict[tuple[str, str], dict[str, Any]]]:
+    ) -> tuple[
+        list[dict[str, Any]],
+        dict[tuple[str, str], dict[str, Any]],
+        dict[tuple[str, str], dict[str, Any]],
+    ]:
         by_id = {
             term["id"]: copy.deepcopy(term)
             for term in self._catalog["terms"]
@@ -895,6 +933,9 @@ class TaxonomyGovernance:
             if term["status"] == _ACTIVE_TERM_STATUS
         }
         alias_index: dict[tuple[str, str], dict[str, Any]] = {}
+        legacy_candidates: dict[
+            tuple[str, str], list[dict[str, Any]]
+        ] = {}
         for term in terms:
             if term["status"] != _ACTIVE_TERM_STATUS:
                 continue
@@ -913,11 +954,24 @@ class TaxonomyGovernance:
                         f"Ambiguous approved taxonomy alias: {value}"
                     )
                 alias_index[key] = term
-        return terms, alias_index
+            for value in (
+                *term.get("legacy_names", []),
+                *term.get("legacy_ids", []),
+            ):
+                normalized = _normalized_name(value)
+                if normalized:
+                    key = (term["dimension"], normalized)
+                    legacy_candidates.setdefault(key, []).append(term)
+        legacy_index = {
+            key: owners[0]
+            for key, owners in legacy_candidates.items()
+            if len({owner["id"] for owner in owners}) == 1
+        }
+        return terms, alias_index, legacy_index
 
     def snapshot(self) -> dict[str, Any]:
         state = self._read_state()
-        terms, _ = self._combined_terms(state)
+        terms, _, _ = self._combined_terms(state)
         active_by_dimension = {
             dimension: [
                 _term_public(term)
@@ -967,9 +1021,27 @@ class TaxonomyGovernance:
         if dimension not in _DIMENSION_SET:
             return None
         state = self._read_state()
-        _, alias_index = self._combined_terms(state)
-        term = alias_index.get((dimension, _normalized_name(value)))
+        _, alias_index, legacy_index = self._combined_terms(state)
+        key = (dimension, _normalized_name(value))
+        term = alias_index.get(key)
+        if term is None:
+            term = legacy_index.get(key)
         return _term_public(term) if term is not None else None
+
+    def identity_lookup(self) -> dict[str, dict[str, str]]:
+        """Return internal same-dimension lookup values for stored tags.
+
+        Hidden legacy names and IDs are included for local reads and filters,
+        but this map is never returned by the catalog API or sent to the model.
+        """
+
+        state = self._read_state()
+        _, alias_index, legacy_index = self._combined_terms(state)
+        lookup = {dimension: {} for dimension in ALLOWED_DIMENSIONS}
+        for index in (alias_index, legacy_index):
+            for (dimension, normalized), term in index.items():
+                lookup[dimension][normalized] = term["name"]
+        return lookup
 
     def expand_filter_values(
         self, dimension: str, canonical_values: Iterable[object]
@@ -978,16 +1050,28 @@ class TaxonomyGovernance:
         if dimension not in _DIMENSION_SET:
             return ()
         state = self._read_state()
-        _, alias_index = self._combined_terms(state)
+        _, alias_index, legacy_index = self._combined_terms(state)
         expanded: list[str] = []
         for value in canonical_values:
             term = alias_index.get((dimension, _normalized_name(value)))
+            if term is None:
+                term = legacy_index.get(
+                    (dimension, _normalized_name(value))
+                )
             if term is None:
                 text = _text(value)
                 if text:
                     expanded.append(text)
                 continue
-            expanded.extend([term["name"], *term["aliases"]])
+            expanded.extend(
+                [
+                    term["id"],
+                    term["name"],
+                    *term["aliases"],
+                    *term.get("legacy_names", []),
+                    *term.get("legacy_ids", []),
+                ]
+            )
         return tuple(_unique_text(expanded))
 
     def prompt_contracts(
@@ -997,7 +1081,7 @@ class TaxonomyGovernance:
         """Build isolated per-question candidate contracts from one snapshot."""
 
         state = self._read_state()
-        terms, _alias_index = self._combined_terms(state)
+        terms, _alias_index, _legacy_index = self._combined_terms(state)
         active_by_dimension = {
             dimension: [
                 term
@@ -1057,9 +1141,10 @@ class TaxonomyGovernance:
             "curriculum": 8,
             "knowledge": 32,
             "ability": 10,
-            "method": 12,
-            "model": 16,
-            "special_type": 8,
+            "method": 32,
+            "thought": 20,
+            "model": 48,
+            "special_type": 16,
         }
 
         def phrase_score(
@@ -1112,6 +1197,15 @@ class TaxonomyGovernance:
                         overlap_weight=10,
                     ),
                 )
+            for legacy_name in term.get("legacy_names", []):
+                score_value = max(
+                    score_value,
+                    phrase_score(
+                        legacy_name,
+                        exact_weight=700,
+                        overlap_weight=12,
+                    ),
+                )
             for path in term.get("source_paths", []):
                 score_value = max(
                     score_value,
@@ -1142,7 +1236,13 @@ class TaxonomyGovernance:
                 eligible = [
                     item for item in ranked if item[1]["id"] in allowed_chapter_ids
                 ]
-            elif dimension == "ability":
+            elif dimension in {
+                "ability",
+                "method",
+                "thought",
+                "model",
+                "special_type",
+            }:
                 eligible = ranked
             elif not has_query:
                 eligible = []
@@ -1183,8 +1283,12 @@ class TaxonomyGovernance:
                 "special_type": (
                     "特殊题型/考法描述可复用的呈现方式，不等同于选择、填空等基本题型。"
                 ),
+                "knowledge": "只选题目直接考查的概念、性质、定理、公式或运算规则。",
+                "method": "只选本题实际使用的具体解题程序或构造办法。",
+                "thought": "只选跨知识主题复用的通用思考策略，不与具体方法混放。",
+                "model": "只选题目满足明确条件的稳定结构，不按图形外观或网络绰号自由命名。",
                 "unknown": (
-                    "候选中确无匹配时可返回 proposed_tags；每题最多2个。"
+                    "知识点候选中确无匹配时可返回 proposed_tags；每题最多1个。"
                     "本地会先与完整正式词表匹配，仍未知才进入教师审核。"
                 ),
                 "forbidden_dimensions": [
@@ -1198,6 +1302,7 @@ class TaxonomyGovernance:
                 "knowledge": ["term-id"],
                 "ability": ["term-id"],
                 "method": ["term-id"],
+                "thought": ["term-id"],
                 "model": ["term-id"],
                 "special_type": ["term-id"],
                 "proposed_tags": [
@@ -1221,7 +1326,7 @@ class TaxonomyGovernance:
         state: Mapping[str, Any],
         allowed_term_ids: Mapping[str, object] | None = None,
     ) -> dict[str, Any]:
-        terms, alias_index = self._combined_terms(state)
+        terms, alias_index, legacy_index = self._combined_terms(state)
         accepted_terms = {dimension: [] for dimension in ALLOWED_DIMENSIONS}
         accepted_fields: dict[str, list[str]] = {}
         unknown_by_key: dict[tuple[str, str], dict[str, str]] = {}
@@ -1281,7 +1386,8 @@ class TaxonomyGovernance:
         ) -> bool:
             if key in free_keys:
                 return True
-            if len(free_keys) >= 2:
+            limit = 1 if restricted else 2
+            if len(free_keys) >= limit:
                 proposal_overflow.append(
                     {
                         "dimension": dimension,
@@ -1304,9 +1410,13 @@ class TaxonomyGovernance:
                 for existing in accepted_terms[dimension]
             ):
                 accepted_terms[dimension].append(_term_public(term))
-            accepted_fields.setdefault(source_field, [])
-            if term["name"] not in accepted_fields[source_field]:
-                accepted_fields[source_field].append(term["name"])
+            output_field = source_field
+            source_dimension = _RAW_FIELD_DIMENSIONS.get(source_field)
+            if source_dimension is not None and source_dimension != dimension:
+                output_field = _DIMENSION_PRIMARY_FIELD[dimension]
+            accepted_fields.setdefault(output_field, [])
+            if term["name"] not in accepted_fields[output_field]:
+                accepted_fields[output_field].append(term["name"])
 
         def exact_composite_terms(
             dimension: str,
@@ -1344,22 +1454,40 @@ class TaxonomyGovernance:
             if not key[1]:
                 return
             term = alias_index.get(key)
+            if term is None:
+                term = legacy_index.get(key)
+            if term is None and dimension == "method":
+                thought_key = ("thought", key[1])
+                term = alias_index.get(thought_key)
+                if term is None:
+                    term = legacy_index.get(thought_key)
             if term is not None:
+                resolved_dimension = term["dimension"]
                 within_candidates = (
                     not restricted
-                    or term["id"] in allowed_ids[dimension]
+                    or term["id"] in allowed_ids[resolved_dimension]
                 )
-                accept(dimension, term, source_field=source_field)
+                accept(resolved_dimension, term, source_field=source_field)
                 if not within_candidates:
                     retrieval_misses.append(
                         {
-                            "dimension": dimension,
+                            "dimension": resolved_dimension,
                             "submitted_name": name,
                             "canonical_id": term["id"],
                             "canonical_name": term["name"],
                             "source_field": source_field,
                         }
                     )
+                return
+            # A value known in another controlled dimension is misplaced model
+            # output, not a new term.  The only intentional cross-dimension
+            # compatibility is the old combined method field handled above.
+            if any(
+                alias_index.get((other_dimension, key[1])) is not None
+                or legacy_index.get((other_dimension, key[1])) is not None
+                for other_dimension in ALLOWED_DIMENSIONS
+                if other_dimension != dimension
+            ):
                 return
             composite_terms = exact_composite_terms(dimension, name)
             if composite_terms:
@@ -1369,6 +1497,14 @@ class TaxonomyGovernance:
                         composite_term,
                         source_field=source_field,
                     )
+                return
+            # A per-question model contract is closed for every optional
+            # semantic dimension.  The compressed catalog deliberately sends
+            # all method/thought/model/special-type choices, so an out-of-list
+            # value is model drift rather than a new vocabulary proposal.
+            # Knowledge keeps the single controlled escape hatch needed when
+            # local retrieval misses a legitimate concept.
+            if restricted and dimension != "knowledge":
                 return
             if not reserve_free_slot(
                 key,
@@ -1851,7 +1987,7 @@ class TaxonomyGovernance:
                 raise TaxonomyRevisionConflict(
                     expected_revision, state["revision"]
                 )
-            terms, alias_index = self._combined_terms(state)
+            terms, alias_index, _legacy_index = self._combined_terms(state)
             terms_by_id = {term["id"]: term for term in terms}
             proposals_by_id = {
                 proposal["id"]: proposal for proposal in state["proposals"]
