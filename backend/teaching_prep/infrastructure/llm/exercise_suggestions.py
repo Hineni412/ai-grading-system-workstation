@@ -15,7 +15,7 @@ from .lesson_model import _response_text
 
 _SYSTEM_INSTRUCTION = """\
 你是初中数学备课资料定位助手。只能查看用户提供的冻结参考范围快照，
-不得引用快照外资料。返回单个 JSON 对象且只能包含 suggestions。
+不得引用快照外资料。返回单个 json（JSON）对象且只能包含 suggestions。
 每条 suggestion 只能包含 material_version_id、question_number、content_label、
 difficulty、classroom_use、estimated_minutes、teaching_focus、reason、
 uncertainties、question_regions、answer_regions。每个区域只能包含

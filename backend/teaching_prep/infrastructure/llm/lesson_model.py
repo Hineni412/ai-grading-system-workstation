@@ -13,7 +13,7 @@ from backend.workspaces.model_policy import (
 
 _SYSTEM_INSTRUCTION = """\
 你是初中数学备课草稿助手。只能依据用户提供的已冻结资源包。
-返回单个 JSON 对象，只能包含 knowledge_objectives、focus_points、
+返回单个 json（JSON）对象，只能包含 knowledge_objectives、focus_points、
 anticipated_difficulties、lesson_flow、exercise_recommendations、
 slide_adaptations、uncertainties。必须遵守资源包中的
 preparation_preferences：它是教师本次明确选择的倾向。slide_adaptations
