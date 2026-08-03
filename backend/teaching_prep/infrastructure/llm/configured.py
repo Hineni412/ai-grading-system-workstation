@@ -1,17 +1,19 @@
 from __future__ import annotations
 
 import os
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
 from api_profiles import ApiProfileStorageError, ApiProfileStore, active_api_profile
 from backend.llm import (
+    LLMGateway,
     create_openai_client,
     gateway_config_key,
     normalize_openai_base_url,
     policy_overrides_from_profile,
 )
+from backend.llm.trace import safe_endpoint_host
 from backend.teaching_prep.domain.errors import TeachingPrepValidationError
 from backend.workspaces.contracts import WorkspaceContext
 from backend.workspaces.model_policy import WorkspaceModelGateway
@@ -123,14 +125,24 @@ class _ActiveProfileRuntime:
         self,
         resolved: _ResolvedModel,
     ) -> tuple[WorkspaceModelGateway, object]:
+        config_key = gateway_config_key(
+            resolved.api_key,
+            resolved.base_url,
+        )
+        diagnostic_gateway = LLMGateway(
+            profile=resolved.policy_profile,
+            config_key=config_key,
+            endpoint_host=safe_endpoint_host(resolved.base_url),
+        )
         return (
             WorkspaceModelGateway(
                 context=self.context,
                 profile=resolved.policy_profile,
-                config_key=gateway_config_key(
-                    resolved.api_key,
-                    resolved.base_url,
-                ),
+                config_key=config_key,
+                gateway=diagnostic_gateway,
+                metadata_only=False,
+                claim_operations=True,
+                allow_retry=False,
             ),
             create_openai_client(
                 resolved.api_key,
@@ -186,10 +198,12 @@ class ActiveProfileSemesterMappingModelAdapter:
         *,
         operation_id: str,
         semester_snapshot: dict[str, Any],
+        dispatch_callback: Callable[[], None] | None = None,
     ) -> dict[str, Any]:
         return self._runtime.semester_mapping_adapter().generate(
             operation_id=operation_id,
             semester_snapshot=semester_snapshot,
+            dispatch_callback=dispatch_callback,
         )
 
 

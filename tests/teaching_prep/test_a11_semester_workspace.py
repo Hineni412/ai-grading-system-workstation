@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+from collections.abc import Callable
 from pathlib import Path
 from threading import Event, Thread
 
@@ -54,7 +55,10 @@ class _FakeSemesterMappingModel:
         *,
         operation_id: str,
         semester_snapshot: dict[str, object],
+        dispatch_callback: Callable[[], None] | None = None,
     ) -> dict[str, object]:
+        if dispatch_callback is not None:
+            dispatch_callback()
         self.calls.append(
             {
                 "operation_id": operation_id,
@@ -83,7 +87,10 @@ class _BlockingSemesterMappingModel(_FakeSemesterMappingModel):
         *,
         operation_id: str,
         semester_snapshot: dict[str, object],
+        dispatch_callback: Callable[[], None] | None = None,
     ) -> dict[str, object]:
+        if dispatch_callback is not None:
+            dispatch_callback()
         self.calls.append(
             {
                 "operation_id": operation_id,
@@ -863,6 +870,7 @@ def test_semester_mapping_job_is_durable_deduplicated_and_public_safe(
         assert waiting.status_code == 200
         assert waiting.json()["stage"] == "calling_model"
         assert waiting.json()["progress"] == 0.35
+        assert waiting.json()["detail"] == "模型请求已开始，正在等待返回"
         second = client.post(
             f"/api/teaching-prep/semesters/{semester.id}/mapping-proposal-jobs",
             json={**body, "operation_id": "semester-mapping-job-fresh-0002"},
@@ -978,6 +986,118 @@ def test_invalid_semester_mapping_response_allows_an_explicit_new_operation(
         "semester-mapping-retry-json-0002",
         "semester-mapping-retry-new-0003",
     ]
+
+
+def test_semester_mapping_configuration_failure_stays_before_dispatch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths, base_service = _migrated_service(tmp_path, monkeypatch)
+    semester, _lesson_ids = _semester(base_service)
+    version, _created = base_service.register_material_file(
+        request_token="mapping-config-file",
+        path=_pdf(tmp_path / "config-workbook.pdf", ["L1"]),
+        display_name="合成配置失败教辅",
+    )
+    record, _created = base_service.attach_semester_material(
+        semester.id,
+        request_token="mapping-config-attach",
+        material_version_id=version.id,
+        material_role="exercise_workbook",
+    )
+    base_service.parse_material_version(version.id)
+
+    class _ConfigurationFailureModel:
+        def is_available(self) -> bool:
+            return True
+
+        def generate(
+            self,
+            *,
+            operation_id: str,
+            semester_snapshot: dict[str, object],
+            dispatch_callback: Callable[[], None] | None = None,
+        ) -> dict[str, object]:
+            raise TeachingPrepValidationError(
+                "active teaching-prep model configuration is incomplete"
+            )
+
+    service = TeachingPrepService(
+        paths.workspace_dir("teaching-prep"),
+        semester_mapping_model_adapter=_ConfigurationFailureModel(),
+    )
+    stages: list[str] = []
+
+    with pytest.raises(
+        TeachingPrepRetryAvailableError,
+        match="configuration is unavailable",
+    ):
+        service.generate_semester_mapping_proposal(
+            semester.id,
+            operation_id="semester-mapping-config-0001",
+            material_record_ids=[record.id],
+            progress_callback=stages.append,
+        )
+
+    assert "calling_model" not in stages
+    with service.database.connect() as connection:
+        row = connection.execute(
+            """
+            SELECT status, error_code
+            FROM teaching_prep_operations
+            WHERE operation_id = ?
+            """,
+            ("semester-mapping-config-0001",),
+        ).fetchone()
+    assert row is not None
+    assert dict(row) == {
+        "status": "failed",
+        "error_code": "semester_mapping_model_configuration_invalid",
+    }
+
+
+def test_semester_mapping_configuration_removed_after_preflight_is_specific(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths, base_service = _migrated_service(tmp_path, monkeypatch)
+    semester, _lesson_ids = _semester(base_service)
+    version, _created = base_service.register_material_file(
+        request_token="mapping-config-removed-file",
+        path=_pdf(tmp_path / "config-removed-workbook.pdf", ["L1"]),
+        display_name="合成配置移除教辅",
+    )
+    record, _created = base_service.attach_semester_material(
+        semester.id,
+        request_token="mapping-config-removed-attach",
+        material_version_id=version.id,
+        material_role="exercise_workbook",
+    )
+    base_service.parse_material_version(version.id)
+
+    class _UnavailableModel:
+        def is_available(self) -> bool:
+            return False
+
+    service = TeachingPrepService(
+        paths.workspace_dir("teaching-prep"),
+        semester_mapping_model_adapter=_UnavailableModel(),
+    )
+    stages: list[str] = []
+
+    with pytest.raises(
+        TeachingPrepValidationError,
+        match="model configuration is unavailable",
+    ):
+        service.generate_semester_mapping_proposal(
+            semester.id,
+            operation_id="semester-mapping-config-removed-0001",
+            material_record_ids=[record.id],
+            progress_callback=stages.append,
+        )
+
+    assert stages[-1] == "claiming_operation"
+    assert "calling_model" not in stages
 
 
 def test_indeterminate_semester_mapping_model_failure_blocks_a_new_call(
@@ -1202,7 +1322,10 @@ def test_mapping_semantic_identity_blocks_a_parallel_fresh_operation(
             *,
             operation_id: str,
             semester_snapshot: dict[str, object],
+            dispatch_callback: Callable[[], None] | None = None,
         ) -> dict[str, object]:
+            if dispatch_callback is not None:
+                dispatch_callback()
             self.calls.append(
                 {
                     "operation_id": operation_id,
