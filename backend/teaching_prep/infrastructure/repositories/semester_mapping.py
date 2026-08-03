@@ -91,6 +91,11 @@ class SemesterMappingRepository:
                     raise TeachingPrepRetryAvailableError(
                         "previous semester mapping did not complete"
                     )
+                if operation_status == "interrupted":
+                    raise TeachingPrepStateError(
+                        "semester mapping result is unknown after application restart; "
+                        "automatic retry is blocked"
+                    )
                 raise TeachingPrepStateError(
                     "semester mapping already started; wait for its result"
                 )
@@ -113,9 +118,11 @@ class SemesterMappingRepository:
                     request_hash,
                     target_kind,
                     target_id,
-                    status
+                    status,
+                    error_code
                 )
-                VALUES (?, 'semester_mapping_model', ?, ?, 'semester', ?, 'running')
+                VALUES (?, 'semester_mapping_model', ?, ?, 'semester', ?, 'running',
+                        'semester_mapping_model_call_pending')
                 """,
                 (
                     operation_id,
@@ -125,6 +132,24 @@ class SemesterMappingRepository:
                 ),
             )
         return None
+
+    def mark_generation_model_call_started(self, operation_id: str) -> None:
+        with self._database.connect(immediate=True) as connection:
+            updated = connection.execute(
+                """
+                UPDATE teaching_prep_operations
+                SET error_code = 'semester_mapping_model_call_started',
+                    updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                WHERE operation_id = ?
+                  AND status = 'running'
+                  AND error_code = 'semester_mapping_model_call_pending'
+                """,
+                (operation_id,),
+            ).rowcount
+            if updated != 1:
+                raise TeachingPrepStateError(
+                    "semester mapping operation is no longer ready to call the model"
+                )
 
     def finish_generation(
         self,
@@ -324,6 +349,25 @@ class SemesterMappingRepository:
                 """
                 UPDATE teaching_prep_operations
                 SET status = 'failed',
+                    error_code = ?,
+                    updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+                    finished_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                WHERE operation_id = ? AND status = 'running'
+                """,
+                (error_code, operation_id),
+            )
+
+    def mark_generation_result_unknown(
+        self,
+        operation_id: str,
+        error_code: str,
+    ) -> None:
+        """Keep an indeterminate physical model call behind the durable guard."""
+        with self._database.connect(immediate=True) as connection:
+            connection.execute(
+                """
+                UPDATE teaching_prep_operations
+                SET status = 'interrupted',
                     error_code = ?,
                     updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
                     finished_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
@@ -851,9 +895,13 @@ class SemesterMappingRepository:
             FROM teaching_prep_operations
             WHERE operation_type = 'semester_mapping_model'
               AND request_hash = ?
-              AND status IN ('running', 'succeeded')
+              AND status IN ('running', 'succeeded', 'interrupted')
             ORDER BY
-                CASE status WHEN 'succeeded' THEN 0 ELSE 1 END,
+                CASE status
+                    WHEN 'succeeded' THEN 0
+                    WHEN 'interrupted' THEN 1
+                    ELSE 2
+                END,
                 created_at DESC,
                 operation_id DESC
             LIMIT 1
@@ -895,6 +943,11 @@ class SemesterMappingRepository:
         if operation_status == "running":
             raise TeachingPrepStateError(
                 "semester mapping is still running"
+            )
+        if operation_status == "interrupted":
+            raise TeachingPrepStateError(
+                "semester mapping result is unknown after application restart; "
+                "automatic retry is blocked"
             )
         raise TeachingPrepConflictError("mapping operation has invalid state")
 
