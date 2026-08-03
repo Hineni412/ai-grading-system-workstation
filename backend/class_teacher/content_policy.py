@@ -153,19 +153,31 @@ _CLASS_NAME_PATTERNS = (
         rf"(?P<name>{_NAME_BODY})(?={_NAME_CONTEXT_SUFFIX})"
     ),
 )
+_INCIDENT_EVENT = (
+    r"(?:发生(?:了)?(?:矛盾|冲突|争执)|出现(?:了)?(?:矛盾|冲突|争执)|"
+    r"产生(?:了)?(?:矛盾|冲突|争执)|闹(?:了)?矛盾|打架|斗殴|推搡|受伤)"
+)
+_INCIDENT_CONTEXT_START = (
+    r"(?:今天|明天|后天|昨天|当时|刚才|最近|本周|这周|下周|上午|中午|下午|"
+    r"晚上|早上|课间|午休|放学|返校|到校|在|于|因|因为|由于|上|下|参加|"
+    r"进行|完成|做|又|刚|突然|期间|过程中|\d)"
+)
+_INCIDENT_CONTEXT_AND_EVENT = (
+    rf"(?:{_INCIDENT_CONTEXT_START}[^，。；\n]*?)?{_INCIDENT_EVENT}"
+)
 _INCIDENT_NAME_PATTERNS = (
     re.compile(
         rf"(?P<name>{_NAME_BODY})(?:同学|学生)?"
         rf"(?=\s*(?:和|与|、)\s*{_NAME_BODY}(?:同学|学生)?"
-        r"\s*(?:发生|打架|冲突|争执|斗殴|推搡|受伤))"
+        rf"\s*{_INCIDENT_CONTEXT_AND_EVENT})"
     ),
     re.compile(
         rf"(?:和|与|、)\s*(?P<name>{_NAME_BODY})(?:同学|学生)?"
-        r"(?=\s*(?:发生|打架|冲突|争执|斗殴|推搡|受伤|[，。；]|$))"
+        rf"(?=\s*{_INCIDENT_CONTEXT_AND_EVENT})"
     ),
     re.compile(
         rf"(?:^|(?<=[，。；]))\s*(?P<name>{_NAME_BODY})(?:同学|学生)?"
-        r"(?=\s*(?:发生|打架|冲突|争执|斗殴|推搡|受伤))"
+        rf"(?=\s*{_INCIDENT_CONTEXT_AND_EVENT})"
     ),
 )
 
@@ -187,6 +199,7 @@ def _name_findings(value: str) -> bool:
         _DIRECT_NAME_PATTERN.search(masked)
         or any(pattern.search(masked) for pattern in _CONTEXTUAL_NAME_PATTERNS)
         or any(pattern.search(value) for pattern in _CLASS_NAME_PATTERNS)
+        or any(pattern.search(masked) for pattern in _INCIDENT_NAME_PATTERNS)
     )
 
 

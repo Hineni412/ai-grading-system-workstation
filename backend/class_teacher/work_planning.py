@@ -259,17 +259,29 @@ class WorkPlanning:
             "parent_context": parent_context,
             "instructions": [
                 "根据教师这一次输入的真实语境拆解任务，不使用任何预置业务模板。",
-                "识别完成目标所需的具体节点、依赖关系，并从最终日期向前倒排；信息不足时返回 questions，不得猜测。",
-                "优先只返回 JSON；信息不足时追问，若更适合连续事务或学生支持则只给出建议去向，不得自动创建。",
+                "识别完成目标所需的具体节点、依赖关系，并从最终日期向前倒排；只有缺少的信息会阻止形成安全且有用的方案时才追问，不得猜测。",
+                "追问只问最少必要的 1—3 个问题；每个问题必须指出缺失的是目标成果、参与角色、时间、范围数量、约束资源或待确认事实中的哪一方面，并结合原文给出可选示例，不得只说‘请补充具体信息’。",
+                "不得重复询问 task_text 或 final_due_date 中已经明确的信息，也不得索要完成当前方案不需要的姓名、电话、地址等敏感信息。",
+                "kind 是必填字段且不得为空；返回 questions 时 kind 必须为 follow_up，nodes 和 edges 必须为空数组。",
+                "优先只返回 JSON；若更适合连续事务或学生支持则只给出建议去向，不得自动创建。",
                 "不得诊断、认定欺凌、惩戒、自动外发、自动完成或自动结案。",
                 "没有最终日期时不得编造节点日期；所有日期只能是 YYYY-MM-DD，且不能晚于 final_due_date。",
             ],
             "output_contract": {
-                "kind": "plan、follow_up、affair_recommendation 或 student_support_recommendation",
-                "questions": ["需要教师补充的问题；没有则为空数组"],
+                "kind": "必填枚举：plan、follow_up、affair_recommendation 或 student_support_recommendation",
+                "questions": ["最多 3 个具体问题；没有则为空数组"],
                 "assumptions": ["模型采用且需教师复核的假设；没有则为空数组"],
                 "summary": "建议去向的中性说明；仅 recommendation 类型需要",
                 "reasons": ["建议该去向的理由；没有则为空数组"],
+                "follow_up_example": {
+                    "kind": "follow_up",
+                    "questions": [
+                        "你希望围绕这件事完成哪类成果？例如流程安排、材料准备、通知回执或事实核对。"
+                    ],
+                    "assumptions": [],
+                    "nodes": [],
+                    "edges": [],
+                },
                 "nodes": [
                     {
                         "id": "本次方案内唯一编号",
@@ -671,7 +683,30 @@ class WorkPlanning:
             raise self._invalid("AI 返回的内容不是有效 JSON") from exc
         if not isinstance(decoded, dict):
             raise self._invalid("AI 返回的方案结构无效")
-        kind = str(decoded.get("kind") or "").strip()
+        raw_kind = decoded.get("kind")
+        if raw_kind is not None and not isinstance(raw_kind, str):
+            raise self._invalid("AI 返回了不支持的方案类型")
+        kind = raw_kind.strip() if isinstance(raw_kind, str) else ""
+        questions = self._string_list(
+            decoded.get("questions", []),
+            label="追问",
+            maximum_items=3,
+        )
+        assumptions = self._string_list(decoded.get("assumptions", []), label="假设")
+        raw_nodes = decoded.get("nodes", [])
+        raw_edges = decoded.get("edges", [])
+        recommendation_payload_empty = all(
+            decoded.get(key) in (None, "", [])
+            for key in ("summary", "reasons", "text")
+        )
+        if (
+            not kind
+            and questions
+            and raw_nodes == []
+            and raw_edges == []
+            and recommendation_payload_empty
+        ):
+            kind = "follow_up"
         if kind not in {
             "plan",
             "follow_up",
@@ -680,12 +715,16 @@ class WorkPlanning:
             "plain_text",
         }:
             raise self._invalid("AI 返回了不支持的方案类型")
-        questions = self._string_list(decoded.get("questions", []), label="追问")
-        assumptions = self._string_list(decoded.get("assumptions", []), label="假设")
         self._assert_safe_model_text([*questions, *assumptions])
         if kind == "follow_up":
             if not questions:
                 raise self._invalid("AI 表示信息不足但没有返回追问")
+            if (
+                raw_nodes != []
+                or raw_edges != []
+                or not recommendation_payload_empty
+            ):
+                raise self._invalid("AI 追问结果不能混入方案节点或建议内容")
             return {
                 "kind": kind,
                 "questions": questions,
@@ -693,6 +732,8 @@ class WorkPlanning:
                 "nodes": [],
                 "edges": [],
             }
+        if questions:
+            raise self._invalid("AI 返回追问时必须使用 follow_up 类型")
         if kind == "plain_text":
             message = self._bounded_text(
                 decoded.get("text"),
@@ -734,8 +775,6 @@ class WorkPlanning:
                 },
             }
 
-        raw_nodes = decoded.get("nodes")
-        raw_edges = decoded.get("edges")
         if not isinstance(raw_nodes, list) or not raw_nodes or len(raw_nodes) > 24:
             raise self._invalid("AI 方案节点数量无效")
         if not isinstance(raw_edges, list) or len(raw_edges) > 64:
@@ -871,8 +910,15 @@ class WorkPlanning:
             raise WorkPlanning._invalid("AI 方案关系形成了循环")
 
     @staticmethod
-    def _string_list(value: object, *, label: str) -> list[str]:
-        if not isinstance(value, list) or len(value) > 8:
+    def _string_list(
+        value: object,
+        *,
+        label: str,
+        maximum_items: int = 8,
+    ) -> list[str]:
+        if not isinstance(value, list) or len(value) > maximum_items:
+            raise WorkPlanning._invalid(f"AI 返回的{label}列表无效")
+        if any(not isinstance(item, str) for item in value):
             raise WorkPlanning._invalid(f"AI 返回的{label}列表无效")
         return [
             WorkPlanning._bounded_text(item, label=label, maximum=240)
