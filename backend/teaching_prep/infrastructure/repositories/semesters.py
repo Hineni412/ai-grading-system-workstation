@@ -520,11 +520,15 @@ class SemesterWorkspaceRepository:
         request_token: str,
         material_version_id: str,
         material_role: str,
+        workbook_series: str | None = None,
+        workbook_volume: str | None = None,
     ) -> tuple[SemesterMaterialRecord, bool]:
         values = {
             "semester_id": semester_id,
             "material_version_id": material_version_id,
             "material_role": material_role,
+            "workbook_series": workbook_series,
+            "workbook_volume": workbook_volume,
         }
         request_hash = _request_hash(values)
         with self._database.connect(immediate=True) as connection:
@@ -552,9 +556,10 @@ class SemesterWorkspaceRepository:
                 raise TeachingPrepNotFoundError("semester was not found")
             version = connection.execute(
                 """
-                SELECT source_id
-                FROM material_versions
-                WHERE id = ?
+                SELECT version.source_id, source.archived_at
+                FROM material_versions AS version
+                JOIN material_sources AS source ON source.id = version.source_id
+                WHERE version.id = ?
                 """,
                 (material_version_id,),
             ).fetchone()
@@ -563,16 +568,31 @@ class SemesterWorkspaceRepository:
                     "material version was not found"
                 )
             source_id = str(version["source_id"])
+            if version["archived_at"] is not None:
+                raise TeachingPrepConflictError(
+                    "restore the archived material before adding it to a semester"
+                )
+            is_daily = material_role == "homework_workbook"
+            stored_role = (
+                "exercise_workbook"
+                if is_daily and workbook_series and workbook_volume
+                else material_role
+            )
             existing = connection.execute(
                 """
-                SELECT id, material_role
+                SELECT id, material_role, is_daily_workbook
                 FROM semester_material_records
                 WHERE semester_id = ? AND material_source_id = ?
                 """,
                 (semester_id, source_id),
             ).fetchone()
             if existing is not None:
-                if str(existing["material_role"]) != material_role:
+                existing_role = (
+                    "homework_workbook"
+                    if bool(existing["is_daily_workbook"])
+                    else str(existing["material_role"])
+                )
+                if existing_role != material_role:
                     raise TeachingPrepConflictError(
                         "material already has a different semester role"
                     )
@@ -583,10 +603,12 @@ class SemesterWorkspaceRepository:
                     ),
                     False,
                 )
-            self._require_homework_slot(
+            self._require_workbook_slot(
                 connection,
                 semester_id=semester_id,
                 material_role=material_role,
+                workbook_series=workbook_series,
+                workbook_volume=workbook_volume,
                 excluding_id=None,
             )
             parsed = connection.execute(
@@ -614,11 +636,14 @@ class SemesterWorkspaceRepository:
                     semester_id,
                     material_source_id,
                     material_role,
+                    is_daily_workbook,
+                    workbook_series,
+                    workbook_volume,
                     parse_status,
                     last_parsed_version_id,
                     parsed_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     record_id,
@@ -626,7 +651,10 @@ class SemesterWorkspaceRepository:
                     request_hash,
                     semester_id,
                     source_id,
-                    material_role,
+                    stored_role,
+                    int(is_daily),
+                    workbook_series,
+                    workbook_volume,
                     "parsed" if parsed else "not_started",
                     material_version_id if parsed else None,
                     (
@@ -666,13 +694,17 @@ class SemesterWorkspaceRepository:
         material_role: str,
         mapping_status: str,
         is_active: bool,
+        workbook_series: str | None = None,
+        workbook_volume: str | None = None,
     ) -> SemesterMaterialRecord:
         with self._database.connect(immediate=True) as connection:
             current = connection.execute(
                 """
-                SELECT semester_id
-                FROM semester_material_records
-                WHERE id = ?
+                SELECT record.semester_id, source.archived_at
+                FROM semester_material_records AS record
+                JOIN material_sources AS source
+                  ON source.id = record.material_source_id
+                WHERE record.id = ?
                 """,
                 (record_id,),
             ).fetchone()
@@ -680,17 +712,32 @@ class SemesterWorkspaceRepository:
                 raise TeachingPrepNotFoundError(
                     "semester material was not found"
                 )
+            is_daily = material_role == "homework_workbook"
+            stored_role = (
+                "exercise_workbook"
+                if is_daily and workbook_series and workbook_volume
+                else material_role
+            )
             if is_active:
-                self._require_homework_slot(
+                self._require_workbook_slot(
                     connection,
                     semester_id=str(current["semester_id"]),
                     material_role=material_role,
+                    workbook_series=workbook_series,
+                    workbook_volume=workbook_volume,
                     excluding_id=record_id,
+                )
+            if is_active and current["archived_at"] is not None:
+                raise TeachingPrepConflictError(
+                    "restore the archived material before adding it to a semester"
                 )
             cursor = connection.execute(
                 """
                 UPDATE semester_material_records
                 SET material_role = ?,
+                    is_daily_workbook = ?,
+                    workbook_series = ?,
+                    workbook_volume = ?,
                     mapping_status = ?,
                     is_active = ?,
                     revision = revision + 1,
@@ -698,7 +745,10 @@ class SemesterWorkspaceRepository:
                 WHERE id = ? AND revision = ?
                 """,
                 (
-                    material_role,
+                    stored_role,
+                    int(is_daily),
+                    workbook_series,
+                    workbook_volume,
                     mapping_status,
                     int(is_active),
                     record_id,
@@ -796,14 +846,31 @@ class SemesterWorkspaceRepository:
             )
 
     @staticmethod
-    def _require_homework_slot(
+    def _require_workbook_slot(
         connection: sqlite3.Connection,
         *,
         semester_id: str,
         material_role: str,
+        workbook_series: str | None,
+        workbook_volume: str | None,
         excluding_id: str | None,
     ) -> None:
         if material_role != "homework_workbook":
+            return
+        if workbook_series and workbook_volume:
+            row = connection.execute(
+                """
+                SELECT id FROM semester_material_records
+                WHERE semester_id = ? AND is_daily_workbook = 1
+                  AND lower(workbook_series) = lower(?)
+                  AND workbook_volume = ? AND is_active = 1 AND id IS NOT ?
+                """,
+                (semester_id, workbook_series, workbook_volume, excluding_id),
+            ).fetchone()
+            if row is not None:
+                raise TeachingPrepConflictError(
+                    "this workbook series and volume is already active"
+                )
             return
         row = connection.execute(
             """
@@ -943,6 +1010,9 @@ JOIN curriculum_editions AS curriculum
 _MATERIAL_RECORD_SQL = """
 SELECT
     record.*,
+    CASE WHEN record.is_daily_workbook = 1
+         THEN 'homework_workbook'
+         ELSE record.material_role END AS effective_material_role,
     source.display_name,
     current_version.id AS current_material_version_id,
     current_version.file_name AS current_file_name,
@@ -1019,7 +1089,16 @@ def _material_record(row: sqlite3.Row) -> SemesterMaterialRecord:
         semester_id=str(row["semester_id"]),
         material_source_id=str(row["material_source_id"]),
         display_name=str(row["display_name"]),
-        material_role=str(row["material_role"]),
+        material_role=str(row["effective_material_role"]),
+        is_daily_workbook=bool(row["is_daily_workbook"]),
+        workbook_series=(
+            str(row["workbook_series"])
+            if row["workbook_series"] is not None else None
+        ),
+        workbook_volume=(
+            str(row["workbook_volume"])
+            if row["workbook_volume"] is not None else None
+        ),
         parse_status=str(row["parse_status"]),
         mapping_status=str(row["mapping_status"]),
         current_material_version_id=current_version_id,

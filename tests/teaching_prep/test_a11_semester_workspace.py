@@ -321,6 +321,134 @@ def test_semester_materials_are_incremental_and_homework_role_is_unique(
     assert len(service.list_semester_materials(semester.id)) == 2
 
 
+def test_daily_workbook_a_and_b_are_separate_recoverable_volumes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _paths_value, service = _migrated_service(tmp_path, monkeypatch)
+    semester, lesson_ids = _semester(service)
+    versions = []
+    for volume in ("A", "B", "A-copy"):
+        path = _pdf(tmp_path / f"daily-{volume}.pdf", [volume])
+        version, _created = service.register_material_file(
+            request_token=f"daily-file-{volume}",
+            path=path,
+            display_name=f"全品学练考 {volume}",
+        )
+        versions.append(version)
+
+    a_record, _created = service.attach_semester_material(
+        semester.id,
+        request_token="daily-attach-a",
+        material_version_id=versions[0].id,
+        material_role="homework_workbook",
+        workbook_series="全品学练考",
+        workbook_volume="A",
+    )
+    b_record, _created = service.attach_semester_material(
+        semester.id,
+        request_token="daily-attach-b",
+        material_version_id=versions[1].id,
+        material_role="homework_workbook",
+        workbook_series="全品学练考",
+        workbook_volume="B",
+    )
+
+    assert (a_record.material_role, a_record.workbook_volume) == (
+        "homework_workbook", "A"
+    )
+    assert (b_record.material_role, b_record.workbook_volume) == (
+        "homework_workbook", "B"
+    )
+    service.parse_material_version(versions[0].id)
+    link, _created = service.create_material_link(
+        request_token="daily-link-a",
+        lesson_node_id=lesson_ids[0],
+        material_version_id=versions[0].id,
+        start_unit=1,
+        end_unit=1,
+        crop=None,
+        purpose="exercise",
+        teacher_note=None,
+        confirmation_status="confirmed",
+    )
+    pack, _created = service.freeze_resource_pack(
+        request_token="daily-pack-a",
+        lesson_node_id=lesson_ids[0],
+        class_name=None,
+        lesson_type="new_lesson",
+        teacher_context=None,
+        reference_ppt_intents={},
+        question_ids=[],
+        assessment_ids=[],
+        knowledge_scope=[],
+        selected_material_link_ids=[link.id],
+        selected_exercise_candidate_ids=[],
+    )
+    assert pack.payload["materials"][0]["semester_material_role"] == (
+        "homework_workbook"
+    )
+    with pytest.raises(TeachingPrepConflictError):
+        service.attach_semester_material(
+            semester.id,
+            request_token="daily-attach-a-copy",
+            material_version_id=versions[2].id,
+            material_role="homework_workbook",
+            workbook_series="全品学练考",
+            workbook_volume="A",
+        )
+
+    with pytest.raises(TeachingPrepConflictError):
+        service.update_material_source(
+            versions[0].source_id,
+            expected_revision=1,
+            display_name=None,
+            archived=True,
+        )
+    current_a = next(
+        item for item in service.list_semester_materials(semester.id)
+        if item.id == a_record.id
+    )
+    service.update_semester_material(
+        current_a.id,
+        expected_revision=current_a.revision,
+        material_role=current_a.material_role,
+        mapping_status=current_a.mapping_status,
+        is_active=False,
+        workbook_series=current_a.workbook_series,
+        workbook_volume=current_a.workbook_volume,
+    )
+    archived = service.update_material_source(
+        versions[0].source_id,
+        expected_revision=1,
+        display_name=None,
+        archived=True,
+    )
+    assert archived.source_archived_at is not None
+    inactive = next(
+        item for item in service.list_semester_materials(semester.id)
+        if item.id == a_record.id
+    )
+    with pytest.raises(TeachingPrepConflictError):
+        service.update_semester_material(
+            inactive.id,
+            expected_revision=inactive.revision,
+            material_role=inactive.material_role,
+            mapping_status=inactive.mapping_status,
+            is_active=True,
+            workbook_series=inactive.workbook_series,
+            workbook_volume=inactive.workbook_volume,
+        )
+    restored = service.update_material_source(
+        versions[0].source_id,
+        expected_revision=archived.source_revision,
+        display_name="全品学练考 A 本",
+        archived=False,
+    )
+    assert restored.source_archived_at is None
+    assert restored.display_name == "全品学练考 A 本"
+
+
 def test_parse_status_follows_new_versions_without_overwriting_mapping(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

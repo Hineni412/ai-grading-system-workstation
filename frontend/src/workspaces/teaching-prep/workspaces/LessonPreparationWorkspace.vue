@@ -279,7 +279,7 @@ async function createSlidePlan(): Promise<void> {
       <div>
         <p class="tp-eyebrow">本节备课</p>
         <h1 data-workbench-title tabindex="-1">限定来源，确定课堂方案</h1>
-        <p>教师先圈定资料池；AI 只提建议，题目、答案、草稿和课件都由教师最终确认。</p>
+        <p>教师先圈定资料池；教辅答案和参考课件都可不提供。没有答案时只保留题目原图，不会自动补答案截图。</p>
       </div>
       <span class="tp-trust-badge">只读所选来源</span>
     </header>
@@ -400,14 +400,15 @@ async function createSlidePlan(): Promise<void> {
             {{ capacity.within_capacity ? '容量合适' : `预计超时 ${capacity.overrun_minutes} 分钟` }}
           </p>
           <button type="button" @click="confirmDraft">保存并确认课堂草稿</button>
-          <button class="tp-button tp-button--primary" type="button" :disabled="selectedDraft.status !== 'confirmed'" @click="createSlidePlan">创建逐页课件计划</button>
+          <button class="tp-button tp-button--primary" type="button" :disabled="selectedDraft.status !== 'confirmed'" @click="createSlidePlan">需要课件时创建逐页计划</button>
         </div>
       </div>
     </section>
 
     <TeachingPrepStickyActions :state="workbench.dirtyReason.value ? 'dirty' : 'saved'" :message="message">
       <button class="tp-button tp-button--secondary" type="button" @click="workbench.openStage('materials')">上一步：核资料</button>
-      <button class="tp-button tp-button--primary" type="button" :disabled="!selectedDraft" @click="workbench.openStage('slides')">下一步：审课件</button>
+      <span class="tp-muted">课件是可选分支；草稿确认后可直接用于上课。</span>
+      <button class="tp-button tp-button--primary" type="button" :disabled="!selectedDraft" @click="workbench.openStage('slides')">可选：制作课件</button>
     </TeachingPrepStickyActions>
   </section>
 </template>

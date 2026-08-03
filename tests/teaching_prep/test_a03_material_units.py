@@ -35,6 +35,41 @@ def _pdf(path: Path, pages: list[str]) -> Path:
     return path
 
 
+def _text_pdf_with_image(path: Path) -> Path:
+    document = fitz.open()
+    try:
+        page = document.new_page(width=640, height=900)
+        page.insert_text((48, 64), "Embedded text with an illustration")
+        pixmap = fitz.Pixmap(fitz.csRGB, fitz.IRect(0, 0, 12, 12), 0)
+        pixmap.clear_with(0x65AFA3)
+        page.insert_image(fitz.Rect(48, 100, 160, 212), stream=pixmap.tobytes("png"))
+        document.save(path)
+    finally:
+        document.close()
+    return path
+
+
+def test_ocr_checkpoint_excludes_text_pages_that_only_contain_illustrations(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _paths_value, service = _migrated_service(tmp_path, monkeypatch)
+    source = _text_pdf_with_image(tmp_path / "text-with-image.pdf")
+    version = _register(
+        service,
+        source,
+        token="material-a03-text-image",
+        name="合成图文教材",
+    )
+
+    service.parse_material_version(version.id)
+    completed = service.get_material_version(version.id)
+
+    assert completed.preview_completed_count == 1
+    assert completed.ocr_total_count == 0
+    assert completed.ocr_completed_count == 0
+
+
 def _scanned_pdf(path: Path) -> Path:
     from PIL import Image, ImageDraw
 
