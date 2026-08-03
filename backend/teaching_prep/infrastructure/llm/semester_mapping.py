@@ -5,6 +5,8 @@ from collections.abc import Callable, Mapping
 from types import SimpleNamespace
 from typing import Any
 
+from backend.llm.json_repair import parse_json_object_locally
+from backend.llm.usage import response_diagnostics
 from backend.teaching_prep.domain.errors import (
     TeachingPrepModelResponseError,
     TeachingPrepValidationError,
@@ -18,12 +20,25 @@ from backend.workspaces.model_policy import (
 )
 
 
+_MAX_OUTPUT_TOKENS = 12_288
 _SYSTEM_INSTRUCTION = """\
 你是初中数学学期资料目录整理助手。只依据给出的学期快照工作。
-返回单个 json（JSON）对象，只能包含 tree、mappings、uncertainties。
+返回单个紧凑 JSON 对象，不要 Markdown、代码围栏、解释或缩进，只能包含
+tree、mappings、uncertainties。严格使用下面的字段结构：
+{"tree":[{"key":"chapter_1","title":"章名","sections":[{"key":"section_1",
+"title":"节名","lessons":[{"key":"lesson_1","title":"课时名",
+"duration_minutes":45}]}]}],"mappings":[{"material_record_id":"原样复制资料ID",
+"lesson_ref":"proposal:lesson_1","start_unit":1,"end_unit":2}],
+"uncertainties":[]}
+所有 key 必须在整个 tree 全局唯一；推荐使用 chapter_01、
+chapter_01_section_01、chapter_01_section_01_lesson_01 这种带完整层级的 key。
 如果快照已经有课时树，tree 必须为空，只把新增资料映射到 existing lesson id。
 如果课时树为空，tree 按章、节、课时三级给出，每个节点使用简短唯一 key；
-mapping 的 lesson_ref 对新课时使用 proposal:<lesson key>。
+sections 只表示“节”，课时必须放入 lessons；禁止空 lessons。每个课时必须包含
+duration_minutes（1—300 的整数），通常使用 45。尽量贴近 planned_new_lesson_count；
+证据不足时减少课时并说明 uncertainty，不要用空数组占位。
+mapping 的 lesson_ref 对新课时使用 proposal:<lesson key>，只能引用 lesson 的 key，
+不能引用 chapter 或 section 的 key。连续页段合并，不要为每页重复建立 mapping。
 每条 mapping 只能包含 material_record_id、lesson_ref、start_unit、end_unit。
 页码必须是快照中真实 unit_index 范围，不得编造页码、课时或资料。
 不能确定时写入 uncertainties，不要猜测。不要返回题目正文、答案或 WPS 指令。
@@ -73,7 +88,7 @@ class WorkspaceSemesterMappingModelAdapter:
                     {
                         "role": "user",
                         "content": json.dumps(
-                            semester_snapshot,
+                            _compact_model_snapshot(semester_snapshot),
                             ensure_ascii=False,
                             sort_keys=True,
                             separators=(",", ":"),
@@ -81,9 +96,16 @@ class WorkspaceSemesterMappingModelAdapter:
                     },
                 ],
                 "response_format": {"type": "json_object"},
+                "max_tokens": _MAX_OUTPUT_TOKENS,
             },
             timeout_override_seconds=600,
         )
+        diagnostics = response_diagnostics(response)
+        if bool(diagnostics.get("output_truncated")):
+            raise TeachingPrepModelResponseError(
+                "semester mapping model output was truncated",
+                error_code="semester_mapping_model_response_truncated",
+            )
         try:
             response_text = _response_text(response)
         except TeachingPrepValidationError as exc:
@@ -96,16 +118,86 @@ class WorkspaceSemesterMappingModelAdapter:
         try:
             payload = json.loads(response_text)
         except json.JSONDecodeError as exc:
-            raise TeachingPrepModelResponseError(
-                "semester mapping model returned invalid JSON",
-                error_code="semester_mapping_model_response_invalid_json",
-            ) from exc
+            try:
+                payload = parse_json_object_locally(response_text).payload
+            except (TypeError, ValueError):
+                raise TeachingPrepModelResponseError(
+                    "semester mapping model returned invalid JSON",
+                    error_code="semester_mapping_model_response_invalid_json",
+                ) from exc
         if not isinstance(payload, Mapping):
             raise TeachingPrepModelResponseError(
                 "semester mapping model response must be an object",
                 error_code="semester_mapping_model_response_invalid_type",
             )
         return dict(payload)
+
+
+def _compact_model_snapshot(
+    snapshot: Mapping[str, object],
+) -> dict[str, object]:
+    semester = _selected_fields(
+        snapshot.get("semester"),
+        (
+            "school_year",
+            "term",
+            "planned_new_lesson_count",
+            "curriculum_title",
+        ),
+    )
+    lessons = [
+        _selected_fields(
+            item,
+            (
+                "id",
+                "parent_id",
+                "node_type",
+                "title",
+                "sort_order",
+                "duration_minutes",
+            ),
+        )
+        for item in _mapping_list(snapshot.get("lessons"))
+    ]
+    materials: list[dict[str, object]] = []
+    for item in _mapping_list(snapshot.get("materials")):
+        material = _selected_fields(
+            item,
+            (
+                "record_id",
+                "display_name",
+                "material_role",
+                "unit_count",
+            ),
+        )
+        material["units"] = [
+            _selected_fields(
+                unit,
+                ("unit_index", "title", "text_excerpt"),
+            )
+            for unit in _mapping_list(item.get("units"))
+        ]
+        materials.append(material)
+    return {
+        "semester": semester,
+        "lessons": lessons,
+        "materials": materials,
+    }
+
+
+def _mapping_list(value: object) -> list[Mapping[str, object]]:
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, Mapping)]
+
+
+def _selected_fields(
+    value: object,
+    fields: tuple[str, ...],
+) -> dict[str, object]:
+    if not isinstance(value, Mapping):
+        return {}
+    return {field: value[field] for field in fields if field in value}
 
 
 class _DispatchAwareCompletions:
