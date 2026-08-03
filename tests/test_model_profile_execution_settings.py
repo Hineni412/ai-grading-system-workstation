@@ -54,6 +54,8 @@ def test_model_profile_saves_custom_request_speed_settings(tmp_path) -> None:
         "config_base_url": "",
         "has_config_api_key": False,
         "config_model": "",
+        "teaching_prep_model": "",
+        "class_teacher_model": "",
         "request_speed_mode": "custom",
         "max_concurrent_requests": 37,
         "requests_per_minute": 10_000,

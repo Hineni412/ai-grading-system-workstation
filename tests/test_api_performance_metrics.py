@@ -6,6 +6,7 @@ import warnings
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from importlib import import_module
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -337,16 +338,39 @@ def test_recorder_finish_failure_leaves_original_response_unchanged(
 
 def test_supplied_path_manager_drives_app_health_and_lifespan_factories(
     monkeypatch,
+    tmp_path,
 ) -> None:
     from backend.api import dependencies
 
     app_module = import_module("backend.api.app")
 
-    supplied_paths = SimpleNamespace(version="v-isolated")
+    data_root = tmp_path / "user_data"
+    supplied_paths = SimpleNamespace(
+        project_root=Path(__file__).resolve().parents[1],
+        version="v-isolated",
+        data_root=data_root,
+        db_path=data_root / "databases" / "grading_system.db",
+        qb_db_path=data_root / "databases" / "question_bank.db",
+        reports_dir=data_root / "reports",
+        exams_dir=data_root / "exams",
+        templates_dir=data_root / "templates",
+        upload_config_dir=data_root / "config" / "uploaded",
+        outputs_dir=data_root / "outputs",
+        backups_dir=data_root / "backups",
+        ops_state_dir=data_root / "ops",
+        api_profiles_path=tmp_path / "config" / "api_profiles.json",
+        legacy_api_profiles_paths=(),
+        workspace_dir=lambda workspace_id, *, create=False: (
+            data_root / "workspaces" / workspace_id
+        ),
+    )
     captured: dict[str, object] = {}
 
     class Manager:
         is_shutdown = False
+
+        def register(self, _name, _handler) -> None:
+            return None
 
         def shutdown(self) -> None:
             self.is_shutdown = True

@@ -5,6 +5,7 @@ import {
   questionBankTaxonomyApi,
   TAXONOMY_DIMENSIONS,
   type TaxonomyDimension,
+  type KnowledgeGraphReleasePreview,
   type TaxonomyProposal,
   type TaxonomyReviewDecision,
   type TaxonomySuggestionItem,
@@ -21,6 +22,12 @@ export const TAXONOMY_SUGGESTION_COMMAND_STORAGE_KEY =
 export type TaxonomyReviewLoadState = 'idle' | 'loading' | 'ready' | 'empty' | 'error'
 export type TaxonomyReviewWriteState = 'idle' | 'saving' | 'conflict' | 'error'
 export type TaxonomySuggestionState = 'idle' | 'starting' | 'running' | 'error'
+export type KnowledgeGraphReleaseState =
+  | 'idle'
+  | 'loading'
+  | 'activating'
+  | 'ready'
+  | 'error'
 
 export interface TaxonomyReviewAction {
   decision: TaxonomyReviewDecision
@@ -113,6 +120,9 @@ export const useTaxonomyReviewStore = defineStore('taxonomy-review', () => {
   const suggestionState = ref<TaxonomySuggestionState>('idle')
   const suggestionMessage = ref('')
   const suggestionJobId = ref<number | null>(null)
+  const graphRelease = ref<KnowledgeGraphReleasePreview | null>(null)
+  const graphReleaseState = ref<KnowledgeGraphReleaseState>('idle')
+  const graphReleaseMessage = ref('')
 
   let loadGeneration = 0
   let loadController: AbortController | null = null
@@ -155,6 +165,7 @@ export const useTaxonomyReviewStore = defineStore('taxonomy-review', () => {
       )
       revision.value = proposalList.revision
       loadState.value = proposalList.counts.actionable === 0 ? 'empty' : 'ready'
+      await loadGraphRelease(api, controller.signal)
       if (!suggestionRun.value) await restoreSuggestions(api)
       return true
     } catch {
@@ -164,6 +175,66 @@ export const useTaxonomyReviewStore = defineStore('taxonomy-review', () => {
       return false
     } finally {
       if (loadController === controller) loadController = null
+    }
+  }
+
+  async function loadGraphRelease(
+    api: TaxonomyReviewApi = questionBankTaxonomyApi,
+    signal?: AbortSignal,
+  ): Promise<boolean> {
+    graphReleaseState.value = 'loading'
+    try {
+      graphRelease.value = await api.getKnowledgeGraphReleasePreview(signal)
+      graphReleaseState.value = 'ready'
+      graphReleaseMessage.value = graphRelease.value.current_release_id
+        === graphRelease.value.release_id
+        ? '新版知识图谱已启用。'
+        : '新版知识图谱已准备好，需由老师确认后才会启用。'
+      return true
+    } catch {
+      if (signal?.aborted) return false
+      graphReleaseState.value = 'error'
+      graphReleaseMessage.value = '知识图谱发布状态暂时无法读取。'
+      return false
+    }
+  }
+
+  async function activateGraphRelease(
+    api: TaxonomyReviewApi = questionBankTaxonomyApi,
+  ): Promise<boolean> {
+    if (!graphRelease.value || graphReleaseState.value === 'activating') return false
+    graphReleaseState.value = 'activating'
+    graphReleaseMessage.value = ''
+    try {
+      let preview = await api.stageKnowledgeGraphRelease(
+        '教师从新词审核页确认候选知识图谱发布包',
+      )
+      if (!preview.can_activate) {
+        graphRelease.value = preview
+        graphReleaseState.value = 'error'
+        graphReleaseMessage.value = preview.issues
+          .filter(({ blocking }) => blocking)
+          .map(({ message }) => message)
+          .join('；') || '存在需要先处理的图谱冲突。'
+        return false
+      }
+      preview = await api.activateKnowledgeGraphRelease(
+        preview.release_id,
+        preview.current_release_id,
+        '教师已核对 294 个词的映射摘要并确认启用',
+      )
+      graphRelease.value = preview
+      graphReleaseState.value = 'ready'
+      graphReleaseMessage.value = '新版知识图谱已整体启用；以后新生成的证据会记录这个版本。'
+      return true
+    } catch (error) {
+      const failureMessage = error instanceof ApiError && error.status === 409
+        ? '图谱状态或教师确认关系刚刚发生变化，请刷新后重新核对。'
+        : '新版知识图谱没有启用，现有图谱保持不变。'
+      await loadGraphRelease(api)
+      graphReleaseState.value = 'error'
+      graphReleaseMessage.value = failureMessage
+      return false
     }
   }
 
@@ -417,9 +488,14 @@ export const useTaxonomyReviewStore = defineStore('taxonomy-review', () => {
     suggestionState,
     suggestionMessage,
     suggestionJobId,
+    graphRelease,
+    graphReleaseState,
+    graphReleaseMessage,
     hasCatalog,
     termsFor,
     load,
+    loadGraphRelease,
+    activateGraphRelease,
     review,
     suggestionFor,
     restoreSuggestions,

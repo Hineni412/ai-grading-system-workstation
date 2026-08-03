@@ -1540,7 +1540,10 @@ class InMemoryCombinedQuestionAnalysisModule:
                                 raw.get("tag_analysis")
                                 if projection in {"both", "tag"}
                                 else (
-                                    dict(preserved_item.tag_analysis)
+                                    {
+                                        key: preserved_item.tag_analysis.get(key)
+                                        for key in _MODEL_TAG_PAYLOAD_FIELDS
+                                    }
                                     if preserved_item is not None
                                     else None
                                 )
@@ -2363,28 +2366,33 @@ def _audit_mapping_list(value: object) -> list[dict[str, Any]]:
     return result
 
 
+_MODEL_TAG_PAYLOAD_FIELDS = frozenset(
+    {
+        "knowledge_points",
+        "method_tags",
+        "thought_tags",
+        "ability_tags",
+        "math_model_tags",
+        "special_type_tags",
+        "difficulty",
+        "error_prone_points",
+        "prerequisite_points",
+        "textbook_chapters",
+        "curriculum_sections",
+        "suitable_student_level",
+        "canonical_knowledge_id",
+        "taxonomy_revision",
+        "proposed_tags",
+        "reason",
+        "confidence",
+    }
+)
+
+
 def _validate_model_tag_payload(payload: Mapping[str, Any]) -> None:
     _require_exact_keys(
         payload,
-        {
-            "knowledge_points",
-            "method_tags",
-            "thought_tags",
-            "ability_tags",
-            "math_model_tags",
-            "special_type_tags",
-            "difficulty",
-            "error_prone_points",
-            "prerequisite_points",
-            "textbook_chapters",
-            "curriculum_sections",
-            "suitable_student_level",
-            "canonical_knowledge_id",
-            "taxonomy_revision",
-            "proposed_tags",
-            "reason",
-            "confidence",
-        },
+        _MODEL_TAG_PAYLOAD_FIELDS,
         "combined tag analysis",
     )
 

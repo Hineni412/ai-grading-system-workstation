@@ -1656,6 +1656,62 @@
   justify-content: flex-end;
 }
 
+.taxonomy-review__graph-release {
+  align-items: center;
+  background: linear-gradient(135deg, #f3f8f7, #fffaf0);
+  border: 1px solid #cbded9;
+  border-radius: 10px;
+  display: flex;
+  gap: 14px;
+  justify-content: space-between;
+  margin-bottom: 10px;
+  padding: 12px;
+}
+
+.taxonomy-review__graph-release h3 {
+  font-size: 14px;
+  margin: 2px 0 4px;
+}
+
+.taxonomy-review__graph-release p,
+.taxonomy-review__graph-release li {
+  color: var(--color-text-secondary, #5c6672);
+  font-size: 11px;
+  line-height: 1.55;
+  margin: 0;
+}
+
+.taxonomy-review__graph-release ul {
+  margin: 5px 0 0;
+  padding-left: 18px;
+}
+
+.taxonomy-review__graph-details {
+  margin-top: 7px;
+}
+
+.taxonomy-review__graph-details summary {
+  color: #27634e;
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.taxonomy-review__graph-details ul {
+  max-height: 180px;
+  overflow: auto;
+}
+
+.taxonomy-review__graph-status {
+  border: 1px solid #90c2ae;
+  border-radius: 999px;
+  color: #27634e;
+  flex: 0 0 auto;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 6px 10px;
+}
+
 .taxonomy-review__suggestion-progress {
   background: #fff;
   border: 1px solid var(--color-border, #e2e4e7);
@@ -2304,6 +2360,11 @@
   .taxonomy-review__toolbar {
     align-items: flex-start;
     gap: 8px;
+  }
+
+  .taxonomy-review__graph-release {
+    align-items: stretch;
+    flex-direction: column;
   }
 
   .taxonomy-question-preview {

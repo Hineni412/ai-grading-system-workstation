@@ -32,6 +32,33 @@ export interface TaxonomyCatalogResponse {
   dimensions: Record<TaxonomyDimension, TaxonomyTerm[]>
 }
 
+export interface KnowledgeGraphReleaseIssue {
+  code: string
+  message: string
+  blocking: boolean
+}
+
+export interface KnowledgeGraphHighImpactItem {
+  fine_term_id: string
+  display_name: string
+  disposition: string
+  target_names: string[]
+}
+
+export interface KnowledgeGraphReleasePreview {
+  release_id: string
+  content_hash: string
+  current_release_id: string | null
+  node_count: number
+  fine_term_count: number
+  mapping_count: number
+  relation_count: number
+  high_impact_count: number
+  high_impact_items: KnowledgeGraphHighImpactItem[]
+  can_activate: boolean
+  issues: KnowledgeGraphReleaseIssue[]
+}
+
 export interface TaxonomyProposal {
   id: string
   dimension: TaxonomyDimension
@@ -512,7 +539,95 @@ export function decodeTaxonomySuggestionJob(
   }
 }
 
+export function decodeKnowledgeGraphReleasePreview(
+  value: unknown,
+): KnowledgeGraphReleasePreview {
+  if (
+    !isRecord(value)
+    || !Array.isArray(value.issues)
+    || !Array.isArray(value.high_impact_items)
+    || typeof value.can_activate !== 'boolean'
+  ) throw new Error('Invalid knowledge graph release preview')
+  return {
+    release_id: stableId(value.release_id),
+    content_hash: requiredString(value.content_hash),
+    current_release_id: optionalString(value.current_release_id),
+    node_count: safeCount(value.node_count),
+    fine_term_count: safeCount(value.fine_term_count),
+    mapping_count: safeCount(value.mapping_count),
+    relation_count: safeCount(value.relation_count),
+    high_impact_count: safeCount(value.high_impact_count),
+    high_impact_items: value.high_impact_items.map((item) => {
+      if (!isRecord(item) || !Array.isArray(item.target_names)) {
+        throw new Error('Invalid knowledge graph high-impact item')
+      }
+      return {
+        fine_term_id: stableId(item.fine_term_id),
+        display_name: requiredString(item.display_name),
+        disposition: requiredString(item.disposition),
+        target_names: item.target_names.map(requiredString),
+      }
+    }),
+    can_activate: value.can_activate,
+    issues: value.issues.map((item) => {
+      if (!isRecord(item) || typeof item.blocking !== 'boolean') {
+        throw new Error('Invalid knowledge graph release issue')
+      }
+      return {
+        code: requiredString(item.code),
+        message: requiredString(item.message),
+        blocking: item.blocking,
+      }
+    }),
+  }
+}
+
 export const questionBankTaxonomyApi = {
+  getKnowledgeGraphReleasePreview(
+    signal?: AbortSignal,
+  ): Promise<KnowledgeGraphReleasePreview> {
+    return apiClient.request(
+      '/api/question-bank/knowledge-graph/release-preview',
+      {
+        decode: decodeKnowledgeGraphReleasePreview,
+        signal,
+      },
+    )
+  },
+
+  stageKnowledgeGraphRelease(
+    reason: string,
+    signal?: AbortSignal,
+  ): Promise<KnowledgeGraphReleasePreview> {
+    return apiClient.request('/api/question-bank/knowledge-graph/releases/stage', {
+      method: 'POST',
+      body: { reason },
+      decode: decodeKnowledgeGraphReleasePreview,
+      signal,
+    })
+  },
+
+  activateKnowledgeGraphRelease(
+    releaseId: string,
+    expectedActiveReleaseId: string | null,
+    reason: string,
+    signal?: AbortSignal,
+  ): Promise<KnowledgeGraphReleasePreview> {
+    return apiClient.request(
+      `/api/question-bank/knowledge-graph/releases/${encodeURIComponent(releaseId)}/activate`,
+      {
+        method: 'POST',
+        body: {
+          expected_active_release_id: expectedActiveReleaseId,
+          confirmation_phrase: '启用知识图谱',
+          reason,
+        },
+        decode: decodeKnowledgeGraphReleasePreview,
+        signal,
+      },
+    )
+  },
+
   getCatalog(signal?: AbortSignal): Promise<TaxonomyCatalogResponse> {
     return apiClient.request('/api/question-bank/taxonomy/catalog', {
       decode: decodeTaxonomyCatalog,
