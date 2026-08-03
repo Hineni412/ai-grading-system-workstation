@@ -101,6 +101,34 @@ export interface HomeIntakeRecommendation {
   summary: string | null
   reasons: string[]
   assumptions: string[]
+  transaction_type: string
+  template_key: string
+  title: string
+  to_verify: string[]
+  steps: HomeIntakeWorkflowStep[]
+  edges: Array<{ source_key: string; target_key: string; relation: string }>
+  calendar_items: HomeIntakeCalendarItem[]
+  student_aliases: string[]
+  risk_level: string
+  emergency_prompt: string | null
+}
+
+export interface HomeIntakeWorkflowStep {
+  key: string
+  title: string
+  details: string
+  depends_on: string[]
+  required: boolean
+  waivable: boolean
+  safety_required: boolean
+}
+
+export interface HomeIntakeCalendarItem {
+  key: string
+  step_key: string
+  title: string
+  due_date: string | null
+  depends_on: string[]
 }
 
 export type HomeIntakeDecodedResult =
@@ -275,6 +303,19 @@ function recommendation(value: unknown, kind: 'affair_recommendation' | 'student
     summary: nullableString(item.summary),
     reasons: item.reasons === undefined ? [] : strings(item.reasons),
     assumptions: item.assumptions === undefined ? [] : strings(item.assumptions),
+    transaction_type: string(item.transaction_type),
+    template_key: string(item.template_key),
+    title: string(item.title),
+    to_verify: item.to_verify === undefined ? [] : strings(item.to_verify),
+    steps: Array.isArray(item.steps) ? item.steps.map((raw) => {
+      const step = record(raw)
+      return { key: string(step.key), title: string(step.title), details: string(step.details), depends_on: strings(step.depends_on), required: boolean(step.required), waivable: boolean(step.waivable), safety_required: boolean(step.safety_required) }
+    }) : [],
+    edges: Array.isArray(item.edges) ? item.edges.map((raw) => { const edge = record(raw); return { source_key: string(edge.source_key), target_key: string(edge.target_key), relation: string(edge.relation) } }) : [],
+    calendar_items: Array.isArray(item.calendar_items) ? item.calendar_items.map((raw) => { const calendar = record(raw); return { key: string(calendar.key), step_key: string(calendar.step_key), title: string(calendar.title), due_date: nullableString(calendar.due_date), depends_on: strings(calendar.depends_on) } }) : [],
+    student_aliases: item.student_aliases === undefined ? [] : strings(item.student_aliases),
+    risk_level: string(item.risk_level),
+    emergency_prompt: nullableString(item.emergency_prompt),
   }
 }
 function decodedResult(kind: HomeIntakeResultKind | null, value: unknown): HomeIntakeDecodedResult {
@@ -367,9 +408,9 @@ export const homeIntakeApi = {
       headers: token ? { 'x-class-teacher-session': token } : undefined, decode: operation,
     })
   },
-  followUpPreview(operationId: string, answer: string, token?: string, referenceDate?: string) {
+  followUpPreview(operationId: string, answer: string, token?: string, referenceDate?: string, selectedStepKeys: string[] = [], selectedCalendarKeys: string[] = []) {
     return apiClient.request(`/api/class-teacher/home/intake/operations/${operationId}/follow-up-previews`, {
-      method: 'POST', headers: headers(token), body: { answer, reference_date: referenceDate ?? null }, decode: preview,
+      method: 'POST', headers: headers(token), body: { answer, reference_date: referenceDate ?? null, selected_step_keys: selectedStepKeys, selected_calendar_keys: selectedCalendarKeys }, decode: preview,
     })
   },
   confirmPlan(value: HomeIntakeOperation, operationId: string) {
@@ -385,6 +426,17 @@ export const homeIntakeApi = {
       method: 'POST', headers: headers(token), body: {
         source_operation_id: sourceOperationId, operation_id: operationId, title: title || null, due_date: null,
       }, decode: manualFallback,
+    })
+  },
+  adopt(value: HomeIntakeOperation, operationId: string, subjectIds: string[], token: string) {
+    if (!value.result_fingerprint) throw new Error('home intake result fingerprint required')
+    return apiClient.request('/api/class-teacher/home/intake/adopt', {
+      method: 'POST', headers: headers(token), body: {
+        source_operation_id: value.operation_id,
+        operation_id: operationId,
+        result_fingerprint: value.result_fingerprint,
+        subject_ids: subjectIds,
+      }, decode: record,
     })
   },
 }

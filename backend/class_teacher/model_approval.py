@@ -161,6 +161,7 @@ class ModelApproval:
         redaction: RedactionResult | None = None,
         route_hint: str | None = None,
         output_contract: dict[str, object] | None = None,
+        request_context: dict[str, object] | None = None,
     ) -> dict[str, object]:
         if _SAFE_TOKEN.fullmatch(str(purpose or "")) is None:
             raise VaultError(
@@ -205,6 +206,8 @@ class ModelApproval:
             exact_payload["route_hint"] = str(route_hint)
         if output_contract is not None:
             exact_payload["output_contract"] = dict(output_contract)
+        if request_context:
+            exact_payload["context"] = dict(request_context)
         fingerprint = hashlib.sha256(canonical_json(exact_payload)).hexdigest()
         with closing(self.sensitive_database.connect()) as connection:
             with connection:

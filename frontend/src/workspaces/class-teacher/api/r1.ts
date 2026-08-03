@@ -58,6 +58,24 @@ export interface DirectorySubject {
   projection_state: string
   attention_pending_count: number
   last_confirmed_at: string | null
+  roster_state?: 'active' | 'historical' | 'manual'
+}
+
+export interface ExistingRosterStudent {
+  source_key: string
+  student_code: string
+  display_name: string
+  class_label: string
+  subject_id: string | null
+  roster_state: 'available' | 'active' | 'historical'
+}
+
+export interface CurrentRosterStudent {
+  source_key: string
+  subject_id: string
+  display_name: string
+  class_label: string
+  state: 'active' | 'historical'
 }
 
 export interface AcademicAnalysis {
@@ -120,11 +138,26 @@ export const projectionR1Api = {
 }
 
 export const studentR1Api = {
-  directory(token: string, input: { q?: string; classLabel?: string; state?: string; sort?: string; cursor?: string; pageSize?: number } = {}) {
+  rosterSource(token: string, input: { q?: string; classLabel?: string; cursor?: string; pageSize?: number } = {}) {
+    const query = new URLSearchParams()
+    if (input.q) query.set('q', input.q)
+    if (input.classLabel) query.set('class_label', input.classLabel)
+    if (input.cursor) query.set('cursor', input.cursor)
+    if (input.pageSize) query.set('page_size', String(input.pageSize))
+    return apiClient.request(`/api/class-teacher/support/roster-source?${query}`, { headers: readHeaders(token), decode: (value) => record(value) as unknown as { items: ExistingRosterStudent[]; classes: string[]; source_revision: string; total: number; cursor: string | null } })
+  },
+  currentRoster(token: string) {
+    return apiClient.request('/api/class-teacher/support/current-roster', { headers: readHeaders(token), decode: (value) => record(value) as unknown as { items: CurrentRosterStudent[]; active_count: number; historical_count: number; replayed: boolean } })
+  },
+  replaceCurrentRoster(token: string, input: { expectedSourceRevision: string; classLabel: string; q?: string; operationId?: string }) {
+    return apiClient.request('/api/class-teacher/support/current-roster/replace', { method: 'POST', headers: writeHeaders(token), body: { operation_id: input.operationId || operationId(), expected_source_revision: input.expectedSourceRevision, class_label: input.classLabel, q: input.q || null }, decode: (value) => record(value) as unknown as { items: CurrentRosterStudent[]; active_count: number; historical_count: number; replayed: boolean } })
+  },
+  directory(token: string, input: { q?: string; classLabel?: string; state?: string; rosterState?: string; sort?: string; cursor?: string; pageSize?: number } = {}) {
     const query = new URLSearchParams()
     if (input.q) query.set('q', input.q)
     if (input.classLabel) query.set('class_label', input.classLabel)
     if (input.state) query.set('state', input.state)
+    if (input.rosterState) query.set('roster_state', input.rosterState)
     if (input.sort) query.set('sort', input.sort)
     if (input.cursor) query.set('cursor', input.cursor)
     if (input.pageSize) query.set('page_size', String(input.pageSize))

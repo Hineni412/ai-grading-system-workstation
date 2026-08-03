@@ -45,6 +45,8 @@ class AffairWorkspace:
         title: str,
         summary: str | None,
         participant_refs: list[str],
+        subject_ids: list[str] | None = None,
+        idempotency_fingerprint: str | None = None,
     ) -> dict[str, object]:
         def enqueue_projection(
             connection: Any,
@@ -69,6 +71,8 @@ class AffairWorkspace:
             title=title,
             summary=summary,
             participant_refs=participant_refs,
+            subject_ids=subject_ids,
+            idempotency_fingerprint=idempotency_fingerprint,
             transaction_hook=enqueue_projection,
         )
         self.projections.drain(token=token)

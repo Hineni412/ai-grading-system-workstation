@@ -340,7 +340,7 @@ def test_work_plan_receipt_reports_all_gateway_retry_attempts(tmp_path: Path) ->
     assert result["physical_request_count"] == 3
 
 
-def test_follow_up_and_unknown_result_do_not_fabricate_or_retry(tmp_path: Path) -> None:
+def test_first_follow_up_becomes_broad_draft_and_unknown_result_does_not_retry(tmp_path: Path) -> None:
     follow_up = {
         "kind": "follow_up",
         "questions": ["最终需要在哪一天完成？"],
@@ -356,9 +356,11 @@ def test_follow_up_and_unknown_result_do_not_fabricate_or_retry(tmp_path: Path) 
         operation_id="work-model-question-001",
     )
 
-    assert result["state"] == "needs_information"
+    assert result["state"] == "succeeded"
+    assert result["result_kind"] == "ordinary_plan"
     assert result["questions"] == ["最终需要在哪一天完成？"]
-    assert result["plan"] is None
+    assert len(result["plan"]["nodes"]) == 3
+    assert result["plan_fingerprint"]
     assert len(gateway.calls) == 1
 
     unknown_graph, unknown_gateway = _graph(tmp_path / "unknown", unknown=True)

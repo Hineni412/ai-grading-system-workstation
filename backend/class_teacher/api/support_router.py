@@ -19,6 +19,7 @@ from .support_schemas import (
     AttentionCreateRequest,
     AttentionDecisionRequest,
     AttentionResolveRequest,
+    ClassRosterReplaceRequest,
     EvidenceBatchRequest,
     EvidenceLinkRequest,
     EvidenceSupersedeRequest,
@@ -44,6 +45,55 @@ from .support_schemas import (
 def create_support_router() -> APIRouter:
     router = APIRouter()
 
+    @router.get("/support/roster-source")
+    def roster_source(
+        request: Request,
+        response: Response,
+        q: str | None = None,
+        class_label: str | None = None,
+        cursor: str | None = None,
+        page_size: int = 50,
+        session_token: str | None = Header(None, alias="x-class-teacher-session"),
+    ):
+        _no_store(response)
+        return _call(
+            lambda: _service(request).class_roster.browse(
+                token=session(session_token),
+                q=q,
+                class_label=class_label,
+                cursor=cursor,
+                page_size=page_size,
+            )
+        )
+
+    @router.get("/support/current-roster")
+    def current_roster(
+        request: Request,
+        response: Response,
+        session_token: str | None = Header(None, alias="x-class-teacher-session"),
+    ):
+        _no_store(response)
+        return _call(
+            lambda: _service(request).class_roster.current(
+                token=session(session_token)
+            )
+        )
+
+    @router.post("/support/current-roster/replace")
+    def replace_current_roster(
+        request: Request,
+        body: ClassRosterReplaceRequest,
+        response: Response,
+        session_token: str | None = Header(None, alias="x-class-teacher-session"),
+    ):
+        _require_trusted_mutation(request)
+        _no_store(response)
+        return _call(
+            lambda: _service(request).class_roster.replace_current(
+                token=session(session_token), **body.model_dump()
+            )
+        )
+
     @router.get("/support/directory")
     def directory(
         request: Request,
@@ -51,6 +101,7 @@ def create_support_router() -> APIRouter:
         q: str | None = None,
         class_label: str | None = None,
         state: str | None = None,
+        roster_state: str | None = None,
         sort: str = "last_confirmed_desc",
         cursor: str | None = None,
         page_size: int = 20,
@@ -63,6 +114,7 @@ def create_support_router() -> APIRouter:
                 q=q,
                 class_label=class_label,
                 state=state,
+                roster_state=roster_state,
                 sort=sort,
                 cursor=cursor,
                 page_size=page_size,
