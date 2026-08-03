@@ -250,6 +250,10 @@ def _semester_mapping_job_response(
             public_error = (
                 "模型已返回，但目录格式不是有效 JSON；可重新检查后手动生成。"
             )
+        elif "output was truncated" in normalized_error:
+            public_error = (
+                "模型输出达到长度上限，目录没有完整返回；系统未自动重试。"
+            )
         elif "response must be an object" in normalized_error:
             public_error = (
                 "模型已返回，但目录顶层结构不是对象；可重新检查后手动生成。"
