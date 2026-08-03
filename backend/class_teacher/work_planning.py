@@ -260,19 +260,23 @@ class WorkPlanning:
             "instructions": [
                 "根据教师这一次输入的真实语境拆解任务，不使用任何预置业务模板。",
                 "识别完成目标所需的具体节点、依赖关系，并从最终日期向前倒排；信息不足时返回 questions，不得猜测。",
-                "只返回 JSON；不得诊断、认定、惩戒、自动外发、自动完成或自动结案。",
+                "优先只返回 JSON；信息不足时追问，若更适合连续事务或学生支持则只给出建议去向，不得自动创建。",
+                "不得诊断、认定欺凌、惩戒、自动外发、自动完成或自动结案。",
                 "没有最终日期时不得编造节点日期；所有日期只能是 YYYY-MM-DD，且不能晚于 final_due_date。",
             ],
             "output_contract": {
-                "kind": "plan 或 follow_up",
+                "kind": "plan、follow_up、affair_recommendation 或 student_support_recommendation",
                 "questions": ["需要教师补充的问题；没有则为空数组"],
                 "assumptions": ["模型采用且需教师复核的假设；没有则为空数组"],
+                "summary": "建议去向的中性说明；仅 recommendation 类型需要",
+                "reasons": ["建议该去向的理由；没有则为空数组"],
                 "nodes": [
                     {
                         "id": "本次方案内唯一编号",
                         "kind": sorted(_NODE_KINDS),
                         "title": "节点标题",
                         "details": "具体说明或 null",
+                        "rationale": "为什么这样安排；没有则为 null",
                         "status": sorted(_INITIAL_STATUSES),
                         "due_date": "YYYY-MM-DD 或 null",
                     }
@@ -382,6 +386,10 @@ class WorkPlanning:
             "local_context": preview["local_context"],
             "plan": None,
             "plan_fingerprint": None,
+            "result_kind": None,
+            "result": None,
+            "assistant_message": None,
+            "validation_issue": None,
             "questions": [],
             "assumptions": [],
             "teacher_confirmation_required": False,
@@ -491,17 +499,35 @@ class WorkPlanning:
                         "state": "invalid_result",
                         "physical_request_count": physical_request_count,
                         "error_category": exc.code,
+                        "validation_issue": exc.message,
                     }
                 else:
                     questions = parsed["questions"]
                     assumptions = parsed["assumptions"]
-                    if parsed["kind"] == "follow_up" or questions:
+                    parsed_kind = str(parsed["kind"])
+                    if parsed_kind == "follow_up" or questions:
                         result = {
                             **receipt,
                             "state": "needs_information",
                             "physical_request_count": physical_request_count,
+                            "result_kind": "follow_up",
                             "questions": questions,
                             "assumptions": assumptions,
+                        }
+                    elif parsed_kind in {
+                        "affair_recommendation",
+                        "student_support_recommendation",
+                        "plain_text",
+                    }:
+                        result = {
+                            **receipt,
+                            "state": "succeeded",
+                            "physical_request_count": physical_request_count,
+                            "result_kind": parsed_kind,
+                            "result": parsed.get("result"),
+                            "assistant_message": parsed.get("assistant_message"),
+                            "assumptions": assumptions,
+                            "teacher_confirmation_required": True,
                         }
                     else:
                         plan = {
@@ -516,6 +542,8 @@ class WorkPlanning:
                             **receipt,
                             "state": "succeeded",
                             "physical_request_count": physical_request_count,
+                            "result_kind": "ordinary_plan",
+                            "result": plan,
                             "plan": plan,
                             "plan_fingerprint": plan_fingerprint,
                             "assumptions": assumptions,
@@ -597,6 +625,10 @@ class WorkPlanning:
             "assumptions": list(receipt.get("assumptions") or []),
             "plan": receipt.get("plan"),
             "plan_fingerprint": receipt.get("plan_fingerprint"),
+            "result_kind": receipt.get("result_kind"),
+            "result": receipt.get("result"),
+            "assistant_message": receipt.get("assistant_message"),
+            "validation_issue": receipt.get("validation_issue"),
             "teacher_confirmation_required": bool(
                 receipt.get("teacher_confirmation_required")
             ),
@@ -610,17 +642,46 @@ class WorkPlanning:
         mode: str,
         final_due_date: str | None,
     ) -> dict[str, object]:
+        clean_result = str(raw_result or "").strip()
+        fenced = re.fullmatch(
+            r"```(?:json)?\s*(.*?)\s*```",
+            clean_result,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        if fenced is not None:
+            clean_result = fenced.group(1).strip()
         try:
-            decoded = json.loads(raw_result)
+            decoded = json.loads(clean_result)
         except (json.JSONDecodeError, TypeError) as exc:
+            readable = " ".join(clean_result.split())
+            if (
+                8 <= len(readable) <= 800
+                and re.search(r"[一-鿿]", readable)
+            ):
+                self._assert_safe_model_text([readable])
+                return {
+                    "kind": "plain_text",
+                    "questions": [],
+                    "assumptions": [],
+                    "nodes": [],
+                    "edges": [],
+                    "assistant_message": readable,
+                    "result": {"text": readable},
+                }
             raise self._invalid("AI 返回的内容不是有效 JSON") from exc
         if not isinstance(decoded, dict):
             raise self._invalid("AI 返回的方案结构无效")
         kind = str(decoded.get("kind") or "").strip()
-        if kind not in {"plan", "follow_up"}:
+        if kind not in {
+            "plan",
+            "follow_up",
+            "affair_recommendation",
+            "student_support_recommendation",
+            "plain_text",
+        }:
             raise self._invalid("AI 返回了不支持的方案类型")
-        questions = self._string_list(decoded.get("questions"), label="追问")
-        assumptions = self._string_list(decoded.get("assumptions"), label="假设")
+        questions = self._string_list(decoded.get("questions", []), label="追问")
+        assumptions = self._string_list(decoded.get("assumptions", []), label="假设")
         self._assert_safe_model_text([*questions, *assumptions])
         if kind == "follow_up":
             if not questions:
@@ -631,6 +692,46 @@ class WorkPlanning:
                 "assumptions": assumptions,
                 "nodes": [],
                 "edges": [],
+            }
+        if kind == "plain_text":
+            message = self._bounded_text(
+                decoded.get("text"),
+                label="安全说明",
+                maximum=800,
+            )
+            self._assert_safe_model_text([message])
+            return {
+                "kind": kind,
+                "questions": [],
+                "assumptions": assumptions,
+                "nodes": [],
+                "edges": [],
+                "assistant_message": message,
+                "result": {"text": message},
+            }
+        if kind in {
+            "affair_recommendation",
+            "student_support_recommendation",
+        }:
+            summary = self._bounded_text(
+                decoded.get("summary"),
+                label="建议说明",
+                maximum=800,
+            )
+            reasons = self._string_list(decoded.get("reasons", []), label="建议理由")
+            self._assert_safe_model_text([summary, *reasons])
+            return {
+                "kind": kind,
+                "questions": [],
+                "assumptions": assumptions,
+                "nodes": [],
+                "edges": [],
+                "assistant_message": summary,
+                "result": {
+                    "kind": kind,
+                    "summary": summary,
+                    "reasons": reasons,
+                },
             }
 
         raw_nodes = decoded.get("nodes")
@@ -660,6 +761,12 @@ class WorkPlanning:
                 if details_raw is None
                 else self._bounded_text(details_raw, label="节点说明", maximum=800)
             )
+            rationale_raw = raw.get("rationale")
+            rationale = (
+                None
+                if rationale_raw is None
+                else self._bounded_text(rationale_raw, label="安排理由", maximum=800)
+            )
             due_date = self._plan_date(raw.get("due_date"), final_due_date)
             nodes.append(
                 {
@@ -667,6 +774,7 @@ class WorkPlanning:
                     "kind": node_kind,
                     "title": title,
                     "details": details,
+                    "rationale": rationale,
                     "status": status,
                     "due_date": due_date,
                 }
@@ -730,6 +838,7 @@ class WorkPlanning:
             [
                 *(str(node["title"]) for node in nodes),
                 *(str(node.get("details") or "") for node in nodes),
+                *(str(node.get("rationale") or "") for node in nodes),
                 *questions,
                 *assumptions,
             ]

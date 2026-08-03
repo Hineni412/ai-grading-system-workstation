@@ -167,6 +167,13 @@ class VaultService:
             self.session_key,
             model_gateway,
         )
+        from .home_intake import HomeIntake
+
+        self.home_intake = HomeIntake(
+            self.ordinary_database,
+            self.work,
+            self.model_approval,
+        )
         from .sensitive_work_projection import SensitiveWorkProjection
 
         self.projections = SensitiveWorkProjection(

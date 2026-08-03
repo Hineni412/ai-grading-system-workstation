@@ -9,15 +9,18 @@ export function createOrdinaryWorkModule() {
   const error = ref('')
   let requestVersion = 0
 
-  async function load(view: WorkView, anchor?: string): Promise<void> {
+  async function load(view: WorkView, anchor?: string): Promise<boolean> {
     const version = ++requestVersion
     loading.value = true
     error.value = ''
     try {
       const value = await workApi.read(view, anchor)
-      if (version === requestVersion) snapshot.value = value
+      if (version !== requestVersion) return false
+      snapshot.value = value
+      return true
     } catch {
       if (version === requestVersion) error.value = '普通工作暂时无法读取，请稍后重试。'
+      return false
     } finally {
       if (version === requestVersion) loading.value = false
     }

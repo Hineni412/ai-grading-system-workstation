@@ -434,6 +434,7 @@ def create_router() -> APIRouter:
     from .work_router import create_work_router
     from .model_router import create_model_router
     from .card_router import create_card_router
+    from .home_intake_router import create_home_intake_router
 
     protected_router.include_router(create_action_router())
     protected_router.include_router(create_planning_router())
@@ -444,6 +445,7 @@ def create_router() -> APIRouter:
     protected_router.include_router(create_model_router())
     router.include_router(protected_router)
     router.include_router(create_work_router())
+    router.include_router(create_home_intake_router())
     return router
 
 

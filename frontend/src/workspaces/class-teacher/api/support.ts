@@ -258,11 +258,12 @@ export const supportApi = {
       review_at: string | null
       expires_at: string | null
     },
+    operationIdValue = operationId(),
   ) {
     return apiClient.request(`/api/class-teacher/support/subjects/${subjectId}/records`, {
       method: 'POST',
       headers: headers(token),
-      body: { ...input, operation_id: operationId() },
+      body: { ...input, operation_id: operationIdValue },
       decode: supportRecord,
     })
   },
