@@ -250,6 +250,10 @@ def _semester_mapping_job_response(
             public_error = (
                 "模型已返回，但目录格式不是有效 JSON；可重新检查后手动生成。"
             )
+        elif "output was truncated" in normalized_error:
+            public_error = (
+                "模型输出达到长度上限，目录没有完整返回；系统未自动重试。"
+            )
         elif "response must be an object" in normalized_error:
             public_error = (
                 "模型已返回，但目录顶层结构不是对象；可重新检查后手动生成。"
@@ -261,6 +265,10 @@ def _semester_mapping_job_response(
         elif "model configuration is unavailable" in normalized_error:
             public_error = (
                 "当前备课模型配置不可用，请先检查“大模型 API”设置。"
+            )
+        elif "request parameter is incompatible" in normalized_error:
+            public_error = (
+                "当前模型不接受目录请求参数，请检查模型配置后手动生成。"
             )
         elif job.stage in {"queued", "checking", "snapshotting", "claiming_operation"}:
             public_error = (

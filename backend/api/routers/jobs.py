@@ -61,6 +61,9 @@ _SEMESTER_MAPPING_PUBLIC_ERRORS = {
     "returned invalid json": (
         "模型已返回，但目录格式不是有效 JSON；可重新检查后手动生成。"
     ),
+    "output was truncated": (
+        "模型输出达到长度上限，目录没有完整返回；系统未自动重试。"
+    ),
     "response must be an object": (
         "模型已返回，但目录顶层结构不是对象；可重新检查后手动生成。"
     ),
@@ -69,6 +72,9 @@ _SEMESTER_MAPPING_PUBLIC_ERRORS = {
     ),
     "model configuration is unavailable": (
         "当前备课模型配置不可用，请先检查“大模型 API”设置。"
+    ),
+    "request parameter is incompatible": (
+        "当前模型不接受目录请求参数，请检查模型配置后手动生成。"
     ),
 }
 _CONFIG_TRUNCATION_PUBLIC_ERRORS = {

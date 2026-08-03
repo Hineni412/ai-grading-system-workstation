@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -10,6 +11,9 @@ from backend.jobs.store import JobRecord
 from backend.llm import LLMGateway
 from backend.llm.diagnostics import JsonlDiagnosticJournal
 from backend.teaching_prep.api.router import _semester_mapping_job_response
+from backend.teaching_prep.application.semester_mapping import (
+    validate_semester_mapping_payload,
+)
 from backend.teaching_prep.domain.errors import TeachingPrepValidationError
 from backend.teaching_prep.infrastructure.llm import configured as configured_module
 from backend.teaching_prep.infrastructure.llm.configured import (
@@ -101,7 +105,38 @@ def test_active_profile_mapping_call_is_visible_in_ai_diagnostics(
 
     result = adapter.generate(
         operation_id="semester-mapping-observable-0001",
-        semester_snapshot={"synthetic_excerpt": "合成目录片段"},
+        semester_snapshot={
+            "semester": {
+                "semester_id": "s" * 32,
+                "school_year": "2026",
+                "term": "第一学期",
+                "planned_new_lesson_count": 1,
+                "revision": 3,
+                "curriculum_id": "c" * 32,
+                "curriculum_title": "合成课程",
+            },
+            "lessons": [],
+            "materials": [
+                {
+                    "record_id": "m" * 32,
+                    "display_name": "合成资料",
+                    "material_role": "exercise_workbook",
+                    "current_version_id": "v" * 32,
+                    "record_revision": 7,
+                    "unit_count": 1,
+                    "units": [
+                        {
+                            "unit_index": 1,
+                            "title": "第1页",
+                            "text_excerpt": "合成目录片段",
+                            "text_status": "ready",
+                            "object_summary": {"preview_kind": "pdf_page"},
+                            "preview_sha256": "a" * 64,
+                        }
+                    ],
+                }
+            ],
+        },
         dispatch_callback=lambda: dispatches.append("started"),
     )
 
@@ -119,6 +154,25 @@ def test_active_profile_mapping_call_is_visible_in_ai_diagnostics(
     assert call["retry_limit"] == 0
     assert "合成目录片段" in str(call["request"])
     assert call["raw_response"].startswith('{"tree"')
+    sent = completions.calls[0]
+    assert sent["max_tokens"] == 12_288
+    messages = sent["messages"]
+    assert isinstance(messages, list)
+    model_snapshot = json.loads(str(messages[1]["content"]))
+    material = model_snapshot["materials"][0]
+    assert set(material) == {
+        "display_name",
+        "material_role",
+        "record_id",
+        "unit_count",
+        "units",
+    }
+    assert set(material["units"][0]) == {
+        "text_excerpt",
+        "title",
+        "unit_index",
+    }
+    assert "duration_minutes" in str(messages[0]["content"])
 
 
 @pytest.mark.parametrize(
@@ -127,6 +181,28 @@ def test_active_profile_mapping_call_is_visible_in_ai_diagnostics(
         ({"choices": []}, "semester_mapping_model_response_text_unavailable"),
         (
             {"choices": [{"message": {"content": "not-json"}}]},
+            "semester_mapping_model_response_invalid_json",
+        ),
+        (
+            {
+                "choices": [
+                    {
+                        "finish_reason": "length",
+                        "message": {"content": '{"tree":['},
+                    }
+                ]
+            },
+            "semester_mapping_model_response_truncated",
+        ),
+        (
+            {
+                "choices": [
+                    {
+                        "finish_reason": "stop",
+                        "message": {"content": '{"tree":['},
+                    }
+                ]
+            },
             "semester_mapping_model_response_invalid_json",
         ),
         (
@@ -155,6 +231,141 @@ def test_mapping_adapter_preserves_safe_response_failure_category(
         )
 
     assert getattr(caught.value, "error_code", "") == expected_code
+
+
+def test_diagnostic_journal_distinguishes_truncated_json(tmp_path: Path) -> None:
+    journal = JsonlDiagnosticJournal(tmp_path / "llm_diagnostics.jsonl")
+    journal.record_response(
+        operation_id="semester-mapping-truncated-diagnostic-0001",
+        request_id="semester-mapping-truncated-diagnostic-0001",
+        attempt=1,
+        request_kind="workspace",
+        protocol="chat_completions",
+        model="synthetic-model",
+        endpoint_host="model.invalid",
+        response={
+            "choices": [
+                {
+                    "finish_reason": "length",
+                    "message": {"content": '{"tree":['},
+                }
+            ]
+        },
+        elapsed_ms=123,
+    )
+
+    listed = journal.list_calls(limit=10)
+    call = journal.get_call(str(listed["items"][0]["call_id"]))
+    assert call is not None
+    assert call["parse_status"] == "truncated_json"
+    assert "长度上限" in str(call["parse_error"])
+
+
+def test_mapping_validation_assigns_global_machine_keys_locally() -> None:
+    record_id = "m" * 32
+    raw = {
+        "tree": [
+            {
+                "key": "chapter_1",
+                "title": "第一章",
+                "sections": [
+                    {
+                        "key": "section_1",
+                        "title": "第一节",
+                        "lessons": [
+                            {
+                                "key": "lesson_a",
+                                "title": "课时一",
+                                "duration_minutes": 45,
+                            }
+                        ],
+                    }
+                ],
+            },
+            {
+                "key": "chapter_2",
+                "title": "第二章",
+                "sections": [
+                    {
+                        "key": "section_1",
+                        "title": "第一节",
+                        "lessons": [
+                            {
+                                "key": "lesson_b",
+                                "title": "课时二",
+                                "duration_minutes": 45,
+                            }
+                        ],
+                    }
+                ],
+            },
+        ],
+        "mappings": [
+            {
+                "material_record_id": record_id,
+                "lesson_ref": "proposal:lesson_a",
+                "start_unit": 1,
+                "end_unit": 1,
+            },
+            {
+                "material_record_id": record_id,
+                "lesson_ref": "proposal:lesson_b",
+                "start_unit": 2,
+                "end_unit": 2,
+            },
+        ],
+        "uncertainties": [],
+    }
+    snapshot = {
+        "lessons": [],
+        "materials": [
+            {
+                "record_id": record_id,
+                "material_role": "exercise_workbook",
+                "unit_count": 2,
+            }
+        ],
+    }
+
+    normalized = validate_semester_mapping_payload(raw, snapshot=snapshot)
+
+    first_section = normalized["tree"][0]["sections"][0]
+    second_section = normalized["tree"][1]["sections"][0]
+    assert first_section["key"] == "section_001_001"
+    assert second_section["key"] == "section_002_001"
+    assert [item["lesson_ref"] for item in normalized["mappings"]] == [
+        "proposal:lesson_001_001_001",
+        "proposal:lesson_002_001_001",
+    ]
+
+
+def test_mapping_validation_rejects_empty_lesson_sections() -> None:
+    raw = {
+        "tree": [
+            {
+                "key": "chapter_1",
+                "title": "第一章",
+                "sections": [
+                    {
+                        "key": "section_1",
+                        "title": "第一节",
+                        "lessons": [],
+                    }
+                ],
+            }
+        ],
+        "mappings": [],
+        "uncertainties": ["资料不足"],
+    }
+
+    with pytest.raises(
+        TeachingPrepValidationError,
+        match="at least one lesson",
+    ):
+        validate_semester_mapping_payload(
+            raw,
+            snapshot={"lessons": [], "materials": []},
+        )
 
 
 def test_mapping_adapter_does_not_report_dispatch_without_client_transport() -> None:
@@ -190,6 +401,10 @@ def test_mapping_adapter_does_not_report_dispatch_without_client_transport() -> 
             "模型已返回，但目录格式不是有效 JSON；可重新检查后手动生成。",
         ),
         (
+            "semester mapping model output was truncated",
+            "模型输出达到长度上限，目录没有完整返回；系统未自动重试。",
+        ),
+        (
             "semester mapping model response must be an object",
             "模型已返回，但目录顶层结构不是对象；可重新检查后手动生成。",
         ),
@@ -200,6 +415,10 @@ def test_mapping_adapter_does_not_report_dispatch_without_client_transport() -> 
         (
             "semester mapping model configuration is unavailable",
             "当前备课模型配置不可用，请先检查“大模型 API”设置。",
+        ),
+        (
+            "semester mapping model request parameter is incompatible",
+            "当前模型不接受目录请求参数，请检查模型配置后手动生成。",
         ),
     ],
 )
