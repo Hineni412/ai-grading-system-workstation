@@ -5,12 +5,13 @@ from pathlib import Path
 
 import pytest
 
-from question_bank.database.schema import connect
+from question_bank.database.schema import connect, initialize_database
 from question_bank.services.question_frequency_service import (
     QuestionFrequencyService,
     build_question_fingerprint,
     is_frequency_exam_type,
 )
+from tests.current_knowledge_support import install_current_knowledge
 
 
 def _insert_paper(
@@ -41,7 +42,7 @@ def _insert_question(
     *,
     number: str,
     question_type: str = "选择题",
-    knowledge: str = "科学记数法",
+    knowledge: str = "科学记数法—表示较大的数",
     method: str = "数形结合",
     ability: str = "运算能力",
     model: str = "",
@@ -86,8 +87,9 @@ def test_only_formal_exams_have_frequency() -> None:
 
 def test_frequency_counts_at_most_one_best_match_per_paper(tmp_path: Path) -> None:
     db_path = tmp_path / "question_bank.db"
+    initialize_database(db_path)
+    install_current_knowledge(db_path)
     service = QuestionFrequencyService(db_path)
-    service.initialize_database()
     first_paper = _insert_paper(db_path, title="A", exam_type="期末")
     second_paper = _insert_paper(db_path, title="B", exam_type="期末")
     target_id = _insert_question(db_path, first_paper, number="1")
@@ -104,8 +106,9 @@ def test_frequency_counts_at_most_one_best_match_per_paper(tmp_path: Path) -> No
 
 def test_practice_invalidation_does_not_clear_formal_exam_cache(tmp_path: Path) -> None:
     db_path = tmp_path / "question_bank.db"
+    initialize_database(db_path)
+    install_current_knowledge(db_path)
     service = QuestionFrequencyService(db_path)
-    service.initialize_database()
     formal_paper = _insert_paper(db_path, title="期末卷", exam_type="期末")
     practice_paper = _insert_paper(db_path, title="阶段小测", exam_type="阶段练习")
     formal_question = _insert_question(db_path, formal_paper, number="1")
@@ -152,8 +155,9 @@ def test_practice_invalidation_does_not_clear_formal_exam_cache(tmp_path: Path) 
 
 def test_frequency_excludes_practice_and_other_semesters(tmp_path: Path) -> None:
     db_path = tmp_path / "question_bank.db"
+    initialize_database(db_path)
+    install_current_knowledge(db_path)
     service = QuestionFrequencyService(db_path)
-    service.initialize_database()
     target_paper = _insert_paper(db_path, title="期末A", exam_type="期末")
     same_scope = _insert_paper(db_path, title="期末B", exam_type="期末")
     other_semester = _insert_paper(db_path, title="上学期期末", exam_type="期末", semester="上学期")
@@ -187,8 +191,9 @@ def test_formal_tag_change_refreshes_cross_type_frequency_dependants(
     tmp_path: Path,
 ) -> None:
     db_path = tmp_path / "question_bank.db"
+    initialize_database(db_path)
+    install_current_knowledge(db_path)
     service = QuestionFrequencyService(db_path)
-    service.initialize_database()
     final_paper = _insert_paper(
         db_path,
         title="期末卷",
@@ -267,8 +272,9 @@ def test_formal_tag_change_refreshes_cross_type_frequency_dependants(
 
 def test_zhongkao_has_national_and_shenzhen_frequency_without_semester_limit(tmp_path: Path) -> None:
     db_path = tmp_path / "question_bank.db"
+    initialize_database(db_path)
+    install_current_knowledge(db_path)
     service = QuestionFrequencyService(db_path)
-    service.initialize_database()
     shenzhen = _insert_paper(
         db_path, title="深圳中考", exam_type="中考", grade="九年级", semester="", city="深圳市"
     )
@@ -294,13 +300,13 @@ def test_fingerprint_uses_method_for_both_simple_and_solution_questions() -> Non
     # 用具体方法验证"方法参与指纹"；宽泛方法（数形结合/分类讨论）已被排除，
     # 不再用于区分指纹（见 GENERIC_METHOD_TAGS）。
     simple_a = build_question_fingerprint(
-        {"question_type": "选择题", "tags": [{"tag_type": "knowledge_point", "tag_value": "概率"}]}
+        {"question_type": "选择题", "tags": [{"tag_type": "current_knowledge_key", "tag_value": "kp_probability"}]}
     )
     simple_b = build_question_fingerprint(
         {
             "question_type": "选择题",
             "tags": [
-                {"tag_type": "knowledge_point", "tag_value": "概率"},
+                {"tag_type": "current_knowledge_key", "tag_value": "kp_probability"},
                 {"tag_type": "method", "tag_value": "列举法"},
             ],
         }
@@ -309,7 +315,7 @@ def test_fingerprint_uses_method_for_both_simple_and_solution_questions() -> Non
         {
             "question_type": "解答题",
             "tags": [
-                {"tag_type": "knowledge_point", "tag_value": "概率"},
+                {"tag_type": "current_knowledge_key", "tag_value": "kp_probability"},
                 {"tag_type": "method", "tag_value": "列举法"},
             ],
         }
@@ -318,7 +324,7 @@ def test_fingerprint_uses_method_for_both_simple_and_solution_questions() -> Non
         {
             "question_type": "解答题",
             "tags": [
-                {"tag_type": "knowledge_point", "tag_value": "概率"},
+                {"tag_type": "current_knowledge_key", "tag_value": "kp_probability"},
                 {"tag_type": "method", "tag_value": "树状图法"},
             ],
         }
@@ -331,13 +337,13 @@ def test_fingerprint_uses_method_for_both_simple_and_solution_questions() -> Non
 def test_fingerprint_excludes_generic_method_tags() -> None:
     # 数形结合/分类讨论等宽泛方法不进指纹，避免几何综合题过度聚拢。
     without_generic = build_question_fingerprint(
-        {"question_type": "解答题", "tags": [{"tag_type": "knowledge_point", "tag_value": "二次函数"}]}
+        {"question_type": "解答题", "tags": [{"tag_type": "current_knowledge_key", "tag_value": "kp_fun_quadratic"}]}
     )
     with_generic_only = build_question_fingerprint(
         {
             "question_type": "解答题",
             "tags": [
-                {"tag_type": "knowledge_point", "tag_value": "二次函数"},
+                {"tag_type": "current_knowledge_key", "tag_value": "kp_fun_quadratic"},
                 {"tag_type": "method", "tag_value": "数形结合"},
                 {"tag_type": "method", "tag_value": "分类讨论"},
             ],
@@ -352,7 +358,7 @@ def test_fingerprint_is_invariant_to_tag_order() -> None:
         {
             "question_type": "解答题",
             "tags": [
-                {"tag_type": "knowledge_point", "tag_value": "二次函数"},
+                {"tag_type": "current_knowledge_key", "tag_value": "kp_fun_quadratic"},
                 {"tag_type": "method", "tag_value": "待定系数法"},
                 {"tag_type": "method", "tag_value": "配方法"},
             ],
@@ -362,7 +368,7 @@ def test_fingerprint_is_invariant_to_tag_order() -> None:
         {
             "question_type": "解答题",
             "tags": [
-                {"tag_type": "knowledge_point", "tag_value": "二次函数"},
+                {"tag_type": "current_knowledge_key", "tag_value": "kp_fun_quadratic"},
                 {"tag_type": "method", "tag_value": "配方法"},
                 {"tag_type": "method", "tag_value": "待定系数法"},
             ],
@@ -376,14 +382,14 @@ def test_fingerprint_splits_mid_difficulty_into_two_buckets() -> None:
     base_mid = build_question_fingerprint(
         {
             "question_type": "解答题",
-            "tags": [{"tag_type": "knowledge_point", "tag_value": "一元二次方程"}],
+            "tags": [{"tag_type": "current_knowledge_key", "tag_value": "kp_alg_quadratic_equation"}],
             "difficulty": "4",
         }
     )
     advanced_mid = build_question_fingerprint(
         {
             "question_type": "解答题",
-            "tags": [{"tag_type": "knowledge_point", "tag_value": "一元二次方程"}],
+            "tags": [{"tag_type": "current_knowledge_key", "tag_value": "kp_alg_quadratic_equation"}],
             "difficulty": "7",
         }
     )
@@ -392,8 +398,9 @@ def test_fingerprint_splits_mid_difficulty_into_two_buckets() -> None:
 
 def test_external_zhongkao_gets_explainable_shenzhen_fit_score(tmp_path: Path) -> None:
     db_path = tmp_path / "question_bank.db"
+    initialize_database(db_path)
+    install_current_knowledge(db_path)
     service = QuestionFrequencyService(db_path)
-    service.initialize_database()
     shenzhen = _insert_paper(
         db_path, title="深圳中考", exam_type="中考", grade="九年级", semester="", city="深圳市"
     )
@@ -431,8 +438,9 @@ def test_external_zhongkao_gets_explainable_shenzhen_fit_score(tmp_path: Path) -
 
 def test_shenzhen_zhongkao_question_does_not_get_external_fit_score(tmp_path: Path) -> None:
     db_path = tmp_path / "question_bank.db"
+    initialize_database(db_path)
+    install_current_knowledge(db_path)
     service = QuestionFrequencyService(db_path)
-    service.initialize_database()
     shenzhen = _insert_paper(
         db_path, title="深圳中考", exam_type="中考", grade="九年级", semester="", city="深圳市"
     )
@@ -452,8 +460,9 @@ def test_frequency_batch_read_uses_borrowed_readonly_connection(
     from question_bank.services import question_frequency_service as frequency_module
 
     db_path = tmp_path / "question_bank.db"
+    initialize_database(db_path)
+    install_current_knowledge(db_path)
     legacy_service = QuestionFrequencyService(db_path)
-    legacy_service.initialize_database()
     paper_id = _insert_paper(db_path, title="借用连接期末", exam_type="期末")
     question_id = _insert_question(db_path, paper_id, number="1", method="列举法")
     borrowed = sqlite3.connect(db_path)
@@ -483,8 +492,9 @@ def test_frequency_batch_legacy_path_still_initializes_database(
     from question_bank.services import question_frequency_service as frequency_module
 
     db_path = tmp_path / "question_bank.db"
+    initialize_database(db_path)
+    install_current_knowledge(db_path)
     service = QuestionFrequencyService(db_path)
-    service.initialize_database()
     paper_id = _insert_paper(db_path, title="legacy 期末", exam_type="期末")
     question_id = _insert_question(db_path, paper_id, number="1", method="列举法")
     initialize_calls: list[Path] = []

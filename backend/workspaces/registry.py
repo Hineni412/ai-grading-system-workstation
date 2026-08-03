@@ -224,7 +224,11 @@ class WorkspaceRegistry:
                 f"workspace {feature.module_id} migration data path escaped"
             ) from exc
         project_root = Path(
-            getattr(context.paths, "project_root", Path.cwd())
+            getattr(
+                context.paths,
+                "migration_project_root",
+                getattr(context.paths, "project_root", Path.cwd()),
+            )
         )
         try:
             migrations_dir.resolve(strict=False).relative_to(

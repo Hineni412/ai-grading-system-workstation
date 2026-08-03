@@ -6,6 +6,9 @@ from pathlib import Path
 from question_bank.models.question import QuestionCreate
 from question_bank.models.tag_schema import TagAnalysis
 from question_bank.services.question_service import QuestionService
+from tests.current_knowledge_support import install_current_knowledge
+from question_bank.services.question_read_service import QuestionBankReadService
+from question_bank.taxonomy.governance import TaxonomyGovernance
 
 
 def test_question_schema_has_reason_column_and_migration_file(tmp_path: Path) -> None:
@@ -47,6 +50,7 @@ def test_save_tag_analysis_persists_reason(tmp_path: Path) -> None:
             answer_text="参考答案",
         )
     )
+    install_current_knowledge(service.db_path)
     analysis = TagAnalysis.from_dict(
         {
             "knowledge_points": ["一次函数"],
@@ -83,6 +87,7 @@ def test_save_tag_analysis_does_not_create_retired_free_text_dimensions(
     question_id = service.add_question(
         QuestionCreate(question_number="1", question_text="证明三角形全等。")
     )
+    install_current_knowledge(db_path)
     analysis = TagAnalysis.from_dict(
         {
             "knowledge_points": ["三角形全等"],
@@ -127,6 +132,7 @@ def test_save_tag_analysis_persists_every_textbook_chapter(
     question_id = service.add_question(
         QuestionCreate(question_number="1", question_text="跨章节综合题")
     )
+    install_current_knowledge(db_path)
     chapters = [
         "七年级下册 第二章 相交线与平行线",
         "七年级下册 第四章 三角形",
@@ -161,6 +167,72 @@ def test_save_tag_analysis_persists_every_textbook_chapter(
     assert stored == chapters
 
 
+def test_teacher_approved_knowledge_stays_visible_and_survives_reanalysis(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    db_path = tmp_path / "question_bank.db"
+    service = QuestionService(db_path)
+    question_id = service.add_question(
+        QuestionCreate(question_number="1", question_text="教师确认的新知识点")
+    )
+    install_current_knowledge(db_path)
+    governance = TaxonomyGovernance(
+        state_path=tmp_path / "taxonomy-state.json",
+        knowledge_graph_db_path=db_path,
+    )
+    constrained = governance.constrain(
+        {
+            "proposed_tags": [
+                {
+                    "dimension": "knowledge",
+                    "name": "教师确认的局部新词",
+                    "reason": "当前标准没有严格同义词",
+                }
+            ]
+        },
+        context={
+            "persist_proposals": True,
+            "question_ref": str(question_id),
+            "request_token": "local-new-term-proposal",
+        },
+    )
+    proposal = constrained["proposals"][0]
+    governance.review_batch(
+        commands=[
+            {
+                "proposal_id": proposal["id"],
+                "decision": "approve",
+                "edited_name": "教师确认的局部新词",
+            }
+        ],
+        expected_revision=constrained["taxonomy_revision"],
+        request_token="local-new-term-review",
+    )
+
+    analysis = TagAnalysis.from_dict(
+        {"knowledge_points": ["教师确认的局部新词"]}
+    )
+    assert service.save_tag_analysis(
+        question_id,
+        analysis,
+        taxonomy_governance=governance,
+    )
+    monkeypatch.setattr(
+        "question_bank.services.question_read_service.get_taxonomy_governance",
+        lambda: governance,
+    )
+    visible = QuestionBankReadService(db_path).get_question(question_id)
+    assert visible is not None
+    assert visible["tags"] == [
+        {
+            "tag_type": "knowledge_point",
+            "tag_value": "教师确认的局部新词",
+            "confidence": 0.8,
+        }
+    ]
+
+
 def test_query_questions_sorts_before_pagination(tmp_path: Path) -> None:
     service = QuestionService(tmp_path / "question_bank.db")
     for number, difficulty in [("1", "1"), ("2", "9"), ("3", "5"), ("4", "7")]:
@@ -193,25 +265,26 @@ def test_query_questions_frequency_does_not_inflate_same_paper_duplicates(tmp_pa
         )
     
     service = QuestionService(db_path)
+    install_current_knowledge(db_path)
     q1 = service.add_question(QuestionCreate(question_number="1", question_text="Q1", question_type="选择题", paper_id=101))
     q2 = service.add_question(QuestionCreate(question_number="2", question_text="Q2", question_type="选择题", paper_id=101))
     q3 = service.add_question(QuestionCreate(question_number="3", question_text="Q3", question_type="选择题", paper_id=101))
 
     # Complete the three core tags and difficulty for every question.
     service.save_tag_analysis(q1, TagAnalysis.from_dict({
-        "knowledge_points": ["KP_A"],
+        "knowledge_points": ["一次函数"],
         "ability_tags": ["Ability_A"],
         "textbook_chapter": "Chapter_A",
         "difficulty": 4,
     }))
     service.save_tag_analysis(q2, TagAnalysis.from_dict({
-        "knowledge_points": ["KP_A"],
+        "knowledge_points": ["一次函数"],
         "ability_tags": ["Ability_A"],
         "textbook_chapter": "Chapter_A",
         "difficulty": 4,
     }))
     service.save_tag_analysis(q3, TagAnalysis.from_dict({
-        "knowledge_points": ["KP_B"],
+        "knowledge_points": ["二次函数"],
         "ability_tags": ["Ability_A"],
         "textbook_chapter": "Chapter_A",
         "difficulty": 4,
@@ -244,6 +317,7 @@ def test_query_questions_sort_by_frequency_applies_difficulty_isolation(tmp_path
         )
     
     service = QuestionService(db_path)
+    install_current_knowledge(db_path)
     
     # We will create two main questions:
     # q1: difficulty 4
@@ -256,21 +330,21 @@ def test_query_questions_sort_by_frequency_applies_difficulty_isolation(tmp_path
     
     # Tag all of them completely so the paper is eligible.
     service.save_tag_analysis(q1, TagAnalysis.from_dict({
-        "knowledge_points": ["KP_A"],
+        "knowledge_points": ["一次函数"],
         "ability_tags": ["Ability_A"],
         "textbook_chapter": "Chapter_A",
         "suitable_student_level": "Level_A",
         "difficulty": 4
     }))
     service.save_tag_analysis(q2, TagAnalysis.from_dict({
-        "knowledge_points": ["KP_A"],
+        "knowledge_points": ["一次函数"],
         "ability_tags": ["Ability_A"],
         "textbook_chapter": "Chapter_A",
         "suitable_student_level": "Level_A",
         "difficulty": 9
     }))
     service.save_tag_analysis(q1_match, TagAnalysis.from_dict({
-        "knowledge_points": ["KP_A"],
+        "knowledge_points": ["一次函数"],
         "ability_tags": ["Ability_A"],
         "textbook_chapter": "Chapter_A",
         "difficulty": 4

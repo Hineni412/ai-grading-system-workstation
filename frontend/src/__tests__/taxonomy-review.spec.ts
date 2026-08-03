@@ -57,11 +57,15 @@ const suggestionRun = {
     status: 'suggested',
     attempts: 1,
     suggestion: {
-      decision: 'map_many',
+      relation_kind: 'related',
       target_term_ids: ['term-1', 'term-2'],
       reason: '题目确实同时考查两个章节。',
       confidence: 0.91,
       source: 'ai',
+      legacy_format: false,
+      evidence_question_ids: [482],
+      taxonomy_revision: 7,
+      graph_release_id: 'current-standard',
     },
     error: null,
   }],
@@ -129,7 +133,7 @@ describe('taxonomy review', () => {
   it('decodes multi-target suggestions without treating them as approvals', () => {
     const decoded = decodeTaxonomySuggestionRun(suggestionRun)
 
-    expect(decoded.items[0]?.suggestion?.decision).toBe('map_many')
+    expect(decoded.items[0]?.suggestion?.relation_kind).toBe('related')
     expect(decoded.items[0]?.suggestion?.target_term_ids).toEqual([
       'term-1',
       'term-2',
@@ -266,6 +270,98 @@ describe('taxonomy review', () => {
     expect(document.body.textContent).toContain(
       'AI 返回中缺少这个待审词，可单独重试。',
     )
+
+    app.unmount()
+  })
+
+  it('shows doubtful batch items first, keeps automatic items collapsed, and saves once', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const store = useTaxonomyReviewStore()
+    store.revision = 7
+    store.loadState = 'ready'
+    store.suggestionRun = decodeTaxonomySuggestionRun(suggestionRun)
+    store.batchPreview = {
+      run_id: 'run-1',
+      base_revision: 7,
+      evidence_revision: 3,
+      graph_release_id: 'current-standard',
+      policy_version: 'taxonomy-batch-v1',
+      policy_fingerprint: 'fingerprint-1',
+      counts: { automatic: 1, manual: 1, total: 2 },
+      items: [
+        {
+          proposal_id: 'proposal-manual',
+          dimension: 'curriculum',
+          proposed_name: '需要人工判断的词',
+          question_ids: [482],
+          automatic: false,
+          reasons: ['relation_requires_teacher'],
+          suggestion: {
+            relation_kind: 'related',
+            target_term_ids: ['term-1'],
+            reason: '相关但并非严格同义。',
+            confidence: 0.72,
+            source: 'ai',
+            legacy_format: false,
+            evidence_question_ids: [482],
+            taxonomy_revision: 7,
+            graph_release_id: 'current-standard',
+          },
+        },
+        {
+          proposal_id: 'proposal-auto',
+          dimension: 'curriculum',
+          proposed_name: '可严格归并的词',
+          question_ids: [483],
+          automatic: true,
+          reasons: [],
+          suggestion: {
+            relation_kind: 'exact',
+            target_term_ids: ['term-1'],
+            reason: '定义和适用边界相同。',
+            confidence: 0.91,
+            source: 'ai',
+            legacy_format: false,
+            evidence_question_ids: [483],
+            taxonomy_revision: 7,
+            graph_release_id: 'current-standard',
+          },
+        },
+      ],
+    }
+    const saveSpy = vi.spyOn(store, 'applySuggestionBatch').mockResolvedValue(true)
+
+    const host = document.createElement('div')
+    document.body.append(host)
+    const app = createApp(TaxonomyCandidateReview, { open: true })
+    app.use(pinia)
+    app.mount(host)
+    await nextTick()
+
+    const results = document.body.querySelector('.taxonomy-ai-results')
+    const automatic = results?.querySelector<HTMLDetailsElement>(
+      '.taxonomy-ai-results__automatic',
+    )
+    const resultText = results?.textContent ?? ''
+    expect(results?.textContent).toContain('先核对疑难项，再一次保存')
+    expect(resultText.indexOf('需要人工判断的词')).toBeLessThan(
+      resultText.indexOf('可严格归并的词'),
+    )
+    expect(automatic?.open).toBe(false)
+    expect(document.body.textContent).toContain('当前知识标准 · 词表修订 7')
+    expect(document.body.textContent).not.toContain('启用知识图谱')
+
+    const saveButton = [...document.body.querySelectorAll<HTMLButtonElement>('button')]
+      .find((button) => button.textContent?.includes('保存本批决定'))
+    saveButton?.click()
+    await nextTick()
+    expect(saveSpy).toHaveBeenCalledTimes(1)
+    expect(saveSpy).toHaveBeenCalledWith([{
+      proposal_id: 'proposal-manual',
+      decision: 'defer',
+      target_term_ids: [],
+    }])
 
     app.unmount()
   })

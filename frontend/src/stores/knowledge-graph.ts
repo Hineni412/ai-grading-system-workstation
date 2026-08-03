@@ -3,27 +3,26 @@ import { defineStore } from 'pinia'
 
 import { ApiError } from '../api/errors'
 import {
-  decodeGraphRowsResponse,
-  fetchScopedGraphEvidence,
-  fetchScopedGraphRows,
-  hasMatchingGraphEvidenceScope,
+  decodeGraphResponse,
+  fetchGraph,
+  fetchGraphEvidence,
   normalizeGraphQuery,
   type GraphEvidenceItem,
   type GraphEvidenceResponse,
   type GraphNode,
   type GraphQueryInput,
-  type GraphRowsResponse,
+  type GraphResponse,
 } from '../api/graph'
 import type { ResourceState } from './workbench'
 
 export type GraphLoader = (
   query: GraphQueryInput,
   signal?: AbortSignal,
-) => Promise<GraphRowsResponse>
+) => Promise<GraphResponse>
 
 export type GraphEvidenceLoader = (
   query: GraphQueryInput,
-  knowledgeKey: string,
+  stableKey: string,
   signal?: AbortSignal,
   page?: number,
 ) => Promise<GraphEvidenceResponse>
@@ -45,23 +44,31 @@ function arraysEqual<T>(left: T[], right: T[]): boolean {
 
 function evidenceMatchesGraph(
   loaded: GraphEvidenceResponse,
-  source: GraphRowsResponse,
-  knowledgeKey: string,
+  source: GraphResponse,
+  stableKey: string,
   page: number,
 ): boolean {
-  if (
-    loaded.knowledge_key !== knowledgeKey ||
-    loaded.page !== page ||
-    loaded.scope.mode !== source.scope.mode ||
-    loaded.scope.class_id !== source.scope.class_id ||
-    !arraysEqual(loaded.scope.student_ids, source.scope.student_ids) ||
-    loaded.exam_scope.mode !== source.exam_scope.mode ||
-    !arraysEqual(loaded.exam_scope.session_ids, source.exam_scope.session_ids)
-  ) return false
-
-  return loaded.items.every((item) => (
-    item.knowledge_key === knowledgeKey
-  )) && hasMatchingGraphEvidenceScope(loaded)
+  const node = source.nodes.find((candidate) => candidate.stable_key === stableKey)
+  return (
+    node !== undefined &&
+    loaded.display_name === node.display_name &&
+    loaded.stable_key === stableKey &&
+    loaded.page === page &&
+    loaded.scope.mode === source.scope.mode &&
+    loaded.scope.class_id === source.scope.class_id &&
+    arraysEqual(loaded.scope.student_ids, source.scope.student_ids) &&
+    loaded.exam_scope.mode === source.exam_scope.mode &&
+    arraysEqual(loaded.exam_scope.session_ids, source.exam_scope.session_ids) &&
+    loaded.current_standard.release_id === source.current_standard.release_id &&
+    loaded.current_standard.content_hash === source.current_standard.content_hash &&
+    loaded.current_standard.taxonomy_revision === source.current_standard.taxonomy_revision &&
+    loaded.items.every((item) => (
+      item.stable_key === stableKey &&
+      loaded.scope.student_ids.includes(String(item.student_id)) &&
+      loaded.exam_scope.session_ids.includes(item.session_id) &&
+      (loaded.scope.mode !== 'class' || item.class_id === loaded.scope.class_id)
+    ))
+  )
 }
 
 function evidenceIdentity(item: GraphEvidenceItem): string {
@@ -71,7 +78,7 @@ function evidenceIdentity(item: GraphEvidenceItem): string {
 export const useKnowledgeGraphStore = defineStore('knowledge-graph', () => {
   const requestedQuery = ref<GraphQueryInput | null>(null)
   const appliedQuery = ref<GraphQueryInput | null>(null)
-  const graph = ref<GraphRowsResponse | null>(null)
+  const graph = ref<GraphResponse | null>(null)
   const graphState = ref<ResourceState>('idle')
   const graphError = ref('')
   const graphUpdatedAt = ref<string | null>(null)
@@ -111,7 +118,7 @@ export const useKnowledgeGraphStore = defineStore('knowledge-graph', () => {
 
   async function loadGraph(
     query: GraphQueryInput,
-    loader: GraphLoader = fetchScopedGraphRows,
+    loader: GraphLoader = fetchGraph,
   ): Promise<void> {
     const normalized = normalizeGraphQuery(query)
     const nextKey = queryKey(normalized)
@@ -132,10 +139,7 @@ export const useKnowledgeGraphStore = defineStore('knowledge-graph', () => {
     }
 
     try {
-      const loaded = decodeGraphRowsResponse(
-        await loader(normalized, controller.signal),
-        normalized,
-      )
+      const loaded = decodeGraphResponse(await loader(normalized, controller.signal), normalized)
       if (generation !== graphGeneration || queryKey(requestedQuery.value!) !== nextKey) return
       clearSelection()
       appliedQuery.value = normalized
@@ -161,12 +165,12 @@ export const useKnowledgeGraphStore = defineStore('knowledge-graph', () => {
 
   async function selectNode(
     node: GraphNode,
-    loader: GraphEvidenceLoader = fetchScopedGraphEvidence,
+    loader: GraphEvidenceLoader = fetchGraphEvidence,
   ): Promise<void> {
     if (
       appliedQuery.value === null ||
       graph.value === null ||
-      !graph.value.nodes.some((candidate) => candidate.knowledge_key === node.knowledge_key)
+      !graph.value.nodes.some((candidate) => candidate.stable_key === node.stable_key)
     ) return
 
     evidenceController?.abort()
@@ -175,27 +179,27 @@ export const useKnowledgeGraphStore = defineStore('knowledge-graph', () => {
     const generation = ++evidenceGeneration
     const query = appliedQuery.value
     const source = graph.value
-    const knowledgeKey = node.knowledge_key
-    const changedNode = selectedNodeKey.value !== knowledgeKey
-    selectedNodeKey.value = knowledgeKey
+    const stableKey = node.stable_key
+    const changedNode = selectedNodeKey.value !== stableKey
+    selectedNodeKey.value = stableKey
     evidenceState.value = 'loading'
     evidenceError.value = ''
     if (changedNode) evidence.value = null
 
     try {
-      const loaded = await loader(query, knowledgeKey, controller.signal, 1)
+      const loaded = await loader(query, stableKey, controller.signal, 1)
       if (
         generation !== evidenceGeneration ||
-        selectedNodeKey.value !== knowledgeKey ||
+        selectedNodeKey.value !== stableKey ||
         graph.value !== source
       ) return
-      if (!evidenceMatchesGraph(loaded, source, knowledgeKey, 1)) {
+      if (!evidenceMatchesGraph(loaded, source, stableKey, 1)) {
         throw new Error('Graph evidence scope mismatch')
       }
       evidence.value = loaded
       evidenceState.value = loaded.items.length === 0 ? 'empty' : 'ready'
     } catch (error) {
-      if (generation !== evidenceGeneration || selectedNodeKey.value !== knowledgeKey) return
+      if (generation !== evidenceGeneration || selectedNodeKey.value !== stableKey) return
       if (isCancelled(error)) {
         evidenceState.value = evidence.value === null
           ? 'idle'
@@ -210,7 +214,7 @@ export const useKnowledgeGraphStore = defineStore('knowledge-graph', () => {
   }
 
   async function loadMoreEvidence(
-    loader: GraphEvidenceLoader = fetchScopedGraphEvidence,
+    loader: GraphEvidenceLoader = fetchGraphEvidence,
   ): Promise<void> {
     if (
       appliedQuery.value === null ||
@@ -227,21 +231,21 @@ export const useKnowledgeGraphStore = defineStore('knowledge-graph', () => {
     const generation = ++evidenceGeneration
     const query = appliedQuery.value
     const source = graph.value
-    const knowledgeKey = selectedNodeKey.value
+    const stableKey = selectedNodeKey.value
     const previous = evidence.value
     const nextPage = previous.page + 1
     evidenceState.value = 'loading'
     evidenceError.value = ''
 
     try {
-      const loaded = await loader(query, knowledgeKey, controller.signal, nextPage)
+      const loaded = await loader(query, stableKey, controller.signal, nextPage)
       if (
         generation !== evidenceGeneration ||
-        selectedNodeKey.value !== knowledgeKey ||
+        selectedNodeKey.value !== stableKey ||
         graph.value !== source ||
         evidence.value !== previous
       ) return
-      if (!evidenceMatchesGraph(loaded, source, knowledgeKey, nextPage)) {
+      if (!evidenceMatchesGraph(loaded, source, stableKey, nextPage)) {
         throw new Error('Graph evidence scope mismatch')
       }
       const seen = new Set(previous.items.map(evidenceIdentity))
@@ -254,7 +258,7 @@ export const useKnowledgeGraphStore = defineStore('knowledge-graph', () => {
       evidence.value = { ...loaded, items: [...previous.items, ...appended] }
       evidenceState.value = evidence.value.items.length === 0 ? 'empty' : 'ready'
     } catch (error) {
-      if (generation !== evidenceGeneration || selectedNodeKey.value !== knowledgeKey) return
+      if (generation !== evidenceGeneration || selectedNodeKey.value !== stableKey) return
       if (isCancelled(error)) {
         evidenceState.value = previous.items.length === 0 ? 'empty' : 'ready'
         return
@@ -266,13 +270,17 @@ export const useKnowledgeGraphStore = defineStore('knowledge-graph', () => {
     }
   }
 
-  async function retryGraph(loader: GraphLoader = fetchScopedGraphRows): Promise<void> {
+  async function retryGraph(loader: GraphLoader = fetchGraph): Promise<void> {
     if (requestedQuery.value !== null) await loadGraph(requestedQuery.value, loader)
   }
 
-  async function retryEvidence(loader: GraphEvidenceLoader = fetchScopedGraphEvidence): Promise<void> {
+  async function retryEvidence(
+    loader: GraphEvidenceLoader = fetchGraphEvidence,
+  ): Promise<void> {
     if (selectedNodeKey.value === null || graph.value === null) return
-    const node = graph.value.nodes.find((candidate) => candidate.knowledge_key === selectedNodeKey.value)
+    const node = graph.value.nodes.find(
+      (candidate) => candidate.stable_key === selectedNodeKey.value,
+    )
     if (node) await selectNode(node, loader)
   }
 

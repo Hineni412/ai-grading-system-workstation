@@ -100,6 +100,7 @@ class QuestionAnalysisInput:
     rich_answer_blocks: tuple[Mapping[str, Any], ...] = ()
     images: tuple[QuestionAnalysisImage, ...] = ()
     taxonomy_contract: Mapping[str, Any] = field(default_factory=dict)
+    reference_solution: Mapping[str, Any] = field(default_factory=dict)
     repair_context: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -124,6 +125,16 @@ class QuestionAnalysisInput:
             "taxonomy_contract",
             dict(self.taxonomy_contract),
         )
+        reference_solution = dict(self.reference_solution)
+        if reference_solution:
+            required = {
+                "text", "source_segments", "rich_blocks", "trust_level", "source_kind"
+            }
+            if set(reference_solution) != required or reference_solution.get(
+                "trust_level"
+            ) not in {"teacher_confirmed", "source_extracted", "absent"}:
+                raise ValueError("reference_solution fields are invalid")
+        object.__setattr__(self, "reference_solution", reference_solution)
         repair_context = dict(self.repair_context)
         if repair_context:
             required_fields = {
@@ -203,6 +214,7 @@ class QuestionAnalysisInput:
                     for image in self.images
                 ],
                 "taxonomy_contract": self.taxonomy_contract,
+                "reference_solution": self.reference_solution,
             }
         )
 
@@ -218,6 +230,7 @@ class QuestionAnalysisInput:
                 "has_images": context.has_images,
                 "rich_question_blocks": self.rich_question_blocks,
                 "rich_answer_blocks": self.rich_answer_blocks,
+                "reference_solution": self.reference_solution,
                 "image_hashes": [
                     {
                         "role": image.role,
@@ -1258,6 +1271,11 @@ def combined_response_format(
     selected = _selected_projections(_projection(projection))
     item_properties: dict[str, Any] = {
         "question_id": {"type": "integer"},
+        "reference_assessment": {
+            "type": "string",
+            "enum": ["consistent", "conflict", "insufficient"],
+        },
+        "reference_assessment_reason": {"type": "string"},
     }
     if "tag" in selected:
         item_properties["tag_analysis"] = _tag_schema()

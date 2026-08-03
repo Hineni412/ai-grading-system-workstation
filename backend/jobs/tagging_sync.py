@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from question_bank.database.schema import connect
+from question_bank.current_knowledge import CurrentFineTermResolver
 from question_bank.models.tag_schema import TaggingContext
 from question_bank.relations.evidence_governance import (
     EvidenceRelationGovernanceService,
@@ -20,11 +21,8 @@ from question_bank.services.question_service import (
     QuestionService,
 )
 from question_bank.solution_evidence import (
-    FineTermCoreMappingRepository,
     SolutionEvidenceProjectionWriter,
     SolutionEvidenceRepository,
-    build_fine_term_mapping_baseline,
-    install_fine_term_mapping_baseline,
 )
 from question_bank.training_criteria import (
     CombinedAnalysisRepository,
@@ -217,6 +215,12 @@ def _run_tagging_sync_job_locked(
     review_question_ids: list[int] = []
     retrieval_miss_count = 0
     retrieval_miss_question_ids: list[int] = []
+    generation_id = f"tagging-sync:{context.job_id}:legacy"
+    observation_sequences = _allocate_observation_sequences(
+        governance,
+        generation_id=generation_id,
+        question_ids=normal_pending_ids,
+    )
 
     context.report(0.05, "tagging_sync", "loading")
     for batch_index, start in enumerate(range(0, len(pending_ids), size)):
@@ -297,10 +301,28 @@ def _run_tagging_sync_job_locked(
                     result.analysis,
                     model_name=result.model_name,
                     confidence=result.analysis.confidence,
+                    taxonomy_governance=governance,
                 )
             except Exception:  # noqa: BLE001
                 saved = False
             if not saved:
+                failures.append(_failure(question_id, "save"))
+                continue
+            try:
+                _record_successful_observation(
+                    governance,
+                    question_id=question_id,
+                    generation_id=generation_id,
+                    proposal_ids=[
+                        proposal_id
+                        for item in persisted_proposals
+                        if (proposal_id := _proposal_id(item))
+                    ],
+                    taxonomy_revision=int(result.taxonomy_revision or 0),
+                    graph_release_id=knowledge_graph_release_id,
+                    allocated=observation_sequences,
+                )
+            except Exception:  # noqa: BLE001
                 failures.append(_failure(question_id, "save"))
                 continue
             tagged_count += 1
@@ -417,12 +439,7 @@ def _run_unified_tagging_analysis(
         ),
         context,
     )
-    mapping_repository = FineTermCoreMappingRepository(db_path)
-    install_fine_term_mapping_baseline(
-        mapping_repository,
-        build_fine_term_mapping_baseline(),
-        actor_ref="system:taxonomy-baseline-v1",
-    )
+    mapping_repository = CurrentFineTermResolver.from_active_database(db_path)
     tag_writer = ExistingTagProjectionWriter(
         question_service=QuestionService(db_path),
         tagging_service=ai_service,
@@ -455,6 +472,11 @@ def _run_unified_tagging_analysis(
     audit_rows: list[Mapping[str, Any]] = []
     if regular_loaded:
         regular_operation_id = f"tagging-sync:{context.job_id}"
+        observation_sequences = _allocate_observation_sequences(
+            taxonomy_governance or ai_service.taxonomy_governance,
+            generation_id=regular_operation_id,
+            question_ids=[item.question_id for item in regular_loaded],
+        )
         summaries.append(
             module.analyze(
                 operation_id=regular_operation_id,
@@ -507,6 +529,27 @@ def _run_unified_tagging_analysis(
             continue
         if question_id not in evidence_only_set:
             if str(item.get("tag_status")) == "succeeded":
+                question_audit = tag_writer.audit_summary(
+                    f"tagging-sync:{context.job_id}", [question_id]
+                )
+                try:
+                    _record_successful_observation(
+                        taxonomy_governance or ai_service.taxonomy_governance,
+                        question_id=question_id,
+                        generation_id=f"tagging-sync:{context.job_id}",
+                        proposal_ids=[
+                            proposal_id
+                            for proposal in question_audit.get("proposals", [])
+                            if isinstance(proposal, Mapping)
+                            and (proposal_id := _proposal_id(proposal))
+                        ],
+                        taxonomy_revision=taxonomy_revision,
+                        graph_release_id=knowledge_graph_release_id,
+                        allocated=locals().get("observation_sequences", {}),
+                    )
+                except Exception:  # noqa: BLE001
+                    failures.append(_failure(question_id, "save"))
+                    continue
                 tag_success.append(question_id)
                 newly_tagged.append(question_id)
             else:
@@ -929,6 +972,45 @@ def _persist_proposals(
         for item in constrained.get("proposals", [])
         if isinstance(item, Mapping)
     ]
+
+
+def _allocate_observation_sequences(
+    governance: Any | None,
+    *,
+    generation_id: str,
+    question_ids: Sequence[int],
+) -> dict[str, int]:
+    allocate = getattr(governance, "allocate_observation_sequences", None)
+    if not callable(allocate) or not question_ids:
+        return {}
+    return dict(
+        allocate(
+            generation_id=generation_id,
+            question_ids=[str(question_id) for question_id in question_ids],
+        )
+    )
+
+
+def _record_successful_observation(
+    governance: Any | None,
+    *,
+    question_id: int,
+    generation_id: str,
+    proposal_ids: Sequence[str],
+    taxonomy_revision: int,
+    graph_release_id: str,
+    allocated: Mapping[str, int],
+) -> None:
+    record = getattr(governance, "record_successful_observation", None)
+    if not callable(record) or str(question_id) not in allocated:
+        return
+    record(
+        question_id=str(question_id),
+        generation_id=generation_id,
+        proposal_ids=list(proposal_ids),
+        taxonomy_revision=max(0, int(taxonomy_revision)),
+        graph_release_id=str(graph_release_id or ""),
+    )
 
 
 def _proposal_id(item: Mapping[str, Any]) -> str:

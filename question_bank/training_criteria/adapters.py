@@ -124,6 +124,7 @@ class ExistingTagProjectionWriter:
             checked.analysis,
             model_name=model_name,
             confidence=checked.analysis.confidence,
+            taxonomy_governance=self.tagging_service.taxonomy_governance,
         ):
             raise RuntimeError("tag projection could not be saved")
         return {
@@ -442,6 +443,7 @@ def question_analysis_input_from_config_source(
         source.get("rich_answer_blocks")
         or source.get("answer_blocks")
     )
+    reference_solution = source.get("reference_solution")
     normalized_images = tuple(images)
     volume_id = str(curriculum_volume_id or "").strip()
     if not volume_id:
@@ -480,6 +482,11 @@ def question_analysis_input_from_config_source(
         rich_answer_blocks=tuple(_public_block(item) for item in answer_blocks),
         images=normalized_images,
         taxonomy_contract=dict(taxonomy_contract or {}),
+        reference_solution=(
+            dict(reference_solution)
+            if isinstance(reference_solution, Mapping)
+            else {}
+        ),
     )
 
 
@@ -537,6 +544,13 @@ def _combined_prompt(
         "response_mode, full_answer must be non-empty. Keep "
         "keys present even when a type-specific list or answer is empty. "
         "Solution evidence must never contain score fields. "
+        "Treat reference_solution according to trust_level. teacher_confirmed is a "
+        "teacher-confirmed basis. source_extracted is unconfirmed reference material "
+        "that may be incomplete or internally conflicting: use the stem, images and "
+        "mathematical reasoning instead of copying it mechanically. absent means no "
+        "reference was available. Return reference_assessment as consistent, conflict, "
+        "or insufficient with a short reference_assessment_reason. A conflict is a "
+        "teacher warning, never a reason to omit a usable grading structure. "
         "Do not invent content hidden by a missing image. When repair_context is "
         "present, this is a teacher-authorized targeted repair. Use its exact "
         "validation_error, validation_issues, allowed_changes, immutable_fields, "
@@ -545,12 +559,9 @@ def _combined_prompt(
         "one complete replacement result for the requested projection. When "
         "expected_projection is training_criteria, return solution_evidence only; "
         "the application preserves the already accepted tag_analysis. "
-        "Do not copy the rejected structure blindly. Re-audit every full_answer: "
-        "each standalone intermediate equality, angle relation, equation, or "
-        "mathematical result that is used by a later step must have its own "
-        "evidence point. For the Q11-style example, if full_answer contains "
-        "∠B=90°-x, ∠ACD=90°-x/2, and y=x/2, omitting any one of those three "
-        "placeholders is invalid."
+        "Do not copy the rejected structure blindly. Process-required parts need at "
+        "least two distinct non-empty evidence points. Do not infer an exact evidence "
+        "point count from punctuation, equations, angle symbols, or connective words."
     )
     questions = []
     for item in batch.questions:
@@ -567,6 +578,7 @@ def _combined_prompt(
                 item.rich_answer_blocks
             ),
             "candidate_contract": dict(item.taxonomy_contract),
+            "reference_solution": dict(item.reference_solution),
             "expected_projection": projection,
         }
         if item.repair_context:

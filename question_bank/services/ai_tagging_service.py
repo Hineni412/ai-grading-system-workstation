@@ -1101,14 +1101,13 @@ def _taxonomy_suggestion_prompt_input(
     junior-middle-school mathematics question bank. Return suggestions only;
     never claim that a proposal has been approved or write any data.
 
-    Prefer an existing candidate whenever its meaning fits the actual question.
-    Use merge with exactly one candidate ID for an equivalent term. Use
-    map_many only when the evidence genuinely spans two or more independent
-    approved terms (especially multiple textbook chapters). Use approve only
-    for a genuinely reusable new controlled term, reject for an unsuitable
-    label, and uncertain when the summaries are insufficient. Target IDs must
-    come from that proposal's candidates. Do not concatenate multiple chapter
-    names into a new term. Return one result for every proposal ID.
+    Classify the semantic relation as exactly one of: exact, broader, narrower,
+    related, new_core_candidate, wrong_dimension, reject, uncertain. Exact means
+    strict synonymy, never merely similar or overlapping. Only exact may name
+    one target for possible automatic handling. Broader, narrower, and related
+    may name relevant targets for teacher review. Target IDs must come from that
+    proposal's candidates. Return one result for every proposal ID. Never claim
+    that confidence alone approves or writes a decision.
     """.strip()
     return [
         {"role": "system", "content": system_prompt},
@@ -1128,12 +1127,15 @@ def _taxonomy_suggestion_prompt_input(
 def _taxonomy_suggestion_response_format() -> dict[str, Any]:
     properties = {
         "proposal_id": {"type": "string"},
-        "decision": {
+        "relation_kind": {
             "type": "string",
             "enum": [
-                "merge",
-                "map_many",
-                "approve",
+                "exact",
+                "broader",
+                "narrower",
+                "related",
+                "new_core_candidate",
+                "wrong_dimension",
                 "reject",
                 "uncertain",
             ],

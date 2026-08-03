@@ -202,6 +202,7 @@ def intake_grading_paper_to_question_bank(
                     result.analysis,
                     model_name=result.model_name,
                     confidence=result.analysis.confidence,
+                    taxonomy_governance=tagger.taxonomy_governance,
                 ):
                     tagged_questions += 1
                 else:

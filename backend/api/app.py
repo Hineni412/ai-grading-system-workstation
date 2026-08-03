@@ -99,6 +99,11 @@ async def _lifespan(api: FastAPI) -> AsyncIterator[None]:
         registry: WorkspaceRegistry = api.state.workspace_registry
         if hasattr(paths, "db_path") and hasattr(paths, "qb_db_path"):
             ensure_application_schema(paths)
+            from question_bank.current_knowledge import (
+                ensure_checked_in_current_standard,
+            )
+
+            ensure_checked_in_current_standard(Path(paths.qb_db_path))
         registry.run_migrations()
         workspace_services = registry.create_services()
         manager = create_job_manager(paths) if owns_manager else None

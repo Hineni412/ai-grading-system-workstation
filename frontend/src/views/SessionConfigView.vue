@@ -569,6 +569,7 @@ watch(
                 :source="configStore.source"
                 :decisions="configStore.decisions"
                 :asset-decisions="configStore.assetDecisions"
+                :question-states="configStore.questionStates"
                 @update:decisions="configStore.updateDecisions"
                 @update:asset-decisions="configStore.updateAssetDecisions"
               />

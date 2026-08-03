@@ -13,6 +13,7 @@ from backend.config_workspace.deferred_analysis import (
 from backend.config_workspace.publish import LoadedEditorConfig, load_editor_config
 from path_manager import resolve_stored_file_path
 from question_bank.database.schema import connect
+from question_bank.current_knowledge import CurrentFineTermResolver
 from question_bank.services.question_write_service import QuestionBankWriteService
 from question_bank.services.question_service import QuestionService
 from question_bank.services.source_question_link_service import (
@@ -24,10 +25,7 @@ from .question_import import run_question_import_job
 from .tagging_sync import run_tagging_sync_job
 from question_bank.taxonomy.curriculum_catalog import curriculum_volume
 from question_bank.solution_evidence import (
-    FineTermCoreMappingRepository,
     SolutionEvidenceRepository,
-    build_fine_term_mapping_baseline,
-    install_fine_term_mapping_baseline,
 )
 from question_bank.training_criteria import (
     ConfirmedQuestionAdoptionLink,
@@ -694,12 +692,13 @@ def _adopt_deferred_analysis_with_links(
             curriculum_volume_id=artifact.curriculum_volume_id,
         )
     }
-    mapping_repository = FineTermCoreMappingRepository(question_bank_db_path)
-    baseline_result = install_fine_term_mapping_baseline(
-        mapping_repository,
-        build_fine_term_mapping_baseline(),
-        actor_ref="system:taxonomy-baseline-v1",
+    mapping_repository = CurrentFineTermResolver.from_active_database(
+        question_bank_db_path
     )
+    baseline_result = {
+        "status": "current_standard",
+        "release_id": mapping_repository.release_id,
+    }
     tag_writer = ExistingTagProjectionWriter(
         question_service=QuestionService(question_bank_db_path),
         tagging_service=ai_service,

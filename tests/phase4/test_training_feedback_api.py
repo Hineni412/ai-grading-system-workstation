@@ -114,7 +114,7 @@ class FakeAssessmentModule:
             "timeline": [],
             "safety": {
                 "is_exam_score": False,
-                "changes_v1": False,
+                "changes_exam_score": False,
                 "auto_paper_created": False,
                 "auto_printed": False,
             },
