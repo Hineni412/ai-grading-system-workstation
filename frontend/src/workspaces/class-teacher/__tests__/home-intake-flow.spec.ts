@@ -270,7 +270,7 @@ describe('homepage intake flow', () => {
     await nextTick()
     expect(source.value).toBe('保留这段普通班务')
 
-    click(host, '只查询同一操作')
+    click(host, '查看刚才这次调用')
     await flush()
     expect(status).toHaveBeenLastCalledWith(operationId, undefined)
     expect(source.disabled).toBe(true)
@@ -278,14 +278,14 @@ describe('homepage intake flow', () => {
     await nextTick()
     expect(source.value).toBe('保留这段普通班务')
 
-    click(host, '只查询同一操作')
+    click(host, '查看刚才这次调用')
     await flush()
     expect(source.disabled).toBe(true)
     enter(source, '处理中不能替换')
     await nextTick()
     expect(source.value).toBe('保留这段普通班务')
 
-    click(host, '只查询同一操作')
+    click(host, '查看刚才这次调用')
     await flush()
     expect(status).toHaveBeenCalledTimes(3)
     expect(status.mock.calls.every(([id]) => id === operationId)).toBe(true)
