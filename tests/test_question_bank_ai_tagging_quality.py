@@ -23,8 +23,19 @@ from question_bank.services.ai_tagging_service import (
     _tag_analysis_response_format,
     _taxonomy_suggestion_prompt_input,
     _taxonomy_suggestion_response_format,
+    converge_tag_analysis,
 )
 from question_bank.services.question_service import QuestionService, has_complete_analysis_tags
+from question_bank.taxonomy.governance import TaxonomyGovernance
+
+
+CATALOG_PATH = (
+    Path(__file__).resolve().parents[1]
+    / "question_bank"
+    / "taxonomy"
+    / "catalogs"
+    / "tag_vocabulary_v2.json"
+)
 
 
 def _analysis(**overrides) -> TagAnalysis:
@@ -267,6 +278,75 @@ def test_tagging_schema_supports_special_type_and_caps_free_proposals() -> None:
     ]
 
 
+def test_tagging_schema_limits_controlled_fields_to_contract_candidates() -> None:
+    first_contract = {
+        "candidates": {
+            "curriculum": [{"id": "chapter-1", "name": "三角形"}],
+            "knowledge": [{"id": "knowledge-1", "name": "等腰三角形"}],
+            "ability": [{"id": "ability-1", "name": "推理能力"}],
+            "method": [{"id": "method-1", "name": "分类讨论"}],
+            "model": [{"id": "model-1", "name": "角平分线模型"}],
+            "special_type": [{"id": "special-1", "name": "新定义题"}],
+        },
+    }
+    second_contract = {
+        "candidates": {
+            **first_contract["candidates"],
+            "knowledge": [{"id": "knowledge-2", "name": "轴对称"}],
+        },
+    }
+
+    single = _tag_analysis_response_format(first_contract)["schema"][
+        "properties"
+    ]
+    batch = _batch_tag_analysis_response_format(
+        {1: first_contract, 2: second_contract}
+    )["schema"]["properties"]["results"]["items"]["properties"]
+
+    assert single["knowledge_points"]["items"]["enum"] == [
+        "等腰三角形"
+    ]
+    assert single["prerequisite_points"]["items"]["enum"] == [
+        "等腰三角形"
+    ]
+    assert single["method_tags"]["items"]["enum"] == ["分类讨论"]
+    assert single["canonical_knowledge_id"]["enum"] == [
+        "",
+        "knowledge-1",
+    ]
+    assert batch["knowledge_points"]["items"]["enum"] == [
+        "等腰三角形",
+        "轴对称",
+    ]
+    assert single["proposed_tags"]["maxItems"] == 2
+
+
+def test_legacy_free_text_in_controlled_field_is_reported_safely(
+    tmp_path: Path,
+) -> None:
+    governance = TaxonomyGovernance(
+        catalog_path=CATALOG_PATH,
+        state_path=tmp_path / "taxonomy-state.json",
+    )
+    context = TaggingContext(
+        question_text="根据轴对称性质完成证明。",
+        answer_text="证明略。",
+        question_number="1",
+        question_type="解答题",
+    )
+    contract = governance.prompt_contract()
+
+    result = converge_tag_analysis(
+        _analysis(knowledge_points=["轴对称的性质"]),
+        context,
+        governance=governance,
+        taxonomy_contract=contract,
+    )
+
+    assert "controlled_field_violation:knowledge_points" in result.quality_notes
+    assert all("轴对称的性质" not in note for note in result.quality_notes)
+
+
 def test_tagging_schema_preserves_multiple_textbook_chapters() -> None:
     single_schema = _tag_analysis_response_format()["schema"]["properties"]
     batch_schema = _batch_tag_analysis_response_format()["schema"]["properties"][
@@ -420,6 +500,7 @@ def test_single_responses_uses_tagging_gateway_with_raw_client(monkeypatch) -> N
     )
 
     service = AITaggingService(env=_tagging_env(), client=fake_client)
+    taxonomy_contract = service.taxonomy_contract(context)
     expected_analysis = replace(
         expected_analysis,
         taxonomy_revision=service.taxonomy_revision,
@@ -442,13 +523,17 @@ def test_single_responses_uses_tagging_gateway_with_raw_client(monkeypatch) -> N
     assert adapter_calls[0]["request_kind"] is backend_llm.LLMRequestKind.TAGGING
     assert adapter_calls[0]["model"] == "fake-tagging-model"
     assert adapter_calls[0]["kwargs"] == {
-        "text": {"format": _tag_analysis_response_format()},
-        "input": _prompt_input(context),
+        "text": {
+            "format": _tag_analysis_response_format(taxonomy_contract)
+        },
+        "input": _prompt_input(context, taxonomy_contract),
     }
     assert provider_calls == [
         {
-            "text": {"format": _tag_analysis_response_format()},
-            "input": _prompt_input(context),
+            "text": {
+                "format": _tag_analysis_response_format(taxonomy_contract)
+            },
+            "input": _prompt_input(context, taxonomy_contract),
             "model": "fake-tagging-model",
             "timeout": 120.0,
         }
@@ -508,6 +593,8 @@ def test_batch_responses_preserves_structured_payload_mapping_and_lazy_adapter(
     batch_items = list(contexts.items())
 
     service = AITaggingService(env=_tagging_env(), client=fake_client)
+    single_contract = service.taxonomy_contract(contexts[1])
+    batch_contracts = service.taxonomy_contracts(contexts)
     first_analysis = replace(
         first_analysis,
         taxonomy_revision=service.taxonomy_revision,
@@ -533,19 +620,25 @@ def test_batch_responses_preserves_structured_payload_mapping_and_lazy_adapter(
         for call in adapter_calls
     )
     assert adapter_calls[1]["kwargs"] == {
-        "text": {"format": _batch_tag_analysis_response_format()},
-        "input": _batch_prompt_input(batch_items),
+        "text": {
+            "format": _batch_tag_analysis_response_format(batch_contracts)
+        },
+        "input": _batch_prompt_input(batch_items, batch_contracts),
     }
     assert provider_calls == [
         {
-            "text": {"format": _tag_analysis_response_format()},
-            "input": _prompt_input(contexts[1]),
+            "text": {
+                "format": _tag_analysis_response_format(single_contract)
+            },
+            "input": _prompt_input(contexts[1], single_contract),
             "model": "fake-tagging-model",
             "timeout": 120.0,
         },
         {
-            "text": {"format": _batch_tag_analysis_response_format()},
-            "input": _batch_prompt_input(batch_items),
+            "text": {
+                "format": _batch_tag_analysis_response_format(batch_contracts)
+            },
+            "input": _batch_prompt_input(batch_items, batch_contracts),
             "model": "fake-tagging-model",
             "timeout": 120.0,
         }
@@ -713,6 +806,14 @@ def test_taxonomy_review_suggestions_use_one_request_without_ai_repair() -> None
     assert result == expected["results"]
     assert len(calls) == 1
     assert calls[0][1]["request_kind"] is backend_llm.LLMRequestKind.TAGGING
+    assert calls[0][1]["response_format"] == {
+        "type": "json_schema",
+        "json_schema": {
+            "name": "question_bank_taxonomy_review_suggestions",
+            "strict": True,
+            "schema": _taxonomy_suggestion_response_format()["schema"],
+        },
+    }
 
 
 def test_taxonomy_review_suggestions_do_not_fake_ai_in_mock_mode(

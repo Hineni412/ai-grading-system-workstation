@@ -1898,6 +1898,78 @@ def test_llm_single_request_method_sends_explicit_output_limit_without_fallback(
     assert "response_format" not in completions.last_kwargs
 
 
+def test_llm_single_request_forwards_strict_response_format_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeCompletions:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+
+        def create(self, **kwargs):
+            self.calls.append(kwargs)
+            return type(
+                "Completion",
+                (),
+                {
+                    "choices": [
+                        type(
+                            "Choice",
+                            (),
+                            {
+                                "message": type(
+                                    "Message", (), {"content": '{"results": []}'}
+                                )()
+                            },
+                        )()
+                    ]
+                },
+            )()
+
+    completions = FakeCompletions()
+    fake_openai = type(
+        "FakeOpenAI",
+        (),
+        {"chat": type("Chat", (), {"completions": completions})()},
+    )()
+    settings = llm_client.LLMSettings(
+        api_key="x",
+        base_url="https://example.invalid/v1",
+        ocr_model="model",
+        grading_model="model",
+        config_model="model",
+    )
+    monkeypatch.setattr(
+        llm_client,
+        "_create_openai_client",
+        lambda *_args, **_kwargs: fake_openai,
+    )
+    client = llm_client.LLMClient(
+        settings,
+        usage_sink_factory=NullUsageSink,
+        trace_sink_factory=NullCallTraceSink,
+    )
+    response_format = {
+        "type": "json_schema",
+        "json_schema": {
+            "name": "taxonomy_suggestions",
+            "strict": True,
+            "schema": {
+                "type": "object",
+                "properties": {"results": {"type": "array"}},
+                "required": ["results"],
+                "additionalProperties": False,
+            },
+        },
+    }
+
+    assert client.json_from_text_once(
+        "prompt",
+        response_format=response_format,
+    ) == {"results": []}
+    assert len(completions.calls) == 1
+    assert completions.calls[0]["response_format"] == response_format
+
+
 def test_llm_single_request_does_not_retry_unsupported_output_limit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

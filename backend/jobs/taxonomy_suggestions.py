@@ -97,11 +97,7 @@ def _report_progress(
 ) -> None:
     counts = _progress_counts(snapshot)
     total = counts["total_count"]
-    terminal = (
-        counts["completed_count"]
-        + counts["failed_count"]
-        + counts["cancelled_count"]
-    )
+    terminal = counts["processed_count"]
     progress = 0.05 + (0.9 * terminal / max(1, total))
     context.report(
         min(0.95, progress),
@@ -139,6 +135,7 @@ def _safe_summary(
         "taxonomy_revision": taxonomy_revision,
         "progress": {
             "total": counts["total_count"],
+            "processed": counts["processed_count"],
             "completed": counts["completed_count"],
             "failed": counts["failed_count"],
             "pending": counts["pending_count"],
@@ -160,18 +157,27 @@ def _progress_counts(value: Mapping[str, Any]) -> dict[str, int]:
         except (TypeError, ValueError):
             return 0
 
+    total = count("total")
+    pending = count("pending")
+    processed = (
+        count("processed")
+        if "processed" in progress
+        else max(0, total - pending)
+    )
     return {
-        "total_count": count("total"),
+        "total_count": total,
+        "processed_count": processed,
         "completed_count": count("completed"),
         "failed_count": count("failed"),
-        "pending_count": count("pending"),
+        "pending_count": pending,
         "cancelled_count": count("cancelled"),
     }
 
 
 def _progress_detail(counts: Mapping[str, object]) -> str:
     return (
-        f"已完成 {int(counts.get('completed_count') or 0)}，"
+        f"已处理 {int(counts.get('processed_count') or 0)}，"
+        f"已生成建议 {int(counts.get('completed_count') or 0)}，"
         f"失败 {int(counts.get('failed_count') or 0)}，"
         f"待处理 {int(counts.get('pending_count') or 0)}，"
         f"已取消 {int(counts.get('cancelled_count') or 0)}。"
