@@ -4,7 +4,10 @@ import json
 import re
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from types import SimpleNamespace
 
+from llm_client import LLMResponseFormatError
+from question_bank.services.ai_tagging_service import AITaggingService
 from question_bank.services.taxonomy_review_suggestions import (
     TaxonomySuggestionService,
 )
@@ -52,6 +55,19 @@ def _persist(
         },
     )
     return result["proposals"][0]
+
+
+def _question_loader(question_ids):
+    return [
+        {
+            "id": int(question_id),
+            "question_number": f"Q{question_id}",
+            "question_type": "解答题",
+            "question_text": "用于核对归并建议的当前题目。",
+            "answer_text": "当前题目的答案摘要。",
+        }
+        for question_id in question_ids
+    ]
 
 
 def _rewrite_as_legacy_composite(
@@ -214,6 +230,7 @@ def test_failed_batches_resume_after_restart_without_repeating_successes(
     restarted = TaxonomySuggestionService(
         state_path=tmp_path / "suggestions.json",
         governance=governance,
+        question_loader=_question_loader,
     )
     retry_gateway = RecordingGateway()
     retried = restarted.retry_failed(
@@ -251,6 +268,7 @@ def test_running_state_is_resumable_and_cancel_preserves_finished_suggestions(
     service = TaxonomySuggestionService(
         state_path=tmp_path / "suggestions.json",
         governance=governance,
+        question_loader=_question_loader,
     )
     run = service.create_run(
         proposal_ids=[first["id"], second["id"]],
@@ -297,6 +315,7 @@ def test_taxonomy_revision_change_marks_unfinished_run_stale_without_gateway_cal
     service = TaxonomySuggestionService(
         state_path=tmp_path / "suggestions.json",
         governance=governance,
+        question_loader=_question_loader,
     )
     run = service.create_run(
         proposal_ids=[proposal["id"]],
@@ -340,6 +359,7 @@ def test_progress_callback_and_external_cancel_stop_before_the_next_batch(
     service = TaxonomySuggestionService(
         state_path=tmp_path / "suggestions.json",
         governance=governance,
+        question_loader=_question_loader,
     )
     run = service.create_run(
         proposal_ids=[first["id"], second["id"]],
@@ -370,6 +390,175 @@ def test_progress_callback_and_external_cancel_stop_before_the_next_batch(
         snapshot["progress"]["completed"] == 1
         for snapshot in progress
     )
+    assert result["progress"]["processed"] == 2
+
+
+def test_current_question_context_is_derived_without_rewriting_historical_refs(
+    tmp_path: Path,
+) -> None:
+    governance = _governance(tmp_path)
+    proposal = _persist(
+        governance,
+        dimension="knowledge",
+        name="保留历史引用的候选",
+        token="10" * 16,
+        question_id=111,
+    )
+    _persist(
+        governance,
+        dimension="knowledge",
+        name="保留历史引用的候选",
+        token="11" * 16,
+        question_id=112,
+    )
+
+    def load_current(question_ids):
+        return _question_loader(
+            [question_id for question_id in question_ids if question_id == 112]
+        )
+
+    service = TaxonomySuggestionService(
+        state_path=tmp_path / "suggestions.json",
+        governance=governance,
+        question_loader=load_current,
+    )
+    page = service.contextualize_proposal_page(
+        governance.list_proposals(status="pending")
+    )
+    item = page["items"][0]
+
+    assert item["question_refs"] == [111, 112]
+    assert item["active_question_refs"] == [112]
+    assert item["unavailable_question_ref_count"] == 1
+    assert item["actionable"] is True
+    assert page["counts"]["actionable"] == 1
+    assert page["counts"]["historical_unavailable"] == 0
+
+    run = service.create_run(
+        proposal_ids=[proposal["id"]],
+        expected_revision=page["revision"],
+        request_token="12" * 16,
+    )
+    gateway = RecordingGateway()
+    completed = service.process_run(run["run_id"], gateway, batch_size=1)
+
+    assert completed["status"] == "completed"
+    assert [
+        summary["id"]
+        for summary in gateway.calls[0][0]["question_summaries"]
+    ] == [112]
+    assert governance.get_proposal(proposal["id"])["question_refs"] == [111, 112]
+
+
+def test_unavailable_question_context_costs_no_request_and_can_retry_after_restore(
+    tmp_path: Path,
+) -> None:
+    governance = _governance(tmp_path)
+    proposal = _persist(
+        governance,
+        dimension="knowledge",
+        name="等待原题恢复的候选",
+        token="13" * 16,
+        question_id=121,
+    )
+    active_question_ids: set[int] = set()
+
+    def load_current(question_ids):
+        return _question_loader(
+            [
+                question_id
+                for question_id in question_ids
+                if question_id in active_question_ids
+            ]
+        )
+
+    service = TaxonomySuggestionService(
+        state_path=tmp_path / "suggestions.json",
+        governance=governance,
+        question_loader=load_current,
+    )
+    run = service.create_run(
+        proposal_ids=[proposal["id"]],
+        expected_revision=governance.list_proposals(status="pending")["revision"],
+        request_token="14" * 16,
+    )
+    first_gateway = RecordingGateway()
+
+    blocked = service.process_run(run["run_id"], first_gateway, batch_size=1)
+
+    assert first_gateway.calls == []
+    assert blocked["status"] == "failed"
+    assert blocked["items"][0]["error"]["category"] == "question_context"
+    assert governance.get_proposal(proposal["id"])["question_refs"] == [121]
+
+    active_question_ids.add(121)
+    retry_gateway = RecordingGateway()
+    retried = service.retry_failed(run["run_id"], retry_gateway, batch_size=1)
+
+    assert retried["status"] == "completed"
+    assert len(retry_gateway.calls) == 1
+
+
+def test_thirty_nine_invalid_model_responses_finish_in_five_requests_without_repair(
+    tmp_path: Path,
+) -> None:
+    governance = _governance(tmp_path)
+    proposals = [
+        _persist(
+            governance,
+            dimension="knowledge",
+            name=f"格式错误回归候选{i}",
+            token=f"{i + 1:032x}",
+            question_id=200 + i,
+        )
+        for i in range(39)
+    ]
+    service = TaxonomySuggestionService(
+        state_path=tmp_path / "suggestions.json",
+        governance=governance,
+        question_loader=_question_loader,
+    )
+    run = service.create_run(
+        proposal_ids=[proposal["id"] for proposal in proposals],
+        expected_revision=governance.list_proposals(status="pending")["revision"],
+        request_token="f" * 32,
+    )
+
+    class NonJsonSingleRequestClient:
+        settings = SimpleNamespace(config_model="fake-tagging-model")
+
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, dict]] = []
+
+        def json_from_text_once(self, prompt, **kwargs):
+            self.calls.append((prompt, kwargs))
+            raise LLMResponseFormatError("Model response is not valid JSON")
+
+        def json_from_text(self, *_args, **_kwargs):
+            raise AssertionError("invalid suggestion output must not use AI repair")
+
+    llm_client = NonJsonSingleRequestClient()
+    gateway = AITaggingService(
+        env={"QUESTION_BANK_TAGGING_MODEL": "fake-tagging-model"},
+        llm_client=llm_client,
+    )
+
+    failed = service.process_run(run["run_id"], gateway, batch_size=8)
+
+    assert len(llm_client.calls) == 5
+    assert failed["status"] == "failed"
+    assert failed["progress"] == {
+        "total": 39,
+        "processed": 39,
+        "completed": 0,
+        "failed": 39,
+        "pending": 0,
+        "cancelled": 0,
+    }
+    assert {item["attempts"] for item in failed["items"]} == {1}
+    assert {
+        item["error"]["category"] for item in failed["items"]
+    } == {"model_response"}
 
 
 def test_interrupted_run_becomes_retryable_without_losing_finished_items(

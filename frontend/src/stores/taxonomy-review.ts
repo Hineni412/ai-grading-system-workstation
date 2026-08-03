@@ -102,6 +102,7 @@ export const useTaxonomyReviewStore = defineStore('taxonomy-review', () => {
   const dimensions = ref<Record<TaxonomyDimension, TaxonomyTerm[]>>(emptyDimensions())
   const proposals = ref<TaxonomyProposal[]>([])
   const pendingCount = ref(0)
+  const historicalUnavailableCount = ref(0)
   const loadState = ref<TaxonomyReviewLoadState>('idle')
   const writeState = ref<TaxonomyReviewWriteState>('idle')
   const busyProposalId = ref<string | null>(null)
@@ -147,9 +148,12 @@ export const useTaxonomyReviewStore = defineStore('taxonomy-review', () => {
       if (generation !== loadGeneration || controller.signal.aborted) return false
       dimensions.value = catalog.dimensions
       proposals.value = proposalList.items
-      pendingCount.value = proposalList.counts.pending
+      pendingCount.value = proposalList.counts.actionable
+      historicalUnavailableCount.value = (
+        proposalList.counts.historical_unavailable
+      )
       revision.value = proposalList.revision
-      loadState.value = proposalList.counts.pending === 0 ? 'empty' : 'ready'
+      loadState.value = proposalList.counts.actionable === 0 ? 'empty' : 'ready'
       if (!suggestionRun.value) await restoreSuggestions(api)
       return true
     } catch {
@@ -402,6 +406,7 @@ export const useTaxonomyReviewStore = defineStore('taxonomy-review', () => {
     dimensions,
     proposals,
     pendingCount,
+    historicalUnavailableCount,
     loadState,
     writeState,
     busyProposalId,
