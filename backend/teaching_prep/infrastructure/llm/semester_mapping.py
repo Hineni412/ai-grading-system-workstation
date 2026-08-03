@@ -16,7 +16,7 @@ from backend.workspaces.model_policy import (
 
 _SYSTEM_INSTRUCTION = """\
 你是初中数学学期资料目录整理助手。只依据给出的学期快照工作。
-返回单个 JSON 对象，只能包含 tree、mappings、uncertainties。
+返回单个 json（JSON）对象，只能包含 tree、mappings、uncertainties。
 如果快照已经有课时树，tree 必须为空，只把新增资料映射到 existing lesson id。
 如果课时树为空，tree 按章、节、课时三级给出，每个节点使用简短唯一 key；
 mapping 的 lesson_ref 对新课时使用 proposal:<lesson key>。
