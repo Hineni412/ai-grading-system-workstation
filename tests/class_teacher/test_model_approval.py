@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import closing
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -65,6 +66,7 @@ def test_preview_is_exact_anonymous_and_plaintext_stays_out_of_ordinary_db(
     )
     assert preview["removed_categories"] == ["姓名或称呼", "具体分数或名次"]
     assert preview["max_physical_requests"] == 1
+    assert "json" in json.dumps(preview["exact_payload"], ensure_ascii=False)
     assert source.encode("utf-8") not in service.ordinary_database.database_path.read_bytes()
     assert source.encode("utf-8") not in service.database.database_path.read_bytes()
     assert gateway.calls == []

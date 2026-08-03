@@ -91,8 +91,8 @@ function resultMessage(value: HomeIntakeOperation): string {
     ? 'AI 已返回工作方案草案，请逐项核对后再确认写入。'
     : 'AI 已返回待教师判断的参考内容，尚未写入。'
   if (value.state === 'needs_information') return 'AI 只提出了追问。只有教师明确补充并提交，才会开始下一轮。'
-  if (value.state === 'result_unknown') return `本轮结果暂不明确${reason}。只能查询同一操作，不能自动重发。`
-  if (value.state === 'in_progress') return '同一操作仍在处理中。请只查询状态，不要另发一轮。'
+  if (value.state === 'result_unknown') return `系统已发出本轮请求，但暂时无法确认 AI 是否返回${reason}。可以查看刚才这次调用的状态；这不会再次调用 AI。`
+  if (value.state === 'in_progress') return '刚才这次 AI 调用仍在处理中。可以继续查看它的状态；这不会再次调用 AI。'
   if (value.state === 'unavailable' || value.state === 'failed_before_send') return `模型当前不可用${reason}。原文仍保留。`
   if (value.state === 'invalid_result') return `AI 返回内容未通过校验${reason}，没有形成可写入草案。`
   if (value.state === 'destination_changed') return `发送前模型目的地发生变化${reason}，本轮没有继续发送。`
@@ -108,7 +108,7 @@ async function dispatchPreview(value: HomeIntakePreview): Promise<void> {
     operation.value = await homeIntakeApi.dispatch(value, requestOperationId.value, props.token)
     message.value = resultMessage(operation.value)
   } catch {
-    message.value = '发送响应未能确认。原文仍保留；请查询同一操作，不要再次发送。'
+    message.value = '发送响应未能确认。原文仍保留；请查看刚才这次调用，不要重新发送。'
   }
   focusStatus()
 }
@@ -157,9 +157,9 @@ async function querySameOperation(): Promise<void> {
   busy.value = true
   try {
     operation.value = await homeIntakeApi.status(requestOperationId.value, props.token)
-    message.value = `已查询同一操作，没有追加发送。${resultMessage(operation.value)}`
+    message.value = `已查看刚才这次调用，没有再次调用 AI。${resultMessage(operation.value)}`
   } catch {
-    message.value = '同一操作状态暂时无法查询；没有追加发送，原文仍保留。'
+    message.value = '刚才这次调用的状态暂时无法查询；没有再次调用 AI，原文仍保留。'
   } finally { busy.value = false; focusStatus() }
 }
 
@@ -352,7 +352,7 @@ function handoff(): void {
           <button type="button" :disabled="busy || !followUpAnswer.trim()" @click="submitFollowUp">提交补充，开始下一轮</button>
         </section>
 
-        <button v-if="unresolvedOperation || requestOperationId" v-show="unresolvedOperation || message.includes('响应未能确认')" type="button" :disabled="busy || !requestOperationId" @click="querySameOperation">只查询同一操作</button>
+        <button v-if="unresolvedOperation || requestOperationId" v-show="unresolvedOperation || message.includes('响应未能确认')" type="button" :disabled="busy || !requestOperationId" @click="querySameOperation">查看刚才这次调用（不会再次调用 AI）</button>
         <button v-if="canRetry" type="button" :disabled="busy" @click="retryWithNewOperation">重新整理一次（会发起新请求）</button>
 
         <section v-if="canManualFallback" class="fallback">
@@ -363,7 +363,7 @@ function handoff(): void {
         </section>
       </template>
 
-      <button v-if="!operation && requestOperationId" type="button" :disabled="busy" @click="querySameOperation">只查询同一操作</button>
+      <button v-if="!operation && requestOperationId" type="button" :disabled="busy" @click="querySameOperation">查看刚才这次调用（不会再次调用 AI）</button>
       <p v-if="message" class="message" role="status">{{ message }}</p>
       <button v-if="text" class="discard" type="button" :disabled="sourceLocked" @click="discard">明确放弃本次内容</button>
     </section>
