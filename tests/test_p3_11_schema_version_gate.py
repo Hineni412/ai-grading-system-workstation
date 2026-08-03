@@ -436,6 +436,8 @@ def test_fastapi_lifespan_checks_both_schema_versions(tmp_path: Path) -> None:
         outputs_dir=data_root / "outputs",
         backups_dir=data_root / "backups",
         ops_state_dir=data_root / "ops",
+        api_profiles_path=tmp_path / "config" / "api_profiles.json",
+        legacy_api_profiles_paths=(),
         workspace_dir=lambda workspace_id, *, create=False: (
             data_root / "workspaces" / workspace_id
         ),

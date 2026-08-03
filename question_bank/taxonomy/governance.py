@@ -25,6 +25,9 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from path_manager import get_path_manager
+from question_bank.database.paths import question_bank_db_path
+from question_bank.knowledge_graph_release.loader import load_release
+from question_bank.knowledge_graph_release.repository import load_active_release
 from question_bank.taxonomy.curriculum_catalog import curriculum_volume_contract
 
 
@@ -803,6 +806,61 @@ def _bigrams(value: object) -> set[str]:
     return {text[index : index + 2] for index in range(len(text) - 1)}
 
 
+def _knowledge_release_prompt_contract(db_path: Path) -> dict[str, Any]:
+    """Return the compact, immutable knowledge catalog shared by a batch."""
+
+    packaged_release = load_release()
+    database_exists = Path(db_path).is_file()
+    active_release = load_active_release(db_path) if database_exists else None
+    release = active_release or packaged_release
+    payload = release.payload
+    node_names = {
+        str(item["stable_key"]): str(item["display_name"])
+        for item in payload.get("core_nodes", [])
+        if isinstance(item, Mapping)
+    }
+    targets: dict[str, list[str]] = {}
+    for item in payload.get("mappings", []):
+        if not isinstance(item, Mapping):
+            continue
+        fine_term_id = str(item.get("fine_term_id") or "").strip()
+        target_name = node_names.get(str(item.get("stable_key") or ""), "")
+        if fine_term_id and target_name:
+            targets.setdefault(fine_term_id, []).append(target_name)
+    terms: dict[str, dict[str, str]] = {}
+    for item in payload.get("fine_term_dispositions", []):
+        if not isinstance(item, Mapping):
+            continue
+        fine_term_id = str(item.get("fine_term_id") or "").strip()
+        disposition = str(item.get("disposition") or "").strip()
+        anchors = item.get("curriculum_anchors")
+        topic = "初中数学"
+        if isinstance(anchors, list) and anchors:
+            topic = str(anchors[0]).removeprefix("第四学段/")
+        usage = disposition
+        if disposition == "wrong_dimension":
+            usage = "do_not_use_as_knowledge"
+        row = {
+            "topic": topic,
+            "usage": usage,
+        }
+        mapped_names = targets.get(fine_term_id, [])
+        if mapped_names:
+            row["core"] = "/".join(mapped_names)
+        if str(item.get("review_priority") or "") == "high_impact":
+            row["boundary"] = str(item.get("exclude_scope") or "")[:72]
+        terms[fine_term_id] = row
+    return {
+        "release_id": (
+            release.release_id
+            if active_release is not None or not database_exists
+            else ""
+        ),
+        "taxonomy_revision": release.taxonomy_revision,
+        "terms": terms,
+    }
+
+
 def _term_public(term: Mapping[str, Any]) -> dict[str, Any]:
     return {
         "id": term["id"],
@@ -864,10 +922,14 @@ class TaxonomyGovernance:
         *,
         catalog_path: Path | None = None,
         state_path: Path | None = None,
+        knowledge_graph_db_path: Path | None = None,
     ) -> None:
         self.catalog_path = Path(catalog_path or _CATALOG_PATH)
         self.state_path = Path(
             state_path or get_path_manager().taxonomy_state_path
+        )
+        self.knowledge_graph_db_path = Path(
+            knowledge_graph_db_path or question_bank_db_path()
         )
         try:
             catalog_payload = _read_json(self.catalog_path)
@@ -1091,11 +1153,15 @@ class TaxonomyGovernance:
             ]
             for dimension in ALLOWED_DIMENSIONS
         }
+        knowledge_release = _knowledge_release_prompt_contract(
+            self.knowledge_graph_db_path
+        )
         return {
             key: self._prompt_contract_from_snapshot(
                 context,
                 revision=state["revision"],
                 active_by_dimension=active_by_dimension,
+                knowledge_release=knowledge_release,
             )
             for key, context in contexts.items()
         }
@@ -1109,6 +1175,7 @@ class TaxonomyGovernance:
         *,
         revision: int,
         active_by_dimension: Mapping[str, list[dict[str, Any]]],
+        knowledge_release: Mapping[str, Any],
     ) -> dict[str, Any]:
         values = _context_mapping(context)
         volume_contract = curriculum_volume_contract(
@@ -1236,6 +1303,8 @@ class TaxonomyGovernance:
                 eligible = [
                     item for item in ranked if item[1]["id"] in allowed_chapter_ids
                 ]
+            elif dimension == "knowledge":
+                eligible = ranked
             elif dimension in {
                 "ability",
                 "method",
@@ -1248,17 +1317,43 @@ class TaxonomyGovernance:
                 eligible = []
             else:
                 eligible = [item for item in ranked if item[0] > 0]
-            selected = [term for _score, term in eligible[: limits[dimension]]]
-            truncated[dimension] = len(eligible) > len(selected)
-            candidates[dimension] = [
-                {"id": term["id"], "name": term["name"]}
-                for term in selected
+            selected = [
+                term
+                for _score, term in (
+                    eligible if dimension == "knowledge"
+                    else eligible[: limits[dimension]]
+                )
             ]
+            truncated[dimension] = len(eligible) > len(selected)
+            if dimension == "knowledge":
+                release_terms = knowledge_release["terms"]
+                candidates[dimension] = [
+                    {
+                        "id": term["id"],
+                        "name": term["name"],
+                        **dict(
+                            release_terms.get(
+                                term["id"],
+                                {
+                                    "topic": "教师确认的新词观察",
+                                    "usage": "temporary_observation",
+                                },
+                            )
+                        ),
+                    }
+                    for term in selected
+                ]
+            else:
+                candidates[dimension] = [
+                    {"id": term["id"], "name": term["name"]}
+                    for term in selected
+                ]
             allowed_term_ids[dimension] = [term["id"] for term in selected]
 
         fingerprint = _fingerprint(
             {
                 "revision": revision,
+                "knowledge_graph_release_id": knowledge_release["release_id"],
                 "allowed_term_ids": allowed_term_ids,
             }
         )
@@ -1268,6 +1363,10 @@ class TaxonomyGovernance:
         result = {
             "schema_version": 1,
             "taxonomy_revision": revision,
+            "knowledge_graph_release_id": knowledge_release["release_id"],
+            "knowledge_catalog_revision": knowledge_release[
+                "taxonomy_revision"
+            ],
             "candidate_fingerprint": fingerprint,
             "retrieval_status": retrieval_status,
             "allowed_dimensions": list(ALLOWED_DIMENSIONS),

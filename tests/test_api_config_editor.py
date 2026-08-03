@@ -451,41 +451,52 @@ def test_editor_mapping_keeps_config_job_submission_outside_the_session_claim(
         blocked_mapping,
     )
 
+    from backend.api.routers.config import save_config_editor
+    from backend.api.schemas.config import ConfigEditorSaveRequest
+
+    save_request = ConfigEditorSaveRequest(
+        revision=first["revision"],
+        edits=[{
+            "row_id": first["rows"][0]["row_id"],
+            "standard_answer": "serialized",
+        }],
+        commands=[],
+    )
+
     save_thread = threading.Thread(
-        target=lambda: responses.append(client.put(
-            f"/api/sessions/{session_id}/config/editor",
-            json={
-                "revision": first["revision"],
-                "edits": [{
-                    "row_id": first["rows"][0]["row_id"],
-                    "standard_answer": "serialized",
-                }],
-                "commands": [],
-            },
+        target=lambda: responses.append(save_config_editor(
+            session_id,
+            save_request,
+            db,
+            manager,
+            tmp_path / "uploaded",
+            tmp_path / "templates",
         )),
         daemon=True,
     )
     save_thread.start()
-    assert mapping_started.wait(timeout=5)
-
     submitted: list[object] = []
+    submit_thread: threading.Thread | None = None
+    try:
+        assert mapping_started.wait(timeout=5)
 
-    def submit_job() -> None:
-        submitted.append(manager.submit(
-            "config_generation",
-            {"session_id": session_id, "mode": "generate"},
-        ))
-        submit_finished.set()
+        def submit_job() -> None:
+            submitted.append(manager.submit(
+                "config_generation",
+                {"session_id": session_id, "mode": "generate"},
+            ))
+            submit_finished.set()
 
-    submit_thread = threading.Thread(target=submit_job, daemon=True)
-    submit_thread.start()
-    assert not submit_finished.wait(timeout=0.2)
-    manager.store.assert_config_session_idle(session_id)
-
-    release_mapping.set()
-    save_thread.join(timeout=5)
-    submit_thread.join(timeout=5)
-    assert responses and responses[0].status_code == 200
+        submit_thread = threading.Thread(target=submit_job, daemon=True)
+        submit_thread.start()
+        assert not submit_finished.wait(timeout=0.2)
+        manager.store.assert_config_session_idle(session_id)
+    finally:
+        release_mapping.set()
+        save_thread.join(timeout=5)
+        if submit_thread is not None:
+            submit_thread.join(timeout=5)
+    assert responses and responses[0]["save_result"]["config_saved"] is True
     assert submitted and submit_finished.is_set()
 
 

@@ -75,6 +75,17 @@ def _solve_global_question_scores(
     # instead of hoping it remains among the nearest 500 raw-model paths.
     solution_units.sort(key=lambda indexes: _scorable_step_count(questions[indexes[0]]))
     units = list(objective_indexes.values()) + solution_units
+    candidate_limit = (
+        1
+        if not objective_indexes
+        and len(
+            {
+                _scorable_step_count(questions[indexes[0]])
+                for indexes in solution_units
+            }
+        ) <= 1
+        else 500
+    )
 
     # Keep several candidates per total.  A numerically closest allocation can
     # still violate the paper's teaching hierarchy, so retaining only one path
@@ -102,7 +113,7 @@ def _solve_global_question_scores(
                             (cost, next_path)
                         )
         states = {
-            total: sorted(candidates, key=lambda item: item[0])[:500]
+            total: sorted(candidates, key=lambda item: item[0])[:candidate_limit]
             for total, candidates in next_states.items()
         }
 

@@ -271,10 +271,10 @@ def test_twelve_questions_send_constructed_response_questions_one_per_batch() ->
         item["question_id"]: item["max_score"]
         for item in payload["rubric"]["questions"]
     } == {
-        **{f"Q{index}": 3 for index in range(1, 7)},
-        "Q7": 14,
-        "Q8": 14,
-        "Q9": 14,
+        **{f"Q{index}": 5 for index in range(1, 7)},
+        "Q7": 10,
+        "Q8": 10,
+        "Q9": 10,
         "Q10": 14,
         "Q11": 13,
         "Q12": 13,

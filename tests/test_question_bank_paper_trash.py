@@ -104,7 +104,7 @@ def test_restoring_a_trashed_paper_only_restores_questions_moved_with_it(
     assert restored.deleted is False
     assert restored.affected_question_count == 2
     assert reader.get_question(1)["question_text"] == "第一题"
-    assert reader.get_question(1)["tags"][0]["tag_value"] == "全等三角形"
+    assert reader.get_question(1)["tags"][0]["tag_value"] == "三角形全等"
     assert reader.get_question(3) is None
     assert source_path.read_bytes() == b"source-stays"
 

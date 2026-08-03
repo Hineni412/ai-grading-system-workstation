@@ -54,6 +54,17 @@ const dimensionLabels: Record<TaxonomyDimension, string> = {
   special_type: '特殊题型/考法',
 }
 
+const graphDispositionLabels: Record<string, string> = {
+  maps_to_many: '映射多个核心',
+  retrieval_only: '仅用于检索',
+  wrong_dimension: '移出知识维度',
+  retired: '退役',
+}
+
+function graphDispositionLabel(value: string): string {
+  return graphDispositionLabels[value] ?? value
+}
+
 const pendingProposals = computed(() => (
   store.proposals.filter(({ status, actionable }) => (
     status === 'pending' && actionable
@@ -323,7 +334,7 @@ function suggestionManualHint(suggestion: TaxonomySuggestion): string {
 
 async function startSuggestions(): Promise<void> {
   const started = await store.startSuggestions(
-    pendingProposals.value.map(({ id }) => id),
+    pendingProposals.value.slice(0, 200).map(({ id }) => id),
   )
   if (started) scheduleSuggestionRefresh()
 }
@@ -392,6 +403,18 @@ function closeQuestionPreview(): void {
   if (returnTarget) void nextTick(() => returnTarget.focus())
 }
 
+async function confirmGraphRelease(): Promise<void> {
+  const release = store.graphRelease
+  if (!release || release.current_release_id === release.release_id) return
+  const confirmed = window.confirm(
+    `确认整体启用新版知识图谱吗？\n\n`
+    + `将一次启用 ${release.fine_term_count} 个规范词的映射、`
+    + `${release.node_count} 个节点资料和 ${release.relation_count} 条关系。`
+    + `已有历史记录不会被改写。`,
+  )
+  if (confirmed) await store.activateGraphRelease()
+}
+
 function onKeydown(event: KeyboardEvent): void {
   if (!props.open || event.key !== 'Escape') return
   if (previewState.value !== 'idle') closeQuestionPreview()
@@ -442,6 +465,12 @@ onBeforeUnmount(() => {
             <strong>{{ store.pendingCount }}</strong>
             <span>个词等待教师确认</span>
             <small>词表版本 {{ store.revision }}</small>
+            <small v-if="store.pendingCount < 30">
+              建议积累到 30—50 个候选或月底再集中请 AI 判断
+            </small>
+            <small v-else>
+              已达到集中治理建议数量；单批最多处理 200 个
+            </small>
             <small v-if="store.historicalUnavailableCount">
               另有 {{ store.historicalUnavailableCount }} 个历史候选暂无当前题目
             </small>
@@ -486,6 +515,67 @@ onBeforeUnmount(() => {
             </button>
           </div>
         </div>
+
+        <section
+          v-if="store.graphRelease"
+          class="taxonomy-review__graph-release"
+          aria-live="polite"
+        >
+          <div>
+            <p class="qb-eyebrow">KNOWLEDGE GRAPH 2.1</p>
+            <h3>294 词权威映射包</h3>
+            <p>
+              已处置 {{ store.graphRelease.fine_term_count }} 个规范知识词，
+              包含 {{ store.graphRelease.node_count }} 个节点资料、
+              {{ store.graphRelease.relation_count }} 条有依据的关系；
+              {{ store.graphRelease.high_impact_count }} 项属于集中确认范围。
+            </p>
+            <p>{{ store.graphReleaseMessage }}</p>
+            <ul v-if="store.graphRelease.issues.length">
+              <li v-for="issue in store.graphRelease.issues" :key="issue.code">
+                {{ issue.message }}
+              </li>
+            </ul>
+            <details
+              v-if="store.graphRelease.high_impact_items.length"
+              class="taxonomy-review__graph-details"
+            >
+              <summary>
+                查看 {{ store.graphRelease.high_impact_items.length }} 项集中确认清单
+              </summary>
+              <ul>
+                <li
+                  v-for="item in store.graphRelease.high_impact_items"
+                  :key="item.fine_term_id"
+                >
+                  <strong>{{ item.display_name }}</strong>：
+                  {{ graphDispositionLabel(item.disposition) }}
+                  <template v-if="item.target_names.length">
+                    → {{ item.target_names.join('、') }}
+                  </template>
+                </li>
+              </ul>
+            </details>
+          </div>
+          <span
+            v-if="store.graphRelease.current_release_id === store.graphRelease.release_id"
+            class="taxonomy-review__graph-status is-active"
+          >
+            已整体启用
+          </span>
+          <button
+            v-else
+            type="button"
+            class="qb-button is-primary"
+            :disabled="
+              !store.graphRelease.can_activate
+              || store.graphReleaseState === 'activating'
+            "
+            @click="confirmGraphRelease"
+          >
+            {{ store.graphReleaseState === 'activating' ? '正在安全启用…' : '核对并整体启用' }}
+          </button>
+        </section>
 
         <section
           v-if="store.suggestionRun || store.suggestionMessage"

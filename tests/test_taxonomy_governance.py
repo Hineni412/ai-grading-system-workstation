@@ -53,6 +53,7 @@ def governance(tmp_path: Path) -> TaxonomyGovernance:
     return TaxonomyGovernance(
         catalog_path=CATALOG_PATH,
         state_path=tmp_path / "taxonomy-state.json",
+        knowledge_graph_db_path=tmp_path / "not-created-question-bank.db",
     )
 
 
@@ -125,10 +126,13 @@ def test_catalog_and_prompt_expose_seven_controlled_dimensions(
         for item in contract["candidates"]["method"]
     )
     assert all(
-        set(item) == {"id", "name"}
+        {"id", "name"}.issubset(item)
         for values in contract["candidates"].values()
         for item in values
     )
+    assert len(contract["candidates"]["knowledge"]) == 294
+    assert contract["truncated"]["knowledge"] is False
+    assert contract["knowledge_graph_release_id"].startswith("kgr_")
     assert all(
         re.match(r"^[七八九]年级[上下]册 第[一二三四五六七八九十百0-9]+章(?:\s|$)", item.name)
         for item in response.dimensions.curriculum
@@ -242,7 +246,7 @@ def test_revision_two_state_remains_readable_with_revision_three_catalog(
     assert snapshot["base_catalog_revision"] == 3
 
 
-def test_per_question_candidates_share_revision_but_do_not_share_shortlist(
+def test_per_question_candidates_share_full_knowledge_but_keep_other_shortlists(
     governance: TaxonomyGovernance,
 ) -> None:
     contracts = governance.prompt_contracts(
@@ -263,8 +267,13 @@ def test_per_question_candidates_share_revision_but_do_not_share_shortlist(
     assert contracts[1]["taxonomy_revision"] == contracts[2]["taxonomy_revision"]
     assert contracts[1]["candidate_fingerprint"] != contracts[2]["candidate_fingerprint"]
     assert (
-        contracts[1]["allowed_term_ids"]["knowledge"]
-        != contracts[2]["allowed_term_ids"]["knowledge"]
+        set(contracts[1]["allowed_term_ids"]["knowledge"])
+        == set(contracts[2]["allowed_term_ids"]["knowledge"])
+    )
+    assert len(contracts[1]["allowed_term_ids"]["knowledge"]) == 294
+    assert (
+        contracts[1]["allowed_term_ids"]["special_type"]
+        != contracts[2]["allowed_term_ids"]["special_type"]
     )
     assert any(
         item["name"] == "新定义题"
