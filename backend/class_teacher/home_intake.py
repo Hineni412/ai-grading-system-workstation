@@ -34,7 +34,11 @@ _EMERGENCY = re.compile(
     r"正在(?:打架|斗殴|自伤|伤人)|持刀|要跳楼|试图自杀|已经自伤|"
     r"扬言.{0,8}(?:自杀|伤人)|失去意识|无法呼吸|严重出血|人身安全.{0,8}危险"
 )
-_AFFAIR = re.compile(r"打架|斗殴|推搡|肢体冲突|发生冲突|欺凌|受伤|处分|惩戒")
+_AFFAIR = re.compile(
+    r"打架|斗殴|推搡|肢体冲突|"
+    r"(?:发生|出现|产生)(?:了)?(?:冲突|矛盾|争执)|"
+    r"闹(?:了)?矛盾|欺凌|受伤|处分|惩戒"
+)
 _SUPPORT = re.compile(r"情绪|焦虑|抑郁|自伤|自杀|心理|健康|用药|家庭|家访|成绩|作业|课堂")
 _FENCED_JSON = re.compile(r"^```(?:json)?\s*(.*?)\s*```$", re.IGNORECASE | re.DOTALL)
 _HOME_SENSITIVE_OPERATION = "home.intake.sensitive"
@@ -673,12 +677,20 @@ class HomeIntake:
                 state="unsafe_output_suppressed",
                 error_category="unsafe_model_output",
             )
-        kind = decoded.get("kind")
-        if not isinstance(kind, str):
+        raw_kind = decoded.get("kind")
+        if raw_kind is not None and not isinstance(raw_kind, str):
             return HomeIntake._invalid_sensitive_result(
                 error_category="unsupported_result_kind",
             )
-        kind = kind.strip()
+        kind = raw_kind.strip() if isinstance(raw_kind, str) else ""
+        questions = HomeIntake._normalized_result_string_list(
+            decoded.get("questions", []),
+            maximum_items=3,
+        )
+        if questions is None:
+            return HomeIntake._invalid_sensitive_result(
+                error_category="invalid_questions",
+            )
         assumptions = HomeIntake._normalized_result_string_list(
             decoded.get("assumptions", [])
         )
@@ -686,13 +698,32 @@ class HomeIntake:
             return HomeIntake._invalid_sensitive_result(
                 error_category="invalid_assumptions",
             )
+        raw_nodes = decoded.get("nodes", [])
+        raw_edges = decoded.get("edges", [])
+        recommendation_payload_empty = all(
+            decoded.get(key) in (None, "", [])
+            for key in ("summary", "reasons", "text")
+        )
+        if (
+            not kind
+            and questions
+            and raw_nodes == []
+            and raw_edges == []
+            and recommendation_payload_empty
+        ):
+            kind = "follow_up"
         if kind == "follow_up":
-            questions = HomeIntake._normalized_result_string_list(
-                decoded.get("questions")
-            )
             if not questions:
                 return HomeIntake._invalid_sensitive_result(
                     error_category="follow_up_questions_missing",
+                )
+            if (
+                raw_nodes != []
+                or raw_edges != []
+                or not recommendation_payload_empty
+            ):
+                return HomeIntake._invalid_sensitive_result(
+                    error_category="mixed_follow_up_result",
                 )
             return {
                 "state": "needs_information",
@@ -702,6 +733,10 @@ class HomeIntake:
                 "error_category": None,
                 "teacher_confirmation_required": False,
             }
+        if questions:
+            return HomeIntake._invalid_sensitive_result(
+                error_category="questions_require_follow_up_kind",
+            )
         if kind == "plain_text":
             raw_text = decoded.get("text")
             if not isinstance(raw_text, str):
@@ -763,8 +798,12 @@ class HomeIntake:
         )
 
     @staticmethod
-    def _normalized_result_string_list(value: object) -> list[str] | None:
-        if not isinstance(value, list) or len(value) > 8:
+    def _normalized_result_string_list(
+        value: object,
+        *,
+        maximum_items: int = 8,
+    ) -> list[str] | None:
+        if not isinstance(value, list) or len(value) > maximum_items:
             return None
         normalized: list[str] = []
         for item in value:
@@ -829,10 +868,19 @@ class HomeIntake:
                 "plain_text",
             ],
             "rules": [
-                "信息不足时只返回 follow_up 和 questions，不得自行补全事实",
+                "kind 是必填字段且不得为空；信息不足时 kind 必须为 follow_up，只返回 questions，不得自行补全事实",
+                "只询问阻止形成安全建议的最少 1—3 项信息；每个问题必须点明缺少的是期望结果、参与角色、时间、范围、约束资源、已确认事实或即时安全状态中的哪一方面，并结合原文给出可选示例",
+                "不得只说‘请补充具体信息’，不得重复询问 task_text 中已有信息，也不得索要不必要的姓名、电话或地址",
                 "建议只供教师复核，不创建事务、学生记录或外发消息",
                 "不得诊断、认定欺凌、决定惩戒、自动发送或自动结案",
             ],
+            "follow_up_example": {
+                "kind": "follow_up",
+                "questions": [
+                    "请补充已经确认的现场事实和当前安全状态，例如是否仍在接触、是否有人受伤。"
+                ],
+                "assumptions": [],
+            },
         }
 
     def _destination(self) -> dict[str, object]:
