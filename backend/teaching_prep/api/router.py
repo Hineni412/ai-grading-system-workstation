@@ -62,7 +62,6 @@ from .schemas import (
     ExerciseSuggestionRunResponse,
     FreezeResourcePackRequest,
     GenerateLessonDraftRequest,
-    GenerateSemesterMappingRequest,
     LessonDraftListResponse,
     LessonDraftGenerationCancellationResponse,
     LessonDraftPreflightResponse,
@@ -108,10 +107,13 @@ from .schemas import (
     SemesterListResponse,
     SemesterMaterialListResponse,
     SemesterMaterialResponse,
+    SemesterMappingJobListResponse,
+    SemesterMappingJobResponse,
     SemesterMappingPreflightResponse,
     SemesterMappingProposalListResponse,
     SemesterMappingProposalResponse,
     SemesterMappingRequest,
+    StartSemesterMappingJobRequest,
     SemesterResponse,
     SemesterWorkspaceResponse,
     ReviewSemesterMappingRowRequest,
@@ -143,6 +145,8 @@ from .schemas import (
 _MAX_MATERIAL_UPLOAD_BYTES = 256 * 1024 * 1024
 _MATERIAL_PARSE_JOB_TYPE = "teaching_prep.material_parse"
 _MATERIAL_PARSE_SUBMIT_LOCK = threading.Lock()
+_SEMESTER_MAPPING_JOB_TYPE = "teaching_prep.semester_mapping"
+_SEMESTER_MAPPING_SUBMIT_LOCK = threading.Lock()
 
 
 def _material_parse_job_response(job: JobRecord) -> MaterialParseJobResponse:
@@ -211,6 +215,117 @@ def _latest_material_parse_jobs(manager: JobManager) -> tuple[JobRecord, ...]:
         for job in jobs:
             material_id = str(
                 job.payload.get("material_version_id") or ""
+            ).strip()
+            if len(material_id) == 32 and material_id not in latest:
+                latest[material_id] = job
+        offset += len(jobs)
+        if not jobs or offset >= total:
+            return tuple(latest.values())
+
+
+def _semester_mapping_job_response(
+    job: JobRecord,
+) -> SemesterMappingJobResponse:
+    payload_keys = (
+        "semester_id",
+        "material_record_id",
+        "operation_id",
+        "source_state_sha256",
+    )
+    result_keys = (
+        "semester_id",
+        "operation_id",
+        "source_state_sha256",
+        "proposal_id",
+        "recovered_existing",
+    )
+    public_error = None
+    if job.error:
+        if job.stage in {"queued", "checking", "snapshotting", "claiming_operation"}:
+            public_error = (
+                "目录建议任务在模型请求前停止，未自动发出新的模型请求。"
+            )
+        elif (
+            "restart" in job.error.lower()
+            or "interrupted" in job.error.lower()
+            or "result is unknown" in job.error.lower()
+        ):
+            public_error = (
+                "应用重启时模型结果可能未知，系统已阻止自动重发。"
+            )
+        else:
+            public_error = "目录建议没有完成，系统未自动重试模型请求。"
+    return SemesterMappingJobResponse(
+        id=job.id,
+        job_type=job.job_type,
+        payload=sanitize_public_mapping(
+            {key: job.payload[key] for key in payload_keys if key in job.payload}
+        ),
+        result=sanitize_public_mapping(
+            {key: job.result[key] for key in result_keys if key in job.result}
+        ),
+        status=job.status,
+        progress=job.progress,
+        stage=job.stage,
+        detail=sanitize_public_diagnostic_text(job.detail) or "",
+        error=public_error,
+        cancel_requested=job.cancel_requested,
+        created_at=job.created_at,
+        started_at=job.started_at,
+        updated_at=job.updated_at,
+        finished_at=job.finished_at,
+    )
+
+
+def _matching_semester_mapping_job(
+    manager: JobManager,
+    *,
+    semester_id: str,
+    material_record_id: str,
+    source_state_sha256: str,
+) -> JobRecord | None:
+    offset = 0
+    while True:
+        jobs, total = manager.list(
+            job_types=(_SEMESTER_MAPPING_JOB_TYPE,),
+            statuses=("queued", "running", "paused", "succeeded"),
+            limit=100,
+            offset=offset,
+        )
+        matching = next(
+            (
+                job
+                for job in jobs
+                if job.payload.get("semester_id") == semester_id
+                and job.payload.get("material_record_id") == material_record_id
+                and job.payload.get("source_state_sha256") == source_state_sha256
+            ),
+            None,
+        )
+        if matching is not None:
+            return matching
+        offset += len(jobs)
+        if not jobs or offset >= total:
+            return None
+
+
+def _latest_semester_mapping_jobs(
+    manager: JobManager,
+    semester_id: str,
+) -> tuple[JobRecord, ...]:
+    latest: dict[str, JobRecord] = {}
+    offset = 0
+    while True:
+        jobs, total = manager.list(
+            job_types=(_SEMESTER_MAPPING_JOB_TYPE,),
+            limit=100,
+            offset=offset,
+        )
+        for job in jobs:
+            if job.payload.get("semester_id") != semester_id:
+                continue
+            material_id = str(
+                job.payload.get("material_record_id") or ""
             ).strip()
             if len(material_id) == 32 and material_id not in latest:
                 latest[material_id] = job
@@ -608,27 +723,68 @@ def create_router() -> APIRouter:
         return SemesterMappingPreflightResponse.model_validate(item)
 
     @router.post(
-        "/semesters/{semester_id}/mapping-proposals",
-        response_model=SemesterMappingProposalResponse,
-        status_code=status.HTTP_201_CREATED,
+        "/semesters/{semester_id}/mapping-proposal-jobs",
+        response_model=SemesterMappingJobResponse,
+        status_code=status.HTTP_202_ACCEPTED,
     )
-    def generate_semester_mapping_proposal(
+    def start_semester_mapping_job(
         semester_id: str,
-        payload: GenerateSemesterMappingRequest,
-        response: Response,
+        payload: StartSemesterMappingJobRequest,
         service: TeachingPrepService = Depends(get_teaching_prep_service),
-    ) -> SemesterMappingProposalResponse:
+        manager: JobManager = Depends(get_teaching_prep_job_manager),
+    ) -> SemesterMappingJobResponse:
         try:
-            item, created = service.generate_semester_mapping_proposal(
+            preflight = service.semester_mapping_preflight(
                 semester_id,
-                operation_id=payload.operation_id,
-                material_record_ids=payload.material_record_ids,
+                material_record_ids=[payload.material_record_id],
             )
+            source_digest = str(preflight["source_state_sha256"])
+            if source_digest != payload.expected_source_state_sha256:
+                raise TeachingPrepConflictError(
+                    "semester lessons or materials changed; check the send scope again"
+                )
+            if not bool(preflight["model_available"]):
+                raise TeachingPrepValidationError(
+                    "semester mapping model is unavailable"
+                )
+            with _SEMESTER_MAPPING_SUBMIT_LOCK:
+                job = _matching_semester_mapping_job(
+                    manager,
+                    semester_id=semester_id,
+                    material_record_id=payload.material_record_id,
+                    source_state_sha256=source_digest,
+                )
+                if job is None:
+                    job = manager.submit(
+                        _SEMESTER_MAPPING_JOB_TYPE,
+                        {
+                            "semester_id": semester_id,
+                            "material_record_id": payload.material_record_id,
+                            "operation_id": payload.operation_id,
+                            "source_state_sha256": source_digest,
+                        },
+                    )
         except Exception as exc:
             raise _api_error(exc) from exc
-        if not created:
-            response.status_code = status.HTTP_200_OK
-        return SemesterMappingProposalResponse.from_domain(item)
+        return _semester_mapping_job_response(job)
+
+    @router.get(
+        "/semesters/{semester_id}/mapping-proposal-jobs",
+        response_model=SemesterMappingJobListResponse,
+    )
+    def list_semester_mapping_jobs(
+        semester_id: str,
+        service: TeachingPrepService = Depends(get_teaching_prep_service),
+        manager: JobManager = Depends(get_teaching_prep_job_manager),
+    ) -> SemesterMappingJobListResponse:
+        try:
+            service.list_semester_materials(semester_id)
+            jobs = _latest_semester_mapping_jobs(manager, semester_id)
+        except Exception as exc:
+            raise _api_error(exc) from exc
+        return SemesterMappingJobListResponse(
+            items=[_semester_mapping_job_response(job) for job in jobs]
+        )
 
     @router.get(
         "/semesters/{semester_id}/mapping-proposals",

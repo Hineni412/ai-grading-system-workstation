@@ -43,6 +43,17 @@ _SOURCE_CONFIG_PUBLIC_DETAILS = {
     "AI 统一配分": "评分依据批次已完成，正在统一配分。",
     "AI 统一配分失败": "模型已返回或调用已结束，但统一配分校验未通过。",
 }
+_SEMESTER_MAPPING_PUBLIC_DETAILS = {
+    "queued": "目录建议任务已排队。",
+    "checking": "正在核对学期、资料和模型配置。",
+    "snapshotting": "正在固定本次发送范围。",
+    "claiming_operation": "正在取得防重复调用权。",
+    "calling_model": "已发送唯一一次模型请求，正在等待返回。",
+    "validating_response": "正在校验模型返回的目录和页码。",
+    "persisting_proposal": "正在保存待确认建议。",
+    "recovered": "已恢复此前保存的待确认建议。",
+    "completed": "待确认建议已保存。",
+}
 _CONFIG_TRUNCATION_PUBLIC_ERRORS = {
     "模型因输出长度上限停止": (
         "模型因输出长度上限停止，当前批次结果不完整；未发布配置，也未自动重试。"
@@ -100,6 +111,8 @@ def public_job_detail(job: JobRecord) -> str:
                 return "评分依据生成流程已结束，但本地校验尚未全部通过，未发布正式版本。"
             return "Grading configuration generated."
         return _SOURCE_CONFIG_PUBLIC_DETAILS.get(job.stage, "")
+    if job.job_type == "teaching_prep.semester_mapping":
+        return _SEMESTER_MAPPING_PUBLIC_DETAILS.get(job.stage, "")
     return job.detail
 
 
@@ -280,6 +293,17 @@ def public_job_result(job: JobRecord) -> dict[str, Any]:
             result["filename"] = filename
         result["download_url"] = f"/api/jobs/{job.id}/download"
         return result
+    if job.job_type == "teaching_prep.semester_mapping":
+        allowed = (
+            "semester_id",
+            "operation_id",
+            "source_state_sha256",
+            "proposal_id",
+            "recovered_existing",
+        )
+        return sanitize_public_mapping(
+            {key: job.result[key] for key in allowed if key in job.result}
+        )
     return sanitize_public_mapping(job.result)
 
 
@@ -290,6 +314,13 @@ def public_job_error(job: JobRecord) -> str | None:
         for prefix, public_error in _CONFIG_TRUNCATION_PUBLIC_ERRORS.items():
             if job.error.startswith(prefix):
                 return public_error
+    if job.job_type == "teaching_prep.semester_mapping":
+        if job.stage in {"queued", "checking", "snapshotting", "claiming_operation"}:
+            return "目录建议任务在模型请求前停止，未自动发出新的模型请求。"
+        lowered = job.error.lower()
+        if "restart" in lowered or "interrupted" in lowered or "result is unknown" in lowered:
+            return "应用重启时模型结果可能未知，系统已阻止自动重发。"
+        return "目录建议没有完成，系统未自动重试模型请求。"
     if job.status == "failed":
         return "Job failed; see local logs for details."
     return "Job ended with an internal error; see local logs for details."
@@ -380,6 +411,16 @@ def public_job_payload(job: JobRecord) -> dict[str, Any]:
         return sanitize_public_mapping(
             {key: job.payload[key] for key in allowed if key in job.payload}
         )
+    if job.job_type == "teaching_prep.semester_mapping":
+        allowed = (
+            "semester_id",
+            "material_record_id",
+            "operation_id",
+            "source_state_sha256",
+        )
+        return sanitize_public_mapping(
+            {key: job.payload[key] for key in allowed if key in job.payload}
+        )
     return sanitize_public_mapping(job.payload)
 
 
@@ -457,6 +498,7 @@ def submit_job(
         "ops_migration_prepare",
         "ops_transfer_import_prepare",
         "ops_transfer_export",
+        "teaching_prep.semester_mapping",
     }:
         raise ApiError(
             422,
