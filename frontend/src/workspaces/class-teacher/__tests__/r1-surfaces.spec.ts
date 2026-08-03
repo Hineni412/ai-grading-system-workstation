@@ -13,11 +13,11 @@ vi.mock('echarts/core', () => ({
   }),
 }))
 
+import { homeIntakeApi } from '../api/homeIntake'
 import { studentR1Api } from '../api/r1'
 import { supportApi } from '../api/support'
 import { vaultApi } from '../api/vault'
 import type { WorkNode, WorkNodeDetail, WorkSnapshot } from '../api/work'
-import { workApi } from '../api/work'
 import TodaySurface from '../ordinary/TodaySurface.vue'
 import QuickWorkCapture from '../ordinary/QuickWorkCapture.vue'
 import AcademicAnalysisPanel from '../students/AcademicAnalysisPanel.vue'
@@ -254,37 +254,44 @@ describe('B UI R1 surfaces', () => {
   })
 
   it('quick capture sends ordinary work directly and explains an invalid AI result', async () => {
-    vi.spyOn(workApi, 'previewPlan').mockResolvedValue({ preview_id:'p1', source_text:'普通班务', final_due_date:'2026-08-03', date_semantics:'date-only', exact_payload:{text:'普通班务'}, fingerprint:'f', expires_at:'2026-08-01', model_provider:'fake', model_endpoint:null, model_name:'fake', destination_fingerprint:'d', model_enabled:true, max_physical_requests:1, physical_request_count:0 })
-    const invoke = vi.spyOn(workApi, 'invokePlan').mockResolvedValue({
-      preview_id:'p1', operation_id:'op1', state:'invalid_result', physical_request_count:1,
-      error_category:'class_teacher_work_plan_invalid_result', questions:[], assumptions:[],
-      plan:null, plan_fingerprint:null, teacher_confirmation_required:false, local_context:{},
+    vi.spyOn(homeIntakeApi, 'preview').mockResolvedValue({
+      preview_id:'p1', route:'ordinary', recommended_route:'ordinary_plan',
+      date_interpretation:{status:'resolved',source:'relative_day',resolved_date:'2026-08-03',selected_date:null,candidates:['2026-08-03'],pending_reason:null}, emergency_guidance:null,
+      round_number:1, prior_operations:[], round_physical_request_count:0,cumulative_physical_request_count:0,physical_request_count:0,
+      dispatch_ready:true,local_only:false,blocked_categories:[],removed_categories:[],student_aliases:[],exact_payload:{text:'普通班务'},fingerprint:'f',
+      expires_at:null,model_provider:'fake',model_endpoint:null,model_name:'fake',destination_fingerprint:'d',model_enabled:true,max_physical_requests:null,estimated_cost:null,source_text:'普通班务',final_due_date:'2026-08-03',date_semantics:'date-only',
+    })
+    const dispatch = vi.spyOn(homeIntakeApi, 'dispatch').mockResolvedValue({
+      operation_id:'op1',route:'ordinary',state:'invalid_result',result_kind:null,result:null,follow_up_questions:[],can_follow_up:false,
+      assistant_message:null,validation_issue:'AI 返回的内容不是有效 JSON',error_category:'class_teacher_work_plan_invalid_result',round_number:1,round_physical_request_count:1,cumulative_physical_request_count:1,physical_request_count:1,
+      teacher_confirmation_required:false,result_fingerprint:null,local_context:{},
     })
     const host = await mount(QuickWorkCapture, { module:{ load:vi.fn() } })
-    const input = host.querySelector<HTMLInputElement>('input[placeholder]')!
+    const input = host.querySelector<HTMLTextAreaElement>('#home-intake-text')!
     input.value='普通班务'; input.dispatchEvent(new Event('input',{bubbles:true}))
-    clickByText(host, '生成 AI 草案'); await new Promise((resolve)=>setTimeout(resolve,0)); await nextTick()
-    expect(invoke).toHaveBeenCalledOnce()
-    expect(host.textContent).not.toContain('发送前逐字核对')
+    clickByText(host, '交给 AI 整理'); await new Promise((resolve)=>setTimeout(resolve,0)); await nextTick()
+    expect(dispatch).toHaveBeenCalledOnce()
+    expect(host.textContent).not.toContain('敏感内容匿名逐字预览')
     expect(host.textContent).toContain('AI 返回内容未通过校验')
-    expect(host.textContent).toContain('已请求 1 次')
-    expect(host.textContent).toContain('原因：class_teacher_work_plan_invalid_result')
+    expect(host.textContent).toContain('本轮物理请求1 次')
+    expect(host.textContent).toContain('原因：AI 返回的内容不是有效 JSON')
+    expect(host.textContent).not.toContain('class_teacher_work_plan_invalid_result')
   })
 
   it('shows a complete zero-request receipt when the model destination changed', async () => {
-    vi.spyOn(workApi, 'previewPlan').mockResolvedValue({ preview_id:'p1', source_text:'普通班务', final_due_date:'2026-08-03', date_semantics:'date-only', exact_payload:{text:'普通班务'}, fingerprint:'f', expires_at:'2026-08-01', model_provider:'fake', model_endpoint:null, model_name:'fake', destination_fingerprint:'d', model_enabled:true, max_physical_requests:null, physical_request_count:0 })
-    vi.spyOn(workApi, 'invokePlan').mockResolvedValue({
-      preview_id:'p1', operation_id:'op1', state:'destination_changed', physical_request_count:0,
-      error_category:'destination_changed', questions:[], assumptions:[], plan:null,
-      plan_fingerprint:null, teacher_confirmation_required:false, local_context:{},
+    vi.spyOn(homeIntakeApi, 'preview').mockResolvedValue({
+      preview_id:'p1',route:'ordinary',recommended_route:'ordinary_plan',date_interpretation:{status:'pending',source:'not_provided',resolved_date:null,selected_date:null,candidates:[],pending_reason:null},emergency_guidance:null,
+      round_number:1,prior_operations:[],round_physical_request_count:0,cumulative_physical_request_count:0,physical_request_count:0,dispatch_ready:true,local_only:false,blocked_categories:[],removed_categories:[],student_aliases:[],exact_payload:{text:'普通班务'},fingerprint:'f',expires_at:null,model_provider:'fake',model_endpoint:null,model_name:'fake',destination_fingerprint:'d',model_enabled:true,max_physical_requests:null,estimated_cost:null,source_text:'普通班务',final_due_date:null,date_semantics:'date-only',
     })
+    vi.spyOn(homeIntakeApi, 'dispatch').mockResolvedValue({operation_id:'op1',route:'ordinary',state:'destination_changed',result_kind:null,result:null,follow_up_questions:[],can_follow_up:false,assistant_message:null,validation_issue:null,error_category:'destination_changed',round_number:1,round_physical_request_count:0,cumulative_physical_request_count:0,physical_request_count:0,teacher_confirmation_required:false,result_fingerprint:null,local_context:{}})
     const host = await mount(QuickWorkCapture, { module:{ load:vi.fn() } })
-    const input = host.querySelector<HTMLInputElement>('input[placeholder]')!
+    const input = host.querySelector<HTMLTextAreaElement>('#home-intake-text')!
     input.value='普通班务'; input.dispatchEvent(new Event('input',{bubbles:true}))
-    clickByText(host, '生成 AI 草案'); await new Promise((resolve)=>setTimeout(resolve,0)); await nextTick()
+    clickByText(host, '交给 AI 整理'); await new Promise((resolve)=>setTimeout(resolve,0)); await nextTick()
 
-    expect(host.textContent).toContain('原因：destination_changed')
-    expect(host.textContent).toContain('已请求 0 次')
+    expect(host.textContent).toContain('发送前模型目的地发生变化')
+    expect(host.textContent).not.toContain('destination_changed')
+    expect(host.textContent).toContain('本轮物理请求0 次')
   })
 
   it('saving a support record locally makes zero AI requests', async () => {

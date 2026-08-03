@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
 import { ApiError } from '../../../api/errors'
+import type { HomeIntakeHandoff } from '../api/homeIntake'
 import { vaultApi } from '../api/vault'
 import { projectionR1Api } from '../api/r1'
 import AffairsSurface from '../affairs/AffairsSurface.vue'
@@ -33,6 +34,8 @@ interface ProtectedTarget {
   subject_id?: string
 }
 const protectedTarget = ref<ProtectedTarget | null>(null)
+const homeIntakeHandoff = ref<HomeIntakeHandoff | null>(null)
+let preserveNextHandoffNavigation = false
 const loading = ref(true)
 const busy = ref(false)
 const message = ref('')
@@ -219,9 +222,47 @@ async function resolvePendingProjection(): Promise<void> {
   })
 }
 
-async function selectStudentPanel(panel: 'directory' | 'support' | 'academic' | 'security'): Promise<void> {
+function clearHomeIntakeHandoff(): void {
+  homeIntakeHandoff.value = null
+  preserveNextHandoffNavigation = false
+}
+
+async function receiveHomeIntakeHandoff(value: HomeIntakeHandoff): Promise<void> {
+  protectedTarget.value = null
+  pendingProjectionId.value = ''
+  homeIntakeHandoff.value = value
+  await navigate({
+    surface: value.destination === 'affair' ? 'affairs' : 'students',
+    panel: value.destination === 'student_support' ? 'directory' : undefined,
+  })
+}
+
+async function selectStudentPanel(
+  panel: 'directory' | 'support' | 'academic' | 'security',
+  preserveHandoff = false,
+): Promise<void> {
+  if (!preserveHandoff) clearHomeIntakeHandoff()
+  else preserveNextHandoffNavigation = true
   await navigate({ surface: 'students', panel })
 }
+
+watch(
+  () => [routeState.value.surface, routeState.value.panel] as const,
+  ([surface, panel], previous) => {
+    if (!homeIntakeHandoff.value) return
+    const expected = homeIntakeHandoff.value.destination === 'affair' ? 'affairs' : 'students'
+    if (surface !== expected) {
+      clearHomeIntakeHandoff()
+      return
+    }
+    if (homeIntakeHandoff.value.destination !== 'student_support' || panel === previous?.[1]) return
+    if (preserveNextHandoffNavigation) {
+      preserveNextHandoffNavigation = false
+      return
+    }
+    clearHomeIntakeHandoff()
+  },
+)
 
 async function recoverVault(): Promise<void> {
   const replacementValid = usesPin.value
@@ -283,6 +324,7 @@ async function upgradeLegacyPin(): Promise<void> {
 }
 
 async function lockVault(reason = '敏感保险箱已锁定，普通工作区仍可使用。'): Promise<void> {
+  clearHomeIntakeHandoff()
   recoveryKey.value = ''
   clearSensitiveInputs()
   clearNotices()
@@ -293,6 +335,7 @@ async function lockVault(reason = '敏感保险箱已锁定，普通工作区仍
 }
 
 async function selectSurface(surface: ClassTeacherSurface): Promise<void> {
+  clearHomeIntakeHandoff()
   if (vaultStatus.value?.protection_mode === 'plaintext_debug_v1') {
     await navigate({ surface })
     return
@@ -319,6 +362,7 @@ function onActivity(): void {
 }
 
 function onPageHide(): void {
+  clearHomeIntakeHandoff()
   if (vaultStatus.value?.protection_mode === 'plaintext_debug_v1') return
   const token = vaultSession.clearImmediately()
   recoveryKey.value = ''
@@ -363,7 +407,9 @@ onBeforeUnmount(() => {
     <TodaySurface
       v-if="routeState.surface === 'today'"
       :module="ordinaryWork"
+      :token="sessionToken || undefined"
       @open-restricted="openRestricted"
+      @handoff="receiveHomeIntakeHandoff"
     />
     <CalendarSurface
       v-else-if="routeState.surface === 'calendar'"
@@ -389,6 +435,9 @@ onBeforeUnmount(() => {
         v-if="routeState.surface === 'affairs'"
         :token="sessionToken"
         :target-id="protectedTarget?.target_kind === 'affair' ? protectedTarget.target_id : null"
+        :handoff="homeIntakeHandoff?.destination === 'affair' ? homeIntakeHandoff : null"
+        @handoff-persisted="clearHomeIntakeHandoff"
+        @handoff-discarded="clearHomeIntakeHandoff"
       />
       <StudentSurface
         v-else
@@ -396,7 +445,10 @@ onBeforeUnmount(() => {
         :panel="routeState.panel"
         :status="vaultStatus"
         :subject-id="protectedTarget?.subject_id ?? null"
+        :handoff="homeIntakeHandoff?.destination === 'student_support' ? homeIntakeHandoff : null"
         @navigate="selectStudentPanel"
+        @handoff-persisted="clearHomeIntakeHandoff"
+        @handoff-discarded="clearHomeIntakeHandoff"
       />
     </template>
 
@@ -557,6 +609,9 @@ onBeforeUnmount(() => {
         v-if="routeState.surface === 'affairs'"
         :token="sessionToken"
         :target-id="protectedTarget?.target_kind === 'affair' ? protectedTarget.target_id : null"
+        :handoff="homeIntakeHandoff?.destination === 'affair' ? homeIntakeHandoff : null"
+        @handoff-persisted="clearHomeIntakeHandoff"
+        @handoff-discarded="clearHomeIntakeHandoff"
       />
       <StudentSurface
         v-else
@@ -564,7 +619,10 @@ onBeforeUnmount(() => {
         :panel="routeState.panel"
         :status="vaultStatus"
         :subject-id="protectedTarget?.subject_id ?? null"
+        :handoff="homeIntakeHandoff?.destination === 'student_support' ? homeIntakeHandoff : null"
         @navigate="selectStudentPanel"
+        @handoff-persisted="clearHomeIntakeHandoff"
+        @handoff-discarded="clearHomeIntakeHandoff"
         @locked="lockVault"
       />
     </template>
