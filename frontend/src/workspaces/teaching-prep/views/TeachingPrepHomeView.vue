@@ -2,7 +2,6 @@
 import { computed, onMounted, provide } from 'vue'
 
 import TeachingPrepLessonContext from '../components/TeachingPrepLessonContext.vue'
-import TeachingPrepStageRuler from '../components/TeachingPrepStageRuler.vue'
 import { teachingPrepWorkbenchKey } from '../workbench/context'
 import { useTeachingPrepWorkbench } from '../workbench/state'
 import LessonTreeWorkspace from '../workspaces/LessonTreeWorkspace.vue'
@@ -22,10 +21,10 @@ const workspaceComponent = computed(() => ({
 }[workbench.workspace.value]))
 
 const workspaceTabs = [
-  { id: 'lesson-tree', label: '个人课时树' },
+  { id: 'lesson-tree', label: '课时' },
   { id: 'materials', label: '资料库' },
-  { id: 'lesson-prep', label: '本节备课' },
-  { id: 'versions', label: '课件版本' },
+  { id: 'lesson-prep', label: '备课' },
+  { id: 'versions', label: '课件' },
 ] as const
 
 onMounted(() => workbench.load())
@@ -54,7 +53,6 @@ onMounted(() => workbench.load())
     </header>
 
     <TeachingPrepLessonContext :compact="workbench.workspace.value === 'versions'" />
-    <TeachingPrepStageRuler />
 
     <div v-if="workbench.workbenchError.value" class="tp-global-notice" role="alert">
       <strong>当前状态未完全载入</strong>

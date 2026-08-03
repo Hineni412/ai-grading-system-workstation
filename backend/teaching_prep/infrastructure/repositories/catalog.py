@@ -499,6 +499,7 @@ class TeachingCatalogRepository:
         search: str | None = None,
         material_type: str | None = None,
         availability: str | None = None,
+        include_archived: bool = False,
     ) -> tuple[MaterialVersion, ...]:
         clauses: list[str] = []
         parameters: list[object] = []
@@ -515,6 +516,8 @@ class TeachingCatalogRepository:
         if availability:
             clauses.append("location.availability = ?")
             parameters.append(availability)
+        if not include_archived:
+            clauses.append("source.archived_at IS NULL")
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         with self._database.connect() as connection:
             rows = connection.execute(
@@ -523,7 +526,20 @@ class TeachingCatalogRepository:
                     version.*,
                     source.display_name,
                     source.material_type,
-                    location.availability
+                    source.revision AS source_revision,
+                    source.archived_at AS source_archived_at,
+                    location.availability,
+                    (SELECT COUNT(*) FROM material_units AS unit
+                     WHERE unit.material_version_id = version.id)
+                        AS preview_completed_count,
+                    (SELECT COUNT(*) FROM material_units AS unit
+                     WHERE unit.material_version_id = version.id
+                       AND json_extract(unit.object_summary_json, '$.ocr_status') = 'completed')
+                        AS ocr_completed_count,
+                    (SELECT COUNT(*) FROM material_units AS unit
+                     WHERE unit.material_version_id = version.id
+                       AND json_extract(unit.object_summary_json, '$.ocr_required') = 1)
+                        AS ocr_total_count
                 FROM material_versions AS version
                 JOIN material_sources AS source
                   ON source.id = version.source_id
@@ -535,6 +551,61 @@ class TeachingCatalogRepository:
                 tuple(parameters),
             ).fetchall()
         return tuple(_material_version(row) for row in rows)
+
+    def update_material_source(
+        self,
+        source_id: str,
+        *,
+        expected_revision: int,
+        display_name: str | None,
+        archived: bool | None,
+    ) -> MaterialVersion:
+        with self._database.connect(immediate=True) as connection:
+            source = connection.execute(
+                "SELECT * FROM material_sources WHERE id = ?",
+                (source_id,),
+            ).fetchone()
+            if source is None:
+                raise TeachingPrepNotFoundError("material source was not found")
+            if int(source["revision"]) != expected_revision:
+                raise TeachingPrepConflictError("material source revision changed")
+            if archived is True:
+                active = connection.execute(
+                    """
+                    SELECT 1 FROM semester_material_records
+                    WHERE material_source_id = ? AND is_active = 1
+                    """,
+                    (source_id,),
+                ).fetchone()
+                if active is not None:
+                    raise TeachingPrepConflictError(
+                        "remove the material from its active semester before archiving"
+                    )
+            new_name = display_name if display_name is not None else str(source["display_name"])
+            archived_at = source["archived_at"]
+            if archived is True:
+                archived_at = connection.execute(
+                    "SELECT strftime('%Y-%m-%dT%H:%M:%fZ', 'now')"
+                ).fetchone()[0]
+            elif archived is False:
+                archived_at = None
+            connection.execute(
+                """
+                UPDATE material_sources
+                SET display_name = ?, archived_at = ?, revision = revision + 1,
+                    updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                WHERE id = ? AND revision = ?
+                """,
+                (new_name, archived_at, source_id, expected_revision),
+            )
+            row = self._material_query(
+                connection,
+                "version.id = (SELECT id FROM material_versions WHERE source_id = ? ORDER BY created_at DESC, id DESC LIMIT 1)",
+                (source_id,),
+            )
+        if row is None:
+            raise TeachingPrepNotFoundError("material version was not found")
+        return _material_version(row)
 
     def get_material_version(self, version_id: str) -> MaterialVersion:
         with self._database.connect() as connection:
@@ -700,7 +771,20 @@ class TeachingCatalogRepository:
                 version.*,
                 source.display_name,
                 source.material_type,
-                location.availability
+                source.revision AS source_revision,
+                source.archived_at AS source_archived_at,
+                location.availability,
+                (SELECT COUNT(*) FROM material_units AS unit
+                 WHERE unit.material_version_id = version.id)
+                    AS preview_completed_count,
+                (SELECT COUNT(*) FROM material_units AS unit
+                 WHERE unit.material_version_id = version.id
+                   AND json_extract(unit.object_summary_json, '$.ocr_status') = 'completed')
+                    AS ocr_completed_count,
+                (SELECT COUNT(*) FROM material_units AS unit
+                 WHERE unit.material_version_id = version.id
+                   AND json_extract(unit.object_summary_json, '$.ocr_required') = 1)
+                    AS ocr_total_count
             FROM material_versions AS version
             JOIN material_sources AS source
               ON source.id = version.source_id
@@ -792,8 +876,22 @@ def _material_version(row: sqlite3.Row) -> MaterialVersion:
             if row["unit_count"] is not None
             else None
         ),
+        parse_expected_unit_count=(
+            int(row["parse_expected_unit_count"])
+            if row["parse_expected_unit_count"] is not None
+            else None
+        ),
+        preview_completed_count=int(row["preview_completed_count"]),
+        ocr_completed_count=int(row["ocr_completed_count"]),
+        ocr_total_count=int(row["ocr_total_count"]),
         inspection_status=str(row["inspection_status"]),
         availability=str(row["availability"]),
+        source_revision=int(row["source_revision"]),
+        source_archived_at=(
+            str(row["source_archived_at"])
+            if row["source_archived_at"] is not None
+            else None
+        ),
         created_at=str(row["created_at"]),
     )
 

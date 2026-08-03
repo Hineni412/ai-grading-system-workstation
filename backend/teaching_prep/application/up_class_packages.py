@@ -44,21 +44,32 @@ def build_up_class_package(
     copied_pptx = staging_dir / "lesson-slides.pptx"
     shutil.copyfile(pptx_path, copied_pptx)
     selected = _selected_exercises(draft, pack)
-    _exercise_pdf(
-        staging_dir / "class-exercise.pdf",
-        selected,
-        role="question_regions",
-        title="课堂练习（学生用）",
-        resolve_region=resolve_region,
-    )
-    _exercise_pdf(
-        staging_dir / "teacher-answer.pdf",
-        selected,
-        role="answer_regions",
-        title="课堂练习答案（教师用）",
-        resolve_region=resolve_region,
-    )
+    answered = [
+        item for item in selected
+        if item.get("formal_answer_usable")
+        and list(item.get("answer_regions") or [])
+    ]
+    package_files = ["lesson-slides.pptx"]
+    if selected:
+        _exercise_pdf(
+            staging_dir / "class-exercise.pdf",
+            selected,
+            role="question_regions",
+            title="课堂练习（学生用）",
+            resolve_region=resolve_region,
+        )
+        package_files.append("class-exercise.pdf")
+    if answered:
+        _exercise_pdf(
+            staging_dir / "teacher-answer.pdf",
+            answered,
+            role="answer_regions",
+            title="课堂练习答案（教师用）",
+            resolve_region=resolve_region,
+        )
+        package_files.append("teacher-answer.pdf")
     _flow_pdf(staging_dir / "lesson-flow.pdf", draft)
+    package_files.extend(("lesson-flow.pdf", "sources.json", "preflight.json"))
     dependency_report = inspect_pptx_dependencies(copied_pptx)
     sources = {
         "schema_version": 1,
@@ -103,10 +114,11 @@ def build_up_class_package(
     preflight = {
         "schema_version": 1,
         "complete": True,
-        "required_files": list(PACKAGE_FILES),
+        "required_files": [*package_files, "manifest.json"],
         "pptx_verification": pptx_version.verification_report,
         "selected_exercise_count": len(selected),
-        "all_answers_available_and_frozen": True,
+        "all_answers_available_and_frozen": len(answered) == len(selected),
+        "answer_output_optional": True,
         "external_dependencies": dependency_report,
         "offline_ready": dependency_report["external_relationship_count"] == 0,
         "limitations": [
@@ -117,7 +129,7 @@ def build_up_class_package(
     _write_json(staging_dir / "preflight.json", preflight)
     file_records = [
         _file_record(staging_dir / name)
-        for name in PACKAGE_FILES
+        for name in package_files
         if name != "manifest.json"
     ]
     manifest = {
@@ -134,6 +146,7 @@ def build_up_class_package(
         },
     }
     _write_json(staging_dir / "manifest.json", manifest)
+    package_files.append("manifest.json")
     archive = staging_dir / "candidate.zip"
     with zipfile.ZipFile(
         archive,
@@ -141,7 +154,7 @@ def build_up_class_package(
         compression=zipfile.ZIP_DEFLATED,
         compresslevel=9,
     ) as bundle:
-        for name in PACKAGE_FILES:
+        for name in package_files:
             bundle.write(staging_dir / name, arcname=name)
     verify_package_archive(archive, manifest)
     return archive, manifest, _sha256(archive)
@@ -155,10 +168,6 @@ def verify_package_archive(
         raise TeachingPrepValidationError("up-class package archive is missing")
     with zipfile.ZipFile(archive, "r") as bundle:
         names = tuple(bundle.namelist())
-        if names != PACKAGE_FILES:
-            raise TeachingPrepValidationError(
-                "up-class package file list is incomplete or unexpected"
-            )
         manifest = json.loads(bundle.read("manifest.json").decode("utf-8"))
         if manifest != dict(expected_manifest):
             raise TeachingPrepValidationError(
@@ -168,6 +177,14 @@ def verify_package_archive(
         if not isinstance(records, list):
             raise TeachingPrepValidationError(
                 "up-class package manifest is invalid"
+            )
+        expected_names = tuple(
+            [str(item.get("name") or "") for item in records]
+            + ["manifest.json"]
+        )
+        if names != expected_names:
+            raise TeachingPrepValidationError(
+                "up-class package file list is incomplete or unexpected"
             )
         for raw in records:
             if not isinstance(raw, Mapping):
@@ -240,19 +257,11 @@ def _selected_exercises(
             raise TeachingPrepValidationError(
                 "selected exercise has no frozen printable source"
             )
-        if (
-            not item.get("formal_answer_usable")
-            or not list(item.get("question_regions") or [])
-            or not list(item.get("answer_regions") or [])
-        ):
+        if not list(item.get("question_regions") or []):
             raise TeachingPrepValidationError(
-                "selected exercise requires a teacher-verified printable answer"
+                "selected exercise requires a printable question region"
             )
         selected.append(item)
-    if not selected:
-        raise TeachingPrepValidationError(
-            "at least one printable exercise must be selected"
-        )
     if len(selected) > 3:
         raise TeachingPrepValidationError(
             "up-class package supports at most three class exercises"

@@ -399,6 +399,26 @@ describe('semester workflow idempotency', () => {
 })
 
 describe('teaching preparation selection consistency', () => {
+  it('opens saved partial pages without implicitly restarting parsing', async () => {
+    const incomplete: MaterialVersion = {
+      ...material('c'.repeat(32)),
+      unit_count: null,
+      inspection_status: 'uninspected',
+      parse_expected_unit_count: 3,
+      preview_completed_count: 1,
+    }
+    const partial = materialUnit('3'.repeat(32), incomplete.id)
+    vi.spyOn(teachingPrepCatalogApi, 'listMaterialUnits').mockResolvedValue([partial])
+    vi.spyOn(teachingPrepCatalogApi, 'listMaterials').mockResolvedValue([incomplete])
+    const start = vi.spyOn(teachingPrepCatalogApi, 'startMaterialParse')
+    const store = useTeachingPrepCatalogStore()
+
+    await store.openMaterial(incomplete)
+
+    expect(store.materialUnits).toEqual([partial])
+    expect(start).not.toHaveBeenCalled()
+  })
+
   it('restores and continues polling a persisted material parse job', async () => {
     vi.useFakeTimers()
     const materialItem = material('a'.repeat(32))
