@@ -73,6 +73,16 @@ def _client(
     service = TaxonomySuggestionService(
         state_path=tmp_path / "taxonomy-suggestions.json",
         governance=governance,
+        question_loader=lambda question_ids: [
+            {
+                "id": int(question_id),
+                "question_number": f"Q{question_id}",
+                "question_type": "解答题",
+                "question_text": "用于核对归并建议的当前题目。",
+                "answer_text": "当前题目的答案摘要。",
+            }
+            for question_id in question_ids
+        ],
     )
     manager = JobManager(
         JobStore(tmp_path / "jobs.db"),
@@ -87,9 +97,7 @@ def _client(
             total = max(1, int(progress["total"]))
             context.report(
                 (
-                    int(progress["completed"])
-                    + int(progress["failed"])
-                    + int(progress["cancelled"])
+                    int(progress["processed"])
                 )
                 / total,
                 "taxonomy_suggestion",

@@ -58,6 +58,10 @@ class TaxonomySuggestionInvalid(ValueError):
     """The requested proposal selection is invalid."""
 
 
+class TaxonomySuggestionModelResponseError(ValueError):
+    """The model replied, but its suggestion payload was unusable."""
+
+
 class TaxonomySuggestionService:
     """Persist resumable, teacher-review-only taxonomy suggestions."""
 
@@ -188,6 +192,60 @@ class TaxonomySuggestionService:
         with _STATE_LOCK:
             state = self._read_state_unlocked()
             return self._public_run(self._require_run(state, run_id))
+
+    def contextualize_proposal_page(
+        self,
+        page: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """Derive current question refs without rewriting historical evidence."""
+
+        result = copy.deepcopy(dict(page))
+        items = [
+            item
+            for item in result.get("items", [])
+            if isinstance(item, dict)
+        ]
+        all_refs = _positive_ids(
+            question_id
+            for item in items
+            for question_id in item.get("question_refs", [])
+        )
+        active_ids = set(all_refs)
+        if all_refs and self.question_loader is not None:
+            try:
+                loaded = self.question_loader(all_refs)
+            except Exception:
+                loaded = []
+            else:
+                active_ids = {
+                    int(raw.get("id"))
+                    for raw in loaded
+                    if isinstance(raw, Mapping)
+                    and str(raw.get("id") or "").isdigit()
+                }
+        actionable = 0
+        historical_only = 0
+        for item in items:
+            historical_refs = _positive_ids(item.get("question_refs", []))
+            active_refs = [
+                question_id
+                for question_id in historical_refs
+                if question_id in active_ids
+            ]
+            item["active_question_refs"] = active_refs
+            item["unavailable_question_ref_count"] = max(
+                0, len(historical_refs) - len(active_refs)
+            )
+            item["actionable"] = bool(active_refs)
+            if active_refs:
+                actionable += 1
+            else:
+                historical_only += 1
+        counts = dict(result.get("counts") or {})
+        counts["actionable"] = actionable
+        counts["historical_unavailable"] = historical_only
+        result["counts"] = counts
+        return result
 
     def cancel_run(self, run_id: str) -> dict[str, Any]:
         with _STATE_LOCK:
@@ -334,17 +392,57 @@ class TaxonomySuggestionService:
                 batch = self._claim_batch(normalized_run_id, size)
                 if not batch:
                     break
-                payload = [self._gateway_item(item) for item in batch]
+                prepared = [
+                    (item, self._gateway_item(item)) for item in batch
+                ]
+                without_context = [
+                    item["proposal_id"]
+                    for item, payload in prepared
+                    if not payload["question_summaries"]
+                ]
+                if without_context:
+                    self._finish_batch_failure(
+                        normalized_run_id,
+                        without_context,
+                        category="question_context",
+                        message=(
+                            "当前题库中已没有可核对的关联题目；"
+                            "恢复原试卷后可重试。"
+                        ),
+                    )
+                eligible = [
+                    (item, payload)
+                    for item, payload in prepared
+                    if payload["question_summaries"]
+                ]
+                if not eligible:
+                    self._emit_progress(
+                        progress_callback, normalized_run_id
+                    )
+                    continue
+                eligible_batch = [item for item, _payload in eligible]
+                payload = [payload for _item, payload in eligible]
                 try:
                     response = gateway.suggest_taxonomy_reviews(payload)
                     suggestions = self._validated_gateway_response(
-                        batch,
+                        eligible_batch,
                         response,
+                    )
+                except TaxonomySuggestionModelResponseError:
+                    self._finish_batch_failure(
+                        normalized_run_id,
+                        [item["proposal_id"] for item in eligible_batch],
+                        category="model_response",
+                        message=(
+                            "AI 已返回内容，但格式无法读取，可单独重试。"
+                        ),
                     )
                 except Exception:
                     self._finish_batch_failure(
                         normalized_run_id,
-                        [item["proposal_id"] for item in batch],
+                        [item["proposal_id"] for item in eligible_batch],
+                        category="model_gateway",
+                        message="AI 建议暂时未返回，可单独重试。",
                     )
                 else:
                     self._finish_batch_success(
@@ -451,6 +549,9 @@ class TaxonomySuggestionService:
         self,
         run_id: str,
         proposal_ids: Sequence[str],
+        *,
+        category: str,
+        message: str,
     ) -> None:
         wanted = set(proposal_ids)
         with _STATE_LOCK:
@@ -466,8 +567,8 @@ class TaxonomySuggestionService:
                     ):
                         item["status"] = "failed"
                         item["error"] = {
-                            "category": "model_gateway",
-                            "message": "AI 建议暂时未返回，可单独重试。",
+                            "category": str(category),
+                            "message": str(message),
                         }
                 run["updated_at"] = _now()
             self._write_state_unlocked(state)
@@ -629,7 +730,9 @@ class TaxonomySuggestionService:
         if not isinstance(response, Sequence) or isinstance(
             response, (str, bytes)
         ):
-            raise ValueError("AI suggestion response must be a list")
+            raise TaxonomySuggestionModelResponseError(
+                "AI suggestion response must be a list"
+            )
         payload_by_id = {
             str(item["proposal_id"]): self._gateway_item(item)
             for item in batch
@@ -708,6 +811,10 @@ class TaxonomySuggestionService:
         ]
         result["progress"] = {
             "total": len(statuses),
+            "processed": sum(
+                status in {"suggested", "failed", "cancelled", "stale"}
+                for status in statuses
+            ),
             "completed": sum(status == "suggested" for status in statuses),
             "failed": sum(status == "failed" for status in statuses),
             "pending": sum(

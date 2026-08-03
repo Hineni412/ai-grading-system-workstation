@@ -25,6 +25,9 @@ const proposal: TaxonomyProposal = {
   nearest_id: 'term-1',
   why_not_reuse: null,
   question_refs: [482],
+  active_question_refs: [482],
+  unavailable_question_ref_count: 0,
+  actionable: true,
   resolved_term_ids: [],
   status: 'pending',
   created_at: '2026-07-29T10:21:00Z',
@@ -263,6 +266,56 @@ describe('taxonomy review', () => {
     expect(document.body.textContent).toContain(
       'AI 返回中缺少这个待审词，可单独重试。',
     )
+
+    app.unmount()
+  })
+
+  it('counts terminal failures as processed progress', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const store = useTaxonomyReviewStore()
+    store.revision = 7
+    store.proposals = [proposal]
+    store.pendingCount = 1
+    store.loadState = 'ready'
+    store.suggestionRun = decodeTaxonomySuggestionRun({
+      ...suggestionRun,
+      status: 'failed',
+      retryable: true,
+      progress: {
+        total: 39,
+        processed: 39,
+        completed: 0,
+        failed: 39,
+        pending: 0,
+        cancelled: 0,
+      },
+      items: [{
+        ...suggestionRun.items[0],
+        status: 'failed',
+        suggestion: null,
+        error: {
+          category: 'model_response',
+          message: 'AI 已返回内容，但格式无法读取，可单独重试。',
+        },
+      }],
+    })
+
+    const host = document.createElement('div')
+    document.body.append(host)
+    const app = createApp(TaxonomyCandidateReview, { open: true })
+    app.use(pinia)
+    app.mount(host)
+    await nextTick()
+
+    const progress = document.body.querySelector<HTMLProgressElement>(
+      '.taxonomy-review__suggestion-progress progress',
+    )
+    expect(progress?.max).toBe(39)
+    expect(progress?.value).toBe(39)
+    expect(document.body.textContent).toContain('已处理 39/39')
+    expect(document.body.textContent).toContain('已生成建议 0')
+    expect(document.body.textContent).toContain('失败 39')
 
     app.unmount()
   })

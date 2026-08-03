@@ -40,6 +40,9 @@ export interface TaxonomyProposal {
   nearest_id: string | null
   why_not_reuse: string | null
   question_refs: number[]
+  active_question_refs: number[]
+  unavailable_question_ref_count: number
+  actionable: boolean
   resolved_term_ids: string[]
   status: string
   created_at: string | null
@@ -51,6 +54,8 @@ export interface TaxonomyProposalListResponse {
   items: TaxonomyProposal[]
   counts: {
     pending: number
+    actionable: number
+    historical_unavailable: number
   }
 }
 
@@ -142,6 +147,7 @@ export interface TaxonomySuggestionRun {
   items: TaxonomySuggestionItem[]
   progress: {
     total: number
+    processed: number
     completed: number
     failed: number
     pending: number
@@ -245,6 +251,10 @@ function decodeProposal(value: unknown): TaxonomyProposal {
   if (!isRecord(value)) throw new Error('Expected taxonomy proposal')
   const rawId = value.id ?? value.proposal_id
   const rawName = value.proposed_name ?? value.name
+  const historicalRefs = questionRefs(value.question_refs)
+  const activeRefs = value.active_question_refs === undefined
+    ? historicalRefs
+    : questionRefs(value.active_question_refs)
   return {
     id: stableId(rawId),
     dimension: dimension(value.dimension),
@@ -253,7 +263,14 @@ function decodeProposal(value: unknown): TaxonomyProposal {
     reason: optionalString(value.reason),
     nearest_id: optionalString(value.nearest_id),
     why_not_reuse: optionalString(value.why_not_reuse),
-    question_refs: questionRefs(value.question_refs),
+    question_refs: historicalRefs,
+    active_question_refs: activeRefs,
+    unavailable_question_ref_count: safeCount(
+      value.unavailable_question_ref_count,
+    ),
+    actionable: typeof value.actionable === 'boolean'
+      ? value.actionable
+      : activeRefs.length > 0,
     resolved_term_ids: stringList(value.resolved_term_ids),
     status: requiredString(value.status),
     created_at: optionalString(value.created_at),
@@ -283,11 +300,21 @@ export function decodeTaxonomyProposals(value: unknown): TaxonomyProposalListRes
   if (!isRecord(value) || !Array.isArray(value.items) || !isRecord(value.counts)) {
     throw new Error('Invalid taxonomy proposal list')
   }
+  const items = value.items.map(decodeProposal)
+  const pending = safeCount(value.counts.pending)
+  const actionable = value.counts.actionable === undefined
+    ? items.filter((item) => item.actionable).length
+    : safeCount(value.counts.actionable)
   return {
     revision: revision(value.revision),
-    items: value.items.map(decodeProposal),
+    items,
     counts: {
-      pending: safeCount(value.counts.pending),
+      pending,
+      actionable,
+      historical_unavailable:
+        value.counts.historical_unavailable === undefined
+          ? Math.max(0, pending - actionable)
+          : safeCount(value.counts.historical_unavailable),
     },
   }
 }
@@ -446,6 +473,8 @@ export function decodeTaxonomySuggestionRun(
     || !isRecord(value.progress)
     || typeof value.stale !== 'boolean'
   ) throw new Error('Invalid taxonomy suggestion run')
+  const total = safeCount(value.progress.total)
+  const pending = safeCount(value.progress.pending)
   return {
     run_id: stableId(value.run_id),
     status: oneOf(
@@ -460,10 +489,13 @@ export function decodeTaxonomySuggestionRun(
     updated_at: requiredString(value.updated_at),
     items: value.items.map(decodeSuggestionItem),
     progress: {
-      total: safeCount(value.progress.total),
+      total,
+      processed: value.progress.processed === undefined
+        ? Math.max(0, total - pending)
+        : safeCount(value.progress.processed),
       completed: safeCount(value.progress.completed),
       failed: safeCount(value.progress.failed),
-      pending: safeCount(value.progress.pending),
+      pending,
       cancelled: safeCount(value.progress.cancelled),
     },
   }
