@@ -698,6 +698,109 @@ def test_safe_plain_text_is_wrapped_in_a_useful_sensitive_draft(tmp_path: Path) 
     assert len(gateway.calls) == 1
 
 
+def test_normal_conflict_recommendation_is_not_mistaken_for_a_student_name(
+    tmp_path: Path,
+) -> None:
+    service, token, gateway = _service(
+        tmp_path,
+        result={
+            "assumptions": ["暂按普通学生矛盾处理"],
+            "calendar_items": [
+                "calendar.confirm_safety",
+                "calendar.record_conflict",
+                "calendar.verify_details",
+            ],
+            "kind": "affair_recommendation",
+            "steps": ["confirm_safety", "record_conflict", "verify_details"],
+            "summary": "先确保安全，再分别记录、核实并跟进。",
+            "template_key": "baseline.student_conflict",
+            "title": "学生矛盾处理初稿",
+            "to_verify": [
+                "是否有人受伤或仍存在即时风险",
+                "矛盾的具体起因",
+                "当前双方的状态是否稳定",
+            ],
+        },
+    )
+
+    result = _dispatch_sensitive(
+        service,
+        token,
+        text="钱肖白和张立璞今天信息课又发生了矛盾",
+        operation_id="home-normal-conflict-output-001",
+    )
+
+    assert result["state"] == "succeeded"
+    assert result["result_kind"] == "affair_recommendation"
+    assert result["result"]["template_key"] == "baseline.student_conflict"
+    assert len(result["result"]["steps"]) >= 5
+    assert len(result["result"]["calendar_items"]) == len(result["result"]["steps"])
+    assert len(gateway.calls) == 1
+
+
+def test_opening_day_plan_keeps_ai_guidance_and_turns_questions_into_verification(
+    tmp_path: Path,
+) -> None:
+    service, token, gateway = _service(
+        tmp_path,
+        result={
+            "kind": "plan",
+            "assumptions": [],
+            "questions": [
+                "本次开学是否有明确的核心任务或成果目标？",
+                "是否存在与本次开学相关的前置已完成工作？",
+            ],
+            "nodes": [
+                {
+                    "id": "goal",
+                    "kind": "goal",
+                    "title": "完成九月一日开学准备",
+                    "details": "确保开学首日各项工作顺利开展",
+                    "rationale": "把日期事件转为可执行准备方案",
+                    "status": "pending",
+                    "due_date": "202X-09-01",
+                },
+                {
+                    "id": "materials",
+                    "kind": "task",
+                    "title": "开学物资筹备",
+                    "details": "筹备开学首日所需各项物资与材料",
+                    "rationale": "提前完成物资筹备以保障开学首日使用",
+                    "status": "pending",
+                    "due_date": "202X-08-25",
+                },
+            ],
+            "edges": [
+                {"source_id": "goal", "target_id": "materials", "relation": "contains"}
+            ],
+        },
+    )
+    preview = service.home_intake.prepare(
+        token=token,
+        text="九月一日开学",
+        reference_date="2026-08-04",
+    )
+    assert preview["final_due_date"] == "2026-09-01"
+
+    result = service.home_intake.dispatch(
+        token=token,
+        preview_id=str(preview["preview_id"]),
+        fingerprint=str(preview["fingerprint"]),
+        operation_id="home-opening-day-guidance-001",
+    )
+
+    assert result.get("validation_issue") is None, result.get("validation_issue")
+    assert result["state"] == "succeeded"
+    assert result["result_kind"] == "ordinary_plan"
+    assert [node["title"] for node in result["result"]["nodes"]] == [
+        "完成九月一日开学准备",
+        "开学物资筹备",
+    ]
+    assert result["result"]["nodes"][1]["due_date"] == "2026-08-25"
+    assert any("核心任务" in item for item in result["result"]["assumptions"])
+    assert len(gateway.calls) == 1
+
+
 def test_unsafe_output_is_suppressed(tmp_path: Path) -> None:
     service, token, gateway = _service(tmp_path, result="已经认定属于欺凌，必须给予处分并自动结案。")
 
@@ -723,6 +826,9 @@ def test_unsafe_output_is_suppressed(tmp_path: Path) -> None:
         ("该行为构成网络欺凌事件", "home-unsafe-bullying-equivalent"),
         ("建议停课一周", "home-unsafe-suspension-text"),
         ("停学两周", "home-unsafe-suspension-equivalent"),
+        ("请联系家长13812345678", "home-unsafe-phone-output"),
+        ("家庭住址为北京市海淀区合成路8号", "home-unsafe-address-output"),
+        ("请查看该生病历后再安排", "home-unsafe-medical-record-output"),
         (
             {"kind": "student_support_recommendation", "summary": "该生患有抑郁症"},
             "home-unsafe-diagnosis-json",
@@ -756,6 +862,21 @@ def test_explicit_diagnostic_and_high_impact_outputs_are_suppressed(
     assert result["error_category"] == "unsafe_model_output"
     assert result["teacher_confirmation_required"] is False
     assert len(gateway.calls) == 1
+
+
+@pytest.mark.parametrize("text", ("九月十一一日开学", "九月十十日开学"))
+def test_malformed_chinese_dates_are_rejected(tmp_path: Path, text: str) -> None:
+    service, token, gateway = _service(tmp_path)
+
+    with pytest.raises(VaultError) as invalid:
+        service.home_intake.prepare(
+            token=token,
+            text=text,
+            reference_date="2026-08-04",
+        )
+
+    assert invalid.value.code == "home_intake_date_invalid"
+    assert len(gateway.calls) == 0
 
 
 @pytest.mark.parametrize(

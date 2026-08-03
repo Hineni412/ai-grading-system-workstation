@@ -267,6 +267,7 @@ class WorkPlanning:
                 ),
                 "不得重复询问 task_text 或 final_due_date 中已经明确的信息，也不得索要完成当前方案不需要的姓名、电话、地址等敏感信息。",
                 "kind 是必填字段且不得为空；返回 questions 时 kind 必须为 follow_up，nodes 和 edges 必须为空数组。",
+                "plan 中不阻止执行的未知信息写入 assumptions，不要同时返回 questions；不得使用 202X 等年份占位符。",
                 "优先只返回有效的 json 对象；若更适合连续事务或学生支持则只给出建议去向，不得自动创建。",
                 "不得诊断、认定欺凌、惩戒、自动外发、自动完成或自动结案。",
                 "没有最终日期时不得编造节点日期；所有日期只能是 YYYY-MM-DD，且不能晚于 final_due_date。",
@@ -825,7 +826,14 @@ class WorkPlanning:
                 "nodes": [],
                 "edges": [],
             }
-        if questions:
+        if questions and kind == "plan":
+            assumptions = list(
+                dict.fromkeys(
+                    [*assumptions, *(f"待核实：{question}" for question in questions)]
+                )
+            )[:8]
+            questions = []
+        elif questions:
             raise self._invalid("AI 返回追问时必须使用 follow_up 类型")
         if kind == "plain_text":
             message = self._bounded_text(
@@ -1039,8 +1047,12 @@ class WorkPlanning:
     def _plan_date(value: object, final_due_date: str | None) -> str | None:
         if value is None or not str(value).strip():
             return None
+        raw = str(value).strip()
+        placeholder = re.fullmatch(r"202[Xx]-(\d{2}-\d{2})", raw)
+        if placeholder is not None and final_due_date is not None:
+            raw = f"{final_due_date[:4]}-{placeholder.group(1)}"
         try:
-            parsed = date.fromisoformat(str(value).strip()).isoformat()
+            parsed = date.fromisoformat(raw).isoformat()
         except ValueError as exc:
             raise WorkPlanning._invalid("AI 返回了无效日期") from exc
         if final_due_date is None:
