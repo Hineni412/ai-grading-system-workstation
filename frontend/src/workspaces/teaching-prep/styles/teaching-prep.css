@@ -1895,7 +1895,45 @@ button:disabled { cursor: not-allowed; opacity: 0.46; }
 .tp-directory-actions > div:first-child p { margin: 0.2rem 0; }
 
 .tp-directory-actions .tp-inline-guidance,
-.tp-directory-actions > .tp-muted { grid-column: 1 / -1; }
+.tp-directory-actions > .tp-muted,
+.tp-mapping-job-status { grid-column: 1 / -1; }
+
+.tp-mapping-job-status {
+  display: grid;
+  gap: 0.7rem;
+  padding: 0.9rem 1rem;
+  border: 1px solid var(--tp-line);
+  border-inline-start: 4px solid #7a918d;
+  border-radius: 0.65rem;
+  background: #f8faf9;
+}
+.tp-mapping-job-status.is-running { border-inline-start-color: #b8892f; }
+.tp-mapping-job-status.is-success { border-inline-start-color: var(--tp-teal); }
+.tp-mapping-job-status.is-error { border-inline-start-color: #a34a42; background: #fff7f5; }
+.tp-mapping-job-status__heading,
+.tp-mapping-job-status__heading > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.55rem;
+  align-items: center;
+  justify-content: space-between;
+}
+.tp-mapping-job-status__heading > div { justify-content: flex-start; }
+.tp-mapping-job-status progress {
+  inline-size: 100%;
+  block-size: 0.55rem;
+  accent-color: var(--tp-teal);
+}
+.tp-mapping-job-status dl {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.7rem;
+  margin: 0;
+}
+.tp-mapping-job-status dl > div { display: grid; gap: 0.15rem; }
+.tp-mapping-job-status dt { color: var(--tp-muted); font-size: 0.76rem; }
+.tp-mapping-job-status dd { margin: 0; font-weight: 650; }
+.tp-mapping-job-status p { margin: 0; }
 
 .tp-material-card {
   overflow: hidden;
@@ -2110,7 +2148,9 @@ button:disabled { cursor: not-allowed; opacity: 0.46; }
   .tp-directory-actions > div:first-child,
   .tp-import-queue .tp-section-heading > div:first-child,
   .tp-directory-actions .tp-inline-guidance,
-  .tp-directory-actions > .tp-muted { grid-column: auto; }
+  .tp-directory-actions > .tp-muted,
+  .tp-mapping-job-status { grid-column: auto; }
+  .tp-mapping-job-status dl { grid-template-columns: 1fr; }
   .tp-execution-phases { grid-template-columns: 1fr; gap: 0.7rem; }
   .tp-execution-phases li::after { inset: 1.25rem auto -0.9rem 0.65rem; inline-size: 2px; block-size: auto; }
   .tp-sticky-actions { align-items: start; flex-direction: column; }

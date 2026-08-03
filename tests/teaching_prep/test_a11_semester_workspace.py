@@ -1,11 +1,21 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import sqlite3
 from pathlib import Path
 from threading import Event, Thread
 
 import pytest
+from fastapi import FastAPI
+from fastapi.responses import JSONResponse
+from fastapi.testclient import TestClient
 
+from backend.api.app import ApiError
+from backend.api.routers.jobs import router as jobs_router
+from backend.jobs import JobManager, JobStore
+from backend.jobs.manager import JobCancellationRequested
+from backend.teaching_prep.api.router import create_router
 from backend.teaching_prep.domain.errors import (
     TeachingPrepConflictError,
     TeachingPrepRetryAvailableError,
@@ -13,10 +23,19 @@ from backend.teaching_prep.domain.errors import (
     TeachingPrepValidationError,
 )
 from backend.teaching_prep.application import TeachingPrepService
+from backend.teaching_prep.jobs import register_jobs
 
 from .test_a01_foundation import _migrated_service
 from .test_a02_catalog import _api_client, _lesson_tree
 from .test_a03_material_units import _pdf
+
+
+class _PrefixedJobRegistrar:
+    def __init__(self, manager: JobManager) -> None:
+        self.manager = manager
+
+    def register(self, name, handler) -> None:
+        self.manager.register(f"teaching_prep.{name}", handler)
 
 
 class _FakeSemesterMappingModel:
@@ -44,6 +63,36 @@ class _FakeSemesterMappingModel:
         )
         if self.failure is not None:
             raise self.failure
+        return self.payload
+
+
+class _BlockingSemesterMappingModel(_FakeSemesterMappingModel):
+    def __init__(
+        self,
+        payload: dict[str, object],
+        *,
+        started: Event,
+        release: Event,
+    ) -> None:
+        super().__init__(payload)
+        self.started = started
+        self.release = release
+
+    def generate(
+        self,
+        *,
+        operation_id: str,
+        semester_snapshot: dict[str, object],
+    ) -> dict[str, object]:
+        self.calls.append(
+            {
+                "operation_id": operation_id,
+                "snapshot": semester_snapshot,
+            }
+        )
+        self.started.set()
+        if not self.release.wait(timeout=5):
+            raise RuntimeError("synthetic mapping model timed out")
         return self.payload
 
 
@@ -606,11 +655,22 @@ def test_mapping_model_proposes_existing_lesson_ranges_once_then_teacher_applies
         semester_mapping_model_label="fake-semester-model",
     )
 
+    stages: list[str] = []
     proposal, created = service.generate_semester_mapping_proposal(
         semester.id,
         operation_id="semester-mapping-existing-0001",
         material_record_ids=[record.id],
+        progress_callback=stages.append,
     )
+    assert stages == [
+        "checking",
+        "snapshotting",
+        "claiming_operation",
+        "calling_model",
+        "validating_response",
+        "persisting_proposal",
+        "completed",
+    ]
     repeated, repeated_created = service.generate_semester_mapping_proposal(
         semester.id,
         operation_id="semester-mapping-existing-0001",
@@ -642,7 +702,209 @@ def test_mapping_model_proposes_existing_lesson_ranges_once_then_teacher_applies
     assert updated_record.mapping_status == "confirmed"
 
 
-def test_failed_semester_mapping_allows_an_explicit_new_operation(
+def test_saved_mapping_proposal_recovers_when_job_completion_report_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths, base_service = _migrated_service(tmp_path, monkeypatch)
+    semester, lesson_ids = _semester(base_service)
+    version, _created = base_service.register_material_file(
+        request_token="mapping-finish-report-file",
+        path=_pdf(tmp_path / "mapping-finish-report.pdf", ["L1"]),
+        display_name="合成完成记录教辅",
+    )
+    record, _created = base_service.attach_semester_material(
+        semester.id,
+        request_token="mapping-finish-report-attach",
+        material_version_id=version.id,
+        material_role="exercise_workbook",
+    )
+    base_service.parse_material_version(version.id)
+    fake = _FakeSemesterMappingModel(
+        {
+            "tree": [],
+            "mappings": [
+                {
+                    "material_record_id": record.id,
+                    "lesson_ref": lesson_ids[0],
+                    "start_unit": 1,
+                    "end_unit": 1,
+                }
+            ],
+            "uncertainties": [],
+        }
+    )
+    service = TeachingPrepService(
+        paths.workspace_dir("teaching-prep"),
+        semester_mapping_model_adapter=fake,
+    )
+
+    def fail_completed_report(stage: str) -> None:
+        if stage == "completed":
+            raise RuntimeError("synthetic Job completion write failed")
+
+    with pytest.raises(TeachingPrepRetryAvailableError):
+        service.generate_semester_mapping_proposal(
+            semester.id,
+            operation_id="semester-mapping-finish-report-old-0001",
+            material_record_ids=[record.id],
+            progress_callback=fail_completed_report,
+        )
+    persisted = service.list_semester_mapping_proposals(semester.id)
+    assert len(persisted) == 1
+
+    recovered, created = service.generate_semester_mapping_proposal(
+        semester.id,
+        operation_id="semester-mapping-finish-report-new-0002",
+        material_record_ids=[record.id],
+    )
+    assert created is False
+    assert recovered.id == persisted[0].id
+    assert len(fake.calls) == 1
+
+
+def test_semester_mapping_job_is_durable_deduplicated_and_public_safe(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths, base_service = _migrated_service(tmp_path, monkeypatch)
+    semester, lesson_ids = _semester(base_service)
+    version, _created = base_service.register_material_file(
+        request_token="mapping-job-file",
+        path=_pdf(tmp_path / "mapping-job-workbook.pdf", ["L1", "L2"]),
+        display_name="合成后台教辅",
+    )
+    record, _created = base_service.attach_semester_material(
+        semester.id,
+        request_token="mapping-job-attach",
+        material_version_id=version.id,
+        material_role="exercise_workbook",
+    )
+    base_service.parse_material_version(version.id)
+    started = Event()
+    release = Event()
+    fake = _BlockingSemesterMappingModel(
+        {
+            "tree": [],
+            "mappings": [
+                {
+                    "material_record_id": record.id,
+                    "lesson_ref": lesson_ids[0],
+                    "start_unit": 1,
+                    "end_unit": 2,
+                }
+            ],
+            "uncertainties": [],
+        },
+        started=started,
+        release=release,
+    )
+    service = TeachingPrepService(
+        paths.workspace_dir("teaching-prep"),
+        semester_mapping_model_adapter=fake,
+        semester_mapping_model_label="fake-semester-model",
+    )
+    manager = JobManager(
+        JobStore(tmp_path / "mapping-jobs.db"),
+        cleanup_interrupted=False,
+        max_workers=1,
+    )
+    register_jobs(_PrefixedJobRegistrar(manager), service)
+    api = FastAPI()
+    api.state.workspace_services = {"teaching-prep": service}
+    api.state.job_manager = manager
+    api.include_router(create_router(), prefix="/api/teaching-prep")
+    api.include_router(jobs_router)
+
+    @api.exception_handler(ApiError)
+    async def handle_api_error(_request, exc: ApiError) -> JSONResponse:
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={"error": {"code": exc.code, "message": exc.message}},
+        )
+
+    client = TestClient(api)
+    try:
+        legacy = client.post(
+            f"/api/teaching-prep/semesters/{semester.id}/mapping-proposals",
+            json={
+                "operation_id": "legacy-semester-mapping-0001",
+                "material_record_ids": [record.id],
+            },
+        )
+        assert legacy.status_code == 405
+        assert fake.calls == []
+
+        preflight = client.post(
+            f"/api/teaching-prep/semesters/{semester.id}/mapping-preflight",
+            json={"material_record_ids": [record.id]},
+        )
+        assert preflight.status_code == 200
+        source_digest = preflight.json()["source_state_sha256"]
+        body = {
+            "operation_id": "semester-mapping-job-0001",
+            "material_record_id": record.id,
+            "expected_source_state_sha256": source_digest,
+        }
+        stale = client.post(
+            f"/api/teaching-prep/semesters/{semester.id}/mapping-proposal-jobs",
+            json={**body, "expected_source_state_sha256": "0" * 64},
+        )
+        assert stale.status_code == 409
+        assert fake.calls == []
+
+        first = client.post(
+            f"/api/teaching-prep/semesters/{semester.id}/mapping-proposal-jobs",
+            json=body,
+        )
+        assert first.status_code == 202
+        assert started.wait(timeout=2)
+        waiting = client.get(f"/api/jobs/{first.json()['id']}")
+        assert waiting.status_code == 200
+        assert waiting.json()["stage"] == "calling_model"
+        assert waiting.json()["progress"] == 0.35
+        second = client.post(
+            f"/api/teaching-prep/semesters/{semester.id}/mapping-proposal-jobs",
+            json={**body, "operation_id": "semester-mapping-job-fresh-0002"},
+        )
+        assert second.status_code == 202
+        assert second.json()["id"] == first.json()["id"]
+        release.set()
+        manager.wait(first.json()["id"], timeout=5)
+
+        public_job = client.get(f"/api/jobs/{first.json()['id']}")
+        assert public_job.status_code == 200
+        payload = public_job.json()
+        assert payload["status"] == "succeeded"
+        assert payload["stage"] == "completed"
+        assert payload["payload"] == {
+            "semester_id": semester.id,
+            "material_record_id": record.id,
+            "operation_id": body["operation_id"],
+            "source_state_sha256": source_digest,
+        }
+        assert set(payload["result"]) == {
+            "semester_id",
+            "operation_id",
+            "source_state_sha256",
+            "proposal_id",
+            "recovered_existing",
+        }
+        assert len(fake.calls) == 1
+        assert str(tmp_path) not in public_job.text
+
+        listed = client.get(
+            f"/api/teaching-prep/semesters/{semester.id}/mapping-proposal-jobs"
+        )
+        assert listed.status_code == 200
+        assert [item["id"] for item in listed.json()["items"]] == [
+            first.json()["id"]
+        ]
+    finally:
+        manager.shutdown()
+
+
+def test_invalid_semester_mapping_response_allows_an_explicit_new_operation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -660,21 +922,19 @@ def test_failed_semester_mapping_allows_an_explicit_new_operation(
         material_role="exercise_workbook",
     )
     base_service.parse_material_version(version.id)
-    fake = _FakeSemesterMappingModel(
-        {
-            "tree": [],
-            "mappings": [
-                {
-                    "material_record_id": record.id,
-                    "lesson_ref": lesson_ids[0],
-                    "start_unit": 1,
-                    "end_unit": 1,
-                }
-            ],
-            "uncertainties": [],
-        },
-        failure=RuntimeError("synthetic model failure"),
-    )
+    valid_payload = {
+        "tree": [],
+        "mappings": [
+            {
+                "material_record_id": record.id,
+                "lesson_ref": lesson_ids[0],
+                "start_unit": 1,
+                "end_unit": 1,
+            }
+        ],
+        "uncertainties": [],
+    }
+    fake = _FakeSemesterMappingModel({**valid_payload, "tree": "invalid"})
     service = TeachingPrepService(
         paths.workspace_dir("teaching-prep"),
         semester_mapping_model_adapter=fake,
@@ -693,19 +953,226 @@ def test_failed_semester_mapping_allows_an_explicit_new_operation(
             material_record_ids=[record.id],
         )
 
+    fake.failure = TeachingPrepValidationError(
+        "semester mapping model returned invalid JSON"
+    )
+    with pytest.raises(TeachingPrepRetryAvailableError):
+        service.generate_semester_mapping_proposal(
+            semester.id,
+            operation_id="semester-mapping-retry-json-0002",
+            material_record_ids=[record.id],
+        )
+
     fake.failure = None
+    fake.payload = valid_payload
     proposal, created = service.generate_semester_mapping_proposal(
         semester.id,
-        operation_id="semester-mapping-retry-new-0002",
+        operation_id="semester-mapping-retry-new-0003",
         material_record_ids=[record.id],
     )
 
     assert created is True
-    assert proposal.operation_id == "semester-mapping-retry-new-0002"
+    assert proposal.operation_id == "semester-mapping-retry-new-0003"
     assert [item["operation_id"] for item in fake.calls] == [
         "semester-mapping-retry-old-0001",
-        "semester-mapping-retry-new-0002",
+        "semester-mapping-retry-json-0002",
+        "semester-mapping-retry-new-0003",
     ]
+
+
+def test_indeterminate_semester_mapping_model_failure_blocks_a_new_call(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths, base_service = _migrated_service(tmp_path, monkeypatch)
+    semester, lesson_ids = _semester(base_service)
+    version, _created = base_service.register_material_file(
+        request_token="mapping-unknown-file",
+        path=_pdf(tmp_path / "unknown-workbook.pdf", ["L1"]),
+        display_name="合成结果未知教辅",
+    )
+    record, _created = base_service.attach_semester_material(
+        semester.id,
+        request_token="mapping-unknown-attach",
+        material_version_id=version.id,
+        material_role="exercise_workbook",
+    )
+    base_service.parse_material_version(version.id)
+    fake = _FakeSemesterMappingModel(
+        {
+            "tree": [],
+            "mappings": [{
+                "material_record_id": record.id,
+                "lesson_ref": lesson_ids[0],
+                "start_unit": 1,
+                "end_unit": 1,
+            }],
+            "uncertainties": [],
+        },
+        failure=TimeoutError("synthetic response loss"),
+    )
+    service = TeachingPrepService(
+        paths.workspace_dir("teaching-prep"),
+        semester_mapping_model_adapter=fake,
+    )
+
+    with pytest.raises(TeachingPrepStateError, match="result is unknown"):
+        service.generate_semester_mapping_proposal(
+            semester.id,
+            operation_id="semester-mapping-unknown-old-0001",
+            material_record_ids=[record.id],
+        )
+    with pytest.raises(TeachingPrepStateError, match="result is unknown"):
+        service.generate_semester_mapping_proposal(
+            semester.id,
+            operation_id="semester-mapping-unknown-new-0002",
+            material_record_ids=[record.id],
+        )
+    assert len(fake.calls) == 1
+
+
+def test_semester_mapping_cancellation_after_model_return_discards_proposal(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths, base_service = _migrated_service(tmp_path, monkeypatch)
+    semester, lesson_ids = _semester(base_service)
+    version, _created = base_service.register_material_file(
+        request_token="mapping-cancel-file",
+        path=_pdf(tmp_path / "cancel-workbook.pdf", ["L1"]),
+        display_name="合成取消教辅",
+    )
+    record, _created = base_service.attach_semester_material(
+        semester.id,
+        request_token="mapping-cancel-attach",
+        material_version_id=version.id,
+        material_role="exercise_workbook",
+    )
+    base_service.parse_material_version(version.id)
+    started = Event()
+    release = Event()
+    fake = _BlockingSemesterMappingModel(
+        {
+            "tree": [],
+            "mappings": [{
+                "material_record_id": record.id,
+                "lesson_ref": lesson_ids[0],
+                "start_unit": 1,
+                "end_unit": 1,
+            }],
+            "uncertainties": [],
+        },
+        started=started,
+        release=release,
+    )
+    service = TeachingPrepService(
+        paths.workspace_dir("teaching-prep"),
+        semester_mapping_model_adapter=fake,
+    )
+    cancelled = Event()
+    errors: list[BaseException] = []
+
+    def cancel_check() -> None:
+        if cancelled.is_set():
+            raise JobCancellationRequested("synthetic cancellation")
+
+    def generate() -> None:
+        try:
+            service.generate_semester_mapping_proposal(
+                semester.id,
+                operation_id="semester-mapping-cancel-0001",
+                material_record_ids=[record.id],
+                cancel_check=cancel_check,
+            )
+        except BaseException as exc:  # pragma: no cover - asserted below
+            errors.append(exc)
+
+    worker = Thread(target=generate)
+    worker.start()
+    assert started.wait(timeout=5)
+    cancelled.set()
+    release.set()
+    worker.join(timeout=5)
+
+    assert worker.is_alive() is False
+    assert len(errors) == 1
+    assert isinstance(errors[0], JobCancellationRequested)
+    assert service.list_semester_mapping_proposals(semester.id) == ()
+    assert len(fake.calls) == 1
+    with pytest.raises(TeachingPrepStateError, match="result is unknown"):
+        service.generate_semester_mapping_proposal(
+            semester.id,
+            operation_id="semester-mapping-cancel-new-0002",
+            material_record_ids=[record.id],
+        )
+    assert len(fake.calls) == 1
+
+
+def test_restart_before_semester_mapping_model_call_allows_safe_new_operation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths, base_service = _migrated_service(tmp_path, monkeypatch)
+    semester, lesson_ids = _semester(base_service)
+    version, _created = base_service.register_material_file(
+        request_token="mapping-pre-call-restart-file",
+        path=_pdf(tmp_path / "pre-call-restart.pdf", ["L1"]),
+        display_name="合成调用前重启教辅",
+    )
+    record, _created = base_service.attach_semester_material(
+        semester.id,
+        request_token="mapping-pre-call-restart-attach",
+        material_version_id=version.id,
+        material_role="exercise_workbook",
+    )
+    base_service.parse_material_version(version.id)
+    fake = _FakeSemesterMappingModel({
+        "tree": [],
+        "mappings": [{
+            "material_record_id": record.id,
+            "lesson_ref": lesson_ids[0],
+            "start_unit": 1,
+            "end_unit": 1,
+        }],
+        "uncertainties": [],
+    })
+    service = TeachingPrepService(
+        paths.workspace_dir("teaching-prep"),
+        semester_mapping_model_adapter=fake,
+    )
+    _snapshot, source_digest = service.semester_mapping.snapshot(
+        semester.id,
+        [record.id],
+    )
+    request_hash = hashlib.sha256(
+        json.dumps(
+            {
+                "semester_id": semester.id,
+                "material_record_ids": [record.id],
+                "source_state_sha256": source_digest,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    assert service.semester_mapping.begin_generation(
+        operation_id="semester-mapping-pre-call-old-0001",
+        request_hash=request_hash,
+        semester_id=semester.id,
+    ) is None
+
+    service.mark_interrupted_operations()
+
+    proposal, created = service.generate_semester_mapping_proposal(
+        semester.id,
+        operation_id="semester-mapping-pre-call-new-0002",
+        material_record_ids=[record.id],
+        expected_source_state_sha256=source_digest,
+    )
+    assert created is True
+    assert proposal.operation_id == "semester-mapping-pre-call-new-0002"
+    assert len(fake.calls) == 1
 
 
 def test_mapping_semantic_identity_blocks_a_parallel_fresh_operation(
@@ -799,9 +1266,94 @@ def test_mapping_semantic_identity_blocks_a_parallel_fresh_operation(
     assert len(fake.calls) == 1
 
 
+def test_interrupted_semester_mapping_blocks_equivalent_new_model_call(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths, base_service = _migrated_service(tmp_path, monkeypatch)
+    semester, lesson_ids = _semester(base_service)
+    version, _created = base_service.register_material_file(
+        request_token="mapping-interrupted-file",
+        path=_pdf(tmp_path / "interrupted-workbook.pdf", ["L1"]),
+        display_name="合成中断教辅",
+    )
+    record, _created = base_service.attach_semester_material(
+        semester.id,
+        request_token="mapping-interrupted-attach",
+        material_version_id=version.id,
+        material_role="exercise_workbook",
+    )
+    base_service.parse_material_version(version.id)
+    fake = _FakeSemesterMappingModel(
+        {
+            "tree": [],
+            "mappings": [
+                {
+                    "material_record_id": record.id,
+                    "lesson_ref": lesson_ids[0],
+                    "start_unit": 1,
+                    "end_unit": 1,
+                }
+            ],
+            "uncertainties": [],
+        }
+    )
+    service = TeachingPrepService(
+        paths.workspace_dir("teaching-prep"),
+        semester_mapping_model_adapter=fake,
+    )
+    _snapshot, source_digest = service.semester_mapping.snapshot(
+        semester.id,
+        [record.id],
+    )
+    request_hash = hashlib.sha256(
+        json.dumps(
+            {
+                "semester_id": semester.id,
+                "material_record_ids": [record.id],
+                "source_state_sha256": source_digest,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    with service.database.connect(immediate=True) as connection:
+        connection.execute(
+            """
+            INSERT INTO teaching_prep_operations (
+                operation_id, operation_type, idempotency_key, request_hash,
+                target_kind, target_id, status, error_code
+            )
+            VALUES (?, 'semester_mapping_model', ?, ?, 'semester', ?,
+                    'interrupted', 'application_restarted')
+            """,
+            (
+                "semester-mapping-interrupted-old-0001",
+                "semester-mapping-interrupted-old-0001",
+                request_hash,
+                semester.id,
+            ),
+        )
+
+    with pytest.raises(TeachingPrepStateError, match="result is unknown"):
+        service.generate_semester_mapping_proposal(
+            semester.id,
+            operation_id="semester-mapping-interrupted-new-0002",
+            material_record_ids=[record.id],
+            expected_source_state_sha256=source_digest,
+        )
+    assert fake.calls == []
+
+
+@pytest.mark.parametrize(
+    "initial_role",
+    ["textbook", "exercise_workbook", "homework_workbook"],
+)
 def test_initial_mapping_proposal_creates_three_level_tree_atomically(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    initial_role: str,
 ) -> None:
     paths, base_service = _migrated_service(tmp_path, monkeypatch)
     curriculum, _created = base_service.create_curriculum(
@@ -826,7 +1378,7 @@ def test_initial_mapping_proposal_creates_three_level_tree_atomically(
         semester.id,
         request_token="mapping-empty-attach",
         material_version_id=version.id,
-        material_role="textbook",
+        material_role=initial_role,
     )
     base_service.parse_material_version(version.id)
     fake = _FakeSemesterMappingModel(

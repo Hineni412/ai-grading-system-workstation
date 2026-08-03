@@ -385,6 +385,26 @@ class GenerateSemesterMappingRequest(SemesterMappingRequest):
     operation_id: str = Field(min_length=8, max_length=96)
 
 
+class StartSemesterMappingJobRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    operation_id: str = Field(min_length=8, max_length=96)
+    material_record_id: str = Field(min_length=32, max_length=32)
+    expected_source_state_sha256: str = Field(
+        min_length=64,
+        max_length=64,
+        pattern=r"^[0-9a-f]{64}$",
+    )
+
+
+class SemesterMappingJobResponse(MaterialParseJobResponse):
+    pass
+
+
+class SemesterMappingJobListResponse(BaseModel):
+    items: list[SemesterMappingJobResponse]
+
+
 class SemesterMappingPreflightResponse(BaseModel):
     semester_id: str
     source_state_sha256: str

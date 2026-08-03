@@ -888,6 +888,36 @@ function semesterMappingPreflight(value: unknown): SemesterMappingPreflight {
   return value as unknown as SemesterMappingPreflight
 }
 
+function semesterMappingJob(value: unknown): JobResponse {
+  const job = decodeJobResponse(value)
+  const payload = job.payload
+  const digest = payload.source_state_sha256
+  if (
+    job.job_type !== 'teaching_prep.semester_mapping'
+    || typeof payload.semester_id !== 'string'
+    || payload.semester_id.length !== 32
+    || typeof payload.material_record_id !== 'string'
+    || payload.material_record_id.length !== 32
+    || !text(payload.operation_id)
+    || typeof digest !== 'string'
+    || !/^[0-9a-f]{64}$/.test(digest)
+    || job.progress < 0
+    || job.progress > 1
+  ) throw new Error('Invalid semester mapping Job response')
+  if (
+    job.status === 'succeeded'
+    && (
+      job.result.semester_id !== payload.semester_id
+      || job.result.operation_id !== payload.operation_id
+      || job.result.source_state_sha256 !== digest
+      || typeof job.result.proposal_id !== 'string'
+      || job.result.proposal_id.length !== 32
+      || typeof job.result.recovered_existing !== 'boolean'
+    )
+  ) throw new Error('Invalid semester mapping Job result')
+  return job
+}
+
 function semesterMappingProposal(value: unknown): SemesterMappingProposal {
   if (
     !isRecord(value)
@@ -937,6 +967,7 @@ function validSemesterProposalChapter(value: unknown): boolean {
 function validSemesterProposalRange(value: unknown): boolean {
   return (
     isRecord(value)
+    && text(value.mapping_id)
     && text(value.material_record_id)
     && text(value.lesson_ref)
     && integer(value.start_unit, 1)
@@ -949,6 +980,20 @@ function validSemesterProposalRange(value: unknown): boolean {
       'answer',
       'supplement',
     ].includes(String(value.purpose))
+    && ['pending', 'accepted', 'modified', 'rejected'].includes(
+      String(value.decision),
+    )
+    && (
+      value.teacher_revision === null
+      || (
+        isRecord(value.teacher_revision)
+        && text(value.teacher_revision.lesson_ref)
+        && integer(value.teacher_revision.start_unit, 1)
+        && integer(value.teacher_revision.end_unit, 1)
+        && value.teacher_revision.end_unit >= value.teacher_revision.start_unit
+      )
+    )
+    && nullableText(value.decision_reason)
   )
 }
 
@@ -1782,23 +1827,33 @@ export const teachingPrepCatalogApi = {
     )
   },
 
-  generateSemesterMappingProposal(
+  startSemesterMappingProposalJob(
     semesterId: string,
     input: {
       operation_id: string
-      material_record_ids: string[]
+      material_record_id: string
+      expected_source_state_sha256: string
     },
-  ): Promise<SemesterMappingProposal> {
+  ): Promise<JobResponse> {
     return apiClient.request(
-      `/api/teaching-prep/semesters/${encodeURIComponent(semesterId)}/mapping-proposals`,
+      `/api/teaching-prep/semesters/${encodeURIComponent(semesterId)}/mapping-proposal-jobs`,
       {
         method: 'POST',
         body: input,
-        timeoutMs: 620_000,
-        decode: (payload) => {
-          assertNoPathLikeKeys(payload)
-          return semesterMappingProposal(payload)
-        },
+        decode: semesterMappingJob,
+      },
+    )
+  },
+
+  listSemesterMappingProposalJobs(
+    semesterId: string,
+    signal?: AbortSignal,
+  ): Promise<JobResponse[]> {
+    return apiClient.request(
+      `/api/teaching-prep/semesters/${encodeURIComponent(semesterId)}/mapping-proposal-jobs`,
+      {
+        signal,
+        decode: payload => itemList(payload, semesterMappingJob),
       },
     )
   },
