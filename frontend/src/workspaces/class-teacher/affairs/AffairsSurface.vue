@@ -1,9 +1,12 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 
+import type { HomeIntakeHandoff } from '../api/homeIntake'
 import { affairR1Api, type AffairDetail, type AffairStep, type AffairSummary } from '../api/r1'
+import { sopApi, type Affair, type SopTemplate } from '../api/sop'
 
-const props = defineProps<{ token: string; targetId?: string | null }>()
+const props = defineProps<{ token: string; targetId?: string | null; handoff?: HomeIntakeHandoff | null }>()
+const emit = defineEmits<{ handoffPersisted: []; handoffDiscarded: [] }>()
 const items = ref<AffairSummary[]>([])
 const selected = ref<AffairDetail | null>(null)
 const draftText = ref('')
@@ -14,6 +17,24 @@ const decisionSummary = ref('')
 const selectedDecisionOption = ref('')
 const closureSummary = ref('')
 const reopenReason = ref('')
+const templates = ref<SopTemplate[]>([])
+const creationTemplateId = ref('')
+const creationTitle = ref('')
+const creationSummary = ref('')
+const creationParticipantRefs = ref('')
+const creationAiReference = ref('')
+const retainAiReference = ref(false)
+const creationMessage = ref('')
+const preparedHandoffId = ref<string | null>(null)
+const affairOperationId = ref('')
+const aiSuggestionOperationId = ref('')
+const affairWriteStarted = ref(false)
+const createdHandoffAffair = ref<Affair | null>(null)
+const aiReferencePending = ref(false)
+const participantRefs = computed(() => creationParticipantRefs.value
+  .split(/\r?\n/)
+  .map((value) => value.trim())
+  .filter(Boolean))
 const currentSteps = computed(() => selected.value?.current_steps ?? [])
 const decisionStep = computed(() => currentSteps.value.find((step) => step.decision_key || step.decision_prompt) ?? null)
 const baselines = ['学生安全与紧急处置','欺凌线索核实','家校沟通','纪律与教育支持','缺勤与返校','阶段性关怀']
@@ -57,12 +78,164 @@ async function command(name: 'teacher_decision' | 'close' | 'reopen') {
   selected.value = await affairR1Api.command(props.token, selected.value, name, input)
   decisionSummary.value=''; selectedDecisionOption.value=''; closureSummary.value=''; reopenReason.value=''; await load()
 }
-onMounted(() => { void load() })
+
+function clearCreationPrefill(): void {
+  creationTemplateId.value = ''
+  creationTitle.value = ''
+  creationSummary.value = ''
+  creationParticipantRefs.value = ''
+  creationAiReference.value = ''
+  retainAiReference.value = false
+  creationMessage.value = ''
+  preparedHandoffId.value = null
+  affairOperationId.value = ''
+  aiSuggestionOperationId.value = ''
+  affairWriteStarted.value = false
+  createdHandoffAffair.value = null
+  aiReferencePending.value = false
+  templates.value = []
+}
+
+function applyHandoffPrefill(): void {
+  if (!props.handoff || props.handoff.destination !== 'affair') {
+    clearCreationPrefill()
+    return
+  }
+  if (preparedHandoffId.value === props.handoff.id) return
+  preparedHandoffId.value = props.handoff.id
+  affairOperationId.value = globalThis.crypto.randomUUID()
+  aiSuggestionOperationId.value = globalThis.crypto.randomUUID()
+  affairWriteStarted.value = false
+  createdHandoffAffair.value = null
+  aiReferencePending.value = false
+  creationTitle.value = props.handoff.sourceText.slice(0, 120)
+  creationSummary.value = props.handoff.sourceText
+  creationParticipantRefs.value = ''
+  creationAiReference.value = props.handoff.aiReference.summary || ''
+  retainAiReference.value = false
+  creationMessage.value = '已把教师原文放入创建表单；AI 建议只在旁边作为参考，尚未创建事务。'
+}
+
+async function loadTemplates(): Promise<void> {
+  if (!props.handoff || props.handoff.destination !== 'affair') return
+  try {
+    templates.value = await sopApi.listTemplates(props.token)
+    if (!creationTemplateId.value && templates.value.length === 1) creationTemplateId.value = templates.value[0]!.template_version_id
+  } catch {
+    creationMessage.value = '学校流程模板暂时无法读取；没有创建事务。'
+  }
+}
+
+async function revealCreatedAffair(created: Affair): Promise<void> {
+  await load()
+  const target = items.value.find((item) => item.affair_id === created.affair_id)
+  if (target) await open(target)
+}
+
+async function createFromHandoff(): Promise<void> {
+  if (
+    !props.handoff
+    || !creationTemplateId.value
+    || !creationTitle.value.trim()
+    || participantRefs.value.length < 1
+    || participantRefs.value.length > 50
+    || busy.value
+    || createdHandoffAffair.value
+  ) return
+  busy.value = true
+  affairWriteStarted.value = true
+  creationMessage.value = ''
+  try {
+    const created = await sopApi.createAffair(props.token, {
+      template_version_id: creationTemplateId.value,
+      title: creationTitle.value.trim(),
+      summary: creationSummary.value.trim() || null,
+      participant_refs: participantRefs.value,
+    }, affairOperationId.value)
+    createdHandoffAffair.value = created
+    if (retainAiReference.value && creationAiReference.value.trim()) {
+      try {
+        await sopApi.recordAiSuggestion(
+          props.token,
+          created,
+          creationAiReference.value.trim(),
+          aiSuggestionOperationId.value,
+        )
+        creationMessage.value = '教师确认的事务已创建；AI 内容仅以“AI 参考建议”保存，不能驱动流程。'
+        emit('handoffPersisted')
+      } catch {
+        aiReferencePending.value = true
+        creationMessage.value = '事务已经创建，但教师选择保留的 AI 参考尚未确认保存。请只重试 AI 参考，不要重复创建事务。'
+      }
+    } else {
+      creationMessage.value = '教师确认的事务已创建；教师未选择保存 AI 参考。'
+      emit('handoffPersisted')
+    }
+    try {
+      await revealCreatedAffair(created)
+    } catch {
+      error.value = '事务已经创建，但事务详情暂时无法刷新；请不要重复创建。'
+    }
+  } catch {
+    creationMessage.value = '事务写入结果尚未确认；请只重试同一写入，不要新建重复事务。本次写入编号已保留。'
+  } finally { busy.value = false }
+}
+
+async function retryAiReference(): Promise<void> {
+  if (!createdHandoffAffair.value || !aiReferencePending.value || busy.value) return
+  busy.value = true
+  try {
+    await sopApi.recordAiSuggestion(
+      props.token,
+      createdHandoffAffair.value,
+      creationAiReference.value.trim(),
+      aiSuggestionOperationId.value,
+    )
+    aiReferencePending.value = false
+    creationMessage.value = '事务已经创建；AI 内容现已另存为不驱动流程的“AI 参考建议”。'
+    emit('handoffPersisted')
+  } catch {
+    creationMessage.value = '事务已经创建，但 AI 参考仍未确认保存。只能重试这条 AI 参考，不能重复创建事务。'
+  } finally { busy.value = false }
+}
+
+function abandonAiReference(): void {
+  if (!createdHandoffAffair.value || !aiReferencePending.value || busy.value) return
+  aiReferencePending.value = false
+  creationMessage.value = '事务已经创建；教师已明确放弃保存本次 AI 参考，交接现已完成。'
+  emit('handoffPersisted')
+}
+
+watch(() => props.handoff?.id, () => { applyHandoffPrefill(); void loadTemplates() })
+onMounted(() => { applyHandoffPrefill(); void loadTemplates(); void load() })
 </script>
 
 <template>
   <section class="affairs">
     <header><div><p>受保护的连续事务</p><h2>每件事只沿一条流程推进</h2></div><button type="button" @click="load">刷新</button></header>
+    <section v-if="handoff?.destination === 'affair'" class="creation-prefill" aria-labelledby="affair-prefill-title">
+      <div>
+        <p class="eyebrow">首页转交 · 仅内存预填</p>
+        <h3 id="affair-prefill-title">创建事务前由教师补全</h3>
+        <p>不会自动创建事务。教师原文与 AI 参考分开保留，只有点击确认创建才会写入。</p>
+      </div>
+      <label>学校流程<select v-model="creationTemplateId" :disabled="affairWriteStarted"><option value="">请选择流程</option><option v-for="template in templates" :key="template.template_version_id" :value="template.template_version_id">{{ template.title }}</option></select></label>
+      <label>事务标题<input v-model="creationTitle" :disabled="affairWriteStarted" maxlength="240"></label>
+      <label class="wide">匿名参与者编号（必填，每行一个，1—50 个）<textarea v-model="creationParticipantRefs" :disabled="affairWriteStarted" rows="3" maxlength="8000" placeholder="例如：学生A&#10;家长A"></textarea><small>当前 {{ participantRefs.length }} 个。只填写匿名引用，不填写真实姓名。</small></label>
+      <label class="wide">教师原文（将作为事务摘要）<textarea v-model="creationSummary" :disabled="affairWriteStarted" rows="4" maxlength="8000"></textarea></label>
+      <aside class="ai-reference"><strong>AI 建议，仅供参考</strong><p v-if="handoff.aiReference.reasons.length">理由：{{ handoff.aiReference.reasons.join('；') }}</p><label>教师可修改的参考内容<textarea v-model="creationAiReference" :disabled="affairWriteStarted" rows="4" maxlength="8000"></textarea></label><label class="retain-reference"><input v-model="retainAiReference" :disabled="affairWriteStarted" type="checkbox"><span>创建后把上面内容另存为“AI 参考建议”（不会驱动流程）</span></label></aside>
+      <div class="prefill-actions">
+        <template v-if="aiReferencePending">
+          <button type="button" :disabled="busy" @click="retryAiReference">只重试保存 AI 参考</button>
+          <button type="button" :disabled="busy" @click="abandonAiReference">放弃 AI 参考并完成</button>
+        </template>
+        <template v-else-if="!createdHandoffAffair">
+          <button type="button" :disabled="busy || !creationTemplateId || !creationTitle.trim() || participantRefs.length < 1 || participantRefs.length > 50" @click="createFromHandoff">{{ affairWriteStarted ? '重试确认同一事务写入' : '教师确认，创建事务' }}</button>
+          <button v-if="!affairWriteStarted" type="button" :disabled="busy" @click="emit('handoffDiscarded')">放弃本次预填</button>
+        </template>
+      </div>
+      <p v-if="creationMessage" class="message" role="status">{{ creationMessage }}</p>
+    </section>
     <p v-if="error" class="error" role="alert">{{ error }}</p>
     <div class="layout">
       <nav aria-label="事务列表">
@@ -102,5 +275,5 @@ onMounted(() => { void load() })
 </template>
 
 <style scoped>
-.affairs{overflow:hidden;border:1px solid var(--color-border-default);border-radius:var(--radius-panel);background:var(--color-bg-surface)}header{display:flex;justify-content:space-between;align-items:end;padding:var(--space-5);border-bottom:1px solid var(--color-border-subtle)}header p,.eyebrow{margin:0 0 2px;color:var(--color-accent);font-size:var(--font-size-caption);font-weight:700;letter-spacing:.08em}h2{margin:0;font-size:var(--font-size-h2)}button,select,textarea{font:inherit}header button,.rail button,.draft-box button,.decision-box button,.next-panel button{min-height:36px;padding:0 var(--space-3);border:1px solid var(--color-border-strong);border-radius:var(--radius-control);background:var(--color-bg-surface)}.layout{display:grid;grid-template-columns:240px minmax(0,1fr) 300px;min-height:560px}.layout>nav{padding:var(--space-3);border-right:1px solid var(--color-border-default);background:var(--color-bg-subtle)}nav>button{display:grid;grid-template-columns:4px 1fr;gap:var(--space-2);width:100%;padding:var(--space-3);border:0;border-bottom:1px solid var(--color-border-subtle);background:transparent;text-align:left}nav>button.active{background:var(--color-bg-surface)}nav i{background:var(--color-accent);border-radius:3px}nav span{display:grid;gap:3px}nav small{color:var(--color-text-secondary)}nav em{grid-column:2;color:var(--color-text-muted);font-size:var(--font-size-caption);font-style:normal}.baselines{display:grid;gap:var(--space-1);padding:var(--space-3)}.baselines span{padding:var(--space-1);border-bottom:1px solid var(--color-border-subtle);font-size:var(--font-size-dense)}.detail{padding:var(--space-5)}.detail h3{margin:0;font-size:var(--font-size-h2)}.muted{color:var(--color-text-secondary)}.rail{margin-top:var(--space-5);border-left:2px solid var(--color-accent-subtle)}.rail section{display:grid;grid-template-columns:14px minmax(0,1fr) auto;gap:var(--space-3);margin-left:-8px;padding:0 0 var(--space-5)}.rail section>span{width:14px;height:14px;border:3px solid var(--color-bg-surface);border-radius:50%;background:var(--color-accent)}.rail section[data-state="blocked"]>span{background:var(--color-text-muted)}.rail div{display:grid;gap:3px}.rail small{color:var(--color-text-muted)}.rail p{margin:var(--space-1) 0 0;color:var(--color-text-secondary)}.draft-box,.decision-box{display:grid;grid-template-columns:180px 1fr;gap:var(--space-2);padding:var(--space-4);border-top:1px solid var(--color-border-default);background:var(--color-bg-subtle)}.draft-box h4,.decision-box h4{grid-column:1/-1;margin:0}.draft-box textarea,.decision-box textarea{grid-column:1/-1;padding:var(--space-2);border:1px solid var(--color-border-default);border-radius:var(--radius-control)}.draft-box button,.decision-box button{grid-column:2;justify-self:end}.next-panel{padding:var(--space-4);border-left:1px solid var(--color-border-default);background:var(--color-bg-subtle)}.next-panel>section{margin-top:var(--space-4);padding-top:var(--space-3);border-top:1px solid var(--color-border-subtle)}.next-panel p,.next-panel li{color:var(--color-text-secondary);font-size:var(--font-size-dense)}.next-panel textarea{width:100%;box-sizing:border-box;margin-top:var(--space-2);padding:var(--space-2);border:1px solid var(--color-border-default);border-radius:var(--radius-control)}.warning{border-left:3px solid var(--color-warning);padding-left:var(--space-3)!important}.empty{display:grid;place-items:center;align-content:center;text-align:center;color:var(--color-text-secondary)}.empty span{font-size:36px;color:var(--color-accent)}.error{padding:var(--space-3);color:var(--color-danger)}@media(max-width:1050px){.layout{grid-template-columns:220px 1fr}.next-panel{grid-column:1/-1;border-top:1px solid var(--color-border-default);border-left:0}}@media(max-width:750px){.layout{grid-template-columns:1fr}.layout>nav{border-right:0;border-bottom:1px solid var(--color-border-default)}}
+.affairs{overflow:hidden;border:1px solid var(--color-border-default);border-radius:var(--radius-panel);background:var(--color-bg-surface)}header{display:flex;justify-content:space-between;align-items:end;padding:var(--space-5);border-bottom:1px solid var(--color-border-subtle)}header p,.eyebrow{margin:0 0 2px;color:var(--color-accent);font-size:var(--font-size-caption);font-weight:700;letter-spacing:.08em}h2{margin:0;font-size:var(--font-size-h2)}button,input,select,textarea{font:inherit}header button,.rail button,.draft-box button,.decision-box button,.next-panel button{min-height:36px;padding:0 var(--space-3);border:1px solid var(--color-border-strong);border-radius:var(--radius-control);background:var(--color-bg-surface)}.layout{display:grid;grid-template-columns:240px minmax(0,1fr) 300px;min-height:560px}.layout>nav{padding:var(--space-3);border-right:1px solid var(--color-border-default);background:var(--color-bg-subtle)}nav>button{display:grid;grid-template-columns:4px 1fr;gap:var(--space-2);width:100%;padding:var(--space-3);border:0;border-bottom:1px solid var(--color-border-subtle);background:transparent;text-align:left}nav>button.active{background:var(--color-bg-surface)}nav i{background:var(--color-accent);border-radius:3px}nav span{display:grid;gap:3px}nav small{color:var(--color-text-secondary)}nav em{grid-column:2;color:var(--color-text-muted);font-size:var(--font-size-caption);font-style:normal}.baselines{display:grid;gap:var(--space-1);padding:var(--space-3)}.baselines span{padding:var(--space-1);border-bottom:1px solid var(--color-border-subtle);font-size:var(--font-size-dense)}.detail{padding:var(--space-5)}.detail h3{margin:0;font-size:var(--font-size-h2)}.muted{color:var(--color-text-secondary)}.rail{margin-top:var(--space-5);border-left:2px solid var(--color-accent-subtle)}.rail section{display:grid;grid-template-columns:14px minmax(0,1fr) auto;gap:var(--space-3);margin-left:-8px;padding:0 0 var(--space-5)}.rail section>span{width:14px;height:14px;border:3px solid var(--color-bg-surface);border-radius:50%;background:var(--color-accent)}.rail section[data-state="blocked"]>span{background:var(--color-text-muted)}.rail div{display:grid;gap:3px}.rail small{color:var(--color-text-muted)}.rail p{margin:var(--space-1) 0 0;color:var(--color-text-secondary)}.draft-box,.decision-box{display:grid;grid-template-columns:180px 1fr;gap:var(--space-2);padding:var(--space-4);border-top:1px solid var(--color-border-default);background:var(--color-bg-subtle)}.draft-box h4,.decision-box h4{grid-column:1/-1;margin:0}.draft-box textarea,.decision-box textarea{grid-column:1/-1;padding:var(--space-2);border:1px solid var(--color-border-default);border-radius:var(--radius-control)}.draft-box button,.decision-box button{grid-column:2;justify-self:end}.next-panel{padding:var(--space-4);border-left:1px solid var(--color-border-default);background:var(--color-bg-subtle)}.next-panel>section{margin-top:var(--space-4);padding-top:var(--space-3);border-top:1px solid var(--color-border-subtle)}.next-panel p,.next-panel li{color:var(--color-text-secondary);font-size:var(--font-size-dense)}.next-panel textarea{width:100%;box-sizing:border-box;margin-top:var(--space-2);padding:var(--space-2);border:1px solid var(--color-border-default);border-radius:var(--radius-control)}.warning{border-left:3px solid var(--color-warning);padding-left:var(--space-3)!important}.empty{display:grid;place-items:center;align-content:center;text-align:center;color:var(--color-text-secondary)}.empty span{font-size:36px;color:var(--color-accent)}.error{padding:var(--space-3);color:var(--color-danger)}.creation-prefill{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--space-3);padding:var(--space-4) var(--space-5);border-bottom:1px solid var(--color-border-default);background:var(--color-warning-subtle)}.creation-prefill>div:first-child,.creation-prefill .wide,.ai-reference,.prefill-actions,.creation-prefill .message{grid-column:1/-1}.creation-prefill h3{margin:0}.creation-prefill label{display:grid;gap:var(--space-1);font-size:var(--font-size-dense);font-weight:650}.creation-prefill input,.creation-prefill select,.creation-prefill textarea{box-sizing:border-box;width:100%;padding:var(--space-2);border:1px solid var(--color-border-default);border-radius:var(--radius-control);background:var(--color-bg-surface)}.ai-reference{padding:var(--space-3);border-left:3px solid var(--color-warning);background:var(--color-bg-surface);overflow-wrap:anywhere}.retain-reference{display:flex!important;align-items:flex-start;gap:var(--space-2);margin-top:var(--space-2)}.retain-reference input{width:auto}.prefill-actions{display:flex;gap:var(--space-2)}.prefill-actions button{min-height:38px;padding:0 var(--space-3);border:1px solid var(--color-border-strong);border-radius:var(--radius-control);background:var(--color-bg-surface)}.prefill-actions button:first-child{border-color:var(--color-accent);background:var(--color-accent);color:white}.creation-prefill .message{margin:0;color:var(--color-accent-active)}@media(max-width:1050px){.layout{grid-template-columns:220px 1fr}.next-panel{grid-column:1/-1;border-top:1px solid var(--color-border-default);border-left:0}}@media(max-width:750px){.creation-prefill{grid-template-columns:1fr}.creation-prefill>*{grid-column:1!important}.layout{grid-template-columns:1fr}.layout>nav{border-right:0;border-bottom:1px solid var(--color-border-default)}}
 </style>

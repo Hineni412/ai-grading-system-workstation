@@ -315,11 +315,12 @@ export const sopApi = {
       summary: string | null
       participant_refs: string[]
     },
+    operationIdValue = operationId(),
   ) {
     return apiClient.request('/api/class-teacher/sop/affairs', {
       method: 'POST',
       headers: headers(token),
-      body: { ...input, operation_id: operationId() },
+      body: { ...input, operation_id: operationIdValue },
       decode: affair,
     })
   },
@@ -344,6 +345,26 @@ export const sopApi = {
         decode: affair,
       },
     )
+  },
+  recordAiSuggestion(
+    token: string,
+    value: Affair,
+    summary: string,
+    operationIdValue = operationId(),
+  ) {
+    return apiClient.request(`/api/class-teacher/sop/affairs/${value.affair_id}/decisions`, {
+      method: 'POST',
+      headers: headers(token),
+      body: {
+        operation_id: operationIdValue,
+        decision_kind: 'ai_suggestion',
+        summary,
+        step_instance_id: null,
+        decision_key: null,
+        selected_option: null,
+      },
+      decode: affair,
+    })
   },
   recordDecision(
     token: string,

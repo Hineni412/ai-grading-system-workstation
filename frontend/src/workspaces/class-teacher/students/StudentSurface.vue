@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { onMounted, ref, watch } from 'vue'
 
+import type { HomeIntakeHandoff } from '../api/homeIntake'
 import type { VaultStatus } from '../api/vault'
 import type { DirectorySubject } from '../api/r1'
 import { studentR1Api } from '../api/r1'
@@ -10,8 +11,19 @@ import StudentDirectoryPanel from './StudentDirectoryPanel.vue'
 import SupportReviewPanel from './SupportReviewPanel.vue'
 
 type Panel = 'directory' | 'support' | 'academic' | 'security'
-const props = defineProps<{ token: string; panel: Panel; status: VaultStatus | null; subjectId?: string | null }>()
-const emit = defineEmits<{ navigate: [panel: Panel]; locked: [reason: string] }>()
+const props = defineProps<{
+  token: string
+  panel: Panel
+  status: VaultStatus | null
+  subjectId?: string | null
+  handoff?: HomeIntakeHandoff | null
+}>()
+const emit = defineEmits<{
+  navigate: [panel: Panel, preserveHandoff?: boolean]
+  locked: [reason: string]
+  handoffPersisted: []
+  handoffDiscarded: []
+}>()
 const selected = ref<DirectorySubject | null>(null)
 const notice = ref('')
 async function restoreSelection() {
@@ -19,7 +31,7 @@ async function restoreSelection() {
   const value = await studentR1Api.header(props.token, props.subjectId)
   selected.value = value as unknown as DirectorySubject
 }
-function choose(subject: DirectorySubject) { selected.value = subject; emit('navigate', 'support') }
+function choose(subject: DirectorySubject) { selected.value = subject; emit('navigate', 'support', true) }
 function deleted(message: string) { selected.value = null; notice.value = message; emit('navigate', 'directory') }
 watch(() => props.subjectId, () => { void restoreSelection() })
 onMounted(() => { void restoreSelection() })
@@ -33,8 +45,16 @@ onMounted(() => { void restoreSelection() })
       <span v-if="selected">当前学生：<strong>{{ selected.display_name }}</strong></span>
       <span v-else>当前学生只保存在页面内存中</span>
     </nav>
-    <StudentDirectoryPanel v-if="panel==='directory'" :token="token" @select="choose" />
-    <SupportReviewPanel v-else-if="panel==='support' && selected" :key="selected.subject_id" :token="token" :subject="selected" />
+    <StudentDirectoryPanel v-if="panel==='directory'" :token="token" :handoff-pending="handoff?.destination === 'student_support'" @select="choose" />
+    <SupportReviewPanel
+      v-else-if="panel==='support' && selected"
+      :key="selected.subject_id"
+      :token="token"
+      :subject="selected"
+      :handoff="handoff?.destination === 'student_support' ? handoff : null"
+      @handoff-persisted="emit('handoffPersisted')"
+      @handoff-discarded="emit('handoffDiscarded')"
+    />
     <AcademicAnalysisPanel v-else-if="panel==='academic' && selected" :key="selected.subject_id" :token="token" :subject="selected" />
     <SecurityPanel v-else-if="panel==='security'" :token="token" :status="status" :subject="selected" @locked="emit('locked',$event)" @subject-deleted="deleted" />
     <section v-else class="reselect"><span aria-hidden="true">↶</span><h2>请重新选择学生</h2><p>刷新或直接打开此页面时，不会从网址恢复真实学生编号。请回到目录重新选择。</p><button type="button" @click="emit('navigate','directory')">返回学生目录</button></section>
