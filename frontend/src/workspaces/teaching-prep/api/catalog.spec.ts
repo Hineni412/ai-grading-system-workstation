@@ -331,6 +331,185 @@ describe('teaching preparation delivery API', () => {
     )
   })
 
+  it('starts semester mapping as a durable background job', async () => {
+    const semesterId = 's'.repeat(32)
+    const materialRecordId = 'r'.repeat(32)
+    const job = {
+      id: 27,
+      job_type: 'teaching_prep.semester_mapping',
+      payload: {
+        semester_id: semesterId,
+        material_record_id: materialRecordId,
+        operation_id: 'semester-mapping-1234567890abcdef1234567890abcdef',
+        source_state_sha256: '4'.repeat(64),
+      },
+      result: {},
+      status: 'queued',
+      progress: 0,
+      stage: 'queued',
+      detail: '等待生成课时目录建议',
+      error: null,
+      cancel_requested: false,
+      created_at: '2026-08-03T00:00:00Z',
+      started_at: null,
+      updated_at: '2026-08-03T00:00:00Z',
+      finished_at: null,
+    }
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValue(response(job, 202))
+
+    await expect(teachingPrepCatalogApi.startSemesterMappingProposalJob(
+      semesterId,
+      {
+        operation_id: String(job.payload.operation_id),
+        material_record_id: materialRecordId,
+        expected_source_state_sha256: String(job.payload.source_state_sha256),
+      },
+    )).resolves.toEqual(job)
+
+    expect(fetchMock).toHaveBeenCalledExactlyOnceWith(
+      `/api/teaching-prep/semesters/${semesterId}/mapping-proposal-jobs`,
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({
+          operation_id: job.payload.operation_id,
+          material_record_id: materialRecordId,
+          expected_source_state_sha256: job.payload.source_state_sha256,
+        }),
+      }),
+    )
+  })
+
+  it('decodes the recoverable semester mapping job list', async () => {
+    const semesterId = 's'.repeat(32)
+    const job = {
+      id: 28,
+      job_type: 'teaching_prep.semester_mapping',
+      payload: {
+        semester_id: semesterId,
+        material_record_id: 'r'.repeat(32),
+        operation_id: 'semester-mapping-1234567890abcdef1234567890abcdef',
+        source_state_sha256: '4'.repeat(64),
+      },
+      result: {},
+      status: 'running',
+      progress: 0.5,
+      stage: 'calling_model',
+      detail: '模型正在生成建议',
+      error: null,
+      cancel_requested: false,
+      created_at: '2026-08-03T00:00:00Z',
+      started_at: '2026-08-03T00:00:01Z',
+      updated_at: '2026-08-03T00:00:02Z',
+      finished_at: null,
+    }
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValue(response({ items: [job] }))
+
+    await expect(
+      teachingPrepCatalogApi.listSemesterMappingProposalJobs(semesterId),
+    ).resolves.toEqual([job])
+    expect(fetchMock).toHaveBeenCalledExactlyOnceWith(
+      `/api/teaching-prep/semesters/${semesterId}/mapping-proposal-jobs`,
+      expect.objectContaining({ method: 'GET' }),
+    )
+  })
+
+  it.each([
+    ['wrong job type', (job: Record<string, unknown>) => {
+      job.job_type = 'report_export'
+    }],
+    ['missing material identity', (job: Record<string, unknown>) => {
+      delete (job.payload as Record<string, unknown>).material_record_id
+    }],
+  ])('rejects a semester mapping Job with %s', async (_label, mutate) => {
+    const semesterId = 's'.repeat(32)
+    const job: Record<string, unknown> = {
+      id: 29,
+      job_type: 'teaching_prep.semester_mapping',
+      payload: {
+        semester_id: semesterId,
+        material_record_id: 'r'.repeat(32),
+        operation_id: 'semester-mapping-1234567890abcdef1234567890abcdef',
+        source_state_sha256: '4'.repeat(64),
+      },
+      result: {},
+      status: 'queued',
+      progress: 0,
+      stage: 'queued',
+      detail: '等待生成课时目录建议',
+      error: null,
+      cancel_requested: false,
+      created_at: '2026-08-03T00:00:00Z',
+      started_at: null,
+      updated_at: '2026-08-03T00:00:00Z',
+      finished_at: null,
+    }
+    mutate(job)
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(response(job, 202))
+
+    await expect(teachingPrepCatalogApi.startSemesterMappingProposalJob(
+      semesterId,
+      {
+        operation_id: 'semester-mapping-1234567890abcdef1234567890abcdef',
+        material_record_id: 'r'.repeat(32),
+        expected_source_state_sha256: '4'.repeat(64),
+      },
+    )).rejects.toMatchObject({
+      kind: 'contract',
+      code: 'invalid_success_contract',
+    })
+  })
+
+  it('rejects mapping proposals with missing review fields', async () => {
+    const semesterId = 's'.repeat(32)
+    const proposal = {
+      id: 'p'.repeat(32),
+      semester_id: semesterId,
+      operation_id: 'stored-operation',
+      source_state_sha256: '4'.repeat(64),
+      status: 'proposed',
+      payload: {
+        tree: [],
+        mappings: [{
+          mapping_id: 'mapping-1',
+          material_record_id: 'r'.repeat(32),
+          lesson_ref: 'lesson-1',
+          start_unit: 1,
+          end_unit: 3,
+          purpose: 'textbook',
+          decision: 'pending',
+          teacher_revision: null,
+          decision_reason: null,
+        }],
+        uncertainties: [],
+        source_material_record_ids: ['r'.repeat(32)],
+      },
+      revision: 1,
+      created_at: '2026-08-03T00:00:00Z',
+      updated_at: '2026-08-03T00:00:00Z',
+      applied_at: null,
+    }
+    for (const field of [
+      'mapping_id',
+      'decision',
+      'teacher_revision',
+      'decision_reason',
+    ]) {
+      const invalid = structuredClone(proposal)
+      delete (invalid.payload.mappings[0] as Record<string, unknown>)[field]
+      vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+        response({ items: [invalid] }),
+      )
+      await expect(
+        teachingPrepCatalogApi.listSemesterMappingProposals(semesterId),
+      ).rejects.toMatchObject({
+        kind: 'contract',
+        code: 'invalid_success_contract',
+      })
+    }
+  })
+
   it('accepts a safe semester material filename without weakening path checks', async () => {
     const semesterId = 's'.repeat(32)
     const payload = {

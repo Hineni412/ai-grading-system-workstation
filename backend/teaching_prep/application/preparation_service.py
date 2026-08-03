@@ -66,6 +66,7 @@ from backend.teaching_prep.domain.errors import (
     TeachingPrepConflictError,
     TeachingPrepNotFoundError,
     TeachingPrepRetryAvailableError,
+    TeachingPrepStateError,
     TeachingPrepValidationError,
 )
 from backend.teaching_prep.domain.models import (
@@ -994,6 +995,9 @@ class TeachingPrepService:
         *,
         operation_id: str,
         material_record_ids: Sequence[str],
+        expected_source_state_sha256: str | None = None,
+        progress_callback: Callable[[str], None] | None = None,
+        cancel_check: Callable[[], None] | None = None,
     ) -> tuple[SemesterMappingProposal, bool]:
         clean_semester_id = _clean_entity_id(semester_id)
         clean_operation_id = _clean_token(operation_id)
@@ -1006,11 +1010,25 @@ class TeachingPrepService:
             raise TeachingPrepValidationError(
                 "semester mapping handles one material at a time"
             )
+
+        def report(stage: str) -> None:
+            if progress_callback is not None:
+                progress_callback(stage)
+
+        report("checking")
         snapshot, source_digest = self.semester_mapping.snapshot(
             clean_semester_id,
             clean_material_ids,
         )
+        report("snapshotting")
         _require_initial_tree_source(snapshot)
+        if (
+            expected_source_state_sha256 is not None
+            and source_digest != str(expected_source_state_sha256).strip()
+        ):
+            raise TeachingPrepConflictError(
+                "semester lessons or materials changed; check the send scope again"
+            )
         request_hash = _stable_hash(
             {
                 "semester_id": clean_semester_id,
@@ -1018,11 +1036,13 @@ class TeachingPrepService:
                 "source_state_sha256": source_digest,
             }
         )
+        report("claiming_operation")
         existing = self.semester_mapping.find_generation(
             operation_id=clean_operation_id,
             request_hash=request_hash,
         )
         if existing is not None:
+            report("recovered")
             return existing, False
         if not _model_adapter_available(
             self.semester_mapping_model_adapter
@@ -1030,18 +1050,71 @@ class TeachingPrepService:
             raise TeachingPrepValidationError(
                 "semester mapping model is unavailable"
             )
+        if cancel_check is not None:
+            cancel_check()
         existing = self.semester_mapping.begin_generation(
             operation_id=clean_operation_id,
             request_hash=request_hash,
             semester_id=clean_semester_id,
         )
         if existing is not None:
+            report("recovered")
             return existing, False
+        try:
+            if cancel_check is not None:
+                cancel_check()
+        except Exception:
+            self.semester_mapping.fail_generation(
+                clean_operation_id,
+                "semester_mapping_stopped_before_model_call",
+            )
+            raise
+        self.semester_mapping.mark_generation_model_call_started(
+            clean_operation_id
+        )
+        try:
+            report("calling_model")
+            if cancel_check is not None:
+                cancel_check()
+        except Exception:
+            self.semester_mapping.mark_generation_result_unknown(
+                clean_operation_id,
+                "semester_mapping_stopped_at_model_dispatch",
+            )
+            raise
         try:
             raw = self.semester_mapping_model_adapter.generate(
                 operation_id=clean_operation_id,
                 semester_snapshot=snapshot,
             )
+        except TeachingPrepValidationError as exc:
+            self.semester_mapping.fail_generation(
+                clean_operation_id,
+                "semester_mapping_model_response_invalid",
+            )
+            raise TeachingPrepRetryAvailableError(
+                "semester mapping model response was invalid; the teacher may retry"
+            ) from exc
+        except Exception as exc:
+            self.semester_mapping.mark_generation_result_unknown(
+                clean_operation_id,
+                "semester_mapping_model_result_unknown",
+            )
+            raise TeachingPrepStateError(
+                "semester mapping result is unknown after the model request; "
+                "automatic retry is blocked"
+            ) from exc
+        try:
+            if cancel_check is not None:
+                cancel_check()
+        except Exception:
+            self.semester_mapping.mark_generation_result_unknown(
+                clean_operation_id,
+                "semester_mapping_cancelled_after_model_result",
+            )
+            raise
+        try:
+            report("validating_response")
             normalized = validate_semester_mapping_payload(
                 raw,
                 snapshot=snapshot,
@@ -1050,15 +1123,15 @@ class TeachingPrepService:
                 **normalized,
                 "source_material_record_ids": list(clean_material_ids),
             }
-            return (
-                self.semester_mapping.finish_generation(
-                    operation_id=clean_operation_id,
-                    semester_id=clean_semester_id,
-                    source_state_sha256=source_digest,
-                    payload=stored,
-                ),
-                True,
+            report("persisting_proposal")
+            proposal = self.semester_mapping.finish_generation(
+                operation_id=clean_operation_id,
+                semester_id=clean_semester_id,
+                source_state_sha256=source_digest,
+                payload=stored,
             )
+            report("completed")
+            return proposal, True
         except Exception as exc:
             self.semester_mapping.fail_generation(
                 clean_operation_id,
@@ -3761,8 +3834,18 @@ class TeachingPrepService:
             cursor = connection.execute(
                 """
                 UPDATE teaching_prep_operations
-                SET status = 'interrupted',
-                    error_code = 'application_restarted',
+                SET status = CASE
+                        WHEN operation_type = 'semester_mapping_model'
+                         AND error_code = 'semester_mapping_model_call_pending'
+                        THEN 'failed'
+                        ELSE 'interrupted'
+                    END,
+                    error_code = CASE
+                        WHEN operation_type = 'semester_mapping_model'
+                         AND error_code = 'semester_mapping_model_call_pending'
+                        THEN 'application_restarted_before_model_call'
+                        ELSE 'application_restarted'
+                    END,
                     updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
                     finished_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
                 WHERE status IN ('pending', 'running')
@@ -3816,7 +3899,7 @@ def _require_initial_tree_source(snapshot: Mapping[str, object]) -> None:
     materials = snapshot.get("materials")
     if not isinstance(materials, list) or len(materials) != 1:
         raise TeachingPrepValidationError(
-            "initial lesson tree requires one textbook or homework workbook"
+            "initial lesson tree requires one textbook, exercise workbook, or homework workbook"
         )
     material = materials[0]
     role = (
@@ -3824,7 +3907,11 @@ def _require_initial_tree_source(snapshot: Mapping[str, object]) -> None:
         if isinstance(material, Mapping)
         else ""
     )
-    if role not in {"textbook", "homework_workbook"}:
+    if role not in {
+        "textbook",
+        "exercise_workbook",
+        "homework_workbook",
+    }:
         raise TeachingPrepValidationError(
             "initial lesson tree requires a textbook or homework workbook"
         )

@@ -31,6 +31,48 @@ def client_with_manager(tmp_path):
             manager.shutdown()
 
 
+def test_semester_mapping_restart_before_model_call_remains_retryable() -> None:
+    from dataclasses import replace
+
+    from backend.api.routers.jobs import public_job_error
+    from backend.jobs.store import JobRecord
+    from backend.teaching_prep.api.router import _semester_mapping_job_response
+
+    before_call = JobRecord(
+        id=1,
+        job_type="teaching_prep.semester_mapping",
+        payload={
+            "semester_id": "s" * 32,
+            "material_record_id": "m" * 32,
+            "operation_id": "mapping-operation-0001",
+            "source_state_sha256": "a" * 64,
+        },
+        result={},
+        status="failed",
+        progress=0.05,
+        stage="checking",
+        detail="",
+        error="Application restarted while job was running.",
+        cancel_requested=False,
+        created_at="2026-08-03T00:00:00Z",
+        started_at="2026-08-03T00:00:00Z",
+        updated_at="2026-08-03T00:00:01Z",
+        finished_at="2026-08-03T00:00:01Z",
+    )
+    assert public_job_error(before_call) == (
+        "目录建议任务在模型请求前停止，未自动发出新的模型请求。"
+    )
+    assert _semester_mapping_job_response(before_call).error == (
+        "目录建议任务在模型请求前停止，未自动发出新的模型请求。"
+    )
+
+    after_call = replace(before_call, stage="calling_model", progress=0.35)
+    assert "结果可能未知" in str(public_job_error(after_call))
+    assert "结果可能未知" in str(
+        _semester_mapping_job_response(after_call).error
+    )
+
+
 def test_jobs_list_filters_session_and_returns_safe_summaries(
     client_with_manager,
 ) -> None:
@@ -384,6 +426,7 @@ def test_jobs_api_returns_unified_error_for_unsupported_type(client_with_manager
         "ops_migration_prepare",
         "ops_transfer_import_prepare",
         "ops_transfer_export",
+        "teaching_prep.semester_mapping",
     ],
 )
 def test_generic_jobs_api_rejects_ops_types_before_persistence(
