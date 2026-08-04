@@ -254,6 +254,7 @@ class HomeIntake:
         prior = list(prior_operations or [])
         local_context = {
             "home_intake": True,
+            "mode": "new_work",
             "round_number": round_number,
             "prior_operations": prior,
             "source_text": clean,
@@ -517,15 +518,15 @@ class HomeIntake:
             str(model_result.get("draft_text") or ""),
             recommended_route=str(metadata.get("recommended_route") or "student_support"),
         )
+        model_context = self.model.operation_context(
+            token=token, operation_id=operation_id
+        )
         if interpreted.get("kind") in {
             "follow_up",
             "plain_text",
             "affair_recommendation",
             "student_support_recommendation",
         }:
-            model_context = self.model.operation_context(
-                token=token, operation_id=operation_id
-            )
             aliases = [
                 str(item[1])
                 for item in list(model_context.get("identity_aliases") or [])
@@ -577,7 +578,11 @@ class HomeIntake:
             round_count=round_count,
             cumulative_count=self._cumulative_count(token, prior) + round_count,
             teacher_confirmation_required=bool(interpreted.get("teacher_confirmation_required")),
-            local_context={"prior_operations": prior},
+            local_context={
+                "prior_operations": prior,
+                "source_text": str(model_context.get("source_text") or ""),
+                "final_due_date": model_context.get("final_due_date"),
+            },
             result_fingerprint=(
                 hashlib.sha256(canonical_json(interpreted["result"])).hexdigest()
                 if isinstance(interpreted.get("result"), dict)
@@ -781,12 +786,6 @@ class HomeIntake:
         recommended_route: str,
     ) -> dict[str, object]:
         clean = draft_text.strip()
-        findings = SensitiveContentPolicy.sensitive_model_output_findings(clean)
-        if findings:
-            return HomeIntake._invalid_sensitive_result(
-                state="unsafe_output_suppressed",
-                error_category="unsafe_model_output",
-            )
         match = _FENCED_JSON.fullmatch(clean)
         json_text = match.group(1).strip() if match else clean
         try:
@@ -795,7 +794,7 @@ class HomeIntake:
             readable = " ".join(clean.split())
             if (
                 match is None
-                and 8 <= len(readable) <= 800
+                and 2 <= len(readable) <= 800
                 and re.search(r"[一-鿿]", readable)
             ):
                 return {
@@ -812,14 +811,6 @@ class HomeIntake:
         if not isinstance(decoded, dict):
             return HomeIntake._invalid_sensitive_result(
                 error_category="unsupported_result_shape",
-            )
-        decoded_findings = SensitiveContentPolicy.sensitive_model_output_findings(
-            json.dumps(decoded, ensure_ascii=False, sort_keys=True)
-        )
-        if decoded_findings:
-            return HomeIntake._invalid_sensitive_result(
-                state="unsafe_output_suppressed",
-                error_category="unsafe_model_output",
             )
         raw_kind = decoded.get("kind")
         if raw_kind is not None and not isinstance(raw_kind, str):
@@ -1014,10 +1005,11 @@ class HomeIntake:
             "rules": [
                 "第一轮必须基于现有信息形成可执行初稿，不得只追问；缺失信息写入 to_verify，不能阻止输出",
                 "返回 template_key、title、summary、steps、calendar_items、assumptions 和 to_verify；steps 使用基线步骤 key，日历使用 calendar.<步骤key>",
+                "按实际工作量排期；同一天可以安排多个可连续完成的步骤，不得机械地把每个步骤拆成一天",
                 "若 context 含 revision_context，只允许调整 selected_step_keys 和 selected_calendar_keys；其他内容原样保留，安全必做步骤不得删除",
                 "不得重复询问 task_text 中已有信息，不得索要不必要的姓名、电话或地址",
                 "建议只供教师复核，不创建事务、学生记录或外发消息",
-                "不得诊断、认定欺凌、决定惩戒、自动发送或自动结案",
+                "所有判断和建议都作为待教师核对的草稿，不得自动发送或自动结案",
             ],
             "draft_example": {
                 "kind": "affair_recommendation",

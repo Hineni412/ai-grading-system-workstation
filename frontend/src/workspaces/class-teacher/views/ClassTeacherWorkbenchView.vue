@@ -6,6 +6,7 @@ import type { HomeIntakeHandoff } from '../api/homeIntake'
 import { vaultApi } from '../api/vault'
 import { projectionR1Api } from '../api/r1'
 import AffairsSurface from '../affairs/AffairsSurface.vue'
+import IntakeDraftWorkspace from '../affairs/IntakeDraftWorkspace.vue'
 import CalendarSurface from '../ordinary/CalendarSurface.vue'
 import { createOrdinaryWorkModule } from '../ordinary/createOrdinaryWorkModule'
 import TodaySurface from '../ordinary/TodaySurface.vue'
@@ -99,6 +100,19 @@ function errorText(error: unknown): string {
 function clearNotices(): void {
   message.value = ''
   errorMessage.value = ''
+}
+
+function openHomeIntakeDraft(draftId: string): void {
+  void navigate({ surface: 'affairs', draftId })
+}
+
+function closeHomeIntakeDraft(): void {
+  void navigate({ surface: 'affairs', draftId: null })
+}
+
+function completeHomeIntakeDraft(): void {
+  message.value = '事务方案已经按教师最终确认保存。'
+  void navigate({ surface: 'affairs', draftId: null })
 }
 
 function clearSensitiveInputs(): void {
@@ -410,6 +424,7 @@ onBeforeUnmount(() => {
       :token="sessionToken || undefined"
       @open-restricted="openRestricted"
       @handoff="receiveHomeIntakeHandoff"
+      @open-draft="openHomeIntakeDraft"
     />
     <CalendarSurface
       v-else-if="routeState.surface === 'calendar'"
@@ -430,7 +445,16 @@ onBeforeUnmount(() => {
       <span>当前不设 PIN、密码或自动锁定</span>
     </div>
 
-    <template v-if="!loading && vaultStatus?.protection_mode === 'plaintext_debug_v1'">
+    <IntakeDraftWorkspace
+      v-if="routeState.surface === 'affairs' && routeState.draftId"
+      :draft-id="routeState.draftId"
+      :token="sessionToken"
+      :module="ordinaryWork"
+      @close="closeHomeIntakeDraft"
+      @completed="completeHomeIntakeDraft"
+    />
+
+    <template v-else-if="!loading && vaultStatus?.protection_mode === 'plaintext_debug_v1'">
       <AffairsSurface
         v-if="routeState.surface === 'affairs'"
         :token="sessionToken"
@@ -440,7 +464,7 @@ onBeforeUnmount(() => {
         @handoff-discarded="clearHomeIntakeHandoff"
       />
       <StudentSurface
-        v-else
+        v-else-if="routeState.surface === 'students'"
         :token="sessionToken"
         :panel="routeState.panel"
         :status="vaultStatus"
@@ -614,7 +638,7 @@ onBeforeUnmount(() => {
         @handoff-discarded="clearHomeIntakeHandoff"
       />
       <StudentSurface
-        v-else
+        v-else-if="routeState.surface === 'students'"
         :token="sessionToken"
         :panel="routeState.panel"
         :status="vaultStatus"

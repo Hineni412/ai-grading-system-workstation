@@ -62,4 +62,16 @@ describe('class teacher shell navigation', () => {
       week: '2026-08-03',
     })
   })
+
+  it('keeps only an opaque draft id on the focused affair route', async () => {
+    const draftId = 'a'.repeat(32)
+    const { router, routeState } = await mountAt('/class-teacher?surface=today')
+
+    await routeState.navigate({ surface: 'affairs', draftId })
+    expect(router.currentRoute.value.query).toEqual({ surface: 'affairs', draft: draftId })
+    expect(routeState.state.value.draftId).toBe(draftId)
+
+    await routeState.navigate({ surface: 'today' })
+    expect(router.currentRoute.value.query).toEqual({ surface: 'today' })
+  })
 })

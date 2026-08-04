@@ -174,6 +174,14 @@ class VaultService:
             self.work,
             self.model_approval,
         )
+        from .home_intake_drafts import HomeIntakeDrafts
+
+        self.home_intake_drafts = HomeIntakeDrafts(
+            self.database,
+            self.repository,
+            self.session_key,
+            self.ordinary_database,
+        )
         from .sensitive_work_projection import SensitiveWorkProjection
 
         self.projections = SensitiveWorkProjection(
@@ -1423,6 +1431,7 @@ class VaultService:
             self.sop_baselines,
             self.affairs,
             self.projections,
+            self.home_intake_drafts,
         )
         if hasattr(self, "projections"):
             self.projections.drain(token=token)
