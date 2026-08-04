@@ -540,19 +540,17 @@ class GradingService:
             }
 
         if resolved_grading_mode == "hybrid_batch":
-            hybrid_run_item_by_paper: dict[int, int] = {}
-            if supplement_only:
-                matched_records, hybrid_run_item_by_paper = yield from (
-                    self._classify_full_paper_candidates(
-                        matched_records,
-                        run_store=run_store,
-                        run=run,
-                        session_id=session_id,
-                        config_fingerprint=config_fingerprint,
-                        resume_run_id=supplement_run_id,
-                    )
+            matched_records, hybrid_run_item_by_paper = yield from (
+                self._classify_full_paper_candidates(
+                    matched_records,
+                    run_store=run_store,
+                    run=run,
+                    session_id=session_id,
+                    config_fingerprint=config_fingerprint,
+                    resume_run_id=resume_run_id or supplement_run_id,
                 )
-                total = len(matched_records)
+            )
+            total = len(matched_records)
             existing_results_by_student = {}
             skipped_questions_by_student = {
                 student_id: set(question_ids)

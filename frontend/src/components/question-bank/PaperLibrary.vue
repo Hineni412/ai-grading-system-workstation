@@ -9,7 +9,7 @@ import type {
 import { questionBankApi } from '../../api/question-bank'
 import { useQuestionBankStore } from '../../stores/question-bank'
 import { useJobStore } from '../../stores/jobs'
-import { TERMINAL_JOB_STATUSES } from '../../api/jobs'
+import { TERMINAL_JOB_STATUSES, type JobResponse } from '../../api/jobs'
 
 const props = withDefaults(defineProps<{
   pendingTaxonomyCount?: number
@@ -132,11 +132,25 @@ const completeQuestions = computed(() => store.papers.reduce(
   (total, paper) => total + paper.tagged_question_count,
   0,
 ))
-const activeAnalysisJobs = computed(() => Object.values(jobStore.jobs)
-  .filter((job) => (
-    job.job_type === 'question_import' || job.job_type === 'tagging_sync'
-  ) && !TERMINAL_JOB_STATUSES.has(job.status))
-  .sort((left, right) => right.id - left.id))
+const analysisJobs = computed(() => {
+  const matching = Object.values(jobStore.jobs)
+    .filter((job) => job.job_type === 'question_import' || job.job_type === 'tagging_sync')
+    .sort((left, right) => right.id - left.id)
+  const active = matching.filter((job) => !TERMINAL_JOB_STATUSES.has(job.status))
+  const latestFinished = matching.find((job) => TERMINAL_JOB_STATUSES.has(job.status))
+  return latestFinished ? [...active, latestFinished] : active
+})
+
+function analysisJobState(job: JobResponse): string {
+  if (!TERMINAL_JOB_STATUSES.has(job.status)) return job.detail || job.stage || '正在处理'
+  if (job.status === 'cancelled') return '任务已取消；已保存的结果不会被撤销。'
+  if (job.status === 'failed') return '本地处理失败，模型尚未完成分析；可再次补齐未完成项目。'
+  const outcome = String(job.result.outcome ?? '')
+  if (outcome === 'complete') return '标签、解题证据和训练判定点已完成。'
+  if (outcome === 'partial') return '部分题目已完成，未完成项目可继续补齐。'
+  if (outcome === 'failed') return '任务已结束，但标签或训练判定点没有保存成功。'
+  return '任务已结束，试卷卡片已刷新。'
+}
 
 watch(
   () => Object.values(jobStore.jobs)
@@ -585,15 +599,20 @@ async function confirmPermanentDelete(): Promise<void> {
 
     <p v-if="retagMessage" class="paper-library__state" role="status">{{ retagMessage }}</p>
 
-    <section v-if="activeAnalysisJobs.length" class="paper-library__task-strip" aria-live="polite">
+    <section v-if="analysisJobs.length" class="paper-library__task-strip" aria-live="polite">
       <div class="paper-library__task-strip-heading">
         <strong>AI 解析进度</strong>
         <span>任务会自动刷新，完成后试卷卡片也会同步更新。</span>
       </div>
-      <div v-for="job in activeAnalysisJobs" :key="job.id" class="paper-library__task">
+      <div
+        v-for="job in analysisJobs"
+        :key="job.id"
+        class="paper-library__task"
+        :class="{ 'is-failed': job.status === 'failed' || job.result.outcome === 'failed' }"
+      >
         <div class="paper-library__task-main">
           <strong>{{ job.job_type === 'question_import' ? '试卷入库' : '标签与训练点补齐' }} #{{ job.id }}</strong>
-          <span>{{ job.detail || job.stage || '正在处理' }}</span>
+          <span>{{ analysisJobState(job) }}</span>
         </div>
         <progress :value="Math.round(job.progress * 100)" max="100">
           {{ Math.round(job.progress * 100) }}%
@@ -1576,6 +1595,14 @@ async function confirmPermanentDelete(): Promise<void> {
   width: min(340px, 34vw);
   height: 8px;
   accent-color: var(--color-accent, #135e6b);
+}
+
+.paper-library__task.is-failed {
+  margin-inline: -6px;
+  padding: 8px 6px;
+  border-inline-start: 4px solid #b7791f;
+  border-radius: 8px;
+  background: #fff8e6;
 }
 
 @media (max-width: 620px) {
