@@ -153,6 +153,32 @@ describe('homepage intake flow', () => {
     expect(host.textContent).toContain('九月一日开学准备')
   })
 
+  it('keeps parsed plan visible when automatic draft persistence fails', async () => {
+    vi.spyOn(homeIntakeApi, 'preview').mockResolvedValue(intakePreview())
+    vi.spyOn(homeIntakeApi, 'dispatch').mockResolvedValue(intakeOperation({
+      result_kind: 'ordinary_plan', result_fingerprint: 'p'.repeat(64),
+      draft_persistence_error: 'home_intake_draft_save_failed',
+      draft_persistence_message: 'AI 方案已经返回，但自动保存草稿失败。请保留当前页面并重试保存，不要重新发起模型请求。',
+      result: { kind: 'ordinary_plan', value: {
+        assumptions: [], edges: [],
+        nodes: [{
+          draft_key: 'goal', kind: 'goal', title: '九月一日开学', details: '先准备开学事项',
+          rationale: null, status: 'pending', due_date: '2026-09-01',
+        }],
+      } },
+    }))
+    const host = await mount(QuickWorkCapture, { module: moduleStub() })
+    enter(host.querySelector<HTMLTextAreaElement>('#home-intake-text')!, '九月一日开学')
+    click(host, '交给 AI 整理')
+    await flush()
+
+    expect(host.textContent).toContain('AI 方案已经返回，但自动保存草稿失败')
+    expect(host.textContent).toContain('九月一日开学')
+    expect(host.textContent).toContain('先准备开学事项')
+    expect(host.textContent).toContain('重试保存草稿（不会再次调用 AI）')
+    expect(click(host, '确认方案，写入工作图与日历').disabled).toBe(true)
+  })
+
   it('uses one broad textarea with no date/type controls and directly dispatches a prevention-theme ordinary plan', async () => {
     const preview = vi.spyOn(homeIntakeApi, 'preview').mockResolvedValue(intakePreview({
       source_text: '开展防欺凌主题班会', final_due_date: '2026-08-07',

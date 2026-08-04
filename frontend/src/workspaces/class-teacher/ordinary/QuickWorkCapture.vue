@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
 
+import { ApiError } from '../../../api/errors'
+
 import {
   homeIntakeApi,
   type HomeIntakeDraftSummary,
@@ -33,6 +35,7 @@ const selectedSubjectIds = ref<string[]>([])
 const savedDrafts = ref<HomeIntakeDraftSummary[]>([])
 
 const unresolvedOperation = computed(() => ['result_unknown', 'in_progress'].includes(operation.value?.state ?? ''))
+const draftPersistenceFailed = computed(() => Boolean(operation.value?.draft_persistence_error))
 const unresolvedRequest = computed(() => Boolean(requestOperationId.value) && (!operation.value || unresolvedOperation.value))
 const unresolvedManualFallback = computed(() => Boolean(manualFallbackOperationId.value))
 const sourceLocked = computed(() => busy.value || unresolvedRequest.value || unresolvedManualFallback.value)
@@ -102,6 +105,7 @@ function discard(): void {
 }
 
 function resultMessage(value: HomeIntakeOperation): string {
+  if (value.draft_persistence_message) return value.draft_persistence_message
   const safeReason = value.validation_issue || value.assistant_message
   const reason = safeReason ? `；原因：${safeReason}` : ''
   if (value.state === 'succeeded') return value.result_kind === 'ordinary_plan'
@@ -126,8 +130,10 @@ async function dispatchPreview(value: HomeIntakePreview): Promise<void> {
     message.value = resultMessage(operation.value)
     if (operation.value.draft_id) emit('openDraft', operation.value.draft_id)
     else await prepareDraftControls()
-  } catch {
-    message.value = '发送响应未能确认。原文仍保留；请查看刚才这次调用，不要重新发送。'
+  } catch (error) {
+    message.value = error instanceof ApiError
+      ? `${error.message}；本轮未发起或不会重复发起模型请求。`
+      : '发送响应未能确认。原文仍保留；请查看刚才这次调用，不要重新发送。'
   }
   focusStatus()
 }
@@ -252,6 +258,7 @@ async function querySameOperation(): Promise<void> {
   try {
     operation.value = await homeIntakeApi.status(requestOperationId.value, props.token)
     message.value = `已查看刚才这次调用，没有再次调用 AI。${resultMessage(operation.value)}`
+    if (operation.value.draft_id) emit('openDraft', operation.value.draft_id)
   } catch {
     message.value = '刚才这次调用的状态暂时无法查询；没有再次调用 AI，原文仍保留。'
   } finally { busy.value = false; focusStatus() }
@@ -435,7 +442,7 @@ function preserveManualTitle(): void {
             </li>
           </ol>
           <div v-if="plan.edges.length" class="relations"><strong>节点关系</strong><ul><li v-for="edge in plan.edges" :key="`${edge.source_draft_key}-${edge.target_draft_key}-${edge.relation}`">{{ edge.source_draft_key }} → {{ edge.target_draft_key }}（{{ edge.relation }}）</li></ul></div>
-          <button class="primary" type="button" :disabled="busy" @click="confirmPlan">确认方案，写入工作图与日历</button>
+          <button class="primary" type="button" :disabled="busy || draftPersistenceFailed" @click="confirmPlan">确认方案，写入工作图与日历</button>
         </section>
 
         <section v-else-if="recommendation" class="recommendation">
@@ -458,7 +465,7 @@ function preserveManualTitle(): void {
           <section v-if="recommendation.to_verify.length" class="verify"><h4>后续核对（不阻止先采用方案）</h4><ul><li v-for="item in recommendation.to_verify" :key="item">{{ item }}</li></ul></section>
           <fieldset class="student-links"><legend>关联到学生档案</legend><p>姓名在当前我班名单中唯一匹配时已自动勾选；重名、未匹配或不确定时请手动选择。</p><label v-for="student in roster" :key="student.subject_id"><input v-model="selectedSubjectIds" type="checkbox" :value="student.subject_id">{{ student.display_name }} · {{ student.class_label || '未分班' }}</label><p v-if="!roster.length">当前还没有设置“我班学生”，请先到学生目录从现有学生库设置。</p></fieldset>
           <p class="reference-note">当前仍是草案，不会自动外发、作欺凌认定、决定惩戒或结案。</p>
-          <button class="primary" type="button" :disabled="busy || !selectedSubjectIds.length" @click="adoptRecommendation">采用并保存方案</button>
+          <button class="primary" type="button" :disabled="busy || draftPersistenceFailed || !selectedSubjectIds.length" @click="adoptRecommendation">采用并保存方案</button>
         </section>
 
         <section v-else-if="plainText" class="plain-text">
@@ -472,7 +479,7 @@ function preserveManualTitle(): void {
           <button type="button" :disabled="busy || !followUpAnswer.trim() || (!selectedStepKeys.length && !selectedCalendarKeys.length)" @click="submitFollowUp">发送标记和补充，重新调整</button>
         </section>
 
-        <button v-if="unresolvedOperation || requestOperationId" v-show="unresolvedOperation || message.includes('响应未能确认')" type="button" :disabled="busy || !requestOperationId" @click="querySameOperation">查看刚才这次调用（不会再次调用 AI）</button>
+        <button v-if="unresolvedOperation || requestOperationId" v-show="unresolvedOperation || draftPersistenceFailed || message.includes('响应未能确认')" type="button" :disabled="busy || !requestOperationId" @click="querySameOperation">{{ draftPersistenceFailed ? '重试保存草稿（不会再次调用 AI）' : '查看刚才这次调用（不会再次调用 AI）' }}</button>
         <button v-if="canRetry" type="button" :disabled="busy" @click="retryWithNewOperation">重新整理一次（会发起新请求）</button>
 
         <section v-if="canManualFallback" class="fallback">

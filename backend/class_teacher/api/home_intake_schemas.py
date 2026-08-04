@@ -117,6 +117,8 @@ class HomeIntakeOperationResponse(BaseModel):
     draft_id: str | None = None
     draft_version: int | None = None
     draft_saved_at: str | None = None
+    draft_persistence_error: str | None = None
+    draft_persistence_message: str | None = None
     previous_result_preserved: bool = False
     preserved_result_kind: Literal[
         "ordinary_plan",

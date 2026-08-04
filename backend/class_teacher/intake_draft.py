@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from datetime import date, timedelta
 from typing import Any
 
@@ -10,7 +11,12 @@ def classify_template(source_text: str, recommended_route: str) -> str:
     """Choose a conservative local SOP family from the first teacher sentence."""
     text = str(source_text or "")
     if recommended_route == "affair":
-        if any(word in text for word in ("受伤", "流血", "骨折", "昏迷", "急救")):
+        injury_text = re.sub(
+            r"(?:无人|无人员|没有人?|未)(?:明确)?受伤",
+            "",
+            text,
+        )
+        if any(word in injury_text for word in ("受伤", "流血", "骨折", "昏迷", "急救")):
             return "baseline.student_injury"
         if any(word in text for word in ("欺凌", "霸凌", "长期排挤", "反复威胁")):
             return "baseline.suspected_bullying"
@@ -18,6 +24,29 @@ def classify_template(source_text: str, recommended_route: str) -> str:
     if any(word in text for word in ("家长", "家校", "家访", "监护人")):
         return "baseline.family_communication"
     return "baseline.care_conversation"
+
+
+def _revision_template(
+    source_text: str,
+    recommended_route: str,
+    template_key_override: str | None,
+) -> str:
+    """Keep a prior template stable unless new facts require a safer workflow."""
+
+    classified = classify_template(source_text, recommended_route)
+    previous = str(template_key_override or "")
+    if not previous:
+        return classified
+    if recommended_route != "affair":
+        return previous
+    risk_rank = {
+        "baseline.student_conflict": 0,
+        "baseline.suspected_bullying": 1,
+        "baseline.student_injury": 2,
+    }
+    if previous not in risk_rank or classified not in risk_rank:
+        return classified
+    return max((previous, classified), key=risk_rank.__getitem__)
 
 
 def compose_sensitive_draft(
@@ -28,6 +57,7 @@ def compose_sensitive_draft(
     model_payload: dict[str, Any] | None,
     model_questions: list[str] | None = None,
     student_aliases: list[str] | None = None,
+    template_key_override: str | None = None,
 ) -> dict[str, Any]:
     """Build a complete, useful first draft even when the model only asks questions.
 
@@ -37,7 +67,11 @@ def compose_sensitive_draft(
     payload = dict(model_payload or {})
     # The local classifier owns the safety baseline. Model output may tailor
     # wording and dates, but it cannot switch an incident to a weaker workflow.
-    template_key = classify_template(source_text, recommended_route)
+    template_key = _revision_template(
+        source_text,
+        recommended_route,
+        template_key_override,
+    )
     baseline = SopBaselineService.preview(template_key)
 
     anchor = _date(resolved_date) or date.today()

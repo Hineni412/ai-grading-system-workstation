@@ -215,6 +215,10 @@ class HomeIntake:
         )
         route, recommendation = self._route(clean, redaction)
         emergency = self._emergency_guidance() if route == "emergency" else None
+        revision_allows_multiple_dates = bool(revision_context)
+        date_conflict_blocks_dispatch = (
+            date_info["status"] == "conflict" and not revision_allows_multiple_dates
+        )
         common: dict[str, object] = {
             "route": route,
             "recommended_route": recommendation,
@@ -227,13 +231,13 @@ class HomeIntake:
                 token, list(prior_operations or [])
             ),
             "physical_request_count": 0,
-            "dispatch_ready": date_info["status"] != "conflict",
+            "dispatch_ready": not date_conflict_blocks_dispatch,
             "local_only": bool(redaction.blocked_categories),
             "blocked_categories": list(redaction.blocked_categories),
             "removed_categories": list(redaction.removed_categories),
             "student_aliases": [alias for _name, alias in redaction.identity_aliases],
         }
-        if date_info["status"] == "conflict":
+        if date_conflict_blocks_dispatch:
             preview_id = uuid4().hex
             stored = {"route": route, "dispatch_ready": False}
             with self._lock:
@@ -436,6 +440,19 @@ class HomeIntake:
             raise
         return self.status(token=token, operation_id=operation_id)
 
+    def route_for_preview(self, preview_id: str) -> str:
+        """Expose only the storage class needed for pre-dispatch persistence checks."""
+
+        with self._lock:
+            preview = self._previews.get(preview_id)
+        if preview is None:
+            raise VaultError(
+                "home_intake_preview_not_found",
+                "首页发送预览不存在或已经过期，请重新生成",
+                status_code=404,
+            )
+        return str(preview["route"])
+
     def status(self, *, token: str, operation_id: str) -> dict[str, object]:
         self._validate_operation(operation_id)
         row = self._work_operation(operation_id)
@@ -534,6 +551,12 @@ class HomeIntake:
             ]
             raw_result = interpreted.get("result")
             payload = dict(raw_result) if isinstance(raw_result, dict) else {}
+            revision = model_context.get("revision_context")
+            revision_base = (
+                dict(revision.get("base_draft") or {})
+                if isinstance(revision, dict)
+                else {}
+            )
             draft = compose_sensitive_draft(
                 source_text=str(model_context.get("source_text") or ""),
                 recommended_route=str(
@@ -547,13 +570,16 @@ class HomeIntake:
                 model_payload=payload,
                 model_questions=list(interpreted.get("questions") or []),
                 student_aliases=aliases,
+                template_key_override=(
+                    str(revision_base.get("template_key") or "") or None
+                ),
             )
-            revision = model_context.get("revision_context")
-            if isinstance(revision, dict) and isinstance(
-                revision.get("base_draft"), dict
+            if (
+                revision_base
+                and draft.get("template_key") == revision_base.get("template_key")
             ):
                 draft = merge_revision(
-                    dict(revision["base_draft"]),
+                    revision_base,
                     draft,
                     [str(item) for item in list(revision.get("selected_step_keys") or [])],
                     [str(item) for item in list(revision.get("selected_calendar_keys") or [])],

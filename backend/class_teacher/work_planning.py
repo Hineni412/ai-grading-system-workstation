@@ -266,6 +266,9 @@ class WorkPlanning:
                 ),
                 "不得重复询问 task_text 或 final_due_date 中已经明确的信息，也不得索要完成当前方案不需要的姓名、电话、地址等敏感信息。",
                 "kind 是必填字段且不得为空；返回 questions 时 kind 必须为 follow_up，nodes 和 edges 必须为空数组。",
+                "new_work 的 plan 必须且只能有一个 kind=goal 的目标节点；其余节点使用 task、collection、communication、decision、sop 或 waiting。",
+                "nodes 中 status 必须是单个字符串 pending 或 waiting，不能返回数组。",
+                "edges 中 relation 必须是单个字符串 contains、depends_on 或 next，不能返回数组。",
                 "plan 中不阻止执行的未知信息写入 assumptions，不要同时返回 questions；不得使用 202X 等年份占位符。",
                 "优先只返回有效的 json 对象；若更适合连续事务或学生支持则只给出建议去向，不得自动创建。",
                 "可以完整提出判断和处置建议，但所有内容都只是待教师复核的草稿，不得自动执行、外发、完成或结案。",
@@ -289,11 +292,11 @@ class WorkPlanning:
                 "nodes": [
                     {
                         "id": "本次方案内唯一编号",
-                        "kind": sorted(_NODE_KINDS),
+                        "kind": "goal | task | collection | communication | decision | sop | waiting",
                         "title": "节点标题",
                         "details": "具体说明或 null",
                         "rationale": "为什么这样安排；没有则为 null",
-                        "status": sorted(_INITIAL_STATUSES),
+                        "status": "pending | waiting",
                         "due_date": "YYYY-MM-DD 或 null",
                     }
                 ],
@@ -301,7 +304,7 @@ class WorkPlanning:
                     {
                         "source_id": "已有节点编号",
                         "target_id": "已有节点编号",
-                        "relation": sorted(_EDGE_RELATIONS),
+                        "relation": "contains | depends_on | next",
                     }
                 ],
             },
@@ -503,6 +506,10 @@ class WorkPlanning:
                     parsed = self._validate_result(
                         raw_result,
                         mode=str(preview["mode"]),
+                        source_text=str(
+                            dict(receipt.get("local_context") or {}).get("source_text")
+                            or "教师工作"
+                        ),
                         final_due_date=(
                             None
                             if preview["final_due_date"] is None
@@ -745,6 +752,7 @@ class WorkPlanning:
         raw_result: str,
         *,
         mode: str,
+        source_text: str,
         final_due_date: str | None,
     ) -> dict[str, object]:
         clean_result = str(raw_result or "").strip()
@@ -898,7 +906,14 @@ class WorkPlanning:
             node_id = canonical_ids[raw_node_id]
             node_ids.add(node_id)
             node_kind = str(raw.get("kind") or "").strip()
-            status = str(raw.get("status") or "").strip()
+            raw_status = raw.get("status")
+            if (
+                isinstance(raw_status, list)
+                and len(raw_status) == 1
+                and isinstance(raw_status[0], str)
+            ):
+                raw_status = raw_status[0]
+            status = str(raw_status or "").strip()
             if node_kind not in _NODE_KINDS or status not in _INITIAL_STATUSES:
                 raise self._invalid("AI 方案节点类型或初始状态无效")
             title = self._bounded_text(raw.get("title"), label="节点标题", maximum=160)
@@ -927,13 +942,37 @@ class WorkPlanning:
                 }
             )
 
-        goal_ids = {
-            str(node["draft_key"])
-            for node in nodes
-            if node["kind"] == "goal"
-        }
-        if mode == "new_work" and len(goal_ids) != 1:
-            raise self._invalid("新工作方案必须且只能包含一个目标节点")
+        goal_nodes = [node for node in nodes if node["kind"] == "goal"]
+        synthetic_goal_id: str | None = None
+        if mode == "new_work" and not goal_nodes:
+            synthetic_goal_id = "goal"
+            suffix = 1
+            while synthetic_goal_id in node_ids:
+                synthetic_goal_id = f"goal_{suffix}"
+                suffix += 1
+            nodes.insert(
+                0,
+                {
+                    "draft_key": synthetic_goal_id,
+                    "kind": "goal",
+                    "title": self._bounded_text(
+                        source_text,
+                        label="目标标题",
+                        maximum=160,
+                    ),
+                    "details": "按 AI 返回的可执行步骤完成本次教师工作目标。",
+                    "rationale": "模型遗漏目标节点时，本地只补充承载原始输入的目标，不改写模型步骤。",
+                    "status": "pending",
+                    "due_date": final_due_date,
+                },
+            )
+            node_ids.add(synthetic_goal_id)
+            goal_nodes = [nodes[0]]
+        elif mode == "new_work" and len(goal_nodes) > 1:
+            for extra_goal in goal_nodes[1:]:
+                extra_goal["kind"] = "task"
+            goal_nodes = goal_nodes[:1]
+        goal_ids = {str(node["draft_key"]) for node in goal_nodes}
         if mode == "progress_update" and goal_ids:
             raise self._invalid("最新情况分支不能新建另一个目标节点")
 
@@ -948,7 +987,14 @@ class WorkPlanning:
             raw_target = str(raw.get("target_id") or "").strip()
             source = canonical_ids.get(raw_source, "")
             target = canonical_ids.get(raw_target, "")
-            relation = str(raw.get("relation") or "").strip()
+            raw_relation = raw.get("relation")
+            if (
+                isinstance(raw_relation, list)
+                and len(raw_relation) == 1
+                and isinstance(raw_relation[0], str)
+            ):
+                raw_relation = raw_relation[0]
+            relation = str(raw_relation or "").strip()
             if (
                 source not in node_ids
                 or target not in node_ids
@@ -970,6 +1016,22 @@ class WorkPlanning:
                     "relation": relation,
                 }
             )
+        if synthetic_goal_id is not None:
+            for node_id in sorted(node_ids - {synthetic_goal_id}):
+                key = (synthetic_goal_id, node_id, "contains")
+                if key in edge_keys:
+                    continue
+                edge_keys.add(key)
+                adjacency[synthetic_goal_id].add(node_id)
+                undirected[synthetic_goal_id].add(node_id)
+                undirected[node_id].add(synthetic_goal_id)
+                edges.append(
+                    {
+                        "source_draft_key": synthetic_goal_id,
+                        "target_draft_key": node_id,
+                        "relation": "contains",
+                    }
+                )
         self._assert_acyclic(adjacency)
         if len(node_ids) > 1:
             start = next(iter(goal_ids or node_ids))
