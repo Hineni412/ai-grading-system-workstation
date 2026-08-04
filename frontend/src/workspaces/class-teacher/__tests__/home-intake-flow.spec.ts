@@ -179,6 +179,28 @@ describe('homepage intake flow', () => {
     expect(click(host, '确认方案，写入工作图与日历').disabled).toBe(true)
   })
 
+  it('routes a saved AI result to the focused draft without rendering it again on the homepage', async () => {
+    vi.spyOn(homeIntakeApi, 'preview').mockResolvedValue(intakePreview())
+    vi.spyOn(homeIntakeApi, 'dispatch').mockResolvedValue(intakeOperation({
+      draft_id: 'a'.repeat(32), draft_version: 1,
+      result_kind: 'ordinary_plan', result_fingerprint: 'p'.repeat(64),
+      result: { kind: 'ordinary_plan', value: {
+        assumptions: [], edges: [],
+        nodes: [{ draft_key: 'goal', kind: 'goal', title: '九月一日开学', details: '准备开学事项', rationale: null, status: 'pending', due_date: '2026-09-01' }],
+      } },
+    }))
+    const openDraft = vi.fn()
+    const host = await mount(QuickWorkCapture, { module: moduleStub(), onOpenDraft: openDraft })
+    enter(host.querySelector<HTMLTextAreaElement>('#home-intake-text')!, '九月一日开学')
+    click(host, '交给 AI 整理')
+    await flush()
+
+    expect(openDraft).toHaveBeenCalledWith('a'.repeat(32))
+    expect(host.querySelector('.plan')).toBeNull()
+    expect(host.textContent).not.toContain('AI 初步执行方案')
+    expect(host.textContent).not.toContain('确认方案，写入工作图与日历')
+  })
+
   it('uses one broad textarea with no date/type controls and directly dispatches a prevention-theme ordinary plan', async () => {
     const preview = vi.spyOn(homeIntakeApi, 'preview').mockResolvedValue(intakePreview({
       source_text: '开展防欺凌主题班会', final_due_date: '2026-08-07',
@@ -209,7 +231,8 @@ describe('homepage intake flow', () => {
 
     expect(preview).toHaveBeenCalledWith('开展防欺凌主题班会', undefined)
     expect(dispatch).toHaveBeenCalledOnce()
-    expect(host.textContent).toContain('本地日期理解：已明确')
+    expect(host.querySelector<HTMLDetailsElement>('.technical-details')?.open).toBe(false)
+    expect(host.textContent).toContain('日期已明确')
     expect(host.textContent).toContain('草案，尚未写入')
     expect(host.textContent).toContain('准备案例和讨论问题')
     expect(host.textContent).toContain('先建立预防意识')
@@ -468,7 +491,8 @@ describe('homepage intake flow', () => {
     click(host, '交给 AI 整理')
     await flush()
     expect(preview).toHaveBeenCalledTimes(2)
-    expect(host.textContent).toContain('本地日期理解：日期待定')
+    expect(host.querySelector<HTMLDetailsElement>('.technical-details')?.open).toBe(false)
+    expect(host.textContent).toContain('日期待定')
     expect(host.querySelector('input[type="date"]')).toBeNull()
   })
 })
