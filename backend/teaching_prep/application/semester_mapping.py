@@ -3,7 +3,10 @@ from __future__ import annotations
 import re
 from collections.abc import Mapping
 
-from backend.teaching_prep.domain.errors import TeachingPrepValidationError
+from backend.teaching_prep.domain.errors import (
+    TeachingPrepModelResponseError,
+    TeachingPrepValidationError,
+)
 
 
 _KEY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
@@ -35,8 +38,10 @@ def validate_semester_mapping_payload(
         if item.get("node_type") == "lesson"
     }
     if tree and _mapping_list(snapshot.get("lessons"), "lessons"):
-        raise TeachingPrepValidationError(
-            "a proposed lesson tree can only apply to an empty semester"
+        raise TeachingPrepModelResponseError(
+            "semester mapping model attempted to replace the existing "
+            "lesson tree",
+            error_code="semester_mapping_existing_tree_replaced",
         )
 
     normalized_tree: list[dict[str, object]] = []
@@ -159,8 +164,10 @@ def validate_semester_mapping_payload(
             raw_lesson_ref,
         )
         if lesson_ref not in valid_lesson_refs:
-            raise TeachingPrepValidationError(
-                "mapping refers to an unavailable lesson"
+            raise TeachingPrepModelResponseError(
+                "semester mapping model referred to a lesson outside the "
+                "existing tree",
+                error_code="semester_mapping_unavailable_lesson",
             )
         start = mapping.get("start_unit")
         end = mapping.get("end_unit")

@@ -173,6 +173,94 @@ def test_active_profile_mapping_call_is_visible_in_ai_diagnostics(
     assert "duration_minutes" in str(messages[0]["content"])
 
 
+def test_existing_tree_mapping_call_only_offers_formal_lesson_ids() -> None:
+    captured: dict[str, object] = {}
+
+    def chat_completions(**kwargs: object) -> dict[str, object]:
+        captured.update(kwargs)
+        return {
+            "choices": [
+                {
+                    "message": {
+                        "content": (
+                            '{"tree":[],"mappings":[],"uncertainties":[]}'
+                        )
+                    }
+                }
+            ]
+        }
+
+    adapter = WorkspaceSemesterMappingModelAdapter(
+        gateway=SimpleNamespace(chat_completions=chat_completions),
+        client=object(),
+        model="synthetic-model",
+    )
+    lesson_id = "l" * 32
+
+    result = adapter.generate(
+        operation_id="semester-mapping-existing-tree-0001",
+        semester_snapshot={
+            "semester": {
+                "school_year": "2026-2027",
+                "term": "first",
+                "planned_new_lesson_count": 48,
+                "curriculum_title": "北师大",
+            },
+            "lessons": [
+                {
+                    "id": "c" * 32,
+                    "parent_id": None,
+                    "node_type": "chapter",
+                    "title": "第一章",
+                    "sort_order": 1,
+                    "duration_minutes": None,
+                },
+                {
+                    "id": lesson_id,
+                    "parent_id": "c" * 32,
+                    "node_type": "lesson",
+                    "title": "第1课时 算术平方根",
+                    "sort_order": 1,
+                    "duration_minutes": 45,
+                },
+            ],
+            "materials": [
+                {
+                    "record_id": "m" * 32,
+                    "display_name": "合成教辅",
+                    "material_role": "exercise_workbook",
+                    "unit_count": 67,
+                }
+            ],
+            "directory_evidence": {
+                "strategy": "sparse_outline",
+                "anchors": [],
+                "confidence": "low",
+            },
+        },
+    )
+
+    assert result == {"tree": [], "mappings": [], "uncertainties": []}
+    request_kwargs = captured["kwargs"]
+    assert isinstance(request_kwargs, dict)
+    messages = request_kwargs["messages"]
+    assert isinstance(messages, list)
+    system_instruction = str(messages[0]["content"])
+    model_snapshot = json.loads(str(messages[1]["content"]))
+    assert "proposal:" not in system_instruction
+    assert '"tree":[]' in system_instruction
+    assert model_snapshot["mapping_mode"] == "map_existing_lessons"
+    assert model_snapshot["available_lessons"] == [
+        {
+            "duration_minutes": 45,
+            "id": lesson_id,
+            "title": "第1课时 算术平方根",
+        }
+    ]
+    assert "lessons" not in model_snapshot
+    assert "planned_new_lesson_count" not in model_snapshot["semester"]
+
+
 @pytest.mark.parametrize(
     ("response", "expected_code"),
     [
@@ -409,6 +497,16 @@ def test_mapping_adapter_does_not_report_dispatch_without_client_transport() -> 
         (
             "semester mapping response failed local validation",
             "模型目录未通过页码和结构校验；可重新检查后手动生成。",
+        ),
+        (
+            "semester mapping model attempted to replace the existing "
+            "lesson tree",
+            "模型尝试重建已有课时目录，本次建议已拦截；请重新生成映射。",
+        ),
+        (
+            "semester mapping model referred to a lesson outside the "
+            "existing tree",
+            "模型引用了当前目录中不存在的课时，本次建议已拦截；请重新生成映射。",
         ),
         (
             "semester mapping model configuration is unavailable",
