@@ -514,6 +514,11 @@ def _combined_prompt(
         "integer unchanged into both the result and solution_evidence, and "
         "never mix candidates between questions. Tag candidates may only come "
         "from that question's candidate_contract. Solution evidence must use "
+        "Simplified Chinese for every teacher-visible semantic field, including "
+        "target, observable_evidence, justification, rationale, auxiliary rules, "
+        "equivalent rules, counterexamples, and reference assessment reasons. "
+        "Only formulas, mathematical variables, option letters, machine IDs, and "
+        "verbatim answer anchors may remain non-Chinese. "
         "question-solution-evidence-v2 and be split into question parts. Within "
         "each part, one independently scorable mathematical milestone must map "
         "to exactly one evidence point. If a derivation contains several meaningful "
@@ -583,7 +588,12 @@ def _combined_prompt(
         "not a grading fact. Decide response_mode separately for every part from the "
         "question, its complete answer and analysis. One blank in part (1) must never "
         "collapse later process-required parts into a whole-question fill blank. When "
-        "expected_part_count is present, return exactly that many parts in the stated order."
+        "expected_part_count is present, return exactly that many parts in the stated order. "
+        "response_shape is a deterministic local fact: single_choice and single_blank "
+        "must each return one exact_objective part with one final-answer evidence point; "
+        "never turn option-by-option elimination or explanatory work into extra points. "
+        "multiple_blank keeps separately observable blank answers, and unknown must not "
+        "be forced into an objective shape."
     )
     questions = []
     for item in batch.questions:
@@ -602,6 +612,7 @@ def _combined_prompt(
             "candidate_contract": dict(item.taxonomy_contract),
             "reference_solution": dict(item.reference_solution),
             "question_type_confirmed": item.question_type_confirmed,
+            "response_shape": item.objective_response_shape,
             "expected_part_count": (
                 len(item.explicit_part_labels)
                 if item.explicit_part_labels

@@ -47,6 +47,7 @@ const exportMode = ref<ExportMode>('bundle')
 const exportFormat = ref<'docx' | 'markdown'>('docx')
 const exportAudience = ref<'student' | 'teacher'>('student')
 const exportVariantId = ref<number | null>(null)
+const scopeEditorOpen = ref(true)
 let studentsController: AbortController | null = null
 let autoAnalyzeHandle: ReturnType<typeof setTimeout> | null = null
 let autoAnalyzeGeneration = 0
@@ -611,15 +612,24 @@ onBeforeUnmount(() => {
           <p class="training-eyebrow">01 · 明确范围</p>
           <h2 id="training-scope-title">选择考试与学生</h2>
         </div>
-        <span>{{ selectedExamCount }} 场考试 · {{ selectedStudentCount }} 名学生</span>
+        <div class="training-scope-summary">
+          <span>{{ selectedExamCount }} 场考试 · {{ selectedStudentCount }} 名学生</span>
+          <button
+            type="button"
+            class="training-button is-secondary"
+            :aria-expanded="scopeEditorOpen"
+            @click="scopeEditorOpen = !scopeEditorOpen"
+          >{{ scopeEditorOpen ? '收起范围' : '更改范围' }}</button>
+        </div>
       </div>
 
-      <div v-if="referenceState === 'error'" class="training-feedback is-error" role="alert">
-        学生名单暂时无法读取。当前未选择任何学生。
-        <button type="button" class="training-link" @click="loadStudents">重新读取</button>
-      </div>
+      <template v-if="scopeEditorOpen">
+        <div v-if="referenceState === 'error'" class="training-feedback is-error" role="alert">
+          学生名单暂时无法读取。当前未选择任何学生。
+          <button type="button" class="training-link" @click="loadStudents">重新读取</button>
+        </div>
 
-      <div class="training-scope-grid">
+        <div class="training-scope-grid">
         <fieldset class="training-filter-group">
           <legend>考试</legend>
           <div class="training-filter-modes" data-testid="training-exam-mode">
@@ -690,24 +700,25 @@ onBeforeUnmount(() => {
             </div>
           </template>
         </fieldset>
-      </div>
+        </div>
 
-      <div class="training-action-row">
-        <p>筛选条件有效后会自动刷新下方热力图，不调用外部 AI，也不会产生模型费用。</p>
-        <button
-          v-if="training.analysisState === 'error'"
-          type="button"
-          class="training-button is-secondary"
-          data-testid="retry-training-analysis"
-          :disabled="!canAnalyze"
-          @click="analyze"
-        >
-          重新读取热力图
-        </button>
-        <span v-else class="training-auto-state" role="status">
-          {{ training.analysisState === 'loading' ? '正在自动刷新…' : '范围变化后自动刷新' }}
-        </span>
-      </div>
+        <div class="training-action-row">
+          <p>筛选条件有效后会自动刷新下方热力图，不调用外部 AI，也不会产生模型费用。</p>
+          <button
+            v-if="training.analysisState === 'error'"
+            type="button"
+            class="training-button is-secondary"
+            data-testid="retry-training-analysis"
+            :disabled="!canAnalyze"
+            @click="analyze"
+          >
+            重新读取热力图
+          </button>
+          <span v-else class="training-auto-state" role="status">
+            {{ training.analysisState === 'loading' ? '正在自动刷新…' : '范围变化后自动刷新' }}
+          </span>
+        </div>
+      </template>
     </section>
 
     <p v-if="training.errorMessage" class="training-feedback is-error" role="alert">
@@ -988,7 +999,22 @@ onBeforeUnmount(() => {
       </main>
 
       <aside class="training-sidebar" aria-labelledby="training-history-title">
-        <section>
+        <nav class="training-stage-rail" aria-label="训练推荐步骤">
+          <strong>当前工作</strong>
+          <ol>
+            <li :class="{ 'is-complete': selectedExamCount > 0 && selectedStudentCount > 0 }">确定范围</li>
+            <li :class="{ 'is-complete': Boolean(training.diagnosis) }">核对证据</li>
+            <li :class="{ 'is-complete': Boolean(training.plan) }">确认计划</li>
+            <li :class="{ 'is-complete': Boolean(selectedTask) }">保存与出件</li>
+          </ol>
+        </nav>
+
+        <details class="training-history-panel">
+          <summary>
+            <span>最近训练任务</span>
+            <strong>{{ training.tasks.length }}</strong>
+          </summary>
+          <section>
           <div class="training-section-heading">
             <div>
               <p class="training-eyebrow">已保存</p>
@@ -1020,7 +1046,8 @@ onBeforeUnmount(() => {
               </button>
             </li>
           </ul>
-        </section>
+          </section>
+        </details>
 
         <section v-if="selectedTask" class="training-export-panel">
           <div class="training-section-heading">

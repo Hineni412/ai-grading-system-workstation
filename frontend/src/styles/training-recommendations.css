@@ -88,6 +88,19 @@
   background: var(--color-bg-subtle);
 }
 
+.training-scope-summary {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.training-scope:not(:has(.training-scope-grid)) {
+  gap: var(--space-2);
+  padding-block: var(--space-3);
+  background: var(--color-bg-surface);
+  border-inline-start: var(--border-selected-width) solid var(--color-accent);
+}
+
 .training-scope-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -379,21 +392,117 @@
 
 .training-main-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 320px;
+  grid-template-columns: minmax(260px, 1.15fr) minmax(420px, 1.85fr) minmax(240px, .9fr);
   align-items: start;
   gap: var(--space-5);
 }
 
-.training-primary,
+.training-primary {
+  display: contents;
+}
+
 .training-sidebar {
   display: grid;
   min-width: 0;
   gap: var(--space-5);
 }
 
+.training-ledger { grid-column: 1; grid-row: 1; }
+.training-evidence { grid-column: 1; grid-row: 2; }
+.training-plan { grid-column: 2; grid-row: 1 / span 2; }
+.training-sidebar { grid-column: 3; grid-row: 1 / span 2; }
+
 .training-sidebar {
   position: sticky;
   top: calc(var(--shell-topbar-height) + var(--space-4));
+}
+
+.training-stage-rail,
+.training-history-panel {
+  border: var(--border-width) solid var(--color-border-default);
+  border-radius: var(--radius-panel);
+  background: var(--color-bg-surface);
+}
+
+.training-stage-rail {
+  padding: var(--space-4);
+}
+
+.training-stage-rail ol {
+  display: grid;
+  gap: 0;
+  margin: var(--space-3) 0 0;
+  padding: 0;
+  list-style: none;
+  counter-reset: training-stage;
+}
+
+.training-stage-rail li {
+  position: relative;
+  min-height: 38px;
+  padding: 3px 0 var(--space-3) 34px;
+  color: var(--color-text-secondary);
+  counter-increment: training-stage;
+}
+
+.training-stage-rail li::before {
+  position: absolute;
+  top: 0;
+  left: 0;
+  display: grid;
+  width: 24px;
+  height: 24px;
+  place-items: center;
+  border: var(--border-width) solid var(--color-border-strong);
+  border-radius: 50%;
+  background: var(--color-bg-surface);
+  content: counter(training-stage);
+  font-size: var(--font-size-caption);
+}
+
+.training-stage-rail li:not(:last-child)::after {
+  position: absolute;
+  top: 24px;
+  bottom: 0;
+  left: 12px;
+  width: 1px;
+  background: var(--color-border-default);
+  content: "";
+}
+
+.training-stage-rail li.is-complete {
+  color: var(--color-text-primary);
+  font-weight: var(--font-weight-semibold);
+}
+
+.training-stage-rail li.is-complete::before {
+  border-color: var(--color-accent);
+  background: var(--color-accent);
+  color: var(--color-bg-surface);
+  content: "✓";
+}
+
+.training-history-panel > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-3) var(--space-4);
+  cursor: pointer;
+}
+
+.training-history-panel > summary strong {
+  min-width: 24px;
+  padding: 2px 6px;
+  border-radius: var(--radius-tag);
+  background: var(--color-bg-subtle);
+  text-align: center;
+}
+
+.training-history-panel > section {
+  display: grid;
+  gap: var(--space-4);
+  padding: var(--space-4);
+  border-block-start: var(--border-width) solid var(--color-border-subtle);
 }
 
 .training-ledger-scroll {
@@ -757,13 +866,19 @@
 
 @media (max-width: 1180px) {
   .training-main-grid {
-    grid-template-columns: minmax(0, 1fr);
+    grid-template-columns: minmax(300px, 1fr) minmax(0, 1.7fr);
   }
 
   .training-sidebar {
     position: static;
+    grid-column: 1 / -1;
+    grid-row: auto;
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
+
+  .training-ledger { grid-column: 1; grid-row: 1; }
+  .training-evidence { grid-column: 1; grid-row: 2; }
+  .training-plan { grid-column: 2; grid-row: 1 / span 2; }
 
   .training-jobs {
     grid-column: 1 / -1;
@@ -788,12 +903,20 @@
   }
 
   .training-scope-grid,
+  .training-main-grid,
   .training-sidebar,
   .training-plan-controls,
   .training-ratio-controls,
   .training-path {
     grid-template-columns: minmax(0, 1fr);
   }
+
+  .training-ledger,
+  .training-evidence,
+  .training-plan,
+  .training-sidebar { grid-column: auto; grid-row: auto; }
+
+  .training-scope-summary { align-items: stretch; flex-direction: column; }
 
   .training-filter-modes,
   .training-filter-inline,
