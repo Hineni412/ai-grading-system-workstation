@@ -9,7 +9,6 @@ from datetime import UTC, date, datetime, timedelta
 from typing import Mapping, Protocol
 from uuid import uuid4
 
-from .content_policy import SensitiveContentPolicy
 from .crypto import canonical_json
 from .errors import VaultError
 from .model_approval import (
@@ -269,7 +268,7 @@ class WorkPlanning:
                 "kind 是必填字段且不得为空；返回 questions 时 kind 必须为 follow_up，nodes 和 edges 必须为空数组。",
                 "plan 中不阻止执行的未知信息写入 assumptions，不要同时返回 questions；不得使用 202X 等年份占位符。",
                 "优先只返回有效的 json 对象；若更适合连续事务或学生支持则只给出建议去向，不得自动创建。",
-                "不得诊断、认定欺凌、惩戒、自动外发、自动完成或自动结案。",
+                "可以完整提出判断和处置建议，但所有内容都只是待教师复核的草稿，不得自动执行、外发、完成或结案。",
                 "没有最终日期时不得编造节点日期；所有日期只能是 YYYY-MM-DD，且不能晚于 final_due_date。",
             ],
             "output_contract": {
@@ -764,7 +763,6 @@ class WorkPlanning:
                 8 <= len(readable) <= 800
                 and re.search(r"[一-鿿]", readable)
             ):
-                self._assert_safe_model_text([readable])
                 return {
                     "kind": "plain_text",
                     "questions": [],
@@ -809,7 +807,6 @@ class WorkPlanning:
             "plain_text",
         }:
             raise self._invalid("AI 返回了不支持的方案类型")
-        self._assert_safe_model_text([*questions, *assumptions])
         if kind == "follow_up":
             if not questions:
                 raise self._invalid("AI 表示信息不足但没有返回追问")
@@ -841,7 +838,6 @@ class WorkPlanning:
                 label="安全说明",
                 maximum=800,
             )
-            self._assert_safe_model_text([message])
             return {
                 "kind": kind,
                 "questions": [],
@@ -861,7 +857,6 @@ class WorkPlanning:
                 maximum=800,
             )
             reasons = self._string_list(decoded.get("reasons", []), label="建议理由")
-            self._assert_safe_model_text([summary, *reasons])
             return {
                 "kind": kind,
                 "questions": [],
@@ -881,14 +876,26 @@ class WorkPlanning:
         if not isinstance(raw_edges, list) or len(raw_edges) > 64:
             raise self._invalid("AI 方案关系数量无效")
 
+        raw_node_ids = [
+            str(raw.get("id") or "").strip()
+            for raw in raw_nodes
+            if isinstance(raw, dict)
+        ]
+        if (
+            len(raw_node_ids) != len(raw_nodes)
+            or any(not item for item in raw_node_ids)
+            or len(set(raw_node_ids)) != len(raw_node_ids)
+        ):
+            raise self._invalid("AI 方案节点编号无效或重复")
+        canonical_ids = self._canonical_node_ids(raw_node_ids)
+
         nodes: list[dict[str, object]] = []
         node_ids: set[str] = set()
         for raw in raw_nodes:
             if not isinstance(raw, dict):
                 raise self._invalid("AI 方案节点结构无效")
-            node_id = str(raw.get("id") or "").strip()
-            if _DRAFT_KEY.fullmatch(node_id) is None or node_id in node_ids:
-                raise self._invalid("AI 方案节点编号无效或重复")
+            raw_node_id = str(raw.get("id") or "").strip()
+            node_id = canonical_ids[raw_node_id]
             node_ids.add(node_id)
             node_kind = str(raw.get("kind") or "").strip()
             status = str(raw.get("status") or "").strip()
@@ -937,8 +944,10 @@ class WorkPlanning:
         for raw in raw_edges:
             if not isinstance(raw, dict):
                 raise self._invalid("AI 方案关系结构无效")
-            source = str(raw.get("source_id") or "").strip()
-            target = str(raw.get("target_id") or "").strip()
+            raw_source = str(raw.get("source_id") or "").strip()
+            raw_target = str(raw.get("target_id") or "").strip()
+            source = canonical_ids.get(raw_source, "")
+            target = canonical_ids.get(raw_target, "")
             relation = str(raw.get("relation") or "").strip()
             if (
                 source not in node_ids
@@ -974,16 +983,6 @@ class WorkPlanning:
             if reached != node_ids:
                 raise self._invalid("AI 方案存在与主流程无关的孤立节点")
 
-        all_text = " ".join(
-            [
-                *(str(node["title"]) for node in nodes),
-                *(str(node.get("details") or "") for node in nodes),
-                *(str(node.get("rationale") or "") for node in nodes),
-                *questions,
-                *assumptions,
-            ]
-        )
-        self._assert_safe_model_text([all_text])
         return {
             "kind": kind,
             "questions": questions,
@@ -1034,14 +1033,22 @@ class WorkPlanning:
         return clean
 
     @staticmethod
-    def _assert_safe_model_text(values: list[str]) -> None:
-        findings: list[str] = []
-        for value in values:
-            findings.extend(SensitiveContentPolicy.model_output_findings(value))
-        if findings:
-            raise WorkPlanning._invalid(
-                "AI 返回内容包含敏感身份或禁止由模型决定的事项"
-            )
+    def _canonical_node_ids(raw_ids: list[str]) -> dict[str, str]:
+        reserved = {item for item in raw_ids if _DRAFT_KEY.fullmatch(item)}
+        used: set[str] = set()
+        result: dict[str, str] = {}
+        for index, raw_id in enumerate(raw_ids, start=1):
+            if _DRAFT_KEY.fullmatch(raw_id) and raw_id not in used:
+                canonical = raw_id
+            else:
+                suffix = 0
+                canonical = f"node_{index}"
+                while canonical in reserved or canonical in used:
+                    suffix += 1
+                    canonical = f"node_{index}_{suffix}"
+            used.add(canonical)
+            result[raw_id] = canonical
+        return result
 
     @staticmethod
     def _plan_date(value: object, final_due_date: str | None) -> str | None:

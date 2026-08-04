@@ -111,6 +111,7 @@ export interface HomeIntakeRecommendation {
   student_aliases: string[]
   risk_level: string
   emergency_prompt: string | null
+  model_advice?: string | null
 }
 
 export interface HomeIntakeWorkflowStep {
@@ -156,6 +157,35 @@ export interface HomeIntakeOperation {
   teacher_confirmation_required: boolean
   result_fingerprint: string | null
   local_context: Record<string, unknown>
+  draft_id?: string | null
+  draft_version?: number | null
+  draft_saved_at?: string | null
+  previous_result_preserved?: boolean
+  preserved_result_kind?: 'ordinary_plan' | 'affair_recommendation' | 'student_support_recommendation' | null
+  preserved_result?: HomeIntakeDecodedResult
+}
+
+export interface HomeIntakeDraftSummary {
+  draft_id: string
+  version: number
+  route: HomeIntakeRoute
+  result_kind: 'ordinary_plan' | 'affair_recommendation' | 'student_support_recommendation'
+  title: string
+  updated_at: string
+}
+
+export interface HomeIntakeDraft {
+  draft_id: string
+  version: number
+  state: 'open' | 'adopting' | 'adopted' | 'discarded'
+  route: HomeIntakeRoute
+  result_kind: 'ordinary_plan' | 'affair_recommendation' | 'student_support_recommendation'
+  source_operation_id: string
+  content_fingerprint: string
+  created_at: string
+  updated_at: string
+  adopted_affair_id: string | null
+  operation: HomeIntakeOperation
 }
 
 export interface HomeIntakeHandoff {
@@ -316,6 +346,7 @@ function recommendation(value: unknown, kind: 'affair_recommendation' | 'student
     student_aliases: item.student_aliases === undefined ? [] : strings(item.student_aliases),
     risk_level: string(item.risk_level),
     emergency_prompt: nullableString(item.emergency_prompt),
+    model_advice: nullableString(item.model_advice),
   }
 }
 function decodedResult(kind: HomeIntakeResultKind | null, value: unknown): HomeIntakeDecodedResult {
@@ -342,6 +373,9 @@ function operation(value: unknown): HomeIntakeOperation {
   const roundCount = number(item.round_physical_request_count)
   const physicalCount = number(item.physical_request_count)
   if (roundCount !== physicalCount) throw new Error('home intake contract')
+  const preservedKind = item.preserved_result_kind === null || item.preserved_result_kind === undefined
+    ? null
+    : literal(item.preserved_result_kind, ['ordinary_plan', 'affair_recommendation', 'student_support_recommendation'] as const)
   return {
     operation_id: string(item.operation_id),
     route: literal(item.route, routes),
@@ -360,6 +394,41 @@ function operation(value: unknown): HomeIntakeOperation {
     teacher_confirmation_required: boolean(item.teacher_confirmation_required),
     result_fingerprint: nullableString(item.result_fingerprint),
     local_context: record(item.local_context),
+    draft_id: nullableString(item.draft_id),
+    draft_version: item.draft_version === null || item.draft_version === undefined ? null : number(item.draft_version),
+    draft_saved_at: nullableString(item.draft_saved_at),
+    previous_result_preserved: item.previous_result_preserved === undefined ? false : boolean(item.previous_result_preserved),
+    preserved_result_kind: preservedKind,
+    preserved_result: preservedKind === null ? null : decodedResult(preservedKind, item.preserved_result),
+  }
+}
+
+function draftSummary(value: unknown): HomeIntakeDraftSummary {
+  const item = record(value)
+  return {
+    draft_id: string(item.draft_id),
+    version: number(item.version),
+    route: literal(item.route, routes),
+    result_kind: literal(item.result_kind, ['ordinary_plan', 'affair_recommendation', 'student_support_recommendation'] as const),
+    title: string(item.title),
+    updated_at: string(item.updated_at),
+  }
+}
+
+function draft(value: unknown): HomeIntakeDraft {
+  const item = record(value)
+  return {
+    draft_id: string(item.draft_id),
+    version: number(item.version),
+    state: literal(item.state, ['open', 'adopting', 'adopted', 'discarded'] as const),
+    route: literal(item.route, routes),
+    result_kind: literal(item.result_kind, ['ordinary_plan', 'affair_recommendation', 'student_support_recommendation'] as const),
+    source_operation_id: string(item.source_operation_id),
+    content_fingerprint: string(item.content_fingerprint),
+    created_at: string(item.created_at),
+    updated_at: string(item.updated_at),
+    adopted_affair_id: nullableString(item.adopted_affair_id),
+    operation: operation(item.operation),
   }
 }
 
@@ -408,6 +477,35 @@ export const homeIntakeApi = {
       headers: token ? { 'x-class-teacher-session': token } : undefined, decode: operation,
     })
   },
+  listDrafts(token?: string) {
+    return apiClient.request('/api/class-teacher/home/intake/drafts', {
+      headers: headers(token), decode: (value) => {
+        const item = record(value)
+        if (!Array.isArray(item.items)) throw new Error('home intake contract')
+        return item.items.map(draftSummary)
+      },
+    })
+  },
+  getDraft(draftId: string, token: string) {
+    return apiClient.request(`/api/class-teacher/home/intake/drafts/${draftId}`, {
+      headers: headers(token), decode: draft,
+    })
+  },
+  discardDraft(draftId: string, expectedVersion: number, token: string) {
+    return apiClient.request(`/api/class-teacher/home/intake/drafts/${draftId}/discard`, {
+      method: 'POST', headers: headers(token), body: { expected_version: expectedVersion }, decode: record,
+    })
+  },
+  adoptOrdinaryDraft(value: HomeIntakeOperation, token?: string) {
+    if (!value.draft_id || !value.draft_version || !value.result_fingerprint) throw new Error('home intake draft required')
+    return apiClient.request(`/api/class-teacher/home/intake/drafts/${value.draft_id}/adopt-ordinary`, {
+      method: 'POST', headers: headers(token), body: {
+        expected_version: value.draft_version,
+        source_operation_id: value.operation_id,
+        result_fingerprint: value.result_fingerprint,
+      }, decode: record,
+    })
+  },
   followUpPreview(operationId: string, answer: string, token?: string, referenceDate?: string, selectedStepKeys: string[] = [], selectedCalendarKeys: string[] = []) {
     return apiClient.request(`/api/class-teacher/home/intake/operations/${operationId}/follow-up-previews`, {
       method: 'POST', headers: headers(token), body: { answer, reference_date: referenceDate ?? null, selected_step_keys: selectedStepKeys, selected_calendar_keys: selectedCalendarKeys }, decode: preview,
@@ -436,6 +534,8 @@ export const homeIntakeApi = {
         operation_id: operationId,
         result_fingerprint: value.result_fingerprint,
         subject_ids: subjectIds,
+        draft_id: value.draft_id,
+        draft_version: value.draft_version,
       }, decode: record,
     })
   },

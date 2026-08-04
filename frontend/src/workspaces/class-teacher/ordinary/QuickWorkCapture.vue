@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { computed, nextTick, ref } from 'vue'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
 
 import {
   homeIntakeApi,
+  type HomeIntakeDraftSummary,
   type HomeIntakeOperation,
   type HomeIntakePreview,
 } from '../api/homeIntake'
@@ -10,6 +11,7 @@ import type { OrdinaryWorkModule } from './createOrdinaryWorkModule'
 import { studentR1Api, type CurrentRosterStudent } from '../api/r1'
 
 const props = defineProps<{ module: OrdinaryWorkModule; token?: string }>()
+const emit = defineEmits<{ openDraft: [draftId: string] }>()
 const text = ref('')
 const submittedSourceText = ref('')
 const preview = ref<HomeIntakePreview | null>(null)
@@ -28,6 +30,7 @@ const selectedStepRoots = ref<string[]>([])
 const selectedCalendarRoots = ref<string[]>([])
 const roster = ref<CurrentRosterStudent[]>([])
 const selectedSubjectIds = ref<string[]>([])
+const savedDrafts = ref<HomeIntakeDraftSummary[]>([])
 
 const unresolvedOperation = computed(() => ['result_unknown', 'in_progress'].includes(operation.value?.state ?? ''))
 const unresolvedRequest = computed(() => Boolean(requestOperationId.value) && (!operation.value || unresolvedOperation.value))
@@ -110,7 +113,7 @@ function resultMessage(value: HomeIntakeOperation): string {
   if (value.state === 'unavailable' || value.state === 'failed_before_send') return `模型当前不可用${reason}。原文仍保留。`
   if (value.state === 'invalid_result') return `AI 返回内容未通过校验${reason}，没有形成可写入草案。`
   if (value.state === 'destination_changed') return `发送前模型目的地发生变化${reason}，本轮没有继续发送。`
-  if (value.state === 'unsafe_output_suppressed') return 'AI 输出触及安全边界，已被抑制，不会展示或写入。'
+  if (value.state === 'unsafe_output_suppressed') return '这是一条旧版本留下的拦截结果；当前版本不再按建议内容拦截。'
   return `本轮状态：${value.state}${reason}`
 }
 
@@ -121,12 +124,24 @@ async function dispatchPreview(value: HomeIntakePreview): Promise<void> {
   try {
     operation.value = await homeIntakeApi.dispatch(value, requestOperationId.value, props.token)
     message.value = resultMessage(operation.value)
-    await prepareDraftControls()
+    if (operation.value.draft_id) emit('openDraft', operation.value.draft_id)
+    else await prepareDraftControls()
   } catch {
     message.value = '发送响应未能确认。原文仍保留；请查看刚才这次调用，不要重新发送。'
   }
   focusStatus()
 }
+
+async function loadSavedDrafts(): Promise<void> {
+  try {
+    savedDrafts.value = await homeIntakeApi.listDrafts(props.token)
+  } catch {
+    savedDrafts.value = []
+  }
+}
+
+onMounted(() => { void loadSavedDrafts() })
+watch(() => props.token, () => { void loadSavedDrafts() })
 
 function downstream(start: string, kind: 'step' | 'calendar'): string[] {
   if (!recommendation.value) return [start]
@@ -297,7 +312,11 @@ async function confirmPlan(): Promise<void> {
   if (!operation.value || !plan.value || busy.value) return
   busy.value = true
   try {
-    await homeIntakeApi.confirmPlan(operation.value, globalThis.crypto.randomUUID())
+    if (operation.value.draft_id) {
+      await homeIntakeApi.adoptOrdinaryDraft(operation.value, props.token)
+    } else {
+      await homeIntakeApi.confirmPlan(operation.value, globalThis.crypto.randomUUID())
+    }
     const refreshed = await props.module.load('today')
     clearAll(refreshed
       ? '教师确认的工作方案已写入唯一工作图。'
@@ -354,6 +373,14 @@ function preserveManualTitle(): void {
         <button type="button" :disabled="!canStart" @click="start">{{ busy ? '正在整理…' : '交给 AI 整理' }}</button>
       </div>
     </div>
+
+    <section v-if="savedDrafts.length" class="saved-drafts" aria-label="未完成事务草稿">
+      <div><strong>继续处理未完成事务</strong><span>离开页面后仍可回来</span></div>
+      <button v-for="item in savedDrafts" :key="item.draft_id" type="button" @click="emit('openDraft', item.draft_id)">
+        <span>{{ item.title }}</span>
+        <time>{{ item.updated_at.slice(0, 10) }} · 第 {{ item.version }} 版</time>
+      </button>
+    </section>
 
     <section v-if="preview || operation || message" ref="statusRegion" class="progress" tabindex="-1" aria-live="polite" :aria-busy="busy">
       <div v-if="preview" class="date-status" :data-state="preview.date_interpretation.status">
@@ -464,6 +491,7 @@ function preserveManualTitle(): void {
 </template>
 
 <style scoped>
+.saved-drafts{display:flex;flex-wrap:wrap;align-items:stretch;gap:var(--space-2);margin-top:var(--space-4);padding-top:var(--space-3);border-top:1px solid var(--color-border-default)}.saved-drafts>div{display:grid;align-content:center;min-width:200px}.saved-drafts>div span,.saved-drafts time{color:var(--color-text-secondary);font-size:var(--font-size-caption)}.saved-drafts button{display:grid;gap:2px;min-width:220px;padding:var(--space-2) var(--space-3);text-align:left}.saved-drafts time{font-weight:400}
 .capture{padding:var(--space-5);border-bottom:1px solid var(--color-border-default);background:var(--color-bg-subtle)}.capture__input{display:grid;gap:var(--space-2)}label{display:grid;gap:var(--space-1);font-size:var(--font-size-dense);font-weight:650}textarea,input,button{box-sizing:border-box;border:1px solid var(--color-border-default);border-radius:var(--radius-control);background:var(--color-bg-surface);font:inherit}.capture__input textarea{width:100%;min-height:128px;padding:var(--space-3);line-height:1.6;resize:vertical;overflow-wrap:anywhere}.capture__actions{display:flex;align-items:center;justify-content:flex-end;gap:var(--space-3)}.capture__actions span{color:var(--color-text-muted);font-size:var(--font-size-caption)}button{min-height:40px;padding:0 var(--space-3)}.capture__actions button,.primary{border-color:var(--color-accent);background:var(--color-accent);color:white}.progress{display:grid;gap:var(--space-3);margin-top:var(--space-4);outline:2px solid transparent;outline-offset:var(--space-1)}.progress:focus{outline-color:var(--color-accent)}.date-status,.receipt{display:flex;flex-wrap:wrap;gap:var(--space-2) var(--space-4);padding:var(--space-3);border-left:3px solid var(--color-accent);background:var(--color-bg-surface)}.date-status[data-state="conflict"]{border-color:var(--color-danger)}.date-status[data-state="pending"]{border-color:var(--color-warning)}.emergency{padding:var(--space-4);border:2px solid var(--color-danger);border-radius:var(--radius-control);background:var(--color-danger-subtle)}.emergency h3{margin-top:0}.exact-preview,.plan,.recommendation,.plain-text,.follow-up,.fallback{padding:var(--space-4);border:1px solid var(--color-border-default);border-radius:var(--radius-control);background:var(--color-bg-surface);overflow-wrap:anywhere}.exact-preview>p:first-child{display:flex;justify-content:space-between;gap:var(--space-3)}.exact-preview pre{max-height:320px;overflow:auto;padding:var(--space-3);white-space:pre-wrap;overflow-wrap:anywhere;background:var(--color-bg-subtle)}.destination-receipt{display:grid;gap:var(--space-2);margin:var(--space-3) 0;padding:var(--space-3);background:var(--color-bg-subtle)}.destination-receipt div{display:grid;grid-template-columns:minmax(7rem,auto) minmax(0,1fr);gap:var(--space-2)}.destination-receipt dt{color:var(--color-text-secondary)}.destination-receipt dd{min-width:0;margin:0;overflow-wrap:anywhere;font-weight:650}.destination-note{color:var(--color-text-secondary);font-size:var(--font-size-dense)}.draft-label{width:max-content;padding:var(--space-1) var(--space-2);border:1px dashed var(--color-warning);border-radius:var(--radius-tag);color:var(--color-warning);font-weight:700}.receipt{margin:0}.receipt div{display:flex;gap:var(--space-1)}.receipt dt{color:var(--color-text-secondary)}.receipt dd{margin:0;font-weight:700}.plan h3,.recommendation h3,.plain-text h3,.follow-up h3,.fallback h3{margin-top:0}.plan-nodes{display:grid;gap:var(--space-3);padding-left:var(--space-5)}.plan-nodes li{padding:var(--space-3);border-left:3px solid var(--color-accent);background:var(--color-bg-subtle)}.plan-nodes div{display:flex;flex-wrap:wrap;justify-content:space-between;gap:var(--space-2)}.plan-nodes span{color:var(--color-text-secondary);font-size:var(--font-size-dense)}.plan-nodes p{margin-bottom:0;white-space:pre-wrap}.assumptions,.relations,.reference-note{color:var(--color-text-secondary)}.follow-up label,.fallback label{margin:var(--space-3) 0}.follow-up textarea,.fallback input{width:100%;padding:var(--space-2)}.message{margin:0;color:var(--color-accent-active);overflow-wrap:anywhere}.discard{justify-self:start;border-color:transparent;background:transparent;color:var(--color-text-secondary);text-decoration:underline}button:disabled{cursor:not-allowed;opacity:var(--opacity-disabled)}@media(max-width:700px){.exact-preview>p:first-child,.plan-nodes div{flex-direction:column}.capture{padding:var(--space-4)}}
 .selection-help,.student-links>p{color:var(--color-text-secondary);font-size:var(--font-size-dense)}.workflow-cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:var(--space-2)}.workflow-cards button{display:grid;grid-template-columns:auto 1fr;gap:var(--space-1) var(--space-2);min-height:120px;padding:var(--space-3);text-align:left}.workflow-cards button>span{grid-row:1/4;display:grid;place-items:center;width:28px;height:28px;border-radius:50%;background:var(--color-accent-subtle);color:var(--color-accent-active);font-weight:750}.workflow-cards small{color:var(--color-text-secondary);line-height:1.45}.workflow-cards em{color:var(--color-danger);font-size:var(--font-size-caption);font-style:normal;font-weight:700}.workflow-cards button.selected,.calendar-list button.selected{border-color:var(--color-warning);background:var(--color-warning-subtle);box-shadow:inset 0 0 0 1px var(--color-warning)}.calendar-list{display:grid;gap:var(--space-2)}.calendar-list button{display:grid;grid-template-columns:110px 1fr;gap:var(--space-3);align-items:center;padding:var(--space-2) var(--space-3);text-align:left}.calendar-list time{font-weight:700;color:var(--color-accent-active)}.verify,.safety-note{margin:var(--space-3) 0;padding:var(--space-3);border-left:3px solid var(--color-warning);background:var(--color-warning-subtle)}.verify h4,.safety-note p{margin:0}.student-links{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:var(--space-2);margin:var(--space-4) 0;padding:var(--space-3);border:1px solid var(--color-border-default);border-radius:var(--radius-control)}.student-links legend{font-weight:750}.student-links>p{grid-column:1/-1;margin:0}.student-links label{display:flex;align-items:center;gap:var(--space-2);font-weight:500}.student-links input{min-height:auto}
 </style>

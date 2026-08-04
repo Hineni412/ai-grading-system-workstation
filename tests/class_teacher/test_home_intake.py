@@ -735,6 +735,9 @@ def test_normal_conflict_recommendation_is_not_mistaken_for_a_student_name(
     assert result["result"]["template_key"] == "baseline.student_conflict"
     assert len(result["result"]["steps"]) >= 5
     assert len(result["result"]["calendar_items"]) == len(result["result"]["steps"])
+    scheduled_dates = [item["due_date"] for item in result["result"]["calendar_items"]]
+    assert len(set(scheduled_dates)) < len(scheduled_dates)
+    assert scheduled_dates[:3] == [scheduled_dates[0]] * 3
     assert len(gateway.calls) == 1
 
 
@@ -752,7 +755,7 @@ def test_opening_day_plan_keeps_ai_guidance_and_turns_questions_into_verificatio
             ],
             "nodes": [
                 {
-                    "id": "goal",
+                    "id": "1",
                     "kind": "goal",
                     "title": "完成九月一日开学准备",
                     "details": "确保开学首日各项工作顺利开展",
@@ -761,7 +764,7 @@ def test_opening_day_plan_keeps_ai_guidance_and_turns_questions_into_verificatio
                     "due_date": "202X-09-01",
                 },
                 {
-                    "id": "materials",
+                    "id": "2",
                     "kind": "task",
                     "title": "开学物资筹备",
                     "details": "筹备开学首日所需各项物资与材料",
@@ -771,7 +774,7 @@ def test_opening_day_plan_keeps_ai_guidance_and_turns_questions_into_verificatio
                 },
             ],
             "edges": [
-                {"source_id": "goal", "target_id": "materials", "relation": "contains"}
+                {"source_id": "1", "target_id": "2", "relation": "contains"}
             ],
         },
     )
@@ -797,12 +800,19 @@ def test_opening_day_plan_keeps_ai_guidance_and_turns_questions_into_verificatio
         "开学物资筹备",
     ]
     assert result["result"]["nodes"][1]["due_date"] == "2026-08-25"
+    assert [node["draft_key"] for node in result["result"]["nodes"]] == [
+        "node_1",
+        "node_2",
+    ]
+    assert result["result"]["edges"][0]["source_draft_key"] == "node_1"
+    assert result["result"]["edges"][0]["target_draft_key"] == "node_2"
     assert any("核心任务" in item for item in result["result"]["assumptions"])
     assert len(gateway.calls) == 1
 
 
-def test_unsafe_output_is_suppressed(tmp_path: Path) -> None:
-    service, token, gateway = _service(tmp_path, result="已经认定属于欺凌，必须给予处分并自动结案。")
+def test_model_judgement_is_visible_for_teacher_review(tmp_path: Path) -> None:
+    advice = "已经认定属于欺凌，必须给予处分并自动结案。"
+    service, token, gateway = _service(tmp_path, result=advice)
 
     result = _dispatch_sensitive(
         service,
@@ -811,9 +821,9 @@ def test_unsafe_output_is_suppressed(tmp_path: Path) -> None:
         operation_id="home-unsafe-output-001",
     )
 
-    assert result["state"] == "unsafe_output_suppressed"
-    assert result["result"] is None
-    assert result["error_category"] == "unsafe_model_output"
+    assert result["state"] == "succeeded"
+    assert result["result"]["model_advice"] == advice
+    assert result["teacher_confirmation_required"] is True
     assert len(gateway.calls) == 1
 
 
@@ -843,7 +853,7 @@ def test_unsafe_output_is_suppressed(tmp_path: Path) -> None:
         ),
     ),
 )
-def test_explicit_diagnostic_and_high_impact_outputs_are_suppressed(
+def test_explicit_diagnostic_and_high_impact_outputs_remain_visible(
     tmp_path: Path,
     model_result: dict[str, object] | str,
     operation_id: str,
@@ -857,10 +867,17 @@ def test_explicit_diagnostic_and_high_impact_outputs_are_suppressed(
         operation_id=operation_id,
     )
 
-    assert result["state"] == "unsafe_output_suppressed"
-    assert result["result"] is None
-    assert result["error_category"] == "unsafe_model_output"
-    assert result["teacher_confirmation_required"] is False
+    assert result["state"] == "succeeded"
+    rendered = json.dumps(result["result"], ensure_ascii=False)
+    expected_text = (
+        str(model_result)
+        if isinstance(model_result, str)
+        else json.dumps(model_result, ensure_ascii=False)
+    )
+    for fragment in ("抑郁症", "焦虑症", "欺凌", "停课", "停学", "13812345678", "家庭住址", "病历", "处分"):
+        if fragment in expected_text:
+            assert fragment in rendered
+    assert result["teacher_confirmation_required"] is True
     assert len(gateway.calls) == 1
 
 
@@ -1113,6 +1130,144 @@ def test_follow_up_starts_next_round_only_on_explicit_call(tmp_path: Path) -> No
     assert second["round_physical_request_count"] == 1
     assert second["cumulative_physical_request_count"] == 2
     assert len(gateway.calls) == 2
+
+
+def test_failed_revision_keeps_the_last_saved_draft_version(tmp_path: Path) -> None:
+    service, token, gateway = _service(
+        tmp_path,
+        result={"kind": "affair_recommendation", "summary": "先处理当前矛盾"},
+    )
+    first_operation = _dispatch_sensitive(
+        service,
+        token,
+        text="王小明和张伟发生冲突",
+        operation_id="home-durable-draft-round-001",
+    )
+    first = service.home_intake_drafts.capture(token=token, operation=first_operation)
+    draft_id = str(first["draft_id"])
+    assert first["draft_version"] == 1
+
+    preview = service.home_intake.prepare_follow_up(
+        token=token,
+        operation_id="home-durable-draft-round-001",
+        answer="前两步已经完成，后续安排需要调整",
+        reference_date="2026-08-04",
+        selected_step_keys=[str(first_operation["result"]["steps"][2]["key"])],
+    )
+    gateway.result = {"kind": "unsupported"}
+    failed_operation = service.home_intake.dispatch(
+        token=token,
+        preview_id=str(preview["preview_id"]),
+        fingerprint=str(preview["fingerprint"]),
+        operation_id="home-durable-draft-round-002",
+    )
+    failed = service.home_intake_drafts.capture(token=token, operation=failed_operation)
+
+    assert failed["state"] == "invalid_result"
+    assert failed["previous_result_preserved"] is True
+    assert failed["draft_id"] == draft_id
+    assert failed["draft_version"] == 1
+    assert failed["preserved_result"] == first_operation["result"]
+    restored = service.home_intake_drafts.get(token=token, draft_id=draft_id)
+    assert restored["version"] == 1
+    assert restored["operation"]["result"] == first_operation["result"]
+    assert restored["operation"]["local_context"]["source_text"] == "王小明和张伟发生冲突"
+    assert service.home_intake_drafts.list_open(token=token)["items"][0]["draft_id"] == draft_id
+
+
+def test_adoption_claim_blocks_a_concurrent_sensitive_revision(tmp_path: Path) -> None:
+    service, token, _gateway = _service(
+        tmp_path,
+        result={"kind": "affair_recommendation", "summary": "先处理当前矛盾"},
+    )
+    operation = _dispatch_sensitive(
+        service,
+        token,
+        text="王小明和张伟发生冲突",
+        operation_id="home-adoption-claim-001",
+    )
+    captured = service.home_intake_drafts.capture(token=token, operation=operation)
+    service.home_intake_drafts.begin_adoption(
+        token=token,
+        draft_id=str(captured["draft_id"]),
+        version=int(captured["draft_version"]),
+        source_operation_id=str(operation["operation_id"]),
+        result_fingerprint=str(operation["result_fingerprint"]),
+    )
+    concurrent = {
+        **operation,
+        "operation_id": "home-adoption-claim-002",
+        "local_context": {
+            **dict(operation["local_context"]),
+            "prior_operations": [operation["operation_id"]],
+        },
+    }
+
+    with pytest.raises(VaultError) as captured_error:
+        service.home_intake_drafts.capture(token=token, operation=concurrent)
+
+    assert captured_error.value.code == "home_intake_draft_closed"
+
+
+def test_ordinary_draft_can_close_after_work_graph_confirmation(tmp_path: Path) -> None:
+    service, token, _gateway = _service(tmp_path)
+    preview = service.home_intake.prepare(
+        token=token,
+        text="九月一日开学，提前完成开学准备",
+        reference_date="2026-08-04",
+    )
+    operation = service.home_intake.dispatch(
+        token=token,
+        preview_id=str(preview["preview_id"]),
+        fingerprint=str(preview["fingerprint"]),
+        operation_id="home-ordinary-draft-001",
+    )
+    captured = service.home_intake_drafts.capture(token=token, operation=operation)
+
+    closed = service.home_intake_finalizer.adopt_ordinary(
+        token=token,
+        draft_id=str(captured["draft_id"]),
+        expected_version=int(captured["draft_version"]),
+        source_operation_id=str(operation["operation_id"]),
+        result_fingerprint=str(operation["result_fingerprint"]),
+    )
+    replay = service.home_intake_finalizer.adopt_ordinary(
+        token=token,
+        draft_id=str(captured["draft_id"]),
+        expected_version=int(captured["draft_version"]),
+        source_operation_id=str(operation["operation_id"]),
+        result_fingerprint=str(operation["result_fingerprint"]),
+    )
+
+    assert closed["state"] == "complete"
+    assert replay["operation_id"] == closed["operation_id"]
+    assert service.home_intake_drafts.list_open(token=token)["items"] == []
+
+
+def test_ordinary_draft_remains_available_while_sensitive_vault_is_locked(
+    tmp_path: Path,
+) -> None:
+    service, token, _gateway = _service(tmp_path)
+    service.lock(token)
+    preview = service.home_intake.prepare(
+        token="",
+        text="九月一日开学，提前完成开学准备",
+        reference_date="2026-08-04",
+    )
+    operation = service.home_intake.dispatch(
+        token="",
+        preview_id=str(preview["preview_id"]),
+        fingerprint=str(preview["fingerprint"]),
+        operation_id="home-ordinary-locked-001",
+    )
+
+    captured = service.home_intake_drafts.capture(token="", operation=operation)
+
+    assert captured["draft_id"]
+    assert service.home_intake_drafts.get(
+        token="", draft_id=str(captured["draft_id"])
+    )["result_kind"] == "ordinary_plan"
+    assert service.home_intake_drafts.list_open(token="")["items"][0]["draft_id"] == captured["draft_id"]
 
 
 def test_destination_change_inside_invoke_is_zero_request_state(tmp_path: Path) -> None:
