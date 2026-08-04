@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type {
   ConfigAmbiguousAssetDecision,
+  ConfigQuestionGenerationState,
   ConfigSource,
   QuestionDecision,
 } from '../../../api/config-workspace'
@@ -37,6 +38,7 @@ async function mountReview(options: {
   assetDecisions?: ConfigAmbiguousAssetDecision[]
   onUpdate?: (value: QuestionDecision[]) => void
   onAssetUpdate?: (value: ConfigAmbiguousAssetDecision[]) => void
+  questionStates?: ConfigQuestionGenerationState[]
 } = {}) {
   const host = document.createElement('div')
   document.body.append(host)
@@ -49,28 +51,32 @@ async function mountReview(options: {
       state, onUpdate, onAssetUpdate,
       decisions: options.decisions ?? [],
       assetDecisions: options.assetDecisions ?? [],
+      questionStates: options.questionStates ?? [],
     }),
-    template: '<QuestionBlockReview :source="state.value" :decisions="decisions" :asset-decisions="assetDecisions" @update:decisions="onUpdate" @update:asset-decisions="onAssetUpdate" />',
+    template: '<QuestionBlockReview :source="state.value" :decisions="decisions" :asset-decisions="assetDecisions" :question-states="questionStates" @update:decisions="onUpdate" @update:asset-decisions="onAssetUpdate" />',
   })
   app.mount(host)
   await nextTick()
   return { host, state, onUpdate, onAssetUpdate, unmount: () => app.unmount() }
 }
 
-function change(
-  element: HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement,
-  value: string | boolean,
-): void {
-  if (element instanceof HTMLInputElement && element.type === 'checkbox') {
-    element.checked = Boolean(value)
-  }
-  else element.value = String(value)
-  element.dispatchEvent(new Event('change', { bubbles: true }))
-}
-
 beforeEach(() => { document.body.innerHTML = '' })
 
 describe('QuestionBlockReview', () => {
+  it('keeps passed questions and exceptions fully expanded', async () => {
+    const mounted = await mountReview({
+      questionStates: [
+        { question_id: 'Q1', state: 'passed', reason: '', retryable: false },
+        { question_id: 'Q2', state: 'blocked', reason: 'local_validation', retryable: true },
+      ],
+    })
+    const q1 = mounted.host.querySelector<HTMLElement>('[data-question-row="Q1"]')!
+    const q2 = mounted.host.querySelector<HTMLElement>('[data-question-row="Q2"]')!
+    expect(q1.classList.contains('is-collapsed')).toBe(false)
+    expect(q1.querySelector('.question-review__pair')).not.toBeNull()
+    expect(q2.classList.contains('is-exception')).toBe(true)
+    expect(q2.querySelector('.question-review__pair')).not.toBeNull()
+  })
   it('shows preview only without question exclusion controls', async () => {
     const onUpdate = vi.fn()
     const mounted = await mountReview({
@@ -98,7 +104,31 @@ describe('QuestionBlockReview', () => {
     const mounted = await mountReview({ value: unknown })
 
     expect(mounted.host.querySelector('[aria-label="Q-unknown 题型"]')).toBeNull()
-    expect(mounted.host.textContent).toContain('题型、小问和作答方式由 AI')
+    expect(mounted.host.textContent).toContain('只有题面和解析冲突时')
+  })
+
+  it('asks for type confirmation only when the source reports a conflict', async () => {
+    const onUpdate = vi.fn()
+    const value = source({
+      questions: [{
+        ...source().questions[1]!,
+        question_id: 'Q9',
+        question_type: 'fill_blank',
+        question_type_review_required: true,
+        question_type_review_reason: '检测到下一部分标题可能粘在本题末尾，请确认题型。',
+      }],
+    })
+    const mounted = await mountReview({ value, onUpdate })
+    const select = mounted.host.querySelector<HTMLSelectElement>('.question-review__type-check select')!
+
+    expect(mounted.host.textContent).toContain('请确认题型')
+    expect(mounted.host.textContent).toContain('下一部分标题')
+    select.value = 'fill_blank'
+    select.dispatchEvent(new Event('change'))
+
+    expect(onUpdate).toHaveBeenLastCalledWith([
+      { question_id: 'Q9', excluded: false, question_type: 'fill_blank' },
+    ])
   })
 
   it('shows answer facts and builds assets only from semantic identifiers', async () => {
@@ -116,7 +146,7 @@ describe('QuestionBlockReview', () => {
     expect(images.every((image) => !image.src.includes('path='))).toBe(true)
   })
 
-  it('renders one adjacent-image candidate and emits a single manual binding', async () => {
+  it('renders one adjacent-image candidate with only a reversible ignore control', async () => {
     const onAssetUpdate = vi.fn()
     const baseSource = source()
     const reviewSource = source({
@@ -134,16 +164,18 @@ describe('QuestionBlockReview', () => {
       }],
     })
     const mounted = await mountReview({ value: reviewSource, onAssetUpdate })
-    const selector = mounted.host.querySelector<HTMLSelectElement>('[aria-label="A1 图片归属"]')!
+    const candidate = mounted.host.querySelector<HTMLElement>('.question-review__asset-between')!
 
-    expect(mounted.host.querySelectorAll('.question-review__asset-candidate')).toHaveLength(1)
-    expect(mounted.host.textContent).toContain('本地程序不猜测')
-    expect(selector.querySelector<HTMLOptionElement>('option[value="Q2:question"]')?.disabled).toBe(false)
-    change(selector, 'Q2:question')
+    expect(mounted.host.querySelectorAll('.question-review__asset-between')).toHaveLength(1)
+    expect(candidate.textContent).toContain('Q1 / Q2')
+    const buttons = candidate.querySelectorAll<HTMLButtonElement>('button')
+    expect(buttons).toHaveLength(1)
+    expect(buttons[0]!.getAttribute('aria-label')).toContain('忽略这张图片')
+    buttons[0]!.click()
     await nextTick()
 
     expect(onAssetUpdate).toHaveBeenLastCalledWith([{
-      candidate_id: 'A1', action: 'bind', question_id: 'Q2', asset_kind: 'question',
+      candidate_id: 'A1', action: 'ignore',
     }])
   })
 
@@ -186,7 +218,7 @@ describe('QuestionBlockReview', () => {
     }])
   })
 
-  it('also lets a keyboard user move an automatically assigned image', async () => {
+  it('lets a keyboard user ignore an automatically assigned image', async () => {
     const onAssetUpdate = vi.fn()
     const base = source({ suffix: '.docx', safe_filename: '七年级数学.docx' })
     const mounted = await mountReview({
@@ -203,16 +235,15 @@ describe('QuestionBlockReview', () => {
       },
       onAssetUpdate,
     })
-    const selector = mounted.host.querySelector<HTMLSelectElement>(
-      '.question-review__placed-asset select',
+    const ignore = mounted.host.querySelector<HTMLButtonElement>(
+      '.question-review__placed-asset .question-review__ignore-button',
     )!
-    expect(selector.value).toBe('Q1:question')
-
-    change(selector, 'Q2:answer')
+    expect(ignore.getAttribute('aria-label')).toContain('忽略这张图片')
+    ignore.click()
     await nextTick()
 
     expect(onAssetUpdate).toHaveBeenLastCalledWith([{
-      candidate_id: 'P1', action: 'bind', question_id: 'Q2', asset_kind: 'answer',
+      candidate_id: 'P1', action: 'ignore',
     }])
   })
 

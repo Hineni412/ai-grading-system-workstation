@@ -19,6 +19,7 @@ from question_bank.training_criteria.analysis import (
     rubric_skeleton_from_solution_evidence,
     solution_evidence_source_content_hash,
     training_criteria_from_solution_evidence,
+    training_criterion_source_reference,
 )
 from question_bank.training_criteria.repository import (
     CombinedAnalysisRepository,
@@ -102,4 +103,5 @@ __all__ = [
     "rubric_skeleton_from_solution_evidence",
     "solution_evidence_source_content_hash",
     "training_criteria_from_solution_evidence",
+    "training_criterion_source_reference",
 ]

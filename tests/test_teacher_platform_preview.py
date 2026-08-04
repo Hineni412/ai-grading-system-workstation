@@ -230,6 +230,114 @@ def test_preview_guard_accepts_its_forced_isolated_runtime_paths(
     preview._assert_local_data_boundary()
 
 
+def test_preview_guard_accepts_a_recorded_cherry_pick_checkpoint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_heads = {
+        branch: f"{index + 1:040x}"
+        for index, branch in enumerate(preview.SOURCE_BRANCHES)
+    }
+    monkeypatch.setattr(preview, "_current_branch", lambda: preview.EXPECTED_BRANCH)
+    monkeypatch.setattr(preview, "_current_head", lambda: "f" * 40)
+    monkeypatch.setattr(preview, "_source_heads", lambda: source_heads)
+    monkeypatch.setattr(preview, "_tracked_code_changes", lambda: "")
+    teaching_head = source_heads["codex/teaching-prep-iteration"]
+    integration_commit = "e" * 40
+    monkeypatch.setattr(
+        preview,
+        "_source_is_ancestor",
+        lambda candidate, _preview: candidate != teaching_head,
+    )
+    monkeypatch.setattr(
+        preview,
+        "_source_checkpoint_receipts",
+        lambda: {
+            "codex/teaching-prep-iteration": {
+                "source_head": teaching_head,
+                "integration_commit": integration_commit,
+            }
+        },
+    )
+    monkeypatch.setattr(
+        preview,
+        "_source_matches_integration",
+        lambda source, integrated, _paths: (
+            source == teaching_head and integrated == integration_commit
+        ),
+    )
+    monkeypatch.setattr(preview, "_assert_local_data_boundary", lambda: None)
+
+    assert preview._assert_preview_workspace() == ("f" * 40, source_heads)
+
+
+def test_preview_guard_rejects_when_a_recorded_source_advances(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_heads = {
+        branch: f"{index + 1:040x}"
+        for index, branch in enumerate(preview.SOURCE_BRANCHES)
+    }
+    teaching_branch = "codex/teaching-prep-iteration"
+    teaching_head = source_heads[teaching_branch]
+    recorded = {
+        teaching_branch: {
+            "source_head": "a" * 40,
+            "integration_commit": "e" * 40,
+        }
+    }
+    monkeypatch.setattr(preview, "_current_branch", lambda: preview.EXPECTED_BRANCH)
+    monkeypatch.setattr(preview, "_current_head", lambda: "f" * 40)
+    monkeypatch.setattr(preview, "_source_heads", lambda: source_heads)
+    monkeypatch.setattr(preview, "_tracked_code_changes", lambda: "")
+    monkeypatch.setattr(
+        preview,
+        "_source_is_ancestor",
+        lambda candidate, _preview: candidate != teaching_head,
+    )
+    monkeypatch.setattr(preview, "_source_checkpoint_receipts", lambda: recorded)
+
+    with pytest.raises(preview.PreviewGuardError, match="尚未进入组合预览"):
+        preview._assert_preview_workspace()
+
+
+def test_preview_guard_rejects_a_receipt_without_matching_integrated_content(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_heads = {
+        branch: f"{index + 1:040x}"
+        for index, branch in enumerate(preview.SOURCE_BRANCHES)
+    }
+    teaching_branch = "codex/teaching-prep-iteration"
+    teaching_head = source_heads[teaching_branch]
+    monkeypatch.setattr(preview, "_current_branch", lambda: preview.EXPECTED_BRANCH)
+    monkeypatch.setattr(preview, "_current_head", lambda: "f" * 40)
+    monkeypatch.setattr(preview, "_source_heads", lambda: source_heads)
+    monkeypatch.setattr(preview, "_tracked_code_changes", lambda: "")
+    monkeypatch.setattr(
+        preview,
+        "_source_is_ancestor",
+        lambda candidate, _preview: candidate != teaching_head,
+    )
+    monkeypatch.setattr(
+        preview,
+        "_source_checkpoint_receipts",
+        lambda: {
+            teaching_branch: {
+                "source_head": teaching_head,
+                "integration_commit": "e" * 40,
+            }
+        },
+    )
+    monkeypatch.setattr(
+        preview,
+        "_source_matches_integration",
+        lambda *_args: False,
+    )
+
+    with pytest.raises(preview.PreviewGuardError, match="尚未进入组合预览"):
+        preview._assert_preview_workspace()
+
+
 def test_git_executable_falls_back_to_the_standard_windows_install(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
@@ -273,6 +381,8 @@ def test_preview_launcher_does_not_misreport_all_failures_as_stale() -> None:
     assert "goto preview_prepare_error" in launcher
     assert "goto running_probe_error" in launcher
     assert "The three-workspace preview is not current." not in launcher
+    assert "具体失败原因以上方输出为准。" in launcher
+    assert "三合一不是最新" not in launcher
 
 
 def test_preview_launcher_uses_windows_crlf_line_endings() -> None:

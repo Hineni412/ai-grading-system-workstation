@@ -10,6 +10,7 @@ import tempfile
 import time
 import unicodedata
 from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, BinaryIO, Iterable, Iterator
@@ -20,6 +21,10 @@ from backend.file_access import (
     resolve_controlled_file,
 )
 from backend.performance.metrics import instrument_sqlite_connection
+from question_bank.current_knowledge import (
+    CurrentKnowledgeResolver,
+    CurrentKnowledgeUnavailable,
+)
 from question_bank.models.question import ALLOWED_TAG_TYPES
 from question_bank.services.asset_path_service import (
     AmbiguousQuestionBankAssetPathError,
@@ -142,7 +147,17 @@ _FREQUENCY_SORTS = {
     "frequency_zhongkao",
     "frequency_contextual",
 }
-_PUBLIC_TAG_TYPES = tuple(sorted(ALLOWED_TAG_TYPES))
+_RETIRED_PUBLIC_TAG_TYPES = {
+    "canonical_knowledge_id",
+    "measured_skill_name",
+    "prerequisite",
+    "sub_skill",
+    "supporting_skill_name",
+    "teaching_stage",
+}
+_PUBLIC_TAG_TYPES = tuple(
+    sorted(ALLOWED_TAG_TYPES - _RETIRED_PUBLIC_TAG_TYPES)
+)
 _RICH_CONTENT_VERSION = 3
 _CURRENT_PREVIEW_ORDER_SQL = "updated_at DESC, id DESC"
 _ACTIVE_QUESTION_PREDICATE_SQL = """
@@ -165,6 +180,9 @@ _SNAPSHOT_REQUIRED_TABLES = frozenset(
         "question_previews",
     }
 )
+_ACTIVE_READ_SCOPE: ContextVar[
+    tuple[Path, sqlite3.Connection, CurrentKnowledgeResolver | None] | None
+] = ContextVar("question_bank_active_read_scope", default=None)
 
 
 class QuestionMediaNotFound(LookupError):
@@ -241,11 +259,24 @@ class QuestionReadPage:
 
 @contextmanager
 def _read_connection(db_path: Path) -> Iterator[sqlite3.Connection]:
+    requested = Path(db_path).resolve(strict=False)
+    active = _ACTIVE_READ_SCOPE.get()
+    if active is not None and active[0] == requested:
+        yield active[1]
+        return
     with captured_sqlite_read_connection(
         db_path,
         required_tables=_SNAPSHOT_REQUIRED_TABLES,
     ) as conn:
-        yield conn
+        try:
+            current_knowledge = CurrentKnowledgeResolver.from_connection(conn)
+        except CurrentKnowledgeUnavailable:
+            current_knowledge = None
+        token = _ACTIVE_READ_SCOPE.set((requested, conn, current_knowledge))
+        try:
+            yield conn
+        finally:
+            _ACTIVE_READ_SCOPE.reset(token)
 
 
 @contextmanager
@@ -593,6 +624,16 @@ class QuestionBankReadService:
         self.db_path = Path(db_path)
         self.data_root = Path(data_root) if data_root is not None else None
 
+    @property
+    def current_knowledge(self) -> CurrentKnowledgeResolver | None:
+        active = _ACTIVE_READ_SCOPE.get()
+        if (
+            active is None
+            or active[0] != self.db_path.resolve(strict=False)
+        ):
+            return None
+        return active[2]
+
     def list_papers(self, *, deleted: bool = False) -> list[dict[str, Any]]:
         tag_placeholders = ", ".join("?" for _ in ANALYSIS_TAG_TYPES)
         visible_question_sql = (
@@ -679,7 +720,14 @@ class QuestionBankReadService:
         return items
 
     def list_questions(self, filters: QuestionReadFilters) -> QuestionReadPage:
-        joins, where, params = _question_filter_parts(filters)
+        with _read_connection(self.db_path):
+            return self._list_questions(filters)
+
+    def _list_questions(self, filters: QuestionReadFilters) -> QuestionReadPage:
+        joins, where, params = _question_filter_parts(
+            filters,
+            current_knowledge=self.current_knowledge,
+        )
         where_sql = "WHERE " + " AND ".join(where) if where else ""
         count_sql = " ".join(
             [
@@ -739,7 +787,11 @@ class QuestionBankReadService:
                 list_sql,
                 [*params, filters.page_size, offset],
             ).fetchall()
-            tags_by_question = _load_page_tags(conn, [int(row["id"]) for row in rows])
+            tags_by_question = _load_page_tags(
+                conn,
+                [int(row["id"]) for row in rows],
+                current_knowledge=self.current_knowledge,
+            )
             revisions = question_revisions(conn, [int(row["id"]) for row in rows])
 
         items = [
@@ -762,7 +814,17 @@ class QuestionBankReadService:
         self,
         filters: QuestionReadFilters,
     ) -> dict[str, list[dict[str, Any]]]:
-        taxonomy_expansions = _taxonomy_filter_expansions(filters)
+        with _read_connection(self.db_path):
+            return self._list_facets(filters)
+
+    def _list_facets(
+        self,
+        filters: QuestionReadFilters,
+    ) -> dict[str, list[dict[str, Any]]]:
+        taxonomy_expansions = _taxonomy_filter_expansions(
+            filters,
+            current_knowledge=self.current_knowledge,
+        )
 
         def facet_source(
             **excluded_dimension: object,
@@ -771,6 +833,7 @@ class QuestionBankReadService:
             joins, where, params = _question_filter_parts(
                 facet_filters,
                 taxonomy_expansions=taxonomy_expansions,
+                current_knowledge=self.current_knowledge,
             )
             where_sql = "WHERE " + " AND ".join(where) if where else ""
             return (
@@ -868,6 +931,7 @@ class QuestionBankReadService:
                     taxonomy_dimension="knowledge",
                     taxonomy_snapshot=taxonomy_snapshot,
                     taxonomy_identity_lookup=taxonomy_identity_lookup,
+                    current_knowledge=self.current_knowledge,
                 ),
                 "curriculum_chapters": _curriculum_chapter_facet(
                     conn,
@@ -1007,7 +1071,11 @@ class QuestionBankReadService:
             target = rows_by_id.get(int(question_id))
             if target is None:
                 return None
-            tags_by_question = _load_page_tags(conn, list(rows_by_id))
+            tags_by_question = _load_page_tags(
+                conn,
+                list(rows_by_id),
+                current_knowledge=self.current_knowledge,
+            )
             target_tags = tags_by_question.get(int(question_id), [])
             scored: list[tuple[float, str, int, sqlite3.Row, list[str]]] = []
             target_for_similarity = {
@@ -1109,7 +1177,11 @@ class QuestionBankReadService:
             ).fetchone()
             if row is None:
                 return None
-            tags = _load_page_tags(conn, [int(question_id)]).get(
+            tags = _load_page_tags(
+                conn,
+                [int(question_id)],
+                current_knowledge=self.current_knowledge,
+            ).get(
                 int(question_id),
                 [],
             )
@@ -1176,11 +1248,16 @@ class QuestionBankReadService:
                 LEFT JOIN papers p ON p.id = q.paper_id
                 WHERE q.id IN ({placeholders})
                   AND COALESCE(q.is_deleted, 0) = 0
+                  AND COALESCE(p.import_status, '') <> 'deleted'
                 """,
                 ordered_ids,
             ).fetchall()
             rows_by_id = {int(row["id"]): row for row in rows}
-            tags_by_question = _load_page_tags(conn, list(rows_by_id))
+            tags_by_question = _load_page_tags(
+                conn,
+                list(rows_by_id),
+                current_knowledge=self.current_knowledge,
+            )
             revisions = question_revisions(conn, list(rows_by_id))
 
         return [
@@ -1326,6 +1403,7 @@ def _question_filter_parts(
     filters: QuestionReadFilters,
     *,
     taxonomy_expansions: dict[str, tuple[str, ...]] | None = None,
+    current_knowledge: CurrentKnowledgeResolver | None = None,
 ) -> tuple[list[str], list[str], list[Any]]:
     difficulty_range = None
     if filters.difficulty_min is not None and filters.difficulty_max is not None:
@@ -1341,6 +1419,19 @@ def _question_filter_parts(
             cached = taxonomy_expansions.get(dimension)
             if cached is not None:
                 return cached
+        if dimension == "knowledge":
+            if current_knowledge is None:
+                return ()
+            return tuple(
+                dict.fromkeys(
+                    stored
+                    for value in values
+                    for stored in current_knowledge.stored_values_for_term(
+                        value
+                    )
+                    if current_knowledge.resolve(stored)
+                )
+            )
         return get_taxonomy_governance().expand_filter_values(
             dimension,
             values,
@@ -1349,7 +1440,7 @@ def _question_filter_parts(
     return build_question_filter_query(
         question_number=filters.question_number,
         keyword=filters.keyword,
-        knowledge_point=filters.knowledge_point,
+        knowledge_point=None,
         difficulty_range=difficulty_range,
         question_types=list(filters.question_types),
         paper_ids=list(filters.paper_ids),
@@ -1366,7 +1457,17 @@ def _question_filter_parts(
                 ("curriculum_section", filters.curriculum_sections),
                 (
                     "knowledge_point",
-                    expand("knowledge", filters.knowledge_points),
+                    expand(
+                        "knowledge",
+                        tuple(
+                            value
+                            for value in (
+                                *filters.knowledge_points,
+                                filters.knowledge_point,
+                            )
+                            if value
+                        ),
+                    ),
                 ),
                 (
                     "ability",
@@ -1401,21 +1502,52 @@ def _question_filter_parts(
 
 def _taxonomy_filter_expansions(
     filters: QuestionReadFilters,
+    *,
+    current_knowledge: CurrentKnowledgeResolver | None = None,
 ) -> dict[str, tuple[str, ...]]:
     governance = get_taxonomy_governance()
-    return {
-        dimension: governance.expand_filter_values(dimension, values)
-        for dimension, values in (
-            ("curriculum", filters.exam_scopes),
-            ("knowledge", filters.knowledge_points),
-            ("ability", filters.abilities),
-            ("method", filters.methods),
-            ("thought", filters.thoughts),
-            ("model", filters.models),
-            ("special_type", filters.special_types),
-        )
-        if values
-    }
+    result: dict[str, tuple[str, ...]] = {}
+    for dimension, values in (
+        ("curriculum", filters.exam_scopes),
+        (
+            "knowledge",
+            tuple(
+                value
+                for value in (
+                    *filters.knowledge_points,
+                    filters.knowledge_point,
+                )
+                if value
+            ),
+        ),
+        ("ability", filters.abilities),
+        ("method", filters.methods),
+        ("thought", filters.thoughts),
+        ("model", filters.models),
+        ("special_type", filters.special_types),
+    ):
+        if not values:
+            continue
+        if dimension == "knowledge":
+            result[dimension] = (
+                ()
+                if current_knowledge is None
+                else tuple(
+                    dict.fromkeys(
+                        stored
+                        for value in values
+                        for stored in current_knowledge.stored_values_for_term(
+                            value
+                        )
+                        if current_knowledge.resolve(stored)
+                    )
+                )
+            )
+        else:
+            result[dimension] = governance.expand_filter_values(
+                dimension, values
+            )
+    return result
 
 
 def _tag_facet(
@@ -1427,6 +1559,7 @@ def _tag_facet(
     taxonomy_dimension: str | None = None,
     taxonomy_snapshot: dict[str, Any] | None = None,
     taxonomy_identity_lookup: dict[str, dict[str, str]] | None = None,
+    current_knowledge: CurrentKnowledgeResolver | None = None,
 ) -> list[dict[str, Any]]:
     if tag_type not in {
         "ability",
@@ -1443,7 +1576,7 @@ def _tag_facet(
     }:
         raise ValueError("Unsupported question facet")
     if taxonomy_dimension is not None:
-        return _controlled_taxonomy_facet(
+        items = _controlled_taxonomy_facet(
             conn,
             filtered_sql,
             params,
@@ -1452,6 +1585,9 @@ def _tag_facet(
             taxonomy_snapshot=taxonomy_snapshot,
             taxonomy_identity_lookup=taxonomy_identity_lookup,
         )
+        if taxonomy_dimension == "knowledge":
+            return _current_knowledge_facet(items, current_knowledge)
+        return items
     rows = conn.execute(
         f"""
         WITH filtered_questions AS (
@@ -1651,6 +1787,28 @@ def _public_facet_items(rows: Iterable[sqlite3.Row]) -> list[dict[str, Any]]:
     ]
 
 
+def _current_knowledge_facet(
+    items: list[dict[str, Any]],
+    resolver: CurrentKnowledgeResolver | None,
+) -> list[dict[str, Any]]:
+    if resolver is None:
+        return []
+    counts: dict[str, int] = {}
+    for item in items:
+        term = resolver.canonical_term(item.get("value"))
+        if term is None or not resolver.resolve(term[0]):
+            continue
+        counts[term[1]] = counts.get(term[1], 0) + int(
+            item.get("count") or 0
+        )
+    return [
+        {"value": value, "count": count}
+        for value, count in sorted(
+            counts.items(), key=lambda pair: (-pair[1], pair[0].casefold())
+        )
+    ]
+
+
 def _combined_similarity_score(tag_score: float, wording_score: float) -> float:
     normalized_tag = max(0.0, min(float(tag_score), 1.0))
     normalized_wording = max(0.0, min(float(wording_score), 1.0))
@@ -1788,6 +1946,8 @@ def _ordered_question_assets(
 def _load_page_tags(
     conn: sqlite3.Connection,
     question_ids: list[int],
+    *,
+    current_knowledge: CurrentKnowledgeResolver | None,
 ) -> dict[int, list[dict[str, Any]]]:
     if not question_ids:
         return {}
@@ -1810,6 +1970,19 @@ def _load_page_tags(
         if tag_value is None:
             continue
         tag_type = str(row["tag_type"])
+        if tag_type == "knowledge_point":
+            if current_knowledge is None:
+                continue
+            term = current_knowledge.canonical_term(tag_value)
+            if term is not None and current_knowledge.resolve(term[0]):
+                tag_value = term[1]
+            else:
+                teacher_term = get_taxonomy_governance().resolve_teacher_term(
+                    "knowledge", tag_value
+                )
+                if teacher_term is None:
+                    continue
+                tag_value = str(teacher_term["name"])
         dimension = {
             "knowledge_point": "knowledge",
             "method": "method",
@@ -1828,7 +2001,14 @@ def _load_page_tags(
                 dimension = "thought"
         if dimension:
             tag_value = identity_lookup[dimension].get(key, tag_value)
-        tags_by_question.setdefault(int(row["question_id"]), []).append(
+        bucket = tags_by_question.setdefault(int(row["question_id"]), [])
+        if any(
+            item["tag_type"] == tag_type
+            and item["tag_value"] == tag_value
+            for item in bucket
+        ):
+            continue
+        bucket.append(
             {
                 "tag_type": tag_type,
                 "tag_value": tag_value,

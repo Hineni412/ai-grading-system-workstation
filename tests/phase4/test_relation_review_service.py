@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -12,6 +13,7 @@ from question_bank.relations.contracts import (
 )
 from question_bank.relations.repository import (
     KnowledgeRelationConfirmationConflict,
+    KnowledgeRelationNotFound,
     KnowledgeRelationRepository,
     KnowledgeRelationRevisionConflict,
 )
@@ -19,6 +21,7 @@ from question_bank.relations.review_service import (
     RelationReviewCommand,
     RelationReviewService,
 )
+from tests.current_knowledge_support import install_current_knowledge
 
 
 @pytest.fixture
@@ -27,6 +30,7 @@ def review_store(
 ) -> tuple[RelationReviewService, KnowledgeRelationRepository]:
     database = tmp_path / "question-bank.db"
     initialize_database(database)
+    install_current_knowledge(database)
     return (
         RelationReviewService(database),
         KnowledgeRelationRepository(database),
@@ -89,6 +93,9 @@ def test_preview_and_confirm_never_hide_an_active_conflict(
     review_store,
 ) -> None:
     service, repository = review_store
+    baseline_ids = {
+        relation.relation_id for relation in repository.list_active_relations()
+    }
     active = _suggest(
         repository,
         "kp_alg_real_numbers",
@@ -111,7 +118,7 @@ def test_preview_and_confirm_never_hide_an_active_conflict(
 
     assert preview["can_apply"] is False
     assert preview["conflict_codes"] == ["reverse_conflict"]
-    assert preview["activity_effect"] == "add_to_active_graph"
+    assert preview["activity_effect"] == "include_in_next_standard_candidate"
     with pytest.raises(KnowledgeRelationConfirmationConflict):
         service.review_one(
             reverse.relation_id,
@@ -120,7 +127,9 @@ def test_preview_and_confirm_never_hide_an_active_conflict(
             actor_ref="teacher-b",
             reason="不应确认",
         )
-    assert len(repository.list_active_relations()) == 1
+    assert {
+        relation.relation_id for relation in repository.list_active_relations()
+    } == baseline_ids | {active.relation_id}
 
 
 def test_teacher_can_amend_then_confirm_with_complete_timeline(
@@ -171,6 +180,9 @@ def test_reject_and_retire_have_different_active_graph_effects(
     review_store,
 ) -> None:
     service, repository = review_store
+    baseline_ids = {
+        relation.relation_id for relation in repository.list_active_relations()
+    }
     rejected = _suggest(
         repository,
         "kp_alg_real_numbers",
@@ -184,7 +196,9 @@ def test_reject_and_retire_have_different_active_graph_effects(
         reason="证据不足",
     )
     assert rejection["relation"]["status"] == "rejected"
-    assert repository.list_active_relations() == ()
+    assert {
+        relation.relation_id for relation in repository.list_active_relations()
+    } == baseline_ids
 
     confirmed = _suggest(
         repository,
@@ -198,9 +212,11 @@ def test_reject_and_retire_have_different_active_graph_effects(
         actor_ref="teacher-a",
         reason="确认有效",
     )
-    assert len(repository.list_active_relations()) == 1
+    assert {
+        relation.relation_id for relation in repository.list_active_relations()
+    } == baseline_ids | {confirmed.relation_id}
     preview = service.preview(confirmed.relation_id, action="retire")
-    assert preview["recommendation_effect"] == "unavailable_immediately"
+    assert preview["recommendation_effect"] == "unchanged_until_next_standard"
     retired = service.review_one(
         confirmed.relation_id,
         expected_revision=active["relation"]["revision"],
@@ -209,7 +225,9 @@ def test_reject_and_retire_have_different_active_graph_effects(
         reason="课程口径调整",
     )
     assert retired["relation"]["status"] == "retired"
-    assert repository.list_active_relations() == ()
+    assert {
+        relation.relation_id for relation in repository.list_active_relations()
+    } == baseline_ids
 
 
 def test_stale_page_cannot_overwrite_newer_teacher_decision(
@@ -245,6 +263,9 @@ def test_batch_never_confirms_mutually_conflicting_edges(
     review_store,
 ) -> None:
     service, repository = review_store
+    baseline_ids = {
+        relation.relation_id for relation in repository.list_active_relations()
+    }
     forward = _suggest(
         repository,
         "kp_alg_real_numbers",
@@ -280,7 +301,57 @@ def test_batch_never_confirms_mutually_conflicting_edges(
         item["category"] == "confirmation_conflict"
         for item in result["results"]
     )
-    assert repository.list_active_relations() == ()
+    assert {
+        relation.relation_id for relation in repository.list_active_relations()
+    } == baseline_ids
+
+
+def test_review_queue_hides_relations_from_before_current_standard(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "question-bank.db"
+    initialize_database(database)
+    repository = KnowledgeRelationRepository(database)
+    legacy_id = "kr_legacy_before_current_standard"
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            """
+            INSERT INTO knowledge_relations (
+                relation_id, source_key, target_key, relation_type,
+                status, source_kind, rationale, model_name, model_version
+            ) VALUES (?, ?, ?, 'parent', 'suggested', 'model', ?, ?, ?)
+            """,
+            (
+                legacy_id,
+                "kp_alg_real_numbers",
+                "kp_alg_equation_properties",
+                "旧标准建议",
+                "legacy-model",
+                "legacy-v1",
+            ),
+        )
+        connection.commit()
+
+    install_current_knowledge(database)
+    current = _suggest(
+        repository,
+        "kp_alg_real_numbers",
+        "kp_alg_equation_properties",
+    )
+    page = RelationReviewService(database).list_queue()
+
+    assert page["total"] == 1
+    assert [item["relation_id"] for item in page["items"]] == [
+        current.relation_id
+    ]
+    assert legacy_id not in {
+        item["relation_id"] for item in page["items"]
+    }
+    with pytest.raises(KnowledgeRelationNotFound):
+        RelationReviewService(database).preview(
+            legacy_id,
+            action="confirm",
+        )
 
 
 def test_batch_reports_partial_failure_without_overwriting_stale_item(

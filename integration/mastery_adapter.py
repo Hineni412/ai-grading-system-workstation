@@ -9,7 +9,7 @@ from typing import Any
 
 from integration.mastery_schema import StudentMasteryProfile, WeakPoint
 from path_manager import resolve_stored_file_path
-from question_bank.taxonomy.registry import canonicalize_error_type, canonicalize_knowledge_values
+from question_bank.current_knowledge import CurrentKnowledgeResolver
 
 
 ROW_CONTAINER_KEYS = ("weak_point_rows", "rows", "items")
@@ -73,6 +73,7 @@ def read_mastery_sqlite(
 def adapt_mastery_rows(
     rows: Iterable[Mapping[str, Any]],
     *,
+    current_knowledge: CurrentKnowledgeResolver,
     exam_id: object | None = None,
     student_id: object | None = None,
 ) -> list[StudentMasteryProfile]:
@@ -96,7 +97,9 @@ def adapt_mastery_rows(
                 exam_id=normalized_exam_id,
             ),
         )
-        profile.weak_points.append(_weak_point_from_row(row))
+        weak_point = _weak_point_from_row(row, current_knowledge)
+        if weak_point is not None:
+            profile.weak_points.append(weak_point)
 
     return list(profiles.values())
 
@@ -113,39 +116,31 @@ def compute_priority(mastery: float) -> int:
     return 1
 
 
-def _get_mapped_knowledge_point(raw_kp: str) -> str:
-    from path_manager import get_path_manager
-    import json
-    try:
-        pm = get_path_manager()
-        mapping_path = pm.config_dir / "knowledge_mapping.json"
-        if mapping_path.exists():
-            mapping = json.loads(mapping_path.read_text(encoding="utf-8"))
-            if raw_kp in mapping:
-                val = mapping[raw_kp]
-                if isinstance(val, list) and val:
-                    return str(val[0])
-                if isinstance(val, str):
-                    return val
-    except Exception:
-        pass
-    return raw_kp
-
-
-def _weak_point_from_row(row: Mapping[str, Any]) -> WeakPoint:
+def _weak_point_from_row(
+    row: Mapping[str, Any],
+    current_knowledge: CurrentKnowledgeResolver,
+) -> WeakPoint | None:
     mastery = _mastery_value(row)
     priority = _priority_value(row.get("priority"), mastery)
     raw_knowledge_ids = _knowledge_ids(row)
     raw_knowledge_point = _first_text(row, "knowledge_point", "knowledge_label", "knowledge_id")
-    
-    mapped_knowledge_point = _get_mapped_knowledge_point(raw_knowledge_point)
-    canonical = canonicalize_knowledge_values([mapped_knowledge_point, *raw_knowledge_ids])
-    
+    source_values = [raw_knowledge_point, *raw_knowledge_ids]
+    canonical = next(
+        (
+            term
+            for value in source_values
+            if (term := current_knowledge.canonical_term(value)) is not None
+        ),
+        None,
+    )
+    if canonical is None or not current_knowledge.resolve_many(source_values):
+        return None
+
     raw_error_types = _raw_error_types(row)
     normalized_errors = _normalize_error_types(raw_error_types)
     return WeakPoint(
-        knowledge_point=canonical.canonical_name if canonical is not None else mapped_knowledge_point,
-        canonical_knowledge_id=canonical.canonical_id if canonical is not None else "",
+        knowledge_point=canonical[1],
+        canonical_knowledge_id=canonical[0],
         mastery=mastery,
         stability=_optional_rate(row.get("stability")),
         error_types=normalized_errors,
@@ -231,10 +226,6 @@ def _priority_value(value: object, mastery: float) -> int:
     return priority if 1 <= priority <= 5 else compute_priority(mastery)
 
 
-def _error_types(row: Mapping[str, Any]) -> list[str]:
-    return _normalize_error_types(_raw_error_types(row))
-
-
 def _raw_error_types(row: Mapping[str, Any]) -> list[str]:
     explicit = _to_string_list(row.get("error_types"))
     if explicit:
@@ -248,7 +239,7 @@ def _raw_error_types(row: Mapping[str, Any]) -> list[str]:
 def _normalize_error_types(values: Iterable[str]) -> list[str]:
     result: list[str] = []
     for value in values:
-        normalized = canonicalize_error_type(value)
+        normalized = _clean_string(value)
         if normalized and normalized not in result:
             result.append(normalized)
     return result

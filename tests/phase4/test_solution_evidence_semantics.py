@@ -917,7 +917,13 @@ def test_legacy_v3_failure_retries_without_unavailable_repair_context() -> None:
 
     assert retried.status == "succeeded"
     assert gateway.calls == [(11,)]
-    assert gateway.repair_contexts == [{}]
+    assert gateway.repair_contexts == [
+        {
+            "mode": "repair_previous_rejected_result",
+            "validation_error": "上一轮未通过 solution_evidence_contract 校验",
+            "previous_result": {},
+        }
+    ]
 
 
 def test_targeted_repair_context_survives_uncertain_retry_and_restart() -> None:
@@ -1035,7 +1041,13 @@ def test_oversized_rejected_result_degrades_to_exact_error_only() -> None:
 
     assert completed.status == "succeeded"
     assert gateway.calls == [(11,)]
-    assert gateway.repair_contexts == [{}]
+    assert gateway.repair_contexts == [
+        {
+            "mode": "repair_previous_rejected_result",
+            "validation_error": initial.failures[0].validation_error,
+            "previous_result": {},
+        }
+    ]
 
 
 def test_new_oversized_rejection_does_not_pair_old_json_with_new_error() -> None:
@@ -1102,7 +1114,13 @@ def test_new_oversized_rejection_does_not_pair_old_json_with_new_error() -> None
 
     assert completed.status == "succeeded"
     assert gateway.calls == [(11,)]
-    assert gateway.repair_contexts == [{}]
+    assert gateway.repair_contexts == [
+        {
+            "mode": "repair_previous_rejected_result",
+            "validation_error": replacement_failure.validation_error,
+            "previous_result": {},
+        }
+    ]
 
 
 def test_received_invalid_json_does_not_preserve_old_repair_context() -> None:
@@ -1236,7 +1254,7 @@ def test_deferred_v2_checkpoint_loads_without_replaying_successful_analysis() ->
     assert restored.get("Q1").taxonomy_audit["status"] == "legacy_unrecorded"
     assert restored.to_dict()["schema_version"] == "deferred-combined-analysis-v4"
     assert restored.to_dict()["items"][0]["schema_version"] == (
-        "deferred-combined-analysis-item-v3"
+        "deferred-combined-analysis-item-v4"
     )
 
 
@@ -1932,6 +1950,17 @@ def test_in_memory_reanalysis_replaces_only_the_teacher_selected_success() -> No
         sources=sources,
         curriculum_volume_id=VOLUME_ID,
         source_refs=("Q2",),
+        validation_issues_by_ref={
+            "Q2": (
+                {
+                    "code": "generic_or_unscorable_step",
+                    "path": "rubric.questions[Q2].parts[Q2].steps",
+                    "expected": "具体、可独立核验的结果",
+                    "actual": "步骤过于空泛",
+                    "message": "Q2 的步骤需要重新分析",
+                },
+            )
+        },
     )
 
     assert retried.status == "succeeded"
@@ -1948,6 +1977,7 @@ def test_in_memory_reanalysis_replaces_only_the_teacher_selected_success() -> No
             sources=sources,
             curriculum_volume_id=VOLUME_ID,
             source_refs=("Q3",),
+            validation_issues_by_ref={},
         )
 
 

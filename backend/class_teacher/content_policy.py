@@ -212,41 +212,6 @@ def _replace_spans(
         value = value[:start] + replacement + value[end:]
     return value
 
-_MODEL_DECISION_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
-    (
-        "诊断结论",
-        re.compile(
-            r"(?:诊断为|确诊为?|心理诊断|判定为[^，。；]{0,12}(?:障碍|疾病)|"
-            r"(?:患有|罹患|得了|就是)[^，。；]{0,8}"
-            r"(?:抑郁症|焦虑症|双相情感障碍|精神障碍|心理障碍|人格障碍|"
-            r"注意缺陷多动障碍|自闭症|孤独症|心理疾病|精神疾病)|"
-            r"(?:该生|该学生|这个学生|当事学生|学生[A-Z]{0,2})\s*(?:是|有)\s*"
-            r"(?:轻度|中度|重度)?(?:抑郁症|焦虑症|双相情感障碍|精神障碍|"
-            r"心理障碍|人格障碍|注意缺陷多动障碍|自闭症|孤独症|心理疾病|精神疾病))"
-        ),
-    ),
-    (
-        "欺凌认定",
-        re.compile(
-            r"(?:认定|判定|确认|属于|构成)[^，。；]{0,10}欺凌|"
-            r"(?:这是|此事是|该行为是)\s*(?:一起|一宗|一种|典型的|明确的|严重的)?\s*"
-            r"(?:校园|网络)?欺凌(?:行为|事件)"
-        ),
-    ),
-    (
-        "惩戒决定",
-        re.compile(
-            r"(?:决定|应当|应该|必须|建议|要求|责令|予以|给予)"
-            r"[^，。；]{0,10}(?:惩戒|处分|处罚|警告|记过|留校察看|停课|停学|"
-            r"禁止返校|转学|劝退|退学|开除)|"
-            r"(?:停课|停学)\s*[一二三四五六七八九十两\d]+\s*(?:天|周|月|个月)"
-        ),
-    ),
-    ("自动外发", re.compile(r"自动(?:发送|通知|外发|联系)")),
-    ("自动完成", re.compile(r"自动(?:标记)?完成")),
-    ("自动结案", re.compile(r"自动结案|已结案")),
-)
-
 _RESTRICTED_CONTEXT_TERMS = (
     "家庭住址",
     "家长电话",
@@ -299,16 +264,6 @@ class SensitiveContentPolicy:
             findings.append("家长电话")
         if _name_findings(value):
             findings.append("可能的具体姓名")
-        return tuple(dict.fromkeys(findings))
-
-    @staticmethod
-    def model_output_findings(value: str) -> tuple[str, ...]:
-        findings = list(SensitiveContentPolicy.ordinary_findings(value))
-        findings.extend(
-            label
-            for label, pattern in _MODEL_DECISION_PATTERNS
-            if pattern.search(value)
-        )
         return tuple(dict.fromkeys(findings))
 
     @staticmethod

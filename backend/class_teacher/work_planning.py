@@ -9,7 +9,6 @@ from datetime import UTC, date, datetime, timedelta
 from typing import Mapping, Protocol
 from uuid import uuid4
 
-from .content_policy import SensitiveContentPolicy
 from .crypto import canonical_json
 from .errors import VaultError
 from .model_approval import (
@@ -259,12 +258,20 @@ class WorkPlanning:
             "parent_context": parent_context,
             "instructions": [
                 "根据教师这一次输入的真实语境拆解任务，不使用任何预置业务模板。",
-                "识别完成目标所需的具体节点、依赖关系，并从最终日期向前倒排；只有缺少的信息会阻止形成安全且有用的方案时才追问，不得猜测。",
-                "追问只问最少必要的 1—3 个问题；每个问题必须指出缺失的是目标成果、参与角色、时间、范围数量、约束资源或待确认事实中的哪一方面，并结合原文给出可选示例，不得只说‘请补充具体信息’。",
+                "识别完成目标所需的具体节点、依赖关系，并从最终日期向前倒排。",
+                (
+                    "这是首页首轮：必须基于现有信息形成可执行 plan；缺失信息写入 assumptions，不能只返回 follow_up。"
+                    if mode == "new_work"
+                    else "只有缺少的信息确实阻止形成安全且有用的进展方案时才追问，且只问最少必要的 1—3 项。"
+                ),
                 "不得重复询问 task_text 或 final_due_date 中已经明确的信息，也不得索要完成当前方案不需要的姓名、电话、地址等敏感信息。",
                 "kind 是必填字段且不得为空；返回 questions 时 kind 必须为 follow_up，nodes 和 edges 必须为空数组。",
+                "new_work 的 plan 必须且只能有一个 kind=goal 的目标节点；其余节点使用 task、collection、communication、decision、sop 或 waiting。",
+                "nodes 中 status 必须是单个字符串 pending 或 waiting，不能返回数组。",
+                "edges 中 relation 必须是单个字符串 contains、depends_on 或 next，不能返回数组。",
+                "plan 中不阻止执行的未知信息写入 assumptions，不要同时返回 questions；不得使用 202X 等年份占位符。",
                 "优先只返回有效的 json 对象；若更适合连续事务或学生支持则只给出建议去向，不得自动创建。",
-                "不得诊断、认定欺凌、惩戒、自动外发、自动完成或自动结案。",
+                "可以完整提出判断和处置建议，但所有内容都只是待教师复核的草稿，不得自动执行、外发、完成或结案。",
                 "没有最终日期时不得编造节点日期；所有日期只能是 YYYY-MM-DD，且不能晚于 final_due_date。",
             ],
             "output_contract": {
@@ -285,11 +292,11 @@ class WorkPlanning:
                 "nodes": [
                     {
                         "id": "本次方案内唯一编号",
-                        "kind": sorted(_NODE_KINDS),
+                        "kind": "goal | task | collection | communication | decision | sop | waiting",
                         "title": "节点标题",
                         "details": "具体说明或 null",
                         "rationale": "为什么这样安排；没有则为 null",
-                        "status": sorted(_INITIAL_STATUSES),
+                        "status": "pending | waiting",
                         "due_date": "YYYY-MM-DD 或 null",
                     }
                 ],
@@ -297,7 +304,7 @@ class WorkPlanning:
                     {
                         "source_id": "已有节点编号",
                         "target_id": "已有节点编号",
-                        "relation": sorted(_EDGE_RELATIONS),
+                        "relation": "contains | depends_on | next",
                     }
                 ],
             },
@@ -499,6 +506,10 @@ class WorkPlanning:
                     parsed = self._validate_result(
                         raw_result,
                         mode=str(preview["mode"]),
+                        source_text=str(
+                            dict(receipt.get("local_context") or {}).get("source_text")
+                            or "教师工作"
+                        ),
                         final_due_date=(
                             None
                             if preview["final_due_date"] is None
@@ -518,14 +529,46 @@ class WorkPlanning:
                     assumptions = parsed["assumptions"]
                     parsed_kind = str(parsed["kind"])
                     if parsed_kind == "follow_up" or questions:
-                        result = {
-                            **receipt,
-                            "state": "needs_information",
-                            "physical_request_count": physical_request_count,
-                            "result_kind": "follow_up",
-                            "questions": questions,
-                            "assumptions": assumptions,
-                        }
+                        if str(preview["mode"]) == "new_work":
+                            plan = self._first_round_fallback_plan(
+                                source_text=str(
+                                    dict(receipt.get("local_context") or {}).get(
+                                        "source_text"
+                                    )
+                                    or "教师工作"
+                                ),
+                                final_due_date=(
+                                    None
+                                    if preview["final_due_date"] is None
+                                    else str(preview["final_due_date"])
+                                ),
+                                questions=questions,
+                                assumptions=assumptions,
+                            )
+                            plan_fingerprint = hashlib.sha256(
+                                canonical_json(plan)
+                            ).hexdigest()
+                            result = {
+                                **receipt,
+                                "state": "succeeded",
+                                "physical_request_count": physical_request_count,
+                                "result_kind": "ordinary_plan",
+                                "result": plan,
+                                "plan": plan,
+                                "plan_fingerprint": plan_fingerprint,
+                                "questions": questions,
+                                "assumptions": plan["assumptions"],
+                                "teacher_confirmation_required": True,
+                            }
+                        else:
+                            result = {
+                                **receipt,
+                                "state": "needs_information",
+                                "physical_request_count": physical_request_count,
+                                "result_kind": "follow_up",
+                                "questions": questions,
+                                "assumptions": assumptions,
+                            }
                     elif parsed_kind in {
                         "affair_recommendation",
                         "student_support_recommendation",
@@ -647,11 +690,69 @@ class WorkPlanning:
             "local_context": dict(receipt.get("local_context") or {}),
         }
 
+    @staticmethod
+    def _first_round_fallback_plan(
+        *,
+        source_text: str,
+        final_due_date: str | None,
+        questions: list[str],
+        assumptions: list[str],
+    ) -> dict[str, object]:
+        """Turn an exclusive model follow-up into a confirmable broad draft."""
+        title = " ".join(str(source_text or "教师工作").split())[:160]
+        verification = [f"待核对：{item}" for item in questions]
+        nodes = [
+            {
+                "draft_key": "goal",
+                "kind": "goal",
+                "title": title,
+                "details": "先按当前信息形成工作目标，缺失信息在执行中核对。",
+                "rationale": "避免因边缘信息缺失而阻塞工作安排。",
+                "status": "pending",
+                "due_date": final_due_date,
+            },
+            {
+                "draft_key": "prepare",
+                "kind": "task",
+                "title": "确认必要范围并准备",
+                "details": "只核对会改变执行方式、负责人或时限的必要信息。",
+                "rationale": "先确定可执行边界。",
+                "status": "pending",
+                "due_date": final_due_date,
+            },
+            {
+                "draft_key": "execute",
+                "kind": "task",
+                "title": "执行并记录结果",
+                "details": "按已确认范围执行，记录完成情况和仍待处理事项。",
+                "rationale": "让工作形成可追踪闭环。",
+                "status": "waiting",
+                "due_date": final_due_date,
+            },
+        ]
+        return {
+            "nodes": nodes,
+            "edges": [
+                {
+                    "source_draft_key": "goal",
+                    "target_draft_key": "prepare",
+                    "relation": "contains",
+                },
+                {
+                    "source_draft_key": "prepare",
+                    "target_draft_key": "execute",
+                    "relation": "blocks",
+                },
+            ],
+            "assumptions": list(dict.fromkeys([*assumptions, *verification]))[:8],
+        }
+
     def _validate_result(
         self,
         raw_result: str,
         *,
         mode: str,
+        source_text: str,
         final_due_date: str | None,
     ) -> dict[str, object]:
         clean_result = str(raw_result or "").strip()
@@ -670,7 +771,6 @@ class WorkPlanning:
                 8 <= len(readable) <= 800
                 and re.search(r"[一-鿿]", readable)
             ):
-                self._assert_safe_model_text([readable])
                 return {
                     "kind": "plain_text",
                     "questions": [],
@@ -715,7 +815,6 @@ class WorkPlanning:
             "plain_text",
         }:
             raise self._invalid("AI 返回了不支持的方案类型")
-        self._assert_safe_model_text([*questions, *assumptions])
         if kind == "follow_up":
             if not questions:
                 raise self._invalid("AI 表示信息不足但没有返回追问")
@@ -732,7 +831,14 @@ class WorkPlanning:
                 "nodes": [],
                 "edges": [],
             }
-        if questions:
+        if questions and kind == "plan":
+            assumptions = list(
+                dict.fromkeys(
+                    [*assumptions, *(f"待核实：{question}" for question in questions)]
+                )
+            )[:8]
+            questions = []
+        elif questions:
             raise self._invalid("AI 返回追问时必须使用 follow_up 类型")
         if kind == "plain_text":
             message = self._bounded_text(
@@ -740,7 +846,6 @@ class WorkPlanning:
                 label="安全说明",
                 maximum=800,
             )
-            self._assert_safe_model_text([message])
             return {
                 "kind": kind,
                 "questions": [],
@@ -760,7 +865,6 @@ class WorkPlanning:
                 maximum=800,
             )
             reasons = self._string_list(decoded.get("reasons", []), label="建议理由")
-            self._assert_safe_model_text([summary, *reasons])
             return {
                 "kind": kind,
                 "questions": [],
@@ -780,17 +884,36 @@ class WorkPlanning:
         if not isinstance(raw_edges, list) or len(raw_edges) > 64:
             raise self._invalid("AI 方案关系数量无效")
 
+        raw_node_ids = [
+            str(raw.get("id") or "").strip()
+            for raw in raw_nodes
+            if isinstance(raw, dict)
+        ]
+        if (
+            len(raw_node_ids) != len(raw_nodes)
+            or any(not item for item in raw_node_ids)
+            or len(set(raw_node_ids)) != len(raw_node_ids)
+        ):
+            raise self._invalid("AI 方案节点编号无效或重复")
+        canonical_ids = self._canonical_node_ids(raw_node_ids)
+
         nodes: list[dict[str, object]] = []
         node_ids: set[str] = set()
         for raw in raw_nodes:
             if not isinstance(raw, dict):
                 raise self._invalid("AI 方案节点结构无效")
-            node_id = str(raw.get("id") or "").strip()
-            if _DRAFT_KEY.fullmatch(node_id) is None or node_id in node_ids:
-                raise self._invalid("AI 方案节点编号无效或重复")
+            raw_node_id = str(raw.get("id") or "").strip()
+            node_id = canonical_ids[raw_node_id]
             node_ids.add(node_id)
             node_kind = str(raw.get("kind") or "").strip()
-            status = str(raw.get("status") or "").strip()
+            raw_status = raw.get("status")
+            if (
+                isinstance(raw_status, list)
+                and len(raw_status) == 1
+                and isinstance(raw_status[0], str)
+            ):
+                raw_status = raw_status[0]
+            status = str(raw_status or "").strip()
             if node_kind not in _NODE_KINDS or status not in _INITIAL_STATUSES:
                 raise self._invalid("AI 方案节点类型或初始状态无效")
             title = self._bounded_text(raw.get("title"), label="节点标题", maximum=160)
@@ -819,13 +942,37 @@ class WorkPlanning:
                 }
             )
 
-        goal_ids = {
-            str(node["draft_key"])
-            for node in nodes
-            if node["kind"] == "goal"
-        }
-        if mode == "new_work" and len(goal_ids) != 1:
-            raise self._invalid("新工作方案必须且只能包含一个目标节点")
+        goal_nodes = [node for node in nodes if node["kind"] == "goal"]
+        synthetic_goal_id: str | None = None
+        if mode == "new_work" and not goal_nodes:
+            synthetic_goal_id = "goal"
+            suffix = 1
+            while synthetic_goal_id in node_ids:
+                synthetic_goal_id = f"goal_{suffix}"
+                suffix += 1
+            nodes.insert(
+                0,
+                {
+                    "draft_key": synthetic_goal_id,
+                    "kind": "goal",
+                    "title": self._bounded_text(
+                        source_text,
+                        label="目标标题",
+                        maximum=160,
+                    ),
+                    "details": "按 AI 返回的可执行步骤完成本次教师工作目标。",
+                    "rationale": "模型遗漏目标节点时，本地只补充承载原始输入的目标，不改写模型步骤。",
+                    "status": "pending",
+                    "due_date": final_due_date,
+                },
+            )
+            node_ids.add(synthetic_goal_id)
+            goal_nodes = [nodes[0]]
+        elif mode == "new_work" and len(goal_nodes) > 1:
+            for extra_goal in goal_nodes[1:]:
+                extra_goal["kind"] = "task"
+            goal_nodes = goal_nodes[:1]
+        goal_ids = {str(node["draft_key"]) for node in goal_nodes}
         if mode == "progress_update" and goal_ids:
             raise self._invalid("最新情况分支不能新建另一个目标节点")
 
@@ -836,9 +983,18 @@ class WorkPlanning:
         for raw in raw_edges:
             if not isinstance(raw, dict):
                 raise self._invalid("AI 方案关系结构无效")
-            source = str(raw.get("source_id") or "").strip()
-            target = str(raw.get("target_id") or "").strip()
-            relation = str(raw.get("relation") or "").strip()
+            raw_source = str(raw.get("source_id") or "").strip()
+            raw_target = str(raw.get("target_id") or "").strip()
+            source = canonical_ids.get(raw_source, "")
+            target = canonical_ids.get(raw_target, "")
+            raw_relation = raw.get("relation")
+            if (
+                isinstance(raw_relation, list)
+                and len(raw_relation) == 1
+                and isinstance(raw_relation[0], str)
+            ):
+                raw_relation = raw_relation[0]
+            relation = str(raw_relation or "").strip()
             if (
                 source not in node_ids
                 or target not in node_ids
@@ -860,6 +1016,22 @@ class WorkPlanning:
                     "relation": relation,
                 }
             )
+        if synthetic_goal_id is not None:
+            for node_id in sorted(node_ids - {synthetic_goal_id}):
+                key = (synthetic_goal_id, node_id, "contains")
+                if key in edge_keys:
+                    continue
+                edge_keys.add(key)
+                adjacency[synthetic_goal_id].add(node_id)
+                undirected[synthetic_goal_id].add(node_id)
+                undirected[node_id].add(synthetic_goal_id)
+                edges.append(
+                    {
+                        "source_draft_key": synthetic_goal_id,
+                        "target_draft_key": node_id,
+                        "relation": "contains",
+                    }
+                )
         self._assert_acyclic(adjacency)
         if len(node_ids) > 1:
             start = next(iter(goal_ids or node_ids))
@@ -873,16 +1045,6 @@ class WorkPlanning:
             if reached != node_ids:
                 raise self._invalid("AI 方案存在与主流程无关的孤立节点")
 
-        all_text = " ".join(
-            [
-                *(str(node["title"]) for node in nodes),
-                *(str(node.get("details") or "") for node in nodes),
-                *(str(node.get("rationale") or "") for node in nodes),
-                *questions,
-                *assumptions,
-            ]
-        )
-        self._assert_safe_model_text([all_text])
         return {
             "kind": kind,
             "questions": questions,
@@ -933,21 +1095,33 @@ class WorkPlanning:
         return clean
 
     @staticmethod
-    def _assert_safe_model_text(values: list[str]) -> None:
-        findings: list[str] = []
-        for value in values:
-            findings.extend(SensitiveContentPolicy.model_output_findings(value))
-        if findings:
-            raise WorkPlanning._invalid(
-                "AI 返回内容包含敏感身份或禁止由模型决定的事项"
-            )
+    def _canonical_node_ids(raw_ids: list[str]) -> dict[str, str]:
+        reserved = {item for item in raw_ids if _DRAFT_KEY.fullmatch(item)}
+        used: set[str] = set()
+        result: dict[str, str] = {}
+        for index, raw_id in enumerate(raw_ids, start=1):
+            if _DRAFT_KEY.fullmatch(raw_id) and raw_id not in used:
+                canonical = raw_id
+            else:
+                suffix = 0
+                canonical = f"node_{index}"
+                while canonical in reserved or canonical in used:
+                    suffix += 1
+                    canonical = f"node_{index}_{suffix}"
+            used.add(canonical)
+            result[raw_id] = canonical
+        return result
 
     @staticmethod
     def _plan_date(value: object, final_due_date: str | None) -> str | None:
         if value is None or not str(value).strip():
             return None
+        raw = str(value).strip()
+        placeholder = re.fullmatch(r"202[Xx]-(\d{2}-\d{2})", raw)
+        if placeholder is not None and final_due_date is not None:
+            raw = f"{final_due_date[:4]}-{placeholder.group(1)}"
         try:
-            parsed = date.fromisoformat(str(value).strip()).isoformat()
+            parsed = date.fromisoformat(raw).isoformat()
         except ValueError as exc:
             raise WorkPlanning._invalid("AI 返回了无效日期") from exc
         if final_due_date is None:

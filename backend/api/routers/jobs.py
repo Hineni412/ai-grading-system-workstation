@@ -70,6 +70,15 @@ _SEMESTER_MAPPING_PUBLIC_ERRORS = {
     "response failed local validation": (
         "模型目录未通过页码和结构校验；可重新检查后手动生成。"
     ),
+    "attempted to replace the existing lesson tree": (
+        "模型尝试重建已有课时目录，本次建议已拦截；请重新生成映射。"
+    ),
+    "referred to a lesson outside the existing tree": (
+        "模型引用了当前目录中不存在的课时，本次建议已拦截；请重新生成映射。"
+    ),
+    "omitted uncertainty for unmapped pages": (
+        "模型没有说明未映射的资料页，本次建议已拦截；请重新生成映射。"
+    ),
     "model configuration is unavailable": (
         "当前备课模型配置不可用，请先检查“大模型 API”设置。"
     ),
@@ -210,12 +219,27 @@ def public_job_result(job: JobRecord) -> dict[str, Any]:
             "requested_count",
             "skipped_complete_count",
             "tagged_count",
+            "complete_tagged_count",
+            "evidence_count",
+            "evidence_succeeded_question_ids",
+            "evidence_failed_question_ids",
+            "criteria_count",
+            "criteria_succeeded_question_ids",
+            "criteria_failed_question_ids",
+            "analysis_contract",
             "failed_count",
             "successful_question_ids",
             "failed_question_ids",
+            "taxonomy_review_count",
+            "taxonomy_review_question_ids",
+            "taxonomy_review_source_refs",
+            "review_count",
+            "proposal_ids",
             "failure_category",
             "failures",
             "retryable",
+            "restore_required",
+            "restore_paper_id",
             "relation_governance_failed_question_ids",
         )
         return sanitize_public_mapping(
@@ -237,7 +261,12 @@ def public_job_result(job: JobRecord) -> dict[str, Any]:
             "session_id",
             "outcome",
             "imported_count",
+            "question_count",
             "tagged_count",
+            "complete_tagged_count",
+            "evidence_count",
+            "criteria_count",
+            "criteria_failed_question_ids",
             "linked_count",
             "failed_count",
             "successful_question_ids",

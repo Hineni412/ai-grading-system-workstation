@@ -174,6 +174,14 @@ class VaultService:
             self.work,
             self.model_approval,
         )
+        from .home_intake_drafts import HomeIntakeDrafts
+
+        self.home_intake_drafts = HomeIntakeDrafts(
+            self.database,
+            self.repository,
+            self.session_key,
+            self.ordinary_database,
+        )
         from .sensitive_work_projection import SensitiveWorkProjection
 
         self.projections = SensitiveWorkProjection(
@@ -221,6 +229,18 @@ class VaultService:
             self.session_key,
             self.projections,
         )
+        from .class_roster_service import ClassRosterService
+        from .existing_student_roster import SqliteExistingStudentRosterSource
+
+        self.class_roster = ClassRosterService(
+            self.database,
+            self.repository,
+            self.session_key,
+            self.support,
+            SqliteExistingStudentRosterSource(
+                Path(getattr(context.paths, "db_path", context.root / "grading.db"))
+            ),
+        )
         self.student_cards = StudentCardService(
             self.database,
             self.repository,
@@ -264,6 +284,48 @@ class VaultService:
         self._sessions: dict[str, _Session] = {}
         self._previews: dict[str, _RestorePreview] = {}
         self._initialization_replays: dict[str, dict[str, object]] = {}
+        self._initialize_session_bound_services()
+
+    def _initialize_session_bound_services(self) -> None:
+        """Build stateless protected-work facades for every runtime mode.
+
+        These services resolve the active key through ``session_key`` for each
+        operation.  Constructing them does not unlock the vault or touch the
+        database, so plaintext preview mode must receive the same facades as an
+        encrypted session.
+        """
+        from .affair_workspace import AffairWorkspace
+        from .home_intake_finalizer import HomeIntakeFinalizer
+        from .student_directory import StudentDirectory
+        from .support_ai_review import SupportRecordAIReview
+
+        self.support_ai_reviews = SupportRecordAIReview(
+            self.database,
+            self.repository,
+            self.session_key,
+            self.support,
+            self.model_approval,
+            self.projections,
+        )
+        self.student_directory = StudentDirectory(
+            self.database,
+            self.repository,
+            self.session_key,
+        )
+        self.affairs = AffairWorkspace(
+            self.database,
+            self.repository,
+            self.session_key,
+            self.sop,
+            self.projections,
+        )
+        self.home_intake_finalizer = HomeIntakeFinalizer(
+            self.home_intake,
+            self.sop_baselines,
+            self.affairs,
+            self.projections,
+            self.home_intake_drafts,
+        )
 
     @asynccontextmanager
     async def operation_scope(self):
@@ -1377,32 +1439,6 @@ class VaultService:
             vmk=bytearray(vmk),
             instance_id=instance_id,
             last_activity=time.monotonic(),
-        )
-        from .support_ai_review import SupportRecordAIReview
-
-        self.support_ai_reviews = SupportRecordAIReview(
-            self.database,
-            self.repository,
-            self.session_key,
-            self.support,
-            self.model_approval,
-            self.projections,
-        )
-        from .student_directory import StudentDirectory
-
-        self.student_directory = StudentDirectory(
-            self.database,
-            self.repository,
-            self.session_key,
-        )
-        from .affair_workspace import AffairWorkspace
-
-        self.affairs = AffairWorkspace(
-            self.database,
-            self.repository,
-            self.session_key,
-            self.sop,
-            self.projections,
         )
         if hasattr(self, "projections"):
             self.projections.drain(token=token)

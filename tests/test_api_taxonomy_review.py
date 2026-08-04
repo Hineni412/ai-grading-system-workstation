@@ -8,7 +8,9 @@ import pytest
 from fastapi.testclient import TestClient
 
 from backend.api.app import create_app
-from backend.api.dependencies import get_taxonomy_review_service
+from backend.api.dependencies import (
+    get_taxonomy_review_service,
+)
 from question_bank.models.question import QuestionCreate
 from question_bank.services.question_service import QuestionService
 from question_bank.services.question_write_service import QuestionBankWriteService
@@ -26,6 +28,18 @@ CATALOG_PATH = (
     / "catalogs"
     / "tag_vocabulary_v2.json"
 )
+
+
+def test_teacher_facing_knowledge_graph_release_switch_endpoints_are_removed() -> None:
+    app = create_app()
+    client = TestClient(app)
+    assert client.get(
+        "/api/question-bank/knowledge-graph/release-preview"
+    ).status_code == 404
+    for action in ("stage", "demo-release/activate", "demo-release/rollback"):
+        assert client.post(
+            f"/api/question-bank/knowledge-graph/releases/{action}", json={}
+        ).status_code == 404
 
 
 def _client_with_curriculum_proposal(

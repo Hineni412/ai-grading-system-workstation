@@ -653,7 +653,7 @@ def test_mapping_model_proposes_existing_lesson_ranges_once_then_teacher_applies
                     "end_unit": 2,
                 }
             ],
-            "uncertainties": [],
+            "uncertainties": ["第3页无法对应到现有课时。"],
         }
     )
     service = TeachingPrepService(
@@ -707,6 +707,74 @@ def test_mapping_model_proposes_existing_lesson_ranges_once_then_teacher_applies
     ]
     updated_record = service.list_semester_materials(semester.id)[0]
     assert updated_record.mapping_status == "confirmed"
+
+
+def test_existing_tree_replacement_response_reports_the_real_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths, base_service = _migrated_service(tmp_path, monkeypatch)
+    semester, _lesson_ids = _semester(base_service)
+    version, _created = base_service.register_material_file(
+        request_token="mapping-replacement-file",
+        path=_pdf(tmp_path / "replacement-workbook.pdf", ["L1"]),
+        display_name="合成新增教辅",
+    )
+    record, _created = base_service.attach_semester_material(
+        semester.id,
+        request_token="mapping-replacement-attach",
+        material_version_id=version.id,
+        material_role="exercise_workbook",
+    )
+    base_service.parse_material_version(version.id)
+    fake = _FakeSemesterMappingModel(
+        {
+            "tree": [
+                {
+                    "key": "chapter-new",
+                    "title": "模型擅自新建的章",
+                    "sections": [
+                        {
+                            "key": "section-new",
+                            "title": "模型擅自新建的节",
+                            "lessons": [
+                                {
+                                    "key": "lesson-new",
+                                    "title": "模型擅自新建的课时",
+                                    "duration_minutes": 45,
+                                }
+                            ],
+                        }
+                    ],
+                }
+            ],
+            "mappings": [
+                {
+                    "material_record_id": record.id,
+                    "lesson_ref": "proposal:lesson-new",
+                    "start_unit": 1,
+                    "end_unit": 1,
+                }
+            ],
+            "uncertainties": [],
+        }
+    )
+    service = TeachingPrepService(
+        paths.workspace_dir("teaching-prep"),
+        semester_mapping_model_adapter=fake,
+    )
+
+    with pytest.raises(
+        TeachingPrepRetryAvailableError,
+        match="attempted to replace the existing lesson tree",
+    ):
+        service.generate_semester_mapping_proposal(
+            semester.id,
+            operation_id="semester-mapping-replacement-0001",
+            material_record_ids=[record.id],
+        )
+
+    assert service.list_semester_mapping_proposals(semester.id) == ()
 
 
 def test_saved_mapping_proposal_recovers_when_job_completion_report_fails(
@@ -940,7 +1008,7 @@ def test_invalid_semester_mapping_response_allows_an_explicit_new_operation(
                 "end_unit": 1,
             }
         ],
-        "uncertainties": [],
+        "uncertainties": ["第2页无法对应到现有课时。"],
     }
     fake = _FakeSemesterMappingModel({**valid_payload, "tree": "invalid"})
     service = TeachingPrepService(
@@ -1415,7 +1483,7 @@ def test_mapping_semantic_identity_blocks_a_parallel_fresh_operation(
                     "end_unit": 1,
                 }
             ],
-            "uncertainties": [],
+            "uncertainties": ["第2页无法对应到现有课时。"],
         }
     )
     service = TeachingPrepService(

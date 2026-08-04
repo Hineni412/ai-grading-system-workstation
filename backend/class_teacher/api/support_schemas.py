@@ -15,6 +15,12 @@ class SubjectCreateRequest(OperationRequest):
     class_label: str | None = Field(default=None, max_length=240)
 
 
+class ClassRosterReplaceRequest(OperationRequest):
+    expected_source_revision: str = Field(min_length=64, max_length=64)
+    class_label: str = Field(min_length=1, max_length=240)
+    q: str | None = Field(default=None, max_length=240)
+
+
 class SubjectUpdateRequest(OperationRequest):
     revision: int = Field(ge=1)
     display_name: str = Field(min_length=1, max_length=240)

@@ -55,6 +55,12 @@ const selectedQuestionLayout = computed<'compact' | 'expanded'>(() => {
     ? 'compact'
     : 'expanded'
 })
+const prioritizedQuestions = computed(() => [...props.questions].sort((left, right) => {
+  const reviewDifference = Number(right.needs_review_count > 0)
+    - Number(left.needs_review_count > 0)
+  if (reviewDifference !== 0) return reviewDifference
+  return props.questions.indexOf(left) - props.questions.indexOf(right)
+}))
 const editableItems = computed(() =>
   props.queueItems.filter((item) => !resolveReviewItem(item).teacher_locked),
 )
@@ -186,10 +192,14 @@ watch(
   >
     <nav class="review-question-strip" data-testid="question-strip" aria-label="按题号选择复核内容">
       <button
-        v-for="question in questions"
+        v-for="question in prioritizedQuestions"
         :key="question.question_id"
         type="button"
         :data-question-id="question.question_id"
+        :data-needs-review="question.needs_review_count > 0 ? 'true' : undefined"
+        :aria-label="question.needs_review_count > 0
+          ? `${question.question_id}，有 ${question.needs_review_count} 份答卷需要人工复核`
+          : question.question_id"
         :aria-current="question.question_id === selectedQuestionId ? 'true' : undefined"
         @click="emit('selectQuestion', question.question_id)"
       >

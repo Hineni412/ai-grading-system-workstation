@@ -124,6 +124,7 @@ class ExistingTagProjectionWriter:
             checked.analysis,
             model_name=model_name,
             confidence=checked.analysis.confidence,
+            taxonomy_governance=self.tagging_service.taxonomy_governance,
         ):
             raise RuntimeError("tag projection could not be saved")
         return {
@@ -325,12 +326,23 @@ class QuestionAnalysisInputLoader:
                     *_rich_paths(answer_blocks),
                 ]
             )
-            images = tuple(
-                [
-                    *self._images(question_paths, role="question"),
-                    *self._images(answer_paths, role="answer"),
+            question_images = self._images(question_paths, role="question")
+            answer_images = self._images(answer_paths, role="answer")
+            # Some DOCX/PDF extractors attach a diagram to the answer-side
+            # rich blocks even though it is the figure the question refers to.
+            # Keep the original answer image and expose a question-role copy
+            # when no question-side body could be resolved, so the structural
+            # image gate does not reject an otherwise usable question.
+            if bool(row["has_images"]) and not question_images and answer_images:
+                question_images = [
+                    QuestionAnalysisImage(
+                        role="question",
+                        mime_type=image.mime_type,
+                        content=image.content,
+                    )
+                    for image in answer_images
                 ]
-            )
+            images = tuple([*question_images, *answer_images])
             has_images = bool(row["has_images"]) or bool(
                 question_paths or answer_paths
             )
@@ -442,12 +454,16 @@ def question_analysis_input_from_config_source(
         source.get("rich_answer_blocks")
         or source.get("answer_blocks")
     )
+    reference_solution = source.get("reference_solution")
     normalized_images = tuple(images)
     volume_id = str(curriculum_volume_id or "").strip()
     if not volume_id:
         raise ValueError("curriculum_volume_id must be selected before analysis")
     return QuestionAnalysisInput(
         question_id=int(question_id),
+        question_type_confirmed=(
+            source.get("question_type_confirmed") is True
+        ),
         tagging_context=TaggingContext(
             question_text=question_text,
             answer_text=answer_text,
@@ -480,6 +496,11 @@ def question_analysis_input_from_config_source(
         rich_answer_blocks=tuple(_public_block(item) for item in answer_blocks),
         images=normalized_images,
         taxonomy_contract=dict(taxonomy_contract or {}),
+        reference_solution=(
+            dict(reference_solution)
+            if isinstance(reference_solution, Mapping)
+            else {}
+        ),
     )
 
 
@@ -537,6 +558,13 @@ def _combined_prompt(
         "response_mode, full_answer must be non-empty. Keep "
         "keys present even when a type-specific list or answer is empty. "
         "Solution evidence must never contain score fields. "
+        "Treat reference_solution according to trust_level. teacher_confirmed is a "
+        "teacher-confirmed basis. source_extracted is unconfirmed reference material "
+        "that may be incomplete or internally conflicting: use the stem, images and "
+        "mathematical reasoning instead of copying it mechanically. absent means no "
+        "reference was available. Return reference_assessment as consistent, conflict, "
+        "or insufficient with a short reference_assessment_reason. A conflict is a "
+        "teacher warning, never a reason to omit a usable grading structure. "
         "Do not invent content hidden by a missing image. When repair_context is "
         "present, this is a teacher-authorized targeted repair. Use its exact "
         "validation_error, validation_issues, allowed_changes, immutable_fields, "
@@ -545,12 +573,17 @@ def _combined_prompt(
         "one complete replacement result for the requested projection. When "
         "expected_projection is training_criteria, return solution_evidence only; "
         "the application preserves the already accepted tag_analysis. "
-        "Do not copy the rejected structure blindly. Re-audit every full_answer: "
-        "each standalone intermediate equality, angle relation, equation, or "
-        "mathematical result that is used by a later step must have its own "
-        "evidence point. For the Q11-style example, if full_answer contains "
-        "∠B=90°-x, ∠ACD=90°-x/2, and y=x/2, omitting any one of those three "
-        "placeholders is invalid."
+        "Do not copy the rejected structure blindly. Process-required parts should "
+         "be split into independently verifiable evidence points when the answer "
+         "shows more than one meaningful milestone. If only one milestone can be "
+         "confirmed, one evidence point is allowed; never invent steps just to "
+         "satisfy a count. Do not infer an exact evidence point count from punctuation, "
+         "equations, angle symbols, or connective words. "
+        "A local question_type with question_type_confirmed=false is only a preview hint, "
+        "not a grading fact. Decide response_mode separately for every part from the "
+        "question, its complete answer and analysis. One blank in part (1) must never "
+        "collapse later process-required parts into a whole-question fill blank. When "
+        "expected_part_count is present, return exactly that many parts in the stated order."
     )
     questions = []
     for item in batch.questions:
@@ -567,6 +600,14 @@ def _combined_prompt(
                 item.rich_answer_blocks
             ),
             "candidate_contract": dict(item.taxonomy_contract),
+            "reference_solution": dict(item.reference_solution),
+            "question_type_confirmed": item.question_type_confirmed,
+            "expected_part_count": (
+                len(item.explicit_part_labels)
+                if item.explicit_part_labels
+                else None
+            ),
+            "explicit_part_labels": list(item.explicit_part_labels),
             "expected_projection": projection,
         }
         if item.repair_context:

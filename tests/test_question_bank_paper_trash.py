@@ -15,6 +15,7 @@ from question_bank.services.question_write_service import (
     PaperStateConflict,
     QuestionBankWriteService,
 )
+from tests.current_knowledge_support import install_current_knowledge
 
 
 def _seed_paper(
@@ -23,6 +24,7 @@ def _seed_paper(
     data_root = tmp_path / "data"
     db_path = data_root / "databases" / "question_bank.db"
     initialize_database(db_path)
+    install_current_knowledge(db_path)
     source_path = data_root / "question_bank" / "raw_papers" / "source.docx"
     source_path.parent.mkdir(parents=True, exist_ok=True)
     source_path.write_bytes(b"source-stays")
@@ -104,7 +106,7 @@ def test_restoring_a_trashed_paper_only_restores_questions_moved_with_it(
     assert restored.deleted is False
     assert restored.affected_question_count == 2
     assert reader.get_question(1)["question_text"] == "第一题"
-    assert reader.get_question(1)["tags"][0]["tag_value"] == "全等三角形"
+    assert reader.get_question(1)["tags"][0]["tag_value"] == "三角形全等"
     assert reader.get_question(3) is None
     assert source_path.read_bytes() == b"source-stays"
 

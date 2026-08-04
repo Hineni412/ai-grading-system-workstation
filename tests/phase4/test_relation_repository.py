@@ -9,7 +9,9 @@ from threading import Barrier
 import pytest
 
 from backend.schema_migrations import ensure_schema_current
+from question_bank.current_knowledge import CurrentKnowledgeUnavailable
 from question_bank.database.schema import initialize_database
+from question_bank.knowledge_graph_release import load_release
 from question_bank.relations.contracts import (
     KnowledgeRelation,
     RelationConflict,
@@ -25,6 +27,7 @@ from question_bank.relations.repository import (
 )
 from question_bank.taxonomy.registry import CANONICAL_KNOWLEDGE
 from update_tools.migrate_db import run_migrations
+from tests.current_knowledge_support import install_current_knowledge
 
 
 QUESTION_BANK_MIGRATIONS = (
@@ -38,7 +41,21 @@ def relation_store(
 ) -> tuple[Path, KnowledgeRelationRepository]:
     database = tmp_path / "question-bank.db"
     initialize_database(database)
+    install_current_knowledge(database)
     return database, KnowledgeRelationRepository(database)
+
+
+def test_relation_suggestion_requires_a_current_standard(tmp_path: Path) -> None:
+    database = tmp_path / "question-bank.db"
+    initialize_database(database)
+    repository = KnowledgeRelationRepository(database)
+
+    with pytest.raises(CurrentKnowledgeUnavailable):
+        _suggest(
+            repository,
+            "kp_alg_real_numbers",
+            "kp_alg_equation_properties",
+        )
 
 
 def _relation(
@@ -88,8 +105,16 @@ def test_empty_database_seeds_governed_identities_without_relations(
 
     identities = repository.list_identities()
 
-    assert len(identities) == len(CANONICAL_KNOWLEDGE)
-    assert all(identity.origin == "builtin" for identity in identities)
+    canonical_keys = {
+        item.canonical_id.casefold() for item in CANONICAL_KNOWLEDGE
+    }
+    release_keys = {
+        str(item["stable_key"])
+        for item in load_release().payload["core_nodes"]
+    }
+    by_key = {identity.stable_key: identity for identity in identities}
+    assert set(by_key) == canonical_keys | release_keys
+    assert all(by_key[key].origin == "builtin" for key in canonical_keys)
     assert repository.list_active_relations() == ()
     with sqlite3.connect(database) as connection:
         assert (
@@ -168,6 +193,86 @@ def test_historical_database_keeps_tags_and_maps_only_exact_governed_values(
         ("一次函数", "kp_fun_linear"),
         ("待定系数法", "kp_fun_linear"),
     ]
+
+
+def test_release_scoped_relation_migration_preserves_history(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "relation-history.db"
+    old_migrations = tmp_path / "migrations-through-027"
+    old_migrations.mkdir()
+    for source in sorted(QUESTION_BANK_MIGRATIONS.glob("*.sql")):
+        if int(source.name.split("_", 1)[0]) <= 27:
+            shutil.copy2(source, old_migrations / source.name)
+    report = run_migrations(
+        "question_bank",
+        db_path=database,
+        migrations_dir=old_migrations,
+        backup_dir_override=tmp_path / "old-backups",
+    )
+    assert report.error is None
+
+    with sqlite3.connect(database) as connection:
+        connection.executemany(
+            """
+            INSERT INTO knowledge_tag_identities (
+                stable_key, display_name, origin
+            ) VALUES (?, ?, 'local')
+            """,
+            (
+                ("kp_history_source", "历史起点"),
+                ("kp_history_target", "历史终点"),
+            ),
+        )
+        connection.execute(
+            """
+            INSERT INTO knowledge_relations (
+                relation_id, source_key, target_key, relation_type,
+                status, source_kind, rationale, decision_by, decided_at
+            ) VALUES (
+                'kr_history', 'kp_history_source', 'kp_history_target',
+                'parent', 'confirmed', 'teacher', '历史关系',
+                'teacher-history', datetime('now','localtime')
+            )
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO knowledge_relation_audit_events (
+                relation_id, event_type, from_status, to_status,
+                actor_kind, actor_ref, reason,
+                expected_revision, resulting_revision
+            ) VALUES (
+                'kr_history', 'confirmed', NULL, 'confirmed',
+                'teacher', 'teacher-history', '历史确认', 0, 1
+            )
+            """
+        )
+        connection.commit()
+
+    initialize_database(database)
+
+    with sqlite3.connect(database) as connection:
+        relation = connection.execute(
+            """
+            SELECT relation_id, status, rationale, graph_release_id
+            FROM knowledge_relations
+            WHERE relation_id = 'kr_history'
+            """
+        ).fetchone()
+        events = connection.execute(
+            """
+            SELECT event_type, actor_ref, reason
+            FROM knowledge_relation_audit_events
+            WHERE relation_id = 'kr_history'
+            """
+        ).fetchall()
+        foreign_key_issues = connection.execute(
+            "PRAGMA foreign_key_check"
+        ).fetchall()
+    assert relation == ("kr_history", "confirmed", "历史关系", None)
+    assert events == [("confirmed", "teacher-history", "历史确认")]
+    assert foreign_key_issues == []
 
 
 def test_bootstrap_keeps_stable_identity_when_visible_tag_text_changes(
@@ -500,6 +605,7 @@ def test_database_constraints_reject_missing_identity_and_active_reverse_pair(
         1,
     )
     assert confirmed.status is RelationStatus.CONFIRMED
+    current_release_id = repository.current_release_id()
 
     with sqlite3.connect(database) as connection:
         connection.execute("PRAGMA foreign_keys = ON")
@@ -509,7 +615,7 @@ def test_database_constraints_reject_missing_identity_and_active_reverse_pair(
                 INSERT INTO knowledge_relations (
                     relation_id, source_key, target_key, relation_type,
                     status, source_kind, rationale,
-                    decision_by, decided_at
+                    decision_by, decided_at, graph_release_id
                 ) VALUES (
                     'kr_missing_identity',
                     'kp_missing',
@@ -519,9 +625,11 @@ def test_database_constraints_reject_missing_identity_and_active_reverse_pair(
                     'teacher',
                     '非法外键',
                     'teacher-synthetic',
-                    datetime('now','localtime')
+                    datetime('now','localtime'),
+                    ?
                 )
-                """
+                """,
+                (current_release_id,),
             )
         with pytest.raises(sqlite3.IntegrityError):
             connection.execute(
@@ -529,7 +637,7 @@ def test_database_constraints_reject_missing_identity_and_active_reverse_pair(
                 INSERT INTO knowledge_relations (
                     relation_id, source_key, target_key, relation_type,
                     status, source_kind, rationale,
-                    decision_by, decided_at
+                    decision_by, decided_at, graph_release_id
                 ) VALUES (
                     'kr_reverse_active',
                     'kp_alg_equation_properties',
@@ -539,7 +647,9 @@ def test_database_constraints_reject_missing_identity_and_active_reverse_pair(
                     'teacher',
                     '非法反向活动边',
                     'teacher-synthetic',
-                    datetime('now','localtime')
+                    datetime('now','localtime'),
+                    ?
                 )
-                """
+                """,
+                (current_release_id,),
             )

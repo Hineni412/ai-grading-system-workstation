@@ -215,11 +215,19 @@ class SopWorkflowService:
         title: str,
         summary: str | None,
         participant_refs: list[str],
+        subject_ids: list[str] | None = None,
+        idempotency_fingerprint: str | None = None,
         transaction_hook: Callable[[Any, bytes, str, str], None] | None = None,
     ) -> dict[str, object]:
         vmk = self._key_provider(token)
         replay = self._idempotent(operation_id, "sop.affair.create")
         if replay is not None:
+            if idempotency_fingerprint and replay.get("request_fingerprint") != idempotency_fingerprint:
+                raise VaultError(
+                    "vault_operation_conflict",
+                    "同一方案的保存内容已经变化，请恢复原选择或重新生成方案",
+                    status_code=409,
+                )
             return self.get_affair(
                 token=token,
                 affair_id=str(replay["affair_id"]),
@@ -230,7 +238,8 @@ class SopWorkflowService:
             self._text(item, "参与引用", 240)
             for item in list(dict.fromkeys(participant_refs))
         ]
-        if not participants or len(participants) > 50:
+        unique_subject_ids = list(dict.fromkeys(str(item) for item in list(subject_ids or [])))
+        if (not participants and not unique_subject_ids) or len(participants) + len(unique_subject_ids) > 50:
             raise VaultError(
                 "sop_participants_invalid",
                 "事务需要 1 至 50 个匿名参与引用",
@@ -340,7 +349,34 @@ class SopWorkflowService:
                         timestamp,
                     ),
                 )
-                for participant in participants:
+                participant_inputs: list[tuple[str, str | None]] = [
+                    (participant, None) for participant in participants
+                ]
+                for subject_id in unique_subject_ids:
+                    subject_row = connection.execute(
+                        """
+                        SELECT s.payload_object_id
+                        FROM student_subject_links s
+                        JOIN class_roster_memberships m ON m.subject_id=s.subject_id
+                        WHERE s.subject_id=? AND s.state='active' AND m.state='active'
+                        """,
+                        (subject_id,),
+                    ).fetchone()
+                    if subject_row is None:
+                        raise VaultError(
+                            "sop_subject_not_current_roster",
+                            "所选学生已不在当前我班学生名单中，请刷新后重试",
+                            status_code=409,
+                        )
+                    identity, _ = self.repository.get(
+                        connection,
+                        vmk=vmk,
+                        object_id=str(subject_row["payload_object_id"]),
+                    )
+                    participant_inputs.append(
+                        (str(identity.get("display_name") or "学生"), subject_id)
+                    )
+                for participant, subject_id in participant_inputs:
                     participant_id = uuid4().hex
                     participant_object_id = f"affair-participant-{participant_id}"
                     self.repository.put(
@@ -364,6 +400,15 @@ class SopWorkflowService:
                             timestamp,
                         ),
                     )
+                    if subject_id is not None:
+                        connection.execute(
+                            """
+                            INSERT INTO affair_student_links (
+                                affair_id, subject_id, participant_id, created_at
+                            ) VALUES (?, ?, ?, ?)
+                            """,
+                            (affair_id, subject_id, participant_id, timestamp),
+                        )
                 self._instantiate_steps(
                     connection,
                     vmk=vmk,
@@ -377,8 +422,22 @@ class SopWorkflowService:
                     connection,
                     operation_id,
                     "sop.affair.create",
-                    {"affair_id": affair_id},
+                    {
+                        "affair_id": affair_id,
+                        **(
+                            {"request_fingerprint": idempotency_fingerprint}
+                            if idempotency_fingerprint
+                            else {}
+                        ),
+                    },
                 )
+                if transaction_hook is not None:
+                    transaction_hook(
+                        connection,
+                        vmk,
+                        affair_id,
+                        occurrence_id,
+                    )
         return self.get_affair(token=token, affair_id=affair_id)
 
     def get_affair(self, *, token: str, affair_id: str) -> dict[str, object]:
@@ -414,9 +473,11 @@ class SopWorkflowService:
             ).fetchone()
             participant_rows = connection.execute(
                 """
-                SELECT participant_id, payload_object_id
-                FROM affair_participants WHERE affair_id = ?
-                ORDER BY created_at
+                SELECT p.participant_id, p.payload_object_id, l.subject_id
+                FROM affair_participants p
+                LEFT JOIN affair_student_links l ON l.participant_id=p.participant_id
+                WHERE p.affair_id = ?
+                ORDER BY p.created_at
                 """,
                 (affair_id,),
             ).fetchall()
@@ -431,6 +492,11 @@ class SopWorkflowService:
                     {
                         "participant_id": str(participant["participant_id"]),
                         "reference": protected["reference"],
+                        "subject_id": (
+                            None
+                            if participant["subject_id"] is None
+                            else str(participant["subject_id"])
+                        ),
                     }
                 )
             steps = self._steps_for_occurrence(

@@ -301,16 +301,12 @@ def _import_scanned_paper(
             source_title=source_title,
         )
         if collision is not None:
-            paper_id, is_deleted = collision
+            paper_id, _is_deleted = collision
             return PaperImportFileResult(
                 source_file=source_value,
-                status="duplicate_in_trash" if is_deleted else "duplicate",
+                status="duplicate",
                 paper_id=paper_id,
-                message=(
-                    "matching paper is in trash; restore it instead of importing again"
-                    if is_deleted
-                    else "paper already imported"
-                ),
+                message="paper already imported",
             )
 
     extracted = _extract_paper(path)
@@ -344,6 +340,26 @@ def _import_scanned_paper(
     pending_rich_content: list[tuple[int, list[dict[str, object]], list[dict[str, object]]]] = []
 
     with connect(db_path) as conn:
+        # The source may have taken long enough to parse for another request to
+        # finish importing it.  Serialize the final active-paper check and the
+        # insert so retries and concurrent workers still create at most one new
+        # active paper.  Deleted papers intentionally do not participate: a
+        # teacher who uploads the same source again is starting a fresh paper.
+        conn.execute("BEGIN IMMEDIATE")
+        collision = _find_paper_collision(
+            conn,
+            fingerprint=fingerprint,
+            source_file=source_value,
+            source_title=source_title,
+        )
+        if collision is not None:
+            paper_id, _is_deleted = collision
+            return PaperImportFileResult(
+                source_file=source_value,
+                status="duplicate",
+                paper_id=paper_id,
+                message="paper already imported",
+            )
         paper_cursor = conn.execute(
             """
             INSERT INTO papers (
@@ -459,8 +475,8 @@ def _find_paper_collision(
             SELECT id, COALESCE(import_status, '') AS import_status
             FROM papers
             WHERE content_fingerprint = ?
-            ORDER BY CASE WHEN COALESCE(import_status, '') = 'deleted' THEN 1 ELSE 0 END,
-                     id
+              AND COALESCE(import_status, '') <> 'deleted'
+            ORDER BY id
             LIMIT 1
             """,
             (fingerprint,),
@@ -471,9 +487,9 @@ def _find_paper_collision(
                 SELECT id, COALESCE(import_status, '') AS import_status
                 FROM papers
                 WHERE COALESCE(content_fingerprint, '') = ''
+                  AND COALESCE(import_status, '') <> 'deleted'
                   AND (source_file = ? OR title = ? OR title LIKE ?)
-                ORDER BY CASE WHEN COALESCE(import_status, '') = 'deleted' THEN 1 ELSE 0 END,
-                         id
+                ORDER BY id
                 LIMIT 1
                 """,
                 (source_file, clean_title, f"{clean_title}_%"),
@@ -483,16 +499,16 @@ def _find_paper_collision(
             """
             SELECT id, COALESCE(import_status, '') AS import_status
             FROM papers
-            WHERE source_file = ? OR title = ? OR title LIKE ?
-            ORDER BY CASE WHEN COALESCE(import_status, '') = 'deleted' THEN 1 ELSE 0 END,
-                     id
+            WHERE COALESCE(import_status, '') <> 'deleted'
+              AND (source_file = ? OR title = ? OR title LIKE ?)
+            ORDER BY id
             LIMIT 1
             """,
             (source_file, clean_title, f"{clean_title}_%"),
         ).fetchone()
     if row is None:
         return None
-    return int(row["id"]), str(row["import_status"]) == "deleted"
+    return int(row["id"]), False
 
 
 def _paper_exists(

@@ -8,6 +8,10 @@ from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any
 
+from question_bank.current_knowledge import (
+    CurrentKnowledgeResolver,
+    CurrentKnowledgeUnavailable,
+)
 from question_bank.recommendation.scoring import (
     difficulty_match_score,
     parse_difficulty,
@@ -15,7 +19,6 @@ from question_bank.recommendation.scoring import (
     tag_match_score,
 )
 from question_bank.services.question_frequency_service import FrequencyMetrics, QuestionFrequencyService
-from question_bank.taxonomy.registry import canonicalize_error_type, canonicalize_knowledge_values
 
 
 RECOMMENDATION_TAG_TYPES = ("knowledge_point", "canonical_knowledge_id", "method", "error_type", "model")
@@ -29,13 +32,17 @@ def recommend_for_weak_point(
     limit: int = 5,
     similarity_threshold: float = 0.9,
 ) -> list[dict[str, Any]]:
-    normalized_weak_point = _normalize_weak_point(weak_point)
+    database_path = Path(db_path)
+    try:
+        resolver = CurrentKnowledgeResolver.from_active_database(database_path)
+    except CurrentKnowledgeUnavailable:
+        return []
+    normalized_weak_point = _normalize_weak_point(weak_point, resolver)
     knowledge_point = _text(normalized_weak_point.get("knowledge_point"))
     if not knowledge_point or limit <= 0:
         return []
 
-    database_path = Path(db_path)
-    candidates = _load_candidates(database_path, normalized_weak_point)
+    candidates = _load_candidates(database_path, normalized_weak_point, resolver)
     frequency_metrics = QuestionFrequencyService(database_path).metrics_for_questions(
         [int(candidate["id"]) for candidate in candidates]
     )
@@ -98,61 +105,46 @@ def practice_gradient_fit(stage: str, difficulty: object) -> float | None:
     return 0.2
 
 
-def _load_candidates(db_path: Path, weak_point: Mapping[str, Any]) -> list[dict[str, Any]]:
+def _load_candidates(
+    db_path: Path,
+    weak_point: Mapping[str, Any],
+    resolver: CurrentKnowledgeResolver,
+) -> list[dict[str, Any]]:
     if not db_path.exists():
         return []
 
-    canonical_knowledge_id = _text(weak_point.get("canonical_knowledge_id"))
-    knowledge_point = _text(weak_point.get("knowledge_point"))
-    knowledge_terms = [
-        term
-        for term in (
-            knowledge_point,
-            _text(weak_point.get("raw_knowledge_point")),
-            *(_text(value) for value in _as_list(weak_point.get("raw_knowledge_ids"))),
-        )
-        if term
-    ]
+    target_keys = set(weak_point.get("_current_core_keys") or [])
+    if not target_keys:
+        return []
     db_uri = f"{db_path.resolve().as_uri()}?mode=ro"
     try:
         with sqlite3.connect(db_uri, uri=True) as conn:
             conn.row_factory = sqlite3.Row
-            rows = []
-            if canonical_knowledge_id:
-                rows = conn.execute(
-                    f"{_candidate_select_sql()} JOIN question_tags kt ON kt.question_id = q.id "
-                    "AND kt.tag_type = 'canonical_knowledge_id' AND kt.tag_value = ? "
-                    "LEFT JOIN papers p ON p.id = q.paper_id "
-                    "WHERE COALESCE(q.is_deleted, 0) = 0 ORDER BY q.id ASC",
-                    (canonical_knowledge_id,),
-                ).fetchall()
-            if not rows:
-                rows = _load_candidates_by_knowledge_terms(conn, knowledge_terms or [knowledge_point])
+            rows = conn.execute(
+                f"{_candidate_select_sql()} "
+                "LEFT JOIN papers p ON p.id = q.paper_id "
+                "WHERE COALESCE(q.is_deleted, 0) = 0 "
+                "AND COALESCE(p.import_status, '') <> 'deleted' "
+                "ORDER BY q.id ASC"
+            ).fetchall()
             candidates = [dict(row) for row in rows]
-            _attach_tags(conn, candidates)
+            _attach_tags(conn, candidates, resolver)
     except sqlite3.Error:
         return []
-    return candidates
+    return [
+        candidate
+        for candidate in candidates
+        if target_keys.intersection(
+            candidate["tags"].get("current_knowledge_key", [])
+        )
+    ]
 
 
-def _load_candidates_by_knowledge_terms(conn: sqlite3.Connection, terms: list[str]) -> list[sqlite3.Row]:
-    rows_by_id: dict[int, sqlite3.Row] = {}
-    for term in terms:
-        if not term:
-            continue
-        rows = conn.execute(
-            f"{_candidate_select_sql()} JOIN question_tags kt ON kt.question_id = q.id "
-            "AND kt.tag_type = 'knowledge_point' AND kt.tag_value LIKE ? "
-            "LEFT JOIN papers p ON p.id = q.paper_id "
-            "WHERE COALESCE(q.is_deleted, 0) = 0 ORDER BY q.id ASC",
-            (f"%{term}%",),
-        ).fetchall()
-        for row in rows:
-            rows_by_id[int(row["id"])] = row
-    return list(rows_by_id.values())
-
-
-def _attach_tags(conn: sqlite3.Connection, candidates: list[dict[str, Any]]) -> None:
+def _attach_tags(
+    conn: sqlite3.Connection,
+    candidates: list[dict[str, Any]],
+    resolver: CurrentKnowledgeResolver,
+) -> None:
     if not candidates:
         return
     placeholders = ", ".join("?" for _ in candidates)
@@ -168,12 +160,30 @@ def _attach_tags(conn: sqlite3.Connection, candidates: list[dict[str, Any]]) -> 
         [*(item["id"] for item in candidates), *RECOMMENDATION_TAG_TYPES],
     ).fetchall()
     tags_by_question: dict[int, dict[str, list[str]]] = {
-        int(item["id"]): {tag_type: [] for tag_type in RECOMMENDATION_TAG_TYPES}
+        int(item["id"]): {
+            **{tag_type: [] for tag_type in RECOMMENDATION_TAG_TYPES},
+            "current_knowledge_key": [],
+        }
         for item in candidates
     }
     for row in rows:
-        values = tags_by_question[int(row["question_id"])][str(row["tag_type"])]
+        tag_type = str(row["tag_type"])
         tag_value = _text(row["tag_value"])
+        if tag_type in {"knowledge_point", "canonical_knowledge_id"}:
+            term = resolver.canonical_term(tag_value)
+            resolved = resolver.resolve(tag_value)
+            if term is None or not resolved:
+                continue
+            knowledge = tags_by_question[int(row["question_id"])]
+            if term[1] not in knowledge["knowledge_point"]:
+                knowledge["knowledge_point"].append(term[1])
+            if term[0] not in knowledge["canonical_knowledge_id"]:
+                knowledge["canonical_knowledge_id"].append(term[0])
+            for target in resolved:
+                if target.stable_key not in knowledge["current_knowledge_key"]:
+                    knowledge["current_knowledge_key"].append(target.stable_key)
+            continue
+        values = tags_by_question[int(row["question_id"])][tag_type]
         if tag_value and tag_value not in values:
             values.append(tag_value)
     for item in candidates:
@@ -385,24 +395,41 @@ def _candidate_select_sql() -> str:
     """
 
 
-def _normalize_weak_point(weak_point: Mapping[str, Any]) -> dict[str, Any]:
+def _normalize_weak_point(
+    weak_point: Mapping[str, Any],
+    resolver: CurrentKnowledgeResolver,
+) -> dict[str, Any]:
     item = dict(weak_point)
     if item.get("knowledge_point") and not item.get("raw_knowledge_point"):
         item["raw_knowledge_point"] = item.get("knowledge_point")
-    canonical = canonicalize_knowledge_values(
-        [
-            item.get("canonical_knowledge_id"),
-            item.get("knowledge_point"),
-            *(_as_list(item.get("raw_knowledge_ids"))),
-            item.get("raw_knowledge_point"),
-        ]
+    values = [
+        item.get("canonical_knowledge_id"),
+        item.get("knowledge_point"),
+        *(_as_list(item.get("raw_knowledge_ids"))),
+        item.get("raw_knowledge_point"),
+    ]
+    term = next(
+        (
+            resolved
+            for value in values
+            if (resolved := resolver.canonical_term(value))
+        ),
+        None,
     )
-    if canonical is not None:
-        item["canonical_knowledge_id"] = item.get("canonical_knowledge_id") or canonical.canonical_id
-        item["knowledge_point"] = canonical.canonical_name
+    targets = resolver.resolve_many(values)
+    if term is None or not targets:
+        item["canonical_knowledge_id"] = ""
+        item["knowledge_point"] = ""
+        item["_current_core_keys"] = []
+        return item
+    item["canonical_knowledge_id"] = term[0]
+    item["knowledge_point"] = term[1]
+    item["_current_core_keys"] = list(
+        dict.fromkeys(target.stable_key for target in targets)
+    )
     errors = []
     for value in _as_list(item.get("error_types")) + _as_list(item.get("raw_error_types")):
-        normalized = canonicalize_error_type(value)
+        normalized = _text(value)
         if normalized and normalized not in errors:
             errors.append(normalized)
     if errors:

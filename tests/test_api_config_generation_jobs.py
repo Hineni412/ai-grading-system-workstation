@@ -145,6 +145,20 @@ def test_config_generation_route_submits_safe_queryable_job(tmp_path: Path) -> N
     assert queried.status_code == 200
     assert queried.json()["result"]["failed_question_ids"] == ["Q1"]
 
+    states = client.get(
+        f"/api/sessions/{session_id}/config/generation-jobs/{body['id']}/question-states"
+    )
+    assert states.status_code == 200
+    assert states.json() == {
+        "job_id": body["id"],
+        "questions": [{
+            "question_id": "Q1",
+            "state": "blocked",
+            "reason": "local_validation",
+            "retryable": True,
+        }],
+    }
+
 
 def test_active_config_job_rejects_legacy_config_replacement(tmp_path: Path) -> None:
     client, db, manager = _client(tmp_path)

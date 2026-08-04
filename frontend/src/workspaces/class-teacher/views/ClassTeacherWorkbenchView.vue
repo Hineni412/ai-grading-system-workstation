@@ -6,6 +6,7 @@ import type { HomeIntakeHandoff } from '../api/homeIntake'
 import { vaultApi } from '../api/vault'
 import { projectionR1Api } from '../api/r1'
 import AffairsSurface from '../affairs/AffairsSurface.vue'
+import IntakeDraftWorkspace from '../affairs/IntakeDraftWorkspace.vue'
 import CalendarSurface from '../ordinary/CalendarSurface.vue'
 import { createOrdinaryWorkModule } from '../ordinary/createOrdinaryWorkModule'
 import TodaySurface from '../ordinary/TodaySurface.vue'
@@ -99,6 +100,19 @@ function errorText(error: unknown): string {
 function clearNotices(): void {
   message.value = ''
   errorMessage.value = ''
+}
+
+function openHomeIntakeDraft(draftId: string): void {
+  void navigate({ surface: 'affairs', draftId })
+}
+
+function closeHomeIntakeDraft(): void {
+  void navigate({ surface: 'affairs', draftId: null })
+}
+
+function completeHomeIntakeDraft(): void {
+  message.value = '事务方案已经按教师最终确认保存。'
+  void navigate({ surface: 'affairs', draftId: null })
 }
 
 function clearSensitiveInputs(): void {
@@ -385,8 +399,8 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <main class="class-teacher">
-    <header class="workspace-heading">
+  <main class="class-teacher" :class="{ 'class-teacher--focused': routeState.draftId }">
+    <header v-if="!routeState.draftId" class="workspace-heading">
       <div>
         <p class="workspace-heading__eyebrow">调试模式 · 所有工作面直接打开</p>
         <h1>班主任工作台</h1>
@@ -399,6 +413,7 @@ onBeforeUnmount(() => {
     </header>
 
     <ClassTeacherSurfaceTabs
+      v-if="!routeState.draftId"
       :active="routeState.surface"
       :locked="vaultStatus?.protection_mode === 'plaintext_debug_v1' ? false : !unlocked"
       @select="selectSurface"
@@ -410,6 +425,7 @@ onBeforeUnmount(() => {
       :token="sessionToken || undefined"
       @open-restricted="openRestricted"
       @handoff="receiveHomeIntakeHandoff"
+      @open-draft="openHomeIntakeDraft"
     />
     <CalendarSurface
       v-else-if="routeState.surface === 'calendar'"
@@ -421,7 +437,7 @@ onBeforeUnmount(() => {
     <p v-if="errorMessage" class="notice notice--danger" role="alert">{{ errorMessage }}</p>
 
     <template v-if="routeState.surface === 'affairs' || routeState.surface === 'students'">
-    <div class="sensitive-divider">
+    <div v-if="!routeState.draftId" class="sensitive-divider">
       <div>
         <p class="section-kicker">班级名单与具体学生事项</p>
         <h2>学生与事务工作区</h2>
@@ -430,7 +446,16 @@ onBeforeUnmount(() => {
       <span>当前不设 PIN、密码或自动锁定</span>
     </div>
 
-    <template v-if="!loading && vaultStatus?.protection_mode === 'plaintext_debug_v1'">
+    <IntakeDraftWorkspace
+      v-if="routeState.surface === 'affairs' && routeState.draftId"
+      :draft-id="routeState.draftId"
+      :token="sessionToken"
+      :module="ordinaryWork"
+      @close="closeHomeIntakeDraft"
+      @completed="completeHomeIntakeDraft"
+    />
+
+    <template v-else-if="!loading && vaultStatus?.protection_mode === 'plaintext_debug_v1'">
       <AffairsSurface
         v-if="routeState.surface === 'affairs'"
         :token="sessionToken"
@@ -438,9 +463,10 @@ onBeforeUnmount(() => {
         :handoff="homeIntakeHandoff?.destination === 'affair' ? homeIntakeHandoff : null"
         @handoff-persisted="clearHomeIntakeHandoff"
         @handoff-discarded="clearHomeIntakeHandoff"
+        @open-draft="openHomeIntakeDraft"
       />
       <StudentSurface
-        v-else
+        v-else-if="routeState.surface === 'students'"
         :token="sessionToken"
         :panel="routeState.panel"
         :status="vaultStatus"
@@ -612,9 +638,10 @@ onBeforeUnmount(() => {
         :handoff="homeIntakeHandoff?.destination === 'affair' ? homeIntakeHandoff : null"
         @handoff-persisted="clearHomeIntakeHandoff"
         @handoff-discarded="clearHomeIntakeHandoff"
+        @open-draft="openHomeIntakeDraft"
       />
       <StudentSurface
-        v-else
+        v-else-if="routeState.surface === 'students'"
         :token="sessionToken"
         :panel="routeState.panel"
         :status="vaultStatus"
@@ -636,6 +663,12 @@ onBeforeUnmount(() => {
   margin: 0 auto;
   padding: var(--space-7);
   color: var(--color-text-primary);
+}
+
+.class-teacher--focused {
+  width: 100%;
+  max-width: none;
+  padding: var(--space-3);
 }
 
 .workspace-heading,

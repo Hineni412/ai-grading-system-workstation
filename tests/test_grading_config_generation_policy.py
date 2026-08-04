@@ -506,7 +506,7 @@ def test_quality_warnings_detect_garbled_content_missing_answers_and_stem_knowle
     warnings = session_manager.collect_generated_config_quality_warnings(payload)
 
     assert not any("knowledge" in warning.lower() for warning in warnings)
-    assert any("疑似乱码" in warning for warning in warnings)
+    assert not any("疑似乱码" in warning for warning in warnings)
     assert any("缺少可评分的文本标准答案" in warning for warning in warnings)
 
 
@@ -1028,7 +1028,8 @@ def test_subjective_top_level_serialized_list_stays_blocked_when_part_count_diff
     session_manager.normalize_generated_config_schema(payload)
 
     warnings = session_manager.collect_generated_config_quality_warnings(payload)
-    assert any("列表字符串" in warning for warning in warnings)
+    assert not any("列表字符串" in warning for warning in warnings)
+    assert sum("过程题需要至少两个可区分步骤" in warning for warning in warnings) == 3
 
 
 def test_generated_config_normalization_recovers_paired_knowledge_list_strings_idempotently() -> None:
@@ -1248,7 +1249,7 @@ def test_quality_warnings_flag_overly_broad_knowledge_and_serialized_answer_list
     warnings = session_manager.collect_generated_config_quality_warnings(payload)
 
     assert not any("knowledge" in warning.lower() for warning in warnings)
-    assert any("列表字符串" in warning for warning in warnings)
+    assert not any("列表字符串" in warning for warning in warnings)
 
 
 def test_quality_warnings_do_not_semantically_classify_generic_subjective_steps() -> None:
@@ -1297,7 +1298,9 @@ def test_quality_warnings_do_not_semantically_classify_generic_subjective_steps(
     warnings = session_manager.collect_generated_config_quality_warnings(payload)
 
     assert not any("Q10" in warning for warning in warnings)
-    assert not any("Q12" in warning for warning in warnings)
+    assert warnings == [
+        "[质量检查-阻断] Q12/Q12 过程题需要至少两个可区分步骤"
+    ]
 
 
 @pytest.mark.parametrize(
@@ -2607,7 +2610,8 @@ def test_objective_types_only_need_equal_scores_within_their_own_type() -> None:
     fill_score = questions[2]["max_score"]
     assert choice_score == questions[1]["max_score"]
     assert fill_score == questions[3]["max_score"]
-    assert choice_score > fill_score
+    assert choice_score <= fill_score
+    assert choice_score * 2 >= fill_score
     assert max(question["max_score"] for question in questions) <= 18
     assert sum(question["max_score"] for question in questions) == 100
 

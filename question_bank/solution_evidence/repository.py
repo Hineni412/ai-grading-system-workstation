@@ -7,8 +7,11 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, Mapping, Sequence
 
 from question_bank.database.schema import connect
+from question_bank.knowledge_graph_release.contracts import stable_record_hash
+from question_bank.knowledge_graph_release.repository import active_release_id
 from question_bank.solution_evidence.contracts import (
     CoreResolution,
+    FineTermResolver,
     QuestionSolutionEvidence,
     validate_evidence_fine_terms,
 )
@@ -232,6 +235,16 @@ class FineTermCoreMappingRepository:
         ]
         with connect(self.db_path) as connection:
             connection.execute("BEGIN IMMEDIATE")
+            active_release = connection.execute(
+                """
+                SELECT 1
+                FROM knowledge_graph_releases
+                WHERE status = 'active'
+                LIMIT 1
+                """
+            ).fetchone()
+            if active_release is not None:
+                return 0
             installed = 0
             for term_id, key in normalized:
                 _require_active_identity(connection, key)
@@ -240,13 +253,14 @@ class FineTermCoreMappingRepository:
                 )
                 existing = connection.execute(
                     """
-                    SELECT source_kind, status, revision
+                    SELECT mapping_id, source_kind, status, revision
                     FROM fine_term_core_mappings
-                    WHERE mapping_id = ?
+                    WHERE fine_term_id = ? AND stable_key = ?
                     """,
-                    (mapping_id,),
+                    (term_id, key),
                 ).fetchone()
                 if existing is not None:
+                    mapping_id = str(existing["mapping_id"])
                     if str(existing["status"]) == "confirmed":
                         continue
                     if str(existing["source_kind"]) not in {"builtin", "synthetic"}:
@@ -329,12 +343,23 @@ class SolutionEvidenceRepository:
         source_kind: Literal["combined_model", "teacher_manual", "import", "backfill"],
         source_reference: str,
         created_by: str,
+        graph_release_id: str | None = None,
     ) -> str:
         source = str(source_kind or "").strip().casefold()
         if source not in {"combined_model", "teacher_manual", "import", "backfill"}:
             raise ValueError("solution evidence source_kind is invalid")
         reference = _required_text(source_reference, "source_reference")
         actor = _required_text(created_by, "created_by")
+        graph_id = str(graph_release_id or "").strip() or None
+        storage_version_id = (
+            stable_record_hash(
+                "solution-evidence-graph-version",
+                evidence.version_id,
+                graph_id,
+            )
+            if graph_id is not None
+            else evidence.version_id
+        )
         stored_payload = evidence.to_dict()
         # Whole-question classification is a read-only projection, never a
         # separately editable source of truth.
@@ -344,7 +369,8 @@ class SolutionEvidenceRepository:
             connection.execute("BEGIN IMMEDIATE")
             existing_reference = connection.execute(
                 """
-                SELECT evidence_version_id, content_hash, source_content_hash
+                SELECT evidence_version_id, content_hash, source_content_hash,
+                       graph_release_id
                 FROM question_solution_evidence_versions
                 WHERE question_id = ? AND source_kind = ? AND source_reference = ?
                 """,
@@ -355,6 +381,8 @@ class SolutionEvidenceRepository:
                     str(existing_reference["content_hash"]) != evidence.content_hash
                     or str(existing_reference["source_content_hash"])
                     != evidence.source_content_hash
+                    or str(existing_reference["graph_release_id"] or "")
+                    != str(graph_id or "")
                 ):
                     raise RuntimeError("solution evidence source reference was reused")
                 return str(existing_reference["evidence_version_id"])
@@ -363,22 +391,23 @@ class SolutionEvidenceRepository:
                 SELECT content_hash FROM question_solution_evidence_versions
                 WHERE evidence_version_id = ?
                 """,
-                (evidence.version_id,),
+                (storage_version_id,),
             ).fetchone()
             if existing_version is not None:
                 if str(existing_version["content_hash"]) != evidence.content_hash:
                     raise RuntimeError("solution evidence version collision")
-                return evidence.version_id
+                return storage_version_id
             connection.execute(
                 """
                 INSERT INTO question_solution_evidence_versions (
                     evidence_version_id, question_id, source_content_hash,
                     schema_version, content_hash, evidence_json, status,
-                    source_kind, source_reference, created_by
-                ) VALUES (?, ?, ?, ?, ?, ?, 'proposed', ?, ?, ?)
+                    source_kind, source_reference, created_by,
+                    graph_release_id
+                ) VALUES (?, ?, ?, ?, ?, ?, 'proposed', ?, ?, ?, ?)
                 """,
                 (
-                    evidence.version_id,
+                    storage_version_id,
                     evidence.question_id,
                     evidence.source_content_hash,
                     evidence.schema_version,
@@ -387,9 +416,10 @@ class SolutionEvidenceRepository:
                     source,
                     reference,
                     actor,
+                    graph_id,
                 ),
             )
-        return evidence.version_id
+        return storage_version_id
 
     def has_current(self, question_id: int, source_content_hash: str) -> bool:
         with connect(self.db_path) as connection:
@@ -431,6 +461,7 @@ class SolutionEvidenceRepository:
                 "source_content_hash": stored_hash,
                 "content_hash": str(row["content_hash"]),
                 "status": "stale",
+                "graph_release_id": str(row["graph_release_id"] or ""),
                 "evidence": None,
             }
         evidence_payload = json.loads(str(row["evidence_json"]))
@@ -443,8 +474,48 @@ class SolutionEvidenceRepository:
             "source_content_hash": str(row["source_content_hash"]),
             "content_hash": str(row["content_hash"]),
             "status": str(row["status"]),
+            "graph_release_id": str(row["graph_release_id"] or ""),
             "evidence": evidence_payload,
         }
+
+    def load_current(
+        self,
+        question_id: int,
+        *,
+        source_content_hash: str,
+        resolver: "FineTermResolver",
+    ) -> "QuestionSolutionEvidence | None":
+        """Decode the current saved evidence for a projection-only retry.
+
+        A tag or training-point retry must be able to reuse an already saved
+        model result.  The database payload contains a read-only
+        ``core_resolution`` decoration on links; remove that decoration before
+        passing the payload back through the strict model contract.
+        """
+
+        latest = self.latest(
+            question_id,
+            current_source_content_hash=source_content_hash,
+        )
+        if not isinstance(latest, dict) or latest.get("status") not in {
+            "proposed",
+            "approved",
+        }:
+            return None
+        payload = latest.get("evidence")
+        if not isinstance(payload, dict):
+            return None
+        clean_payload = _model_evidence_payload(payload)
+        from question_bank.solution_evidence.contracts import (
+            QuestionSolutionEvidence,
+        )
+
+        return QuestionSolutionEvidence.from_model_dict(
+            clean_payload,
+            question_id=int(question_id),
+            source_content_hash=str(source_content_hash),
+            resolver=resolver,
+        )
 
     def relation_hints(
         self,
@@ -492,7 +563,7 @@ class SolutionEvidenceProjectionWriter:
     def __init__(
         self,
         *,
-        mapping_repository: FineTermCoreMappingRepository,
+        mapping_repository: FineTermResolver,
         evidence_repository: SolutionEvidenceRepository,
         taxonomy_governance: Any | None = None,
     ) -> None:
@@ -551,11 +622,24 @@ class SolutionEvidenceProjectionWriter:
                 operation_id=operation_id,
             )
             self._audits[(str(operation_id), question.question_id)] = audit
+        requested_graph_release_id = str(
+            question.taxonomy_contract.get("knowledge_graph_release_id") or ""
+        ).strip()
+        active_graph_release_id = ""
+        if requested_graph_release_id:
+            db_path = getattr(self.evidence_repository, "db_path", None)
+            if db_path is not None:
+                active_graph_release_id = active_release_id(Path(db_path)) or ""
         self.evidence_repository.save(
             evidence,
             source_kind="combined_model",
             source_reference=f"analysis:{operation_id}:{question.question_id}",
             created_by=f"model:{str(model_name or 'unknown').strip()}",
+            graph_release_id=(
+                requested_graph_release_id
+                if requested_graph_release_id == active_graph_release_id
+                else None
+            ),
         )
         return evidence
 
@@ -795,6 +879,36 @@ def _canonical_json(value: object) -> str:
         sort_keys=True,
         separators=(",", ":"),
     )
+
+
+def _model_evidence_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
+    """Strip repository-only link resolution fields from a stored payload."""
+
+    clean = json.loads(json.dumps(dict(payload), ensure_ascii=False))
+    parts = clean.get("parts")
+    if not isinstance(parts, list):
+        return clean
+    for part in parts:
+        if not isinstance(part, dict):
+            continue
+        points = part.get("evidence_points")
+        if not isinstance(points, list):
+            continue
+        for point in points:
+            if not isinstance(point, dict):
+                continue
+            links = point.get("fine_term_links")
+            if not isinstance(links, list):
+                continue
+            point["fine_term_links"] = [
+                {
+                    key: link.get(key)
+                    for key in ("fine_term_id", "fine_term_name", "role")
+                }
+                for link in links
+                if isinstance(link, Mapping)
+            ]
+    return clean
 
 
 def _classification_from_evidence_payload(

@@ -10,6 +10,7 @@ from question_bank.database.schema import initialize_database
 from question_bank.relations.contracts import KnowledgeRelation, RelationType
 from question_bank.relations.repository import KnowledgeRelationRepository
 from question_bank.relations.review_service import RelationReviewService
+from tests.current_knowledge_support import install_current_knowledge
 
 
 def _client(
@@ -17,6 +18,7 @@ def _client(
 ) -> tuple[TestClient, KnowledgeRelationRepository]:
     database = tmp_path / "question-bank.db"
     initialize_database(database)
+    install_current_knowledge(database)
     repository = KnowledgeRelationRepository(database)
     service = RelationReviewService(database)
     app = create_app()
@@ -73,7 +75,7 @@ def test_relation_review_api_exposes_queue_preview_decision_and_timeline(
     assert queue.json()["items"][0]["rationale"] == "合成 API 建议"
     assert impact.status_code == 200
     assert impact.json()["can_apply"] is True
-    assert impact.json()["activity_effect"] == "add_to_active_graph"
+    assert impact.json()["activity_effect"] == "include_in_next_standard_candidate"
     assert reviewed.status_code == 200
     assert reviewed.json()["relation"]["status"] == "confirmed"
     assert reviewed.json()["relation"]["decision_by"] == "teacher-api"
@@ -116,7 +118,9 @@ def test_relation_review_api_reports_stale_revision_without_overwrite(
     assert stale.status_code == 409
     assert stale.json()["error"]["code"] == "relation_revision_conflict"
     assert stale.json()["error"]["details"]["current_revision"] == 2
-    assert repository.list_active_relations()[0].relation_id == suggested.relation_id
+    assert suggested.relation_id in {
+        relation.relation_id for relation in repository.list_active_relations()
+    }
 
 
 def test_relation_batch_api_returns_partial_result_and_keeps_each_revision(

@@ -17,6 +17,7 @@ const REASON_LABELS: Record<string, string> = {
   missing_detail_question_ids: 'AI 未完整返回所有小问的评分结果',
   duplicate_detail_question_id: 'AI 重复返回了同一小问',
   unexpected_detail_question_id: 'AI 返回了不属于本题的小问',
+  no_numeric_value: '未能可靠识别填写的数值，需要教师确认',
 }
 
 export function translateGradingReason(
@@ -27,6 +28,10 @@ export function translateGradingReason(
   if (!text) return fallback
   const direct = REASON_LABELS[text.toLocaleLowerCase()]
   if (direct) return direct
+  const embeddedCode = Object.entries(REASON_LABELS).find(([code]) => (
+    text.toLocaleLowerCase().includes(code)
+  ))
+  if (embeddedCode) return embeddedCode[1]
   if (/[\u3400-\u9fff]/u.test(text)) return text
   return fallback
 }

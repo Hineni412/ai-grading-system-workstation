@@ -12,6 +12,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from backend.api.app import ApiError
 from backend.class_teacher.api.router import create_router
 from backend.class_teacher.errors import VaultError
 from backend.class_teacher.home_intake import interpret_local_date
@@ -192,13 +193,15 @@ def test_two_character_incident_names_keep_context_and_stable_aliases(
         fingerprint=str(preview["fingerprint"]),
         operation_id="home-two-character-follow-up-001",
     )
-    assert first["result_kind"] == "follow_up"
+    assert first["result_kind"] == "affair_recommendation"
+    assert first["follow_up_questions"][0] == "双方目前是否仍在接触？"
 
     second_preview = service.home_intake.prepare_follow_up(
         token=token,
         operation_id="home-two-character-follow-up-001",
         answer="张伟仍在现场，王明已经离开",
         reference_date="2026-08-03",
+        selected_step_keys=[str(first["result"]["steps"][0]["key"])],
     )
     second_payload = json.dumps(second_preview["exact_payload"], ensure_ascii=False)
     assert "王明" not in second_payload
@@ -419,7 +422,7 @@ def test_emergency_guidance_is_local_and_precedes_ai(tmp_path: Path) -> None:
     assert gateway.calls == []
 
 
-def test_empty_kind_question_only_result_becomes_specific_follow_up(
+def test_empty_kind_question_only_result_becomes_confirmable_first_draft(
     tmp_path: Path,
 ) -> None:
     question = (
@@ -451,16 +454,15 @@ def test_empty_kind_question_only_result_becomes_specific_follow_up(
         operation_id="home-empty-kind-follow-up-001",
     )
 
-    assert result["state"] == "needs_information"
-    assert result["result_kind"] == "follow_up"
+    assert result["state"] == "succeeded"
+    assert result["result_kind"] == "ordinary_plan"
     assert result["follow_up_questions"] == [question]
-    assert result["teacher_confirmation_required"] is False
+    assert result["teacher_confirmation_required"] is True
+    assert len(result["result"]["nodes"]) == 3
     assert result["physical_request_count"] == 1
     assert len(gateway.calls) == 1
     payload = gateway.calls[0]["payload"]
-    assert any("最少必要的 1—3 个问题" in item for item in payload["instructions"])
     assert any("kind 是必填字段" in item for item in payload["instructions"])
-    assert payload["output_contract"]["follow_up_example"]["kind"] == "follow_up"
 
 
 def test_empty_kind_mixed_plan_and_questions_remains_invalid(tmp_path: Path) -> None:
@@ -678,7 +680,7 @@ def _dispatch_sensitive(
     )
 
 
-def test_safe_plain_text_continuation_is_preserved(tmp_path: Path) -> None:
+def test_safe_plain_text_is_wrapped_in_a_useful_sensitive_draft(tmp_path: Path) -> None:
     service, token, gateway = _service(
         tmp_path,
         result="先记录可核对事实并联系校内负责人，再由教师选择后续路径。",
@@ -692,13 +694,126 @@ def test_safe_plain_text_continuation_is_preserved(tmp_path: Path) -> None:
     )
 
     assert result["state"] == "succeeded"
-    assert result["result_kind"] == "plain_text"
-    assert result["result"]["text"].startswith("先记录可核对事实并联系校内负责人")
+    assert result["result_kind"] == "student_support_recommendation"
+    assert len(result["result"]["steps"]) >= 5
     assert len(gateway.calls) == 1
 
 
-def test_unsafe_output_is_suppressed(tmp_path: Path) -> None:
-    service, token, gateway = _service(tmp_path, result="已经认定属于欺凌，必须给予处分并自动结案。")
+def test_normal_conflict_recommendation_is_not_mistaken_for_a_student_name(
+    tmp_path: Path,
+) -> None:
+    service, token, gateway = _service(
+        tmp_path,
+        result={
+            "assumptions": ["暂按普通学生矛盾处理"],
+            "calendar_items": [
+                "calendar.confirm_safety",
+                "calendar.record_conflict",
+                "calendar.verify_details",
+            ],
+            "kind": "affair_recommendation",
+            "steps": ["confirm_safety", "record_conflict", "verify_details"],
+            "summary": "先确保安全，再分别记录、核实并跟进。",
+            "template_key": "baseline.student_conflict",
+            "title": "学生矛盾处理初稿",
+            "to_verify": [
+                "是否有人受伤或仍存在即时风险",
+                "矛盾的具体起因",
+                "当前双方的状态是否稳定",
+            ],
+        },
+    )
+
+    result = _dispatch_sensitive(
+        service,
+        token,
+        text="钱肖白和张立璞今天信息课又发生了矛盾",
+        operation_id="home-normal-conflict-output-001",
+    )
+
+    assert result["state"] == "succeeded"
+    assert result["result_kind"] == "affair_recommendation"
+    assert result["result"]["template_key"] == "baseline.student_conflict"
+    assert len(result["result"]["steps"]) >= 5
+    assert len(result["result"]["calendar_items"]) == len(result["result"]["steps"])
+    scheduled_dates = [item["due_date"] for item in result["result"]["calendar_items"]]
+    assert len(set(scheduled_dates)) < len(scheduled_dates)
+    assert scheduled_dates[:3] == [scheduled_dates[0]] * 3
+    assert len(gateway.calls) == 1
+
+
+def test_opening_day_plan_keeps_ai_guidance_and_turns_questions_into_verification(
+    tmp_path: Path,
+) -> None:
+    service, token, gateway = _service(
+        tmp_path,
+        result={
+            "kind": "plan",
+            "assumptions": [],
+            "questions": [
+                "本次开学是否有明确的核心任务或成果目标？",
+                "是否存在与本次开学相关的前置已完成工作？",
+            ],
+            "nodes": [
+                {
+                    "id": "1",
+                    "kind": "goal",
+                    "title": "完成九月一日开学准备",
+                    "details": "确保开学首日各项工作顺利开展",
+                    "rationale": "把日期事件转为可执行准备方案",
+                    "status": "pending",
+                    "due_date": "202X-09-01",
+                },
+                {
+                    "id": "2",
+                    "kind": "task",
+                    "title": "开学物资筹备",
+                    "details": "筹备开学首日所需各项物资与材料",
+                    "rationale": "提前完成物资筹备以保障开学首日使用",
+                    "status": "pending",
+                    "due_date": "202X-08-25",
+                },
+            ],
+            "edges": [
+                {"source_id": "1", "target_id": "2", "relation": "contains"}
+            ],
+        },
+    )
+    preview = service.home_intake.prepare(
+        token=token,
+        text="九月一日开学",
+        reference_date="2026-08-04",
+    )
+    assert preview["final_due_date"] == "2026-09-01"
+
+    result = service.home_intake.dispatch(
+        token=token,
+        preview_id=str(preview["preview_id"]),
+        fingerprint=str(preview["fingerprint"]),
+        operation_id="home-opening-day-guidance-001",
+    )
+
+    assert result.get("validation_issue") is None, result.get("validation_issue")
+    assert result["state"] == "succeeded"
+    assert result["result_kind"] == "ordinary_plan"
+    assert [node["title"] for node in result["result"]["nodes"]] == [
+        "完成九月一日开学准备",
+        "开学物资筹备",
+    ]
+    assert result["result"]["nodes"][1]["due_date"] == "2026-08-25"
+    assert [node["draft_key"] for node in result["result"]["nodes"]] == [
+        "node_1",
+        "node_2",
+    ]
+    assert result["result"]["edges"][0]["source_draft_key"] == "node_1"
+    assert result["result"]["edges"][0]["target_draft_key"] == "node_2"
+    assert any("核心任务" in item for item in result["result"]["assumptions"])
+    assert len(gateway.calls) == 1
+
+
+def test_model_judgement_is_visible_for_teacher_review(tmp_path: Path) -> None:
+    advice = "已经认定属于欺凌，必须给予处分并自动结案。"
+    service, token, gateway = _service(tmp_path, result=advice)
 
     result = _dispatch_sensitive(
         service,
@@ -707,9 +822,9 @@ def test_unsafe_output_is_suppressed(tmp_path: Path) -> None:
         operation_id="home-unsafe-output-001",
     )
 
-    assert result["state"] == "unsafe_output_suppressed"
-    assert result["result"] is None
-    assert result["error_category"] == "unsafe_model_output"
+    assert result["state"] == "succeeded"
+    assert result["result"]["model_advice"] == advice
+    assert result["teacher_confirmation_required"] is True
     assert len(gateway.calls) == 1
 
 
@@ -722,6 +837,9 @@ def test_unsafe_output_is_suppressed(tmp_path: Path) -> None:
         ("该行为构成网络欺凌事件", "home-unsafe-bullying-equivalent"),
         ("建议停课一周", "home-unsafe-suspension-text"),
         ("停学两周", "home-unsafe-suspension-equivalent"),
+        ("请联系家长13812345678", "home-unsafe-phone-output"),
+        ("家庭住址为北京市海淀区合成路8号", "home-unsafe-address-output"),
+        ("请查看该生病历后再安排", "home-unsafe-medical-record-output"),
         (
             {"kind": "student_support_recommendation", "summary": "该生患有抑郁症"},
             "home-unsafe-diagnosis-json",
@@ -736,7 +854,7 @@ def test_unsafe_output_is_suppressed(tmp_path: Path) -> None:
         ),
     ),
 )
-def test_explicit_diagnostic_and_high_impact_outputs_are_suppressed(
+def test_explicit_diagnostic_and_high_impact_outputs_remain_visible(
     tmp_path: Path,
     model_result: dict[str, object] | str,
     operation_id: str,
@@ -750,11 +868,33 @@ def test_explicit_diagnostic_and_high_impact_outputs_are_suppressed(
         operation_id=operation_id,
     )
 
-    assert result["state"] == "unsafe_output_suppressed"
-    assert result["result"] is None
-    assert result["error_category"] == "unsafe_model_output"
-    assert result["teacher_confirmation_required"] is False
+    assert result["state"] == "succeeded"
+    rendered = json.dumps(result["result"], ensure_ascii=False)
+    expected_text = (
+        str(model_result)
+        if isinstance(model_result, str)
+        else json.dumps(model_result, ensure_ascii=False)
+    )
+    for fragment in ("抑郁症", "焦虑症", "欺凌", "停课", "停学", "13812345678", "家庭住址", "病历", "处分"):
+        if fragment in expected_text:
+            assert fragment in rendered
+    assert result["teacher_confirmation_required"] is True
     assert len(gateway.calls) == 1
+
+
+@pytest.mark.parametrize("text", ("九月十一一日开学", "九月十十日开学"))
+def test_malformed_chinese_dates_are_rejected(tmp_path: Path, text: str) -> None:
+    service, token, gateway = _service(tmp_path)
+
+    with pytest.raises(VaultError) as invalid:
+        service.home_intake.prepare(
+            token=token,
+            text=text,
+            reference_date="2026-08-04",
+        )
+
+    assert invalid.value.code == "home_intake_date_invalid"
+    assert len(gateway.calls) == 0
 
 
 @pytest.mark.parametrize(
@@ -831,12 +971,11 @@ def test_sensitive_recommendation_is_normalized_server_side(tmp_path: Path) -> N
     )
 
     assert dispatched["state"] == "succeeded"
-    assert dispatched["result"] == {
-        "kind": "student_support_recommendation",
-        "summary": None,
-        "reasons": ["先核对 已知事实"],
-        "assumptions": ["不补全 未知信息"],
-    }
+    assert dispatched["result"]["kind"] == "student_support_recommendation"
+    assert dispatched["result"]["reasons"] == ["先核对 已知事实"]
+    assert dispatched["result"]["assumptions"] == ["不补全 未知信息"]
+    assert dispatched["result"]["template_key"] == "baseline.care_conversation"
+    assert dispatched["result"]["steps"]
 
 
 @pytest.mark.parametrize("result", ("", "ok", "abc12345", "。"))
@@ -858,7 +997,7 @@ def test_nonmeaningful_non_json_sensitive_results_are_invalid(
     assert dispatched["error_category"] == "nonmeaningful_plain_text"
 
 
-def test_sensitive_empty_kind_question_only_result_becomes_follow_up(
+def test_sensitive_empty_kind_question_only_result_becomes_sop_draft(
     tmp_path: Path,
 ) -> None:
     question = "请补充已经确认的现场事实，例如双方是否仍在接触、是否有人受伤。"
@@ -882,14 +1021,16 @@ def test_sensitive_empty_kind_question_only_result_becomes_follow_up(
         operation_id="home-sensitive-empty-kind-001",
     )
 
-    assert result["state"] == "needs_information"
-    assert result["result_kind"] == "follow_up"
-    assert result["follow_up_questions"] == [question]
-    assert result["teacher_confirmation_required"] is False
+    assert result["state"] == "succeeded"
+    assert result["result_kind"] == "affair_recommendation"
+    assert result["follow_up_questions"][0] == question
+    assert result["teacher_confirmation_required"] is True
+    assert result["result"]["template_key"] == "baseline.student_conflict"
+    assert result["result"]["steps"]
     assert len(gateway.calls) == 1
     contract = gateway.calls[0]["payload"]["output_contract"]
-    assert contract["follow_up_example"]["kind"] == "follow_up"
-    assert any("最少 1—3 项信息" in rule for rule in contract["rules"])
+    assert "follow_up" not in contract["allowed_kinds"]
+    assert any("不得只追问" in rule for rule in contract["rules"])
 
 
 @pytest.mark.parametrize(
@@ -948,7 +1089,7 @@ def test_follow_up_starts_next_round_only_on_explicit_call(tmp_path: Path) -> No
         operation_id="home-follow-up-round-001",
     )
 
-    assert first["result_kind"] == "follow_up"
+    assert first["result_kind"] == "affair_recommendation"
     assert first["round_number"] == 1
     assert first["cumulative_physical_request_count"] == 1
     assert len(gateway.calls) == 1
@@ -960,10 +1101,19 @@ def test_follow_up_starts_next_round_only_on_explicit_call(tmp_path: Path) -> No
         operation_id="home-follow-up-round-001",
         answer="已经分开，目前没有继续接触",
         reference_date="2026-08-03",
+        selected_step_keys=[str(first["result"]["steps"][0]["key"])],
     )
     assert second_preview["round_number"] == 2
     assert second_preview["student_aliases"] == ["学生A", "学生B"]
     assert "学生A和学生B发生冲突" in second_preview["exact_payload"]["task_text"]
+    revision = second_preview["exact_payload"]["context"]["revision_context"]
+    assert set(revision["selected_step_keys"]) == {
+        item["key"] for item in first["result"]["steps"]
+    }
+    assert set(revision["selected_calendar_keys"]) == {
+        item["key"] for item in first["result"]["calendar_items"]
+    }
+    assert "王小明" not in json.dumps(revision, ensure_ascii=False)
     assert second_preview["physical_request_count"] == 0
     assert second_preview["cumulative_physical_request_count"] == 1
     assert len(gateway.calls) == 1
@@ -981,6 +1131,257 @@ def test_follow_up_starts_next_round_only_on_explicit_call(tmp_path: Path) -> No
     assert second["round_physical_request_count"] == 1
     assert second["cumulative_physical_request_count"] == 2
     assert len(gateway.calls) == 2
+
+
+def test_revision_can_span_multiple_dates_without_being_blocked(tmp_path: Path) -> None:
+    service, token, gateway = _service(
+        tmp_path,
+        result={"kind": "affair_recommendation", "summary": "先处理当前矛盾"},
+    )
+    first = _dispatch_sensitive(
+        service,
+        token,
+        text="王小明和张伟今天发生冲突",
+        operation_id="home-multi-date-revision-001",
+    )
+
+    preview = service.home_intake.prepare_follow_up(
+        token=token,
+        operation_id="home-multi-date-revision-001",
+        answer="已确认无人受伤，请把后续安排压缩为今天和明天两天完成",
+        reference_date="2026-08-03",
+        selected_step_keys=[str(first["result"]["steps"][1]["key"])],
+    )
+
+    assert preview["date_interpretation"]["status"] == "conflict"
+    assert preview["date_interpretation"]["candidates"] == [
+        "2026-08-03",
+        "2026-08-04",
+    ]
+    assert preview["dispatch_ready"] is True
+    assert preview["exact_payload"] is not None
+    assert preview["physical_request_count"] == 0
+    assert len(gateway.calls) == 1
+
+    gateway.result = {
+        "kind": "affair_recommendation",
+        "summary": "今天完成事实记录，明天完成后续跟进",
+        "calendar_items": [
+            {
+                "key": "calendar.separate_statements",
+                "step_key": "separate_statements",
+                "title": "分别记录各方表述",
+                "due_date": "2026-08-03",
+                "depends_on": ["calendar.safety_check"],
+            },
+            {
+                "key": "calendar.follow_up",
+                "step_key": "follow_up",
+                "title": "分别设置跟进并记录结果",
+                "due_date": "2026-08-04",
+                "depends_on": ["calendar.ordinary_support"],
+            },
+        ],
+    }
+    revised = service.home_intake.dispatch(
+        token=token,
+        preview_id=str(preview["preview_id"]),
+        fingerprint=str(preview["fingerprint"]),
+        operation_id="home-multi-date-revision-002",
+    )
+    dates = {
+        str(item["key"]): str(item["due_date"])
+        for item in revised["result"]["calendar_items"]
+    }
+    assert revised["result"]["template_key"] == "baseline.student_conflict"
+    assert dates["calendar.separate_statements"] == "2026-08-03"
+    assert dates["calendar.follow_up"] == "2026-08-04"
+    assert len(gateway.calls) == 2
+
+
+def test_revision_with_new_injury_information_upgrades_the_sop_template(
+    tmp_path: Path,
+) -> None:
+    service, token, gateway = _service(
+        tmp_path,
+        result={"kind": "affair_recommendation", "summary": "先处理当前矛盾"},
+    )
+    first = _dispatch_sensitive(
+        service,
+        token,
+        text="王小明和张伟发生冲突",
+        operation_id="home-injury-upgrade-revision-001",
+    )
+    assert first["result"]["template_key"] == "baseline.student_conflict"
+
+    preview = service.home_intake.prepare_follow_up(
+        token=token,
+        operation_id="home-injury-upgrade-revision-001",
+        answer="刚确认有学生骨折，正在急救",
+        reference_date="2026-08-03",
+        selected_step_keys=[str(first["result"]["steps"][0]["key"])],
+    )
+    gateway.result = {
+        "kind": "affair_recommendation",
+        "summary": "立即按学生受伤流程处理",
+    }
+
+    revised = service.home_intake.dispatch(
+        token=token,
+        preview_id=str(preview["preview_id"]),
+        fingerprint=str(preview["fingerprint"]),
+        operation_id="home-injury-upgrade-revision-002",
+    )
+
+    assert revised["result"]["template_key"] == "baseline.student_injury"
+    assert {step["key"] for step in revised["result"]["steps"]} != {
+        step["key"] for step in first["result"]["steps"]
+    }
+    assert len(gateway.calls) == 2
+
+
+def test_failed_revision_keeps_the_last_saved_draft_version(tmp_path: Path) -> None:
+    service, token, gateway = _service(
+        tmp_path,
+        result={"kind": "affair_recommendation", "summary": "先处理当前矛盾"},
+    )
+    first_operation = _dispatch_sensitive(
+        service,
+        token,
+        text="王小明和张伟发生冲突",
+        operation_id="home-durable-draft-round-001",
+    )
+    first = service.home_intake_drafts.capture(token=token, operation=first_operation)
+    draft_id = str(first["draft_id"])
+    assert first["draft_version"] == 1
+
+    preview = service.home_intake.prepare_follow_up(
+        token=token,
+        operation_id="home-durable-draft-round-001",
+        answer="前两步已经完成，后续安排需要调整",
+        reference_date="2026-08-04",
+        selected_step_keys=[str(first_operation["result"]["steps"][2]["key"])],
+    )
+    gateway.result = {"kind": "unsupported"}
+    failed_operation = service.home_intake.dispatch(
+        token=token,
+        preview_id=str(preview["preview_id"]),
+        fingerprint=str(preview["fingerprint"]),
+        operation_id="home-durable-draft-round-002",
+    )
+    failed = service.home_intake_drafts.capture(token=token, operation=failed_operation)
+
+    assert failed["state"] == "invalid_result"
+    assert failed["previous_result_preserved"] is True
+    assert failed["draft_id"] == draft_id
+    assert failed["draft_version"] == 1
+    assert failed["preserved_result"] == first_operation["result"]
+    restored = service.home_intake_drafts.get(token=token, draft_id=draft_id)
+    assert restored["version"] == 1
+    assert restored["operation"]["draft_id"] == draft_id
+    assert restored["operation"]["draft_version"] == 1
+    assert restored["operation"]["draft_saved_at"] == restored["updated_at"]
+    assert restored["operation"]["result"] == first_operation["result"]
+    assert restored["operation"]["local_context"]["source_text"] == "王小明和张伟发生冲突"
+    summary = service.home_intake_drafts.list_open(token=token)["items"][0]
+    assert summary["draft_id"] == draft_id
+    assert summary["source_text"] == "王小明和张伟发生冲突"
+    assert summary["student_aliases"] == ["学生A", "学生B"]
+
+
+def test_adoption_claim_blocks_a_concurrent_sensitive_revision(tmp_path: Path) -> None:
+    service, token, _gateway = _service(
+        tmp_path,
+        result={"kind": "affair_recommendation", "summary": "先处理当前矛盾"},
+    )
+    operation = _dispatch_sensitive(
+        service,
+        token,
+        text="王小明和张伟发生冲突",
+        operation_id="home-adoption-claim-001",
+    )
+    captured = service.home_intake_drafts.capture(token=token, operation=operation)
+    service.home_intake_drafts.begin_adoption(
+        token=token,
+        draft_id=str(captured["draft_id"]),
+        version=int(captured["draft_version"]),
+        source_operation_id=str(operation["operation_id"]),
+        result_fingerprint=str(operation["result_fingerprint"]),
+    )
+    concurrent = {
+        **operation,
+        "operation_id": "home-adoption-claim-002",
+        "local_context": {
+            **dict(operation["local_context"]),
+            "prior_operations": [operation["operation_id"]],
+        },
+    }
+
+    with pytest.raises(VaultError) as captured_error:
+        service.home_intake_drafts.capture(token=token, operation=concurrent)
+
+    assert captured_error.value.code == "home_intake_draft_closed"
+
+
+def test_ordinary_draft_can_close_after_work_graph_confirmation(tmp_path: Path) -> None:
+    service, token, _gateway = _service(tmp_path)
+    preview = service.home_intake.prepare(
+        token=token,
+        text="九月一日开学，提前完成开学准备",
+        reference_date="2026-08-04",
+    )
+    operation = service.home_intake.dispatch(
+        token=token,
+        preview_id=str(preview["preview_id"]),
+        fingerprint=str(preview["fingerprint"]),
+        operation_id="home-ordinary-draft-001",
+    )
+    captured = service.home_intake_drafts.capture(token=token, operation=operation)
+
+    closed = service.home_intake_finalizer.adopt_ordinary(
+        token=token,
+        draft_id=str(captured["draft_id"]),
+        expected_version=int(captured["draft_version"]),
+        source_operation_id=str(operation["operation_id"]),
+        result_fingerprint=str(operation["result_fingerprint"]),
+    )
+    replay = service.home_intake_finalizer.adopt_ordinary(
+        token=token,
+        draft_id=str(captured["draft_id"]),
+        expected_version=int(captured["draft_version"]),
+        source_operation_id=str(operation["operation_id"]),
+        result_fingerprint=str(operation["result_fingerprint"]),
+    )
+
+    assert closed["state"] == "complete"
+    assert replay["operation_id"] == closed["operation_id"]
+    assert service.home_intake_drafts.list_open(token=token)["items"] == []
+
+
+def test_ordinary_draft_remains_available_while_sensitive_vault_is_locked(
+    tmp_path: Path,
+) -> None:
+    service, token, _gateway = _service(tmp_path)
+    service.lock(token)
+    preview = service.home_intake.prepare(
+        token="",
+        text="九月一日开学，提前完成开学准备",
+        reference_date="2026-08-04",
+    )
+    operation = service.home_intake.dispatch(
+        token="",
+        preview_id=str(preview["preview_id"]),
+        fingerprint=str(preview["fingerprint"]),
+        operation_id="home-ordinary-locked-001",
+    )
+
+    captured = service.home_intake_drafts.capture(token="", operation=operation)
+
+    assert captured["draft_id"]
+    assert service.home_intake_drafts.get(
+        token="", draft_id=str(captured["draft_id"])
+    )["result_kind"] == "ordinary_plan"
+    assert service.home_intake_drafts.list_open(token="")["items"][0]["draft_id"] == captured["draft_id"]
 
 
 def test_destination_change_inside_invoke_is_zero_request_state(tmp_path: Path) -> None:
@@ -1190,6 +1591,284 @@ def test_home_intake_http_contract_exposes_local_preview(tmp_path: Path) -> None
     assert body["date_interpretation"]["resolved_date"] == "2026-08-04"
     assert body["physical_request_count"] == 0
     assert gateway.calls == []
+
+
+def test_existing_ordinary_store_is_upgraded_before_dispatch_result_is_captured(
+    tmp_path: Path,
+) -> None:
+    service, _token, gateway = _service(tmp_path)
+    service.ordinary_database.initialize_schema()
+    with closing(service.ordinary_database.connect()) as connection:
+        with connection:
+            connection.execute("DROP TABLE ordinary_home_intake_draft_versions")
+            connection.execute("DROP TABLE ordinary_home_intake_drafts")
+            connection.execute(
+                "DELETE FROM schema_migrations WHERE migration_name = ?",
+                ("005_home_intake_drafts",),
+            )
+
+    app = FastAPI()
+    app.state.workspace_services = {"class-teacher": service}
+    app.include_router(create_router(), prefix="/api/class-teacher")
+    client = TestClient(app)
+    preview_response = client.post(
+        "/api/class-teacher/home/intake/previews",
+        headers={"x-class-teacher-client": "class-teacher-browser-v1"},
+        json={
+            "text": "九月一日开学，提前完成开学准备",
+            "reference_date": "2026-08-04",
+        },
+    )
+    assert preview_response.status_code == 200
+    preview = preview_response.json()
+
+    response = client.post(
+        f"/api/class-teacher/home/intake/previews/{preview['preview_id']}/dispatch",
+        headers={"x-class-teacher-client": "class-teacher-browser-v1"},
+        json={
+            "fingerprint": preview["fingerprint"],
+            "operation_id": "home-existing-ordinary-upgrade-001",
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["state"] == "succeeded"
+    assert body["result_kind"] == "ordinary_plan"
+    assert body["draft_id"]
+    assert body["result"]["nodes"]
+    assert len(gateway.calls) == 1
+
+
+def test_existing_sensitive_store_is_upgraded_before_dispatch_can_call_model(
+    tmp_path: Path,
+) -> None:
+    service, token, gateway = _service(
+        tmp_path,
+        result={"kind": "affair_recommendation", "summary": "先核对现场事实"},
+    )
+    with closing(service.database.connect()) as connection:
+        with connection:
+            connection.execute("DROP TABLE home_intake_draft_versions")
+            connection.execute("DROP TABLE home_intake_drafts")
+            connection.execute(
+                "DELETE FROM schema_migrations WHERE migration_name = ?",
+                ("024_home_intake_draft_versions",),
+            )
+
+    preview = service.home_intake.prepare(
+        token=token,
+        text="王小明和张伟发生冲突",
+        reference_date="2026-08-04",
+    )
+    app = FastAPI()
+    app.state.workspace_services = {"class-teacher": service}
+    app.include_router(create_router(), prefix="/api/class-teacher")
+    client = TestClient(app)
+    response = client.post(
+        f"/api/class-teacher/home/intake/previews/{preview['preview_id']}/dispatch",
+        headers={
+            "x-class-teacher-client": "class-teacher-browser-v1",
+            "x-class-teacher-session": token,
+        },
+        json={
+            "fingerprint": preview["fingerprint"],
+            "operation_id": "home-existing-sensitive-upgrade-001",
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["state"] == "succeeded"
+    assert body["result_kind"] == "affair_recommendation"
+    assert body["draft_id"]
+    assert len(gateway.calls) == 1
+
+
+def test_opening_day_plan_recovers_missing_goal_and_singleton_relation_arrays(
+    tmp_path: Path,
+) -> None:
+    service, token, gateway = _service(
+        tmp_path,
+        result={
+            "kind": "plan",
+            "assumptions": [],
+            "questions": [],
+            "nodes": [
+                {
+                    "id": "1",
+                    "kind": "task",
+                    "title": "清点开学物资",
+                    "details": None,
+                    "rationale": "提前发现缺口",
+                    "status": ["pending"],
+                    "due_date": "2026-08-28",
+                },
+                {
+                    "id": "2",
+                    "kind": "task",
+                    "title": "确认开学职责",
+                    "details": None,
+                    "rationale": "保障当天衔接",
+                    "status": "pending",
+                    "due_date": "2026-08-31",
+                },
+            ],
+            "edges": [
+                {"source_id": "2", "target_id": "1", "relation": ["depends_on"]}
+            ],
+        },
+    )
+    preview = service.home_intake.prepare(
+        token=token,
+        text="九月一日正式开学，请帮我安排开学前准备",
+        reference_date="2026-08-04",
+    )
+
+    result = service.home_intake.dispatch(
+        token=token,
+        preview_id=str(preview["preview_id"]),
+        fingerprint=str(preview["fingerprint"]),
+        operation_id="home-opening-day-normalized-contract-001",
+    )
+
+    assert result["state"] == "succeeded"
+    assert result["result_kind"] == "ordinary_plan"
+    assert result["result"]["nodes"][0]["kind"] == "goal"
+    assert result["result"]["nodes"][0]["title"].startswith("九月一日正式开学")
+    assert {edge["relation"] for edge in result["result"]["edges"]} == {
+        "contains",
+        "depends_on",
+    }
+    assert len(gateway.calls) == 1
+
+
+def test_dispatch_does_not_call_model_when_draft_store_preflight_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service, _token, gateway = _service(tmp_path)
+    app = FastAPI()
+    app.state.workspace_services = {"class-teacher": service}
+    app.include_router(create_router(), prefix="/api/class-teacher")
+    client = TestClient(app)
+    preview_response = client.post(
+        "/api/class-teacher/home/intake/previews",
+        headers={"x-class-teacher-client": "class-teacher-browser-v1"},
+        json={"text": "九月一日开学", "reference_date": "2026-08-04"},
+    )
+    preview = preview_response.json()
+
+    def fail_preflight(*, token: str, route: str) -> None:
+        _ = token, route
+        raise VaultError(
+            "class_teacher_work_initialization_failed",
+            "普通工作区初始化失败，现有数据没有改变",
+            status_code=500,
+        )
+
+    monkeypatch.setattr(
+        service.home_intake_drafts,
+        "prepare_for_dispatch",
+        fail_preflight,
+    )
+    with pytest.raises(ApiError) as caught:
+        client.post(
+            f"/api/class-teacher/home/intake/previews/{preview['preview_id']}/dispatch",
+            headers={"x-class-teacher-client": "class-teacher-browser-v1"},
+            json={
+                "fingerprint": preview["fingerprint"],
+                "operation_id": "home-preflight-failure-001",
+            },
+        )
+
+    assert caught.value.code == "class_teacher_work_initialization_failed"
+    assert gateway.calls == []
+
+
+def test_sensitive_dispatch_does_not_call_model_when_draft_store_preflight_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service, token, gateway = _service(tmp_path)
+    preview = service.home_intake.prepare(
+        token=token,
+        text="王小明和张伟发生冲突",
+        reference_date="2026-08-04",
+    )
+    app = FastAPI()
+    app.state.workspace_services = {"class-teacher": service}
+    app.include_router(create_router(), prefix="/api/class-teacher")
+    client = TestClient(app)
+
+    def fail_preflight() -> None:
+        raise VaultError(
+            "vault_initialization_failed",
+            "保险箱初始化失败，没有创建可用数据",
+            status_code=500,
+        )
+
+    monkeypatch.setattr(service.database, "initialize_schema", fail_preflight)
+    with pytest.raises(ApiError) as caught:
+        client.post(
+            f"/api/class-teacher/home/intake/previews/{preview['preview_id']}/dispatch",
+            headers={
+                "x-class-teacher-client": "class-teacher-browser-v1",
+                "x-class-teacher-session": token,
+            },
+            json={
+                "fingerprint": preview["fingerprint"],
+                "operation_id": "home-sensitive-preflight-failure-001",
+            },
+        )
+
+    assert caught.value.code == "vault_initialization_failed"
+    assert gateway.calls == []
+
+
+def test_parsed_result_remains_visible_when_draft_persistence_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service, _token, gateway = _service(tmp_path)
+    app = FastAPI()
+    app.state.workspace_services = {"class-teacher": service}
+    app.include_router(create_router(), prefix="/api/class-teacher")
+    client = TestClient(app)
+    preview_response = client.post(
+        "/api/class-teacher/home/intake/previews",
+        headers={"x-class-teacher-client": "class-teacher-browser-v1"},
+        json={"text": "九月一日开学", "reference_date": "2026-08-04"},
+    )
+    preview = preview_response.json()
+
+    def fail_capture(*, token: str, operation: dict[str, object]) -> dict[str, object]:
+        _ = token, operation
+        raise VaultError(
+            "home_intake_draft_save_failed",
+            "事务草稿保存失败",
+            status_code=500,
+        )
+
+    monkeypatch.setattr(service.home_intake_drafts, "capture", fail_capture)
+    response = client.post(
+        f"/api/class-teacher/home/intake/previews/{preview['preview_id']}/dispatch",
+        headers={"x-class-teacher-client": "class-teacher-browser-v1"},
+        json={
+            "fingerprint": preview["fingerprint"],
+            "operation_id": "home-capture-failure-001",
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["state"] == "succeeded"
+    assert body["result_kind"] == "ordinary_plan"
+    assert body["result"]["nodes"]
+    assert body["draft_id"] is None
+    assert body["draft_persistence_error"] == "home_intake_draft_save_failed"
+    assert "AI 方案已经返回" in body["draft_persistence_message"]
+    assert len(gateway.calls) == 1
 
 
 def test_home_router_serializes_status_behind_sensitive_dispatch(

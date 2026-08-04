@@ -96,10 +96,12 @@ class QuestionAnalysisImage:
 class QuestionAnalysisInput:
     question_id: int
     tagging_context: TaggingContext
+    question_type_confirmed: bool = False
     rich_question_blocks: tuple[Mapping[str, Any], ...] = ()
     rich_answer_blocks: tuple[Mapping[str, Any], ...] = ()
     images: tuple[QuestionAnalysisImage, ...] = ()
     taxonomy_contract: Mapping[str, Any] = field(default_factory=dict)
+    reference_solution: Mapping[str, Any] = field(default_factory=dict)
     repair_context: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -108,6 +110,11 @@ class QuestionAnalysisInput:
         if not str(self.tagging_context.question_text or "").strip():
             raise ValueError("question text must not be empty")
         object.__setattr__(self, "question_id", int(self.question_id))
+        object.__setattr__(
+            self,
+            "question_type_confirmed",
+            self.question_type_confirmed is True,
+        )
         object.__setattr__(
             self,
             "rich_question_blocks",
@@ -124,6 +131,16 @@ class QuestionAnalysisInput:
             "taxonomy_contract",
             dict(self.taxonomy_contract),
         )
+        reference_solution = dict(self.reference_solution)
+        if reference_solution:
+            required = {
+                "text", "source_segments", "rich_blocks", "trust_level", "source_kind"
+            }
+            if set(reference_solution) != required or reference_solution.get(
+                "trust_level"
+            ) not in {"teacher_confirmed", "source_extracted", "absent"}:
+                raise ValueError("reference_solution fields are invalid")
+        object.__setattr__(self, "reference_solution", reference_solution)
         repair_context = dict(self.repair_context)
         if repair_context:
             required_fields = {
@@ -192,6 +209,8 @@ class QuestionAnalysisInput:
             {
                 "question_id": self.question_id,
                 "tagging_context": self.tagging_context.to_dict(),
+                "question_type_confirmed": self.question_type_confirmed,
+                "explicit_part_labels": list(self.explicit_part_labels),
                 "rich_question_blocks": self.rich_question_blocks,
                 "rich_answer_blocks": self.rich_answer_blocks,
                 "image_hashes": [
@@ -203,6 +222,7 @@ class QuestionAnalysisInput:
                     for image in self.images
                 ],
                 "taxonomy_contract": self.taxonomy_contract,
+                "reference_solution": self.reference_solution,
             }
         )
 
@@ -215,9 +235,12 @@ class QuestionAnalysisInput:
                 "question_text": context.question_text,
                 "answer_text": context.answer_text,
                 "question_type": context.question_type,
+                "question_type_confirmed": self.question_type_confirmed,
+                "explicit_part_labels": list(self.explicit_part_labels),
                 "has_images": context.has_images,
                 "rich_question_blocks": self.rich_question_blocks,
                 "rich_answer_blocks": self.rich_answer_blocks,
+                "reference_solution": self.reference_solution,
                 "image_hashes": [
                     {
                         "role": image.role,
@@ -228,6 +251,23 @@ class QuestionAnalysisInput:
                 ],
             }
         )
+
+    @property
+    def explicit_part_labels(self) -> tuple[str, ...]:
+        """Return only an objective, sequential (1)(2)... structure fact."""
+
+        labels = [
+            str(match)
+            for match in re.findall(
+                r"[（(]\s*([1-9]\d?)\s*[）)]",
+                str(self.tagging_context.question_text or ""),
+            )
+        ]
+        ordered = tuple(dict.fromkeys(labels))
+        if len(ordered) < 2:
+            return ()
+        expected = tuple(str(index) for index in range(1, len(ordered) + 1))
+        return ordered if ordered == expected else ()
 
     @property
     def question_type_group(self) -> str:
@@ -519,11 +559,49 @@ class CombinedQuestionAnalysisModule:
         gateway: QuestionAnalysisGateway,
         tag_writer: TagProjectionWriter,
         evidence_writer: SolutionEvidenceWriter | None = None,
+        criterion_module: Any | None = None,
     ) -> None:
         self.repository = repository
         self.gateway = gateway
         self.tag_writer = tag_writer
         self.evidence_writer = evidence_writer
+        self.criterion_module = criterion_module
+        self._criterion_audits: dict[tuple[str, int], dict[str, Any]] = {}
+
+    def criterion_audit_summary(
+        self,
+        operation_id: str,
+        question_ids: Sequence[int],
+    ) -> dict[str, Any]:
+        """Return the independent training-version save result.
+
+        The combined analysis projection is intentionally allowed to remain
+        successful when evidence was saved but publishing its training-point
+        version failed.  Jobs use this small audit seam to retry only the
+        missing training projection on a later run.
+        """
+
+        rows: list[dict[str, Any]] = []
+        succeeded: list[int] = []
+        failed: list[int] = []
+        for question_id in question_ids:
+            audit = dict(
+                self._criterion_audits.get(
+                    (str(operation_id), int(question_id)),
+                )
+                or {"status": "not_requested"},
+            )
+            row = {"question_id": int(question_id), **audit}
+            rows.append(row)
+            if audit.get("status") == "succeeded":
+                succeeded.append(int(question_id))
+            elif audit.get("status") == "failed":
+                failed.append(int(question_id))
+        return {
+            "items": rows,
+            "succeeded_question_ids": succeeded,
+            "failed_question_ids": failed,
+        }
 
     def analyze(
         self,
@@ -848,6 +926,41 @@ class CombinedQuestionAnalysisModule:
                 ),
             )
             return
+        criterion_audit: dict[str, Any] = {"status": "not_requested"}
+        if self.criterion_module is not None:
+            try:
+                workspace = self.criterion_module.propose(
+                    question=question,
+                    draft=draft,
+                    source_kind="combined_model",
+                    source_reference=training_criterion_source_reference(
+                        question.question_id,
+                        draft,
+                    ),
+                    actor_ref=f"model:{str(model_name or 'combined-analysis')}",
+                    reason="联合题目解析自动发布训练判定点",
+                )
+                current = (
+                    workspace.get("current_version")
+                    if isinstance(workspace, Mapping)
+                    else None
+                )
+                criterion_audit = {
+                    "status": "succeeded",
+                    "version_id": (
+                        str(current.get("version_id") or "")
+                        if isinstance(current, Mapping)
+                        else ""
+                    ),
+                }
+            except Exception as exc:  # noqa: BLE001
+                criterion_audit = {
+                    "status": "failed",
+                    "error_category": type(exc).__name__,
+                }
+        self._criterion_audits[(str(operation_id), question.question_id)] = (
+            criterion_audit
+        )
         self.repository.save_projection(
             operation_id=operation_id,
             question_id=question.question_id,
@@ -1097,6 +1210,19 @@ def training_criteria_from_solution_evidence(
     )
 
 
+def training_criterion_source_reference(
+    question_id: int,
+    draft: TrainingCriteriaDraft,
+) -> str:
+    """Build the idempotency key shared by every criterion publisher."""
+
+    return (
+        "combined-analysis:"
+        f"{int(question_id)}:{draft.source_content_hash}:"
+        f"{_hash_payload(draft.to_dict())}"
+    )
+
+
 def solution_evidence_source_content_hash(
     question: QuestionAnalysisInput,
 ) -> str:
@@ -1163,6 +1289,14 @@ def rubric_skeleton_from_solution_evidence(
                         "depends_on": list(point.depends_on),
                         "equivalent_rules": list(point.equivalent_rules),
                         "counterexamples": list(point.counterexamples),
+                        "deduction_rules": list(
+                            dict.fromkeys(
+                                [
+                                    *point.counterexamples,
+                                    *part.deduction_policy,
+                                ]
+                            )
+                        ),
                     }
                     for point in part.evidence_points
                 ],
@@ -1258,6 +1392,11 @@ def combined_response_format(
     selected = _selected_projections(_projection(projection))
     item_properties: dict[str, Any] = {
         "question_id": {"type": "integer"},
+        "reference_assessment": {
+            "type": "string",
+            "enum": ["consistent", "conflict", "insufficient"],
+        },
+        "reference_assessment_reason": {"type": "string"},
     }
     if "tag" in selected:
         item_properties["tag_analysis"] = _tag_schema()
@@ -1704,5 +1843,6 @@ __all__ = [
     "rubric_skeleton_from_solution_evidence",
     "solution_evidence_source_content_hash",
     "training_criteria_from_solution_evidence",
+    "training_criterion_source_reference",
     "plan_analysis_batches",
 ]

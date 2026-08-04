@@ -161,6 +161,7 @@ class ModelApproval:
         redaction: RedactionResult | None = None,
         route_hint: str | None = None,
         output_contract: dict[str, object] | None = None,
+        request_context: dict[str, object] | None = None,
     ) -> dict[str, object]:
         if _SAFE_TOKEN.fullmatch(str(purpose or "")) is None:
             raise VaultError(
@@ -195,8 +196,8 @@ class ModelApproval:
             "student_alias": alias_labels[0] if alias_labels else "学生A",
             "task_text": redaction.outbound_text,
             "instructions": (
-                "只返回有效的 json 对象，生成待教师复核的中性草稿；"
-                "不得诊断、认定、惩戒、外发或结案。"
+                "只返回有效的 json 对象；可以完整提出判断、认定或处置建议，"
+                "但所有内容都只是待教师复核的草稿，不得自动执行、外发或结案。"
             ),
         }
         if alias_labels:
@@ -205,6 +206,8 @@ class ModelApproval:
             exact_payload["route_hint"] = str(route_hint)
         if output_contract is not None:
             exact_payload["output_contract"] = dict(output_contract)
+        if request_context:
+            exact_payload["context"] = dict(request_context)
         fingerprint = hashlib.sha256(canonical_json(exact_payload)).hexdigest()
         with closing(self.sensitive_database.connect()) as connection:
             with connection:

@@ -52,6 +52,18 @@ _QUESTION_ID = re.compile(r"^[A-Za-z0-9_-]{1,100}$")
 _IMAGE_MARKER = re.compile(r"\[\[IMAGE:.+?\]\]", re.IGNORECASE)
 _IMAGE_PATH_MARKER = re.compile(r"\[\[IMAGE:(?P<path>.+?)\]\]", re.IGNORECASE)
 _HTML_TAG = re.compile(r"<[^>]*>")
+_QUESTION_SECTION_HEADING = re.compile(
+    r"(?:^|\n)\s*(?:[一二三四五六七八九十]+|\d+)\s*[、.．]\s*"
+    r"(?:选择|填空|解答|计算|证明|作图)题[^\n]*",
+    re.MULTILINE,
+)
+_HTML_QUESTION_SECTION_HEADING = re.compile(
+    r"<p\b[^>]*>\s*(?:<[^>]+>\s*)*(?:[一二三四五六七八九十]+|\d+)\s*"
+    r"[、.．]\s*(?:选择|填空|解答|计算|证明|作图)题.*",
+    re.IGNORECASE | re.DOTALL,
+)
+_VISIBLE_BLANK = re.compile(r"(?:_{1,}|＿{1,}|﹏{2,}|<u\b[^>]*>.*?</u>)", re.IGNORECASE | re.DOTALL)
+_VISIBLE_SUBPART = re.compile(r"(?:^|\s)[（(]\s*[1-9]\d*\s*[）)]", re.MULTILINE)
 _RICH_TABLE_PATTERN = re.compile(r"<table\b[^>]*>.*?</table>", re.IGNORECASE | re.DOTALL)
 _RICH_TABLE_ROW_PATTERN = re.compile(r"<tr\b[^>]*>(.*?)</tr>", re.IGNORECASE | re.DOTALL)
 _RICH_TABLE_CELL_PATTERN = re.compile(
@@ -130,6 +142,8 @@ class ConfigQuestionPreview:
     answer_preview: str
     answer_present: bool
     needs_review: bool
+    question_type_review_required: bool
+    question_type_review_reason: str
     local_answer_trusted: bool
     has_question_asset: bool
     has_answer_asset: bool
@@ -1124,10 +1138,24 @@ class ConfigSourceService:
                 continue
             if question_id in unresolved_question_ids:
                 continue
-            # Local parsing provides preview hints only. Question type, subparts,
-            # response form, and answer structure are determined by the combined
-            # model analysis rather than being frozen by this review screen.
-            block["question_type_confirmed"] = False
+            _strip_embedded_question_section_heading(block)
+            if decision is not None and decision.question_type is not None:
+                block["question_type"] = decision.question_type
+                block["question_type_confirmed"] = True
+                block.pop("response_form_fact", None)
+            else:
+                # Teacher confirmation remains distinct from a visible answer-form
+                # fact.  A single printed blank is still not permission for the
+                # model to invent process subquestions.
+                block["question_type_confirmed"] = False
+                if _visible_response_form_fact(block) == "single_blank":
+                    block["response_form_fact"] = "single_blank"
+                else:
+                    block.pop("response_form_fact", None)
+            if decision is not None and decision.answer_confirmed:
+                if decision.answer_override is not None:
+                    block["answer_text"] = decision.answer_override
+                block["answer_confirmed"] = True
             confirmed.append(block)
             included_ids.add(question_id)
         return PreparedGenerationInput(
@@ -2660,6 +2688,10 @@ def _question_previews(
             or block.get("canonical_answer")
             or ""
         )
+        type_review_reason = _question_type_review_reason(
+            str(block.get("question_type") or "comprehensive"),
+            question_value,
+        )
         assets = asset_files.get(question_id, {})
         image_semantic_source = (
             str(block.get("semantic_source") or "").strip() == "images"
@@ -2686,6 +2718,8 @@ def _question_previews(
                     )
                 ),
                 needs_review=bool(block.get("needs_review")) or image_semantic_source,
+                question_type_review_required=bool(type_review_reason),
+                question_type_review_reason=type_review_reason,
                 local_answer_trusted=(
                     False
                     if image_semantic_source
@@ -2706,10 +2740,60 @@ def _public_preview(value: Any) -> str:
     return text[:PUBLIC_PREVIEW_CHARACTERS]
 
 
+def _question_type_review_reason(question_type: str, question_value: Any) -> str:
+    raw = str(question_value or "")
+    plain = html.unescape(_HTML_TAG.sub(" ", raw)).replace("\r", "")
+    if _QUESTION_SECTION_HEADING.search(plain):
+        return "检测到下一部分标题可能粘在本题末尾，请确认题型。"
+    if (
+        str(question_type or "").strip() != "fill_blank"
+        and _VISIBLE_BLANK.search(raw)
+        and not _VISIBLE_SUBPART.search(plain)
+    ):
+        return "题面只有一个明确填空位置，但当前题型不是填空题。"
+    return ""
+
+
+def _visible_response_form_fact(block: dict[str, Any]) -> str:
+    question_type = str(block.get("question_type") or "").strip()
+    raw = str(
+        block.get("question_html")
+        or block.get("question_text")
+        or block.get("text")
+        or ""
+    )
+    plain = html.unescape(_HTML_TAG.sub(" ", raw))
+    if (
+        question_type == "fill_blank"
+        and _VISIBLE_BLANK.search(raw)
+        and not _VISIBLE_SUBPART.search(plain)
+    ):
+        return "single_blank"
+    return ""
+
+
+def _strip_embedded_question_section_heading(block: dict[str, Any]) -> None:
+    for field in ("question_text", "text"):
+        value = str(block.get(field) or "")
+        match = _QUESTION_SECTION_HEADING.search(value.replace("\r", ""))
+        if match:
+            block[field] = value[: match.start()].rstrip()
+    html_value = str(block.get("question_html") or "")
+    match = _HTML_QUESTION_SECTION_HEADING.search(html_value)
+    if match:
+        block["question_html"] = html_value[: match.start()].rstrip()
+
+
 def _question_from_dict(value: Any) -> ConfigQuestionPreview:
     if not isinstance(value, dict):
         raise ConfigSourceInvalidError()
     try:
+        type_review_reason = str(value.get("question_type_review_reason") or "")
+        if not type_review_reason:
+            type_review_reason = _question_type_review_reason(
+                str(value["question_type"]),
+                value["question_preview"],
+            )
         question = ConfigQuestionPreview(
             question_id=str(value["question_id"]),
             question_type=str(value["question_type"]),
@@ -2717,6 +2801,11 @@ def _question_from_dict(value: Any) -> ConfigQuestionPreview:
             answer_preview=str(value["answer_preview"]),
             answer_present=value["answer_present"] is True,
             needs_review=value["needs_review"] is True,
+            question_type_review_required=(
+                value.get("question_type_review_required") is True
+                or bool(type_review_reason)
+            ),
+            question_type_review_reason=type_review_reason,
             local_answer_trusted=value["local_answer_trusted"] is True,
             has_question_asset=value["has_question_asset"] is True,
             has_answer_asset=value["has_answer_asset"] is True,

@@ -2,7 +2,7 @@ import { createPinia, setActivePinia } from 'pinia'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { QuestionAnalysisResponse, StudentAnalysisResponse } from '../api/analysis'
-import type { GraphRowsResponse } from '../api/graph'
+import type { GraphResponse } from '../api/graph'
 import { useAnalysisStore } from '../stores/analysis'
 
 const questionItem = {
@@ -22,12 +22,16 @@ const students: StudentAnalysisResponse = {
   scope: { session_id: 7, class_name: '一班', question_id: 'Q1' },
   items: [], total: 0, page: 1, page_size: 100, total_pages: 0,
 }
-const graph: GraphRowsResponse = {
+const graph: GraphResponse = {
+  response_schema_version: 'knowledge-graph-current',
+  response_version: 'a'.repeat(64),
   scope: { mode: 'class', student_ids: [], class_id: '一班' },
   exam_scope: { mode: 'current', session_ids: [7], sessions: [{ session_id: 7, session_name: '期中考试' }] },
-  rows: [], nodes: [], edges: [],
+  current_standard: { release_id: 'current', content_hash: 'c'.repeat(64), taxonomy_revision: 1 },
+  nodes: [], edges: [], missing: [],
   coverage: { covered_items: 0, total_items: 0, missing_items: {} },
-  warnings: [], diagnosis_identity: 'question_tag',
+  warnings: [],
+  counts: { node_count: 0, edge_count: 0, evidence_row_count: 0, missing_count: 0 },
 }
 
 function deferred<T>() {

@@ -244,14 +244,14 @@ def check_p35_governance(project_root: Path) -> list[DocumentationIssue]:
     required_fragments = {
         "AGENTS.md": (
             "P3.5",
-            "codex/p3.5-interactive-refinement",
-            "实际操作",
+            "已完成并进入主线",
+            "EXECUTION_INDEX.md",
         ),
         "docs/superpowers/packages/EXECUTION_INDEX.md": (
             "P3.5",
-            "codex/p3.5-interactive-refinement",
+            "`completed`",
             "Phase 4",
-            "paused",
+            "completed_local_integration",
         ),
         "docs/user-testing/README.md": (
             "P3.5",

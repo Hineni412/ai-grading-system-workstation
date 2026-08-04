@@ -34,6 +34,8 @@ from question_bank.training_criteria.analysis import (
     grading_config_skeleton_from_solution_evidence,
     plan_analysis_batches,
     solution_evidence_source_content_hash,
+    training_criteria_from_solution_evidence,
+    training_criterion_source_reference,
 )
 
 
@@ -151,6 +153,8 @@ class DeferredCombinedAnalysisItem:
     taxonomy_audit: Mapping[str, Any]
     model_name: str
     operation_id: str
+    reference_assessment: str = "insufficient"
+    reference_assessment_reason: str = ""
 
     def __post_init__(self) -> None:
         reference = str(self.source_question_ref or "").strip()
@@ -184,6 +188,9 @@ class DeferredCombinedAnalysisItem:
             _candidate_contract(candidates),
         )
         audit = _normalize_taxonomy_audit(self.taxonomy_audit)
+        assessment = str(self.reference_assessment or "").strip().casefold()
+        if assessment not in {"consistent", "conflict", "insufficient"}:
+            raise ValueError("reference assessment is invalid")
         object.__setattr__(self, "source_question_ref", reference)
         object.__setattr__(self, "analysis_question_id", int(self.analysis_question_id))
         object.__setattr__(self, "source_content_hash", source_hash)
@@ -194,6 +201,12 @@ class DeferredCombinedAnalysisItem:
         object.__setattr__(self, "operation_id", operation)
         object.__setattr__(self, "tag_analysis", dict(self.tag_analysis))
         object.__setattr__(self, "taxonomy_audit", audit)
+        object.__setattr__(self, "reference_assessment", assessment)
+        object.__setattr__(
+            self,
+            "reference_assessment_reason",
+            str(self.reference_assessment_reason or "").strip()[:500],
+        )
         object.__setattr__(
             self,
             "solution_evidence_payload",
@@ -334,7 +347,7 @@ class DeferredCombinedAnalysisItem:
 
     def to_dict(self) -> dict[str, Any]:
         payload = {
-            "schema_version": "deferred-combined-analysis-item-v3",
+            "schema_version": "deferred-combined-analysis-item-v4",
             "source_question_ref": self.source_question_ref,
             "analysis_question_id": self.analysis_question_id,
             "source_content_hash": self.source_content_hash,
@@ -346,6 +359,8 @@ class DeferredCombinedAnalysisItem:
             "tag_analysis": dict(self.tag_analysis),
             "solution_evidence_payload": dict(self.solution_evidence_payload),
             "taxonomy_audit": dict(self.taxonomy_audit),
+            "reference_assessment": self.reference_assessment,
+            "reference_assessment_reason": self.reference_assessment_reason,
             "model_name": self.model_name,
             "operation_id": self.operation_id,
         }
@@ -377,11 +392,31 @@ class DeferredCombinedAnalysisItem:
             "content_hash",
         }
         if version == "deferred-combined-analysis-item-v2":
-            _require_exact_keys(payload, common_keys, "deferred analysis item")
+            submitted_keys = {str(key) for key in payload}
+            if submitted_keys not in {
+                frozenset(common_keys),
+                frozenset({
+                    *common_keys,
+                    "reference_assessment",
+                    "reference_assessment_reason",
+                }),
+            }:
+                raise ValueError("deferred analysis item fields do not match the contract")
         elif version == "deferred-combined-analysis-item-v3":
             _require_exact_keys(
                 payload,
                 {*common_keys, "taxonomy_audit"},
+                "deferred analysis item",
+            )
+        elif version == "deferred-combined-analysis-item-v4":
+            _require_exact_keys(
+                payload,
+                {
+                    *common_keys,
+                    "taxonomy_audit",
+                    "reference_assessment",
+                    "reference_assessment_reason",
+                },
                 "deferred analysis item",
             )
         else:
@@ -412,7 +447,7 @@ class DeferredCombinedAnalysisItem:
         )
         taxonomy_audit = (
             _normalize_taxonomy_audit(payload.get("taxonomy_audit"))
-            if version == "deferred-combined-analysis-item-v3"
+            if version in {"deferred-combined-analysis-item-v3", "deferred-combined-analysis-item-v4"}
             else _legacy_taxonomy_audit(normalized_tag)
         )
         return cls(
@@ -432,6 +467,16 @@ class DeferredCombinedAnalysisItem:
             solution_evidence_payload=dict(raw_evidence),
             solution_evidence=evidence,
             taxonomy_audit=taxonomy_audit,
+            reference_assessment=(
+                str(payload.get("reference_assessment") or "insufficient")
+                if version == "deferred-combined-analysis-item-v4"
+                else "insufficient"
+            ),
+            reference_assessment_reason=(
+                str(payload.get("reference_assessment_reason") or "")
+                if version == "deferred-combined-analysis-item-v4"
+                else ""
+            ),
             model_name=str(payload.get("model_name") or ""),
             operation_id=str(payload.get("operation_id") or ""),
         )
@@ -731,6 +776,20 @@ class DeferredCombinedAnalysisBundle:
             self.taxonomy_review_source_refs
         )
         meta["taxonomy_review_count"] = len(self.taxonomy_review_source_refs)
+        assessments = [
+            {
+                "question_id": item.source_question_ref,
+                "assessment": item.reference_assessment,
+                "reason": item.reference_assessment_reason,
+            }
+            for item in self.items
+        ]
+        meta["reference_assessments"] = assessments
+        for item in assessments:
+            if item["assessment"] == "conflict":
+                meta.setdefault("warnings", []).append(
+                    f"[来源提醒] {item['question_id']} 来源解析存在冲突，请教师核对"
+                )
         return payload
 
     def to_dict(self) -> dict[str, Any]:
@@ -1540,7 +1599,10 @@ class InMemoryCombinedQuestionAnalysisModule:
                                 raw.get("tag_analysis")
                                 if projection in {"both", "tag"}
                                 else (
-                                    dict(preserved_item.tag_analysis)
+                                    {
+                                        key: preserved_item.tag_analysis.get(key)
+                                        for key in _MODEL_TAG_PAYLOAD_FIELDS
+                                    }
                                     if preserved_item is not None
                                     else None
                                 )
@@ -1553,6 +1615,16 @@ class InMemoryCombinedQuestionAnalysisModule:
                             source_hash = solution_evidence_source_content_hash(
                                 question
                             )
+                            reference_assessment = str(
+                                raw.get("reference_assessment") or "insufficient"
+                            ).strip().casefold()
+                            if reference_assessment not in {
+                                "consistent", "conflict", "insufficient"
+                            }:
+                                raise ValueError("reference assessment is invalid")
+                            reference_assessment_reason = str(
+                                raw.get("reference_assessment_reason") or ""
+                            ).strip()
                             validation_category = "solution_evidence_contract"
                             (
                                 normalized_tag,
@@ -1605,6 +1677,8 @@ class InMemoryCombinedQuestionAnalysisModule:
                                 solution_evidence_payload=normalized_evidence,
                                 solution_evidence=evidence,
                                 taxonomy_audit=taxonomy_audit,
+                                reference_assessment=reference_assessment,
+                                reference_assessment_reason=reference_assessment_reason,
                                 model_name=response.model_name,
                                 operation_id=operation_id,
                             )
@@ -1614,6 +1688,8 @@ class InMemoryCombinedQuestionAnalysisModule:
                                 "question_id": question.question_id,
                                 "tag_analysis": normalized_tag,
                                 "solution_evidence": normalized_evidence,
+                                "reference_assessment": reference_assessment,
+                                "reference_assessment_reason": reference_assessment_reason,
                             }
                         )
                         parsed_count += 1
@@ -1671,14 +1747,60 @@ class DeferredCombinedProjectionWriter:
         self,
         *,
         tag_writer: Any,
-        mapping_repository: FineTermCoreMappingRepository,
+        mapping_repository: FineTermResolver,
         evidence_repository: SolutionEvidenceRepository,
         taxonomy_governance: Any | None = None,
+        criterion_module: Any | None = None,
     ) -> None:
         self.tag_writer = tag_writer
         self.mapping_repository = mapping_repository
         self.evidence_repository = evidence_repository
         self.taxonomy_governance = taxonomy_governance
+        self.criterion_module = criterion_module
+
+    def _publish_criterion(
+        self,
+        evidence: QuestionSolutionEvidence,
+        *,
+        question: QuestionAnalysisInput,
+        model_name: str,
+    ) -> dict[str, Any]:
+        if self.criterion_module is None:
+            return {"status": "not_requested"}
+        try:
+            draft = training_criteria_from_solution_evidence(
+                evidence,
+                question=question,
+            )
+            workspace = self.criterion_module.propose(
+                question=question,
+                draft=draft,
+                source_kind="combined_model",
+                source_reference=training_criterion_source_reference(
+                    question.question_id,
+                    draft,
+                ),
+                actor_ref=f"model:{str(model_name or 'combined-analysis')}",
+                reason="联合题目解析自动发布训练判定点",
+            )
+            current = (
+                workspace.get("current_version")
+                if isinstance(workspace, Mapping)
+                else None
+            )
+            return {
+                "status": "succeeded",
+                "version_id": (
+                    str(current.get("version_id") or "")
+                    if isinstance(current, Mapping)
+                    else ""
+                ),
+            }
+        except Exception as exc:  # noqa: BLE001
+            return {
+                "status": "failed",
+                "error_category": type(exc).__name__,
+            }
 
     def write(
         self,
@@ -1694,6 +1816,7 @@ class DeferredCombinedProjectionWriter:
         tag_error = ""
         evidence_error = ""
         evidence_version_id = ""
+        criterion_audit: dict[str, Any] = {"status": "not_requested"}
         taxonomy_proposal_ids: tuple[str, ...] = ()
         taxonomy_review_required = False
         taxonomy_retry_required = False
@@ -1727,6 +1850,11 @@ class DeferredCombinedProjectionWriter:
             evidence_error = "evidence_validation"
         else:
             evidence_status = "succeeded"
+            criterion_audit = self._publish_criterion(
+                binding.evidence,
+                question=question,
+                model_name=item.model_name,
+            )
         return {
             "source_question_ref": item.source_question_ref,
             "question_id": question.question_id,
@@ -1734,6 +1862,13 @@ class DeferredCombinedProjectionWriter:
             "tag_error_category": tag_error,
             "evidence_status": evidence_status,
             "evidence_error_category": evidence_error,
+            "criteria_status": criterion_audit.get("status", "not_requested"),
+            "criteria_error_category": str(
+                criterion_audit.get("error_category") or ""
+            ),
+            "criterion_version_id": str(
+                criterion_audit.get("version_id") or ""
+            ),
             "source_evidence_version_id": evidence_version_id,
             "taxonomy_proposal_ids": list(taxonomy_proposal_ids),
             "taxonomy_review_required": taxonomy_review_required,
@@ -1779,6 +1914,7 @@ class DeferredCombinedProjectionWriter:
         tag_error = ""
         evidence_error = ""
         evidence_version_id = ""
+        criterion_audit: dict[str, Any] = {"status": "not_requested"}
         taxonomy_proposal_ids: tuple[str, ...] = ()
         taxonomy_review_required = False
         taxonomy_retry_required = False
@@ -1821,6 +1957,11 @@ class DeferredCombinedProjectionWriter:
             evidence_error = "evidence_validation"
         else:
             evidence_status = "succeeded"
+            criterion_audit = self._publish_criterion(
+                binding.evidence,
+                question=question,
+                model_name=item.model_name,
+            )
         return {
             "source_question_ref": item.source_question_ref,
             "question_id": question.question_id,
@@ -1829,6 +1970,13 @@ class DeferredCombinedProjectionWriter:
             "tag_error_category": tag_error,
             "evidence_status": evidence_status,
             "evidence_error_category": evidence_error,
+            "criteria_status": criterion_audit.get("status", "not_requested"),
+            "criteria_error_category": str(
+                criterion_audit.get("error_category") or ""
+            ),
+            "criterion_version_id": str(
+                criterion_audit.get("version_id") or ""
+            ),
             "source_evidence_version_id": evidence_version_id,
             "taxonomy_proposal_ids": list(taxonomy_proposal_ids),
             "taxonomy_review_required": taxonomy_review_required,
@@ -2054,6 +2202,9 @@ def compose_generated_config_from_skeletons(
                         ),
                         "counterexamples": _text_list(
                             raw_step.get("counterexamples")
+                        ),
+                        "deduction_rules": _text_list(
+                            raw_step.get("deduction_rules")
                         ),
                     }
                 )
@@ -2363,28 +2514,33 @@ def _audit_mapping_list(value: object) -> list[dict[str, Any]]:
     return result
 
 
+_MODEL_TAG_PAYLOAD_FIELDS = frozenset(
+    {
+        "knowledge_points",
+        "method_tags",
+        "thought_tags",
+        "ability_tags",
+        "math_model_tags",
+        "special_type_tags",
+        "difficulty",
+        "error_prone_points",
+        "prerequisite_points",
+        "textbook_chapters",
+        "curriculum_sections",
+        "suitable_student_level",
+        "canonical_knowledge_id",
+        "taxonomy_revision",
+        "proposed_tags",
+        "reason",
+        "confidence",
+    }
+)
+
+
 def _validate_model_tag_payload(payload: Mapping[str, Any]) -> None:
     _require_exact_keys(
         payload,
-        {
-            "knowledge_points",
-            "method_tags",
-            "thought_tags",
-            "ability_tags",
-            "math_model_tags",
-            "special_type_tags",
-            "difficulty",
-            "error_prone_points",
-            "prerequisite_points",
-            "textbook_chapters",
-            "curriculum_sections",
-            "suitable_student_level",
-            "canonical_knowledge_id",
-            "taxonomy_revision",
-            "proposed_tags",
-            "reason",
-            "confidence",
-        },
+        _MODEL_TAG_PAYLOAD_FIELDS,
         "combined tag analysis",
     )
 
@@ -2537,6 +2693,12 @@ def _govern_deferred_analysis_item(
         question_id=question.question_id,
         question_type=question.question_type_group,
         taxonomy_contract=question.taxonomy_contract,
+        question_type_confirmed=question.question_type_confirmed,
+        expected_part_count=(
+            len(question.explicit_part_labels)
+            if question.explicit_part_labels
+            else None
+        ),
     )
 
     if taxonomy_governance is None:
@@ -2989,6 +3151,8 @@ def _question_type_from_skeleton(
     parts: Sequence[Mapping[str, Any]],
     canonical_answer: str,
 ) -> str:
+    if len(parts) > 1:
+        return "comprehensive"
     if any(mode == "visual_construction" for mode in response_modes):
         return "comprehensive"
     if any(

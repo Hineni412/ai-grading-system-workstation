@@ -257,7 +257,8 @@ def test_json_object_request_explicitly_instructs_the_model_to_return_json(
         operation_id="model-json-contract-001",
     )
 
-    assert result["state"] == "needs_information"
+    assert result["state"] == "succeeded"
+    assert result["result_kind"] == "ordinary_plan"
     assert len(constructed[0].calls) == 1
 
 

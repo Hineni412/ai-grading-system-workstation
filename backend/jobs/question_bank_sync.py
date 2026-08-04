@@ -13,6 +13,7 @@ from backend.config_workspace.deferred_analysis import (
 from backend.config_workspace.publish import LoadedEditorConfig, load_editor_config
 from path_manager import resolve_stored_file_path
 from question_bank.database.schema import connect
+from question_bank.current_knowledge import CurrentFineTermResolver
 from question_bank.services.question_write_service import QuestionBankWriteService
 from question_bank.services.question_service import QuestionService
 from question_bank.services.source_question_link_service import (
@@ -24,16 +25,14 @@ from .question_import import run_question_import_job
 from .tagging_sync import run_tagging_sync_job
 from question_bank.taxonomy.curriculum_catalog import curriculum_volume
 from question_bank.solution_evidence import (
-    FineTermCoreMappingRepository,
     SolutionEvidenceRepository,
-    build_fine_term_mapping_baseline,
-    install_fine_term_mapping_baseline,
 )
 from question_bank.training_criteria import (
     ConfirmedQuestionAdoptionLink,
     DeferredCombinedProjectionWriter,
     ExistingTagProjectionWriter,
     QuestionAnalysisInputLoader,
+    TrainingCriterionModule,
 )
 
 
@@ -231,6 +230,7 @@ def run_session_question_bank_sync_job(
             tagging_result = tagging_sync_runner(
                 context=tag_context,
                 question_bank_db_path=Path(question_bank_db_path),
+                data_root=Path(data_root),
                 ai_service_factory=ai_service_factory,
                 taxonomy_governance=taxonomy_governance,
             )
@@ -314,6 +314,7 @@ def run_session_question_bank_sync_job(
                 imported_count=result["imported_count"],
                 tagged_count=result["tagged_count"],
                 evidence_count=result["evidence_count"],
+                criteria_count=result.get("criteria_count", 0),
                 linked_count=result["linked_count"],
                 failed_count=result["failed_count"],
                 review_count=result["review_count"],
@@ -535,13 +536,30 @@ def _result(
         "session_id": session_id,
         "outcome": outcome,
         "imported_count": len(imported_ids),
+        "question_count": max(
+            len(imported_ids),
+            int(tagging_result.get("requested_count") or 0),
+            len(successful_ids) + len(failed_ids),
+        ),
         "tagged_count": max(
-            len(successful_ids),
+            0,
             int(tagging_result.get("tagged_count") or 0),
+        ),
+        "complete_tagged_count": max(
+            int(tagging_result.get("complete_tagged_count") or 0),
+            len(successful_ids),
         ),
         "evidence_count": max(
             0,
             int(tagging_result.get("evidence_count") or 0),
+        ),
+        "criteria_count": max(
+            0,
+            int(tagging_result.get("criteria_count") or 0),
+        ),
+        "criteria_failed_question_ids": _question_ids(
+            tagging_result.get("criteria_failed_question_ids"),
+            allow_empty=True,
         ),
         "linked_count": int(link_result.get("confirmed") or 0),
         "failed_count": failed_count,
@@ -662,6 +680,7 @@ def _adopt_deferred_analysis_with_links(
             "requested_count": len(artifact.bundle.items),
             "tagged_count": 0,
             "evidence_count": 0,
+            "criteria_count": 0,
             "successful_question_ids": [],
             "failed_question_ids": [],
             "failed_count": len(artifact.bundle.items),
@@ -694,12 +713,13 @@ def _adopt_deferred_analysis_with_links(
             curriculum_volume_id=artifact.curriculum_volume_id,
         )
     }
-    mapping_repository = FineTermCoreMappingRepository(question_bank_db_path)
-    baseline_result = install_fine_term_mapping_baseline(
-        mapping_repository,
-        build_fine_term_mapping_baseline(),
-        actor_ref="system:taxonomy-baseline-v1",
+    mapping_repository = CurrentFineTermResolver.from_active_database(
+        question_bank_db_path
     )
+    baseline_result = {
+        "status": "current_standard",
+        "release_id": mapping_repository.release_id,
+    }
     tag_writer = ExistingTagProjectionWriter(
         question_service=QuestionService(question_bank_db_path),
         tagging_service=ai_service,
@@ -709,6 +729,7 @@ def _adopt_deferred_analysis_with_links(
         mapping_repository=mapping_repository,
         evidence_repository=SolutionEvidenceRepository(question_bank_db_path),
         taxonomy_governance=taxonomy_governance,
+        criterion_module=TrainingCriterionModule(question_bank_db_path),
     )
     adoption_results: list[dict[str, Any]] = []
     missing_links = 0
@@ -741,6 +762,8 @@ def _adopt_deferred_analysis_with_links(
         in {"succeeded", "needs_taxonomy_review"}
         and item.get("evidence_status")
         in {"succeeded", "needs_taxonomy_review"}
+        and item.get("criteria_status")
+        in {"succeeded", "not_requested"}
     ]
     failed_ids = [
         int(item["question_id"])
@@ -749,6 +772,8 @@ def _adopt_deferred_analysis_with_links(
         not in {"succeeded", "needs_taxonomy_review"}
         or item.get("evidence_status")
         not in {"succeeded", "needs_taxonomy_review"}
+        or item.get("criteria_status")
+        not in {"succeeded", "not_requested"}
     ]
     tagged_count = sum(
         item.get("tag_status") == "succeeded" for item in adoption_results
@@ -756,6 +781,15 @@ def _adopt_deferred_analysis_with_links(
     evidence_count = sum(
         item.get("evidence_status") == "succeeded" for item in adoption_results
     )
+    criteria_count = sum(
+        item.get("criteria_status") == "succeeded"
+        for item in adoption_results
+    )
+    criteria_failed_ids = [
+        int(item["question_id"])
+        for item in adoption_results
+        if item.get("criteria_status") == "failed"
+    ]
     taxonomy_audit = tag_writer.audit_summary(
         artifact.bundle.operation_id,
         [int(item["question_id"]) for item in adoption_results],
@@ -834,7 +868,10 @@ def _adopt_deferred_analysis_with_links(
         "outcome": outcome,
         "requested_count": len(artifact.bundle.items),
         "tagged_count": tagged_count,
+        "complete_tagged_count": tagged_count,
         "evidence_count": evidence_count,
+        "criteria_count": criteria_count,
+        "criteria_failed_question_ids": criteria_failed_ids,
         "successful_question_ids": successful_ids,
         "failed_question_ids": failed_ids,
         "failed_count": failed_count,
