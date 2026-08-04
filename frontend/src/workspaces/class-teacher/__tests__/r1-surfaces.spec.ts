@@ -83,11 +83,32 @@ describe('B UI R1 surfaces', () => {
     const command = vi.fn().mockResolvedValue({ projection_id:'projection-001' })
     const module = { snapshot, selected:detail, loading:ref(false), error:ref(''), active:ref([node]), load:vi.fn(), inspect:vi.fn(async()=>{ detail.value={node,upstream:[],downstream:[],progress_events:[],collection_summary:null,pending_ai_branches:[],allowed_commands:['open_restricted_projection'],projection_id:'projection-001'} }), command, clearSelection:()=>{detail.value=null} }
     const host = await mount(TodaySurface, { module })
+    expect(host.textContent).toContain('1 项待推进')
+    expect(host.textContent).not.toContain('2 项待推进')
     expect(host.textContent).toContain('待复查')
-    expect(host.textContent).toContain('等待中')
+    expect(host.textContent).not.toContain('等待中')
+    expect(host.querySelectorAll('.summary>div')).toHaveLength(2)
+    expect(host.querySelectorAll('.lane')).toHaveLength(2)
     clickByText(host, '学生事项待复查'); await nextTick()
     clickByText(host, '解锁并打开受保护事项'); await nextTick()
     expect(command).toHaveBeenCalledWith(node, 'open_restricted_projection', {})
+  })
+
+  it('hides all-zero summaries and empty work lanes on the homepage', async () => {
+    const snapshot = ref<WorkSnapshot | null>({
+      as_of:'2026-08-04', start_date:'2026-08-04', end_date:'2026-08-04', nodes:[], edges:[],
+      today:[], overdue:[], waiting:[], review_due:[], summary:{today:0,overdue:0,waiting:0,review_due:0},
+      view:'today', cursor:null, source_version:'empty',
+    })
+    const module = {
+      snapshot, selected:ref<WorkNodeDetail | null>(null), loading:ref(false), error:ref(''), active:ref([]),
+      load:vi.fn(), inspect:vi.fn(), command:vi.fn(), clearSelection:vi.fn(),
+    }
+    const host = await mount(TodaySurface, { module })
+
+    expect(host.querySelector('.summary')).toBeNull()
+    expect(host.querySelector('.workspace')).toBeNull()
+    expect(host.textContent).not.toContain('这一段目前没有工作')
   })
 
   it('directory calls only the lightweight directory interface before selection', async () => {

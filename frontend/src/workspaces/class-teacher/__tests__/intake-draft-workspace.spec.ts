@@ -36,12 +36,12 @@ describe('focused intake draft workspace', () => {
         result: { kind: 'affair_recommendation', value: {
           kind: 'affair_recommendation', transaction_type: '学生事务', template_key: 'baseline.student_conflict',
           title: '学生矛盾处理', summary: '先核实，再跟进。', reasons: [], assumptions: [], to_verify: [],
-          student_aliases: ['学生A', '学生B'], risk_level: 'elevated', emergency_prompt: null,
+          student_aliases: ['学生A', '学生B'], risk_level: 'elevated', emergency_prompt: '如有即时风险，先人工处置。',
           model_advice: '教师可结合现场情况调整全部建议。',
           steps: [
             { key: 'one', title: '确认现场', details: '确认当前状态。', depends_on: [], required: true, waivable: false, safety_required: true },
             { key: 'two', title: '分别记录', details: '记录双方表述。', depends_on: ['one'], required: true, waivable: false, safety_required: false },
-            { key: 'three', title: '持续跟进', details: '记录后续变化。', depends_on: ['two'], required: true, waivable: false, safety_required: false },
+            { key: 'three', title: '持续跟进', details: '记录后续变化。', depends_on: [], required: true, waivable: false, safety_required: false },
           ],
           edges: [],
           calendar_items: [
@@ -53,7 +53,10 @@ describe('focused intake draft workspace', () => {
       },
     }
     vi.spyOn(homeIntakeApi, 'getDraft').mockResolvedValue(draft)
-    vi.spyOn(studentR1Api, 'currentRoster').mockResolvedValue({ items: [], active_count: 0, historical_count: 0, replayed: false })
+    vi.spyOn(studentR1Api, 'currentRoster').mockResolvedValue({ items: [
+      { source_key: 'one', subject_id: 'student-one', display_name: '甲', class_label: '九班', state: 'active' },
+      { source_key: 'two', subject_id: 'student-two', display_name: '乙', class_label: '九班', state: 'active' },
+    ], active_count: 2, historical_count: 0, replayed: false })
     const host = document.createElement('div')
     document.body.append(host)
     const app = createApp(IntakeDraftWorkspace, { draftId: draft.draft_id, token: 'token', module: { load: vi.fn() } })
@@ -61,9 +64,24 @@ describe('focused intake draft workspace', () => {
     apps.push(app)
     await flush()
 
-    expect(host.textContent).toContain('教师可结合现场情况调整全部建议。')
+    expect(host.querySelector('.draft-head')?.textContent).toContain('学生矛盾处理')
+    expect(host.querySelector('.draft-head')?.textContent).toContain('第 2 版 · 草稿已自动保存')
+    expect(document.activeElement).toBe(host.querySelector('.draft-head h2'))
+    expect(host.querySelector('.draft-context')).toBeNull()
+    expect(host.querySelector<HTMLDetailsElement>('.ai-details')?.open).toBe(false)
+    expect(host.querySelector('.ai-details')?.textContent).toContain('技术状态：已成功生成')
+    expect(host.querySelector('.ai-details')?.textContent).toContain('本轮 1 次请求')
+    expect(host.querySelector('.notice--emergency')?.textContent).toContain('如有即时风险')
     expect(host.textContent).not.toContain('初步日历安排')
-    expect(host.textContent?.match(/2026-08-04/g)).toHaveLength(2)
+    expect(host.querySelectorAll('.timeline-day')).toHaveLength(2)
+    expect(host.querySelector('.timeline-day')?.querySelectorAll('.flow-track>li')).toHaveLength(2)
+    expect(host.textContent?.match(/2026-08-04/g)).toHaveLength(3)
+    const studentLinks = host.querySelector<HTMLDetailsElement>('.student-links')!
+    expect(studentLinks.open).toBe(false)
+    expect(studentLinks.querySelector('summary')?.textContent).toContain('已关联 2 人')
+    expect(host.querySelector('.decision-bar')).not.toBeNull()
+    expect(host.querySelector('.decision-bar')?.textContent).toContain('调整选中步骤')
+    expect(host.querySelector('.decision-bar')?.textContent).toContain('最后确认，保存方案')
 
     const cards = [...host.querySelectorAll<HTMLButtonElement>('.flow-track button')]
     cards[0]!.click()

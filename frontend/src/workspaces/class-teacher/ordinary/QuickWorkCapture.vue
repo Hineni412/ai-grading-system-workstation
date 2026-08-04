@@ -369,7 +369,7 @@ function preserveManualTitle(): void {
       <textarea
         id="home-intake-text"
         v-model="text"
-        rows="5"
+        rows="3"
         maxlength="4000"
         placeholder="例如：下周五前收齐家长会回执；或记录需要继续跟进的情况"
         :disabled="sourceLocked"
@@ -390,18 +390,26 @@ function preserveManualTitle(): void {
     </section>
 
     <section v-if="preview || operation || message" ref="statusRegion" class="progress" tabindex="-1" aria-live="polite" :aria-busy="busy">
-      <div v-if="preview" class="date-status" :data-state="preview.date_interpretation.status">
-        <strong>本地日期理解：{{ preview.date_interpretation.status === 'resolved' ? '已明确' : preview.date_interpretation.status === 'conflict' ? '有冲突' : '日期待定' }}</strong>
+      <div v-if="preview?.date_interpretation.status === 'conflict'" class="date-status" data-state="conflict">
+        <strong>本地日期理解：有冲突</strong>
         <span v-if="preview.date_interpretation.resolved_date">{{ preview.date_interpretation.resolved_date }}</span>
         <span v-else-if="preview.date_interpretation.candidates.length">候选：{{ preview.date_interpretation.candidates.join('、') }}</span>
         <span v-else>原文未提供可确定日期，后续可以在工作图中补充。</span>
       </div>
 
-      <dl v-if="preview && !operation" class="receipt" aria-label="请求计数">
-        <div><dt>逻辑轮次</dt><dd>第 {{ preview.round_number }} 轮</dd></div>
-        <div><dt>本轮物理请求</dt><dd>{{ preview.round_physical_request_count }} 次</dd></div>
-        <div><dt>累计物理请求</dt><dd>{{ preview.cumulative_physical_request_count }} 次</dd></div>
-      </dl>
+      <details v-if="preview && preview.date_interpretation.status !== 'conflict'" class="technical-details">
+        <summary>本地理解与调用详情</summary>
+        <div class="date-status" :data-state="preview.date_interpretation.status">
+          <strong>{{ preview.date_interpretation.status === 'resolved' ? '日期已明确' : '日期待定' }}</strong>
+          <span v-if="preview.date_interpretation.resolved_date">{{ preview.date_interpretation.resolved_date }}</span>
+          <span v-else>可以稍后在方案中补充。</span>
+        </div>
+        <dl class="receipt" aria-label="请求计数">
+          <div><dt>逻辑轮次</dt><dd>第 {{ preview.round_number }} 轮</dd></div>
+          <div><dt>本轮物理请求</dt><dd>{{ preview.round_physical_request_count }} 次</dd></div>
+          <div><dt>累计物理请求</dt><dd>{{ preview.cumulative_physical_request_count }} 次</dd></div>
+        </dl>
+      </details>
 
       <section v-if="preview?.emergency_guidance" class="emergency" role="alert">
         <h3>{{ preview.emergency_guidance.title }}</h3>
@@ -422,13 +430,16 @@ function preserveManualTitle(): void {
         <button type="button" :disabled="busy" @click="confirmSensitiveDispatch">确认匿名发送并生成方案</button>
       </section>
 
-      <template v-if="operation">
+      <template v-if="operation && !operation.draft_id">
         <div class="draft-label">草案，尚未写入</div>
-        <dl class="receipt">
-          <div><dt>逻辑轮次</dt><dd>第 {{ operation.round_number }} 轮</dd></div>
-          <div><dt>本轮物理请求</dt><dd>{{ operation.round_physical_request_count }} 次</dd></div>
-          <div><dt>累计物理请求</dt><dd>{{ operation.cumulative_physical_request_count }} 次</dd></div>
-        </dl>
+        <details class="technical-details">
+          <summary>调用详情</summary>
+          <dl class="receipt">
+            <div><dt>逻辑轮次</dt><dd>第 {{ operation.round_number }} 轮</dd></div>
+            <div><dt>本轮物理请求</dt><dd>{{ operation.round_physical_request_count }} 次</dd></div>
+            <div><dt>累计物理请求</dt><dd>{{ operation.cumulative_physical_request_count }} 次</dd></div>
+          </dl>
+        </details>
 
         <section v-if="plan" class="plan">
           <h3>AI 初步执行方案</h3>
@@ -501,4 +512,5 @@ function preserveManualTitle(): void {
 .saved-drafts{display:flex;flex-wrap:wrap;align-items:stretch;gap:var(--space-2);margin-top:var(--space-4);padding-top:var(--space-3);border-top:1px solid var(--color-border-default)}.saved-drafts>div{display:grid;align-content:center;min-width:200px}.saved-drafts>div span,.saved-drafts time{color:var(--color-text-secondary);font-size:var(--font-size-caption)}.saved-drafts button{display:grid;gap:2px;min-width:220px;padding:var(--space-2) var(--space-3);text-align:left}.saved-drafts time{font-weight:400}
 .capture{padding:var(--space-5);border-bottom:1px solid var(--color-border-default);background:var(--color-bg-subtle)}.capture__input{display:grid;gap:var(--space-2)}label{display:grid;gap:var(--space-1);font-size:var(--font-size-dense);font-weight:650}textarea,input,button{box-sizing:border-box;border:1px solid var(--color-border-default);border-radius:var(--radius-control);background:var(--color-bg-surface);font:inherit}.capture__input textarea{width:100%;min-height:128px;padding:var(--space-3);line-height:1.6;resize:vertical;overflow-wrap:anywhere}.capture__actions{display:flex;align-items:center;justify-content:flex-end;gap:var(--space-3)}.capture__actions span{color:var(--color-text-muted);font-size:var(--font-size-caption)}button{min-height:40px;padding:0 var(--space-3)}.capture__actions button,.primary{border-color:var(--color-accent);background:var(--color-accent);color:white}.progress{display:grid;gap:var(--space-3);margin-top:var(--space-4);outline:2px solid transparent;outline-offset:var(--space-1)}.progress:focus{outline-color:var(--color-accent)}.date-status,.receipt{display:flex;flex-wrap:wrap;gap:var(--space-2) var(--space-4);padding:var(--space-3);border-left:3px solid var(--color-accent);background:var(--color-bg-surface)}.date-status[data-state="conflict"]{border-color:var(--color-danger)}.date-status[data-state="pending"]{border-color:var(--color-warning)}.emergency{padding:var(--space-4);border:2px solid var(--color-danger);border-radius:var(--radius-control);background:var(--color-danger-subtle)}.emergency h3{margin-top:0}.exact-preview,.plan,.recommendation,.plain-text,.follow-up,.fallback{padding:var(--space-4);border:1px solid var(--color-border-default);border-radius:var(--radius-control);background:var(--color-bg-surface);overflow-wrap:anywhere}.exact-preview>p:first-child{display:flex;justify-content:space-between;gap:var(--space-3)}.exact-preview pre{max-height:320px;overflow:auto;padding:var(--space-3);white-space:pre-wrap;overflow-wrap:anywhere;background:var(--color-bg-subtle)}.destination-receipt{display:grid;gap:var(--space-2);margin:var(--space-3) 0;padding:var(--space-3);background:var(--color-bg-subtle)}.destination-receipt div{display:grid;grid-template-columns:minmax(7rem,auto) minmax(0,1fr);gap:var(--space-2)}.destination-receipt dt{color:var(--color-text-secondary)}.destination-receipt dd{min-width:0;margin:0;overflow-wrap:anywhere;font-weight:650}.destination-note{color:var(--color-text-secondary);font-size:var(--font-size-dense)}.draft-label{width:max-content;padding:var(--space-1) var(--space-2);border:1px dashed var(--color-warning);border-radius:var(--radius-tag);color:var(--color-warning);font-weight:700}.receipt{margin:0}.receipt div{display:flex;gap:var(--space-1)}.receipt dt{color:var(--color-text-secondary)}.receipt dd{margin:0;font-weight:700}.plan h3,.recommendation h3,.plain-text h3,.follow-up h3,.fallback h3{margin-top:0}.plan-nodes{display:grid;gap:var(--space-3);padding-left:var(--space-5)}.plan-nodes li{padding:var(--space-3);border-left:3px solid var(--color-accent);background:var(--color-bg-subtle)}.plan-nodes div{display:flex;flex-wrap:wrap;justify-content:space-between;gap:var(--space-2)}.plan-nodes span{color:var(--color-text-secondary);font-size:var(--font-size-dense)}.plan-nodes p{margin-bottom:0;white-space:pre-wrap}.assumptions,.relations,.reference-note{color:var(--color-text-secondary)}.follow-up label,.fallback label{margin:var(--space-3) 0}.follow-up textarea,.fallback input{width:100%;padding:var(--space-2)}.message{margin:0;color:var(--color-accent-active);overflow-wrap:anywhere}.discard{justify-self:start;border-color:transparent;background:transparent;color:var(--color-text-secondary);text-decoration:underline}button:disabled{cursor:not-allowed;opacity:var(--opacity-disabled)}@media(max-width:700px){.exact-preview>p:first-child,.plan-nodes div{flex-direction:column}.capture{padding:var(--space-4)}}
 .selection-help,.student-links>p{color:var(--color-text-secondary);font-size:var(--font-size-dense)}.workflow-cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:var(--space-2)}.workflow-cards button{display:grid;grid-template-columns:auto 1fr;gap:var(--space-1) var(--space-2);min-height:120px;padding:var(--space-3);text-align:left}.workflow-cards button>span{grid-row:1/4;display:grid;place-items:center;width:28px;height:28px;border-radius:50%;background:var(--color-accent-subtle);color:var(--color-accent-active);font-weight:750}.workflow-cards small{color:var(--color-text-secondary);line-height:1.45}.workflow-cards em{color:var(--color-danger);font-size:var(--font-size-caption);font-style:normal;font-weight:700}.workflow-cards button.selected,.calendar-list button.selected{border-color:var(--color-warning);background:var(--color-warning-subtle);box-shadow:inset 0 0 0 1px var(--color-warning)}.calendar-list{display:grid;gap:var(--space-2)}.calendar-list button{display:grid;grid-template-columns:110px 1fr;gap:var(--space-3);align-items:center;padding:var(--space-2) var(--space-3);text-align:left}.calendar-list time{font-weight:700;color:var(--color-accent-active)}.verify,.safety-note{margin:var(--space-3) 0;padding:var(--space-3);border-left:3px solid var(--color-warning);background:var(--color-warning-subtle)}.verify h4,.safety-note p{margin:0}.student-links{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:var(--space-2);margin:var(--space-4) 0;padding:var(--space-3);border:1px solid var(--color-border-default);border-radius:var(--radius-control)}.student-links legend{font-weight:750}.student-links>p{grid-column:1/-1;margin:0}.student-links label{display:flex;align-items:center;gap:var(--space-2);font-weight:500}.student-links input{min-height:auto}
+.capture{padding:var(--space-4) var(--space-5)}.capture__input textarea{min-height:88px;line-height:1.55}.progress{margin-top:var(--space-3)}.technical-details{border:1px solid var(--color-border-default);border-radius:var(--radius-control);background:var(--color-bg-surface)}.technical-details summary{padding:var(--space-2) var(--space-3);color:var(--color-text-secondary);font-size:var(--font-size-dense);cursor:pointer}.technical-details .date-status,.technical-details .receipt{border:0;border-top:1px solid var(--color-border-subtle);background:var(--color-bg-subtle)}
 </style>

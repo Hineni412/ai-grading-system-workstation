@@ -399,8 +399,8 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <main class="class-teacher">
-    <header class="workspace-heading">
+  <main class="class-teacher" :class="{ 'class-teacher--focused': routeState.draftId }">
+    <header v-if="!routeState.draftId" class="workspace-heading">
       <div>
         <p class="workspace-heading__eyebrow">调试模式 · 所有工作面直接打开</p>
         <h1>班主任工作台</h1>
@@ -413,6 +413,7 @@ onBeforeUnmount(() => {
     </header>
 
     <ClassTeacherSurfaceTabs
+      v-if="!routeState.draftId"
       :active="routeState.surface"
       :locked="vaultStatus?.protection_mode === 'plaintext_debug_v1' ? false : !unlocked"
       @select="selectSurface"
@@ -436,7 +437,7 @@ onBeforeUnmount(() => {
     <p v-if="errorMessage" class="notice notice--danger" role="alert">{{ errorMessage }}</p>
 
     <template v-if="routeState.surface === 'affairs' || routeState.surface === 'students'">
-    <div class="sensitive-divider">
+    <div v-if="!routeState.draftId" class="sensitive-divider">
       <div>
         <p class="section-kicker">班级名单与具体学生事项</p>
         <h2>学生与事务工作区</h2>
@@ -660,6 +661,12 @@ onBeforeUnmount(() => {
   margin: 0 auto;
   padding: var(--space-7);
   color: var(--color-text-primary);
+}
+
+.class-teacher--focused {
+  width: 100%;
+  max-width: none;
+  padding: var(--space-3);
 }
 
 .workspace-heading,
