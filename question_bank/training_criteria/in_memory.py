@@ -34,6 +34,8 @@ from question_bank.training_criteria.analysis import (
     grading_config_skeleton_from_solution_evidence,
     plan_analysis_batches,
     solution_evidence_source_content_hash,
+    training_criteria_from_solution_evidence,
+    training_criterion_source_reference,
 )
 
 
@@ -1748,11 +1750,57 @@ class DeferredCombinedProjectionWriter:
         mapping_repository: FineTermResolver,
         evidence_repository: SolutionEvidenceRepository,
         taxonomy_governance: Any | None = None,
+        criterion_module: Any | None = None,
     ) -> None:
         self.tag_writer = tag_writer
         self.mapping_repository = mapping_repository
         self.evidence_repository = evidence_repository
         self.taxonomy_governance = taxonomy_governance
+        self.criterion_module = criterion_module
+
+    def _publish_criterion(
+        self,
+        evidence: QuestionSolutionEvidence,
+        *,
+        question: QuestionAnalysisInput,
+        model_name: str,
+    ) -> dict[str, Any]:
+        if self.criterion_module is None:
+            return {"status": "not_requested"}
+        try:
+            draft = training_criteria_from_solution_evidence(
+                evidence,
+                question=question,
+            )
+            workspace = self.criterion_module.propose(
+                question=question,
+                draft=draft,
+                source_kind="combined_model",
+                source_reference=training_criterion_source_reference(
+                    question.question_id,
+                    draft,
+                ),
+                actor_ref=f"model:{str(model_name or 'combined-analysis')}",
+                reason="联合题目解析自动发布训练判定点",
+            )
+            current = (
+                workspace.get("current_version")
+                if isinstance(workspace, Mapping)
+                else None
+            )
+            return {
+                "status": "succeeded",
+                "version_id": (
+                    str(current.get("version_id") or "")
+                    if isinstance(current, Mapping)
+                    else ""
+                ),
+            }
+        except Exception as exc:  # noqa: BLE001
+            return {
+                "status": "failed",
+                "error_category": type(exc).__name__,
+            }
 
     def write(
         self,
@@ -1768,6 +1816,7 @@ class DeferredCombinedProjectionWriter:
         tag_error = ""
         evidence_error = ""
         evidence_version_id = ""
+        criterion_audit: dict[str, Any] = {"status": "not_requested"}
         taxonomy_proposal_ids: tuple[str, ...] = ()
         taxonomy_review_required = False
         taxonomy_retry_required = False
@@ -1801,6 +1850,11 @@ class DeferredCombinedProjectionWriter:
             evidence_error = "evidence_validation"
         else:
             evidence_status = "succeeded"
+            criterion_audit = self._publish_criterion(
+                binding.evidence,
+                question=question,
+                model_name=item.model_name,
+            )
         return {
             "source_question_ref": item.source_question_ref,
             "question_id": question.question_id,
@@ -1808,6 +1862,13 @@ class DeferredCombinedProjectionWriter:
             "tag_error_category": tag_error,
             "evidence_status": evidence_status,
             "evidence_error_category": evidence_error,
+            "criteria_status": criterion_audit.get("status", "not_requested"),
+            "criteria_error_category": str(
+                criterion_audit.get("error_category") or ""
+            ),
+            "criterion_version_id": str(
+                criterion_audit.get("version_id") or ""
+            ),
             "source_evidence_version_id": evidence_version_id,
             "taxonomy_proposal_ids": list(taxonomy_proposal_ids),
             "taxonomy_review_required": taxonomy_review_required,
@@ -1853,6 +1914,7 @@ class DeferredCombinedProjectionWriter:
         tag_error = ""
         evidence_error = ""
         evidence_version_id = ""
+        criterion_audit: dict[str, Any] = {"status": "not_requested"}
         taxonomy_proposal_ids: tuple[str, ...] = ()
         taxonomy_review_required = False
         taxonomy_retry_required = False
@@ -1895,6 +1957,11 @@ class DeferredCombinedProjectionWriter:
             evidence_error = "evidence_validation"
         else:
             evidence_status = "succeeded"
+            criterion_audit = self._publish_criterion(
+                binding.evidence,
+                question=question,
+                model_name=item.model_name,
+            )
         return {
             "source_question_ref": item.source_question_ref,
             "question_id": question.question_id,
@@ -1903,6 +1970,13 @@ class DeferredCombinedProjectionWriter:
             "tag_error_category": tag_error,
             "evidence_status": evidence_status,
             "evidence_error_category": evidence_error,
+            "criteria_status": criterion_audit.get("status", "not_requested"),
+            "criteria_error_category": str(
+                criterion_audit.get("error_category") or ""
+            ),
+            "criterion_version_id": str(
+                criterion_audit.get("version_id") or ""
+            ),
             "source_evidence_version_id": evidence_version_id,
             "taxonomy_proposal_ids": list(taxonomy_proposal_ids),
             "taxonomy_review_required": taxonomy_review_required,
@@ -2128,6 +2202,9 @@ def compose_generated_config_from_skeletons(
                         ),
                         "counterexamples": _text_list(
                             raw_step.get("counterexamples")
+                        ),
+                        "deduction_rules": _text_list(
+                            raw_step.get("deduction_rules")
                         ),
                     }
                 )

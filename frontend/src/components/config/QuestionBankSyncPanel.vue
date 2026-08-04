@@ -116,10 +116,10 @@ function statusCopy(current: JobResponse): string {
   if (current.status === 'cancelled') return '题库流程已取消'
   if (outcome.value === 'complete') {
     return safeCount(current.result.taxonomy_review_count)
-      ? '试卷已入库，标签仍待补充或归并'
-      : '试卷已入库并完成标签治理'
+      ? '试卷已入库，部分标签仍待归并'
+      : '试卷已入库，标签与训练判定点已保存'
   }
-  if (outcome.value === 'partial') return '已部分入库，仍有标签需要处理'
+  if (outcome.value === 'partial') return '已部分入库，仍有标签或训练判定点需要处理'
   return '题库流程未完成'
 }
 
@@ -255,9 +255,10 @@ watch(
       </div>
       <progress :value="progress" max="1" aria-label="试卷入库与标签治理进度" />
       <p v-if="terminal">
-        入库 {{ safeCount(job.result.imported_count) }} 题 ·
-        已标注 {{ safeCount(job.result.tagged_count) }} 题 ·
-        已关联 {{ safeCount(job.result.linked_count) }} 题
+        题目入库成功 {{ safeCount(job.result.imported_count) }} 题 ·
+        本次标签保存成功 {{ safeCount(job.result.tagged_count) }} 题 ·
+        完整标签 {{ safeCount(job.result.complete_tagged_count) }}/{{ safeCount(job.result.question_count) || safeCount(job.result.imported_count) }}
+        · 训练判定点 {{ safeCount(job.result.criteria_count) }}/{{ safeCount(job.result.question_count) || safeCount(job.result.imported_count) }} 题
         <template v-if="safeCount(job.result.taxonomy_review_count)">
           · {{ safeCount(job.result.taxonomy_review_count) }} 题标签待补充或归并
         </template>

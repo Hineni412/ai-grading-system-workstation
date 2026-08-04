@@ -239,7 +239,11 @@ function downloadFailures(job: JobResponse): void {
                   job.job_type === 'question_import' ||
                   questionJobRetryIds(job).length > 0
                 ) &&
-                (job.status !== 'succeeded' || job.result.outcome === 'partial')
+                (
+                  job.status !== 'succeeded' ||
+                  job.result.outcome === 'partial' ||
+                  job.result.restore_required === true
+                )
               "
               type="button"
               class="qb-link"

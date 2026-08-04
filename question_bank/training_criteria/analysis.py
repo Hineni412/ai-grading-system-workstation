@@ -559,11 +559,49 @@ class CombinedQuestionAnalysisModule:
         gateway: QuestionAnalysisGateway,
         tag_writer: TagProjectionWriter,
         evidence_writer: SolutionEvidenceWriter | None = None,
+        criterion_module: Any | None = None,
     ) -> None:
         self.repository = repository
         self.gateway = gateway
         self.tag_writer = tag_writer
         self.evidence_writer = evidence_writer
+        self.criterion_module = criterion_module
+        self._criterion_audits: dict[tuple[str, int], dict[str, Any]] = {}
+
+    def criterion_audit_summary(
+        self,
+        operation_id: str,
+        question_ids: Sequence[int],
+    ) -> dict[str, Any]:
+        """Return the independent training-version save result.
+
+        The combined analysis projection is intentionally allowed to remain
+        successful when evidence was saved but publishing its training-point
+        version failed.  Jobs use this small audit seam to retry only the
+        missing training projection on a later run.
+        """
+
+        rows: list[dict[str, Any]] = []
+        succeeded: list[int] = []
+        failed: list[int] = []
+        for question_id in question_ids:
+            audit = dict(
+                self._criterion_audits.get(
+                    (str(operation_id), int(question_id)),
+                )
+                or {"status": "not_requested"},
+            )
+            row = {"question_id": int(question_id), **audit}
+            rows.append(row)
+            if audit.get("status") == "succeeded":
+                succeeded.append(int(question_id))
+            elif audit.get("status") == "failed":
+                failed.append(int(question_id))
+        return {
+            "items": rows,
+            "succeeded_question_ids": succeeded,
+            "failed_question_ids": failed,
+        }
 
     def analyze(
         self,
@@ -888,6 +926,41 @@ class CombinedQuestionAnalysisModule:
                 ),
             )
             return
+        criterion_audit: dict[str, Any] = {"status": "not_requested"}
+        if self.criterion_module is not None:
+            try:
+                workspace = self.criterion_module.propose(
+                    question=question,
+                    draft=draft,
+                    source_kind="combined_model",
+                    source_reference=training_criterion_source_reference(
+                        question.question_id,
+                        draft,
+                    ),
+                    actor_ref=f"model:{str(model_name or 'combined-analysis')}",
+                    reason="联合题目解析自动发布训练判定点",
+                )
+                current = (
+                    workspace.get("current_version")
+                    if isinstance(workspace, Mapping)
+                    else None
+                )
+                criterion_audit = {
+                    "status": "succeeded",
+                    "version_id": (
+                        str(current.get("version_id") or "")
+                        if isinstance(current, Mapping)
+                        else ""
+                    ),
+                }
+            except Exception as exc:  # noqa: BLE001
+                criterion_audit = {
+                    "status": "failed",
+                    "error_category": type(exc).__name__,
+                }
+        self._criterion_audits[(str(operation_id), question.question_id)] = (
+            criterion_audit
+        )
         self.repository.save_projection(
             operation_id=operation_id,
             question_id=question.question_id,
@@ -1137,6 +1210,19 @@ def training_criteria_from_solution_evidence(
     )
 
 
+def training_criterion_source_reference(
+    question_id: int,
+    draft: TrainingCriteriaDraft,
+) -> str:
+    """Build the idempotency key shared by every criterion publisher."""
+
+    return (
+        "combined-analysis:"
+        f"{int(question_id)}:{draft.source_content_hash}:"
+        f"{_hash_payload(draft.to_dict())}"
+    )
+
+
 def solution_evidence_source_content_hash(
     question: QuestionAnalysisInput,
 ) -> str:
@@ -1203,6 +1289,14 @@ def rubric_skeleton_from_solution_evidence(
                         "depends_on": list(point.depends_on),
                         "equivalent_rules": list(point.equivalent_rules),
                         "counterexamples": list(point.counterexamples),
+                        "deduction_rules": list(
+                            dict.fromkeys(
+                                [
+                                    *point.counterexamples,
+                                    *part.deduction_policy,
+                                ]
+                            )
+                        ),
                     }
                     for point in part.evidence_points
                 ],
@@ -1749,5 +1843,6 @@ __all__ = [
     "rubric_skeleton_from_solution_evidence",
     "solution_evidence_source_content_hash",
     "training_criteria_from_solution_evidence",
+    "training_criterion_source_reference",
     "plan_analysis_batches",
 ]
