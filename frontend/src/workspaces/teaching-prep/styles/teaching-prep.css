@@ -1510,17 +1510,6 @@
   background: var(--tp-work);
 }
 
-.tp-shell-header {
-  display: grid;
-  grid-template-columns: minmax(180px, 1fr) auto minmax(120px, 1fr);
-  gap: 1.25rem;
-  align-items: center;
-  padding: 0.85rem clamp(1rem, 3vw, 3rem);
-  border-block-end: 1px solid var(--tp-line);
-  background: var(--tp-paper);
-}
-
-.tp-shell-header__brand,
 .tp-lesson-context,
 .tp-inline-actions,
 .tp-section-heading,
@@ -1532,8 +1521,6 @@
   align-items: center;
 }
 
-.tp-shell-header__brand p,
-.tp-shell-header__brand strong,
 .tp-workspace__header p,
 .tp-section-heading h2,
 .tp-section-heading p,
@@ -1542,18 +1529,9 @@
   margin: 0;
 }
 
-.tp-shell-mark {
-  display: grid;
-  inline-size: 2.4rem;
-  aspect-ratio: 1;
-  place-items: center;
-  border-radius: 0.55rem;
-  color: white;
-  background: var(--tp-teal);
-  font-weight: 800;
-}
-
 .tp-workspace-tabs {
+  --tp-muted: #667a7f;
+  --tp-teal-dark: #0d4650;
   display: flex;
   gap: 0.25rem;
   padding: 0.25rem;
@@ -1579,12 +1557,6 @@
   background: white;
   box-shadow: 0 1px 5px rgb(20 57 62 / 12%);
   font-weight: 700;
-}
-
-.tp-local-only {
-  justify-self: end;
-  color: var(--tp-muted);
-  font-size: 0.78rem;
 }
 
 .tp-lesson-context {
@@ -1921,6 +1893,7 @@ button:disabled { cursor: not-allowed; opacity: 0.46; }
 .tp-directory-actions > div:first-child p { margin: 0.2rem 0; }
 
 .tp-directory-actions .tp-inline-guidance,
+.tp-directory-actions .tp-mapping-scope-summary,
 .tp-directory-actions > .tp-muted,
 .tp-mapping-job-status { grid-column: 1 / -1; }
 
@@ -1950,16 +1923,38 @@ button:disabled { cursor: not-allowed; opacity: 0.46; }
   block-size: 0.55rem;
   accent-color: var(--tp-teal);
 }
-.tp-mapping-job-status dl {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 0.7rem;
-  margin: 0;
+.tp-mapping-job-status__summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem 1rem;
+  color: var(--tp-muted);
+  font-size: 0.84rem;
 }
-.tp-mapping-job-status dl > div { display: grid; gap: 0.15rem; }
-.tp-mapping-job-status dt { color: var(--tp-muted); font-size: 0.76rem; }
-.tp-mapping-job-status dd { margin: 0; font-weight: 650; }
+.tp-mapping-job-status__summary span + span::before {
+  content: '·';
+  margin-inline-end: 1rem;
+  color: var(--tp-line);
+}
 .tp-mapping-job-status p { margin: 0; }
+
+.tp-mapping-scope-summary {
+  padding: 0.7rem 0.9rem;
+  border: 1px solid var(--tp-line);
+  border-radius: 0.55rem;
+  background: var(--tp-paper);
+}
+.tp-mapping-scope-summary summary {
+  cursor: pointer;
+  color: var(--tp-teal-dark);
+  font-weight: 700;
+}
+.tp-mapping-scope-summary > div {
+  display: grid;
+  gap: 0.35rem;
+  padding-block-start: 0.65rem;
+  color: var(--tp-muted);
+  font-size: 0.84rem;
+}
 
 .tp-material-card {
   overflow: hidden;
@@ -2133,8 +2128,6 @@ button:disabled { cursor: not-allowed; opacity: 0.46; }
 .tp-visually-hidden { position: absolute; inline-size: 1px; block-size: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 
 @media (max-width: 1050px) {
-  .tp-shell-header { grid-template-columns: 1fr auto; }
-  .tp-workspace-tabs { grid-column: 1 / -1; grid-row: 2; overflow-x: auto; }
   .tp-document-workspace { grid-template-columns: 190px minmax(420px, 1fr); }
   .tp-document-workspace__inspector { grid-column: 1 / -1; border-block-start: 1px solid var(--tp-line); border-inline-start: 0; }
   .tp-lesson-board { grid-template-columns: 1fr; }
@@ -2148,9 +2141,6 @@ button:disabled { cursor: not-allowed; opacity: 0.46; }
 }
 
 @media (max-width: 760px) {
-  .tp-shell-header { display: flex; flex-wrap: wrap; }
-  .tp-local-only { margin-inline-start: auto; }
-  .tp-workspace-tabs { order: 3; inline-size: 100%; }
   .tp-lesson-context { flex-wrap: wrap; }
   .tp-safe-note { margin-inline-start: 0; }
   .tp-stage-ruler { grid-template-columns: repeat(5, minmax(55px, 1fr)); overflow-x: auto; }
@@ -2177,7 +2167,6 @@ button:disabled { cursor: not-allowed; opacity: 0.46; }
   .tp-directory-actions .tp-inline-guidance,
   .tp-directory-actions > .tp-muted,
   .tp-mapping-job-status { grid-column: auto; }
-  .tp-mapping-job-status dl { grid-template-columns: 1fr; }
   .tp-execution-phases { grid-template-columns: 1fr; gap: 0.7rem; }
   .tp-execution-phases li::after { inset: 1.25rem auto -0.9rem 0.65rem; inline-size: 2px; block-size: auto; }
   .tp-sticky-actions { align-items: start; flex-direction: column; }

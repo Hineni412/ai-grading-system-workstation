@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, provide } from 'vue'
+import { computed, onBeforeUnmount, onMounted, provide } from 'vue'
 
 import TeachingPrepLessonContext from '../components/TeachingPrepLessonContext.vue'
 import { teachingPrepWorkbenchKey } from '../workbench/context'
@@ -20,38 +20,23 @@ const workspaceComponent = computed(() => ({
   versions: PresentationVersionsWorkspace,
 }[workbench.workspace.value]))
 
-const workspaceTabs = [
-  { id: 'lesson-tree', label: '课时' },
-  { id: 'materials', label: '资料库' },
-  { id: 'lesson-prep', label: '备课' },
-  { id: 'versions', label: '课件' },
-] as const
+function handleTopbarNavigation(event: Event): void {
+  const workspace = (event as CustomEvent<{ workspace?: unknown }>).detail?.workspace
+  if (!['materials', 'lesson-tree', 'lesson-prep', 'versions'].includes(String(workspace))) return
+  void workbench.openWorkspace(workspace as 'materials' | 'lesson-tree' | 'lesson-prep' | 'versions')
+}
 
-onMounted(() => workbench.load())
+onMounted(() => {
+  globalThis.addEventListener('teaching-prep:open-workspace', handleTopbarNavigation)
+  void workbench.load()
+})
+onBeforeUnmount(() => {
+  globalThis.removeEventListener('teaching-prep:open-workspace', handleTopbarNavigation)
+})
 </script>
 
 <template>
   <main class="teaching-prep-shell">
-    <header class="tp-shell-header">
-      <div class="tp-shell-header__brand">
-        <span class="tp-shell-mark" aria-hidden="true">备</span>
-        <div><p>教师工作台</p><strong>初中数学备课</strong></div>
-      </div>
-      <nav class="tp-workspace-tabs" aria-label="备课工作区">
-        <button
-          v-for="item in workspaceTabs"
-          :key="item.id"
-          type="button"
-          :aria-current="workbench.workspace.value === item.id ? 'page' : undefined"
-          :class="{ 'is-current': workbench.workspace.value === item.id }"
-          @click="workbench.openWorkspace(item.id)"
-        >
-          {{ item.label }}
-        </button>
-      </nav>
-      <span class="tp-local-only">本机工作区</span>
-    </header>
-
     <TeachingPrepLessonContext :compact="workbench.workspace.value === 'versions'" />
 
     <div v-if="workbench.workbenchError.value" class="tp-global-notice" role="alert">

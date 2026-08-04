@@ -314,7 +314,8 @@ describe('MaterialLibraryWorkspace current-material safety', () => {
 
     expect(host.textContent).toContain('模型正在生成建议')
     expect(host.textContent).toContain('45%')
-    expect(host.textContent).toContain('最多一次物理调用，不自动重试')
+    expect(host.textContent).toContain('单次调用 · 不自动重试')
+    expect(host.querySelector('.tp-mapping-job-status dl')).toBeNull()
 
     useJobStore().track({
       ...running, status: 'failed', stage: 'result_unknown',

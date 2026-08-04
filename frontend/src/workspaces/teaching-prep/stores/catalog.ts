@@ -287,8 +287,11 @@ export const useTeachingPrepCatalogStore = defineStore(
       }
     }
 
-    async function refreshProposalsForMappingJob(job: JobResponse): Promise<void> {
-      if (refreshedSemesterMappingJobs.has(job.id)) return
+    async function refreshProposalsForMappingJob(
+      job: JobResponse,
+      force = false,
+    ): Promise<void> {
+      if (!force && refreshedSemesterMappingJobs.has(job.id)) return
       const semester = selectedSemester.value
       const record = selectedSemesterMaterial.value
       const sourceState = mappingJobSourceState(job)
@@ -309,8 +312,34 @@ export const useTeachingPrepCatalogStore = defineStore(
           || currentSemesterMappingPreflight.value?.source_state_sha256 !== sourceState
         ) return
         semesterMappingProposals.value = next
-        refreshedSemesterMappingJobs.add(job.id)
+        const proposalId = typeof job.result.proposal_id === 'string'
+          ? job.result.proposal_id
+          : null
+        const operationId = mappingJobOperationId(job)
+        const durableProposalFound = next.some(item => (
+          item.status === 'proposed'
+          && item.payload.source_material_record_ids.length === 1
+          && item.payload.source_material_record_ids[0] === record.id
+          && item.source_state_sha256 === sourceState
+          && (
+            (proposalId !== null && item.id === proposalId)
+            || (operationId !== null && item.operation_id === operationId)
+          )
+        ))
+        if (durableProposalFound) {
+          refreshedSemesterMappingJobs.add(job.id)
+        } else if (!force) {
+          await refreshProposalsForMappingJob(job, true)
+        } else {
+          refreshedSemesterMappingJobs.delete(job.id)
+          errorMessage.value = '后台任务已完成，但待确认建议尚未同步；重新检查后会继续恢复，不会再次调用模型。'
+        }
       } catch (error) {
+        refreshedSemesterMappingJobs.delete(job.id)
+        if (!force) {
+          await refreshProposalsForMappingJob(job, true)
+          return
+        }
         errorMessage.value = safeMessage(error)
       }
     }
@@ -1756,6 +1785,14 @@ export const useTeachingPrepCatalogStore = defineStore(
           generation,
         }
         loadState.value = 'ready'
+        const job = currentSemesterMappingJob.value
+        if (
+          job
+          && TERMINAL_JOB_STATUSES.has(job.status)
+          && currentSemesterMappingProposal.value === null
+        ) {
+          await refreshProposalsForMappingJob(job, true)
+        }
       } catch (error) {
         if (
           generation !== semesterMappingFlowGeneration

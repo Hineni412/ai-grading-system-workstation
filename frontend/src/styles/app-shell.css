@@ -265,6 +265,18 @@
   grid-template-columns: minmax(0, 1fr);
 }
 
+.app-topbar--workspace-context:has(.app-topbar__workspace-navigation:not(:empty)) {
+  grid-template-areas: 'page workspace-navigation';
+  grid-template-columns: minmax(220px, 1fr) auto;
+}
+
+.app-topbar__workspace-navigation {
+  display: flex;
+  grid-area: workspace-navigation;
+  min-width: 0;
+  justify-content: flex-end;
+}
+
 .app-topbar__skip-link {
   position: fixed;
   inset-block-start: var(--space-2);
@@ -549,6 +561,18 @@
   .app-topbar {
     grid-template-columns: minmax(0, 1fr) minmax(250px, 360px);
     padding-inline: var(--space-4);
+  }
+
+  .app-topbar--workspace-context:has(.app-topbar__workspace-navigation:not(:empty)) {
+    grid-template-areas:
+      "page"
+      "workspace-navigation";
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .app-topbar__workspace-navigation {
+    overflow-x: auto;
+    justify-content: flex-start;
   }
 
   .app-topbar__navigation-toggle {

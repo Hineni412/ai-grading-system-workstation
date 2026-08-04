@@ -51,6 +51,12 @@ const STAGE_ORDER = Object.fromEntries(
   STAGES.map((stage, index) => [stage.id, index]),
 ) as Record<TeachingPrepStage, number>
 
+export function hasFormalLessonTree(
+  nodes: Array<{ node_type: string; is_active: boolean }>,
+): boolean {
+  return nodes.some(node => node.node_type === 'lesson' && node.is_active)
+}
+
 export function useTeachingPrepWorkbench() {
   const route = useRoute()
   const router = useRouter()
@@ -104,6 +110,15 @@ export function useTeachingPrepWorkbench() {
     workbenchError.value = ''
     try {
       await catalog.load()
+      if (!isWorkspace(route.query.workspace) && !isStage(route.query.stage)) {
+        if (hasFormalLessonTree(catalog.lessonNodes)) {
+          workspace.value = 'lesson-tree'
+          stage.value = 'select'
+        } else {
+          workspace.value = 'materials'
+          stage.value = 'materials'
+        }
+      }
       restoreRouteContext()
       await loadSemesterStatuses()
       const lessonId = route.query.lesson

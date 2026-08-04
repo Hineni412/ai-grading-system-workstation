@@ -1097,13 +1097,15 @@ async function saveManualMapping(): Promise<void> {
           max="100"
           :aria-label="`目录建议任务：${mappingStageLabel}`"
         />
-        <dl>
-          <div><dt>当前资料</dt><dd>{{ roleLabel(activeSemesterRecord.material_role) }} · {{ activeSemesterRecord.current_unit_count }} 页/张</dd></div>
-          <div><dt>用途</dt><dd>{{ mappingPurposeLabel }}</dd></div>
-          <div><dt>模型</dt><dd>{{ currentMappingPreflight?.model_label ?? (currentMappingPreflight?.model_available ? '已配置模型' : '尚未确认') }}</dd></div>
-          <div><dt>调用规则</dt><dd>最多一次物理调用，不自动重试，不自动应用建议</dd></div>
-        </dl>
-        <p v-if="currentMappingJob?.detail" class="tp-muted">{{ currentMappingJob.detail }}</p>
+        <p class="tp-mapping-job-status__summary">
+          <span>{{ roleLabel(activeSemesterRecord.material_role) }} · {{ activeSemesterRecord.current_unit_count }} 页/张</span>
+          <span>{{ mappingPurposeLabel }}</span>
+          <span>单次调用 · 不自动重试</span>
+        </p>
+        <p
+          v-if="currentMappingJob?.detail && !mappingJobHasDurableProposal"
+          class="tp-muted"
+        >{{ currentMappingJob.detail }}</p>
         <p v-if="workbench.catalog.currentSemesterMappingJobRecovered" class="tp-muted">
           已从服务端恢复同一后台任务，没有再次发送模型请求。
         </p>
@@ -1116,30 +1118,32 @@ async function saveManualMapping(): Promise<void> {
           应用重启后无法确认模型结果；为避免重复费用，本页不提供重新生成入口。
         </p>
       </div>
-      <div v-if="currentMappingPreflight" class="tp-inline-guidance">
-        <strong>
-          本次 {{ currentMappingPreflight.material_count }} 份资料，
-          {{ currentMappingPreflight.unit_count }} 页/张
-        </strong>
-        <span>{{ mappingPurposeLabel }} · 最多一次模型调用 · 不自动重试</span>
-        <span v-if="currentMappingPreflight.evidence_strategy">
-          目录策略：{{ currentMappingPreflight.evidence_strategy }} ·
-          前置检查 {{ currentMappingPreflight.scanned_unit_count }} 页 ·
-          目录 {{ currentMappingPreflight.toc_entry_count }} 条 ·
-          正文锚点 {{ currentMappingPreflight.anchor_count }} 个
-        </span>
-        <span v-if="currentMappingPreflight.full_page_text_sent === false">
-          不会发送全部逐页正文；预计证据文本约 {{ currentMappingPreflight.estimated_input_characters }} 字符。
-        </span>
-        <span
-          v-for="issue in currentMappingPreflight.evidence_issues ?? []"
-          :key="issue"
-          class="tp-muted"
-        >{{ issue }}</span>
-        <span v-if="!currentMappingPreflight.model_available">
-          当前模型不可用；仍可在右侧把页段人工关联到现有课时。
-        </span>
-      </div>
+      <details v-if="currentMappingPreflight" class="tp-mapping-scope-summary">
+        <summary>
+          发送范围：{{ currentMappingPreflight.scanned_unit_count ?? currentMappingPreflight.unit_count }} 页检查
+          · {{ currentMappingPreflight.anchor_count ?? 0 }} 个正文锚点
+          <template v-if="currentMappingPreflight.estimated_input_characters">
+            · 约 {{ currentMappingPreflight.estimated_input_characters }} 字
+          </template>
+        </summary>
+        <div>
+          <span>
+            {{ currentMappingPreflight.model_label ?? (currentMappingPreflight.model_available ? '已配置模型' : '模型不可用') }}
+            · 建议需逐条确认后才会写入课时树
+          </span>
+          <span v-if="currentMappingPreflight.full_page_text_sent === false">
+            未发送全部逐页正文，只发送目录线索与抽样正文锚点。
+          </span>
+          <span
+            v-for="issue in currentMappingPreflight.evidence_issues ?? []"
+            :key="issue"
+            class="tp-muted"
+          >{{ issue }}</span>
+          <span v-if="!currentMappingPreflight.model_available">
+            仍可在右侧把页段人工关联到现有课时。
+          </span>
+        </div>
+      </details>
       <p v-else-if="eligibleSemesterMaterials.length === 0" class="tp-muted">
         暂无已解析的本学期资料。先在上方导入，或把左侧已有资料补充加入本学期。
       </p>

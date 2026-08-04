@@ -24,6 +24,22 @@ const pageDescription = computed(() => String(route.meta.description ?? ''))
 const showCurrentExamContext = computed(
   () => route.meta.topbarContext !== 'workspace',
 )
+const showTeachingPrepNavigation = computed(
+  () => route.path === '/teaching-prep' || route.path.startsWith('/teaching-prep/'),
+)
+const teachingPrepTabs = [
+  { id: 'materials', label: '资料库' },
+  { id: 'lesson-tree', label: '课时' },
+  { id: 'lesson-prep', label: '备课' },
+  { id: 'versions', label: '课件' },
+] as const
+
+function openTeachingPrepWorkspace(workspace: string): void {
+  globalThis.dispatchEvent(new CustomEvent(
+    'teaching-prep:open-workspace',
+    { detail: { workspace } },
+  ))
+}
 
 function selectSession(event: Event): void {
   const selector = event.currentTarget as HTMLSelectElement
@@ -79,6 +95,26 @@ function retrySessions(): void {
         <strong>{{ pageTitle }}</strong>
         <span v-if="pageDescription">{{ pageDescription }}</span>
       </div>
+    </div>
+
+    <div
+      v-if="showTeachingPrepNavigation"
+      id="teaching-prep-topbar-tabs"
+      class="app-topbar__workspace-navigation"
+      aria-label="备课工作区入口"
+    >
+      <nav class="tp-workspace-tabs" aria-label="备课工作区">
+        <button
+          v-for="item in teachingPrepTabs"
+          :key="item.id"
+          type="button"
+          :aria-current="route.query.workspace === item.id ? 'page' : undefined"
+          :class="{ 'is-current': route.query.workspace === item.id }"
+          @click="openTeachingPrepWorkspace(item.id)"
+        >
+          {{ item.label }}
+        </button>
+      </nav>
     </div>
 
     <div v-if="showCurrentExamContext" class="app-topbar__session">
