@@ -24,8 +24,9 @@ from backend.workspaces.model_policy import (
 
 
 _MAX_OUTPUT_TOKENS = 12_288
-_SYSTEM_INSTRUCTION = """\
+_CREATE_TREE_SYSTEM_INSTRUCTION = """\
 你是初中数学学期资料目录整理助手。只依据给出的学期快照工作。
+当前任务模式是“首次建立课时目录”。
 返回单个紧凑 JSON 对象，不要 Markdown、代码围栏、解释或缩进，只能包含
 tree、mappings、uncertainties。严格使用下面的字段结构：
 {"tree":[{"key":"chapter_1","title":"章名","sections":[{"key":"section_1",
@@ -36,8 +37,7 @@ tree、mappings、uncertainties。严格使用下面的字段结构：
 "uncertainties":[]}
 所有 key 必须在整个 tree 全局唯一；推荐使用 chapter_01、
 chapter_01_section_01、chapter_01_section_01_lesson_01 这种带完整层级的 key。
-如果快照已经有课时树，tree 必须为空，只把新增资料映射到 existing lesson id。
-如果课时树为空，tree 按章、节、课时三级给出，每个节点使用简短唯一 key；
+tree 按章、节、课时三级给出，每个节点使用简短唯一 key；
 sections 只表示“节”，课时必须放入 lessons；禁止空 lessons。每个课时必须包含
 duration_minutes（1—300 的整数），通常使用 45。尽量贴近 planned_new_lesson_count；
 证据不足时减少课时并说明 uncertainty，不要用空数组占位。
@@ -48,6 +48,26 @@ evidence_refs。basis 用一句短话说明依据；evidence_refs 只能引用 d
 真实存在的 evidence_id，不能编造。相邻且属于同一课时的页必须合并成一个连续页段。
 页码必须是快照中真实 unit_index 范围，不得编造页码、课时或资料。
 不能确定时写入 uncertainties，不要猜测。不要返回题目正文、答案或 WPS 指令。
+"""
+
+_MAP_EXISTING_SYSTEM_INSTRUCTION = """\
+你是初中数学学期资料映射助手。只依据给出的学期快照工作。
+当前任务模式是“把一份新增资料映射到已有正式课时”，绝对不能创建、补充、
+改名或重建章、节、课时。
+返回单个紧凑 JSON 对象，不要 Markdown、代码围栏、解释或缩进，只能包含
+tree、mappings、uncertainties，并严格使用下面的字段结构：
+{"tree":[],"mappings":[{"material_record_id":"原样复制资料ID",
+"lesson_ref":"原样复制已有课时ID","start_unit":1,"end_unit":2,
+"basis":"依据目录与正文标题推断","evidence_refs":["toc-001","anchor-0012"]}],
+"uncertainties":[]}
+tree 必须始终是空数组。lesson_ref 只能原样复制 available_lessons 中某个 id，
+不能生成新 ID，也不能引用章或节。只映射证据足以对应到已有课时的连续页段；
+资料中找不到对应已有课时的内容必须跳过，并在 uncertainties 中说明，禁止为了
+覆盖全书而猜测或创建课时。连续且属于同一课时的页段合并，不要为每页重复建立
+mapping。每条 mapping 必须包含 material_record_id、lesson_ref、start_unit、
+end_unit、basis、evidence_refs。evidence_refs 只能引用 directory_evidence 中真实
+存在的 evidence_id。页码必须是快照中真实 unit_index 范围。
+不要返回题目正文、答案或 WPS 指令。
 """
 
 
@@ -76,6 +96,12 @@ class WorkspaceSemesterMappingModelAdapter:
         semester_snapshot: dict[str, Any],
         dispatch_callback: Callable[[], None] | None = None,
     ) -> dict[str, Any]:
+        model_snapshot = _compact_model_snapshot(semester_snapshot)
+        instruction = (
+            _MAP_EXISTING_SYSTEM_INSTRUCTION
+            if model_snapshot["mapping_mode"] == "map_existing_lessons"
+            else _CREATE_TREE_SYSTEM_INSTRUCTION
+        )
         client = _client_with_dispatch_callback(
             self.client,
             dispatch_callback,
@@ -90,11 +116,11 @@ class WorkspaceSemesterMappingModelAdapter:
             model=self.model,
             kwargs={
                 "messages": [
-                    {"role": "system", "content": _SYSTEM_INSTRUCTION},
+                    {"role": "system", "content": instruction},
                     {
                         "role": "user",
                         "content": json.dumps(
-                            _compact_model_snapshot(semester_snapshot),
+                            model_snapshot,
                             ensure_ascii=False,
                             sort_keys=True,
                             separators=(",", ":"),
@@ -145,29 +171,19 @@ def _compact_model_snapshot(
     directory_evidence = snapshot.get("directory_evidence")
     if not isinstance(directory_evidence, Mapping):
         directory_evidence = build_directory_evidence(snapshot)
+    lesson_nodes = _mapping_list(snapshot.get("lessons"))
+    has_existing_tree = bool(lesson_nodes)
+    semester_fields = [
+        "school_year",
+        "term",
+        "curriculum_title",
+    ]
+    if not has_existing_tree:
+        semester_fields.append("planned_new_lesson_count")
     semester = _selected_fields(
         snapshot.get("semester"),
-        (
-            "school_year",
-            "term",
-            "planned_new_lesson_count",
-            "curriculum_title",
-        ),
+        tuple(semester_fields),
     )
-    lessons = [
-        _selected_fields(
-            item,
-            (
-                "id",
-                "parent_id",
-                "node_type",
-                "title",
-                "sort_order",
-                "duration_minutes",
-            ),
-        )
-        for item in _mapping_list(snapshot.get("lessons"))
-    ]
     materials: list[dict[str, object]] = []
     for item in _mapping_list(snapshot.get("materials")):
         material = _selected_fields(
@@ -180,14 +196,34 @@ def _compact_model_snapshot(
             ),
         )
         materials.append(material)
-    return {
+    compact: dict[str, object] = {
+        "mapping_mode": (
+            "map_existing_lessons"
+            if has_existing_tree
+            else "create_initial_tree"
+        ),
         "semester": semester,
-        "lessons": lessons,
         "materials": materials,
         "directory_evidence": _compact_directory_evidence(
             directory_evidence
         ),
     }
+    if has_existing_tree:
+        compact["available_lessons"] = _available_lessons(lesson_nodes)
+    return compact
+
+
+def _available_lessons(
+    lesson_nodes: list[Mapping[str, object]],
+) -> list[dict[str, object]]:
+    return [
+        _selected_fields(
+            item,
+            ("id", "title", "duration_minutes"),
+        )
+        for item in lesson_nodes
+        if item.get("node_type") == "lesson"
+    ]
 
 
 def _compact_directory_evidence(value: object) -> dict[str, object]:

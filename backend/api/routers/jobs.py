@@ -70,6 +70,12 @@ _SEMESTER_MAPPING_PUBLIC_ERRORS = {
     "response failed local validation": (
         "模型目录未通过页码和结构校验；可重新检查后手动生成。"
     ),
+    "attempted to replace the existing lesson tree": (
+        "模型尝试重建已有课时目录，本次建议已拦截；请重新生成映射。"
+    ),
+    "referred to a lesson outside the existing tree": (
+        "模型引用了当前目录中不存在的课时，本次建议已拦截；请重新生成映射。"
+    ),
     "model configuration is unavailable": (
         "当前备课模型配置不可用，请先检查“大模型 API”设置。"
     ),
