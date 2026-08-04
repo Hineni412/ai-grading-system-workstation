@@ -5,14 +5,22 @@ import hashlib
 import json
 import math
 import re
+from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass, field
-from typing import Any, Literal, Mapping, Protocol, Sequence
+from typing import Any, Callable, Literal, Mapping, Protocol, Sequence
 
 from question_bank.models.tag_schema import TagAnalysis, TaggingContext
 from question_bank.solution_evidence.contracts import QuestionSolutionEvidence
 
 
 AnalysisProjection = Literal["both", "tag", "training_criteria"]
+ObjectiveResponseShape = Literal[
+    "single_choice",
+    "single_blank",
+    "multiple_blank",
+    "unknown",
+]
+AnalysisProgressCallback = Callable[[Mapping[str, Any]], None]
 ProjectionStatus = Literal[
     "pending",
     "succeeded",
@@ -288,6 +296,25 @@ class QuestionAnalysisInput:
         if "作图" in text:
             return "construction"
         return "calculation"
+
+    @property
+    def objective_response_shape(self) -> ObjectiveResponseShape:
+        """Return only objective response facts that are safe to enforce locally."""
+
+        if self.explicit_part_labels:
+            return "unknown"
+        if not str(self.tagging_context.answer_text or "").strip():
+            return "unknown"
+        if self.question_type_group == "single_choice":
+            return "single_choice"
+        if self.question_type_group != "fill_blank":
+            return "unknown"
+        text = str(self.tagging_context.question_text or "")
+        named = re.findall(r"第[一二三四五六七八九十\d]+空", text)
+        underscores = re.findall(r"_{2,}|＿{2,}|　{2,}", text)
+        empty_brackets = re.findall(r"[（(]\s*[）)]", text)
+        blank_count = max(len(named), len(underscores) + len(empty_brackets), 1)
+        return "single_blank" if blank_count == 1 else "multiple_blank"
 
 
 @dataclass(frozen=True, slots=True)
@@ -584,6 +611,7 @@ class CombinedQuestionAnalysisModule:
         rows: list[dict[str, Any]] = []
         succeeded: list[int] = []
         failed: list[int] = []
+        needs_review: list[int] = []
         for question_id in question_ids:
             audit = dict(
                 self._criterion_audits.get(
@@ -597,10 +625,13 @@ class CombinedQuestionAnalysisModule:
                 succeeded.append(int(question_id))
             elif audit.get("status") == "failed":
                 failed.append(int(question_id))
+            elif audit.get("status") == "needs_review":
+                needs_review.append(int(question_id))
         return {
             "items": rows,
             "succeeded_question_ids": succeeded,
             "failed_question_ids": failed,
+            "needs_review_question_ids": needs_review,
         }
 
     def analyze(
@@ -609,6 +640,7 @@ class CombinedQuestionAnalysisModule:
         operation_id: str,
         questions: Sequence[QuestionAnalysisInput],
         projection: AnalysisProjection = "both",
+        progress_callback: AnalysisProgressCallback | None = None,
     ) -> Mapping[str, Any]:
         clean_operation = _required_text(operation_id, "operation_id")
         normalized = _normalize_questions(questions)
@@ -630,6 +662,7 @@ class CombinedQuestionAnalysisModule:
             questions=normalized,
             projection=normalized_projection,
             retry=False,
+            progress_callback=progress_callback,
         )
         return self.repository.operation_summary(clean_operation)
 
@@ -639,6 +672,7 @@ class CombinedQuestionAnalysisModule:
         operation_id: str,
         questions: Sequence[QuestionAnalysisInput],
         projection: Literal["tag", "training_criteria"],
+        progress_callback: AnalysisProgressCallback | None = None,
     ) -> Mapping[str, Any]:
         clean_operation = _required_text(operation_id, "operation_id")
         normalized = _normalize_questions(questions)
@@ -658,6 +692,7 @@ class CombinedQuestionAnalysisModule:
             questions=normalized,
             projection=selected,
             retry=True,
+            progress_callback=progress_callback,
         )
         return self.repository.operation_summary(clean_operation)
 
@@ -696,6 +731,7 @@ class CombinedQuestionAnalysisModule:
         questions: tuple[QuestionAnalysisInput, ...],
         projection: AnalysisProjection,
         retry: bool,
+        progress_callback: AnalysisProgressCallback | None = None,
     ) -> None:
         selected = _selected_projections(projection)
         ready: list[QuestionAnalysisInput] = []
@@ -731,19 +767,51 @@ class CombinedQuestionAnalysisModule:
             tuple(ready),
             projection=projection,
         )
-        for batch_index, batch in enumerate(batches):
+        total_questions = sum(len(batch.questions) for batch in batches)
+        if not batches:
+            self._report_progress(
+                progress_callback,
+                operation_id=operation_id,
+                projection=projection,
+                processed_batches=0,
+                total_batches=0,
+                processed_questions=0,
+                total_questions=0,
+            )
+            return
+
+        worker_count = min(
+            len(batches),
+            _gateway_parallel_limit(self.gateway),
+        )
+        base_request_count = int(
+            self.repository.operation_summary(operation_id).get(
+                "request_count",
+                0,
+            )
+        )
+        future_map: dict[
+            Future[GatewayBatchResponse],
+            tuple[int, PlannedAnalysisBatch, str],
+        ] = {}
+        next_batch_index = 0
+        processed_batches = 0
+        processed_questions = 0
+        stop_scheduling = False
+
+        def submit_next(
+            executor: ThreadPoolExecutor,
+        ) -> None:
+            nonlocal next_batch_index
+            batch_index = next_batch_index
+            batch = batches[batch_index]
+            next_batch_index += 1
             request_id = _hash_payload(
                 {
                     "operation_id": operation_id,
                     "projection": projection,
                     "batch_hash": batch.batch_hash,
-                    "request_number": int(
-                        self.repository.operation_summary(operation_id).get(
-                            "request_count",
-                            0,
-                        )
-                    )
-                    + 1,
+                    "request_number": base_request_count + batch_index + 1,
                 }
             )
             self.repository.record_request_started(
@@ -752,82 +820,169 @@ class CombinedQuestionAnalysisModule:
                 projection=projection,
                 batch=batch,
             )
-            try:
-                response = self.gateway.analyze(
-                    batch,
-                    projection=projection,
-                    operation_id=operation_id,
-                    request_id=request_id,
-                )
-                items = _response_items(response.payload, batch)
-            except Exception as exc:
-                category = _error_category(exc)
-                self.repository.record_request_finished(
-                    request_id=request_id,
-                    status="failed",
-                    error_category=category,
-                )
-                self._fail_batch(
-                    operation_id=operation_id,
-                    batch=batch,
-                    projection=projection,
-                    retry=retry,
-                    category=category,
-                )
-                if category == "cancelled":
-                    for remaining in batches[batch_index + 1 :]:
-                        self._fail_batch(
-                            operation_id=operation_id,
-                            batch=remaining,
-                            projection=projection,
-                            retry=retry,
-                            category=category,
-                        )
-                    break
-                continue
-
-            self.repository.record_request_finished(
+            future = executor.submit(
+                self.gateway.analyze,
+                batch,
+                projection=projection,
+                operation_id=operation_id,
                 request_id=request_id,
-                status="succeeded",
-                response=response,
             )
-            for question in batch.questions:
-                raw = items.get(question.question_id)
-                if raw is None:
-                    self._fail_question(
+            future_map[future] = (batch_index, batch, request_id)
+
+        def fill_available_slots(
+            executor: ThreadPoolExecutor,
+        ) -> None:
+            while (
+                not stop_scheduling
+                and next_batch_index < len(batches)
+                and len(future_map) < worker_count
+            ):
+                submit_next(executor)
+
+        with ThreadPoolExecutor(
+            max_workers=worker_count,
+            thread_name_prefix="question-analysis",
+        ) as executor:
+            fill_available_slots(executor)
+            while future_map:
+                future = next(as_completed(tuple(future_map)))
+                batch_index, batch, request_id = future_map.pop(future)
+                try:
+                    response = future.result()
+                    items = _response_items(response.payload, batch)
+                except Exception as exc:
+                    category = _error_category(exc)
+                    self.repository.record_request_finished(
+                        request_id=request_id,
+                        status="failed",
+                        error_category=category,
+                    )
+                    self._fail_batch(
                         operation_id=operation_id,
-                        question=question,
+                        batch=batch,
                         projection=projection,
                         retry=retry,
-                        category="missing_result",
+                        category=category,
                     )
-                    continue
-                if "tag" in selected:
-                    status = self.repository.projection_status(
-                        operation_id,
-                        question.question_id,
-                        "tag",
+                    if category == "cancelled":
+                        stop_scheduling = True
+                else:
+                    self.repository.record_request_finished(
+                        request_id=request_id,
+                        status="succeeded",
+                        response=response,
                     )
-                    if not retry or status in {"failed", "cancelled", "pending"}:
-                        self._save_tag(
-                            operation_id,
-                            question,
-                            raw,
-                            response.model_name,
-                        )
-                if "training_criteria" in selected:
-                    status = self.repository.projection_status(
-                        operation_id,
-                        question.question_id,
-                        "training_criteria",
-                    )
-                    if not retry or status in {"failed", "cancelled", "pending"}:
-                        self._save_criteria(
-                            operation_id,
-                            question,
-                            raw,
-                            response.model_name,
-                        )
+                    for question in batch.questions:
+                        raw = items.get(question.question_id)
+                        if raw is None:
+                            self._fail_question(
+                                operation_id=operation_id,
+                                question=question,
+                                projection=projection,
+                                retry=retry,
+                                category="missing_result",
+                            )
+                            continue
+                        if "tag" in selected:
+                            status = self.repository.projection_status(
+                                operation_id,
+                                question.question_id,
+                                "tag",
+                            )
+                            if not retry or status in {
+                                "failed",
+                                "cancelled",
+                                "pending",
+                            }:
+                                self._save_tag(
+                                    operation_id,
+                                    question,
+                                    raw,
+                                    response.model_name,
+                                )
+                        if "training_criteria" in selected:
+                            status = self.repository.projection_status(
+                                operation_id,
+                                question.question_id,
+                                "training_criteria",
+                            )
+                            if not retry or status in {
+                                "failed",
+                                "cancelled",
+                                "pending",
+                            }:
+                                self._save_criteria(
+                                    operation_id,
+                                    question,
+                                    raw,
+                                    response.model_name,
+                                )
+
+                processed_batches += 1
+                processed_questions += len(batch.questions)
+                self._report_progress(
+                    progress_callback,
+                    operation_id=operation_id,
+                    projection=projection,
+                    processed_batches=processed_batches,
+                    total_batches=len(batches),
+                    processed_questions=processed_questions,
+                    total_questions=total_questions,
+                )
+                fill_available_slots(executor)
+
+        if stop_scheduling and next_batch_index < len(batches):
+            for remaining in batches[next_batch_index:]:
+                self._fail_batch(
+                    operation_id=operation_id,
+                    batch=remaining,
+                    projection=projection,
+                    retry=retry,
+                    category="cancelled",
+                )
+                processed_batches += 1
+                processed_questions += len(remaining.questions)
+            self._report_progress(
+                progress_callback,
+                operation_id=operation_id,
+                projection=projection,
+                processed_batches=processed_batches,
+                total_batches=len(batches),
+                processed_questions=processed_questions,
+                total_questions=total_questions,
+            )
+
+    def _report_progress(
+        self,
+        callback: AnalysisProgressCallback | None,
+        *,
+        operation_id: str,
+        projection: AnalysisProjection,
+        processed_batches: int,
+        total_batches: int,
+        processed_questions: int,
+        total_questions: int,
+    ) -> None:
+        if callback is None:
+            return
+        try:
+            callback(
+                {
+                    "operation_id": operation_id,
+                    "projection": projection,
+                    "processed_batches": int(processed_batches),
+                    "total_batches": int(total_batches),
+                    "processed_questions": int(processed_questions),
+                    "total_questions": int(total_questions),
+                    "summary": dict(
+                        self.repository.operation_summary(operation_id)
+                    ),
+                }
+            )
+        except Exception:
+            # Progress reporting is observational. A UI/store failure must not
+            # turn a saved model result into a failed analysis request.
+            return
 
     def _save_tag(
         self,
@@ -945,13 +1100,52 @@ class CombinedQuestionAnalysisModule:
                     if isinstance(workspace, Mapping)
                     else None
                 )
+                quality_status = (
+                    str(current.get("quality_status") or "")
+                    if isinstance(current, Mapping)
+                    else ""
+                )
+                quality_codes = (
+                    list(current.get("quality_codes") or [])
+                    if isinstance(current, Mapping)
+                    else []
+                )
+                evidence_review_required = bool(
+                    self.evidence_writer is not None
+                    and getattr(
+                        self.evidence_writer,
+                        "criterion_review_required",
+                        lambda *_args: False,
+                    )(operation_id, question.question_id)
+                )
+                reference_conflict = (
+                    str(raw.get("reference_assessment") or "")
+                    .strip()
+                    .casefold()
+                    == "conflict"
+                )
+                needs_review = (
+                    quality_status != "passed"
+                    or evidence_review_required
+                    or reference_conflict
+                )
                 criterion_audit = {
-                    "status": "succeeded",
+                    "status": "needs_review" if needs_review else "succeeded",
                     "version_id": (
                         str(current.get("version_id") or "")
                         if isinstance(current, Mapping)
                         else ""
                     ),
+                    "quality_codes": quality_codes,
+                    "review_reasons": [
+                        reason
+                        for reason, active in (
+                            ("quality_gate", quality_status != "passed"),
+                            ("objective_answer_conflict", evidence_review_required),
+                            ("reference_conflict", reference_conflict),
+                        )
+                        if active
+                    ],
                 }
             except Exception as exc:  # noqa: BLE001
                 criterion_audit = {
@@ -1075,6 +1269,39 @@ def criteria_from_confirmed_rubric(
     answer_key: Mapping[str, Any] | None = None,
 ) -> TrainingCriteriaDraft:
     answer = dict(answer_key or {})
+    if question.objective_response_shape in {"single_choice", "single_blank"}:
+        canonical = _first_text(
+            answer,
+            "canonical_answer",
+            "answer",
+            "correct_answer",
+        ) or str(question.tagging_context.answer_text or "").strip()
+        if not canonical:
+            raise ProjectionValidationError(
+                "confirmed rubric cannot be converted without an answer"
+            )
+        return TrainingCriteriaDraft(
+            schema_version="training-criteria-draft-v1",
+            question_id=question.question_id,
+            source_content_hash=question.criterion_source_content_hash,
+            question_type=question.question_type_group,
+            points=(
+                TrainingCriterionPoint(
+                    point_id="objective-answer",
+                    target="给出正确或等价答案",
+                    observable_evidence=canonical,
+                    equivalent_rules=_text_tuple(
+                        answer.get("accepted_forms")
+                        or answer.get("equivalent_answers")
+                    ),
+                    counterexamples=(),
+                ),
+            ),
+            auxiliary_rules=(),
+            rationale="由教师已确认的正式评分依据本地去分值转换。",
+            confidence=1.0,
+            source_kind="confirmed_rubric_adapter",
+        )
     candidates: list[Mapping[str, Any]] = []
     parts = rubric_question.get("parts")
     if isinstance(parts, list):
@@ -1683,6 +1910,14 @@ def _selected_projections(
     if projection == "both":
         return _PROJECTIONS
     return (projection,)
+
+
+def _gateway_parallel_limit(gateway: QuestionAnalysisGateway) -> int:
+    value = getattr(gateway, "max_parallel_requests", 1)
+    try:
+        return max(1, int(value))
+    except (TypeError, ValueError):
+        return 1
 
 
 def _projection(value: object) -> AnalysisProjection:

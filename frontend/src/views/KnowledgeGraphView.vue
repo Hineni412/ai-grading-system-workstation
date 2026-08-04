@@ -26,6 +26,7 @@ const students = ref<StudentSummary[]>([])
 const studentsState = ref<'loading' | 'ready' | 'error'>('loading')
 const activeQuery = ref<GraphQueryInput | null>(null)
 const routeNotice = ref('')
+const scopeEditorOpen = ref(true)
 let studentsController: AbortController | null = null
 let routeInitialized = false
 
@@ -63,6 +64,7 @@ async function initializeFromRoute(): Promise<void> {
     sessionStore.selectSession(parsed.query.exam_scope.session_ids[0])
   }
   activeQuery.value = parsed.query
+  scopeEditorOpen.value = false
   routeNotice.value = parsed.notice
   await router.replace({ name: 'knowledge-graph', query: parsed.canonical })
   await graphStore.loadGraph(parsed.query)
@@ -88,6 +90,7 @@ async function loadStudentOptions(): Promise<void> {
 
 async function applyQuery(query: GraphQueryInput): Promise<void> {
   activeQuery.value = query
+  scopeEditorOpen.value = false
   routeNotice.value = ''
   await router.replace({ name: 'knowledge-graph', query: serializeGraphRouteScope(query) })
   await graphStore.loadGraph(query)
@@ -151,13 +154,23 @@ onBeforeUnmount(() => {
       </dl>
     </header>
 
-    <GraphRelationReviewShortcut />
-
     <div v-if="studentsState === 'error'" class="knowledge-graph-inline-error" role="alert">
       <p>班级和学生列表暂时无法读取</p>
       <button type="button" @click="retryStudents">重新加载筛选项</button>
     </div>
+    <section class="knowledge-graph-scope-bar" aria-label="当前查看范围">
+      <div>
+        <span>当前范围</span>
+        <strong>{{ scopeLabel }}</strong>
+      </div>
+      <button
+        type="button"
+        :aria-expanded="scopeEditorOpen"
+        @click="scopeEditorOpen = !scopeEditorOpen"
+      >{{ scopeEditorOpen ? '收起筛选' : '更改范围' }}</button>
+    </section>
     <GraphScopeFilters
+      v-if="scopeEditorOpen"
       :sessions="sessionStore.sessions"
       :current-session-id="sessionStore.selectedSessionId"
       :students="students"
@@ -165,6 +178,11 @@ onBeforeUnmount(() => {
       :applying="graphStore.graphState === 'loading'"
       @apply="applyQuery"
     />
+
+    <details class="knowledge-graph-secondary-panel">
+      <summary>关系异常与审核</summary>
+      <GraphRelationReviewShortcut />
+    </details>
 
     <p v-if="routeNotice" class="knowledge-graph-scope-notice" role="status">
       {{ routeNotice }}
@@ -208,19 +226,33 @@ onBeforeUnmount(() => {
         <span>未覆盖 {{ graphStore.graph.coverage.total_items - graphStore.graph.coverage.covered_items }} 份</span>
         <span>已应用当前筛选范围</span>
       </section>
-      <ul v-if="visibleWarnings.length" class="knowledge-graph-warnings" aria-label="知识图谱说明">
-        <li v-for="warning in visibleWarnings" :key="warning">{{ warning }}</li>
-      </ul>
+      <details
+        v-if="visibleWarnings.length || graphStore.graph.missing.length"
+        class="knowledge-graph-secondary-panel"
+      >
+        <summary>
+          数据说明（{{ visibleWarnings.length + graphStore.graph.missing.length }}）
+        </summary>
+        <ul v-if="visibleWarnings.length" class="knowledge-graph-warnings" aria-label="知识图谱说明">
+          <li v-for="warning in visibleWarnings" :key="warning">{{ warning }}</li>
+        </ul>
+        <ul v-if="graphStore.graph.missing.length" class="knowledge-graph-missing-list" aria-label="未纳入图谱的项目">
+          <li v-for="(item, index) in graphStore.graph.missing" :key="`${String(item.stable_key ?? item.label ?? 'missing')}:${index}`">
+            {{ String(item.label ?? item.stable_key ?? '未识别知识项') }} 未纳入当前知识图谱。
+          </li>
+        </ul>
+      </details>
       <p v-if="graphStore.graph.nodes.length === 0" class="knowledge-graph-scope-notice">
         当前范围没有可显示的已治理知识点。可调整考试或学生范围；未治理标签不会被伪装成关系节点。
       </p>
-      <ul v-if="graphStore.graph.missing.length" class="knowledge-graph-missing-list" aria-label="未纳入图谱的项目">
-        <li v-for="(item, index) in graphStore.graph.missing" :key="`${String(item.stable_key ?? item.label ?? 'missing')}:${index}`">
-          {{ String(item.label ?? item.stable_key ?? '未识别知识项') }} 未纳入当前知识图谱。
-        </li>
-      </ul>
       <template v-if="graphStore.graph.nodes.length > 0">
         <div class="knowledge-graph-workspace">
+          <GraphTextDirectory
+            :nodes="graphStore.graph.nodes"
+            :edges="graphStore.graph.edges"
+            :selected-key="graphStore.selectedNodeKey"
+            @select-node="selectNode"
+          />
           <KnowledgeGraphCanvas
             :nodes="graphStore.graph.nodes"
             :edges="graphStore.graph.edges"
@@ -242,12 +274,6 @@ onBeforeUnmount(() => {
             @retry-evidence="graphStore.retryEvidence()"
           />
         </div>
-        <GraphTextDirectory
-          :nodes="graphStore.graph.nodes"
-          :edges="graphStore.graph.edges"
-          :selected-key="graphStore.selectedNodeKey"
-          @select-node="selectNode"
-        />
       </template>
     </template>
   </section>

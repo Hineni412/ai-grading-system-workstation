@@ -1788,12 +1788,24 @@ class DeferredCombinedProjectionWriter:
                 if isinstance(workspace, Mapping)
                 else None
             )
+            quality_status = (
+                str(current.get("quality_status") or "")
+                if isinstance(current, Mapping)
+                else ""
+            )
             return {
-                "status": "succeeded",
+                "status": (
+                    "succeeded" if quality_status == "passed" else "needs_review"
+                ),
                 "version_id": (
                     str(current.get("version_id") or "")
                     if isinstance(current, Mapping)
                     else ""
+                ),
+                "quality_codes": (
+                    list(current.get("quality_codes") or [])
+                    if isinstance(current, Mapping)
+                    else []
                 ),
             }
         except Exception as exc:  # noqa: BLE001
@@ -2694,6 +2706,8 @@ def _govern_deferred_analysis_item(
         question_type=question.question_type_group,
         taxonomy_contract=question.taxonomy_contract,
         question_type_confirmed=question.question_type_confirmed,
+        objective_response_shape=question.objective_response_shape,
+        expected_answer=question.tagging_context.answer_text,
         expected_part_count=(
             len(question.explicit_part_labels)
             if question.explicit_part_labels
