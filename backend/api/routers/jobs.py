@@ -76,6 +76,9 @@ _SEMESTER_MAPPING_PUBLIC_ERRORS = {
     "referred to a lesson outside the existing tree": (
         "模型引用了当前目录中不存在的课时，本次建议已拦截；请重新生成映射。"
     ),
+    "omitted uncertainty for unmapped pages": (
+        "模型没有说明未映射的资料页，本次建议已拦截；请重新生成映射。"
+    ),
     "model configuration is unavailable": (
         "当前备课模型配置不可用，请先检查“大模型 API”设置。"
     ),

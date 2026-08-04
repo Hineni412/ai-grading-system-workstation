@@ -653,7 +653,7 @@ def test_mapping_model_proposes_existing_lesson_ranges_once_then_teacher_applies
                     "end_unit": 2,
                 }
             ],
-            "uncertainties": [],
+            "uncertainties": ["第3页无法对应到现有课时。"],
         }
     )
     service = TeachingPrepService(
@@ -1008,7 +1008,7 @@ def test_invalid_semester_mapping_response_allows_an_explicit_new_operation(
                 "end_unit": 1,
             }
         ],
-        "uncertainties": [],
+        "uncertainties": ["第2页无法对应到现有课时。"],
     }
     fake = _FakeSemesterMappingModel({**valid_payload, "tree": "invalid"})
     service = TeachingPrepService(
@@ -1483,7 +1483,7 @@ def test_mapping_semantic_identity_blocks_a_parallel_fresh_operation(
                     "end_unit": 1,
                 }
             ],
-            "uncertainties": [],
+            "uncertainties": ["第2页无法对应到现有课时。"],
         }
     )
     service = TeachingPrepService(
