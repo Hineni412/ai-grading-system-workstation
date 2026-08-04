@@ -450,6 +450,9 @@ def question_analysis_input_from_config_source(
         raise ValueError("curriculum_volume_id must be selected before analysis")
     return QuestionAnalysisInput(
         question_id=int(question_id),
+        question_type_confirmed=(
+            source.get("question_type_confirmed") is True
+        ),
         tagging_context=TaggingContext(
             question_text=question_text,
             answer_text=answer_text,
@@ -561,7 +564,12 @@ def _combined_prompt(
         "the application preserves the already accepted tag_analysis. "
         "Do not copy the rejected structure blindly. Process-required parts need at "
         "least two distinct non-empty evidence points. Do not infer an exact evidence "
-        "point count from punctuation, equations, angle symbols, or connective words."
+        "point count from punctuation, equations, angle symbols, or connective words. "
+        "A local question_type with question_type_confirmed=false is only a preview hint, "
+        "not a grading fact. Decide response_mode separately for every part from the "
+        "question, its complete answer and analysis. One blank in part (1) must never "
+        "collapse later process-required parts into a whole-question fill blank. When "
+        "expected_part_count is present, return exactly that many parts in the stated order."
     )
     questions = []
     for item in batch.questions:
@@ -579,6 +587,13 @@ def _combined_prompt(
             ),
             "candidate_contract": dict(item.taxonomy_contract),
             "reference_solution": dict(item.reference_solution),
+            "question_type_confirmed": item.question_type_confirmed,
+            "expected_part_count": (
+                len(item.explicit_part_labels)
+                if item.explicit_part_labels
+                else None
+            ),
+            "explicit_part_labels": list(item.explicit_part_labels),
             "expected_projection": projection,
         }
         if item.repair_context:
