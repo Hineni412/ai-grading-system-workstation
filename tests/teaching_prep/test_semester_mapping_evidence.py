@@ -155,3 +155,52 @@ def test_mapping_validation_rejects_invented_evidence_reference() -> None:
 
     with pytest.raises(TeachingPrepValidationError, match="unavailable directory evidence"):
         validate_semester_mapping_payload(raw, snapshot=snapshot)
+
+
+def test_existing_tree_mapping_rejects_silent_unmapped_pages() -> None:
+    snapshot = _snapshot()
+    snapshot["lessons"] = [
+        {
+            "id": "lesson-existing",
+            "node_type": "lesson",
+            "title": "探索勾股定理",
+        }
+    ]
+
+    with pytest.raises(
+        TeachingPrepValidationError,
+        match="omitted uncertainty for unmapped pages",
+    ):
+        validate_semester_mapping_payload(
+            {
+                "tree": [],
+                "mappings": [],
+                "uncertainties": [],
+            },
+            snapshot=snapshot,
+        )
+
+
+def test_existing_tree_mapping_allows_unmapped_pages_with_uncertainty() -> None:
+    snapshot = _snapshot()
+    snapshot["lessons"] = [
+        {
+            "id": "lesson-existing",
+            "node_type": "lesson",
+            "title": "探索勾股定理",
+        }
+    ]
+
+    result = validate_semester_mapping_payload(
+        {
+            "tree": [],
+            "mappings": [],
+            "uncertainties": ["当前资料没有足够证据对应到已有课时。"],
+        },
+        snapshot=snapshot,
+    )
+
+    assert result["mappings"] == []
+    assert result["uncertainties"] == [
+        "当前资料没有足够证据对应到已有课时。"
+    ]
