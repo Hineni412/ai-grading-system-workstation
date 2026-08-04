@@ -2,11 +2,13 @@
 import { computed, ref, watch } from 'vue'
 
 import {
+  QUESTION_TYPES,
   type ConfigQuestionPreview,
   type ConfigAmbiguousAssetDecision,
   type ConfigSource,
   type ConfigSourceAsset,
   type QuestionDecision,
+  type QuestionType,
 } from '../../api/config-workspace'
 import QuestionContentRenderer from '../question-bank/QuestionContentRenderer.vue'
 import type { ConfigQuestionGenerationState } from '../../api/config-workspace'
@@ -191,6 +193,39 @@ function answerStatus(question: ConfigQuestionPreview): string {
   return '未识别到答案'
 }
 
+const questionTypeLabels: Record<QuestionType, string> = {
+  choice: '选择题',
+  fill_blank: '填空题',
+  calculation: '计算题',
+  proof: '证明题',
+  comprehensive: '综合解答题',
+}
+
+function decisionFor(questionId: string): QuestionDecision | undefined {
+  return props.decisions.find((item) => item.question_id === questionId)
+}
+
+function confirmQuestionType(questionId: string, event: Event): void {
+  const questionType = (event.currentTarget as HTMLSelectElement).value as QuestionType | ''
+  const current = decisionFor(questionId)
+  const retained = props.decisions.filter((item) => item.question_id !== questionId)
+  if (!questionType) {
+    emit('update:decisions', current
+      ? [...retained, { ...current, question_type: undefined }]
+      : retained)
+    return
+  }
+  emit('update:decisions', [
+    ...retained,
+    {
+      question_id: questionId,
+      excluded: current?.excluded ?? false,
+      ...(current ?? {}),
+      question_type: questionType,
+    },
+  ])
+}
+
 function openFullAnswer(questionId: string): void {
   expandedAnswerQuestionId.value = questionId
 }
@@ -214,7 +249,7 @@ watch(() => props.source.source_revision, (_revision, previous) => {
     <header class="config-section-heading">
       <div>
         <h2 id="question-review-title">核对拆题结果</h2>
-        <p>题目与完整答案并排呈现。黄色图片请拖到对应区域；题型、小问和作答方式由 AI 在后续分析中判断。</p>
+        <p>题目与完整答案并排呈现。黄色图片请拖到对应区域；只有题面和解析冲突时才需要老师确认题型。</p>
       </div>
       <span v-if="source.questions.length" class="question-review__count">
         共 {{ source.questions.length }} 题
@@ -255,6 +290,14 @@ watch(() => props.source.source_revision, (_revision, previous) => {
           </div>
           <span v-if="question.needs_review" class="question-review__warning">建议留意预览</span>
         </header>
+
+        <label v-if="question.question_type_review_required" class="question-review__type-check">
+          <span><strong>请确认题型</strong>{{ question.question_type_review_reason || '题面形式与解析内容存在冲突。' }}</span>
+          <select :value="decisionFor(question.question_id)?.question_type ?? ''" @change="confirmQuestionType(question.question_id, $event)">
+            <option value="">请选择（本地建议：{{ questionTypeLabels[question.question_type as QuestionType] ?? question.question_type }}）</option>
+            <option v-for="type in QUESTION_TYPES" :key="type" :value="type">{{ questionTypeLabels[type] }}</option>
+          </select>
+        </label>
 
         <div class="question-review__pair">
           <section
@@ -481,6 +524,10 @@ watch(() => props.source.source_revision, (_revision, previous) => {
   align-items: center;
   gap: var(--space-2);
 }
+.question-review__type-check { display: grid; grid-template-columns: minmax(0, 1fr) minmax(180px, 240px); align-items: center; gap: var(--space-3); padding: var(--space-2) var(--space-3); border-inline-start: 4px solid #d39a1f; background: #fff7dc; }
+.question-review__type-check > span { display: grid; gap: 2px; color: var(--color-text-secondary); font-size: var(--font-size-caption); }
+.question-review__type-check strong { color: #8a5b00; }
+.question-review__type-check select { width: 100%; }
 .question-review__toggle { display: flex; min-width: 0; flex: 1; align-items: center; gap: var(--space-2); padding: var(--space-1); color: var(--color-text-primary); text-align: left; }
 .question-review__toggle > span:last-child { min-width: 0; overflow: hidden; color: var(--color-text-secondary); font-size: var(--font-size-caption); text-overflow: ellipsis; white-space: nowrap; }
 .question-review__toggle .is-passed { color: var(--color-success); }
@@ -667,6 +714,7 @@ watch(() => props.source.source_revision, (_revision, previous) => {
 }
 
 @media (max-width: 900px) {
+  .question-review__type-check { grid-template-columns: minmax(0, 1fr); }
   .question-review__pair { grid-template-columns: minmax(0, 1fr); }
   .question-review__asset-between { grid-template-columns: 64px minmax(0, 1fr); }
   .question-review__asset-between img { width: 64px; height: 56px; }

@@ -230,6 +230,7 @@ def run_session_question_bank_sync_job(
             tagging_result = tagging_sync_runner(
                 context=tag_context,
                 question_bank_db_path=Path(question_bank_db_path),
+                data_root=Path(data_root),
                 ai_service_factory=ai_service_factory,
                 taxonomy_governance=taxonomy_governance,
             )

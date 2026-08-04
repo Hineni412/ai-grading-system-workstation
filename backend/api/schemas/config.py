@@ -84,6 +84,8 @@ class ConfigQuestionPreviewResponse(BaseModel):
     answer_preview: str = Field(max_length=500)
     answer_present: bool
     needs_review: bool
+    question_type_review_required: bool = False
+    question_type_review_reason: str = Field(default="", max_length=200)
     local_answer_trusted: bool
     has_question_asset: bool
     has_answer_asset: bool

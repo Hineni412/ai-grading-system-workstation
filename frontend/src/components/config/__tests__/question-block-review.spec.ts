@@ -104,7 +104,31 @@ describe('QuestionBlockReview', () => {
     const mounted = await mountReview({ value: unknown })
 
     expect(mounted.host.querySelector('[aria-label="Q-unknown 题型"]')).toBeNull()
-    expect(mounted.host.textContent).toContain('题型、小问和作答方式由 AI')
+    expect(mounted.host.textContent).toContain('只有题面和解析冲突时')
+  })
+
+  it('asks for type confirmation only when the source reports a conflict', async () => {
+    const onUpdate = vi.fn()
+    const value = source({
+      questions: [{
+        ...source().questions[1]!,
+        question_id: 'Q9',
+        question_type: 'fill_blank',
+        question_type_review_required: true,
+        question_type_review_reason: '检测到下一部分标题可能粘在本题末尾，请确认题型。',
+      }],
+    })
+    const mounted = await mountReview({ value, onUpdate })
+    const select = mounted.host.querySelector<HTMLSelectElement>('.question-review__type-check select')!
+
+    expect(mounted.host.textContent).toContain('请确认题型')
+    expect(mounted.host.textContent).toContain('下一部分标题')
+    select.value = 'fill_blank'
+    select.dispatchEvent(new Event('change'))
+
+    expect(onUpdate).toHaveBeenLastCalledWith([
+      { question_id: 'Q9', excluded: false, question_type: 'fill_blank' },
+    ])
   })
 
   it('shows answer facts and builds assets only from semantic identifiers', async () => {
