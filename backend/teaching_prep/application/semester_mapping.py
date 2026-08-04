@@ -302,7 +302,11 @@ def _evidence_refs(value: object, *, valid_ids: set[str]) -> list[str]:
     result: list[str] = []
     for item in value:
         evidence_id = str(item or "").strip()
-        if evidence_id in valid_ids and evidence_id not in result:
+        if evidence_id not in valid_ids:
+            raise TeachingPrepValidationError(
+                "mapping refers to unavailable directory evidence"
+            )
+        if evidence_id not in result:
             result.append(evidence_id)
     return result
 

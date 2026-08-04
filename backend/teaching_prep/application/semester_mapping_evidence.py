@@ -32,11 +32,9 @@ class DirectoryEvidenceBuilder:
         maximum_count = min(40, max(initial_count, math.ceil(len(units) * 0.25)))
         scanned_count = initial_count
         entries = _toc_entries(units[:scanned_count])
-        while (
-            entries
-            and scanned_count < maximum_count
-            and _toc_continues_near_end(entries, scanned_count)
-        ):
+        while scanned_count < maximum_count:
+            if entries and not _toc_continues_near_end(entries, scanned_count):
+                break
             scanned_count = min(maximum_count, scanned_count + 5)
             entries = _toc_entries(units[:scanned_count])
 
