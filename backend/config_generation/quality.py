@@ -335,9 +335,7 @@ def collect_generated_config_quality_issues(
     payload: dict[str, Any],
 ) -> list[dict[str, str]]:
     rubric = payload.get("rubric") if isinstance(payload, dict) else None
-    answer_key = payload.get("answer_key") if isinstance(payload, dict) else None
     questions = rubric.get("questions") if isinstance(rubric, dict) else []
-    answers = answer_key.get("questions") if isinstance(answer_key, dict) else []
     question_ids = [
         str(item.get("question_id") or "").strip()
         for item in questions or []
@@ -368,23 +366,12 @@ def collect_generated_config_quality_issues(
             )
         )
 
-    answer_map = {
-        str(item.get("question_id") or ""): item
-        for item in answers or []
-        if isinstance(item, dict)
-    } if isinstance(answers, list) else {}
     for question in questions or []:
         if not isinstance(question, dict):
             continue
         qid = str(question.get("question_id") or "未知题号")
         qtype = str(question.get("question_type") or "").strip()
         parts = [item for item in question.get("parts") or [] if isinstance(item, dict)]
-        answer_item = answer_map.get(qid, {})
-        answer_parts = (
-            answer_item.get("parts")
-            if isinstance(answer_item, dict) and isinstance(answer_item.get("parts"), list)
-            else []
-        )
         if qtype == "fill_blank":
             step_count = sum(
                 len(part.get("steps") or [])
@@ -404,33 +391,9 @@ def collect_generated_config_quality_issues(
                     )
                 )
 
-        for index, part in enumerate(parts):
-            mode = str(part.get("response_mode") or "").strip() or _infer_part_response_mode(question, part)
-            if mode != "process_required":
-                continue
-            part_id = str(part.get("part_id") or f"第{index + 1}问")
-            path = f"rubric.questions[{qid}].parts[{part_id}]"
-            steps = [item for item in part.get("steps") or [] if isinstance(item, dict)]
-            step_signatures = {
-                (
-                    str(step.get("core_goal") or "").strip(),
-                    tuple(_string_list(step.get("required_elements"))),
-                )
-                for step in steps
-                if str(step.get("core_goal") or "").strip()
-                and _string_list(step.get("required_elements"))
-            }
-            if len(step_signatures) < 2:
-                issues.append(
-                    _quality_issue(
-                        question_id=qid,
-                        code="process_requires_two_steps",
-                        path=f"{path}.steps",
-                        expected="至少两个非空且互不重复的结构步骤",
-                        actual=f"只有{len(step_signatures)}个可区分步骤",
-                        message=f"[质量检查-阻断] {qid}/{part_id} 过程题需要至少两个可区分步骤",
-                    )
-                )
+        # Step granularity belongs to the model plus teacher review. The local
+        # gate must not guess how many mathematical steps this question ought
+        # to contain or block a correct one-step solution.
 
     deduped: list[dict[str, str]] = []
     seen: set[tuple[str, str, str]] = set()
