@@ -183,7 +183,8 @@ def test_existing_tree_mapping_call_only_offers_formal_lesson_ids() -> None:
                 {
                     "message": {
                         "content": (
-                            '{"tree":[],"mappings":[],"uncertainties":[]}'
+                            '{"tree":[],"mappings":[],"uncertainties":'
+                            '["资料内容无法对应已有课时"]}'
                         )
                     }
                 }
@@ -240,7 +241,11 @@ def test_existing_tree_mapping_call_only_offers_formal_lesson_ids() -> None:
         },
     )
 
-    assert result == {"tree": [], "mappings": [], "uncertainties": []}
+    assert result == {
+        "tree": [],
+        "mappings": [],
+        "uncertainties": ["资料内容无法对应已有课时"],
+    }
     request_kwargs = captured["kwargs"]
     assert isinstance(request_kwargs, dict)
     messages = request_kwargs["messages"]
@@ -507,6 +512,10 @@ def test_mapping_adapter_does_not_report_dispatch_without_client_transport() -> 
             "semester mapping model referred to a lesson outside the "
             "existing tree",
             "模型引用了当前目录中不存在的课时，本次建议已拦截；请重新生成映射。",
+        ),
+        (
+            "semester mapping model omitted uncertainty for unmapped pages",
+            "模型没有说明未映射的资料页，本次建议已拦截；请重新生成映射。",
         ),
         (
             "semester mapping model configuration is unavailable",

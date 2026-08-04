@@ -32,12 +32,13 @@ def validate_semester_mapping_payload(
     tree = _list(raw.get("tree"), "tree")
     mappings = _list(raw.get("mappings"), "mappings")
     uncertainties = _list(raw.get("uncertainties"), "uncertainties")
+    snapshot_lessons = _mapping_list(snapshot.get("lessons"), "lessons")
     existing_lessons = {
         str(item["id"])
-        for item in _mapping_list(snapshot.get("lessons"), "lessons")
+        for item in snapshot_lessons
         if item.get("node_type") == "lesson"
     }
-    if tree and _mapping_list(snapshot.get("lessons"), "lessons"):
+    if tree and snapshot_lessons:
         raise TeachingPrepModelResponseError(
             "semester mapping model attempted to replace the existing "
             "lesson tree",
@@ -233,11 +234,44 @@ def validate_semester_mapping_payload(
         normalized_uncertainties.append(text)
     if len(normalized_uncertainties) > 100:
         raise TeachingPrepValidationError("too many proposal uncertainties")
+    if (
+        snapshot_lessons
+        and not normalized_uncertainties
+        and _has_unmapped_material_units(materials, normalized_mappings)
+    ):
+        raise TeachingPrepModelResponseError(
+            "semester mapping model omitted uncertainty for unmapped pages",
+            error_code="semester_mapping_unexplained_coverage_gap",
+        )
     return {
         "tree": normalized_tree,
         "mappings": normalized_mappings,
         "uncertainties": normalized_uncertainties,
     }
+
+
+def _has_unmapped_material_units(
+    materials: Mapping[str, Mapping[str, object]],
+    mappings: list[dict[str, object]],
+) -> bool:
+    ranges_by_material: dict[str, list[tuple[int, int]]] = {
+        record_id: [] for record_id in materials
+    }
+    for item in mappings:
+        record_id = str(item["material_record_id"])
+        if record_id in ranges_by_material:
+            ranges_by_material[record_id].append(
+                (int(item["start_unit"]), int(item["end_unit"]))
+            )
+    for record_id, material in materials.items():
+        next_uncovered = 1
+        for start, end in sorted(ranges_by_material[record_id]):
+            if start > next_uncovered:
+                return True
+            next_uncovered = max(next_uncovered, end + 1)
+        if next_uncovered <= int(material["unit_count"]):
+            return True
+    return False
 
 
 def _mapping(value: object, label: str) -> Mapping[str, object]:

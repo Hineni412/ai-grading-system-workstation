@@ -1232,6 +1232,14 @@ class TeachingPrepService:
                     "semester mapping model referred to a lesson outside "
                     "the existing tree"
                 )
+            elif (
+                failure_code
+                == "semester_mapping_unexplained_coverage_gap"
+            ):
+                public_failure = (
+                    "semester mapping model omitted uncertainty for "
+                    "unmapped pages"
+                )
             else:
                 public_failure = (
                     "semester mapping response failed local validation"
