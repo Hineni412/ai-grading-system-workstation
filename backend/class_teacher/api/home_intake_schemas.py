@@ -35,6 +35,18 @@ class HomeIntakeAdoptRequest(BaseModel):
     operation_id: str = Field(min_length=8, max_length=128)
     result_fingerprint: str = Field(min_length=64, max_length=64)
     subject_ids: list[str] = Field(min_length=1, max_length=50)
+    draft_id: str | None = Field(default=None, min_length=8, max_length=128)
+    draft_version: int | None = Field(default=None, ge=1)
+
+
+class HomeIntakeDraftDiscardRequest(BaseModel):
+    expected_version: int = Field(ge=1)
+
+
+class HomeIntakeDraftAdoptRequest(BaseModel):
+    expected_version: int = Field(ge=1)
+    source_operation_id: str = Field(min_length=8, max_length=128)
+    result_fingerprint: str = Field(min_length=64, max_length=64)
 
 
 class HomeIntakePreviewResponse(BaseModel):
@@ -102,6 +114,16 @@ class HomeIntakeOperationResponse(BaseModel):
     teacher_confirmation_required: bool
     result_fingerprint: str | None
     local_context: dict[str, object]
+    draft_id: str | None = None
+    draft_version: int | None = None
+    draft_saved_at: str | None = None
+    previous_result_preserved: bool = False
+    preserved_result_kind: Literal[
+        "ordinary_plan",
+        "affair_recommendation",
+        "student_support_recommendation",
+    ] | None = None
+    preserved_result: dict[str, object] | None = None
 
 
 class HomeIntakeManualFallbackResponse(BaseModel):
@@ -115,6 +137,8 @@ class HomeIntakeManualFallbackResponse(BaseModel):
 __all__ = [
     "HomeIntakeDispatchRequest",
     "HomeIntakeAdoptRequest",
+    "HomeIntakeDraftAdoptRequest",
+    "HomeIntakeDraftDiscardRequest",
     "HomeIntakeFollowUpRequest",
     "HomeIntakeManualFallbackRequest",
     "HomeIntakeManualFallbackResponse",

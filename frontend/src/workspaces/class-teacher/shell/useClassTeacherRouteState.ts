@@ -10,12 +10,14 @@ export interface ClassTeacherRouteState {
   panel: StudentPanel
   range: WorkRange
   week: string | null
+  draftId: string | null
 }
 
 const surfaces = new Set<ClassTeacherSurface>(['today', 'calendar', 'affairs', 'students'])
 const panels = new Set<StudentPanel>(['directory', 'support', 'academic', 'security'])
 const ranges = new Set<WorkRange>(['today', 'week', 'timeline', 'all'])
 const isoDate = /^\d{4}-\d{2}-\d{2}$/
+const draftIdPattern = /^[a-f0-9]{32}$/
 
 function first(value: unknown): string | null {
   if (Array.isArray(value)) return typeof value[0] === 'string' ? value[0] : null
@@ -27,6 +29,7 @@ function normalize(query: Record<string, unknown>): { state: ClassTeacherRouteSt
   const rawPanel = first(query.panel)
   const rawRange = first(query.range)
   const rawWeek = first(query.week)
+  const rawDraft = first(query.draft)
   const surface = surfaces.has(rawSurface as ClassTeacherSurface)
     ? rawSurface as ClassTeacherSurface
     : 'today'
@@ -37,14 +40,17 @@ function normalize(query: Record<string, unknown>): { state: ClassTeacherRouteSt
     ? rawRange as WorkRange
     : 'week'
   const week = rawWeek && isoDate.test(rawWeek) ? rawWeek : null
-  const allowed = new Set(['surface', 'panel', 'range', 'week'])
+  const draftId = rawDraft && draftIdPattern.test(rawDraft) ? rawDraft : null
+  const allowed = new Set(['surface', 'panel', 'range', 'week', 'draft'])
   const unknown = Object.keys(query).some((key) => !allowed.has(key))
   const valid = !unknown
     && rawSurface === surface
     && (surface !== 'students' || rawPanel === panel)
     && (surface !== 'calendar' || rawRange === range)
+    && (surface !== 'affairs' || !rawDraft || rawDraft === draftId)
+    && (surface === 'affairs' || !rawDraft)
     && (!rawWeek || week === rawWeek)
-  return { state: { surface, panel, range, week }, valid }
+  return { state: { surface, panel, range, week, draftId }, valid }
 }
 
 function browserQuery(): Record<string, string> {
@@ -71,6 +77,7 @@ export function useClassTeacherRouteState(): {
       if (next.week) target.week = next.week
     }
     if (next.surface === 'students') target.panel = next.panel
+    if (next.surface === 'affairs' && next.draftId) target.draft = next.draftId
     return { path: '/class-teacher', query: target }
   }
 
@@ -87,7 +94,7 @@ export function useClassTeacherRouteState(): {
 
   async function canonicalize(): Promise<void> {
     if (!normalized.value.valid) {
-      await commit({ surface: 'today', panel: 'directory', range: 'week', week: null }, true)
+      await commit({ surface: 'today', panel: 'directory', range: 'week', week: null, draftId: null }, true)
     }
   }
 

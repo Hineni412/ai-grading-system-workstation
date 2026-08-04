@@ -58,7 +58,7 @@ def compose_sensitive_draft(
     for raw in baseline_steps:
         key = str(raw["key"])
         suggestion = model_steps.get(key, {})
-        due = anchor + timedelta(days=levels.get(key, 0))
+        due = anchor + timedelta(days=_schedule_offset(levels.get(key, 0)))
         title = _limited_text(suggestion.get("title"), 160) or str(raw["title"])
         details = _limited_text(suggestion.get("details"), 500) or str(raw.get("details") or "")
         step = {
@@ -111,6 +111,9 @@ def compose_sensitive_draft(
         "summary": _limited_text(payload.get("summary"), 800)
         or "已按首句信息形成可执行初稿；未确认的信息不会阻止教师先查看和调整方案。",
         "reasons": _string_list(payload.get("reasons"), maximum=8),
+        "model_advice": _limited_text(
+            payload.get("model_advice") or payload.get("text"), 800
+        ),
         "assumptions": assumptions,
         "to_verify": to_verify,
         "steps": steps,
@@ -224,6 +227,11 @@ def merge_revision(
             if step_scope
             else base.get("summary")
         ),
+        "model_advice": (
+            candidate.get("model_advice") or base.get("model_advice")
+            if step_scope
+            else base.get("model_advice")
+        ),
         "assumptions": (
             _string_list(candidate.get("assumptions"), maximum=8)
             or list(base.get("assumptions") or [])
@@ -259,6 +267,16 @@ def _dependency_levels(steps: list[dict[str, Any]]) -> dict[str, int]:
                 levels[key] = 0
             break
     return levels
+
+
+def _schedule_offset(level: int) -> int:
+    """Compress dependency levels into work phases instead of one day per step."""
+
+    if level <= 2:
+        return 0
+    if level <= 4:
+        return 1
+    return 3
 
 
 def _date(value: str | None) -> date | None:

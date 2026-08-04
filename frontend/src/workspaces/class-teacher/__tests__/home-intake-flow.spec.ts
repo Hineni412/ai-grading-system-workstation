@@ -141,6 +141,18 @@ afterEach(() => {
 })
 
 describe('homepage intake flow', () => {
+  it('shows ordinary saved drafts even when the sensitive vault has no session token', async () => {
+    const listDrafts = vi.spyOn(homeIntakeApi, 'listDrafts').mockResolvedValue([{
+      draft_id: 'a'.repeat(32), version: 1, route: 'ordinary', result_kind: 'ordinary_plan',
+      title: '九月一日开学准备', updated_at: '2026-08-04T01:00:00Z',
+    }])
+    const host = await mount(QuickWorkCapture, { module: moduleStub() })
+
+    expect(listDrafts).toHaveBeenCalledWith(undefined)
+    expect(host.textContent).toContain('继续处理未完成事务')
+    expect(host.textContent).toContain('九月一日开学准备')
+  })
+
   it('uses one broad textarea with no date/type controls and directly dispatches a prevention-theme ordinary plan', async () => {
     const preview = vi.spyOn(homeIntakeApi, 'preview').mockResolvedValue(intakePreview({
       source_text: '开展防欺凌主题班会', final_due_date: '2026-08-07',

@@ -11,6 +11,7 @@ const props = defineProps<{ module: OrdinaryWorkModule; token?: string }>()
 const emit = defineEmits<{
   openRestricted: [projectionId: string, projectionType: string | null]
   handoff: [value: HomeIntakeHandoff]
+  openDraft: [draftId: string]
 }>()
 const groups = computed(() => [
   { key: 'overdue', label: '已经逾期', items: props.module.snapshot.value?.overdue ?? [] },
@@ -36,7 +37,7 @@ onMounted(() => { void props.module.load('today') })
       <div><p>每日工作脉络</p><h2>今天先处理什么</h2></div>
       <button type="button" @click="module.load('today')">刷新</button>
     </header>
-    <QuickWorkCapture :module="module" :token="token" @handoff="emit('handoff', $event)" />
+    <QuickWorkCapture :module="module" :token="token" @handoff="emit('handoff', $event)" @open-draft="emit('openDraft', $event)" />
     <div class="summary" aria-label="工作摘要">
       <div><strong>{{ module.snapshot.value?.summary?.today ?? 0 }}</strong><span>今天</span></div>
       <div><strong>{{ module.snapshot.value?.summary?.overdue ?? 0 }}</strong><span>逾期</span></div>

@@ -5,6 +5,8 @@ from fastapi import APIRouter, Depends, Header, Request, Response
 from .home_intake_schemas import (
     HomeIntakeAdoptRequest,
     HomeIntakeDispatchRequest,
+    HomeIntakeDraftAdoptRequest,
+    HomeIntakeDraftDiscardRequest,
     HomeIntakeFollowUpRequest,
     HomeIntakeManualFallbackRequest,
     HomeIntakeManualFallbackResponse,
@@ -60,14 +62,16 @@ def create_home_intake_router() -> APIRouter:
     ):
         _require_trusted_mutation(request)
         _no_store(response)
-        return _call(
-            lambda: _service(request).home_intake.dispatch(
-                token=_token(session_token),
+        token = _token(session_token)
+        return _call(lambda: _service(request).home_intake_drafts.capture(
+            token=token,
+            operation=_service(request).home_intake.dispatch(
+                token=token,
                 preview_id=preview_id,
                 fingerprint=body.fingerprint,
                 operation_id=body.operation_id,
-            )
-        )
+            ),
+        ))
 
     @router.get(
         "/operations/{operation_id}",
@@ -80,12 +84,71 @@ def create_home_intake_router() -> APIRouter:
         session_token: str | None = Header(default=None, alias="x-class-teacher-session"),
     ):
         _no_store(response)
-        return _call(
-            lambda: _service(request).home_intake.status(
-                token=_token(session_token),
+        token = _token(session_token)
+        return _call(lambda: _service(request).home_intake_drafts.capture(
+            token=token,
+            operation=_service(request).home_intake.status(
+                token=token,
                 operation_id=operation_id,
-            )
-        )
+            ),
+        ))
+
+    @router.get("/drafts")
+    def list_drafts(
+        request: Request,
+        response: Response,
+        session_token: str | None = Header(default=None, alias="x-class-teacher-session"),
+    ):
+        _no_store(response)
+        return _call(lambda: _service(request).home_intake_drafts.list_open(
+            token=_token(session_token)
+        ))
+
+    @router.get("/drafts/{draft_id}")
+    def get_draft(
+        draft_id: str,
+        request: Request,
+        response: Response,
+        session_token: str | None = Header(default=None, alias="x-class-teacher-session"),
+    ):
+        _no_store(response)
+        return _call(lambda: _service(request).home_intake_drafts.get(
+            token=_token(session_token), draft_id=draft_id
+        ))
+
+    @router.post("/drafts/{draft_id}/discard")
+    def discard_draft(
+        draft_id: str,
+        request: Request,
+        body: HomeIntakeDraftDiscardRequest,
+        response: Response,
+        session_token: str | None = Header(default=None, alias="x-class-teacher-session"),
+    ):
+        _require_trusted_mutation(request)
+        _no_store(response)
+        return _call(lambda: _service(request).home_intake_drafts.discard(
+            token=_token(session_token),
+            draft_id=draft_id,
+            expected_version=body.expected_version,
+        ))
+
+    @router.post("/drafts/{draft_id}/adopt-ordinary")
+    def adopt_ordinary_draft(
+        draft_id: str,
+        request: Request,
+        body: HomeIntakeDraftAdoptRequest,
+        response: Response,
+        session_token: str | None = Header(default=None, alias="x-class-teacher-session"),
+    ):
+        _require_trusted_mutation(request)
+        _no_store(response)
+        return _call(lambda: _service(request).home_intake_finalizer.adopt_ordinary(
+            token=_token(session_token),
+            draft_id=draft_id,
+            expected_version=body.expected_version,
+            source_operation_id=body.source_operation_id,
+            result_fingerprint=body.result_fingerprint,
+        ))
 
     @router.post(
         "/operations/{operation_id}/follow-up-previews",
