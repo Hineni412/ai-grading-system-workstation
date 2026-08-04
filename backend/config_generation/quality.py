@@ -406,7 +406,7 @@ def collect_generated_config_quality_issues(
 
         for index, part in enumerate(parts):
             mode = str(part.get("response_mode") or "").strip() or _infer_part_response_mode(question, part)
-            if qtype not in _PROCESS_TYPES or mode != "process_required":
+            if mode != "process_required":
                 continue
             part_id = str(part.get("part_id") or f"第{index + 1}问")
             path = f"rubric.questions[{qid}].parts[{part_id}]"

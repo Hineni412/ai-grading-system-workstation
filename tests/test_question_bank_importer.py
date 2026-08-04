@@ -213,7 +213,7 @@ def test_archived_import_uses_original_title_for_legacy_duplicate_detection(
     assert result.status == "duplicate"
 
 
-def test_exact_fingerprint_in_trash_requires_restore_instead_of_reimport(
+def test_exact_fingerprint_in_trash_creates_a_fresh_active_paper(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -235,8 +235,11 @@ def test_exact_fingerprint_in_trash_requires_restore_instead_of_reimport(
     monkeypatch.setattr(
         batch_importer,
         "_extract_paper",
-        lambda _path: (_ for _ in ()).throw(
-            AssertionError("trash collision should skip parsing")
+        lambda path: ExtractedDocument(
+            source_file=str(path),
+            page_range="document",
+            text="1．这是一道全新入库的数学题目",
+            needs_ocr=False,
         ),
     )
 
@@ -249,10 +252,16 @@ def test_exact_fingerprint_in_trash_requires_restore_instead_of_reimport(
         question_range=None,
     )
 
-    assert result.status == "duplicate_in_trash"
-    assert result.paper_id == paper_id
+    assert result.status == "needs_review"
+    assert result.paper_id != paper_id
     with connect(db_path) as conn:
-        assert conn.execute("SELECT COUNT(*) FROM papers").fetchone()[0] == 1
+        rows = conn.execute(
+            "SELECT id, import_status FROM papers ORDER BY id"
+        ).fetchall()
+        assert [(int(row["id"]), row["import_status"]) for row in rows] == [
+            (paper_id, "deleted"),
+            (result.paper_id, "needs_review"),
+        ]
 
 
 def test_exact_fingerprint_in_active_bank_reuses_existing_paper_identity(

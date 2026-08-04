@@ -63,7 +63,7 @@ async function mountReview(options: {
 beforeEach(() => { document.body.innerHTML = '' })
 
 describe('QuestionBlockReview', () => {
-  it('collapses passed questions and keeps exceptions expanded', async () => {
+  it('keeps passed questions and exceptions fully expanded', async () => {
     const mounted = await mountReview({
       questionStates: [
         { question_id: 'Q1', state: 'passed', reason: '', retryable: false },
@@ -72,8 +72,8 @@ describe('QuestionBlockReview', () => {
     })
     const q1 = mounted.host.querySelector<HTMLElement>('[data-question-row="Q1"]')!
     const q2 = mounted.host.querySelector<HTMLElement>('[data-question-row="Q2"]')!
-    expect(q1.classList.contains('is-collapsed')).toBe(true)
-    expect(q1.querySelector('.question-review__pair')).toBeNull()
+    expect(q1.classList.contains('is-collapsed')).toBe(false)
+    expect(q1.querySelector('.question-review__pair')).not.toBeNull()
     expect(q2.classList.contains('is-exception')).toBe(true)
     expect(q2.querySelector('.question-review__pair')).not.toBeNull()
   })
@@ -122,7 +122,7 @@ describe('QuestionBlockReview', () => {
     expect(images.every((image) => !image.src.includes('path='))).toBe(true)
   })
 
-  it('renders one adjacent-image candidate and emits a single manual binding', async () => {
+  it('renders one adjacent-image candidate with only a reversible ignore control', async () => {
     const onAssetUpdate = vi.fn()
     const baseSource = source()
     const reviewSource = source({
@@ -145,12 +145,13 @@ describe('QuestionBlockReview', () => {
     expect(mounted.host.querySelectorAll('.question-review__asset-between')).toHaveLength(1)
     expect(candidate.textContent).toContain('Q1 / Q2')
     const buttons = candidate.querySelectorAll<HTMLButtonElement>('button')
-    expect([...buttons].map((item) => item.textContent)).toEqual(['放入前题', '放入后题', '忽略'])
-    buttons[1]!.click()
+    expect(buttons).toHaveLength(1)
+    expect(buttons[0]!.getAttribute('aria-label')).toContain('忽略这张图片')
+    buttons[0]!.click()
     await nextTick()
 
     expect(onAssetUpdate).toHaveBeenLastCalledWith([{
-      candidate_id: 'A1', action: 'bind', question_id: 'Q2', asset_kind: 'question',
+      candidate_id: 'A1', action: 'ignore',
     }])
   })
 
@@ -193,7 +194,7 @@ describe('QuestionBlockReview', () => {
     }])
   })
 
-  it('also lets a keyboard user move an automatically assigned image', async () => {
+  it('lets a keyboard user ignore an automatically assigned image', async () => {
     const onAssetUpdate = vi.fn()
     const base = source({ suffix: '.docx', safe_filename: '七年级数学.docx' })
     const mounted = await mountReview({
@@ -210,14 +211,15 @@ describe('QuestionBlockReview', () => {
       },
       onAssetUpdate,
     })
-    const moveToAnswer = [...mounted.host.querySelectorAll<HTMLButtonElement>(
-      '.question-review__placed-asset button',
-    )].find((item) => item.textContent === '移到答案')!
-    moveToAnswer.click()
+    const ignore = mounted.host.querySelector<HTMLButtonElement>(
+      '.question-review__placed-asset .question-review__ignore-button',
+    )!
+    expect(ignore.getAttribute('aria-label')).toContain('忽略这张图片')
+    ignore.click()
     await nextTick()
 
     expect(onAssetUpdate).toHaveBeenLastCalledWith([{
-      candidate_id: 'P1', action: 'bind', question_id: 'Q1', asset_kind: 'answer',
+      candidate_id: 'P1', action: 'ignore',
     }])
   })
 

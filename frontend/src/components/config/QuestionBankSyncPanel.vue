@@ -67,7 +67,6 @@ const outcome = computed(() => String(job.value?.result.outcome ?? ''))
 const terminal = computed(() => job.value !== null
   && ['succeeded', 'failed', 'cancelled'].includes(job.value.status))
 const canRetry = computed(() => terminal.value
-  && job.value?.result.restore_required !== true
   && (
     job.value?.status === 'failed'
     || job.value?.result.retryable === true
@@ -273,7 +272,8 @@ watch(
         v-if="terminal && job.result.restore_required === true"
         class="question-bank-sync__warning"
       >
-        相同试卷已在题库回收站。请先恢复原试卷，系统不会重复入库或自动再次调用 AI。
+        检测到旧版流程曾被回收站中的同卷阻塞。现在可直接重试，系统会全新入库，
+        不恢复旧题或旧标签；已经完成的分析不会重复调用 AI。
       </p>
       <button v-if="canRetry" type="button" :disabled="submitting" @click="retry">
         {{ submitting

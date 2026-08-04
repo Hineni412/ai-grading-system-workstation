@@ -146,7 +146,7 @@ describe('QuestionBankSyncPanel', () => {
     app.unmount()
   })
 
-  it('requires restoring an identical trashed paper instead of retrying the sync', async () => {
+  it('allows an old trash-blocked job to retry as a fresh import', async () => {
     useJobStore().track(job({
       status: 'succeeded',
       progress: 1,
@@ -175,10 +175,12 @@ describe('QuestionBankSyncPanel', () => {
     app.mount(host)
     await nextTick()
 
-    expect(host.textContent).toContain('相同试卷已在题库回收站')
-    expect(host.textContent).toContain('恢复原试卷')
-    expect(host.textContent).not.toContain('只重试未完成的题库流程')
-    expect(retryer).not.toHaveBeenCalled()
+    expect(host.textContent).toContain('旧版流程曾被回收站中的同卷阻塞')
+    expect(host.textContent).toContain('全新入库')
+    expect(host.textContent).toContain('只重试未完成的题库流程')
+    host.querySelector<HTMLButtonElement>('button')!.click()
+    await settle()
+    expect(retryer).toHaveBeenCalledOnce()
     app.unmount()
   })
 
