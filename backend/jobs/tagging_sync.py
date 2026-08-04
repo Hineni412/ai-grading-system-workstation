@@ -347,6 +347,21 @@ def _run_tagging_sync_job_locked(
 
     failed_ids = [int(item["question_id"]) for item in failures]
     successful_ids = [item for item in question_ids if item in set(successful_ids)]
+    evidence_succeeded_ids = [
+        question_id
+        for question_id in successful_ids
+        if analysis_gaps.get(question_id, {}).get("evidence_ready")
+    ]
+    criteria_succeeded_ids = [
+        question_id
+        for question_id in successful_ids
+        if analysis_gaps.get(question_id, {}).get("criteria_ready")
+    ]
+    criteria_failed_ids = [
+        question_id
+        for question_id in successful_ids
+        if not analysis_gaps.get(question_id, {}).get("criteria_ready")
+    ]
     if failures:
         outcome = "partial" if successful_ids else "failed"
     else:
@@ -369,8 +384,13 @@ def _run_tagging_sync_job_locked(
         "review_count": len(proposal_keys),
         "review_question_ids": review_question_ids,
         "proposal_ids": proposal_ids,
-        "evidence_succeeded_question_ids": [],
+        "evidence_succeeded_question_ids": evidence_succeeded_ids,
         "evidence_failed_question_ids": list(evidence_only_ids),
+        "evidence_count": len(evidence_succeeded_ids),
+        "criteria_succeeded_question_ids": criteria_succeeded_ids,
+        "criteria_failed_question_ids": criteria_failed_ids,
+        "criteria_count": len(criteria_succeeded_ids),
+        "analysis_contract": "legacy-tag-only",
         "retryable": any(
             str(item["category"]) in _RETRYABLE_CATEGORIES for item in failures
         ),
