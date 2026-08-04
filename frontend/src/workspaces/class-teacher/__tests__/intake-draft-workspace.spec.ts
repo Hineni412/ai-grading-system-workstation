@@ -56,7 +56,8 @@ describe('focused intake draft workspace', () => {
     vi.spyOn(studentR1Api, 'currentRoster').mockResolvedValue({ items: [
       { source_key: 'one', subject_id: 'student-one', display_name: '甲', class_label: '九班', state: 'active' },
       { source_key: 'two', subject_id: 'student-two', display_name: '乙', class_label: '九班', state: 'active' },
-    ], active_count: 2, historical_count: 0, replayed: false })
+      { source_key: 'three', subject_id: 'student-three', display_name: '丙', class_label: '九班', state: 'active' },
+    ], active_count: 3, historical_count: 0, replayed: false })
     const host = document.createElement('div')
     document.body.append(host)
     const app = createApp(IntakeDraftWorkspace, { draftId: draft.draft_id, token: 'token', module: { load: vi.fn() } })
@@ -69,21 +70,46 @@ describe('focused intake draft workspace', () => {
     expect(document.activeElement).toBe(host.querySelector('.draft-head h2'))
     expect(host.querySelector('.draft-context')).toBeNull()
     expect(host.querySelector<HTMLDetailsElement>('.ai-details')?.open).toBe(false)
-    expect(host.querySelector('.ai-details')?.textContent).toContain('技术状态：已成功生成')
-    expect(host.querySelector('.ai-details')?.textContent).toContain('本轮 1 次请求')
+    expect(host.querySelector('.ai-details')?.textContent).toContain('已成功生成')
+    expect(host.querySelector('.ai-details')?.textContent).toContain('累计 2 次请求')
     expect(host.querySelector('.notice--emergency')?.textContent).toContain('如有即时风险')
     expect(host.textContent).not.toContain('初步日历安排')
-    expect(host.querySelectorAll('.timeline-day')).toHaveLength(2)
-    expect(host.querySelector('.timeline-day')?.querySelectorAll('.flow-track>li')).toHaveLength(2)
-    expect(host.textContent?.match(/2026-08-04/g)).toHaveLength(3)
-    const studentLinks = host.querySelector<HTMLDetailsElement>('.student-links')!
-    expect(studentLinks.open).toBe(false)
-    expect(studentLinks.querySelector('summary')?.textContent).toContain('已关联 2 人')
+    expect(host.querySelectorAll('.flow-phase')).toHaveLength(2)
+    expect(host.querySelector('.flow-phase')?.querySelectorAll('ol>li')).toHaveLength(2)
+    expect(host.textContent?.match(/2026-08-04/g)).toHaveLength(1)
+    expect(host.querySelector('.case-brief')?.textContent).toContain('关联学生 · 2 人')
+    expect(host.querySelector('.case-brief')?.textContent).toContain('甲')
+    expect(host.querySelector('.case-brief')?.textContent).toContain('乙')
+    expect(host.querySelector('.student-picker')).toBeNull()
     expect(host.querySelector('.decision-bar')).not.toBeNull()
-    expect(host.querySelector('.decision-bar')?.textContent).toContain('调整选中步骤')
+    expect(host.querySelector('.decision-bar')?.textContent).toContain('发送补充，更新方案')
     expect(host.querySelector('.decision-bar')?.textContent).toContain('最后确认，保存方案')
 
-    const cards = [...host.querySelectorAll<HTMLButtonElement>('.flow-track button')]
+    const pickerTrigger = [...host.querySelectorAll<HTMLButtonElement>('button')].find((button) => button.textContent === '更换')!
+    pickerTrigger.click()
+    await flush()
+    const picker = host.querySelector<HTMLElement>('.student-picker')!
+    expect(document.activeElement).toBe(host.querySelector('.student-search input'))
+    expect(picker.querySelectorAll('.student-picker__grid label')).toHaveLength(2)
+    const initialChecks = [...picker.querySelectorAll<HTMLInputElement>('.student-picker__grid input')]
+    initialChecks[1]!.checked = false
+    initialChecks[1]!.dispatchEvent(new Event('change', { bubbles: true }))
+    const search = picker.querySelector<HTMLInputElement>('.student-search input')!
+    search.value = '丙'
+    search.dispatchEvent(new Event('input', { bubbles: true }))
+    await nextTick()
+    expect(picker.querySelectorAll('.student-picker__grid label')).toHaveLength(1)
+    const replacement = picker.querySelector<HTMLInputElement>('.student-picker__grid input')!
+    replacement.checked = true
+    replacement.dispatchEvent(new Event('change', { bubbles: true }))
+    picker.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    await flush()
+    expect(host.querySelector('.student-picker')).toBeNull()
+    expect(document.activeElement).toBe(pickerTrigger)
+    expect(host.querySelector('.case-brief')?.textContent).toContain('丙')
+    expect(host.querySelector('.case-brief')?.textContent).not.toContain('乙')
+
+    const cards = [...host.querySelectorAll<HTMLButtonElement>('.flow-phase ol button')]
     cards[0]!.click()
     await nextTick()
     expect(cards.map((card) => card.getAttribute('aria-pressed'))).toEqual(['true', 'true', 'true'])
@@ -93,5 +119,34 @@ describe('focused intake draft workspace', () => {
     cards[1]!.click()
     await nextTick()
     expect(cards.map((card) => card.getAttribute('aria-pressed'))).toEqual(['false', 'false', 'false'])
+
+    const followUp = vi.spyOn(homeIntakeApi, 'followUpPreview').mockResolvedValue({
+      preview_id: 'preview-2', route: 'sensitive', recommended_route: 'affair',
+      date_interpretation: { status: 'resolved', source: 'explicit_numeric', resolved_date: '2026-08-04', selected_date: null, candidates: [], pending_reason: null },
+      emergency_guidance: null, round_number: 3, prior_operations: ['operation-2'],
+      round_physical_request_count: 0, cumulative_physical_request_count: 2, physical_request_count: 0,
+      dispatch_ready: true, local_only: false, blocked_categories: [], removed_categories: [],
+      student_aliases: ['学生A', '学生B'], exact_payload: { answer: '已无风险' },
+      fingerprint: 'p'.repeat(64), expires_at: '2026-08-04T02:00:00Z', model_provider: 'fake',
+      model_endpoint: 'local', model_name: 'fake', destination_fingerprint: 'd'.repeat(64),
+      model_enabled: true, max_physical_requests: 1, estimated_cost: null, source_text: null,
+      final_due_date: null, date_semantics: 'date-only',
+    })
+    const dispatch = vi.spyOn(homeIntakeApi, 'dispatch').mockResolvedValue({
+      ...draft.operation, operation_id: 'operation-3', draft_id: draft.draft_id, draft_version: 3,
+    })
+    cards[0]!.click()
+    const feedback = host.querySelector<HTMLTextAreaElement>('.revision-label textarea')!
+    feedback.value = '双方已经分开，没有人受伤。'
+    feedback.dispatchEvent(new Event('input', { bubbles: true }))
+    await nextTick()
+    ;[...host.querySelectorAll<HTMLButtonElement>('.decision-bar button')]
+      .find((button) => button.textContent?.includes('发送补充'))!.click()
+    await flush()
+    expect(followUp).toHaveBeenCalledOnce()
+    expect(dispatch).toHaveBeenCalledOnce()
+    expect(host.querySelector('.case-brief')?.textContent).toContain('丙')
+    expect(host.querySelector('.case-brief')?.textContent).not.toContain('乙')
+    expect(host.textContent).not.toContain('确认匿名发送')
   })
 })

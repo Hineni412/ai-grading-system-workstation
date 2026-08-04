@@ -636,6 +636,12 @@ class HomeIntakeDrafts:
                 "事务草案未通过完整性检查",
                 status_code=409,
             )
+        operation = {
+            **operation,
+            "draft_id": str(row["draft_id"]),
+            "draft_version": int(row["current_version"]),
+            "draft_saved_at": str(row["updated_at"]),
+        }
         return {
             "draft_id": str(row["draft_id"]),
             "version": int(row["current_version"]),
@@ -686,6 +692,12 @@ class HomeIntakeDrafts:
                 "事务草案未通过完整性检查",
                 status_code=409,
             )
+        operation = {
+            **operation,
+            "draft_id": str(row["draft_id"]),
+            "draft_version": int(row["current_version"]),
+            "draft_saved_at": str(row["updated_at"]),
+        }
         return {
             "draft_id": str(row["draft_id"]),
             "version": int(row["current_version"]),
@@ -723,6 +735,8 @@ class HomeIntakeDrafts:
         operation = snapshot["operation"]
         result = operation.get("result") if isinstance(operation, dict) else None
         result = result if isinstance(result, dict) else {}
+        local_context = operation.get("local_context") if isinstance(operation, dict) else None
+        local_context = local_context if isinstance(local_context, dict) else {}
         title = str(result.get("title") or "")
         if not title and isinstance(result.get("nodes"), list) and result["nodes"]:
             first = result["nodes"][0]
@@ -734,6 +748,10 @@ class HomeIntakeDrafts:
             "route": snapshot["route"],
             "result_kind": snapshot["result_kind"],
             "title": title or "未命名事务草案",
+            "source_text": str(local_context.get("source_text") or ""),
+            "student_aliases": [
+                str(item) for item in list(result.get("student_aliases") or []) if str(item)
+            ],
             "updated_at": snapshot["updated_at"],
         }
 

@@ -173,6 +173,8 @@ export interface HomeIntakeDraftSummary {
   route: HomeIntakeRoute
   result_kind: 'ordinary_plan' | 'affair_recommendation' | 'student_support_recommendation'
   title: string
+  source_text: string
+  student_aliases: string[]
   updated_at: string
 }
 
@@ -188,6 +190,11 @@ export interface HomeIntakeDraft {
   updated_at: string
   adopted_affair_id: string | null
   operation: HomeIntakeOperation
+}
+
+export interface HomeIntakeDraftRef {
+  draftId: string
+  version: number
 }
 
 export interface HomeIntakeHandoff {
@@ -415,6 +422,8 @@ function draftSummary(value: unknown): HomeIntakeDraftSummary {
     route: literal(item.route, routes),
     result_kind: literal(item.result_kind, ['ordinary_plan', 'affair_recommendation', 'student_support_recommendation'] as const),
     title: string(item.title),
+    source_text: item.source_text === undefined ? '' : string(item.source_text),
+    student_aliases: item.student_aliases === undefined ? [] : strings(item.student_aliases),
     updated_at: string(item.updated_at),
   }
 }
@@ -500,11 +509,13 @@ export const homeIntakeApi = {
       method: 'POST', headers: headers(token), body: { expected_version: expectedVersion }, decode: record,
     })
   },
-  adoptOrdinaryDraft(value: HomeIntakeOperation, token?: string) {
-    if (!value.draft_id || !value.draft_version || !value.result_fingerprint) throw new Error('home intake draft required')
-    return apiClient.request(`/api/class-teacher/home/intake/drafts/${value.draft_id}/adopt-ordinary`, {
+  adoptOrdinaryDraft(value: HomeIntakeOperation, token?: string, draftRef?: HomeIntakeDraftRef) {
+    const draftId = draftRef?.draftId || value.draft_id
+    const draftVersion = draftRef?.version || value.draft_version
+    if (!draftId || !draftVersion || !value.result_fingerprint) throw new Error('home intake draft required')
+    return apiClient.request(`/api/class-teacher/home/intake/drafts/${draftId}/adopt-ordinary`, {
       method: 'POST', headers: headers(token), body: {
-        expected_version: value.draft_version,
+        expected_version: draftVersion,
         source_operation_id: value.operation_id,
         result_fingerprint: value.result_fingerprint,
       }, decode: record,
@@ -530,7 +541,7 @@ export const homeIntakeApi = {
       }, decode: manualFallback,
     })
   },
-  adopt(value: HomeIntakeOperation, operationId: string, subjectIds: string[], token: string) {
+  adopt(value: HomeIntakeOperation, operationId: string, subjectIds: string[], token: string, draftRef?: HomeIntakeDraftRef) {
     if (!value.result_fingerprint) throw new Error('home intake result fingerprint required')
     return apiClient.request('/api/class-teacher/home/intake/adopt', {
       method: 'POST', headers: headers(token), body: {
@@ -538,8 +549,8 @@ export const homeIntakeApi = {
         operation_id: operationId,
         result_fingerprint: value.result_fingerprint,
         subject_ids: subjectIds,
-        draft_id: value.draft_id,
-        draft_version: value.draft_version,
+        draft_id: draftRef?.draftId || value.draft_id,
+        draft_version: draftRef?.version || value.draft_version,
       }, decode: record,
     })
   },

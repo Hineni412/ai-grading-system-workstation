@@ -1278,9 +1278,15 @@ def test_failed_revision_keeps_the_last_saved_draft_version(tmp_path: Path) -> N
     assert failed["preserved_result"] == first_operation["result"]
     restored = service.home_intake_drafts.get(token=token, draft_id=draft_id)
     assert restored["version"] == 1
+    assert restored["operation"]["draft_id"] == draft_id
+    assert restored["operation"]["draft_version"] == 1
+    assert restored["operation"]["draft_saved_at"] == restored["updated_at"]
     assert restored["operation"]["result"] == first_operation["result"]
     assert restored["operation"]["local_context"]["source_text"] == "王小明和张伟发生冲突"
-    assert service.home_intake_drafts.list_open(token=token)["items"][0]["draft_id"] == draft_id
+    summary = service.home_intake_drafts.list_open(token=token)["items"][0]
+    assert summary["draft_id"] == draft_id
+    assert summary["source_text"] == "王小明和张伟发生冲突"
+    assert summary["student_aliases"] == ["学生A", "学生B"]
 
 
 def test_adoption_claim_blocks_a_concurrent_sensitive_revision(tmp_path: Path) -> None:
