@@ -416,6 +416,14 @@ class SemesterMappingPreflightResponse(BaseModel):
     existing_lesson_count: int
     creates_initial_tree: bool
     automatic_retry: bool
+    evidence_strategy: str
+    evidence_confidence: str
+    scanned_unit_count: int
+    toc_entry_count: int
+    anchor_count: int
+    estimated_input_characters: int
+    full_page_text_sent: bool
+    evidence_issues: list[str]
 
 
 class SemesterMappingProposalResponse(BaseModel):
