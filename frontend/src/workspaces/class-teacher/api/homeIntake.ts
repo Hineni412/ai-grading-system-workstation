@@ -160,6 +160,8 @@ export interface HomeIntakeOperation {
   draft_id?: string | null
   draft_version?: number | null
   draft_saved_at?: string | null
+  draft_persistence_error?: string | null
+  draft_persistence_message?: string | null
   previous_result_preserved?: boolean
   preserved_result_kind?: 'ordinary_plan' | 'affair_recommendation' | 'student_support_recommendation' | null
   preserved_result?: HomeIntakeDecodedResult
@@ -397,6 +399,8 @@ function operation(value: unknown): HomeIntakeOperation {
     draft_id: nullableString(item.draft_id),
     draft_version: item.draft_version === null || item.draft_version === undefined ? null : number(item.draft_version),
     draft_saved_at: nullableString(item.draft_saved_at),
+    draft_persistence_error: nullableString(item.draft_persistence_error),
+    draft_persistence_message: nullableString(item.draft_persistence_message),
     previous_result_preserved: item.previous_result_preserved === undefined ? false : boolean(item.previous_result_preserved),
     preserved_result_kind: preservedKind,
     preserved_result: preservedKind === null ? null : decodedResult(preservedKind, item.preserved_result),

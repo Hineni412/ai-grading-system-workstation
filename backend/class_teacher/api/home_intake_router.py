@@ -63,15 +63,25 @@ def create_home_intake_router() -> APIRouter:
         _require_trusted_mutation(request)
         _no_store(response)
         token = _token(session_token)
-        return _call(lambda: _service(request).home_intake_drafts.capture(
-            token=token,
-            operation=_service(request).home_intake.dispatch(
+
+        def dispatch_and_capture():
+            service = _service(request)
+            service.home_intake_drafts.prepare_for_dispatch(
+                token=token,
+                route=service.home_intake.route_for_preview(preview_id),
+            )
+            operation = service.home_intake.dispatch(
                 token=token,
                 preview_id=preview_id,
                 fingerprint=body.fingerprint,
                 operation_id=body.operation_id,
-            ),
-        ))
+            )
+            return service.home_intake_drafts.capture_for_response(
+                token=token,
+                operation=operation,
+            )
+
+        return _call(dispatch_and_capture)
 
     @router.get(
         "/operations/{operation_id}",
@@ -85,7 +95,7 @@ def create_home_intake_router() -> APIRouter:
     ):
         _no_store(response)
         token = _token(session_token)
-        return _call(lambda: _service(request).home_intake_drafts.capture(
+        return _call(lambda: _service(request).home_intake_drafts.capture_for_response(
             token=token,
             operation=_service(request).home_intake.status(
                 token=token,

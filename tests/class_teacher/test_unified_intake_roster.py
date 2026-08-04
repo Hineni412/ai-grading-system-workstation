@@ -62,6 +62,17 @@ def test_local_classifier_cannot_be_weakened_by_model_template() -> None:
     assert any(item["safety_required"] for item in draft["steps"])
 
 
+def test_negated_injury_keeps_the_student_conflict_template() -> None:
+    draft = compose_sensitive_draft(
+        source_text="两名学生发生推搡，教师已确认无人受伤",
+        recommended_route="affair",
+        resolved_date="2026-08-03",
+        model_payload={},
+    )
+
+    assert draft["template_key"] == "baseline.student_conflict"
+
+
 def _service(tmp_path: Path) -> tuple[VaultService, str]:
     grading = tmp_path / "grading.db"
     with closing(sqlite3.connect(grading)) as connection:

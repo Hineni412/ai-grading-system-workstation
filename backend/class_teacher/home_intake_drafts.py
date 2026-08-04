@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sqlite3
 from contextlib import closing
 from datetime import UTC, datetime
 from typing import Callable
@@ -55,6 +56,10 @@ class HomeIntakeDrafts:
             and result_kind in self._SUPPORTED_KINDS
             and isinstance(result, dict)
         ):
+            self.prepare_for_dispatch(
+                token=token,
+                route="ordinary" if result_kind == "ordinary_plan" else "sensitive",
+            )
             capture = (
                 self._capture_ordinary_success
                 if result_kind == "ordinary_plan"
@@ -78,6 +83,36 @@ class HomeIntakeDrafts:
             "preserved_result_kind": preserved["result_kind"],
             "preserved_result": preserved["operation"]["result"],
         }
+
+    def prepare_for_dispatch(self, *, token: str, route: str) -> None:
+        """Upgrade the matching draft store before a request can incur model cost."""
+
+        if route == "ordinary":
+            self.ordinary_database.initialize_schema()
+            return
+        self._key_provider(token)
+        self.database.initialize_schema()
+
+    def capture_for_response(
+        self,
+        *,
+        token: str,
+        operation: dict[str, object],
+    ) -> dict[str, object]:
+        """Keep a parsed model result visible when draft persistence fails."""
+
+        try:
+            return self.capture(token=token, operation=operation)
+        except (VaultError, sqlite3.Error, OSError) as exc:
+            code = exc.code if isinstance(exc, VaultError) else "home_intake_draft_save_failed"
+            return {
+                **operation,
+                "draft_persistence_error": code,
+                "draft_persistence_message": (
+                    "AI 方案已经返回，但自动保存草稿失败。请保留当前页面并重试保存，"
+                    "不要重新发起模型请求。"
+                ),
+            }
 
     def list_open(self, *, token: str) -> dict[str, object]:
         items: list[dict[str, object]] = []
@@ -403,7 +438,7 @@ class HomeIntakeDrafts:
         parent_operation_id: str | None,
     ) -> dict[str, object]:
         _ = token
-        self.ordinary_database.initialize_schema() if not self.ordinary_database.exists else None
+        self.ordinary_database.initialize_schema()
         source_operation_id = str(operation["operation_id"])
         fingerprint = str(operation.get("result_fingerprint") or "")
         if not fingerprint:
