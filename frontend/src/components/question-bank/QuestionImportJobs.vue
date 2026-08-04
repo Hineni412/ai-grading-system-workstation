@@ -205,7 +205,7 @@ function downloadFailures(job: JobResponse): void {
             v-if="job.job_type === 'question_import' && job.result.restore_required === true"
             class="qb-feedback is-warning"
           >
-            相同试卷已在回收站，请从题库回收站恢复原试卷。系统没有重复创建题目，也不会自动调用 AI。
+            这是旧版留下的回收站阻塞记录。重新提交后会全新入库，旧题和旧标签不会恢复。
           </p>
           <p v-if="job.error" class="qb-feedback is-error">{{ job.error }}</p>
           <p v-if="jobStore.syncErrors[job.id]" class="qb-feedback is-error" role="alert">

@@ -130,6 +130,8 @@ def normalize_model_solution_evidence(
     question_id: int,
     question_type: str,
     taxonomy_contract: Mapping[str, Any],
+    question_type_confirmed: bool = True,
+    expected_part_count: int | None = None,
 ) -> ModelEvidenceNormalization:
     """Converge model-shaped evidence into the strict internal contract.
 
@@ -140,6 +142,11 @@ def normalize_model_solution_evidence(
     _reject_score_fields(payload)
     notes: list[str] = []
     requires_review = False
+    confirmed_type = (
+        str(question_type or "").strip().casefold()
+        if question_type_confirmed
+        else ""
+    )
     root = _canonicalize_keys(
         payload,
         fields=_ROOT_FIELDS,
@@ -163,7 +170,7 @@ def normalize_model_solution_evidence(
         part, part_review = _normalize_part_shape(
             raw_part,
             part_index=part_index,
-            question_type=question_type,
+            question_type=confirmed_type,
             candidate_names=candidate_names,
             notes=notes,
         )
@@ -180,7 +187,7 @@ def normalize_model_solution_evidence(
             _normalize_part_shape(
                 raw_part,
                 part_index=index,
-                question_type=question_type,
+                question_type=confirmed_type,
                 candidate_names=candidate_names,
                 notes=notes,
             )[0]
@@ -188,12 +195,18 @@ def normalize_model_solution_evidence(
             if isinstance(raw_part, Mapping)
         ]
 
-    if str(question_type or "").strip().casefold() == "single_choice":
+    if confirmed_type == "single_choice":
         parts, collapsed_rules = _collapse_single_choice(parts, notes=notes)
         auxiliary_rules.extend(collapsed_rules)
-    elif str(question_type or "").strip().casefold() == "fill_blank":
+    elif confirmed_type == "fill_blank":
         parts, collapsed_rules = _collapse_fill_blank(parts, notes=notes)
         auxiliary_rules.extend(collapsed_rules)
+
+    if expected_part_count is not None and len(parts) != int(expected_part_count):
+        raise ValueError(
+            "显式小问结构不完整："
+            f"题干包含 {int(expected_part_count)} 个小问，模型返回 {len(parts)} 个。"
+        )
 
     _regenerate_identities_and_dependencies(parts, notes=notes)
     if schema_version == "question-solution-evidence-v1":

@@ -530,9 +530,29 @@ def _integerize_steps(part: dict[str, Any], part_score: int) -> None:
         [_safe_float(step.get("step_score"), 0.0) if isinstance(step, dict) else 0.0 for step in steps],
         part_score,
     )
+    step_scores = _balance_step_scores(step_scores)
     for step, step_score in zip(steps, step_scores):
         if isinstance(step, dict):
             step["step_score"] = step_score
+
+
+def _balance_step_scores(scores: list[int], *, max_gap: int = 2) -> list[int]:
+    """Keep one small question's scoring steps locally balanced."""
+
+    balanced = [int(value) for value in scores]
+    if len(balanced) < 2:
+        return balanced
+    while min(balanced) <= 0 and max(balanced) > 1:
+        donor = balanced.index(max(balanced))
+        receiver = balanced.index(min(balanced))
+        balanced[donor] -= 1
+        balanced[receiver] += 1
+    while max(balanced) - min(balanced) > int(max_gap):
+        donor = balanced.index(max(balanced))
+        receiver = balanced.index(min(balanced))
+        balanced[donor] -= 1
+        balanced[receiver] += 1
+    return balanced
 
 
 def _integerize_deductions(question: dict[str, Any], question_score: int) -> None:
