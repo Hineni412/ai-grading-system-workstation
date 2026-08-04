@@ -18,6 +18,7 @@ from question_bank.services.ai_tagging_service import (
     AITaggingService,
     _adaptive_batches,
     _batch_prompt_input,
+    _batch_shared_contract,
     _batch_tag_analysis_response_format,
     _prompt_input,
     _tag_analysis_response_format,
@@ -27,6 +28,7 @@ from question_bank.services.ai_tagging_service import (
 )
 from question_bank.services.question_service import QuestionService, has_complete_analysis_tags
 from question_bank.taxonomy.governance import TaxonomyGovernance
+from tests.current_knowledge_support import install_current_knowledge
 
 
 CATALOG_PATH = (
@@ -321,10 +323,10 @@ def test_tagging_schema_limits_controlled_fields_to_contract_candidates() -> Non
         "等腰三角形",
         "轴对称",
     ]
-    assert single["proposed_tags"]["maxItems"] == 2
+    assert single["proposed_tags"]["maxItems"] == 1
 
 
-def test_legacy_free_text_in_controlled_field_is_reported_safely(
+def test_full_governed_knowledge_catalog_accepts_non_recalled_standard_term(
     tmp_path: Path,
 ) -> None:
     governance = TaxonomyGovernance(
@@ -346,8 +348,8 @@ def test_legacy_free_text_in_controlled_field_is_reported_safely(
         taxonomy_contract=contract,
     )
 
-    assert "controlled_field_violation:knowledge_points" in result.quality_notes
-    assert all("轴对称的性质" not in note for note in result.quality_notes)
+    assert "controlled_field_violation:knowledge_points" not in result.quality_notes
+    assert any("完整词表归并" in note for note in result.quality_notes)
 
 
 def test_tagging_schema_preserves_multiple_textbook_chapters() -> None:
@@ -383,7 +385,7 @@ def test_legacy_single_textbook_chapter_is_promoted_to_the_plural_contract() -> 
     assert analysis.textbook_chapter == "七年级上册 第二章 有理数及其运算"
 
 
-def test_batch_prompt_attaches_an_isolated_candidate_contract_per_question() -> None:
+def test_batch_prompt_sends_full_knowledge_once_and_keeps_other_contracts_isolated() -> None:
     contexts = {
         1: TaggingContext(
             question_text="用配方法解一元二次方程",
@@ -411,6 +413,13 @@ def test_batch_prompt_attaches_an_isolated_candidate_contract_per_question() -> 
         inputs[1]["candidate_contract"]["taxonomy_revision"]
         == inputs[2]["candidate_contract"]["taxonomy_revision"]
     )
+    assert "knowledge" not in inputs[1]["candidate_contract"]["candidates"]
+    assert "knowledge" not in inputs[2]["candidate_contract"]["candidates"]
+    system_contract = _batch_shared_contract(
+        list(contexts.items()),
+        contracts,
+    )
+    assert len(system_contract["shared_knowledge_catalog"]) == 294
 
 
 def test_prompts_do_not_send_historical_saved_tags_to_the_model() -> None:
@@ -865,6 +874,7 @@ def test_save_tag_analysis_persists_model_name_and_confidence(tmp_path: Path) ->
     question_id = service.add_question(
         QuestionCreate(question_number="1", question_text="计算 a^2 · a^3。", answer_text="a^5")
     )
+    install_current_knowledge(db_path)
 
     assert service.save_tag_analysis(
         question_id,
@@ -912,6 +922,7 @@ def test_exact_duplicate_complete_tags_can_be_reused_with_confidence_cap(tmp_pat
     target_id = service.add_question(
         QuestionCreate(question_number="2", question_text=" 计算 a^2 · a^3。 ", answer_text=" a^5 ")
     )
+    install_current_knowledge(service.db_path)
     assert service.save_tag_analysis(source_id, _analysis(confidence=0.97), model_name="doubao-main", confidence=0.97)
 
     duplicate = service.find_exact_duplicate_tag_analysis(target_id)

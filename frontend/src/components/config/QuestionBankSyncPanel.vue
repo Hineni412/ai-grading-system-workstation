@@ -67,7 +67,6 @@ const outcome = computed(() => String(job.value?.result.outcome ?? ''))
 const terminal = computed(() => job.value !== null
   && ['succeeded', 'failed', 'cancelled'].includes(job.value.status))
 const canRetry = computed(() => terminal.value
-  && job.value?.result.restore_required !== true
   && (
     job.value?.status === 'failed'
     || job.value?.result.retryable === true
@@ -117,10 +116,10 @@ function statusCopy(current: JobResponse): string {
   if (current.status === 'cancelled') return '题库流程已取消'
   if (outcome.value === 'complete') {
     return safeCount(current.result.taxonomy_review_count)
-      ? '试卷已入库，标签仍待补充或归并'
-      : '试卷已入库并完成标签治理'
+      ? '试卷已入库，部分标签仍待归并'
+      : '试卷已入库，标签与训练判定点已保存'
   }
-  if (outcome.value === 'partial') return '已部分入库，仍有标签需要处理'
+  if (outcome.value === 'partial') return '已部分入库，仍有标签或训练判定点需要处理'
   return '题库流程未完成'
 }
 
@@ -256,9 +255,10 @@ watch(
       </div>
       <progress :value="progress" max="1" aria-label="试卷入库与标签治理进度" />
       <p v-if="terminal">
-        入库 {{ safeCount(job.result.imported_count) }} 题 ·
-        已标注 {{ safeCount(job.result.tagged_count) }} 题 ·
-        已关联 {{ safeCount(job.result.linked_count) }} 题
+        题目入库成功 {{ safeCount(job.result.imported_count) }} 题 ·
+        本次标签保存成功 {{ safeCount(job.result.tagged_count) }} 题 ·
+        完整标签 {{ safeCount(job.result.complete_tagged_count) }}/{{ safeCount(job.result.question_count) || safeCount(job.result.imported_count) }}
+        · 训练判定点 {{ safeCount(job.result.criteria_count) }}/{{ safeCount(job.result.question_count) || safeCount(job.result.imported_count) }} 题
         <template v-if="safeCount(job.result.taxonomy_review_count)">
           · {{ safeCount(job.result.taxonomy_review_count) }} 题标签待补充或归并
         </template>
@@ -273,7 +273,8 @@ watch(
         v-if="terminal && job.result.restore_required === true"
         class="question-bank-sync__warning"
       >
-        相同试卷已在题库回收站。请先恢复原试卷，系统不会重复入库或自动再次调用 AI。
+        检测到旧版流程曾被回收站中的同卷阻塞。现在可直接重试，系统会全新入库，
+        不恢复旧题或旧标签；已经完成的分析不会重复调用 AI。
       </p>
       <button v-if="canRetry" type="button" :disabled="submitting" @click="retry">
         {{ submitting

@@ -52,6 +52,8 @@ export interface ConfigQuestionPreview {
   answer_preview: string
   answer_present: boolean
   needs_review: boolean
+  question_type_review_required?: boolean
+  question_type_review_reason?: string
   local_answer_trusted: boolean
   has_question_asset: boolean
   has_answer_asset: boolean
@@ -75,6 +77,13 @@ export interface ConfigSource {
 export interface ConfigSourceSubmission {
   status: 'processing' | 'succeeded' | 'failed' | 'replaced'
   source: ConfigSource | null
+}
+
+export interface ConfigQuestionGenerationState {
+  question_id: string
+  state: 'pending' | 'running' | 'passed' | 'blocked' | 'failed'
+  reason: string
+  retryable: boolean
 }
 
 export interface ConfigGenerationRequest {
@@ -242,11 +251,22 @@ function isQuestionPreview(value: unknown): value is ConfigQuestionPreview {
     'question_id', 'question_type', 'question_preview', 'answer_preview', 'answer_present',
     'needs_review', 'local_answer_trusted', 'has_question_asset', 'has_answer_asset',
   ]
-  if (!hasExactKeys(value, baseKeys) && !hasExactKeys(value, [...baseKeys, 'rich_content'])) return false
+  const allowedKeys = new Set([
+    ...baseKeys,
+    'rich_content',
+    'question_type_review_required',
+    'question_type_review_reason',
+  ])
+  if (baseKeys.some((key) => !(key in value))
+    || Object.keys(value).some((key) => !allowedKeys.has(key))) return false
   return typeof value.question_id === 'string' && typeof value.question_type === 'string'
     && typeof value.question_preview === 'string' && typeof value.answer_preview === 'string'
     && typeof value.answer_present === 'boolean' && typeof value.needs_review === 'boolean'
     && typeof value.local_answer_trusted === 'boolean'
+    && (value.question_type_review_required === undefined
+      || typeof value.question_type_review_required === 'boolean')
+    && (value.question_type_review_reason === undefined
+      || typeof value.question_type_review_reason === 'string')
     && typeof value.has_question_asset === 'boolean' && typeof value.has_answer_asset === 'boolean'
     && (value.rich_content === undefined || isRichContent(value.rich_content))
 }
@@ -471,6 +491,35 @@ export async function fetchLatestConfigGenerationJob(
   return apiClient.request(`/api/sessions/${id}/config/generation-jobs/latest?${query}`, {
     decode: decodeStrictJob,
   })
+}
+
+export async function fetchConfigGenerationQuestionStates(
+  sessionId: number,
+  jobId: number,
+): Promise<ConfigQuestionGenerationState[]> {
+  const id = requireSessionId(sessionId)
+  if (!isPositiveInteger(jobId)) throw new Error('Invalid job id')
+  return apiClient.request(
+    `/api/sessions/${id}/config/generation-jobs/${jobId}/question-states`,
+    {
+      decode: (value) => {
+        assertNoPathLikeKeys(value)
+        if (!isRecord(value) || !hasExactKeys(value, ['job_id', 'questions'])
+          || value.job_id !== jobId || !Array.isArray(value.questions)) {
+          throw new Error('Invalid config question states response')
+        }
+        const questions = value.questions
+        if (!questions.every((item) => isRecord(item)
+          && hasExactKeys(item, ['question_id', 'state', 'reason', 'retryable'])
+          && typeof item.question_id === 'string'
+          && ['pending', 'running', 'passed', 'blocked', 'failed'].includes(String(item.state))
+          && typeof item.reason === 'string' && typeof item.retryable === 'boolean')) {
+          throw new Error('Invalid config question states response')
+        }
+        return questions as ConfigQuestionGenerationState[]
+      },
+    },
+  )
 }
 
 export async function fetchConfigGenerationJobByToken(

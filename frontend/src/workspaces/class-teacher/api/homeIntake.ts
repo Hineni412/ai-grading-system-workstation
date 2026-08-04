@@ -101,6 +101,35 @@ export interface HomeIntakeRecommendation {
   summary: string | null
   reasons: string[]
   assumptions: string[]
+  transaction_type: string
+  template_key: string
+  title: string
+  to_verify: string[]
+  steps: HomeIntakeWorkflowStep[]
+  edges: Array<{ source_key: string; target_key: string; relation: string }>
+  calendar_items: HomeIntakeCalendarItem[]
+  student_aliases: string[]
+  risk_level: string
+  emergency_prompt: string | null
+  model_advice?: string | null
+}
+
+export interface HomeIntakeWorkflowStep {
+  key: string
+  title: string
+  details: string
+  depends_on: string[]
+  required: boolean
+  waivable: boolean
+  safety_required: boolean
+}
+
+export interface HomeIntakeCalendarItem {
+  key: string
+  step_key: string
+  title: string
+  due_date: string | null
+  depends_on: string[]
 }
 
 export type HomeIntakeDecodedResult =
@@ -128,6 +157,44 @@ export interface HomeIntakeOperation {
   teacher_confirmation_required: boolean
   result_fingerprint: string | null
   local_context: Record<string, unknown>
+  draft_id?: string | null
+  draft_version?: number | null
+  draft_saved_at?: string | null
+  draft_persistence_error?: string | null
+  draft_persistence_message?: string | null
+  previous_result_preserved?: boolean
+  preserved_result_kind?: 'ordinary_plan' | 'affair_recommendation' | 'student_support_recommendation' | null
+  preserved_result?: HomeIntakeDecodedResult
+}
+
+export interface HomeIntakeDraftSummary {
+  draft_id: string
+  version: number
+  route: HomeIntakeRoute
+  result_kind: 'ordinary_plan' | 'affair_recommendation' | 'student_support_recommendation'
+  title: string
+  source_text: string
+  student_aliases: string[]
+  updated_at: string
+}
+
+export interface HomeIntakeDraft {
+  draft_id: string
+  version: number
+  state: 'open' | 'adopting' | 'adopted' | 'discarded'
+  route: HomeIntakeRoute
+  result_kind: 'ordinary_plan' | 'affair_recommendation' | 'student_support_recommendation'
+  source_operation_id: string
+  content_fingerprint: string
+  created_at: string
+  updated_at: string
+  adopted_affair_id: string | null
+  operation: HomeIntakeOperation
+}
+
+export interface HomeIntakeDraftRef {
+  draftId: string
+  version: number
 }
 
 export interface HomeIntakeHandoff {
@@ -275,6 +342,20 @@ function recommendation(value: unknown, kind: 'affair_recommendation' | 'student
     summary: nullableString(item.summary),
     reasons: item.reasons === undefined ? [] : strings(item.reasons),
     assumptions: item.assumptions === undefined ? [] : strings(item.assumptions),
+    transaction_type: string(item.transaction_type),
+    template_key: string(item.template_key),
+    title: string(item.title),
+    to_verify: item.to_verify === undefined ? [] : strings(item.to_verify),
+    steps: Array.isArray(item.steps) ? item.steps.map((raw) => {
+      const step = record(raw)
+      return { key: string(step.key), title: string(step.title), details: string(step.details), depends_on: strings(step.depends_on), required: boolean(step.required), waivable: boolean(step.waivable), safety_required: boolean(step.safety_required) }
+    }) : [],
+    edges: Array.isArray(item.edges) ? item.edges.map((raw) => { const edge = record(raw); return { source_key: string(edge.source_key), target_key: string(edge.target_key), relation: string(edge.relation) } }) : [],
+    calendar_items: Array.isArray(item.calendar_items) ? item.calendar_items.map((raw) => { const calendar = record(raw); return { key: string(calendar.key), step_key: string(calendar.step_key), title: string(calendar.title), due_date: nullableString(calendar.due_date), depends_on: strings(calendar.depends_on) } }) : [],
+    student_aliases: item.student_aliases === undefined ? [] : strings(item.student_aliases),
+    risk_level: string(item.risk_level),
+    emergency_prompt: nullableString(item.emergency_prompt),
+    model_advice: nullableString(item.model_advice),
   }
 }
 function decodedResult(kind: HomeIntakeResultKind | null, value: unknown): HomeIntakeDecodedResult {
@@ -301,6 +382,9 @@ function operation(value: unknown): HomeIntakeOperation {
   const roundCount = number(item.round_physical_request_count)
   const physicalCount = number(item.physical_request_count)
   if (roundCount !== physicalCount) throw new Error('home intake contract')
+  const preservedKind = item.preserved_result_kind === null || item.preserved_result_kind === undefined
+    ? null
+    : literal(item.preserved_result_kind, ['ordinary_plan', 'affair_recommendation', 'student_support_recommendation'] as const)
   return {
     operation_id: string(item.operation_id),
     route: literal(item.route, routes),
@@ -319,6 +403,45 @@ function operation(value: unknown): HomeIntakeOperation {
     teacher_confirmation_required: boolean(item.teacher_confirmation_required),
     result_fingerprint: nullableString(item.result_fingerprint),
     local_context: record(item.local_context),
+    draft_id: nullableString(item.draft_id),
+    draft_version: item.draft_version === null || item.draft_version === undefined ? null : number(item.draft_version),
+    draft_saved_at: nullableString(item.draft_saved_at),
+    draft_persistence_error: nullableString(item.draft_persistence_error),
+    draft_persistence_message: nullableString(item.draft_persistence_message),
+    previous_result_preserved: item.previous_result_preserved === undefined ? false : boolean(item.previous_result_preserved),
+    preserved_result_kind: preservedKind,
+    preserved_result: preservedKind === null ? null : decodedResult(preservedKind, item.preserved_result),
+  }
+}
+
+function draftSummary(value: unknown): HomeIntakeDraftSummary {
+  const item = record(value)
+  return {
+    draft_id: string(item.draft_id),
+    version: number(item.version),
+    route: literal(item.route, routes),
+    result_kind: literal(item.result_kind, ['ordinary_plan', 'affair_recommendation', 'student_support_recommendation'] as const),
+    title: string(item.title),
+    source_text: item.source_text === undefined ? '' : string(item.source_text),
+    student_aliases: item.student_aliases === undefined ? [] : strings(item.student_aliases),
+    updated_at: string(item.updated_at),
+  }
+}
+
+function draft(value: unknown): HomeIntakeDraft {
+  const item = record(value)
+  return {
+    draft_id: string(item.draft_id),
+    version: number(item.version),
+    state: literal(item.state, ['open', 'adopting', 'adopted', 'discarded'] as const),
+    route: literal(item.route, routes),
+    result_kind: literal(item.result_kind, ['ordinary_plan', 'affair_recommendation', 'student_support_recommendation'] as const),
+    source_operation_id: string(item.source_operation_id),
+    content_fingerprint: string(item.content_fingerprint),
+    created_at: string(item.created_at),
+    updated_at: string(item.updated_at),
+    adopted_affair_id: nullableString(item.adopted_affair_id),
+    operation: operation(item.operation),
   }
 }
 
@@ -367,9 +490,40 @@ export const homeIntakeApi = {
       headers: token ? { 'x-class-teacher-session': token } : undefined, decode: operation,
     })
   },
-  followUpPreview(operationId: string, answer: string, token?: string, referenceDate?: string) {
+  listDrafts(token?: string) {
+    return apiClient.request('/api/class-teacher/home/intake/drafts', {
+      headers: headers(token), decode: (value) => {
+        const item = record(value)
+        if (!Array.isArray(item.items)) throw new Error('home intake contract')
+        return item.items.map(draftSummary)
+      },
+    })
+  },
+  getDraft(draftId: string, token: string) {
+    return apiClient.request(`/api/class-teacher/home/intake/drafts/${draftId}`, {
+      headers: headers(token), decode: draft,
+    })
+  },
+  discardDraft(draftId: string, expectedVersion: number, token: string) {
+    return apiClient.request(`/api/class-teacher/home/intake/drafts/${draftId}/discard`, {
+      method: 'POST', headers: headers(token), body: { expected_version: expectedVersion }, decode: record,
+    })
+  },
+  adoptOrdinaryDraft(value: HomeIntakeOperation, token?: string, draftRef?: HomeIntakeDraftRef) {
+    const draftId = draftRef?.draftId || value.draft_id
+    const draftVersion = draftRef?.version || value.draft_version
+    if (!draftId || !draftVersion || !value.result_fingerprint) throw new Error('home intake draft required')
+    return apiClient.request(`/api/class-teacher/home/intake/drafts/${draftId}/adopt-ordinary`, {
+      method: 'POST', headers: headers(token), body: {
+        expected_version: draftVersion,
+        source_operation_id: value.operation_id,
+        result_fingerprint: value.result_fingerprint,
+      }, decode: record,
+    })
+  },
+  followUpPreview(operationId: string, answer: string, token?: string, referenceDate?: string, selectedStepKeys: string[] = [], selectedCalendarKeys: string[] = []) {
     return apiClient.request(`/api/class-teacher/home/intake/operations/${operationId}/follow-up-previews`, {
-      method: 'POST', headers: headers(token), body: { answer, reference_date: referenceDate ?? null }, decode: preview,
+      method: 'POST', headers: headers(token), body: { answer, reference_date: referenceDate ?? null, selected_step_keys: selectedStepKeys, selected_calendar_keys: selectedCalendarKeys }, decode: preview,
     })
   },
   confirmPlan(value: HomeIntakeOperation, operationId: string) {
@@ -385,6 +539,19 @@ export const homeIntakeApi = {
       method: 'POST', headers: headers(token), body: {
         source_operation_id: sourceOperationId, operation_id: operationId, title: title || null, due_date: null,
       }, decode: manualFallback,
+    })
+  },
+  adopt(value: HomeIntakeOperation, operationId: string, subjectIds: string[], token: string, draftRef?: HomeIntakeDraftRef) {
+    if (!value.result_fingerprint) throw new Error('home intake result fingerprint required')
+    return apiClient.request('/api/class-teacher/home/intake/adopt', {
+      method: 'POST', headers: headers(token), body: {
+        source_operation_id: value.operation_id,
+        operation_id: operationId,
+        result_fingerprint: value.result_fingerprint,
+        subject_ids: subjectIds,
+        draft_id: draftRef?.draftId || value.draft_id,
+        draft_version: draftRef?.version || value.draft_version,
+      }, decode: record,
     })
   },
 }

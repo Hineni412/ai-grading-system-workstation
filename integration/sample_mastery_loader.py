@@ -5,6 +5,11 @@ from pathlib import Path
 from typing import Any
 
 from integration.mastery_adapter import adapt_mastery_rows, read_mastery_json
+from path_manager import get_path_manager
+from question_bank.current_knowledge import (
+    CurrentKnowledgeResolver,
+    CurrentKnowledgeUnavailable,
+)
 
 
 DEFAULT_SAMPLE_PATH = (
@@ -50,7 +55,18 @@ def build_sample_debug_payload(
         for row in source_rows
         if _first_text(row, "student_id", "student_code") == normalized_student_id
     ]
-    profiles = adapt_mastery_rows(raw_rows, student_id=normalized_student_id)
+    try:
+        current_knowledge = CurrentKnowledgeResolver.from_active_database(
+            get_path_manager().qb_db_path
+        )
+    except CurrentKnowledgeUnavailable:
+        profiles = []
+    else:
+        profiles = adapt_mastery_rows(
+            raw_rows,
+            current_knowledge=current_knowledge,
+            student_id=normalized_student_id,
+        )
     return {
         "student_id": normalized_student_id,
         "raw_rows": raw_rows,

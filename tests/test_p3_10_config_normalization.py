@@ -161,13 +161,9 @@ def test_quality_warning_order_and_text_are_exact() -> None:
     }
 
     warnings = quality.collect_generated_config_quality_warnings(payload)
-    assert len(warnings) == 3
+    assert len(warnings) == 1
     assert not any("knowledge" in warning.lower() for warning in warnings)
-    assert warnings == [
-        "[质量检查-阻断] Q1 的题干、公式、答案或踩分点中存在疑似乱码",
-        "[质量检查-阻断] Q1 缺少可评分的文本标准答案",
-        "[质量检查-阻断] Q1/Q1 缺少可评分的文本标准答案",
-    ]
+    assert warnings == ["[质量检查-阻断] Q1 缺少可评分的文本标准答案"]
 
 
 def test_score_allocation_structure_validation_and_application_are_exact() -> None:

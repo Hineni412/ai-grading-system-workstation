@@ -1,29 +1,33 @@
 <script setup lang="ts">
-import { computed, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 
 import {
+  QUESTION_TYPES,
   type ConfigQuestionPreview,
   type ConfigAmbiguousAssetDecision,
   type ConfigSource,
   type ConfigSourceAsset,
   type QuestionDecision,
+  type QuestionType,
 } from '../../api/config-workspace'
 import QuestionContentRenderer from '../question-bank/QuestionContentRenderer.vue'
+import type { ConfigQuestionGenerationState } from '../../api/config-workspace'
 
 const props = withDefaults(defineProps<{
   source: ConfigSource
   decisions?: QuestionDecision[]
   assetDecisions?: ConfigAmbiguousAssetDecision[]
+  questionStates?: ConfigQuestionGenerationState[]
 }>(), {
   decisions: () => [],
   assetDecisions: () => [],
+  questionStates: () => [],
 })
 
 const emit = defineEmits<{
   'update:decisions': [decisions: QuestionDecision[]]
   'update:asset-decisions': [decisions: ConfigAmbiguousAssetDecision[]]
 }>()
-
 const emptyRichContent: NonNullable<ConfigQuestionPreview['rich_content']> = {
   available: false,
   question_block_count: 0,
@@ -62,11 +66,7 @@ const sourceAssets = computed<ConfigSourceAsset[]>(() => {
 
 const uncertainAssets = computed(() => sourceAssets.value
   .filter((item) => item.assignment_state === 'uncertain'))
-
-const unresolvedAssetCount = computed(() => {
-  const resolved = new Set(props.assetDecisions.map((item) => item.candidate_id))
-  return uncertainAssets.value.filter((item) => !resolved.has(item.asset_id)).length
-})
+const expandedAnswerQuestionId = ref<string | null>(null)
 
 function richContent(question: ConfigQuestionPreview): NonNullable<ConfigQuestionPreview['rich_content']> {
   return question.rich_content ?? emptyRichContent
@@ -84,17 +84,6 @@ function textBlocks(
 
 function assetDecision(candidateId: string): ConfigAmbiguousAssetDecision | undefined {
   return props.assetDecisions.find((item) => item.candidate_id === candidateId)
-}
-
-function assetChoice(asset: ConfigSourceAsset): string {
-  const decision = assetDecision(asset.asset_id)
-  if (decision === undefined) {
-    return asset.question_id === null
-      ? ''
-      : `${asset.question_id}:${asset.asset_kind}`
-  }
-  if (decision.action === 'ignore') return 'ignore'
-  return `${decision.question_id}:${decision.asset_kind}`
 }
 
 function bindAsset(
@@ -116,26 +105,18 @@ function bindAsset(
   ])
 }
 
-function updateAssetChoice(asset: ConfigSourceAsset, event: Event): void {
-  const value = (event.currentTarget as HTMLSelectElement).value
-  const retained = props.assetDecisions.filter(
-    (item) => item.candidate_id !== asset.asset_id,
-  )
-  if (!value) {
-    emit('update:asset-decisions', retained)
-    return
-  }
-  if (value === 'ignore') {
-    emit('update:asset-decisions', [
-      ...retained,
-      { candidate_id: asset.asset_id, action: 'ignore' },
-    ])
-    return
-  }
-  const [questionId, assetKind] = value.split(':')
-  if (!props.source.questions.some((item) => item.question_id === questionId)
-    || !['question', 'answer'].includes(assetKind ?? '')) return
-  bindAsset(asset.asset_id, questionId!, assetKind as 'question' | 'answer')
+function ignoreAsset(assetId: string): void {
+  const current = assetDecision(assetId)
+  emit('update:asset-decisions', [
+    ...props.assetDecisions.filter((item) => item.candidate_id !== assetId),
+    ...(current?.action === 'ignore'
+      ? []
+      : [{ candidate_id: assetId, action: 'ignore' as const }]),
+  ])
+}
+
+function isIgnored(assetId: string): boolean {
+  return assetDecision(assetId)?.action === 'ignore'
 }
 
 function startAssetDrag(assetId: string, event: DragEvent): void {
@@ -175,7 +156,9 @@ function imageUrls(question: ConfigQuestionPreview, assetKind: 'question' | 'ans
 
 function assetPlacement(asset: ConfigSourceAsset): { questionId: string | null; assetKind: 'question' | 'answer' } | null {
   const decision = assetDecision(asset.asset_id)
-  if (decision?.action === 'ignore') return null
+  if (decision?.action === 'ignore') {
+    return { questionId: asset.question_id, assetKind: asset.asset_kind }
+  }
   if (decision?.action === 'bind') {
     return { questionId: decision.question_id, assetKind: decision.asset_kind }
   }
@@ -196,11 +179,65 @@ function candidatePlacement(asset: ConfigSourceAsset): string {
   return `${decision.question_id} · ${decision.asset_kind === 'question' ? '题目' : '答案'}`
 }
 
+function candidatesBefore(questionId: string): ConfigSourceAsset[] {
+  return uncertainAssets.value.filter((item) => item.candidate_question_ids[1] === questionId)
+}
+
+function stateOf(questionId: string): 'pending' | 'running' | 'passed' | 'blocked' | 'failed' | '' {
+  return props.questionStates.find((item) => item.question_id === questionId)?.state ?? ''
+}
+
 function answerStatus(question: ConfigQuestionPreview): string {
   if (question.local_answer_trusted) return '答案已匹配'
   if (question.answer_present) return '识别到答案，完整预览'
   return '未识别到答案'
 }
+
+const questionTypeLabels: Record<QuestionType, string> = {
+  choice: '选择题',
+  fill_blank: '填空题',
+  calculation: '计算题',
+  proof: '证明题',
+  comprehensive: '综合解答题',
+}
+
+function decisionFor(questionId: string): QuestionDecision | undefined {
+  return props.decisions.find((item) => item.question_id === questionId)
+}
+
+function confirmQuestionType(questionId: string, event: Event): void {
+  const questionType = (event.currentTarget as HTMLSelectElement).value as QuestionType | ''
+  const current = decisionFor(questionId)
+  const retained = props.decisions.filter((item) => item.question_id !== questionId)
+  if (!questionType) {
+    emit('update:decisions', current
+      ? [...retained, { ...current, question_type: undefined }]
+      : retained)
+    return
+  }
+  emit('update:decisions', [
+    ...retained,
+    {
+      question_id: questionId,
+      excluded: current?.excluded ?? false,
+      ...(current ?? {}),
+      question_type: questionType,
+    },
+  ])
+}
+
+function openFullAnswer(questionId: string): void {
+  expandedAnswerQuestionId.value = questionId
+}
+
+function closeFullAnswer(): void {
+  expandedAnswerQuestionId.value = null
+}
+
+const expandedAnswer = computed(() => (
+  props.source.questions.find((question) => question.question_id === expandedAnswerQuestionId.value)
+  ?? null
+))
 
 watch(() => props.source.source_revision, (_revision, previous) => {
   if (previous !== undefined || props.decisions.length > 0) emit('update:decisions', [])
@@ -212,73 +249,55 @@ watch(() => props.source.source_revision, (_revision, previous) => {
     <header class="config-section-heading">
       <div>
         <h2 id="question-review-title">核对拆题结果</h2>
-        <p>题目与完整答案并排呈现。黄色图片请拖到对应区域；题型、小问和作答方式由 AI 在后续分析中判断。</p>
+        <p>题目与完整答案并排呈现。黄色图片请拖到对应区域；只有题面和解析冲突时才需要老师确认题型。</p>
       </div>
       <span v-if="source.questions.length" class="question-review__count">
         共 {{ source.questions.length }} 题
       </span>
     </header>
 
-    <aside
-      v-if="uncertainAssets.length"
-      class="question-review__asset-tray"
-      :class="{ 'is-complete': unresolvedAssetCount === 0 }"
-      aria-label="待归属图片"
-    >
-      <div class="question-review__asset-tray-heading">
-        <div>
-          <strong>{{ unresolvedAssetCount ? `${unresolvedAssetCount} 张图片待归属` : '图片归属已完成' }}</strong>
-          <span>本地程序不猜测，只提供相邻题作为建议；你也可以拖到其他题目的题目区或答案区。</span>
-        </div>
-      </div>
-      <div class="question-review__asset-tray-list">
-        <article
-          v-for="candidate in uncertainAssets"
-          :key="candidate.asset_id"
-          class="question-review__asset-candidate"
-          :class="{ 'is-resolved': assetDecision(candidate.asset_id) !== undefined }"
-          draggable="true"
-          :data-asset-id="candidate.asset_id"
-          @dragstart="startAssetDrag(candidate.asset_id, $event)"
-        >
-          <img :src="candidate.asset_url" :alt="`${candidate.asset_id} 待归属图片`">
-          <div>
-            <strong>{{ candidate.asset_id }}</strong>
-            <span>{{ candidate.candidate_question_ids.join(' / ') }}</span>
-            <small>{{ candidatePlacement(candidate) }}</small>
-          </div>
-          <label>
-            <span class="sr-only">放到</span>
-            <select
-              :aria-label="`${candidate.asset_id} 图片归属`"
-              :value="assetChoice(candidate)"
-              @change="updateAssetChoice(candidate, $event)"
-            >
-              <option value="">暂不确定</option>
-              <template v-for="question in source.questions" :key="question.question_id">
-                <option :value="`${question.question_id}:question`">{{ question.question_id }} 题目</option>
-                <option :value="`${question.question_id}:answer`">{{ question.question_id }} 答案</option>
-              </template>
-              <option value="ignore">忽略这张图片</option>
-            </select>
-          </label>
-        </article>
-      </div>
-    </aside>
-
     <p v-if="source.questions.length === 0" class="question-review__empty" role="status">
       当前来源没有可核对的题目，请更换文件后重试。
     </p>
     <ol v-else class="question-review__list">
+      <template v-for="question in source.questions" :key="question.question_id">
       <li
-        v-for="question in source.questions"
-        :key="question.question_id"
+        v-for="candidate in candidatesBefore(question.question_id)"
+        :key="candidate.asset_id"
+        class="question-review__asset-between"
+        :class="{ 'is-ignored': isIgnored(candidate.asset_id) }"
+      >
+        <img :src="candidate.asset_url" :alt="`${candidate.asset_id} 待归属图片`" draggable="true" @dragstart="startAssetDrag(candidate.asset_id, $event)">
+        <div><strong>疑难图片 · {{ candidate.candidate_question_ids.join(' / ') }}</strong><small>{{ candidatePlacement(candidate) }}</small></div>
+        <button
+          type="button"
+          class="question-review__ignore-button"
+          :aria-label="isIgnored(candidate.asset_id) ? '撤销忽略这张图片' : '忽略这张图片，不发送给AI'"
+          :aria-pressed="isIgnored(candidate.asset_id)"
+          @click="ignoreAsset(candidate.asset_id)"
+        ><span aria-hidden="true">×</span></button>
+      </li>
+      <li
         class="question-review__row"
+        :class="{ 'is-exception': ['blocked', 'failed'].includes(stateOf(question.question_id)) }"
+        :data-question-row="question.question_id"
       >
         <header class="question-review__identity">
-          <strong class="question-review__id">{{ question.question_id }}</strong>
+          <div class="question-review__toggle">
+            <span :class="`is-${stateOf(question.question_id) || 'idle'}`" aria-hidden="true">●</span>
+            <strong class="question-review__id">{{ question.question_id }}</strong>
+            <span>题目与完整答案</span>
+          </div>
           <span v-if="question.needs_review" class="question-review__warning">建议留意预览</span>
         </header>
+
+        <label v-if="question.question_type_review_required" class="question-review__type-check">
+          <span><strong>请确认题型</strong>{{ question.question_type_review_reason || '题面形式与解析内容存在冲突。' }}</span>
+          <select :value="decisionFor(question.question_id)?.question_type ?? ''" @change="confirmQuestionType(question.question_id, $event)">
+            <option value="">请选择（本地建议：{{ questionTypeLabels[question.question_type as QuestionType] ?? question.question_type }}）</option>
+            <option v-for="type in QUESTION_TYPES" :key="type" :value="type">{{ questionTypeLabels[type] }}</option>
+          </select>
+        </label>
 
         <div class="question-review__pair">
           <section
@@ -298,11 +317,12 @@ watch(() => props.source.source_revision, (_revision, previous) => {
                 dense
               />
             </div>
-            <div class="question-review__image-well" :aria-label="`${question.question_id} 题目图片放置区`">
+            <div v-if="placedAssets(question.question_id, 'question').length" class="question-review__image-well" :aria-label="`${question.question_id} 题目图片放置区`">
               <div
                 v-for="(asset, index) in placedAssets(question.question_id, 'question')"
                 :key="asset.asset_id"
                 class="question-review__placed-asset"
+                :class="{ 'is-ignored': isIgnored(asset.asset_id) }"
               >
                 <img
                   :src="asset.asset_url"
@@ -311,19 +331,14 @@ watch(() => props.source.source_revision, (_revision, previous) => {
                   :data-asset-id="asset.asset_id"
                   @dragstart="startAssetDrag(asset.asset_id, $event)"
                 >
-                <label>
-                  <span class="sr-only">移动{{ question.question_id }}题目图{{ index + 1 }}</span>
-                  <select :value="assetChoice(asset)" @change="updateAssetChoice(asset, $event)">
-                    <option value="">选择图片归属</option>
-                    <template v-for="target in source.questions" :key="target.question_id">
-                      <option :value="`${target.question_id}:question`">{{ target.question_id }} 题目</option>
-                      <option :value="`${target.question_id}:answer`">{{ target.question_id }} 答案</option>
-                    </template>
-                    <option value="ignore">忽略这张图片</option>
-                  </select>
-                </label>
+                <button
+                  type="button"
+                  class="question-review__ignore-button"
+                  :aria-label="isIgnored(asset.asset_id) ? '撤销忽略这张图片' : '忽略这张图片，不发送给AI'"
+                  :aria-pressed="isIgnored(asset.asset_id)"
+                  @click="ignoreAsset(asset.asset_id)"
+                ><span aria-hidden="true">×</span></button>
               </div>
-              <span v-if="placedAssets(question.question_id, 'question').length === 0">可将图片拖到这里</span>
             </div>
           </section>
 
@@ -334,7 +349,7 @@ watch(() => props.source.source_revision, (_revision, previous) => {
             @drop.prevent="dropCandidate(question.question_id, 'answer', $event)"
           >
             <header><strong>完整答案</strong><span>{{ answerStatus(question) }}</span></header>
-            <div :data-answer-content="question.question_id">
+            <div class="question-review__answer-preview" :data-answer-content="question.question_id">
               <QuestionContentRenderer
                 :blocks="textBlocks(question, 'answer')"
                 :fallback="question.answer_preview"
@@ -343,11 +358,19 @@ watch(() => props.source.source_revision, (_revision, previous) => {
                 dense
               />
             </div>
-            <div class="question-review__image-well" :aria-label="`${question.question_id} 答案图片放置区`">
+            <button
+              type="button"
+              class="question-review__answer-expand"
+              @click="openFullAnswer(question.question_id)"
+            >
+              <span aria-hidden="true">⋯</span> 查看完整答案
+            </button>
+            <div v-if="placedAssets(question.question_id, 'answer').length" class="question-review__image-well" :aria-label="`${question.question_id} 答案图片放置区`">
               <div
                 v-for="(asset, index) in placedAssets(question.question_id, 'answer')"
                 :key="asset.asset_id"
                 class="question-review__placed-asset"
+                :class="{ 'is-ignored': isIgnored(asset.asset_id) }"
               >
                 <img
                   :src="asset.asset_url"
@@ -356,24 +379,49 @@ watch(() => props.source.source_revision, (_revision, previous) => {
                   :data-asset-id="asset.asset_id"
                   @dragstart="startAssetDrag(asset.asset_id, $event)"
                 >
-                <label>
-                  <span class="sr-only">移动{{ question.question_id }}答案图{{ index + 1 }}</span>
-                  <select :value="assetChoice(asset)" @change="updateAssetChoice(asset, $event)">
-                    <option value="">选择图片归属</option>
-                    <template v-for="target in source.questions" :key="target.question_id">
-                      <option :value="`${target.question_id}:question`">{{ target.question_id }} 题目</option>
-                      <option :value="`${target.question_id}:answer`">{{ target.question_id }} 答案</option>
-                    </template>
-                    <option value="ignore">忽略这张图片</option>
-                  </select>
-                </label>
+                <button
+                  type="button"
+                  class="question-review__ignore-button"
+                  :aria-label="isIgnored(asset.asset_id) ? '撤销忽略这张图片' : '忽略这张图片，不发送给AI'"
+                  :aria-pressed="isIgnored(asset.asset_id)"
+                  @click="ignoreAsset(asset.asset_id)"
+                ><span aria-hidden="true">×</span></button>
               </div>
-              <span v-if="placedAssets(question.question_id, 'answer').length === 0">可将图片拖到这里</span>
             </div>
           </section>
         </div>
       </li>
+      </template>
     </ol>
+
+    <Teleport to="body">
+      <div
+        v-if="expandedAnswer"
+        class="question-review__answer-layer"
+        @click.self="closeFullAnswer"
+      >
+        <aside
+          class="question-review__answer-drawer"
+          role="dialog"
+          aria-modal="true"
+          :aria-label="`${expandedAnswer.question_id} 完整答案`"
+        >
+          <header>
+            <div>
+              <small>{{ expandedAnswer.question_id }}</small>
+              <h3>完整答案</h3>
+            </div>
+            <button type="button" aria-label="关闭完整答案" @click="closeFullAnswer">×</button>
+          </header>
+          <QuestionContentRenderer
+            :blocks="textBlocks(expandedAnswer, 'answer')"
+            :fallback="expandedAnswer.answer_preview"
+            empty-label="答案内容暂未识别。"
+            media-mode="review"
+          />
+        </aside>
+      </div>
+    </Teleport>
   </section>
 </template>
 
@@ -436,6 +484,32 @@ watch(() => props.source.source_revision, (_revision, previous) => {
   border: 0;
   list-style: none;
 }
+.question-review__asset-between { position: relative; display: grid; grid-template-columns: 88px minmax(0, 1fr); align-items: center; gap: var(--space-3); padding: var(--space-3) 52px var(--space-3) var(--space-3); border: 1px solid #d7a94a; border-left-width: 4px; border-radius: var(--radius-sm); background: #fff8e8; }
+.question-review__asset-between img { width: 88px; height: 72px; object-fit: contain; }
+.question-review__asset-between small { display: block; color: var(--color-text-secondary); }
+
+.question-review__ignore-button {
+  position: absolute;
+  inset-block-start: var(--space-2);
+  inset-inline-end: var(--space-2);
+  display: grid;
+  width: 34px;
+  height: 34px;
+  place-items: center;
+  padding: 0;
+  border: 1px solid color-mix(in srgb, var(--color-text-secondary) 35%, transparent);
+  border-radius: 50%;
+  background: color-mix(in srgb, white 76%, transparent);
+  color: var(--color-text-secondary);
+  font-size: 24px;
+  line-height: 1;
+  cursor: pointer;
+  backdrop-filter: blur(3px);
+}
+.question-review__ignore-button:hover,
+.question-review__ignore-button:focus-visible { border-color: var(--color-danger); color: var(--color-danger); }
+.question-review__ignore-button:focus-visible { outline: 2px solid var(--color-danger); outline-offset: 2px; }
+.question-review__ignore-button[aria-pressed="true"] { border-color: var(--color-danger); background: var(--color-danger); color: white; }
 
 .question-review__row {
   display: grid;
@@ -444,16 +518,25 @@ watch(() => props.source.source_revision, (_revision, previous) => {
   padding: 0 0 var(--space-3);
   border-bottom: 1px solid var(--color-border-subtle);
 }
-
+.question-review__row.is-exception { padding: var(--space-3); border: 1px solid color-mix(in srgb, var(--color-danger) 45%, var(--color-border-default)); border-left-width: 4px; background: color-mix(in srgb, var(--color-danger-subtle) 45%, white); }
 .question-review__identity {
   display: flex;
   align-items: center;
   gap: var(--space-2);
 }
-
+.question-review__type-check { display: grid; grid-template-columns: minmax(0, 1fr) minmax(180px, 240px); align-items: center; gap: var(--space-3); padding: var(--space-2) var(--space-3); border-inline-start: 4px solid #d39a1f; background: #fff7dc; }
+.question-review__type-check > span { display: grid; gap: 2px; color: var(--color-text-secondary); font-size: var(--font-size-caption); }
+.question-review__type-check strong { color: #8a5b00; }
+.question-review__type-check select { width: 100%; }
+.question-review__toggle { display: flex; min-width: 0; flex: 1; align-items: center; gap: var(--space-2); padding: var(--space-1); color: var(--color-text-primary); text-align: left; }
+.question-review__toggle > span:last-child { min-width: 0; overflow: hidden; color: var(--color-text-secondary); font-size: var(--font-size-caption); text-overflow: ellipsis; white-space: nowrap; }
+.question-review__toggle .is-passed { color: var(--color-success); }
+.question-review__toggle .is-blocked, .question-review__toggle .is-failed { color: var(--color-danger); }
+.question-review__toggle .is-pending, .question-review__toggle .is-running, .question-review__toggle .is-idle { color: #9aa7ab; }
 .question-review__pair {
   display: grid;
-  grid-template-columns: minmax(0, 1.15fr) minmax(0, .85fr);
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: stretch;
   gap: var(--space-3);
   min-width: 0;
 }
@@ -470,6 +553,68 @@ watch(() => props.source.source_revision, (_revision, previous) => {
 }
 
 .question-review__paper-panel--answer { background: #f8fbfb; }
+
+.question-review__answer-preview {
+  position: relative;
+  max-height: 260px;
+  overflow: hidden;
+}
+
+.question-review__answer-preview::after {
+  position: absolute;
+  inset-inline: 0;
+  inset-block-end: 0;
+  height: 42px;
+  background: linear-gradient(transparent, #f8fbfb);
+  content: '';
+  pointer-events: none;
+}
+
+.question-review__answer-expand {
+  align-self: flex-start;
+  min-height: 32px;
+  padding-inline: 8px;
+  border: 0;
+  background: transparent;
+  color: var(--color-accent);
+  font-size: var(--font-size-caption);
+}
+
+.question-review__answer-expand:hover { background: color-mix(in srgb, var(--color-accent) 8%, transparent); }
+
+.question-review__answer-layer {
+  position: fixed;
+  z-index: 1300;
+  inset: 0;
+  display: flex;
+  justify-content: flex-end;
+  background: rgb(28 39 51 / 38%);
+}
+
+.question-review__answer-drawer {
+  display: flex;
+  width: min(720px, 100%);
+  max-width: 100%;
+  height: 100%;
+  flex-direction: column;
+  gap: var(--space-4);
+  padding: var(--space-5);
+  overflow: auto;
+  background: var(--color-bg-surface);
+  box-shadow: -12px 0 32px rgb(28 39 51 / 12%);
+}
+
+.question-review__answer-drawer > header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.question-review__answer-drawer h3,
+.question-review__answer-drawer small { margin: 0; }
+.question-review__answer-drawer small { color: var(--color-text-secondary); }
+.question-review__answer-drawer button { font-size: 24px; line-height: 1; }
 
 .question-review__paper-panel > header {
   display: flex;
@@ -496,9 +641,11 @@ watch(() => props.source.source_revision, (_revision, previous) => {
 }
 
 .question-review__placed-asset {
+  position: relative;
   display: grid;
   gap: var(--space-1);
   width: min(100%, 240px);
+  padding: var(--space-1);
 }
 
 .question-review__placed-asset > img {
@@ -506,6 +653,53 @@ watch(() => props.source.source_revision, (_revision, previous) => {
   max-height: 180px;
   object-fit: contain;
   cursor: grab;
+}
+
+.question-review__placed-asset.is-ignored,
+.question-review__asset-between.is-ignored {
+  overflow: hidden;
+}
+
+.question-review__placed-asset.is-ignored > img,
+.question-review__asset-between.is-ignored > img {
+  filter: grayscale(1);
+  opacity: .28;
+}
+
+.question-review__placed-asset.is-ignored::before,
+.question-review__placed-asset.is-ignored::after,
+.question-review__asset-between.is-ignored::before,
+.question-review__asset-between.is-ignored::after {
+  position: absolute;
+  z-index: 1;
+  inset-block-start: 50%;
+  inset-inline-start: 50%;
+  width: min(74%, 170px);
+  height: 4px;
+  border-radius: 999px;
+  background: var(--color-danger);
+  content: '';
+  pointer-events: none;
+  transform-origin: center;
+  animation: question-review-cross-in 180ms ease-out both;
+}
+.question-review__placed-asset.is-ignored::before,
+.question-review__asset-between.is-ignored::before { transform: translate(-50%, -50%) rotate(38deg); }
+.question-review__placed-asset.is-ignored::after,
+.question-review__asset-between.is-ignored::after { transform: translate(-50%, -50%) rotate(-38deg); }
+.question-review__placed-asset.is-ignored .question-review__ignore-button,
+.question-review__asset-between.is-ignored .question-review__ignore-button { z-index: 2; }
+
+@keyframes question-review-cross-in {
+  from { opacity: 0; scale: .55 1; }
+  to { opacity: 1; scale: 1 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .question-review__placed-asset.is-ignored::before,
+  .question-review__placed-asset.is-ignored::after,
+  .question-review__asset-between.is-ignored::before,
+  .question-review__asset-between.is-ignored::after { animation: none; }
 }
 
 .question-review__placed-asset select {
@@ -520,6 +714,9 @@ watch(() => props.source.source_revision, (_revision, previous) => {
 }
 
 @media (max-width: 900px) {
+  .question-review__type-check { grid-template-columns: minmax(0, 1fr); }
   .question-review__pair { grid-template-columns: minmax(0, 1fr); }
+  .question-review__asset-between { grid-template-columns: 64px minmax(0, 1fr); }
+  .question-review__asset-between img { width: 64px; height: 56px; }
 }
 </style>

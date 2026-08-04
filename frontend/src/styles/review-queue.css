@@ -145,9 +145,22 @@
   background: var(--color-bg-subtle);
 }
 
+.review-question-strip button[data-needs-review="true"] {
+  border-inline-start: 4px solid #d39a1f;
+  background: #fff6d9;
+}
+
+.review-question-strip button[data-needs-review="true"]:hover {
+  background: #ffefbd;
+}
+
 .review-question-strip button[aria-current="true"] {
   border-block-end-color: var(--color-accent);
   background: var(--color-bg-selected);
+}
+
+.review-question-strip button[data-needs-review="true"][aria-current="true"] {
+  background: linear-gradient(135deg, #fff1be 0%, var(--color-bg-selected) 100%);
 }
 
 .review-question-strip strong {

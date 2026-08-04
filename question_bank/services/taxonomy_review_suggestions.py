@@ -23,8 +23,17 @@ _COMPOSITE_SEPARATOR = re.compile(r"[，,、；;\n]+")
 _TERMINAL_STATUSES = frozenset(
     {"completed", "partial", "failed", "cancelled", "stale"}
 )
-_ALLOWED_AI_DECISIONS = frozenset(
-    {"merge", "map_many", "approve", "reject", "uncertain"}
+_ALLOWED_RELATION_KINDS = frozenset(
+    {
+        "exact",
+        "broader",
+        "narrower",
+        "related",
+        "new_core_candidate",
+        "wrong_dimension",
+        "reject",
+        "uncertain",
+    }
 )
 
 
@@ -89,6 +98,10 @@ class TaxonomySuggestionService:
             raise TaxonomySuggestionInvalid(
                 "At least one pending proposal must be selected"
             )
+        if len(selected) > 200:
+            raise TaxonomySuggestionInvalid(
+                "A suggestion run can contain at most 200 proposals"
+            )
         command = {
             "proposal_ids": sorted(selected),
             "expected_revision": int(expected_revision),
@@ -107,7 +120,9 @@ class TaxonomySuggestionService:
                     self._require_run(state, remembered.get("run_id"))
                 )
 
-            proposal_page = self.governance.list_proposals(status="pending")
+            proposal_page = self.contextualize_proposal_page(
+                self.governance.list_proposals(status="pending")
+            )
             current_revision = int(proposal_page["revision"])
             if current_revision != int(expected_revision):
                 raise TaxonomySuggestionRevisionConflict(
@@ -156,6 +171,15 @@ class TaxonomySuggestionService:
                 "run_id": run_id,
                 "status": "queued",
                 "taxonomy_revision": current_revision,
+                "evidence_revision": int(
+                    proposal_page.get("evidence_revision") or 0
+                ),
+                "graph_release_id": str(
+                    self.governance.observation_snapshot().get(
+                        "graph_release_id"
+                    )
+                    or ""
+                ),
                 "stale": False,
                 "cancellation_requested": False,
                 "created_at": now,
@@ -169,8 +193,18 @@ class TaxonomySuggestionService:
                         ],
                         "question_refs": _positive_ids(
                             pending_by_id[proposal_id].get(
-                                "question_refs", []
+                                "active_question_refs", []
                             )
+                        ),
+                        "taxonomy_revision": current_revision,
+                        "evidence_revision": int(
+                            proposal_page.get("evidence_revision") or 0
+                        ),
+                        "graph_release_id": str(
+                            self.governance.observation_snapshot().get(
+                                "graph_release_id"
+                            )
+                            or ""
                         ),
                         "status": "pending",
                         "attempts": 0,
@@ -208,7 +242,9 @@ class TaxonomySuggestionService:
         all_refs = _positive_ids(
             question_id
             for item in items
-            for question_id in item.get("question_refs", [])
+            for question_id in item.get(
+                "active_question_refs", item.get("question_refs", [])
+            )
         )
         active_ids = set(all_refs)
         if all_refs and self.question_loader is not None:
@@ -224,26 +260,29 @@ class TaxonomySuggestionService:
                     and str(raw.get("id") or "").isdigit()
                 }
         actionable = 0
-        historical_only = 0
+        visible_items: list[dict[str, Any]] = []
         for item in items:
-            historical_refs = _positive_ids(item.get("question_refs", []))
+            current_refs = _positive_ids(
+                item.get("active_question_refs", [])
+            )
             active_refs = [
                 question_id
-                for question_id in historical_refs
+                for question_id in current_refs
                 if question_id in active_ids
             ]
+            if not active_refs:
+                continue
+            item["question_refs"] = active_refs
             item["active_question_refs"] = active_refs
-            item["unavailable_question_ref_count"] = max(
-                0, len(historical_refs) - len(active_refs)
-            )
-            item["actionable"] = bool(active_refs)
-            if active_refs:
-                actionable += 1
-            else:
-                historical_only += 1
+            item["unavailable_question_ref_count"] = 0
+            item["actionable"] = True
+            actionable += 1
+            visible_items.append(item)
         counts = dict(result.get("counts") or {})
+        counts["pending"] = actionable
         counts["actionable"] = actionable
-        counts["historical_unavailable"] = historical_only
+        counts.pop("historical_unavailable", None)
+        result["items"] = visible_items
         result["counts"] = counts
         return result
 
@@ -505,11 +544,17 @@ class TaxonomySuggestionService:
         if len(target_ids) < 2:
             return None
         return {
-            "decision": "map_many",
+            "relation_kind": "related",
             "target_term_ids": target_ids,
             "reason": "名称可安全拆分并精确匹配到多个现有教材章节。",
             "confidence": 1.0,
             "source": "local_exact",
+            "legacy_format": False,
+            "evidence_question_ids": _positive_ids(
+                item.get("question_refs", [])
+            ),
+            "taxonomy_revision": int(item.get("taxonomy_revision") or 0),
+            "graph_release_id": str(item.get("graph_release_id") or ""),
         }
 
     def _claim_batch(
@@ -650,6 +695,9 @@ class TaxonomySuggestionService:
             "question_summaries": self._question_summaries(
                 item.get("question_refs", [])
             ),
+            "taxonomy_revision": int(item.get("taxonomy_revision") or 0),
+            "evidence_revision": int(item.get("evidence_revision") or 0),
+            "graph_release_id": str(item.get("graph_release_id") or ""),
         }
 
     def _nearby_terms(
@@ -745,8 +793,20 @@ class TaxonomySuggestionService:
             payload = payload_by_id.get(proposal_id)
             if payload is None or proposal_id in suggestions:
                 continue
-            decision = str(raw.get("decision") or "").strip()
-            if decision not in _ALLOWED_AI_DECISIONS:
+            legacy_format = not bool(str(raw.get("relation_kind") or "").strip())
+            relation_kind = str(
+                raw.get("relation_kind")
+                or ({
+                    "merge": "exact",
+                    "map_many": "related",
+                    "approve": "new_core_candidate",
+                }.get(
+                    str(raw.get("decision") or "").strip(),
+                    raw.get("decision"),
+                ))
+                or ""
+            ).strip()
+            if relation_kind not in _ALLOWED_RELATION_KINDS:
                 continue
             allowed_targets = {
                 candidate["id"] for candidate in payload["candidates"]
@@ -759,28 +819,41 @@ class TaxonomySuggestionService:
             )
             if not set(target_ids).issubset(allowed_targets):
                 continue
-            if decision == "merge" and len(target_ids) != 1:
+            if relation_kind == "exact" and len(target_ids) != 1:
                 continue
-            if decision == "map_many" and len(target_ids) < 2:
-                continue
-            if decision in {"approve", "reject", "uncertain"}:
+            if relation_kind in {
+                "new_core_candidate", "reject", "uncertain", "wrong_dimension"
+            }:
                 target_ids = []
             try:
                 confidence = float(raw.get("confidence", 0))
             except (TypeError, ValueError):
                 confidence = 0.0
             suggestions[proposal_id] = {
-                "decision": decision,
+                "relation_kind": relation_kind,
                 "target_term_ids": target_ids,
                 "reason": _trim_text(raw.get("reason"), 300),
                 "confidence": max(0.0, min(1.0, confidence)),
                 "source": "ai",
+                "legacy_format": legacy_format,
+                "evidence_question_ids": [
+                    int(item["id"])
+                    for item in payload["question_summaries"]
+                ],
+                "taxonomy_revision": int(payload["taxonomy_revision"]),
+                "graph_release_id": str(payload["graph_release_id"]),
             }
         return suggestions
 
     def _revision_is_current(self, run: Mapping[str, Any]) -> bool:
-        current = self.governance.list_proposals(status="pending")["revision"]
-        return int(current) == int(run["taxonomy_revision"])
+        current = self.governance.observation_snapshot()
+        return (
+            int(current["taxonomy_revision"]) == int(run["taxonomy_revision"])
+            and int(current["evidence_revision"])
+            == int(run.get("evidence_revision") or 0)
+            and str(current.get("graph_release_id") or "")
+            == str(run.get("graph_release_id") or "")
+        )
 
     def _emit_progress(
         self,

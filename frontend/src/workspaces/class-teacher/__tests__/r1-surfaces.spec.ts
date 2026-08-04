@@ -20,6 +20,7 @@ import { vaultApi } from '../api/vault'
 import type { WorkNode, WorkNodeDetail, WorkSnapshot } from '../api/work'
 import TodaySurface from '../ordinary/TodaySurface.vue'
 import QuickWorkCapture from '../ordinary/QuickWorkCapture.vue'
+import WorkNodeInspector from '../ordinary/WorkNodeInspector.vue'
 import AcademicAnalysisPanel from '../students/AcademicAnalysisPanel.vue'
 import SecurityPanel from '../students/SecurityPanel.vue'
 import StudentDirectoryPanel from '../students/StudentDirectoryPanel.vue'
@@ -50,6 +51,8 @@ describe('B UI R1 surfaces', () => {
       status_observed_at:'2026-08-02T00:00:00Z', lock_reason:null,
     })
     vi.spyOn(studentR1Api, 'directory').mockResolvedValue({ items:[], cursor:null, total:0, page_size:20 })
+    vi.spyOn(studentR1Api, 'currentRoster').mockResolvedValue({ items:[], active_count:0, historical_count:0, replayed:false })
+    vi.spyOn(studentR1Api, 'rosterSource').mockResolvedValue({ items:[], classes:[], source_revision:'r1', total:0, cursor:null })
 
     const host = await mount(ClassTeacherWorkbenchView, {})
 
@@ -83,20 +86,73 @@ describe('B UI R1 surfaces', () => {
     const command = vi.fn().mockResolvedValue({ projection_id:'projection-001' })
     const module = { snapshot, selected:detail, loading:ref(false), error:ref(''), active:ref([node]), load:vi.fn(), inspect:vi.fn(async()=>{ detail.value={node,upstream:[],downstream:[],progress_events:[],collection_summary:null,pending_ai_branches:[],allowed_commands:['open_restricted_projection'],projection_id:'projection-001'} }), command, clearSelection:()=>{detail.value=null} }
     const host = await mount(TodaySurface, { module })
+    expect(host.textContent).toContain('1 项待推进')
+    expect(host.textContent).not.toContain('2 项待推进')
     expect(host.textContent).toContain('待复查')
-    expect(host.textContent).toContain('等待中')
+    expect(host.textContent).not.toContain('等待中')
+    expect(host.querySelectorAll('.summary>div')).toHaveLength(2)
+    expect(host.querySelectorAll('.lane')).toHaveLength(2)
     clickByText(host, '学生事项待复查'); await nextTick()
     clickByText(host, '解锁并打开受保护事项'); await nextTick()
     expect(command).toHaveBeenCalledWith(node, 'open_restricted_projection', {})
   })
 
+  it('hides all-zero summaries and empty work lanes on the homepage', async () => {
+    const snapshot = ref<WorkSnapshot | null>({
+      as_of:'2026-08-04', start_date:'2026-08-04', end_date:'2026-08-04', nodes:[], edges:[],
+      today:[], overdue:[], waiting:[], review_due:[], summary:{today:0,overdue:0,waiting:0,review_due:0},
+      view:'today', cursor:null, source_version:'empty',
+    })
+    const module = {
+      snapshot, selected:ref<WorkNodeDetail | null>(null), loading:ref(false), error:ref(''), active:ref([]),
+      load:vi.fn(), inspect:vi.fn(), command:vi.fn(), clearSelection:vi.fn(),
+    }
+    const host = await mount(TodaySurface, { module })
+
+    expect(host.querySelector('.summary')).toBeNull()
+    expect(host.querySelector('.workspace')).toBeNull()
+    expect(host.textContent).not.toContain('这一段目前没有工作')
+  })
+
+  it('lets ordinary work leave and return to the calendar without deleting its history', async () => {
+    const node: WorkNode = { node_id:'ordinary-1', kind:'task', classification:'ordinary', title:'准备开学材料', details:null, status:'pending', due_date:'2026-08-25', revision:1, created_at:'2026-08-01', updated_at:'2026-08-01', projection_type:null }
+    const selected = ref<WorkNodeDetail | null>({ node, upstream:[], downstream:[], progress_events:[], collection_summary:null, pending_ai_branches:[], allowed_commands:['update_status'], projection_id:null })
+    const command = vi.fn(async (_node: WorkNode, _name: string, fields: Record<string, unknown>) => {
+      selected.value = { ...selected.value!, node: { ...selected.value!.node, status: fields.status as WorkNode['status'], revision: selected.value!.node.revision + 1 } }
+      return {}
+    })
+    const module = { selected, command, clearSelection:vi.fn() }
+    const host = await mount(WorkNodeInspector, { module })
+
+    clickByText(host, '移出日历'); await nextTick()
+    clickByText(host, '确认移出'); await new Promise((resolve)=>setTimeout(resolve,0)); await nextTick()
+    expect(command).toHaveBeenCalledWith(node, 'update_status', { status:'cancelled' })
+    expect(host.textContent).toContain('历史记录仍然保留')
+    clickByText(host, '恢复到日历'); await nextTick()
+    expect(command).toHaveBeenLastCalledWith(expect.objectContaining({ status:'cancelled' }), 'update_status', { status:'pending' })
+  })
+
+  it('explains when an ordinary calendar change is rejected', async () => {
+    const node: WorkNode = { node_id:'ordinary-2', kind:'task', classification:'ordinary', title:'准备材料', details:null, status:'pending', due_date:'2026-08-25', revision:1, created_at:'2026-08-01', updated_at:'2026-08-01', projection_type:null }
+    const selected = ref<WorkNodeDetail | null>({ node, upstream:[], downstream:[], progress_events:[], collection_summary:null, pending_ai_branches:[], allowed_commands:['update_status'], projection_id:null })
+    const host = await mount(WorkNodeInspector, { module:{ selected, command:vi.fn().mockRejectedValue(new Error('conflict')), clearSelection:vi.fn() } })
+
+    clickByText(host, '移出日历'); await nextTick()
+    clickByText(host, '确认移出'); await new Promise((resolve)=>setTimeout(resolve,0)); await nextTick()
+    expect(host.textContent).toContain('请刷新后再试')
+  })
+
   it('directory calls only the lightweight directory interface before selection', async () => {
     const directory = vi.spyOn(studentR1Api, 'directory').mockResolvedValue({ items:[{ subject_id:'s1', display_name:'合成学生', source_student_id:'S001', class_label:'一班', support_record_count:3, support_plan_count:1, confirmed_entry_count:2, projection_state:'applied', attention_pending_count:0, last_confirmed_at:'2026-08-01' }], cursor:null, total:1, page_size:20 })
+    vi.spyOn(studentR1Api, 'currentRoster').mockResolvedValue({ items:[{ source_key:'s1', subject_id:'s1', display_name:'合成学生', class_label:'一班', state:'active' }], active_count:1, historical_count:0, replayed:false })
+    vi.spyOn(studentR1Api, 'rosterSource').mockResolvedValue({ items:[], classes:['一班'], source_revision:'r1', total:0, cursor:null })
     const records = vi.spyOn(studentR1Api, 'records')
     const host = await mount(StudentDirectoryPanel, { token:'synthetic-token' })
     expect(host.textContent).toContain('本页不读取支持正文')
     expect(host.textContent).toContain('合成学生')
+    expect(host.textContent).toContain('当前我班 · 1 人')
     expect(directory).toHaveBeenCalledOnce()
+    expect(directory).toHaveBeenCalledWith('synthetic-token', expect.objectContaining({ classLabel:'一班', rosterState:'active' }))
     expect(records).not.toHaveBeenCalled()
   })
 

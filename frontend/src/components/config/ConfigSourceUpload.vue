@@ -161,44 +161,53 @@ function formatBytes(bytes: number): string {
     <header class="config-section-heading">
       <div>
         <h2 id="config-source-title">上传与拆题</h2>
-        <p>接收 DOCX 或 PDF，并在本机拆分为可核对的题目。</p>
+        <p>更换试卷后会在本机重新拆题，当前核对结果不会静默覆盖。</p>
       </div>
     </header>
 
-    <form class="config-source__form" @submit.prevent="submit">
-      <div class="config-source__picker">
-        <span id="config-source-file-label">选择 DOCX 或 PDF</span>
-        <input
-          ref="fileInput"
-          class="config-source__native-input"
-          type="file"
-          accept=".docx,.pdf,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-          aria-labelledby="config-source-file-label"
-          :disabled="uploading || workspaceLocked"
-          @change="onFileChange"
-        >
-        <div class="config-source__file-control">
-          <button
-            type="button"
-            class="config-source__choose"
+    <div class="config-source__compact">
+      <form class="config-source__form" @submit.prevent="submit">
+        <div class="config-source__picker">
+          <span id="config-source-file-label" class="sr-only">选择 DOCX 或 PDF</span>
+          <input
+            ref="fileInput"
+            class="config-source__native-input"
+            type="file"
+            accept=".docx,.pdf,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            aria-labelledby="config-source-file-label"
             :disabled="uploading || workspaceLocked"
-            @click="chooseFile"
-          >选择文件</button>
-          <span
-            class="config-source__file-name"
-            :class="{ 'has-file': selectedFile !== null }"
-            :title="selectedFile?.name ?? ''"
-          >{{ selectedFileDescription }}</span>
+            @change="onFileChange"
+          >
+          <div class="config-source__file-control">
+            <button
+              type="button"
+              class="config-source__choose"
+              :disabled="uploading || workspaceLocked"
+              @click="chooseFile"
+            >选择试卷</button>
+            <span
+              class="config-source__file-name"
+              :class="{ 'has-file': selectedFile !== null }"
+              :title="selectedFile?.name ?? ''"
+            >{{ selectedFileDescription }}</span>
+          </div>
         </div>
-      </div>
-      <button
-        type="submit"
-        class="config-source__submit"
-        :disabled="uploading || workspaceLocked || selectedFileInvalid"
-      >
-        上传并拆题
-      </button>
-    </form>
+        <button
+          type="submit"
+          class="config-source__submit"
+          :disabled="uploading || workspaceLocked || selectedFileInvalid"
+        >上传并拆题</button>
+      </form>
+
+      <dl v-if="source" class="config-source__summary" aria-label="当前试卷来源">
+        <div><dt>当前文件</dt><dd>{{ source.safe_filename }}</dd></div>
+        <div><dt>大小</dt><dd>{{ formatBytes(source.size_bytes) }}</dd></div>
+        <div><dt>拆题</dt><dd>{{ source.questions.length }} 题</dd></div>
+      </dl>
+      <p v-else class="config-source__summary config-source__summary--empty">
+        上传后，这里显示当前文件和拆题数量。
+      </p>
+    </div>
 
     <div v-if="uploading" class="config-source__progress" role="status" aria-live="polite">
       <progress aria-label="上传并拆题进度" />
@@ -212,12 +221,6 @@ function formatBytes(bytes: number): string {
       @click="reconcileUpload"
     >重新核对上传结果</button>
 
-    <dl v-if="source" class="config-source__summary" aria-label="当前试卷来源">
-      <div><dt>文件</dt><dd>{{ source.safe_filename }}</dd></div>
-      <div><dt>大小</dt><dd>{{ formatBytes(source.size_bytes) }}</dd></div>
-      <div><dt>内容指纹</dt><dd><code>{{ source.sha256_prefix }}</code></dd></div>
-      <div><dt>来源版本</dt><dd><code>{{ source.source_revision }}</code></dd></div>
-    </dl>
     <p v-if="source && source.questions.length === 0" class="config-source__empty" role="status">
       未识别到题目。当前来源已接收，可以选择更换文件。
     </p>

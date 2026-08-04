@@ -67,8 +67,18 @@ def collect_score_consistency_issues(
             ):
                 issues.append(f"{question_id}/{part_id} 存在无效的评分步骤分值")
                 continue
-            step_total = sum(
+            comparable_scores = [
                 float(value) for value in step_scores if value is not None
+            ]
+            if (
+                len(comparable_scores) > 1
+                and max(comparable_scores) - min(comparable_scores) > 2.01
+            ):
+                issues.append(
+                    f"{question_id}/{part_id} 同一小问内的评分步骤分差超过2分"
+                )
+            step_total = sum(
+                comparable_scores
             )
             if not _scores_equal(step_total, part_score):
                 issues.append(
@@ -134,6 +144,12 @@ def _validate_exact_score_allocation_payload(
                 _strict_positive_score(item.get("step_score"))
                 for item in actual_part["steps"]
             )
+            step_scores = [
+                _strict_positive_score(item.get("step_score"))
+                for item in actual_part["steps"]
+            ]
+            if len(step_scores) > 1 and max(step_scores) - min(step_scores) > 2:
+                raise ValueError("AI 统一配分中同一小问的评分步骤分差超过2分。")
             if step_total != part_score:
                 raise ValueError("AI 统一配分的步骤分之和不等于分问分。")
         if part_total != question_score:

@@ -53,7 +53,12 @@ from backend.api.schemas.question_bank import (
     TaxonomyProposalReviewRequest,
     TaxonomyProposalReviewResponse,
     TaxonomySuggestionCreateRequest,
+    TaxonomySuggestionBatchApplyRequest,
+    TaxonomySuggestionBatchPreviewRequest,
+    TaxonomySuggestionBatchPreviewResponse,
     TaxonomySuggestionRetryRequest,
+    TaxonomyReviewOperationResponse,
+    TaxonomyReviewOperationUndoRequest,
     TaxonomySuggestionRunResponse,
     TaxonomySuggestionStartResponse,
     TrainingCriterionBackfillCreateRequest,
@@ -82,6 +87,7 @@ from question_bank.services.taxonomy_review_service import (
     TaxonomyReviewRequestConflict,
     TaxonomyReviewSelectionInvalid,
     TaxonomyReviewService,
+    TaxonomyReviewUndoConflict,
 )
 from question_bank.services.taxonomy_review_suggestions import (
     TaxonomySuggestionInvalid,
@@ -469,6 +475,124 @@ def cancel_taxonomy_suggestions(
     except (OSError, TimeoutError, RuntimeError, ValueError) as exc:
         _raise_taxonomy_storage_api_error(exc)
     return TaxonomySuggestionRunResponse(**run)
+
+
+@router.post(
+    "/taxonomy/suggestions/{run_id}/batch-preview",
+    response_model=TaxonomySuggestionBatchPreviewResponse,
+    responses=TAXONOMY_REVIEW_ERROR_RESPONSES,
+)
+def preview_taxonomy_suggestion_batch(
+    run_id: str,
+    body: TaxonomySuggestionBatchPreviewRequest,
+    suggestion_service: TaxonomySuggestionService = Depends(
+        get_taxonomy_suggestion_service
+    ),
+    review_service: TaxonomyReviewService = Depends(
+        get_taxonomy_review_service
+    ),
+) -> TaxonomySuggestionBatchPreviewResponse:
+    try:
+        run = suggestion_service.get_run(run_id)
+        payload = review_service.preview_suggestion_batch(
+            run,
+            base_revision=body.base_revision,
+            policy_version=body.policy_version,
+        )
+    except TaxonomySuggestionNotFound as exc:
+        raise ApiError(404, "taxonomy_suggestion_not_found", "Suggestion run not found") from exc
+    except (TaxonomyReviewSelectionInvalid, ValueError) as exc:
+        raise ApiError(409, "taxonomy_suggestion_batch_stale", "Suggestion evidence changed") from exc
+    except (TaxonomyStorageError, OSError, TimeoutError, RuntimeError) as exc:
+        _raise_taxonomy_storage_api_error(exc)
+    return TaxonomySuggestionBatchPreviewResponse(**payload)
+
+
+@router.post(
+    "/taxonomy/suggestions/{run_id}/apply",
+    response_model=TaxonomyReviewOperationResponse,
+    responses=TAXONOMY_REVIEW_ERROR_RESPONSES,
+)
+def apply_taxonomy_suggestion_batch(
+    run_id: str,
+    body: TaxonomySuggestionBatchApplyRequest,
+    suggestion_service: TaxonomySuggestionService = Depends(
+        get_taxonomy_suggestion_service
+    ),
+    review_service: TaxonomyReviewService = Depends(
+        get_taxonomy_review_service
+    ),
+) -> TaxonomyReviewOperationResponse:
+    try:
+        run = suggestion_service.get_run(run_id)
+        payload = review_service.apply_suggestion_batch(
+            run,
+            base_revision=body.base_revision,
+            request_token=body.request_token.lower(),
+            policy_version=body.policy_version,
+            accepted_manual_decisions=[
+                item.model_dump() for item in body.accepted_manual_decisions
+            ],
+        )
+    except TaxonomySuggestionNotFound as exc:
+        raise ApiError(404, "taxonomy_suggestion_not_found", "Suggestion run not found") from exc
+    except TaxonomyRevisionConflict as exc:
+        raise ApiError(
+            409,
+            "taxonomy_revision_conflict",
+            "Taxonomy state changed; refresh and retry",
+            {"current_revision": exc.current_revision},
+        ) from exc
+    except TaxonomyReviewRequestConflict as exc:
+        raise ApiError(409, "taxonomy_review_request_conflict", "Request token was reused") from exc
+    except (TaxonomyReviewSelectionInvalid, TaxonomyReviewInvalid, ValueError) as exc:
+        raise ApiError(422, "taxonomy_review_invalid", "Taxonomy batch is invalid") from exc
+    except (TaxonomyStorageError, OSError, TimeoutError, RuntimeError) as exc:
+        _raise_taxonomy_storage_api_error(exc)
+    return TaxonomyReviewOperationResponse(**payload)
+
+
+@router.get(
+    "/taxonomy/review-operations/{operation_id}",
+    response_model=TaxonomyReviewOperationResponse,
+    responses=TAXONOMY_REVIEW_ERROR_RESPONSES,
+)
+def get_taxonomy_review_operation(
+    operation_id: str,
+    service: TaxonomyReviewService = Depends(get_taxonomy_review_service),
+) -> TaxonomyReviewOperationResponse:
+    try:
+        payload = service.read_operation(operation_id)
+    except TaxonomyReviewApplicationNotFound as exc:
+        raise ApiError(404, "taxonomy_review_operation_not_found", "Operation not found") from exc
+    except (TaxonomyStorageError, OSError, TimeoutError, RuntimeError) as exc:
+        _raise_taxonomy_storage_api_error(exc)
+    return TaxonomyReviewOperationResponse(**payload)
+
+
+@router.post(
+    "/taxonomy/review-operations/{operation_id}/undo",
+    response_model=TaxonomyReviewOperationResponse,
+    responses=TAXONOMY_REVIEW_ERROR_RESPONSES,
+)
+def undo_taxonomy_review_operation(
+    operation_id: str,
+    body: TaxonomyReviewOperationUndoRequest,
+    service: TaxonomyReviewService = Depends(get_taxonomy_review_service),
+) -> TaxonomyReviewOperationResponse:
+    try:
+        payload = service.undo_operation(
+            operation_id=operation_id,
+            expected_revision=body.expected_revision,
+            request_token=body.request_token.lower(),
+        )
+    except TaxonomyReviewApplicationNotFound as exc:
+        raise ApiError(404, "taxonomy_review_operation_not_found", "Operation not found") from exc
+    except (TaxonomyReviewUndoConflict, TaxonomyRevisionConflict) as exc:
+        raise ApiError(409, "taxonomy_review_undo_conflict", "Later changes prevent undo") from exc
+    except (TaxonomyStorageError, OSError, TimeoutError, RuntimeError) as exc:
+        _raise_taxonomy_storage_api_error(exc)
+    return TaxonomyReviewOperationResponse(**payload)
 
 
 @router.post(

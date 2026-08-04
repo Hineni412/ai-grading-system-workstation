@@ -1,0 +1,8 @@
+{
+  "source_checkpoints": {
+    "codex/teaching-prep-iteration": {
+      "source_head": "07dc895f91b19c2a6ef0b77a0b629d92df8c210d",
+      "integration_commit": "bb4ab3921234b6ebedff47f4611db6a769063a35"
+    }
+  }
+}

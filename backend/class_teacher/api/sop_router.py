@@ -112,6 +112,7 @@ def create_sop_router() -> APIRouter:
                 title=body.title,
                 summary=body.summary,
                 participant_refs=body.participant_refs,
+                subject_ids=body.subject_ids,
             )
         )
 

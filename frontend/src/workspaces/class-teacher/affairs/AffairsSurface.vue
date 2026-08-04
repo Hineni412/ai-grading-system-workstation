@@ -1,13 +1,14 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
 
-import type { HomeIntakeHandoff } from '../api/homeIntake'
+import { homeIntakeApi, type HomeIntakeDraftSummary, type HomeIntakeHandoff } from '../api/homeIntake'
 import { affairR1Api, type AffairDetail, type AffairStep, type AffairSummary } from '../api/r1'
 import { sopApi, type Affair, type SopTemplate } from '../api/sop'
 
 const props = defineProps<{ token: string; targetId?: string | null; handoff?: HomeIntakeHandoff | null }>()
-const emit = defineEmits<{ handoffPersisted: []; handoffDiscarded: [] }>()
+const emit = defineEmits<{ handoffPersisted: []; handoffDiscarded: []; openDraft: [draftId: string] }>()
 const items = ref<AffairSummary[]>([])
+const drafts = ref<HomeIntakeDraftSummary[]>([])
 const selected = ref<AffairDetail | null>(null)
 const draftText = ref('')
 const draftKind = ref<'fact' | 'communication'>('fact')
@@ -47,6 +48,13 @@ async function load() {
     const target = items.value.find((item) => item.affair_id === selectedId)
     if (target) await open(target)
   } catch { error.value = '事务列表暂时无法读取。' } finally { busy.value = false }
+}
+async function loadDrafts() {
+  try { drafts.value = await homeIntakeApi.listDrafts(props.token) } catch { drafts.value = [] }
+}
+function refresh(): void {
+  void load()
+  void loadDrafts()
 }
 async function open(item: AffairSummary) {
   selected.value = await affairR1Api.read(props.token, item.affair_id)
@@ -207,12 +215,12 @@ function abandonAiReference(): void {
 }
 
 watch(() => props.handoff?.id, () => { applyHandoffPrefill(); void loadTemplates() })
-onMounted(() => { applyHandoffPrefill(); void loadTemplates(); void load() })
+onMounted(() => { applyHandoffPrefill(); void loadTemplates(); void load(); void loadDrafts() })
 </script>
 
 <template>
   <section class="affairs">
-    <header><div><p>受保护的连续事务</p><h2>每件事只沿一条流程推进</h2></div><button type="button" @click="load">刷新</button></header>
+    <header><div><p>受保护的连续事务</p><h2>每件事只沿一条流程推进</h2></div><button type="button" @click="refresh">刷新</button></header>
     <section v-if="handoff?.destination === 'affair'" class="creation-prefill" aria-labelledby="affair-prefill-title">
       <div>
         <p class="eyebrow">首页转交 · 仅内存预填</p>
@@ -239,10 +247,17 @@ onMounted(() => { applyHandoffPrefill(); void loadTemplates(); void load() })
     <p v-if="error" class="error" role="alert">{{ error }}</p>
     <div class="layout">
       <nav aria-label="事务列表">
+        <section v-if="drafts.length" class="draft-list" aria-label="待确认草稿">
+          <strong>待确认草稿 · {{ drafts.length }}</strong>
+          <button v-for="item in drafts" :key="item.draft_id" type="button" :data-kind="item.result_kind" @click="emit('openDraft', item.draft_id)">
+            <span><b>{{ item.title }}</b><small>第 {{ item.version }} 版 · 尚未写入学生档案</small></span>
+          </button>
+        </section>
+        <strong v-if="items.length" class="list-heading">已保存事务 · {{ items.length }}</strong>
         <button v-for="item in items" :key="item.affair_id" type="button" :class="{ active: selected?.affair_id === item.affair_id }" @click="open(item)">
           <i aria-hidden="true"></i><span><strong>{{ item.title }}</strong><small>{{ item.current_step_count }} 个当前步骤 · {{ item.completed_step_count }} 个已完成</small></span><em>{{ item.projection_state === 'applied' ? '已同步' : '待同步' }}</em>
         </button>
-        <div v-if="!items.length && !busy" class="baselines"><strong>当前没有事务</strong><p>学校流程基线仍可查看：</p><span v-for="baseline in baselines" :key="baseline">{{ baseline }}</span></div>
+        <div v-if="!items.length && !drafts.length && !busy" class="baselines"><strong>当前没有事务</strong><p>学校流程基线仍可查看：</p><span v-for="baseline in baselines" :key="baseline">{{ baseline }}</span></div>
       </nav>
       <article v-if="selected" class="detail">
         <p class="eyebrow">{{ selected.template_key }} · 第 {{ selected.occurrence_sequence }} 轮</p>
@@ -276,4 +291,5 @@ onMounted(() => { applyHandoffPrefill(); void loadTemplates(); void load() })
 
 <style scoped>
 .affairs{overflow:hidden;border:1px solid var(--color-border-default);border-radius:var(--radius-panel);background:var(--color-bg-surface)}header{display:flex;justify-content:space-between;align-items:end;padding:var(--space-5);border-bottom:1px solid var(--color-border-subtle)}header p,.eyebrow{margin:0 0 2px;color:var(--color-accent);font-size:var(--font-size-caption);font-weight:700;letter-spacing:.08em}h2{margin:0;font-size:var(--font-size-h2)}button,input,select,textarea{font:inherit}header button,.rail button,.draft-box button,.decision-box button,.next-panel button{min-height:36px;padding:0 var(--space-3);border:1px solid var(--color-border-strong);border-radius:var(--radius-control);background:var(--color-bg-surface)}.layout{display:grid;grid-template-columns:240px minmax(0,1fr) 300px;min-height:560px}.layout>nav{padding:var(--space-3);border-right:1px solid var(--color-border-default);background:var(--color-bg-subtle)}nav>button{display:grid;grid-template-columns:4px 1fr;gap:var(--space-2);width:100%;padding:var(--space-3);border:0;border-bottom:1px solid var(--color-border-subtle);background:transparent;text-align:left}nav>button.active{background:var(--color-bg-surface)}nav i{background:var(--color-accent);border-radius:3px}nav span{display:grid;gap:3px}nav small{color:var(--color-text-secondary)}nav em{grid-column:2;color:var(--color-text-muted);font-size:var(--font-size-caption);font-style:normal}.baselines{display:grid;gap:var(--space-1);padding:var(--space-3)}.baselines span{padding:var(--space-1);border-bottom:1px solid var(--color-border-subtle);font-size:var(--font-size-dense)}.detail{padding:var(--space-5)}.detail h3{margin:0;font-size:var(--font-size-h2)}.muted{color:var(--color-text-secondary)}.rail{margin-top:var(--space-5);border-left:2px solid var(--color-accent-subtle)}.rail section{display:grid;grid-template-columns:14px minmax(0,1fr) auto;gap:var(--space-3);margin-left:-8px;padding:0 0 var(--space-5)}.rail section>span{width:14px;height:14px;border:3px solid var(--color-bg-surface);border-radius:50%;background:var(--color-accent)}.rail section[data-state="blocked"]>span{background:var(--color-text-muted)}.rail div{display:grid;gap:3px}.rail small{color:var(--color-text-muted)}.rail p{margin:var(--space-1) 0 0;color:var(--color-text-secondary)}.draft-box,.decision-box{display:grid;grid-template-columns:180px 1fr;gap:var(--space-2);padding:var(--space-4);border-top:1px solid var(--color-border-default);background:var(--color-bg-subtle)}.draft-box h4,.decision-box h4{grid-column:1/-1;margin:0}.draft-box textarea,.decision-box textarea{grid-column:1/-1;padding:var(--space-2);border:1px solid var(--color-border-default);border-radius:var(--radius-control)}.draft-box button,.decision-box button{grid-column:2;justify-self:end}.next-panel{padding:var(--space-4);border-left:1px solid var(--color-border-default);background:var(--color-bg-subtle)}.next-panel>section{margin-top:var(--space-4);padding-top:var(--space-3);border-top:1px solid var(--color-border-subtle)}.next-panel p,.next-panel li{color:var(--color-text-secondary);font-size:var(--font-size-dense)}.next-panel textarea{width:100%;box-sizing:border-box;margin-top:var(--space-2);padding:var(--space-2);border:1px solid var(--color-border-default);border-radius:var(--radius-control)}.warning{border-left:3px solid var(--color-warning);padding-left:var(--space-3)!important}.empty{display:grid;place-items:center;align-content:center;text-align:center;color:var(--color-text-secondary)}.empty span{font-size:36px;color:var(--color-accent)}.error{padding:var(--space-3);color:var(--color-danger)}.creation-prefill{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--space-3);padding:var(--space-4) var(--space-5);border-bottom:1px solid var(--color-border-default);background:var(--color-warning-subtle)}.creation-prefill>div:first-child,.creation-prefill .wide,.ai-reference,.prefill-actions,.creation-prefill .message{grid-column:1/-1}.creation-prefill h3{margin:0}.creation-prefill label{display:grid;gap:var(--space-1);font-size:var(--font-size-dense);font-weight:650}.creation-prefill input,.creation-prefill select,.creation-prefill textarea{box-sizing:border-box;width:100%;padding:var(--space-2);border:1px solid var(--color-border-default);border-radius:var(--radius-control);background:var(--color-bg-surface)}.ai-reference{padding:var(--space-3);border-left:3px solid var(--color-warning);background:var(--color-bg-surface);overflow-wrap:anywhere}.retain-reference{display:flex!important;align-items:flex-start;gap:var(--space-2);margin-top:var(--space-2)}.retain-reference input{width:auto}.prefill-actions{display:flex;gap:var(--space-2)}.prefill-actions button{min-height:38px;padding:0 var(--space-3);border:1px solid var(--color-border-strong);border-radius:var(--radius-control);background:var(--color-bg-surface)}.prefill-actions button:first-child{border-color:var(--color-accent);background:var(--color-accent);color:white}.creation-prefill .message{margin:0;color:var(--color-accent-active)}@media(max-width:1050px){.layout{grid-template-columns:220px 1fr}.next-panel{grid-column:1/-1;border-top:1px solid var(--color-border-default);border-left:0}}@media(max-width:750px){.creation-prefill{grid-template-columns:1fr}.creation-prefill>*{grid-column:1!important}.layout{grid-template-columns:1fr}.layout>nav{border-right:0;border-bottom:1px solid var(--color-border-default)}}
+.draft-list{display:grid;gap:var(--space-2);margin-bottom:var(--space-3);padding-bottom:var(--space-3);border-bottom:1px solid var(--color-border-default)}.draft-list>strong,.list-heading{display:block;padding:var(--space-1) var(--space-2);color:var(--color-text-secondary);font-size:var(--font-size-caption)}.draft-list button{width:100%;padding:var(--space-3);border:1px solid var(--color-border-default);border-left:4px solid var(--color-accent);border-radius:var(--radius-control);background:var(--color-bg-surface);text-align:left}.draft-list button[data-kind="affair_recommendation"]{border-left-color:var(--color-warning)}.draft-list button[data-kind="student_support_recommendation"]{border-left-color:#75658b}.draft-list button span{display:grid;gap:3px}.draft-list button small{color:var(--color-text-secondary)}
 </style>

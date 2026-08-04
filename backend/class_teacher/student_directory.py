@@ -28,6 +28,7 @@ class StudentDirectory:
         q: str | None = None,
         class_label: str | None = None,
         state: str | None = None,
+        roster_state: str | None = None,
         sort: str = "last_confirmed_desc",
         cursor: str | None = None,
         page_size: int = 20,
@@ -38,6 +39,7 @@ class StudentDirectory:
         needle = str(q or "").strip().casefold()
         requested_class = str(class_label or "").strip()
         requested_state = str(state or "").strip()
+        requested_roster_state = str(roster_state or "").strip()
         with closing(self.database.connect()) as connection:
             rows = connection.execute(
                 """
@@ -50,6 +52,10 @@ class StudentDirectory:
                         WHERE a.subject_id = s.subject_id AND a.state = 'draft') AS attention_pending_count,
                        (SELECT COUNT(*) FROM student_card_entries c
                         WHERE c.subject_id = s.subject_id AND c.state = 'active') AS confirmed_entry_count,
+                       (SELECT COUNT(*) FROM affair_student_links l
+                        WHERE l.subject_id = s.subject_id) AS affair_count,
+                       COALESCE((SELECT m.state FROM class_roster_memberships m
+                                 WHERE m.subject_id=s.subject_id), 'manual') AS roster_state,
                        (SELECT MAX(created_at) FROM student_card_entries c
                         WHERE c.subject_id = s.subject_id AND c.state = 'active') AS last_confirmed_at,
                        (SELECT CASE WHEN COUNT(*) = 0 THEN 'none'
@@ -79,6 +85,7 @@ class StudentDirectory:
                     "display_name": str(identity.get("display_name") or ""),
                     "class_label": str(identity.get("class_label") or ""),
                     "confirmed_entry_count": int(row["confirmed_entry_count"]),
+                    "affair_count": int(row["affair_count"]),
                     "support_record_count": int(row["support_record_count"]),
                     "support_plan_count": int(row["support_plan_count"]),
                     "attention_pending_count": int(row["attention_pending_count"]),
@@ -87,6 +94,7 @@ class StudentDirectory:
                         None if row["last_confirmed_at"] is None else str(row["last_confirmed_at"])
                     ),
                     "state": str(row["state"]),
+                    "roster_state": str(row["roster_state"]),
                 }
                 haystack = f"{item['display_name']} {item['source_student_id']}".casefold()
                 if needle and needle not in haystack:
@@ -94,6 +102,8 @@ class StudentDirectory:
                 if requested_class and item["class_label"] != requested_class:
                     continue
                 if requested_state and item["state"] != requested_state:
+                    continue
+                if requested_roster_state and item["roster_state"] != requested_roster_state:
                     continue
                 items.append(item)
         if sort == "name_asc":
@@ -125,6 +135,7 @@ class StudentDirectory:
                   (SELECT COUNT(*) FROM support_plans p WHERE p.subject_id=s.subject_id AND p.state='active') support_plan_count,
                   (SELECT COUNT(*) FROM attention_cards a WHERE a.subject_id=s.subject_id AND a.state='draft') attention_pending_count,
                   (SELECT COUNT(*) FROM student_card_entries c WHERE c.subject_id=s.subject_id AND c.state='active') confirmed_entry_count,
+                  (SELECT COUNT(*) FROM affair_student_links l WHERE l.subject_id=s.subject_id) affair_count,
                   (SELECT MAX(created_at) FROM student_card_entries c WHERE c.subject_id=s.subject_id AND c.state='active') last_confirmed_at
                 FROM student_subject_links s WHERE s.subject_id = ?
                 """,
@@ -137,6 +148,32 @@ class StudentDirectory:
                 vmk=vmk,
                 object_id=str(row["payload_object_id"]),
             )
+            affair_rows = connection.execute(
+                """
+                SELECT a.affair_id, a.payload_object_id, a.state, a.updated_at
+                FROM affair_student_links l
+                JOIN affairs a ON a.affair_id=l.affair_id
+                WHERE l.subject_id=?
+                ORDER BY a.updated_at DESC, a.affair_id
+                """,
+                (subject_id,),
+            ).fetchall()
+            related_affairs = []
+            for affair in affair_rows:
+                protected, _ = self.repository.get(
+                    connection,
+                    vmk=vmk,
+                    object_id=str(affair["payload_object_id"]),
+                )
+                related_affairs.append(
+                    {
+                        "affair_id": str(affair["affair_id"]),
+                        "title": str(protected.get("title") or ""),
+                        "summary": protected.get("summary"),
+                        "state": str(affair["state"]),
+                        "updated_at": str(affair["updated_at"]),
+                    }
+                )
         return {
             "subject_id": subject_id,
             "source_student_id": str(identity.get("source_student_id") or ""),
@@ -146,6 +183,8 @@ class StudentDirectory:
             "support_plan_count": int(row["support_plan_count"]),
             "attention_pending_count": int(row["attention_pending_count"]),
             "confirmed_entry_count": int(row["confirmed_entry_count"]),
+            "affair_count": int(row["affair_count"]),
+            "related_affairs": related_affairs,
             "projection_state": "unknown",
             "last_confirmed_at": None if row["last_confirmed_at"] is None else str(row["last_confirmed_at"]),
         }

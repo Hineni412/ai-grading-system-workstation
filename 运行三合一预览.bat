@@ -38,7 +38,7 @@ goto failed
 :preview_prepare_error
 echo.
 echo 三合一预览检查或前端更新失败。
-echo 请查看上方的具体原因；这不等于“三合一不是最新”。
+echo 具体失败原因以上方输出为准。
 goto failed
 
 :running_probe_error

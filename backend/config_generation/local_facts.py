@@ -37,6 +37,10 @@ def _apply_local_question_facts(payload: dict[str, Any], question_blocks: list[d
             continue
         local_type = str(fact.get("question_type") or "").strip()
         type_confirmed = fact.get("question_type_confirmed") is True
+        single_blank_fact = (
+            fact.get("response_form_fact") == "single_blank"
+            and not type_confirmed
+        )
         question["question_type_confirmed"] = type_confirmed
         if type_confirmed and local_type in {
             "choice",
@@ -51,6 +55,9 @@ def _apply_local_question_facts(payload: dict[str, Any], question_blocks: list[d
                 if local_type in {"choice", "fill_blank"}
                 else "deductive_obligation"
             )
+        elif single_blank_fact:
+            question["question_type"] = "fill_blank"
+            question["grading_mode"] = "direct_answer"
         image_semantic_source = str(fact.get("semantic_source") or "").strip() == "images"
         if (
             not image_semantic_source
@@ -109,6 +116,35 @@ def _apply_local_question_facts(payload: dict[str, Any], question_blocks: list[d
                                 step.pop(alias, None)
                     elif not str(part.get("answer") or "").strip():
                         part["answer"] = base_answer
+        if single_blank_fact:
+            score = question.get("max_score", 1)
+            answer_value = str(answer.get("canonical_answer") or canonical).strip()
+            question["parts"] = [
+                {
+                    "part_id": qid,
+                    "part_score": score,
+                    "response_mode": "exact_objective",
+                    "presentation_rules": [],
+                    "require_final_answer": False,
+                    "steps": [
+                        {
+                            "step_id": "S1",
+                            "step_score": score,
+                            "core_goal": "填写正确或等价的答案",
+                            "required_elements": [answer_value] if answer_value else [],
+                            "allow_alternative_methods": True,
+                        }
+                    ],
+                }
+            ]
+            answer["parts"] = [
+                {
+                    "part_id": qid,
+                    "answer": answer_value,
+                    "analysis": str(fact.get("answer_text") or ""),
+                    "step_milestones": [],
+                }
+            ]
 
 def _attach_reference_answer_images(
     payload: dict[str, Any],

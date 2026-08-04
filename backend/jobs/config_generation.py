@@ -78,6 +78,8 @@ from backend.config_generation.quality import (
     collect_generated_config_quality_issues,
     refresh_generated_config_quality_warnings,
 )
+from backend.config_generation.reference_context import build_reference_context
+from backend.config_generation.status_projection import project_question_states
 from session_manager import (
     generate_grading_config_from_images,
     generate_grading_config_from_text,
@@ -254,6 +256,14 @@ def load_config_generation_input(
     if not isinstance(payload, dict):
         raise ValueError("config generation input must contain a JSON object")
     return payload
+
+
+def read_config_generation_draft(
+    upload_config_dir: Path,
+    job_id: int,
+) -> dict[str, Any] | None:
+    path = _draft_path(upload_config_dir, job_id)
+    return _read_json_object(path) if path.is_file() else None
 
 
 def discard_config_generation_input(upload_config_dir: Path, input_id: str) -> None:
@@ -1014,6 +1024,15 @@ def _run_config_generation_job_impl(
         **score_allocation,
         retryable_mode=generation_mode == "batched",
     )
+    summary["questions"] = project_question_states(
+        [
+            str(block.get("question_id") or "").strip()
+            for block in confirmed_blocks
+            if isinstance(block, dict)
+        ],
+        payload,
+        job_status="succeeded",
+    )
     taxonomy_review_ids = _taxonomy_review_question_ids(payload)
     summary["taxonomy_review_count"] = len(taxonomy_review_ids)
     summary["taxonomy_review_question_ids"] = taxonomy_review_ids
@@ -1502,6 +1521,7 @@ def _config_analysis_sources(
             "textbook_version",
             str(volume.get("textbook_version") or ""),
         )
+        block["reference_solution"] = build_reference_context(block)
         images = _config_analysis_images(question_images.get(source_ref))
         if not any(
             str(block.get(key) or "").strip()
@@ -1708,6 +1728,30 @@ def _deferred_analysis_draft(
         warnings.append("部分题目的拆分点分析失败")
     if uncertain_refs:
         warnings.append("部分模型请求结果未知，需要教师决定是否重新发起新分析")
+    question_states = []
+    item_refs = {item.source_question_ref for item in bundle.items}
+    running_refs = set(bundle.running_source_refs)
+    uncertain_set = set(uncertain_refs)
+    failure_by_ref = {item.source_question_ref: item for item in bundle.failures}
+    for source_ref, _fingerprint in bundle.source_fingerprints:
+        failure = failure_by_ref.get(source_ref)
+        if source_ref in running_refs:
+            state, reason, retryable = "running", "", False
+        elif failure is not None:
+            state = "blocked" if failure.category == "local_validation" else "failed"
+            reason, retryable = failure.category, True
+        elif source_ref in uncertain_set:
+            state, reason, retryable = "failed", "outcome_unknown", True
+        elif source_ref in item_refs:
+            state, reason, retryable = "passed", "", False
+        else:
+            state, reason, retryable = "pending", "", False
+        question_states.append({
+            "question_id": source_ref,
+            "state": state,
+            "reason": reason,
+            "retryable": retryable,
+        })
     return {
         "rubric": {
             "exam_title": str(exam_title or "待命名试卷"),
@@ -1730,6 +1774,7 @@ def _deferred_analysis_draft(
             "taxonomy_review_question_ids": taxonomy_review_refs,
             "taxonomy_review_count": len(taxonomy_review_refs),
             "score_allocation_pending": False,
+            "question_states": question_states,
         },
     }
 
@@ -2232,7 +2277,7 @@ def _summary_from_batch_draft(
         if isinstance(meta, dict)
         else 0
     )
-    return _summary(
+    summary = _summary(
         session_id,
         total_questions or _question_count(payload, []),
         failed_ids,
@@ -2244,6 +2289,15 @@ def _summary_from_batch_draft(
         **_score_allocation_summary(payload),
         retryable_mode=True,
     )
+    question_ids = [
+        str(item.get("question_id") or "").strip()
+        for item in (meta.get("question_states") or [])
+        if isinstance(item, dict) and str(item.get("question_id") or "").strip()
+    ] if isinstance(meta, dict) else []
+    if not question_ids:
+        question_ids = _batch_question_ids(payload)
+    summary["questions"] = project_question_states(question_ids, payload)
+    return summary
 
 
 def _deferred_uncertain_question_ids(payload: dict[str, Any]) -> list[str]:

@@ -128,6 +128,12 @@ class BenchmarkPaths:
     def outputs_dir(self) -> Path:
         return self.data_root / "outputs"
 
+    def workspace_dir(self, module_id: str, *, create: bool = False) -> Path:
+        path = self.data_root / "workspaces" / str(module_id)
+        if create:
+            path.mkdir(parents=True, exist_ok=True)
+        return path
+
     @property
     def exams_dir(self) -> Path:
         return self.data_root / "exams"

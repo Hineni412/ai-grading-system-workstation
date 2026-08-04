@@ -144,8 +144,7 @@ def test_existing_main_class_teacher_vault_accepts_new_tail_migration(
     released_manifest = tmp_path / "released-student-affairs-migrations"
     released_manifest.mkdir()
     for migration in sorted(migration_root.glob("*.sql")):
-        sql = migration.read_text(encoding="utf-8")
-        if "CREATE TABLE IF NOT EXISTS student_card_entries" in sql:
+        if int(migration.stem.split("_", 1)[0]) > 18:
             continue
         shutil.copy2(migration, released_manifest / migration.name)
 
@@ -166,7 +165,7 @@ def test_existing_main_class_teacher_vault_accepts_new_tail_migration(
         logger_override=logging.getLogger("test.class-teacher.upgrade-migration"),
     )
 
-    assert result.applied[-1] == "019_student_card_entries"
+    assert result.applied[-1] == "022_assessment_sessions_v2"
     with sqlite3.connect(database) as connection:
         assert connection.execute(
             "SELECT name FROM sqlite_master "

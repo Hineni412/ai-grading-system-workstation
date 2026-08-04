@@ -55,9 +55,14 @@ def test_page_specific_color_exceptions_are_confined_to_p3_5_question_work() -> 
             offenders.append(path.relative_to(ROOT).as_posix())
     assert set(offenders) == {
         "frontend/src/components/config/SessionDeletionPanel.vue",
+        "frontend/src/components/config/ConfigGenerationPanel.vue",
+        "frontend/src/components/config/QuestionBlockReview.vue",
         "frontend/src/components/question-bank/PaperLibrary.vue",
         "frontend/src/components/question-bank/QuestionContentRenderer.vue",
         "frontend/src/views/ResultsCenterView.vue",
+        "frontend/src/workspaces/class-teacher/ordinary/WorkNodeInspector.vue",
+        "frontend/src/workspaces/class-teacher/students/AcademicAnalysisPanel.vue",
+        "frontend/src/workspaces/teaching-prep/styles/teaching-prep.css",
         "frontend/src/styles/question-assembly.css",
         "frontend/src/styles/question-bank.css",
     }

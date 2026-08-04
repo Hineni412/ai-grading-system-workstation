@@ -1712,7 +1712,7 @@ def test_cleanup_retains_referenced_old_source_and_removes_exact_owned_files_onl
     assert not first.manifest_path.exists()
 
 
-def test_teacher_decisions_only_exclude_known_questions(tmp_path: Path) -> None:
+def test_teacher_question_type_decision_is_preserved_as_a_hard_fact(tmp_path: Path) -> None:
     record = asyncio.run(
         service(tmp_path).stage_and_parse(
             session_id=7,
@@ -1726,8 +1726,8 @@ def test_teacher_decisions_only_exclude_known_questions(tmp_path: Path) -> None:
         [QuestionDecision(question_id="Q1", question_type="proof", excluded=False)],
     )
 
-    assert prepared.confirmed_blocks[0]["question_type"] != "proof"
-    assert prepared.confirmed_blocks[0]["question_type_confirmed"] is False
+    assert prepared.confirmed_blocks[0]["question_type"] == "proof"
+    assert prepared.confirmed_blocks[0]["question_type_confirmed"] is True
     assert prepared.document_text == record.private_document_text
     assert prepared.question_images["Q1"]["question"]
     with pytest.raises(ValueError, match="unknown question"):
@@ -1737,7 +1737,7 @@ def test_teacher_decisions_only_exclude_known_questions(tmp_path: Path) -> None:
         )
 
 
-def test_legacy_teacher_type_and_answer_fields_do_not_freeze_model_analysis(
+def test_teacher_type_and_answer_decisions_are_forwarded_to_model_analysis(
     tmp_path: Path,
 ) -> None:
     document = Document()
@@ -1770,7 +1770,35 @@ def test_legacy_teacher_type_and_answer_fields_do_not_freeze_model_analysis(
     )
 
     block = prepared.confirmed_blocks[0]
-    assert block["canonical_answer"] != "72°"
-    assert block["answer_text"] == record.private_blocks[0]["answer_text"]
-    assert block["question_type_confirmed"] is False
-    assert "answer_confirmed_by_teacher" not in block
+    assert block["answer_text"] == "72°"
+    assert block["question_type"] == "fill_blank"
+    assert block["question_type_confirmed"] is True
+    assert block["answer_confirmed"] is True
+
+
+def test_single_blank_fact_strips_following_section_heading_without_teacher_type(
+    tmp_path: Path,
+) -> None:
+    document = Document()
+    document.add_paragraph("二、填空题")
+    document.add_paragraph("9. ∠OCD 的度数为 ____。")
+    document.add_paragraph("三、解答题（共3小题）")
+    document.add_paragraph("10. 计算并说明理由。")
+    document.add_paragraph("参考答案")
+    document.add_paragraph("9. 65°、50°或80°。分三种情况讨论。")
+    document.add_paragraph("10. 略")
+    output = io.BytesIO()
+    document.save(output)
+    source_service = service(tmp_path)
+    record = asyncio.run(source_service.stage_and_parse(
+        session_id=7,
+        filename="paper.docx",
+        chunks=chunks(output.getvalue()),
+    ))
+
+    prepared = source_service.apply_teacher_decisions(record, [])
+    q9 = next(item for item in prepared.confirmed_blocks if item["question_id"] == "Q9")
+
+    assert "三、解答题" not in str(q9.get("question_text") or q9.get("text") or "")
+    assert q9["question_type_confirmed"] is False
+    assert q9["response_form_fact"] == "single_blank"
