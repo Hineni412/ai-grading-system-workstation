@@ -165,13 +165,11 @@ def test_active_profile_mapping_call_is_visible_in_ai_diagnostics(
         "material_role",
         "record_id",
         "unit_count",
-        "units",
     }
-    assert set(material["units"][0]) == {
-        "text_excerpt",
-        "title",
-        "unit_index",
-    }
+    assert model_snapshot["directory_evidence"]["full_page_text_sent"] is False
+    assert model_snapshot["directory_evidence"]["anchors"][0]["text_excerpt"] == (
+        "合成目录片段"
+    )
     assert "duration_minutes" in str(messages[0]["content"])
 
 
