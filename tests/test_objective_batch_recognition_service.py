@@ -23,12 +23,14 @@ class FakeBatchClient:
         answer: str = "A",
         review_reason: str | None = None,
         normalized_answer: str | None = None,
+        raw_answer: str | None = None,
     ) -> None:
         self.confidence = confidence
         self.need_review = need_review
         self.answer = answer
         self.review_reason = review_reason
         self.normalized_answer = normalized_answer
+        self.raw_answer = raw_answer
         self.calls: list[dict[str, Any]] = []
 
     def json_from_images(
@@ -76,7 +78,7 @@ class FakeBatchClient:
                     "question_id": question_id,
                     "question_type": question_type,
                     "recognized_answer": self.answer,
-                    "raw_answer": self.answer,
+                    "raw_answer": self.answer if self.raw_answer is None else self.raw_answer,
                     "normalized_answer": self.normalized_answer if self.normalized_answer is not None else self.answer,
                     "confidence": self.confidence,
                     "need_review": self.need_review,
@@ -420,6 +422,35 @@ def test_low_confidence_blank_fill_blank_auto_scores_zero_without_review(tmp_pat
     assert detail.score_awarded == 0
     assert metadata["recognized_answer"] == ""
     assert metadata["auto_scored"] is True
+    assert metadata["need_review"] is False
+    assert result.review_items == []
+
+
+def test_fill_blank_blank_sentinel_does_not_become_numeric_review_error(tmp_path: Path) -> None:
+    client = FakeBatchClient(
+        confidence=1.0,
+        need_review=False,
+        answer="blank",
+        raw_answer="",
+    )
+
+    result = run_objective_batch_recognition(
+        session_id=13,
+        paper_groups=_groups(tmp_path, 1),
+        answer_regions=[
+            {"page": "front", "mapped_question_id": "Q8", "x": 10, "y": 10, "w": 120, "h": 80, "is_confirmed": True}
+        ],
+        rubric={"questions": [{"question_id": "Q8", "question_type": "fill_blank", "max_score": 5}]},
+        answer_key={"questions": [{"question_id": "Q8", "standard_answer": "3"}]},
+        output_root=tmp_path / "out",
+        recognition_client=client,
+    )
+
+    detail = next(iter(result.details_by_paper_key.values()))[0]
+    metadata = next(iter(result.metadata_by_paper_key.values()))[0]
+    assert detail.score_awarded == 0
+    assert detail.deduction_reason == "未见有效作答，自动 0 分。"
+    assert metadata["recognized_answer"] == ""
     assert metadata["need_review"] is False
     assert result.review_items == []
 

@@ -960,7 +960,15 @@ def validate_objective_paper_response(
         else:
             raw_answer = item.get("raw_answer")
             if raw_answer is None or not str(raw_answer).strip():
-                raw_answer = item.get("recognized_answer") or ""
+                recognized_fallback = str(
+                    item.get("recognized_answer") or ""
+                ).strip()
+                raw_answer = (
+                    ""
+                    if recognized_fallback.casefold()
+                    in {"blank", "empty", "unanswered", "空白", "未作答"}
+                    else recognized_fallback
+                )
             answer = str(
                 raw_answer
             ).strip()
@@ -1383,7 +1391,7 @@ def _review_detail(
     detail = QuestionGradingDetail(
         question_id=spec.question_id,
         score_awarded=0.0,
-        deduction_reason=f"需复核: {reason}",
+        deduction_reason=_objective_review_reason(reason),
         knowledge_id="OBJECTIVE",
         error_category="需复核",
         error_summary=reason,
@@ -1407,6 +1415,16 @@ def _review_detail(
         ],
         **({"primary_review_reason": str(primary_review_reason)} if primary_review_reason else {}),
     }
+
+
+def _objective_review_reason(reason: str) -> str:
+    labels = {
+        "no_numeric_value": "未能可靠识别填写的数值，需要教师确认。",
+        "low_confidence": "作答辨识度较低，需要教师确认。",
+        "missing_question_result": "AI 未返回本题识别结果，需要教师确认。",
+        "duplicate_question_result": "AI 返回了重复结果，需要教师确认。",
+    }
+    return labels.get(str(reason or "").strip(), "客观题结果存在不确定性，需要教师确认。")
 
 
 def _review_item(entry: ObjectivePaperEntry, spec: ObjectiveQuestionSpec, reason: str, confidence: float) -> dict[str, Any]:
