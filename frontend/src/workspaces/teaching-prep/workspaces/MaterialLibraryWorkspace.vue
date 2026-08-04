@@ -651,6 +651,10 @@ const mappingJobHasDurableProposal = computed(() => {
     )
   )
 })
+const mappingAwaitingProposal = computed(() => (
+  currentMappingJob.value?.status === 'succeeded'
+  && !mappingJobHasDurableProposal.value
+))
 const mappingResultUnknown = computed(() => {
   const job = currentMappingJob.value
   return Boolean(
@@ -695,11 +699,11 @@ const mappingElapsedLabel = computed(() => {
 const mappingStageLabel = computed(() => {
   const job = currentMappingJob.value
   if (!job) return '尚未提交'
-  if (mappingJobHasDurableProposal.value) return '已恢复待确认建议'
+  if (mappingJobHasDurableProposal.value) return '待确认建议已就绪'
   if (mappingResultUnknown.value) return '结果未知，禁止自动重试'
   if (job.status === 'failed') return '生成失败'
   if (job.status === 'cancelled') return '已停止'
-  if (job.status === 'succeeded') return job.stage === 'recovered' ? '已恢复建议' : '建议已生成'
+  if (job.status === 'succeeded') return '正在恢复审核内容'
   return ({
     queued: '等待后台处理',
     checking: '正在核对资料与模型',
@@ -1064,19 +1068,25 @@ async function saveManualMapping(): Promise<void> {
           v-else
           class="tp-button--primary"
           type="button"
-          :disabled="!canGenerateMapping"
+          :disabled="!canGenerateMapping || mappingAwaitingProposal"
           @click="generateSemesterMapping"
         >
-          {{ mappingResultUnknown ? '结果未知，不能自动重试' : mappingJobBusy ? '后台生成中…' : '生成待确认建议' }}
+          {{ mappingResultUnknown
+            ? '结果未知，不能自动重试'
+            : mappingJobBusy
+              ? '后台生成中…'
+              : mappingAwaitingProposal
+                ? '正在恢复审核内容…'
+                : '生成待确认建议' }}
         </button>
       </div>
       <div
         v-if="activeSemesterRecord"
         class="tp-mapping-job-status"
         :class="{
-          'is-running': mappingJobBusy,
+          'is-running': mappingJobBusy || mappingAwaitingProposal,
           'is-error': Boolean(mappingJobError) || mappingResultUnknown,
-          'is-success': currentMappingJob?.status === 'succeeded',
+          'is-success': mappingJobHasDurableProposal,
         }"
         role="status"
         aria-live="polite"

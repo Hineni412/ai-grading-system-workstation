@@ -119,6 +119,7 @@ export const useTeachingPrepCatalogStore = defineStore(
     const semesterMappingProposals = ref<SemesterMappingProposal[]>([])
     const semesterMappingJobIds = ref<number[]>([])
     const recoveredSemesterMappingJobIds = ref<number[]>([])
+    const refreshingSemesterMappingJobs = new Map<number, Promise<void>>()
     const selectedLessonId = ref<string | null>(null)
     const selectedMaterialId = ref<string | null>(null)
     const materialUnits = ref<MaterialUnit[]>([])
@@ -241,7 +242,7 @@ export const useTeachingPrepCatalogStore = defineStore(
             && item.source_state_sha256 === sourceState
           )
         ))
-        if (exact) return exact
+        return exact ?? null
       }
       return candidates.sort((left, right) => (
         Date.parse(right.updated_at) - Date.parse(left.updated_at)
@@ -292,6 +293,23 @@ export const useTeachingPrepCatalogStore = defineStore(
       force = false,
     ): Promise<void> {
       if (!force && refreshedSemesterMappingJobs.has(job.id)) return
+      const inFlight = refreshingSemesterMappingJobs.get(job.id)
+      if (inFlight) return inFlight
+      const refresh = refreshProposalsForMappingJobOnce(job, force)
+      refreshingSemesterMappingJobs.set(job.id, refresh)
+      try {
+        await refresh
+      } finally {
+        if (refreshingSemesterMappingJobs.get(job.id) === refresh) {
+          refreshingSemesterMappingJobs.delete(job.id)
+        }
+      }
+    }
+
+    async function refreshProposalsForMappingJobOnce(
+      job: JobResponse,
+      force: boolean,
+    ): Promise<void> {
       const semester = selectedSemester.value
       const record = selectedSemesterMaterial.value
       const sourceState = mappingJobSourceState(job)
@@ -302,46 +320,45 @@ export const useTeachingPrepCatalogStore = defineStore(
         || job.payload.semester_id !== semester.id
         || mappingJobMaterialRecordId(job) !== record.id
       ) return
-      try {
-        const next = await teachingPrepCatalogApi.listSemesterMappingProposals(
-          semester.id,
-        )
-        if (
-          selectedSemester.value?.id !== semester.id
-          || selectedSemesterMaterial.value?.id !== record.id
-          || currentSemesterMappingPreflight.value?.source_state_sha256 !== sourceState
-        ) return
-        semesterMappingProposals.value = next
-        const proposalId = typeof job.result.proposal_id === 'string'
-          ? job.result.proposal_id
-          : null
-        const operationId = mappingJobOperationId(job)
-        const durableProposalFound = next.some(item => (
-          item.status === 'proposed'
-          && item.payload.source_material_record_ids.length === 1
-          && item.payload.source_material_record_ids[0] === record.id
-          && item.source_state_sha256 === sourceState
-          && (
-            (proposalId !== null && item.id === proposalId)
-            || (operationId !== null && item.operation_id === operationId)
+      const proposalId = typeof job.result.proposal_id === 'string'
+        ? job.result.proposal_id
+        : null
+      const operationId = mappingJobOperationId(job)
+      const attempts = force ? 1 : 2
+      let lastError: unknown = null
+      for (let attempt = 0; attempt < attempts; attempt += 1) {
+        try {
+          const next = await teachingPrepCatalogApi.listSemesterMappingProposals(
+            semester.id,
           )
-        ))
-        if (durableProposalFound) {
-          refreshedSemesterMappingJobs.add(job.id)
-        } else if (!force) {
-          await refreshProposalsForMappingJob(job, true)
-        } else {
-          refreshedSemesterMappingJobs.delete(job.id)
-          errorMessage.value = '后台任务已完成，但待确认建议尚未同步；重新检查后会继续恢复，不会再次调用模型。'
+          if (
+            selectedSemester.value?.id !== semester.id
+            || selectedSemesterMaterial.value?.id !== record.id
+            || currentSemesterMappingPreflight.value?.source_state_sha256 !== sourceState
+          ) return
+          const durableProposalFound = next.some(item => (
+            item.status === 'proposed'
+            && item.payload.source_material_record_ids.length === 1
+            && item.payload.source_material_record_ids[0] === record.id
+            && item.source_state_sha256 === sourceState
+            && (
+              (proposalId !== null && item.id === proposalId)
+              || (operationId !== null && item.operation_id === operationId)
+            )
+          ))
+          if (durableProposalFound) {
+            semesterMappingProposals.value = next
+            refreshedSemesterMappingJobs.add(job.id)
+            return
+          }
+        } catch (error) {
+          lastError = error
         }
-      } catch (error) {
-        refreshedSemesterMappingJobs.delete(job.id)
-        if (!force) {
-          await refreshProposalsForMappingJob(job, true)
-          return
-        }
-        errorMessage.value = safeMessage(error)
       }
+      refreshedSemesterMappingJobs.delete(job.id)
+      errorMessage.value = lastError
+        ? safeMessage(lastError)
+        : '后台任务已完成，但待确认建议尚未同步；重新检查后会继续恢复，不会再次调用模型。'
     }
 
     watch(

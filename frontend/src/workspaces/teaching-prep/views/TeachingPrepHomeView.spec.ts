@@ -109,4 +109,19 @@ describe('TeachingPrepHomeView workbench shell', () => {
     })
     app.unmount()
   })
+
+  it('handles topbar workspace events through the workbench navigation flow', async () => {
+    mockEmptyCatalog()
+    const { app, router } = await mountAt()
+
+    globalThis.dispatchEvent(new CustomEvent('teaching-prep:open-workspace', {
+      detail: { workspace: 'lesson-tree' },
+    }))
+    await vi.waitFor(() => expect(router.currentRoute.value.query).toMatchObject({
+      workspace: 'lesson-tree',
+      stage: 'select',
+    }))
+
+    app.unmount()
+  })
 })

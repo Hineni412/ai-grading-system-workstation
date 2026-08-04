@@ -556,6 +556,97 @@ describe('semester workflow idempotency', () => {
     await vi.waitFor(() => expect(store.currentSemesterMappingProposal?.id).toBe(proposal.id))
   })
 
+  it('does not expose another operation proposal while recovering the current Job', async () => {
+    const curriculumItem = curriculum()
+    const semesterItem = semester(curriculumItem.id)
+    const materialItem = material('v'.repeat(32))
+    const record = semesterMaterial(semesterItem.id, materialItem)
+    const queued = mappingJob(semesterItem.id, record.id)
+    const old = mappingProposal(semesterItem.id)
+    old.payload.source_material_record_ids = [record.id]
+    old.operation_id = 'semester-mapping-old-operation'
+    vi.spyOn(teachingPrepCatalogApi, 'semesterMappingPreflight')
+      .mockResolvedValue(mappingPreflight(semesterItem.id))
+    vi.spyOn(teachingPrepCatalogApi, 'startSemesterMappingProposalJob')
+      .mockResolvedValue(queued)
+    const listProposals = vi.spyOn(teachingPrepCatalogApi, 'listSemesterMappingProposals')
+      .mockResolvedValue([old])
+    const store = useTeachingPrepCatalogStore()
+    configureMappingSelection(store, curriculumItem, semesterItem, materialItem, record)
+
+    await store.prepareSemesterMapping([record.id])
+    await store.generateSemesterMapping([record.id])
+    useJobStore().track({
+      ...queued,
+      status: 'succeeded',
+      progress: 1,
+      stage: 'completed',
+      result: {
+        semester_id: semesterItem.id,
+        operation_id: String(queued.payload.operation_id),
+        source_state_sha256: String(queued.payload.source_state_sha256),
+        proposal_id: 'z'.repeat(32),
+        recovered_existing: false,
+      },
+      updated_at: '2026-08-03T00:00:10Z',
+      finished_at: '2026-08-03T00:00:10Z',
+    })
+    await vi.waitFor(() => expect(listProposals).toHaveBeenCalledTimes(2))
+
+    expect(store.currentSemesterMappingProposal).toBeNull()
+  })
+
+  it('deduplicates concurrent recovery for the same terminal Job', async () => {
+    const curriculumItem = curriculum()
+    const semesterItem = semester(curriculumItem.id)
+    const materialItem = material('v'.repeat(32))
+    const record = semesterMaterial(semesterItem.id, materialItem)
+    const queued = mappingJob(semesterItem.id, record.id)
+    const proposal = mappingProposal(semesterItem.id)
+    proposal.payload.source_material_record_ids = [record.id]
+    proposal.operation_id = String(queued.payload.operation_id)
+    let releaseFirst!: (items: SemesterMappingProposal[]) => void
+    const firstResponse = new Promise<SemesterMappingProposal[]>(resolve => {
+      releaseFirst = resolve
+    })
+    vi.spyOn(teachingPrepCatalogApi, 'semesterMappingPreflight')
+      .mockResolvedValue(mappingPreflight(semesterItem.id))
+    vi.spyOn(teachingPrepCatalogApi, 'startSemesterMappingProposalJob')
+      .mockResolvedValue(queued)
+    const listProposals = vi.spyOn(teachingPrepCatalogApi, 'listSemesterMappingProposals')
+      .mockReturnValueOnce(firstResponse)
+      .mockResolvedValueOnce([proposal])
+    const store = useTeachingPrepCatalogStore()
+    configureMappingSelection(store, curriculumItem, semesterItem, materialItem, record)
+
+    await store.prepareSemesterMapping([record.id])
+    await store.generateSemesterMapping([record.id])
+    useJobStore().track({
+      ...queued,
+      status: 'succeeded',
+      progress: 1,
+      stage: 'completed',
+      result: {
+        semester_id: semesterItem.id,
+        operation_id: proposal.operation_id,
+        source_state_sha256: proposal.source_state_sha256,
+        proposal_id: proposal.id,
+        recovered_existing: false,
+      },
+      updated_at: '2026-08-03T00:00:10Z',
+      finished_at: '2026-08-03T00:00:10Z',
+    })
+    await vi.waitFor(() => expect(listProposals).toHaveBeenCalledTimes(1))
+    const concurrentPrepare = store.prepareSemesterMapping([record.id])
+    await Promise.resolve()
+    expect(listProposals).toHaveBeenCalledTimes(1)
+
+    releaseFirst([])
+    await concurrentPrepare
+    await vi.waitFor(() => expect(store.currentSemesterMappingProposal?.id).toBe(proposal.id))
+    expect(listProposals).toHaveBeenCalledTimes(2)
+  })
+
   it('recovers the durable proposal even when the Job completion record fails', async () => {
     const curriculumItem = curriculum()
     const semesterItem = semester(curriculumItem.id)
