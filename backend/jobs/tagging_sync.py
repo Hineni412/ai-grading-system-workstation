@@ -403,6 +403,14 @@ class _CancellationAwareCombinedGateway:
         self.gateway = gateway
         self.context = context
 
+    @property
+    def max_parallel_requests(self) -> int:
+        value = getattr(self.gateway, "max_parallel_requests", 1)
+        try:
+            return max(1, int(value))
+        except (TypeError, ValueError):
+            return 1
+
     def analyze(self, *args: Any, **kwargs: Any) -> Any:
         self.context.raise_if_cancelled()
         response = self.gateway.analyze(*args, **kwargs)
@@ -528,7 +536,7 @@ def _run_unified_tagging_analysis(
                 ]
             }
         )
-        if audit.get("status") == "succeeded":
+        if audit.get("status") in {"succeeded", "needs_review"}:
             locally_repaired_criterion_ids.add(question.question_id)
         elif audit.get("status") == "failed" and question.question_id in set(
             complete_ids
@@ -570,6 +578,7 @@ def _run_unified_tagging_analysis(
             and question_id not in evidence_only_set
             and question_id not in tag_only_set
             and question_id not in local_criterion_only_ids
+            and question_id not in locally_repaired_criterion_ids
         )
     )
     tag_only_loaded = tuple(
@@ -584,6 +593,30 @@ def _run_unified_tagging_analysis(
     )
     summaries: list[Mapping[str, Any]] = []
     audit_rows: list[Mapping[str, Any]] = []
+    analysis_total = sum(
+        len(group)
+        for group in (regular_loaded, tag_only_loaded, evidence_loaded)
+    )
+    analysis_completed = 0
+
+    def analysis_progress(group_size: int):
+        group_start = analysis_completed
+
+        def report(update: Mapping[str, Any]) -> None:
+            processed = min(
+                group_size,
+                max(0, int(update.get("processed_questions") or 0)),
+            )
+            overall = min(analysis_total, group_start + processed)
+            fraction = overall / max(analysis_total, 1)
+            context.report(
+                0.1 + 0.72 * fraction,
+                "tagging_sync",
+                f"AI 分析已处理 {overall}/{analysis_total} 道题",
+            )
+
+        return report
+
     if regular_loaded:
         regular_operation_id = f"tagging-sync:{context.job_id}"
         observation_sequences = _allocate_observation_sequences(
@@ -596,8 +629,10 @@ def _run_unified_tagging_analysis(
                 operation_id=regular_operation_id,
                 questions=regular_loaded,
                 projection="both",
+                progress_callback=analysis_progress(len(regular_loaded)),
             )
         )
+        analysis_completed += len(regular_loaded)
         regular_ids = [item.question_id for item in regular_loaded]
         audit_rows.extend(
             (
@@ -618,8 +653,10 @@ def _run_unified_tagging_analysis(
                 operation_id=tag_only_operation_id,
                 questions=tag_only_loaded,
                 projection="tag",
+                progress_callback=analysis_progress(len(tag_only_loaded)),
             )
         )
+        analysis_completed += len(tag_only_loaded)
         tag_only_ids = [item.question_id for item in tag_only_loaded]
         audit_rows.append(tag_writer.audit_summary(tag_only_operation_id, tag_only_ids))
     if evidence_loaded:
@@ -629,8 +666,10 @@ def _run_unified_tagging_analysis(
                 operation_id=evidence_operation_id,
                 questions=evidence_loaded,
                 projection="training_criteria",
+                progress_callback=analysis_progress(len(evidence_loaded)),
             )
         )
+        analysis_completed += len(evidence_loaded)
         audit_rows.append(
             evidence_writer.audit_summary(
                 evidence_operation_id,
@@ -650,7 +689,7 @@ def _run_unified_tagging_analysis(
         for item in summary.get("items", []):
             if isinstance(item, Mapping):
                 items[int(item["question_id"])] = item
-    for question_id in local_criterion_only_ids:
+    for question_id in local_criterion_only_ids | locally_repaired_criterion_ids:
         items.setdefault(
             question_id,
             {
@@ -670,6 +709,7 @@ def _run_unified_tagging_analysis(
     evidence_failed: list[int] = []
     criterion_success: list[int] = []
     criterion_failed: list[int] = []
+    criterion_review: list[int] = []
     criterion_audit_by_id = {
         int(item["question_id"]): item
         for audit in criterion_audits
@@ -686,6 +726,7 @@ def _run_unified_tagging_analysis(
         if (
             question_id not in evidence_only_set
             and question_id not in local_criterion_only_ids
+            and question_id not in locally_repaired_criterion_ids
         ):
             if str(item.get("tag_status")) == "succeeded":
                 question_audit = tag_writer.audit_summary(
@@ -732,6 +773,8 @@ def _run_unified_tagging_analysis(
         )
         if criterion_status == "succeeded":
             criterion_success.append(question_id)
+        elif criterion_status == "needs_review":
+            criterion_review.append(question_id)
         elif criterion_status == "failed":
             criterion_failed.append(question_id)
             if not any(
@@ -765,6 +808,7 @@ def _run_unified_tagging_analysis(
                 operation_id=f"tagging-sync:{context.job_id}:relation-replay",
             )
         )
+    context.report(0.9, "tagging_sync", "正在整理知识关系与最终状态")
     try:
         relation_governance = EvidenceRelationGovernanceService(db_path).govern(
             audits["relation_hints"],
@@ -793,7 +837,13 @@ def _run_unified_tagging_analysis(
         int(item)
         for item in relation_governance.get("failed_question_ids", [])
     ]
-    if failures or evidence_failed or criterion_failed or relation_failed_ids:
+    if (
+        failures
+        or evidence_failed
+        or criterion_failed
+        or criterion_review
+        or relation_failed_ids
+    ):
         outcome = "partial" if successful_ids or evidence_success else "failed"
     else:
         outcome = "complete"
@@ -827,7 +877,9 @@ def _run_unified_tagging_analysis(
         "evidence_count": len(evidence_success),
         "criteria_succeeded_question_ids": criterion_success,
         "criteria_failed_question_ids": criterion_failed,
+        "criteria_needs_review_question_ids": criterion_review,
         "criteria_count": len(criterion_success),
+        "criteria_needs_review_count": len(criterion_review),
         "analysis_contract": "combined-v3",
         "retryable": bool(
             failures or evidence_failed or criterion_failed or relation_failed_ids
@@ -964,12 +1016,24 @@ def _publish_saved_criterion(
             reason="从已保存解题证据发布训练判定点",
         )
         current = workspace.get("current_version") if isinstance(workspace, Mapping) else None
+        quality_status = (
+            str(current.get("quality_status") or "")
+            if isinstance(current, Mapping)
+            else ""
+        )
         return {
-            "status": "succeeded",
+            "status": (
+                "succeeded" if quality_status == "passed" else "needs_review"
+            ),
             "version_id": (
                 str(current.get("version_id") or "")
                 if isinstance(current, Mapping)
                 else ""
+            ),
+            "quality_codes": (
+                list(current.get("quality_codes") or [])
+                if isinstance(current, Mapping)
+                else []
             ),
         }
     except Exception as exc:  # noqa: BLE001

@@ -16,6 +16,9 @@ from question_bank.solution_evidence.contracts import (
     validate_evidence_fine_terms,
 )
 from question_bank.solution_evidence.convergence import converge_evidence_terms
+from question_bank.solution_evidence.normalization import (
+    normalize_model_solution_evidence,
+)
 
 if TYPE_CHECKING:
     from question_bank.training_criteria.analysis import QuestionAnalysisInput
@@ -585,11 +588,31 @@ class SolutionEvidenceProjectionWriter:
             solution_evidence_source_content_hash,
         )
 
-        normalized_payload: Mapping[str, Any] = payload
+        normalization = normalize_model_solution_evidence(
+            payload,
+            question_id=question.question_id,
+            question_type=question.question_type_group,
+            taxonomy_contract=question.taxonomy_contract,
+            question_type_confirmed=question.question_type_confirmed,
+            expected_part_count=(
+                len(question.explicit_part_labels)
+                if question.explicit_part_labels
+                else None
+            ),
+            objective_response_shape=question.objective_response_shape,
+            expected_answer=question.tagging_context.answer_text,
+        )
+        normalized_payload: Mapping[str, Any] = normalization.payload
         additional_allowed: Sequence[str] = ()
+        audit_key = (str(operation_id), question.question_id)
+        with self._audit_lock:
+            self._audits[audit_key] = {
+                "normalization_notes": list(normalization.notes),
+                "criteria_review_required": normalization.requires_review,
+            }
         if self.taxonomy_governance is not None:
             convergence = converge_evidence_terms(
-                payload,
+                normalized_payload,
                 taxonomy_contract=question.taxonomy_contract,
                 governance=self.taxonomy_governance,
                 question_ref=str(question.question_id),
@@ -600,9 +623,9 @@ class SolutionEvidenceProjectionWriter:
             normalized_payload = convergence.payload
             additional_allowed = convergence.canonical_term_ids
             with self._audit_lock:
-                self._audits[(str(operation_id), question.question_id)] = (
-                    convergence.audit_dict()
-                )
+                audit = dict(self._audits.get(audit_key) or {})
+                audit.update(convergence.audit_dict())
+                self._audits[audit_key] = audit
         evidence = QuestionSolutionEvidence.from_model_dict(
             normalized_payload,
             question_id=question.question_id,
@@ -615,7 +638,7 @@ class SolutionEvidenceProjectionWriter:
             additional_allowed_term_ids=additional_allowed,
         )
         with self._audit_lock:
-            audit = dict(self._audits.get((str(operation_id), question.question_id)) or {})
+            audit = dict(self._audits.get(audit_key) or {})
             audit["relation_hints"] = _relation_hints_from_evidence(
                 evidence,
                 model_name=model_name,
@@ -642,6 +665,15 @@ class SolutionEvidenceProjectionWriter:
             ),
         )
         return evidence
+
+    def criterion_review_required(
+        self,
+        operation_id: str,
+        question_id: int,
+    ) -> bool:
+        with self._audit_lock:
+            audit = self._audits.get((str(operation_id), int(question_id))) or {}
+            return audit.get("criteria_review_required") is True
 
     def audit_summary(
         self,

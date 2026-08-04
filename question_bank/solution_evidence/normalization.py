@@ -132,6 +132,8 @@ def normalize_model_solution_evidence(
     taxonomy_contract: Mapping[str, Any],
     question_type_confirmed: bool = True,
     expected_part_count: int | None = None,
+    objective_response_shape: str = "unknown",
+    expected_answer: str = "",
 ) -> ModelEvidenceNormalization:
     """Converge model-shaped evidence into the strict internal contract.
 
@@ -147,6 +149,14 @@ def normalize_model_solution_evidence(
         if question_type_confirmed
         else ""
     )
+    response_shape = str(objective_response_shape or "unknown").strip().casefold()
+    if response_shape not in {
+        "single_choice",
+        "single_blank",
+        "multiple_blank",
+        "unknown",
+    }:
+        response_shape = "unknown"
     root = _canonicalize_keys(
         payload,
         fields=_ROOT_FIELDS,
@@ -195,12 +205,36 @@ def normalize_model_solution_evidence(
             if isinstance(raw_part, Mapping)
         ]
 
-    if confirmed_type == "single_choice":
+    if response_shape == "single_choice" or (
+        response_shape == "unknown" and confirmed_type == "single_choice"
+    ):
+        submitted_choices = {
+            choice
+            for part in parts
+            if (choice := _choice_letter(part.get("canonical_answer")))
+        }
+        expected_choice = _choice_letter(expected_answer)
+        if len(submitted_choices) > 1 and expected_choice:
+            parts = [
+                {**part, "canonical_answer": expected_choice}
+                for part in parts
+            ]
+            requires_review = True
+            notes.append("模型返回多个互相冲突的选择答案，已保留本地标准答案并转待审核")
         parts, collapsed_rules = _collapse_single_choice(parts, notes=notes)
         auxiliary_rules.extend(collapsed_rules)
-    elif confirmed_type == "fill_blank":
+    elif response_shape == "single_blank" or (
+        response_shape == "unknown" and confirmed_type == "fill_blank"
+    ):
         parts, collapsed_rules = _collapse_fill_blank(parts, notes=notes)
         auxiliary_rules.extend(collapsed_rules)
+
+    if response_shape == "single_choice" and _choice_answer_conflicts(
+        parts,
+        expected_answer,
+    ):
+        requires_review = True
+        notes.append("模型选择答案与本地标准答案冲突，需教师审核")
 
     if expected_part_count is not None and len(parts) != int(expected_part_count):
         raise ValueError(
@@ -418,6 +452,27 @@ def _normalize_point_shape(
         },
         requires_review,
     )
+
+
+def _choice_answer_conflicts(
+    parts: Sequence[Mapping[str, Any]],
+    expected_answer: object,
+) -> bool:
+    expected = _choice_letter(expected_answer)
+    if not expected:
+        return False
+    submitted = {
+        value
+        for part in parts
+        if (value := _choice_letter(part.get("canonical_answer")))
+    }
+    return bool(submitted and submitted != {expected})
+
+
+def _choice_letter(value: object) -> str:
+    text = str(value or "").upper()
+    matches = re.findall(r"(?<![A-Z])([A-D])(?![A-Z])", text)
+    return matches[0] if len(set(matches)) == 1 else ""
 
 
 def _collapse_single_choice(
