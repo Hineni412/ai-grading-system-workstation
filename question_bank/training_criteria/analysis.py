@@ -96,6 +96,7 @@ class QuestionAnalysisImage:
 class QuestionAnalysisInput:
     question_id: int
     tagging_context: TaggingContext
+    question_type_confirmed: bool = False
     rich_question_blocks: tuple[Mapping[str, Any], ...] = ()
     rich_answer_blocks: tuple[Mapping[str, Any], ...] = ()
     images: tuple[QuestionAnalysisImage, ...] = ()
@@ -109,6 +110,11 @@ class QuestionAnalysisInput:
         if not str(self.tagging_context.question_text or "").strip():
             raise ValueError("question text must not be empty")
         object.__setattr__(self, "question_id", int(self.question_id))
+        object.__setattr__(
+            self,
+            "question_type_confirmed",
+            self.question_type_confirmed is True,
+        )
         object.__setattr__(
             self,
             "rich_question_blocks",
@@ -203,6 +209,8 @@ class QuestionAnalysisInput:
             {
                 "question_id": self.question_id,
                 "tagging_context": self.tagging_context.to_dict(),
+                "question_type_confirmed": self.question_type_confirmed,
+                "explicit_part_labels": list(self.explicit_part_labels),
                 "rich_question_blocks": self.rich_question_blocks,
                 "rich_answer_blocks": self.rich_answer_blocks,
                 "image_hashes": [
@@ -227,6 +235,8 @@ class QuestionAnalysisInput:
                 "question_text": context.question_text,
                 "answer_text": context.answer_text,
                 "question_type": context.question_type,
+                "question_type_confirmed": self.question_type_confirmed,
+                "explicit_part_labels": list(self.explicit_part_labels),
                 "has_images": context.has_images,
                 "rich_question_blocks": self.rich_question_blocks,
                 "rich_answer_blocks": self.rich_answer_blocks,
@@ -241,6 +251,23 @@ class QuestionAnalysisInput:
                 ],
             }
         )
+
+    @property
+    def explicit_part_labels(self) -> tuple[str, ...]:
+        """Return only an objective, sequential (1)(2)... structure fact."""
+
+        labels = [
+            str(match)
+            for match in re.findall(
+                r"[（(]\s*([1-9]\d?)\s*[）)]",
+                str(self.tagging_context.question_text or ""),
+            )
+        ]
+        ordered = tuple(dict.fromkeys(labels))
+        if len(ordered) < 2:
+            return ()
+        expected = tuple(str(index) for index in range(1, len(ordered) + 1))
+        return ordered if ordered == expected else ()
 
     @property
     def question_type_group(self) -> str:

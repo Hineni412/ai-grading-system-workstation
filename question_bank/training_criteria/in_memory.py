@@ -2616,6 +2616,12 @@ def _govern_deferred_analysis_item(
         question_id=question.question_id,
         question_type=question.question_type_group,
         taxonomy_contract=question.taxonomy_contract,
+        question_type_confirmed=question.question_type_confirmed,
+        expected_part_count=(
+            len(question.explicit_part_labels)
+            if question.explicit_part_labels
+            else None
+        ),
     )
 
     if taxonomy_governance is None:
@@ -3068,6 +3074,8 @@ def _question_type_from_skeleton(
     parts: Sequence[Mapping[str, Any]],
     canonical_answer: str,
 ) -> str:
+    if len(parts) > 1:
+        return "comprehensive"
     if any(mode == "visual_construction" for mode in response_modes):
         return "comprehensive"
     if any(
