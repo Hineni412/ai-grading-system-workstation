@@ -317,6 +317,20 @@ describe('MaterialLibraryWorkspace current-material safety', () => {
     expect(host.textContent).toContain('单次调用 · 不自动重试')
     expect(host.querySelector('.tp-mapping-job-status dl')).toBeNull()
 
+    vi.spyOn(teachingPrepCatalogApi, 'listSemesterMappingProposals').mockResolvedValue([])
+    useJobStore().track({
+      ...running, status: 'succeeded', progress: 1, stage: 'completed',
+      result: {
+        semester_id: semesterItem.id,
+        operation_id: running.payload.operation_id,
+        source_state_sha256: running.payload.source_state_sha256,
+        proposal_id: 'p'.repeat(32), recovered_existing: false,
+      },
+      updated_at: '2026-08-03T00:00:08Z', finished_at: '2026-08-03T00:00:08Z',
+    })
+    await vi.waitFor(() => expect(host.textContent).toContain('正在恢复审核内容'))
+    expect(host.querySelector('.tp-mapping-job-status')?.classList.contains('is-success')).toBe(false)
+
     useJobStore().track({
       ...running, status: 'failed', stage: 'result_unknown',
       detail: '应用重启，结果未知', error: '无法确认模型结果',
