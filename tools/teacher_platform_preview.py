@@ -34,6 +34,15 @@ SOURCE_BRANCHES = (
     "codex/teaching-prep-iteration",
     "codex/class-teacher-iteration",
 )
+SOURCE_PATH_SCOPES = {
+    "codex/teaching-prep-iteration": (
+        "backend/teaching_prep",
+        "frontend/src/workspaces/teaching-prep",
+        "tests/teaching_prep",
+        "migrations/teaching_prep",
+        "docs/product/TEACHING_PREP_WORKBENCH_IMPLEMENTATION_PLAN.md",
+    ),
+}
 EXPECTED_LABELS = ("备课工作台", "班主任工作台")
 
 
@@ -107,7 +116,7 @@ def _source_heads() -> dict[str, str]:
     return {branch: _git("rev-parse", branch) for branch in SOURCE_BRANCHES}
 
 
-def _source_checkpoint_receipts() -> dict[str, str]:
+def _source_checkpoint_receipts() -> dict[str, dict[str, str]]:
     if not SOURCE_CHECKPOINT_RECEIPTS_PATH.is_file():
         return {}
     try:
@@ -121,16 +130,31 @@ def _source_checkpoint_receipts() -> dict[str, str]:
     receipts = payload.get("source_checkpoints")
     if not isinstance(receipts, dict):
         raise PreviewGuardError("组合预览来源检查点记录格式无效。")
-    result: dict[str, str] = {}
-    for branch, head in receipts.items():
-        if branch not in SOURCE_BRANCHES or not isinstance(head, str):
-            raise PreviewGuardError("组合预览来源检查点记录包含无效条目。")
-        clean_head = head.strip().lower()
-        if len(clean_head) not in (40, 64) or any(
-            character not in "0123456789abcdef" for character in clean_head
+    result: dict[str, dict[str, str]] = {}
+    for branch, receipt in receipts.items():
+        if (
+            branch not in SOURCE_PATH_SCOPES
+            or not isinstance(receipt, dict)
+            or set(receipt) != {"source_head", "integration_commit"}
         ):
-            raise PreviewGuardError("组合预览来源检查点记录包含无效提交号。")
-        result[branch] = clean_head
+            raise PreviewGuardError("组合预览来源检查点记录包含无效条目。")
+        clean_receipt: dict[str, str] = {}
+        for field in ("source_head", "integration_commit"):
+            value = receipt.get(field)
+            if not isinstance(value, str):
+                raise PreviewGuardError(
+                    "组合预览来源检查点记录包含无效提交号。"
+                )
+            clean_value = value.strip().lower()
+            if len(clean_value) not in (40, 64) or any(
+                character not in "0123456789abcdef"
+                for character in clean_value
+            ):
+                raise PreviewGuardError(
+                    "组合预览来源检查点记录包含无效提交号。"
+                )
+            clean_receipt[field] = clean_value
+        result[branch] = clean_receipt
     return result
 
 
@@ -151,6 +175,50 @@ def _source_is_ancestor(source_head: str, preview_head: str) -> bool:
         stderr=subprocess.DEVNULL,
     )
     return completed.returncode == 0
+
+
+def _source_matches_integration(
+    source_head: str,
+    integration_commit: str,
+    paths: tuple[str, ...],
+) -> bool:
+    completed = subprocess.run(
+        [
+            _git_executable(),
+            "-c",
+            f"safe.directory={PROJECT_ROOT.as_posix()}",
+            "diff",
+            "--quiet",
+            source_head,
+            integration_commit,
+            "--",
+            *paths,
+        ],
+        cwd=PROJECT_ROOT,
+        check=False,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    return completed.returncode == 0
+
+
+def _receipt_proves_integration(
+    *,
+    source_branch: str,
+    source_head: str,
+    preview_head: str,
+    receipts: dict[str, dict[str, str]],
+) -> bool:
+    receipt = receipts.get(source_branch)
+    paths = SOURCE_PATH_SCOPES.get(source_branch)
+    if receipt is None or paths is None:
+        return False
+    integration_commit = receipt["integration_commit"]
+    return (
+        receipt["source_head"] == source_head
+        and _source_is_ancestor(integration_commit, preview_head)
+        and _source_matches_integration(source_head, integration_commit, paths)
+    )
 
 
 def _tracked_code_changes() -> str:
@@ -183,7 +251,12 @@ def _assert_preview_workspace() -> tuple[str, dict[str, str]]:
     for source_branch, source_head in source_heads.items():
         if (
             not _source_is_ancestor(source_head, preview_head)
-            and checkpoint_receipts.get(source_branch) != source_head
+            and not _receipt_proves_integration(
+                source_branch=source_branch,
+                source_head=source_head,
+                preview_head=preview_head,
+                receipts=checkpoint_receipts,
+            )
         ):
             raise PreviewGuardError(
                 f"{source_branch} 已有新检查点但尚未进入组合预览；请先刷新合并。"

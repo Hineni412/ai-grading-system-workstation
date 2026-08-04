@@ -241,11 +241,29 @@ def test_preview_guard_accepts_a_recorded_cherry_pick_checkpoint(
     monkeypatch.setattr(preview, "_current_head", lambda: "f" * 40)
     monkeypatch.setattr(preview, "_source_heads", lambda: source_heads)
     monkeypatch.setattr(preview, "_tracked_code_changes", lambda: "")
-    monkeypatch.setattr(preview, "_source_is_ancestor", lambda *_args: False)
+    teaching_head = source_heads["codex/teaching-prep-iteration"]
+    integration_commit = "e" * 40
+    monkeypatch.setattr(
+        preview,
+        "_source_is_ancestor",
+        lambda candidate, _preview: candidate != teaching_head,
+    )
     monkeypatch.setattr(
         preview,
         "_source_checkpoint_receipts",
-        lambda: dict(source_heads),
+        lambda: {
+            "codex/teaching-prep-iteration": {
+                "source_head": teaching_head,
+                "integration_commit": integration_commit,
+            }
+        },
+    )
+    monkeypatch.setattr(
+        preview,
+        "_source_matches_integration",
+        lambda source, integrated, _paths: (
+            source == teaching_head and integrated == integration_commit
+        ),
     )
     monkeypatch.setattr(preview, "_assert_local_data_boundary", lambda: None)
 
@@ -259,14 +277,62 @@ def test_preview_guard_rejects_when_a_recorded_source_advances(
         branch: f"{index + 1:040x}"
         for index, branch in enumerate(preview.SOURCE_BRANCHES)
     }
-    recorded = dict(source_heads)
-    recorded[preview.SOURCE_BRANCHES[1]] = "a" * 40
+    teaching_branch = "codex/teaching-prep-iteration"
+    teaching_head = source_heads[teaching_branch]
+    recorded = {
+        teaching_branch: {
+            "source_head": "a" * 40,
+            "integration_commit": "e" * 40,
+        }
+    }
     monkeypatch.setattr(preview, "_current_branch", lambda: preview.EXPECTED_BRANCH)
     monkeypatch.setattr(preview, "_current_head", lambda: "f" * 40)
     monkeypatch.setattr(preview, "_source_heads", lambda: source_heads)
     monkeypatch.setattr(preview, "_tracked_code_changes", lambda: "")
-    monkeypatch.setattr(preview, "_source_is_ancestor", lambda *_args: False)
+    monkeypatch.setattr(
+        preview,
+        "_source_is_ancestor",
+        lambda candidate, _preview: candidate != teaching_head,
+    )
     monkeypatch.setattr(preview, "_source_checkpoint_receipts", lambda: recorded)
+
+    with pytest.raises(preview.PreviewGuardError, match="尚未进入组合预览"):
+        preview._assert_preview_workspace()
+
+
+def test_preview_guard_rejects_a_receipt_without_matching_integrated_content(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_heads = {
+        branch: f"{index + 1:040x}"
+        for index, branch in enumerate(preview.SOURCE_BRANCHES)
+    }
+    teaching_branch = "codex/teaching-prep-iteration"
+    teaching_head = source_heads[teaching_branch]
+    monkeypatch.setattr(preview, "_current_branch", lambda: preview.EXPECTED_BRANCH)
+    monkeypatch.setattr(preview, "_current_head", lambda: "f" * 40)
+    monkeypatch.setattr(preview, "_source_heads", lambda: source_heads)
+    monkeypatch.setattr(preview, "_tracked_code_changes", lambda: "")
+    monkeypatch.setattr(
+        preview,
+        "_source_is_ancestor",
+        lambda candidate, _preview: candidate != teaching_head,
+    )
+    monkeypatch.setattr(
+        preview,
+        "_source_checkpoint_receipts",
+        lambda: {
+            teaching_branch: {
+                "source_head": teaching_head,
+                "integration_commit": "e" * 40,
+            }
+        },
+    )
+    monkeypatch.setattr(
+        preview,
+        "_source_matches_integration",
+        lambda *_args: False,
+    )
 
     with pytest.raises(preview.PreviewGuardError, match="尚未进入组合预览"):
         preview._assert_preview_workspace()
