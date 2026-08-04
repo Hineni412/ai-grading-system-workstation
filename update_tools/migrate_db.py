@@ -101,6 +101,9 @@ _APPROVED_TABLE_REBUILDS = {
     "028_scope_knowledge_relations_to_release": frozenset(
         {"knowledge_relations"}
     ),
+    "029_allow_solution_evidence_v2": frozenset(
+        {"question_solution_evidence_versions"}
+    ),
 }
 _APPROVED_TABLE_DROPS = {
     "008_drop_legacy_cli_tables": frozenset(
