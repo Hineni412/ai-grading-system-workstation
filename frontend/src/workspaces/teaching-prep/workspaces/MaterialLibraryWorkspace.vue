@@ -139,6 +139,18 @@ const activeMappingGroup = computed(() => (
     ?? mappingGroups.value[0]
     ?? null
 ))
+const proposalEvidenceById = computed(() => {
+  const evidence = activeProposal.value?.payload.directory_evidence
+  const entries = [
+    ...(evidence?.toc_entries ?? []),
+    ...(evidence?.resolved_ranges ?? []),
+    ...(evidence?.anchors ?? []),
+  ]
+  return new Map(entries.flatMap((entry) => {
+    const id = typeof entry.evidence_id === 'string' ? entry.evidence_id : ''
+    return id ? [[id, entry] as const] : []
+  }))
+})
 const allMappingsDecided = computed(() => {
   const mappings = activeProposal.value?.payload.mappings ?? []
   return mappings.length > 0
@@ -228,6 +240,41 @@ function stepPage(offset: number): void {
 
 function openMappingRange(startUnit: number): void {
   goToPage(startUnit)
+}
+
+function evidenceDisplay(evidenceId: string): { label: string, unit: number | null } {
+  const evidence = proposalEvidenceById.value.get(evidenceId)
+  if (!evidence) return { label: `${evidenceId}（旧建议未保存证据详情）`, unit: null }
+  const title = typeof evidence.title === 'string' ? evidence.title : ''
+  const printedPage = typeof evidence.printed_page === 'number' ? evidence.printed_page : null
+  const sourceUnit = typeof evidence.source_unit === 'number' ? evidence.source_unit : null
+  const unitIndex = typeof evidence.unit_index === 'number' ? evidence.unit_index : null
+  const startUnit = typeof evidence.start_unit === 'number' ? evidence.start_unit : null
+  const endUnit = typeof evidence.end_unit === 'number' ? evidence.end_unit : null
+  const excerpt = typeof evidence.text_excerpt === 'string'
+    ? evidence.text_excerpt.trim().slice(0, 72)
+    : ''
+  if (startUnit !== null && endUnit !== null) {
+    return {
+      label: `推断范围：${title || evidenceId} · PDF ${startUnit}—${endUnit} 页`,
+      unit: startUnit,
+    }
+  }
+  if (unitIndex !== null) {
+    return {
+      label: `正文锚点：PDF 第 ${unitIndex} 页 · ${title || excerpt || evidenceId}`,
+      unit: unitIndex,
+    }
+  }
+  return {
+    label: `目录：${title || evidenceId}${printedPage === null ? '' : ` · 书上第 ${printedPage} 页`}${sourceUnit === null ? '' : ` · 目录位于 PDF 第 ${sourceUnit} 页`}`,
+    unit: sourceUnit,
+  }
+}
+
+function openEvidence(evidenceId: string): void {
+  const unit = evidenceDisplay(evidenceId).unit
+  if (unit !== null) openMappingRange(unit)
 }
 
 function handlePageKey(event: KeyboardEvent): void {
@@ -1303,7 +1350,18 @@ async function saveManualMapping(): Promise<void> {
           <div class="tp-mapping-basis">
             <strong>模型映射依据</strong>
             <p>{{ item.basis ?? '旧建议未保存模型依据，请结合原页人工复核。' }}</p>
-            <small v-if="item.evidence_refs?.length">证据：{{ item.evidence_refs.join('、') }}</small>
+            <div v-if="item.evidence_refs?.length" class="tp-mapping-evidence-list">
+              <span>证据</span>
+              <button
+                v-for="evidenceId in item.evidence_refs"
+                :key="evidenceId"
+                type="button"
+                :disabled="evidenceDisplay(evidenceId).unit === null"
+                @click="openEvidence(evidenceId)"
+              >
+                {{ evidenceDisplay(evidenceId).label }}
+              </button>
+            </div>
           </div>
           <label>
             目标课时

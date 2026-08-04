@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import pytest
+
+from backend.teaching_prep.domain.errors import TeachingPrepValidationError
 from backend.teaching_prep.application.semester_mapping import (
     validate_semester_mapping_payload,
 )
@@ -106,3 +109,49 @@ def test_mapping_validation_adds_basis_and_merges_adjacent_pages() -> None:
     assert result["mappings"][0]["end_unit"] == 12
     assert "正文标题与目录一致" in result["mappings"][0]["basis"]
     assert result["mappings"][0]["evidence_refs"]
+
+
+def test_directory_search_expands_when_toc_starts_after_initial_window() -> None:
+    snapshot = _snapshot()
+    units = list(snapshot["materials"][0]["units"])
+    units.extend(
+        {"unit_index": index, "title": None, "text_excerpt": f"练习 {index}"}
+        for index in range(68, 101)
+    )
+    units[1]["text_excerpt"] = "前言"
+    units[16]["text_excerpt"] = "目录\n第一章 三角形 ...... 1"
+    units[29]["text_excerpt"] = "第一章 三角形"
+    snapshot["materials"][0]["units"] = units
+    snapshot["materials"][0]["unit_count"] = 100
+
+    evidence = build_directory_evidence(snapshot)
+
+    assert evidence["strategy"] != "sparse_outline"
+    assert len(evidence["scanned_unit_indices"]) == 22
+    assert evidence["toc_entries"][0]["source_unit"] == 17
+
+
+def test_mapping_validation_rejects_invented_evidence_reference() -> None:
+    snapshot = _snapshot()
+    snapshot["directory_evidence"] = build_directory_evidence(snapshot)
+    raw = {
+        "tree": [{
+            "key": "chapter-a", "title": "第一章", "sections": [{
+                "key": "section-a", "title": "第一节", "lessons": [{
+                    "key": "lesson-a", "title": "第1课时", "duration_minutes": 45,
+                }],
+            }],
+        }],
+        "mappings": [{
+            "material_record_id": "record-1",
+            "lesson_ref": "proposal:lesson-a",
+            "start_unit": 9,
+            "end_unit": 12,
+            "basis": "目录与正文一致",
+            "evidence_refs": ["toc-invented"],
+        }],
+        "uncertainties": [],
+    }
+
+    with pytest.raises(TeachingPrepValidationError, match="unavailable directory evidence"):
+        validate_semester_mapping_payload(raw, snapshot=snapshot)
