@@ -1,5 +1,9 @@
 # 备课工作台连续迭代边界
 
+> 当前实施入口：`docs/product/teaching-prep/A_I1_R7_IMPLEMENTATION_PLAN.md`。本轮采用 **C 型备课首页 + A 型单课时工作页**，并依赖共同 AI 任务地基。该决定替代旧 A-I1 文档中的“四个并列工作区”页面结构；旧五段业务语义、资料版本、教师审批、源 PPTX 不可覆盖和无课件备课仍然有效。当前仅完成设计与实施拆解，尚未开始生产代码、真实资料、真实模型或 WPS 验证。
+>
+> 启动门：先由完整文档候选形成共同检查点，并通过 Git 同步到 A 分支；共同契约在本分支实际存在前不得开始 A-I1-R7 编码。
+
 ## 基线与定位
 
 - 分支：`codex/teaching-prep-iteration`
@@ -16,12 +20,11 @@
 
 ## 当前冻结任务
 
-- 直接实施规格：`docs/product/teaching-prep/FRONTEND_IMPLEMENTATION_SPEC.md`；
-- 视觉与页面状态参考：`docs/product/teaching-prep/UI_CONCEPT.md` 及 `ui-concepts/`；
-- 当前状态：A-I1 完整候选和集中自动化验证已完成，包含四工作区、五段流程和对应后端契约；用户在
-  2026-08-01 更新当前目标，要求不再等待额外终审，直接合入集成预览。该授权只覆盖本地集成预览，
-  不等于 `main` 发布、真实数据迁移、模型调用或真实 WPS 授权；
-- 原 A01—A11 的完成状态不变，本轮属于新的 A 线体验与能力增强。
+- 直接实施规格：`docs/product/teaching-prep/A_I1_R7_IMPLEMENTATION_PLAN.md`；
+- 共同契约：`docs/product/teacher-workspaces/AI_TASK_AND_HANDOFF_CONTRACT.md`，必须先通过 `TW-F1` 共同地基检查点并以 Git 同步完整文档后，再实施 A 的 AI 接入与顶部子导航；
+- 旧视觉与页面状态参考：`FRONTEND_IMPLEMENTATION_SPEC.md`、`UI_CONCEPT.md` 及 `ui-concepts/`，只作为现有能力和历史布局证据，不再决定默认入口与页面层级；
+- 当前状态：A-I1-R7 设计和连续实施拆解已冻结，生产代码尚未开始；
+- 原 A01—A11、A-I1 和 A-I1-R1—R6 的完成状态不变，本轮是新的 A 线体验重构。
 
 ## 包含范围
 
