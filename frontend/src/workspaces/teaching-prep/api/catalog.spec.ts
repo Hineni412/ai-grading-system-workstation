@@ -510,6 +510,56 @@ describe('teaching preparation delivery API', () => {
     }
   })
 
+  it('accepts directory evidence metadata without treating it as a local path', async () => {
+    const semesterId = 's'.repeat(32)
+    const proposal = {
+      id: 'p'.repeat(32),
+      semester_id: semesterId,
+      operation_id: 'stored-operation',
+      source_state_sha256: '4'.repeat(64),
+      status: 'proposed',
+      payload: {
+        tree: [],
+        mappings: [{
+          mapping_id: 'mapping-1',
+          material_record_id: 'r'.repeat(32),
+          lesson_ref: 'lesson-1',
+          start_unit: 1,
+          end_unit: 3,
+          purpose: 'textbook',
+          decision: 'pending',
+          teacher_revision: null,
+          decision_reason: null,
+        }],
+        uncertainties: [],
+        source_material_record_ids: ['r'.repeat(32)],
+        directory_evidence: {
+          strategy: 'sparse_outline',
+          confidence: 'medium',
+          scanned_unit_indices: [1, 2, 3],
+          toc_entries: [],
+          anchors: [],
+          resolved_ranges: [],
+          printed_to_pdf_offset: null,
+          total_unit_count: 67,
+          full_page_text_sent: false,
+          issues: [],
+        },
+      },
+      revision: 1,
+      created_at: '2026-08-03T00:00:00Z',
+      updated_at: '2026-08-03T00:00:00Z',
+      applied_at: null,
+    }
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      response({ items: [proposal] }),
+    )
+
+    await expect(
+      teachingPrepCatalogApi.listSemesterMappingProposals(semesterId),
+    ).resolves.toHaveLength(1)
+  })
+
   it('accepts a safe semester material filename without weakening path checks', async () => {
     const semesterId = 's'.repeat(32)
     const payload = {
