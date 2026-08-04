@@ -218,6 +218,64 @@ describe('MaterialLibraryWorkspace current-material safety', () => {
     app.unmount()
   })
 
+  it('shows the proposed lesson tree, model basis, one lesson group, and preview errors', async () => {
+    const curriculumItem = curriculum()
+    const semesterItem = semester(curriculumItem.id)
+    const materialItem = material('a'.repeat(32), '目录教辅')
+    const materialRecord = record('r'.repeat(32), materialItem)
+    const item = proposal('2'.repeat(32), materialRecord.id)
+    item.payload.tree = [{
+      key: 'chapter_001', title: '第一章 勾股定理', sections: [{
+        key: 'section_001_001', title: '探索勾股定理', lessons: [
+          { key: 'lesson_001_001_001', title: '勾股定理第1课时', duration_minutes: 45 },
+          { key: 'lesson_001_001_002', title: '勾股定理第2课时', duration_minutes: 45 },
+        ],
+      }],
+    }]
+    item.payload.mappings = [
+      {
+        ...item.payload.mappings[0]!, lesson_ref: 'proposal:lesson_001_001_001',
+        basis: '目录页码与正文标题一致', evidence_refs: ['toc-001', 'anchor-0007'],
+      },
+      {
+        ...item.payload.mappings[0]!, mapping_id: 'mapping-second',
+        lesson_ref: 'proposal:lesson_001_001_002', start_unit: 2, end_unit: 4,
+        basis: '下一节目录起始页', evidence_refs: ['toc-002'],
+      },
+    ]
+    vi.spyOn(teachingPrepCatalogApi, 'semesterMappingPreflight').mockResolvedValue({
+      semester_id: semesterId, source_state_sha256: 'f'.repeat(64), will_call_model: true,
+      model_available: true, model_label: '合成模型', material_count: 1, unit_count: 4,
+      existing_lesson_count: 0, creates_initial_tree: true, automatic_retry: false,
+    })
+    const { app, host, catalog } = mountWorkspace()
+    catalog.curricula = [curriculumItem]
+    catalog.semesters = [semesterItem]
+    catalog.selectedCurriculumId = curriculumItem.id
+    catalog.materials = [materialItem]
+    catalog.semesterMaterials = [materialRecord]
+    catalog.selectedMaterialId = materialItem.id
+    catalog.materialUnits = [unit('1'.repeat(32), materialItem)]
+    await catalog.prepareSemesterMapping([materialRecord.id])
+    catalog.semesterMappingProposals = [item]
+    await flush()
+
+    expect(host.textContent).toContain('待确认课时树')
+    expect(host.textContent).toContain('勾股定理第1课时')
+    expect(host.querySelectorAll('.tp-mapping-review')).toHaveLength(1)
+    expect(host.textContent).toContain('目录页码与正文标题一致')
+    const lessonSelect = host.querySelector<HTMLSelectElement>('.tp-mapping-review select')!
+    expect([...lessonSelect.options].some(option => (
+      option.value === 'proposal:lesson_001_001_001'
+    ))).toBe(true)
+
+    const image = host.querySelector<HTMLImageElement>('.tp-document-workspace__preview')!
+    image.dispatchEvent(new Event('error'))
+    await flush()
+    expect(host.textContent).toContain('原页预览加载失败')
+    app.unmount()
+  })
+
   it('shows durable Job stage, progress, and result-unknown retry guard', async () => {
     const curriculumItem = curriculum()
     const semesterItem = semester(curriculumItem.id)

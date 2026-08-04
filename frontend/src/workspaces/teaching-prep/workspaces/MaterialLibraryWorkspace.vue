@@ -42,6 +42,7 @@ const manualMapping = reactive<{
   note: '',
 })
 const mappingMessage = ref('先导入并解析资料，再逐份建立课时目录。')
+const reviewLessonRef = ref('')
 
 const MATERIAL_ROLES: Array<{ value: SemesterMaterialRole; label: string }> = [
   { value: 'textbook', label: '教材' },
@@ -101,6 +102,43 @@ const activeMaterial = computed(
 const activeProposal = computed(
   () => workbench.catalog.currentSemesterMappingProposal,
 )
+const proposalLessonOptions = computed(() => (
+  activeProposal.value?.payload.tree.flatMap(chapter => (
+    chapter.sections.flatMap(section => section.lessons.map(lesson => ({
+      value: `proposal:${lesson.key}`,
+      title: lesson.title,
+      path: `${chapter.title} / ${section.title}`,
+    })))
+  )) ?? []
+))
+const formalLessonOptions = computed(() => workbench.catalog.lessonNodes
+  .filter(node => node.node_type === 'lesson' && node.is_active)
+  .map(node => ({ value: node.id, title: node.title, path: '正式课时树' })))
+const mappingLessonOptions = computed(() => [
+  ...proposalLessonOptions.value,
+  ...formalLessonOptions.value,
+])
+const mappingGroups = computed(() => {
+  const proposal = activeProposal.value
+  if (!proposal) return []
+  const refs = [...new Set(proposal.payload.mappings.map(item => item.lesson_ref))]
+  return refs.map((lessonRef) => {
+    const option = mappingLessonOptions.value.find(item => item.value === lessonRef)
+    const mappings = proposal.payload.mappings.filter(item => item.lesson_ref === lessonRef)
+    return {
+      lessonRef,
+      title: option?.title ?? '未识别课时',
+      path: option?.path ?? lessonRef,
+      mappings,
+      pendingCount: mappings.filter(item => item.decision === 'pending').length,
+    }
+  })
+})
+const activeMappingGroup = computed(() => (
+  mappingGroups.value.find(group => group.lessonRef === reviewLessonRef.value)
+    ?? mappingGroups.value[0]
+    ?? null
+))
 const allMappingsDecided = computed(() => {
   const mappings = activeProposal.value?.payload.mappings ?? []
   return mappings.length > 0
@@ -168,6 +206,16 @@ watch(
 
 watch(activeUnit, unit => { pageInput.value = unit?.unit_index ?? 1 }, { immediate: true })
 
+watch(
+  mappingGroups,
+  groups => {
+    if (!groups.some(group => group.lessonRef === reviewLessonRef.value)) {
+      reviewLessonRef.value = groups[0]?.lessonRef ?? ''
+    }
+  },
+  { immediate: true },
+)
+
 function goToPage(value = pageInput.value): void {
   const target = Math.max(1, Math.min(totalPages.value || 1, Math.round(Number(value) || 1)))
   pageInput.value = target
@@ -176,6 +224,10 @@ function goToPage(value = pageInput.value): void {
 
 function stepPage(offset: number): void {
   goToPage((activeUnit.value?.unit_index ?? 1) + offset)
+}
+
+function openMappingRange(startUnit: number): void {
+  goToPage(startUnit)
 }
 
 function handlePageKey(event: KeyboardEvent): void {
@@ -1023,6 +1075,20 @@ async function saveManualMapping(): Promise<void> {
           {{ currentMappingPreflight.unit_count }} 页/张
         </strong>
         <span>{{ mappingPurposeLabel }} · 最多一次模型调用 · 不自动重试</span>
+        <span v-if="currentMappingPreflight.evidence_strategy">
+          目录策略：{{ currentMappingPreflight.evidence_strategy }} ·
+          前置检查 {{ currentMappingPreflight.scanned_unit_count }} 页 ·
+          目录 {{ currentMappingPreflight.toc_entry_count }} 条 ·
+          正文锚点 {{ currentMappingPreflight.anchor_count }} 个
+        </span>
+        <span v-if="currentMappingPreflight.full_page_text_sent === false">
+          不会发送全部逐页正文；预计证据文本约 {{ currentMappingPreflight.estimated_input_characters }} 字符。
+        </span>
+        <span
+          v-for="issue in currentMappingPreflight.evidence_issues ?? []"
+          :key="issue"
+          class="tp-muted"
+        >{{ issue }}</span>
         <span v-if="!currentMappingPreflight.model_available">
           当前模型不可用；仍可在右侧把页段人工关联到现有课时。
         </span>
@@ -1041,6 +1107,30 @@ async function saveManualMapping(): Promise<void> {
         : '选择左侧资料后在这里核对原页；若解析失败，上方会显示原因。'"
     >
       <template #rail>
+        <section v-if="activeProposal?.payload.tree.length" class="tp-proposal-tree">
+          <p class="tp-eyebrow">模型建议目录</p>
+          <h2>待确认课时树</h2>
+          <details
+            v-for="chapter in activeProposal.payload.tree"
+            :key="chapter.key"
+            open
+          >
+            <summary>{{ chapter.title }}</summary>
+            <div v-for="section in chapter.sections" :key="section.key">
+              <strong>{{ section.title }}</strong>
+              <button
+                v-for="lesson in section.lessons"
+                :key="lesson.key"
+                type="button"
+                :class="{ 'is-selected': reviewLessonRef === `proposal:${lesson.key}` }"
+                @click="reviewLessonRef = `proposal:${lesson.key}`"
+              >
+                <span>{{ lesson.title }}</span>
+                <small>{{ lesson.duration_minutes }} 分钟</small>
+              </button>
+            </div>
+          </details>
+        </section>
         <h2>资料版本</h2>
         <p v-if="activeMaterials.length === 0" class="tp-muted">
           尚未导入教材、教辅或课件。
@@ -1171,29 +1261,59 @@ async function saveManualMapping(): Promise<void> {
         </div>
       </template>
       <template #inspector>
-        <h2>逐条映射审核</h2>
+        <h2>按课时审核页段</h2>
         <p v-if="!activeProposal" class="tp-inline-guidance">
           暂无待审核建议。可在上方生成目录建议，或在下方人工关联当前资料页段。
         </p>
+        <template v-else>
+          <label class="tp-field">
+            当前建议课时
+            <select v-model="reviewLessonRef">
+              <option
+                v-for="group in mappingGroups"
+                :key="group.lessonRef"
+                :value="group.lessonRef"
+              >
+                {{ group.title }} · {{ group.mappings.length }} 个页段
+              </option>
+            </select>
+          </label>
+          <div v-if="activeMappingGroup" class="tp-mapping-group-summary">
+            <strong>{{ activeMappingGroup.title }}</strong>
+            <small>{{ activeMappingGroup.path }}</small>
+            <span>{{ activeMappingGroup.pendingCount }} 条待确认</span>
+          </div>
+          <details v-if="activeProposal.payload.uncertainties.length" class="tp-mapping-uncertainties">
+            <summary>模型标记的疑点（{{ activeProposal.payload.uncertainties.length }}）</summary>
+            <ul><li v-for="item in activeProposal.payload.uncertainties" :key="item">{{ item }}</li></ul>
+          </details>
+        </template>
         <article
-          v-for="item in activeProposal?.payload.mappings ?? []"
+          v-for="item in activeMappingGroup?.mappings ?? []"
           :key="item.mapping_id"
           class="tp-mapping-review"
           :class="`is-${item.decision}`"
         >
           <header>
-            <strong>{{ item.start_unit }}—{{ item.end_unit }} 页/张</strong>
+            <button type="button" @click="openMappingRange(item.start_unit)">
+              {{ item.start_unit }}—{{ item.end_unit }} 页/张 · 查看原页
+            </button>
             <span>{{ item.decision === 'pending' ? '待处理' : item.decision }}</span>
           </header>
+          <div class="tp-mapping-basis">
+            <strong>模型映射依据</strong>
+            <p>{{ item.basis ?? '旧建议未保存模型依据，请结合原页人工复核。' }}</p>
+            <small v-if="item.evidence_refs?.length">证据：{{ item.evidence_refs.join('、') }}</small>
+          </div>
           <label>
             目标课时
             <select v-model="editFor(item).lessonRef">
               <option
-                v-for="lesson in workbench.catalog.lessonNodes.filter(node => node.node_type === 'lesson')"
-                :key="lesson.id"
-                :value="lesson.id"
+                v-for="lesson in mappingLessonOptions"
+                :key="lesson.value"
+                :value="lesson.value"
               >
-                {{ lesson.title }}
+                {{ lesson.title }} · {{ lesson.path }}
               </option>
             </select>
           </label>
@@ -1201,7 +1321,7 @@ async function saveManualMapping(): Promise<void> {
             <label>起始页<input v-model.number="editFor(item).startUnit" type="number" min="1"></label>
             <label>结束页<input v-model.number="editFor(item).endUnit" type="number" min="1"></label>
           </div>
-          <label>决定说明<input v-model="editFor(item).reason" type="text"></label>
+          <label>教师修改说明（可选）<input v-model="editFor(item).reason" type="text"></label>
           <div class="tp-inline-actions">
             <button type="button" @click="decideMapping(item, 'accepted')">接受</button>
             <button type="button" @click="decideMapping(item, 'modified')">保存修改</button>

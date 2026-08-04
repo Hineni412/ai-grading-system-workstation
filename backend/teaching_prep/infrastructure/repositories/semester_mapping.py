@@ -789,7 +789,7 @@ class SemesterMappingRepository:
                             ),
                             "text_excerpt": str(
                                 unit["extracted_text"]
-                            )[:240],
+                            )[:4000],
                             "text_status": str(unit["text_status"]),
                             "object_summary": _compact_object_summary(
                                 str(
