@@ -975,6 +975,13 @@ def _normalize_rubric_question(question: dict[str, Any], answer_item: dict[str, 
             # and could override the visible part_score during grading.
             part.pop("max_score", None)
             step_alias = _best_step_alias(part)
+            if not step_alias:
+                answer_part = _answer_part_for_rubric(
+                    answer_item,
+                    part,
+                    idx - 1,
+                )
+                step_alias = _milestone_step_alias(answer_part)
             if step_alias is not part.get("steps"):
                 part["steps"] = step_alias
 
@@ -1047,6 +1054,66 @@ def _best_step_alias(part: dict[str, Any]) -> list[Any]:
     if not existing:
         return next(iter(candidates), visual_steps)
     return existing
+
+
+def _answer_part_for_rubric(
+    answer_item: dict[str, Any],
+    rubric_part: dict[str, Any],
+    index: int,
+) -> dict[str, Any] | None:
+    answer_parts = answer_item.get("parts")
+    if not isinstance(answer_parts, list):
+        return None
+    part_id = str(rubric_part.get("part_id") or "").strip()
+    for answer_part in answer_parts:
+        if (
+            isinstance(answer_part, dict)
+            and part_id
+            and str(answer_part.get("part_id") or "").strip() == part_id
+        ):
+            return answer_part
+    candidate = answer_parts[index] if index < len(answer_parts) else None
+    return candidate if isinstance(candidate, dict) else None
+
+
+def _milestone_step_alias(answer_part: dict[str, Any] | None) -> list[dict[str, Any]]:
+    if not isinstance(answer_part, dict):
+        return []
+    milestones = answer_part.get("step_milestones")
+    if not isinstance(milestones, list) or not milestones:
+        return []
+    steps: list[dict[str, Any]] = []
+    for index, raw in enumerate(milestones, start=1):
+        if isinstance(raw, dict):
+            goal = _specific_step_goal(raw, "")
+            required = _string_list(raw.get("required_elements"))
+            if not required:
+                required = _string_list(
+                    raw.get("observable_evidence")
+                    or raw.get("justification")
+                    or raw.get("answer_anchor")
+                )
+            step = {
+                "step_id": str(raw.get("step_id") or f"S{index}"),
+                "core_goal": goal or str(raw.get("target") or "").strip(),
+                "required_elements": required,
+                "allow_alternative_methods": bool(
+                    raw.get("allow_alternative_methods", True)
+                ),
+                "deduction_rules": _string_list(raw.get("deduction_rules")),
+            }
+        else:
+            text = str(raw or "").strip()
+            step = {
+                "step_id": f"S{index}",
+                "core_goal": text,
+                "required_elements": [text] if text else [],
+                "allow_alternative_methods": True,
+                "deduction_rules": [],
+            }
+        if step["core_goal"] and step["required_elements"]:
+            steps.append(step)
+    return steps
 
 def _specific_step_goal(step: dict[str, Any], default: str) -> str:
     values = [
@@ -1231,17 +1298,19 @@ def _align_solution_parts_with_answer_parts(
             continue
         part_id = str(answer_part.get("part_id") or f"{question.get('question_id')}({idx})")
         answer = str(answer_part.get("answer") or "").strip()
+        milestone_steps = _milestone_step_alias(answer_part)
         next_parts.append(
             {
                 "part_id": part_id,
                 "part_score": part_score,
-                "steps": [
+                "steps": milestone_steps or [
                     {
                         "step_id": "S1",
                         "step_score": part_score,
                         "core_goal": f"完成 {part_id} 的答题要求",
                         "required_elements": [answer] if answer else ["合理的推理过程", "正确的结论"],
                         "allow_alternative_methods": True,
+                        "deduction_rules": [],
                     }
                 ],
                 "presentation_rules": [],

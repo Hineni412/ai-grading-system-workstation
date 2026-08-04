@@ -326,12 +326,23 @@ class QuestionAnalysisInputLoader:
                     *_rich_paths(answer_blocks),
                 ]
             )
-            images = tuple(
-                [
-                    *self._images(question_paths, role="question"),
-                    *self._images(answer_paths, role="answer"),
+            question_images = self._images(question_paths, role="question")
+            answer_images = self._images(answer_paths, role="answer")
+            # Some DOCX/PDF extractors attach a diagram to the answer-side
+            # rich blocks even though it is the figure the question refers to.
+            # Keep the original answer image and expose a question-role copy
+            # when no question-side body could be resolved, so the structural
+            # image gate does not reject an otherwise usable question.
+            if bool(row["has_images"]) and not question_images and answer_images:
+                question_images = [
+                    QuestionAnalysisImage(
+                        role="question",
+                        mime_type=image.mime_type,
+                        content=image.content,
+                    )
+                    for image in answer_images
                 ]
-            )
+            images = tuple([*question_images, *answer_images])
             has_images = bool(row["has_images"]) or bool(
                 question_paths or answer_paths
             )
@@ -562,9 +573,12 @@ def _combined_prompt(
         "one complete replacement result for the requested projection. When "
         "expected_projection is training_criteria, return solution_evidence only; "
         "the application preserves the already accepted tag_analysis. "
-        "Do not copy the rejected structure blindly. Process-required parts need at "
-        "least two distinct non-empty evidence points. Do not infer an exact evidence "
-        "point count from punctuation, equations, angle symbols, or connective words. "
+        "Do not copy the rejected structure blindly. Process-required parts should "
+         "be split into independently verifiable evidence points when the answer "
+         "shows more than one meaningful milestone. If only one milestone can be "
+         "confirmed, one evidence point is allowed; never invent steps just to "
+         "satisfy a count. Do not infer an exact evidence point count from punctuation, "
+         "equations, angle symbols, or connective words. "
         "A local question_type with question_type_confirmed=false is only a preview hint, "
         "not a grading fact. Decide response_mode separately for every part from the "
         "question, its complete answer and analysis. One blank in part (1) must never "

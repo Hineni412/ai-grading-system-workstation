@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 
 import type {
   QuestionBankPaper,
@@ -9,6 +9,7 @@ import type {
 import { questionBankApi } from '../../api/question-bank'
 import { useQuestionBankStore } from '../../stores/question-bank'
 import { useJobStore } from '../../stores/jobs'
+import { TERMINAL_JOB_STATUSES } from '../../api/jobs'
 
 const props = withDefaults(defineProps<{
   pendingTaxonomyCount?: number
@@ -47,6 +48,7 @@ const retagBusyPaperId = ref<number | null>(null)
 const retagAllBusy = ref(false)
 const taggingMode = ref<'fill' | 'retag' | null>(null)
 const retagMessage = ref('')
+const refreshedTerminalJobs = new Set<string>()
 const paperDraft = ref({
   title: '',
   year: '',
@@ -130,6 +132,30 @@ const completeQuestions = computed(() => store.papers.reduce(
   (total, paper) => total + paper.tagged_question_count,
   0,
 ))
+const activeAnalysisJobs = computed(() => Object.values(jobStore.jobs)
+  .filter((job) => (
+    job.job_type === 'question_import' || job.job_type === 'tagging_sync'
+  ) && !TERMINAL_JOB_STATUSES.has(job.status))
+  .sort((left, right) => right.id - left.id))
+
+watch(
+  () => Object.values(jobStore.jobs)
+    .filter((job) => job.job_type === 'question_import' || job.job_type === 'tagging_sync')
+    .map((job) => `${job.id}:${job.status}:${job.updated_at}`)
+    .sort()
+    .join('|'),
+  (signature) => {
+    if (!signature) return
+    const terminalJob = Object.values(jobStore.jobs).find((job) => (
+      (job.job_type === 'question_import' || job.job_type === 'tagging_sync')
+      && TERMINAL_JOB_STATUSES.has(job.status)
+      && !refreshedTerminalJobs.has(`${job.id}:${job.status}:${job.updated_at}`)
+    ))
+    if (!terminalJob) return
+    refreshedTerminalJobs.add(`${terminalJob.id}:${terminalJob.status}:${terminalJob.updated_at}`)
+    void store.loadPapers()
+  },
+)
 
 function uniqueValues(values: Array<string | null>): string[] {
   return [...new Set(values.filter((value): value is string => Boolean(value?.trim())))]
@@ -253,19 +279,19 @@ async function fillPaperTags(paper: QuestionBankPaper): Promise<void> {
   retagBusyPaperId.value = paper.id
   taggingMode.value = 'fill'
   try {
-    const ids = await loadQuestionIds([paper.id], 'untagged')
+    const ids = await loadQuestionIds([paper.id], 'all')
     if (ids.length === 0) {
-      retagMessage.value = '这份试卷的核心标签已经完整。'
+      retagMessage.value = '这份试卷没有可补齐的题目。'
       return
     }
     if (!window.confirm(
-      `将只补齐“${paper.title || `试卷 #${paper.id}`}”中 ${ids.length} 道标签不完整的题，可能产生模型费用；已有标签和人工修改会保留。确认继续吗？`,
+      `将补齐“${paper.title || `试卷 #${paper.id}`}”中 ${ids.length} 道题的标签、解题证据和训练判定点，可能产生模型费用；已有标签和人工修改会保留。确认继续吗？`,
     )) return
     const count = await submitTaggingBatches(ids, {
       forceRetag: false,
       scope: `paper-${paper.id}-fill`,
     })
-    retagMessage.value = `已提交 ${ids.length} 道标签不完整的题，共 ${count} 个补齐任务。`
+    retagMessage.value = `已提交 ${ids.length} 道题的标签与训练点补齐任务，共 ${count} 个任务；进度会在这里自动更新。`
   } catch {
     retagMessage.value = '补齐标签任务没有完整提交；已提交的任务会保留，请先查看任务记录。'
   } finally {
@@ -307,19 +333,19 @@ async function fillAllTags(): Promise<void> {
   retagAllBusy.value = true
   taggingMode.value = 'fill'
   try {
-    const ids = await loadQuestionIds(undefined, 'untagged')
+    const ids = await loadQuestionIds(undefined, 'all')
     if (ids.length === 0) {
-      retagMessage.value = '题库中的核心标签已经完整。'
+      retagMessage.value = '题库中没有可补齐的题目。'
       return
     }
     if (!window.confirm(
-      `将只补齐题库中 ${ids.length} 道标签不完整的题，可能产生模型费用；已有标签和人工修改会保留。确认继续吗？`,
+      `将补齐题库中 ${ids.length} 道题的标签、解题证据和训练判定点，可能产生模型费用；已有标签和人工修改会保留。确认继续吗？`,
     )) return
     const count = await submitTaggingBatches(ids, {
       forceRetag: false,
       scope: 'all-fill',
     })
-    retagMessage.value = `已提交全库 ${ids.length} 道标签不完整的题，共 ${count} 个补齐任务。`
+    retagMessage.value = `已提交全库 ${ids.length} 道题的标签与训练点补齐任务，共 ${count} 个任务；进度会在这里自动更新。`
   } catch {
     retagMessage.value = '全库补齐标签没有完整提交；已提交的任务会保留，请先查看任务记录。'
   } finally {
@@ -522,12 +548,11 @@ async function confirmPermanentDelete(): Promise<void> {
         <span><strong>{{ totalQuestions }}</strong> 道题</span>
         <span><strong>{{ completeQuestions }}</strong> 道标签完整</span>
         <button
-          v-if="completeQuestions < totalQuestions"
           type="button"
           class="paper-button is-quiet"
           :disabled="retagAllBusy || retagBusyPaperId !== null"
           @click="fillAllTags"
-        >{{ retagAllBusy && taggingMode === 'fill' ? '正在准备…' : '补齐未完整标签' }}</button>
+        >{{ retagAllBusy && taggingMode === 'fill' ? '正在准备…' : '补齐标签与训练点' }}</button>
         <button
           type="button"
           class="paper-button is-review"
@@ -559,6 +584,23 @@ async function confirmPermanentDelete(): Promise<void> {
     </header>
 
     <p v-if="retagMessage" class="paper-library__state" role="status">{{ retagMessage }}</p>
+
+    <section v-if="activeAnalysisJobs.length" class="paper-library__task-strip" aria-live="polite">
+      <div class="paper-library__task-strip-heading">
+        <strong>AI 解析进度</strong>
+        <span>任务会自动刷新，完成后试卷卡片也会同步更新。</span>
+      </div>
+      <div v-for="job in activeAnalysisJobs" :key="job.id" class="paper-library__task">
+        <div class="paper-library__task-main">
+          <strong>{{ job.job_type === 'question_import' ? '试卷入库' : '标签与训练点补齐' }} #{{ job.id }}</strong>
+          <span>{{ job.detail || job.stage || '正在处理' }}</span>
+        </div>
+        <progress :value="Math.round(job.progress * 100)" max="100">
+          {{ Math.round(job.progress * 100) }}%
+        </progress>
+        <button type="button" class="paper-button is-quiet" @click="jobStore.refresh(job.id)">刷新</button>
+      </div>
+    </section>
 
     <div class="paper-library__filters">
       <label class="paper-search">
@@ -663,7 +705,6 @@ async function confirmPermanentDelete(): Promise<void> {
             <span>更新于 {{ formatDate(paper.updated_at) }}</span>
             <div class="paper-card__actions">
               <button
-                v-if="paper.tagged_question_count < paper.question_count"
                 type="button"
                 class="paper-button is-quiet"
                 :disabled="retagBusyPaperId !== null || retagAllBusy"
@@ -671,7 +712,7 @@ async function confirmPermanentDelete(): Promise<void> {
               >{{
                 retagBusyPaperId === paper.id && taggingMode === 'fill'
                   ? '准备中…'
-                  : '补齐标签'
+                  : '补齐标签与训练点'
               }}</button>
               <button
                 type="button"
@@ -1496,6 +1537,57 @@ async function confirmPermanentDelete(): Promise<void> {
 
 .paper-library__state.is-error {
   color: #9a4136;
+}
+
+.paper-library__task-strip {
+  display: grid;
+  gap: 10px;
+  padding: 14px 16px;
+  border: 1px solid rgb(19 94 107 / 18%);
+  border-radius: 12px;
+  background: #f4faf9;
+}
+
+.paper-library__task-strip-heading,
+.paper-library__task {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 12px;
+}
+
+.paper-library__task-strip-heading {
+  justify-content: space-between;
+}
+
+.paper-library__task-strip-heading span,
+.paper-library__task-main span {
+  color: var(--color-text-secondary, #5c6672);
+  font-size: 12px;
+}
+
+.paper-library__task-main {
+  display: grid;
+  min-width: 180px;
+  gap: 2px;
+}
+
+.paper-library__task progress {
+  width: min(340px, 34vw);
+  height: 8px;
+  accent-color: var(--color-accent, #135e6b);
+}
+
+@media (max-width: 620px) {
+  .paper-library__task-strip-heading,
+  .paper-library__task {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .paper-library__task progress {
+    width: 100%;
+  }
 }
 
 .paper-editor-layer {
