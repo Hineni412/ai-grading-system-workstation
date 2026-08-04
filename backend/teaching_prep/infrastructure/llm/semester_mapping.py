@@ -7,6 +7,9 @@ from typing import Any
 
 from backend.llm.json_repair import parse_json_object_locally
 from backend.llm.usage import response_diagnostics
+from backend.teaching_prep.application.semester_mapping_evidence import (
+    build_directory_evidence,
+)
 from backend.teaching_prep.domain.errors import (
     TeachingPrepModelResponseError,
     TeachingPrepValidationError,
@@ -28,7 +31,8 @@ tree、mappings、uncertainties。严格使用下面的字段结构：
 {"tree":[{"key":"chapter_1","title":"章名","sections":[{"key":"section_1",
 "title":"节名","lessons":[{"key":"lesson_1","title":"课时名",
 "duration_minutes":45}]}]}],"mappings":[{"material_record_id":"原样复制资料ID",
-"lesson_ref":"proposal:lesson_1","start_unit":1,"end_unit":2}],
+"lesson_ref":"proposal:lesson_1","start_unit":1,"end_unit":2,
+"basis":"依据目录与正文标题推断","evidence_refs":["toc-001","anchor-0012"]}],
 "uncertainties":[]}
 所有 key 必须在整个 tree 全局唯一；推荐使用 chapter_01、
 chapter_01_section_01、chapter_01_section_01_lesson_01 这种带完整层级的 key。
@@ -39,7 +43,9 @@ duration_minutes（1—300 的整数），通常使用 45。尽量贴近 planned
 证据不足时减少课时并说明 uncertainty，不要用空数组占位。
 mapping 的 lesson_ref 对新课时使用 proposal:<lesson key>，只能引用 lesson 的 key，
 不能引用 chapter 或 section 的 key。连续页段合并，不要为每页重复建立 mapping。
-每条 mapping 只能包含 material_record_id、lesson_ref、start_unit、end_unit。
+每条 mapping 必须包含 material_record_id、lesson_ref、start_unit、end_unit、basis、
+evidence_refs。basis 用一句短话说明依据；evidence_refs 只能引用 directory_evidence 中
+真实存在的 evidence_id，不能编造。相邻且属于同一课时的页必须合并成一个连续页段。
 页码必须是快照中真实 unit_index 范围，不得编造页码、课时或资料。
 不能确定时写入 uncertainties，不要猜测。不要返回题目正文、答案或 WPS 指令。
 """
@@ -136,6 +142,9 @@ class WorkspaceSemesterMappingModelAdapter:
 def _compact_model_snapshot(
     snapshot: Mapping[str, object],
 ) -> dict[str, object]:
+    directory_evidence = snapshot.get("directory_evidence")
+    if not isinstance(directory_evidence, Mapping):
+        directory_evidence = build_directory_evidence(snapshot)
     semester = _selected_fields(
         snapshot.get("semester"),
         (
@@ -170,18 +179,35 @@ def _compact_model_snapshot(
                 "unit_count",
             ),
         )
-        material["units"] = [
-            _selected_fields(
-                unit,
-                ("unit_index", "title", "text_excerpt"),
-            )
-            for unit in _mapping_list(item.get("units"))
-        ]
         materials.append(material)
     return {
         "semester": semester,
         "lessons": lessons,
         "materials": materials,
+        "directory_evidence": _compact_directory_evidence(
+            directory_evidence
+        ),
+    }
+
+
+def _compact_directory_evidence(value: object) -> dict[str, object]:
+    if not isinstance(value, Mapping):
+        return {}
+    return {
+        field: value[field]
+        for field in (
+            "strategy",
+            "total_unit_count",
+            "scanned_unit_indices",
+            "toc_entries",
+            "resolved_ranges",
+            "anchors",
+            "printed_to_pdf_offset",
+            "confidence",
+            "issues",
+            "full_page_text_sent",
+        )
+        if field in value
     }
 
 

@@ -122,6 +122,14 @@ export interface SemesterMappingPreflight {
   existing_lesson_count: number
   creates_initial_tree: boolean
   automatic_retry: boolean
+  evidence_strategy?: 'toc_calibrated' | 'toc_unverified' | 'sparse_outline'
+  evidence_confidence?: 'high' | 'medium' | 'low'
+  scanned_unit_count?: number
+  toc_entry_count?: number
+  anchor_count?: number
+  estimated_input_characters?: number
+  full_page_text_sent?: boolean
+  evidence_issues?: string[]
 }
 
 export interface SemesterMappingProposalLesson {
@@ -156,6 +164,8 @@ export interface SemesterMappingProposalRange {
     end_unit: number
   } | null
   decision_reason: string | null
+  basis?: string
+  evidence_refs?: string[]
 }
 
 export interface SemesterMappingProposal {
@@ -169,6 +179,15 @@ export interface SemesterMappingProposal {
     mappings: SemesterMappingProposalRange[]
     uncertainties: string[]
     source_material_record_ids: string[]
+    directory_evidence?: {
+      strategy: string
+      confidence: string
+      issues: string[]
+      toc_entries: Array<Record<string, unknown>>
+      resolved_ranges: Array<Record<string, unknown>>
+      anchors: Array<Record<string, unknown>>
+      full_page_text_sent: boolean
+    }
   }
   revision: number
   created_at: string
@@ -884,6 +903,16 @@ function semesterMappingPreflight(value: unknown): SemesterMappingPreflight {
     || !integer(value.existing_lesson_count)
     || typeof value.creates_initial_tree !== 'boolean'
     || typeof value.automatic_retry !== 'boolean'
+    || (value.evidence_strategy !== undefined && !text(value.evidence_strategy))
+    || (value.evidence_confidence !== undefined && !text(value.evidence_confidence))
+    || (value.scanned_unit_count !== undefined && !integer(value.scanned_unit_count))
+    || (value.toc_entry_count !== undefined && !integer(value.toc_entry_count))
+    || (value.anchor_count !== undefined && !integer(value.anchor_count))
+    || (value.estimated_input_characters !== undefined && !integer(value.estimated_input_characters))
+    || (value.full_page_text_sent !== undefined && typeof value.full_page_text_sent !== 'boolean')
+    || (value.evidence_issues !== undefined && (
+      !Array.isArray(value.evidence_issues) || !value.evidence_issues.every(text)
+    ))
   ) throw new Error('Invalid semester mapping preflight response')
   return value as unknown as SemesterMappingPreflight
 }
@@ -994,6 +1023,10 @@ function validSemesterProposalRange(value: unknown): boolean {
       )
     )
     && nullableText(value.decision_reason)
+    && (value.basis === undefined || text(value.basis))
+    && (value.evidence_refs === undefined || (
+      Array.isArray(value.evidence_refs) && value.evidence_refs.every(text)
+    ))
   )
 }
 

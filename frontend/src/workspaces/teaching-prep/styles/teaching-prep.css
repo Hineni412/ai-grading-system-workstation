@@ -1724,6 +1724,7 @@ button:disabled { cursor: not-allowed; opacity: 0.46; }
 .tp-document-workspace {
   display: grid;
   grid-template-columns: minmax(180px, 0.7fr) minmax(480px, 2.4fr) minmax(260px, 0.9fr);
+  block-size: clamp(620px, calc(100vh - 2rem), 820px);
   min-block-size: 610px;
   overflow: clip;
   border: 1px solid var(--tp-line);
@@ -1739,15 +1740,17 @@ button:disabled { cursor: not-allowed; opacity: 0.46; }
   gap: 0.7rem;
   padding: 1rem;
   overflow: auto;
+  min-block-size: 0;
   background: #f6f8f7;
 }
 
 .tp-document-workspace__rail { border-inline-end: 1px solid var(--tp-line); }
 .tp-document-workspace__inspector { border-inline-start: 1px solid var(--tp-line); }
-.tp-document-workspace__canvas { position: relative; display: grid; grid-template-rows: auto 1fr; min-inline-size: 0; padding: 1rem; background: #dfe6e4; }
+.tp-document-workspace__canvas { position: relative; display: grid; grid-template-rows: auto minmax(0, 1fr); min-inline-size: 0; min-block-size: 0; overflow: auto; padding: 1rem; background: #dfe6e4; }
 .tp-document-workspace__canvas > header { display: flex; justify-content: space-between; gap: 1rem; padding: 0 0 0.8rem; }
 .tp-document-workspace__preview { max-inline-size: 100%; max-block-size: 720px; margin: auto; object-fit: contain; background: white; box-shadow: 0 4px 22px rgb(0 0 0 / 13%); }
 .tp-document-workspace__empty { display: grid; min-block-size: 430px; place-items: center; color: var(--tp-muted); }
+.tp-document-workspace__empty.is-error { color: #8e332d; text-align: center; }
 
 .tp-check-row {
   display: flex;
@@ -1798,6 +1801,25 @@ button:disabled { cursor: not-allowed; opacity: 0.46; }
 }
 
 .tp-mapping-review > header { display: flex; justify-content: space-between; }
+.tp-mapping-review > header button { padding: 0; border: 0; color: var(--tp-teal-dark); background: transparent; font-weight: 750; text-align: start; }
+.tp-mapping-basis { display: grid; gap: 0.25rem; padding: 0.65rem; border-radius: 0.45rem; background: #edf5f2; }
+.tp-mapping-basis p { margin: 0; color: var(--tp-ink-soft); }
+.tp-mapping-basis small { color: var(--tp-muted); overflow-wrap: anywhere; }
+.tp-mapping-group-summary { display: grid; gap: 0.2rem; padding: 0.7rem; border-inline-start: 4px solid var(--tp-teal); background: #e8f2ef; }
+.tp-mapping-group-summary small { color: var(--tp-muted); }
+.tp-mapping-uncertainties { padding: 0.65rem; border: 1px solid #d6b671; border-radius: 0.5rem; background: #fff8e7; }
+.tp-mapping-uncertainties summary { cursor: pointer; font-weight: 700; }
+.tp-mapping-uncertainties ul { margin-block-end: 0; padding-inline-start: 1.2rem; }
+
+.tp-proposal-tree { display: grid; gap: 0.55rem; padding-block-end: 0.8rem; border-block-end: 1px solid var(--tp-line); }
+.tp-proposal-tree h2 { margin: 0; }
+.tp-proposal-tree details { display: grid; gap: 0.4rem; }
+.tp-proposal-tree summary { cursor: pointer; font-weight: 800; }
+.tp-proposal-tree details > div { display: grid; gap: 0.3rem; padding-inline-start: 0.55rem; }
+.tp-proposal-tree details > div > strong { color: var(--tp-ink-soft); font-size: 0.8rem; }
+.tp-proposal-tree button { display: flex; justify-content: space-between; gap: 0.35rem; padding: 0.45rem; border: 1px solid transparent; background: transparent; text-align: start; }
+.tp-proposal-tree button.is-selected { border-color: var(--tp-teal); background: #dbece8; }
+.tp-proposal-tree button small { color: var(--tp-muted); white-space: nowrap; }
 .tp-mapping-review.is-accepted,
 .tp-mapping-review.is-modified,
 .tp-candidate-card.is-accepted,
@@ -2139,6 +2161,7 @@ button:disabled { cursor: not-allowed; opacity: 0.46; }
   .tp-manual-region-editor { grid-template-columns: 1fr; }
   .tp-document-workspace__rail { max-block-size: 260px; border-block-end: 1px solid var(--tp-line); border-inline-end: 0; }
   .tp-document-workspace__canvas { min-block-size: 500px; }
+  .tp-document-workspace { block-size: auto; }
   .tp-version-rail { position: static; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); }
   .tp-before-after { grid-template-columns: minmax(260px, 1fr) minmax(260px, 1fr); overflow-x: auto; }
   .tp-operation-row { grid-template-columns: 1fr; }

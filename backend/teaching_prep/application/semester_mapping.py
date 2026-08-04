@@ -131,16 +131,22 @@ def validate_semester_mapping_payload(
         str(item["record_id"]): item
         for item in _mapping_list(snapshot.get("materials"), "materials")
     }
+    evidence = snapshot.get("directory_evidence")
+    evidence_items = _evidence_items(evidence)
+    valid_evidence_ids = set(evidence_items)
     valid_lesson_refs = existing_lessons | proposal_lesson_refs
     normalized_mappings: list[dict[str, object]] = []
     seen: set[tuple[str, str, int, int]] = set()
     for mapping_raw in mappings:
         mapping = _mapping(mapping_raw, "mapping")
-        _require_exact(
-            mapping,
-            {"material_record_id", "lesson_ref", "start_unit", "end_unit"},
-            "mapping",
-        )
+        required_fields = {
+            "material_record_id", "lesson_ref", "start_unit", "end_unit"
+        }
+        optional_fields = {"basis", "evidence_refs"}
+        if not required_fields.issubset(mapping) or not set(mapping).issubset(
+            required_fields | optional_fields
+        ):
+            raise TeachingPrepValidationError("mapping has unexpected fields")
         record_id = str(mapping.get("material_record_id") or "")
         material = materials.get(record_id)
         if material is None:
@@ -177,6 +183,25 @@ def validate_semester_mapping_payload(
                 "mapping contains a duplicate page range"
             )
         seen.add(identity)
+        evidence_refs = _evidence_refs(
+            mapping.get("evidence_refs"),
+            valid_ids=valid_evidence_ids,
+        )
+        if not evidence_refs:
+            evidence_refs = _overlapping_evidence_refs(
+                evidence_items,
+                start=start,
+                end=end,
+            )
+        basis = str(mapping.get("basis") or "").strip()
+        if len(basis) > 500:
+            raise TeachingPrepValidationError("mapping basis is invalid")
+        if not basis:
+            basis = (
+                "依据目录页码与正文锚点推断，需教师结合原页复核。"
+                if evidence_refs
+                else "模型未提供映射依据，需教师结合原页复核。"
+            )
         normalized_mappings.append(
             {
                 "material_record_id": record_id,
@@ -184,8 +209,12 @@ def validate_semester_mapping_payload(
                 "start_unit": start,
                 "end_unit": end,
                 "purpose": _ROLE_PURPOSES[str(material["material_role"])],
+                "basis": basis,
+                "evidence_refs": evidence_refs,
             }
         )
+
+    normalized_mappings = _coalesce_adjacent_ranges(normalized_mappings)
 
     normalized_uncertainties: list[str] = []
     for item in uncertainties:
@@ -246,6 +275,102 @@ def _title(value: object) -> str:
     if not title or len(title) > 160:
         raise TeachingPrepValidationError("proposal title is invalid")
     return title
+
+
+def _evidence_items(value: object) -> dict[str, Mapping[str, object]]:
+    if not isinstance(value, Mapping):
+        return {}
+    result: dict[str, Mapping[str, object]] = {}
+    for collection in ("toc_entries", "resolved_ranges", "anchors"):
+        raw_items = value.get(collection)
+        if not isinstance(raw_items, list):
+            continue
+        for raw in raw_items:
+            if not isinstance(raw, Mapping):
+                continue
+            evidence_id = str(raw.get("evidence_id") or "").strip()
+            if evidence_id:
+                result[evidence_id] = raw
+    return result
+
+
+def _evidence_refs(value: object, *, valid_ids: set[str]) -> list[str]:
+    if value is None:
+        return []
+    if not isinstance(value, list) or len(value) > 20:
+        raise TeachingPrepValidationError("mapping evidence refs are invalid")
+    result: list[str] = []
+    for item in value:
+        evidence_id = str(item or "").strip()
+        if evidence_id in valid_ids and evidence_id not in result:
+            result.append(evidence_id)
+    return result
+
+
+def _overlapping_evidence_refs(
+    evidence: Mapping[str, Mapping[str, object]],
+    *,
+    start: int,
+    end: int,
+) -> list[str]:
+    result: list[str] = []
+    for evidence_id, item in evidence.items():
+        unit = item.get("unit_index")
+        range_start = item.get("start_unit")
+        range_end = item.get("end_unit")
+        overlaps = (
+            isinstance(unit, int) and start <= unit <= end
+        ) or (
+            isinstance(range_start, int)
+            and isinstance(range_end, int)
+            and range_start <= end
+            and range_end >= start
+        )
+        if overlaps:
+            result.append(evidence_id)
+        if len(result) >= 8:
+            break
+    return result
+
+
+def _coalesce_adjacent_ranges(
+    mappings: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    ordered = sorted(
+        mappings,
+        key=lambda item: (
+            str(item["material_record_id"]),
+            str(item["lesson_ref"]),
+            int(item["start_unit"]),
+            int(item["end_unit"]),
+        ),
+    )
+    merged: list[dict[str, object]] = []
+    for item in ordered:
+        previous = merged[-1] if merged else None
+        if (
+            previous is not None
+            and previous["material_record_id"] == item["material_record_id"]
+            and previous["lesson_ref"] == item["lesson_ref"]
+            and previous["purpose"] == item["purpose"]
+            and int(item["start_unit"]) <= int(previous["end_unit"]) + 1
+        ):
+            previous["end_unit"] = max(
+                int(previous["end_unit"]), int(item["end_unit"])
+            )
+            bases = [str(previous["basis"]), str(item["basis"])]
+            previous["basis"] = "；".join(dict.fromkeys(bases))[:500]
+            previous["evidence_refs"] = list(
+                dict.fromkeys(
+                    [
+                        *list(previous["evidence_refs"]),
+                        *list(item["evidence_refs"]),
+                    ]
+                )
+            )[:20]
+            continue
+        merged.append(dict(item))
+    return merged
 
 
 __all__ = ["validate_semester_mapping_payload"]

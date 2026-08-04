@@ -53,6 +53,10 @@ from backend.teaching_prep.application.slide_plans import (
 from backend.teaching_prep.application.semester_mapping import (
     validate_semester_mapping_payload,
 )
+from backend.teaching_prep.application.semester_mapping_evidence import (
+    build_directory_evidence,
+    evidence_character_estimate,
+)
 from backend.teaching_prep.application.workbench_iteration import (
     normalize_exercise_suggestion_payload,
     normalize_mapping_decision,
@@ -964,6 +968,7 @@ class TeachingPrepService:
             clean_material_ids,
         )
         _require_initial_tree_source(snapshot)
+        directory_evidence = build_directory_evidence(snapshot)
         materials = list(snapshot["materials"])
         lessons = list(snapshot["lessons"])
         return {
@@ -989,6 +994,16 @@ class TeachingPrepService:
             ),
             "creates_initial_tree": not lessons,
             "automatic_retry": False,
+            "evidence_strategy": directory_evidence["strategy"],
+            "evidence_confidence": directory_evidence["confidence"],
+            "scanned_unit_count": len(directory_evidence["scanned_unit_indices"]),
+            "toc_entry_count": len(directory_evidence["toc_entries"]),
+            "anchor_count": len(directory_evidence["anchors"]),
+            "estimated_input_characters": evidence_character_estimate(
+                directory_evidence
+            ),
+            "full_page_text_sent": False,
+            "evidence_issues": list(directory_evidence["issues"]),
         }
 
     def generate_semester_mapping_proposal(
@@ -1024,6 +1039,11 @@ class TeachingPrepService:
         )
         report("snapshotting")
         _require_initial_tree_source(snapshot)
+        directory_evidence = build_directory_evidence(snapshot)
+        model_snapshot = {
+            **snapshot,
+            "directory_evidence": directory_evidence,
+        }
         if (
             expected_source_state_sha256 is not None
             and source_digest != str(expected_source_state_sha256).strip()
@@ -1095,7 +1115,7 @@ class TeachingPrepService:
         try:
             raw = self.semester_mapping_model_adapter.generate(
                 operation_id=clean_operation_id,
-                semester_snapshot=snapshot,
+                semester_snapshot=model_snapshot,
                 dispatch_callback=mark_physical_request_started,
             )
             if not model_call_started:
@@ -1174,11 +1194,12 @@ class TeachingPrepService:
             report("validating_response")
             normalized = validate_semester_mapping_payload(
                 raw,
-                snapshot=snapshot,
+                snapshot=model_snapshot,
             )
             stored = {
                 **normalized,
                 "source_material_record_ids": list(clean_material_ids),
+                "directory_evidence": directory_evidence,
             }
             report("persisting_proposal")
             proposal = self.semester_mapping.finish_generation(
