@@ -52,6 +52,8 @@ export interface ConfigQuestionPreview {
   answer_preview: string
   answer_present: boolean
   needs_review: boolean
+  question_type_review_required?: boolean
+  question_type_review_reason?: string
   local_answer_trusted: boolean
   has_question_asset: boolean
   has_answer_asset: boolean
@@ -249,11 +251,22 @@ function isQuestionPreview(value: unknown): value is ConfigQuestionPreview {
     'question_id', 'question_type', 'question_preview', 'answer_preview', 'answer_present',
     'needs_review', 'local_answer_trusted', 'has_question_asset', 'has_answer_asset',
   ]
-  if (!hasExactKeys(value, baseKeys) && !hasExactKeys(value, [...baseKeys, 'rich_content'])) return false
+  const allowedKeys = new Set([
+    ...baseKeys,
+    'rich_content',
+    'question_type_review_required',
+    'question_type_review_reason',
+  ])
+  if (baseKeys.some((key) => !(key in value))
+    || Object.keys(value).some((key) => !allowedKeys.has(key))) return false
   return typeof value.question_id === 'string' && typeof value.question_type === 'string'
     && typeof value.question_preview === 'string' && typeof value.answer_preview === 'string'
     && typeof value.answer_present === 'boolean' && typeof value.needs_review === 'boolean'
     && typeof value.local_answer_trusted === 'boolean'
+    && (value.question_type_review_required === undefined
+      || typeof value.question_type_review_required === 'boolean')
+    && (value.question_type_review_reason === undefined
+      || typeof value.question_type_review_reason === 'string')
     && typeof value.has_question_asset === 'boolean' && typeof value.has_answer_asset === 'boolean'
     && (value.rich_content === undefined || isRichContent(value.rich_content))
 }

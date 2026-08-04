@@ -175,6 +175,18 @@ const interventionSummary = computed(() => interventionQuestions.value.reduce(
   }),
   { total: 0, ungraded: 0, failed: 0, review: 0, aiReady: 0, teacher: 0 },
 ))
+const hybridPhase = computed(() => {
+  const stage = store.gradingJob?.stage ?? ''
+  if (['grading_saving', 'grading_completed', 'grading_finished'].includes(stage)) return 4
+  if (stage === 'grading_subjective') return 3
+  if (stage === 'grading_objective') return 2
+  return 1
+})
+const hybridTeacherPending = computed(() => (
+  interventionSummary.value.ungraded
+  + interventionSummary.value.failed
+  + interventionSummary.value.review
+))
 const runStateLabel = computed(() => ({
   running: '批改运行中', pause_requested: '正在安全暂停', paused: '已安全暂停',
   starting: '批改任务正在启动',
@@ -812,7 +824,28 @@ watch(
               {{ runProgress }}%
             </progress>
           </div>
-          <div class="run-counts">
+          <section
+            v-if="store.gradingRun.mode === 'hybrid_batch'"
+            class="hybrid-run-board"
+            aria-label="混合批改统计"
+          >
+            <header>
+              <div><strong>混合批改流水</strong><span>客观题先识别，解答题再按题分批，最后集中交给老师复核。</span></div>
+              <b>{{ runStateLabel }}</b>
+            </header>
+            <ol class="hybrid-run-board__phases">
+              <li v-for="(label, index) in ['答卷入队', '客观题识别', '解答题分批', '教师交接']" :key="label" :class="{ 'is-current': hybridPhase === index + 1, 'is-done': hybridPhase > index + 1 }">
+                <span>{{ index + 1 }}</span><strong>{{ label }}</strong>
+              </li>
+            </ol>
+            <div class="hybrid-run-board__metrics">
+              <div><span>本轮答卷</span><strong>{{ store.gradingRun.counts.total }}</strong><small>已进入队列</small></div>
+              <div><span>结果已保存</span><strong>{{ store.gradingRun.counts.graded }}</strong><small>可随时查看</small></div>
+              <div :class="{ 'needs-attention': hybridTeacherPending > 0 }"><span>需要老师</span><strong>{{ hybridTeacherPending }}</strong><small>未评分、失败或待复核</small></div>
+              <div><span>老师已确认</span><strong>{{ interventionSummary.teacher }}</strong><small>最终分已锁定</small></div>
+            </div>
+          </section>
+          <div v-else class="run-counts">
             <span><strong>已完成 {{ store.gradingRun.counts.graded }}</strong></span>
             <span>处理中 {{ store.gradingRun.counts.grading }}</span><span>待处理 {{ store.gradingRun.counts.pending }}</span>
             <span>跳过 {{ store.gradingRun.counts.skipped }}</span><span>失败 {{ store.gradingRun.counts.failed }}</span>
