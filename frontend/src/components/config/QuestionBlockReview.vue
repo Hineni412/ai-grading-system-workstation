@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 
 import {
   type ConfigQuestionPreview,
@@ -64,6 +64,7 @@ const sourceAssets = computed<ConfigSourceAsset[]>(() => {
 
 const uncertainAssets = computed(() => sourceAssets.value
   .filter((item) => item.assignment_state === 'uncertain'))
+const expandedAnswerQuestionId = ref<string | null>(null)
 
 function richContent(question: ConfigQuestionPreview): NonNullable<ConfigQuestionPreview['rich_content']> {
   return question.rich_content ?? emptyRichContent
@@ -190,6 +191,19 @@ function answerStatus(question: ConfigQuestionPreview): string {
   return '未识别到答案'
 }
 
+function openFullAnswer(questionId: string): void {
+  expandedAnswerQuestionId.value = questionId
+}
+
+function closeFullAnswer(): void {
+  expandedAnswerQuestionId.value = null
+}
+
+const expandedAnswer = computed(() => (
+  props.source.questions.find((question) => question.question_id === expandedAnswerQuestionId.value)
+  ?? null
+))
+
 watch(() => props.source.source_revision, (_revision, previous) => {
   if (previous !== undefined || props.decisions.length > 0) emit('update:decisions', [])
 }, { immediate: true })
@@ -292,7 +306,7 @@ watch(() => props.source.source_revision, (_revision, previous) => {
             @drop.prevent="dropCandidate(question.question_id, 'answer', $event)"
           >
             <header><strong>完整答案</strong><span>{{ answerStatus(question) }}</span></header>
-            <div :data-answer-content="question.question_id">
+            <div class="question-review__answer-preview" :data-answer-content="question.question_id">
               <QuestionContentRenderer
                 :blocks="textBlocks(question, 'answer')"
                 :fallback="question.answer_preview"
@@ -301,6 +315,13 @@ watch(() => props.source.source_revision, (_revision, previous) => {
                 dense
               />
             </div>
+            <button
+              type="button"
+              class="question-review__answer-expand"
+              @click="openFullAnswer(question.question_id)"
+            >
+              <span aria-hidden="true">⋯</span> 查看完整答案
+            </button>
             <div v-if="placedAssets(question.question_id, 'answer').length" class="question-review__image-well" :aria-label="`${question.question_id} 答案图片放置区`">
               <div
                 v-for="(asset, index) in placedAssets(question.question_id, 'answer')"
@@ -329,6 +350,35 @@ watch(() => props.source.source_revision, (_revision, previous) => {
       </li>
       </template>
     </ol>
+
+    <Teleport to="body">
+      <div
+        v-if="expandedAnswer"
+        class="question-review__answer-layer"
+        @click.self="closeFullAnswer"
+      >
+        <aside
+          class="question-review__answer-drawer"
+          role="dialog"
+          aria-modal="true"
+          :aria-label="`${expandedAnswer.question_id} 完整答案`"
+        >
+          <header>
+            <div>
+              <small>{{ expandedAnswer.question_id }}</small>
+              <h3>完整答案</h3>
+            </div>
+            <button type="button" aria-label="关闭完整答案" @click="closeFullAnswer">×</button>
+          </header>
+          <QuestionContentRenderer
+            :blocks="textBlocks(expandedAnswer, 'answer')"
+            :fallback="expandedAnswer.answer_preview"
+            empty-label="答案内容暂未识别。"
+            media-mode="review"
+          />
+        </aside>
+      </div>
+    </Teleport>
   </section>
 </template>
 
@@ -448,7 +498,6 @@ watch(() => props.source.source_revision, (_revision, previous) => {
   display: grid;
   align-content: start;
   gap: var(--space-3);
-  height: 100%;
   min-width: 0;
   padding: var(--space-4);
   border: 1px solid var(--color-border);
@@ -457,6 +506,68 @@ watch(() => props.source.source_revision, (_revision, previous) => {
 }
 
 .question-review__paper-panel--answer { background: #f8fbfb; }
+
+.question-review__answer-preview {
+  position: relative;
+  max-height: 260px;
+  overflow: hidden;
+}
+
+.question-review__answer-preview::after {
+  position: absolute;
+  inset-inline: 0;
+  inset-block-end: 0;
+  height: 42px;
+  background: linear-gradient(transparent, #f8fbfb);
+  content: '';
+  pointer-events: none;
+}
+
+.question-review__answer-expand {
+  align-self: flex-start;
+  min-height: 32px;
+  padding-inline: 8px;
+  border: 0;
+  background: transparent;
+  color: var(--color-accent);
+  font-size: var(--font-size-caption);
+}
+
+.question-review__answer-expand:hover { background: color-mix(in srgb, var(--color-accent) 8%, transparent); }
+
+.question-review__answer-layer {
+  position: fixed;
+  z-index: 1300;
+  inset: 0;
+  display: flex;
+  justify-content: flex-end;
+  background: rgb(28 39 51 / 38%);
+}
+
+.question-review__answer-drawer {
+  display: flex;
+  width: min(720px, 100%);
+  max-width: 100%;
+  height: 100%;
+  flex-direction: column;
+  gap: var(--space-4);
+  padding: var(--space-5);
+  overflow: auto;
+  background: var(--color-bg-surface);
+  box-shadow: -12px 0 32px rgb(28 39 51 / 12%);
+}
+
+.question-review__answer-drawer > header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.question-review__answer-drawer h3,
+.question-review__answer-drawer small { margin: 0; }
+.question-review__answer-drawer small { color: var(--color-text-secondary); }
+.question-review__answer-drawer button { font-size: 24px; line-height: 1; }
 
 .question-review__paper-panel > header {
   display: flex;

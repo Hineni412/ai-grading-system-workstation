@@ -478,6 +478,45 @@ class SolutionEvidenceRepository:
             "evidence": evidence_payload,
         }
 
+    def load_current(
+        self,
+        question_id: int,
+        *,
+        source_content_hash: str,
+        resolver: "FineTermResolver",
+    ) -> "QuestionSolutionEvidence | None":
+        """Decode the current saved evidence for a projection-only retry.
+
+        A tag or training-point retry must be able to reuse an already saved
+        model result.  The database payload contains a read-only
+        ``core_resolution`` decoration on links; remove that decoration before
+        passing the payload back through the strict model contract.
+        """
+
+        latest = self.latest(
+            question_id,
+            current_source_content_hash=source_content_hash,
+        )
+        if not isinstance(latest, dict) or latest.get("status") not in {
+            "proposed",
+            "approved",
+        }:
+            return None
+        payload = latest.get("evidence")
+        if not isinstance(payload, dict):
+            return None
+        clean_payload = _model_evidence_payload(payload)
+        from question_bank.solution_evidence.contracts import (
+            QuestionSolutionEvidence,
+        )
+
+        return QuestionSolutionEvidence.from_model_dict(
+            clean_payload,
+            question_id=int(question_id),
+            source_content_hash=str(source_content_hash),
+            resolver=resolver,
+        )
+
     def relation_hints(
         self,
         question_ids: Sequence[int],
@@ -840,6 +879,36 @@ def _canonical_json(value: object) -> str:
         sort_keys=True,
         separators=(",", ":"),
     )
+
+
+def _model_evidence_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
+    """Strip repository-only link resolution fields from a stored payload."""
+
+    clean = json.loads(json.dumps(dict(payload), ensure_ascii=False))
+    parts = clean.get("parts")
+    if not isinstance(parts, list):
+        return clean
+    for part in parts:
+        if not isinstance(part, dict):
+            continue
+        points = part.get("evidence_points")
+        if not isinstance(points, list):
+            continue
+        for point in points:
+            if not isinstance(point, dict):
+                continue
+            links = point.get("fine_term_links")
+            if not isinstance(links, list):
+                continue
+            point["fine_term_links"] = [
+                {
+                    key: link.get(key)
+                    for key in ("fine_term_id", "fine_term_name", "role")
+                }
+                for link in links
+                if isinstance(link, Mapping)
+            ]
+    return clean
 
 
 def _classification_from_evidence_payload(

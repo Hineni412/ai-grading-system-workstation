@@ -32,6 +32,7 @@ from question_bank.training_criteria import (
     DeferredCombinedProjectionWriter,
     ExistingTagProjectionWriter,
     QuestionAnalysisInputLoader,
+    TrainingCriterionModule,
 )
 
 
@@ -312,6 +313,7 @@ def run_session_question_bank_sync_job(
                 imported_count=result["imported_count"],
                 tagged_count=result["tagged_count"],
                 evidence_count=result["evidence_count"],
+                criteria_count=result.get("criteria_count", 0),
                 linked_count=result["linked_count"],
                 failed_count=result["failed_count"],
                 review_count=result["review_count"],
@@ -533,13 +535,30 @@ def _result(
         "session_id": session_id,
         "outcome": outcome,
         "imported_count": len(imported_ids),
+        "question_count": max(
+            len(imported_ids),
+            int(tagging_result.get("requested_count") or 0),
+            len(successful_ids) + len(failed_ids),
+        ),
         "tagged_count": max(
-            len(successful_ids),
+            0,
             int(tagging_result.get("tagged_count") or 0),
+        ),
+        "complete_tagged_count": max(
+            int(tagging_result.get("complete_tagged_count") or 0),
+            len(successful_ids),
         ),
         "evidence_count": max(
             0,
             int(tagging_result.get("evidence_count") or 0),
+        ),
+        "criteria_count": max(
+            0,
+            int(tagging_result.get("criteria_count") or 0),
+        ),
+        "criteria_failed_question_ids": _question_ids(
+            tagging_result.get("criteria_failed_question_ids"),
+            allow_empty=True,
         ),
         "linked_count": int(link_result.get("confirmed") or 0),
         "failed_count": failed_count,
@@ -660,6 +679,7 @@ def _adopt_deferred_analysis_with_links(
             "requested_count": len(artifact.bundle.items),
             "tagged_count": 0,
             "evidence_count": 0,
+            "criteria_count": 0,
             "successful_question_ids": [],
             "failed_question_ids": [],
             "failed_count": len(artifact.bundle.items),
@@ -708,6 +728,7 @@ def _adopt_deferred_analysis_with_links(
         mapping_repository=mapping_repository,
         evidence_repository=SolutionEvidenceRepository(question_bank_db_path),
         taxonomy_governance=taxonomy_governance,
+        criterion_module=TrainingCriterionModule(question_bank_db_path),
     )
     adoption_results: list[dict[str, Any]] = []
     missing_links = 0
@@ -740,6 +761,8 @@ def _adopt_deferred_analysis_with_links(
         in {"succeeded", "needs_taxonomy_review"}
         and item.get("evidence_status")
         in {"succeeded", "needs_taxonomy_review"}
+        and item.get("criteria_status")
+        in {"succeeded", "not_requested"}
     ]
     failed_ids = [
         int(item["question_id"])
@@ -748,6 +771,8 @@ def _adopt_deferred_analysis_with_links(
         not in {"succeeded", "needs_taxonomy_review"}
         or item.get("evidence_status")
         not in {"succeeded", "needs_taxonomy_review"}
+        or item.get("criteria_status")
+        not in {"succeeded", "not_requested"}
     ]
     tagged_count = sum(
         item.get("tag_status") == "succeeded" for item in adoption_results
@@ -755,6 +780,15 @@ def _adopt_deferred_analysis_with_links(
     evidence_count = sum(
         item.get("evidence_status") == "succeeded" for item in adoption_results
     )
+    criteria_count = sum(
+        item.get("criteria_status") == "succeeded"
+        for item in adoption_results
+    )
+    criteria_failed_ids = [
+        int(item["question_id"])
+        for item in adoption_results
+        if item.get("criteria_status") == "failed"
+    ]
     taxonomy_audit = tag_writer.audit_summary(
         artifact.bundle.operation_id,
         [int(item["question_id"]) for item in adoption_results],
@@ -833,7 +867,10 @@ def _adopt_deferred_analysis_with_links(
         "outcome": outcome,
         "requested_count": len(artifact.bundle.items),
         "tagged_count": tagged_count,
+        "complete_tagged_count": tagged_count,
         "evidence_count": evidence_count,
+        "criteria_count": criteria_count,
+        "criteria_failed_question_ids": criteria_failed_ids,
         "successful_question_ids": successful_ids,
         "failed_question_ids": failed_ids,
         "failed_count": failed_count,
