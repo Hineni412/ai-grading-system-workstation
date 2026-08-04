@@ -196,8 +196,8 @@ class ModelApproval:
             "student_alias": alias_labels[0] if alias_labels else "学生A",
             "task_text": redaction.outbound_text,
             "instructions": (
-                "只返回有效的 json 对象，生成待教师复核的中性草稿；"
-                "不得诊断、认定、惩戒、外发或结案。"
+                "只返回有效的 json 对象；可以完整提出判断、认定或处置建议，"
+                "但所有内容都只是待教师复核的草稿，不得自动执行、外发或结案。"
             ),
         }
         if alias_labels:

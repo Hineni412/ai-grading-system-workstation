@@ -5,6 +5,7 @@ from .affair_workspace import AffairWorkspace
 from .crypto import canonical_json
 from .errors import VaultError
 from .home_intake import HomeIntake
+from .home_intake_drafts import HomeIntakeDrafts
 from .sensitive_work_projection import SensitiveWorkProjection
 from .sop_baseline_service import SopBaselineService
 
@@ -18,11 +19,13 @@ class HomeIntakeFinalizer:
         baselines: SopBaselineService,
         affairs: AffairWorkspace,
         projections: SensitiveWorkProjection,
+        drafts: HomeIntakeDrafts,
     ) -> None:
         self.intake = intake
         self.baselines = baselines
         self.affairs = affairs
         self.projections = projections
+        self.drafts = drafts
 
     def adopt(
         self,
@@ -32,7 +35,17 @@ class HomeIntakeFinalizer:
         operation_id: str,
         result_fingerprint: str,
         subject_ids: list[str],
+        draft_id: str | None = None,
+        draft_version: int | None = None,
     ) -> dict[str, object]:
+        if draft_id is not None and draft_version is not None:
+            self.drafts.begin_adoption(
+                token=token,
+                draft_id=draft_id,
+                version=draft_version,
+                source_operation_id=source_operation_id,
+                result_fingerprint=result_fingerprint,
+            )
         status = self.intake.status(token=token, operation_id=source_operation_id)
         result = status.get("result")
         if status.get("result_kind") not in {
@@ -110,7 +123,7 @@ class HomeIntakeFinalizer:
                     status_code=503,
                 )
             applied += 1
-        return {
+        response = {
             "state": "complete",
             "source_operation_id": source_operation_id,
             "operation_id": operation_id,
@@ -123,6 +136,59 @@ class HomeIntakeFinalizer:
                 "student_links_stage": "complete",
                 "calendar_stage": "complete",
             },
+        }
+        if draft_id is not None and draft_version is not None:
+            self.drafts.mark_adopted(
+                token=token,
+                draft_id=draft_id,
+                version=draft_version,
+                affair_id=affair_id,
+            )
+        return response
+
+    def adopt_ordinary(
+        self,
+        *,
+        token: str,
+        draft_id: str,
+        expected_version: int,
+        source_operation_id: str,
+        result_fingerprint: str,
+    ) -> dict[str, object]:
+        snapshot = self.drafts.begin_adoption(
+            token=token,
+            draft_id=draft_id,
+            version=expected_version,
+            source_operation_id=source_operation_id,
+            result_fingerprint=result_fingerprint,
+        )
+        if snapshot["result_kind"] != "ordinary_plan":
+            raise VaultError(
+                "home_intake_draft_kind_invalid",
+                "该草案不是普通工作方案，不能写入普通工作图",
+                status_code=409,
+            )
+        stable_operation_id = "home-draft-confirm-" + hashlib.sha256(
+            draft_id.encode("utf-8")
+        ).hexdigest()[:40]
+        persisted = self.intake.work.confirm_plan(
+            model_operation_id=source_operation_id,
+            plan_fingerprint=result_fingerprint,
+            operation_id=stable_operation_id,
+        )
+        self.drafts.mark_adopted(
+            token=token,
+            draft_id=draft_id,
+            version=expected_version,
+            affair_id=None,
+        )
+        return {
+            "state": "complete",
+            "draft_id": draft_id,
+            "version": expected_version,
+            "operation_id": stable_operation_id,
+            "work": persisted,
+            "physical_request_count": 0,
         }
 
 
