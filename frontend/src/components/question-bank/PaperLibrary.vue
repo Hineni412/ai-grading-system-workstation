@@ -144,12 +144,46 @@ const analysisJobs = computed(() => {
 function analysisJobState(job: JobResponse): string {
   if (!TERMINAL_JOB_STATUSES.has(job.status)) return job.detail || job.stage || '正在处理'
   if (job.status === 'cancelled') return '任务已取消；已保存的结果不会被撤销。'
-  if (job.status === 'failed') return '本地处理失败，模型尚未完成分析；可再次补齐未完成项目。'
+  if (job.status === 'failed') {
+    return job.job_type === 'question_import'
+      ? '试卷入库失败，请检查文件后重试。'
+      : '分析失败；已保存的结果保留，可补齐未完成项目。'
+  }
+  if (job.job_type === 'question_import') {
+    return '试卷已入库，等待标签与判定点分析。'
+  }
   const outcome = String(job.result.outcome ?? '')
-  if (outcome === 'complete') return '标签、解题证据和训练判定点已完成。'
-  if (outcome === 'partial') return '部分题目已完成，未完成项目可继续补齐。'
+  const reviewCount = jobResultCount(job, 'criteria_needs_review_count')
+  if (reviewCount > 0) return `${reviewCount} 道题需要审核，禁止按分析成功展示。`
+  if (outcome === 'complete') return '标签、解题证据和训练判定点均已完成。'
+  if (outcome === 'partial') return '部分题目已完成，其余项目待补齐或审核。'
   if (outcome === 'failed') return '任务已结束，但标签或训练判定点没有保存成功。'
-  return '任务已结束，试卷卡片已刷新。'
+  return '分析任务已结束，请核对标签与判定点状态。'
+}
+
+function jobResultCount(job: JobResponse, key: string): number {
+  const value = Number(job.result[key] ?? 0)
+  return Number.isFinite(value) && value > 0 ? Math.floor(value) : 0
+}
+
+function analysisJobMetrics(job: JobResponse): string {
+  if (job.job_type === 'question_import') {
+    const count = jobResultCount(job, 'question_count')
+      || jobResultCount(job, 'imported_question_count')
+    return count > 0 ? `已入库 ${count} 道题` : '仅执行本地入库'
+  }
+  const tagged = jobResultCount(job, 'complete_tagged_count')
+  const evidence = jobResultCount(job, 'evidence_count')
+  const criteria = jobResultCount(job, 'criteria_count')
+  const review = jobResultCount(job, 'criteria_needs_review_count')
+  const failed = jobResultCount(job, 'failed_count')
+  return [
+    `标签 ${tagged}`,
+    `证据 ${evidence}`,
+    `判定点 ${criteria}`,
+    review > 0 ? `待审核 ${review}` : '',
+    failed > 0 ? `未完成 ${failed}` : '',
+  ].filter(Boolean).join(' · ')
 }
 
 watch(
@@ -597,12 +631,12 @@ async function confirmPermanentDelete(): Promise<void> {
       </div>
     </header>
 
-    <p v-if="retagMessage" class="paper-library__state" role="status">{{ retagMessage }}</p>
+    <p v-if="retagMessage" class="paper-library__notice" role="status">{{ retagMessage }}</p>
 
     <section v-if="analysisJobs.length" class="paper-library__task-strip" aria-live="polite">
       <div class="paper-library__task-strip-heading">
         <strong>AI 解析进度</strong>
-        <span>任务会自动刷新，完成后试卷卡片也会同步更新。</span>
+        <span>自动刷新</span>
       </div>
       <div
         v-for="job in analysisJobs"
@@ -614,10 +648,13 @@ async function confirmPermanentDelete(): Promise<void> {
           <strong>{{ job.job_type === 'question_import' ? '试卷入库' : '标签与训练点补齐' }} #{{ job.id }}</strong>
           <span>{{ analysisJobState(job) }}</span>
         </div>
-        <progress :value="Math.round(job.progress * 100)" max="100">
-          {{ Math.round(job.progress * 100) }}%
-        </progress>
-        <button type="button" class="paper-button is-quiet" @click="jobStore.refresh(job.id)">刷新</button>
+        <div class="paper-library__task-progress">
+          <progress :value="Math.round(job.progress * 100)" max="100">
+            {{ Math.round(job.progress * 100) }}%
+          </progress>
+          <span>{{ Math.round(job.progress * 100) }}%</span>
+        </div>
+        <span class="paper-library__task-metrics">{{ analysisJobMetrics(job) }}</span>
       </div>
     </section>
 
@@ -1558,10 +1595,20 @@ async function confirmPermanentDelete(): Promise<void> {
   color: #9a4136;
 }
 
+.paper-library__notice {
+  margin: 0;
+  padding: 9px 12px;
+  border-inline-start: 3px solid var(--color-accent, #135e6b);
+  border-radius: 6px;
+  background: #f4faf9;
+  color: var(--color-text-secondary, #5c6672);
+  font-size: 13px;
+}
+
 .paper-library__task-strip {
   display: grid;
-  gap: 10px;
-  padding: 14px 16px;
+  gap: 7px;
+  padding: 10px 12px;
   border: 1px solid rgb(19 94 107 / 18%);
   border-radius: 12px;
   background: #f4faf9;
@@ -1587,14 +1634,29 @@ async function confirmPermanentDelete(): Promise<void> {
 
 .paper-library__task-main {
   display: grid;
-  min-width: 180px;
+  flex: 1 1 300px;
+  min-width: 220px;
   gap: 2px;
 }
 
-.paper-library__task progress {
-  width: min(340px, 34vw);
+.paper-library__task-progress {
+  display: flex;
+  flex: 0 1 340px;
+  align-items: center;
+  gap: 8px;
+}
+
+.paper-library__task-progress progress {
+  width: min(280px, 28vw);
   height: 8px;
   accent-color: var(--color-accent, #135e6b);
+}
+
+.paper-library__task-progress span,
+.paper-library__task-metrics {
+  color: var(--color-text-secondary, #5c6672);
+  font-size: 12px;
+  white-space: nowrap;
 }
 
 .paper-library__task.is-failed {
@@ -1612,8 +1674,13 @@ async function confirmPermanentDelete(): Promise<void> {
     flex-direction: column;
   }
 
-  .paper-library__task progress {
+  .paper-library__task-progress,
+  .paper-library__task-progress progress {
     width: 100%;
+  }
+
+  .paper-library__task-metrics {
+    white-space: normal;
   }
 }
 

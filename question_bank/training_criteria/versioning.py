@@ -126,14 +126,35 @@ def evaluate_criterion_quality(
         codes.append("missing_actual_image")
 
     group = question.question_type_group
+    response_shape = question.objective_response_shape
     if group in {"single_choice", "fill_blank"} and not str(
         question.tagging_context.answer_text or ""
     ).strip():
         codes.append("objective_answer_missing")
-    if group == "fill_blank":
+    if response_shape in {"single_choice", "single_blank"} and len(
+        draft.points
+    ) != 1:
+        codes.append("objective_point_count")
+    if response_shape == "multiple_blank":
         blank_count = _blank_count(question.tagging_context.question_text)
         if blank_count > 1 and len(draft.points) < blank_count:
             codes.append("multiple_blanks_collapsed")
+    teacher_visible_values = [
+        draft.rationale,
+        *draft.auxiliary_rules,
+        *(
+            value
+            for point in draft.points
+            for value in (
+                point.target,
+                point.observable_evidence,
+                *point.equivalent_rules,
+                *point.counterexamples,
+            )
+        ),
+    ]
+    if any(_contains_teacher_visible_english(value) for value in teacher_visible_values):
+        codes.append("teacher_visible_language_not_zh")
     return QualityGateResult(
         passed=not codes,
         codes=tuple(dict.fromkeys(codes)),
@@ -1187,6 +1208,30 @@ def _blank_count(value: object) -> int:
     underscores = re.findall(r"_{2,}", text)
     empty_brackets = re.findall(r"[（(]\s*[）)]", text)
     return max(len(named), len(underscores) + len(empty_brackets), 1)
+
+
+def _contains_teacher_visible_english(value: object) -> bool:
+    text = str(value or "").strip()
+    if not text:
+        return False
+    words = [
+        word
+        for word in re.findall(r"[A-Za-z]{2,}", text)
+        if not (
+            (word.isupper() and len(word) <= 3)
+            or word.casefold() in {
+                "sin",
+                "cos",
+                "tan",
+                "log",
+                "ln",
+                "cm",
+                "mm",
+                "km",
+            }
+        )
+    ]
+    return bool(words)
 
 
 def _compact(value: object) -> str:

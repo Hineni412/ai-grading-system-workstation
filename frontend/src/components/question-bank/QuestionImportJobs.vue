@@ -45,6 +45,20 @@ function safeCount(result: Record<string, unknown>, key: string): number {
   return Number.isSafeInteger(value) && Number(value) >= 0 ? Number(value) : 0
 }
 
+function jobCompletionNote(job: JobResponse): string {
+  if (!TERMINAL_JOB_STATUSES.has(job.status)) return job.detail || job.stage || '任务等待服务处理'
+  if (job.status === 'failed') return job.job_type === 'question_import'
+    ? '试卷没有完成入库。'
+    : '标签或判定点没有完成；已保存结果不会撤销。'
+  if (job.status === 'cancelled') return '任务已取消；已保存结果不会撤销。'
+  if (job.job_type === 'question_import') return '试卷已入库，尚未执行标签与判定点分析。'
+  const reviewCount = safeCount(job.result, 'criteria_needs_review_count')
+  if (reviewCount > 0) return `${reviewCount} 道题的判定点需要审核，本任务不计为分析成功。`
+  if (job.result.outcome === 'complete') return '标签、解题证据和训练判定点均已完成。'
+  if (job.result.outcome === 'partial') return '部分完成，仍有未完成或待审核项目。'
+  return '分析任务已结束，请核对各项结果。'
+}
+
 async function chooseFiles(event: Event): Promise<void> {
   const input = event.currentTarget as HTMLInputElement
   const files = [...(input.files ?? [])]
@@ -194,12 +208,19 @@ function downloadFailures(job: JobResponse): void {
             </div>
             <progress :value="job.progress" max="1">{{ Math.round(job.progress * 100) }}%</progress>
           </header>
-          <p>{{ job.detail || job.stage || '任务等待服务处理' }}</p>
+          <p>{{ jobCompletionNote(job) }}</p>
           <p v-if="job.result.outcome === 'partial'" class="qb-feedback is-warning">
             部分完成：成功
             {{ safeCount(job.result, 'tagged_count') || safeCount(job.result, 'question_count') }}，
             跳过 {{ safeCount(job.result, 'skipped_complete_count') }}，
             失败 {{ safeCount(job.result, 'failed_count') }}。
+          </p>
+          <p
+            v-if="safeCount(job.result, 'criteria_needs_review_count') > 0"
+            class="qb-feedback is-warning"
+          >
+            待审核判定点 {{ safeCount(job.result, 'criteria_needs_review_count') }} 道；
+            审核通过前不会显示为成功。
           </p>
           <p
             v-if="job.job_type === 'question_import' && job.result.restore_required === true"

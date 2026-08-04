@@ -31,6 +31,13 @@ class _CancellationAwareGateway:
         self.gateway = gateway
         self.context = context
 
+    @property
+    def max_parallel_requests(self) -> int:
+        try:
+            return max(1, int(getattr(self.gateway, "max_parallel_requests", 1)))
+        except (TypeError, ValueError):
+            return 1
+
     def analyze(self, *args, **kwargs):
         self.context.raise_if_cancelled()
         return self.gateway.analyze(*args, **kwargs)
@@ -147,6 +154,18 @@ def run_criterion_backfill_job(
                 operation_id=f"criterion-backfill:{run_id}",
                 questions=tuple(pending),
                 projection="training_criteria",
+                progress_callback=lambda update: context.report(
+                    0.1
+                    + 0.72
+                    * int(update.get("processed_questions") or 0)
+                    / max(len(pending), 1),
+                    "criterion_backfill",
+                    (
+                        "AI 分析已处理 "
+                        f"{int(update.get('processed_questions') or 0)}/"
+                        f"{len(pending)} 道题"
+                    ),
+                ),
             )
         except JobCancellationRequested:
             criterion_module.cancel_backfill(run_id)
@@ -221,14 +240,24 @@ def run_criterion_backfill_job(
                     )
                 else:
                     current = workspace["current_version"]
-                    criterion_module.finish_backfill_item(
-                        run_id=run_id,
-                        question_id=question.question_id,
-                        status="succeeded",
-                        version_id=str(current["version_id"]),
-                    )
+                    quality_status = str(current.get("quality_status") or "")
+                    if quality_status == "passed":
+                        criterion_module.finish_backfill_item(
+                            run_id=run_id,
+                            question_id=question.question_id,
+                            status="succeeded",
+                            version_id=str(current["version_id"]),
+                        )
+                    else:
+                        criterion_module.finish_backfill_item(
+                            run_id=run_id,
+                            question_id=question.question_id,
+                            status="failed",
+                            version_id=str(current["version_id"]),
+                            error_category="needs_review",
+                        )
                 context.report(
-                    0.1 + 0.85 * index / max(len(pending), 1),
+                    0.82 + 0.15 * index / max(len(pending), 1),
                     "criterion_backfill",
                     f"{index}/{len(pending)}",
                 )
