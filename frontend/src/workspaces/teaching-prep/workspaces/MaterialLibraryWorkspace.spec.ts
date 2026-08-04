@@ -243,6 +243,17 @@ describe('MaterialLibraryWorkspace current-material safety', () => {
         basis: '下一节目录起始页', evidence_refs: ['toc-002'],
       },
     ]
+    item.payload.directory_evidence = {
+      strategy: 'toc_calibrated', confidence: 'high', issues: [],
+      full_page_text_sent: false,
+      toc_entries: [{
+        evidence_id: 'toc-001', title: '第一章 勾股定理', printed_page: 1, source_unit: 1,
+      }],
+      resolved_ranges: [],
+      anchors: [{
+        evidence_id: 'anchor-0007', unit_index: 1, title: '探索勾股定理', text_excerpt: '正文标题',
+      }],
+    }
     vi.spyOn(teachingPrepCatalogApi, 'semesterMappingPreflight').mockResolvedValue({
       semester_id: semesterId, source_state_sha256: 'f'.repeat(64), will_call_model: true,
       model_available: true, model_label: '合成模型', material_count: 1, unit_count: 4,
@@ -264,6 +275,8 @@ describe('MaterialLibraryWorkspace current-material safety', () => {
     expect(host.textContent).toContain('勾股定理第1课时')
     expect(host.querySelectorAll('.tp-mapping-review')).toHaveLength(1)
     expect(host.textContent).toContain('目录页码与正文标题一致')
+    expect(host.textContent).toContain('目录：第一章 勾股定理 · 书上第 1 页')
+    expect(host.textContent).toContain('正文锚点：PDF 第 1 页 · 探索勾股定理')
     const lessonSelect = host.querySelector<HTMLSelectElement>('.tp-mapping-review select')!
     expect([...lessonSelect.options].some(option => (
       option.value === 'proposal:lesson_001_001_001'
