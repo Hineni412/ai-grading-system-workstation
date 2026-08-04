@@ -244,6 +244,17 @@ def test_only_the_approved_005_rebuild_can_drop_the_declared_tables(
     assert _check_destructive(MigrationFile.from_path(overbroad_path))
 
 
+def test_solution_evidence_v2_rebuild_is_explicitly_approved() -> None:
+    migration = MigrationFile.from_path(
+        PROJECT_ROOT
+        / "migrations"
+        / "question_bank"
+        / "029_allow_solution_evidence_v2.sql"
+    )
+
+    assert _check_destructive(migration) == []
+
+
 class _UnexpectedConnection:
     def execute(self, *_args: object, **_kwargs: object) -> None:
         raise AssertionError("invalid status reached SQL")
