@@ -1,0 +1,411 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="icon" href="data:," />
+  <title>学生事务 SOP 聚焦页 · 静态方案</title>
+  <style>
+    :root {
+      --paper: #f4f7f6;
+      --surface: #ffffff;
+      --ink: #172a33;
+      --muted: #687981;
+      --line: #d8e2e1;
+      --teal: #0f6973;
+      --teal-soft: #e7f2f1;
+      --amber: #a66a13;
+      --amber-soft: #fff3d7;
+      --red: #b54037;
+      --red-soft: #fbeae7;
+      --blue: #466a90;
+      --blue-soft: #eaf0f7;
+      --shadow: 0 14px 36px rgba(20, 48, 55, .08);
+      font-family: "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", sans-serif;
+      color: var(--ink);
+      background: var(--paper);
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-width: 1080px; background: var(--paper); }
+    button, textarea { font: inherit; }
+    button { cursor: pointer; }
+    .utility, .date, .eyebrow { font-family: Bahnschrift, "Segoe UI", "Microsoft YaHei UI", sans-serif; }
+
+    .prototype-note {
+      height: 30px; display: flex; align-items: center; justify-content: center;
+      background: #17343c; color: #dcebea; font-size: 12px; letter-spacing: .08em;
+    }
+    .topbar {
+      height: 62px; padding: 0 24px; display: grid; grid-template-columns: 1fr auto;
+      align-items: center; gap: 20px; background: rgba(255,255,255,.96); border-bottom: 1px solid var(--line);
+      position: sticky; top: 0; z-index: 20;
+    }
+    .titleline { display: flex; align-items: baseline; gap: 12px; min-width: 0; }
+    .back { color: var(--teal); font-weight: 700; white-space: nowrap; }
+    h1 { margin: 0; font-size: 20px; line-height: 1.2; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .version { color: var(--muted); font-size: 13px; white-space: nowrap; }
+    .header-tools { display: flex; align-items: center; gap: 10px; }
+    .status-pill { padding: 6px 10px; border-radius: 999px; background: var(--teal-soft); color: var(--teal); font-size: 12px; font-weight: 700; }
+    .ghost { border: 1px solid var(--line); background: #fff; color: var(--ink); border-radius: 9px; padding: 8px 12px; }
+
+    .page { padding: 18px 24px 108px; max-width: 1880px; margin: 0 auto; }
+    .variant { display: none; }
+    .variant.active { display: block; }
+    .section-label { font-size: 12px; letter-spacing: .12em; text-transform: uppercase; color: var(--teal); font-weight: 800; }
+    .muted { color: var(--muted); }
+    .danger { color: var(--red); }
+
+    /* A — case cockpit */
+    .cockpit { display: grid; grid-template-columns: 238px minmax(620px, 1fr) 286px; gap: 14px; align-items: start; }
+    .rail, .canvas, .inspector { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; box-shadow: var(--shadow); }
+    .rail, .inspector { position: sticky; top: 80px; }
+    .rail { padding: 18px; }
+    .case-type { margin: 8px 0 4px; font-size: 22px; font-weight: 800; }
+    .case-summary { margin: 0 0 16px; color: var(--muted); font-size: 13px; line-height: 1.6; }
+    .person-list { display: grid; gap: 8px; margin: 10px 0 16px; }
+    .person {
+      display: grid; grid-template-columns: 34px 1fr; gap: 9px; align-items: center; padding: 9px;
+      background: #f7faf9; border: 1px solid var(--line); border-radius: 10px;
+    }
+    .avatar { width: 34px; height: 34px; display: grid; place-items: center; border-radius: 50%; background: var(--teal-soft); color: var(--teal); font-weight: 800; }
+    .person strong { font-size: 14px; }
+    .person small { display: block; color: var(--muted); margin-top: 2px; }
+    .inline-link { border: 0; background: transparent; color: var(--teal); font-weight: 700; padding: 0; }
+    .facts { display: grid; gap: 10px; border-top: 1px solid var(--line); padding-top: 14px; }
+    .fact { display: grid; grid-template-columns: 55px 1fr; gap: 8px; font-size: 13px; }
+    .fact span:first-child { color: var(--muted); }
+    .risk { margin-top: 16px; padding: 10px; border-left: 3px solid var(--red); background: var(--red-soft); font-size: 12px; line-height: 1.5; }
+
+    .canvas { padding: 18px; overflow: hidden; }
+    .canvas-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; }
+    .canvas-head h2, .timeline-head h2 { margin: 4px 0 0; font-size: 19px; }
+    .legend { display: flex; gap: 14px; font-size: 12px; color: var(--muted); }
+    .dot { width: 8px; height: 8px; display: inline-block; border-radius: 50%; margin-right: 5px; }
+    .dot.done { background: var(--teal); } .dot.pending { background: var(--amber); }
+    .flow-scroll { overflow-x: auto; padding: 4px 2px 12px; }
+    .flow { display: grid; grid-template-columns: repeat(4, minmax(220px, 1fr)); gap: 24px; min-width: 930px; }
+    .phase { position: relative; }
+    .phase:not(:last-child)::after {
+      content: ""; position: absolute; height: 2px; width: 24px; right: -24px; top: 48px; background: #abc6c7;
+    }
+    .phase:not(:last-child)::before {
+      content: ""; position: absolute; right: -24px; top: 44px; border-left: 7px solid #abc6c7;
+      border-top: 5px solid transparent; border-bottom: 5px solid transparent;
+    }
+    .phase-date { font-size: 12px; color: var(--muted); margin-bottom: 7px; }
+    .phase-title { min-height: 52px; padding: 12px 13px; border-radius: 11px 11px 0 0; background: #173f48; color: white; }
+    .phase-title small { display: block; opacity: .7; margin-top: 3px; }
+    .steps { border: 1px solid var(--line); border-top: 0; border-radius: 0 0 11px 11px; overflow: hidden; }
+    .step {
+      display: grid; grid-template-columns: 26px 1fr; gap: 9px; padding: 12px; background: #fff;
+      border: 0; border-bottom: 1px solid var(--line); text-align: left; width: 100%; color: var(--ink);
+    }
+    .step:last-child { border-bottom: 0; }
+    .step:hover, .step.active { background: var(--teal-soft); }
+    .step-no { width: 24px; height: 24px; border-radius: 50%; display: grid; place-items: center; background: #dfecec; color: var(--teal); font-size: 12px; font-weight: 800; }
+    .step strong { display: block; font-size: 13px; line-height: 1.4; }
+    .step small { display: block; margin-top: 3px; color: var(--muted); line-height: 1.4; }
+    .question-node {
+      position: relative; margin: 12px -6px 0; padding: 10px 11px 10px 28px; border-radius: 10px;
+      background: var(--amber-soft); color: #63430f; font-size: 12px; line-height: 1.45; border: 1px solid #eed395;
+    }
+    .question-node::before { content: "?"; position: absolute; left: 8px; top: 9px; font-weight: 900; color: var(--amber); }
+    .inspector { padding: 17px; }
+    .inspector h3 { margin: 6px 0 7px; font-size: 17px; line-height: 1.4; }
+    .inspector p { margin: 0 0 14px; color: var(--muted); font-size: 13px; line-height: 1.6; }
+    .checkline { display: flex; gap: 8px; align-items: start; padding: 10px 0; border-top: 1px solid var(--line); font-size: 13px; }
+    .mini-question { padding: 10px; background: var(--amber-soft); border-radius: 9px; font-size: 12px; line-height: 1.5; margin-top: 10px; }
+    .composer { margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--line); }
+    .composer label { display: block; font-size: 12px; font-weight: 800; margin-bottom: 7px; }
+    textarea { width: 100%; min-height: 82px; resize: vertical; padding: 10px; border: 1px solid #bdccca; border-radius: 9px; color: var(--ink); background: #fbfdfc; }
+    textarea:focus { outline: 2px solid rgba(15,105,115,.2); border-color: var(--teal); }
+    .primary { border: 0; background: var(--teal); color: #fff; border-radius: 9px; padding: 10px 14px; font-weight: 800; }
+    .composer .primary { width: 100%; margin-top: 8px; }
+
+    /* B — rail timeline */
+    .timeline-shell { background: #fff; border: 1px solid var(--line); border-radius: 14px; box-shadow: var(--shadow); overflow: hidden; }
+    .timeline-head { padding: 18px 22px; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--line); }
+    .case-strip { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+    .case-strip b { background: var(--teal-soft); color: var(--teal); padding: 7px 10px; border-radius: 8px; }
+    .date-row { display: grid; grid-template-columns: 132px 1fr; border-bottom: 1px solid var(--line); }
+    .date-row:last-child { border-bottom: 0; }
+    .date-cell { padding: 20px; background: #f7faf9; border-right: 1px solid var(--line); }
+    .date-cell strong { display: block; color: var(--teal); }
+    .date-cell small { color: var(--muted); }
+    .rail-flow { display: grid; grid-template-columns: repeat(3, 1fr); gap: 34px; padding: 18px 24px; align-items: stretch; }
+    .rail-node { position: relative; padding: 14px; border: 1px solid var(--line); border-radius: 10px; min-height: 100px; }
+    .rail-node:not(:last-child)::after { content: "→"; position: absolute; right: -27px; top: 36px; color: var(--teal); font-size: 22px; font-weight: 800; }
+    .rail-node strong { display: block; font-size: 14px; margin-bottom: 7px; }
+    .rail-node p { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.5; }
+    .rail-node.question { background: var(--amber-soft); border-color: #e8c985; }
+    .rail-node.question strong { color: #694712; }
+    .rail-node.optional { border-style: dashed; background: #fbfcfc; }
+    .timeline-footer { padding: 15px 22px; display: flex; justify-content: space-between; align-items: center; background: #f8faf9; }
+
+    /* C — decision lanes */
+    .matrix-head { display: flex; justify-content: space-between; align-items: end; margin-bottom: 12px; }
+    .matrix-head h2 { margin: 4px 0 0; }
+    .matrix { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; min-height: 590px; }
+    .lane { background: #fff; border: 1px solid var(--line); border-radius: 13px; overflow: hidden; box-shadow: var(--shadow); }
+    .lane-head { padding: 16px; border-top: 4px solid var(--teal); background: #f8fbfa; }
+    .lane:nth-child(2) .lane-head { border-color: var(--blue); }
+    .lane:nth-child(3) .lane-head { border-color: var(--amber); }
+    .lane:nth-child(4) .lane-head { border-color: #607b66; }
+    .lane-head b { display: block; font-size: 17px; }
+    .lane-head small { color: var(--muted); }
+    .lane-body { padding: 12px; display: grid; gap: 9px; }
+    .compact-node { padding: 11px 12px; border: 1px solid var(--line); border-radius: 9px; }
+    .compact-node .meta { display: flex; justify-content: space-between; color: var(--muted); font-size: 11px; margin-bottom: 5px; }
+    .compact-node strong { font-size: 13px; line-height: 1.4; }
+    .compact-node p { margin: 5px 0 0; color: var(--muted); font-size: 12px; line-height: 1.45; }
+    .decision { background: var(--amber-soft); border-color: #e8c985; }
+    .decision .options { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 8px; }
+    .decision .options span { padding: 4px 6px; border-radius: 6px; background: rgba(255,255,255,.7); font-size: 11px; }
+    .student-bar { grid-column: 1 / -1; display: flex; align-items: center; gap: 9px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 11px; background: #fff; margin-bottom: 10px; }
+    .student-chip { padding: 6px 9px; border-radius: 999px; background: var(--teal-soft); color: var(--teal); font-size: 12px; font-weight: 800; }
+
+    .actionbar {
+      position: fixed; left: 0; right: 0; bottom: 0; z-index: 30; min-height: 68px;
+      display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 18px; padding: 10px 24px;
+      background: rgba(255,255,255,.97); border-top: 1px solid var(--line); box-shadow: 0 -10px 28px rgba(20,48,55,.07);
+    }
+    .action-copy strong { display: block; font-size: 13px; }
+    .action-copy small { color: var(--muted); }
+    .actions { display: flex; gap: 8px; }
+    .secondary { border: 1px solid var(--teal); background: #fff; color: var(--teal); border-radius: 9px; padding: 10px 14px; font-weight: 800; }
+    .variant-switcher {
+      position: fixed; left: 24px; bottom: 78px; z-index: 40; display: flex; gap: 4px; padding: 5px;
+      border: 1px solid #b9c9c7; border-radius: 12px; background: rgba(255,255,255,.97); box-shadow: var(--shadow);
+    }
+    .variant-switcher button { border: 0; border-radius: 8px; padding: 8px 11px; background: transparent; color: var(--muted); font-size: 12px; font-weight: 800; }
+    .variant-switcher button.active { background: var(--ink); color: #fff; }
+    .toast {
+      position: fixed; right: 24px; bottom: 88px; z-index: 50; display: none; align-items: center; gap: 9px;
+      padding: 12px 15px; border-radius: 10px; background: #17343c; color: #fff; box-shadow: var(--shadow); font-size: 13px;
+    }
+    .toast.show { display: flex; }
+    .spinner { width: 15px; height: 15px; border: 2px solid rgba(255,255,255,.35); border-top-color: #fff; border-radius: 50%; animation: spin .8s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    @media (max-width: 1320px) {
+      .cockpit { grid-template-columns: 210px minmax(570px, 1fr) 260px; }
+      .rail-flow { gap: 24px; padding-inline: 16px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="prototype-note">静态交互方案 · 不连接真实学生数据、不保存、不调用 AI</div>
+  <header class="topbar">
+    <div class="titleline">
+      <span class="back">← 事务列表</span>
+      <h1>张立璞与钱肖白课堂冲突处理</h1>
+      <span class="version">第 3 版 · 刚刚自动保存</span>
+    </div>
+    <div class="header-tools">
+      <span class="status-pill">处理中 · 下一步：分别谈话</span>
+      <button class="ghost" data-demo="history">版本记录 3</button>
+    </div>
+  </header>
+
+  <main class="page">
+    <section class="variant" data-variant="a">
+      <div class="cockpit">
+        <aside class="rail">
+          <span class="section-label">学生冲突</span>
+          <div class="case-type">事务简报</div>
+          <p class="case-summary">信息课课堂中发生言语争执和推搡。当前先按普通学生冲突流程处理。</p>
+          <b>关联学生 · 2 人</b>
+          <div class="person-list">
+            <div class="person"><span class="avatar">张</span><div><strong>张立璞</strong><small>9 班</small></div></div>
+            <div class="person"><span class="avatar">钱</span><div><strong>钱肖白</strong><small>9 班</small></div></div>
+          </div>
+          <button class="inline-link" data-demo="students">更换关联学生</button>
+          <div class="facts">
+            <div class="fact"><span>发生时间</span><b>今天第 3 节</b></div>
+            <div class="fact"><span>发生地点</span><b>信息教室</b></div>
+            <div class="fact"><span>当前负责人</span><b>班主任</b></div>
+          </div>
+          <div class="risk"><b>紧急提醒</b><br>若有人受伤或仍有即时风险，先人工升级处置，不等待 AI。</div>
+        </aside>
+
+        <section class="canvas">
+          <div class="canvas-head">
+            <div><span class="section-label">SOP + 日期安排</span><h2>沿一条流程推进</h2></div>
+            <div class="legend"><span><i class="dot done"></i>可直接执行</span><span><i class="dot pending"></i>待教师核对</span></div>
+          </div>
+          <div class="flow-scroll">
+            <div class="flow">
+              <article class="phase">
+                <div class="phase-date date">08/04 · 今天 · 3 项</div>
+                <div class="phase-title"><b>稳住现场</b><small>先确保安全和课堂秩序</small></div>
+                <div class="steps">
+                  <button class="step active" data-step="1"><span class="step-no">1</span><span><strong>确认双方已分开</strong><small>避免继续对峙</small></span></button>
+                  <button class="step" data-step="2"><span class="step-no">2</span><span><strong>记录客观观察</strong><small>不写定性标签</small></span></button>
+                </div>
+                <div class="question-node">是否有人受伤，或仍存在即时风险？</div>
+              </article>
+              <article class="phase">
+                <div class="phase-date date">08/04 · 今天 · 2 项</div>
+                <div class="phase-title"><b>分别了解</b><small>分开谈话，不要求当面对质</small></div>
+                <div class="steps">
+                  <button class="step" data-step="3"><span class="step-no">3</span><span><strong>听取张立璞表述</strong><small>记录原话与时间线</small></span></button>
+                  <button class="step" data-step="4"><span class="step-no">4</span><span><strong>听取钱肖白表述</strong><small>区分事实与转述</small></span></button>
+                </div>
+                <div class="question-node">冲突是否影响了其他学生正常上课？</div>
+              </article>
+              <article class="phase">
+                <div class="phase-date date">08/05 · 明天 · 2 项</div>
+                <div class="phase-title"><b>核对与选择</b><small>依据已知事实选择支持路径</small></div>
+                <div class="steps">
+                  <button class="step" data-step="5"><span class="step-no">5</span><span><strong>核对一致事实</strong><small>保留仍有分歧的部分</small></span></button>
+                  <button class="step" data-step="6"><span class="step-no">6</span><span><strong>确定支持措施</strong><small>修复关系或家校沟通</small></span></button>
+                </div>
+                <div class="question-node">此前是否反复发生同类冲突？</div>
+              </article>
+              <article class="phase">
+                <div class="phase-date date">08/07 · 三天后 · 1 项</div>
+                <div class="phase-title"><b>跟进复盘</b><small>观察变化，由教师决定结案</small></div>
+                <div class="steps">
+                  <button class="step" data-step="7"><span class="step-no">7</span><span><strong>检查后续状态</strong><small>更新学生档案事实记录</small></span></button>
+                </div>
+              </article>
+            </div>
+          </div>
+        </section>
+
+        <aside class="inspector">
+          <span class="section-label">当前步骤 1</span>
+          <h3>确认双方已分开</h3>
+          <p>确认冲突已经停止，双方情绪允许分别沟通。若无法确保安全，转人工紧急处置。</p>
+          <label class="checkline"><input type="checkbox"> <span>已完成这一步</span></label>
+          <label class="checkline"><input type="checkbox"> <span>需要调整负责人或时间</span></label>
+          <div class="mini-question"><b>在这里补足关键事实</b><br>是否有人受伤，或仍存在即时风险？</div>
+          <div class="composer">
+            <label for="feedback-a">告诉 AI 哪些地方要调整</label>
+            <textarea id="feedback-a" placeholder="例如：双方已经分开，没有人受伤；把后续谈话安排到午休。"></textarea>
+            <button class="primary ai-demo">发送并更新方案</button>
+          </div>
+        </aside>
+      </div>
+    </section>
+
+    <section class="variant" data-variant="b">
+      <div class="timeline-shell">
+        <div class="timeline-head">
+          <div><span class="section-label">方案 B · 日期轨道</span><h2>同一天的动作放在同一条线上</h2></div>
+          <div class="case-strip"><b>学生冲突</b><span>张立璞</span><span>×</span><span>钱肖白</span><button class="inline-link" data-demo="students">更换</button></div>
+        </div>
+        <div class="date-row">
+          <div class="date-cell"><strong class="date">08/04 今天</strong><small>稳定与了解</small></div>
+          <div class="rail-flow">
+            <article class="rail-node"><strong>1 · 分开双方并记录现场</strong><p>确保冲突停止，只写可观察事实。</p></article>
+            <article class="rail-node question"><strong>影响下一步的核对</strong><p>是否有人受伤或仍有即时风险？</p></article>
+            <article class="rail-node"><strong>2 · 分别听取双方表述</strong><p>分开谈话，记录原话和时间线。</p></article>
+          </div>
+        </div>
+        <div class="date-row">
+          <div class="date-cell"><strong class="date">08/05 明天</strong><small>核对与选择</small></div>
+          <div class="rail-flow">
+            <article class="rail-node"><strong>3 · 核对一致事实</strong><p>把一致事实、观察和争议内容分开。</p></article>
+            <article class="rail-node question"><strong>需要教师补充</strong><p>此前是否多次发生同类冲突？</p></article>
+            <article class="rail-node"><strong>4 · 确定支持路径</strong><p>选择关系修复、家校沟通或校内支持。</p></article>
+          </div>
+        </div>
+        <div class="date-row">
+          <div class="date-cell"><strong class="date">08/07 三天后</strong><small>复查</small></div>
+          <div class="rail-flow">
+            <article class="rail-node"><strong>5 · 检查双方状态</strong><p>观察是否还有对立、回避或课堂影响。</p></article>
+            <article class="rail-node optional"><strong>可选 · 家校沟通</strong><p>由教师判断是否需要，不由系统自动外发。</p></article>
+            <article class="rail-node"><strong>6 · 更新记录或继续跟进</strong><p>由教师决定结案、延长观察或转交。</p></article>
+          </div>
+        </div>
+        <div class="timeline-footer"><span class="muted">问题就放在它会改变的流程节点上，不另设黄色长面板。</span><button class="secondary ai-demo">补充情况并更新</button></div>
+      </div>
+    </section>
+
+    <section class="variant" data-variant="c">
+      <div class="matrix-head">
+        <div><span class="section-label">方案 C · 决策分栏</span><h2>按处理阶段看全局</h2></div>
+        <span class="muted">适合同时比较“已明确 / 待核对 / 下一步”</span>
+      </div>
+      <div class="student-bar"><b>关联 2 人</b><span class="student-chip">张立璞 · 9 班</span><span class="student-chip">钱肖白 · 9 班</span><button class="inline-link" data-demo="students">更换学生</button><span class="muted">｜ 第 3 版 · 已自动保存</span></div>
+      <div class="matrix">
+        <section class="lane">
+          <div class="lane-head"><b>01 稳住现场</b><small>08/04 · 今天</small></div>
+          <div class="lane-body">
+            <article class="compact-node"><div class="meta"><span>步骤 1</span><span>今天</span></div><strong>分开双方，恢复课堂秩序</strong><p>不等待 AI；若有即时危险，人工升级。</p></article>
+            <article class="compact-node"><div class="meta"><span>步骤 2</span><span>今天</span></div><strong>记录客观观察</strong><p>不写“态度差”等定性标签。</p></article>
+            <article class="compact-node decision"><div class="meta"><span>待核对</span><span>影响紧急程度</span></div><strong>是否有人受伤？</strong><div class="options"><span>没有</span><span>轻微</span><span>需立即处理</span></div></article>
+          </div>
+        </section>
+        <section class="lane">
+          <div class="lane-head"><b>02 还原事实</b><small>08/04 · 今天</small></div>
+          <div class="lane-body">
+            <article class="compact-node"><div class="meta"><span>步骤 3</span><span>分别进行</span></div><strong>听取张立璞表述</strong><p>记录原话、顺序和本人诉求。</p></article>
+            <article class="compact-node"><div class="meta"><span>步骤 4</span><span>分别进行</span></div><strong>听取钱肖白表述</strong><p>不要求双方当面对质。</p></article>
+            <article class="compact-node decision"><div class="meta"><span>待核对</span><span>影响范围</span></div><strong>是否影响其他同学上课？</strong><div class="options"><span>未影响</span><span>短时中断</span><span>持续影响</span></div></article>
+          </div>
+        </section>
+        <section class="lane">
+          <div class="lane-head"><b>03 选择路径</b><small>08/05 · 明天</small></div>
+          <div class="lane-body">
+            <article class="compact-node"><div class="meta"><span>步骤 5</span><span>核对</span></div><strong>整理一致事实与分歧</strong><p>保留不能确认的内容，不强行下结论。</p></article>
+            <article class="compact-node decision"><div class="meta"><span>教师决策</span><span>不自动执行</span></div><strong>选择支持措施</strong><div class="options"><span>关系修复</span><span>家校沟通</span><span>校内支持</span></div></article>
+          </div>
+        </section>
+        <section class="lane">
+          <div class="lane-head"><b>04 跟进复盘</b><small>08/07 · 三天后</small></div>
+          <div class="lane-body">
+            <article class="compact-node"><div class="meta"><span>步骤 6</span><span>复查</span></div><strong>检查双方后续状态</strong><p>观察新的事实变化和支持效果。</p></article>
+            <article class="compact-node"><div class="meta"><span>步骤 7</span><span>教师确认</span></div><strong>更新档案或继续跟进</strong><p>保存事实记录；教师决定是否结案。</p></article>
+          </div>
+        </section>
+      </div>
+    </section>
+  </main>
+
+  <nav class="variant-switcher" aria-label="原型方案切换">
+    <button data-switch="a">A 流程驾驶舱</button>
+    <button data-switch="b">B 日期轨道</button>
+    <button data-switch="c">C 决策分栏</button>
+  </nav>
+
+  <footer class="actionbar">
+    <div class="action-copy"><strong>草稿持续自动保存</strong><small>选中步骤与补充文字会生成新版本；上一版始终保留。</small></div>
+    <div class="actions"><button class="secondary ai-demo">发送补充，更新方案</button><button class="primary" data-demo="save">保存为正式事务</button></div>
+  </footer>
+  <div class="toast" role="status"><span class="spinner"></span><span id="toast-text">AI 正在整理，上一版仍可使用……</span></div>
+
+  <script>
+    const variants = new Set(['a', 'b', 'c']);
+    const requested = new URLSearchParams(location.search).get('variant');
+    const initial = variants.has(requested) ? requested : 'a';
+    const showVariant = (name) => {
+      document.querySelectorAll('.variant').forEach((el) => el.classList.toggle('active', el.dataset.variant === name));
+      document.querySelectorAll('[data-switch]').forEach((el) => el.classList.toggle('active', el.dataset.switch === name));
+      const url = new URL(location.href); url.searchParams.set('variant', name); history.replaceState({}, '', url);
+    };
+    document.querySelectorAll('[data-switch]').forEach((button) => button.addEventListener('click', () => showVariant(button.dataset.switch)));
+    showVariant(initial);
+
+    document.querySelectorAll('.step').forEach((button) => button.addEventListener('click', () => {
+      document.querySelectorAll('.step').forEach((el) => el.classList.remove('active'));
+      button.classList.add('active');
+      document.querySelector('.inspector .section-label').textContent = `当前步骤 ${button.dataset.step}`;
+      document.querySelector('.inspector h3').textContent = button.querySelector('strong').textContent;
+    }));
+
+    const toast = document.querySelector('.toast');
+    let toastTimer;
+    const notify = (message, loading = false) => {
+      document.querySelector('#toast-text').textContent = message;
+      document.querySelector('.spinner').style.display = loading ? 'block' : 'none';
+      toast.classList.add('show'); clearTimeout(toastTimer);
+      toastTimer = setTimeout(() => toast.classList.remove('show'), 2600);
+    };
+    document.querySelectorAll('.ai-demo').forEach((button) => button.addEventListener('click', () => notify('AI 正在整理，上一版仍可使用……', true)));
+    document.querySelectorAll('[data-demo="save"]').forEach((button) => button.addEventListener('click', () => notify('静态原型：正式保存将在实现阶段接入', false)));
+    document.querySelectorAll('[data-demo="students"]').forEach((button) => button.addEventListener('click', () => notify('实现时从这里打开学生搜索层，只展示已关联的 2 人', false)));
+    document.querySelectorAll('[data-demo="history"]').forEach((button) => button.addEventListener('click', () => notify('同一事务的 3 个版本将在此查看，不重复占首页卡片', false)));
+  </script>
+</body>
+</html>

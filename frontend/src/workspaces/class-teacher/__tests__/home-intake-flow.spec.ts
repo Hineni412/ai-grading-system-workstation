@@ -1,5 +1,5 @@
 import { createApp, defineComponent, h, nextTick, ref, type App, type Component } from 'vue'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
   homeIntakeApi,
@@ -25,6 +25,8 @@ async function mount(component: Component, props: Record<string, unknown>) {
   return host
 }
 async function flush() {
+  await nextTick()
+  await new Promise((resolve) => setTimeout(resolve, 0))
   await nextTick()
   await new Promise((resolve) => setTimeout(resolve, 0))
   await nextTick()
@@ -144,13 +146,33 @@ describe('homepage intake flow', () => {
   it('shows ordinary saved drafts even when the sensitive vault has no session token', async () => {
     const listDrafts = vi.spyOn(homeIntakeApi, 'listDrafts').mockResolvedValue([{
       draft_id: 'a'.repeat(32), version: 1, route: 'ordinary', result_kind: 'ordinary_plan',
-      title: '九月一日开学准备', updated_at: '2026-08-04T01:00:00Z',
+      title: '九月一日开学准备', source_text: '九月一日开学', student_aliases: [], updated_at: '2026-08-04T01:00:00Z',
     }])
     const host = await mount(QuickWorkCapture, { module: moduleStub() })
 
     expect(listDrafts).toHaveBeenCalledWith(undefined)
     expect(host.textContent).toContain('继续处理未完成事务')
     expect(host.textContent).toContain('九月一日开学准备')
+  })
+
+  it('restores local student names on saved affair cards', async () => {
+    vi.spyOn(homeIntakeApi, 'listDrafts').mockResolvedValue([{
+      draft_id: 'b'.repeat(32), version: 3, route: 'sensitive', result_kind: 'affair_recommendation',
+      title: '学生A与学生B课堂冲突处理', source_text: '张三丰和李四发生冲突',
+      student_aliases: ['学生A', '学生B'], updated_at: '2026-08-04T01:00:00Z',
+    }])
+    vi.spyOn(studentR1Api, 'currentRoster').mockResolvedValue({
+      items: [
+        { source_key:'prefix', subject_id:'prefix', display_name:'张三', class_label:'九班', state:'active' },
+        { source_key:'one', subject_id:'one', display_name:'张三丰', class_label:'九班', state:'active' },
+        { source_key:'two', subject_id:'two', display_name:'李四', class_label:'九班', state:'active' },
+      ], active_count:3, historical_count:0, replayed:false,
+    })
+    const host = await mount(QuickWorkCapture, { module: moduleStub(), token:'token' })
+
+    expect(host.textContent).toContain('张三丰与李四课堂冲突处理')
+    expect(host.querySelector('.draft-students')?.textContent).toBe('张三丰、李四')
+    expect(host.textContent).not.toContain('学生A与学生B')
   })
 
   it('keeps parsed plan visible when automatic draft persistence fails', async () => {
@@ -250,6 +272,7 @@ describe('homepage intake flow', () => {
 
   it('filters the existing student library and replaces the current homeroom roster', async () => {
     vi.spyOn(studentR1Api, 'directory').mockResolvedValue({ items: [], cursor: null, total: 0, page_size: 20 })
+    vi.spyOn(studentR1Api, 'currentRoster').mockResolvedValue({ items:[], active_count:0, historical_count:0, replayed:false })
     const source = vi.spyOn(studentR1Api, 'rosterSource').mockResolvedValue({
       items: [{ source_key: '1', student_code: 'A001', display_name: '王明', class_label: '一班', subject_id: null, roster_state: 'available' }],
       classes: ['一班', '二班'], source_revision: 'r'.repeat(64), total: 1, cursor: null,
@@ -498,6 +521,10 @@ describe('homepage intake flow', () => {
 })
 
 describe('memory-only recommendation handoffs', () => {
+  beforeEach(() => {
+    vi.spyOn(studentR1Api, 'currentRoster').mockResolvedValue({ items:[], active_count:0, historical_count:0, replayed:false })
+    vi.spyOn(studentR1Api, 'rosterSource').mockResolvedValue({ items:[], classes:[], source_revision:'test', total:0, cursor:null })
+  })
   it('prefills affair creation separately from AI reference and never auto-creates', async () => {
     vi.spyOn(affairR1Api, 'list').mockResolvedValue([])
     vi.spyOn(sopApi, 'listTemplates').mockResolvedValue([{ template_version_id: 'template-1', revision: 1, template_key: 'baseline', version: 1, title: '学校核实流程', steps: [], workflow_scope: 'school_confirmed', risk_level: 'elevated', emergency_prompt: null, school_config_gaps: [], model_enabled: false, physical_request_count: 0, frozen: true, created_at: '2026-08-01' }])

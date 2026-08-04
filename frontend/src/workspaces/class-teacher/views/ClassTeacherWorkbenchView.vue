@@ -463,6 +463,7 @@ onBeforeUnmount(() => {
         :handoff="homeIntakeHandoff?.destination === 'affair' ? homeIntakeHandoff : null"
         @handoff-persisted="clearHomeIntakeHandoff"
         @handoff-discarded="clearHomeIntakeHandoff"
+        @open-draft="openHomeIntakeDraft"
       />
       <StudentSurface
         v-else-if="routeState.surface === 'students'"
@@ -637,6 +638,7 @@ onBeforeUnmount(() => {
         :handoff="homeIntakeHandoff?.destination === 'affair' ? homeIntakeHandoff : null"
         @handoff-persisted="clearHomeIntakeHandoff"
         @handoff-discarded="clearHomeIntakeHandoff"
+        @open-draft="openHomeIntakeDraft"
       />
       <StudentSurface
         v-else-if="routeState.surface === 'students'"

@@ -13,6 +13,7 @@ const message = ref('')
 const expectedCount = ref(0)
 const receivedCount = ref(0)
 const needsReviewCount = ref(0)
+const confirmingCancel = ref(false)
 const detail = computed(() => props.module.selected.value)
 
 watch(detail, (value) => {
@@ -22,6 +23,7 @@ watch(detail, (value) => {
   receivedCount.value = value?.collection_summary?.received_count ?? 0
   needsReviewCount.value = value?.collection_summary?.needs_review_count ?? 0
   message.value = ''
+  confirmingCancel.value = false
 })
 
 async function run(node: WorkNode, command: string, fields: Record<string, unknown> = {}) {
@@ -32,9 +34,16 @@ async function run(node: WorkNode, command: string, fields: Record<string, unkno
     if (command === 'open_restricted_projection') {
       const projectionId = String(result.projection_id ?? detail.value?.projection_id ?? '')
       if (projectionId) emit('openRestricted', projectionId, detail.value?.node.projection_type ?? null)
+    } else if (command === 'update_status' && fields.status === 'cancelled') {
+      message.value = '已移出默认日历；工作记录仍保留，可以恢复。'
+      confirmingCancel.value = false
+    } else if (command === 'update_status' && fields.status === 'pending') {
+      message.value = '事项已经恢复到日历。'
     } else {
       message.value = '工作状态已更新。'
     }
+  } catch {
+    message.value = '操作没有完成，事项可能已在其他页面发生变化。请刷新后再试。'
   } finally {
     busy.value = false
   }
@@ -63,9 +72,15 @@ async function run(node: WorkNode, command: string, fields: Record<string, unkno
       >解锁并打开受保护事项</button>
 
       <template v-else>
-        <div class="command-row">
+        <div v-if="detail.node.status === 'cancelled'" class="restore-panel">
+          <p>这项工作已移出默认日历，历史记录仍然保留。</p>
+          <button type="button" :disabled="busy" @click="run(detail.node, 'update_status', { status: 'pending' })">恢复到日历</button>
+        </div>
+        <div v-else class="command-row">
           <button type="button" :disabled="busy" @click="run(detail.node, 'update_status', { status: 'in_progress' })">开始处理</button>
           <button type="button" :disabled="busy" @click="run(detail.node, 'update_status', { status: 'completed' })">标为完成</button>
+          <button v-if="!confirmingCancel" type="button" class="remove-calendar" :disabled="busy" @click="confirmingCancel = true">移出日历</button>
+          <template v-else><span class="confirm-copy">确定移出？记录会保留。</span><button type="button" class="remove-calendar" :disabled="busy" @click="run(detail.node, 'update_status', { status: 'cancelled' })">确认移出</button><button type="button" :disabled="busy" @click="confirmingCancel = false">不移出</button></template>
         </div>
         <label>
           <span>调整到期日期</span>
@@ -130,6 +145,7 @@ h2 { margin: 0 0 var(--space-2); font-size: var(--font-size-h2); }
 .facts div { display: grid; gap: 2px; }.facts dt { color: var(--color-text-muted); font-size: var(--font-size-caption); }.facts dd { margin: 0; font-weight: 650; }
 label { display: grid; gap: var(--space-2); margin-top: var(--space-4); font-size: var(--font-size-dense); font-weight: 650; }
 .inline,.command-row { display: flex; gap: var(--space-2); }.inline input { flex: 1; }
+.command-row{flex-wrap:wrap;align-items:center}.remove-calendar{border-color:var(--color-warning);color:var(--color-warning)}.confirm-copy{color:var(--color-text-secondary);font-size:var(--font-size-caption)}.restore-panel{margin-top:var(--space-4);padding:var(--space-3);border-left:3px solid var(--color-warning);background:var(--color-warning-subtle)}.restore-panel p{margin-top:0;color:var(--color-text-secondary)}
 button,input,textarea { font: inherit; } button { min-height: 36px; padding: 0 var(--space-3); border: 1px solid var(--color-border-strong); border-radius: var(--radius-control); background: var(--color-bg-surface); cursor: pointer; }
 .primary { width: 100%; margin-top: var(--space-4); border-color: var(--color-accent); background: var(--color-accent); color: white; }
 textarea { resize: vertical; padding: var(--space-2); border: 1px solid var(--color-border-default); border-radius: var(--radius-control); }
