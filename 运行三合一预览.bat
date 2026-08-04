@@ -37,14 +37,14 @@ goto failed
 
 :preview_prepare_error
 echo.
-echo 三合一预览检查或前端更新失败。
-echo 具体失败原因以上方输出为准。
+echo Preview preparation or frontend update failed.
+echo See the detailed error above.
 goto failed
 
 :running_probe_error
 echo.
-echo 无法判断端口 %API_PORT% 上的程序能否复用。
-echo 请查看上方的具体原因，并把完整窗口截图发给 Codex。
+echo Could not determine whether the service on port %API_PORT% can be reused.
+echo See the detailed error above and send the full window capture to Codex.
 goto failed
 
 :failed

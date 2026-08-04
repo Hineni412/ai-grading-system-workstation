@@ -381,8 +381,14 @@ def test_preview_launcher_does_not_misreport_all_failures_as_stale() -> None:
     assert "goto preview_prepare_error" in launcher
     assert "goto running_probe_error" in launcher
     assert "The three-workspace preview is not current." not in launcher
-    assert "具体失败原因以上方输出为准。" in launcher
+    assert "Preview preparation or frontend update failed." in launcher
+    assert "See the detailed error above." in launcher
     assert "三合一不是最新" not in launcher
+
+    failure_messages = launcher[launcher.index(":missing_runtime") :]
+    for line in failure_messages.splitlines():
+        if line.startswith("echo"):
+            line.encode("ascii")
 
 
 def test_preview_launcher_uses_windows_crlf_line_endings() -> None:
