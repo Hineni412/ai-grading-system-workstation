@@ -1211,12 +1211,41 @@ class TeachingPrepService:
             report("completed")
             return proposal, True
         except TeachingPrepValidationError as exc:
+            failure_code = str(
+                getattr(
+                    exc,
+                    "error_code",
+                    "semester_mapping_response_failed_local_validation",
+                )
+            )
             self.semester_mapping.fail_generation(
                 clean_operation_id,
-                "semester_mapping_response_failed_local_validation",
+                failure_code,
             )
+            if failure_code == "semester_mapping_existing_tree_replaced":
+                public_failure = (
+                    "semester mapping model attempted to replace the "
+                    "existing lesson tree"
+                )
+            elif failure_code == "semester_mapping_unavailable_lesson":
+                public_failure = (
+                    "semester mapping model referred to a lesson outside "
+                    "the existing tree"
+                )
+            elif (
+                failure_code
+                == "semester_mapping_unexplained_coverage_gap"
+            ):
+                public_failure = (
+                    "semester mapping model omitted uncertainty for "
+                    "unmapped pages"
+                )
+            else:
+                public_failure = (
+                    "semester mapping response failed local validation"
+                )
             raise TeachingPrepRetryAvailableError(
-                "semester mapping response failed local validation"
+                public_failure
             ) from exc
         except Exception as exc:
             self.semester_mapping.fail_generation(
