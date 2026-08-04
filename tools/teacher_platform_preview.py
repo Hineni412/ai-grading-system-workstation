@@ -24,6 +24,9 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 FRONTEND_DIR = PROJECT_ROOT / "frontend"
 DIST_DIR = FRONTEND_DIR / "dist"
 STAMP_PATH = DIST_DIR / "teacher-platform-preview-build.json"
+SOURCE_CHECKPOINT_RECEIPTS_PATH = (
+    PROJECT_ROOT / "integration" / "teacher-platform-source-checkpoints.json"
+)
 EXPECTED_BRANCH = "codex/teacher-platform-integration"
 EXPECTED_PREVIEW_INSTANCE_ID = "teacher-platform-integration"
 SOURCE_BRANCHES = (
@@ -104,6 +107,52 @@ def _source_heads() -> dict[str, str]:
     return {branch: _git("rev-parse", branch) for branch in SOURCE_BRANCHES}
 
 
+def _source_checkpoint_receipts() -> dict[str, str]:
+    if not SOURCE_CHECKPOINT_RECEIPTS_PATH.is_file():
+        return {}
+    try:
+        payload = json.loads(
+            SOURCE_CHECKPOINT_RECEIPTS_PATH.read_text(encoding="utf-8")
+        )
+    except (OSError, json.JSONDecodeError) as exc:
+        raise PreviewGuardError("组合预览来源检查点记录无法读取。") from exc
+    if not isinstance(payload, dict):
+        raise PreviewGuardError("组合预览来源检查点记录格式无效。")
+    receipts = payload.get("source_checkpoints")
+    if not isinstance(receipts, dict):
+        raise PreviewGuardError("组合预览来源检查点记录格式无效。")
+    result: dict[str, str] = {}
+    for branch, head in receipts.items():
+        if branch not in SOURCE_BRANCHES or not isinstance(head, str):
+            raise PreviewGuardError("组合预览来源检查点记录包含无效条目。")
+        clean_head = head.strip().lower()
+        if len(clean_head) not in (40, 64) or any(
+            character not in "0123456789abcdef" for character in clean_head
+        ):
+            raise PreviewGuardError("组合预览来源检查点记录包含无效提交号。")
+        result[branch] = clean_head
+    return result
+
+
+def _source_is_ancestor(source_head: str, preview_head: str) -> bool:
+    completed = subprocess.run(
+        [
+            _git_executable(),
+            "-c",
+            f"safe.directory={PROJECT_ROOT.as_posix()}",
+            "merge-base",
+            "--is-ancestor",
+            source_head,
+            preview_head,
+        ],
+        cwd=PROJECT_ROOT,
+        check=False,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    return completed.returncode == 0
+
+
 def _tracked_code_changes() -> str:
     return _git(
         "status",
@@ -130,23 +179,12 @@ def _assert_preview_workspace() -> tuple[str, dict[str, str]]:
 
     preview_head = _current_head()
     source_heads = _source_heads()
+    checkpoint_receipts = _source_checkpoint_receipts()
     for source_branch, source_head in source_heads.items():
-        ancestor = subprocess.run(
-            [
-                _git_executable(),
-                "-c",
-                f"safe.directory={PROJECT_ROOT.as_posix()}",
-                "merge-base",
-                "--is-ancestor",
-                source_head,
-                preview_head,
-            ],
-            cwd=PROJECT_ROOT,
-            check=False,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-        if ancestor.returncode != 0:
+        if (
+            not _source_is_ancestor(source_head, preview_head)
+            and checkpoint_receipts.get(source_branch) != source_head
+        ):
             raise PreviewGuardError(
                 f"{source_branch} 已有新检查点但尚未进入组合预览；请先刷新合并。"
             )
