@@ -1805,6 +1805,10 @@ button:disabled { cursor: not-allowed; opacity: 0.46; }
 .tp-mapping-basis { display: grid; gap: 0.25rem; padding: 0.65rem; border-radius: 0.45rem; background: #edf5f2; }
 .tp-mapping-basis p { margin: 0; color: var(--tp-ink-soft); }
 .tp-mapping-basis small { color: var(--tp-muted); overflow-wrap: anywhere; }
+.tp-mapping-evidence-list { display: grid; gap: 0.25rem; }
+.tp-mapping-evidence-list > span { color: var(--tp-muted); font-size: 0.76rem; }
+.tp-mapping-evidence-list button { padding: 0.35rem 0.45rem; border: 1px solid #b9d3cc; border-radius: 0.35rem; color: var(--tp-teal-dark); background: white; text-align: start; }
+.tp-mapping-evidence-list button:disabled { color: var(--tp-muted); }
 .tp-mapping-group-summary { display: grid; gap: 0.2rem; padding: 0.7rem; border-inline-start: 4px solid var(--tp-teal); background: #e8f2ef; }
 .tp-mapping-group-summary small { color: var(--tp-muted); }
 .tp-mapping-uncertainties { padding: 0.65rem; border: 1px solid #d6b671; border-radius: 0.5rem; background: #fff8e7; }
