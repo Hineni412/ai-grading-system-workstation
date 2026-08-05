@@ -282,6 +282,11 @@ class SharedWorkspaceAITaskPort:
     def _bind_handoffs(self, snapshot) -> None:
         for handoff in snapshot.handoffs:
             try:
+                domain = self.conversations.handoff_by_draft_id(handoff.draft_ref.id)
+                if str(domain["draft_revision"]) != handoff.draft_ref.revision:
+                    continue
+                if self.conversations.task_id_for_handoff(str(domain["handoff_id"])) != snapshot.task_id:
+                    continue
                 previous = self.conversations.bind_common_handoff(
                     handoff.draft_ref.id,
                     handoff.handoff_id,

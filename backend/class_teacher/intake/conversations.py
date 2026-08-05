@@ -328,6 +328,13 @@ class ConversationStore:
             }:
                 raise VaultError("class_teacher_manual_route_unavailable", "当前任务仍在处理或已有可用结果", status_code=409)
         domain = "conflict_safety" if mode == "sop" else "class_operations"
+        manual_draft: dict[str, object] = {
+            "summary": str(turn["teacher_message"]),
+            "manual_routing": True,
+            "steps": [],
+        }
+        if mode == "sop":
+            manual_draft["template_key"] = ""
         payload = {
             "contract_version": "class_teacher_triage.v1",
             "assistant_message": "AI 未参与这次整理。已按教师选择保留原文，请在目标页面核对并补全。",
@@ -343,7 +350,7 @@ class ConversationStore:
                 "time_facts": [],
                 "safety_level": "teacher_review_required" if mode == "sop" else "normal",
                 "missing_fields": ["请核对对象、时间和事实"] if mode == "record" else ["请补全正式保存所需字段"],
-                "draft": {"summary": str(turn["teacher_message"]), "manual_routing": True, "steps": []},
+                "draft": manual_draft,
             }],
         }
         conversation = self.apply_triage_result(

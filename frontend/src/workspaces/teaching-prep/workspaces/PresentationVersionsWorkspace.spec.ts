@@ -1,6 +1,9 @@
+import { createPinia } from 'pinia'
 import { createApp, nextTick, ref } from 'vue'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import * as aiAdoption from '../aiAdoption'
+import { useWorkspaceAITaskStore } from '../../shared/ai-tasks/store'
 import { teachingPrepWorkbenchKey } from '../workbench/context'
 import PresentationVersionsWorkspace from './PresentationVersionsWorkspace.vue'
 
@@ -48,24 +51,29 @@ function mountChecker(options: {
           { stable_signature: 'slide-2', original_index: 2, title: '第二页', preview_url: '/preview/2' },
         ], after: [], changes: [], manual_only: [] },
       pptxExecutions: [], saveState: 'idle', upClassPackages: [],
-      selectSlidePlan: async () => undefined, reviewSlidePlan: async () => undefined,
+      selectSlidePlan: vi.fn(), reviewSlidePlan: vi.fn(),
       executePptx: async () => undefined, createUpClassPackage: async () => undefined,
       activateUpClassPackage: async () => undefined, recoverUpClassPackage: async () => undefined,
       cancelPptxExecution: async () => undefined, recoverPptxExecution: async () => undefined,
       discardPptxStaging: async () => undefined,
     },
     pptxVersions: ref([]), setDirty: () => undefined, refreshCurrentWorkspace: async () => undefined,
-    openStage: async () => undefined,
+    openStage: vi.fn(),
   }
   const host = document.createElement('div')
   document.body.appendChild(host)
   const app = createApp(PresentationVersionsWorkspace)
+  const pinia = createPinia()
+  app.use(pinia)
   app.provide(teachingPrepWorkbenchKey, fake as never)
   app.mount(host)
-  return { app, host }
+  return { app, host, fake, pinia }
 }
 
-afterEach(() => { document.body.innerHTML = '' })
+afterEach(() => {
+  vi.restoreAllMocks()
+  document.body.innerHTML = ''
+})
 
 describe('PresentationVersionsWorkspace R7 checker', () => {
   it('selects the operation source slide and scales only a validated target.position', async () => {
@@ -120,6 +128,42 @@ describe('PresentationVersionsWorkspace R7 checker', () => {
 
     expect(host.querySelectorAll('.tp-slide-checker__thumbs button')[1]?.classList.contains('is-active')).toBe(true)
     expect(host.querySelector<HTMLImageElement>('.tp-slide-stage img')?.getAttribute('src')).toBe('/preview/b/1')
+    app.unmount()
+  })
+
+  it.each([
+    ['AI proposal', true],
+    ['manual plan', false],
+  ])('routes %s review through the correct adoption path', async (_label, isAI) => {
+    const adoption = vi.spyOn(aiAdoption, 'adoptTeachingPrepProposal')
+      .mockResolvedValue(isAI ? ({
+        match: { task: { task_id: 'task-slide' } },
+        receipt: { object_id: 'reviewed-plan' },
+      } as never) : null)
+    const { app, host, fake, pinia } = mountChecker()
+    if (isAI) {
+      vi.spyOn(useWorkspaceAITaskStore(pinia), 'refresh')
+        .mockRejectedValue(new Error('synthetic task refresh failure'))
+    }
+    await nextTick()
+    for (const input of host.querySelectorAll<HTMLInputElement>(
+      '.tp-operation-row input[type="radio"]:first-of-type',
+    )) {
+      input.click()
+    }
+    await nextTick()
+    const save = [...host.querySelectorAll<HTMLButtonElement>('button')]
+      .find(item => item.textContent?.includes('保存全部审核决定'))
+    save?.click()
+    await vi.waitFor(() => expect(adoption).toHaveBeenCalled())
+
+    if (isAI) {
+      expect(fake.catalog.reviewSlidePlan).not.toHaveBeenCalled()
+      await vi.waitFor(() => {
+        expect(host.textContent).toContain('课件审核已保存并生成采用回执')
+        expect(host.textContent).not.toContain('课件审核尚未确认')
+      })
+    } else expect(fake.catalog.reviewSlidePlan).toHaveBeenCalledOnce()
     app.unmount()
   })
 })

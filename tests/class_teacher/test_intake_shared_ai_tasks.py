@@ -388,6 +388,65 @@ def test_successful_draft_revision_supersedes_only_the_old_common_handoff(tmp_pa
         manager.shutdown()
 
 
+def test_reading_original_conversation_does_not_stale_the_current_revision_handoff(
+    tmp_path: Path,
+) -> None:
+    domain, common, manager, configured = _wired(tmp_path, _triage())
+    try:
+        conversation = domain.intake.start_conversation()
+        queued = domain.intake.append_turn(
+            conversation_id=str(conversation["conversation_id"]),
+            expected_revision=int(conversation["revision"]),
+            message="合成历史任务回看正文",
+            operation_id="shared-history-rebind-original",
+        )
+        original_task_id = str(queued["turns"][-1]["task_id"])
+        original = common.get(task_id=original_task_id)
+        assert original.job_id is not None
+        manager.wait(original.job_id, timeout=5)
+        ready = domain.intake.get_conversation(str(conversation["conversation_id"]))
+        handoff = domain.intake.open_handoff(str(ready["handoffs"][0]["handoff_id"]))
+
+        configured.result = {
+            "contract_version": "class_teacher_draft_revision.v1",
+            "content": {
+                "summary": "合成当前版本正文",
+                "observed_at": "2026-08-05T11:00:00+08:00",
+            },
+        }
+        revision = domain.intake.request_draft_revision(
+            handoff_id=str(handoff["handoff_id"]),
+            expected_revision=int(handoff["draft_revision"]),
+            instruction="整理为当前版本",
+            operation_id="shared-history-rebind-current",
+        )
+        current_task_id = str(revision["task_id"])
+        current = common.get(task_id=current_task_id)
+        assert current.job_id is not None
+        manager.wait(current.job_id, timeout=5)
+        domain.intake.get_draft_revision(str(revision["request_id"]))
+
+        current_handoff = common.get(task_id=current_task_id).handoffs[0]
+        assert current_handoff.adoption_state == "pending"
+        assert (
+            domain.intake.conversations.common_handoff_id(str(handoff["handoff_id"]))
+            == current_handoff.handoff_id
+        )
+
+        # Conversation refresh reads the original turn task again.  It must not
+        # rebind that historical revision over the current revision handoff.
+        domain.intake.get_conversation(str(conversation["conversation_id"]))
+        domain.intake.conversations.ai_tasks.get(task_id=original_task_id)
+
+        assert common.get(task_id=current_task_id).handoffs[0].adoption_state == "pending"
+        assert (
+            domain.intake.conversations.common_handoff_id(str(handoff["handoff_id"]))
+            == current_handoff.handoff_id
+        )
+    finally:
+        manager.shutdown()
+
+
 def test_draft_rebind_recovers_after_cross_store_projection_interruption(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -456,37 +515,25 @@ def test_legacy_intake_task_recovers_locally_without_a_second_model_send(
     def prepare_as_legacy(*, operation_id: str, request: dict[str, object]):
         source = dict(request["source_ref"])
         contexts = [dict(item) for item in list(request["context_refs"])]
-        prepared = common.prepare(
-            operation_id,
-            PrepareRequest(
-                module="class_teacher",
-                task_kind="class_teacher.intake",
-                source_ref=OpaqueRef(
-                    str(source["kind"]), str(source["id"]), str(source["revision"])
-                ),
-                context_refs=tuple(
-                    OpaqueRef(str(item["kind"]), str(item["id"]), str(item["revision"]))
-                    for item in contexts
-                ),
-                prompt_contract_version=str(request["prompt_contract_version"]),
-                model_destination_fingerprint="a" * 64,
-                return_target=str(request["return_target"]),
+        prepared = common.store.prepare(
+            operation_id=operation_id,
+            module="class_teacher",
+            task_kind="class_teacher.intake",
+            source_ref=OpaqueRef(
+                str(source["kind"]), str(source["id"]), str(source["revision"])
             ),
+            context_refs=tuple(
+                OpaqueRef(str(item["kind"]), str(item["id"]), str(item["revision"]))
+                for item in contexts
+            ),
+            prompt_contract_version=str(request["prompt_contract_version"]),
+            request_fingerprint="b" * 64,
+            model_destination_fingerprint="a" * 64,
+            return_target=str(request["return_target"]),
         )
         return PreparedTask(prepared.task_id, "")
 
     monkeypatch.setattr(domain.intake.conversations.ai_tasks, "prepare", prepare_as_legacy)
-    original_complete = common.store.complete
-    interrupted = False
-
-    def interrupt_complete(*args, **kwargs):
-        nonlocal interrupted
-        if not interrupted:
-            interrupted = True
-            raise RuntimeError("synthetic common projection interruption")
-        return original_complete(*args, **kwargs)
-
-    monkeypatch.setattr(common.store, "complete", interrupt_complete)
     conversation = domain.intake.start_conversation()
     queued = domain.intake.append_turn(
         conversation_id=str(conversation["conversation_id"]),
@@ -497,8 +544,12 @@ def test_legacy_intake_task_recovers_locally_without_a_second_model_send(
     task_id = str(queued["turns"][-1]["task_id"])
     started = common.get(task_id=task_id)
     assert started.task_kind == "class_teacher.intake"
-    assert started.job_id is not None
-    manager.wait(started.job_id, timeout=5)
+    assert started.status == "prepared"
+    queued_task, created = common.store.create_dispatch_job(task_id)
+    assert created is True
+    claimed = common.store.claim(queued_task.task_id)
+    sending = common.store.reserve_send_attempt(claimed.task_id)
+    domain.intake.ai_task_adapter.execute(sending, model_gateway=common.model_gateway)
     assert len(configured.calls) == 1
     manager.shutdown()
 
@@ -516,6 +567,47 @@ def test_legacy_intake_task_recovers_locally_without_a_second_model_send(
         assert len(configured.calls) == 1
     finally:
         restarted_manager.shutdown()
+
+
+def test_legacy_intake_kind_cannot_prepare_or_dispatch_a_new_model_send(tmp_path: Path) -> None:
+    _domain, common, manager, configured = _wired(tmp_path, _triage())
+    request = PrepareRequest(
+        module="class_teacher",
+        task_kind="class_teacher.intake",
+        source_ref=OpaqueRef("conversation", "legacy-source", "1"),
+        context_refs=(OpaqueRef("turn", "legacy-turn", "1"),),
+        prompt_contract_version="class_teacher_triage.v1",
+        model_destination_fingerprint="a" * 64,
+        return_target="class_teacher.home",
+    )
+    try:
+        with pytest.raises(ValueError, match="recovery-only"):
+            common.prepare("shared-legacy-new-prepare", request)
+        assert common.store.find_by_operation("shared-legacy-new-prepare") is None
+
+        persisted = common.store.prepare(
+            operation_id="shared-legacy-new-dispatch",
+            module=request.module,
+            task_kind=request.task_kind,
+            source_ref=request.source_ref,
+            context_refs=request.context_refs,
+            prompt_contract_version=request.prompt_contract_version,
+            request_fingerprint="c" * 64,
+            model_destination_fingerprint=request.model_destination_fingerprint,
+            return_target=request.return_target,
+        )
+        with pytest.raises(ValueError, match="recovery-only"):
+            common.dispatch(
+                "shared-legacy-new-dispatch",
+                prepared_task_id=persisted.task_id,
+            )
+        assert common.get(task_id=persisted.task_id).job_id is None
+        queued, created = common.store.create_dispatch_job(persisted.task_id)
+        assert created is True
+        assert common.run_task(queued.task_id)["status"] == "result_unknown"
+        assert configured.calls == []
+    finally:
+        manager.shutdown()
 
 
 def test_student_target_conflict_rebinds_shared_handoff_and_adopts_once(tmp_path: Path) -> None:

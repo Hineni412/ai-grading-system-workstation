@@ -22,6 +22,9 @@ from backend.public_data import (
     sanitize_public_mapping,
 )
 from backend.teaching_prep.application import TeachingPrepService
+from backend.teaching_prep.application.ai_task_adapter import (
+    bind_adoption_command,
+)
 from backend.teaching_prep.domain.errors import (
     TeachingPrepConflictError,
     TeachingPrepNotFoundError,
@@ -2141,12 +2144,18 @@ def create_router() -> APIRouter:
                 raise TeachingPrepStateError(
                     "workspace AI task coordinator is unavailable"
                 )
-            result = coordinator.adopt(
-                handoff_id,
-                module="teaching_prep",
-                draft_revision=payload.draft_revision,
-                target_revision=payload.target_revision,
+            command = (
+                payload.command.model_dump()
+                if payload.command is not None
+                else None
             )
+            with bind_adoption_command(command):
+                result = coordinator.adopt(
+                    handoff_id,
+                    module="teaching_prep",
+                    draft_revision=payload.draft_revision,
+                    target_revision=payload.target_revision,
+                )
             adopted = service.find_workspace_ai_adoption(result.adoption_id)
             if adopted is None:
                 raise TeachingPrepStateError(

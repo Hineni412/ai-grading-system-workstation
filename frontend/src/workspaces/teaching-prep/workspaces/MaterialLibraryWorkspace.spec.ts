@@ -4,6 +4,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { JobResponse } from '../../../api/jobs'
 import { useJobStore } from '../../../stores/jobs'
+import { useWorkspaceAITaskStore } from '../../shared/ai-tasks/store'
+import * as aiAdoption from '../aiAdoption'
 import {
   teachingPrepCatalogApi,
   type CurriculumEdition,
@@ -139,6 +141,60 @@ afterEach(() => {
 })
 
 describe('MaterialLibraryWorkspace current-material safety', () => {
+  it.each([
+    ['AI proposal', true],
+    ['local proposal', false],
+  ])('routes %s application through the correct adoption path', async (_label, isAI) => {
+    const curriculumItem = curriculum()
+    const semesterItem = semester(curriculumItem.id)
+    const materialItem = material('a'.repeat(32), '当前教材')
+    const materialRecord = record('r'.repeat(32), materialItem)
+    const item = proposal('2'.repeat(32), materialRecord.id)
+    item.payload.mappings[0]!.decision = 'accepted'
+    vi.spyOn(teachingPrepCatalogApi, 'semesterMappingPreflight').mockResolvedValue({
+      semester_id: semesterId, source_state_sha256: 'f'.repeat(64),
+      will_call_model: true, model_available: true, model_label: '合成模型',
+      model_destination_fingerprint: 'f'.repeat(64), material_count: 1,
+      unit_count: 1, existing_lesson_count: 1, creates_initial_tree: false,
+      automatic_retry: false,
+    })
+    const adoption = vi.spyOn(aiAdoption, 'adoptTeachingPrepProposal')
+      .mockResolvedValue(isAI ? ({
+        match: { task: { task_id: 'task-mapping' } },
+        receipt: { object_id: item.id },
+      } as never) : null)
+    if (isAI) {
+      vi.spyOn(useWorkspaceAITaskStore(), 'refresh')
+        .mockRejectedValue(new Error('synthetic task refresh failure'))
+    }
+    const { app, host, catalog } = mountWorkspace()
+    catalog.curricula = [curriculumItem]
+    catalog.semesters = [semesterItem]
+    catalog.selectedCurriculumId = curriculumItem.id
+    catalog.materials = [materialItem]
+    catalog.semesterMaterials = [materialRecord]
+    catalog.selectedMaterialId = materialItem.id
+    await catalog.prepareSemesterMapping([materialRecord.id])
+    catalog.semesterMappingProposals = [item]
+    const legacyApply = vi.spyOn(catalog, 'applySemesterMapping')
+      .mockResolvedValue(undefined)
+    await flush()
+
+    const apply = [...host.querySelectorAll<HTMLButtonElement>('button')]
+      .find(button => button.textContent?.includes('应用全部接受项'))
+    apply?.click()
+    await vi.waitFor(() => expect(adoption).toHaveBeenCalled())
+
+    if (isAI) {
+      expect(legacyApply).not.toHaveBeenCalled()
+      await vi.waitFor(() => {
+        expect(host.textContent).toContain('正式映射已写入且已有回执')
+        expect(host.textContent).not.toContain('正式映射尚未确认')
+      })
+    } else expect(legacyApply).toHaveBeenCalledOnce()
+    app.unmount()
+  })
+
   it('keeps rail, dropdown, title, and preview on the newly selected material', async () => {
     const curriculumItem = curriculum()
     const semesterItem = semester(curriculumItem.id)

@@ -42,7 +42,7 @@ def _request(module: str = "teaching_prep") -> PrepareRequest:
         task_kind=(
             "teaching_prep.lesson_plan"
             if module == "teaching_prep"
-            else "class_teacher.intake"
+            else "class_teacher.intake_triage"
         ),
         source_ref=OpaqueRef(
             kind="lesson" if module == "teaching_prep" else "conversation",

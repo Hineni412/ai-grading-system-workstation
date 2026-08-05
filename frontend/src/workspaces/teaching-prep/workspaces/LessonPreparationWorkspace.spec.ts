@@ -2,7 +2,12 @@ import { createPinia } from 'pinia'
 import { createApp, nextTick, ref } from 'vue'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { teachingPrepWorkbenchApi } from '../api/workbench'
+import * as aiAdoption from '../aiAdoption'
+import {
+  teachingPrepWorkbenchApi,
+  type ExerciseSuggestion,
+} from '../api/workbench'
+import { useWorkspaceAITaskStore } from '../../shared/ai-tasks/store'
 import { teachingPrepWorkbenchKey } from '../workbench/context'
 import LessonPreparationWorkspace from './LessonPreparationWorkspace.vue'
 
@@ -12,6 +17,143 @@ afterEach(() => {
 })
 
 describe('LessonPreparationWorkspace common AI submission', () => {
+  it('keeps exercise finalization visible after refresh, disabled until all decisions are saved', async () => {
+    const suggestion: ExerciseSuggestion = {
+      id: 'suggestion-1', run_id: 'run-current', lesson_node_id: 'lesson-1',
+      source_state_sha256: 'a'.repeat(64), decision: 'pending' as const,
+      original_payload: {
+        material_version_id: 'material-1', question_number: '1',
+        content_label: '候选题', difficulty: 'medium' as const,
+        classroom_use: 'guided_practice', estimated_minutes: 4,
+        teaching_focus: null, reason: '匹配本节目标', uncertainties: [],
+        question_regions: [], answer_regions: [],
+      },
+      teacher_payload: null, rejection_reason: null,
+      exercise_candidate_id: null, revision: 1, created_at: '', updated_at: '',
+    }
+    const run = ref({
+      id: 'run-current', snapshot_id: 'snapshot-1', operation_id: 'operation-1',
+      status: 'succeeded' as const, error_code: null, model_call_count: 1,
+      created_at: '', updated_at: '', finished_at: '', suggestions: [suggestion],
+    })
+    const fake = {
+      stage: ref('materials'), panel: ref('exercises'), pane: ref('source'),
+      dirtyReason: ref(null), referencePreflight: ref(null), activeSuggestionRun: run,
+      catalog: {
+        selectedLessonId: 'lesson-1', selectedLesson: { id: 'lesson-1', revision: 7 },
+        resourcePacks: [], selectedResourcePackId: null, lessonDrafts: [],
+        selectedLessonDraftId: null, teachingPreferences: { payload: {} },
+        saveState: 'idle',
+      },
+      setDirty: vi.fn(), refreshCurrentWorkspace: vi.fn(), openPanel: vi.fn(),
+      openStage: vi.fn(), watchSuggestionRun: vi.fn(), setPane: vi.fn(),
+    }
+    vi.spyOn(aiAdoption, 'findTeachingPrepAdoption').mockReturnValue({
+      task: { task_id: 'task-exercise' }, handoff: { handoff_id: 'handoff-exercise' },
+    } as never)
+    const adopt = vi.spyOn(aiAdoption, 'adoptTeachingPrepProposal')
+      .mockResolvedValue({
+        match: { task: { task_id: 'task-exercise' } },
+        receipt: { object_id: 'run-current' },
+      } as never)
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const app = createApp(LessonPreparationWorkspace)
+    const pinia = createPinia()
+    vi.spyOn(useWorkspaceAITaskStore(pinia), 'refresh')
+      .mockRejectedValue(new Error('synthetic task refresh failure'))
+    app.use(pinia)
+    app.provide(teachingPrepWorkbenchKey, fake as never)
+    app.mount(host)
+    await nextTick()
+
+    const finalize = [...host.querySelectorAll<HTMLButtonElement>('button')]
+      .find(item => item.textContent?.includes('确认本轮候选题决定'))
+    expect(finalize).toBeDefined()
+    expect(finalize?.disabled).toBe(true)
+
+    run.value = {
+      ...run.value,
+      suggestions: [{ ...suggestion, decision: 'accepted' as const }],
+    }
+    await nextTick()
+    expect(finalize?.disabled).toBe(false)
+    finalize?.click()
+    await vi.waitFor(() => expect(adopt).toHaveBeenCalledWith(
+      expect.any(Array),
+      'teaching_prep.exercise_suggestions',
+      'run-current',
+      { kind: 'finalize_exercise_suggestions' },
+    ))
+    await vi.waitFor(() => {
+      expect(host.textContent).toContain('本轮候选题决定已确认并形成回执')
+      expect(host.textContent).not.toContain('本轮确认尚未完成')
+    })
+    app.unmount()
+  })
+
+  it.each([
+    ['AI proposal', true],
+    ['local draft', false],
+  ])('routes %s confirmation through the correct adoption path', async (_label, isAI) => {
+    const draft = {
+      id: 'draft-current', resource_pack_id: 'pack-1', version_number: 3,
+      based_on_draft_id: null, operation_id: null, source_kind: isAI ? 'model' : 'local',
+      model_label: null, status: 'draft', capacity: {}, created_at: '',
+      payload: {
+        knowledge_objectives: [{ text: '理解勾股定理', citations: [] }],
+        anticipated_difficulties: [],
+        lesson_flow: [{ phase: 'teach', title: '新授', suggested_minutes: 20, citations: [] }],
+        exercise_recommendations: [],
+      },
+    }
+    const reviseLessonDraft = vi.fn()
+    const fake = {
+      stage: ref('plan'), panel: ref('sources'), pane: ref('source'),
+      dirtyReason: ref(null), referencePreflight: ref(null), activeSuggestionRun: ref(null),
+      catalog: {
+        selectedLessonId: 'lesson-1', selectedLesson: { id: 'lesson-1', revision: 7 },
+        resourcePacks: [{ id: 'pack-1', version_number: 1 }], selectedResourcePackId: 'pack-1',
+        lessonDrafts: [draft], selectedLessonDraftId: draft.id,
+        teachingPreferences: { payload: {} }, saveState: 'idle',
+        reviseLessonDraft,
+      },
+      setDirty: vi.fn(), refreshCurrentWorkspace: vi.fn(), openPanel: vi.fn(),
+      openStage: vi.fn(), watchSuggestionRun: vi.fn(), setPane: vi.fn(),
+    }
+    const adoption = vi.spyOn(aiAdoption, 'adoptTeachingPrepProposal')
+      .mockResolvedValue(isAI ? ({
+        match: { task: { task_id: 'task-lesson' } },
+        receipt: { object_id: 'teacher-version' },
+      } as never) : null)
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const app = createApp(LessonPreparationWorkspace)
+    const pinia = createPinia()
+    if (isAI) {
+      vi.spyOn(useWorkspaceAITaskStore(pinia), 'refresh')
+        .mockRejectedValue(new Error('synthetic task refresh failure'))
+    }
+    app.use(pinia)
+    app.provide(teachingPrepWorkbenchKey, fake as never)
+    app.mount(host)
+    await nextTick()
+
+    const button = [...host.querySelectorAll<HTMLButtonElement>('button')]
+      .find(item => item.textContent?.includes('保存并确认课堂草稿'))
+    button?.click()
+    await vi.waitFor(() => expect(adoption).toHaveBeenCalled())
+
+    if (isAI) {
+      expect(reviseLessonDraft).not.toHaveBeenCalled()
+      await vi.waitFor(() => {
+        expect(host.textContent).toContain('课堂草稿已确认并生成采用回执')
+        expect(host.textContent).not.toContain('课堂草稿尚未确认')
+      })
+    } else expect(reviseLessonDraft).toHaveBeenCalledOnce()
+    app.unmount()
+  })
+
   it('does not freeze or dispatch an old reference draft when saving the visible selection fails', async () => {
     const lessonId = 'l'.repeat(32)
     const preflight = {

@@ -511,6 +511,43 @@ def test_manual_routing_after_failure_creates_no_second_ai_task(tmp_path: Path) 
     assert len(port.prepare_calls) == 1
     assert len(port.dispatch_calls) == 1
 
+    handoff = service.intake.open_handoff(str(routed["handoffs"][0]["handoff_id"]))
+    assert handoff["content"]["template_key"] == ""
+    with pytest.raises(VaultError, match="选择与实际情况相符"):
+        service.intake.adopt_handoff(
+            token="",
+            handoff_id=str(handoff["handoff_id"]),
+            draft_revision=int(handoff["draft_revision"]),
+            target_revision="new",
+            operation_id="manual-sop-without-template",
+        )
+    failed = service.intake.open_handoff(str(handoff["handoff_id"]))
+    service.intake.adoption.release_uncommitted(
+        handoff_id=str(failed["handoff_id"]),
+        adoption_id=str(failed["adoption_id"]),
+        target_revision="new",
+    )
+    corrected = service.intake.update_draft(
+        handoff_id=str(handoff["handoff_id"]),
+        expected_revision=int(handoff["draft_revision"]),
+        content={
+            **dict(handoff["content"]),
+            "template_key": "baseline.student_injury",
+            "participant_refs": ["synthetic-injured-student"],
+        },
+    )
+    receipt = service.intake.adopt_handoff(
+        token="",
+        handoff_id=str(corrected["handoff_id"]),
+        draft_revision=int(corrected["draft_revision"]),
+        target_revision="new",
+        operation_id="manual-sop-with-injury-template",
+    )
+    affair = service.sop.get_affair(
+        token="", affair_id=str(receipt["formal_object_id"])
+    )
+    assert affair["template_key"] == "baseline.student_injury"
+
 
 def test_manual_route_cannot_race_a_running_task_or_downgrade_a_saved_result(tmp_path: Path) -> None:
     service, _ = _service(tmp_path)
@@ -694,6 +731,98 @@ def test_plan_receipt_recovers_calendar_projection_without_duplicate_plan(
         assert connection.execute("SELECT COUNT(*) FROM work_plans").fetchone()[0] == 1
         assert connection.execute("SELECT COUNT(*) FROM handoff_adoption_receipts").fetchone()[0] == 1
     assert len(service.work.read(view="all", anchor="2026-08-15")["nodes"]) == 2
+
+
+def test_plan_validation_retry_uses_the_revised_deadline_in_plan_and_calendar(
+    tmp_path: Path,
+) -> None:
+    service, _ = _service(tmp_path)
+    _conversation, turn = _conversation_with_turn(
+        service,
+        "conversation-plan-validation-retry",
+    )
+    ready = service.intake.apply_triage_result(
+        turn_id=str(turn["turn_id"]),
+        task_id=str(turn["task_id"]),
+        payload={
+            "contract_version": "class_teacher_triage.v1",
+            "assistant_message": "已整理为计划草稿。",
+            "clarification_questions": [],
+            "work_items": [_work_item(
+                "plan-validation-retry-001",
+                domain="activities_culture",
+                mode="plan_calendar",
+                intent="plan",
+                draft={
+                    "summary": "合成计划失败后修订",
+                    "plan_title": "合成计划",
+                    "final_deadline": "2026-08-20T16:00:00+08:00",
+                    "actions": [{
+                        "draft_action_id": "action-1",
+                        "title": "待补日期行动",
+                        "details": "保留这段行动说明",
+                        "due_at": "",
+                        "depends_on_draft_action_ids": [],
+                    }],
+                },
+            )],
+        },
+    )
+    handoff = ready["handoffs"][0]
+    with pytest.raises(VaultError, match="行动缺少截止时间"):
+        service.intake.adopt_handoff(
+            token="",
+            handoff_id=str(handoff["handoff_id"]),
+            draft_revision=int(handoff["draft_revision"]),
+            target_revision="new",
+            operation_id="ignored-plan-validation-first",
+        )
+    failed = service.intake.open_handoff(str(handoff["handoff_id"]))
+    service.intake.adoption.release_uncommitted(
+        handoff_id=str(failed["handoff_id"]),
+        adoption_id=str(failed["adoption_id"]),
+        target_revision="new",
+    )
+
+    revised = service.intake.update_draft(
+        handoff_id=str(handoff["handoff_id"]),
+        expected_revision=int(handoff["draft_revision"]),
+        content={
+            "summary": "合成计划失败后修订",
+            "plan_title": "合成计划",
+            "final_deadline": "2026-08-25T16:00:00+08:00",
+            "actions": [{
+                "draft_action_id": "action-1",
+                "title": "已补日期行动",
+                "details": "保留这段行动说明",
+                "due_at": "2026-08-23T16:00:00+08:00",
+                "depends_on_draft_action_ids": [],
+            }],
+        },
+    )
+    receipt = service.intake.adopt_handoff(
+        token="",
+        handoff_id=str(revised["handoff_id"]),
+        draft_revision=int(revised["draft_revision"]),
+        target_revision="new",
+        operation_id="ignored-plan-validation-second",
+    )
+
+    with closing(service.database.connect()) as connection:
+        row = connection.execute(
+            "SELECT payload_object_id FROM work_plans WHERE plan_id=?",
+            (str(receipt["formal_object_id"]),),
+        ).fetchone()
+        assert row is not None
+        payload, _revision = service.repository.get(
+            connection,
+            vmk=service.session_key(""),
+            object_id=str(row["payload_object_id"]),
+        )
+    assert str(payload["final_deadline"]).startswith("2026-08-25")
+    calendar = service.work.read(view="all", anchor="2026-08-25")
+    goal = next(item for item in calendar["nodes"] if item["kind"] == "goal")
+    assert goal["due_date"] == "2026-08-25"
 
 
 def test_sop_adoption_creates_unfinished_affair_without_decision_or_closure(tmp_path: Path) -> None:

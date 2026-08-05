@@ -5,6 +5,10 @@ import type { ExerciseRegionInput } from '../api/catalog'
 import type { ExerciseSuggestion, ReferenceSelectionPayload } from '../api/workbench'
 import { teachingPrepWorkbenchApi } from '../api/workbench'
 import { useWorkspaceAITaskStore } from '../../shared/ai-tasks/store'
+import {
+  adoptTeachingPrepProposal,
+  findTeachingPrepAdoption,
+} from '../aiAdoption'
 import TeachingPrepDocumentWorkspace from '../components/TeachingPrepDocumentWorkspace.vue'
 import TeachingPrepStickyActions from '../components/TeachingPrepStickyActions.vue'
 import { useTeachingPrepWorkbenchContext } from '../workbench/context'
@@ -41,6 +45,10 @@ const suggestions = computed(() => workbench.activeSuggestionRun.value?.suggesti
 const acceptedSuggestions = computed(() => suggestions.value.filter(item => (
   item.decision === 'accepted' || item.decision === 'modified'
 )))
+const allSuggestionsDecided = computed(() => (
+  suggestions.value.length > 0
+  && suggestions.value.every(item => item.decision !== 'pending')
+))
 const currentLessonTask = (kind: string) => aiTasks.orderedTasks.find(task => (
   task.module === 'teaching_prep'
   && task.task_kind === kind
@@ -48,6 +56,14 @@ const currentLessonTask = (kind: string) => aiTasks.orderedTasks.find(task => (
   && task.source_ref.id === workbench.catalog.selectedLessonId
 )) ?? null
 const exerciseTask = computed(() => currentLessonTask('teaching_prep.exercise_suggestions'))
+const exerciseAdoptionPending = computed(() => {
+  const runId = workbench.activeSuggestionRun.value?.id
+  return Boolean(runId && findTeachingPrepAdoption(
+    aiTasks.orderedTasks,
+    'teaching_prep.exercise_suggestions',
+    runId,
+  ))
+})
 const selectedPack = computed(() => workbench.catalog.resourcePacks.find(
   item => item.id === workbench.catalog.selectedResourcePackId,
 ) ?? workbench.catalog.resourcePacks[0] ?? null)
@@ -219,6 +235,32 @@ async function decideSuggestion(
   }
 }
 
+async function finalizeSuggestions(): Promise<void> {
+  const run = workbench.activeSuggestionRun.value
+  if (!run || !allSuggestionsDecided.value) return
+  try {
+    const adopted = await adoptTeachingPrepProposal(
+      aiTasks.orderedTasks,
+      'teaching_prep.exercise_suggestions',
+      run.id,
+      { kind: 'finalize_exercise_suggestions' },
+    )
+    if (!adopted) {
+      message.value = '这不是 AI 交接结果，无需生成采用回执。'
+      return
+    }
+    message.value = '本轮候选题决定已确认，AI 任务已形成采用回执。'
+    const [taskRefresh] = await Promise.allSettled([
+      aiTasks.refresh(adopted.match.task.task_id),
+    ])
+    if (taskRefresh.status === 'rejected') {
+      message.value = '本轮候选题决定已确认并形成回执；任务状态暂未刷新，请刷新页面。'
+    }
+  } catch {
+    message.value = '候选题决定已保留，但本轮确认尚未完成；请直接重试确认，不会重复生成候选。'
+  }
+}
+
 function addManualRegion(): void {
   if (!manualForm.unitId || manualForm.x1 <= manualForm.x0 || manualForm.y1 <= manualForm.y0) {
     message.value = '人工区域边界无效：结束位置必须大于开始位置。'
@@ -349,9 +391,32 @@ async function confirmDraft(): Promise<void> {
     ...item,
     suggested_minutes: editedMinutes[`flow-${index}`] ?? item.suggested_minutes,
   }))
-  await workbench.catalog.reviseLessonDraft(selectedDraft.value, payload, true)
-  workbench.setDirty(null)
-  message.value = '课堂草稿已保存为教师确认版本，可以进入逐页课件计划。'
+  try {
+    const adopted = await adoptTeachingPrepProposal(
+      aiTasks.orderedTasks,
+      'teaching_prep.lesson_plan',
+      selectedDraft.value.id,
+      { kind: 'confirm_lesson_draft', payload },
+    )
+    if (adopted) {
+      workbench.setDirty(null)
+      message.value = '课堂草稿已确认并生成采用回执，可以进入逐页课件计划。'
+      const refreshes = await Promise.allSettled([
+        workbench.refreshCurrentWorkspace(),
+        aiTasks.refresh(adopted.match.task.task_id),
+      ])
+      if (refreshes.some(result => result.status === 'rejected')) {
+        message.value = '课堂草稿已确认并生成采用回执；页面状态暂未刷新，请刷新页面。'
+      }
+      return
+    } else {
+      await workbench.catalog.reviseLessonDraft(selectedDraft.value, payload, true)
+    }
+    workbench.setDirty(null)
+    message.value = '课堂草稿已保存为教师确认版本，可以进入逐页课件计划。'
+  } catch {
+    message.value = '课堂草稿尚未确认；页面修改仍保留，请重试，不会重复生成 AI 方案。'
+  }
 }
 
 async function createSlidePlan(): Promise<void> {
@@ -493,6 +558,15 @@ watch(
           </div>
         </article>
       </div>
+      <button
+        v-if="exerciseAdoptionPending"
+        class="tp-button tp-button--primary"
+        type="button"
+        :disabled="!allSuggestionsDecided"
+        @click="finalizeSuggestions"
+      >
+        确认本轮候选题决定
+      </button>
       <button class="tp-button tp-button--secondary" type="button" @click="showManualEditor = !showManualEditor">
         {{ showManualEditor ? '收起人工兜底' : '人工框选 / 键盘录入区域' }}
       </button>
