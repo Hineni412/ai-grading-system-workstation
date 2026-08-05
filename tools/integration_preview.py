@@ -26,6 +26,13 @@ DIST_DIR = FRONTEND_DIR / "dist"
 STAMP_PATH = DIST_DIR / "integration-preview-build.json"
 EXPECTED_PREVIEW_INSTANCE_ID = "integration-preview"
 EXPECTED_LABELS = ("备课工作台", "班主任工作台")
+LOCAL_ARTIFACT_PATHS = (
+    ".p35t/**",
+    ".codex_artifacts/**",
+    ".codex-review/**",
+    ".cindy-worktrees/**",
+    "论文修订输出/**",
+)
 
 
 class PreviewGuardError(RuntimeError):
@@ -102,6 +109,10 @@ def _code_changes() -> str:
         "--",
         ".",
         ":(exclude)user_data/**",
+        *(
+            f":(exclude){path}"
+            for path in LOCAL_ARTIFACT_PATHS
+        ),
     )
 
 
@@ -118,11 +129,22 @@ def _assert_preview_workspace() -> tuple[str, str]:
     return branch, preview_head
 
 
+def _primary_worktree_root() -> Path:
+    common_dir = Path(_git("rev-parse", "--git-common-dir"))
+    if not common_dir.is_absolute():
+        common_dir = PROJECT_ROOT / common_dir
+    return common_dir.resolve().parent
+
+
 def _assert_local_data_boundary() -> None:
     local_data = PROJECT_ROOT / "user_data"
-    repository_root = PROJECT_ROOT.parents[1]
+    repository_root = _primary_worktree_root()
     real_data = repository_root / "user_data"
-    if local_data.exists() and local_data.resolve() == real_data.resolve():
+    if (
+        PROJECT_ROOT.resolve() != repository_root.resolve()
+        and local_data.exists()
+        and local_data.resolve() == real_data.resolve()
+    ):
         raise PreviewGuardError("集成预览不能连接根目录的真实 user_data。")
 
     expected_paths = {

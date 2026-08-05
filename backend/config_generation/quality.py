@@ -408,7 +408,7 @@ def collect_generated_config_quality_issues(
             step_signatures = {
                 (
                     str(step.get("core_goal") or "").strip(),
-                    tuple(_string_list(step.get("required_elements"))),
+                    frozenset(_string_list(step.get("required_elements"))),
                 )
                 for step in steps
                 if str(step.get("core_goal") or "").strip()

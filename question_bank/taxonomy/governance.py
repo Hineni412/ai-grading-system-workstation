@@ -1290,7 +1290,7 @@ class TaxonomyGovernance:
         catalog = (
             self._catalog_for_revision(knowledge_catalog_revision)
             if knowledge_catalog_revision is not None
-            else self._catalog
+            else self._prompt_catalog()
         )
         state = self._read_state(catalog=catalog)
         terms, _, _ = self._combined_terms(state, catalog=catalog)

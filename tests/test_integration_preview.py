@@ -51,6 +51,18 @@ def test_code_changes_ignore_preview_data_but_not_source(
     database.write_text("runtime change", encoding="utf-8")
     assert preview._code_changes() == ""
 
+    for artifact_root in (
+        ".p35t",
+        ".codex_artifacts",
+        ".codex-review",
+        ".cindy-worktrees",
+        "论文修订输出",
+    ):
+        artifact = tmp_path / artifact_root / "local-output.txt"
+        artifact.parent.mkdir(parents=True)
+        artifact.write_text("local artifact", encoding="utf-8")
+    assert preview._code_changes() == ""
+
     source.write_text("source change", encoding="utf-8")
     assert "app.py" in preview._code_changes()
 
@@ -293,6 +305,7 @@ def test_preview_guard_rejects_external_runtime_paths(
     project_root = tmp_path / ".worktrees" / "preview"
     project_root.mkdir(parents=True)
     monkeypatch.setattr(preview, "PROJECT_ROOT", project_root)
+    monkeypatch.setattr(preview, "_primary_worktree_root", lambda: tmp_path)
     for environment_name in (
         "AI_GRADING_WORKTREE_DATA_DIR",
         "AI_GRADING_DATA_DIR",
@@ -314,6 +327,7 @@ def test_preview_guard_accepts_its_forced_isolated_runtime_paths(
     local_data = project_root / "user_data"
     project_root.mkdir(parents=True)
     monkeypatch.setattr(preview, "PROJECT_ROOT", project_root)
+    monkeypatch.setattr(preview, "_primary_worktree_root", lambda: tmp_path)
     monkeypatch.setenv("AI_GRADING_WORKTREE_DATA_DIR", str(local_data))
     monkeypatch.setenv("AI_GRADING_DATA_DIR", str(local_data))
     monkeypatch.setenv(
@@ -326,6 +340,37 @@ def test_preview_guard_accepts_its_forced_isolated_runtime_paths(
     )
 
     preview._assert_local_data_boundary()
+
+
+def test_preview_guard_accepts_the_primary_worktree_runtime_paths(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    local_data = tmp_path / "user_data"
+    monkeypatch.setattr(preview, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(preview, "_primary_worktree_root", lambda: tmp_path)
+    monkeypatch.setenv("AI_GRADING_WORKTREE_DATA_DIR", str(local_data))
+    monkeypatch.setenv("AI_GRADING_DATA_DIR", str(local_data))
+    monkeypatch.setenv(
+        "AI_GRADING_OPS_STATE_DIR",
+        str(local_data / "runtime_state" / "ops"),
+    )
+    monkeypatch.setenv(
+        "AI_GRADING_API_PROFILES_PATH",
+        str(local_data / "config" / "api_profiles.json"),
+    )
+
+    preview._assert_local_data_boundary()
+
+
+def test_primary_worktree_root_resolves_a_relative_common_git_directory(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    monkeypatch.setattr(preview, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(preview, "_git", lambda *_args: ".git")
+
+    assert preview._primary_worktree_root() == tmp_path
 
 
 def test_git_executable_falls_back_to_the_standard_windows_install(
