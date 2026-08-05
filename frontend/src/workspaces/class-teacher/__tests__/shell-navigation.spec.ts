@@ -36,7 +36,7 @@ async function mountAt(path: string) {
 }
 
 describe('class teacher shell navigation', () => {
-  it('canonicalizes unknown and sensitive query values to today', async () => {
+  it('canonicalizes unknown and body-like query values to the home desk', async () => {
     const { router } = await mountAt(
       '/class-teacher?surface=students&panel=support&subject_id=secret&search=student',
     )
@@ -44,11 +44,11 @@ describe('class teacher shell navigation', () => {
     await new Promise((resolve) => setTimeout(resolve, 0))
     await nextTick()
 
-    expect(router.currentRoute.value.query).toEqual({ surface: 'today' })
+    expect(router.currentRoute.value.query).toEqual({ surface: 'home' })
   })
 
   it('keeps only whitelisted ordinary route state and supports history', async () => {
-    const { router, routeState } = await mountAt('/class-teacher?surface=today')
+    const { router, routeState } = await mountAt('/class-teacher?surface=home')
 
     await routeState.navigate({ surface: 'calendar', range: 'week', week: '2026-08-03' })
     await routeState.navigate({ surface: 'students', panel: 'academic' })
@@ -63,15 +63,22 @@ describe('class teacher shell navigation', () => {
     })
   })
 
-  it('keeps only an opaque draft id on the focused affair route', async () => {
-    const draftId = 'a'.repeat(32)
-    const { router, routeState } = await mountAt('/class-teacher?surface=today')
+  it('rejects the removed legacy draft route instead of restoring old body workflows', async () => {
+    const { router } = await mountAt(`/class-teacher?surface=affairs&draft=${'a'.repeat(32)}`)
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(router.currentRoute.value.query).toEqual({ surface: 'home' })
+  })
 
-    await routeState.navigate({ surface: 'affairs', draftId })
-    expect(router.currentRoute.value.query).toEqual({ surface: 'affairs', draft: draftId })
-    expect(routeState.state.value.draftId).toBe(draftId)
+  it('keeps only opaque conversation and handoff references', async () => {
+    const conversation = 'conversation-1234'
+    const turn = 'turn-12345678'
+    const workItem = 'work-item-1234'
+    const handoff = 'handoff-12345'
+    const { router } = await mountAt(`/class-teacher?surface=home&conversation=${conversation}&turn=${turn}&work_item=${workItem}&handoff=${handoff}`)
 
-    await routeState.navigate({ surface: 'today' })
-    expect(router.currentRoute.value.query).toEqual({ surface: 'today' })
+    expect(router.currentRoute.value.query).toEqual({
+      surface: 'home', conversation, turn, work_item: workItem, handoff,
+    })
+    expect(String(router.currentRoute.value.fullPath)).not.toContain('学生正文')
   })
 })

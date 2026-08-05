@@ -410,6 +410,7 @@ def test_first_follow_up_becomes_broad_draft_and_unknown_result_does_not_retry(t
         },
     ],
 )
+@pytest.mark.skip(reason="B-UI-R7 retired the synchronous WorkGraph model route")
 def test_sensitive_or_decision_making_model_output_is_rejected(
     tmp_path: Path,
     result: dict[str, object],
@@ -664,7 +665,7 @@ def test_revision_sensitive_text_and_projection_safety_are_preserved(tmp_path: P
     assert payload["title"] == "学生事项待跟进"
 
 
-def test_work_preview_api_is_available_while_sensitive_vault_is_locked(
+def test_legacy_work_model_preview_api_is_retired_while_calendar_read_remains(
     tmp_path: Path,
 ) -> None:
     service = VaultService(_context(tmp_path))
@@ -682,8 +683,6 @@ def test_work_preview_api_is_available_while_sensitive_vault_is_locked(
 
     assert empty.status_code == 200
     assert empty.json()["nodes"] == []
-    assert previewed.status_code == 200
-    assert previewed.json()["model_enabled"] is False
-    assert previewed.json()["physical_request_count"] == 0
+    assert previewed.status_code == 404
     assert service.status()["initialized"] is False
     assert not service.ordinary_database.exists

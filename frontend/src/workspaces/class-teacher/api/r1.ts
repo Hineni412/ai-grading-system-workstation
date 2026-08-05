@@ -68,14 +68,8 @@ export interface ExistingRosterStudent {
   class_label: string
   subject_id: string | null
   roster_state: 'available' | 'active' | 'historical'
-}
-
-export interface CurrentRosterStudent {
-  source_key: string
-  subject_id: string
-  display_name: string
-  class_label: string
-  state: 'active' | 'historical'
+  opaque_ref: string
+  student_revision: string
 }
 
 export interface AcademicAnalysis {
@@ -100,9 +94,6 @@ export interface AcademicSeries { subject_name: string; points: AcademicPoint[];
 export interface RankChangePair { subject_name: string; from: number; to: number }
 export interface RelativeSubjectSignal { subject_name: string; signal: string; eligible_session_count: number }
 export interface AttentionCard { attention_card_id: string; revision: number; state: string; observed_fact: string; evidence_sufficiency: string }
-export interface SupportReviewPreview { review_id: string; preview_id: string; fingerprint: string; exact_payload: JsonRecord }
-export interface SupportReviewTurn { model_result?: { operation_id?: string; proposal?: { summary?: string }; draft_text?: string } }
-export interface SupportReview { review_id: string; base_revision_number: number; state: string; model_operation_id?: string | null; turns?: SupportReviewTurn[] }
 
 export const affairR1Api = {
   list(token: string) {
@@ -146,12 +137,6 @@ export const studentR1Api = {
     if (input.pageSize) query.set('page_size', String(input.pageSize))
     return apiClient.request(`/api/class-teacher/support/roster-source?${query}`, { headers: readHeaders(token), decode: (value) => record(value) as unknown as { items: ExistingRosterStudent[]; classes: string[]; source_revision: string; total: number; cursor: string | null } })
   },
-  currentRoster(token: string) {
-    return apiClient.request('/api/class-teacher/support/current-roster', { headers: readHeaders(token), decode: (value) => record(value) as unknown as { items: CurrentRosterStudent[]; active_count: number; historical_count: number; replayed: boolean } })
-  },
-  replaceCurrentRoster(token: string, input: { expectedSourceRevision: string; classLabel: string; q?: string; operationId?: string }) {
-    return apiClient.request('/api/class-teacher/support/current-roster/replace', { method: 'POST', headers: writeHeaders(token), body: { operation_id: input.operationId || operationId(), expected_source_revision: input.expectedSourceRevision, class_label: input.classLabel, q: input.q || null }, decode: (value) => record(value) as unknown as { items: CurrentRosterStudent[]; active_count: number; historical_count: number; replayed: boolean } })
-  },
   directory(token: string, input: { q?: string; classLabel?: string; state?: string; rosterState?: string; sort?: string; cursor?: string; pageSize?: number } = {}) {
     const query = new URLSearchParams()
     if (input.q) query.set('q', input.q)
@@ -170,33 +155,6 @@ export const studentR1Api = {
   },
   records(token: string, subjectId: string) {
     return apiClient.request(`/api/class-teacher/support/subjects/${subjectId}/records`, { headers: readHeaders(token), decode: (value) => record(value).items as JsonRecord[] })
-  },
-  prepareReview(token: string, recordId: string, expectedRevision: number, supplement: string) {
-    return apiClient.request(`/api/class-teacher/support/records/${recordId}/ai-reviews/previews`, {
-      method: 'POST', headers: writeHeaders(token), body: { expected_revision: expectedRevision, teacher_supplement: supplement || null }, decode: (value) => record(value) as unknown as SupportReviewPreview,
-    })
-  },
-  confirmReview(token: string, preview: SupportReviewPreview) {
-    return apiClient.request(`/api/class-teacher/support/ai-reviews/${preview.review_id}/previews/${preview.preview_id}/confirm`, {
-      method: 'POST', headers: writeHeaders(token), body: { fingerprint: preview.fingerprint, operation_id: operationId() }, decode: (value) => record(value) as unknown as SupportReview, timeoutMs: 125_000,
-    })
-  },
-  reviewOperation(token: string, operationId: string) {
-    return apiClient.request(`/api/class-teacher/support/ai-reviews/operations/${operationId}`, { headers: readHeaders(token), decode: (value) => record(value) as unknown as SupportReview })
-  },
-  applyReview(token: string, review: SupportReview, summary: string) {
-    const turn = review.turns?.[review.turns.length - 1]
-    return apiClient.request(`/api/class-teacher/support/ai-reviews/${review.review_id}/apply`, {
-      method: 'POST', headers: writeHeaders(token), body: {
-        model_operation_id: turn?.model_result?.operation_id,
-        expected_revision: review.base_revision_number,
-        teacher_result: { summary, strengths: [], needs: [], open_questions: [] },
-        operation_id: operationId(),
-      }, decode: record,
-    })
-  },
-  rejectReview(token: string, reviewId: string) {
-    return apiClient.request(`/api/class-teacher/support/ai-reviews/${reviewId}/reject`, { method: 'POST', headers: writeHeaders(token), body: { operation_id: operationId() }, decode: record })
   },
   academic(token: string, subjectId: string, input: { timeRange?: string; comparisonSeries?: string; subjectName?: string; comparableOnly?: boolean } = {}) {
     const query = new URLSearchParams()

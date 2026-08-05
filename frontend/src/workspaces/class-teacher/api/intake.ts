@@ -1,0 +1,332 @@
+import { apiClient } from '../../../api/client'
+
+export type IntakeDomain = 'student_growth' | 'student_support' | 'conflict_safety' | 'class_operations' | 'activities_culture' | 'school_coordination'
+export type HandlingMode = 'record' | 'plan_calendar' | 'sop'
+
+export interface HomeroomPreference {
+  homeroom_class: string | null
+  revision: number
+  classes: string[]
+  source_revision: string
+  updated_at?: string
+}
+
+export interface IntakeTurn {
+  turn_id: string
+  conversation_id: string
+  sequence: number
+  operation_id: string
+  teacher_message: string
+  assistant_message: string | null
+  clarification_questions: string[]
+  task_id: string | null
+  task_state: string
+  created_at: string
+  updated_at: string
+}
+
+export interface IntakeHandoffSummary {
+  handoff_id: string
+  draft_id: string
+  work_item_id: string
+  turn_id: string
+  domain: IntakeDomain
+  handling_mode: HandlingMode
+  intent: string
+  destination_key: string
+  draft_revision: number
+  adoption_state: 'pending' | 'opened' | 'adoption_started' | 'adopted' | 'discarded' | 'stale'
+  missing_fields: string[]
+  subject_ref_count: number
+  auto_open_allowed: boolean
+}
+
+export interface IntakeConversation {
+  conversation_id: string
+  revision: number
+  state: string
+  homeroom_class: string | null
+  created_at: string
+  updated_at: string
+  turns: IntakeTurn[]
+  handoffs: IntakeHandoffSummary[]
+}
+
+export interface IntakeConversationSummary {
+  conversation_id: string
+  revision: number
+  state: string
+  homeroom_class: string | null
+  first_message: string | null
+  pending_count: number
+  updated_at: string
+}
+
+export interface HandoffDraft {
+  contract_version: 'teacher_workspace_handoff.v1'
+  handoff_id: string
+  work_item_id: string
+  conversation_id: string
+  turn_id: string
+  draft_id: string
+  draft_revision: number
+  domain: IntakeDomain
+  handling_mode: HandlingMode
+  intent: string
+  destination_key: string
+  adoption_id: string
+  adoption_state: string
+  content: Record<string, unknown>
+  subject_refs: Array<{ kind: string; id: string; revision: string }>
+  missing_fields: string[]
+  return_context: { destination_key: string; focus_ref: string }
+}
+
+export interface DraftRevisionSnapshot {
+  request_id: string
+  handoff_id: string
+  source_draft_revision: number
+  task_id: string | null
+  task_state: string
+  created_at: string
+  updated_at: string
+}
+
+const domains = new Set<IntakeDomain>(['student_growth', 'student_support', 'conflict_safety', 'class_operations', 'activities_culture', 'school_coordination'])
+const modes = new Set<HandlingMode>(['record', 'plan_calendar', 'sop'])
+const destinations = new Set([
+  'class_teacher.student.record',
+  'class_teacher.affair.record',
+  'class_teacher.plan.calendar',
+  'class_teacher.affair.sop',
+])
+const adoptionStates = new Set(['pending', 'opened', 'adoption_started', 'adopted', 'discarded', 'stale'])
+
+function invalid(): never {
+  throw new Error('班主任工作台返回了无法识别的数据')
+}
+
+function record(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return invalid()
+  return value as Record<string, unknown>
+}
+
+function text(value: unknown): string {
+  if (typeof value !== 'string') return invalid()
+  return value
+}
+
+function integer(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isInteger(value)) return invalid()
+  return value
+}
+
+function list(value: unknown): unknown[] {
+  if (!Array.isArray(value)) return invalid()
+  return value
+}
+
+function domain(value: unknown): IntakeDomain {
+  const candidate = text(value) as IntakeDomain
+  if (!domains.has(candidate)) return invalid()
+  return candidate
+}
+
+function mode(value: unknown): HandlingMode {
+  const candidate = text(value) as HandlingMode
+  if (!modes.has(candidate)) return invalid()
+  return candidate
+}
+
+function decodeSubjectRef(value: unknown): { kind: string; id: string; revision: string } {
+  const item = record(value)
+  if (item.kind !== 'student') return invalid()
+  return { kind: 'student', id: text(item.id), revision: text(item.revision) }
+}
+
+function decodeTurn(value: unknown): IntakeTurn {
+  const item = record(value)
+  return {
+    turn_id: text(item.turn_id), conversation_id: text(item.conversation_id),
+    sequence: integer(item.sequence), operation_id: text(item.operation_id),
+    teacher_message: text(item.teacher_message),
+    assistant_message: item.assistant_message === null ? null : text(item.assistant_message),
+    clarification_questions: list(item.clarification_questions).map(text),
+    task_id: item.task_id === null ? null : text(item.task_id), task_state: text(item.task_state),
+    created_at: text(item.created_at), updated_at: text(item.updated_at),
+  }
+}
+
+function decodeHandoffSummary(value: unknown): IntakeHandoffSummary {
+  const item = record(value)
+  const destination = text(item.destination_key)
+  const adoptionState = text(item.adoption_state)
+  if (!destinations.has(destination) || !adoptionStates.has(adoptionState)) return invalid()
+  if (typeof item.auto_open_allowed !== 'boolean') return invalid()
+  return {
+    handoff_id: text(item.handoff_id), draft_id: text(item.draft_id),
+    work_item_id: text(item.work_item_id), turn_id: text(item.turn_id),
+    domain: domain(item.domain), handling_mode: mode(item.handling_mode), intent: text(item.intent),
+    destination_key: destination, draft_revision: integer(item.draft_revision),
+    adoption_state: adoptionState as IntakeHandoffSummary['adoption_state'],
+    missing_fields: list(item.missing_fields).map(text), subject_ref_count: integer(item.subject_ref_count),
+    auto_open_allowed: item.auto_open_allowed,
+  }
+}
+
+export function decodeIntakeConversation(value: unknown): IntakeConversation {
+  const item = record(value)
+  return {
+    conversation_id: text(item.conversation_id), revision: integer(item.revision), state: text(item.state),
+    homeroom_class: item.homeroom_class === null ? null : text(item.homeroom_class),
+    created_at: text(item.created_at), updated_at: text(item.updated_at),
+    turns: list(item.turns).map(decodeTurn), handoffs: list(item.handoffs).map(decodeHandoffSummary),
+  }
+}
+
+export function decodeHandoffDraft(value: unknown): HandoffDraft {
+  const item = record(value)
+  const destination = text(item.destination_key)
+  const adoptionState = text(item.adoption_state)
+  if (item.contract_version !== 'teacher_workspace_handoff.v1' || !destinations.has(destination) || !adoptionStates.has(adoptionState)) return invalid()
+  return {
+    contract_version: 'teacher_workspace_handoff.v1',
+    handoff_id: text(item.handoff_id), work_item_id: text(item.work_item_id),
+    conversation_id: text(item.conversation_id), turn_id: text(item.turn_id),
+    draft_id: text(item.draft_id), draft_revision: integer(item.draft_revision),
+    domain: domain(item.domain), handling_mode: mode(item.handling_mode), intent: text(item.intent),
+    destination_key: destination, adoption_id: text(item.adoption_id), adoption_state: adoptionState,
+    content: record(item.content), subject_refs: list(item.subject_refs).map(decodeSubjectRef),
+    missing_fields: list(item.missing_fields).map(text),
+    return_context: (() => {
+      const context = record(item.return_context)
+      if (context.destination_key !== 'class_teacher.home') return invalid()
+      return { destination_key: 'class_teacher.home', focus_ref: text(context.focus_ref) }
+    })(),
+  }
+}
+
+function decodePreference(value: unknown): HomeroomPreference {
+  const item = record(value)
+  return {
+    homeroom_class: item.homeroom_class === null ? null : text(item.homeroom_class),
+    revision: integer(item.revision), classes: list(item.classes).map(text), source_revision: text(item.source_revision),
+    ...(item.updated_at === undefined ? {} : { updated_at: text(item.updated_at) }),
+  }
+}
+
+function decodeConversationSummary(value: unknown): IntakeConversationSummary {
+  const item = record(value)
+  return {
+    conversation_id: text(item.conversation_id), revision: integer(item.revision), state: text(item.state),
+    homeroom_class: item.homeroom_class === null ? null : text(item.homeroom_class),
+    first_message: item.first_message === null ? null : text(item.first_message),
+    pending_count: integer(item.pending_count), updated_at: text(item.updated_at),
+  }
+}
+
+function decodeDraftRevision(value: unknown): DraftRevisionSnapshot {
+  const item = record(value)
+  return {
+    request_id: text(item.request_id), handoff_id: text(item.handoff_id),
+    source_draft_revision: integer(item.source_draft_revision),
+    task_id: item.task_id === null ? null : text(item.task_id), task_state: text(item.task_state),
+    created_at: text(item.created_at), updated_at: text(item.updated_at),
+  }
+}
+
+function operationId(): string {
+  return crypto.randomUUID()
+}
+
+function headers(token = ''): Record<string, string> {
+  return {
+    'x-class-teacher-client': 'class-teacher-browser-v1',
+    ...(token ? { 'x-class-teacher-session': token } : {}),
+  }
+}
+
+export const intakeApi = {
+  homeroom() {
+    return apiClient.request('/api/class-teacher/intake/preferences/homeroom-class', {
+      decode: decodePreference,
+    })
+  },
+  setHomeroom(preference: HomeroomPreference, homeroomClass: string | null) {
+    return apiClient.request('/api/class-teacher/intake/preferences/homeroom-class', {
+      method: 'PUT',
+      headers: headers(),
+      body: {
+        homeroom_class: homeroomClass || null,
+        expected_revision: preference.revision,
+        expected_source_revision: preference.source_revision,
+        operation_id: operationId(),
+      },
+      decode: decodePreference,
+    })
+  },
+  startConversation() {
+    return apiClient.request('/api/class-teacher/intake/conversations', {
+      method: 'POST', headers: headers(), decode: decodeIntakeConversation,
+    })
+  },
+  listConversations() {
+    return apiClient.request('/api/class-teacher/intake/conversations', {
+      decode: (value) => list(record(value).items).map(decodeConversationSummary),
+    })
+  },
+  conversation(id: string) {
+    return apiClient.request(`/api/class-teacher/intake/conversations/${encodeURIComponent(id)}`, {
+      decode: decodeIntakeConversation,
+    })
+  },
+  appendTurn(conversation: IntakeConversation, message: string, operation = operationId()) {
+    return apiClient.request(`/api/class-teacher/intake/conversations/${encodeURIComponent(conversation.conversation_id)}/turns`, {
+      method: 'POST', headers: headers(),
+      body: { expected_revision: conversation.revision, message, operation_id: operation },
+      decode: decodeIntakeConversation,
+    })
+  },
+  manualRoute(turnId: string, mode: HandlingMode) {
+    return apiClient.request(`/api/class-teacher/intake/turns/${encodeURIComponent(turnId)}/manual-route`, {
+      method: 'POST', headers: headers(), body: { mode },
+      decode: decodeIntakeConversation,
+    })
+  },
+  handoff(id: string) {
+    return apiClient.request(`/api/class-teacher/intake/handoffs/${encodeURIComponent(id)}`, {
+      decode: decodeHandoffDraft,
+    })
+  },
+  updateDraft(draft: HandoffDraft, content: Record<string, unknown>, subjectRefs = draft.subject_refs) {
+    return apiClient.request(`/api/class-teacher/intake/handoffs/${encodeURIComponent(draft.handoff_id)}/draft`, {
+      method: 'PUT', headers: headers(),
+      body: { expected_revision: draft.draft_revision, content, subject_refs: subjectRefs },
+      decode: decodeHandoffDraft,
+    })
+  },
+  requestDraftRevision(draft: HandoffDraft, instruction: string) {
+    return apiClient.request(`/api/class-teacher/intake/handoffs/${encodeURIComponent(draft.handoff_id)}/ai-revisions`, {
+      method: 'POST', headers: headers(),
+      body: { expected_revision: draft.draft_revision, instruction, operation_id: operationId() },
+      decode: decodeDraftRevision,
+    })
+  },
+  draftRevision(id: string) {
+    return apiClient.request(`/api/class-teacher/intake/draft-revisions/${encodeURIComponent(id)}`, {
+      decode: decodeDraftRevision,
+    })
+  },
+  discard(id: string) {
+    return apiClient.request(`/api/class-teacher/intake/handoffs/${encodeURIComponent(id)}/discard`, {
+      method: 'POST', headers: headers(), decode: record,
+    })
+  },
+  adopt(token: string, draft: HandoffDraft, targetRevision: string) {
+    return apiClient.request(`/api/class-teacher/intake/handoffs/${encodeURIComponent(draft.handoff_id)}/adopt`, {
+      method: 'POST', headers: headers(token),
+      body: { draft_revision: draft.draft_revision, target_revision: targetRevision, operation_id: operationId() },
+      decode: record,
+    })
+  },
+}

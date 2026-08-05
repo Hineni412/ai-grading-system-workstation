@@ -7,13 +7,6 @@ from .work_schemas import (
     WorkNodeDetailResponse,
     WorkCommandRequest,
     WorkNodeUpdateRequest,
-    WorkPlanConfirmRequest,
-    WorkPlanConfirmResponse,
-    WorkPlanInvokeRequest,
-    WorkPlanPreviewRequest,
-    WorkPlanPreviewResponse,
-    WorkPlanResultResponse,
-    WorkProgressPlanPreviewRequest,
     WorkSnapshotResponse,
 )
 
@@ -74,73 +67,6 @@ def create_work_router() -> APIRouter:
             )
         )
 
-    @router.post("/plans/previews", response_model=WorkPlanPreviewResponse)
-    def preview_work_plan(
-        request: Request,
-        body: WorkPlanPreviewRequest,
-        response: Response,
-    ):
-        _require_trusted_mutation(request)
-        _no_store(response)
-        return _call(
-            lambda: _service(request).work.prepare_plan(
-                text=body.text,
-                due_date=body.due_date,
-            )
-        )
-
-    @router.post(
-        "/plans/previews/{preview_id}/confirm",
-        response_model=WorkPlanResultResponse,
-    )
-    def invoke_work_plan(
-        preview_id: str,
-        request: Request,
-        body: WorkPlanInvokeRequest,
-        response: Response,
-    ):
-        _require_trusted_mutation(request)
-        _no_store(response)
-        return _call(
-            lambda: _service(request).work.invoke_plan(
-                preview_id=preview_id,
-                fingerprint=body.fingerprint,
-                operation_id=body.operation_id,
-            )
-        )
-
-    @router.get(
-        "/plans/operations/{operation_id}",
-        response_model=WorkPlanResultResponse,
-    )
-    def work_plan_status(
-        operation_id: str,
-        request: Request,
-        response: Response,
-    ):
-        _no_store(response)
-        return _call(
-            lambda: _service(request).work.plan_status(
-                operation_id=operation_id,
-            )
-        )
-
-    @router.post("/plans/confirm", response_model=WorkPlanConfirmResponse)
-    def confirm_work_plan(
-        request: Request,
-        body: WorkPlanConfirmRequest,
-        response: Response,
-    ):
-        _require_trusted_mutation(request)
-        _no_store(response)
-        return _call(
-            lambda: _service(request).work.confirm_plan(
-                model_operation_id=body.model_operation_id,
-                plan_fingerprint=body.plan_fingerprint,
-                operation_id=body.operation_id,
-            )
-        )
-
     @router.patch("/nodes/{node_id}", response_model=WorkNodeResponse)
     def update_node(
         node_id: str,
@@ -157,27 +83,6 @@ def create_work_router() -> APIRouter:
                 status=body.status,
                 due_date=body.due_date,
                 operation_id=body.operation_id,
-            )
-        )
-
-    @router.post(
-        "/nodes/{node_id}/plans/previews",
-        response_model=WorkPlanPreviewResponse,
-    )
-    def preview_progress_plan(
-        node_id: str,
-        request: Request,
-        body: WorkProgressPlanPreviewRequest,
-        response: Response,
-    ):
-        _require_trusted_mutation(request)
-        _no_store(response)
-        return _call(
-            lambda: _service(request).work.prepare_plan(
-                text=body.text,
-                due_date=body.due_date,
-                parent_node_id=node_id,
-                parent_revision=body.revision,
             )
         )
 
