@@ -111,8 +111,25 @@ async def _lifespan(api: FastAPI) -> AsyncIterator[None]:
             create_ops_write_service(paths) if owns_ops_service else None
         )
         if manager is not None:
+            from backend.workspaces.ai_tasks.job_adapter import (
+                register_workspace_ai_job,
+            )
+            from backend.workspaces.ai_tasks.service import WorkspaceAITaskService
+            from backend.workspaces.ai_tasks.store import WorkspaceAITaskStore
+
+            workspace_ai_task_service = WorkspaceAITaskService(
+                store=WorkspaceAITaskStore(manager.store.db_path),
+                manager=manager,
+            )
+            register_workspace_ai_job(manager, workspace_ai_task_service)
             registry.register_jobs(manager, workspace_services)
+            registry.register_ai_tasks(
+                workspace_ai_task_service,
+                workspace_services,
+            )
+            workspace_ai_task_service.recover_interrupted()
             api.state.job_manager = manager
+            api.state.workspace_ai_task_service = workspace_ai_task_service
         if ops_service is not None:
             api.state.ops_write_service = ops_service
         api.state.workspace_services = workspace_services
@@ -127,6 +144,8 @@ async def _lifespan(api: FastAPI) -> AsyncIterator[None]:
                 del api.state.ops_write_service
         if hasattr(api.state, "workspace_services"):
             del api.state.workspace_services
+        if hasattr(api.state, "workspace_ai_task_service"):
+            del api.state.workspace_ai_task_service
 
 
 def create_app(
@@ -289,6 +308,7 @@ def create_app(
         templates_router,
         training_router,
         workbench_router,
+        workspace_ai_tasks_router,
     )
 
     api.include_router(ai_diagnostics_router)
@@ -312,6 +332,7 @@ def create_app(
     api.include_router(templates_router)
     api.include_router(training_router)
     api.include_router(workbench_router)
+    api.include_router(workspace_ai_tasks_router)
     registry.include_routers(api)
 
     return api

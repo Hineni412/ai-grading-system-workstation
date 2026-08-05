@@ -63,6 +63,7 @@ flowchart LR
 | `db_manager.py` | 兼容门面、备份、非 DDL 维护、跨域兼容编排和少量尚未抽取的聚合 SQL | 只由单一兼容组装点创建；不得重新成为所有新功能的万能入口 |
 | `question_bank/` | 题库连接、标签、题目、频次、预览、组卷和训练数据访问 | 题库服务仍拥有自己的数据访问边界；不与阅卷库建立跨库外键 |
 | Job 子系统 | 持久 Job 状态、进程内线程池、进度、取消、重试和受控产物发布 | 没有独立 Worker；进程退出后任务不续跑；取消必须在安全边界确认 |
+| `backend/workspaces/ai_tasks/` | 教师工作台 AI Task、Handoff、发送证据、重启恢复和逐项采用协调 | 共同库只保存安全元数据；A/B 正文、prompt、模型原文和正式对象仍归领域库；一个 operation 最多保留一次发送尝试 |
 | `backend/llm/` | 传输、超时、错误分类、有限重试、节流、请求标识和脱敏用量 | 正式模型调用必须经过 Gateway 或其兼容门面；不得新增无超时或无限重试直连 |
 | `PathManager` 和文件服务 | 持久目录解析、旧路径兼容、受控根和文件发布 | 新持久路径只经 `PathManager`；客户端永不提交服务器绝对路径 |
 | 工作台注册器 | A/B 的前端 manifest、后端 feature、路由、迁移、Job 和模型安全插槽 | A 默认关闭；B 入口已启用。任一模块禁用时不显示入口、不注册 API/Job、不创建目录或数据库；只有教师显式初始化才创建受保护目录和数据库 |
@@ -110,6 +111,10 @@ flowchart LR
 - A-I1 在同一独立库中增加参考范围草稿/不可变快照、一次性题目候选 operation、候选审核版本、
   课时当前可信 PPTX 指针和恢复历史；跨课时准备度由单个只读聚合查询返回。AI 只能读取教师冻结的
   参考快照，候选答案只可进入 `candidate`，不能自动成为 `teacher_verified`。
+- 阅卷运行库通过 `migrations/grading/010_workspace_ai_tasks.sql` 保存工作台 AI Task 与 Handoff 的安全元数据。
+  Job payload 只携带 `task_id`；资料正文、教师原话、完整 prompt、模型原文和领域 proposal 不进入共同表。
+  领域采用使用稳定 `adoption_id`，A/B 必须把正式对象与 Adoption Receipt 放在自己的同一事务内；共同库更新
+  丢失时先查询领域 Receipt，再收敛 Handoff，不能重复创建正式对象。
 
 ### 4.3 真实数据红线
 
@@ -152,8 +157,11 @@ A 启用后只在 `user_data/workspaces/teaching-prep/` 内使用 `temp`、`stag
   中止仍可安全重新发起。终态 Job 只有在读回同一资料、operation 和来源指纹的持久建议后才算同步完成；
   建议列表短暂落后时只补做有界读取，不追加模型调用。通用 Job 提交接口不能绕过专用预检，公开任务结果
   不包含本机路径或模型正文。
-- 备课工作台没有活动课时节点时默认进入资料库；正式课时树建立后才默认进入课时页。资料库、课时、备课、
-  课件四个入口由全局顶部栏承载，模块内部不再重复显示一套类似侧边栏的品牌导航行。
+- A-I1-R7 默认进入 C 型备课首页，即使尚无活动课时也先显示近期课时空态与建库下一动作。公共顶部栏只保留
+  “备课首页／资料库”；单课时以 `view=lesson&lesson=<id>&stage=<stage>` 恢复核资料、定方案、审课件和
+  上课包四个内部阶段。课时页使用左侧阶段、中央原页/幻灯片主画布和右侧准备摘要；窄屏把阶段收为横向页签。
+- 课件审阅以源幻灯片为画布，通过归一化 target 绘制修改定位框；每项建议分别接受、拒绝或标为
+  `manual_only`，保存审核不等于 WPS 已执行，后续仍只允许创建隔离副本，不覆盖源 PPTX。
 
 ## 5. API 与前端长期契约
 
@@ -188,6 +196,13 @@ A 启用后只在 `user_data/workspaces/teaching-prep/` 内使用 `temp`、`stag
 - JobManager 是 FastAPI 进程拥有的线程池；JobStore 持久化公开状态、进度和安全结果，但没有独立后台 Worker。
 - A/B Job 只能通过模块注册器写入各自 `teaching_prep.*`、`class_teacher.*` 前缀；任何重复 Job 类型在启动时明确失败，
   不再静默覆盖已有 handler。禁用模块不注册 Job。
+- 教师工作台 AI Task 复用中性 `workspace_ai.run` Job。第一次 dispatch 在同一阅卷库事务内创建 Job 并绑定 Task，
+  多窗口只允许一个活动 Job；进入外部发送边界前，Task 原子写入 `send_attempt_count=1` 与
+  `dispatch_evidence=may_have_started`。此后崩溃只进入 `result_unknown`，不会自动或沿用同一 operation 重发。
+  通用 Job API 对 `workspace_ai.*` 使用最小允许列表，不回落返回原始 payload/result/detail/error。
+- A Adapter 注册学期目录、课堂方案、候选练习和课件修改四类 task kind。模型调用通过公共 Task Gateway 在物理
+  请求前强制 metadata-only 诊断、零自动重试和单 operation 单请求；A 库的
+  `teaching_prep_ai_task_results` 只保存领域 proposal/Handoff 引用，重启只读回该引用补做本地交接。
 - 姓名识别、评分依据生成、试卷批改和题库标注共用当前模型配置的一套请求速度方案，不再各自维护隐藏
   Worker/RPM 上限。自动模式从 6 个同时请求起步、最多恢复到 20 个；保守模式固定为 1 个；自定义模式允许
   1–100 个同时请求及 1–10000 RPM。RPM 只限制一分钟内启动多少请求，不能替代同时请求数。

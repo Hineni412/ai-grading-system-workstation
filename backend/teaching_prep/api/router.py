@@ -29,9 +29,15 @@ from backend.teaching_prep.domain.errors import (
     TeachingPrepStateError,
     TeachingPrepValidationError,
 )
+from backend.workspaces.ai_tasks.models import (
+    HandoffNotFoundError,
+    RevisionConflictError as WorkspaceAIRevisionConflictError,
+    WorkspaceAITaskError,
+)
 
 from .schemas import (
     ActivateUpClassPackageRequest,
+    AdoptWorkspaceAIHandoffRequest,
     ActivatePptxVersionRequest,
     ActivatePptxVersionResponse,
     AssessmentChoiceListResponse,
@@ -128,6 +134,7 @@ from .schemas import (
     CreateSemesterRequest,
     SetSemesterLessonProgressRequest,
     TeachingPrepStatusResponse,
+    TeachingPrepAIAdoptionResponse,
     TeachingPreferencesResponse,
     UpdateTeachingPreferencesRequest,
     UpdateLessonNodeRequest,
@@ -2086,10 +2093,24 @@ def create_router() -> APIRouter:
     )
     def list_lesson_preparation_statuses(
         semester_id: str,
+        request: Request,
         service: TeachingPrepService = Depends(get_teaching_prep_service),
     ) -> LessonPreparationStatusListResponse:
         try:
-            items = service.list_lesson_preparation_statuses(semester_id)
+            workspace_ai_tasks = getattr(
+                request.app.state,
+                "workspace_ai_task_service",
+                None,
+            )
+            ai_tasks = (
+                workspace_ai_tasks.list_module_tasks("teaching_prep")
+                if workspace_ai_tasks is not None
+                else ()
+            )
+            items = service.list_lesson_preparation_statuses(
+                semester_id,
+                ai_tasks=ai_tasks,
+            )
         except Exception as exc:
             raise _api_error(exc) from exc
         return LessonPreparationStatusListResponse(
@@ -2099,6 +2120,59 @@ def create_router() -> APIRouter:
                 for item in items
             ],
         )
+
+    @router.post(
+        "/ai-handoffs/{handoff_id}/adopt",
+        response_model=TeachingPrepAIAdoptionResponse,
+    )
+    def adopt_workspace_ai_handoff(
+        handoff_id: str,
+        payload: AdoptWorkspaceAIHandoffRequest,
+        request: Request,
+        service: TeachingPrepService = Depends(get_teaching_prep_service),
+    ) -> TeachingPrepAIAdoptionResponse:
+        try:
+            coordinator = getattr(
+                request.app.state,
+                "workspace_ai_task_service",
+                None,
+            )
+            if coordinator is None:
+                raise TeachingPrepStateError(
+                    "workspace AI task coordinator is unavailable"
+                )
+            result = coordinator.adopt(
+                handoff_id,
+                module="teaching_prep",
+                draft_revision=payload.draft_revision,
+                target_revision=payload.target_revision,
+            )
+            adopted = service.find_workspace_ai_adoption(result.adoption_id)
+            if adopted is None:
+                raise TeachingPrepStateError(
+                    "teaching-prep adoption receipt is unavailable"
+                )
+            return TeachingPrepAIAdoptionResponse.from_domain(adopted)
+        except Exception as exc:
+            raise _api_error(exc) from exc
+
+    @router.get(
+        "/ai-adoptions/{adoption_id}",
+        response_model=TeachingPrepAIAdoptionResponse,
+    )
+    def get_workspace_ai_adoption(
+        adoption_id: str,
+        service: TeachingPrepService = Depends(get_teaching_prep_service),
+    ) -> TeachingPrepAIAdoptionResponse:
+        try:
+            adopted = service.find_workspace_ai_adoption(adoption_id)
+            if adopted is None:
+                raise TeachingPrepNotFoundError(
+                    "teaching-prep AI adoption was not found"
+                )
+            return TeachingPrepAIAdoptionResponse.from_domain(adopted)
+        except Exception as exc:
+            raise _api_error(exc) from exc
 
     @router.patch(
         "/semester-mapping-proposals/{proposal_id}/mappings/{mapping_id}",
@@ -2449,6 +2523,24 @@ async def _receive_material_copy(
 
 
 def _api_error(exc: Exception) -> Exception:
+    if isinstance(exc, HandoffNotFoundError):
+        return _new_api_error(
+            404,
+            "workspace_ai_handoff_not_found",
+            "Workspace AI handoff was not found",
+        )
+    if isinstance(exc, WorkspaceAIRevisionConflictError):
+        return _new_api_error(
+            409,
+            "workspace_ai_revision_conflict",
+            "Workspace AI proposal or target changed; refresh and review again",
+        )
+    if isinstance(exc, WorkspaceAITaskError):
+        return _new_api_error(
+            422,
+            "workspace_ai_task_invalid",
+            "Workspace AI adoption request is invalid",
+        )
     if isinstance(exc, TeachingPrepNotFoundError):
         return _new_api_error(
             404,

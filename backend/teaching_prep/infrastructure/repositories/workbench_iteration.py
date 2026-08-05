@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from uuid import uuid4
 
 from backend.teaching_prep.domain.errors import (
@@ -23,12 +23,20 @@ from backend.teaching_prep.infrastructure.database import TeachingPrepDatabase
 class WorkbenchIterationRepository:
     """Persistence seam for the A-I1 workbench version and operation state."""
 
-    def __init__(self, database: TeachingPrepDatabase) -> None:
+    def __init__(
+        self,
+        database: TeachingPrepDatabase,
+        *,
+        source_change_provider: Callable[[tuple[str, ...]], dict[str, bool]] | None = None,
+    ) -> None:
         self._database = database
+        self._source_change_provider = source_change_provider or (lambda _ids: {})
 
     def lesson_preparation_statuses(
         self,
         semester_id: str,
+        *,
+        ai_tasks: Sequence[object] = (),
     ) -> tuple[dict[str, object], ...]:
         with self._database.connect() as connection:
             semester = connection.execute(
@@ -59,12 +67,42 @@ class WorkbenchIterationRepository:
                          WHERE pack.lesson_node_id = lesson.id
                      ) AND draft.status = 'confirmed'
                      ORDER BY draft.created_at DESC LIMIT 1) AS lesson_draft_id,
+                    (SELECT status FROM lesson_draft_versions draft
+                     WHERE draft.resource_pack_id IN (
+                         SELECT id FROM resource_pack_versions pack
+                         WHERE pack.lesson_node_id = lesson.id
+                     ) ORDER BY draft.created_at DESC LIMIT 1) AS latest_draft_status,
+                    (SELECT COUNT(*) FROM exercise_candidates candidate
+                     WHERE candidate.lesson_node_id = lesson.id
+                       AND candidate.is_active = 1) AS exercise_count,
+                    (SELECT COUNT(*) FROM exercise_candidates candidate
+                     WHERE candidate.lesson_node_id = lesson.id
+                       AND candidate.is_active = 1
+                       AND candidate.selection_status = 'classroom_candidate') AS selected_exercise_count,
+                    (SELECT COUNT(*) FROM exercise_candidates candidate
+                     WHERE candidate.lesson_node_id = lesson.id
+                       AND candidate.is_active = 1
+                       AND candidate.selection_status = 'classroom_candidate'
+                       AND candidate.answer_status = 'missing') AS missing_answer_count,
                     (SELECT id FROM slide_plan_versions plan
                      WHERE plan.resource_pack_id IN (
                          SELECT id FROM resource_pack_versions pack
                          WHERE pack.lesson_node_id = lesson.id
                      ) AND plan.status = 'approved'
                      ORDER BY plan.created_at DESC LIMIT 1) AS slide_plan_id,
+                    (SELECT status FROM slide_plan_versions plan
+                     WHERE plan.resource_pack_id IN (
+                         SELECT id FROM resource_pack_versions pack
+                         WHERE pack.lesson_node_id = lesson.id
+                     ) ORDER BY plan.created_at DESC LIMIT 1) AS latest_slide_plan_status,
+                    (SELECT status FROM pptx_execution_runs run
+                     WHERE run.slide_plan_id IN (
+                         SELECT id FROM slide_plan_versions plan
+                         WHERE plan.resource_pack_id IN (
+                             SELECT id FROM resource_pack_versions pack
+                             WHERE pack.lesson_node_id = lesson.id
+                         )
+                     ) ORDER BY run.created_at DESC LIMIT 1) AS latest_execution_status,
                     current.pptx_version_id AS current_pptx_version_id,
                     current.revision AS current_pptx_revision,
                     (SELECT id FROM up_class_packages package
@@ -92,7 +130,24 @@ class WorkbenchIterationRepository:
                 """,
                 (semester_id, str(semester["curriculum_id"])),
             ).fetchall()
-        return tuple(_preparation_status(row) for row in rows)
+        pack_ids = tuple(
+            str(row["resource_pack_id"])
+            for row in rows
+            if row["resource_pack_id"] is not None
+        )
+        source_changes = self._source_change_provider(pack_ids)
+        tasks_by_lesson = _actionable_tasks_by_lesson(ai_tasks)
+        return tuple(
+            _preparation_status(
+                row,
+                tasks_by_lesson.get(str(row["id"]), []),
+                sources_changed=(
+                    row["resource_pack_id"] is not None
+                    and source_changes.get(str(row["resource_pack_id"]), False)
+                ),
+            )
+            for row in rows
+        )
 
     def mark_interrupted(self) -> int:
         with self._database.connect(immediate=True) as connection:
@@ -625,7 +680,12 @@ class WorkbenchIterationRepository:
         return catalog, _sha(source_state)
 
 
-def _preparation_status(row: sqlite3.Row) -> dict[str, object]:
+def _preparation_status(
+    row: sqlite3.Row,
+    ai_tasks: Sequence[Mapping[str, object]],
+    *,
+    sources_changed: bool = False,
+) -> dict[str, object]:
     manual = str(row["manual_progress"])
     blockers: list[str] = []
     stage = "select"
@@ -647,6 +707,90 @@ def _preparation_status(row: sqlite3.Row) -> dict[str, object]:
         next_action = "生成或核对上课包"
     if row["up_class_package_id"] is not None:
         next_action = "查看当前上课包"
+    exercise_count = int(row["exercise_count"])
+    selected_exercise_count = int(row["selected_exercise_count"])
+    missing_answer_count = int(row["missing_answer_count"])
+    materials = {
+        "status": "ready" if int(row["material_count"]) else "needs_teacher",
+        "summary": f"{int(row['material_count'])} 份已确认" if int(row["material_count"]) else "待确认来源",
+        "target_panel": "sources",
+    }
+    plan_status = (
+        "ready" if row["lesson_draft_id"] is not None
+        else "needs_teacher" if row["latest_draft_status"] is not None
+        else "in_progress" if row["resource_pack_id"] is not None
+        else "not_started"
+    )
+    plan = {
+        "status": plan_status,
+        "summary": {
+            "ready": "教师确认版已就绪",
+            "needs_teacher": "草稿待你确认",
+            "in_progress": "资源包已冻结",
+            "not_started": "尚未形成方案",
+        }[plan_status],
+        "target_panel": "plan",
+    }
+    exercise_status = (
+        "not_started" if exercise_count == 0
+        else "needs_teacher" if selected_exercise_count == 0 or missing_answer_count > 0
+        else "ready"
+    )
+    exercises = {
+        "status": exercise_status,
+        "summary": f"{selected_exercise_count}/{exercise_count} 已选"
+        + (f" · {missing_answer_count} 题无答案" if missing_answer_count else ""),
+        "target_panel": "exercises",
+    }
+    execution_status = str(row["latest_execution_status"] or "")
+    slide_status = (
+        "ready" if row["current_pptx_version_id"] is not None
+        else "failed" if execution_status == "failed"
+        else "in_progress" if execution_status in {"running", "verifying", "publishing"}
+        else "needs_teacher" if row["latest_slide_plan_status"] == "in_review"
+        else "in_progress" if row["latest_slide_plan_status"] == "approved"
+        else "not_applicable"
+    )
+    slides = {
+        "status": slide_status,
+        "summary": {
+            "ready": "可信副本可用",
+            "failed": "安全生成未完成",
+            "in_progress": "课件处理中",
+            "needs_teacher": "修改建议待审",
+            "not_applicable": "本节暂不需要",
+        }[slide_status],
+        "target_panel": "slides",
+    }
+    cells = {
+        "materials": materials,
+        "plan": plan,
+        "exercises": exercises,
+        "slides": slides,
+    }
+    if sources_changed:
+        blockers.append("资料来源已有新版本，需重新核对")
+        stage = "materials"
+        next_action = "重新核对资料"
+        materials.update(status="stale", summary="来源版本已变化")
+        if row["resource_pack_id"] is not None:
+            plan.update(status="stale", summary="依赖的资源包需重新冻结")
+        if exercise_count:
+            exercises.update(status="stale", summary="候选练习需重新核对")
+        if (
+            row["latest_slide_plan_status"] is not None
+            or row["latest_execution_status"] is not None
+            or row["current_pptx_version_id"] is not None
+        ):
+            slides.update(status="stale", summary="课件依据已变化")
+    summary_revision = hashlib.sha256(
+        _json({
+            "lesson": str(row["id"]),
+            "manual": manual,
+            "cells": cells,
+            "ai_tasks": list(ai_tasks),
+        }).encode("utf-8")
+    ).hexdigest()
     return {
         "lesson_node_id": str(row["id"]),
         "title": str(row["title"]),
@@ -661,6 +805,9 @@ def _preparation_status(row: sqlite3.Row) -> dict[str, object]:
         "preparation_stage": stage,
         "next_action": next_action,
         "blockers": blockers,
+        "cells": cells,
+        "ai_tasks": list(ai_tasks),
+        "summary_revision": summary_revision,
         "latest": {
             "resource_pack_id": row["resource_pack_id"],
             "lesson_draft_id": row["lesson_draft_id"],
@@ -670,6 +817,39 @@ def _preparation_status(row: sqlite3.Row) -> dict[str, object]:
             "up_class_package_id": row["up_class_package_id"],
         },
     }
+
+
+def _actionable_tasks_by_lesson(
+    ai_tasks: Sequence[object],
+) -> dict[str, list[dict[str, object]]]:
+    tasks_by_lesson: dict[str, list[dict[str, object]]] = {}
+    for task in ai_tasks:
+        if str(getattr(task, "module", "")) != "teaching_prep":
+            continue
+        status = str(getattr(task, "status", ""))
+        if status == "proposal_ready":
+            if int(getattr(task, "pending_count", 0) or 0) < 1:
+                continue
+        elif status not in {"prepared", "queued", "running", "needs_input"}:
+            continue
+        lesson_ids: list[str] = []
+        source_ref = getattr(task, "source_ref", None)
+        if getattr(source_ref, "kind", None) == "lesson":
+            lesson_ids.append(str(getattr(source_ref, "id", "")))
+        for handoff in tuple(getattr(task, "handoffs", ()) or ()):
+            for subject_ref in tuple(getattr(handoff, "subject_refs", ()) or ()):
+                if getattr(subject_ref, "kind", None) == "lesson":
+                    lesson_ids.append(str(getattr(subject_ref, "id", "")))
+        payload = {
+            "task_id": str(getattr(task, "task_id", "")),
+            "task_kind": str(getattr(task, "task_kind", "")),
+            "status": status,
+            "proposal_ref_id": getattr(task, "proposal_ref_id", None),
+            "proposal_revision": getattr(task, "proposal_revision", None),
+        }
+        for lesson_id in dict.fromkeys(item for item in lesson_ids if item):
+            tasks_by_lesson.setdefault(lesson_id, []).append(payload)
+    return tasks_by_lesson
 
 
 def _reference_draft(row: sqlite3.Row) -> ReferenceSelectionDraft:

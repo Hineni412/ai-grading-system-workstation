@@ -20,6 +20,13 @@ const workspaceComponent = computed(() => ({
   versions: PresentationVersionsWorkspace,
 }[workbench.workspace.value]))
 
+const lessonStageLabels = {
+  materials: '核资料',
+  plan: '定方案',
+  slides: '审课件',
+  package: '上课包',
+} as const
+
 function handleTopbarNavigation(event: Event): void {
   const workspace = (event as CustomEvent<{ workspace?: unknown }>).detail?.workspace
   if (!['materials', 'lesson-tree', 'lesson-prep', 'versions'].includes(String(workspace))) return
@@ -37,7 +44,10 @@ onBeforeUnmount(() => {
 
 <template>
   <main class="teaching-prep-shell">
-    <TeachingPrepLessonContext :compact="workbench.workspace.value === 'versions'" />
+    <TeachingPrepLessonContext
+      v-if="workbench.view.value === 'lesson'"
+      :compact="workbench.workspace.value === 'versions'"
+    />
 
     <div v-if="workbench.workbenchError.value" class="tp-global-notice" role="alert">
       <strong>当前状态未完全载入</strong>
@@ -48,6 +58,43 @@ onBeforeUnmount(() => {
     <div v-if="workbench.loading.value" class="tp-loading" role="status">
       <span aria-hidden="true" />正在整理课时与本地资料……
     </div>
-    <component :is="workspaceComponent" v-else />
+    <template v-else>
+      <LessonTreeWorkspace v-if="workbench.view.value === 'overview'" />
+      <MaterialLibraryWorkspace v-else-if="workbench.view.value === 'library'" />
+      <div v-else class="tp-lesson-frame">
+        <aside class="tp-lesson-frame__rail" aria-label="单课时阶段">
+          <p class="tp-eyebrow">本节路径</p>
+          <button
+            v-for="item in workbench.stages.value.filter(item => item.id !== 'select')"
+            :key="item.id"
+            type="button"
+            :class="{ 'is-active': item.id === workbench.stage.value }"
+            @click="workbench.openStage(item.id)"
+          >
+            <span>{{ lessonStageLabels[item.id as keyof typeof lessonStageLabels] }}</span>
+            <small>{{ item.explanation }}</small>
+          </button>
+          <button type="button" class="tp-lesson-frame__back" @click="workbench.openStage('select')">
+            返回备课首页
+          </button>
+        </aside>
+        <section class="tp-lesson-frame__canvas" aria-label="当前课时工作面">
+          <component :is="workspaceComponent" />
+        </section>
+        <aside class="tp-lesson-frame__inspector" aria-label="当前课时准备摘要">
+          <p class="tp-eyebrow">准备摘要</p>
+          <h2>{{ workbench.catalog.selectedLesson?.title ?? '当前课时' }}</h2>
+          <dl>
+            <div><dt>授课状态</dt><dd>{{ workbench.selectedStatus.value?.manual_progress ?? '未开始' }}</dd></div>
+            <div><dt>系统阶段</dt><dd>{{ workbench.stage.value }}</dd></div>
+            <div><dt>下一动作</dt><dd>{{ workbench.selectedStatus.value?.next_action ?? '核对资料' }}</dd></div>
+          </dl>
+          <p v-if="workbench.dirtyReason.value" class="tp-inline-guidance" role="status">
+            尚未保存：{{ workbench.dirtyReason.value }}
+          </p>
+          <p v-else class="tp-inline-guidance">所有已确认修改均已保存为本地版本。</p>
+        </aside>
+      </div>
+    </template>
   </main>
 </template>

@@ -19,6 +19,7 @@ from backend.teaching_prep.infrastructure.wps_adapter import (
     SubprocessWpsAdapter,
 )
 from backend.teaching_prep.jobs import register_jobs
+from backend.teaching_prep.application.ai_task_adapter import register_ai_tasks
 from backend.workspaces.contracts import (
     WorkspaceContext,
     WorkspaceFeature,
@@ -151,4 +152,5 @@ def create_workspace_feature() -> WorkspaceFeature:
         service_factory=_service,
         migration_provider=_migration_plan,
         register_jobs=register_jobs,
+        register_ai_tasks=register_ai_tasks,
     )
