@@ -3,6 +3,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { getActivePinia } from 'pinia'
 
 import { intakeApi, type HandlingMode, type HomeroomPreference, type IntakeConversation, type IntakeConversationSummary, type IntakeHandoffSummary } from '../api/intake'
+import { workApi, type WorkNode } from '../api/work'
 import { workspaceAITaskApi } from '../../shared/ai-tasks/api'
 import { useWorkspaceAITaskStore } from '../../shared/ai-tasks/store'
 
@@ -10,10 +11,12 @@ const props = defineProps<{ conversationId?: string | null; focusWorkItemId?: st
 const emit = defineEmits<{
   conversationChanged: [conversationId: string]
   openHandoff: [handoff: IntakeHandoffSummary]
+  openCalendar: []
 }>()
 
 const conversation = ref<IntakeConversation | null>(null)
 const recent = ref<IntakeConversationSummary[]>([])
+const nearWork = ref<WorkNode[]>([])
 const preference = ref<HomeroomPreference | null>(null)
 const selectedClass = ref('')
 const message = ref('')
@@ -29,6 +32,7 @@ const latestTurn = computed(() => {
   return turns.length ? turns[turns.length - 1]! : null
 })
 const pendingHandoffs = computed(() => conversation.value?.handoffs.filter((item) => ['pending', 'opened', 'adoption_started'].includes(item.adoption_state)) ?? [])
+const taskInFlight = computed(() => conversation.value?.state === 'ai_running')
 const domains = [
   ['student_growth', '成长记录', '观察、谈话、阶段变化'],
   ['student_support', '学生支持', '家校沟通、个别关怀'],
@@ -128,7 +132,7 @@ async function start(): Promise<void> {
 }
 
 async function send(): Promise<void> {
-  if (!conversation.value || !message.value.trim() || busy.value) return
+  if (!conversation.value || !message.value.trim() || busy.value || taskInFlight.value) return
   const outgoing = message.value.trim()
   busy.value = true; error.value = ''; notice.value = '正在整理；离开页面后仍可从最近会话返回。'
   try {
@@ -155,6 +159,24 @@ async function loadRecent(): Promise<void> {
   try { recent.value = await intakeApi.listConversations() } catch { recent.value = [] }
 }
 
+async function loadNearWork(): Promise<void> {
+  try {
+    const snapshot = await workApi.read('week')
+    const candidates = [...snapshot.overdue, ...snapshot.today, ...snapshot.nodes]
+      .filter((item) => item.due_date && !['completed', 'cancelled'].includes(item.status))
+    nearWork.value = [...new Map(candidates.map((item) => [item.node_id, item])).values()]
+      .sort((left, right) => String(left.due_date).localeCompare(String(right.due_date)))
+      .slice(0, 5)
+  } catch {
+    nearWork.value = []
+  }
+}
+
+function dueLabel(value: string | null): string {
+  if (!value) return '时间待定'
+  return value.replace('T', ' ').slice(0, 16)
+}
+
 async function changeHomeroom(): Promise<void> {
   if (!preference.value || busy.value) return
   busy.value = true; error.value = ''
@@ -172,6 +194,7 @@ onBeforeUnmount(stopPolling)
 onMounted(async () => {
   await Promise.all([
     loadRecent(),
+    loadNearWork(),
     intakeApi.homeroom()
       .then((value) => { preference.value = value; selectedClass.value = value.homeroom_class ?? '' })
       .catch(() => { preference.value = null; selectedClass.value = ''; error.value = '默认班级暂时无法读取；仍可处理不涉及学生的事务。' }),
@@ -225,12 +248,13 @@ onMounted(async () => {
 
         <form class="composer" @submit.prevent="send">
           <label for="class-teacher-message">继续说明或补充</label>
-          <textarea id="class-teacher-message" ref="composer" v-model="message" rows="3" maxlength="4000" placeholder="例如：月底提醒我复查；已确认双方目前都安全"></textarea>
-          <div><small>发送后直接进入已配置模型任务，无需额外预览确认。</small><button type="submit" :disabled="busy || !message.trim()">{{ busy ? '处理中…' : '发送并整理' }}</button></div>
+          <textarea id="class-teacher-message" ref="composer" v-model="message" rows="3" maxlength="4000" :disabled="taskInFlight" placeholder="例如：月底提醒我复查；已确认双方目前都安全"></textarea>
+          <div><small>{{ taskInFlight ? '上一轮正在整理；结果返回后可继续补充。' : '发送后直接进入已配置模型任务，无需额外预览确认。' }}</small><button type="submit" :disabled="busy || taskInFlight || !message.trim()">{{ busy || taskInFlight ? '处理中…' : '发送并整理' }}</button></div>
         </form>
       </article>
 
       <aside class="side-notes" aria-label="今日与近期事项">
+        <section class="near-work"><header><span>今日与接下来</span></header><button v-for="item in nearWork" :key="item.node_id" type="button" @click="emit('openCalendar')"><strong>{{ item.title }}</strong><small>{{ dueLabel(item.due_date) }}</small></button><p v-if="!nearWork.length">当前没有需要提醒的日历节点。</p></section>
         <section><header><span>待核对</span><strong>{{ pendingHandoffs.length }}</strong></header><p>{{ pendingHandoffs.length ? '草稿只有在你确认后才会成为正式记录。' : '当前没有等待确认的交接草稿。' }}</p></section>
         <section class="recent"><header><span>最近会话</span></header><button v-for="item in recent.slice(0,6)" :key="item.conversation_id" type="button" @click="loadConversation(item.conversation_id)"><strong>{{ item.first_message || '尚未发送内容' }}</strong><small>{{ item.pending_count ? `${item.pending_count} 项待处理` : '暂无待处理草稿' }}</small></button><p v-if="!recent.length">开始第一段对话后，会在这里保留入口。</p></section>
       </aside>
@@ -243,5 +267,5 @@ onMounted(async () => {
 </template>
 
 <style scoped>
-.desk{--ink:#233239;--paper:#fbfcfa;--teal:#176b6a;--teal-soft:#e8f2ef;--amber:#a45b16;--red:#9a3e35;color:var(--ink)}.desk__masthead{display:flex;align-items:end;justify-content:space-between;gap:24px;padding:22px 26px;border:1px solid var(--color-border-default);border-bottom:3px solid var(--teal);border-radius:18px 18px 0 0;background:linear-gradient(105deg,#f4f8f6,var(--paper) 60%)}.desk__masthead p{margin:0 0 4px;color:var(--teal);font-size:12px;font-weight:800;letter-spacing:.12em}.desk__masthead h1{max-width:720px;margin:0;font-family:"Microsoft YaHei UI","Noto Sans CJK SC",sans-serif;font-size:clamp(24px,3vw,38px);font-weight:760;letter-spacing:-.03em}.desk__tools{display:flex;align-items:end;gap:10px}.desk__tools label{display:grid;gap:5px;font-size:12px;font-weight:700}.desk__tools select,.desk__tools button{min-height:40px;padding:0 12px;border:1px solid var(--color-border-default);border-radius:10px;background:white;font:inherit}.desk__body{display:grid;grid-template-columns:minmax(0,1.75fr) minmax(260px,.72fr);border-right:1px solid var(--color-border-default);border-left:1px solid var(--color-border-default);background:var(--paper)}.conversation{min-width:0;padding:24px 26px;border-right:1px solid var(--color-border-default);background:repeating-linear-gradient(to bottom,transparent 0,transparent 37px,rgba(54,87,91,.055) 38px)}.opening{min-height:230px;display:grid;align-content:center;justify-items:center;text-align:center}.opening p{font-size:18px;font-weight:700}.opening ul{display:grid;gap:8px;padding:0;list-style:none;color:var(--color-text-secondary)}.messages{display:grid;gap:22px;min-height:220px;margin:0;padding:0;list-style:none}.turn{display:grid;gap:10px}.turn blockquote{max-width:78%;margin:0 0 0 auto;padding:12px 15px;border-radius:14px 14px 3px 14px;background:#dfeceb}.turn blockquote span,.assistant>span{display:block;margin-bottom:4px;color:var(--teal);font-size:11px;font-weight:800;letter-spacing:.08em}.assistant{max-width:86%;padding:14px 16px;border-left:4px solid var(--teal);background:rgba(255,255,255,.9);box-shadow:0 6px 18px rgba(29,55,58,.06)}.assistant p{margin:0}.assistant[data-state="failed_before_dispatch"]{border-left-color:var(--amber)}.handoffs{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:10px;margin:22px 0}.handoffs button{display:grid;gap:5px;min-height:112px;padding:14px;border:1px solid var(--color-border-default);border-top:4px solid var(--teal);border-radius:11px;background:white;text-align:left}.handoffs button[data-mode="plan_calendar"]{border-top-color:#3d70a6}.handoffs button[data-mode="sop"]{border-top-color:var(--amber)}.handoffs span,.handoffs small{color:var(--color-text-secondary);font-size:12px}.manual-route{padding:14px;border:1px dashed var(--amber);background:#fff8ef}.manual-route p{margin-top:0}.manual-route button{margin-right:8px;min-height:36px}.composer{display:grid;gap:8px;margin-top:22px;padding-top:16px;border-top:1px solid var(--color-border-default);background:var(--paper)}.composer label{font-weight:750}.composer textarea{width:100%;resize:vertical;padding:12px;border:1px solid #9cb1af;border-radius:12px;background:white;font:inherit;line-height:1.6}.composer>div{display:flex;align-items:center;justify-content:space-between;gap:15px}.composer small{color:var(--color-text-secondary)}.composer button{min-height:42px;padding:0 18px;border:0;border-radius:10px;background:var(--teal);color:white;font:inherit;font-weight:750}.side-notes{display:grid;align-content:start;gap:14px;padding:18px;background:#f2f5f1}.side-notes section{padding:15px;border:1px solid var(--color-border-default);border-radius:12px;background:white}.side-notes header{display:flex;align-items:center;justify-content:space-between}.side-notes header strong{font-size:28px;color:var(--teal)}.side-notes p{color:var(--color-text-secondary);font-size:13px}.recent{display:grid;gap:7px}.recent button{display:grid;gap:3px;padding:10px 0;border:0;border-bottom:1px solid var(--color-border-subtle);background:transparent;text-align:left}.recent strong{display:-webkit-box;overflow:hidden;-webkit-line-clamp:2;-webkit-box-orient:vertical}.recent small{color:var(--color-text-secondary)}.domain-band{display:grid;grid-template-columns:repeat(6,1fr);border:1px solid var(--color-border-default);border-radius:0 0 18px 18px;overflow:hidden;background:white}.domain-band>div{display:grid;gap:3px;min-height:74px;padding:12px;border-right:1px solid var(--color-border-subtle);background:white;text-align:left}.domain-band span{font-weight:750}.domain-band small{color:var(--color-text-secondary);font-size:11px}.notice,.error{margin:0;padding:10px 16px;border-inline:1px solid var(--color-border-default)}.notice{background:var(--teal-soft)}.error{background:#fff0ed;color:var(--red)}button:focus-visible,select:focus-visible,textarea:focus-visible{outline:3px solid #e29d45;outline-offset:2px}@media(max-width:980px){.desk__masthead{align-items:flex-start;flex-direction:column}.desk__body{grid-template-columns:1fr}.conversation{border-right:0}.side-notes{grid-template-columns:1fr 1fr}.domain-band{grid-template-columns:repeat(3,1fr)}}@media(max-width:640px){.desk__masthead,.conversation{padding:18px}.desk__tools{width:100%;align-items:stretch;flex-direction:column}.desk__tools label{width:100%}.turn blockquote,.assistant{max-width:100%}.composer>div{align-items:stretch;flex-direction:column}.side-notes{grid-template-columns:1fr}.domain-band{grid-template-columns:repeat(2,1fr)}}
+.desk{--ink:#233239;--paper:#fbfcfa;--teal:#176b6a;--teal-soft:#e8f2ef;--amber:#a45b16;--red:#9a3e35;color:var(--ink)}.desk__masthead{display:flex;align-items:end;justify-content:space-between;gap:24px;padding:22px 26px;border:1px solid var(--color-border-default);border-bottom:3px solid var(--teal);border-radius:18px 18px 0 0;background:linear-gradient(105deg,#f4f8f6,var(--paper) 60%)}.desk__masthead p{margin:0 0 4px;color:var(--teal);font-size:12px;font-weight:800;letter-spacing:.12em}.desk__masthead h1{max-width:720px;margin:0;font-family:"Microsoft YaHei UI","Noto Sans CJK SC",sans-serif;font-size:clamp(24px,3vw,38px);font-weight:760;letter-spacing:-.03em}.desk__tools{display:flex;align-items:end;gap:10px}.desk__tools label{display:grid;gap:5px;font-size:12px;font-weight:700}.desk__tools select,.desk__tools button{min-height:40px;padding:0 12px;border:1px solid var(--color-border-default);border-radius:10px;background:white;font:inherit}.desk__body{display:grid;grid-template-columns:minmax(0,1.75fr) minmax(260px,.72fr);border-right:1px solid var(--color-border-default);border-left:1px solid var(--color-border-default);background:var(--paper)}.conversation{min-width:0;padding:24px 26px;border-right:1px solid var(--color-border-default);background:repeating-linear-gradient(to bottom,transparent 0,transparent 37px,rgba(54,87,91,.055) 38px)}.opening{min-height:230px;display:grid;align-content:center;justify-items:center;text-align:center}.opening p{font-size:18px;font-weight:700}.opening ul{display:grid;gap:8px;padding:0;list-style:none;color:var(--color-text-secondary)}.messages{display:grid;gap:22px;min-height:220px;margin:0;padding:0;list-style:none}.turn{display:grid;gap:10px}.turn blockquote{max-width:78%;margin:0 0 0 auto;padding:12px 15px;border-radius:14px 14px 3px 14px;background:#dfeceb}.turn blockquote span,.assistant>span{display:block;margin-bottom:4px;color:var(--teal);font-size:11px;font-weight:800;letter-spacing:.08em}.assistant{max-width:86%;padding:14px 16px;border-left:4px solid var(--teal);background:rgba(255,255,255,.9);box-shadow:0 6px 18px rgba(29,55,58,.06)}.assistant p{margin:0}.assistant[data-state="failed_before_dispatch"]{border-left-color:var(--amber)}.handoffs{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:10px;margin:22px 0}.handoffs button{display:grid;gap:5px;min-height:112px;padding:14px;border:1px solid var(--color-border-default);border-top:4px solid var(--teal);border-radius:11px;background:white;text-align:left}.handoffs button[data-mode="plan_calendar"]{border-top-color:#3d70a6}.handoffs button[data-mode="sop"]{border-top-color:var(--amber)}.handoffs span,.handoffs small{color:var(--color-text-secondary);font-size:12px}.manual-route{padding:14px;border:1px dashed var(--amber);background:#fff8ef}.manual-route p{margin-top:0}.manual-route button{margin-right:8px;min-height:36px}.composer{display:grid;gap:8px;margin-top:22px;padding-top:16px;border-top:1px solid var(--color-border-default);background:var(--paper)}.composer label{font-weight:750}.composer textarea{width:100%;resize:vertical;padding:12px;border:1px solid #9cb1af;border-radius:12px;background:white;font:inherit;line-height:1.6}.composer>div{display:flex;align-items:center;justify-content:space-between;gap:15px}.composer small{color:var(--color-text-secondary)}.composer button{min-height:42px;padding:0 18px;border:0;border-radius:10px;background:var(--teal);color:white;font:inherit;font-weight:750}.side-notes{display:grid;align-content:start;gap:14px;padding:18px;background:#f2f5f1}.side-notes section{padding:15px;border:1px solid var(--color-border-default);border-radius:12px;background:white}.side-notes header{display:flex;align-items:center;justify-content:space-between}.side-notes header strong{font-size:28px;color:var(--teal)}.side-notes p{color:var(--color-text-secondary);font-size:13px}.recent,.near-work{display:grid;gap:7px}.recent button,.near-work button{display:grid;gap:3px;padding:10px 0;border:0;border-bottom:1px solid var(--color-border-subtle);background:transparent;text-align:left}.recent strong,.near-work strong{display:-webkit-box;overflow:hidden;-webkit-line-clamp:2;-webkit-box-orient:vertical}.recent small,.near-work small{color:var(--color-text-secondary)}.domain-band{display:grid;grid-template-columns:repeat(6,1fr);border:1px solid var(--color-border-default);border-radius:0 0 18px 18px;overflow:hidden;background:white}.domain-band>div{display:grid;gap:3px;min-height:74px;padding:12px;border-right:1px solid var(--color-border-subtle);background:white;text-align:left}.domain-band span{font-weight:750}.domain-band small{color:var(--color-text-secondary);font-size:11px}.notice,.error{margin:0;padding:10px 16px;border-inline:1px solid var(--color-border-default)}.notice{background:var(--teal-soft)}.error{background:#fff0ed;color:var(--red)}button:focus-visible,select:focus-visible,textarea:focus-visible{outline:3px solid #e29d45;outline-offset:2px}@media(max-width:980px){.desk__masthead{align-items:flex-start;flex-direction:column}.desk__body{grid-template-columns:1fr}.conversation{border-right:0}.side-notes{grid-template-columns:1fr 1fr}.domain-band{grid-template-columns:repeat(3,1fr)}}@media(max-width:640px){.desk__masthead,.conversation{padding:18px}.desk__tools{width:100%;align-items:stretch;flex-direction:column}.desk__tools label{width:100%}.turn blockquote,.assistant{max-width:100%}.composer>div{align-items:stretch;flex-direction:column}.side-notes{grid-template-columns:1fr}.domain-band{grid-template-columns:repeat(2,1fr)}}
 </style>

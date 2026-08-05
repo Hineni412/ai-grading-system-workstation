@@ -6,6 +6,8 @@ from contextlib import closing
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from backend.class_teacher.intake.ports import SharedWorkspaceAITaskPort
 from backend.class_teacher.vault_service import VaultService
 from backend.jobs.manager import JobManager
@@ -172,6 +174,60 @@ def test_shared_failure_is_synchronized_without_a_second_model_send(tmp_path: Pa
         manager.shutdown()
 
 
+def test_receipt_recovery_converges_domain_and_common_handoffs(tmp_path: Path, monkeypatch) -> None:
+    domain, common, manager, _configured = _wired(tmp_path, _triage())
+    try:
+        conversation = domain.intake.start_conversation()
+        queued = domain.intake.append_turn(
+            conversation_id=str(conversation["conversation_id"]),
+            expected_revision=int(conversation["revision"]),
+            message="合成采用恢复内容",
+            operation_id="shared-adoption-recovery-task",
+        )
+        task_id = str(queued["turns"][-1]["task_id"])
+        started = common.get(task_id=task_id)
+        assert started.job_id is not None
+        manager.wait(started.job_id, timeout=5)
+        ready = domain.intake.get_conversation(str(conversation["conversation_id"]))
+        handoff = domain.intake.open_handoff(str(ready["handoffs"][0]["handoff_id"]))
+
+        original_mark = domain.intake.adoption._mark_adopted
+        calls = 0
+
+        def interrupt_once(handoff_id, receipt):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise RuntimeError("synthetic crash after domain receipt")
+            original_mark(handoff_id, receipt)
+
+        monkeypatch.setattr(domain.intake.adoption, "_mark_adopted", interrupt_once)
+        with pytest.raises(RuntimeError, match="synthetic crash"):
+            domain.intake.adopt_handoff(
+                token="",
+                handoff_id=str(handoff["handoff_id"]),
+                draft_revision=int(handoff["draft_revision"]),
+                target_revision="new",
+                operation_id="ignored-first-adoption",
+            )
+        interrupted = domain.intake.get_conversation(str(conversation["conversation_id"]))
+        assert interrupted["handoffs"][0]["adoption_state"] == "adoption_started"
+
+        receipt = domain.intake.adopt_handoff(
+            token="",
+            handoff_id=str(handoff["handoff_id"]),
+            draft_revision=int(handoff["draft_revision"]),
+            target_revision="new",
+            operation_id="ignored-recovered-adoption",
+        )
+        recovered = domain.intake.get_conversation(str(conversation["conversation_id"]))
+        assert receipt["adoption_id"] == common.get(task_id=task_id).handoffs[0].adoption_id
+        assert recovered["handoffs"][0]["adoption_state"] == "adopted"
+        assert recovered["state"] == "teacher_confirmed"
+    finally:
+        manager.shutdown()
+
+
 def test_successful_draft_revision_supersedes_only_the_old_common_handoff(tmp_path: Path) -> None:
     domain, common, manager, configured = _wired(tmp_path, _triage())
     try:
@@ -204,6 +260,8 @@ def test_successful_draft_revision_supersedes_only_the_old_common_handoff(tmp_pa
         )
         revised_task_id = str(revision["task_id"])
         revised_started = common.get(task_id=revised_task_id)
+        assert revised_started.source_ref.kind == "handoff"
+        assert revised_started.source_ref.id == handoff["handoff_id"]
         assert revised_started.job_id is not None
         manager.wait(revised_started.job_id, timeout=5)
         domain.intake.get_draft_revision(str(revision["request_id"]))

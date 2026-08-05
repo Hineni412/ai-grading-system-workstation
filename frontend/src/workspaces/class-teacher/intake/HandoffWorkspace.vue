@@ -232,6 +232,7 @@ onMounted(() => { void load() })
     <section class="ai-revision" aria-labelledby="ai-revision-title"><div><h2 id="ai-revision-title">让 AI 调整这份草稿</h2><p>这会建立一次新的、最多发送一次的模型任务；只更新草稿，不会正式保存。</p></div><textarea v-model="revisionInstruction" rows="2" maxlength="2000" placeholder="例如：把行动拆得更细，但保留原截止时间"></textarea><button type="button" :disabled="busy || !revisionInstruction.trim()" @click="requestRevision">提交调整</button></section>
     <footer><button type="button" :disabled="busy" @click="discard">丢弃草稿</button><span>草稿版本 {{ draft.draft_revision }}</span><button type="button" :disabled="busy" @click="save">保存草稿</button><button class="primary" type="button" :disabled="busy" @click="adopt">{{ draft.handling_mode === 'record' ? '确认保存记录' : draft.handling_mode === 'plan_calendar' ? '确认加入计划／日历' : '确认建立 SOP' }}</button></footer>
   </section>
+  <section v-else-if="error" class="loading error" role="alert">{{ error }}</section>
   <section v-else class="loading" aria-live="polite">正在打开草稿…</section>
 </template>
 

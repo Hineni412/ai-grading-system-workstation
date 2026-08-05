@@ -82,7 +82,13 @@ class HandoffAdoption:
         return {**receipt, "replayed": False}
 
     def find_receipt(self, adoption_id: str) -> dict[str, object] | None:
-        return self._receipt(adoption_id)
+        receipt = self._receipt(adoption_id)
+        if receipt is not None:
+            # The formal object and receipt commit in the domain transaction.
+            # A crash can still happen before the ordinary intake projection is
+            # updated, so receipt lookup is also the idempotent recovery seam.
+            self._mark_adopted(str(receipt["handoff_id"]), receipt)
+        return receipt
 
     def _bind_adoption_id(self, handoff_id: str, adoption_id: str) -> None:
         with closing(self.conversations.database.connect()) as connection:

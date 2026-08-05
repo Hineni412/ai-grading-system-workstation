@@ -113,7 +113,10 @@ class ClassTeacherAITaskAdapter:
         return AdapterResult(
             proposal_ref_id=str(reference["id"]),
             proposal_revision=str(reference["revision"]),
-            handoffs=tuple(self._handoff(item) for item in proposal["handoffs"]),
+            handoffs=tuple(
+                self._handoff(item, expires_on_source_change=revision_ref is None)
+                for item in proposal["handoffs"]
+            ),
             needs_input=bool(proposal["needs_input"]),
         )
 
@@ -149,11 +152,6 @@ class ClassTeacherAITaskAdapter:
     ) -> DomainModelRequest:
         if task_kind not in self.task_kinds:
             raise VaultError("class_teacher_task_kind_invalid", "班主任 AI 任务类型无效", status_code=422)
-        if source_ref.get("kind") != "conversation":
-            raise VaultError("class_teacher_source_ref_invalid", "班主任 AI 任务来源无效", status_code=422)
-        conversation = self.conversations.get(str(source_ref.get("id") or ""))
-        if str(conversation["revision"]) != str(source_ref.get("revision") or ""):
-            raise VaultError("class_teacher_source_revision_conflict", "会话已变化，请从最新内容重新整理", status_code=409)
         if task_kind == "class_teacher.draft_revision":
             revision_ref = next((item for item in context_refs if item.get("kind") == "draft_revision_request"), None)
             handoff_ref = next((item for item in context_refs if item.get("kind") == "handoff"), None)
@@ -167,6 +165,10 @@ class ClassTeacherAITaskAdapter:
             if (
                 str(request.get("handoff_id") or "") != str(handoff_ref.get("id") or "")
                 or str(request.get("source_draft_revision") or "") != str(handoff_ref.get("revision") or "")
+                or str(handoff.get("draft_revision") or "") != str(handoff_ref.get("revision") or "")
+                or source_ref.get("kind") != "handoff"
+                or str(source_ref.get("id") or "") != str(handoff_ref.get("id") or "")
+                or str(source_ref.get("revision") or "") != str(handoff_ref.get("revision") or "")
             ):
                 raise VaultError("class_teacher_draft_conflict", "草稿调整引用已经变化", status_code=409)
             return DomainModelRequest(
@@ -178,6 +180,11 @@ class ClassTeacherAITaskAdapter:
                     {"role": "user", "content": "调整要求：" + str(request.get("instruction") or "")},
                 ),
             )
+        if source_ref.get("kind") != "conversation":
+            raise VaultError("class_teacher_source_ref_invalid", "班主任 AI 任务来源无效", status_code=422)
+        conversation = self.conversations.get(str(source_ref.get("id") or ""))
+        if str(conversation["revision"]) != str(source_ref.get("revision") or ""):
+            raise VaultError("class_teacher_source_revision_conflict", "会话已变化，请从最新内容重新整理", status_code=409)
         turn_ids = {str(item.get("id") or "") for item in context_refs if item.get("kind") == "turn"}
         messages: list[dict[str, str]] = [{"role": "system", "content": _TRIAGE_INSTRUCTION}]
         candidates = self.class_roster.ai_candidates(
@@ -318,7 +325,11 @@ class ClassTeacherAITaskAdapter:
             )
 
     @staticmethod
-    def _handoff(item: Mapping[str, object]) -> HandoffDraft:
+    def _handoff(
+        item: Mapping[str, object],
+        *,
+        expires_on_source_change: bool,
+    ) -> HandoffDraft:
         missing = item.get("missing_fields") if isinstance(item.get("missing_fields"), list) else []
         refs = item.get("subject_refs") if isinstance(item.get("subject_refs"), list) else []
         return HandoffDraft(
@@ -332,7 +343,7 @@ class ClassTeacherAITaskAdapter:
             source_turn_id=str(item["turn_id"]),
             return_destination_key="class_teacher.home",
             return_focus_ref=str(item["work_item_id"]),
-            expires_on_source_change=False,
+            expires_on_source_change=expires_on_source_change,
         )
 
 

@@ -71,6 +71,20 @@ afterEach(() => {
 })
 
 describe('B-UI-R7 handoff workspaces', () => {
+  it('shows a readable error instead of an endless loading state when the draft cannot open', async () => {
+    vi.spyOn(intakeApi, 'handoff').mockRejectedValue(new Error('synthetic unavailable'))
+    const host = document.createElement('div')
+    document.body.append(host)
+    const app = createApp(HandoffWorkspace, { handoffId: 'handoff-error-01', token: '' })
+    app.mount(host)
+    mounted.push(app)
+    await settle()
+
+    expect(host.textContent).toContain('草稿暂时无法打开')
+    expect(host.textContent).not.toContain('正在打开草稿')
+    expect(host.querySelector('[role="alert"]')).not.toBeNull()
+  })
+
   it('keeps a student record as a draft until the teacher selects one opaque subject and confirms', async () => {
     const initial = draft()
     const update = vi.spyOn(intakeApi, 'updateDraft').mockImplementation(async (_current, content, refs) => ({

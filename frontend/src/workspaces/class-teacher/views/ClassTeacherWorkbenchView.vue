@@ -74,6 +74,7 @@ function handoffCompleted(conversationId: string): void {
         :focus-work-item-id="routeState.workItemId"
         @conversation-changed="rememberConversation"
         @open-handoff="openHandoff"
+        @open-calendar="selectSurface('calendar')"
       />
       <CalendarSurface
         v-else-if="routeState.surface === 'calendar'"
