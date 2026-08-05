@@ -19,6 +19,7 @@ from .students import router as students_router
 from .templates import router as templates_router
 from .training import router as training_router
 from .workbench import router as workbench_router
+from .workspace_ai_tasks import router as workspace_ai_tasks_router
 
 __all__ = [
     "ai_diagnostics_router",
@@ -42,4 +43,5 @@ __all__ = [
     "templates_router",
     "training_router",
     "workbench_router",
+    "workspace_ai_tasks_router",
 ]

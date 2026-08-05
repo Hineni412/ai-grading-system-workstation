@@ -105,4 +105,40 @@ describe('workspace registry', () => {
       }),
     ])).toThrow(/Workspace teaching-prep enablement failed/)
   })
+
+  it('validates ordered destination-key sub-navigation without URLs', () => {
+    const registry = createWorkspaceRegistry([
+      manifest('class-teacher', {
+        subNavigation: [
+          {
+            destinationKey: 'class_teacher.home',
+            label: '首页',
+            order: 10,
+            query: { view: 'home' },
+          },
+          {
+            destinationKey: 'class_teacher.plan.calendar',
+            label: '日历',
+            order: 20,
+            query: { view: 'calendar' },
+          },
+        ],
+      }),
+    ])
+    expect(registry.modules[0]?.manifest.subNavigation?.map(item => item.label)).toEqual([
+      '首页',
+      '日历',
+    ])
+
+    expect(() => createWorkspaceRegistry([
+      manifest('teaching-prep', {
+        subNavigation: [{
+          destinationKey: 'class_teacher.home',
+          label: '越界入口',
+          order: 10,
+          query: { url: 'https://example.invalid' },
+        }],
+      }),
+    ])).toThrow(/sub-navigation is invalid/)
+  })
 })

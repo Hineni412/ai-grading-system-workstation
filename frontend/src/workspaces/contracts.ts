@@ -9,6 +9,13 @@ export type WorkspaceDataClassification =
   | 'confidential'
   | 'restricted'
 
+export interface WorkspaceSubNavigationItem {
+  destinationKey: string
+  label: string
+  order: number
+  query: Readonly<Record<string, string>>
+}
+
 export interface WorkspaceManifest {
   moduleId: WorkspaceModuleId
   displayName: string
@@ -24,6 +31,7 @@ export interface WorkspaceManifest {
   description: string
   breadcrumb: string
   topbarContext: WorkspaceTopbarContext
+  subNavigation?: readonly WorkspaceSubNavigationItem[]
 }
 
 export interface WorkspaceManifestModule {

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from copy import deepcopy
 from pathlib import Path
+from types import SimpleNamespace
+import zipfile
 
 import pytest
 
@@ -18,8 +20,10 @@ from .test_a01_foundation import _migrated_service
 from .test_a02_catalog import _api_client
 from .test_a05_resource_packs import (
     _evidence_fakes,
+    _freeze,
     _freeze_ready_setup,
 )
+from .test_a03_material_units import _pptx
 from .test_a08_pptx_execution import _approved_plan, _sha256
 from .test_a11_semester_workspace import _semester
 
@@ -91,6 +95,109 @@ def test_lesson_statuses_are_projected_in_one_semester_query(
     assert all(item["manual_progress"] == "not_started" for item in statuses)
     assert all(item["preparation_stage"] == "select" for item in statuses)
     assert all("latest" in item and "blockers" in item for item in statuses)
+
+
+def test_latest_material_source_version_marks_dependent_home_cells_stale(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _paths, service = _migrated_service(tmp_path, monkeypatch)
+    question_reader, assessment_reader = _evidence_fakes()
+    service.question_evidence_reader = question_reader
+    service.assessment_evidence_reader = assessment_reader
+    lesson_id, reference_link, _candidate = _freeze_ready_setup(service, tmp_path)
+    curriculum = service.list_curricula()[0]
+    semester, _created = service.create_semester(
+        request_token="a12-stale-semester",
+        curriculum_id=curriculum.id,
+        school_year="2026-2027",
+        term="first",
+        planned_new_lesson_count=48,
+    )
+    pack, _created = _freeze(
+        service,
+        token="a12-stale-pack",
+        lesson_id=lesson_id,
+        reference_link_id=reference_link.id,
+    )
+    service.generate_lesson_draft(
+        pack.id,
+        operation_id="a12-stale-local-draft",
+        mode="local_template",
+        confirmed=True,
+    )
+    before = next(
+        item for item in service.list_lesson_preparation_statuses(semester.id)
+        if item["lesson_node_id"] == lesson_id
+    )
+    old_version = service.get_material_version(reference_link.material_version_id)
+    replacement_path = _pptx(tmp_path / "a12-reference-v2.pptx")
+    with zipfile.ZipFile(replacement_path, "a") as archive:
+        archive.writestr("docProps/a12-version.txt", "synthetic-v2")
+    replacement, created = service.register_material_file(
+        request_token="a12-reference-v2",
+        path=replacement_path,
+        display_name=old_version.display_name,
+        source_id=old_version.source_id,
+    )
+
+    assert created is True
+    assert replacement.id != old_version.id
+    assert service.resource_pack_status(lesson_id)["local_sources_changed"] is True
+    after = next(
+        item for item in service.list_lesson_preparation_statuses(semester.id)
+        if item["lesson_node_id"] == lesson_id
+    )
+    assert after["cells"]["materials"]["status"] == "stale"
+    assert after["cells"]["plan"]["status"] == "stale"
+    assert after["cells"]["exercises"]["status"] == "stale"
+    assert after["next_action"] == "重新核对资料"
+    assert after["summary_revision"] != before["summary_revision"]
+
+
+def test_lesson_statuses_include_only_actionable_public_ai_tasks(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _paths, service = _migrated_service(tmp_path, monkeypatch)
+    semester, lesson_ids = _semester(service)
+    lesson_id = lesson_ids[0]
+
+    def task(task_id: str, status: str, adoption_state: str | None = None):
+        handoffs = () if adoption_state is None else (
+            SimpleNamespace(
+                adoption_state=adoption_state,
+                subject_refs=(SimpleNamespace(kind="lesson", id=lesson_id),),
+            ),
+        )
+        return SimpleNamespace(
+            task_id=task_id,
+            module="teaching_prep",
+            task_kind="teaching_prep.lesson_plan",
+            status=status,
+            source_ref=SimpleNamespace(kind="lesson", id=lesson_id),
+            proposal_ref_id=(None if status in {"queued", "running"} else f"proposal-{task_id}"),
+            proposal_revision=(None if status in {"queued", "running"} else "1"),
+            pending_count=(1 if adoption_state in {"pending", "opened", "adoption_started"} else 0),
+            handoffs=handoffs,
+        )
+
+    statuses = service.list_lesson_preparation_statuses(
+        semester.id,
+        ai_tasks=(
+            task("queued-task", "queued"),
+            task("pending-proposal", "proposal_ready", "pending"),
+            task("adopted-proposal", "proposal_ready", "adopted"),
+            task("discarded-proposal", "proposal_ready", "discarded"),
+        ),
+    )
+    lesson = next(item for item in statuses if item["lesson_node_id"] == lesson_id)
+
+    assert [item["task_id"] for item in lesson["ai_tasks"]] == [
+        "queued-task",
+        "pending-proposal",
+    ]
+    assert lesson["ai_tasks"][0]["proposal_ref_id"] is None
 
 
 def test_reference_snapshot_limits_model_input_and_review_never_verifies_answer(

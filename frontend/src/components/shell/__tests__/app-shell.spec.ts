@@ -154,11 +154,11 @@ describe('AppShell', () => {
       expect(topbar?.querySelector('label[for="current-session"]')).toBeNull()
       expect(topbar?.querySelector('#current-session')).toBeNull()
       expect(topbar?.textContent).not.toContain('当前考试')
-      const workspaceNavigation = topbar?.querySelector('#teaching-prep-topbar-tabs')
+      const workspaceNavigation = topbar?.querySelector('#workspace-topbar-tabs')
       expect(workspaceNavigation !== null).toBe(path === '/teaching-prep')
       expect([...workspaceNavigation?.querySelectorAll('button') ?? []].map(
         button => button.textContent?.trim(),
-      )).toEqual(path === '/teaching-prep' ? ['资料库', '课时', '备课', '课件'] : [])
+      )).toEqual(path === '/teaching-prep' ? ['备课首页', '资料库'] : [])
 
       app.unmount()
     },

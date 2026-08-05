@@ -4,20 +4,25 @@ import { computed, reactive, ref, watch } from 'vue'
 import type { ExerciseRegionInput } from '../api/catalog'
 import type { ExerciseSuggestion, ReferenceSelectionPayload } from '../api/workbench'
 import { teachingPrepWorkbenchApi } from '../api/workbench'
+import { useWorkspaceAITaskStore } from '../../shared/ai-tasks/store'
 import TeachingPrepDocumentWorkspace from '../components/TeachingPrepDocumentWorkspace.vue'
 import TeachingPrepStickyActions from '../components/TeachingPrepStickyActions.vue'
 import { useTeachingPrepWorkbenchContext } from '../workbench/context'
 
 const workbench = useTeachingPrepWorkbenchContext()
+const aiTasks = useWorkspaceAITaskStore()
 const selectedLinks = ref<string[]>([])
 const selectedCandidates = ref<string[]>([])
 const teacherContext = ref('')
-const activePreviewUrl = ref<string | null>(null)
+const activePreviewUnitId = ref<string | null>(null)
+const previewZoom = ref(100)
+const previewFitWidth = ref(false)
 const message = ref('先限定本节允许使用的资料，再决定是否让 AI 提出候选题。')
 const capacity = ref<Record<string, unknown> | null>(null)
 const editedMinutes = reactive<Record<string, number>>({})
 const showManualEditor = ref(false)
 const manualRegions = ref<Array<ExerciseRegionInput & { key: string; role: 'question' | 'answer' }>>([])
+const handledTaskRevisions = new Set<string>()
 const manualForm = reactive({
   unitId: '',
   role: 'question' as 'question' | 'answer',
@@ -36,6 +41,13 @@ const suggestions = computed(() => workbench.activeSuggestionRun.value?.suggesti
 const acceptedSuggestions = computed(() => suggestions.value.filter(item => (
   item.decision === 'accepted' || item.decision === 'modified'
 )))
+const currentLessonTask = (kind: string) => aiTasks.orderedTasks.find(task => (
+  task.module === 'teaching_prep'
+  && task.task_kind === kind
+  && task.source_ref.kind === 'lesson'
+  && task.source_ref.id === workbench.catalog.selectedLessonId
+)) ?? null
+const exerciseTask = computed(() => currentLessonTask('teaching_prep.exercise_suggestions'))
 const selectedPack = computed(() => workbench.catalog.resourcePacks.find(
   item => item.id === workbench.catalog.selectedResourcePackId,
 ) ?? workbench.catalog.resourcePacks[0] ?? null)
@@ -47,6 +59,15 @@ const canFreeze = computed(() => selectedLinks.value.length > 0)
 const manualUnitOptions = computed(() => references.value.flatMap(link => (
   selectedLinks.value.includes(link.link_id) ? link.units : []
 )))
+const previewUnits = computed(() => references.value.flatMap(link => (
+  link.units.map(unit => ({ ...unit, material_name: link.material_name }))
+)))
+const activePreviewUnitIndex = computed(() => Math.max(
+  0,
+  previewUnits.value.findIndex(item => item.unit_id === activePreviewUnitId.value),
+))
+const activePreviewUnit = computed(() => previewUnits.value[activePreviewUnitIndex.value] ?? null)
+const activePreviewUrl = computed(() => activePreviewUnit.value?.preview_url ?? null)
 
 watch(preflight, (next) => {
   if (!next) return
@@ -55,11 +76,45 @@ watch(preflight, (next) => {
     ? saved.material_selections.map(item => item.link_id)
     : next.catalog.material_links.map(item => item.link_id)
   teacherContext.value = saved?.teacher_context ?? ''
-  activePreviewUrl.value = next.catalog.material_links[0]?.units[0]?.preview_url ?? null
+  if (!previewUnits.value.some(item => item.unit_id === activePreviewUnitId.value)) {
+    activePreviewUnitId.value = previewUnits.value[0]?.unit_id ?? null
+  }
   if (!manualUnitOptions.value.some(item => item.unit_id === manualForm.unitId)) {
     manualForm.unitId = manualUnitOptions.value[0]?.unit_id ?? ''
   }
 }, { immediate: true })
+
+function movePreview(offset: number): void {
+  const nextIndex = Math.min(
+    previewUnits.value.length - 1,
+    Math.max(0, activePreviewUnitIndex.value + offset),
+  )
+  activePreviewUnitId.value = previewUnits.value[nextIndex]?.unit_id ?? null
+}
+
+function jumpPreview(event: Event): void {
+  const requested = Math.trunc(Number((event.target as HTMLInputElement).value)) - 1
+  if (!Number.isFinite(requested) || requested < 0 || requested >= previewUnits.value.length) return
+  activePreviewUnitId.value = previewUnits.value[requested]?.unit_id ?? null
+}
+
+function selectPreviewUnit(event: Event): void {
+  activePreviewUnitId.value = (event.target as HTMLSelectElement).value || null
+}
+
+function adjustPreviewZoom(delta: number): void {
+  previewFitWidth.value = false
+  previewZoom.value = Math.min(200, Math.max(50, previewZoom.value + delta))
+}
+
+function withSemesterContext(
+  refs: Array<{ kind: string; id: string; revision: string }>,
+): Array<{ kind: string; id: string; revision: string }> {
+  const semester = workbench.catalog.selectedSemester
+  return semester
+    ? [...refs, { kind: 'semester', id: semester.id, revision: String(semester.revision) }]
+    : refs
+}
 
 function selectionPayload(): ReferenceSelectionPayload {
   if (!preflight.value || !preferences.value) throw new Error('参考资料或备课偏好尚未载入')
@@ -82,9 +137,9 @@ function selectionPayload(): ReferenceSelectionPayload {
   }
 }
 
-async function saveSelection(): Promise<void> {
+async function saveSelection(): Promise<boolean> {
   const lessonId = workbench.catalog.selectedLessonId
-  if (!lessonId || !preflight.value) return
+  if (!lessonId || !preflight.value) return false
   workbench.setDirty('参考范围')
   try {
     await teachingPrepWorkbenchApi.saveReferenceDraft(lessonId, {
@@ -95,32 +150,46 @@ async function saveSelection(): Promise<void> {
     workbench.setDirty(null)
     message.value = '参考范围已保存。AI 只会看到这些资料与页段。'
     await workbench.refreshCurrentWorkspace()
+    return true
   } catch {
     message.value = '保存失败，当前勾选仍保留在页面中；请刷新来源后重试。'
+    return false
   }
 }
 
 async function startSuggestions(): Promise<void> {
-  await saveSelection()
+  if (!await saveSelection()) return
   const current = workbench.referencePreflight.value
-  if (!current?.draft) return
+  const lesson = workbench.catalog.selectedLesson
+  if (!current?.draft || !lesson) return
   const snapshot = await teachingPrepWorkbenchApi.freezeReferenceSnapshot(
     current.lesson_node_id,
     `reference-snapshot-${crypto.randomUUID().replaceAll('-', '')}`,
     current.draft.revision,
   )
-  const run = await teachingPrepWorkbenchApi.startExerciseSuggestions(
-    snapshot.id,
-    `exercise-suggestions-${crypto.randomUUID().replaceAll('-', '')}`,
-  )
-  workbench.watchSuggestionRun(run)
-  message.value = '候选识别已开始；不会自动采用题目，也不会读取未勾选资料。'
+  const operationId = `exercise-suggestions-${crypto.randomUUID().replaceAll('-', '')}`
+  const prepared = await aiTasks.prepare({
+    operation_id: operationId,
+    module: 'teaching_prep',
+    task_kind: 'teaching_prep.exercise_suggestions',
+    source_ref: { kind: 'lesson', id: lesson.id, revision: String(lesson.revision) },
+    context_refs: withSemesterContext([{
+      kind: 'reference_snapshot',
+      id: snapshot.id,
+      revision: snapshot.source_state_sha256,
+    }]),
+    prompt_contract_version: 'teaching-prep-exercise-v1',
+    model_destination_fingerprint: current.model_destination_fingerprint,
+    return_target: 'teaching_prep.lesson.exercises',
+  })
+  await aiTasks.dispatch(prepared)
+  message.value = '候选识别已进入统一任务抽屉；不会自动采用题目，也不会读取未勾选资料。'
 }
 
 async function cancelSuggestions(): Promise<void> {
-  const run = workbench.activeSuggestionRun.value
-  if (!run) return
-  workbench.watchSuggestionRun(await teachingPrepWorkbenchApi.cancelExerciseSuggestions(run.id))
+  const task = exerciseTask.value
+  if (!task) return
+  await aiTasks.cancel(task.task_id)
   message.value = '已取消后续候选识别，已经保存的参考范围仍在。'
 }
 
@@ -237,10 +306,29 @@ async function generateDraft(mode: 'local_template' | 'model'): Promise<void> {
     message.value = '当前未配置模型，可继续使用本地结构草稿；没有产生调用或费用。'
     return
   }
+  if (mode === 'model') {
+    const lesson = workbench.catalog.selectedLesson
+    const pack = selectedPack.value
+    const preflight = workbench.catalog.lessonDraftPreflight
+    if (!lesson || !pack || !preflight) return
+    const prepared = await aiTasks.prepare({
+      operation_id: `lesson-plan-${crypto.randomUUID().replaceAll('-', '')}`,
+      module: 'teaching_prep',
+      task_kind: 'teaching_prep.lesson_plan',
+      source_ref: { kind: 'lesson', id: lesson.id, revision: String(lesson.revision) },
+      context_refs: withSemesterContext([{ kind: 'resource_pack', id: pack.id, revision: pack.pack_sha256 }]),
+      prompt_contract_version: 'teaching-prep-lesson-plan-v1',
+      model_destination_fingerprint: preflight.model_destination_fingerprint,
+      return_target: 'teaching_prep.lesson.plan',
+    })
+    await aiTasks.dispatch(prepared)
+    message.value = '模型课堂方案已进入统一任务抽屉；完成后仍需教师确认。'
+    return
+  }
   await workbench.catalog.generateLessonDraft(mode)
   const draft = workbench.catalog.lessonDrafts[0]
   if (draft) await workbench.catalog.selectLessonDraft(draft)
-  message.value = mode === 'model' ? '模型草稿已生成，仍需教师确认。' : '本地结构草稿已生成。'
+  message.value = '本地结构草稿已生成。'
 }
 
 async function previewCapacity(): Promise<void> {
@@ -267,10 +355,55 @@ async function confirmDraft(): Promise<void> {
 }
 
 async function createSlidePlan(): Promise<void> {
-  if (!selectedDraft.value) return
-  await workbench.catalog.createSlidePlan(selectedDraft.value)
-  await workbench.openStage('slides')
+  const draft = selectedDraft.value
+  const lesson = workbench.catalog.selectedLesson
+  if (!draft || !lesson) return
+  const prepared = await aiTasks.prepare({
+    operation_id: `slide-proposal-${crypto.randomUUID().replaceAll('-', '')}`,
+    module: 'teaching_prep',
+    task_kind: 'teaching_prep.slide_change_proposal',
+    source_ref: { kind: 'lesson', id: lesson.id, revision: String(lesson.revision) },
+    context_refs: withSemesterContext([{ kind: 'lesson_draft', id: draft.id, revision: String(draft.version_number) }]),
+    prompt_contract_version: 'teaching-prep-slide-proposal-v1',
+    model_destination_fingerprint: await localContractFingerprint('teaching-prep-local-slide-v1'),
+    return_target: 'teaching_prep.lesson.slides',
+  })
+  await aiTasks.dispatch(prepared)
+  await workbench.openStage('slides', { panel: 'slides' })
 }
+
+async function localContractFingerprint(value: string): Promise<string> {
+  const bytes = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value))
+  return [...new Uint8Array(bytes)].map(item => item.toString(16).padStart(2, '0')).join('')
+}
+
+watch(
+  () => aiTasks.orderedTasks.map(task => `${task.task_id}:${task.revision}`).join('|'),
+  async () => {
+    const lessonId = workbench.catalog.selectedLessonId
+    if (!lessonId) return
+    for (const task of aiTasks.orderedTasks) {
+      const key = `${task.task_id}:${task.revision}`
+      if (
+        handledTaskRevisions.has(key)
+        || task.source_ref.kind !== 'lesson'
+        || task.source_ref.id !== lessonId
+        || !['proposal_ready', 'needs_input'].includes(task.status)
+        || !task.proposal_ref_id
+      ) continue
+      handledTaskRevisions.add(key)
+      if (task.task_kind === 'teaching_prep.exercise_suggestions') {
+        workbench.watchSuggestionRun(
+          await teachingPrepWorkbenchApi.exerciseSuggestionRun(task.proposal_ref_id),
+        )
+      } else if (['teaching_prep.lesson_plan', 'teaching_prep.slide_change_proposal'].includes(task.task_kind)) {
+        const lesson = workbench.catalog.selectedLesson
+        if (lesson) await workbench.catalog.selectLesson(lesson)
+      }
+    }
+  },
+  { immediate: true },
+)
 </script>
 
 <template>
@@ -278,16 +411,26 @@ async function createSlidePlan(): Promise<void> {
     <header class="tp-workspace__header">
       <div>
         <p class="tp-eyebrow">本节备课</p>
-        <h1 data-workbench-title tabindex="-1">限定来源，确定课堂方案</h1>
+        <h1 data-workbench-title tabindex="-1">{{ workbench.stage.value === 'materials' ? '限定本节来源与候选练习' : '确定课堂方案与容量' }}</h1>
         <p>教师先圈定资料池；教辅答案和参考课件都可不提供。没有答案时只保留题目原图，不会自动补答案截图。</p>
       </div>
       <span class="tp-trust-badge">只读所选来源</span>
     </header>
 
+    <nav v-if="workbench.stage.value === 'materials'" class="tp-local-panels" aria-label="核资料子页面">
+      <button type="button" :aria-current="workbench.panel.value === 'sources' ? 'page' : undefined" @click="workbench.openPanel('sources')">来源范围</button>
+      <button type="button" :aria-current="workbench.panel.value === 'exercises' ? 'page' : undefined" @click="workbench.openPanel('exercises')">候选练习</button>
+    </nav>
+
     <TeachingPrepDocumentWorkspace
+      v-if="workbench.stage.value === 'materials' && workbench.panel.value === 'sources'"
       title="本节参考范围"
       subtitle="勾选资料版本与页段，点击来源可查看原页。"
       :preview-url="activePreviewUrl"
+      :active-pane="workbench.pane.value"
+      :preview-zoom="previewZoom"
+      :fit-width="previewFitWidth"
+      @update:active-pane="workbench.setPane"
     >
       <template #rail>
         <p class="tp-eyebrow">允许资料</p>
@@ -295,33 +438,44 @@ async function createSlidePlan(): Promise<void> {
           <input v-model="selectedLinks" type="checkbox" :value="item.link_id" @change="workbench.setDirty('参考范围')">
           <span><strong>{{ item.material_name }}</strong><small>第 {{ item.start_unit }}—{{ item.end_unit }} 页</small></span>
         </label>
-        <button class="tp-button tp-button--secondary" type="button" @click="workbench.openStage('materials')">
-          返回资料库核原页
-        </button>
+        <button class="tp-button tp-button--secondary" type="button" @click="workbench.openPanel('exercises')">查看候选练习</button>
       </template>
       <template #toolbar>
-        <select aria-label="选择原页预览" @change="activePreviewUrl = ($event.target as HTMLSelectElement).value">
-          <option v-for="link in references" :key="link.link_id" :value="link.units[0]?.preview_url">
-            {{ link.material_name }} · 第 {{ link.start_unit }} 页
-          </option>
-        </select>
+        <div class="tp-document-toolbar">
+          <button type="button" aria-label="上一页" :disabled="activePreviewUnitIndex <= 0" @click="movePreview(-1)">←</button>
+          <label class="tp-document-toolbar__jump">
+            <span class="tp-visually-hidden">跳转页码</span>
+            <input aria-label="跳转页码" type="number" min="1" :max="previewUnits.length" :value="activePreviewUnitIndex + 1" @change="jumpPreview">
+            <span>/ {{ previewUnits.length }}</span>
+          </label>
+          <button type="button" aria-label="下一页" :disabled="activePreviewUnitIndex >= previewUnits.length - 1" @click="movePreview(1)">→</button>
+          <select aria-label="选择原页预览" :value="activePreviewUnitId ?? ''" @change="selectPreviewUnit">
+            <option v-for="unit in previewUnits" :key="unit.unit_id" :value="unit.unit_id">
+              {{ unit.material_name }} · {{ unit.title || `第 ${unit.unit_index} 页` }}
+            </option>
+          </select>
+          <button type="button" aria-label="缩小预览" :disabled="previewZoom <= 50" @click="adjustPreviewZoom(-10)">−</button>
+          <span class="tp-document-toolbar__zoom">{{ previewZoom }}%</span>
+          <button type="button" aria-label="放大预览" :disabled="previewZoom >= 200" @click="adjustPreviewZoom(10)">+</button>
+          <button type="button" aria-label="适合宽度" :aria-pressed="previewFitWidth" @click="previewFitWidth = !previewFitWidth">适合宽度</button>
+        </div>
       </template>
       <template #inspector>
         <h3>发送范围</h3>
         <p>{{ selectedLinks.length }} 份已确认资料。未勾选的资料不会进入候选识别。</p>
         <label class="tp-field"><span>本节补充说明</span><textarea v-model="teacherContext" rows="5" @input="workbench.setDirty('参考范围')" /></label>
         <button class="tp-button tp-button--secondary" type="button" :disabled="!canFreeze" @click="saveSelection">保存参考范围</button>
-        <button class="tp-button tp-button--primary" type="button" :disabled="!canFreeze || workbench.activeSuggestionRun.value?.status === 'running'" @click="startSuggestions">
+        <button class="tp-button tp-button--primary" type="button" :disabled="!canFreeze || ['prepared','queued','running'].includes(exerciseTask?.status ?? '')" @click="startSuggestions">
           {{ preflight?.model_available ? '生成 AI 候选题' : '用 Fake/已配置适配器生成候选' }}
         </button>
-        <button v-if="workbench.activeSuggestionRun.value?.status === 'running'" class="tp-button tp-button--danger" type="button" @click="cancelSuggestions">取消识别</button>
+        <button v-if="exerciseTask && ['prepared','queued','running'].includes(exerciseTask.status)" class="tp-button tp-button--danger" type="button" @click="cancelSuggestions">取消识别</button>
       </template>
     </TeachingPrepDocumentWorkspace>
 
-    <section class="tp-section-block" aria-labelledby="candidate-title">
+    <section v-if="workbench.stage.value === 'materials' && workbench.panel.value === 'exercises'" class="tp-section-block" aria-labelledby="candidate-title">
       <div class="tp-section-heading">
         <div><p class="tp-eyebrow">候选题审核</p><h2 id="candidate-title">AI 找到什么，教师采用什么</h2></div>
-        <span class="tp-status-pill">{{ workbench.activeSuggestionRun.value?.status ?? '尚未生成' }}</span>
+        <span class="tp-status-pill">{{ exerciseTask?.status ?? workbench.activeSuggestionRun.value?.status ?? '尚未生成' }}</span>
       </div>
       <div v-if="!suggestions.length" class="tp-empty-state">
         <strong>还没有候选题</strong><p>可以不选题继续备课，也可以在允许范围内人工框选补充。</p>
@@ -372,7 +526,7 @@ async function createSlidePlan(): Promise<void> {
       </div>
     </section>
 
-    <section class="tp-section-block">
+    <section v-if="workbench.stage.value === 'plan'" class="tp-section-block">
       <div class="tp-section-heading"><div><p class="tp-eyebrow">课堂草稿与容量</p><h2>从不可变资源包生成可核对方案</h2></div></div>
       <div class="tp-flow-columns">
         <div>
@@ -406,9 +560,11 @@ async function createSlidePlan(): Promise<void> {
     </section>
 
     <TeachingPrepStickyActions :state="workbench.dirtyReason.value ? 'dirty' : 'saved'" :message="message">
-      <button class="tp-button tp-button--secondary" type="button" @click="workbench.openStage('materials')">上一步：核资料</button>
-      <span class="tp-muted">课件是可选分支；草稿确认后可直接用于上课。</span>
-      <button class="tp-button tp-button--primary" type="button" :disabled="!selectedDraft" @click="workbench.openStage('slides')">可选：制作课件</button>
+      <button v-if="workbench.stage.value === 'plan'" class="tp-button tp-button--secondary" type="button" @click="workbench.openStage('materials')">上一步：核资料</button>
+      <button v-else class="tp-button tp-button--secondary" type="button" @click="workbench.openPanel(workbench.panel.value === 'sources' ? 'exercises' : 'sources')">{{ workbench.panel.value === 'sources' ? '查看候选练习' : '返回来源范围' }}</button>
+      <span class="tp-muted">{{ workbench.stage.value === 'plan' ? '课件是可选分支；草稿确认后可直接用于上课。' : '候选练习属于核资料阶段，可跳过。' }}</span>
+      <button v-if="workbench.stage.value === 'plan'" class="tp-button tp-button--primary" type="button" :disabled="!selectedDraft" @click="workbench.openStage('slides')">可选：制作课件</button>
+      <button v-else class="tp-button tp-button--primary" type="button" @click="workbench.openStage('plan')">下一步：定方案</button>
     </TeachingPrepStickyActions>
   </section>
 </template>

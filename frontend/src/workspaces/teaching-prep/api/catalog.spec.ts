@@ -306,6 +306,7 @@ describe('teaching preparation delivery API', () => {
       will_call_model: true,
       model_available: true,
       model_label: '合成模型',
+      model_destination_fingerprint: 'f'.repeat(64),
       material_count: 1,
       unit_count: 128,
       existing_lesson_count: 36,

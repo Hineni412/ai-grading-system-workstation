@@ -117,6 +117,7 @@ export interface SemesterMappingPreflight {
   will_call_model: boolean
   model_available: boolean
   model_label: string | null
+  model_destination_fingerprint: string
   material_count: number
   unit_count: number
   existing_lesson_count: number
@@ -516,6 +517,7 @@ export interface LessonDraftPreflight {
   will_call_model: boolean
   model_available: boolean
   model_label: string | null
+  model_destination_fingerprint: string
   data_scope: Record<string, unknown>
   references: Array<{ id: string; label: string }>
   missing_and_uncertain_count: number
@@ -898,6 +900,7 @@ function semesterMappingPreflight(value: unknown): SemesterMappingPreflight {
     || typeof value.will_call_model !== 'boolean'
     || typeof value.model_available !== 'boolean'
     || !nullableText(value.model_label)
+    || !text(value.model_destination_fingerprint)
     || !integer(value.material_count, 1)
     || !integer(value.unit_count, 1)
     || !integer(value.existing_lesson_count)
@@ -1370,6 +1373,7 @@ function lessonDraftPreflight(value: unknown): LessonDraftPreflight {
     || typeof value.will_call_model !== 'boolean'
     || typeof value.model_available !== 'boolean'
     || !nullableText(value.model_label)
+    || !text(value.model_destination_fingerprint)
     || !isRecord(value.data_scope)
     || !Array.isArray(value.references)
     || !integer(value.missing_and_uncertain_count, 0)
