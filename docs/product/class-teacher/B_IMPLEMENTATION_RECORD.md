@@ -1903,3 +1903,17 @@ B01 的完成清单以详细实施计划第 9.5 节为准，累计到 B11 集中
 - 当前任务是否通过最终验收：否。以上是 TW-F1 同步前 B 自有候选；公共检查点 `8a71fa78` 已收到，尚待真实接线、公共合同回归、浏览器冒烟和正式双复审；
 - 整个版本是否允许发布：否。当前未执行真实模型调用、真实数据读写、真实迁移、服务重启或任何发布动作；
 - 当前剩余工作：以非破坏方式同步 `8a71fa78`；按公共真实 Interface 接线 B Adapter、启动恢复、任务抽屉与 adopt 协调；集中运行公共合同和最终 B 候选验证；冻结同一版本并进行一次需求复审和一次代码质量复审。
+
+### TW-F1 接线后的冻结候选
+
+- 同步前 B 自有保护提交：`89a0b2de`；TW-F1 检查点 `8a71fa78` 无文件重叠并以非破坏方式进入本分支为 `65710ccc`；
+- B 的 `SharedWorkspaceAITaskPort` 只翻译冻结 Interface：prepare 使用当前去凭据目的地指纹，dispatch/get/cancel/adopt 均委托公共服务；B 没有复制公共状态机、Job、Gateway、恢复器或公共迁移；
+- 公共任务使用已注册的安全展示种类 `class_teacher.intake`，B 内部仍按 context ref 区分 `class_teacher.intake_triage` 与 `class_teacher.draft_revision`，因此共同存储不增加正文或自由标题；
+- B Adapter 在公共 Job 执行时才从 B 库读取 Conversation/Turn、当前班候选和草稿调整要求，并通过 TW-F1 强制的 metadata-only、零自动重试 Gateway 发出最多一次请求；公共数据库、Job payload/result、URL 和 localStorage 只保留安全引用；
+- 采用入口已经统一委托公共协调器：公共 Module 分配稳定 `adoption_id`，B Adapter 用该编号在正式对象同一领域事务写 Adoption Receipt；响应丢失可按收据收敛。草稿调整成功后旧公共 Handoff 才标 stale，调整失败保留旧草稿可采用；
+- 任务抽屉通过安全公共投影跟踪 task/operation ID；返回 B 时只把通过校验的 source ref 规范化为 `surface=home&conversation=<opaque>`，不把教师正文或草稿写入 URL；
+- 接线后专项：B + 公共端到端 `3 passed`，覆盖成功任务、结果未知零重发、共同采用回执和草稿版本交接；公共合同后端 `82 passed`；
+- 接线后 B 完整后端：`294 passed / 9 skipped`；9 项仍是被 R7 明确撤销的旧同步首页/旧 WorkGraph 模型计划验收；
+- 接线后公共任务抽屉 + B 前端：`9 files / 38 passed`；Vue/TypeScript、B ESLint、Vite 生产构建和差异格式检查通过；未跟踪前端源码 `.js` 为 0；
+- 浏览器合成冒烟通过：持续会话首页、六域、最近会话、登记、计划／日历、SOP、教师决策文案、任务抽屉和公共任务返回原会话均正常；唯一控制台错误来自未启动后端时全局 `/api/sessions` 的 502，与 B 流程无关；
+- 当前冻结版本进入一次需求符合性与一次代码质量并行评审；评审期间不再修改代码。整个版本仍未获发布授权，且未读取/写入真实数据、调用真实模型、执行真实迁移、重启服务、push、PR 或同步 `main`。

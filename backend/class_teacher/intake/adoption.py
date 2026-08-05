@@ -51,12 +51,16 @@ class HandoffAdoption:
         draft_revision: int,
         target_revision: str,
         operation_id: str,
+        adoption_id: str | None = None,
     ) -> dict[str, object]:
         handoff = self.conversations.open_handoff(handoff_id)
         if int(handoff["draft_revision"]) != int(draft_revision):
             raise VaultError("class_teacher_draft_conflict", "草稿已经变化，请刷新后再保存", status_code=409)
-        adoption_id = str(handoff["adoption_id"])
-        receipt = self._receipt(adoption_id)
+        if adoption_id and str(handoff["adoption_id"]) != adoption_id:
+            self._bind_adoption_id(handoff_id, adoption_id)
+            handoff = self.conversations.handoff_for_adapter(handoff_id)
+        resolved_adoption_id = str(handoff["adoption_id"])
+        receipt = self._receipt(resolved_adoption_id)
         if receipt is not None:
             self._mark_adopted(handoff_id, receipt)
             return {**receipt, "replayed": True}
@@ -76,6 +80,31 @@ class HandoffAdoption:
             raise VaultError("class_teacher_handling_mode_invalid", "处理方式无效", status_code=422)
         self._mark_adopted(handoff_id, receipt)
         return {**receipt, "replayed": False}
+
+    def find_receipt(self, adoption_id: str) -> dict[str, object] | None:
+        return self._receipt(adoption_id)
+
+    def _bind_adoption_id(self, handoff_id: str, adoption_id: str) -> None:
+        with closing(self.conversations.database.connect()) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                row = self.conversations._handoff_row(connection, handoff_id)
+                current = str(row["adoption_id"])
+                if current == adoption_id:
+                    connection.commit()
+                    return
+                if str(row["adoption_state"]) in {"adopted", "discarded", "stale"}:
+                    raise VaultError("class_teacher_adoption_conflict", "交接采用编号已经固定", status_code=409)
+                if self._receipt(current) is not None:
+                    raise VaultError("class_teacher_adoption_conflict", "交接采用收据已经存在", status_code=409)
+                connection.execute(
+                    "UPDATE intake_handoffs SET adoption_id=?, updated_at=? WHERE handoff_id=?",
+                    (adoption_id, _iso(), handoff_id),
+                )
+                connection.commit()
+            except Exception:
+                connection.rollback()
+                raise
 
     def _adopt_record(
         self,

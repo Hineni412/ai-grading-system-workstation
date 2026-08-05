@@ -20,14 +20,15 @@ class ClassTeacherIntake:
         planning,
         sop,
         sop_baselines,
+        model_gateway,
         ai_tasks: WorkspaceAITaskPort | None = None,
     ) -> None:
+        task_port = ai_tasks or UnavailableWorkspaceAITaskPort()
         self.preferences = HomeroomPreference(ordinary_database, class_roster.source)
         self.conversations = ConversationStore(
             ordinary_database,
-            ai_tasks or UnavailableWorkspaceAITaskPort(),
+            task_port,
         )
-        self.ai_task_adapter = ClassTeacherAITaskAdapter(self.conversations, class_roster)
         self.adoption = HandoffAdoption(
             self.conversations,
             domain_database,
@@ -39,6 +40,18 @@ class ClassTeacherIntake:
             sop_baselines,
             class_roster,
         )
+        bind_adoption = getattr(task_port, "bind_adoption", None)
+        if callable(bind_adoption):
+            bind_adoption(self.adoption.adopt)
+        self.ai_task_adapter = ClassTeacherAITaskAdapter(
+            self.conversations,
+            class_roster,
+            self.adoption,
+            model_gateway,
+        )
+
+    def bind_ai_tasks(self, ai_tasks: WorkspaceAITaskPort) -> None:
+        self.conversations.ai_tasks = ai_tasks
 
     def start_conversation(self) -> dict[str, object]:
         preference = self.preferences.get()
@@ -78,7 +91,9 @@ class ClassTeacherIntake:
         return self.conversations.discard_handoff(handoff_id)
 
     def adopt_handoff(self, **kwargs) -> dict[str, object]:
-        return self.adoption.adopt(**kwargs)
+        kwargs.pop("token", None)
+        kwargs.pop("operation_id", None)
+        return self.conversations.ai_tasks.adopt(**kwargs)
 
 
 __all__ = ["ClassTeacherIntake"]

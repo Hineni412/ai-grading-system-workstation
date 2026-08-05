@@ -81,4 +81,17 @@ describe('class teacher shell navigation', () => {
     })
     expect(String(router.currentRoute.value.fullPath)).not.toContain('学生正文')
   })
+
+  it('returns from the shared AI task drawer to the opaque conversation', async () => {
+    const { router } = await mountAt(
+      '/class-teacher?destination=class_teacher.home&source_task_id=task-12345678&source_ref=conversation-1234',
+    )
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    await nextTick()
+
+    expect(router.currentRoute.value.query).toEqual({
+      surface: 'home',
+      conversation: 'conversation-1234',
+    })
+  })
 })

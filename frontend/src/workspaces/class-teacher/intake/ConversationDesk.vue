@@ -1,7 +1,10 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { getActivePinia } from 'pinia'
 
 import { intakeApi, type HandlingMode, type HomeroomPreference, type IntakeConversation, type IntakeConversationSummary, type IntakeHandoffSummary } from '../api/intake'
+import { workspaceAITaskApi } from '../../shared/ai-tasks/api'
+import { useWorkspaceAITaskStore } from '../../shared/ai-tasks/store'
 
 const props = defineProps<{ conversationId?: string | null; focusWorkItemId?: string | null }>()
 const emit = defineEmits<{
@@ -57,6 +60,15 @@ function stopPolling(): void {
   pollTimer = null
 }
 
+async function trackTask(taskId: string | null): Promise<void> {
+  if (!taskId || !getActivePinia()) return
+  try {
+    useWorkspaceAITaskStore().track(await workspaceAITaskApi.get(taskId))
+  } catch {
+    // The conversation remains the domain-owned recovery path.
+  }
+}
+
 function maybeOpenSingleHandoff(next: IntakeConversation): void {
   const available = next.handoffs.filter((item) => ['pending', 'opened'].includes(item.adoption_state))
   if (available.length === 1 && available[0]!.auto_open_allowed) emit('openHandoff', available[0]!)
@@ -93,6 +105,7 @@ async function loadConversation(id: string): Promise<void> {
   busy.value = true; error.value = ''
   try {
     conversation.value = await intakeApi.conversation(id)
+    await trackTask(latestTurn.value?.task_id ?? null)
     emit('conversationChanged', id)
     await nextTick()
     document.querySelector<HTMLElement>(`[data-work-item="${props.focusWorkItemId ?? ''}"]`)?.focus()
@@ -120,6 +133,7 @@ async function send(): Promise<void> {
   busy.value = true; error.value = ''; notice.value = '正在整理；离开页面后仍可从最近会话返回。'
   try {
     conversation.value = await intakeApi.appendTurn(conversation.value, outgoing)
+    await trackTask(latestTurn.value?.task_id ?? null)
     message.value = ''
     if (conversation.value.state === 'failed') notice.value = 'AI 任务没有发出。原文已保留，可直接选择一种处理方式继续。'
     else if (conversation.value.state === 'ai_running') pollUntilSettled(conversation.value.conversation_id)

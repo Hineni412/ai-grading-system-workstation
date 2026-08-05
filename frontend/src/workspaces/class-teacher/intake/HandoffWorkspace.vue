@@ -1,8 +1,11 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { getActivePinia } from 'pinia'
 
 import { intakeApi, type HandoffDraft } from '../api/intake'
 import { studentR1Api, type ExistingRosterStudent } from '../api/r1'
+import { workspaceAITaskApi } from '../../shared/ai-tasks/api'
+import { useWorkspaceAITaskStore } from '../../shared/ai-tasks/store'
 
 const props = defineProps<{ handoffId: string; token?: string }>()
 const emit = defineEmits<{ back: [conversationId: string, workItemId: string]; completed: [conversationId: string] }>()
@@ -168,6 +171,13 @@ async function requestRevision(): Promise<void> {
   busy.value = true; error.value = ''; message.value = ''
   try {
     const snapshot = await intakeApi.requestDraftRevision(current, revisionInstruction.value.trim())
+    if (snapshot.task_id && getActivePinia()) {
+      try {
+        useWorkspaceAITaskStore().track(await workspaceAITaskApi.get(snapshot.task_id))
+      } catch {
+        // The B draft revision record remains the recovery path.
+      }
+    }
     revisionInstruction.value = ''
     if (['preparing', 'queued', 'running'].includes(snapshot.task_state)) {
       message.value = '已提交草稿调整；离开页面后仍可从任务入口和原会话返回。'
