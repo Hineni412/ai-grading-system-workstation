@@ -224,6 +224,9 @@ def converge_evidence_terms(
             ),
             "expected_revision": _taxonomy_revision(taxonomy_contract),
             "allowed_term_ids": _allowed_term_ids(taxonomy_contract),
+            "knowledge_catalog_revision": taxonomy_contract.get(
+                "knowledge_catalog_revision"
+            ),
         },
     )
     proposals = tuple(

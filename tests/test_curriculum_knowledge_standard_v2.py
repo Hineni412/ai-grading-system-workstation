@@ -220,6 +220,53 @@ def test_batch_shared_catalog_is_union_but_each_question_keeps_allowed_ids(
     ] == contracts[1]["allowed_term_ids"]["knowledge"]
 
 
+def test_new_standard_rejects_known_knowledge_outside_question_scope(
+    tmp_path: Path,
+) -> None:
+    governance = _governance(tmp_path)
+    contract = governance.prompt_contract(
+        {
+            "curriculum_volume_id": "bnu24-math-g7-upper",
+            "question_text": "利用一元一次方程解决问题",
+        }
+    )
+    g7_ids = {
+        str(item["id"])
+        for item in eligible_curriculum_knowledge_nodes(
+            "bnu24-math-g7-upper"
+        )
+    }
+    out_of_scope = next(
+        item
+        for item in eligible_curriculum_knowledge_nodes(
+            "bnu24-math-g9-upper"
+        )
+        if item["id"] not in g7_ids and int(item["level"]) == 3
+    )
+
+    constrained = governance.constrain(
+        {"knowledge_points": [out_of_scope["name"]]},
+        context={
+            "allowed_term_ids": contract["allowed_term_ids"],
+            "knowledge_catalog_revision": contract[
+                "knowledge_catalog_revision"
+            ],
+        },
+    )
+
+    assert constrained["accepted_analysis"]["knowledge"] == []
+    assert constrained["proposals"] == []
+    assert constrained["retrieval_misses"] == [
+        {
+            "dimension": "knowledge",
+            "submitted_name": out_of_scope["name"],
+            "canonical_id": out_of_scope["id"],
+            "canonical_name": out_of_scope["name"],
+            "source_field": "knowledge_points",
+        }
+    ]
+
+
 def test_new_and_legacy_releases_validate_with_their_own_taxonomy_versions() -> None:
     current = load_release()
     legacy = load_release_for_taxonomy_revision(3)

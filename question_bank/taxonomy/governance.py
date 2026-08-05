@@ -982,6 +982,13 @@ def _knowledge_release_prompt_contract(
     packaged_release = load_release_for_taxonomy_revision(taxonomy_revision)
     database_exists = Path(db_path).is_file()
     active_release = load_active_release(db_path) if database_exists else None
+    if (
+        active_release is not None
+        and active_release.taxonomy_revision != taxonomy_revision
+    ):
+        raise TaxonomyStorageError(
+            "Active knowledge release and taxonomy catalog revisions do not match"
+        )
     release = active_release or packaged_release
     payload = release.payload
     node_names = {
@@ -1101,6 +1108,7 @@ class TaxonomyGovernance:
             knowledge_graph_db_path or question_bank_db_path()
         )
         self.catalog_path = Path(catalog_path or _CATALOG_PATH)
+        self._catalog_is_explicit = catalog_path is not None
         try:
             if catalog_path is not None:
                 catalog_payload = _read_json(self.catalog_path)
@@ -1128,9 +1136,42 @@ class TaxonomyGovernance:
                 f"Controlled taxonomy catalog is unavailable: {self.catalog_path}"
             ) from exc
 
-    def _read_state_unlocked(self) -> dict[str, Any]:
+    def _catalog_for_revision(self, revision: int) -> dict[str, Any]:
+        try:
+            release = load_release_for_taxonomy_revision(revision)
+            return _validate_catalog(
+                load_taxonomy_catalog_for_release(release),
+                source=Path(f"bundled-taxonomy-revision-{revision}"),
+            )
+        except (
+            OSError,
+            ValueError,
+            json.JSONDecodeError,
+            TaxonomyValidationError,
+        ) as exc:
+            raise TaxonomyStorageError(
+                f"Controlled taxonomy revision {revision} is unavailable"
+            ) from exc
+
+    def _prompt_catalog(self) -> dict[str, Any]:
+        if (
+            self._catalog_is_explicit
+            or not self.knowledge_graph_db_path.is_file()
+        ):
+            return self._catalog
+        active_release = load_active_release(self.knowledge_graph_db_path)
+        if active_release is None:
+            return self._catalog
+        return self._catalog_for_revision(active_release.taxonomy_revision)
+
+    def _read_state_unlocked(
+        self,
+        *,
+        catalog: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        selected_catalog = catalog or self._catalog
         if not self.state_path.exists():
-            return _empty_state(self._catalog)
+            return _empty_state(selected_catalog)
         failures: list[Exception] = []
         for candidate in (self.state_path, _backup_path(self.state_path)):
             if not candidate.is_file():
@@ -1138,7 +1179,7 @@ class TaxonomyGovernance:
             try:
                 return _validate_state(
                     _read_json(candidate),
-                    catalog=self._catalog,
+                    catalog=selected_catalog,
                     source=candidate,
                 )
             except (OSError, json.JSONDecodeError, TaxonomyValidationError) as exc:
@@ -1147,20 +1188,28 @@ class TaxonomyGovernance:
             "Taxonomy state and backup are both unavailable or invalid"
         ) from (failures[-1] if failures else None)
 
-    def _read_state(self) -> dict[str, Any]:
+    def _read_state(
+        self,
+        *,
+        catalog: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
         with _PROCESS_LOCK:
-            return self._read_state_unlocked()
+            return self._read_state_unlocked(catalog=catalog)
 
     def _combined_terms(
-        self, state: Mapping[str, Any]
+        self,
+        state: Mapping[str, Any],
+        *,
+        catalog: Mapping[str, Any] | None = None,
     ) -> tuple[
         list[dict[str, Any]],
         dict[tuple[str, str], dict[str, Any]],
         dict[tuple[str, str], dict[str, Any]],
     ]:
+        selected_catalog = catalog or self._catalog
         by_id = {
             term["id"]: copy.deepcopy(term)
-            for term in self._catalog["terms"]
+            for term in selected_catalog["terms"]
         }
         for term in state["approved_terms"]:
             # Keep catalog-only retrieval metadata when a teacher overlay changes
@@ -1357,8 +1406,12 @@ class TaxonomyGovernance:
     ) -> dict[object, dict[str, Any]]:
         """Build isolated per-question candidate contracts from one snapshot."""
 
-        state = self._read_state()
-        terms, _alias_index, _legacy_index = self._combined_terms(state)
+        catalog = self._prompt_catalog()
+        state = self._read_state(catalog=catalog)
+        terms, _alias_index, _legacy_index = self._combined_terms(
+            state,
+            catalog=catalog,
+        )
         active_by_dimension = {
             dimension: [
                 term
@@ -1370,7 +1423,7 @@ class TaxonomyGovernance:
         }
         knowledge_release = _knowledge_release_prompt_contract(
             self.knowledge_graph_db_path,
-            taxonomy_revision=int(self._catalog["revision"]),
+            taxonomy_revision=int(catalog["revision"]),
         )
         return {
             key: self._prompt_contract_from_snapshot(
@@ -1725,8 +1778,13 @@ class TaxonomyGovernance:
         *,
         state: Mapping[str, Any],
         allowed_term_ids: Mapping[str, object] | None = None,
+        catalog: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
-        terms, alias_index, legacy_index = self._combined_terms(state)
+        selected_catalog = catalog or self._catalog
+        terms, alias_index, legacy_index = self._combined_terms(
+            state,
+            catalog=selected_catalog,
+        )
         accepted_terms = {dimension: [] for dimension in ALLOWED_DIMENSIONS}
         accepted_fields: dict[str, list[str]] = {}
         unknown_by_key: dict[tuple[str, str], dict[str, str]] = {}
@@ -1867,7 +1925,6 @@ class TaxonomyGovernance:
                     not restricted
                     or term["id"] in allowed_ids[resolved_dimension]
                 )
-                accept(resolved_dimension, term, source_field=source_field)
                 if not within_candidates:
                     retrieval_misses.append(
                         {
@@ -1878,6 +1935,12 @@ class TaxonomyGovernance:
                             "source_field": source_field,
                         }
                     )
+                    if (
+                        resolved_dimension == "knowledge"
+                        and int(selected_catalog["revision"]) >= 4
+                    ):
+                        return
+                accept(resolved_dimension, term, source_field=source_field)
                 return
             # A value known in another controlled dimension is misplaced model
             # output, not a new term.  The only intentional cross-dimension
@@ -1995,8 +2058,18 @@ class TaxonomyGovernance:
         context_values = _context_mapping(context)
         persist = bool(context_values.get("persist_proposals", False))
         allowed_term_ids = context_values.get("allowed_term_ids")
+        catalog_revision = context_values.get("knowledge_catalog_revision")
+        if catalog_revision is not None and type(catalog_revision) is not int:
+            raise TaxonomyValidationError(
+                "knowledge_catalog_revision must be an integer"
+            )
+        catalog = (
+            self._catalog_for_revision(catalog_revision)
+            if catalog_revision is not None
+            else self._catalog
+        )
         if not persist:
-            state = self._read_state()
+            state = self._read_state(catalog=catalog)
             classified = self._classify(
                 raw_analysis,
                 state=state,
@@ -2005,6 +2078,7 @@ class TaxonomyGovernance:
                     if isinstance(allowed_term_ids, Mapping)
                     else None
                 ),
+                catalog=catalog,
             )
             suppressed_keys = {
                 (item["dimension"], item["normalized_name"])
@@ -2036,7 +2110,7 @@ class TaxonomyGovernance:
             )
 
         with _exclusive_state_lock(self.state_path):
-            state = self._read_state_unlocked()
+            state = self._read_state_unlocked(catalog=catalog)
             classified = self._classify(
                 raw_analysis,
                 state=state,
@@ -2045,6 +2119,7 @@ class TaxonomyGovernance:
                     if isinstance(allowed_term_ids, Mapping)
                     else None
                 ),
+                catalog=catalog,
             )
             if not classified["unknown"]:
                 return self._constraint_result(
@@ -2170,9 +2245,9 @@ class TaxonomyGovernance:
             self._remember_operation(
                 state, request_token, operation_fingerprint, result
             )
-            state["base_catalog_revision"] = self._catalog["revision"]
+            state["base_catalog_revision"] = catalog["revision"]
             _write_state_atomic(
-                self.state_path, state, catalog=self._catalog
+                self.state_path, state, catalog=catalog
             )
             return result
 
