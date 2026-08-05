@@ -1135,11 +1135,17 @@ class TaxonomyGovernance:
             raise TaxonomyStorageError(
                 f"Controlled taxonomy catalog is unavailable: {self.catalog_path}"
             ) from exc
+        self._catalogs_by_revision: dict[int, dict[str, Any]] = {
+            int(self._catalog["revision"]): self._catalog
+        }
 
     def _catalog_for_revision(self, revision: int) -> dict[str, Any]:
+        cached = self._catalogs_by_revision.get(revision)
+        if cached is not None:
+            return cached
         try:
             release = load_release_for_taxonomy_revision(revision)
-            return _validate_catalog(
+            catalog = _validate_catalog(
                 load_taxonomy_catalog_for_release(release),
                 source=Path(f"bundled-taxonomy-revision-{revision}"),
             )
@@ -1152,6 +1158,8 @@ class TaxonomyGovernance:
             raise TaxonomyStorageError(
                 f"Controlled taxonomy revision {revision} is unavailable"
             ) from exc
+        self._catalogs_by_revision[revision] = catalog
+        return catalog
 
     def _prompt_catalog(self) -> dict[str, Any]:
         if (
@@ -1267,9 +1275,25 @@ class TaxonomyGovernance:
         }
         return terms, alias_index, legacy_index
 
-    def snapshot(self) -> dict[str, Any]:
-        state = self._read_state()
-        terms, _, _ = self._combined_terms(state)
+    def snapshot(
+        self,
+        *,
+        knowledge_catalog_revision: int | None = None,
+    ) -> dict[str, Any]:
+        if (
+            knowledge_catalog_revision is not None
+            and type(knowledge_catalog_revision) is not int
+        ):
+            raise TaxonomyValidationError(
+                "knowledge_catalog_revision must be an integer"
+            )
+        catalog = (
+            self._catalog_for_revision(knowledge_catalog_revision)
+            if knowledge_catalog_revision is not None
+            else self._catalog
+        )
+        state = self._read_state(catalog=catalog)
+        terms, _, _ = self._combined_terms(state, catalog=catalog)
         active_by_dimension = {
             dimension: [
                 _term_public(term)
@@ -1287,8 +1311,8 @@ class TaxonomyGovernance:
         return {
             "schema_version": 1,
             "revision": state["revision"],
-            "base_catalog_id": self._catalog["catalog_id"],
-            "base_catalog_revision": self._catalog["revision"],
+            "base_catalog_id": catalog["catalog_id"],
+            "base_catalog_revision": catalog["revision"],
             "allowed_dimensions": list(ALLOWED_DIMENSIONS),
             "terms_by_dimension": active_by_dimension,
             "retired_terms": retired,
@@ -1297,7 +1321,7 @@ class TaxonomyGovernance:
                 for proposal in state["proposals"]
             ),
             "reference_candidate_count": len(
-                self._catalog["reference_candidates"]
+                catalog["reference_candidates"]
             ),
         }
 
@@ -1313,13 +1337,32 @@ class TaxonomyGovernance:
         }
 
     def resolve_term(
-        self, dimension: str, value: object
+        self,
+        dimension: str,
+        value: object,
+        *,
+        knowledge_catalog_revision: int | None = None,
     ) -> dict[str, Any] | None:
         dimension = _text(dimension)
         if dimension not in _DIMENSION_SET:
             return None
-        state = self._read_state()
-        _, alias_index, legacy_index = self._combined_terms(state)
+        if (
+            knowledge_catalog_revision is not None
+            and type(knowledge_catalog_revision) is not int
+        ):
+            raise TaxonomyValidationError(
+                "knowledge_catalog_revision must be an integer"
+            )
+        catalog = (
+            self._catalog_for_revision(knowledge_catalog_revision)
+            if knowledge_catalog_revision is not None
+            else self._catalog
+        )
+        state = self._read_state(catalog=catalog)
+        _, alias_index, legacy_index = self._combined_terms(
+            state,
+            catalog=catalog,
+        )
         key = (dimension, _normalized_name(value))
         term = alias_index.get(key)
         if term is None:
@@ -2121,10 +2164,6 @@ class TaxonomyGovernance:
                 ),
                 catalog=catalog,
             )
-            if not classified["unknown"]:
-                return self._constraint_result(
-                    classified, proposals=[], revision=state["revision"]
-                )
             question_ref = _text(
                 context_values.get("question_ref")
                 or context_values.get("question_id")
@@ -2138,6 +2177,23 @@ class TaxonomyGovernance:
                 "raw_analysis": dict(raw_analysis),
                 "question_ref": question_ref,
                 "model": model,
+                "knowledge_catalog_revision": catalog_revision,
+                "allowed_term_ids": (
+                    {
+                        dimension: sorted(
+                            {
+                                _text(value)
+                                for value in allowed_term_ids.get(
+                                    dimension, []
+                                )
+                                if _text(value)
+                            }
+                        )
+                        for dimension in ALLOWED_DIMENSIONS
+                    }
+                    if isinstance(allowed_term_ids, Mapping)
+                    else None
+                ),
             }
             operation_fingerprint = _fingerprint(operation_payload)
             request_token = _text(context_values.get("request_token"))
@@ -2148,6 +2204,10 @@ class TaxonomyGovernance:
             )
             if replay is not None:
                 return replay
+            if not classified["unknown"]:
+                return self._constraint_result(
+                    classified, proposals=[], revision=state["revision"]
+                )
             # Machine observations are merged under the file lock against the
             # latest state. A teacher decision made while the model was running
             # must not cause another paid model request or a stale-write failure.
@@ -2277,7 +2337,7 @@ class TaxonomyGovernance:
         if retrieval_misses:
             notes.append(
                 f"本题有 {len(retrieval_misses)} 个正式标签未被本地候选召回，"
-                "已从完整词表归并。"
+                "已按当前知识目录边界处理并保留审计记录。"
             )
         if proposal_overflow:
             notes.append(
@@ -2417,11 +2477,12 @@ class TaxonomyGovernance:
             return copy.deepcopy(observation)
 
     def observation_snapshot(self) -> dict[str, Any]:
-        state = self._read_state()
+        catalog = self._prompt_catalog()
+        state = self._read_state(catalog=catalog)
         lifecycle = state["observation_lifecycle"]
         release = _knowledge_release_prompt_contract(
             self.knowledge_graph_db_path,
-            taxonomy_revision=int(self._catalog["revision"]),
+            taxonomy_revision=int(catalog["revision"]),
         )
         refs_by_proposal: dict[str, list[int]] = {}
         for observation in lifecycle["observations"]:

@@ -24,12 +24,27 @@ LEGACY_CATALOG_PATH = (
     / "catalogs"
     / "tag_vocabulary_v2.json"
 )
+CURRENT_CATALOG_PATH = (
+    Path(__file__).resolve().parents[2]
+    / "question_bank"
+    / "taxonomy"
+    / "catalogs"
+    / "tag_vocabulary_v3.json"
+)
 
 
 def _legacy_governance(state_path: Path) -> TaxonomyGovernance:
     return TaxonomyGovernance(
         catalog_path=LEGACY_CATALOG_PATH,
         state_path=state_path,
+    )
+
+
+def _current_governance(tmp_path: Path) -> TaxonomyGovernance:
+    return TaxonomyGovernance(
+        catalog_path=CURRENT_CATALOG_PATH,
+        state_path=tmp_path / "taxonomy-current-state.json",
+        knowledge_graph_db_path=tmp_path / "not-created-question-bank.db",
     )
 
 
@@ -138,6 +153,62 @@ def test_convergence_uses_full_vocabulary_and_keeps_unknown_out_of_formal_links(
     )
     assert convergence.taxonomy_revision >= 0
     assert governance.list_proposals(status="pending")["counts"] == {"pending": 0}
+
+
+def test_current_catalog_convergence_keeps_only_question_scoped_knowledge(
+    tmp_path: Path,
+) -> None:
+    current = _current_governance(tmp_path)
+    contract = current.prompt_contract(
+        {
+            "curriculum_volume_id": "bnu24-math-g7-lower",
+            "question_text": "用 AAS 证明三角形全等",
+        }
+    )
+    aas_id = "kp_bnu24_math_g7_lower_4_3_7"
+    aas_name = (
+        "七年级下册｜第四章 三角形｜3 探索三角形全等的条件｜"
+        "用ASA（AAS）证明三角形全等（ASA或者AAS）"
+    )
+    future_id = "kp_bnu24_math_g9_upper_1_2_1"
+    future_name = (
+        "九年级上册｜第一章 特殊平行四边形｜2 菱形的性质与判定｜"
+        "利用菱形的性质求角度"
+    )
+
+    convergence = converge_evidence_terms(
+        _payload(
+            _link(aas_id, aas_name),
+            _link(future_id, future_name),
+        ),
+        taxonomy_contract=contract,
+        governance=_legacy_governance(tmp_path / "taxonomy-legacy-state.json"),
+        question_ref="Q-current-scope",
+        model_name="synthetic-model",
+        operation_id="test:current-question-scope",
+    )
+
+    point = convergence.payload["parts"][0]["evidence_points"][0]
+    assert point["fine_term_links"] == [
+        {
+            "fine_term_id": aas_id,
+            "fine_term_name": aas_name,
+            "role": "direct",
+        }
+    ]
+    assert convergence.canonical_term_ids == (aas_id,)
+    assert [item["reason_code"] for item in convergence.unresolved_links] == [
+        "outside_question_contract"
+    ]
+    assert convergence.retrieval_misses == (
+        {
+            "dimension": "knowledge",
+            "submitted_name": future_name,
+            "canonical_id": future_id,
+            "canonical_name": future_name,
+            "source_field": "knowledge_points",
+        },
+    )
 
 
 def test_conflicting_model_id_and_name_are_not_silently_saved(
@@ -339,3 +410,83 @@ def test_formal_writer_saves_sound_scoring_without_unresolved_formal_links(
         }
     ]
     assert audit["proposals"][0]["question_refs"] == ["1"]
+
+
+def test_formal_writer_never_saves_knowledge_outside_the_question_contract(
+    tmp_path: Path,
+) -> None:
+    current = _current_governance(tmp_path)
+    contract = current.prompt_contract(
+        {
+            "curriculum_volume_id": "bnu24-math-g7-lower",
+            "question_text": "用 AAS 证明三角形全等",
+        }
+    )
+    aas_id = "kp_bnu24_math_g7_lower_4_3_7"
+    aas_name = (
+        "七年级下册｜第四章 三角形｜3 探索三角形全等的条件｜"
+        "用ASA（AAS）证明三角形全等（ASA或者AAS）"
+    )
+    future_id = "kp_bnu24_math_g9_upper_1_2_1"
+    future_name = (
+        "九年级上册｜第一章 特殊平行四边形｜2 菱形的性质与判定｜"
+        "利用菱形的性质求角度"
+    )
+    repository = _EvidenceRepositorySpy()
+    writer = SolutionEvidenceProjectionWriter(
+        mapping_repository=_Resolver(),
+        evidence_repository=repository,  # type: ignore[arg-type]
+        taxonomy_governance=_legacy_governance(
+            tmp_path / "taxonomy-writer-state.json"
+        ),
+    )
+
+    evidence = writer.write(
+        SimpleNamespace(
+            question_id=1,
+            question_type_group="subjective",
+            question_type_confirmed=True,
+            explicit_part_labels=(),
+            objective_response_shape=None,
+            taxonomy_contract=contract,
+            tagging_context=SimpleNamespace(
+                question_text="用 AAS 证明三角形全等",
+                answer_text="写出全等证明过程",
+                question_type="解答题",
+                has_images=False,
+            ),
+            rich_question_blocks=(),
+            rich_answer_blocks=(),
+            images=(),
+        ),
+        _payload(
+            _link(aas_id, aas_name),
+            _link(future_id, future_name),
+        ),
+        model_name="synthetic-model",
+        operation_id="test:formal-current-scope",
+    )
+
+    assert repository.saved is evidence
+    links = evidence.parts[0].evidence_points[0].fine_term_links
+    assert [(item.fine_term_id, item.fine_term_name) for item in links] == [
+        (aas_id, aas_name)
+    ]
+    audit = writer.audit_summary("test:formal-current-scope", (1,))
+    assert audit["unresolved_links"] == [
+        {
+            "part_id": "part-1",
+            "evidence_point_id": "part-1-step-1",
+            "role": "direct",
+            "submitted_id": future_id,
+            "submitted_name": future_name,
+            "proposal_id": "",
+            "reason_code": "outside_question_contract",
+        }
+    ]
+    assert future_id not in {
+        item.fine_term_id
+        for part in evidence.parts
+        for point in part.evidence_points
+        for item in point.fine_term_links
+    }

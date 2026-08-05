@@ -102,7 +102,14 @@ class ExistingTagProjectionWriter:
                     "model": str(model_name or ""),
                     "request_token": (
                         f"combined-tag:{operation_id}:question:"
-                        f"{question.question_id}:taxonomy:{checked.taxonomy_revision}"
+                        f"{question.question_id}:taxonomy:{checked.taxonomy_revision}:"
+                        "candidates:"
+                        f"{str(contract.get('candidate_fingerprint') or 'none')}"
+                    ),
+                    "expected_revision": int(checked.taxonomy_revision or 0),
+                    "allowed_term_ids": contract.get("allowed_term_ids", {}),
+                    "knowledge_catalog_revision": contract.get(
+                        "knowledge_catalog_revision"
                     ),
                 },
             )

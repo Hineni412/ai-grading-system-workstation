@@ -403,6 +403,10 @@ def test_duplicate_intake_retries_only_questions_without_complete_tags(
         def __init__(self) -> None:
             self.question_ids: list[int] = []
 
+        @staticmethod
+        def taxonomy_contracts(contexts):
+            return {question_id: {} for question_id in contexts}
+
         def analyze_questions(self, contexts, **_kwargs):
             self.question_ids = sorted(contexts)
             return {}

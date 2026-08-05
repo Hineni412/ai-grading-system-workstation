@@ -12,10 +12,12 @@ from backend.api.schemas.question_bank import (
     TaxonomyProposalListResponse,
     TaxonomyProposalReviewResponse,
 )
+import question_bank.taxonomy.governance as governance_module
 from question_bank.taxonomy.governance import (
     ALLOWED_DIMENSIONS,
     TaxonomyGovernance,
     TaxonomyRevisionConflict,
+    TaxonomyValidationError,
 )
 from question_bank.taxonomy.curriculum_catalog import (
     infer_curriculum_volume_from_text,
@@ -537,6 +539,89 @@ def test_unknown_term_is_idempotently_queued_and_legacy_fields_are_ignored(
     assert pending["items"][0]["proposed_name"] == "自检规范模型"
     assert pending["items"][0]["question_refs"] == [17]
     TaxonomyProposalListResponse(**pending)
+
+
+def test_proposal_receipt_is_bound_to_the_frozen_candidate_contract(
+    governance: TaxonomyGovernance,
+) -> None:
+    current_term_id = "kp_bnu24_math_g7_lower_4_3_7"
+    current_term_name = (
+        "七年级下册｜第四章 三角形｜3 探索三角形全等的条件｜"
+        "用ASA（AAS）证明三角形全等（ASA或者AAS）"
+    )
+    payload = {
+        "proposed_tags": [
+            {
+                "dimension": "knowledge",
+                "name": current_term_name,
+                "definition": "用于验证候选目录边界",
+                "reason": "现有候选词不能准确表达",
+                "nearest_id": "",
+                "why_not_reuse": "语义边界不同",
+            }
+        ]
+    }
+    token = "candidate-contract-token"
+    common_context = {
+        "persist_proposals": True,
+        "question_ref": "Q-contract",
+        "model": "isolated-fake-model",
+        "request_token": token,
+    }
+    first = governance.constrain(
+        payload,
+        context={
+            **common_context,
+            "knowledge_catalog_revision": 3,
+            "allowed_term_ids": {"knowledge": ["b", "a", "a"]},
+        },
+    )
+    assert first["proposals"]
+    replay = governance.constrain(
+        payload,
+        context={
+            **common_context,
+            "knowledge_catalog_revision": 3,
+            "allowed_term_ids": {"knowledge": ["a", "b"]},
+        },
+    )
+
+    assert replay == first
+    state_before_conflict = governance.list_proposals(status="pending")
+    with pytest.raises(
+        TaxonomyValidationError,
+        match="request_token was already used for a different operation",
+    ):
+        governance.constrain(
+            payload,
+            context={
+                **common_context,
+                "knowledge_catalog_revision": 4,
+                "allowed_term_ids": {"knowledge": [current_term_id]},
+            },
+        )
+    assert governance.list_proposals(status="pending") == state_before_conflict
+
+
+def test_catalog_revision_is_loaded_once_per_governance_instance(
+    governance: TaxonomyGovernance,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    governance.snapshot(knowledge_catalog_revision=4)
+
+    monkeypatch.setattr(
+        governance_module,
+        "load_release_for_taxonomy_revision",
+        lambda _revision: pytest.fail("cached catalog must be reused"),
+    )
+
+    resolved = governance.resolve_term(
+        "knowledge",
+        "用ASA（AAS）证明三角形全等（ASA或者AAS）",
+        knowledge_catalog_revision=4,
+    )
+    assert resolved is not None
+    assert resolved["id"] == "kp_bnu24_math_g7_lower_4_3_7"
 
 
 def test_edit_and_approve_promotes_canonical_term_and_keeps_original_as_alias(

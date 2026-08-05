@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Mapping
@@ -758,6 +758,114 @@ def test_existing_tag_writer_reuses_quality_gate_and_question_save_seam(
         (row["tag_type"], row["tag_value"], row["model_name"])
         for row in rows
     }
+
+
+def test_existing_tag_writer_persists_proposals_with_the_question_contract(
+    tmp_path: Path,
+) -> None:
+    class ProposalRecordingGovernance(AcceptingGovernance):
+        def __init__(self) -> None:
+            self.calls: list[dict[str, Any]] = []
+
+        def constrain(
+            self,
+            payload: Mapping[str, Any],
+            *,
+            context: Mapping[str, Any],
+        ) -> Mapping[str, Any]:
+            self.calls.append(dict(context))
+            result = dict(super().constrain(payload, context=context))
+            if payload.get("proposed_tags"):
+                result["status"] = "needs_review"
+                result["proposals"] = [
+                    {
+                        "id": "proposal-combined",
+                        "dimension": "knowledge",
+                        "proposed_name": "候选知识点",
+                    }
+                ]
+            return result
+
+    governance = ProposalRecordingGovernance()
+
+    class ProposalTaggingStub(ExistingWriterTaggingStub):
+        taxonomy_governance = governance
+
+    database = tmp_path / "question-bank.db"
+    _seed_questions(database)
+    install_current_knowledge(database)
+    contract = {
+        "taxonomy_revision": 7,
+        "candidate_fingerprint": "combined-question-fingerprint",
+        "knowledge_catalog_revision": 4,
+        "allowed_dimensions": [
+            "knowledge",
+            "thought",
+            "ability",
+            "curriculum",
+        ],
+        "allowed_term_ids": {
+            "knowledge": ["kp_alg_linear_equation"],
+            "thought": ["thought_equation"],
+            "ability": ["ability_calculation"],
+            "curriculum": ["curriculum_linear_equation"],
+        },
+        "candidates": {
+            "knowledge": [
+                {
+                    "id": "kp_alg_linear_equation",
+                    "name": "一元一次方程",
+                }
+            ],
+            "thought": [
+                {"id": "thought_equation", "name": "方程思想"}
+            ],
+            "ability": [
+                {"id": "ability_calculation", "name": "运算能力"}
+            ],
+            "curriculum": [
+                {
+                    "id": "curriculum_linear_equation",
+                    "name": "七年级上册 一元一次方程",
+                }
+            ],
+        },
+    }
+    question = replace(_question(1), taxonomy_contract=contract)
+    payload = _tag_payload()
+    payload["textbook_chapters"] = ["七年级上册 一元一次方程"]
+    payload["proposed_tags"] = [
+        {
+            "dimension": "knowledge",
+            "name": "候选知识点",
+            "definition": "候选定义",
+            "reason": "候选目录中没有",
+            "nearest_id": "",
+            "why_not_reuse": "语义边界不同",
+        }
+    ]
+    writer = ExistingTagProjectionWriter(
+        question_service=QuestionService(database),
+        tagging_service=ProposalTaggingStub(),  # type: ignore[arg-type]
+    )
+
+    writer.write(
+        question,
+        payload,
+        model_name="synthetic-model",
+        operation_id="combined-contract",
+    )
+
+    persisted_context = next(
+        item for item in governance.calls if item.get("persist_proposals") is True
+    )
+    assert persisted_context["expected_revision"] == 7
+    assert persisted_context["allowed_term_ids"] == contract["allowed_term_ids"]
+    assert persisted_context["knowledge_catalog_revision"] == 4
+    assert persisted_context["request_token"] == (
+        "combined-tag:combined-contract:question:1:taxonomy:7:"
+        "candidates:combined-question-fingerprint"
+    )
 
 
 class FakeProtocolResponse:

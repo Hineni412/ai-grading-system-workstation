@@ -54,7 +54,16 @@ def converge_evidence_terms(
     """Converge model links and point text against the full local vocabulary."""
 
     normalized = copy.deepcopy(dict(payload))
-    snapshot = governance.snapshot()
+    knowledge_catalog_revision = _knowledge_catalog_revision(
+        taxonomy_contract
+    )
+    snapshot = (
+        governance.snapshot(
+            knowledge_catalog_revision=knowledge_catalog_revision,
+        )
+        if knowledge_catalog_revision is not None
+        else governance.snapshot()
+    )
     dimensions = snapshot.get("terms_by_dimension")
     raw_terms = (
         dimensions.get("knowledge")
@@ -68,6 +77,10 @@ def converge_evidence_terms(
         for item in terms
         if str(item.get("id") or "").strip()
     }
+    strict_question_scope = (knowledge_catalog_revision or 0) >= 4
+    allowed_knowledge_ids = set(
+        _allowed_term_ids(taxonomy_contract).get("knowledge", [])
+    )
     clean_question_ref = _question_reference(question_ref, question_id)
 
     submitted_names: list[str] = []
@@ -126,12 +139,23 @@ def converge_evidence_terms(
                             )
                             continue
                         term_by_id = terms_by_id.get(submitted_id)
-                        resolved_name = governance.resolve_term("knowledge", name)
+                        resolved_name = (
+                            governance.resolve_term(
+                                "knowledge",
+                                name,
+                                knowledge_catalog_revision=(
+                                    knowledge_catalog_revision
+                                ),
+                            )
+                            if knowledge_catalog_revision is not None
+                            else governance.resolve_term("knowledge", name)
+                        )
                         term_by_name = (
                             dict(resolved_name)
                             if isinstance(resolved_name, Mapping)
                             else None
                         )
+                        corrected_match: dict[str, Any] | None = None
                         if term_by_id is not None and term_by_name is not None:
                             if str(term_by_id.get("id") or "").strip() != str(
                                 term_by_name.get("id") or ""
@@ -155,30 +179,26 @@ def converge_evidence_terms(
                             canonical_name = str(term.get("name") or "").strip()
                             if canonical_name:
                                 submitted_names.append(canonical_name)
-                            secondary_matches.append(
-                                _corrected_link_match(
-                                    part_id=part_id,
-                                    evidence_point_id=evidence_point_id,
-                                    term=term,
-                                    role=role,
-                                    submitted_id=submitted_id,
-                                    submitted_name=name,
-                                    correction="display_name_replaced",
-                                )
+                            corrected_match = _corrected_link_match(
+                                part_id=part_id,
+                                evidence_point_id=evidence_point_id,
+                                term=term,
+                                role=role,
+                                submitted_id=submitted_id,
+                                submitted_name=name,
+                                correction="display_name_replaced",
                             )
                         elif term_by_name is not None:
                             term = term_by_name
                             submitted_names.append(name)
-                            secondary_matches.append(
-                                _corrected_link_match(
-                                    part_id=part_id,
-                                    evidence_point_id=evidence_point_id,
-                                    term=term,
-                                    role=role,
-                                    submitted_id=submitted_id,
-                                    submitted_name=name,
-                                    correction="term_id_replaced",
-                                )
+                            corrected_match = _corrected_link_match(
+                                part_id=part_id,
+                                evidence_point_id=evidence_point_id,
+                                term=term,
+                                role=role,
+                                submitted_id=submitted_id,
+                                submitted_name=name,
+                                correction="term_id_replaced",
                             )
                         else:
                             if name:
@@ -194,6 +214,24 @@ def converge_evidence_terms(
                                 )
                             )
                             continue
+                        resolved_id = str(term.get("id") or "").strip()
+                        if (
+                            strict_question_scope
+                            and resolved_id not in allowed_knowledge_ids
+                        ):
+                            unresolved_links.append(
+                                _unresolved_link(
+                                    part_id,
+                                    evidence_point_id,
+                                    submitted_id,
+                                    name,
+                                    role,
+                                    "outside_question_contract",
+                                )
+                            )
+                            continue
+                        if corrected_match is not None:
+                            secondary_matches.append(corrected_match)
                         _append_link(
                             links,
                             linked_keys,
@@ -388,6 +426,20 @@ def _taxonomy_revision(contract: Mapping[str, Any]) -> int:
         return max(0, int(contract.get("taxonomy_revision", 0) or 0))
     except (TypeError, ValueError):
         return 0
+
+
+def _knowledge_catalog_revision(
+    contract: Mapping[str, Any],
+) -> int | None:
+    raw_revision = contract.get("knowledge_catalog_revision")
+    if raw_revision is None:
+        return None
+    if type(raw_revision) is not int or raw_revision < 0:
+        raise ValueError(
+            "taxonomy_contract.knowledge_catalog_revision must be "
+            "a non-negative integer"
+        )
+    return raw_revision
 
 
 def _result_revision(result: Mapping[str, Any], *, fallback: int) -> int:

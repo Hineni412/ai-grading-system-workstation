@@ -132,6 +132,75 @@ def test_tagging_sync_saves_only_complete_results(tmp_path: Path) -> None:
     assert "fake-tag-model" not in json.dumps(result)
 
 
+def test_tagging_sync_proposal_persistence_keeps_the_planned_contract() -> None:
+    calls: list[dict[str, object]] = []
+
+    class RecordingGovernance:
+        @staticmethod
+        def constrain(payload, *, context):
+            del payload
+            calls.append(dict(context))
+            return {
+                "proposals": [
+                    {
+                        "id": "proposal-test",
+                        "dimension": "knowledge",
+                        "proposed_name": "候选知识点",
+                    }
+                ]
+            }
+
+    result = AITaggingResult(
+        ok=True,
+        mock_mode=False,
+        analysis=_analysis(),
+        model_name="fake-tag-model",
+        quality_status="needs_review",
+        taxonomy_revision=9,
+        proposals=[
+            {
+                "dimension": "knowledge",
+                "name": "候选知识点",
+                "definition": "候选定义",
+                "reason": "候选目录中没有",
+                "nearest_id": "",
+                "why_not_reuse": "语义边界不同",
+            }
+        ],
+    )
+    contract = {
+        "candidate_fingerprint": "fingerprint-question-1",
+        "knowledge_catalog_revision": 4,
+        "allowed_term_ids": {"knowledge": ["kp-question-1"]},
+    }
+
+    persisted = tagging_sync_module._persist_proposals(
+        RecordingGovernance(),
+        result,
+        question_id=1,
+        job_id="job-contract",
+        expected_revision=9,
+        knowledge_graph_release_id="release-contract",
+        taxonomy_contract=contract,
+    )
+
+    assert persisted[0]["id"] == "proposal-test"
+    assert calls == [
+        {
+            "persist_proposals": True,
+            "question_ref": "1",
+            "model": "fake-tag-model",
+            "request_token": (
+                "tagging-sync:job-contract:question:1:taxonomy:9:"
+                "graph:release-contract:candidates:fingerprint-question-1"
+            ),
+            "expected_revision": 9,
+            "allowed_term_ids": {"knowledge": ["kp-question-1"]},
+            "knowledge_catalog_revision": 4,
+        }
+    ]
+
+
 def test_production_tagging_uses_one_combined_call_and_persists_point_evidence(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -469,7 +538,10 @@ def test_tagging_sync_skips_complete_questions_and_retries_only_missing(
     assert fake_ai.calls == [[ids[1]]]
     assert result["skipped_complete_count"] == 1
     assert result["tagged_count"] == 1
-    assert result["outcome"] == "complete"
+    assert result["outcome"] == "partial"
+    assert result["evidence_failed_question_ids"] == [ids[0]]
+    assert result["failed_question_ids"] == [ids[0]]
+    assert result["retryable"] is True
 
 
 def test_tagging_sync_classifies_missing_and_deleted_questions(tmp_path: Path) -> None:
