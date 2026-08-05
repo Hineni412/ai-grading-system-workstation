@@ -6,6 +6,7 @@ import type { JobResponse } from '../../../api/jobs'
 import { useJobStore } from '../../../stores/jobs'
 import { useWorkspaceAITaskStore } from '../../shared/ai-tasks/store'
 import * as aiAdoption from '../aiAdoption'
+import { adoptedTeachingPrepTask } from '../aiAdoptionTestFixture'
 import {
   teachingPrepCatalogApi,
   type CurriculumEdition,
@@ -15,6 +16,7 @@ import {
   type SemesterMaterialRecord,
   type TeachingSemester,
 } from '../api/catalog'
+import { teachingPrepWorkbenchApi } from '../api/workbench'
 import { teachingPrepWorkbenchKey } from '../workbench/context'
 import type { TeachingPrepWorkbench } from '../workbench/state'
 import { useTeachingPrepCatalogStore } from '../stores/catalog'
@@ -111,7 +113,9 @@ async function flush(): Promise<void> {
   }
 }
 
-function mountWorkspace() {
+function mountWorkspace(options: {
+  refreshCurrentWorkspace?: () => Promise<void>
+} = {}) {
   const catalog = useTeachingPrepCatalogStore()
   const host = document.createElement('div')
   document.body.appendChild(host)
@@ -123,7 +127,8 @@ function mountWorkspace() {
     activeSuggestionRun: ref(null), pptxVersions: ref([]), dirtyReason: ref(null),
     workbenchError: ref(''), loading: ref(false), load: vi.fn(), openLesson: vi.fn(),
     openStage: vi.fn(), openWorkspace: vi.fn(), requestNavigation: vi.fn(),
-    refreshCurrentWorkspace: vi.fn(), setDirty: vi.fn(), watchSuggestionRun: vi.fn(),
+    refreshCurrentWorkspace: options.refreshCurrentWorkspace ?? vi.fn(),
+    setDirty: vi.fn(), watchSuggestionRun: vi.fn(),
   } as unknown as TeachingPrepWorkbench)
   app.mount(host)
   return { app, host, catalog }
@@ -141,6 +146,71 @@ afterEach(() => {
 })
 
 describe('MaterialLibraryWorkspace current-material safety', () => {
+  it('recovers an adopted mapping handoff instead of applying the stale proposal directly', async () => {
+    const curriculumItem = curriculum()
+    const semesterItem = semester(curriculumItem.id)
+    const materialItem = material('a'.repeat(32), '当前教材')
+    const materialRecord = record('r'.repeat(32), materialItem)
+    const item = proposal('2'.repeat(32), materialRecord.id)
+    item.payload.mappings[0]!.decision = 'accepted'
+    vi.spyOn(teachingPrepCatalogApi, 'semesterMappingPreflight').mockResolvedValue({
+      semester_id: semesterId, source_state_sha256: 'f'.repeat(64),
+      will_call_model: true, model_available: true, model_label: '合成模型',
+      model_destination_fingerprint: 'f'.repeat(64), material_count: 1,
+      unit_count: 1, existing_lesson_count: 1, creates_initial_tree: false,
+      automatic_retry: false,
+    })
+    const receipt = {
+      adoption_id: 'adoption-task-mapping', handoff_id: 'handoff-task-mapping',
+      task_kind: 'teaching_prep.semester_mapping', proposal_ref_id: item.id,
+      object_kind: 'semester_mapping', object_id: item.id,
+      object_ref: `teaching_prep:semester_mapping:${item.id}`, object_status: 'applied',
+      draft_revision: '1', target_revision: '1', receipt_revision: '1', adopted_at: '',
+    }
+    const adopt = vi.spyOn(teachingPrepWorkbenchApi, 'adoptAIHandoff').mockResolvedValue(receipt)
+    const aiTasks = useWorkspaceAITaskStore()
+    aiTasks.track(adoptedTeachingPrepTask({
+      taskId: 'task-mapping', taskKind: 'teaching_prep.semester_mapping',
+      proposalId: item.id, sourceRef: { kind: 'semester', id: semesterId, revision: '1' },
+      draftKind: 'semester_mapping', draftRevision: '1',
+    }))
+    vi.spyOn(aiTasks, 'refresh').mockResolvedValue()
+    const { app, host, catalog } = mountWorkspace({
+      refreshCurrentWorkspace: vi.fn().mockRejectedValue(new Error('offline')),
+    })
+    catalog.curricula = [curriculumItem]
+    catalog.semesters = [semesterItem]
+    catalog.selectedCurriculumId = curriculumItem.id
+    catalog.materials = [materialItem]
+    catalog.semesterMaterials = [materialRecord]
+    catalog.selectedMaterialId = materialItem.id
+    await catalog.prepareSemesterMapping([materialRecord.id])
+    catalog.semesterMappingProposals = [item]
+    const legacyApply = vi.spyOn(catalog, 'applySemesterMapping').mockResolvedValue(undefined)
+    await flush()
+
+    const apply = [...host.querySelectorAll<HTMLButtonElement>('button')]
+      .find(button => button.textContent?.includes('应用全部接受项'))
+    expect(apply).toBeDefined()
+    expect(catalog.currentSemesterMappingProposal?.id).toBe(item.id)
+    expect(catalog.currentSemesterMappingProposal?.payload.mappings[0]?.decision).toBe('accepted')
+    expect(apply?.disabled).toBe(false)
+    expect(aiAdoption.findTeachingPrepAdoption(
+      aiTasks.orderedTasks,
+      'teaching_prep.semester_mapping',
+      item.id,
+    )).not.toBeNull()
+    apply?.click()
+
+    await vi.waitFor(() => expect(adopt).toHaveBeenCalledOnce())
+    expect(legacyApply).not.toHaveBeenCalled()
+    await vi.waitFor(() => {
+      expect(host.textContent).toContain('正式映射已写入且已有回执')
+      expect(host.textContent).not.toContain('正式映射尚未确认')
+    })
+    app.unmount()
+  })
+
   it.each([
     ['AI proposal', true],
     ['local proposal', false],

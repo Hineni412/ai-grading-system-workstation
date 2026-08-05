@@ -3,6 +3,8 @@ import { createApp, nextTick, ref } from 'vue'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import * as aiAdoption from '../aiAdoption'
+import { adoptedTeachingPrepTask } from '../aiAdoptionTestFixture'
+import { teachingPrepWorkbenchApi } from '../api/workbench'
 import { useWorkspaceAITaskStore } from '../../shared/ai-tasks/store'
 import { teachingPrepWorkbenchKey } from '../workbench/context'
 import PresentationVersionsWorkspace from './PresentationVersionsWorkspace.vue'
@@ -32,6 +34,7 @@ const operation = (
 function mountChecker(options: {
   operations?: ReturnType<typeof operation>[]
   before?: Array<Record<string, unknown>>
+  refreshCurrentWorkspace?: () => Promise<void>
 } = {}) {
   const plan = {
     id: 'plan-1', lesson_draft_id: 'draft-1', resource_pack_id: 'pack-1', version_number: 1,
@@ -57,7 +60,8 @@ function mountChecker(options: {
       cancelPptxExecution: async () => undefined, recoverPptxExecution: async () => undefined,
       discardPptxStaging: async () => undefined,
     },
-    pptxVersions: ref([]), setDirty: () => undefined, refreshCurrentWorkspace: async () => undefined,
+    pptxVersions: ref([]), setDirty: () => undefined,
+    refreshCurrentWorkspace: options.refreshCurrentWorkspace ?? (async () => undefined),
     openStage: vi.fn(),
   }
   const host = document.createElement('div')
@@ -76,6 +80,44 @@ afterEach(() => {
 })
 
 describe('PresentationVersionsWorkspace R7 checker', () => {
+  it('recovers an adopted slide handoff instead of saving the stale plan directly', async () => {
+    const { app, host, fake, pinia } = mountChecker({
+      refreshCurrentWorkspace: vi.fn().mockRejectedValue(new Error('offline')),
+    })
+    const aiTasks = useWorkspaceAITaskStore(pinia)
+    aiTasks.track(adoptedTeachingPrepTask({
+      taskId: 'task-slide', taskKind: 'teaching_prep.slide_change_proposal',
+      proposalId: 'plan-1', sourceRef: { kind: 'lesson', id: 'lesson-1', revision: '7' },
+      draftKind: 'slide_plan', draftRevision: '1',
+    }))
+    vi.spyOn(aiTasks, 'refresh').mockResolvedValue()
+    const receipt = {
+      adoption_id: 'adoption-task-slide', handoff_id: 'handoff-task-slide',
+      task_kind: 'teaching_prep.slide_change_proposal', proposal_ref_id: 'plan-1',
+      object_kind: 'slide_plan', object_id: 'reviewed-plan',
+      object_ref: 'teaching_prep:slide_plan:reviewed-plan', object_status: 'approved',
+      draft_revision: '1', target_revision: '7', receipt_revision: '1', adopted_at: '',
+    }
+    const adopt = vi.spyOn(teachingPrepWorkbenchApi, 'adoptAIHandoff').mockResolvedValue(receipt)
+    await nextTick()
+    for (const input of host.querySelectorAll<HTMLInputElement>(
+      '.tp-operation-row input[type="radio"]:first-of-type',
+    )) input.click()
+    await nextTick()
+
+    const save = [...host.querySelectorAll<HTMLButtonElement>('button')]
+      .find(item => item.textContent?.includes('保存全部审核决定'))
+    save?.click()
+
+    await vi.waitFor(() => expect(adopt).toHaveBeenCalledOnce())
+    expect(fake.catalog.reviewSlidePlan).not.toHaveBeenCalled()
+    await vi.waitFor(() => {
+      expect(host.textContent).toContain('课件审核已保存并生成采用回执')
+      expect(host.textContent).not.toContain('课件审核尚未确认')
+    })
+    app.unmount()
+  })
+
   it('selects the operation source slide and scales only a validated target.position', async () => {
     const { app, host } = mountChecker()
     await nextTick()
