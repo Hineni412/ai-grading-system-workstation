@@ -18,6 +18,22 @@ const TOPBAR_CONTEXTS = new Set<WorkspaceTopbarContext>([
   'current-exam',
   'workspace',
 ])
+const DESTINATION_KEYS = new Set([
+  'teaching_prep.overview',
+  'teaching_prep.library',
+  'teaching_prep.lesson.materials',
+  'teaching_prep.lesson.plan',
+  'teaching_prep.lesson.exercises',
+  'teaching_prep.lesson.slides',
+  'teaching_prep.lesson.package',
+  'class_teacher.home',
+  'class_teacher.student.record',
+  'class_teacher.affair.record',
+  'class_teacher.plan.calendar',
+  'class_teacher.affair.sop',
+])
+const QUERY_KEY = /^[a-z][a-z0-9_]{0,63}$/
+const QUERY_VALUE = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/
 
 export interface WorkspaceModuleRouteDefinition {
   id: WorkspaceModuleId
@@ -215,6 +231,48 @@ function validateManifest(source: string, manifest: WorkspaceManifest): void {
     throw new WorkspaceManifestError(
       `Workspace ${label} feature flags are invalid`,
     )
+  }
+  validateSubNavigation(label, manifest)
+}
+
+function validateSubNavigation(label: string, manifest: WorkspaceManifest): void {
+  if (manifest.subNavigation === undefined) return
+  if (!Array.isArray(manifest.subNavigation)) {
+    throw new WorkspaceManifestError(
+      `Workspace ${label} sub-navigation is invalid`,
+    )
+  }
+  const seenDestinations = new Set<string>()
+  const seenOrders = new Set<number>()
+  const prefix = manifest.moduleId === 'teaching-prep'
+    ? 'teaching_prep.'
+    : 'class_teacher.'
+  for (const item of manifest.subNavigation) {
+    if (
+      !item
+      || !DESTINATION_KEYS.has(item.destinationKey)
+      || !item.destinationKey.startsWith(prefix)
+      || typeof item.label !== 'string'
+      || !item.label.trim()
+      || !Number.isSafeInteger(item.order)
+      || item.order <= 0
+      || typeof item.query !== 'object'
+      || item.query === null
+      || Array.isArray(item.query)
+      || Object.entries(item.query).some(
+        ([key, value]) => typeof value !== 'string'
+          || !QUERY_KEY.test(key)
+          || !QUERY_VALUE.test(value),
+      )
+      || seenDestinations.has(item.destinationKey)
+      || seenOrders.has(item.order)
+    ) {
+      throw new WorkspaceManifestError(
+        `Workspace ${label} sub-navigation is invalid`,
+      )
+    }
+    seenDestinations.add(item.destinationKey)
+    seenOrders.add(item.order)
   }
 }
 

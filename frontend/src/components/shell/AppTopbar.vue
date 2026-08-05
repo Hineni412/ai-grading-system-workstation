@@ -1,12 +1,14 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 
 import AppButton from '../design-system/AppButton.vue'
 import AppIconButton from '../design-system/AppIconButton.vue'
 import SessionManagementDrawer from '../sessions/SessionManagementDrawer.vue'
 import { useConfigWorkspaceStore } from '../../stores/config-workspace'
 import { useSessionStore } from '../../stores/session'
+import { workspaceRegistry } from '../../workspaces/registry'
+import type { WorkspaceSubNavigationItem } from '../../workspaces/contracts'
 
 const props = defineProps<{
   navigationOpen: boolean
@@ -17,6 +19,7 @@ const emit = defineEmits<{
 }>()
 
 const route = useRoute()
+const router = useRouter()
 const sessionStore = useSessionStore()
 const configStore = useConfigWorkspaceStore()
 const pageTitle = computed(() => String(route.meta.title ?? '工作台'))
@@ -24,21 +27,27 @@ const pageDescription = computed(() => String(route.meta.description ?? ''))
 const showCurrentExamContext = computed(
   () => route.meta.topbarContext !== 'workspace',
 )
-const showTeachingPrepNavigation = computed(
-  () => route.path === '/teaching-prep' || route.path.startsWith('/teaching-prep/'),
-)
-const teachingPrepTabs = [
-  { id: 'materials', label: '资料库' },
-  { id: 'lesson-tree', label: '课时' },
-  { id: 'lesson-prep', label: '备课' },
-  { id: 'versions', label: '课件' },
-] as const
+const currentWorkspace = computed(() => workspaceRegistry.modules.find(
+  ({ manifest }) => route.path === manifest.routePrefix
+    || route.path.startsWith(`${manifest.routePrefix}/`),
+))
+const workspaceSubNavigation = computed(() => [
+  ...(currentWorkspace.value?.manifest.subNavigation ?? []),
+].sort((left, right) => left.order - right.order))
 
-function openTeachingPrepWorkspace(workspace: string): void {
-  globalThis.dispatchEvent(new CustomEvent(
-    'teaching-prep:open-workspace',
-    { detail: { workspace } },
-  ))
+function isCurrentSubNavigation(item: WorkspaceSubNavigationItem): boolean {
+  return Object.entries(item.query).every(
+    ([key, value]) => route.query[key] === value,
+  )
+}
+
+async function openWorkspaceDestination(item: WorkspaceSubNavigationItem): Promise<void> {
+  const current = currentWorkspace.value
+  if (!current) return
+  await router.push({
+    path: current.manifest.routePrefix,
+    query: { ...route.query, ...item.query },
+  })
 }
 
 function selectSession(event: Event): void {
@@ -98,19 +107,19 @@ function retrySessions(): void {
     </div>
 
     <div
-      v-if="showTeachingPrepNavigation"
-      id="teaching-prep-topbar-tabs"
+      v-if="workspaceSubNavigation.length"
+      id="workspace-topbar-tabs"
       class="app-topbar__workspace-navigation"
-      aria-label="备课工作区入口"
+      :aria-label="`${currentWorkspace?.manifest.displayName ?? '工作台'}入口`"
     >
-      <nav class="tp-workspace-tabs" aria-label="备课工作区">
+      <nav class="tp-workspace-tabs" aria-label="工作台子导航">
         <button
-          v-for="item in teachingPrepTabs"
-          :key="item.id"
+          v-for="item in workspaceSubNavigation"
+          :key="item.destinationKey"
           type="button"
-          :aria-current="route.query.workspace === item.id ? 'page' : undefined"
-          :class="{ 'is-current': route.query.workspace === item.id }"
-          @click="openTeachingPrepWorkspace(item.id)"
+          :aria-current="isCurrentSubNavigation(item) ? 'page' : undefined"
+          :class="{ 'is-current': isCurrentSubNavigation(item) }"
+          @click="openWorkspaceDestination(item)"
         >
           {{ item.label }}
         </button>
