@@ -1917,3 +1917,13 @@ B01 的完成清单以详细实施计划第 9.5 节为准，累计到 B11 集中
 - 接线后公共任务抽屉 + B 前端：`9 files / 38 passed`；Vue/TypeScript、B ESLint、Vite 生产构建和差异格式检查通过；未跟踪前端源码 `.js` 为 0；
 - 浏览器合成冒烟通过：持续会话首页、六域、最近会话、登记、计划／日历、SOP、教师决策文案、任务抽屉和公共任务返回原会话均正常；唯一控制台错误来自未启动后端时全局 `/api/sessions` 的 502，与 B 流程无关；
 - 当前冻结版本进入一次需求符合性与一次代码质量并行评审；评审期间不再修改代码。整个版本仍未获发布授权，且未读取/写入真实数据、调用真实模型、执行真实迁移、重启服务、push、PR 或同步 `main`。
+
+### 首轮复审、统一修复与限定终审
+
+- 首轮冻结候选为 `f33d9095`；需求复审原始 3 条 `Important`，代码质量复审原始 4 条 `Important`；去重后为 5 个 B 范围阻塞根因和 1 个相邻 TW-F1 registry 合同差异，`Critical=0`。
+- 唯一统一修复关闭：Receipt 已提交后的 B 投影恢复、草稿打开失败的可读错误态、运行中追加造成的 revision 冲突、新 Turn 使旧 Handoff stale、草稿调整任务返回原 Handoff，以及首页真实“今日与接下来”工作图节点。修复提交为 `80914525`。
+- 统一修复的直接受影响验证：后端两文件 `31 passed`；前端三文件 `19 passed`；草稿版本专项 `2 passed`；Vue/TypeScript `--noEmit`、定向 ESLint、Vite 生产构建和差异格式检查通过；未跟踪前端 `.js` 为 0。
+- 两位首轮原评审者完成唯一一轮限定终审，只回查登记问题、修复区域和直接回归。需求轴与质量轴均判定原阻塞全部关闭；两轴本轮均为 `Critical=0 / Important=0 / Suggestion=0`，不启动第三轮。
+- 相邻 TW-F1 registry 合同差异未被当前代码自然解决：公共存储仍以已注册的 `class_teacher.intake` 表示首次分诊和草稿调整，B 只在自有 context refs 内区分 `class_teacher.intake_triage` / `class_teacher.draft_revision`。触发公共任务记录或抽屉时，公共审计不能直接按两类操作分组；证据在 `backend/class_teacher/intake/ports.py`、`backend/class_teacher/feature.py` 与 `backend/workspaces/ai_tasks/registry.py`。该缺口属公共注册表契约，B 分支不越界修改，不阻塞 B 自有候选。
+- 本轮集中调查与候选恢复约 8 分钟，首轮并行复审约 7 分钟，统一修复与直接验证约 18 分钟，限定终审约 3 分钟。B-UI-R7 自动验收通过，当前剩余工作量为用户/父任务的最终集成与人工验收；整个版本仍未获发布授权。
+- 本轮未读写真实 `user_data`、真实学生档案、成绩或答卷；未调用真实模型或密钥；未执行真实迁移、重启服务、push、PR、`main` 同步或集成分支合并。
