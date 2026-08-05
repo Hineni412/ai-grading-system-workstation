@@ -569,7 +569,7 @@ describe('question bank workspace', () => {
     })
 
     const fill = [...host.querySelectorAll<HTMLButtonElement>('button')]
-      .find((button) => button.textContent?.trim() === '补齐标签')!
+      .find((button) => button.textContent?.trim() === '只补缺失标签')!
     fill.click()
 
     await vi.waitFor(() => expect(fetchSpy.mock.calls.some(
@@ -585,7 +585,7 @@ describe('question bank workspace', () => {
       question_ids: [17],
       client_request_token: expect.stringMatching(/^[0-9a-f]{32}$/),
     })
-    expect(host.textContent).toContain('1 道标签不完整的题')
+    expect(host.textContent).toContain('1 道缺少核心标签的题')
   })
 
   it('requires explicit confirmation before trashing a paper and restores it from the drawer', async () => {

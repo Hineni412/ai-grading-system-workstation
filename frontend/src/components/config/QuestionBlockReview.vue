@@ -292,9 +292,9 @@ watch(() => props.source.source_revision, (_revision, previous) => {
         </header>
 
         <label v-if="question.question_type_review_required" class="question-review__type-check">
-          <span><strong>请确认题型</strong>{{ question.question_type_review_reason || '题面形式与解析内容存在冲突。' }}</span>
+          <span><strong>题型建议（可选修改）</strong>{{ question.question_type_review_reason || '题面形式与解析内容存在冲突。' }} 不修改时将沿用系统建议，不会阻塞 AI 生成。</span>
           <select :value="decisionFor(question.question_id)?.question_type ?? ''" @change="confirmQuestionType(question.question_id, $event)">
-            <option value="">请选择（本地建议：{{ questionTypeLabels[question.question_type as QuestionType] ?? question.question_type }}）</option>
+            <option value="">沿用系统建议：{{ questionTypeLabels[question.question_type as QuestionType] ?? question.question_type }}</option>
             <option v-for="type in QUESTION_TYPES" :key="type" :value="type">{{ questionTypeLabels[type] }}</option>
           </select>
         </label>
