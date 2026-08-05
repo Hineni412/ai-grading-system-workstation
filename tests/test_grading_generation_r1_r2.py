@@ -79,6 +79,21 @@ def test_structure_gate_still_blocks_process_question_with_one_step() -> None:
     assert blocking_quality_question_ids(_generated_payload(1)) == ["Q10"]
 
 
+def test_structure_gate_treats_reordered_evidence_as_the_same_step() -> None:
+    payload = _generated_payload(2)
+    steps = payload["rubric"]["questions"][0]["parts"][0]["steps"]
+    steps[0].update(
+        core_goal="建立数量关系",
+        required_elements=["列出已知量", "写出等式"],
+    )
+    steps[1].update(
+        core_goal="建立数量关系",
+        required_elements=["写出等式", "列出已知量"],
+    )
+
+    assert blocking_quality_question_ids(payload) == ["Q10"]
+
+
 def test_question_status_projection_uses_durable_checkpoint_states() -> None:
     projected = project_question_states(
         ["Q1", "Q2", "Q3"],
