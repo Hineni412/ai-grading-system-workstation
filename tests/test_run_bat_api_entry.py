@@ -52,3 +52,38 @@ def test_run_bat_uses_portable_runtime_fallback_for_linked_worktrees() -> None:
 
     assert "Desktop" not in content
     assert 'set "PYTHON_EXE=%~dp0..\\..\\runtime\\python\\python.exe"' in content
+
+
+def test_run_bat_checks_the_port_with_portable_python() -> None:
+    content = Path("运行.bat").read_text(encoding="utf-8")
+
+    port_check = content.index('"%PYTHON_EXE%" -c "import socket, sys;')
+    storage_preflight = content.index(
+        '"%PYTHON_EXE%" "%PROJECT_RUNNER%" backend.startup_storage_preflight'
+    )
+    assert port_check < storage_preflight
+    assert "connect_ex(('127.0.0.1', int(sys.argv[1])))" in content
+    assert "WindowsPowerShell" not in content
+    assert "P3.5" not in content
+
+
+def test_shutdown_bat_requires_powershell_7_and_generic_stop_helper() -> None:
+    content = Path("关闭系统.bat").read_text(encoding="utf-8")
+
+    assert 'set "STOP_SCRIPT=%~dp0tools\\stop_service.ps1"' in content
+    assert 'set "PWSH_EXE=C:\\Program Files\\PowerShell\\7\\pwsh.exe"' in content
+    assert "where pwsh.exe" in content
+    assert "PowerShell 7 is required" in content
+    assert "WindowsPowerShell" not in content
+    assert "P3.5" not in content
+
+
+def test_stop_helper_keeps_identity_checks_under_generic_name() -> None:
+    content = Path("tools/stop_service.ps1").read_text(encoding="utf-8")
+
+    assert "function Test-ServiceLauncherProcess" in content
+    assert content.count("Test-ServiceLauncherProcess") == 3
+    assert "Get-LoopbackListenerProcessIds" in content
+    assert "CreationDate" in content
+    assert "Stop-Process -Id $ownerProcessId" in content
+    assert "P3.5" not in content

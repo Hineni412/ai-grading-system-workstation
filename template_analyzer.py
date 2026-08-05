@@ -11,7 +11,6 @@ from PIL import Image
 from llm_client import LLMClient
 from llm_client import _compress_image_for_api
 from score_policy import enforce_integer_scores_by_type, MAX_QUESTION_SCORE
-from question_bank.services.ai_tagging_service import KNOWLEDGE_POINT_OPTIONS
 
 
 def analyze_template_package(
@@ -837,7 +836,6 @@ def _build_template_analysis_prompt(
     front_size: tuple[int, int],
     back_size: tuple[int, int],
 ) -> str:
-    knowledge_options_str = ", ".join(KNOWLEDGE_POINT_OPTIONS)
     return (
         "你是中学试卷样卷解析与评分标准设计专家。请同时分析两张样卷图片：第1张为正面，第2张为反面。\n"
         "目标：生成可用于自动批改的样卷配置，必须覆盖题目、答案、分值、步骤分、等价答案预案。\n"

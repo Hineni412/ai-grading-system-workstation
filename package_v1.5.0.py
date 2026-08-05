@@ -114,15 +114,6 @@ ROOT_COPY_EXTENSIONS = {
     ".yml",
 }
 
-CORE_TEST_FILES = {
-    "test_answer_normalizer.py",
-    "tests/__init__.py",
-    "tests/test_objective_batch_recognition_service.py",
-    "tests/test_objective_escalation.py",
-    "tests/test_portable_path_resolution.py",
-    "tests/test_prompt_injection_guard.py",
-}
-
 
 def _version_from_file(src_dir: Path) -> str:
     version_file = src_dir / "VERSION"
@@ -189,8 +180,6 @@ def _should_copy_root_file(path: Path) -> bool:
     name = path.name
     if name in ROOT_EXCLUDE_EXACT:
         return False
-    if name in CORE_TEST_FILES:
-        return False
     if _is_root_helper_script(name):
         return False
     if name in ROOT_INCLUDE_EXACT:
@@ -233,16 +222,10 @@ def copy_sources(src_dir: Path, pkg_dir: Path, version: str) -> dict[str, int]:
             continue
         _copy_tree_filtered(src, pkg_dir / dirname, include_docs=(dirname == "docs"))
 
-    for rel in sorted(CORE_TEST_FILES):
-        src = src_dir / rel
-        if src.exists():
-            _copy_file(src, pkg_dir / rel)
-            copied_files += 1
-
     frontend_dist_files = copy_frontend_dist(src_dir, pkg_dir)
     (pkg_dir / "VERSION").write_text(f"{version}\n", encoding="utf-8")
     return {
-        "root_and_core_test_files": copied_files,
+        "root_files": copied_files,
         "frontend_dist_files": frontend_dist_files,
     }
 
@@ -423,34 +406,20 @@ def copy_runtime(runtime_src: Path, pkg_dir: Path) -> None:
     _configure_embed_pth(dst)
 
 
-def write_launcher(src_dir: Path, pkg_dir: Path) -> None:
-    launcher = src_dir / "运行.bat"
-    if not launcher.is_file():
-        raise RuntimeError("运行.bat is missing from the package source")
-    _copy_file(launcher, pkg_dir / "运行.bat")
-
-
-def write_core_test_launcher(pkg_dir: Path) -> None:
-    tests = " ".join(
-        [
-            "test_answer_normalizer.py",
-            "tests\\test_objective_batch_recognition_service.py",
-            "tests\\test_objective_escalation.py",
-            "tests\\test_prompt_injection_guard.py",
-            "tests\\test_portable_path_resolution.py",
-        ]
-    )
-    launcher = f"""@echo off
-chcp 65001 >nul
-setlocal
-cd /d "%~dp0"
-set "PYTHON_EXE=%~dp0runtime\\python\\python.exe"
-set "AI_GRADING_DATA_DIR=%~dp0user_data"
-"%PYTHON_EXE%" -m pytest {tests} -q
-pause
-endlocal
-"""
-    (pkg_dir / "运行核心测试.bat").write_text(launcher, encoding="utf-8")
+def write_launchers(src_dir: Path, pkg_dir: Path) -> None:
+    required_files = {
+        Path("运行.bat"): Path("运行.bat"),
+        Path("关闭系统.bat"): Path("关闭系统.bat"),
+        Path("tools/run_project_module.py"): Path("tools/run_project_module.py"),
+        Path("tools/stop_service.ps1"): Path("tools/stop_service.ps1"),
+    }
+    for source_relative, package_relative in required_files.items():
+        source = src_dir / source_relative
+        if not source.is_file():
+            raise RuntimeError(
+                f"{source_relative.as_posix()} is missing from the package source"
+            )
+        _copy_file(source, pkg_dir / package_relative)
 
 
 def write_private_readme(pkg_dir: Path, version: str) -> None:
@@ -478,7 +447,7 @@ API 配置独立保存在当前 Windows 用户的本机配置目录中。首次�
 
 源码保留在发布目录中，可以直接用 Codex 打开这个文件夹继续修改。
 
-临时排查脚本、补丁脚本、旧测试脚本没有进入发布包；保留了少量核心回归测试，可双击 `运行核心测试.bat` 检查关键逻辑。
+临时排查脚本、补丁脚本和测试脚本不会进入发布包。日常使用只需双击 `运行.bat`；需要结束服务时双击 `关闭系统.bat`。
 """
     (pkg_dir / f"README_私人便携版_{version}.md").write_text(readme, encoding="utf-8")
 
@@ -517,7 +486,7 @@ def write_manifest(pkg_dir: Path, version: str, *, runtime_included: bool) -> No
         },
         "cleanup": {
             "excluded_helper_prefixes": list(ROOT_EXCLUDE_PREFIXES),
-            "core_tests_included": sorted(CORE_TEST_FILES),
+            "test_launchers_included": False,
         },
         "package_stats": _dir_stats(pkg_dir),
     }
@@ -565,8 +534,7 @@ def build_package(args: argparse.Namespace) -> None:
         runtime = build_runtime(src_dir, cache_dir, rebuild=args.rebuild_runtime)
         copy_runtime(runtime, pkg_dir)
 
-    write_launcher(src_dir, pkg_dir)
-    write_core_test_launcher(pkg_dir)
+    write_launchers(src_dir, pkg_dir)
     write_private_readme(pkg_dir, version)
     clean_generated_artifacts(pkg_dir)
     write_manifest(pkg_dir, version, runtime_included=runtime_included)

@@ -1,4 +1,4 @@
-"""Start the P3.5 API without keeping the caller's command pipe open.
+"""Start the AI grading API without keeping the caller's command pipe open.
 
 This helper is intended for Codex-driven background restarts. Teachers should
 continue to use ``运行.bat`` for normal interactive startup.
@@ -86,7 +86,7 @@ def _healthy(port: int) -> bool:
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Start the P3.5 API as a detached Windows process."
+        description="Start the AI grading API as a detached Windows process."
     )
     parser.add_argument("--port", type=int, default=8035)
     parser.add_argument("--wait-seconds", type=float, default=12.0)
@@ -157,8 +157,8 @@ def main() -> int:
             | subprocess.CREATE_NO_WINDOW
         )
 
-    stdout_path = log_dir / "p35-service.stdout.log"
-    stderr_path = log_dir / "p35-service.stderr.log"
+    stdout_path = log_dir / "service.stdout.log"
+    stderr_path = log_dir / "service.stderr.log"
     with stdout_path.open("ab") as stdout, stderr_path.open("ab") as stderr:
         process = subprocess.Popen(
             [

@@ -230,20 +230,3 @@ def test_failure_summary_keeps_errors_after_a_long_captured_log() -> None:
         "FAILED tests/test_flow.py::test_flow",
         "1 failed, 10 passed in 5.00s",
     ]
-
-
-def test_all_three_launchers_use_the_isolated_suite_runner() -> None:
-    launchers = {
-        "运行核心测试.bat": "quick",
-        "运行完整验收.bat": "full",
-        "运行隔离测试.bat": "serial",
-    }
-
-    for filename, mode in launchers.items():
-        content = (
-            run_test_suite.PROJECT_ROOT / filename
-        ).read_text(encoding="utf-8").casefold()
-        assert f"tools\\run_test_suite.py {mode}" in content
-        assert "..\\..\\runtime\\python\\python.exe" in content
-        assert "ai_grading_data_dir" not in content
-        assert "user_data" not in content

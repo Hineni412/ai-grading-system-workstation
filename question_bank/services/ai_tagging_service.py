@@ -30,7 +30,6 @@ from question_bank.services.taxonomy_review_suggestions import (
 )
 from question_bank.taxonomy.governance import get_taxonomy_governance
 from question_bank.taxonomy.curriculum_catalog import curriculum_volume_contract
-from question_bank.taxonomy.registry import canonical_knowledge_options
 
 
 DEFAULT_TAGGING_MODEL = "gpt-4o"
@@ -46,11 +45,6 @@ _TAGGING_REASONING_INSTRUCTION = (
     "according to the schema. Every tag must agree with that analysis; do not "
     "invent, omit, or misclassify tags."
 )
-# Compatibility for older configuration-analysis prompts. New question-bank
-# tagging obtains its candidates exclusively from TaxonomyGovernance.
-KNOWLEDGE_POINT_OPTIONS = tuple(canonical_knowledge_options())
-
-
 @dataclass(frozen=True)
 class AITaggingResult:
     ok: bool

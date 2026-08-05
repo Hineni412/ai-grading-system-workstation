@@ -76,7 +76,7 @@ def test_copy_sources_rejects_incomplete_frontend_dist(
         packager.copy_sources(source, package, "v1.5.0")
 
 
-def test_packaged_launcher_is_copied_from_the_single_source_launcher(
+def test_packaged_launchers_and_required_helpers_are_copied_from_source(
     tmp_path: Path,
 ) -> None:
     packager = _load_packager()
@@ -84,12 +84,21 @@ def test_packaged_launcher_is_copied_from_the_single_source_launcher(
     package = tmp_path / "package"
     source.mkdir()
     package.mkdir()
-    launcher = b"@echo off\r\necho P2-21 launcher\r\n"
-    (source / "运行.bat").write_bytes(launcher)
+    files = {
+        Path("运行.bat"): b"@echo off\r\necho start\r\n",
+        Path("关闭系统.bat"): b"@echo off\r\necho stop\r\n",
+        Path("tools/run_project_module.py"): b"print('run')\n",
+        Path("tools/stop_service.ps1"): b"Write-Host 'stop'\r\n",
+    }
+    for relative, content in files.items():
+        path = source / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
 
-    packager.write_launcher(source, package)
+    packager.write_launchers(source, package)
 
-    assert (package / "运行.bat").read_bytes() == launcher
+    for relative, content in files.items():
+        assert (package / relative).read_bytes() == content
 
 
 def test_portable_manifest_excludes_retired_streamlit_ui() -> None:
@@ -112,3 +121,5 @@ def test_private_readme_does_not_offer_retired_streamlit_fallback(
     assert "USE_STREAMLIT" not in content
     assert "START_API" not in content
     assert "Streamlit" not in content
+    assert "运行核心测试.bat" not in content
+    assert "关闭系统.bat" in content
