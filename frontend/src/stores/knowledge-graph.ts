@@ -65,7 +65,8 @@ function evidenceMatchesGraph(
     loaded.items.every((item) => (
       item.stable_key === stableKey &&
       loaded.scope.student_ids.includes(String(item.student_id)) &&
-      loaded.exam_scope.session_ids.includes(item.session_id) &&
+      (item.source_kind === 'historical_exam'
+        || loaded.exam_scope.session_ids.includes(item.session_id)) &&
       (loaded.scope.mode !== 'class' || item.class_id === loaded.scope.class_id)
     ))
   )
@@ -122,8 +123,6 @@ export const useKnowledgeGraphStore = defineStore('knowledge-graph', () => {
   ): Promise<void> {
     const normalized = normalizeGraphQuery(query)
     const nextKey = queryKey(normalized)
-    const scopeChanged = appliedQuery.value === null || queryKey(appliedQuery.value) !== nextKey
-
     graphController?.abort()
     const controller = new AbortController()
     graphController = controller
@@ -131,12 +130,6 @@ export const useKnowledgeGraphStore = defineStore('knowledge-graph', () => {
     requestedQuery.value = normalized
     graphState.value = 'loading'
     graphError.value = ''
-
-    if (scopeChanged) {
-      graph.value = null
-      graphUpdatedAt.value = null
-      clearSelection()
-    }
 
     try {
       const loaded = decodeGraphResponse(await loader(normalized, controller.signal), normalized)
@@ -154,9 +147,7 @@ export const useKnowledgeGraphStore = defineStore('knowledge-graph', () => {
           : graph.value.nodes.length === 0 ? 'empty' : 'ready'
         return
       }
-      const hasSameScopeGraph = graph.value !== null && appliedQuery.value !== null &&
-        queryKey(appliedQuery.value) === nextKey
-      graphState.value = hasSameScopeGraph ? 'stale-error' : 'error'
+      graphState.value = graph.value !== null ? 'stale-error' : 'error'
       graphError.value = '知识图谱暂时无法更新'
     } finally {
       if (graphController === controller) graphController = null

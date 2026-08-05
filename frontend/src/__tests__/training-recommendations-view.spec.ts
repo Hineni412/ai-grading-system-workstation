@@ -76,6 +76,26 @@ const diagnosis = {
       error_counts: { primary: { 逻辑断裂: 1 } },
     }],
   }],
+  group_weak_points: [{
+    knowledge_key: 'knowledge_point:三角形全等',
+    knowledge_point: '三角形全等',
+    mastery: 0.55,
+    score_sum: 0,
+    full_score_sum: 0,
+    deduction_count: 0,
+    evidence_count: 1,
+    effective_weight: 1,
+    exam_count: 1,
+    source_question_refs: [],
+    actionable_reasons: [],
+    tag_context: {},
+    error_counts: { primary: {}, secondary: {} },
+    hierarchy_kind: 'root',
+  }],
+  knowledge_catalog: [{
+    knowledge_key: 'knowledge_point:三角形全等',
+    knowledge_point: '三角形全等',
+  }],
   coverage: {
     covered_items: 1,
     total_items: 2,
@@ -211,6 +231,7 @@ function selectValue(element: HTMLSelectElement, value: string): void {
 beforeEach(() => {
   vi.clearAllMocks()
   localStorage.clear()
+  sessionStorage.clear()
   fetchStudentsMock.mockResolvedValue([
     {
       id: 12,
@@ -260,8 +281,9 @@ describe('training recommendations view', () => {
     await vi.waitFor(() => expect(fetchStudentsMock).toHaveBeenCalled())
 
     expect(host.querySelector('h1')?.textContent).toBe('训练推荐')
-    expect(host.textContent).toContain('精确标签口径')
-    expect(host.textContent).toContain('范围变化后自动刷新')
+    expect(host.textContent).toContain('精确知识标签')
+    expect(host.textContent).toContain('当前证据范围')
+    expect(host.textContent).toContain('缺考参考历史')
     await vi.waitFor(() => expect(trainingApiMock.diagnose).toHaveBeenCalledOnce())
   })
 
@@ -301,17 +323,24 @@ describe('training recommendations view', () => {
 
     const { host } = await mountView()
     await vi.waitFor(() => expect(trainingApiMock.diagnose).toHaveBeenCalledTimes(1))
-    selectValue(
-      host.querySelector<HTMLSelectElement>('.training-filter-inline select')!,
-      '七年级二班',
-    )
+    ;[...host.querySelectorAll<HTMLLabelElement>('.evidence-scope__classes label')]
+      .find((label) => label.textContent?.includes('七年级二班'))!
+      .querySelector<HTMLInputElement>('input')!.click()
+    await settle()
+    host.querySelector<HTMLButtonElement>('[data-testid="apply-evidence-scope"]')!.click()
     await vi.waitFor(() => expect(trainingApiMock.diagnose).toHaveBeenCalledTimes(2))
     resolveFirst(diagnosis)
+    await vi.waitFor(() => expect(
+      [...host.querySelectorAll<HTMLButtonElement>('.training-group-summary button')]
+        .some((button) => button.textContent?.includes('三角形全等')),
+    ).toBe(true))
+    ;[...host.querySelectorAll<HTMLButtonElement>('.training-group-summary button')]
+      .find((button) => button.textContent?.includes('三角形全等'))!.click()
     await vi.waitFor(() => expect(host.textContent).toContain('匿名学生乙'))
 
     expect(host.textContent).not.toContain('匿名学生甲55%')
     expect(trainingApiMock.diagnose.mock.calls[1]?.[0]).toMatchObject({
-      scope: { mode: 'class', class_id: '七年级二班', student_ids: ['22'] },
+      scope: { mode: 'class', class_ids: ['七年级二班'] },
     })
   })
 
@@ -332,35 +361,59 @@ describe('training recommendations view', () => {
         created_at: null,
       },
     ])
+    trainingApiMock.diagnose
+      .mockResolvedValueOnce(diagnosis)
+      .mockResolvedValueOnce({
+        ...diagnosis,
+        scope: {
+          mode: 'all',
+          student_ids: ['12', '22'],
+          matched_student_count: 2,
+        },
+        students: [
+          diagnosis.students[0]!,
+          {
+            ...diagnosis.students[0]!,
+            student_id: '22',
+            student_code: 'S022',
+            student_name: '匿名学生乙',
+          },
+        ],
+      })
     const { host } = await mountView()
     await vi.waitFor(() => expect(trainingApiMock.diagnose).toHaveBeenCalledTimes(1))
 
-    const selectedMode = [...host.querySelectorAll<HTMLButtonElement>('button')]
-      .find((item) => item.textContent?.trim() === '指定学生')!
-    selectedMode.click()
+    const adjust = [...host.querySelectorAll<HTMLButtonElement>('button')]
+      .find((item) => item.textContent?.trim() === '精细调整学生')!
+    adjust.click()
     await settle()
     const search = host.querySelector<HTMLInputElement>('input[aria-label="搜索学生"]')!
 
     search.value = '甲'
     search.dispatchEvent(new Event('input', { bubbles: true }))
     await nextTick()
-    host.querySelector<HTMLInputElement>('[data-testid="training-student"] input')!.click()
-    await vi.waitFor(() => expect(trainingApiMock.diagnose).toHaveBeenCalledTimes(2))
+    selectValue(host.querySelector<HTMLSelectElement>('select[aria-label="匿名学生甲的范围决定"]')!, 'include')
+    await settle()
 
     search.value = '乙'
     search.dispatchEvent(new Event('input', { bubbles: true }))
     await nextTick()
-    host.querySelector<HTMLInputElement>('[data-testid="training-student"] input')!.click()
-    await vi.waitFor(() => expect(trainingApiMock.diagnose).toHaveBeenCalledTimes(3))
+    selectValue(host.querySelector<HTMLSelectElement>('select[aria-label="匿名学生乙的范围决定"]')!, 'include')
+    await settle()
+    host.querySelector<HTMLButtonElement>('[data-testid="apply-evidence-scope"]')!.click()
+    await vi.waitFor(() => expect(trainingApiMock.diagnose).toHaveBeenCalledTimes(2))
 
-    expect(trainingApiMock.diagnose.mock.calls[2]?.[0]).toMatchObject({
-      scope: { mode: 'selected', student_ids: ['12', '22'] },
+    expect(trainingApiMock.diagnose.mock.calls[1]?.[0]).toMatchObject({
+      scope: { mode: 'all', include_student_ids: ['12', '22'] },
     })
-    expect(host.querySelector('.training-section-heading')?.textContent).toContain('2 名学生')
+    await vi.waitFor(() => expect(host.textContent).toContain('当前范围 2 人'))
   })
 
   it('connects diagnosis evidence to the recommendation path and teacher confirmation', async () => {
     const { host } = await mountView()
+    await vi.waitFor(() => expect(host.textContent).toContain('三角形全等'))
+    ;[...host.querySelectorAll<HTMLButtonElement>('.training-group-summary button')]
+      .find((button) => button.textContent?.includes('三角形全等'))!.click()
     await vi.waitFor(() => expect(host.textContent).toContain('匿名学生甲'))
     await vi.waitFor(() => expect(host.textContent).toContain('55%'))
     expect(host.textContent).toContain('1 条证据')

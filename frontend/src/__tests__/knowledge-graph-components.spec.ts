@@ -121,4 +121,38 @@ describe('knowledge graph components', () => {
     expect(host.textContent).toContain('当前标准')
     expect(host.textContent).toContain('当前掌握证据')
   })
+
+  it('shows training-only evidence without reporting zero students or no evidence', async () => {
+    const trainingOnlyNode: GraphNode = {
+      ...nodes[0]!,
+      mastery: {
+        ...nodes[0]!.mastery,
+        evidence_count: 1,
+        contributing_student_count: 1,
+        exam_evidence_count: 0,
+        training_evidence_count: 1,
+      },
+      evidence: {
+        ...nodes[0]!.evidence,
+        student_count: 1,
+        item_count: 1,
+        deduction_count: 0,
+      },
+      missing_reasons: [],
+    }
+    const host = await mount(GraphNodeInspector, {
+      node: trainingOnlyNode,
+      nodes: [trainingOnlyNode],
+      edges: [],
+      currentStandard: standard,
+      evidence: { ...evidence, stable_key: trainingOnlyNode.stable_key },
+      evidenceState: 'empty',
+      evidenceError: '',
+    })
+
+    expect(host.textContent).toContain('涉及学生1 名')
+    expect(host.textContent).toContain('训练回流 1 条')
+    expect(host.textContent).toContain('已有训练回流证据')
+    expect(host.textContent).not.toContain('当前范围没有题目证据')
+  })
 })

@@ -20,9 +20,22 @@
 }
 
 .training-heading {
-  align-items: flex-end;
+  display: grid;
+  grid-template-columns: minmax(280px, .42fr) minmax(720px, 1.58fr);
+  align-items: start;
   padding-bottom: var(--space-5);
   border-bottom: var(--border-width) solid var(--color-border-default);
+}
+
+.training-heading-scope {
+  display: grid;
+  min-width: 0;
+  gap: var(--space-2);
+}
+
+.training-heading-scope .evidence-scope__controls {
+  grid-template-columns: 120px 145px minmax(210px, 1fr) minmax(220px, 1fr) auto;
+  padding: 10px 12px;
 }
 
 .training-heading h1,
@@ -45,11 +58,16 @@
 }
 
 .training-basis {
-  display: grid;
-  max-width: 320px;
+  display: flex;
+  max-width: none;
+  justify-content: space-between;
   gap: var(--space-1);
   padding-left: var(--space-4);
   border-left: var(--border-selected-width) solid var(--color-accent);
+}
+
+@media (max-width: 1100px) {
+  .training-heading { grid-template-columns: minmax(0, 1fr); }
 }
 
 .training-basis span,
@@ -392,7 +410,7 @@
 
 .training-main-grid {
   display: grid;
-  grid-template-columns: minmax(260px, 1.15fr) minmax(420px, 1.85fr) minmax(240px, .9fr);
+  grid-template-columns: minmax(280px, 1fr) minmax(420px, 1.55fr) minmax(240px, .72fr);
   align-items: start;
   gap: var(--space-5);
 }
@@ -407,10 +425,41 @@
   gap: var(--space-5);
 }
 
-.training-ledger { grid-column: 1; grid-row: 1; }
-.training-evidence { grid-column: 1; grid-row: 2; }
-.training-plan { grid-column: 2; grid-row: 1 / span 2; }
-.training-sidebar { grid-column: 3; grid-row: 1 / span 2; }
+.training-ledger { grid-column: 1 / -1; grid-row: 1; }
+.training-evidence { grid-column: 1 / 3; grid-row: 2; }
+.training-plan { grid-column: 1 / -1; grid-row: 3; }
+.training-sidebar { grid-column: 3; grid-row: 2; }
+
+.training-group-summary {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: var(--space-2);
+}
+
+.training-group-summary button {
+  display: grid;
+  min-height: 126px;
+  align-content: start;
+  gap: 5px;
+  padding: 14px;
+  border: var(--border-width) solid var(--color-border-default);
+  border-radius: var(--radius-control);
+  background: var(--color-bg-surface);
+  color: var(--color-text-primary);
+  text-align: left;
+}
+
+.training-group-summary button.is-selected {
+  border: 2px solid var(--color-accent);
+  background: var(--color-accent-subtle);
+}
+
+.training-group-summary span,
+.training-group-summary small,
+.training-matrix-controls span { color: var(--color-text-secondary); font-size: var(--font-size-caption); }
+.training-group-summary b { font-size: var(--font-size-h2); }
+.training-matrix-controls { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); }
+.training-column-expand { display: block; margin: 5px auto 0; border: 0; background: transparent; color: var(--color-accent); font-size: 11px; }
 
 .training-sidebar {
   position: sticky;
@@ -512,6 +561,31 @@
   border-radius: var(--radius-control);
 }
 
+.training-ledger-scroll table {
+  min-width: max-content;
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+}
+
+.training-ledger-scroll thead th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--color-bg-surface);
+}
+
+.training-ledger-scroll tr > :first-child {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  min-width: 176px;
+  background: var(--color-bg-surface);
+  box-shadow: 1px 0 0 var(--color-border-subtle);
+}
+
+.training-ledger-scroll thead tr > :first-child { z-index: 3; }
+
 .training-ledger table {
   width: 100%;
   min-width: 640px;
@@ -576,6 +650,25 @@
 
 .training-heat-cell span,
 .training-no-evidence {
+  color: var(--color-text-muted);
+  font-size: var(--font-size-caption);
+}
+
+.training-group-row > th,
+.training-group-row > td {
+  background: var(--color-accent-subtle);
+}
+
+.training-group-cell {
+  display: grid;
+  min-height: var(--control-height-large);
+  place-content: center;
+  gap: var(--space-1);
+  color: var(--color-text-primary);
+  text-align: center;
+}
+
+.training-group-cell span {
   color: var(--color-text-muted);
   font-size: var(--font-size-caption);
 }

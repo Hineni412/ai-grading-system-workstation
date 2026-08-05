@@ -108,7 +108,11 @@ describe('knowledge graph view', () => {
   it('loads the current graph for the route scope and shows no version switch language', async () => {
     const host = await mountView('/knowledge-graph?session=7&class=%E4%B8%83%E5%B9%B4%E7%BA%A7%E4%B8%80%E7%8F%AD')
     await vi.waitFor(() => expect(fetchGraph).toHaveBeenCalledWith({
-      scope: { mode: 'class', class_id: '七年级一班' },
+      scope: {
+        mode: 'class',
+        class_id: '七年级一班',
+        class_ids: ['七年级一班'],
+      },
       exam_scope: { mode: 'current', session_ids: [7] },
     }, expect.any(AbortSignal)))
     expect(host.textContent).toContain('知识图谱')

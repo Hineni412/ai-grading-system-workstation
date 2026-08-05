@@ -42,7 +42,18 @@ export interface TrainingStudentScopeInput {
   mode: TrainingStudentScopeRequest['mode']
   studentIds: string[]
   classId: string
+  classIds: string[]
+  scoreRateMin: number | null
+  scoreRateMax: number | null
+  includeStudentIds: string[]
+  excludeStudentIds: string[]
+  useHistoricalFallback: boolean
 }
+
+export type TrainingStudentScopeUpdate = Pick<
+  TrainingStudentScopeInput,
+  'mode' | 'studentIds' | 'classId'
+> & Partial<Omit<TrainingStudentScopeInput, 'mode' | 'studentIds' | 'classId'>>
 
 export interface TrainingExamScopeInput {
   mode: TrainingExamScopeRequest['mode']
@@ -123,9 +134,15 @@ function hasRecommendation(plan: TrainingPlanResponse): boolean {
 
 export const useTrainingStore = defineStore('training', () => {
   const studentScope = ref<TrainingStudentScopeInput>({
-    mode: 'student',
+    mode: 'all',
     studentIds: [],
     classId: '',
+    classIds: [],
+    scoreRateMin: null,
+    scoreRateMax: null,
+    includeStudentIds: [],
+    excludeStudentIds: [],
+    useHistoricalFallback: true,
   })
   const examScope = ref<TrainingExamScopeInput>({
     mode: 'current',
@@ -176,8 +193,22 @@ export const useTrainingStore = defineStore('training', () => {
       mode: studentScope.value.mode,
       student_ids: studentIds,
     }
+    if (studentScope.value.scoreRateMin !== null) result.score_rate_min = studentScope.value.scoreRateMin
+    if (studentScope.value.scoreRateMax !== null) result.score_rate_max = studentScope.value.scoreRateMax
+    const included = uniqueText(studentScope.value.includeStudentIds)
+    const excluded = uniqueText(studentScope.value.excludeStudentIds)
+    if (included.length) result.include_student_ids = included
+    if (excluded.length) result.exclude_student_ids = excluded
+    if (!studentScope.value.useHistoricalFallback) result.use_historical_fallback = false
     const classId = studentScope.value.classId.trim()
-    if (studentScope.value.mode === 'class' && classId) result.class_id = classId
+    const classIds = uniqueText([
+      ...studentScope.value.classIds,
+      ...(classId ? [classId] : []),
+    ])
+    if (studentScope.value.mode === 'class' && classIds.length) {
+      result.class_ids = classIds
+      if (classIds.length === 1) result.class_id = classIds[0]
+    }
     return result
   }
 
@@ -198,8 +229,9 @@ export const useTrainingStore = defineStore('training', () => {
   function requestBody(): TrainingDiagnosisRequest {
     const scope = normalizedStudentScope()
     const nextExamScope = normalizedExamScope()
-    if (scope.student_ids.length === 0) throw new Error('请至少选择一名学生')
-    if (scope.mode === 'class' && !scope.class_id) throw new Error('请选择班级')
+    if ((scope.mode === 'student' || scope.mode === 'selected') && scope.student_ids.length === 0) {
+      throw new Error('请至少选择一名学生')
+    }
     if (nextExamScope.session_ids.length === 0) throw new Error('请至少选择一场考试')
     return {
       scope,
@@ -216,7 +248,6 @@ export const useTrainingStore = defineStore('training', () => {
     diagnosisController = null
     planController = null
     confirmController = null
-    diagnosis.value = null
     plan.value = null
     confirmationId.value = ''
     confirmedTask.value = null
@@ -249,11 +280,17 @@ export const useTrainingStore = defineStore('training', () => {
     actionMessage.value = ''
   }
 
-  function setStudentScope(next: TrainingStudentScopeInput): void {
+  function setStudentScope(next: TrainingStudentScopeUpdate): void {
     const normalized: TrainingStudentScopeInput = {
       mode: next.mode,
       studentIds: uniqueText(next.studentIds),
       classId: next.classId.trim(),
+      classIds: uniqueText(next.classIds ?? []),
+      scoreRateMin: next.scoreRateMin ?? null,
+      scoreRateMax: next.scoreRateMax ?? null,
+      includeStudentIds: uniqueText(next.includeStudentIds ?? []),
+      excludeStudentIds: uniqueText(next.excludeStudentIds ?? []),
+      useHistoricalFallback: next.useHistoricalFallback !== false,
     }
     if (JSON.stringify(normalized) === JSON.stringify(studentScope.value)) return
     studentScope.value = normalized
@@ -281,7 +318,6 @@ export const useTrainingStore = defineStore('training', () => {
     diagnosisController = controller
     const requestGeneration = generation
     const requestScopeKey = scopeKey()
-    diagnosis.value = null
     plan.value = null
     confirmationId.value = ''
     confirmedTask.value = null
@@ -547,7 +583,17 @@ export const useTrainingStore = defineStore('training', () => {
     detailController?.abort()
     historyController = null
     detailController = null
-    studentScope.value = { mode: 'student', studentIds: [], classId: '' }
+    studentScope.value = {
+      mode: 'all',
+      studentIds: [],
+      classId: '',
+      classIds: [],
+      scoreRateMin: null,
+      scoreRateMax: null,
+      includeStudentIds: [],
+      excludeStudentIds: [],
+      useHistoricalFallback: true,
+    }
     examScope.value = { mode: 'current', sessionIds: [] }
     tasks.value = []
     selectedTask.value = null

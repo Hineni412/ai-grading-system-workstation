@@ -91,6 +91,19 @@ const activeMasteryLabel = computed(() => masteryLabel(
 const missingReasons = computed(() => {
   return [...new Set(props.node?.missing_reasons ?? [])]
 })
+const trainingEvidenceCount = computed(() => (
+  props.node?.mastery.training_evidence_count ?? 0
+))
+const evidenceSourceLabel = computed(() => {
+  if (!props.node) return '暂无'
+  const exam = props.node.mastery.exam_evidence_count ?? 0
+  const training = props.node.mastery.training_evidence_count ?? 0
+  const sources = [
+    ...(exam > 0 ? [`考试作答 ${exam} 条`] : []),
+    ...(training > 0 ? [`训练回流 ${training} 条`] : []),
+  ]
+  return sources.join('；') || '暂无'
+})
 
 function missingReasonLabel(reason: string): string {
   if (reason === 'no_evidence_in_scope') return '当前考试和学生范围内没有题目证据'
@@ -135,7 +148,9 @@ function strengthLabel(value: GraphRelationStrength): string {
         <dl>
           <div><dt>当前掌握证据</dt><dd>{{ activeMasteryLabel }} · {{ stateLabel }}</dd></div>
           <div><dt>样本数量</dt><dd>{{ node.mastery.evidence_count }} 条</dd></div>
-          <div><dt>涉及学生</dt><dd>{{ node.evidence.student_count }} 名</dd></div>
+          <div><dt>群体分母</dt><dd>{{ node.mastery.contributing_student_count ?? node.evidence.student_count }} 名有证据学生</dd></div>
+          <div><dt>涉及学生</dt><dd>{{ node.evidence.student_count }} 名（无证据不按 0 计）</dd></div>
+          <div><dt>证据来源</dt><dd>{{ evidenceSourceLabel }}</dd></div>
           <div><dt>扣分记录</dt><dd>{{ node.evidence.deduction_count }} 次</dd></div>
           <div><dt>包含范围</dt><dd>{{ node.include_scope || '暂未说明' }}</dd></div>
           <div><dt>不包含范围</dt><dd>{{ node.exclude_scope || '暂未说明' }}</dd></div>
@@ -213,7 +228,10 @@ function strengthLabel(value: GraphRelationStrength): string {
           <p>上次读取的证据仍可查看，最新内容暂时无法确认。</p>
           <button type="button" data-testid="retry-graph-evidence" @click="emit('retryEvidence')">重新加载证据</button>
         </div>
-        <p v-if="evidenceState === 'empty'" class="knowledge-graph-empty-copy">
+        <p v-if="evidenceState === 'empty' && trainingEvidenceCount > 0" class="knowledge-graph-empty-copy">
+          当前知识点已有训练回流证据；当前考试范围没有对应题目证据。
+        </p>
+        <p v-else-if="evidenceState === 'empty'" class="knowledge-graph-empty-copy">
           当前范围没有题目证据。可调整考试或学生范围后重试。
         </p>
 

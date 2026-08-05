@@ -12,11 +12,17 @@ class _TrainingModel(BaseModel):
 
 
 class TrainingScopeRequest(_TrainingModel):
-    mode: Literal["student", "selected", "class"]
+    mode: Literal["all", "student", "selected", "class"] = "all"
     student_ids: list[str] = Field(default_factory=list, max_length=500)
     class_id: str | None = Field(default=None, max_length=100)
+    class_ids: list[str] = Field(default_factory=list, max_length=100)
+    score_rate_min: float | None = Field(default=None, ge=0.0, le=1.0)
+    score_rate_max: float | None = Field(default=None, ge=0.0, le=1.0)
+    include_student_ids: list[str] = Field(default_factory=list, max_length=500)
+    exclude_student_ids: list[str] = Field(default_factory=list, max_length=500)
+    use_historical_fallback: bool = True
 
-    @field_validator("student_ids")
+    @field_validator("student_ids", "include_student_ids", "exclude_student_ids", "class_ids")
     @classmethod
     def normalize_student_ids(cls, values: list[str]) -> list[str]:
         result: list[str] = []
@@ -37,9 +43,14 @@ class TrainingScopeRequest(_TrainingModel):
         return text or None
 
     @model_validator(mode="after")
-    def class_scope_has_class_id(self) -> "TrainingScopeRequest":
-        if self.mode == "class" and self.class_id is None:
-            raise ValueError("class scope requires class_id")
+    def validate_scope(self) -> "TrainingScopeRequest":
+        if self.score_rate_min is not None and self.score_rate_max is not None:
+            if self.score_rate_min > self.score_rate_max:
+                raise ValueError("score rate range is invalid")
+        if self.mode in {"student", "selected"} and not self.student_ids:
+            raise ValueError("selected scope requires student IDs")
+        if self.mode == "class" and not (self.class_ids or self.class_id):
+            raise ValueError("class scope requires at least one class")
         return self
 
 
@@ -203,6 +214,31 @@ class PersonalizedPaperCreateRequest(_TrainingModel):
     context_window_tokens: Literal[32768, 65536, 128000] = 32768
 
 
+class PersonalizedPaperBatchCreateRequest(_TrainingModel):
+    operation_token: str = Field(pattern=r"^[0-9a-fA-F]{32}$")
+    expected_draft_revision: int = Field(ge=1)
+    student_ids: list[str] = Field(default_factory=list, max_length=500)
+    context_window_tokens: Literal[32768, 65536, 128000] = 32768
+
+    @field_validator("student_ids")
+    @classmethod
+    def normalize_students(cls, values: list[str]) -> list[str]:
+        return TrainingScopeRequest.normalize_student_ids(values)
+
+
+class PersonalizedPaperBatchCancelRequest(_TrainingModel):
+    operation_token: str = Field(pattern=r"^[0-9a-fA-F]{32}$")
+
+
+class PersonalizedPaperBatchRetryRequest(_TrainingModel):
+    student_ids: list[str] = Field(default_factory=list, max_length=500)
+
+    @field_validator("student_ids")
+    @classmethod
+    def normalize_students(cls, values: list[str]) -> list[str]:
+        return TrainingScopeRequest.normalize_student_ids(values)
+
+
 class PersonalizedPaperInstanceResponse(_TrainingModel):
     paper_instance_id: str = Field(pattern=r"^[0-9a-f]{64}$")
     paper_batch_id: str = Field(pattern=r"^[0-9a-f]{64}$")
@@ -224,6 +260,7 @@ class PersonalizedPaperInstanceResponse(_TrainingModel):
     review_docx_sha256: str | None = None
     reviewed_docx_sha256: str | None = None
     frozen_pdf_sha256: str | None = None
+    formula_fallbacks: list[dict[str, Any]] = Field(default_factory=list)
     downloads: dict[str, str | None]
     error_code: str | None = None
     created_at: str
@@ -232,6 +269,22 @@ class PersonalizedPaperInstanceResponse(_TrainingModel):
 
 class PersonalizedPaperInstanceListResponse(_TrainingModel):
     items: list[PersonalizedPaperInstanceResponse]
+
+
+class PersonalizedPaperBatchResponse(_TrainingModel):
+    batch_run_id: str = Field(pattern=r"^[0-9a-f]{64}$")
+    paper_batch_id: str = Field(pattern=r"^[0-9a-f]{64}$")
+    status: Literal["creating", "complete", "partial", "failed", "cancelled"]
+    requested_count: int = Field(ge=0)
+    succeeded_count: int = Field(ge=0)
+    failed_count: int = Field(ge=0)
+    items: list[PersonalizedPaperInstanceResponse]
+    failures: list[dict[str, str]]
+    downloads: dict[str, str | None]
+
+
+class PersonalizedPaperBatchListResponse(_TrainingModel):
+    items: list[PersonalizedPaperBatchResponse]
 
 
 class TrainingScanBatchCreateRequest(_TrainingModel):
@@ -428,6 +481,7 @@ class TrainingEvidenceReference(_TrainingModel):
     score_awarded: float
     full_score: float
     score_rate: float | None = None
+    source_kind: Literal["current_exam", "historical_exam"] = "current_exam"
 
 
 class TrainingWeakPoint(_TrainingModel):
@@ -438,11 +492,18 @@ class TrainingWeakPoint(_TrainingModel):
     full_score_sum: float
     deduction_count: int
     evidence_count: int
+    effective_weight: float = Field(default=0.0, ge=0.0)
     exam_count: int
     source_question_refs: list[TrainingEvidenceReference]
     actionable_reasons: list[str]
     tag_context: dict[str, list[str]]
     error_counts: dict[str, dict[str, int]]
+    hierarchy_kind: Literal["root", "child", "parent_summary"] = "root"
+    parent_knowledge_key: str | None = None
+    parent_knowledge_point: str | None = None
+    child_knowledge_keys: list[str] = Field(default_factory=list)
+    direct_evidence_count: int = Field(default=0, ge=0)
+    child_evidence_count: int = Field(default=0, ge=0)
 
 
 class TrainingStudentProfile(_TrainingModel):
@@ -451,13 +512,25 @@ class TrainingStudentProfile(_TrainingModel):
     student_name: str
     class_id: str
     score_rate: float | None = None
+    score_rate_source: Literal["current_exam", "historical_fallback", "none"] = "none"
+    historical_exam_count: int = Field(default=0, ge=0)
+    historical_latest_exam_at: str | None = None
     weak_points: list[TrainingWeakPoint]
 
 
 class TrainingNormalizedScope(_TrainingModel):
-    mode: Literal["student", "selected", "class"]
+    mode: Literal["all", "student", "selected", "class"]
     student_ids: list[str]
     class_id: str | None = None
+    class_ids: list[str] = Field(default_factory=list)
+    score_rate_min: float | None = Field(default=None, ge=0.0, le=1.0)
+    score_rate_max: float | None = Field(default=None, ge=0.0, le=1.0)
+    include_student_ids: list[str] = Field(default_factory=list)
+    exclude_student_ids: list[str] = Field(default_factory=list)
+    use_historical_fallback: bool = True
+    matched_student_count: int = Field(default=0, ge=0)
+    scope_revision: str = Field(default="", pattern=r"^$|^[0-9a-f]{64}$")
+    student_score_profiles: dict[str, dict[str, Any]] = Field(default_factory=dict)
 
 
 class TrainingExamSession(_TrainingModel):
@@ -481,6 +554,8 @@ class TrainingDiagnosisResponse(_TrainingModel):
     scope: TrainingNormalizedScope
     exam_scope: TrainingNormalizedExamScope
     students: list[TrainingStudentProfile]
+    group_weak_points: list[TrainingWeakPoint] = Field(default_factory=list)
+    knowledge_catalog: list[dict[str, Any]] = Field(default_factory=list)
     coverage: TrainingCoverage
     confirmed_concept_ids: list[int]
     suggested_terms: list[str]
@@ -490,6 +565,8 @@ class TrainingDiagnosisResponse(_TrainingModel):
 
 
 __all__ = [
+    "PersonalizedPaperBatchCreateRequest",
+    "PersonalizedPaperBatchResponse",
     "PersonalizedPaperCreateRequest",
     "PersonalizedPaperInstanceListResponse",
     "PersonalizedPaperInstanceResponse",

@@ -50,7 +50,8 @@ const props = withDefaults(defineProps<{
 const emit = defineEmits<{ selectNode: [stableKey: string] }>()
 const chartElement = ref<HTMLElement | null>(null)
 const chartError = ref('')
-const viewMode = ref<GraphViewMode>('overview')
+const viewMode = ref<GraphViewMode>('focus')
+const displayMode = ref<'graph' | 'table'>('graph')
 const pathTargetKey = ref('')
 const enabledTypes = ref<GraphRelationType[]>(['parent', 'prerequisite', 'related'])
 let chart: ChartLike | null = null
@@ -104,6 +105,14 @@ const visibleEdges = computed(() => filteredEdges.value.filter((edge) => (
 const selectedLabel = computed(() => props.nodes.find(
   (node) => node.stable_key === props.selectedKey,
 )?.display_name ?? '未选择')
+const relationRows = computed(() => {
+  const names = new Map(props.nodes.map((node) => [node.stable_key, node.display_name]))
+  return visibleEdges.value.map((edge) => ({
+    ...edge,
+    sourceLabel: names.get(edge.source_key) ?? edge.source_key,
+    targetLabel: names.get(edge.target_key) ?? edge.target_key,
+  }))
+})
 const pathDescription = computed(() => {
   if (viewMode.value !== 'path') return ''
   if (!props.selectedKey) return '请先选择路径起点。'
@@ -123,7 +132,11 @@ function prefersReducedMotion(): boolean {
 }
 
 function graphOption(): Record<string, unknown> {
-  const displayNodes = buildGraphDisplayNodes(visibleNodes.value)
+  const displayNodes = buildGraphDisplayNodes(
+    visibleNodes.value,
+    visibleEdges.value,
+    viewMode.value === 'focus' ? props.selectedKey : null,
+  )
   const names = new Map(props.nodes.map((node) => [node.stable_key, node.display_name]))
   const pathEdgeIds = new Set(path.value?.edgeIds ?? [])
   return {
@@ -151,6 +164,8 @@ function graphOption(): Record<string, unknown> {
       edgeSymbolSize: 8,
       data: displayNodes.map((node) => {
         const tokens = stateTokens[node.state]
+        const selected = props.selectedKey === node.stableKey
+        const adjacent = !props.selectedKey || visibleNodeKeys.value.has(node.stableKey)
         return {
           id: node.stableKey,
           name: node.label,
@@ -160,25 +175,33 @@ function graphOption(): Record<string, unknown> {
           value: node.mastery,
           x: node.x,
           y: node.y,
-          symbol: tokens.symbol,
-          symbolSize: node.size,
+          symbol: 'roundRect',
+          symbolSize: [selected ? 196 : 184, selected ? 72 : 64],
           category: node.stateIndex,
           itemStyle: {
             color: themeColour(tokens.fill),
-            borderColor: themeColour(tokens.border),
-            borderWidth: props.selectedKey === node.stableKey ? 3 : 1,
+            borderColor: selected ? themeColour('--color-accent') : themeColour(tokens.border),
+            borderWidth: selected ? 5 : 1,
+            opacity: adjacent ? 1 : 0.28,
+            shadowBlur: selected ? 18 : 0,
+            shadowColor: selected ? themeColour('--color-accent') : 'transparent',
           },
           label: {
-            show: visibleNodes.value.length <= 100,
+            show: selected || visibleNodes.value.length <= 35,
             color: themeColour('--color-text-primary'),
-            formatter: `${node.label}\n${node.masteryLabel} · ${node.stateLabel}`,
+            formatter: `${node.label.length > 16 ? `${node.label.slice(0, 15)}…` : node.label}\n${selected ? '✓ 已选 · ' : ''}${node.masteryLabel}`,
             fontSize: 12,
             lineHeight: 16,
+            fontWeight: selected ? 700 : 400,
+            backgroundColor: selected ? themeColour('--color-accent-subtle') : 'transparent',
+            padding: selected ? [5, 7] : 0,
+            borderRadius: selected ? 4 : 0,
           },
         }
       }),
       links: visibleEdges.value.map((edge) => {
         const tokens = relationTokens[edge.relation_type]
+        const selected = props.selectedKey === edge.source_key || props.selectedKey === edge.target_key
         return {
           id: edge.relation_key,
           source: edge.source_key,
@@ -189,9 +212,9 @@ function graphOption(): Record<string, unknown> {
           lineStyle: {
             color: themeColour(tokens.colour),
             type: tokens.type,
-            width: pathEdgeIds.has(edge.relation_key) ? 4 : 2,
-            opacity: viewMode.value === 'path' && pathEdgeIds.has(edge.relation_key) ? 1 : 0.72,
-            curveness: edge.relation_type === 'related' ? 0.12 : 0.04,
+            width: pathEdgeIds.has(edge.relation_key) || selected ? 4 : 1.5,
+            opacity: selected || (viewMode.value === 'path' && pathEdgeIds.has(edge.relation_key)) ? 1 : 0.46,
+            curveness: edge.relation_type === 'related' ? 0.09 : 0,
           },
         }
       }),
@@ -295,9 +318,18 @@ function toggleRelation(type: GraphRelationType): void {
     : [...enabledTypes.value, type]
 }
 
+function ensureDenseRangeFocus(): void {
+  if (!props.selectedKey && props.nodes.length > 25 && props.nodes[0]) {
+    emit('selectNode', props.nodes[0].stable_key)
+  }
+}
+
 watch(
   () => [props.nodes, props.edges, props.scopeLabel, props.coverage],
-  renderChart,
+  () => {
+    ensureDenseRangeFocus()
+    renderChart()
+  },
   { deep: true },
 )
 watch([viewMode, pathTargetKey, enabledTypes], renderChart, { deep: true })
@@ -306,7 +338,10 @@ watch(() => props.selectedKey, () => {
   renderChart()
 })
 
-onMounted(initializeChart)
+onMounted(() => {
+  ensureDenseRangeFocus()
+  initializeChart()
+})
 onBeforeUnmount(() => {
   try { observer?.disconnect() } catch { /* Keep failures inside this component. */ }
   observer = null
@@ -326,6 +361,8 @@ onBeforeUnmount(() => {
         <p>{{ scopeLabel }}</p>
       </div>
       <div class="knowledge-graph-canvas-actions" aria-label="图谱查看方式">
+        <button type="button" :class="{ 'is-active': displayMode === 'graph' }" :aria-pressed="displayMode === 'graph'" @click="displayMode = 'graph'">关系图</button>
+        <button type="button" :class="{ 'is-active': displayMode === 'table' }" :aria-pressed="displayMode === 'table'" @click="displayMode = 'table'">关系表</button>
         <button type="button" :class="{ 'is-active': viewMode === 'overview' }" :aria-pressed="viewMode === 'overview'" @click="viewMode = 'overview'">全部关系</button>
         <button type="button" :class="{ 'is-active': viewMode === 'focus' }" :aria-pressed="viewMode === 'focus'" :disabled="!selectedKey" @click="viewMode = 'focus'">聚焦当前节点</button>
         <button type="button" :class="{ 'is-active': viewMode === 'path' }" :aria-pressed="viewMode === 'path'" :disabled="!selectedKey" @click="viewMode = 'path'">查看路径</button>
@@ -373,11 +410,26 @@ onBeforeUnmount(() => {
       <button type="button" data-testid="retry-knowledge-chart" @click="retryChart">重新显示关系图</button>
     </div>
     <div
+      v-show="displayMode === 'graph'"
       ref="chartElement"
       class="knowledge-graph-canvas"
       role="img"
       tabindex="0"
       aria-label="已确认知识关系图。关系类型、方向和掌握状态可在上方文字图例中读取；下方文字目录可使用键盘浏览全部节点。"
     />
+    <div v-if="displayMode === 'table'" class="knowledge-graph-relation-table">
+      <table>
+        <thead><tr><th>知识点</th><th>关系</th><th>关联知识点</th><th>依据</th></tr></thead>
+        <tbody>
+          <tr v-for="edge in relationRows" :key="edge.relation_key">
+            <td><button type="button" @click="emit('selectNode', edge.source_key)">{{ edge.sourceLabel }}</button></td>
+            <td>{{ relationTypeLabel(edge.relation_type) }}</td>
+            <td><button type="button" @click="emit('selectNode', edge.target_key)">{{ edge.targetLabel }}</button></td>
+            <td>{{ edge.rationale }}</td>
+          </tr>
+        </tbody>
+      </table>
+      <p v-if="!relationRows.length" class="knowledge-graph-empty-copy">当前关系筛选没有可显示记录。</p>
+    </div>
   </section>
 </template>
