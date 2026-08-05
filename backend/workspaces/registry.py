@@ -153,6 +153,32 @@ class WorkspaceRegistry:
                     f"workspace {feature.module_id} Job registration failed"
                 ) from exc
 
+    def register_ai_tasks(
+        self,
+        registrar: object,
+        services: dict[str, object],
+    ) -> None:
+        registrations = tuple(
+            feature
+            for feature in self._enabled_features
+            if feature.register_ai_tasks is not None
+        )
+        if not registrations:
+            return
+        register_adapter = getattr(registrar, "register_adapter", None)
+        if not callable(register_adapter):
+            raise TypeError("workspace AI Task registrar is invalid")
+        for feature in registrations:
+            try:
+                feature.register_ai_tasks(
+                    registrar,  # type: ignore[arg-type]
+                    services.get(feature.module_id),
+                )
+            except Exception as exc:
+                raise WorkspaceRegistrationError(
+                    f"workspace {feature.module_id} AI Task registration failed"
+                ) from exc
+
     def _context(self, feature: WorkspaceFeature) -> WorkspaceContext:
         workspace_dir = getattr(self._paths, "workspace_dir", None)
         if not callable(workspace_dir):

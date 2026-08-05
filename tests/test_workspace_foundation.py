@@ -260,6 +260,7 @@ def test_disabled_feature_calls_no_factories_or_registrars(
         service_factory=fail,
         migration_provider=fail,
         register_jobs=fail,
+        register_ai_tasks=fail,
     )
     paths = _paths(tmp_path)
     registry = WorkspaceRegistry([feature], paths=paths)
@@ -269,6 +270,7 @@ def test_disabled_feature_calls_no_factories_or_registrars(
         registry.run_migrations()
         services = registry.create_services()
         registry.register_jobs(manager, services)
+        registry.register_ai_tasks(object(), services)
     finally:
         manager.shutdown()
 
