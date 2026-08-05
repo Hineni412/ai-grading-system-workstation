@@ -13,16 +13,13 @@ vi.mock('echarts/core', () => ({
   }),
 }))
 
-import { homeIntakeApi } from '../api/homeIntake'
+import { intakeApi } from '../api/intake'
 import { studentR1Api } from '../api/r1'
 import { supportApi } from '../api/support'
 import { vaultApi } from '../api/vault'
-import type { WorkNode, WorkNodeDetail, WorkSnapshot } from '../api/work'
-import TodaySurface from '../ordinary/TodaySurface.vue'
-import QuickWorkCapture from '../ordinary/QuickWorkCapture.vue'
+import type { WorkNode, WorkNodeDetail } from '../api/work'
 import WorkNodeInspector from '../ordinary/WorkNodeInspector.vue'
 import AcademicAnalysisPanel from '../students/AcademicAnalysisPanel.vue'
-import SecurityPanel from '../students/SecurityPanel.vue'
 import StudentDirectoryPanel from '../students/StudentDirectoryPanel.vue'
 import SupportReviewPanel from '../students/SupportReviewPanel.vue'
 import ClassTeacherWorkbenchView from '../views/ClassTeacherWorkbenchView.vue'
@@ -42,76 +39,22 @@ function clickByText(host: HTMLElement, text: string) {
 afterEach(() => { apps.splice(0).forEach((app) => app.unmount()); document.body.innerHTML=''; window.history.replaceState({}, '', '/'); vi.restoreAllMocks(); chartOptions.length=0 })
 
 describe('B UI R1 surfaces', () => {
-  it('opens student work directly in plaintext debug mode without a PIN prompt', async () => {
-    window.history.replaceState({}, '', '/class-teacher?surface=students&panel=directory')
-    vi.spyOn(vaultApi, 'status').mockResolvedValue({
-      initialized:true, locked:false, idle_timeout_seconds:0, retry_after_seconds:0,
-      format_version:1, protection_mode:'plaintext_debug_v1', protection_state:null,
-      legacy_upgrade_available:false, session_expires_in_seconds:0,
-      status_observed_at:'2026-08-02T00:00:00Z', lock_reason:null,
+  it('opens the R7 conversation desk without consulting a PIN or vault gate', async () => {
+    window.history.replaceState({}, '', '/class-teacher?surface=home')
+    const vaultStatus = vi.spyOn(vaultApi, 'status')
+    vi.spyOn(intakeApi, 'homeroom').mockResolvedValue({ homeroom_class:null, revision:0, classes:[], source_revision:'r'.repeat(64) })
+    vi.spyOn(intakeApi, 'listConversations').mockResolvedValue([])
+    vi.spyOn(intakeApi, 'startConversation').mockResolvedValue({
+      conversation_id:'conversation-1234', revision:1, state:'collecting', homeroom_class:null,
+      created_at:'2026-08-05T00:00:00Z', updated_at:'2026-08-05T00:00:00Z', turns:[], handoffs:[],
     })
-    vi.spyOn(studentR1Api, 'directory').mockResolvedValue({ items:[], cursor:null, total:0, page_size:20 })
-    vi.spyOn(studentR1Api, 'currentRoster').mockResolvedValue({ items:[], active_count:0, historical_count:0, replayed:false })
-    vi.spyOn(studentR1Api, 'rosterSource').mockResolvedValue({ items:[], classes:[], source_revision:'r1', total:0, cursor:null })
 
     const host = await mount(ClassTeacherWorkbenchView, {})
 
-    expect(host.textContent).toContain('调试直开')
-    expect(host.textContent).toContain('学生目录')
-    expect(host.textContent).not.toContain('输入 6 位 PIN')
-    expect(host.textContent).not.toContain('建立敏感保险箱')
-  })
-
-  it('stops before mounting student content when an old encrypted vault needs migration', async () => {
-    window.history.replaceState({}, '', '/class-teacher?surface=students&panel=directory')
-    vi.spyOn(vaultApi, 'status').mockResolvedValue({
-      initialized:true, locked:true, idle_timeout_seconds:0, retry_after_seconds:0,
-      format_version:1, protection_mode:'legacy_migration_required', protection_state:null,
-      legacy_upgrade_available:false, session_expires_in_seconds:0,
-      status_observed_at:'2026-08-02T00:00:00Z', lock_reason:'legacy_migration_required',
-    })
-    const directory = vi.spyOn(studentR1Api, 'directory')
-
-    const host = await mount(ClassTeacherWorkbenchView, {})
-
-    expect(host.textContent).toContain('旧库待迁移')
-    expect(host.textContent).toContain('已停止读写')
-    expect(directory).not.toHaveBeenCalled()
-  })
-
-  it('opens a restricted work item only through the protected projection command', async () => {
-    const node: WorkNode = { node_id:'n1', kind:'restricted_projection', classification:'restricted_projection', title:'学生事项待复查', details:null, status:'pending', due_date:'2026-08-02', revision:1, created_at:'2026-08-01', updated_at:'2026-08-01', projection_type:'attention_followup' }
-    const snapshot = ref<WorkSnapshot | null>({ as_of:'2026-08-01', start_date:'2026-08-01', end_date:'2026-08-01', nodes:[node], edges:[], today:[node], overdue:[], waiting:[], review_due:[node], summary:{today:1,overdue:0,waiting:0,review_due:1}, view:'today', cursor:null, source_version:'v1' })
-    const detail = ref<WorkNodeDetail | null>(null)
-    const command = vi.fn().mockResolvedValue({ projection_id:'projection-001' })
-    const module = { snapshot, selected:detail, loading:ref(false), error:ref(''), active:ref([node]), load:vi.fn(), inspect:vi.fn(async()=>{ detail.value={node,upstream:[],downstream:[],progress_events:[],collection_summary:null,pending_ai_branches:[],allowed_commands:['open_restricted_projection'],projection_id:'projection-001'} }), command, clearSelection:()=>{detail.value=null} }
-    const host = await mount(TodaySurface, { module })
-    expect(host.textContent).toContain('1 项待推进')
-    expect(host.textContent).not.toContain('2 项待推进')
-    expect(host.textContent).toContain('待复查')
-    expect(host.textContent).not.toContain('等待中')
-    expect(host.querySelectorAll('.summary>div')).toHaveLength(2)
-    expect(host.querySelectorAll('.lane')).toHaveLength(2)
-    clickByText(host, '学生事项待复查'); await nextTick()
-    clickByText(host, '解锁并打开受保护事项'); await nextTick()
-    expect(command).toHaveBeenCalledWith(node, 'open_restricted_projection', {})
-  })
-
-  it('hides all-zero summaries and empty work lanes on the homepage', async () => {
-    const snapshot = ref<WorkSnapshot | null>({
-      as_of:'2026-08-04', start_date:'2026-08-04', end_date:'2026-08-04', nodes:[], edges:[],
-      today:[], overdue:[], waiting:[], review_due:[], summary:{today:0,overdue:0,waiting:0,review_due:0},
-      view:'today', cursor:null, source_version:'empty',
-    })
-    const module = {
-      snapshot, selected:ref<WorkNodeDetail | null>(null), loading:ref(false), error:ref(''), active:ref([]),
-      load:vi.fn(), inspect:vi.fn(), command:vi.fn(), clearSelection:vi.fn(),
-    }
-    const host = await mount(TodaySurface, { module })
-
-    expect(host.querySelector('.summary')).toBeNull()
-    expect(host.querySelector('.workspace')).toBeNull()
-    expect(host.textContent).not.toContain('这一段目前没有工作')
+    expect(host.textContent).toContain('先把事情说清楚，再决定怎么处理')
+    expect(host.textContent).not.toContain('PIN')
+    expect(host.textContent).not.toContain('解锁')
+    expect(vaultStatus).not.toHaveBeenCalled()
   })
 
   it('lets ordinary work leave and return to the calendar without deleting its history', async () => {
@@ -143,16 +86,15 @@ describe('B UI R1 surfaces', () => {
   })
 
   it('directory calls only the lightweight directory interface before selection', async () => {
+    vi.spyOn(intakeApi, 'homeroom').mockResolvedValue({ homeroom_class:'一班', revision:1, classes:['一班'], source_revision:'r'.repeat(64) })
     const directory = vi.spyOn(studentR1Api, 'directory').mockResolvedValue({ items:[{ subject_id:'s1', display_name:'合成学生', source_student_id:'S001', class_label:'一班', support_record_count:3, support_plan_count:1, confirmed_entry_count:2, projection_state:'applied', attention_pending_count:0, last_confirmed_at:'2026-08-01' }], cursor:null, total:1, page_size:20 })
-    vi.spyOn(studentR1Api, 'currentRoster').mockResolvedValue({ items:[{ source_key:'s1', subject_id:'s1', display_name:'合成学生', class_label:'一班', state:'active' }], active_count:1, historical_count:0, replayed:false })
     vi.spyOn(studentR1Api, 'rosterSource').mockResolvedValue({ items:[], classes:['一班'], source_revision:'r1', total:0, cursor:null })
     const records = vi.spyOn(studentR1Api, 'records')
     const host = await mount(StudentDirectoryPanel, { token:'synthetic-token' })
     expect(host.textContent).toContain('本页不读取支持正文')
     expect(host.textContent).toContain('合成学生')
-    expect(host.textContent).toContain('当前我班 · 1 人')
-    expect(directory).toHaveBeenCalledOnce()
-    expect(directory).toHaveBeenCalledWith('synthetic-token', expect.objectContaining({ classLabel:'一班', rosterState:'active' }))
+    expect(host.textContent).toContain('一班 · 一直沿用到手动更改')
+    expect(directory).toHaveBeenCalledExactlyOnceWith('synthetic-token', expect.objectContaining({ classLabel:'一班', state:'active' }))
     expect(records).not.toHaveBeenCalled()
   })
 
@@ -203,164 +145,16 @@ describe('B UI R1 surfaces', () => {
     expect(filteredTimeline).toEqual([])
   })
 
-  it('PIN change immediately asks the shell to lock every sensitive view', async () => {
-    vi.spyOn(vaultApi, 'listBackups').mockResolvedValue([])
-    const change = vi.spyOn(vaultApi, 'changePin').mockResolvedValue({})
-    const locked = vi.fn()
-    const host = await mount(SecurityPanel, { token:'token', status:null, subject:null, onLocked:locked })
-    const inputs = host.querySelectorAll<HTMLInputElement>('input')
-    inputs[0]!.value='123456'; inputs[0]!.dispatchEvent(new Event('input',{bubbles:true}))
-    inputs[1]!.value='654321'; inputs[1]!.dispatchEvent(new Event('input',{bubbles:true}))
-    clickByText(host, '更改并锁定全部会话'); await new Promise((resolve)=>setTimeout(resolve,0))
-    expect(change).toHaveBeenCalledWith('token','123456','654321')
-    expect(locked).toHaveBeenCalledOnce()
-  })
-
-  it('requires the teacher to type both server phrases before deleting backups', async () => {
-    vi.spyOn(vaultApi, 'listBackups').mockResolvedValue([])
-    vi.spyOn(supportApi, 'previewSubjectDeletion').mockResolvedValue({
-      subject_id:'s1', affected_backup_count:1, affected_backups:[], shared_object_count:0,
-      shared_objects:[], delete_confirmation_phrase:'确认完整删除学生支持数据',
-      backup_confirmation_phrase:'确认销毁受影响的班主任专用备份', preview_version:'v1',
-    })
-    const remove = vi.spyOn(supportApi, 'deleteSubject').mockResolvedValue({})
-    vi.spyOn(studentR1Api, 'directory').mockResolvedValue({ items:[], cursor:null, total:0, page_size:1 })
-    const subject = {subject_id:'s1',display_name:'合成学生',source_student_id:'S1',class_label:null,support_record_count:0,support_plan_count:0,confirmed_entry_count:0,projection_state:'none',attention_pending_count:0,last_confirmed_at:null}
-    const host = await mount(SecurityPanel, { token:'token', status:null, subject })
-    clickByText(host, '查看删除影响'); await new Promise((resolve)=>setTimeout(resolve,0)); await nextTick()
-    const phraseInputs = [...host.querySelectorAll<HTMLLabelElement>('.danger label')]
-    const deleteInput = phraseInputs[0]!.querySelector<HTMLInputElement>('input')!
-    const backupInput = phraseInputs[1]!.querySelector<HTMLInputElement>('input')!
-    deleteInput.value='确认完整删除学生支持数据'; deleteInput.dispatchEvent(new Event('input',{bubbles:true})); await nextTick()
-    const deleteButton = clickByText(host, '永久删除并清理投影') as HTMLButtonElement
-    expect(deleteButton.disabled).toBe(true)
-    expect(remove).not.toHaveBeenCalled()
-    backupInput.value='确认销毁受影响的班主任专用备份'; backupInput.dispatchEvent(new Event('input',{bubbles:true})); await nextTick()
-    expect(deleteButton.disabled).toBe(false)
-    deleteButton.click(); await new Promise((resolve)=>setTimeout(resolve,0))
-    expect(remove).toHaveBeenCalledWith(
-      'token', 's1', expect.objectContaining({ preview_version:'v1' }),
-      '确认销毁受影响的班主任专用备份',
-      expect.any(String),
-    )
-  })
-
-  it('states that the current vault is unchanged when restore verification fails', async () => {
-    vi.spyOn(vaultApi, 'listBackups').mockResolvedValue([{ backup_id:'b1', file_name:'synthetic.ctbackup', created_at:'2026-08-01T00:00:00Z', size_bytes:100, status:'verified' }])
-    vi.spyOn(vaultApi, 'previewRestore').mockRejectedValue(new Error('synthetic failure'))
-    const host = await mount(SecurityPanel, { token:'token', status:null, subject:null })
-    const select = host.querySelector<HTMLSelectElement>('.top section:nth-child(2) select')!
-    select.value='synthetic.ctbackup'; select.dispatchEvent(new Event('change',{bubbles:true}))
-    const secret = host.querySelector<HTMLInputElement>('.top section:nth-child(2) input[type="password"]')!
-    secret.value='synthetic-secret'; secret.dispatchEvent(new Event('input',{bubbles:true}))
-    clickByText(host, '验证并预览'); await new Promise((resolve)=>setTimeout(resolve,0)); await nextTick()
-    expect(host.textContent).toContain('当前库保持不变')
-    expect(secret.value).toBe('')
-  })
-
-  it('locks sensitive views when restore may have succeeded but the response is lost', async () => {
-    vi.spyOn(vaultApi, 'listBackups').mockResolvedValue([{ backup_id:'b1', file_name:'synthetic.ctbackup', created_at:'2026-08-01T00:00:00Z', size_bytes:100, status:'verified' }])
-    vi.spyOn(vaultApi, 'previewRestore').mockResolvedValue({
-      backup_id:'b1', source_instance_id:'synthetic', created_at:'2026-08-01T00:00:00Z', format_version:2,
-      scope:'complete', preview_token:'preview-token', expires_in_seconds:60, requires_complete_replacement:true,
-      source_relation:'same_instance', backup_schema_version:22, current_schema_version:22, migration_required:false,
-      backup_scope_counts:{subjects:1}, current_scope_counts:{subjects:1}, mode:'complete_replace', will_replace_current:true,
-      will_lock_after_confirm:true, confirmation_phrase:'确认完整替换当前班主任保险箱',
-    })
-    vi.spyOn(vaultApi, 'confirmRestore').mockRejectedValue(new Error('synthetic response loss'))
-    const locked = vi.fn()
-    const host = await mount(SecurityPanel, { token:'token', status:null, subject:null, onLocked:locked })
-    const select = host.querySelector<HTMLSelectElement>('.top section:nth-child(2) select')!
-    select.value='synthetic.ctbackup'; select.dispatchEvent(new Event('change',{bubbles:true}))
-    const secret = host.querySelector<HTMLInputElement>('.top section:nth-child(2) input[type="password"]')!
-    secret.value='synthetic-secret'; secret.dispatchEvent(new Event('input',{bubbles:true}))
-    clickByText(host, '验证并预览'); await new Promise((resolve)=>setTimeout(resolve,0)); await nextTick()
-    const phrase = host.querySelector<HTMLInputElement>('.top section:nth-child(2) .warning input')!
-    phrase.value='确认完整替换当前班主任保险箱'; phrase.dispatchEvent(new Event('input',{bubbles:true})); await nextTick()
-    clickByText(host, '确认完整替换'); await new Promise((resolve)=>setTimeout(resolve,0)); await nextTick()
-
-    expect(locked).toHaveBeenCalledWith(expect.stringContaining('结果暂未确认'))
-    expect(host.textContent).not.toContain('恢复失败；当前库保持不变')
-  })
-
-  it('reuses the same deletion operation after an unknown result', async () => {
-    vi.spyOn(vaultApi, 'listBackups').mockResolvedValue([])
-    vi.spyOn(supportApi, 'previewSubjectDeletion').mockResolvedValue({
-      subject_id:'s1', affected_backup_count:0, affected_backups:[], shared_object_count:0,
-      shared_objects:[], delete_confirmation_phrase:'确认完整删除学生支持数据',
-      backup_confirmation_phrase:null, preview_version:'v1',
-    })
-    const remove = vi.spyOn(supportApi, 'deleteSubject')
-      .mockRejectedValueOnce(new Error('synthetic response loss'))
-      .mockResolvedValueOnce({ deleted:true })
-    vi.spyOn(studentR1Api, 'directory').mockResolvedValue({ items:[], cursor:null, total:0, page_size:1 })
-    const subjectDeleted = vi.fn()
-    const subject = {subject_id:'s1',display_name:'合成学生',source_student_id:'S1',class_label:null,support_record_count:0,support_plan_count:0,confirmed_entry_count:0,projection_state:'none',attention_pending_count:0,last_confirmed_at:null}
-    const host = await mount(SecurityPanel, { token:'token', status:null, subject, onSubjectDeleted:subjectDeleted })
-    clickByText(host, '查看删除影响'); await new Promise((resolve)=>setTimeout(resolve,0)); await nextTick()
-    const phrase = host.querySelector<HTMLInputElement>('.danger .warning input')!
-    phrase.value='确认完整删除学生支持数据'; phrase.dispatchEvent(new Event('input',{bubbles:true})); await nextTick()
-    clickByText(host, '永久删除并清理投影'); await new Promise((resolve)=>setTimeout(resolve,0)); await nextTick()
-    expect(host.textContent).toContain('删除结果暂未确认')
-    const firstOperationId = remove.mock.calls[0]![4]
-
-    clickByText(host, '查询同一删除操作'); await new Promise((resolve)=>setTimeout(resolve,0)); await nextTick()
-    expect(remove.mock.calls[1]![4]).toBe(firstOperationId)
-    expect(subjectDeleted).toHaveBeenCalledOnce()
-  })
-
-  it('quick capture sends ordinary work directly and explains an invalid AI result', async () => {
-    vi.spyOn(homeIntakeApi, 'preview').mockResolvedValue({
-      preview_id:'p1', route:'ordinary', recommended_route:'ordinary_plan',
-      date_interpretation:{status:'resolved',source:'relative_day',resolved_date:'2026-08-03',selected_date:null,candidates:['2026-08-03'],pending_reason:null}, emergency_guidance:null,
-      round_number:1, prior_operations:[], round_physical_request_count:0,cumulative_physical_request_count:0,physical_request_count:0,
-      dispatch_ready:true,local_only:false,blocked_categories:[],removed_categories:[],student_aliases:[],exact_payload:{text:'普通班务'},fingerprint:'f',
-      expires_at:null,model_provider:'fake',model_endpoint:null,model_name:'fake',destination_fingerprint:'d',model_enabled:true,max_physical_requests:null,estimated_cost:null,source_text:'普通班务',final_due_date:'2026-08-03',date_semantics:'date-only',
-    })
-    const dispatch = vi.spyOn(homeIntakeApi, 'dispatch').mockResolvedValue({
-      operation_id:'op1',route:'ordinary',state:'invalid_result',result_kind:null,result:null,follow_up_questions:[],can_follow_up:false,
-      assistant_message:null,validation_issue:'AI 返回的内容不是有效 JSON',error_category:'class_teacher_work_plan_invalid_result',round_number:1,round_physical_request_count:1,cumulative_physical_request_count:1,physical_request_count:1,
-      teacher_confirmation_required:false,result_fingerprint:null,local_context:{},
-    })
-    const host = await mount(QuickWorkCapture, { module:{ load:vi.fn() } })
-    const input = host.querySelector<HTMLTextAreaElement>('#home-intake-text')!
-    input.value='普通班务'; input.dispatchEvent(new Event('input',{bubbles:true}))
-    clickByText(host, '交给 AI 整理'); await new Promise((resolve)=>setTimeout(resolve,0)); await nextTick()
-    expect(dispatch).toHaveBeenCalledOnce()
-    expect(host.textContent).not.toContain('敏感内容匿名逐字预览')
-    expect(host.textContent).toContain('AI 返回内容未通过校验')
-    expect(host.textContent).toContain('本轮物理请求1 次')
-    expect(host.textContent).toContain('原因：AI 返回的内容不是有效 JSON')
-    expect(host.textContent).not.toContain('class_teacher_work_plan_invalid_result')
-  })
-
-  it('shows a complete zero-request receipt when the model destination changed', async () => {
-    vi.spyOn(homeIntakeApi, 'preview').mockResolvedValue({
-      preview_id:'p1',route:'ordinary',recommended_route:'ordinary_plan',date_interpretation:{status:'pending',source:'not_provided',resolved_date:null,selected_date:null,candidates:[],pending_reason:null},emergency_guidance:null,
-      round_number:1,prior_operations:[],round_physical_request_count:0,cumulative_physical_request_count:0,physical_request_count:0,dispatch_ready:true,local_only:false,blocked_categories:[],removed_categories:[],student_aliases:[],exact_payload:{text:'普通班务'},fingerprint:'f',expires_at:null,model_provider:'fake',model_endpoint:null,model_name:'fake',destination_fingerprint:'d',model_enabled:true,max_physical_requests:null,estimated_cost:null,source_text:'普通班务',final_due_date:null,date_semantics:'date-only',
-    })
-    vi.spyOn(homeIntakeApi, 'dispatch').mockResolvedValue({operation_id:'op1',route:'ordinary',state:'destination_changed',result_kind:null,result:null,follow_up_questions:[],can_follow_up:false,assistant_message:null,validation_issue:null,error_category:'destination_changed',round_number:1,round_physical_request_count:0,cumulative_physical_request_count:0,physical_request_count:0,teacher_confirmation_required:false,result_fingerprint:null,local_context:{}})
-    const host = await mount(QuickWorkCapture, { module:{ load:vi.fn() } })
-    const input = host.querySelector<HTMLTextAreaElement>('#home-intake-text')!
-    input.value='普通班务'; input.dispatchEvent(new Event('input',{bubbles:true}))
-    clickByText(host, '交给 AI 整理'); await new Promise((resolve)=>setTimeout(resolve,0)); await nextTick()
-
-    expect(host.textContent).toContain('发送前模型目的地发生变化')
-    expect(host.textContent).not.toContain('destination_changed')
-    expect(host.textContent).toContain('本轮物理请求0 次')
-  })
 
   it('saving a support record locally makes zero AI requests', async () => {
     vi.spyOn(supportApi, 'listRecords').mockResolvedValue([])
     const create = vi.spyOn(supportApi, 'createRecord').mockResolvedValue({ record_id:'r1',subject_id:'s1',record_kind:'observation',state:'active',current_revision:1,content:'合成事实',scene:'日常观察',source:'教师本人观察',counterexample:null,observed_at:'2026-08-01',review_at:null,expires_at:null })
-    const prepare = vi.spyOn(studentR1Api, 'prepareReview')
     const subject = {subject_id:'s1',display_name:'合成学生',source_student_id:'S1',class_label:null,support_record_count:0,support_plan_count:0,confirmed_entry_count:0,projection_state:'none',attention_pending_count:0,last_confirmed_at:null}
     const host = await mount(SupportReviewPanel, { token:'t', subject })
     const content = host.querySelector<HTMLTextAreaElement>('.editor textarea')!
     content.value='合成事实'; content.dispatchEvent(new Event('input',{bubbles:true}))
-    clickByText(host, '仅保存到本机'); await new Promise((resolve)=>setTimeout(resolve,0)); await nextTick()
+    clickByText(host, '确认保存记录'); await new Promise((resolve)=>setTimeout(resolve,0)); await nextTick()
     expect(create).toHaveBeenCalledOnce()
-    expect(prepare).not.toHaveBeenCalled()
-    expect(host.textContent).toContain('模型请求为 0')
+    expect(host.textContent).toContain('系统没有调用 AI')
   })
 })

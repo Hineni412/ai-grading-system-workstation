@@ -1865,3 +1865,65 @@ B01 的完成清单以详细实施计划第 9.5 节为准，累计到 B11 集中
 - 首页草稿卡使用固定排版和事务类型色，并用本机当前名册把模型匿名代号恢复为教师可读姓名；同一草稿的多个版本仍只占一张卡。不同草稿根是否属于同一现实事务仍缺少稳定事务键，不按相似标题静默合并，留作独立数据模型任务。
 - 验证：首次候选后端 99 项、前端 40 项和类型检查通过；统一修复后定向后端 1 项、前端 42 项通过。首轮双复审原始 7 条、去重 6 个 `Important`；统一修复后的限定最终复审关闭其中 5 项，并发现首页姓名前缀（如“张三”与“张三丰”）会造成错误学生匹配的 1 个 `Important`。用户随后授权开启新的限定修复：姓名恢复改为只匹配名册中唯一姓名、长名优先并占用非重叠文本区间，对应定向测试与类型检查通过。未调用真实模型，未读取、迁移或写入真实学生数据，未重启服务。
 - 本地同步：功能提交 `1c95b300` 已进入 `codex/class-teacher-iteration`、`codex/teaching-prep-iteration` 和 `codex/grading-system-iteration`；前两条可继承集成提交，备课分支通过合并提交 `bbe6887c` 同时保留其已有树增量映射修复。各工作树原有未跟踪预览文件保持不变。
+## 2026-08-05 B-UI-R7 同步前 B 自有候选
+
+### 冻结边界
+
+- 目标：把班主任默认首页替换为可恢复的持续对话入口，以六个业务语义域分诊，并交接到登记、计划／日历或 SOP 三种教师处理页；
+- 包含：Conversation/Turn、B 本地分诊结果、B 草稿、逐 Handoff Adoption Receipt、班主任班级偏好、学生管理默认筛选、三种正式写入 Adapter、B AI Task Adapter 和 B 页面；
+- 不包含：公共 AI Task 状态机、公共 Job/Gateway、AppTopbar、公共迁移、A/P4 目录、真实模型、真实学生数据、真实迁移、服务重启、push、PR 或 `main` 同步；
+- 验收边界：教师发送后不增加 PIN、匿名预览或逐轮目的地确认；正文不进入公共任务引用、普通日志、URL 或 localStorage；AI 只形成草稿；正式记录、计划、SOP、外发、惩戒、认定、诊断和结案都由教师决定；更改班主任班级只改变默认筛选；
+- 风险：中高。涉及未成年人工作正文、会话持久化、异步任务引用和跨普通/领域数据库收据，但本阶段只使用临时数据库、合成正文和 Fake Port。
+
+### 集中调查与故障规则
+
+- 根因清单冻结为四组：旧首页只有一次性输入且依赖内存交接；旧“我班名单整体替换”会改变历史名册状态；六域结果缺少登记/计划/SOP 的稳定 Handoff；正式对象与公共状态之间缺少领域收据；
+- 重复发送同 operation 必须返回同一 Turn/Task 引用，不同输入复用同 operation 必须冲突；多窗口按 Conversation revision 冲突；
+- 模型失败、结果无效或结果未知保留原文，允许零新增模型请求的手动三样式继续；模型任务不自动重发；
+- 多 work_item 独立采用或丢弃；一个 Handoff 不跨两个领域事务；正式对象与 Adoption Receipt 在同一领域事务写入；
+- 学生目标 revision 改变后 Handoff 标为 stale，保留草稿并允许教师重新选择最新 subject revision；
+- 页面刷新只通过 conversation/turn/work_item/handoff 不透明 ID 恢复；学生姓名、教师正文、草稿正文和 AI 输出不写入 URL 或浏览器持久存储。
+
+### 已实现
+
+- 新增 `ClassTeacherIntake` 深模块，统一隐藏会话、六域 contract 校验、B 草稿、Handoff、手动路由、领域采用和班级偏好；
+- 新增 B 普通库会话/草稿迁移和学生事务领域 Adoption Receipt 迁移代码；未执行真实迁移；
+- 新增冻结的 Workspace AI Task Port、不可用 Port 和 Fake Port；公共任务只接收 conversation/turn 不透明引用，B Adapter 在执行时读取 B 正文，并声明 metadata-only、最多一次发送和零自动重试；
+- 新增学生记录、一般事务记录、计划／日历和 SOP 的领域采用路径；学生记录、计划和 SOP 均已用合成数据库证明正式对象与 Receipt 同事务保存，重放不重复创建；
+- 新增 A 型“班主任案头”首页、最近会话、补问、多个交接卡、失败后的手动三路、异步状态查询和受控单草稿跳页；
+- 新增登记、计划／日历、SOP 三种页面样式；登记明确区分直接事实、他人转述和教师判断，SOP 固定显示即时安全优先且不自动作欺凌认定、惩戒、诊断或结案；
+- 班主任班级偏好只读使用全局学生库的班级清单；首页和学生目录沿用该筛选，切换时不调用名册整体替换，不删除学生或历史关系；
+- 删除运行时已无调用方的旧单次首页、匿名预览、自动重试、PIN/解锁页面、旧临时交接和旧草稿路由；保留正式学生目录、日历、事务台账和 SOP 教师步骤操作。
+
+### 当前验证与阶段结论
+
+- 后端 R7 与直接影响专项：`47 passed`；覆盖六域与三种样式、operation 幂等/冲突、Conversation revision、多 work_item、失败/无效/未知结果、手动路由、三种采用、Receipt、stale/rebind、学生名册只读筛选、API no-store 与正文不进入公共引用/URL/测试日志；
+- B 线后端完整回归：`291 passed / 9 skipped`。9 项均是被 R7 明确撤销的旧单次首页、同步 WorkGraph 模型计划接口验收；对应现行路由已改为 404 验收；
+- 前端 B 完整测试：`8 files / 34 passed`；Vue/TypeScript 检查、B 目录 ESLint 和 Vite 生产构建通过；构建后未跟踪源码 `.js` 为 0；
+- 当前任务是否通过最终验收：否。以上是 TW-F1 同步前 B 自有候选；公共检查点 `8a71fa78` 已收到，尚待真实接线、公共合同回归、浏览器冒烟和正式双复审；
+- 整个版本是否允许发布：否。当前未执行真实模型调用、真实数据读写、真实迁移、服务重启或任何发布动作；
+- 当前剩余工作：以非破坏方式同步 `8a71fa78`；按公共真实 Interface 接线 B Adapter、启动恢复、任务抽屉与 adopt 协调；集中运行公共合同和最终 B 候选验证；冻结同一版本并进行一次需求复审和一次代码质量复审。
+
+### TW-F1 接线后的冻结候选
+
+- 同步前 B 自有保护提交：`89a0b2de`；TW-F1 检查点 `8a71fa78` 无文件重叠并以非破坏方式进入本分支为 `65710ccc`；
+- B 的 `SharedWorkspaceAITaskPort` 只翻译冻结 Interface：prepare 使用当前去凭据目的地指纹，dispatch/get/cancel/adopt 均委托公共服务；B 没有复制公共状态机、Job、Gateway、恢复器或公共迁移；
+- 公共任务使用已注册的安全展示种类 `class_teacher.intake`，B 内部仍按 context ref 区分 `class_teacher.intake_triage` 与 `class_teacher.draft_revision`，因此共同存储不增加正文或自由标题；
+- B Adapter 在公共 Job 执行时才从 B 库读取 Conversation/Turn、当前班候选和草稿调整要求，并通过 TW-F1 强制的 metadata-only、零自动重试 Gateway 发出最多一次请求；公共数据库、Job payload/result、URL 和 localStorage 只保留安全引用；
+- 采用入口已经统一委托公共协调器：公共 Module 分配稳定 `adoption_id`，B Adapter 用该编号在正式对象同一领域事务写 Adoption Receipt；响应丢失可按收据收敛。草稿调整成功后旧公共 Handoff 才标 stale，调整失败保留旧草稿可采用；
+- 任务抽屉通过安全公共投影跟踪 task/operation ID；返回 B 时只把通过校验的 source ref 规范化为 `surface=home&conversation=<opaque>`，不把教师正文或草稿写入 URL；
+- 接线后专项：B + 公共端到端 `3 passed`，覆盖成功任务、结果未知零重发、共同采用回执和草稿版本交接；公共合同后端 `82 passed`；
+- 接线后 B 完整后端：`294 passed / 9 skipped`；9 项仍是被 R7 明确撤销的旧同步首页/旧 WorkGraph 模型计划验收；
+- 接线后公共任务抽屉 + B 前端：`9 files / 38 passed`；Vue/TypeScript、B ESLint、Vite 生产构建和差异格式检查通过；未跟踪前端源码 `.js` 为 0；
+- 浏览器合成冒烟通过：持续会话首页、六域、最近会话、登记、计划／日历、SOP、教师决策文案、任务抽屉和公共任务返回原会话均正常；唯一控制台错误来自未启动后端时全局 `/api/sessions` 的 502，与 B 流程无关；
+- 当前冻结版本进入一次需求符合性与一次代码质量并行评审；评审期间不再修改代码。整个版本仍未获发布授权，且未读取/写入真实数据、调用真实模型、执行真实迁移、重启服务、push、PR 或同步 `main`。
+
+### 首轮复审、统一修复与限定终审
+
+- 首轮冻结候选为 `f33d9095`；需求复审原始 3 条 `Important`，代码质量复审原始 4 条 `Important`；去重后为 5 个 B 范围阻塞根因和 1 个相邻 TW-F1 registry 合同差异，`Critical=0`。
+- 唯一统一修复关闭：Receipt 已提交后的 B 投影恢复、草稿打开失败的可读错误态、运行中追加造成的 revision 冲突、新 Turn 使旧 Handoff stale、草稿调整任务返回原 Handoff，以及首页真实“今日与接下来”工作图节点。修复提交为 `80914525`。
+- 统一修复的直接受影响验证：后端两文件 `31 passed`；前端三文件 `19 passed`；草稿版本专项 `2 passed`；Vue/TypeScript `--noEmit`、定向 ESLint、Vite 生产构建和差异格式检查通过；未跟踪前端 `.js` 为 0。
+- 两位首轮原评审者完成唯一一轮限定终审，只回查登记问题、修复区域和直接回归。需求轴与质量轴均判定原阻塞全部关闭；两轴本轮均为 `Critical=0 / Important=0 / Suggestion=0`，不启动第三轮。
+- 相邻 TW-F1 registry 合同差异未被当前代码自然解决：公共存储仍以已注册的 `class_teacher.intake` 表示首次分诊和草稿调整，B 只在自有 context refs 内区分 `class_teacher.intake_triage` / `class_teacher.draft_revision`。触发公共任务记录或抽屉时，公共审计不能直接按两类操作分组；证据在 `backend/class_teacher/intake/ports.py`、`backend/class_teacher/feature.py` 与 `backend/workspaces/ai_tasks/registry.py`。该缺口属公共注册表契约，B 分支不越界修改，不阻塞 B 自有候选。
+- 本轮集中调查与候选恢复约 8 分钟，首轮并行复审约 7 分钟，统一修复与直接验证约 18 分钟，限定终审约 3 分钟。B-UI-R7 自动验收通过，当前剩余工作量为用户/父任务的最终集成与人工验收；整个版本仍未获发布授权。
+- 本轮未读写真实 `user_data`、真实学生档案、成绩或答卷；未调用真实模型或密钥；未执行真实迁移、重启服务、push、PR、`main` 同步或集成分支合并。

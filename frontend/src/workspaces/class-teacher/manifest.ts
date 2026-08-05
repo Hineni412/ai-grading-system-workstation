@@ -10,9 +10,9 @@ const manifest: WorkspaceManifest = {
   icon: 'class-teacher',
   enabled: true,
   dataClassifications: ['restricted'],
-  featureFlags: ['vault'],
+  featureFlags: ['conversation-intake'],
   title: '班主任工作台',
-  description: '普通工作免解锁，具体学生信息单独保护',
+  description: '持续对话整理班级事务，正式保存始终由教师确认',
   breadcrumb: '班主任工作台',
   topbarContext: 'workspace',
 }

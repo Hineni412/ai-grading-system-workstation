@@ -272,6 +272,7 @@ class PlanningService:
         revision: int,
         plan_title: str,
         actions: list[dict[str, object]],
+        transaction_hook: Callable[[Any, bytes, str], None] | None = None,
     ) -> dict[str, object]:
         vmk = self._key_provider(token)
         replay = self._idempotent(operation_id, "planning.draft.confirm")
@@ -487,6 +488,8 @@ class PlanningService:
                     "planning.draft.confirm",
                     result,
                 )
+                if transaction_hook is not None:
+                    transaction_hook(connection, vmk, plan_id)
         return {
             **result,
             "physical_request_count": 0,

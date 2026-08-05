@@ -69,7 +69,7 @@ async function run(node: WorkNode, command: string, fields: Record<string, unkno
         type="button"
         :disabled="busy"
         @click="run(detail.node, 'open_restricted_projection')"
-      >解锁并打开受保护事项</button>
+      >打开相关学生事项</button>
 
       <template v-else>
         <div v-if="detail.node.status === 'cancelled'" class="restore-panel">
