@@ -1997,3 +1997,7 @@ B01 的完成清单以详细实施计划第 9.5 节为准，累计到 B11 集中
 - A 的新窄任务已在冻结提交 `87679f78` 通过需求与质量双轴复审，结果分别为
   `Critical 0 / Important 0 / Suggestion 0` 和 `Critical 0 / Important 0 / Suggestion 1`。组合候选已无
   自动验收阻塞，可以进行本地集成预览快进；B 代码在该任务中没有变化。
+- 组合候选已从 `4532bf52` 纯快进到 `ebb6ff4c`，进入本地 `codex/teacher-platform-integration`；合并后
+  B/A/共同后端 `117 passed`，备课目录与 B Handoff 前端 `10 files / 91 passed`，类型检查和生产构建通过；
+  目标原有 1212 个未提交路径保持原数量，Git 明确保留未更新的真实数据库和题库文件。本轮没有调用模型、
+  执行迁移或重启服务，也未 push、创建 PR 或同步 `main`。
