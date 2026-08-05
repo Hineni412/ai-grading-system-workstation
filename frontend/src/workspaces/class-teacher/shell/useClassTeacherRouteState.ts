@@ -52,11 +52,14 @@ function normalize(query: Record<string, unknown>): { state: ClassTeacherRouteSt
   const sharedReturn = rawDestination?.startsWith('class_teacher.')
     && Boolean(rawSourceTask && opaqueIdPattern.test(rawSourceTask))
     && Boolean(rawSourceRef && opaqueIdPattern.test(rawSourceRef))
-  const conversationCandidate = rawConversation || (sharedReturn ? rawSourceRef : null)
+  const sharedConversationReturn = sharedReturn && rawDestination === 'class_teacher.home'
+  const sharedHandoffReturn = sharedReturn && rawDestination !== 'class_teacher.home'
+  const conversationCandidate = rawConversation || (sharedConversationReturn ? rawSourceRef : null)
   const conversationId = conversationCandidate && opaqueIdPattern.test(conversationCandidate) ? conversationCandidate : null
   const turnId = rawTurn && opaqueIdPattern.test(rawTurn) ? rawTurn : null
   const workItemId = rawWorkItem && opaqueIdPattern.test(rawWorkItem) ? rawWorkItem : null
-  const handoffId = rawHandoff && opaqueIdPattern.test(rawHandoff) ? rawHandoff : null
+  const handoffCandidate = rawHandoff || (sharedHandoffReturn ? rawSourceRef : null)
+  const handoffId = handoffCandidate && opaqueIdPattern.test(handoffCandidate) ? handoffCandidate : null
   const allowed = new Set(['surface', 'panel', 'range', 'week', 'conversation', 'turn', 'work_item', 'handoff', 'destination', 'source_task_id', 'source_ref'])
   const unknown = Object.keys(query).some((key) => !allowed.has(key))
   const valid = !unknown

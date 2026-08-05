@@ -2,6 +2,7 @@ import { createApp, nextTick } from 'vue'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { decodeHandoffDraft, intakeApi, type IntakeConversation } from '../api/intake'
+import { workApi, type WorkNode } from '../api/work'
 import ConversationDesk from '../intake/ConversationDesk.vue'
 
 const mounted: Array<ReturnType<typeof createApp>> = []
@@ -18,12 +19,18 @@ async function settle(): Promise<void> {
   await Promise.resolve(); await Promise.resolve(); await new Promise((resolve) => setTimeout(resolve, 0)); await nextTick()
 }
 
-async function mountDesk(startValue = conversation()) {
+async function mountDesk(startValue = conversation(), workNodes: WorkNode[] = []) {
   vi.spyOn(intakeApi, 'homeroom').mockResolvedValue({
     homeroom_class: '一班', revision: 1, classes: ['一班', '二班'], source_revision: 'a'.repeat(64),
   })
   vi.spyOn(intakeApi, 'listConversations').mockResolvedValue([])
   vi.spyOn(intakeApi, 'startConversation').mockResolvedValue(startValue)
+  vi.spyOn(workApi, 'read').mockResolvedValue({
+    as_of: '2026-08-05T00:00:00Z', start_date: '2026-08-04', end_date: '2026-08-10',
+    nodes: workNodes, edges: [], today: workNodes, overdue: [], waiting: [], review_due: [],
+    summary: { today: workNodes.length, overdue: 0, waiting: 0, review_due: 0 },
+    view: 'week', cursor: null, source_version: 'synthetic',
+  })
   const host = document.createElement('div')
   document.body.append(host)
   const app = createApp(ConversationDesk)
@@ -102,6 +109,36 @@ describe('B-UI-R7 conversation desk', () => {
     })
     expect(host.textContent).toContain('可能已经发出')
     expect(host.textContent).toContain('不会自动重发')
+  })
+
+  it('waits for a running turn before accepting another message', async () => {
+    const host = await mountDesk({
+      ...conversation('ai_running'), revision: 2,
+      turns: [{
+        turn_id: 'turn-running-01', conversation_id: 'conversation-1234', sequence: 1,
+        operation_id: 'operation-running-01', teacher_message: '合成运行中内容', assistant_message: null,
+        clarification_questions: [], task_id: 'task-running-01', task_state: 'running',
+        created_at: '2026-08-05T00:00:00Z', updated_at: '2026-08-05T00:00:00Z',
+      }],
+    })
+
+    expect(host.querySelector<HTMLTextAreaElement>('.composer textarea')!.disabled).toBe(true)
+    expect(host.querySelector<HTMLButtonElement>('.composer button')!.disabled).toBe(true)
+    expect(host.textContent).toContain('结果返回后可继续补充')
+  })
+
+  it('shows real today and upcoming work from the existing work graph', async () => {
+    const item: WorkNode = {
+      node_id: 'node-near-001', kind: 'task', classification: 'ordinary',
+      title: '合成近期检查任务', details: null, status: 'pending',
+      due_date: '2026-08-06T16:00:00+08:00', revision: 1,
+      created_at: '2026-08-05T00:00:00Z', updated_at: '2026-08-05T00:00:00Z',
+    }
+    const host = await mountDesk(conversation(), [item])
+
+    expect(host.textContent).toContain('今日与接下来')
+    expect(host.textContent).toContain('合成近期检查任务')
+    expect(workApi.read).toHaveBeenCalledWith('week')
   })
 
   it('rejects an arbitrary destination before navigation', () => {

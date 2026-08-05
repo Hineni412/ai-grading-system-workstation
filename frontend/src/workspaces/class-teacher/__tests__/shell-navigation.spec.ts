@@ -94,4 +94,17 @@ describe('class teacher shell navigation', () => {
       conversation: 'conversation-1234',
     })
   })
+
+  it('returns a shared draft revision task to its opaque handoff', async () => {
+    const { router } = await mountAt(
+      '/class-teacher?destination=class_teacher.plan.calendar&source_task_id=task-revision-01&source_ref=handoff-12345',
+    )
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    await nextTick()
+
+    expect(router.currentRoute.value.query).toEqual({
+      surface: 'home',
+      handoff: 'handoff-12345',
+    })
+  })
 })

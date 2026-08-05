@@ -174,6 +174,36 @@ def test_conversation_turn_uses_safe_task_reference_and_replays_operation(tmp_pa
         )
 
 
+def test_conversation_waits_for_running_turn_and_stales_previous_handoffs_on_new_source(tmp_path: Path) -> None:
+    service, port = _service(tmp_path)
+    conversation, turn = _conversation_with_turn(service, "conversation-running-guard")
+    with pytest.raises(VaultError, match="上一轮仍在整理"):
+        service.intake.append_turn(
+            conversation_id=str(conversation["conversation_id"]),
+            expected_revision=int(conversation["revision"]),
+            message="运行中不应该追加的合成内容",
+            operation_id="conversation-running-guard-next",
+        )
+    assert len(port.dispatch_calls) == 1
+
+    ready = service.intake.apply_triage_result(
+        turn_id=str(turn["turn_id"]),
+        task_id=str(turn["task_id"]),
+        payload=_triage(),
+    )
+    old_handoff = ready["handoffs"][0]
+    continued = service.intake.append_turn(
+        conversation_id=str(ready["conversation_id"]),
+        expected_revision=int(ready["revision"]),
+        message="改变原事项事实的合成补充",
+        operation_id="conversation-after-handoff",
+    )
+
+    stale = next(item for item in continued["handoffs"] if item["handoff_id"] == old_handoff["handoff_id"])
+    assert stale["adoption_state"] == "stale"
+    assert {call["handoff_id"] for call in port.mark_calls if call["state"] == "stale"} == {old_handoff["handoff_id"]}
+
+
 def test_triage_creates_allowlisted_handoff_and_rejects_model_url(tmp_path: Path) -> None:
     service, _ = _service(tmp_path)
     conversation = service.intake.start_conversation()
