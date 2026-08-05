@@ -298,6 +298,7 @@ class VaultService:
             key_provider=self.session_key,
             support=self.support,
             planning=self.planning,
+            work=self.work,
             sop=self.sop,
             sop_baselines=self.sop_baselines,
             model_gateway=self.workspace_model_gateway,

@@ -392,6 +392,7 @@ class ConversationStore:
                         "UPDATE intake_conversations SET state='draft_opened', updated_at=? WHERE conversation_id=?",
                         (_iso(), str(row["conversation_id"])),
                     )
+                    row = self._handoff_row(connection, handoff_id)
                 view = self._draft_view(row)
         try:
             self.ai_tasks.mark_handoff(handoff_id=handoff_id, state="opened")
@@ -423,7 +424,11 @@ class ConversationStore:
                 )
                 if (
                     not stale_rebind
-                    and (str(row["state"]) != "open" or str(row["adoption_state"]) in {"adopted", "discarded", "stale"})
+                    and (
+                        str(row["state"]) != "open"
+                        or str(row["adoption_state"])
+                        in {"adoption_started", "adopted", "discarded", "stale"}
+                    )
                 ):
                     raise VaultError("class_teacher_draft_not_editable", "这份草稿当前不能修改", status_code=409)
                 refs = self._subject_refs(
@@ -445,7 +450,13 @@ class ConversationStore:
             except Exception:
                 connection.rollback()
                 raise
-        return self.open_handoff(handoff_id)
+        updated = self.open_handoff(handoff_id)
+        self.ai_tasks.rebind_handoff(
+            handoff_id=handoff_id,
+            draft_revision=int(updated["draft_revision"]),
+            subject_refs=[dict(item) for item in list(updated["subject_refs"])],
+        )
+        return updated
 
     def request_draft_revision(
         self,

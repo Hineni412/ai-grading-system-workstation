@@ -608,6 +608,92 @@ def test_plan_adoption_writes_plan_and_receipt_in_domain_transaction(tmp_path: P
     with closing(service.database.connect()) as connection:
         assert connection.execute("SELECT COUNT(*) FROM work_plans").fetchone()[0] == 1
         assert connection.execute("SELECT COUNT(*) FROM handoff_adoption_receipts").fetchone()[0] == 1
+        action_id = str(connection.execute("SELECT action_id FROM actions").fetchone()[0])
+    calendar = service.work.read(view="all", anchor="2026-08-15")
+    assert {item["node_id"] for item in calendar["nodes"]} == {
+        receipt["formal_object_id"],
+        action_id,
+    }
+    assert {item["title"] for item in calendar["nodes"]} == {
+        "合成黑板报",
+        "合成初稿检查",
+    }
+    assert {item["relation"] for item in calendar["edges"]} == {"contains"}
+
+
+def test_plan_receipt_recovers_calendar_projection_without_duplicate_plan(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service, _ = _service(tmp_path)
+    _conversation, turn = _conversation_with_turn(
+        service,
+        "conversation-plan-projection-recovery",
+    )
+    ready = service.intake.apply_triage_result(
+        turn_id=str(turn["turn_id"]),
+        task_id=str(turn["task_id"]),
+        payload={
+            "contract_version": "class_teacher_triage.v1",
+            "assistant_message": "已整理为计划草稿。",
+            "clarification_questions": [],
+            "work_items": [_work_item(
+                "plan-projection-recovery-001",
+                domain="activities_culture",
+                mode="plan_calendar",
+                intent="plan",
+                draft={
+                    "summary": "合成计划投影恢复",
+                    "final_deadline": "2026-08-20T16:00:00+08:00",
+                    "actions": [{
+                        "draft_action_id": "action-1",
+                        "title": "合成投影行动",
+                        "details": "",
+                        "due_at": "2026-08-15T16:00:00+08:00",
+                        "depends_on_draft_action_ids": [],
+                    }],
+                },
+            )],
+        },
+    )
+    handoff = ready["handoffs"][0]
+    original = service.work.create_confirmed_plan
+    calls = 0
+
+    def interrupt_once(**kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise VaultError(
+                "synthetic_calendar_projection_interrupted",
+                "合成日历投影中断",
+                status_code=503,
+            )
+        return original(**kwargs)
+
+    monkeypatch.setattr(service.work, "create_confirmed_plan", interrupt_once)
+    with pytest.raises(VaultError, match="合成日历投影中断"):
+        service.intake.adopt_handoff(
+            token="",
+            handoff_id=str(handoff["handoff_id"]),
+            draft_revision=1,
+            target_revision="new",
+            operation_id="ignored-projection-first",
+        )
+
+    recovered = service.intake.adopt_handoff(
+        token="",
+        handoff_id=str(handoff["handoff_id"]),
+        draft_revision=1,
+        target_revision="new",
+        operation_id="ignored-projection-recovery",
+    )
+    assert recovered["formal_object_type"] == "plan"
+    assert calls == 2
+    with closing(service.database.connect()) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM work_plans").fetchone()[0] == 1
+        assert connection.execute("SELECT COUNT(*) FROM handoff_adoption_receipts").fetchone()[0] == 1
+    assert len(service.work.read(view="all", anchor="2026-08-15")["nodes"]) == 2
 
 
 def test_sop_adoption_creates_unfinished_affair_without_decision_or_closure(tmp_path: Path) -> None:

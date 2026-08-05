@@ -13,6 +13,7 @@ from backend.workspaces.ai_tasks.models import (
     HandoffSnapshot,
     InvalidAdapterResultError,
     OpaqueRef,
+    RevisionConflictError,
     StoredTask,
 )
 
@@ -39,6 +40,7 @@ class ClassTeacherAITaskAdapter:
 
     module = "class_teacher"
     task_kinds = {"class_teacher.intake_triage", "class_teacher.draft_revision"}
+    legacy_task_kind = "class_teacher.intake"
 
     def __init__(
         self,
@@ -129,14 +131,25 @@ class ClassTeacherAITaskAdapter:
         target_revision: str,
     ) -> AdoptionResult:
         domain = self.conversations.handoff_by_draft_id(handoff.draft_ref.id)
-        receipt = self.adoption.adopt(
-            token="",
-            handoff_id=str(domain["handoff_id"]),
-            draft_revision=int(draft_revision),
-            target_revision=target_revision,
-            operation_id=adoption_id,
-            adoption_id=adoption_id,
-        )
+        try:
+            receipt = self.adoption.adopt(
+                token="",
+                handoff_id=str(domain["handoff_id"]),
+                draft_revision=int(draft_revision),
+                target_revision=target_revision,
+                operation_id=adoption_id,
+                adoption_id=adoption_id,
+            )
+        except VaultError as exc:
+            persisted = self.find_adoption(adoption_id)
+            if persisted is not None:
+                return persisted
+            self.adoption.release_uncommitted(
+                handoff_id=str(domain["handoff_id"]),
+                adoption_id=adoption_id,
+                target_revision=target_revision,
+            )
+            raise RevisionConflictError(exc.message) from exc
         return _adoption_result(receipt)
 
     def find_adoption(self, adoption_id: str) -> AdoptionResult | None:
@@ -301,6 +314,14 @@ class ClassTeacherAITaskAdapter:
         }
 
     def _domain_task_kind(self, task: StoredTask) -> str:
+        if task.task_kind in self.task_kinds:
+            return task.task_kind
+        if task.task_kind != self.legacy_task_kind:
+            raise VaultError(
+                "class_teacher_task_kind_invalid",
+                "班主任 AI 任务类型无效",
+                status_code=422,
+            )
         return (
             "class_teacher.draft_revision"
             if any(item.kind == "draft_revision_request" for item in task.context_refs)

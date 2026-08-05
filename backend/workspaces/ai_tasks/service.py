@@ -281,6 +281,34 @@ class WorkspaceAITaskService:
         self.store.finish_adoption(handoff_id, object_ref=result.object_ref)
         return result
 
+    def rebind_handoff_draft(
+        self,
+        handoff_id: str,
+        *,
+        module: str,
+        expected_draft_revision: str,
+        draft_revision: str,
+        subject_refs: tuple[OpaqueRef, ...],
+    ) -> HandoffSnapshot:
+        handoff = self.store.require_handoff(handoff_id)
+        if handoff.module != module:
+            raise ValueError("handoff module does not match domain endpoint")
+        if not _SAFE_REF.fullmatch(draft_revision):
+            raise ValueError("workspace AI draft revision is invalid")
+        for reference in subject_refs:
+            if not all(
+                _SAFE_REF.fullmatch(value)
+                for value in (reference.kind, reference.id, reference.revision)
+            ):
+                raise ValueError("workspace AI subject reference is invalid")
+        return self.store.rebind_handoff_draft(
+            handoff_id,
+            module=module,
+            expected_draft_revision=expected_draft_revision,
+            draft_revision=draft_revision,
+            subject_refs=subject_refs,
+        )
+
     def mark_handoff(self, handoff_id: str, state: str) -> HandoffSnapshot:
         return self.store.set_handoff_state(handoff_id, state)
 

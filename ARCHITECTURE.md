@@ -203,6 +203,19 @@ A 启用后只在 `user_data/workspaces/teaching-prep/` 内使用 `temp`、`stag
 - A Adapter 注册学期目录、课堂方案、候选练习和课件修改四类 task kind。模型调用通过公共 Task Gateway 在物理
   请求前强制 metadata-only 诊断、零自动重试和单 operation 单请求；A 库的
   `teaching_prep_ai_task_results` 只保存领域 proposal/Handoff 引用，重启只读回该引用补做本地交接。
+- B Adapter 对新任务分别注册 `class_teacher.intake_triage` 和 `class_teacher.draft_revision`；旧的
+  `class_teacher.intake` 只用于恢复已经持久化的兼容任务。共同层仍只保存 conversation、turn、draft 和 student
+  的不透明引用，不保存教师原话、学生姓名或草稿正文。
+- 教师修改 B 草稿后，B 先提交自身草稿版本，再把新 draft revision 和不透明学生引用幂等投影到共同 Handoff；
+  若两库之间中断，下一次 adopt 会先补齐该安全投影。采用失败时先查询领域 Receipt：已有 Receipt 就收敛为同一
+  正式对象；确定没有 Receipt 的校验或目标冲突会释放共同占用，学生目标冲突仍保持 B 草稿 stale，直到教师明确
+  重新选择最新学生 revision。采用期间不允许并发修改草稿。
+- 模型失败或结果不明后，教师可以零新增模型请求地手动选择登记、计划／日历或 SOP。此类领域草稿没有共同
+  Handoff，B 直接使用自己的稳定 adoption id、领域 Receipt 和同一套正式写入校验；打开、编辑和采用不会伪造
+  一条共同交接记录。
+- 计划／日历草稿采用时，正式计划和 Adoption Receipt 先在 B 领域事务内一并提交，再以相同 plan/action id 投影到
+  普通 WorkGraph。投影使用独立幂等 operation；若进程在两库之间中断，Receipt 查询会补齐缺失的日历节点和依赖边，
+  不创建第二份计划或行动。
 - 姓名识别、评分依据生成、试卷批改和题库标注共用当前模型配置的一套请求速度方案，不再各自维护隐藏
   Worker/RPM 上限。自动模式从 6 个同时请求起步、最多恢复到 20 个；保守模式固定为 1 个；自定义模式允许
   1–100 个同时请求及 1–10000 RPM。RPM 只限制一分钟内启动多少请求，不能替代同时请求数。
