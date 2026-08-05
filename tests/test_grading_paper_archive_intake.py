@@ -6,7 +6,9 @@ import pytest
 
 from question_bank.database.schema import initialize_database
 from question_bank.importers.batch_importer import BatchImportResult, PaperImportFileResult
+from question_bank.models.tag_schema import TagAnalysis
 from question_bank.services import grading_paper_intake_service
+from question_bank.services.ai_tagging_service import AITaggingResult
 from question_bank.services.grading_paper_intake_service import (
     archive_uploaded_grading_paper,
     copy_existing_grading_paper_to_raw_dir,
@@ -118,3 +120,151 @@ def test_intake_source_saves_tags_without_skill_resolution() -> None:
     assert "resolve_skills" not in source
     assert "allow_batch_fallback=False" in source
     assert "request_callback=" in source
+
+
+def test_intake_reuses_one_taxonomy_contract_for_analysis_and_proposals(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data_root = tmp_path / "user_data"
+    stored_source = "question_bank/raw_papers/paper_contract.docx"
+    saved_file = data_root / stored_source
+    saved_file.parent.mkdir(parents=True)
+    saved_file.write_bytes(b"paper-content")
+    database = tmp_path / "question-bank.db"
+    contract = {
+        "taxonomy_revision": 9,
+        "candidate_fingerprint": "intake-question-fingerprint",
+        "knowledge_catalog_revision": 4,
+        "allowed_term_ids": {"knowledge": ["kp-intake"]},
+    }
+    governance_calls: list[dict[str, object]] = []
+    analyzed_contracts: list[dict[int, dict[str, object]]] = []
+
+    class RecordingGovernance:
+        @staticmethod
+        def constrain(payload, *, context):
+            del payload
+            governance_calls.append(dict(context))
+            return {"proposals": []}
+
+    analysis = TagAnalysis.from_dict(
+        {
+            "knowledge_points": [],
+            "method_tags": [],
+            "thought_tags": [],
+            "ability_tags": [],
+            "math_model_tags": [],
+            "special_type_tags": [],
+            "difficulty": 1,
+            "error_prone_points": [],
+            "prerequisite_points": [],
+            "textbook_chapters": [],
+            "reason": "合成结果",
+            "confidence": 0.9,
+            "taxonomy_revision": 9,
+        }
+    )
+
+    class FakeTagger:
+        taxonomy_governance = RecordingGovernance()
+
+        @staticmethod
+        def taxonomy_contracts(contexts):
+            assert set(contexts) == {1}
+            return {1: dict(contract)}
+
+        @staticmethod
+        def analyze_questions(contexts, *, taxonomy_contracts, **_kwargs):
+            assert set(contexts) == {1}
+            analyzed_contracts.append(
+                {key: dict(value) for key, value in taxonomy_contracts.items()}
+            )
+            return {
+                1: AITaggingResult(
+                    ok=True,
+                    mock_mode=False,
+                    analysis=analysis,
+                    model_name="synthetic-intake",
+                    quality_status="needs_review",
+                    taxonomy_revision=9,
+                    proposals=[
+                        {
+                            "dimension": "knowledge",
+                            "name": "候选知识点",
+                            "definition": "候选定义",
+                            "reason": "候选目录中没有",
+                            "nearest_id": "",
+                            "why_not_reuse": "语义边界不同",
+                        }
+                    ],
+                )
+            }
+
+    class FakeQuestionService:
+        def __init__(self, _database):
+            pass
+
+        @staticmethod
+        def save_tag_analysis(*_args, **_kwargs):
+            return True
+
+    question = {
+        "id": 1,
+        "question_text": "合成题目",
+        "answer_text": "合成答案",
+        "question_number": "1",
+        "question_type": "解答题",
+    }
+    monkeypatch.setattr(
+        grading_paper_intake_service,
+        "import_scanned_papers",
+        lambda *_args, **_kwargs: BatchImportResult(
+            files=[PaperImportFileResult(source_file=stored_source, status="imported")],
+            imported_papers=1,
+            question_count=1,
+            answer_match_count=1,
+            review_count=0,
+            skipped_duplicate_files=0,
+            failed_files=0,
+        ),
+    )
+    monkeypatch.setattr(
+        grading_paper_intake_service,
+        "_questions_for_source",
+        lambda *_args, **_kwargs: [question],
+    )
+    monkeypatch.setattr(
+        grading_paper_intake_service,
+        "_questions_needing_complete_tags",
+        lambda *_args, **_kwargs: [question],
+    )
+    monkeypatch.setattr(
+        grading_paper_intake_service,
+        "QuestionService",
+        FakeQuestionService,
+    )
+
+    result = intake_grading_paper_to_question_bank(
+        source_file=saved_file,
+        db_path=database,
+        data_root=data_root,
+        ai_service=FakeTagger(),  # type: ignore[arg-type]
+    )
+
+    assert result.tagged_questions == 1
+    assert analyzed_contracts == [{1: contract}]
+    assert governance_calls == [
+        {
+            "persist_proposals": True,
+            "question_ref": "1",
+            "model": "synthetic-intake",
+            "request_token": (
+                "grading-intake:question:1:taxonomy:9:"
+                "candidates:intake-question-fingerprint"
+            ),
+            "expected_revision": 9,
+            "allowed_term_ids": {"knowledge": ["kp-intake"]},
+            "knowledge_catalog_revision": 4,
+        }
+    ]

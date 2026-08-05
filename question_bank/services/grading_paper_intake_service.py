@@ -150,6 +150,7 @@ def intake_grading_paper_to_question_bank(
         service = QuestionService(database_path)
         contexts = {int(item["id"]): _tagging_context(item) for item in pending_questions}
         tagger = ai_service or AITaggingService()
+        taxonomy_contracts = tagger.taxonomy_contracts(contexts)
 
         def on_request(event: TaggingRequestEvent) -> None:
             nonlocal request_count
@@ -163,6 +164,7 @@ def intake_grading_paper_to_question_bank(
 
         results = tagger.analyze_questions(
             contexts,
+            taxonomy_contracts=taxonomy_contracts,
             max_workers=tagging_max_workers,
             requests_per_minute=tagging_requests_per_minute,
             progress_callback=on_tag_progress,
@@ -176,6 +178,9 @@ def intake_grading_paper_to_question_bank(
                 if result.proposals:
                     try:
                         governance = tagger.taxonomy_governance
+                        taxonomy_contract = taxonomy_contracts.get(
+                            question_id, {}
+                        )
                         payload = result.analysis.to_dict()
                         payload["proposed_tags"] = [
                             *payload.get("proposed_tags", []),
@@ -189,7 +194,20 @@ def intake_grading_paper_to_question_bank(
                                 "model": str(result.model_name or ""),
                                 "request_token": (
                                     f"grading-intake:question:{question_id}:"
-                                    f"taxonomy:{int(result.taxonomy_revision or 0)}"
+                                    f"taxonomy:{int(result.taxonomy_revision or 0)}:"
+                                    "candidates:"
+                                    f"{str(taxonomy_contract.get('candidate_fingerprint') or 'none')}"
+                                ),
+                                "expected_revision": int(
+                                    result.taxonomy_revision or 0
+                                ),
+                                "allowed_term_ids": taxonomy_contract.get(
+                                    "allowed_term_ids", {}
+                                ),
+                                "knowledge_catalog_revision": (
+                                    taxonomy_contract.get(
+                                        "knowledge_catalog_revision"
+                                    )
                                 ),
                             },
                         )

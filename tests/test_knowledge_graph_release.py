@@ -261,6 +261,7 @@ def test_tagging_contract_follows_activation_and_rollback(
     assert first_contract["knowledge_graph_release_id"] == first.release_id
     assert first_contract["knowledge_catalog_revision"] == 3
     assert first_contract["candidates"]["knowledge"]
+    assert governance.observation_snapshot()["graph_release_id"] == first.release_id
     stage_release(
         db_path,
         second,
@@ -278,6 +279,7 @@ def test_tagging_contract_follows_activation_and_rollback(
     assert second_contract["knowledge_graph_release_id"] == second.release_id
     assert second_contract["knowledge_catalog_revision"] == 4
     assert second_contract["candidates"]["knowledge"]
+    assert governance.observation_snapshot()["graph_release_id"] == second.release_id
     rollback_release(
         db_path,
         first.release_id,
@@ -289,3 +291,4 @@ def test_tagging_contract_follows_activation_and_rollback(
     assert rollback_contract["knowledge_graph_release_id"] == first.release_id
     assert rollback_contract["knowledge_catalog_revision"] == 3
     assert rollback_contract["candidates"]["knowledge"]
+    assert governance.observation_snapshot()["graph_release_id"] == first.release_id

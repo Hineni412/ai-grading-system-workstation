@@ -169,10 +169,15 @@ def _run_tagging_sync_job_locked(
     complete_set = set(complete_ids)
     evidence_retry_set = set(retry_evidence_question_ids)
     evidence_retry_set.update(analysis_retry_ids)
+    force_retag_set = set(force_retag_question_ids)
     evidence_only_ids = [
         item
         for item in pending_ids
-        if item in evidence_retry_set and item in complete_set
+        if (
+            item in evidence_retry_set
+            and item in complete_set
+            and item not in force_retag_set
+        )
     ]
     normal_pending_ids = [
         item for item in pending_ids if item not in set(evidence_only_ids)
@@ -298,6 +303,9 @@ def _run_tagging_sync_job_locked(
                         job_id=context.job_id,
                         expected_revision=int(result.taxonomy_revision or 0),
                         knowledge_graph_release_id=knowledge_graph_release_id,
+                        taxonomy_contract=taxonomy_contracts.get(
+                            question_id, {}
+                        ),
                     )
                 except Exception:  # noqa: BLE001
                     failures.append(_failure(question_id, "save"))
@@ -1343,6 +1351,7 @@ def _persist_proposals(
     job_id: str,
     expected_revision: int,
     knowledge_graph_release_id: str,
+    taxonomy_contract: Mapping[str, Any],
 ) -> list[dict[str, Any]]:
     assert result.analysis is not None
     payload = result.analysis.to_dict()
@@ -1356,7 +1365,14 @@ def _persist_proposals(
         "model": str(result.model_name or ""),
         "request_token": (
             f"tagging-sync:{job_id}:question:{question_id}:"
-            f"taxonomy:{expected_revision}:graph:{knowledge_graph_release_id or 'none'}"
+            f"taxonomy:{expected_revision}:graph:{knowledge_graph_release_id or 'none'}:"
+            "candidates:"
+            f"{str(taxonomy_contract.get('candidate_fingerprint') or 'none')}"
+        ),
+        "expected_revision": expected_revision,
+        "allowed_term_ids": taxonomy_contract.get("allowed_term_ids", {}),
+        "knowledge_catalog_revision": taxonomy_contract.get(
+            "knowledge_catalog_revision"
         ),
     }
     constrained = governance.constrain(payload, context=proposal_context)
