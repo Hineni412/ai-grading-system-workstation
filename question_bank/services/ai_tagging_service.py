@@ -1958,6 +1958,9 @@ def _with_quality(
             "model": str(result.model_name or ""),
             "expected_revision": revision,
             "allowed_term_ids": contract.get("allowed_term_ids", {}),
+            "knowledge_catalog_revision": contract.get(
+                "knowledge_catalog_revision"
+            ),
         },
     )
     normalized_analysis, proposals, governance_status, governance_notes = (

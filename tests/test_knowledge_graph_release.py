@@ -234,14 +234,22 @@ def test_tagging_contract_follows_activation_and_rollback(
     first = load_release_for_taxonomy_revision(3)
     second = load_release()
 
-    assert governance.prompt_contract()["knowledge_graph_release_id"] == ""
+    def tagging_contract() -> dict[str, object]:
+        return governance.prompt_contract(
+            {
+                "curriculum_volume_id": "bnu24-math-g7-upper",
+                "question_text": "利用一元一次方程解决问题",
+            }
+        )
+
+    assert tagging_contract()["knowledge_graph_release_id"] == ""
     stage_release(
         db_path,
         first,
         actor_ref="teacher:test",
         source_reference="test-release",
     )
-    assert governance.prompt_contract()["knowledge_graph_release_id"] == ""
+    assert tagging_contract()["knowledge_graph_release_id"] == ""
     activate_release(
         db_path,
         first.release_id,
@@ -249,10 +257,10 @@ def test_tagging_contract_follows_activation_and_rollback(
         actor_ref="teacher:test",
         reason="test first activation",
     )
-    assert (
-        governance.prompt_contract()["knowledge_graph_release_id"]
-        == first.release_id
-    )
+    first_contract = tagging_contract()
+    assert first_contract["knowledge_graph_release_id"] == first.release_id
+    assert first_contract["knowledge_catalog_revision"] == 3
+    assert first_contract["candidates"]["knowledge"]
     stage_release(
         db_path,
         second,
@@ -266,10 +274,10 @@ def test_tagging_contract_follows_activation_and_rollback(
         actor_ref="teacher:test",
         reason="test second activation",
     )
-    assert (
-        governance.prompt_contract()["knowledge_graph_release_id"]
-        == second.release_id
-    )
+    second_contract = tagging_contract()
+    assert second_contract["knowledge_graph_release_id"] == second.release_id
+    assert second_contract["knowledge_catalog_revision"] == 4
+    assert second_contract["candidates"]["knowledge"]
     rollback_release(
         db_path,
         first.release_id,
@@ -277,7 +285,7 @@ def test_tagging_contract_follows_activation_and_rollback(
         actor_ref="teacher:test",
         reason="test rollback",
     )
-    assert (
-        governance.prompt_contract()["knowledge_graph_release_id"]
-        == first.release_id
-    )
+    rollback_contract = tagging_contract()
+    assert rollback_contract["knowledge_graph_release_id"] == first.release_id
+    assert rollback_contract["knowledge_catalog_revision"] == 3
+    assert rollback_contract["candidates"]["knowledge"]
