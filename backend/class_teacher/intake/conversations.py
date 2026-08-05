@@ -153,15 +153,16 @@ class ConversationStore:
                         (snapshot.task_id, snapshot.state, _iso(), turn_id),
                     )
         except Exception:
+            task_id, task_state = self._outcome_after_dispatch_error(operation_id)
             with closing(self.database.connect()) as connection:
                 with connection:
                     connection.execute(
-                        "UPDATE intake_turns SET task_state='failed_before_dispatch', updated_at=? WHERE turn_id=?",
-                        (_iso(), turn_id),
+                        "UPDATE intake_turns SET task_id=COALESCE(task_id, ?), task_state=?, updated_at=? WHERE turn_id=?",
+                        (task_id or None, task_state, _iso(), turn_id),
                     )
                     connection.execute(
-                        "UPDATE intake_conversations SET state='failed', updated_at=? WHERE conversation_id=?",
-                        (_iso(), conversation_id),
+                        "UPDATE intake_conversations SET state=?, updated_at=? WHERE conversation_id=?",
+                        ("ai_running" if task_state in {"prepared", "queued", "running"} else "failed", _iso(), conversation_id),
                     )
         return self.get(conversation_id)
 
@@ -305,6 +306,7 @@ class ConversationStore:
     def get(self, conversation_id: str) -> dict[str, object]:
         if not self.database.exists:
             raise VaultError("class_teacher_conversation_not_found", "会话不存在", status_code=404)
+        self._sync_conversation_tasks(conversation_id)
         with closing(self.database.connect()) as connection:
             row = connection.execute(
                 "SELECT * FROM intake_conversations WHERE conversation_id=?", (conversation_id,)
@@ -334,7 +336,12 @@ class ConversationStore:
                         "UPDATE intake_conversations SET state='draft_opened', updated_at=? WHERE conversation_id=?",
                         (_iso(), str(row["conversation_id"])),
                     )
-                return self._draft_view(row)
+                view = self._draft_view(row)
+        try:
+            self.ai_tasks.mark_handoff(handoff_id=handoff_id, state="opened")
+        except Exception:
+            pass
+        return view
 
     def update_draft(
         self,
@@ -471,16 +478,18 @@ class ConversationStore:
                         (snapshot.task_id, snapshot.state, _iso(), request_id),
                     )
         except Exception:
+            task_id, task_state = self._outcome_after_dispatch_error(operation_id)
             with closing(self.database.connect()) as connection:
                 with connection:
                     connection.execute(
-                        "UPDATE intake_draft_revision_requests SET task_state='failed_before_dispatch', updated_at=? WHERE request_id=?",
-                        (_iso(), request_id),
+                        "UPDATE intake_draft_revision_requests SET task_id=COALESCE(task_id, ?), task_state=?, updated_at=? WHERE request_id=?",
+                        (task_id or None, task_state, _iso(), request_id),
                     )
         return self.get_draft_revision(request_id)
 
     def get_draft_revision(self, request_id: str) -> dict[str, object]:
         self._id(request_id, "草稿调整编号")
+        self._sync_draft_revision_task(request_id)
         with closing(self.database.connect()) as connection:
             row = connection.execute(
                 "SELECT * FROM intake_draft_revision_requests WHERE request_id=?",
@@ -582,6 +591,7 @@ class ConversationStore:
         return self.get_draft_revision(request_id)
 
     def discard_handoff(self, handoff_id: str) -> dict[str, object]:
+        self.ai_tasks.mark_handoff(handoff_id=handoff_id, state="discarded")
         with closing(self.database.connect()) as connection:
             with connection:
                 row = self._handoff_row(connection, handoff_id)
@@ -608,6 +618,169 @@ class ConversationStore:
                         (_iso(), str(row["conversation_id"])),
                     )
         return {"handoff_id": handoff_id, "adoption_state": "discarded"}
+
+    def handoff_for_adapter(self, handoff_id: str) -> dict[str, object]:
+        with closing(self.database.connect()) as connection:
+            return self._draft_view(self._handoff_row(connection, handoff_id))
+
+    def handoff_by_draft_id(self, draft_id: str) -> dict[str, object]:
+        with closing(self.database.connect()) as connection:
+            row = connection.execute(
+                """
+                SELECT h.*, d.* FROM intake_handoffs h
+                JOIN intake_drafts d ON d.draft_id=h.draft_id
+                WHERE d.draft_id=?
+                """,
+                (draft_id,),
+            ).fetchone()
+            if row is None:
+                raise VaultError("class_teacher_handoff_not_found", "交接草稿不存在", status_code=404)
+            return self._draft_view(row)
+
+    def task_id_for_handoff(self, handoff_id: str) -> str:
+        with closing(self.database.connect()) as connection:
+            row = self._handoff_row(connection, handoff_id)
+            revision = connection.execute(
+                """
+                SELECT task_id FROM intake_draft_revision_requests
+                WHERE handoff_id=? AND task_id IS NOT NULL
+                  AND task_state='response_persisted'
+                ORDER BY created_at DESC LIMIT 1
+                """,
+                (handoff_id,),
+            ).fetchone()
+            turn = connection.execute(
+                "SELECT task_id FROM intake_turns WHERE turn_id=?",
+                (str(row["turn_id"]),),
+            ).fetchone()
+        task_id = str(revision["task_id"] or "") if revision is not None else ""
+        if not task_id:
+            task_id = str(turn["task_id"] or "") if turn is not None else ""
+        if not task_id:
+            raise VaultError("class_teacher_task_not_found", "交接任务不存在", status_code=404)
+        return task_id
+
+    def bind_common_handoff(self, draft_id: str, common_handoff_id: str) -> str | None:
+        with closing(self.database.connect()) as connection:
+            with connection:
+                row = connection.execute(
+                    "SELECT common_handoff_id FROM intake_handoffs WHERE draft_id=?",
+                    (draft_id,),
+                ).fetchone()
+                if row is None:
+                    raise VaultError("class_teacher_handoff_not_found", "交接草稿不存在", status_code=404)
+                previous = str(row["common_handoff_id"] or "") or None
+                connection.execute(
+                    "UPDATE intake_handoffs SET common_handoff_id=?, updated_at=? WHERE draft_id=?",
+                    (common_handoff_id, _iso(), draft_id),
+                )
+        return previous
+
+    def common_handoff_id(self, handoff_id: str) -> str | None:
+        with closing(self.database.connect()) as connection:
+            row = connection.execute(
+                "SELECT common_handoff_id FROM intake_handoffs WHERE handoff_id=?",
+                (handoff_id,),
+            ).fetchone()
+        if row is None:
+            raise VaultError("class_teacher_handoff_not_found", "交接草稿不存在", status_code=404)
+        return str(row["common_handoff_id"] or "") or None
+
+    def proposal_for_task(self, task_id: str, *, draft_revision_request_id: str | None = None) -> dict[str, object] | None:
+        with closing(self.database.connect()) as connection:
+            if draft_revision_request_id:
+                request = connection.execute(
+                    "SELECT handoff_id, task_id, task_state FROM intake_draft_revision_requests WHERE request_id=?",
+                    (draft_revision_request_id,),
+                ).fetchone()
+                if request is None or str(request["task_id"] or "") != task_id or str(request["task_state"]) != "response_persisted":
+                    return None
+                handoff = self._draft_view(self._handoff_row(connection, str(request["handoff_id"])))
+                return {"proposal_ref": {"id": handoff["draft_id"], "revision": str(handoff["draft_revision"])}, "handoffs": [handoff], "needs_input": False}
+            turn = connection.execute(
+                "SELECT turn_id, conversation_id, task_state FROM intake_turns WHERE task_id=?",
+                (task_id,),
+            ).fetchone()
+            if turn is None or str(turn["task_state"]) != "response_persisted":
+                return None
+            handoffs = [
+                item for item in self._handoffs(connection, str(turn["conversation_id"]))
+                if str(item["turn_id"]) == str(turn["turn_id"])
+            ]
+            conversation = connection.execute(
+                "SELECT revision, state FROM intake_conversations WHERE conversation_id=?",
+                (str(turn["conversation_id"]),),
+            ).fetchone()
+            if conversation is None:
+                return None
+            return {
+                "proposal_ref": {"id": str(turn["conversation_id"]), "revision": str(conversation["revision"])},
+                "handoffs": handoffs,
+                "needs_input": str(conversation["state"]) == "needs_input",
+            }
+
+    def _outcome_after_dispatch_error(self, operation_id: str) -> tuple[str, str]:
+        try:
+            snapshot = self.ai_tasks.get(operation_id=operation_id)
+        except Exception:
+            return "", "failed_before_dispatch"
+        if snapshot.state in {"prepared", "queued", "running"}:
+            return snapshot.task_id, snapshot.state
+        return snapshot.task_id, snapshot.state
+
+    def _sync_conversation_tasks(self, conversation_id: str) -> None:
+        with closing(self.database.connect()) as connection:
+            rows = connection.execute(
+                """
+                SELECT turn_id, task_id, task_state FROM intake_turns
+                WHERE conversation_id=? AND task_id IS NOT NULL
+                """,
+                (conversation_id,),
+            ).fetchall()
+        terminal = {"failed_before_dispatch", "failed", "result_unknown", "invalid_result", "cancelled_before_dispatch"}
+        for row in rows:
+            current_state = str(row["task_state"])
+            if current_state in {*terminal, "cancel_requested"}:
+                continue
+            try:
+                snapshot = self.ai_tasks.get(task_id=str(row["task_id"]))
+            except Exception:
+                continue
+            if current_state == "response_persisted":
+                continue
+            with closing(self.database.connect()) as connection:
+                with connection:
+                    connection.execute(
+                        "UPDATE intake_turns SET task_state=?, updated_at=? WHERE turn_id=? AND task_state!='response_persisted'",
+                        (snapshot.state, _iso(), str(row["turn_id"])),
+                    )
+                    if snapshot.state in terminal:
+                        connection.execute(
+                            "UPDATE intake_conversations SET state=?, updated_at=? WHERE conversation_id=? AND state='ai_running'",
+                            ("abandoned" if snapshot.state == "cancelled_before_dispatch" else "failed", _iso(), conversation_id),
+                        )
+
+    def _sync_draft_revision_task(self, request_id: str) -> None:
+        with closing(self.database.connect()) as connection:
+            row = connection.execute(
+                "SELECT task_id, task_state FROM intake_draft_revision_requests WHERE request_id=?",
+                (request_id,),
+            ).fetchone()
+        settled = {"failed_before_dispatch", "failed", "result_unknown", "invalid_result", "cancelled_before_dispatch", "cancel_requested"}
+        if row is None or not row["task_id"] or str(row["task_state"]) in settled:
+            return
+        try:
+            snapshot = self.ai_tasks.get(task_id=str(row["task_id"]))
+        except Exception:
+            return
+        if str(row["task_state"]) == "response_persisted":
+            return
+        with closing(self.database.connect()) as connection:
+            with connection:
+                connection.execute(
+                    "UPDATE intake_draft_revision_requests SET task_state=?, updated_at=? WHERE request_id=? AND task_state!='response_persisted'",
+                    (snapshot.state, _iso(), request_id),
+                )
 
     @staticmethod
     def _turn(item: dict[str, Any]) -> dict[str, object]:

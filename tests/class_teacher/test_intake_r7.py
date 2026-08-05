@@ -265,7 +265,7 @@ def test_first_global_roster_student_is_linked_only_inside_confirmed_record_tran
     )
     candidates = service.class_roster.ai_candidates(token="", class_label="一班")
     assert len(candidates) == 1
-    assert "合成学生甲" in model_request.messages[0]["content"]
+    assert any("合成学生甲" in item["content"] for item in model_request.messages)
     assert "合成学生甲" not in str(task_request)
     candidate = candidates[0]
     outcome = service.intake.ai_task_adapter.persist_model_result(

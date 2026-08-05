@@ -7,6 +7,7 @@ from backend.workspaces.contracts import (
 from .api import create_router
 from .configured_model import create_active_profile_model_gateway
 from .encrypted_database import EncryptedDatabase
+from .intake.ports import SharedWorkspaceAITaskPort
 from .vault_service import VaultService
 
 
@@ -34,6 +35,18 @@ def _migration_plan(
     )
 
 
+def _register_ai_tasks(registrar, service: object | None) -> None:
+    if not isinstance(service, VaultService):
+        raise TypeError("class-teacher service is unavailable")
+    port = SharedWorkspaceAITaskPort(
+        registrar,
+        model_identity=service.workspace_model_gateway,
+        conversations=service.intake.conversations,
+    )
+    service.intake.bind_ai_tasks(port)
+    registrar.register_adapter("class_teacher.intake", service.intake.ai_task_adapter)
+
+
 def create_workspace_feature() -> WorkspaceFeature:
     return WorkspaceFeature(
         module_id="class-teacher",
@@ -43,4 +56,5 @@ def create_workspace_feature() -> WorkspaceFeature:
         router_factory=create_router,
         service_factory=_create_service,
         migration_provider=_migration_plan,
+        register_ai_tasks=_register_ai_tasks,
     )

@@ -27,7 +27,7 @@ function first(value: unknown): string | null {
   return typeof value === 'string' ? value : null
 }
 
-function normalize(query: Record<string, unknown>): { state: ClassTeacherRouteState; valid: boolean } {
+function normalize(query: Record<string, unknown>): { state: ClassTeacherRouteState; valid: boolean; sharedReturn: boolean } {
   const rawSurface = first(query.surface)
   const rawPanel = first(query.panel)
   const rawRange = first(query.range)
@@ -43,14 +43,21 @@ function normalize(query: Record<string, unknown>): { state: ClassTeacherRouteSt
     : 'week'
   const week = rawWeek && isoDate.test(rawWeek) ? rawWeek : null
   const rawConversation = first(query.conversation)
+  const rawDestination = first(query.destination)
+  const rawSourceTask = first(query.source_task_id)
+  const rawSourceRef = first(query.source_ref)
   const rawTurn = first(query.turn)
   const rawWorkItem = first(query.work_item)
   const rawHandoff = first(query.handoff)
-  const conversationId = rawConversation && opaqueIdPattern.test(rawConversation) ? rawConversation : null
+  const sharedReturn = rawDestination?.startsWith('class_teacher.')
+    && Boolean(rawSourceTask && opaqueIdPattern.test(rawSourceTask))
+    && Boolean(rawSourceRef && opaqueIdPattern.test(rawSourceRef))
+  const conversationCandidate = rawConversation || (sharedReturn ? rawSourceRef : null)
+  const conversationId = conversationCandidate && opaqueIdPattern.test(conversationCandidate) ? conversationCandidate : null
   const turnId = rawTurn && opaqueIdPattern.test(rawTurn) ? rawTurn : null
   const workItemId = rawWorkItem && opaqueIdPattern.test(rawWorkItem) ? rawWorkItem : null
   const handoffId = rawHandoff && opaqueIdPattern.test(rawHandoff) ? rawHandoff : null
-  const allowed = new Set(['surface', 'panel', 'range', 'week', 'conversation', 'turn', 'work_item', 'handoff'])
+  const allowed = new Set(['surface', 'panel', 'range', 'week', 'conversation', 'turn', 'work_item', 'handoff', 'destination', 'source_task_id', 'source_ref'])
   const unknown = Object.keys(query).some((key) => !allowed.has(key))
   const valid = !unknown
     && rawSurface === surface
@@ -58,10 +65,13 @@ function normalize(query: Record<string, unknown>): { state: ClassTeacherRouteSt
     && (surface !== 'calendar' || rawRange === range)
     && (!rawWeek || week === rawWeek)
     && (!rawConversation || rawConversation === conversationId)
+    && (!rawDestination || Boolean(sharedReturn))
+    && (!rawSourceTask || Boolean(sharedReturn))
+    && (!rawSourceRef || Boolean(sharedReturn))
     && (!rawTurn || rawTurn === turnId)
     && (!rawWorkItem || rawWorkItem === workItemId)
     && (!rawHandoff || rawHandoff === handoffId)
-  return { state: { surface, panel, range, week, conversationId, turnId, workItemId, handoffId }, valid }
+  return { state: { surface, panel, range, week, conversationId, turnId, workItemId, handoffId }, valid, sharedReturn: Boolean(sharedReturn) }
 }
 
 function browserQuery(): Record<string, string> {
@@ -108,7 +118,9 @@ export function useClassTeacherRouteState(): {
 
   async function canonicalize(): Promise<void> {
     if (!normalized.value.valid) {
-      await commit({ surface: 'home', panel: 'directory', range: 'week', week: null, conversationId: null, turnId: null, workItemId: null, handoffId: null }, true)
+      await commit(normalized.value.sharedReturn
+        ? normalized.value.state
+        : { surface: 'home', panel: 'directory', range: 'week', week: null, conversationId: null, turnId: null, workItemId: null, handoffId: null }, true)
     }
   }
 

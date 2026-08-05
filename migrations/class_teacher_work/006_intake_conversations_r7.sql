@@ -68,6 +68,7 @@ CREATE TABLE IF NOT EXISTS intake_handoffs (
     handoff_id TEXT PRIMARY KEY,
     draft_id TEXT NOT NULL UNIQUE,
     adoption_id TEXT NOT NULL UNIQUE,
+    common_handoff_id TEXT UNIQUE,
     adoption_state TEXT NOT NULL CHECK (adoption_state IN (
         'pending', 'opened', 'adoption_started', 'adopted', 'discarded', 'stale'
     )),

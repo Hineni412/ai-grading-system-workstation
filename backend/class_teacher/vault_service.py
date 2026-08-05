@@ -143,6 +143,7 @@ class VaultService:
         self._operation_lock = asyncio.Lock()
         self.protection_enabled = bool(protection_enabled)
         self.workspace_ai_task_port = workspace_ai_task_port
+        self.workspace_model_gateway = model_gateway
         self.database = EncryptedDatabase(context)
         self.repository = EncryptedObjectRepository(
             plaintext=not self.protection_enabled,
@@ -299,6 +300,7 @@ class VaultService:
             planning=self.planning,
             sop=self.sop,
             sop_baselines=self.sop_baselines,
+            model_gateway=self.workspace_model_gateway,
             ai_tasks=self.workspace_ai_task_port,
         )
 
