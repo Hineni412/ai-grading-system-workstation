@@ -110,7 +110,11 @@ export function useTeachingPrepWorkbench() {
     workbenchError.value = ''
     try {
       await catalog.load()
-      if (!isWorkspace(route.query.workspace) && !isStage(route.query.stage)) {
+      const restoreLibrary = route.query.view === 'library'
+      if (restoreLibrary) {
+        workspace.value = 'materials'
+        stage.value = 'materials'
+      } else if (!isWorkspace(route.query.workspace) && !isStage(route.query.stage)) {
         if (hasFormalLessonTree(catalog.lessonNodes)) {
           workspace.value = 'lesson-tree'
           stage.value = 'select'
@@ -119,7 +123,7 @@ export function useTeachingPrepWorkbench() {
           stage.value = 'materials'
         }
       }
-      restoreRouteContext()
+      if (!restoreLibrary) restoreRouteContext()
       await loadSemesterStatuses()
       const lessonId = route.query.lesson
       if (typeof lessonId === 'string' && lessonId) {
@@ -293,8 +297,15 @@ export function useTeachingPrepWorkbench() {
   globalThis.addEventListener('beforeunload', beforeUnload)
 
   watch(
-    () => [route.query.workspace, route.query.stage],
-    () => restoreRouteContext(),
+    () => [route.query.workspace, route.query.stage, route.query.view],
+    () => {
+      if (route.query.view === 'library') {
+        workspace.value = 'materials'
+        stage.value = 'materials'
+        return
+      }
+      restoreRouteContext()
+    },
   )
 
   onBeforeUnmount(() => {

@@ -168,6 +168,38 @@ class JobManager:
         )
         return job
 
+    def start_existing(self, job_id: int) -> JobRecord:
+        """Schedule one atomically pre-created queued Job.
+
+        Deep modules use this after committing their own metadata and the Job row
+        in one database transaction. The Job payload remains the execution seam;
+        no business body is copied into the manager.
+        """
+        clean_job_id = int(job_id)
+        with self._lock:
+            if self._shutdown:
+                raise RuntimeError("JobManager has shut down")
+            job = self.store.get_job(clean_job_id)
+            if job is None:
+                raise ValueError("pre-created job was not found")
+            if job.status != "queued":
+                return job
+            handler = self._handlers.get(job.job_type)
+            if handler is None:
+                raise UnsupportedJobTypeError(
+                    f"unsupported job type: {job.job_type}"
+                )
+            if clean_job_id in self._futures:
+                return job
+            future = self._executor.submit(self._run_job, clean_job_id, handler)
+            self._futures[clean_job_id] = future
+        future.add_done_callback(
+            lambda completed, existing_job_id=clean_job_id: (
+                self._discard_completed_future(existing_job_id, completed)
+            )
+        )
+        return job
+
     def submit_unique_active(
         self,
         job_type: str,

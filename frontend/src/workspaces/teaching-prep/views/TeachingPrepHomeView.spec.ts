@@ -110,6 +110,21 @@ describe('TeachingPrepHomeView workbench shell', () => {
     app.unmount()
   })
 
+  it('gives the manifest library view priority over stale internal route state', async () => {
+    mockEmptyCatalog()
+    const { app, host, router } = await mountAt(
+      '?view=library&workspace=lesson-tree&stage=select',
+    )
+
+    expect(host.textContent).toContain('建立可复用的学期资料目录')
+    expect(router.currentRoute.value.query).toMatchObject({
+      view: 'library',
+      workspace: 'materials',
+      stage: 'materials',
+    })
+    app.unmount()
+  })
+
   it('handles topbar workspace events through the workbench navigation flow', async () => {
     mockEmptyCatalog()
     const { app, router } = await mountAt()

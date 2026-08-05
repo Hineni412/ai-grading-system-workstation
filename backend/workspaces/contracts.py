@@ -14,6 +14,11 @@ class WorkspaceJobRegistrar(Protocol):
         """Register one handler below the feature's reserved Job prefix."""
 
 
+class WorkspaceAITaskRegistrar(Protocol):
+    def register_adapter(self, task_kind: str, adapter: object) -> None:
+        """Register one domain Adapter with the shared AI Task service."""
+
+
 @dataclass(frozen=True, slots=True)
 class WorkspaceContext:
     module_id: str
@@ -35,6 +40,7 @@ RouterFactory = Callable[[], APIRouter]
 ServiceFactory = Callable[[WorkspaceContext], object]
 MigrationProvider = Callable[[WorkspaceContext], WorkspaceMigrationPlan | None]
 JobRegistration = Callable[[WorkspaceJobRegistrar, object | None], None]
+AITaskRegistration = Callable[[WorkspaceAITaskRegistrar, object | None], None]
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,6 +53,7 @@ class WorkspaceFeature:
     service_factory: ServiceFactory | None = None
     migration_provider: MigrationProvider | None = None
     register_jobs: JobRegistration | None = None
+    register_ai_tasks: AITaskRegistration | None = None
 
     def is_enabled(self, paths: Any) -> bool:
         value = self.enabled(paths) if callable(self.enabled) else self.enabled
