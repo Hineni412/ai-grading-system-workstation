@@ -24,6 +24,7 @@ from question_bank.services.question_service import QuestionService
 from question_bank.services.rich_content_service import (
     load_question_rich_content,
 )
+from backend.llm.json_repair import parse_json_object_locally
 from question_bank.training_criteria.analysis import (
     AnalysisProjection,
     GatewayBatchResponse,
@@ -239,7 +240,8 @@ class OpenAICombinedAnalysisGateway:
             getattr(response, "output_text", "") or ""
         ).strip()
         try:
-            payload = json.loads(output_text)
+            parsed = parse_json_object_locally(output_text)
+            payload = parsed.payload
         except (TypeError, ValueError) as exc:
             raise GatewayResponseParseError(
                 "combined model response JSON parsing failed"

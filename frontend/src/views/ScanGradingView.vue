@@ -135,12 +135,14 @@ const runProcessed = computed(() => {
 })
 const runProgress = computed(() => {
   const total = store.gradingRun?.counts.total ?? 0
-  if (total > 0) return Math.min(100, Math.round((runProcessed.value / total) * 100))
-  return Math.min(100, Math.round((store.gradingJob?.progress ?? 0) * 100))
+  const savedPaperProgress = total > 0 ? Math.round((runProcessed.value / total) * 100) : 0
+  const durableJobProgress = Math.round((store.gradingJob?.progress ?? 0) * 100)
+  return Math.min(100, Math.max(savedPaperProgress, durableJobProgress))
 })
 const runProgressText = computed(() => {
   const total = store.gradingRun?.counts.total ?? 0
-  if (total > 0) return `已处理 ${runProcessed.value} / ${total} 份`
+  if (total > 0 && runProcessed.value > 0) return `已保存 ${runProcessed.value} / ${total} 份答卷结果`
+  if (store.gradingJob) return `后台批改进度 ${runProgress.value}%`
   return runProgressDetail.value
 })
 const runProgressDetail = computed(() => {
@@ -183,9 +185,10 @@ const hybridPhase = computed(() => {
   return 1
 })
 const hybridTeacherPending = computed(() => (
-  interventionSummary.value.ungraded
-  + interventionSummary.value.failed
-  + interventionSummary.value.review
+  interventionSummary.value.review
+))
+const hybridAiPending = computed(() => (
+  interventionSummary.value.ungraded + interventionSummary.value.failed
 ))
 const runStateLabel = computed(() => ({
   running: '批改运行中', pause_requested: '正在安全暂停', paused: '已安全暂停',
@@ -840,8 +843,9 @@ watch(
             </ol>
             <div class="hybrid-run-board__metrics">
               <div><span>本轮答卷</span><strong>{{ store.gradingRun.counts.total }}</strong><small>已进入队列</small></div>
-              <div><span>结果已保存</span><strong>{{ store.gradingRun.counts.graded }}</strong><small>可随时查看</small></div>
-              <div :class="{ 'needs-attention': hybridTeacherPending > 0 }"><span>需要老师</span><strong>{{ hybridTeacherPending }}</strong><small>未评分、失败或待复核</small></div>
+              <div><span>批改单元</span><strong>已完成 {{ store.gradingRun.counts.graded }}</strong><small>已保存，可随时查看</small></div>
+              <div><span>等待 AI</span><strong>{{ hybridAiPending }}</strong><small>未评分或处理失败</small></div>
+              <div :class="{ 'needs-attention': hybridTeacherPending > 0 }"><span>需要老师</span><strong>{{ hybridTeacherPending }}</strong><small>仅统计明确待复核</small></div>
               <div><span>老师已确认</span><strong>{{ interventionSummary.teacher }}</strong><small>最终分已锁定</small></div>
             </div>
           </section>

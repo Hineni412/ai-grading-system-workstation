@@ -649,8 +649,17 @@ async function renameMaterial(item: MaterialVersion): Promise<void> {
 }
 
 async function archiveMaterial(item: MaterialVersion): Promise<void> {
-  await workbench.catalog.updateMaterialSource(item, { archived: true })
-  mappingMessage.value = '资料已移入回收区，可随时恢复；原文件和历史引用没有删除。'
+  const record = semesterRecordFor(item)
+  if (!window.confirm(`把“${item.display_name}”移入回收区吗？原文件和历史课时引用都会保留，可随时恢复。`)) return
+  try {
+    if (record?.is_active) await workbench.catalog.updateSemesterMaterial(record, { isActive: false })
+    await workbench.catalog.updateMaterialSource(item, { archived: true })
+    mappingMessage.value = '资料已移入回收区，可随时恢复；原文件和历史引用没有删除。'
+  } catch {
+    mappingMessage.value = record?.is_active
+      ? '资料尚未移入回收区；如果它已移出本学期，可在“管理资料”中直接重试。'
+      : '资料尚未移入回收区，请保留当前页面后重试。'
+  }
 }
 
 async function restoreMaterial(item: MaterialVersion): Promise<void> {
@@ -1002,7 +1011,7 @@ async function saveManualMapping(): Promise<void> {
       class="tp-global-notice"
       role="alert"
     >
-      <strong>资料处理没有完成</strong>
+      <strong>部分资料信息未更新</strong>
       <span>{{ workbench.catalog.errorMessage }}</span>
     </div>
 
@@ -1346,7 +1355,7 @@ async function saveManualMapping(): Promise<void> {
               <button v-if="semesterRecordFor(item)" type="button" @click="updateExistingRole(item)">保存角色</button>
               <button v-if="semesterRecordFor(item)?.is_active" type="button" @click="removeFromSemester(item)">移出本学期</button>
               <button v-else-if="semesterRecordFor(item)" type="button" @click="restoreToSemester(item)">恢复到本学期</button>
-              <button v-if="!semesterRecordFor(item)?.is_active" class="is-danger" type="button" @click="archiveMaterial(item)">移入回收区</button>
+              <button class="is-danger" type="button" @click="archiveMaterial(item)">移入回收区</button>
             </div>
           </details>
         </article>

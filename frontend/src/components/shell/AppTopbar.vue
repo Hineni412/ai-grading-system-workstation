@@ -9,6 +9,7 @@ import { useConfigWorkspaceStore } from '../../stores/config-workspace'
 import { useSessionStore } from '../../stores/session'
 import { workspaceRegistry } from '../../workspaces/registry'
 import type { WorkspaceSubNavigationItem } from '../../workspaces/contracts'
+import WorkspaceAITaskDrawer from '../../workspaces/shared/ai-tasks/WorkspaceAITaskDrawer.vue'
 
 const props = defineProps<{
   navigationOpen: boolean
@@ -104,6 +105,7 @@ function retrySessions(): void {
         <strong>{{ pageTitle }}</strong>
         <span v-if="pageDescription">{{ pageDescription }}</span>
       </div>
+      <WorkspaceAITaskDrawer />
     </div>
 
     <div

@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 from collections import Counter, defaultdict
+from copy import deepcopy
+import json
 from pathlib import Path
 import sqlite3
+import threading
 from typing import Any, Iterable, Mapping
 
 from backend.repositories.access import GradingRepositoryAccess, as_grading_repositories
@@ -29,6 +32,13 @@ GENERIC_ERROR_REASONS = {
     "答案不正确",
 }
 
+_TAG_PROFILE_CACHE_LOCK = threading.RLock()
+_TAG_PROFILE_CACHE_LIMIT = 12
+_TAG_PROFILE_CACHE: dict[
+    tuple[str, str, str, str],
+    tuple[dict[str, Any], dict[str, Any]],
+] = {}
+
 
 class DiagnosisProfileService:
     def __init__(
@@ -38,7 +48,9 @@ class DiagnosisProfileService:
         *,
         grading_db: GradingRepositoryAccess | None = None,
         question_bank_connection: sqlite3.Connection | None = None,
+        cache_identity: tuple[str, ...] | None = None,
     ) -> None:
+        self.grading_db_path = Path(grading_db_path)
         self.db = (
             as_grading_repositories(grading_db)
             if grading_db is not None
@@ -46,6 +58,8 @@ class DiagnosisProfileService:
         )
         self.question_bank_db_path = Path(question_bank_db_path)
         self.question_bank_connection = question_bank_connection
+        self.cache_identity = cache_identity
+        self.latest_aggregated_mastery: dict[str, Any] = {}
 
     def build_profiles(
         self,
@@ -61,6 +75,22 @@ class DiagnosisProfileService:
         scope: Mapping[str, Any],
         exam_scope: Mapping[str, Any],
     ) -> dict[str, Any]:
+        source_identity = self.cache_identity or (
+            *_path_generation(self.grading_db_path),
+            *_path_generation(self.question_bank_db_path),
+        )
+        cache_key = (
+            "\u0000".join(source_identity),
+            "tag-profile-v1",
+            json.dumps(scope, ensure_ascii=False, sort_keys=True, default=str),
+            json.dumps(exam_scope, ensure_ascii=False, sort_keys=True, default=str),
+        )
+        with _TAG_PROFILE_CACHE_LOCK:
+            cached = _TAG_PROFILE_CACHE.get(cache_key)
+        if cached is not None:
+            self.latest_aggregated_mastery = dict(cached[1])
+            return deepcopy(cached[0])
+
         resolved = EvidenceScopeResolver(self.db).resolve(
             scope=scope,
             exam_scope=exam_scope,
@@ -170,6 +200,21 @@ class DiagnosisProfileService:
                     if secondary_summary:
                         item["secondary_errors"][secondary_summary] += 1
 
+        try:
+            hierarchy_resolver: CurrentKnowledgeResolver | None = (
+                CurrentKnowledgeResolver.from_active_database(
+                    self.question_bank_db_path
+                )
+            )
+        except (
+            CurrentKnowledgeUnavailable,
+            OSError,
+            sqlite3.Error,
+            TypeError,
+            ValueError,
+        ):
+            hierarchy_resolver = None
+
         student_profiles: list[dict[str, Any]] = []
         for student in students:
             student_id = str(student["id"])
@@ -207,7 +252,10 @@ class DiagnosisProfileService:
                         },
                     }
                 )
-            self._apply_governed_hierarchy(weak_points)
+            self._apply_governed_hierarchy(
+                weak_points,
+                resolver=hierarchy_resolver,
+            )
             weak_points = self._dedupe_governed_points(weak_points)
             weak_points.sort(key=lambda item: (
                 item.get("parent_knowledge_point") or item["knowledge_point"],
@@ -225,11 +273,14 @@ class DiagnosisProfileService:
             )
 
         group_weak_points: list[dict[str, Any]] = []
+        aggregated_mastery: dict[str, Any] = {}
         knowledge_catalog: list[dict[str, Any]] = []
         try:
-            resolver = CurrentKnowledgeResolver.from_active_database(
-                self.question_bank_db_path
-            )
+            resolver = hierarchy_resolver
+            if resolver is None:
+                raise CurrentKnowledgeUnavailable(
+                    "current knowledge resolver is unavailable"
+                )
             mastery_profile = {
                 "scope": {"student_ids": student_ids},
                 "students": student_profiles,
@@ -249,9 +300,10 @@ class DiagnosisProfileService:
                 per_student_mastery,
                 resolver=resolver,
             )
+            aggregated_mastery = aggregate_current_mastery(per_student_mastery)
             group_weak_points = self._group_mastery_payload(
                 student_profiles,
-                aggregate_current_mastery(per_student_mastery),
+                aggregated_mastery,
                 resolver=resolver,
             )
             parent_by_child = {
@@ -298,7 +350,7 @@ class DiagnosisProfileService:
             warnings.append("所选范围内没有已关联且带知识点标签的诊断证据。")
 
         normalized_scope = resolved.normalized_scope(scope)
-        return {
+        result = {
             "scope": normalized_scope,
             "exam_scope": {
                 "mode": str(exam_scope.get("mode") or "current"),
@@ -325,7 +377,15 @@ class DiagnosisProfileService:
             "warnings": _unique(warnings),
             "diagnosis_identity": "question_tag",
         }
-
+        self.latest_aggregated_mastery = dict(aggregated_mastery)
+        with _TAG_PROFILE_CACHE_LOCK:
+            _TAG_PROFILE_CACHE[cache_key] = (
+                deepcopy(result),
+                dict(aggregated_mastery),
+            )
+            while len(_TAG_PROFILE_CACHE) > _TAG_PROFILE_CACHE_LIMIT:
+                _TAG_PROFILE_CACHE.pop(next(iter(_TAG_PROFILE_CACHE)))
+        return result
     def _merge_current_mastery(
         self,
         student_profiles: list[dict[str, Any]],
@@ -444,18 +504,13 @@ class DiagnosisProfileService:
         result.sort(key=lambda item: (item["mastery"], item["knowledge_point"]))
         return result
 
-    def _apply_governed_hierarchy(self, weak_points: list[dict[str, Any]]) -> None:
-        try:
-            resolver = CurrentKnowledgeResolver.from_active_database(
-                self.question_bank_db_path
-            )
-        except (
-            CurrentKnowledgeUnavailable,
-            OSError,
-            sqlite3.Error,
-            TypeError,
-            ValueError,
-        ):
+    def _apply_governed_hierarchy(
+        self,
+        weak_points: list[dict[str, Any]],
+        *,
+        resolver: CurrentKnowledgeResolver | None,
+    ) -> None:
+        if resolver is None:
             for item in weak_points:
                 item.update({
                     "hierarchy_kind": "root",
@@ -743,6 +798,18 @@ class DiagnosisProfileService:
             )
             for student in students
         }
+
+def _path_generation(path: Path) -> tuple[str, ...]:
+    source = Path(path).resolve(strict=False)
+    values = [str(source)]
+    for candidate in (source, Path(f"{source}-wal")):
+        try:
+            stat = candidate.stat()
+            values.append(f"{candidate.name}:{stat.st_size}:{stat.st_mtime_ns}")
+        except FileNotFoundError:
+            values.append(f"{candidate.name}:missing")
+    return tuple(values)
+
 
 def _actionable_reasons(value: object) -> list[str]:
     text = str(value or "").replace("；", ";")

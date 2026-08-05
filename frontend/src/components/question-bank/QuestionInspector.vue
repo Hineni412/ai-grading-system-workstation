@@ -51,6 +51,14 @@ const curriculumGroups = computed(() => (
   ))
 ))
 
+function curriculumSectionLabel(sectionId: string): string {
+  for (const group of curriculumGroups.value) {
+    const section = group.chapter.sections.find(item => item.id === sectionId)
+    if (section) return `${group.label} · ${section.label}`
+  }
+  return '旧版教材小节（目录中已找不到，请重新选择）'
+}
+
 onMounted(async () => {
   try {
     curriculum.value = await questionBankApi.getCurriculum()
@@ -323,7 +331,12 @@ async function removeCurrent(): Promise<void> {
                     :key="index"
                     class="qb-tag-chip"
                   >
+                    <span
+                      v-if="group.type === 'curriculum_section'"
+                      class="qb-tag-chip__localized-value"
+                    >{{ curriculumSectionLabel(tag.tag_value) }}</span>
                     <input
+                      v-else
                       v-model="tag.tag_value"
                       maxlength="36"
                       :aria-label="`${group.label}标签值`"
