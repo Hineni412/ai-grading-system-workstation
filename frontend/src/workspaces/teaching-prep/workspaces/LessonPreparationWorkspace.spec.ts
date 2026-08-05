@@ -8,6 +8,7 @@ import {
   type ExerciseSuggestion,
 } from '../api/workbench'
 import { useWorkspaceAITaskStore } from '../../shared/ai-tasks/store'
+import { adoptedTeachingPrepTask } from '../aiAdoptionTestFixture'
 import { teachingPrepWorkbenchKey } from '../workbench/context'
 import LessonPreparationWorkspace from './LessonPreparationWorkspace.vue'
 
@@ -17,6 +18,72 @@ afterEach(() => {
 })
 
 describe('LessonPreparationWorkspace common AI submission', () => {
+  it('recovers the same adopted handoff instead of falling back after workspace refresh failed', async () => {
+    const draft = {
+      id: 'draft-current', resource_pack_id: 'pack-1', version_number: 3,
+      based_on_draft_id: null, operation_id: null, source_kind: 'model',
+      model_label: null, status: 'draft', capacity: {}, created_at: '',
+      payload: {
+        knowledge_objectives: [{ text: '理解勾股定理', citations: [] }],
+        anticipated_difficulties: [],
+        lesson_flow: [{ phase: 'teach', title: '新授', suggested_minutes: 20, citations: [] }],
+        exercise_recommendations: [],
+      },
+    }
+    const reviseLessonDraft = vi.fn()
+    const fake = {
+      stage: ref('plan'), panel: ref('sources'), pane: ref('source'),
+      dirtyReason: ref(null), referencePreflight: ref(null), activeSuggestionRun: ref(null),
+      catalog: {
+        selectedLessonId: 'lesson-1', selectedLesson: { id: 'lesson-1', revision: 7 },
+        resourcePacks: [{ id: 'pack-1', version_number: 1 }], selectedResourcePackId: 'pack-1',
+        lessonDrafts: [draft], selectedLessonDraftId: draft.id,
+        teachingPreferences: { payload: {} }, saveState: 'idle', reviseLessonDraft,
+        selectLesson: vi.fn(),
+      },
+      setDirty: vi.fn(), refreshCurrentWorkspace: vi.fn().mockRejectedValue(new Error('offline')),
+      openPanel: vi.fn(), openStage: vi.fn(), watchSuggestionRun: vi.fn(), setPane: vi.fn(),
+    }
+    const adoptedTask = adoptedTeachingPrepTask({
+      taskId: 'task-lesson',
+      taskKind: 'teaching_prep.lesson_plan',
+      proposalId: draft.id,
+      sourceRef: { kind: 'lesson', id: 'lesson-1', revision: '7' },
+      draftKind: 'lesson_draft',
+    })
+    const receipt = {
+      adoption_id: 'adoption-lesson', handoff_id: 'handoff-lesson',
+      task_kind: adoptedTask.task_kind, proposal_ref_id: draft.id,
+      object_kind: 'lesson_draft', object_id: 'teacher-version',
+      object_ref: 'teaching_prep:lesson_draft:teacher-version', object_status: 'confirmed',
+      draft_revision: '3', target_revision: '7', receipt_revision: '1', adopted_at: '',
+    }
+    const adopt = vi.spyOn(teachingPrepWorkbenchApi, 'adoptAIHandoff').mockResolvedValue(receipt)
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const app = createApp(LessonPreparationWorkspace)
+    const pinia = createPinia()
+    const aiTasks = useWorkspaceAITaskStore(pinia)
+    aiTasks.track(adoptedTask)
+    vi.spyOn(aiTasks, 'refresh').mockResolvedValue()
+    app.use(pinia)
+    app.provide(teachingPrepWorkbenchKey, fake as never)
+    app.mount(host)
+    await nextTick()
+
+    const button = [...host.querySelectorAll<HTMLButtonElement>('button')]
+      .find(item => item.textContent?.includes('保存并确认课堂草稿'))
+    button?.click()
+
+    await vi.waitFor(() => expect(adopt).toHaveBeenCalledOnce())
+    expect(reviseLessonDraft).not.toHaveBeenCalled()
+    await vi.waitFor(() => {
+      expect(host.textContent).toContain('课堂草稿已确认并生成采用回执')
+      expect(host.textContent).not.toContain('课堂草稿尚未确认')
+    })
+    app.unmount()
+  })
+
   it('keeps exercise finalization visible after refresh, disabled until all decisions are saved', async () => {
     const suggestion: ExerciseSuggestion = {
       id: 'suggestion-1', run_id: 'run-current', lesson_node_id: 'lesson-1',

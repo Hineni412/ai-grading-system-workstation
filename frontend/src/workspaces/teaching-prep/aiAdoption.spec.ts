@@ -34,7 +34,7 @@ function task(
       source_task_id: taskId, source_turn_id: null,
       return_destination_key: 'teaching_prep.lesson.plan',
       return_focus_ref: proposalId, expires_on_source_change: true,
-      adoption_id: null, revision: 2,
+      adoption_id: adoptionState === 'adopted' ? `adoption-${taskId}` : null, revision: 2,
     }],
     handoff_total: 1, adopted_count: 0, discarded_count: 0,
     stale_count: 0, pending_count: 1,
@@ -50,7 +50,7 @@ describe('teaching-prep AI adoption routing', () => {
     const tasks = [
       task('new-wrong-proposal', 'teaching_prep.lesson_plan', 'proposal-new'),
       task('wrong-kind', 'teaching_prep.slide_change_proposal', 'proposal-current'),
-      task('already-adopted', 'teaching_prep.lesson_plan', 'proposal-current', 'adopted'),
+      task('not-routable', 'teaching_prep.lesson_plan', 'proposal-current', 'stale'),
       task('exact', 'teaching_prep.lesson_plan', 'proposal-current'),
     ]
 
@@ -59,6 +59,21 @@ describe('teaching-prep AI adoption routing', () => {
       'teaching_prep.lesson_plan',
       'proposal-current',
     )?.task.task_id).toBe('exact')
+  })
+
+  it('keeps an adopted exact handoff available for idempotent receipt recovery', () => {
+    const adopted = task(
+      'already-adopted',
+      'teaching_prep.lesson_plan',
+      'proposal-current',
+      'adopted',
+    )
+
+    expect(findTeachingPrepAdoption(
+      [adopted],
+      'teaching_prep.lesson_plan',
+      'proposal-current',
+    )?.handoff.handoff_id).toBe('handoff-already-adopted')
   })
 
   it('sends the handoff draft revision and current task target revision', async () => {

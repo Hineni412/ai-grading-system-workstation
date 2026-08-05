@@ -9,7 +9,12 @@ import {
   type TeachingPrepAIAdoption,
 } from './api/workbench'
 
-const ADOPTABLE_STATES = new Set(['pending', 'opened', 'adoption_started'])
+const ADOPTION_ROUTABLE_STATES = new Set([
+  'pending',
+  'opened',
+  'adoption_started',
+  'adopted',
+])
 
 export interface TeachingPrepAdoptionMatch {
   task: WorkspaceAITask
@@ -30,7 +35,7 @@ export function findTeachingPrepAdoption(
     const handoff = task.handoffs.find(item => (
       item.module === 'teaching_prep'
       && item.draft_ref.id === proposalId
-      && ADOPTABLE_STATES.has(item.adoption_state)
+      && ADOPTION_ROUTABLE_STATES.has(item.adoption_state)
     ))
     if (handoff) return { task, handoff }
   }
