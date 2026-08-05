@@ -10,11 +10,13 @@ import type {
   SemesterMaterialRole,
 } from '../api/catalog'
 import { teachingPrepWorkbenchApi } from '../api/workbench'
+import { useWorkspaceAITaskStore } from '../../shared/ai-tasks/store'
 import TeachingPrepDocumentWorkspace from '../components/TeachingPrepDocumentWorkspace.vue'
 import TeachingPrepStickyActions from '../components/TeachingPrepStickyActions.vue'
 import { useTeachingPrepWorkbenchContext } from '../workbench/context'
 
 const workbench = useTeachingPrepWorkbenchContext()
+const aiTasks = useWorkspaceAITaskStore()
 const activeUnitId = ref<string | null>(null)
 const importBatchRunning = ref(false)
 const attachingMaterialId = ref<string | null>(null)
@@ -43,6 +45,7 @@ const manualMapping = reactive<{
 })
 const mappingMessage = ref('先导入并解析资料，再逐份建立课时目录。')
 const reviewLessonRef = ref('')
+let refreshedMappingTaskRevision = ''
 
 const MATERIAL_ROLES: Array<{ value: SemesterMaterialRole; label: string }> = [
   { value: 'textbook', label: '教材' },
@@ -180,6 +183,15 @@ const currentMappingPreflight = computed(
 const currentMappingJob = computed(
   () => workbench.catalog.currentSemesterMappingJob,
 )
+const currentMappingTask = computed(() => {
+  const semesterId = workbench.catalog.selectedSemester?.id
+  return aiTasks.orderedTasks.find(task => (
+    task.module === 'teaching_prep'
+    && task.task_kind === 'teaching_prep.semester_mapping'
+    && task.source_ref.kind === 'semester'
+    && task.source_ref.id === semesterId
+  )) ?? null
+})
 const currentMappingJobSyncError = computed(
   () => workbench.catalog.currentSemesterMappingJobSyncError,
 )
@@ -214,6 +226,17 @@ watch(
     }
   },
   { immediate: true },
+)
+
+watch(
+  () => currentMappingTask.value ? `${currentMappingTask.value.task_id}:${currentMappingTask.value.revision}` : '',
+  async (revision) => {
+    const task = currentMappingTask.value
+    if (!revision || revision === refreshedMappingTaskRevision || !task) return
+    if (!['proposal_ready', 'needs_input'].includes(task.status)) return
+    refreshedMappingTaskRevision = revision
+    await workbench.catalog.load()
+  },
 )
 
 watch(activeUnit, unit => { pageInput.value = unit?.unit_index ?? 1 }, { immediate: true })
@@ -638,10 +661,17 @@ const mappingJobBusy = computed(() => (
   currentMappingJob.value !== null
   && !['succeeded', 'failed', 'cancelled'].includes(currentMappingJob.value.status)
 ))
+const mappingTaskBusy = computed(() => (
+  currentMappingTask.value !== null
+  && ['prepared', 'queued', 'running'].includes(currentMappingTask.value.status)
+))
 const mappingJobHasDurableProposal = computed(() => {
   const job = currentMappingJob.value
+  const task = currentMappingTask.value
   const proposal = activeProposal.value
-  if (!job || !proposal) return false
+  if (!proposal) return false
+  if (task?.proposal_ref_id === proposal.id) return true
+  if (!job) return false
   return (
     job.result.proposal_id === proposal.id
     || (
@@ -652,11 +682,13 @@ const mappingJobHasDurableProposal = computed(() => {
   )
 })
 const mappingAwaitingProposal = computed(() => (
-  currentMappingJob.value?.status === 'succeeded'
+  (currentMappingJob.value?.status === 'succeeded'
+    || ['proposal_ready', 'needs_input'].includes(currentMappingTask.value?.status ?? ''))
   && !mappingJobHasDurableProposal.value
 ))
 const mappingResultUnknown = computed(() => {
   const job = currentMappingJob.value
+  if (currentMappingTask.value?.status === 'result_unknown') return true
   return Boolean(
     job
     && !mappingJobHasDurableProposal.value
@@ -697,6 +729,12 @@ const mappingElapsedLabel = computed(() => {
   return minutes > 0 ? `${minutes} 分 ${seconds % 60} 秒` : `${seconds} 秒`
 })
 const mappingStageLabel = computed(() => {
+  const task = currentMappingTask.value
+  if (task) return task.teacher_message || (({
+    prepared: '已冻结发送范围', queued: '等待统一任务执行', running: '模型任务处理中',
+    proposal_ready: '待确认建议已就绪', needs_input: '需要教师补充信息',
+    result_unknown: '结果未知，禁止自动重试', failed: '生成未完成',
+  } as Record<string, string>)[task.status] || task.status)
   const job = currentMappingJob.value
   if (!job) return '尚未提交'
   if (mappingJobHasDurableProposal.value) return '待确认建议已就绪'
@@ -739,6 +777,7 @@ const canGenerateMapping = computed(() => (
   && currentMappingPreflight.value?.model_available === true
   && !mappingInitialTreeBlocker.value
   && !mappingJobBusy.value
+  && !mappingTaskBusy.value
   && !mappingResultUnknown.value
   && !mappingJobHasDurableProposal.value
   && currentMappingJob.value?.status !== 'succeeded'
@@ -772,13 +811,25 @@ async function prepareSemesterMapping(silent = false): Promise<void> {
 
 async function generateSemesterMapping(): Promise<void> {
   const record = activeSemesterRecord.value
-  if (!record) return
-  mappingMessage.value = '后台任务已提交；本次最多调用模型一次，不会自动重试…'
+  const semester = workbench.catalog.selectedSemester
+  const preflight = currentMappingPreflight.value
+  if (!record || !semester || !preflight) return
+  mappingMessage.value = '统一 AI 任务正在登记；本次最多调用模型一次，不会自动重试…'
   try {
-    await workbench.catalog.generateSemesterMapping([record.id])
-    mappingMessage.value = '后台任务已登记，可离开页面；返回后会恢复同一任务。'
+    const prepared = await aiTasks.prepare({
+      operation_id: `semester-mapping-${crypto.randomUUID().replaceAll('-', '')}`,
+      module: 'teaching_prep',
+      task_kind: 'teaching_prep.semester_mapping',
+      source_ref: { kind: 'semester', id: semester.id, revision: preflight.source_state_sha256 },
+      context_refs: [{ kind: 'material', id: record.id, revision: String(record.revision) }],
+      prompt_contract_version: 'teaching-prep-semester-mapping-v1',
+      model_destination_fingerprint: preflight.model_destination_fingerprint,
+      return_target: 'teaching_prep.library',
+    })
+    await aiTasks.dispatch(prepared)
+    mappingMessage.value = '任务已进入统一任务抽屉；可离开页面，重启后只恢复本地结果。'
   } catch {
-    mappingMessage.value = workbench.catalog.errorMessage || '后台任务没有成功登记，系统不会自动重新发送。'
+    mappingMessage.value = '任务没有成功登记，系统不会自动重新发送。'
   }
 }
 
@@ -1084,7 +1135,7 @@ async function saveManualMapping(): Promise<void> {
         v-if="activeSemesterRecord"
         class="tp-mapping-job-status"
         :class="{
-          'is-running': mappingJobBusy || mappingAwaitingProposal,
+          'is-running': mappingJobBusy || mappingTaskBusy || mappingAwaitingProposal,
           'is-error': Boolean(mappingJobError) || mappingResultUnknown,
           'is-success': mappingJobHasDurableProposal,
         }"
@@ -1096,14 +1147,14 @@ async function saveManualMapping(): Promise<void> {
             <span class="tp-status-pill">{{ mappingStageLabel }}</span>
             <strong>{{ activeMaterial?.display_name }}</strong>
           </div>
-          <span v-if="currentMappingJob">
-            {{ mappingProgressPercent }}%
+          <span v-if="currentMappingJob || currentMappingTask">
+            {{ currentMappingTask ? Math.round(currentMappingTask.progress * 100) : mappingProgressPercent }}%
             <template v-if="mappingElapsedLabel"> · 已等待 {{ mappingElapsedLabel }}</template>
           </span>
         </div>
         <progress
-          v-if="currentMappingJob"
-          :value="mappingProgressPercent"
+          v-if="currentMappingJob || currentMappingTask"
+          :value="currentMappingTask ? Math.round(currentMappingTask.progress * 100) : mappingProgressPercent"
           max="100"
           :aria-label="`目录建议任务：${mappingStageLabel}`"
         />

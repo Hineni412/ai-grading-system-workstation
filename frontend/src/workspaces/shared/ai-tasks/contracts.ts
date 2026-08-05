@@ -51,6 +51,7 @@ export interface WorkspaceAITask {
   module: 'teaching_prep' | 'class_teacher'
   task_kind: string
   source_ref: OpaqueRef
+  context_refs: OpaqueRef[]
   return_target: string
   status: WorkspaceAITaskStatus
   phase: string
@@ -98,6 +99,7 @@ export function decodeWorkspaceAITask(value: unknown): WorkspaceAITask {
     || !value.task_id
     || typeof value.operation_id !== 'string'
     || !['teaching_prep', 'class_teacher'].includes(String(value.module))
+    || !Array.isArray(value.context_refs)
     || !WORKSPACE_AI_TASK_STATUSES.includes(value.status as WorkspaceAITaskStatus)
     || typeof value.progress !== 'number'
     || !Number.isSafeInteger(value.revision)

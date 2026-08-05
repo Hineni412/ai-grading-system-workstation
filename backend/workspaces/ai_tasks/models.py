@@ -114,6 +114,7 @@ class TaskSnapshot:
     module: str
     task_kind: str
     source_ref: OpaqueRef
+    context_refs: tuple[OpaqueRef, ...]
     return_target: str
     status: TaskStatus
     phase: str

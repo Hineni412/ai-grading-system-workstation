@@ -128,6 +128,15 @@ class WorkspaceAITaskService:
             raise ValueError("task_id or operation_id is required")
         return project_task(self.store, task)
 
+    def list_module_tasks(self, module: str) -> tuple[TaskSnapshot, ...]:
+        clean_module = str(module or "").strip()
+        if not clean_module:
+            raise ValueError("workspace AI task module is required")
+        return tuple(
+            project_task(self.store, task)
+            for task in self.store.list_tasks(clean_module)
+        )
+
     def cancel(self, operation_id: str) -> TaskSnapshot:
         task = self.store.find_by_operation(operation_id)
         if task is None:
@@ -244,12 +253,26 @@ class WorkspaceAITaskService:
         if started.adoption_id is None:
             raise RuntimeError("adoption claim was not persisted")
         existing = adapter.find_adoption(started.adoption_id)
-        result = existing or adapter.adopt(
-            started,
-            adoption_id=started.adoption_id,
-            draft_revision=draft_revision,
-            target_revision=target_revision,
-        )
+        if existing is not None:
+            result = existing
+        else:
+            try:
+                result = adapter.adopt(
+                    started,
+                    adoption_id=started.adoption_id,
+                    draft_revision=draft_revision,
+                    target_revision=target_revision,
+                )
+            except RevisionConflictError:
+                persisted = adapter.find_adoption(started.adoption_id)
+                if persisted is None:
+                    self.store.release_uncommitted_adoption(
+                        handoff_id,
+                        adoption_id=started.adoption_id,
+                        target_revision=target_revision,
+                    )
+                    raise
+                result = persisted
         if (
             result.adoption_id != started.adoption_id
             or result.target_revision != target_revision

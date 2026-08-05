@@ -156,7 +156,7 @@ describe('MaterialLibraryWorkspace current-material safety', () => {
     vi.spyOn(teachingPrepCatalogApi, 'listSemesters').mockResolvedValue([semesterItem])
     vi.spyOn(teachingPrepCatalogApi, 'semesterMappingPreflight').mockResolvedValue({
       semester_id: semesterId, source_state_sha256: 'a'.repeat(64), will_call_model: true,
-      model_available: true, model_label: '合成模型', material_count: 1, unit_count: 1,
+      model_available: true, model_label: '合成模型', model_destination_fingerprint: 'f'.repeat(64), material_count: 1, unit_count: 1,
       existing_lesson_count: 1, creates_initial_tree: false, automatic_retry: false,
     })
     const { app, host, catalog } = mountWorkspace()
@@ -200,7 +200,7 @@ describe('MaterialLibraryWorkspace current-material safety', () => {
     catalog.selectedMaterialId = materialB.id
     vi.spyOn(teachingPrepCatalogApi, 'semesterMappingPreflight').mockResolvedValue({
       semester_id: semesterId, source_state_sha256: 'f'.repeat(64), will_call_model: true,
-      model_available: true, model_label: '合成模型', material_count: 1, unit_count: 1,
+      model_available: true, model_label: '合成模型', model_destination_fingerprint: 'f'.repeat(64), material_count: 1, unit_count: 1,
       existing_lesson_count: 1, creates_initial_tree: false, automatic_retry: false,
     })
     await catalog.prepareSemesterMapping([recordB.id])
@@ -256,7 +256,7 @@ describe('MaterialLibraryWorkspace current-material safety', () => {
     }
     vi.spyOn(teachingPrepCatalogApi, 'semesterMappingPreflight').mockResolvedValue({
       semester_id: semesterId, source_state_sha256: 'f'.repeat(64), will_call_model: true,
-      model_available: true, model_label: '合成模型', material_count: 1, unit_count: 4,
+      model_available: true, model_label: '合成模型', model_destination_fingerprint: 'f'.repeat(64), material_count: 1, unit_count: 4,
       existing_lesson_count: 0, creates_initial_tree: true, automatic_retry: false,
     })
     const { app, host, catalog } = mountWorkspace()
@@ -297,7 +297,7 @@ describe('MaterialLibraryWorkspace current-material safety', () => {
     const running = mappingJob(materialRecord.id)
     vi.spyOn(teachingPrepCatalogApi, 'semesterMappingPreflight').mockResolvedValue({
       semester_id: semesterId, source_state_sha256: 'a'.repeat(64), will_call_model: true,
-      model_available: true, model_label: '合成模型', material_count: 1, unit_count: 1,
+      model_available: true, model_label: '合成模型', model_destination_fingerprint: 'f'.repeat(64), material_count: 1, unit_count: 1,
       existing_lesson_count: 1, creates_initial_tree: false, automatic_retry: false,
     })
     vi.spyOn(teachingPrepCatalogApi, 'startSemesterMappingProposalJob').mockResolvedValue(running)

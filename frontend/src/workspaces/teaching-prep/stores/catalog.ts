@@ -110,6 +110,7 @@ export const useTeachingPrepCatalogStore = defineStore(
     const curricula = ref<CurriculumEdition[]>([])
     const semesters = ref<TeachingSemester[]>([])
     const selectedCurriculumId = ref<string | null>(null)
+    const selectedSemesterId = ref<string | null>(null)
     const lessonNodes = ref<LessonNode[]>([])
     const materials = ref<MaterialVersion[]>([])
     const semesterLessonProgress = ref<SemesterLessonProgress[]>([])
@@ -163,10 +164,11 @@ export const useTeachingPrepCatalogStore = defineStore(
       ) ?? null,
     )
     const selectedSemester = computed(
-      () => semesters.value.find(
-        ({ curriculum_id: curriculumId }) => (
-          curriculumId === selectedCurriculumId.value
-        ),
+      () => semesters.value.find(item => (
+        item.id === selectedSemesterId.value
+        && item.curriculum_id === selectedCurriculumId.value
+      )) ?? semesters.value.find(
+        ({ curriculum_id: curriculumId }) => curriculumId === selectedCurriculumId.value,
       ) ?? null,
     )
     const selectedLesson = computed(
@@ -420,11 +422,15 @@ export const useTeachingPrepCatalogStore = defineStore(
             selectedCurriculumId.value,
             controller.signal,
           )
-          const semester = nextSemesters.find(
+          const semester = nextSemesters.find(item => (
+            item.id === selectedSemesterId.value
+            && item.curriculum_id === selectedCurriculumId.value
+          )) ?? nextSemesters.find(
             ({ curriculum_id: curriculumId }) => (
               curriculumId === selectedCurriculumId.value
             ),
           )
+          selectedSemesterId.value = semester?.id ?? null
           if (semester) {
             const [nextProgress, nextSemesterMaterials, nextProposals, nextMappingJobs] = await Promise.all([
               teachingPrepCatalogApi.listSemesterLessonProgress(
@@ -455,6 +461,7 @@ export const useTeachingPrepCatalogStore = defineStore(
             semesterMappingJobIds.value = []
           }
         } else {
+          selectedSemesterId.value = null
           lessonNodes.value = []
           semesterLessonProgress.value = []
           semesterMaterials.value = []
@@ -485,12 +492,23 @@ export const useTeachingPrepCatalogStore = defineStore(
       }
     }
 
-    async function selectCurriculum(curriculumId: string): Promise<void> {
-      if (curriculumId === selectedCurriculumId.value) return
+    async function selectCurriculum(
+      curriculumId: string,
+      semesterId?: string,
+    ): Promise<void> {
+      const semester = semesters.value.find(item => (
+        item.curriculum_id === curriculumId
+        && (semesterId === undefined || item.id === semesterId)
+      )) ?? semesters.value.find(item => item.curriculum_id === curriculumId) ?? null
+      if (
+        curriculumId === selectedCurriculumId.value
+        && semester?.id === selectedSemester.value?.id
+      ) return
       const generation = ++lessonFlowGeneration
       materialFlowGeneration += 1
       invalidateSemesterMappingPreflight()
       selectedCurriculumId.value = curriculumId
+      selectedSemesterId.value = semester?.id ?? null
       selectedLessonId.value = null
       selectedMaterialId.value = null
       materialUnits.value = []
@@ -514,9 +532,6 @@ export const useTeachingPrepCatalogStore = defineStore(
           || selectedCurriculumId.value !== curriculumId
         ) return
         lessonNodes.value = nextLessons
-        const semester = semesters.value.find(
-          ({ curriculum_id: selectedId }) => selectedId === curriculumId,
-        )
         if (semester) {
           const [nextProgress, nextSemesterMaterials, nextProposals, nextMappingJobs] = await Promise.all([
             teachingPrepCatalogApi.listSemesterLessonProgress(semester.id),
@@ -542,6 +557,12 @@ export const useTeachingPrepCatalogStore = defineStore(
         loadState.value = 'error'
         errorMessage.value = safeMessage(error)
       }
+    }
+
+    async function selectSemester(semesterId: string): Promise<void> {
+      const semester = semesters.value.find(item => item.id === semesterId)
+      if (!semester) return
+      await selectCurriculum(semester.curriculum_id, semester.id)
     }
 
     async function selectLesson(node: LessonNode): Promise<void> {
@@ -2016,6 +2037,7 @@ export const useTeachingPrepCatalogStore = defineStore(
       curricula,
       semesters,
       selectedCurriculumId,
+      selectedSemesterId,
       selectedCurriculum,
       selectedSemester,
       lessonNodes,
@@ -2061,6 +2083,7 @@ export const useTeachingPrepCatalogStore = defineStore(
       errorMessage,
       load,
       selectCurriculum,
+      selectSemester,
       createCurriculum,
       createSemesterWorkspace,
       createSemester,

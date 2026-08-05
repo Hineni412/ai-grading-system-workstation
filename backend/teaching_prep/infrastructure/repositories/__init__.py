@@ -11,6 +11,7 @@ from .slide_plans import SlidePlanRepository
 from .pptx_execution import PptxExecutionRepository
 from .teaching_delivery import TeachingDeliveryRepository
 from .workbench_iteration import WorkbenchIterationRepository
+from .workspace_ai_adoptions import WorkspaceAIAdoptionRepository
 
 __all__ = [
     "ExerciseCandidateRepository",
@@ -27,4 +28,5 @@ __all__ = [
     "TeachingDeliveryRepository",
     "WorkbenchIterationRepository",
     "TeachingCatalogRepository",
+    "WorkspaceAIAdoptionRepository",
 ]

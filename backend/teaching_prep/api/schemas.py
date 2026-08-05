@@ -34,6 +34,7 @@ from backend.teaching_prep.domain.models import (
     UpClassPackage,
     TeachingPreferences,
     TeachingSemester,
+    TeachingPrepAIAdoption,
 )
 from backend.teaching_prep.domain.states import LessonPreparationState
 
@@ -1254,12 +1255,44 @@ class LessonPreparationStatusResponse(BaseModel):
     preparation_stage: Literal["select", "materials", "plan", "slides", "package"]
     next_action: str
     blockers: list[str]
+    cells: dict[str, dict[str, Any]]
+    ai_tasks: list[dict[str, Any]]
+    summary_revision: str = Field(pattern=r"^[0-9a-f]{64}$")
     latest: dict[str, Any]
 
 
 class LessonPreparationStatusListResponse(BaseModel):
     semester_id: str
     items: list[LessonPreparationStatusResponse]
+
+
+class AdoptWorkspaceAIHandoffRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    draft_revision: str = Field(min_length=1, max_length=160)
+    target_revision: str = Field(min_length=1, max_length=160)
+
+
+class TeachingPrepAIAdoptionResponse(BaseModel):
+    adoption_id: str
+    handoff_id: str
+    task_kind: str
+    proposal_ref_id: str
+    object_kind: str
+    object_id: str
+    object_ref: str
+    object_status: str
+    draft_revision: str
+    target_revision: str
+    receipt_revision: str
+    adopted_at: str
+
+    @classmethod
+    def from_domain(
+        cls,
+        item: TeachingPrepAIAdoption,
+    ) -> "TeachingPrepAIAdoptionResponse":
+        return cls.model_validate(asdict(item))
 
 
 class ReviewSemesterMappingRowRequest(BaseModel):
@@ -1309,6 +1342,9 @@ class ReferenceSelectionPreflightResponse(BaseModel):
     draft: dict[str, Any] | None
     model_available: bool
     model_label: str | None
+    model_destination_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
+    model_destination_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
+    model_destination_fingerprint: str
     will_call_model: bool
 
 

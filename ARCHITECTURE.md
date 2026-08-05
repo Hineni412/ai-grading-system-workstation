@@ -157,8 +157,11 @@ A 启用后只在 `user_data/workspaces/teaching-prep/` 内使用 `temp`、`stag
   中止仍可安全重新发起。终态 Job 只有在读回同一资料、operation 和来源指纹的持久建议后才算同步完成；
   建议列表短暂落后时只补做有界读取，不追加模型调用。通用 Job 提交接口不能绕过专用预检，公开任务结果
   不包含本机路径或模型正文。
-- 备课工作台没有活动课时节点时默认进入资料库；正式课时树建立后才默认进入课时页。资料库、课时、备课、
-  课件四个入口由全局顶部栏承载，模块内部不再重复显示一套类似侧边栏的品牌导航行。
+- A-I1-R7 默认进入 C 型备课首页，即使尚无活动课时也先显示近期课时空态与建库下一动作。公共顶部栏只保留
+  “备课首页／资料库”；单课时以 `view=lesson&lesson=<id>&stage=<stage>` 恢复核资料、定方案、审课件和
+  上课包四个内部阶段。课时页使用左侧阶段、中央原页/幻灯片主画布和右侧准备摘要；窄屏把阶段收为横向页签。
+- 课件审阅以源幻灯片为画布，通过归一化 target 绘制修改定位框；每项建议分别接受、拒绝或标为
+  `manual_only`，保存审核不等于 WPS 已执行，后续仍只允许创建隔离副本，不覆盖源 PPTX。
 
 ## 5. API 与前端长期契约
 
@@ -197,6 +200,9 @@ A 启用后只在 `user_data/workspaces/teaching-prep/` 内使用 `temp`、`stag
   多窗口只允许一个活动 Job；进入外部发送边界前，Task 原子写入 `send_attempt_count=1` 与
   `dispatch_evidence=may_have_started`。此后崩溃只进入 `result_unknown`，不会自动或沿用同一 operation 重发。
   通用 Job API 对 `workspace_ai.*` 使用最小允许列表，不回落返回原始 payload/result/detail/error。
+- A Adapter 注册学期目录、课堂方案、候选练习和课件修改四类 task kind。模型调用通过公共 Task Gateway 在物理
+  请求前强制 metadata-only 诊断、零自动重试和单 operation 单请求；A 库的
+  `teaching_prep_ai_task_results` 只保存领域 proposal/Handoff 引用，重启只读回该引用补做本地交接。
 - 姓名识别、评分依据生成、试卷批改和题库标注共用当前模型配置的一套请求速度方案，不再各自维护隐藏
   Worker/RPM 上限。自动模式从 6 个同时请求起步、最多恢复到 20 个；保守模式固定为 1 个；自定义模式允许
   1–100 个同时请求及 1–10000 RPM。RPM 只限制一分钟内启动多少请求，不能替代同时请求数。

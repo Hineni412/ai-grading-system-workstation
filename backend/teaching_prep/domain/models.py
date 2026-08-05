@@ -291,6 +291,22 @@ class ExerciseSuggestion:
 
 
 @dataclass(frozen=True, slots=True)
+class TeachingPrepAIAdoption:
+    adoption_id: str
+    handoff_id: str
+    task_kind: str
+    proposal_ref_id: str
+    object_kind: str
+    object_id: str
+    object_ref: str
+    object_status: str
+    draft_revision: str
+    target_revision: str
+    receipt_revision: str
+    adopted_at: str
+
+
+@dataclass(frozen=True, slots=True)
 class LessonDraftVersion:
     id: str
     resource_pack_id: str

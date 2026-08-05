@@ -30,6 +30,19 @@ export interface LessonPreparationStatus {
   preparation_stage: TeachingPrepStage
   next_action: string
   blockers: string[]
+  cells: Record<'materials' | 'plan' | 'exercises' | 'slides', {
+    status: 'not_started' | 'in_progress' | 'needs_teacher' | 'ready' | 'stale' | 'failed' | 'not_applicable'
+    summary: string
+    target_panel: string
+  }>
+  ai_tasks: Array<{
+    task_id: string
+    task_kind: string
+    status: string
+    proposal_ref_id: string | null
+    proposal_revision: string | null
+  }>
+  summary_revision: string
   latest: {
     resource_pack_id: string | null
     lesson_draft_id: string | null
@@ -100,6 +113,7 @@ export interface ReferenceSelectionPreflight {
   draft: ReferenceSelectionDraft | null
   model_available: boolean
   model_label: string | null
+  model_destination_fingerprint: string
   will_call_model: false
 }
 

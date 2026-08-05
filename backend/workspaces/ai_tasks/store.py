@@ -127,6 +127,18 @@ class WorkspaceAITaskStore:
             ).fetchone()
         return _task(row) if row is not None else None
 
+    def list_tasks(self, module: str) -> tuple[StoredTask, ...]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM workspace_ai_tasks
+                WHERE module = ?
+                ORDER BY updated_at DESC, task_id DESC
+                """,
+                (module,),
+            ).fetchall()
+        return tuple(_task(row) for row in rows)
+
     def create_dispatch_job(self, task_id: str) -> tuple[StoredTask, bool]:
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
@@ -393,6 +405,31 @@ class WorkspaceAITaskStore:
                 WHERE handoff_id = ?
                 """,
                 (adoption_id, target_revision, handoff_id),
+            )
+            connection.commit()
+        return self.require_handoff(handoff_id)
+
+    def release_uncommitted_adoption(
+        self,
+        handoff_id: str,
+        *,
+        adoption_id: str,
+        target_revision: str,
+    ) -> HandoffSnapshot:
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute(
+                """
+                UPDATE workspace_ai_handoffs
+                SET adoption_state = 'opened', target_revision = NULL,
+                    revision = revision + 1,
+                    updated_at = datetime('now','localtime')
+                WHERE handoff_id = ?
+                  AND adoption_state = 'adoption_started'
+                  AND adoption_id = ?
+                  AND target_revision = ?
+                """,
+                (handoff_id, adoption_id, target_revision),
             )
             connection.commit()
         return self.require_handoff(handoff_id)

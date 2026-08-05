@@ -468,7 +468,9 @@ def test_safe_api_is_idempotent_and_workspace_job_projection_is_allowlisted(
         "module": "teaching_prep",
         "task_kind": "teaching_prep.lesson_plan",
         "source_ref": {"kind": "lesson", "id": "lesson-api-001", "revision": "1"},
-        "context_refs": [],
+        "context_refs": [
+            {"kind": "semester", "id": "semester-api-001", "revision": "4"}
+        ],
         "prompt_contract_version": "synthetic-v1",
         "model_destination_fingerprint": "a" * 64,
         "return_target": "teaching_prep.lesson.plan",
@@ -478,6 +480,10 @@ def test_safe_api_is_idempotent_and_workspace_job_projection_is_allowlisted(
         replay = client.post("/api/workspace-ai-tasks/prepare", json=payload)
         assert first.status_code == replay.status_code == 201
         assert first.json()["task_id"] == replay.json()["task_id"]
+        assert first.json()["context_refs"] == payload["context_refs"]
+        assert [item.task_id for item in service.list_module_tasks("teaching_prep")] == [
+            first.json()["task_id"]
+        ]
         assert "prompt" not in first.text.casefold()
         assert "prefill" not in first.text.casefold()
         dispatch = client.post(

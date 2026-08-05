@@ -97,6 +97,7 @@ from backend.teaching_prep.domain.models import (
     UpClassPackage,
     TeachingPreferences,
     TeachingSemester,
+    TeachingPrepAIAdoption,
 )
 from backend.teaching_prep.domain.states import (
     LessonPreparationState,
@@ -119,6 +120,7 @@ from backend.teaching_prep.infrastructure.repositories import (
     TeachingCatalogRepository,
     TeachingPreferencesRepository,
     WorkbenchIterationRepository,
+    WorkspaceAIAdoptionRepository,
 )
 
 
@@ -260,7 +262,16 @@ class TeachingPrepService:
         self.slide_plans = SlidePlanRepository(self.database)
         self.pptx_executions = PptxExecutionRepository(self.database)
         self.teaching_delivery = TeachingDeliveryRepository(self.database)
-        self.workbench = WorkbenchIterationRepository(self.database)
+        self.workbench = WorkbenchIterationRepository(
+            self.database,
+            source_change_provider=self.resource_packs.source_change_flags,
+        )
+        self.workspace_ai_adoptions = WorkspaceAIAdoptionRepository(
+            self.database,
+            resource_source_status=self.resource_packs.source_status,
+            selection_catalog=self.workbench.selection_catalog,
+            semester_snapshot=self.semester_mapping.snapshot,
+        )
         self.material_parser = material_parser or MaterialParser()
         self._material_parse_lock = threading.Lock()
         self._active_material_parses: set[str] = set()
@@ -304,7 +315,7 @@ class TeachingPrepService:
         return {
             "module": "teaching-prep",
             "enabled": True,
-            "schema_version": "013_workbench_iteration",
+            "schema_version": "015_workspace_ai_adapter",
             "real_model_enabled": _model_adapter_available(
                 self.lesson_model_adapter
             ),
@@ -327,10 +338,38 @@ class TeachingPrepService:
     def list_lesson_preparation_statuses(
         self,
         semester_id: str,
+        *,
+        ai_tasks: Sequence[object] = (),
     ) -> tuple[dict[str, object], ...]:
         return self.workbench.lesson_preparation_statuses(
-            _clean_entity_id(semester_id)
+            _clean_entity_id(semester_id),
+            ai_tasks=ai_tasks,
         )
+
+    def adopt_workspace_ai_result(
+        self,
+        *,
+        source_task_id: str,
+        handoff_id: str,
+        adoption_id: str,
+        proposal_ref_id: str,
+        draft_revision: str,
+        target_revision: str,
+    ) -> TeachingPrepAIAdoption:
+        return self.workspace_ai_adoptions.adopt(
+            source_task_id=source_task_id,
+            handoff_id=handoff_id,
+            adoption_id=adoption_id,
+            proposal_ref_id=proposal_ref_id,
+            draft_revision=draft_revision,
+            target_revision=target_revision,
+        )
+
+    def find_workspace_ai_adoption(
+        self,
+        adoption_id: str,
+    ) -> TeachingPrepAIAdoption | None:
+        return self.workspace_ai_adoptions.find(adoption_id)
 
     def review_semester_mapping_row(
         self,
@@ -380,6 +419,9 @@ class TeachingPrepService:
                 self.exercise_suggestion_model_adapter
             ),
             "model_label": self.exercise_suggestion_model_label,
+            "model_destination_fingerprint": _stable_hash(
+                {"model_label": self.exercise_suggestion_model_label or "unavailable"}
+            ),
             "will_call_model": False,
         }
 
@@ -507,7 +549,12 @@ class TeachingPrepService:
             ),
         )
 
-    def process_exercise_suggestion_run(self, run_id: str) -> None:
+    def process_exercise_suggestion_run(
+        self,
+        run_id: str,
+        *,
+        task_model_gateway: object | None = None,
+    ) -> None:
         clean_run_id = _clean_entity_id(run_id)
         run, _items = self.workbench.get_suggestion_run(clean_run_id)
         if run.status != "running":
@@ -521,10 +568,13 @@ class TeachingPrepService:
             return
         try:
             self.workbench.mark_suggestion_call_started(clean_run_id)
-            raw = adapter.generate(
-                operation_id=run.operation_id,
-                reference_snapshot=dict(snapshot.payload["model_input"]),
-            )
+            model_kwargs = {
+                "operation_id": run.operation_id,
+                "reference_snapshot": dict(snapshot.payload["model_input"]),
+            }
+            if task_model_gateway is not None:
+                model_kwargs["task_model_gateway"] = task_model_gateway
+            raw = adapter.generate(**model_kwargs)
             suggestions = normalize_exercise_suggestion_payload(
                 raw,
                 snapshot=dict(snapshot.payload["model_input"]),
@@ -981,6 +1031,9 @@ class TeachingPrepService:
                 )
             ),
             "model_label": self.semester_mapping_model_label,
+            "model_destination_fingerprint": _stable_hash(
+                {"model_label": self.semester_mapping_model_label or "unavailable"}
+            ),
             "material_count": len(materials),
             "unit_count": sum(
                 int(item["unit_count"])
@@ -1015,6 +1068,7 @@ class TeachingPrepService:
         expected_source_state_sha256: str | None = None,
         progress_callback: Callable[[str], None] | None = None,
         cancel_check: Callable[[], None] | None = None,
+        task_model_gateway: object | None = None,
     ) -> tuple[SemesterMappingProposal, bool]:
         clean_semester_id = _clean_entity_id(semester_id)
         clean_operation_id = _clean_token(operation_id)
@@ -1113,11 +1167,14 @@ class TeachingPrepService:
             report("calling_model")
 
         try:
-            raw = self.semester_mapping_model_adapter.generate(
-                operation_id=clean_operation_id,
-                semester_snapshot=model_snapshot,
-                dispatch_callback=mark_physical_request_started,
-            )
+            model_kwargs = {
+                "operation_id": clean_operation_id,
+                "semester_snapshot": model_snapshot,
+                "dispatch_callback": mark_physical_request_started,
+            }
+            if task_model_gateway is not None:
+                model_kwargs["task_model_gateway"] = task_model_gateway
+            raw = self.semester_mapping_model_adapter.generate(**model_kwargs)
             if not model_call_started:
                 self.semester_mapping.mark_generation_result_unknown(
                     clean_operation_id,
@@ -2337,7 +2394,7 @@ class TeachingPrepService:
             "draft_mode",
         )
         pack = self.resource_packs.get(_clean_entity_id(pack_id))
-        return draft_preflight(
+        result = draft_preflight(
             pack,
             mode=clean_mode,
             model_available=_model_adapter_available(
@@ -2345,6 +2402,10 @@ class TeachingPrepService:
             ),
             model_label=self.lesson_model_label,
         )
+        result["model_destination_fingerprint"] = _stable_hash(
+            {"model_label": self.lesson_model_label or "unavailable"}
+        )
+        return result
 
     def generate_lesson_draft(
         self,
@@ -2353,6 +2414,7 @@ class TeachingPrepService:
         operation_id: str,
         mode: str,
         confirmed: bool,
+        task_model_gateway: object | None = None,
     ) -> tuple[LessonDraftVersion, bool]:
         clean_pack_id = _clean_entity_id(pack_id)
         clean_operation_id = _clean_token(operation_id)
@@ -2406,10 +2468,13 @@ class TeachingPrepService:
                         pack.payload.get("preparation_preferences")
                     )
                 )
-                raw = adapter.generate(
-                    operation_id=clean_operation_id,
-                    resource_pack=model_payload,
-                )
+                model_kwargs = {
+                    "operation_id": clean_operation_id,
+                    "resource_pack": model_payload,
+                }
+                if task_model_gateway is not None:
+                    model_kwargs["task_model_gateway"] = task_model_gateway
+                raw = adapter.generate(**model_kwargs)
             draft = validate_draft_payload(raw, pack)
             if clean_mode == "model" and not draft.get("slide_adaptations"):
                 raise TeachingPrepValidationError(

@@ -338,6 +338,13 @@ class ResourcePackRepository:
                 selected_material_link_ids=_selected_link_ids(latest),
                 selected_exercise_candidate_ids=_selected_exercise_ids(latest),
             )
+            material_versions_changed = bool(
+                latest is not None
+                and _material_source_change_flags(
+                    connection,
+                    (str(latest["id"]),),
+                ).get(str(latest["id"]), False)
+            )
         return {
             "lesson_node_id": lesson_node_id,
             "has_pack": latest is not None,
@@ -349,8 +356,11 @@ class ResourcePackRepository:
             ),
             "local_sources_changed": (
                 latest is not None
-                and str(latest["source_state_sha256"])
-                != current_source_state
+                and (
+                    str(latest["source_state_sha256"])
+                    != current_source_state
+                    or material_versions_changed
+                )
             ),
         }
 
@@ -378,13 +388,75 @@ class ResourcePackRepository:
                 TeachingPrepValidationError,
             ):
                 current_source_state = None
+            material_versions_changed = _material_source_change_flags(
+                connection,
+                (pack_id,),
+            ).get(pack_id, False)
         frozen = str(row["source_state_sha256"])
         return {
             "resource_pack_id": pack_id,
             "frozen_source_state_sha256": frozen,
             "current_source_state_sha256": current_source_state,
-            "sources_changed": current_source_state != frozen,
+            "sources_changed": (
+                current_source_state != frozen or material_versions_changed
+            ),
         }
+
+    def source_change_flags(
+        self,
+        pack_ids: tuple[str, ...],
+    ) -> dict[str, bool]:
+        if not pack_ids:
+            return {}
+        with self._database.connect() as connection:
+            return _material_source_change_flags(connection, pack_ids)
+
+
+def _material_source_change_flags(
+    connection: sqlite3.Connection,
+    pack_ids: tuple[str, ...],
+) -> dict[str, bool]:
+    if not pack_ids:
+        return {}
+    placeholders = ",".join("?" for _item in pack_ids)
+    rows = connection.execute(
+        f"""
+        SELECT pack.id,
+               EXISTS (
+                   SELECT 1
+                   FROM json_each(pack.payload_json, '$.materials') AS frozen
+                   LEFT JOIN material_versions AS frozen_version
+                     ON frozen_version.id = json_extract(
+                         frozen.value, '$.material_version_id'
+                     )
+                   LEFT JOIN material_sources AS source
+                     ON source.id = frozen_version.source_id
+                   WHERE frozen_version.id IS NULL
+                      OR source.id IS NULL
+                      OR source.archived_at IS NOT NULL
+                      OR EXISTS (
+                          SELECT 1
+                          FROM material_versions AS newer
+                          WHERE newer.source_id = frozen_version.source_id
+                            AND newer.id <> frozen_version.id
+                            AND (
+                                newer.created_at > frozen_version.created_at
+                                OR (
+                                    newer.created_at = frozen_version.created_at
+                                    AND newer.rowid > frozen_version.rowid
+                                )
+                            )
+                      )
+               ) AS sources_changed
+        FROM resource_pack_versions AS pack
+        WHERE pack.id IN ({placeholders})
+        """,
+        pack_ids,
+    ).fetchall()
+    return {
+        str(row["id"]): bool(row["sources_changed"])
+        for row in rows
+    }
 
 
 def _capture_local_payload(

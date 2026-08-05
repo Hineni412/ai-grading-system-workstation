@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, reactive, ref } from 'vue'
+import { computed, reactive, ref, watch } from 'vue'
 
 import type { SlideOperationDecision, SlidePlan } from '../api/catalog'
 import { teachingPrepWorkbenchApi, type TrustedPptxVersion } from '../api/workbench'
@@ -10,6 +10,8 @@ const workbench = useTeachingPrepWorkbenchContext()
 const decisions = reactive<Record<string, SlideOperationDecision>>({})
 const reviewMessage = ref('逐项审核课件建议；只有全部决定后才能执行 WPS。')
 const activatingId = ref<string | null>(null)
+const activeOperationId = ref<string | null>(null)
+const activeSlideIndex = ref(0)
 
 const selectedPlan = computed(() => workbench.catalog.slidePlans.find(
   item => item.id === workbench.catalog.selectedSlidePlanId,
@@ -17,6 +19,18 @@ const selectedPlan = computed(() => workbench.catalog.slidePlans.find(
 const preview = computed(() => workbench.catalog.slidePlanPreview)
 const latestRun = computed(() => workbench.catalog.pptxExecutions[0] ?? null)
 const packageMode = computed(() => workbench.stage.value === 'package')
+const activeOperation = computed(() => selectedPlan.value?.payload.operations.find(
+  item => item.operation_id === activeOperationId.value,
+) ?? selectedPlan.value?.payload.operations[0] ?? null)
+const activeSlide = computed(() => preview.value?.before[activeSlideIndex.value] ?? null)
+const activeOperationOnSlide = computed(() => (
+  activeOperation.value !== null && slideIndexFor(activeOperation.value) === activeSlideIndex.value
+))
+const activeOverlayStyle = computed(() => {
+  const operation = activeOperation.value
+  if (!operation || operation.execution_mode === 'manual_only' || !activeSlide.value || !activeOperationOnSlide.value) return null
+  return overlayStyle(operation.target)
+})
 const allOperationsDecided = computed(() => selectedPlan.value?.payload.operations.every(
   item => (decisions[item.operation_id] ?? item.decision) !== 'proposed',
 ) ?? false)
@@ -62,9 +76,60 @@ function describeChange(item: Record<string, unknown>): string {
   return String(item.summary ?? item.reason ?? item.kind ?? '页面调整')
 }
 
+function overlayStyle(target: Record<string, unknown>): Record<string, string> | null {
+  const position = target.position
+  if (!position || typeof position !== 'object' || Array.isArray(position)) return null
+  const value = position as Record<string, unknown>
+  const x = Number(value.x)
+  const y = Number(value.y)
+  const width = Number(value.width)
+  const height = Number(value.height)
+  if (![x, y, width, height].every(Number.isFinite) || x < 0 || y < 0 || width <= 0 || height <= 0 || x + width > 1 || y + height > 1) return null
+  return { left: `${x * 100}%`, top: `${y * 100}%`, width: `${width * 100}%`, height: `${height * 100}%` }
+}
+
+function slideIndexFor(operation: NonNullable<typeof activeOperation.value>): number {
+  const page = Number(operation.target.generated_page_number)
+  const signature = String(operation.target.slide_signature ?? '')
+  const unitId = String(operation.target.material_unit_id ?? '')
+  const sourceLinkId = String(operation.target.source_link_id ?? '')
+  const slides = preview.value?.before ?? []
+
+  if (signature) return slides.findIndex(item => String(item.stable_signature ?? '') === signature)
+  if (unitId) return slides.findIndex(item => String(item.material_unit_id ?? '') === unitId)
+  if (sourceLinkId && Number.isFinite(page)) {
+    return slides.findIndex(item => (
+      String(item.source_link_id ?? '') === sourceLinkId
+      && Number(item.original_index) === page
+    ))
+  }
+  if (!Number.isFinite(page)) return -1
+  const pageMatches = slides
+    .map((item, index) => ({ item, index }))
+    .filter(({ item }) => Number(item.original_index) === page)
+  return pageMatches.length === 1 ? pageMatches[0]!.index : -1
+}
+
+function selectOperation(operation: NonNullable<typeof activeOperation.value>): void {
+  activeOperationId.value = operation.operation_id
+  const index = slideIndexFor(operation)
+  if (index >= 0) activeSlideIndex.value = index
+}
+
+watch(selectedPlan, (plan) => {
+  if (!plan) return
+  for (const item of plan.payload.operations) decisions[item.operation_id] = item.decision
+  const first = plan.payload.operations[0]
+  activeOperationId.value = first?.operation_id ?? null
+  activeSlideIndex.value = first ? Math.max(0, slideIndexFor(first)) : 0
+}, { immediate: true })
+
 async function selectPlan(plan: SlidePlan): Promise<void> {
   await workbench.catalog.selectSlidePlan(plan)
   for (const item of plan.payload.operations) decisions[item.operation_id] = item.decision
+  activeOperationId.value = plan.payload.operations[0]?.operation_id ?? null
+  const first = plan.payload.operations[0]
+  activeSlideIndex.value = first ? Math.max(0, slideIndexFor(first)) : 0
 }
 
 async function saveReview(): Promise<void> {
@@ -140,30 +205,33 @@ async function createPackage(version: TrustedPptxVersion): Promise<void> {
         <p v-if="!workbench.catalog.slidePlans.length" class="tp-muted">先确认课堂草稿并创建课件计划。</p>
       </aside>
 
-      <main v-if="!packageMode" class="tp-slide-review">
-        <section class="tp-before-after" aria-label="课件改编前后对照">
-          <div>
-            <header><span>改编前</span><strong>{{ preview?.before_slide_count ?? 0 }} 页</strong></header>
-            <article v-for="(item, index) in preview?.before ?? []" :key="`before-${index}`" class="tp-slide-sheet">
-              <span>{{ index + 1 }}</span><strong>{{ describeSlide(item, index) }}</strong>
-            </article>
+      <main v-if="!packageMode" class="tp-slide-checker">
+        <aside class="tp-slide-checker__thumbs" aria-label="源幻灯片缩略图">
+          <button v-for="(item, index) in preview?.before ?? []" :key="`source-${index}`" type="button" :class="{ 'is-active': index === activeSlideIndex }" @click="activeSlideIndex = index">
+            <span>{{ index + 1 }}</span><strong>{{ describeSlide(item, index) }}</strong>
+          </button>
+        </aside>
+
+        <section class="tp-slide-checker__canvas" aria-label="源幻灯片与修改定位">
+          <header><span>源幻灯片 · 不会原地修改</span><strong>{{ preview?.before_slide_count ?? 0 }} 页</strong></header>
+          <div class="tp-slide-stage">
+            <img v-if="activeSlide?.preview_url" :src="String(activeSlide.preview_url)" alt="当前源幻灯片预览">
+            <div v-else class="tp-slide-stage__paper"><strong>{{ describeSlide(activeSlide ?? {}, 0) }}</strong><span>当前数据没有可用图片预览，仍可审核结构化定位。</span></div>
+            <span v-if="activeOperation && activeOverlayStyle" class="tp-change-overlay" :style="activeOverlayStyle"><b>{{ activeOperation.kind }}</b></span>
           </div>
-          <div>
-            <header><span>改编后</span><strong>{{ preview?.after_slide_count ?? 0 }} 页</strong></header>
-            <article v-for="(item, index) in preview?.after ?? []" :key="`after-${index}`" class="tp-slide-sheet is-after">
-              <span>{{ index + 1 }}</span><strong>{{ describeSlide(item, index) }}</strong>
-            </article>
-          </div>
+          <p v-if="activeOperation?.execution_mode === 'manual_only'" class="tp-inline-guidance">这项修改只能由教师人工处理，不会交给 WPS 自动执行。</p>
+          <p v-else-if="activeOperationOnSlide && activeOperation && !activeOverlayStyle" class="tp-inline-guidance">这项修改没有可验证的源页区域，因此不显示定位框；请按文字说明核对。</p>
         </section>
 
-        <section class="tp-operation-list">
-          <div class="tp-section-heading"><div><p class="tp-eyebrow">逐项决定</p><h2>允许 WPS 执行哪些调整</h2></div></div>
-          <article v-for="item in selectedPlan?.payload.operations ?? []" :key="item.operation_id" class="tp-operation-row">
-            <div><strong>{{ item.kind }}</strong><p>{{ item.reason }}</p><small>{{ item.support_note || describeChange(item.details) }}</small></div>
+        <section class="tp-slide-checker__inspector">
+          <div class="tp-section-heading"><div><p class="tp-eyebrow">AI 修改检查器</p><h2>逐项定位，再决定</h2></div></div>
+          <article v-for="item in selectedPlan?.payload.operations ?? []" :key="item.operation_id" class="tp-operation-row" :class="{ 'is-active': activeOperation?.operation_id === item.operation_id }">
+            <button class="tp-operation-row__selector" type="button" @click="selectOperation(item)"><strong>{{ item.kind }}</strong><span>{{ item.reason }}</span><small>{{ item.support_note || describeChange(item.details) }}</small></button>
             <fieldset>
               <legend class="tp-visually-hidden">审核 {{ item.kind }}</legend>
-              <label><input v-model="decisions[item.operation_id]" type="radio" :name="item.operation_id" value="approved" @change="workbench.setDirty('课件审核决定')">批准</label>
-              <label><input v-model="decisions[item.operation_id]" type="radio" :name="item.operation_id" value="rejected" @change="workbench.setDirty('课件审核决定')">不执行</label>
+              <label v-if="item.execution_mode !== 'manual_only'"><input v-model="decisions[item.operation_id]" type="radio" :name="item.operation_id" value="approved" @change="workbench.setDirty('课件审核决定')">接受</label>
+              <label v-else><input v-model="decisions[item.operation_id]" type="radio" :name="item.operation_id" value="rejected" @change="workbench.setDirty('课件审核决定')">标记为人工处理</label>
+              <label v-if="item.execution_mode !== 'manual_only'"><input v-model="decisions[item.operation_id]" type="radio" :name="item.operation_id" value="rejected" @change="workbench.setDirty('课件审核决定')">拒绝</label>
             </fieldset>
           </article>
           <div v-if="preview?.source_changed" class="tp-inline-error" role="alert">来源 PPTX 已变化，本计划不可执行；请基于新来源创建计划。</div>

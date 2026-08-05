@@ -67,7 +67,9 @@ class FakeLessonModelAdapter:
         *,
         operation_id: str,
         resource_pack: dict[str, Any],
+        task_model_gateway: object | None = None,
     ) -> dict[str, Any]:
+        del task_model_gateway
         self.calls.append(
             {
                 "operation_id": operation_id,
@@ -95,7 +97,9 @@ class FakeExerciseSuggestionModelAdapter:
         *,
         operation_id: str,
         reference_snapshot: dict[str, Any],
+        task_model_gateway: object | None = None,
     ) -> dict[str, Any]:
+        del task_model_gateway
         self.calls.append(
             {
                 "operation_id": operation_id,
