@@ -71,6 +71,8 @@ class CurrentKnowledgeGraphQueryService:
         self,
         profile: Mapping[str, Any],
         query: CurrentGraphQuery,
+        *,
+        mastery_by_key: Mapping[str, Any] | None = None,
     ) -> dict[str, object]:
         remapped_rows = _current_evidence_rows(profile, self.resolver)
         evidence_nodes = {
@@ -78,28 +80,31 @@ class CurrentKnowledgeGraphQueryService:
             for node in build_question_tag_graph_nodes(remapped_rows)
         }
         mastery_warning: str | None = None
-        try:
-            scope = profile.get("scope")
-            if isinstance(scope, Mapping):
-                allowed_student_ids = frozenset(
-                    str(value) for value in scope.get("student_ids", [])
+        if mastery_by_key is not None:
+            resolved_mastery_by_key = dict(mastery_by_key)
+        else:
+            try:
+                scope = profile.get("scope")
+                if isinstance(scope, Mapping):
+                    allowed_student_ids = frozenset(
+                        str(value) for value in scope.get("student_ids", [])
+                    )
+                else:
+                    allowed_student_ids = frozenset(
+                        str(student.get("student_id") or "")
+                        for student in profile.get("students", [])
+                        if isinstance(student, Mapping)
+                        and str(student.get("student_id") or "").strip()
+                    )
+                resolved_mastery_by_key = aggregate_current_mastery(
+                    self.mastery_calculator.calculate(
+                        profile,
+                        allowed_student_ids=allowed_student_ids,
+                    )
                 )
-            else:
-                allowed_student_ids = frozenset(
-                    str(student.get("student_id") or "")
-                    for student in profile.get("students", [])
-                    if isinstance(student, Mapping)
-                    and str(student.get("student_id") or "").strip()
-                )
-            mastery_by_key = aggregate_current_mastery(
-                self.mastery_calculator.calculate(
-                    profile,
-                    allowed_student_ids=allowed_student_ids,
-                )
-            )
-        except (OSError, sqlite3.Error, TypeError, ValueError):
-            mastery_by_key = {}
-            mastery_warning = "当前掌握度参数或证据不可用。"
+            except (OSError, sqlite3.Error, TypeError, ValueError):
+                resolved_mastery_by_key = {}
+                mastery_warning = "当前掌握度参数或证据不可用。"
 
         node_by_key = {node.stable_key: node for node in self.resolver.nodes}
         missing: list[dict[str, object]] = []
@@ -118,7 +123,7 @@ class CurrentKnowledgeGraphQueryService:
                 seed_keys.add(key)
         else:
             seed_keys = (
-                set(evidence_nodes) | set(mastery_by_key)
+                set(evidence_nodes) | set(resolved_mastery_by_key)
             ).intersection(node_by_key)
 
         included_keys = _expand_prerequisites(
@@ -136,7 +141,7 @@ class CurrentKnowledgeGraphQueryService:
             _node_payload(
                 node_by_key[key],
                 evidence_nodes.get(key),
-                mastery_by_key.get(key),
+                resolved_mastery_by_key.get(key),
                 mastery_available=mastery_warning is None,
             )
             for key in sorted(included_keys)

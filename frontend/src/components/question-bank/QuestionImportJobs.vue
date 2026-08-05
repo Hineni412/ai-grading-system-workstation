@@ -139,6 +139,21 @@ async function retry(job: JobResponse): Promise<void> {
   }
 }
 
+async function restoreRequiredPaper(job: JobResponse): Promise<void> {
+  const paperId = Number(job.result.restore_paper_id)
+  if (!Number.isSafeInteger(paperId) || paperId <= 0 || busy.value) return
+  busy.value = true
+  feedback.value = ''
+  try {
+    const restored = await bank.restorePaperFromTrash(paperId)
+    feedback.value = restored
+      ? '原试卷及其随试卷移入回收站的题目已经恢复。'
+      : '原试卷没有恢复，请打开试卷回收站核对当前状态。'
+  } finally {
+    busy.value = false
+  }
+}
+
 function downloadFailures(job: JobResponse): void {
   const csv = `\uFEFF${questionJobFailuresCsv(job.result)}`
   const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }))
@@ -226,7 +241,7 @@ function downloadFailures(job: JobResponse): void {
             v-if="job.job_type === 'question_import' && job.result.restore_required === true"
             class="qb-feedback is-warning"
           >
-            这是旧版留下的回收站阻塞记录。重新提交后会全新入库，旧题和旧标签不会恢复。
+            相同试卷已在回收站。请恢复原试卷，避免重新入库后产生重复题目。
           </p>
           <p v-if="job.error" class="qb-feedback is-error">{{ job.error }}</p>
           <p v-if="jobStore.syncErrors[job.id]" class="qb-feedback is-error" role="alert">
@@ -246,6 +261,15 @@ function downloadFailures(job: JobResponse): void {
             </button>
             <button type="button" class="qb-link" @click="jobStore.refresh(job.id)">刷新</button>
             <button
+              v-if="job.job_type === 'question_import' && job.result.restore_required === true"
+              type="button"
+              class="qb-link"
+              :disabled="busy"
+              @click="restoreRequiredPaper(job)"
+            >
+              恢复原试卷
+            </button>
+            <button
               v-if="questionJobFailures(job.result).length"
               type="button"
               class="qb-link"
@@ -264,7 +288,7 @@ function downloadFailures(job: JobResponse): void {
                   job.status !== 'succeeded' ||
                   job.result.outcome === 'partial' ||
                   job.result.restore_required === true
-                )
+                ) && job.result.restore_required !== true
               "
               type="button"
               class="qb-link"

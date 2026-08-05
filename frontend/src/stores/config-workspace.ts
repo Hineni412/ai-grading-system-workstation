@@ -279,13 +279,7 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
         .map((item) => item.asset_id)
     const hasUnresolvedAssets = uncertainAssetIds
       .some((assetId) => !resolvedCandidates.has(assetId))
-    const decisionsByQuestion = new Map(decisions.value.map((item) => [item.question_id, item]))
-    const hasUnconfirmedQuestionType = source.value.questions.some((question) => {
-      if (question.question_type_review_required !== true) return false
-      const decision = decisionsByQuestion.get(question.question_id)
-      return !decision?.excluded && !decision?.question_type
-    })
-    return !hasUnresolvedAssets && !hasUnconfirmedQuestionType && source.value.questions.some(
+    return !hasUnresolvedAssets && source.value.questions.some(
       (question) => !excluded.has(question.question_id),
     )
   })
