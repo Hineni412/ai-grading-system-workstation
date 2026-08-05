@@ -11,6 +11,7 @@ import type {
 } from '../api/catalog'
 import { teachingPrepWorkbenchApi } from '../api/workbench'
 import { useWorkspaceAITaskStore } from '../../shared/ai-tasks/store'
+import { adoptTeachingPrepProposal } from '../aiAdoption'
 import TeachingPrepDocumentWorkspace from '../components/TeachingPrepDocumentWorkspace.vue'
 import TeachingPrepStickyActions from '../components/TeachingPrepStickyActions.vue'
 import { useTeachingPrepWorkbenchContext } from '../workbench/context'
@@ -899,11 +900,33 @@ async function decideMapping(
 async function applyProposal(): Promise<void> {
   if (!activeProposal.value || !allMappingsDecided.value) return
   try {
-    await workbench.catalog.applySemesterMapping(activeProposal.value)
-    await workbench.refreshCurrentWorkspace()
-    mappingMessage.value = '全部接受项已在一个事务中写入正式映射。'
+    const proposal = activeProposal.value
+    const adopted = await adoptTeachingPrepProposal(
+      aiTasks.orderedTasks,
+      'teaching_prep.semester_mapping',
+      proposal.id,
+      {
+        kind: 'apply_semester_mapping',
+        proposal_revision: proposal.revision,
+      },
+    )
+    if (adopted) {
+      mappingMessage.value = '正式映射已写入，并已形成 AI 采用回执。'
+      const refreshes = await Promise.allSettled([
+        aiTasks.refresh(adopted.match.task.task_id),
+        workbench.refreshCurrentWorkspace(),
+      ])
+      if (refreshes.some(result => result.status === 'rejected')) {
+        mappingMessage.value = '正式映射已写入且已有回执；页面状态暂未刷新，请刷新页面。'
+      }
+    } else {
+      await workbench.catalog.applySemesterMapping(proposal)
+      await workbench.refreshCurrentWorkspace()
+      mappingMessage.value = '全部接受项已写入正式映射。'
+    }
   } catch {
-    mappingMessage.value = workbench.catalog.errorMessage || '正式映射没有写入。'
+    mappingMessage.value = workbench.catalog.errorMessage
+      || '正式映射尚未确认；已保存的逐条决定仍保留，请直接重试。'
   }
 }
 

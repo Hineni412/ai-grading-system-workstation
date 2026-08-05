@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import asdict
 
 from backend.workspaces.ai_tasks.model_gateway import WorkspaceAITaskModelGateway
@@ -24,6 +27,22 @@ _DESTINATIONS = {
     "teaching_prep.exercise_suggestions": "teaching_prep.lesson.exercises",
     "teaching_prep.slide_change_proposal": "teaching_prep.lesson.slides",
 }
+
+_ADOPTION_COMMAND: ContextVar[Mapping[str, object] | None] = ContextVar(
+    "teaching_prep_adoption_command",
+    default=None,
+)
+
+
+@contextmanager
+def bind_adoption_command(
+    command: Mapping[str, object] | None,
+) -> Iterator[None]:
+    token = _ADOPTION_COMMAND.set(command)
+    try:
+        yield
+    finally:
+        _ADOPTION_COMMAND.reset(token)
 
 
 class TeachingPrepAITaskAdapter:
@@ -123,6 +142,7 @@ class TeachingPrepAITaskAdapter:
             proposal_ref_id=handoff.draft_ref.id,
             draft_revision=draft_revision,
             target_revision=target_revision,
+            command=_ADOPTION_COMMAND.get(),
         )
         return AdoptionResult(
             adopted.adoption_id,
@@ -252,4 +272,8 @@ def register_ai_tasks(registrar, service: object | None) -> None:
         registrar.register_adapter(task_kind, adapter)
 
 
-__all__ = ["TeachingPrepAITaskAdapter", "register_ai_tasks"]
+__all__ = [
+    "TeachingPrepAITaskAdapter",
+    "bind_adoption_command",
+    "register_ai_tasks",
+]

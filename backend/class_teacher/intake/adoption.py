@@ -266,7 +266,7 @@ class HandoffAdoption:
             raise VaultError("class_teacher_plan_deadline_required", "加入正式日历前请确认截止时间", status_code=422)
         draft = self.planning.create_draft(
             token=token,
-            operation_id=f"{operation_id}-draft",
+            operation_id=f"{operation_id}-draft-r{handoff['draft_revision']}",
             raw_input=str(content.get("summary") or content.get("plan_title") or "班主任计划"),
             reference_at=str(content.get("reference_at") or "").strip() or None,
             final_deadline=deadline,
@@ -299,7 +299,13 @@ class HandoffAdoption:
     ) -> dict[str, object]:
         content = dict(handoff["content"])
         baselines = self.sop_baselines.ensure_baselines(token=token)["items"]
-        template_key = str(content.get("template_key") or "baseline.student_conflict")
+        template_key = str(content.get("template_key") or "").strip()
+        if not template_key:
+            raise VaultError(
+                "class_teacher_sop_template_required",
+                "请先选择与实际情况相符的学校流程模板",
+                status_code=422,
+            )
         selected = next((item for item in baselines if item.get("template_key") == template_key), None)
         if selected is None:
             raise VaultError("class_teacher_sop_template_invalid", "请选择可用的学校流程模板", status_code=422)

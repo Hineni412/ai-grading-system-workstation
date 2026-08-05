@@ -59,6 +59,12 @@ _PRESENTATIONS = {
     ),
 }
 
+_RECOVERY_ONLY_TASKS = frozenset(
+    {
+        ("class_teacher", "class_teacher.intake"),
+    }
+)
+
 _MESSAGES = {
     "prepared": ("任务已经准备好，尚未发送。", "返回来源页确认发送"),
     "queued": ("任务已排队，尚未发送。", "等待或取消"),
@@ -79,6 +85,12 @@ def presentation(module: str, task_kind: str) -> TaskPresentation:
         return _PRESENTATIONS[(module, task_kind)]
     except KeyError as exc:
         raise ValueError("workspace AI task kind is not registered") from exc
+
+
+def is_recovery_only_task(module: str, task_kind: str) -> bool:
+    """Return whether a registered legacy kind may only finish persisted work."""
+
+    return (module, task_kind) in _RECOVERY_ONLY_TASKS
 
 
 def message_for(status: str, evidence: str) -> tuple[str, str]:
@@ -105,6 +117,7 @@ __all__ = [
     "DESTINATION_KEYS",
     "TaskPresentation",
     "assert_destination",
+    "is_recovery_only_task",
     "message_for",
     "presentation",
 ]

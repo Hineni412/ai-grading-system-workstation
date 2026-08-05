@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import sqlite3
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 
 from backend.teaching_prep.domain.models import TeachingPrepAIAdoption
 from backend.teaching_prep.infrastructure.database import TeachingPrepDatabase
@@ -26,6 +27,13 @@ _OBJECTS = {
         "slide_plan_versions",
         "slide_plan",
     ),
+}
+
+_COMMAND_KINDS = {
+    "teaching_prep.semester_mapping": "apply_semester_mapping",
+    "teaching_prep.lesson_plan": "confirm_lesson_draft",
+    "teaching_prep.exercise_suggestions": "finalize_exercise_suggestions",
+    "teaching_prep.slide_change_proposal": "review_slide_plan",
 }
 
 
@@ -59,6 +67,308 @@ class WorkspaceAIAdoptionRepository:
                 if receipt is not None
                 else None
             )
+
+    def stage_command(
+        self,
+        *,
+        source_task_id: str,
+        handoff_id: str,
+        adoption_id: str,
+        proposal_ref_id: str,
+        draft_revision: str,
+        target_revision: str,
+        command: Mapping[str, object],
+    ) -> dict[str, object]:
+        """Durably bind one teacher command before its idempotent domain action."""
+
+        clean_command = json.loads(_canonical_json(dict(command)))
+        command_sha256 = hashlib.sha256(
+            _canonical_json(clean_command).encode("utf-8")
+        ).hexdigest()
+        envelope = {
+            "adoption_id": adoption_id,
+            "handoff_id": handoff_id,
+            "draft_revision": draft_revision,
+            "target_revision": target_revision,
+            "command_sha256": command_sha256,
+            "payload": clean_command,
+        }
+        with self._database.connect(immediate=True) as connection:
+            result = connection.execute(
+                """
+                SELECT * FROM teaching_prep_ai_task_results
+                WHERE task_id = ? AND proposal_ref_id = ?
+                """,
+                (source_task_id, proposal_ref_id),
+            ).fetchone()
+            if result is None:
+                raise RevisionConflictError("AI proposal metadata is unavailable")
+            if str(result["proposal_revision"]) != draft_revision:
+                raise RevisionConflictError("AI proposal revision changed")
+            task_kind = str(result["task_kind"])
+            expected_command = _COMMAND_KINDS.get(task_kind)
+            if expected_command != str(clean_command.get("kind") or ""):
+                raise RevisionConflictError(
+                    "teacher command does not match the AI proposal kind"
+                )
+
+            handoffs = json.loads(str(result["handoffs_json"]))
+            if not isinstance(handoffs, list) or len(handoffs) != 1:
+                raise RevisionConflictError("AI handoff metadata is unavailable")
+            handoff = handoffs[0]
+            if not isinstance(handoff, dict):
+                raise RevisionConflictError("AI handoff metadata is invalid")
+            staged = handoff.get("adoption_command")
+            if staged is not None:
+                if staged != envelope:
+                    raise RevisionConflictError(
+                        "adoption command was already bound to different input"
+                    )
+                return {
+                    "task_kind": task_kind,
+                    "proposal_ref_id": proposal_ref_id,
+                    "command": clean_command,
+                }
+
+            # On the first attempt the source and target must still match the
+            # frozen task.  A replay skips this check because the formal action
+            # itself may have advanced those revisions before the receipt write.
+            if task_kind != "teaching_prep.semester_mapping":
+                if self._current_proposal_revision(connection, result) != draft_revision:
+                    raise RevisionConflictError("AI proposal was changed after handoff")
+            self._validate_context_current(connection, result)
+            if self._current_target_revision(connection, result) != target_revision:
+                raise RevisionConflictError("teaching-prep target revision changed")
+
+            handoff["adoption_command"] = envelope
+            connection.execute(
+                """
+                UPDATE teaching_prep_ai_task_results
+                SET handoffs_json = ?
+                WHERE task_id = ?
+                """,
+                (_canonical_json(handoffs), source_task_id),
+            )
+            return {
+                "task_kind": task_kind,
+                "proposal_ref_id": proposal_ref_id,
+                "command": clean_command,
+            }
+
+    def load_staged_command(
+        self,
+        *,
+        source_task_id: str,
+        handoff_id: str,
+        adoption_id: str,
+        proposal_ref_id: str,
+        draft_revision: str,
+        target_revision: str,
+    ) -> dict[str, object] | None:
+        with self._database.connect() as connection:
+            result = connection.execute(
+                """
+                SELECT * FROM teaching_prep_ai_task_results
+                WHERE task_id = ? AND proposal_ref_id = ?
+                """,
+                (source_task_id, proposal_ref_id),
+            ).fetchone()
+            if result is None:
+                return None
+            handoffs = json.loads(str(result["handoffs_json"]))
+            staged = (
+                handoffs[0].get("adoption_command")
+                if isinstance(handoffs, list)
+                and len(handoffs) == 1
+                and isinstance(handoffs[0], dict)
+                else None
+            )
+            if not isinstance(staged, dict):
+                return None
+            if any(
+                str(staged.get(key) or "") != expected
+                for key, expected in (
+                    ("adoption_id", adoption_id),
+                    ("handoff_id", handoff_id),
+                    ("draft_revision", draft_revision),
+                    ("target_revision", target_revision),
+                )
+            ):
+                raise RevisionConflictError(
+                    "staged adoption command does not match the handoff claim"
+                )
+            command = staged.get("payload")
+            if not isinstance(command, dict):
+                raise RevisionConflictError("staged adoption command is invalid")
+            return {
+                "task_kind": str(result["task_kind"]),
+                "proposal_ref_id": proposal_ref_id,
+                "command": command,
+            }
+
+    def clear_staged_command(
+        self,
+        *,
+        source_task_id: str,
+        handoff_id: str,
+        adoption_id: str,
+    ) -> None:
+        """Release a command only after a proven no-write domain rejection."""
+
+        with self._database.connect(immediate=True) as connection:
+            if connection.execute(
+                """
+                SELECT 1 FROM teaching_prep_ai_adoption_receipts
+                WHERE adoption_id = ?
+                """,
+                (adoption_id,),
+            ).fetchone() is not None:
+                return
+            result = connection.execute(
+                """
+                SELECT handoffs_json FROM teaching_prep_ai_task_results
+                WHERE task_id = ?
+                """,
+                (source_task_id,),
+            ).fetchone()
+            if result is None:
+                return
+            handoffs = json.loads(str(result["handoffs_json"]))
+            if (
+                not isinstance(handoffs, list)
+                or len(handoffs) != 1
+                or not isinstance(handoffs[0], dict)
+            ):
+                return
+            staged = handoffs[0].get("adoption_command")
+            if not isinstance(staged, dict) or (
+                str(staged.get("adoption_id") or "") != adoption_id
+                or str(staged.get("handoff_id") or "") != handoff_id
+            ):
+                return
+            del handoffs[0]["adoption_command"]
+            connection.execute(
+                """
+                UPDATE teaching_prep_ai_task_results
+                SET handoffs_json = ?
+                WHERE task_id = ?
+                """,
+                (_canonical_json(handoffs), source_task_id),
+            )
+
+    def complete_command(
+        self,
+        *,
+        source_task_id: str,
+        handoff_id: str,
+        adoption_id: str,
+        draft_revision: str,
+        target_revision: str,
+        formal_object_id: str,
+    ) -> TeachingPrepAIAdoption:
+        """Publish a recovered command result and its receipt atomically."""
+
+        with self._database.connect(immediate=True) as connection:
+            receipt = connection.execute(
+                """
+                SELECT * FROM teaching_prep_ai_adoption_receipts
+                WHERE adoption_id = ?
+                """,
+                (adoption_id,),
+            ).fetchone()
+            if receipt is not None:
+                if (
+                    str(receipt["handoff_id"]) != handoff_id
+                    or str(receipt["draft_revision"]) != draft_revision
+                    or str(receipt["target_revision"]) != target_revision
+                ):
+                    raise RevisionConflictError(
+                        "adoption receipt does not match this handoff revision"
+                    )
+                return self._from_receipt(connection, receipt)
+
+            result = connection.execute(
+                """
+                SELECT * FROM teaching_prep_ai_task_results
+                WHERE task_id = ?
+                """,
+                (source_task_id,),
+            ).fetchone()
+            if result is None:
+                raise RevisionConflictError("AI proposal metadata is unavailable")
+            handoffs = json.loads(str(result["handoffs_json"]))
+            staged = (
+                handoffs[0].get("adoption_command")
+                if isinstance(handoffs, list)
+                and len(handoffs) == 1
+                and isinstance(handoffs[0], dict)
+                else None
+            )
+            if not isinstance(staged, dict) or any(
+                str(staged.get(key) or "") != expected
+                for key, expected in (
+                    ("adoption_id", adoption_id),
+                    ("handoff_id", handoff_id),
+                    ("draft_revision", draft_revision),
+                    ("target_revision", target_revision),
+                )
+            ):
+                raise RevisionConflictError("adoption command is unavailable")
+
+            task_kind = str(result["task_kind"])
+            table, object_kind = _object_definition(task_kind)
+            object_row = connection.execute(
+                f"SELECT status, workspace_adoption_id FROM {table} WHERE id = ?",
+                (formal_object_id,),
+            ).fetchone()
+            if object_row is None:
+                raise RevisionConflictError("formal teaching-prep object is unavailable")
+            current_adoption_id = (
+                str(object_row["workspace_adoption_id"])
+                if object_row["workspace_adoption_id"] is not None
+                else None
+            )
+            if current_adoption_id not in {None, adoption_id}:
+                raise RevisionConflictError("formal object was adopted elsewhere")
+            connection.execute(
+                f"""
+                UPDATE {table}
+                SET workspace_adoption_id = ?,
+                    workspace_adopted_at = COALESCE(
+                        workspace_adopted_at,
+                        strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                    )
+                WHERE id = ?
+                  AND (workspace_adoption_id IS NULL OR workspace_adoption_id = ?)
+                """,
+                (adoption_id, formal_object_id, adoption_id),
+            )
+            object_ref = f"teaching_prep:{object_kind}:{formal_object_id}"
+            connection.execute(
+                """
+                INSERT INTO teaching_prep_ai_adoption_receipts (
+                    adoption_id, handoff_id, draft_revision, target_revision,
+                    object_ref, receipt_revision
+                ) VALUES (?, ?, ?, ?, ?, '1')
+                """,
+                (
+                    adoption_id,
+                    handoff_id,
+                    draft_revision,
+                    target_revision,
+                    object_ref,
+                ),
+            )
+            saved = connection.execute(
+                """
+                SELECT * FROM teaching_prep_ai_adoption_receipts
+                WHERE adoption_id = ?
+                """,
+                (adoption_id,),
+            ).fetchone()
+            if saved is None:
+                raise RuntimeError("teaching-prep adoption receipt was not saved")
+            return self._from_receipt(connection, saved)
 
     def adopt(
         self,
@@ -328,6 +638,15 @@ def _required_ref(
     if not isinstance(value, dict):
         raise RevisionConflictError(f"{kind} context is unavailable")
     return value
+
+
+def _canonical_json(value: object) -> str:
+    return json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
 
 
 __all__ = ["WorkspaceAIAdoptionRepository"]

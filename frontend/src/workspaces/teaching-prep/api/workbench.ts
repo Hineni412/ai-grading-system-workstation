@@ -125,6 +125,38 @@ export interface ReferenceSelectionSnapshot {
   created_at: string
 }
 
+export type TeachingPrepAdoptionCommand =
+  | { kind: 'apply_semester_mapping'; proposal_revision: number }
+  | { kind: 'confirm_lesson_draft'; payload: LessonDraftPayload }
+  | { kind: 'finalize_exercise_suggestions' }
+  | {
+      kind: 'review_slide_plan'
+      operation_reviews: Array<{
+        operation_id: string
+        decision: string
+        reason: string
+        planned_minutes: number
+        teacher_note: string | null
+      }>
+      approve_low_risk_deletions: boolean
+      review_note: string | null
+    }
+
+export interface TeachingPrepAIAdoption {
+  adoption_id: string
+  handoff_id: string
+  task_kind: string
+  proposal_ref_id: string
+  object_kind: string
+  object_id: string
+  object_ref: string
+  object_status: string
+  draft_revision: string
+  target_revision: string
+  receipt_revision: string
+  adopted_at: string
+}
+
 export interface ExerciseSuggestionRegion {
   material_unit_id: string
   sequence: number
@@ -181,6 +213,25 @@ export interface TrustedPptxVersion extends PptxVersion {
 }
 
 export const teachingPrepWorkbenchApi = {
+  adoptAIHandoff(
+    handoffId: string,
+    draftRevision: string,
+    targetRevision: string,
+    command: TeachingPrepAdoptionCommand,
+  ): Promise<TeachingPrepAIAdoption> {
+    return apiClient.request(
+      `/api/teaching-prep/ai-handoffs/${encodeURIComponent(handoffId)}/adopt`,
+      {
+        method: 'POST',
+        body: {
+          draft_revision: draftRevision,
+          target_revision: targetRevision,
+          command,
+        },
+        decode: teachingPrepAIAdoption,
+      },
+    )
+  },
   lessonStatuses(semesterId: string, signal?: AbortSignal): Promise<LessonPreparationStatus[]> {
     return apiClient.request(
       `/api/teaching-prep/semesters/${encodeURIComponent(semesterId)}/lesson-preparation-statuses`,
@@ -395,4 +446,8 @@ function activateResult(
 
 function pptxExecution(payload: unknown): PptxExecution {
   return recordPayload(payload) as unknown as PptxExecution
+}
+
+function teachingPrepAIAdoption(payload: unknown): TeachingPrepAIAdoption {
+  return recordPayload(payload) as unknown as TeachingPrepAIAdoption
 }

@@ -134,6 +134,103 @@ describe('B-UI-R7 handoff workspaces', () => {
     expect(adopt).not.toHaveBeenCalled()
   })
 
+  it('preserves plan details and non-linear dependencies when the teacher confirms without editing', async () => {
+    const initial = draft({
+      handling_mode: 'plan_calendar',
+      destination_key: 'class_teacher.plan.calendar',
+      domain: 'activities_culture',
+      content: {
+        summary: '合成活动计划',
+        plan_title: '合成活动计划',
+        final_deadline: '2026-08-20T16:00:00+08:00',
+        actions: [
+          {
+            draft_action_id: 'prepare-materials', title: '准备素材', details: '保留原始说明',
+            due_at: '2026-08-10T16:00:00+08:00', depends_on_draft_action_ids: [],
+          },
+          {
+            draft_action_id: 'invite-reviewer', title: '邀请检查人', details: '这一步与素材准备并行',
+            due_at: '2026-08-10T17:00:00+08:00', depends_on_draft_action_ids: [],
+          },
+          {
+            draft_action_id: 'final-review', title: '检查初稿', details: '等待两项并行准备完成',
+            due_at: '2026-08-15T16:00:00+08:00',
+            depends_on_draft_action_ids: ['prepare-materials', 'invite-reviewer'],
+          },
+        ],
+      },
+    })
+    const update = vi.spyOn(intakeApi, 'updateDraft').mockImplementation(async (_current, content, refs) => ({
+      ...initial, draft_revision: 2, content, subject_refs: refs ?? initial.subject_refs,
+    }))
+    const adopt = vi.spyOn(intakeApi, 'adopt').mockResolvedValue({})
+    const host = await mountHandoff(initial)
+
+    expect([...host.querySelectorAll<HTMLTextAreaElement>('.plan-action textarea')].map((item) => item.value))
+      .toContain('保留原始说明')
+    expect(host.textContent).toContain('邀请检查人')
+    expect(host.querySelectorAll('.plan-action')).toHaveLength(3)
+    button(host, '确认加入计划／日历').click()
+    await settle()
+    await settle()
+
+    const saved = update.mock.calls[0]?.[1]
+    expect(saved?.actions).toEqual([
+      expect.objectContaining({
+        draft_action_id: 'prepare-materials', details: '保留原始说明',
+        depends_on_draft_action_ids: [],
+      }),
+      expect.objectContaining({
+        draft_action_id: 'invite-reviewer', details: '这一步与素材准备并行',
+        depends_on_draft_action_ids: [],
+      }),
+      expect.objectContaining({
+        draft_action_id: 'final-review', details: '等待两项并行准备完成',
+        depends_on_draft_action_ids: ['prepare-materials', 'invite-reviewer'],
+      }),
+    ])
+    expect(adopt).toHaveBeenCalledWith('', expect.objectContaining({ draft_revision: 2 }), 'new')
+  })
+
+  it('requires the teacher to choose the manual SOP template instead of assuming a student conflict', async () => {
+    const initial = draft({
+      handling_mode: 'sop',
+      destination_key: 'class_teacher.affair.sop',
+      domain: 'conflict_safety',
+      content: {
+        summary: '合成学生受伤，需要人工选择流程',
+        participant_refs: ['synthetic-student'],
+        manual_routing: true,
+        template_key: '',
+      },
+    })
+    const update = vi.spyOn(intakeApi, 'updateDraft').mockImplementation(async (_current, content, refs) => ({
+      ...initial, draft_revision: 2, content, subject_refs: refs ?? initial.subject_refs,
+    }))
+    const adopt = vi.spyOn(intakeApi, 'adopt').mockResolvedValue({})
+    const host = await mountHandoff(initial)
+
+    button(host, '确认建立 SOP').click()
+    await settle()
+    expect(host.textContent).toContain('请先选择与实际情况相符')
+    expect(update).not.toHaveBeenCalled()
+    expect(adopt).not.toHaveBeenCalled()
+
+    const template = [...host.querySelectorAll<HTMLSelectElement>('select')]
+      .find((item) => item.textContent?.includes('学生伤害与紧急安全'))!
+    template.value = 'baseline.student_injury'
+    template.dispatchEvent(new Event('change', { bubbles: true }))
+    await nextTick()
+    button(host, '确认建立 SOP').click()
+    await settle()
+    await settle()
+
+    expect(update).toHaveBeenCalledWith(expect.any(Object), expect.objectContaining({
+      template_key: 'baseline.student_injury',
+    }), expect.any(Array))
+    expect(adopt).toHaveBeenCalledWith('', expect.objectContaining({ draft_revision: 2 }), 'new')
+  })
+
   it('keeps safety, recognition, punishment and closure decisions with the teacher', async () => {
     const host = await mountHandoff(draft({
       handling_mode: 'sop', destination_key: 'class_teacher.affair.sop', domain: 'conflict_safety',

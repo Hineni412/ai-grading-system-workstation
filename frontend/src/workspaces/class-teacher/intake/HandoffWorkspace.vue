@@ -15,13 +15,32 @@ const content = ref<Record<string, unknown>>({})
 const students = ref<ExistingRosterStudent[]>([])
 const selectedSubjectId = ref('')
 const selectedSubjectRevision = ref('')
-const actionText = ref('')
 const revisionInstruction = ref('')
 const busy = ref(false)
 const message = ref('')
 const error = ref('')
 let revisionTimer: number | null = null
 let revisionGeneration = 0
+
+type PlanActionDraft = {
+  draft_action_id: string
+  title: string
+  details: string
+  due_at: string
+  depends_on_draft_action_ids: string[]
+  [key: string]: unknown
+}
+
+const planActions = ref<PlanActionDraft[]>([])
+let planActionSequence = 0
+const sopTemplates = [
+  ['baseline.student_conflict', '普通学生矛盾'],
+  ['baseline.suspected_bullying', '疑似欺凌核查与学校交接'],
+  ['baseline.student_injury', '学生伤害与紧急安全'],
+  ['baseline.family_communication', '家校沟通'],
+  ['baseline.care_conversation', '日常关怀谈话与跟进'],
+  ['baseline.school_activity', '学校活动'],
+] as const
 
 const modeTitle = computed(() => ({ record: '登记草稿', plan_calendar: '计划／日历草稿', sop: 'SOP 处理草稿' }[draft.value?.handling_mode ?? 'record']))
 const isStudentRecord = computed(() => draft.value?.destination_key === 'class_teacher.student.record')
@@ -39,27 +58,73 @@ const judgmentText = computed({ get: () => String(content.value.judgment ?? ''),
 const planTitle = computed({ get: () => String(content.value.plan_title ?? content.value.summary ?? ''), set: (value) => { content.value.plan_title = value } })
 const deadline = computed({ get: () => String(content.value.final_deadline ?? '').slice(0, 16), set: (value) => { content.value.final_deadline = value } })
 const participantRefs = computed({ get: () => (content.value.participant_refs as string[] | undefined)?.join('\n') ?? '', set: (value) => { content.value.participant_refs = value.split(/\r?\n/).map((item) => item.trim()).filter(Boolean) } })
+const sopTemplateKey = computed({ get: () => String(content.value.template_key ?? ''), set: (value) => { content.value.template_key = value } })
 
 function cloneContent(value: Record<string, unknown>): Record<string, unknown> {
   return JSON.parse(JSON.stringify(value)) as Record<string, unknown>
 }
 
-function hydrateActionText(): void {
-  const actions = Array.isArray(content.value.actions) ? content.value.actions as Array<Record<string, unknown>> : []
-  actionText.value = actions.map((item) => `${String(item.title ?? '')}｜${String(item.due_at ?? '').slice(0, 16)}`).join('\n')
+function allocatePlanActionId(): string {
+  const used = new Set(planActions.value.map((item) => item.draft_action_id))
+  let candidate = ''
+  do candidate = `action-${++planActionSequence}`
+  while (used.has(candidate))
+  return candidate
 }
 
-function normalizedActions(): Array<Record<string, unknown>> {
-  return actionText.value.split(/\r?\n/).map((line) => line.trim()).filter(Boolean).map((line, index) => {
-    const [title, due] = line.split('｜').map((item) => item.trim())
+function hydratePlanActions(): void {
+  const actions = Array.isArray(content.value.actions) ? content.value.actions as Array<Record<string, unknown>> : []
+  planActionSequence = actions.length
+  const used = new Set<string>()
+  planActions.value = actions.map((item, index) => {
+    let actionId = String(item.draft_action_id ?? '').trim()
+    if (!actionId || used.has(actionId)) actionId = `action-${index + 1}`
+    while (used.has(actionId)) actionId = `action-${++planActionSequence}`
+    used.add(actionId)
     return {
-      draft_action_id: `action-${index + 1}`,
-      title,
-      details: '',
-      due_at: due || deadline.value,
-      depends_on_draft_action_ids: index ? [`action-${index}`] : [],
+      ...cloneContent(item),
+      draft_action_id: actionId,
+      title: String(item.title ?? ''),
+      details: String(item.details ?? ''),
+      due_at: String(item.due_at ?? '').slice(0, 16),
+      depends_on_draft_action_ids: Array.isArray(item.depends_on_draft_action_ids)
+        ? item.depends_on_draft_action_ids.map(String).filter(Boolean)
+        : [],
     }
   })
+}
+
+function serializedPlanActions(): Array<Record<string, unknown>> {
+  const validIds = new Set(planActions.value.map((item) => item.draft_action_id))
+  return planActions.value.map((item) => ({
+    ...cloneContent(item),
+    draft_action_id: item.draft_action_id,
+    title: item.title.trim(),
+    details: item.details.trim(),
+    due_at: item.due_at,
+    depends_on_draft_action_ids: item.depends_on_draft_action_ids.filter(
+      (dependency) => dependency !== item.draft_action_id && validIds.has(dependency),
+    ),
+  }))
+}
+
+function addPlanAction(): void {
+  planActions.value.push({
+    draft_action_id: allocatePlanActionId(),
+    title: '',
+    details: '',
+    due_at: '',
+    depends_on_draft_action_ids: [],
+  })
+}
+
+function removePlanAction(actionId: string): void {
+  planActions.value = planActions.value
+    .filter((item) => item.draft_action_id !== actionId)
+    .map((item) => ({
+      ...item,
+      depends_on_draft_action_ids: item.depends_on_draft_action_ids.filter((dependency) => dependency !== actionId),
+    }))
 }
 
 function stopRevisionPolling(): void {
@@ -107,7 +172,7 @@ async function load(): Promise<void> {
     }
     selectedSubjectId.value = loaded.subject_refs[0]?.id ?? ''
     selectedSubjectRevision.value = loaded.subject_refs[0]?.revision ?? ''
-    hydrateActionText()
+    hydratePlanActions()
     if (isStudentRecord.value) {
       const preference = await intakeApi.homeroom()
       const result = await studentR1Api.rosterSource(props.token ?? '', { classLabel: preference.homeroom_class ?? undefined, pageSize: 100 })
@@ -126,7 +191,7 @@ async function save(): Promise<HandoffDraft | null> {
   if (!draft.value) return null
   busy.value = true; error.value = ''; message.value = ''
   try {
-    if (draft.value.handling_mode === 'plan_calendar') content.value.actions = normalizedActions()
+    if (draft.value.handling_mode === 'plan_calendar') content.value.actions = serializedPlanActions()
     if (draft.value.handling_mode === 'record') {
       const sections = [
         factText.value.trim() ? `直接事实：${factText.value.trim()}` : '',
@@ -139,6 +204,7 @@ async function save(): Promise<HandoffDraft | null> {
     const updated = await intakeApi.updateDraft(draft.value, cloneContent(content.value), refs)
     draft.value = updated
     content.value = cloneContent(updated.content)
+    if (updated.handling_mode === 'plan_calendar') hydratePlanActions()
     message.value = '草稿已保存，尚未进入正式记录。'
     return draft.value
   } catch { error.value = '草稿没有保存；可能已在其他页面更新，请刷新后核对。'; return null }
@@ -146,6 +212,10 @@ async function save(): Promise<HandoffDraft | null> {
 }
 
 async function adopt(): Promise<void> {
+  if (draft.value?.handling_mode === 'sop' && !sopTemplateKey.value) {
+    error.value = '请先选择与实际情况相符的学校流程模板。'
+    return
+  }
   const current = await save()
   if (!current) return
   if (isStudentRecord.value && (!selectedSubjectId.value || !selectedSubjectRevision.value)) {
@@ -218,13 +288,13 @@ onMounted(() => { void load() })
 
     <div v-else-if="draft.handling_mode === 'plan_calendar'" class="plan-layout">
       <aside><h2>事务简报</h2><label><span>目标</span><input v-model="planTitle" maxlength="240"></label><label><span>最终截止</span><input v-model="deadline" type="datetime-local"></label><p>{{ summary }}</p></aside>
-      <main><h2>行动与日期</h2><p>每行填写“行动｜日期时间”，例如“检查初稿｜2026-08-12T16:00”。</p><textarea v-model="actionText" rows="14" placeholder="准备素材｜2026-08-08T16:00&#10;检查初稿｜2026-08-12T16:00"></textarea></main>
-      <aside class="review"><h2>当前决定</h2><p>日期可修改；冲突不会静默选一个。所有行动正式加入同一计划，不在首页复制另一份。</p></aside>
+      <main><div class="plan-actions__heading"><div><h2>行动与日期</h2><p>逐项核对说明、日期和前置依赖；空日期不会自动套用总截止。</p></div><button type="button" @click="addPlanAction">增加行动</button></div><div class="plan-actions"><article v-for="(action, index) in planActions" :key="action.draft_action_id" class="plan-action"><header><strong>行动 {{ index + 1 }}</strong><button type="button" @click="removePlanAction(action.draft_action_id)">移除</button></header><label><span>行动名称</span><input v-model="action.title" maxlength="240"></label><label><span>截止时间</span><input v-model="action.due_at" type="datetime-local"></label><label><span>行动说明</span><textarea v-model="action.details" rows="3" maxlength="2000"></textarea></label><fieldset><legend>需要先完成</legend><label v-for="candidate in planActions.filter((item) => item.draft_action_id !== action.draft_action_id)" :key="candidate.draft_action_id" class="dependency"><input v-model="action.depends_on_draft_action_ids" type="checkbox" :value="candidate.draft_action_id"><span>{{ candidate.title || '未命名行动' }}</span></label><small v-if="planActions.length < 2">当前没有其他行动可作为前置依赖。</small></fieldset></article><p v-if="!planActions.length" class="empty-plan">还没有行动。请先增加至少一项，再加入正式计划。</p></div></main>
+      <aside class="review"><h2>当前决定</h2><p>日期可修改，依赖也由你逐项确认；系统不会把并行行动静默改成串行，也不会用总截止填补空日期。所有行动正式加入同一计划，不在首页复制另一份。</p></aside>
     </div>
 
     <div v-else class="sop-layout">
       <section class="safety"><strong>先确认即时安全</strong><p>若冲突仍在发生、有人受伤或存在迫近危险，先保护学生并联系有权角色，不等待表单或 AI。</p></section>
-      <aside><h2>已知与未知</h2><label><span>参与人（每行一个）</span><textarea v-model="participantRefs" rows="6"></textarea></label><p>{{ summary }}</p></aside>
+      <aside><h2>已知与未知</h2><label><span>学校流程模板</span><select v-model="sopTemplateKey"><option value="">请根据实际情况选择</option><option v-for="item in sopTemplates" :key="item[0]" :value="item[0]">{{ item[1] }}</option></select></label><p v-if="!sopTemplateKey">模型不可用时系统不会替你猜测冲突、受伤或疑似欺凌；请由教师选择。</p><label><span>参与人（每行一个）</span><textarea v-model="participantRefs" rows="6"></textarea></label><p>{{ summary }}</p></aside>
       <main><h2>流程草稿</h2><ol><li><strong>确保现场安全</strong><span>安全必做步骤不能由模型自动删除</span></li><li><strong>分别记录直接事实与转述</strong><span>不先作欺凌认定</span></li><li><strong>由教师选择学校交接</strong><span>AI 不作惩戒、诊断或结案决定</span></li></ol></main>
       <aside class="review"><h2>教师决定</h2><p>确认后只建立待处理 SOP。每一步完成、对外沟通、惩戒、认定和结案仍需教师或有权人员决定。</p></aside>
     </div>
@@ -237,5 +307,6 @@ onMounted(() => { void load() })
 </template>
 
 <style scoped>
+.plan-actions__heading{display:flex;justify-content:space-between;align-items:flex-start;gap:16px}.plan-actions__heading h2,.plan-actions__heading p{margin:0}.plan-actions__heading button,.plan-action header button{min-height:34px;padding:0 11px;border:1px solid #8ba6b7;border-radius:8px;background:white;color:#285d84;font:inherit}.plan-actions{display:grid;gap:14px;margin-top:18px}.plan-action{padding:16px;border:1px solid #c6d2d8;border-radius:12px;background:#f8fbfc}.plan-action>header{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px}.plan-action fieldset{display:grid;gap:8px;padding:11px;border:1px solid #c6d2d8;border-radius:9px}.plan-action legend{padding:0 5px;font-size:13px;font-weight:800}.plan-action .dependency{display:flex;align-items:center;gap:8px;margin:0;font-weight:500}.plan-action .dependency input{width:auto}.empty-plan{padding:18px;border:1px dashed #9eb2bd;border-radius:10px;text-align:center}
 .handoff-page{--mode:#176b6a;display:grid;gap:0;color:#26363d}.handoff-page[data-mode="plan_calendar"]{--mode:#346a9a}.handoff-page[data-mode="sop"]{--mode:#9b5a1b}.handoff-page__header{display:flex;justify-content:space-between;align-items:center;gap:20px;padding:22px 26px;border:1px solid var(--color-border-default);border-top:5px solid var(--mode);border-radius:16px 16px 0 0;background:#fbfcfa}.handoff-page__header p{margin:0;color:var(--mode);font-size:12px;font-weight:800;letter-spacing:.08em}.handoff-page__header h1{margin:3px 0;font-size:30px}.handoff-page__header span{color:var(--color-text-secondary)}.handoff-page__header button,footer button,.ai-revision button{min-height:40px;padding:0 14px;border:1px solid var(--color-border-default);border-radius:9px;background:white;font:inherit}.record-layout,.plan-layout,.sop-layout{display:grid;grid-template-columns:minmax(220px,.72fr) minmax(360px,1.5fr) minmax(220px,.72fr);min-height:520px;border-inline:1px solid var(--color-border-default)}.record-layout>*,.plan-layout>*,.sop-layout>*{padding:22px;border-right:1px solid var(--color-border-default);background:#fbfcfa}.record-layout>main,.plan-layout>main,.sop-layout>main{background:white}.sop-layout{grid-template-areas:"safety safety safety" "left middle right";grid-template-rows:auto 1fr}.sop-layout .safety{grid-area:safety;padding:14px 22px;border-bottom:1px solid #d5a16e;background:#fff4e8}.safety p{display:inline;margin-left:14px}.sop-layout>aside:first-of-type{grid-area:left}.sop-layout>main{grid-area:middle}.sop-layout>.review{grid-area:right}.handoff-page h2{margin:0 0 18px;font-size:17px}.handoff-page label{display:grid;gap:6px;margin-bottom:14px;font-size:13px;font-weight:700}.handoff-page input,.handoff-page select,.handoff-page textarea{width:100%;padding:10px;border:1px solid #a9b8b8;border-radius:8px;background:white;font:inherit;line-height:1.5}.handoff-page main p,.review p,.review li,.handoff-page aside p{color:var(--color-text-secondary);line-height:1.55}.sop-layout ol{display:grid;gap:13px;padding:0;list-style:none}.sop-layout li{display:grid;gap:5px;padding:15px;border-left:4px solid var(--mode);background:#fff8f0}.sop-layout li span{color:var(--color-text-secondary)}.ai-revision{display:grid;grid-template-columns:minmax(220px,.8fr) minmax(320px,1.5fr) auto;align-items:center;gap:16px;padding:18px 22px;border:1px solid var(--color-border-default);background:#f8f5ed}.ai-revision h2,.ai-revision p{margin:0}.ai-revision p{margin-top:4px;color:var(--color-text-secondary);font-size:12px}.ai-revision textarea{resize:vertical}.ai-revision button{border-color:var(--mode);color:var(--mode);font-weight:750}footer{display:flex;align-items:center;justify-content:flex-end;gap:10px;padding:14px 20px;border:1px solid var(--color-border-default);border-radius:0 0 16px 16px;background:#f3f6f3;position:sticky;bottom:0}footer span{margin-right:auto;color:var(--color-text-secondary);font-size:12px}footer .primary{border-color:var(--mode);background:var(--mode);color:white;font-weight:750}.status,.error{margin:0;padding:10px 18px;border-inline:1px solid var(--color-border-default)}.status{background:#e9f3ef}.error{background:#fff0ed;color:#913d35}.loading{min-height:420px;display:grid;place-items:center}.handoff-page button:focus-visible,.handoff-page input:focus-visible,.handoff-page select:focus-visible,.handoff-page textarea:focus-visible{outline:3px solid #e4a34d;outline-offset:2px}@media(max-width:980px){.record-layout,.plan-layout,.sop-layout{grid-template-columns:1fr}.sop-layout{display:grid;grid-template-areas:"safety" "left" "middle" "right";grid-template-rows:auto}.record-layout>*,.plan-layout>*,.sop-layout>*{border-right:0;border-bottom:1px solid var(--color-border-default)}.ai-revision{grid-template-columns:1fr}}@media(max-width:640px){.handoff-page__header{align-items:flex-start;flex-direction:column}footer{flex-wrap:wrap;position:static}footer span{width:100%;margin:0}.safety p{display:block;margin:6px 0 0}}
 </style>

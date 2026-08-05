@@ -122,6 +122,7 @@ from backend.teaching_prep.infrastructure.repositories import (
     WorkbenchIterationRepository,
     WorkspaceAIAdoptionRepository,
 )
+from backend.workspaces.ai_tasks.models import RevisionConflictError
 
 
 _TOKEN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,95}$")
@@ -355,14 +356,135 @@ class TeachingPrepService:
         proposal_ref_id: str,
         draft_revision: str,
         target_revision: str,
+        command: Mapping[str, object] | None = None,
     ) -> TeachingPrepAIAdoption:
-        return self.workspace_ai_adoptions.adopt(
+        try:
+            if command is not None:
+                staged = self.workspace_ai_adoptions.stage_command(
+                    source_task_id=source_task_id,
+                    handoff_id=handoff_id,
+                    adoption_id=adoption_id,
+                    proposal_ref_id=proposal_ref_id,
+                    draft_revision=draft_revision,
+                    target_revision=target_revision,
+                    command=command,
+                )
+            else:
+                staged = self.workspace_ai_adoptions.load_staged_command(
+                    source_task_id=source_task_id,
+                    handoff_id=handoff_id,
+                    adoption_id=adoption_id,
+                    proposal_ref_id=proposal_ref_id,
+                    draft_revision=draft_revision,
+                    target_revision=target_revision,
+                )
+                if staged is None:
+                    raise RevisionConflictError(
+                        "a teacher adoption command is required"
+                    )
+            formal_object_id = self._execute_workspace_ai_adoption_command(
+                adoption_id=adoption_id,
+                task_kind=str(staged["task_kind"]),
+                proposal_ref_id=str(staged["proposal_ref_id"]),
+                command=dict(staged["command"]),
+            )
+        except (
+            TeachingPrepConflictError,
+            TeachingPrepNotFoundError,
+            TeachingPrepValidationError,
+        ) as exc:
+            # These domain failures are known to happen before a formal object
+            # is committed.  Release any staged command so the common handoff
+            # can reopen and accept corrected/current teacher input.
+            self.workspace_ai_adoptions.clear_staged_command(
+                source_task_id=source_task_id,
+                handoff_id=handoff_id,
+                adoption_id=adoption_id,
+            )
+            raise RevisionConflictError(str(exc)) from exc
+        return self.workspace_ai_adoptions.complete_command(
             source_task_id=source_task_id,
             handoff_id=handoff_id,
             adoption_id=adoption_id,
-            proposal_ref_id=proposal_ref_id,
             draft_revision=draft_revision,
             target_revision=target_revision,
+            formal_object_id=formal_object_id,
+        )
+
+    def _execute_workspace_ai_adoption_command(
+        self,
+        *,
+        adoption_id: str,
+        task_kind: str,
+        proposal_ref_id: str,
+        command: Mapping[str, object],
+    ) -> str:
+        command_kind = str(command.get("kind") or "")
+        request_token = f"ai-adopt-{adoption_id}"
+        if (
+            task_kind == "teaching_prep.semester_mapping"
+            and command_kind == "apply_semester_mapping"
+        ):
+            applied = self.apply_semester_mapping_proposal(
+                proposal_ref_id,
+                expected_revision=int(command["proposal_revision"]),
+            )
+            return applied.id
+        if (
+            task_kind == "teaching_prep.lesson_plan"
+            and command_kind == "confirm_lesson_draft"
+        ):
+            revised, _created = self.revise_lesson_draft(
+                proposal_ref_id,
+                request_token=request_token,
+                payload=dict(command["payload"]),
+                confirmed=True,
+            )
+            return revised.id
+        if (
+            task_kind == "teaching_prep.exercise_suggestions"
+            and command_kind == "finalize_exercise_suggestions"
+        ):
+            run, suggestions = self.get_exercise_suggestion_run(
+                proposal_ref_id
+            )
+            if run.status != "succeeded" or not suggestions:
+                raise TeachingPrepConflictError(
+                    "exercise suggestions are unavailable for confirmation"
+                )
+            if any(item.decision == "pending" for item in suggestions):
+                raise TeachingPrepConflictError(
+                    "decide every exercise suggestion before confirmation"
+                )
+            return proposal_ref_id
+        if (
+            task_kind == "teaching_prep.slide_change_proposal"
+            and command_kind == "review_slide_plan"
+        ):
+            raw_reviews = command.get("operation_reviews")
+            if not isinstance(raw_reviews, list):
+                raise TeachingPrepValidationError(
+                    "slide plan reviews are invalid"
+                )
+            revised, _created = self.revise_slide_plan(
+                proposal_ref_id,
+                request_token=request_token,
+                operation_reviews=[
+                    dict(review) for review in raw_reviews
+                    if isinstance(review, Mapping)
+                ],
+                approve_low_risk_deletions=bool(
+                    command.get("approve_low_risk_deletions", False)
+                ),
+                review_note=(
+                    str(command["review_note"])
+                    if command.get("review_note") is not None
+                    else None
+                ),
+            )
+            return revised.id
+        raise TeachingPrepValidationError(
+            "teacher adoption command does not match the AI proposal"
         )
 
     def find_workspace_ai_adoption(

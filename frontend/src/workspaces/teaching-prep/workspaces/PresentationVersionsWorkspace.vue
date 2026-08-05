@@ -3,10 +3,13 @@ import { computed, reactive, ref, watch } from 'vue'
 
 import type { SlideOperationDecision, SlidePlan } from '../api/catalog'
 import { teachingPrepWorkbenchApi, type TrustedPptxVersion } from '../api/workbench'
+import { useWorkspaceAITaskStore } from '../../shared/ai-tasks/store'
+import { adoptTeachingPrepProposal } from '../aiAdoption'
 import TeachingPrepStickyActions from '../components/TeachingPrepStickyActions.vue'
 import { useTeachingPrepWorkbenchContext } from '../workbench/context'
 
 const workbench = useTeachingPrepWorkbenchContext()
+const aiTasks = useWorkspaceAITaskStore()
 const decisions = reactive<Record<string, SlideOperationDecision>>({})
 const reviewMessage = ref('逐项审核课件建议；只有全部决定后才能执行 WPS。')
 const activatingId = ref<string | null>(null)
@@ -134,20 +137,50 @@ async function selectPlan(plan: SlidePlan): Promise<void> {
 
 async function saveReview(): Promise<void> {
   if (!selectedPlan.value) return
-  await workbench.catalog.reviewSlidePlan(
-    selectedPlan.value,
-    selectedPlan.value.payload.operations.map(item => ({
+  const plan = selectedPlan.value
+  const operationReviews = plan.payload.operations.map(item => ({
       operation_id: item.operation_id,
       decision: decisions[item.operation_id] ?? item.decision,
       reason: item.reason,
       planned_minutes: item.planned_minutes,
       teacher_note: item.teacher_note,
-    })),
-    { reviewNote: '教师已在课件版本工作面逐项审核' },
-  )
-  workbench.setDirty(null)
-  reviewMessage.value = '课件计划审核已保存。原 PPTX 没有被修改。'
-  await workbench.refreshCurrentWorkspace()
+  }))
+  try {
+    const adopted = await adoptTeachingPrepProposal(
+      aiTasks.orderedTasks,
+      'teaching_prep.slide_change_proposal',
+      plan.id,
+      {
+        kind: 'review_slide_plan',
+        operation_reviews: operationReviews,
+        approve_low_risk_deletions: false,
+        review_note: '教师已在课件版本工作面逐项审核',
+      },
+    )
+    if (adopted) {
+      workbench.setDirty(null)
+      reviewMessage.value = '课件计划审核已保存并生成采用回执。原 PPTX 没有被修改。'
+      const refreshes = await Promise.allSettled([
+        aiTasks.refresh(adopted.match.task.task_id),
+        workbench.refreshCurrentWorkspace(),
+      ])
+      if (refreshes.some(result => result.status === 'rejected')) {
+        reviewMessage.value = '课件审核已保存并生成采用回执；页面状态暂未刷新，请刷新页面。'
+      }
+      return
+    } else {
+      await workbench.catalog.reviewSlidePlan(
+        plan,
+        operationReviews,
+        { reviewNote: '教师已在课件版本工作面逐项审核' },
+      )
+    }
+    workbench.setDirty(null)
+    reviewMessage.value = '课件计划审核已保存。原 PPTX 没有被修改。'
+    await workbench.refreshCurrentWorkspace()
+  } catch {
+    reviewMessage.value = '课件审核尚未确认；逐项决定仍保留，请直接重试。'
+  }
 }
 
 async function executePlan(): Promise<void> {

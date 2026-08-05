@@ -1266,11 +1266,52 @@ class LessonPreparationStatusListResponse(BaseModel):
     items: list[LessonPreparationStatusResponse]
 
 
+class ApplySemesterMappingAdoptionCommand(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["apply_semester_mapping"]
+    proposal_revision: int = Field(ge=1)
+
+
+class ConfirmLessonDraftAdoptionCommand(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["confirm_lesson_draft"]
+    payload: dict[str, Any]
+
+
+class FinalizeExerciseSuggestionsAdoptionCommand(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["finalize_exercise_suggestions"]
+
+
+class ReviewSlidePlanAdoptionCommand(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["review_slide_plan"]
+    operation_reviews: list[dict[str, Any]]
+    approve_low_risk_deletions: bool = False
+    review_note: str | None = Field(default=None, max_length=1_000)
+
+
+TeachingPrepAdoptionCommand = (
+    ApplySemesterMappingAdoptionCommand
+    | ConfirmLessonDraftAdoptionCommand
+    | FinalizeExerciseSuggestionsAdoptionCommand
+    | ReviewSlidePlanAdoptionCommand
+)
+
+
 class AdoptWorkspaceAIHandoffRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     draft_revision: str = Field(min_length=1, max_length=160)
     target_revision: str = Field(min_length=1, max_length=160)
+    command: TeachingPrepAdoptionCommand | None = Field(
+        default=None,
+        discriminator="kind",
+    )
 
 
 class TeachingPrepAIAdoptionResponse(BaseModel):

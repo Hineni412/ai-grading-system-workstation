@@ -22,7 +22,7 @@ from .models import (
 from .ports import WorkspaceAITaskAdapter
 from .model_gateway import WorkspaceAITaskModelGateway
 from .public_projection import project_task
-from .registry import assert_destination, presentation
+from .registry import assert_destination, is_recovery_only_task, presentation
 from .store import WorkspaceAITaskStore
 
 
@@ -62,6 +62,8 @@ class WorkspaceAITaskService:
 
     def prepare(self, operation_id: str, request: PrepareRequest) -> TaskSnapshot:
         self._validate_prepare(operation_id, request)
+        if is_recovery_only_task(request.module, request.task_kind):
+            raise ValueError("workspace AI task kind is recovery-only")
         request_fingerprint = _fingerprint(
             {
                 "module": request.module,
@@ -96,6 +98,8 @@ class WorkspaceAITaskService:
         task = self.store.find_by_operation(operation_id)
         if task is None or task.task_id != prepared_task_id:
             raise TaskNotFoundError("prepared workspace AI task was not found")
+        if is_recovery_only_task(task.module, task.task_kind):
+            raise ValueError("workspace AI task kind is recovery-only")
         if request_fingerprint and task.request_fingerprint != request_fingerprint:
             from .models import OperationConflictError
 
@@ -158,6 +162,8 @@ class WorkspaceAITaskService:
                 error_code="adapter_unavailable",
             )
             return {"task_id": task_id, "status": failed.status}
+        if is_recovery_only_task(task.module, task.task_kind):
+            return self._recover_task_without_send(task, adapter)
         task = self.store.reserve_send_attempt(task_id)
         if task.status == "cancelled_before_dispatch":
             return {"task_id": task_id, "status": task.status}
@@ -229,6 +235,35 @@ class WorkspaceAITaskService:
                 )
             recovered.append(task.task_id)
         return tuple(recovered)
+
+    def _recover_task_without_send(
+        self,
+        task: StoredTask,
+        adapter: WorkspaceAITaskAdapter,
+    ) -> dict[str, object]:
+        """Finish legacy persisted work from its domain receipt without a model send."""
+
+        try:
+            result = adapter.recover(task)
+        except Exception:
+            result = None
+        if result is None:
+            failed = self.store.fail(
+                task.task_id,
+                status="result_unknown",
+                error_code="legacy_task_recovery_unavailable",
+            )
+            return {"task_id": task.task_id, "status": failed.status}
+        self._validate_adapter_result(task, result)
+        self.store.mark_validating(task.task_id)
+        completed = self.store.complete(
+            task.task_id,
+            proposal_ref_id=result.proposal_ref_id,
+            proposal_revision=result.proposal_revision,
+            handoffs=result.handoffs,
+            needs_input=result.needs_input,
+        )
+        return {"task_id": task.task_id, "status": completed.status}
 
     def adopt(
         self,
