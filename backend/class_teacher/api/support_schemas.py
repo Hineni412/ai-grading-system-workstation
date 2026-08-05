@@ -15,12 +15,6 @@ class SubjectCreateRequest(OperationRequest):
     class_label: str | None = Field(default=None, max_length=240)
 
 
-class ClassRosterReplaceRequest(OperationRequest):
-    expected_source_revision: str = Field(min_length=64, max_length=64)
-    class_label: str = Field(min_length=1, max_length=240)
-    q: str | None = Field(default=None, max_length=240)
-
-
 class SubjectUpdateRequest(OperationRequest):
     revision: int = Field(ge=1)
     display_name: str = Field(min_length=1, max_length=240)
@@ -80,21 +74,6 @@ class RecordStateRequest(OperationRequest):
 
 class AiDraftConfirmRequest(OperationRequest):
     confirmed_kind: str
-
-
-class SupportAIReviewPreviewRequest(BaseModel):
-    expected_revision: int = Field(ge=1)
-    teacher_supplement: str | None = Field(default=None, max_length=4000)
-
-
-class SupportAIReviewConfirmRequest(OperationRequest):
-    fingerprint: str = Field(min_length=16, max_length=256)
-
-
-class SupportAIReviewApplyRequest(OperationRequest):
-    model_operation_id: str = Field(min_length=8, max_length=128)
-    expected_revision: int = Field(ge=1)
-    teacher_result: dict[str, Any]
 
 
 class EvidenceLinkRequest(OperationRequest):
@@ -203,9 +182,6 @@ __all__ = [
     "SubjectCreateRequest",
     "SubjectDeleteRequest",
     "SubjectUpdateRequest",
-    "SupportAIReviewApplyRequest",
-    "SupportAIReviewConfirmRequest",
-    "SupportAIReviewPreviewRequest",
     "SupportPlanCompleteRequest",
     "SupportPlanCreateRequest",
 ]

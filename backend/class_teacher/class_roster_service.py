@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import re
 from contextlib import closing
@@ -47,23 +48,29 @@ class ClassRosterService:
         cursor: str | None = None,
         page_size: int = 50,
     ) -> dict[str, object]:
-        self._key_provider(token)
+        vmk = self._key_provider(token)
         items, revision = self.source.snapshot()
         filtered = self._filter(items, q=q, class_label=class_label)
         state_by_key: dict[str, tuple[str, str]] = {}
-        with closing(self.database.connect()) as connection:
-            for row in connection.execute(
-                "SELECT source_student_key, subject_id, state FROM class_roster_memberships"
-            ).fetchall():
-                state_by_key[str(row["source_student_key"])] = (
-                    str(row["subject_id"]),
-                    str(row["state"]),
-                )
+        if self.database.exists:
+            with closing(self.database.connect()) as connection:
+                for row in connection.execute(
+                    "SELECT source_student_key, subject_id, state FROM class_roster_memberships"
+                ).fetchall():
+                    state_by_key[str(row["source_student_key"])] = (
+                        str(row["subject_id"]),
+                        str(row["state"]),
+                    )
         offset = int(cursor or "0") if str(cursor or "0").isdigit() else 0
         size = max(1, min(int(page_size), 100))
         page = filtered[offset : offset + size]
         return {
-            "items": [self._item(item, state_by_key.get(item.source_key)) for item in page],
+            "items": [self._item(
+                item,
+                state_by_key.get(item.source_key),
+                opaque_ref=self._opaque_ref(vmk, item.source_key),
+                student_revision=self._student_revision(item),
+            ) for item in page],
             "classes": sorted({item.class_label for item in items if item.class_label}),
             "source_revision": revision,
             "total": len(filtered),
@@ -71,6 +78,43 @@ class ClassRosterService:
             "page_size": size,
             "filter": {"q": str(q or "").strip(), "class_label": str(class_label or "").strip()},
         }
+
+    def ai_candidates(self, *, token: str, class_label: str | None) -> list[dict[str, str]]:
+        if not str(class_label or "").strip():
+            return []
+        vmk = self._key_provider(token)
+        items = self._filter(self.source.snapshot()[0], q=None, class_label=class_label)
+        return [{
+            "id": self._opaque_ref(vmk, item.source_key),
+            "revision": self._student_revision(item),
+            "display_name": item.display_name,
+            "class_label": item.class_label,
+        } for item in items]
+
+    def resolve_opaque_ref(
+        self,
+        *,
+        token: str,
+        opaque_ref: str,
+        expected_revision: str,
+    ) -> ExistingStudent:
+        vmk = self._key_provider(token)
+        candidate = str(opaque_ref or "")
+        revision = str(expected_revision or "")
+        for item in self.source.snapshot()[0]:
+            if hmac.compare_digest(self._opaque_ref(vmk, item.source_key), candidate):
+                if not hmac.compare_digest(self._student_revision(item), revision):
+                    raise VaultError(
+                        "class_teacher_target_conflict",
+                        "学生资料已变化，请刷新后重新核对",
+                        status_code=409,
+                    )
+                return item
+        raise VaultError(
+            "class_teacher_subject_ref_invalid",
+            "学生引用已失效，请重新选择",
+            status_code=409,
+        )
 
     def replace_current(
         self,
@@ -261,7 +305,11 @@ class ClassRosterService:
 
     @staticmethod
     def _item(
-        item: ExistingStudent, membership: tuple[str, str] | None
+        item: ExistingStudent,
+        membership: tuple[str, str] | None,
+        *,
+        opaque_ref: str,
+        student_revision: str,
     ) -> dict[str, object]:
         return {
             "source_key": item.source_key,
@@ -270,7 +318,25 @@ class ClassRosterService:
             "class_label": item.class_label,
             "subject_id": membership[0] if membership else None,
             "roster_state": membership[1] if membership else "available",
+            "opaque_ref": opaque_ref,
+            "student_revision": student_revision,
         }
+
+    @staticmethod
+    def _opaque_ref(vmk: bytes, source_key: str) -> str:
+        return hmac.new(
+            vmk,
+            f"class-teacher|roster-ref|{source_key}".encode("utf-8"),
+            hashlib.sha256,
+        ).hexdigest()
+
+    @staticmethod
+    def _student_revision(item: ExistingStudent) -> str:
+        return hashlib.sha256(json.dumps(
+            [item.source_key, item.student_code, item.display_name, item.class_label],
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode("utf-8")).hexdigest()
 
 
 __all__ = ["ClassRosterService"]

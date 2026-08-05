@@ -1569,7 +1569,7 @@ def test_manual_one_node_fallback_is_idempotent_and_model_free(tmp_path: Path) -
     assert len(service.work.query(as_of="2026-08-07")["nodes"]) == 1
 
 
-def test_home_intake_http_contract_exposes_local_preview(tmp_path: Path) -> None:
+def test_legacy_home_intake_http_contract_is_retired(tmp_path: Path) -> None:
     service, _token, gateway = _service(tmp_path)
     app = FastAPI()
     app.state.workspace_services = {"class-teacher": service}
@@ -1585,14 +1585,11 @@ def test_home_intake_http_contract_exposes_local_preview(tmp_path: Path) -> None
         },
     )
 
-    assert response.status_code == 200
-    body = response.json()
-    assert body["route"] == "ordinary"
-    assert body["date_interpretation"]["resolved_date"] == "2026-08-04"
-    assert body["physical_request_count"] == 0
+    assert response.status_code == 404
     assert gateway.calls == []
 
 
+@pytest.mark.skip(reason="B-UI-R7 retired the legacy home-intake HTTP route")
 def test_existing_ordinary_store_is_upgraded_before_dispatch_result_is_captured(
     tmp_path: Path,
 ) -> None:
@@ -1640,6 +1637,7 @@ def test_existing_ordinary_store_is_upgraded_before_dispatch_result_is_captured(
     assert len(gateway.calls) == 1
 
 
+@pytest.mark.skip(reason="B-UI-R7 retired the legacy home-intake HTTP route")
 def test_existing_sensitive_store_is_upgraded_before_dispatch_can_call_model(
     tmp_path: Path,
 ) -> None:
@@ -1743,6 +1741,7 @@ def test_opening_day_plan_recovers_missing_goal_and_singleton_relation_arrays(
     assert len(gateway.calls) == 1
 
 
+@pytest.mark.skip(reason="B-UI-R7 retired the legacy home-intake HTTP route")
 def test_dispatch_does_not_call_model_when_draft_store_preflight_fails(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1786,6 +1785,7 @@ def test_dispatch_does_not_call_model_when_draft_store_preflight_fails(
     assert gateway.calls == []
 
 
+@pytest.mark.skip(reason="B-UI-R7 retired the legacy home-intake HTTP route")
 def test_sensitive_dispatch_does_not_call_model_when_draft_store_preflight_fails(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1826,6 +1826,7 @@ def test_sensitive_dispatch_does_not_call_model_when_draft_store_preflight_fails
     assert gateway.calls == []
 
 
+@pytest.mark.skip(reason="B-UI-R7 retired the legacy home-intake HTTP route")
 def test_parsed_result_remains_visible_when_draft_persistence_fails(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1871,6 +1872,7 @@ def test_parsed_result_remains_visible_when_draft_persistence_fails(
     assert len(gateway.calls) == 1
 
 
+@pytest.mark.skip(reason="B-UI-R7 retired the legacy home-intake HTTP route")
 def test_home_router_serializes_status_behind_sensitive_dispatch(
     tmp_path: Path,
 ) -> None:

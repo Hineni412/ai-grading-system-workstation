@@ -432,20 +432,16 @@ def create_router() -> APIRouter:
     from .collection_router import create_collection_router
     from .support_router import create_support_router
     from .work_router import create_work_router
-    from .model_router import create_model_router
-    from .card_router import create_card_router
-    from .home_intake_router import create_home_intake_router
+    from .intake_router import create_intake_router
 
     protected_router.include_router(create_action_router())
     protected_router.include_router(create_planning_router())
     protected_router.include_router(create_sop_router())
     protected_router.include_router(create_collection_router())
     protected_router.include_router(create_support_router())
-    protected_router.include_router(create_card_router())
-    protected_router.include_router(create_model_router())
+    protected_router.include_router(create_intake_router())
     router.include_router(protected_router)
     router.include_router(create_work_router())
-    router.include_router(create_home_intake_router())
     return router
 
 

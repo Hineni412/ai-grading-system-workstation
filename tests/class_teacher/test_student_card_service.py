@@ -258,7 +258,7 @@ def test_full_student_delete_removes_model_preview_and_result_ciphertexts(
     assert links == []
 
 
-def test_student_card_api_wires_exact_preview_to_confirmed_sensitive_write(
+def test_legacy_anonymous_preview_and_student_card_routes_are_retired(
     tmp_path: Path,
 ) -> None:
     service, token, subject_id = _unlocked(tmp_path, _proposal())
@@ -271,7 +271,6 @@ def test_student_card_api_wires_exact_preview_to_confirmed_sensitive_write(
         "x-class-teacher-session": token,
     }
 
-    cards = client.get("/api/class-teacher/student-cards", headers=headers)
     preview = client.post(
         "/api/class-teacher/model/previews",
         headers=headers,
@@ -281,53 +280,7 @@ def test_student_card_api_wires_exact_preview_to_confirmed_sensitive_write(
             "subject_id": subject_id,
         },
     )
-    preview_body = preview.json()
-    model = client.post(
-        f"/api/class-teacher/model/previews/{preview_body['preview_id']}/confirm",
-        headers=headers,
-        json={
-            "fingerprint": preview_body["fingerprint"],
-            "operation_id": "student-card-api-model",
-        },
-    )
-    proposal = _proposal()["proposal"]
-    saved = client.post(
-        f"/api/class-teacher/student-cards/{subject_id}/entries/confirm",
-        headers=headers,
-        json={
-            "model_operation_id": "student-card-api-model",
-            "operation_id": "student-card-api-save",
-            "portrait": proposal["portrait"],
-            "sop": proposal["sop"],
-        },
-    )
+    cards = client.get("/api/class-teacher/student-cards", headers=headers)
 
-    assert cards.status_code == 200
-    assert len(cards.json()["items"]) == 1
-    assert preview.status_code == 200
-    assert preview_body["exact_payload"]["student_alias"] == "学生A"
-    assert preview_body["exact_payload"]["task_text"] == "学生A希望一起拆分任务"
-    assert "合成学生甲" not in preview_body["exact_payload"]["task_text"]
-    assert model.status_code == 200
-    assert model.json()["response_kind"] == "proposal"
-    assert saved.status_code == 200
-    replay = client.post(
-        f"/api/class-teacher/student-cards/{subject_id}/entries/confirm",
-        headers=headers,
-        json={
-            "model_operation_id": "student-card-api-model",
-            "operation_id": "student-card-api-save",
-            "portrait": proposal["portrait"],
-            "sop": proposal["sop"],
-        },
-    )
-    assert replay.status_code == 200
-    assert replay.json()["saved"] is True
-    assert replay.json()["entry_id"] == saved.json()["entry_id"]
-    assert saved.json()["projection_state"] == "applied"
-    assert client.get(
-        "/api/class-teacher/student-cards",
-        headers=headers,
-    ).json()["items"][0]["entries"][0]["teacher_quote"] == (
-        "合成学生甲希望一起拆分任务"
-    )
+    assert preview.status_code == 404
+    assert cards.status_code == 404

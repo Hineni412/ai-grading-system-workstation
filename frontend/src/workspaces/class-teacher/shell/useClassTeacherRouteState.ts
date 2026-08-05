@@ -1,8 +1,8 @@
 import { computed, inject, onBeforeUnmount, onMounted, ref, type ComputedRef } from 'vue'
 import { routeLocationKey, routerKey } from 'vue-router'
 
-export type ClassTeacherSurface = 'today' | 'calendar' | 'affairs' | 'students'
-export type StudentPanel = 'directory' | 'support' | 'academic' | 'security'
+export type ClassTeacherSurface = 'home' | 'calendar' | 'affairs' | 'students'
+export type StudentPanel = 'directory' | 'support' | 'academic'
 export type WorkRange = 'today' | 'week' | 'timeline' | 'all'
 
 export interface ClassTeacherRouteState {
@@ -10,14 +10,17 @@ export interface ClassTeacherRouteState {
   panel: StudentPanel
   range: WorkRange
   week: string | null
-  draftId: string | null
+  conversationId: string | null
+  turnId: string | null
+  workItemId: string | null
+  handoffId: string | null
 }
 
-const surfaces = new Set<ClassTeacherSurface>(['today', 'calendar', 'affairs', 'students'])
-const panels = new Set<StudentPanel>(['directory', 'support', 'academic', 'security'])
+const surfaces = new Set<ClassTeacherSurface>(['home', 'calendar', 'affairs', 'students'])
+const panels = new Set<StudentPanel>(['directory', 'support', 'academic'])
 const ranges = new Set<WorkRange>(['today', 'week', 'timeline', 'all'])
 const isoDate = /^\d{4}-\d{2}-\d{2}$/
-const draftIdPattern = /^[a-f0-9]{32}$/
+const opaqueIdPattern = /^[A-Za-z0-9_-]{8,128}$/
 
 function first(value: unknown): string | null {
   if (Array.isArray(value)) return typeof value[0] === 'string' ? value[0] : null
@@ -29,10 +32,9 @@ function normalize(query: Record<string, unknown>): { state: ClassTeacherRouteSt
   const rawPanel = first(query.panel)
   const rawRange = first(query.range)
   const rawWeek = first(query.week)
-  const rawDraft = first(query.draft)
   const surface = surfaces.has(rawSurface as ClassTeacherSurface)
     ? rawSurface as ClassTeacherSurface
-    : 'today'
+    : 'home'
   const panel = panels.has(rawPanel as StudentPanel)
     ? rawPanel as StudentPanel
     : 'directory'
@@ -40,17 +42,26 @@ function normalize(query: Record<string, unknown>): { state: ClassTeacherRouteSt
     ? rawRange as WorkRange
     : 'week'
   const week = rawWeek && isoDate.test(rawWeek) ? rawWeek : null
-  const draftId = rawDraft && draftIdPattern.test(rawDraft) ? rawDraft : null
-  const allowed = new Set(['surface', 'panel', 'range', 'week', 'draft'])
+  const rawConversation = first(query.conversation)
+  const rawTurn = first(query.turn)
+  const rawWorkItem = first(query.work_item)
+  const rawHandoff = first(query.handoff)
+  const conversationId = rawConversation && opaqueIdPattern.test(rawConversation) ? rawConversation : null
+  const turnId = rawTurn && opaqueIdPattern.test(rawTurn) ? rawTurn : null
+  const workItemId = rawWorkItem && opaqueIdPattern.test(rawWorkItem) ? rawWorkItem : null
+  const handoffId = rawHandoff && opaqueIdPattern.test(rawHandoff) ? rawHandoff : null
+  const allowed = new Set(['surface', 'panel', 'range', 'week', 'conversation', 'turn', 'work_item', 'handoff'])
   const unknown = Object.keys(query).some((key) => !allowed.has(key))
   const valid = !unknown
     && rawSurface === surface
     && (surface !== 'students' || rawPanel === panel)
     && (surface !== 'calendar' || rawRange === range)
-    && (surface !== 'affairs' || !rawDraft || rawDraft === draftId)
-    && (surface === 'affairs' || !rawDraft)
     && (!rawWeek || week === rawWeek)
-  return { state: { surface, panel, range, week, draftId }, valid }
+    && (!rawConversation || rawConversation === conversationId)
+    && (!rawTurn || rawTurn === turnId)
+    && (!rawWorkItem || rawWorkItem === workItemId)
+    && (!rawHandoff || rawHandoff === handoffId)
+  return { state: { surface, panel, range, week, conversationId, turnId, workItemId, handoffId }, valid }
 }
 
 function browserQuery(): Record<string, string> {
@@ -77,7 +88,10 @@ export function useClassTeacherRouteState(): {
       if (next.week) target.week = next.week
     }
     if (next.surface === 'students') target.panel = next.panel
-    if (next.surface === 'affairs' && next.draftId) target.draft = next.draftId
+    if (next.conversationId) target.conversation = next.conversationId
+    if (next.turnId) target.turn = next.turnId
+    if (next.workItemId) target.work_item = next.workItemId
+    if (next.handoffId) target.handoff = next.handoffId
     return { path: '/class-teacher', query: target }
   }
 
@@ -94,7 +108,7 @@ export function useClassTeacherRouteState(): {
 
   async function canonicalize(): Promise<void> {
     if (!normalized.value.valid) {
-      await commit({ surface: 'today', panel: 'directory', range: 'week', week: null, draftId: null }, true)
+      await commit({ surface: 'home', panel: 'directory', range: 'week', week: null, conversationId: null, turnId: null, workItemId: null, handoffId: null }, true)
     }
   }
 
