@@ -29,12 +29,15 @@ const examScopes: GraphQueryInput['exam_scope'][] = [
 
 describe('knowledge graph controlled route scope', () => {
   it.each(scopes.flatMap((scope) => examScopes.map((examScope) => ({ scope, examScope }))))(
-    'round-trips $scope.mode with $examScope.mode',
+    'keeps student lists out of the URL for $scope.mode with $examScope.mode',
     ({ scope, examScope }) => {
       const query: GraphQueryInput = { scope, exam_scope: examScope }
       const serialized = serializeGraphRouteScope(query)
+      expect(serialized).not.toHaveProperty('students')
+      expect(serialized).not.toHaveProperty('include')
+      expect(serialized).not.toHaveProperty('exclude')
       expect(parseGraphRouteScope(serialized, sessions, students)).toEqual({
-        query,
+        query: null,
         canonical: serialized,
         notice: '',
       })
@@ -52,7 +55,7 @@ describe('knowledge graph controlled route scope', () => {
         exam_scope: { mode: 'current', session_ids: [7] },
       },
       canonical: {
-        exam: 'current', sessions: '7', scope: 'class', class: '七年级一班',
+        exam: 'current', sessions: '7', scope: 'snapshot',
       },
       notice: '',
     })

@@ -4,6 +4,7 @@ import { computed, ref, watch } from 'vue'
 import {
   trainingApi,
   type PersonalizedPaperInstance,
+  type PersonalizedPaperBatch,
   type PersonalizedRecommendationDraft,
   type PersonalizedRecommendationItem,
   type TrainingDiagnosis,
@@ -24,6 +25,9 @@ const props = defineProps<{
   excludeCurrentExamOriginals: boolean
   disabled?: boolean
 }>()
+const emit = defineEmits<{
+  stageChange: [stage: 'diagnosis' | 'draft' | 'wps' | 'scan']
+}>()
 
 type RequestState = 'idle' | 'loading' | 'ready' | 'error' | 'editing'
 
@@ -34,12 +38,17 @@ const selectedTargets = ref<string[]>([])
 const editReason = ref('教师根据课堂安排调整推荐草稿')
 const state = ref<RequestState>('idle')
 const draft = ref<PersonalizedRecommendationDraft | null>(null)
+const selectedDraftStudentId = ref('')
 const errorMessage = ref('')
 const actionMessage = ref('')
 const paperInstances = ref<PersonalizedPaperInstance[]>([])
 const paperFiles = ref<Record<string, File | undefined>>({})
 const paperBusy = ref('')
 const paperContextWindow = ref<32768 | 65536 | 128000>(32768)
+const paperBatch = ref<PersonalizedPaperBatch | null>(null)
+const includeConservativeStudents = ref(false)
+const paperCancelBusy = ref(false)
+let paperBatchPollGeneration = 0
 
 const targetOptions = computed(() => [...new Set(
   (props.diagnosis?.students ?? [])
@@ -47,6 +56,9 @@ const targetOptions = computed(() => [...new Set(
     .map((weak) => weak.knowledge_point.trim())
     .filter(Boolean),
 )].sort((left, right) => left.localeCompare(right, 'zh-CN')))
+const selectedDraftStudent = computed(() => draft.value?.students.find(
+  (student) => student.student_id === selectedDraftStudentId.value,
+) ?? draft.value?.students[0] ?? null)
 
 const canGenerate = computed(() => (
   Boolean(props.diagnosis)
@@ -59,17 +71,28 @@ const canGenerate = computed(() => (
   && difficultyMax.value <= 10
   && difficultyMin.value <= difficultyMax.value
 ))
+const workflowStage = computed<'diagnosis' | 'draft' | 'wps' | 'scan'>(() => {
+  if (!draft.value) return 'diagnosis'
+  if (paperInstances.value.some((item) => item.status === 'frozen')) return 'scan'
+  if (paperBatch.value || paperInstances.value.length) return 'wps'
+  return 'draft'
+})
+
+watch(workflowStage, (stage) => emit('stageChange', stage), { immediate: true })
 
 watch(
   () => props.diagnosis,
   () => {
     draft.value = null
+    selectedDraftStudentId.value = ''
     state.value = 'idle'
     errorMessage.value = ''
     actionMessage.value = ''
     paperInstances.value = []
     paperFiles.value = {}
     paperBusy.value = ''
+    paperBatch.value = null
+    paperBatchPollGeneration += 1
     selectedTargets.value = [...targetOptions.value]
   },
   { immediate: true },
@@ -131,6 +154,7 @@ async function generate(): Promise<void> {
       exclude_current_exam_originals: props.excludeCurrentExamOriginals,
     })
     paperInstances.value = []
+    selectedDraftStudentId.value = draft.value.students[0]?.student_id ?? ''
     paperFiles.value = {}
     state.value = 'ready'
     actionMessage.value = '已生成可审核草稿；尚未形成正式训练卷。'
@@ -150,7 +174,13 @@ async function openNextDraft(draftId: string): Promise<void> {
   actionMessage.value = ''
   try {
     draft.value = await trainingApi.getPersonalizedDraft(draftId)
-    paperInstances.value = await trainingApi.listPaperInstances(draftId)
+    selectedDraftStudentId.value = draft.value.students[0]?.student_id ?? ''
+    const [instances, batches] = await Promise.all([
+      trainingApi.listPaperInstances(draftId),
+      trainingApi.listPaperBatches(draftId),
+    ])
+    paperInstances.value = instances
+    paperBatch.value = batches[0] ?? null
     paperFiles.value = {}
     state.value = 'ready'
     actionMessage.value = '已打开下一轮草稿；请先审核，系统不会自动生成正式训练卷。'
@@ -208,6 +238,131 @@ async function createPaper(studentId: string): Promise<void> {
   }
 }
 
+async function createPaperBatch(): Promise<void> {
+  if (!draft.value || paperBusy.value) return
+  const studentIds = draft.value.students
+    .filter((student) => student.items.length > 0 && (
+      includeConservativeStudents.value
+      || student.selection_mode !== 'maintenance_fallback'
+    ))
+    .map((student) => student.student_id)
+  if (!studentIds.length) {
+    errorMessage.value = '当前没有带有效证据的学生可批量出卷；如需保守复习卷，请先勾选人工纳入。'
+    return
+  }
+  paperBusy.value = 'batch'
+  errorMessage.value = ''
+  actionMessage.value = ''
+  try {
+    const pollGeneration = ++paperBatchPollGeneration
+    const createPromise = trainingApi.createPaperBatch(
+      draft.value.draft_id,
+      {
+        operation_token: requestToken(),
+        expected_draft_revision: draft.value.revision,
+        student_ids: studentIds,
+        context_window_tokens: paperContextWindow.value,
+      },
+    )
+    void pollCreatingBatch(draft.value.draft_id, pollGeneration)
+    paperBatch.value = await createPromise
+    paperBatchPollGeneration += 1
+    paperInstances.value = [
+      ...paperBatch.value.items,
+      ...paperInstances.value.filter((existing) => !paperBatch.value?.items.some(
+        (item) => item.paper_instance_id === existing.paper_instance_id,
+      )),
+    ]
+    actionMessage.value = paperBatch.value.status === 'cancelled'
+      ? `批次已停止；已保留 ${paperBatch.value.succeeded_count} 份完成卷，未开始学生可另行重试。`
+      : paperBatch.value.failed_count
+        ? `已生成 ${paperBatch.value.succeeded_count} 份实名审核卷，${paperBatch.value.failed_count} 人失败，可保留成功卷后单独重试。`
+        : `已生成 ${paperBatch.value.succeeded_count} 份实名审核卷，可下载 ZIP 后在 WPS 中统一检查。`
+  } catch (error) {
+    errorMessage.value = safeError(error, '批量审核卷暂时无法生成；已有单人卷和推荐草稿均未改变。')
+  } finally {
+    paperBusy.value = ''
+  }
+}
+
+async function pollCreatingBatch(draftId: string, generation: number): Promise<void> {
+  while (generation === paperBatchPollGeneration && paperBusy.value === 'batch') {
+    await new Promise((resolve) => globalThis.setTimeout(resolve, 300))
+    if (generation !== paperBatchPollGeneration || paperBusy.value !== 'batch') return
+    try {
+      const batches = await trainingApi.listPaperBatches(draftId)
+      const creating = batches.find((item) => item.status === 'creating')
+      if (creating) paperBatch.value = creating
+    } catch {
+      // The create request remains authoritative; polling only exposes cancellation state.
+    }
+  }
+}
+
+async function cancelPaperBatch(): Promise<void> {
+  if (!paperBatch.value || paperBatch.value.status !== 'creating' || paperCancelBusy.value) return
+  paperCancelBusy.value = true
+  try {
+    paperBatch.value = await trainingApi.cancelPaperBatch(
+      paperBatch.value.batch_run_id,
+      requestToken(),
+    )
+    actionMessage.value = '已停止尚未开始的学生；已经生成的单人卷仍然保留。'
+  } catch {
+    errorMessage.value = '批量停止请求暂时未生效；请稍后从批次记录重新检查。'
+  } finally {
+    paperCancelBusy.value = false
+  }
+}
+
+async function retryFailedPaperBatch(): Promise<void> {
+  if (!paperBatch.value || paperBusy.value || !paperBatch.value.failures.length) return
+  paperBusy.value = 'batch-retry'
+  errorMessage.value = ''
+  try {
+    paperBatch.value = await trainingApi.retryPaperBatch(
+      paperBatch.value.batch_run_id,
+      paperBatch.value.failures.map((item) => item.student_id),
+    )
+    paperInstances.value = [
+      ...paperBatch.value.items,
+      ...paperInstances.value.filter((existing) => !paperBatch.value?.items.some(
+        (item) => item.paper_instance_id === existing.paper_instance_id,
+      )),
+    ]
+    actionMessage.value = paperBatch.value.failed_count
+      ? `已保留成功卷；仍有 ${paperBatch.value.failed_count} 名学生需要处理。`
+      : '失败学生已补齐，成功卷没有重复生成。'
+  } catch (error) {
+    errorMessage.value = safeError(error, '失败学生暂时无法重试；已完成卷保持不变。')
+  } finally {
+    paperBusy.value = ''
+  }
+}
+
+async function downloadBatch(kind: 'bundle' | 'manifest' | 'frozen_bundle'): Promise<void> {
+  const path = paperBatch.value?.downloads[kind]
+  if (!path || paperBusy.value) return
+  paperBusy.value = `batch-download:${kind}`
+  try {
+    const response = await trainingApi.downloadPaperArtifact(path)
+    const url = URL.createObjectURL(response.blob)
+    const anchor = document.createElement('a')
+    anchor.href = url
+    anchor.download = kind === 'bundle'
+      ? '个性化训练卷-批量审核稿.zip'
+      : kind === 'frozen_bundle'
+        ? '个性化训练卷-批量冻结PDF.zip'
+        : '个性化训练卷-生成清单.json'
+    anchor.click()
+    URL.revokeObjectURL(url)
+  } catch {
+    errorMessage.value = '批量文件暂时无法下载，单人卷仍可分别下载。'
+  } finally {
+    paperBusy.value = ''
+  }
+}
+
 function setPaperFile(instanceId: string, event: Event): void {
   const input = event.target as HTMLInputElement
   paperFiles.value = {
@@ -233,6 +388,20 @@ async function freezePaper(
     paperInstances.value = paperInstances.value.map((item) => (
       item.paper_instance_id === frozen.paper_instance_id ? frozen : item
     ))
+    if (paperBatch.value?.items.some(
+      (item) => item.paper_instance_id === frozen.paper_instance_id,
+    )) {
+      paperBatch.value = {
+        ...paperBatch.value,
+        items: paperBatch.value.items.map((item) => (
+          item.paper_instance_id === frozen.paper_instance_id ? frozen : item
+        )),
+        downloads: {
+          ...paperBatch.value.downloads,
+          frozen_bundle: `/api/training/paper-batches/${paperBatch.value.batch_run_id}/files/frozen-bundle`,
+        },
+      }
+    }
     actionMessage.value = '该版本已冻结为 PDF；不会自动打印，也不会覆盖旧版本。'
   } catch (error) {
     errorMessage.value = safeError(
@@ -317,6 +486,9 @@ async function editItem(
       <span v-if="draft">版本 {{ draft.revision }}</span>
     </header>
 
+    <details class="personalized-settings" :open="!draft">
+      <summary>训练设置</summary>
+      <section>
     <div class="personalized-controls">
       <label>
         预计时长
@@ -354,6 +526,8 @@ async function editItem(
     >
       {{ state === 'loading' ? '正在生成…' : '生成个性化草稿' }}
     </button>
+      </section>
+    </details>
 
     <p v-if="actionMessage" class="training-feedback" role="status">
       {{ actionMessage }}
@@ -372,11 +546,62 @@ async function editItem(
         <li v-for="warning in draft.warnings" :key="warning">{{ warning }}</li>
       </ul>
 
-      <article
-        v-for="student in draft.students"
-        :key="student.student_id"
-        class="personalized-student"
-      >
+      <div class="personalized-workbench">
+      <nav class="personalized-student-list" aria-label="一人一卷学生列表">
+        <strong>学生与状态</strong>
+        <button
+          v-for="student in draft.students"
+          :key="student.student_id"
+          type="button"
+          :class="{ 'is-selected': selectedDraftStudent?.student_id === student.student_id }"
+          @click="selectedDraftStudentId = student.student_id"
+        >
+          <span>{{ student.student_name || student.student_code || student.student_id }}</span>
+          <small>
+            {{ instancesForStudent(student.student_id)[0]?.status === 'frozen'
+              ? '已冻结'
+              : instancesForStudent(student.student_id).length ? '待审核' : `${student.items.length} 题草稿` }}
+          </small>
+        </button>
+      </nav>
+
+      <section class="personalized-batch-panel" aria-labelledby="personalized-batch-title">
+        <div>
+          <strong id="personalized-batch-title">批量生成实名一人一卷</strong>
+          <p>每名学生保持独立卷实例；成功卷不会因其他学生失败而丢失。</p>
+        </div>
+        <label>
+          <input v-model="includeConservativeStudents" type="checkbox">
+          人工纳入无薄弱证据学生，生成“保守复习卷”
+        </label>
+        <button type="button" class="training-button is-primary" :disabled="Boolean(paperBusy)" @click="createPaperBatch">
+          {{ paperBusy === 'batch' ? '正在逐人生成…' : '生成全部 WPS 审核卷' }}
+        </button>
+        <button
+          v-if="paperBatch?.status === 'creating'"
+          type="button"
+          class="training-button is-secondary"
+          :disabled="paperCancelBusy"
+          @click="cancelPaperBatch"
+        >
+          {{ paperCancelBusy ? '正在停止…' : '停止未开始学生' }}
+        </button>
+        <div v-if="paperBatch" class="personalized-batch-result">
+          <span>成功 {{ paperBatch.succeeded_count }} / {{ paperBatch.requested_count }} 人</span>
+          <button v-if="paperBatch.downloads.bundle" type="button" class="training-link" @click="downloadBatch('bundle')">下载审核卷 ZIP</button>
+          <button v-if="paperBatch.downloads.manifest" type="button" class="training-link" @click="downloadBatch('manifest')">下载生成清单</button>
+          <button v-if="paperBatch.downloads.frozen_bundle" type="button" class="training-link" @click="downloadBatch('frozen_bundle')">下载已冻结 PDF ZIP</button>
+          <button v-if="paperBatch.failures.length" type="button" class="training-button is-secondary" :disabled="Boolean(paperBusy)" @click="retryFailedPaperBatch">
+            {{ paperBusy === 'batch-retry' ? '正在重试失败学生…' : `只重试失败的 ${paperBatch.failures.length} 人` }}
+          </button>
+          <ul v-if="paperBatch.failures.length">
+            <li v-for="failure in paperBatch.failures" :key="failure.student_id">学生 {{ failure.student_id }}：生成失败，可单独重试</li>
+          </ul>
+        </div>
+      </section>
+
+      <template v-for="student in draft.students" :key="student.student_id">
+      <article v-if="selectedDraftStudent?.student_id === student.student_id" class="personalized-student">
         <header>
           <div>
             <strong>{{ student.student_name || student.student_code || student.student_id }}</strong>
@@ -482,6 +707,9 @@ async function editItem(
               整卷预计占用 {{ instance.budget.estimated_total_tokens.toLocaleString() }} /
               {{ instance.budget.context_window_tokens.toLocaleString() }}
             </small>
+            <small v-if="instance.formula_fallbacks?.length" class="training-feedback is-warning">
+              {{ instance.formula_fallbacks.length }} 处公式无法转为可编辑公式，已保留原式或题图，请在 WPS 中重点检查。
+            </small>
             <div class="personalized-paper-actions">
               <button
                 v-if="instance.downloads.review_docx"
@@ -535,11 +763,13 @@ async function editItem(
           </p>
         </section>
       </article>
+      </template>
 
       <TrainingScanBatchPanel
         :instances="paperInstances"
         @open-draft="openNextDraft"
       />
+      </div>
 
       <p class="personalized-footnote">
         训练卷使用生成时的题目、推荐理由和已批准判定点快照；以后来源变化不会改写旧卷。
@@ -580,6 +810,64 @@ async function editItem(
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 0.75rem;
   margin: 1rem 0;
+}
+
+.personalized-settings {
+  margin: 1rem 0;
+  border: 1px solid var(--color-border-default);
+  border-radius: 10px;
+  background: white;
+}
+
+.personalized-settings > summary {
+  padding: 0.75rem 0.9rem;
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.personalized-settings > section {
+  padding: 0 0.9rem 0.9rem;
+}
+
+.personalized-workbench {
+  display: grid;
+  grid-template-columns: minmax(190px, 0.58fr) minmax(440px, 1.55fr) minmax(300px, 0.9fr);
+  align-items: start;
+  gap: 1rem;
+  margin-top: 1rem;
+}
+
+.personalized-student-list {
+  display: grid;
+  gap: 0.45rem;
+  position: sticky;
+  top: calc(var(--shell-topbar-height, 64px) + 1rem);
+}
+
+.personalized-student-list > strong {
+  padding: 0.4rem 0.2rem;
+}
+
+.personalized-student-list button {
+  display: grid;
+  gap: 0.2rem;
+  padding: 0.65rem 0.75rem;
+  border: 1px solid var(--color-border-default);
+  border-radius: 9px;
+  background: white;
+  color: var(--color-text-primary);
+  text-align: left;
+  cursor: pointer;
+}
+
+.personalized-student-list button.is-selected {
+  border-color: var(--color-accent);
+  background: var(--color-accent-subtle);
+  box-shadow: inset 3px 0 0 var(--color-accent);
+}
+
+.personalized-student-list small {
+  color: var(--color-text-secondary);
 }
 
 .personalized-controls label,
@@ -624,7 +912,9 @@ async function editItem(
 }
 
 .personalized-student {
-  margin-top: 1rem;
+  grid-column: 2;
+  grid-row: 1 / span 3;
+  margin-top: 0;
   padding: 0.85rem;
   border: 1px solid var(--color-border-default);
   border-radius: 10px;
@@ -666,6 +956,28 @@ async function editItem(
   border-radius: 10px;
   background: var(--color-info-subtle);
 }
+
+.personalized-batch-panel {
+  grid-column: 3;
+  display: grid;
+  grid-template-columns: 1fr;
+  align-items: center;
+  gap: 1rem;
+  margin: 0;
+  padding: 1rem;
+  border: 1px solid var(--color-accent);
+  border-radius: 12px;
+  background: var(--color-accent-subtle);
+}
+
+.personalized-workbench :deep(.training-scan-panel) {
+  grid-column: 3;
+}
+
+.personalized-batch-panel p { margin: .25rem 0 0; color: var(--color-text-secondary); }
+.personalized-batch-panel label { display: flex; align-items: center; gap: .5rem; }
+.personalized-batch-result { display: flex; flex-wrap: wrap; gap: .75rem; align-items: center; }
+.personalized-batch-result ul { flex-basis: 100%; margin: 0; }
 
 .personalized-paper-panel > header {
   display: grid;
@@ -731,6 +1043,23 @@ async function editItem(
   .personalized-paper-panel > header {
     grid-template-columns: 1fr;
     align-items: stretch;
+  }
+
+  .personalized-workbench {
+    grid-template-columns: 1fr;
+  }
+
+  .personalized-student-list,
+  .personalized-student,
+  .personalized-batch-panel {
+    grid-column: 1;
+    grid-row: auto;
+    position: static;
+  }
+
+
+  .personalized-workbench :deep(.training-scan-panel) {
+    grid-column: 1;
   }
 }
 </style>

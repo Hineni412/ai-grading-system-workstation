@@ -5,6 +5,7 @@ import json
 from concurrent.futures import ThreadPoolExecutor
 from io import BytesIO
 from pathlib import Path
+from zipfile import ZipFile
 
 import cv2
 import fitz
@@ -190,6 +191,149 @@ def test_create_review_docx_is_idempotent_versioned_and_immutable(
     assert hashlib.sha256(review_path.read_bytes()).hexdigest() == review_hash
 
 
+def test_review_batch_keeps_individual_instances_and_publishes_manifest(
+    paper_workspace,
+) -> None:
+    module, draft, _db_path, _data_root = paper_workspace
+
+    result = module.create_review_batch(
+        str(draft["draft_id"]),
+        operation_token="9" * 32,
+        expected_draft_revision=int(draft["revision"]),
+        actor_ref="teacher-1",
+    )
+
+    assert result["status"] == "complete"
+    assert result["requested_count"] == result["succeeded_count"] == 1
+    assert result["failed_count"] == 0
+    assert result["items"][0]["student_id"] == "SYN-S01"
+    bundle, media_type = module.batch_artifact_path(result["batch_run_id"], "bundle")
+    manifest, _ = module.batch_artifact_path(result["batch_run_id"], "manifest")
+    assert media_type == "application/zip"
+    payload = json.loads(manifest.read_text(encoding="utf-8"))
+    assert payload["items"][0]["paper_instance_id"] == result["items"][0]["paper_instance_id"]
+    with ZipFile(bundle) as archive:
+        assert "manifest.json" in archive.namelist()
+        assert len([name for name in archive.namelist() if name.endswith(".docx")]) == 1
+
+    repeated = module.create_review_batch(
+        str(draft["draft_id"]),
+        operation_token="9" * 32,
+        expected_draft_revision=int(draft["revision"]),
+        actor_ref="teacher-1",
+    )
+    assert repeated == result
+    assert module.get_batch(result["batch_run_id"]) == result
+    assert module.list_batches_for_draft(str(draft["draft_id"])) == (result,)
+
+    another_batch = module.create_review_batch(
+        str(draft["draft_id"]),
+        operation_token="a" * 32,
+        expected_draft_revision=int(draft["revision"]),
+        actor_ref="teacher-1",
+    )
+    assert another_batch["items"][0]["paper_instance_id"] == result["items"][0]["paper_instance_id"]
+    assert another_batch["items"][0]["series_version"] == 1
+
+    review_path, _ = module.artifact_path(
+        result["items"][0]["paper_instance_id"], "review-docx"
+    )
+    review_payload = review_path.read_bytes()
+    module.freeze(
+        result["items"][0]["paper_instance_id"],
+        FreezePaperCommand(
+            operation_token="b" * 32,
+            expected_revision=result["items"][0]["revision"],
+            content_sha256=hashlib.sha256(review_payload).hexdigest(),
+            filename="reviewed.docx",
+            actor_ref="teacher-1",
+        ),
+        BytesIO(review_payload),
+    )
+    frozen_bundle, _ = module.batch_artifact_path(
+        result["batch_run_id"], "frozen-bundle"
+    )
+    with ZipFile(frozen_bundle) as archive:
+        assert "frozen-manifest.json" in archive.namelist()
+        assert len([name for name in archive.namelist() if name.endswith(".pdf")]) == 1
+
+def test_concurrent_batches_reuse_one_student_draft_instance(paper_workspace) -> None:
+    module, draft, _db_path, _data_root = paper_workspace
+
+    def create(token: str):
+        return module.create_review_batch(
+            str(draft["draft_id"]),
+            operation_token=token * 32,
+            expected_draft_revision=int(draft["revision"]),
+            actor_ref="teacher-1",
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        left, right = list(executor.map(create, ("c", "d")))
+
+    assert left["status"] == right["status"] == "complete"
+    assert left["items"][0]["paper_instance_id"] == right["items"][0]["paper_instance_id"]
+    assert left["items"][0]["series_version"] == right["items"][0]["series_version"] == 1
+
+
+def test_batch_validates_and_recovers_a_missing_review_artifact(paper_workspace) -> None:
+    module, draft, _db_path, _data_root = paper_workspace
+    first = module.create_review_batch(
+        str(draft["draft_id"]),
+        operation_token="e" * 32,
+        expected_draft_revision=int(draft["revision"]),
+        actor_ref="teacher-1",
+    )
+    paper_id = first["items"][0]["paper_instance_id"]
+    review_path, _ = module.artifact_path(paper_id, "review-docx")
+    review_path.unlink()
+
+    recovered = module.create_review_batch(
+        str(draft["draft_id"]),
+        operation_token="f" * 32,
+        expected_draft_revision=int(draft["revision"]),
+        actor_ref="teacher-1",
+    )
+
+    assert recovered["status"] == "complete"
+    assert recovered["items"][0]["paper_instance_id"] == paper_id
+    restored, _ = module.artifact_path(paper_id, "review-docx")
+    assert restored.is_file()
+
+
+def test_failed_batch_item_can_be_retried_without_replacing_success(paper_workspace) -> None:
+    module, draft, db_path, _data_root = paper_workspace
+    batch = module.create_review_batch(
+        str(draft["draft_id"]),
+        operation_token="7" * 32,
+        expected_draft_revision=int(draft["revision"]),
+        actor_ref="teacher-1",
+    )
+    paper_id = batch["items"][0]["paper_instance_id"]
+    with connect(db_path) as connection:
+        connection.execute(
+            """
+            UPDATE personalized_paper_batch_items
+            SET status = 'failed', paper_instance_id = NULL, error_code = 'synthetic_interruption'
+            WHERE batch_run_id = ?
+            """,
+            (batch["batch_run_id"],),
+        )
+        connection.execute(
+            """
+            UPDATE personalized_paper_batches
+            SET status = 'partial', succeeded_count = 0, failed_count = 1
+            WHERE batch_run_id = ?
+            """,
+            (batch["batch_run_id"],),
+        )
+
+    retried = module.retry_batch(batch["batch_run_id"])
+
+    assert retried["status"] == "complete"
+    assert retried["items"][0]["paper_instance_id"] == paper_id
+
+
 def test_freeze_stamps_every_page_and_rejects_identity_tampering(
     paper_workspace,
 ) -> None:
@@ -245,6 +389,11 @@ def test_freeze_stamps_every_page_and_rejects_identity_tampering(
         assert pdf.page_count == 2
         assert "Synthetic reviewed page 1" in pdf[0].get_text()
         assert "Synthetic reviewed page 2" in pdf[1].get_text()
+        visible_identity = pdf[0].get_text()
+        assert (
+            str(instance["student_name"]) in visible_identity
+            or str(instance["student_code"]) in visible_identity
+        )
         pixmap = pdf[0].get_pixmap(matrix=fitz.Matrix(4, 4), alpha=False)
         image = cv2.cvtColor(
             np.frombuffer(pixmap.samples, dtype=np.uint8).reshape(

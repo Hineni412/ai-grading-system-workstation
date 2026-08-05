@@ -4,9 +4,11 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import shutil
 import subprocess
 from collections.abc import Mapping, Sequence
+from dataclasses import asdict
 from io import BytesIO
 from pathlib import Path
 from typing import Any, Protocol
@@ -21,6 +23,8 @@ from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.shared import Mm, Pt, RGBColor
 from PIL import Image
+from question_bank.document_pipeline import SharedWordQuestionRenderer, WordStyleProfile, build_math_expression
+from question_bank.document_pipeline.contracts import math_expression_from_payload
 
 
 LAYOUT_VERSION = "personalized-paper-school-a4-v1"
@@ -37,6 +41,7 @@ _MUTED = RGBColor(100, 116, 139)
 _LIGHT = "E8EEF5"
 _FONT_LATIN = "Calibri"
 _FONT_EAST_ASIA = "Microsoft YaHei"
+_MATH_RUN = re.compile(r"\$\$(.+?)\$\$|\$(.+?)\$", re.DOTALL)
 
 
 class PaperRenderError(RuntimeError):
@@ -116,7 +121,7 @@ def render_review_docx(
     *,
     data_root: Path,
     output_path: Path,
-) -> None:
+) -> tuple[dict[str, Any], ...]:
     document = Document()
     _configure_document(document)
     student = _mapping(snapshot.get("student"))
@@ -124,6 +129,17 @@ def render_review_docx(
     paper_id = str(snapshot["paper_instance_id"])
     series_version = int(snapshot["series_version"])
     budget = _mapping(snapshot.get("budget"))
+    formula_fallbacks: list[dict[str, Any]] = []
+    renderer = SharedWordQuestionRenderer(
+        style=WordStyleProfile(
+            body_font=_FONT_EAST_ASIA,
+            body_font_ascii=_FONT_LATIN,
+            body_size_pt=11,
+            formula_size_pt=11,
+            line_spacing=1.25,
+        ),
+        asset_resolver=lambda value: _controlled_asset_path(data_root, value),
+    )
 
     header = document.sections[0].header.paragraphs[0]
     header.alignment = WD_ALIGN_PARAGRAPH.CENTER
@@ -225,11 +241,38 @@ def render_review_docx(
         body.paragraph_format.keep_with_next = True
         body.paragraph_format.space_after = Pt(6)
         body.paragraph_format.line_spacing = 1.25
-        _add_run(
-            body,
-            str(context.get("question_text") or ""),
-            size=11,
-            color=_INK,
+        expressions = tuple(
+            math_expression_from_payload(value)
+            for value in _mappings(question.get("math_expressions"))
+        )
+        if not expressions:
+            images = _mappings(question.get("images"))
+            fallback_asset = images[0].get("asset_path") if images else None
+            fallback_sha256 = images[0].get("sha256") if images else None
+            expressions = tuple(
+                build_math_expression(
+                    expression_id=f"p4-{question.get('question_id') or index}-math-{expression_index}",
+                    source=match.group(1) if match.group(1) is not None else match.group(2),
+                    fallback_asset=str(fallback_asset) if fallback_asset else None,
+                    fallback_sha256=str(fallback_sha256) if fallback_sha256 else None,
+                )
+                for expression_index, match in enumerate(
+                    _MATH_RUN.finditer(str(context.get("question_text") or "")),
+                    start=1,
+                )
+            )
+        if any(not expression.omml and not expression.fallback_asset for expression in expressions):
+            raise PaperRenderError(
+                "unsupported formula has no governed source image fallback"
+            )
+        formula_fallbacks.extend(
+            asdict(item)
+            for item in renderer.add_to_paragraph(
+                body,
+                str(context.get("question_text") or ""),
+                question_id=str(question.get("question_id") or item.get("question_id") or index),
+                expressions=expressions,
+            )
         )
         image_paragraph_start = len(document.paragraphs)
         _add_question_images(
@@ -272,6 +315,7 @@ def render_review_docx(
     document.save(output)
     if not output.is_file() or output.stat().st_size <= 0:
         raise PaperRenderError("review DOCX was not created")
+    return tuple(formula_fallbacks)
 
 
 def stamp_frozen_pdf(
@@ -281,6 +325,9 @@ def stamp_frozen_pdf(
     paper_instance_id: str,
     paper_batch_id: str,
     series_version: int,
+    student_name: str,
+    student_code: str,
+    class_id: str,
     signing_secret: str,
     reviewed_docx_sha256: str,
     layout_version: str = LAYOUT_VERSION,
@@ -312,24 +359,40 @@ def stamp_frozen_pdf(
             qr = _qr_png(identity)
             width = float(page.rect.width)
             height = float(page.rect.height)
-            footer_top = max(height - 62.0, 0.0)
+            footer_top = max(height - 72.0, 0.0)
             page.draw_rect(
                 fitz.Rect(22.0, footer_top - 3.0, width - 18.0, height - 8.0),
                 color=(1, 1, 1),
                 fill=(1, 1, 1),
                 overlay=True,
             )
+            visible_name = str(student_name or student_code or "Student").strip()[:40]
+            visible_class = str(class_id or "-").strip()[:30]
+            visible_identity = (
+                f"姓名：{visible_name}  班级：{visible_class}  "
+                f"第 {page_number} 页 / 共 {total_pages} 页"
+            )
+            visible_font = "helv"
+            font_path = _visible_identity_font()
+            if font_path is not None:
+                visible_font = "p4-cjk"
+                page.insert_font(fontname=visible_font, fontfile=str(font_path))
+            else:
+                visible_identity = (
+                    f"Student: {student_code or paper_instance_id[:12]}  "
+                    f"Class: {visible_class}  Page {page_number}/{total_pages}"
+                )
             page.insert_text(
                 fitz.Point(26.0, footer_top + 13.0),
-                f"Page {page_number}/{total_pages}  Instance {paper_instance_id[:12]}",
-                fontsize=7.5,
-                fontname="helv",
+                visible_identity,
+                fontsize=8.0,
+                fontname=visible_font,
                 color=(0.25, 0.32, 0.4),
                 overlay=True,
             )
             page.insert_text(
                 fitz.Point(26.0, footer_top + 27.0),
-                f"Identity {signature[:16]}  Layout {layout_version}",
+                f"Identity {signature[:16]}  Instance {paper_instance_id[:12]}  Layout {layout_version}",
                 fontsize=6.5,
                 fontname="helv",
                 color=(0.35, 0.4, 0.47),
@@ -374,6 +437,16 @@ def stamp_frozen_pdf(
                 }
             )
     return tuple(finalized)
+
+
+def _visible_identity_font() -> Path | None:
+    candidates = (
+        Path(r"C:\Windows\Fonts\msyh.ttc"),
+        Path(r"C:\Windows\Fonts\simhei.ttf"),
+        Path("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"),
+        Path("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"),
+    )
+    return next((path for path in candidates if path.is_file()), None)
 
 
 def page_identity(
@@ -746,6 +819,17 @@ def _assert_ordered_text(
 
 def _mapping(value: object) -> dict[str, Any]:
     return dict(value) if isinstance(value, Mapping) else {}
+
+
+def _controlled_asset_path(data_root: Path, value: str) -> Path | None:
+    candidate = Path(str(value or ""))
+    if candidate.is_absolute() or ".." in candidate.parts:
+        return None
+    root = Path(data_root).resolve()
+    resolved = (root / candidate).resolve()
+    if root != resolved and root not in resolved.parents:
+        return None
+    return resolved if resolved.is_file() else None
 
 
 def _mappings(value: object) -> list[dict[str, Any]]:

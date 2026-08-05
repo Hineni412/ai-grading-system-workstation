@@ -10,6 +10,7 @@ import GraphNodeInspector from '../components/knowledge-graph/GraphNodeInspector
 import GraphTextDirectory from '../components/knowledge-graph/GraphTextDirectory.vue'
 import KnowledgeGraphCanvas from '../components/knowledge-graph/KnowledgeGraphCanvas.vue'
 import { summarizeGraph } from '../features/knowledge-graph/model'
+import { loadEvidenceScope, saveEvidenceScope } from '../features/evidence-scope/session'
 import {
   parseGraphRouteScope,
   serializeGraphRouteScope,
@@ -26,7 +27,7 @@ const students = ref<StudentSummary[]>([])
 const studentsState = ref<'loading' | 'ready' | 'error'>('loading')
 const activeQuery = ref<GraphQueryInput | null>(null)
 const routeNotice = ref('')
-const scopeEditorOpen = ref(true)
+const mobilePane = ref<'directory' | 'graph' | 'detail'>('directory')
 let studentsController: AbortController | null = null
 let routeInitialized = false
 
@@ -41,7 +42,7 @@ const scopeLabel = computed(() => {
   const graph = graphStore.graph
   if (!graph) return '尚未应用查看范围'
   const exams = graph.exam_scope.sessions.map((session) => session.session_name).join('、') || '全部可用考试'
-  if (graph.scope.mode === 'class') return `${exams} · ${graph.scope.class_id ?? '班级暂不可用'}`
+  if (graph.scope.mode === 'class') return `${exams} · ${(graph.scope.class_ids ?? []).join('、') || graph.scope.class_id || '班级暂不可用'}`
   return `${exams} · ${graph.scope.student_ids.length} 名学生`
 })
 const visibleWarnings = computed(() => [...new Set(graphStore.graph?.warnings ?? [])])
@@ -51,10 +52,39 @@ async function initializeFromRoute(): Promise<void> {
   routeInitialized = true
   const parsed = parseGraphRouteScope(route.query, sessionStore.sessions, students.value)
   if (parsed.query === null) {
-    routeNotice.value = parsed.notice || '请选择班级并应用范围'
-    if (Object.keys(route.query).length > 0) {
-      await router.replace({ name: 'knowledge-graph', query: parsed.canonical })
+    if (sessionStore.selectedSessionId === null) {
+      routeNotice.value = '请先在顶部选择当前考试'
+      return
     }
+    const savedQuery = loadEvidenceScope()
+    const knownSessionIds = new Set(sessionStore.sessions.map((item) => item.id))
+    const compatibleSavedQuery = savedQuery?.exam_scope.mode === 'cross_exam'
+      || savedQuery?.exam_scope.session_ids.every((id) => knownSessionIds.has(id))
+      ? savedQuery
+      : null
+    const defaultQuery: GraphQueryInput = compatibleSavedQuery ?? {
+      scope: {
+        mode: 'all',
+        include_student_ids: [],
+        exclude_student_ids: [],
+        use_historical_fallback: true,
+      },
+      exam_scope: {
+        mode: 'current',
+        session_ids: [sessionStore.selectedSessionId],
+      },
+    }
+    activeQuery.value = defaultQuery
+    if (
+      defaultQuery.exam_scope.mode === 'current'
+      && sessionStore.selectedSessionId !== defaultQuery.exam_scope.session_ids[0]
+    ) {
+      sessionStore.selectSession(defaultQuery.exam_scope.session_ids[0])
+    }
+    saveEvidenceScope(defaultQuery)
+    routeNotice.value = parsed.notice
+    await router.replace({ name: 'knowledge-graph', query: serializeGraphRouteScope(defaultQuery) })
+    await graphStore.loadGraph(defaultQuery)
     return
   }
   if (
@@ -64,7 +94,7 @@ async function initializeFromRoute(): Promise<void> {
     sessionStore.selectSession(parsed.query.exam_scope.session_ids[0])
   }
   activeQuery.value = parsed.query
-  scopeEditorOpen.value = false
+  saveEvidenceScope(parsed.query)
   routeNotice.value = parsed.notice
   await router.replace({ name: 'knowledge-graph', query: parsed.canonical })
   await graphStore.loadGraph(parsed.query)
@@ -90,7 +120,7 @@ async function loadStudentOptions(): Promise<void> {
 
 async function applyQuery(query: GraphQueryInput): Promise<void> {
   activeQuery.value = query
-  scopeEditorOpen.value = false
+  saveEvidenceScope(query)
   routeNotice.value = ''
   await router.replace({ name: 'knowledge-graph', query: serializeGraphRouteScope(query) })
   await graphStore.loadGraph(query)
@@ -99,6 +129,16 @@ async function applyQuery(query: GraphQueryInput): Promise<void> {
 function selectNode(knowledgeKey: string): void {
   const node = graphStore.graph?.nodes.find((candidate) => candidate.stable_key === knowledgeKey)
   if (node) void graphStore.selectNode(node)
+}
+
+function selectDirectoryNode(knowledgeKey: string): void {
+  selectNode(knowledgeKey)
+  mobilePane.value = 'graph'
+}
+
+function selectCanvasNode(knowledgeKey: string): void {
+  selectNode(knowledgeKey)
+  mobilePane.value = 'detail'
 }
 
 function retryGraph(): void {
@@ -123,10 +163,16 @@ watch(
       applied?.exam_scope.mode !== 'current' ||
       applied.exam_scope.session_ids[0] === sessionId
     ) return
-    graphStore.clearScope()
-    activeQuery.value = null
-    routeNotice.value = '当前考试已更改，请选择班级并应用范围'
-    void router.replace({ name: 'knowledge-graph', query: {} })
+    if (sessionId === null) return
+    const next: GraphQueryInput = {
+      ...applied,
+      exam_scope: { mode: 'current', session_ids: [sessionId] },
+    }
+    activeQuery.value = next
+    saveEvidenceScope(next)
+    routeNotice.value = '已按新的当前考试更新范围'
+    void router.replace({ name: 'knowledge-graph', query: serializeGraphRouteScope(next) })
+    void graphStore.loadGraph(next)
   },
 )
 
@@ -145,40 +191,30 @@ onBeforeUnmount(() => {
         <h1 id="knowledge-graph-title" tabindex="-1">知识图谱</h1>
         <p>查看经过规则与 AI 治理的父子、先修和相关关系；教师只处理少量异常。</p>
       </div>
-      <dl v-if="graphStore.graph" class="knowledge-graph-summary" aria-label="知识图谱汇总">
-        <div><dt>知识点</dt><dd>{{ summary.total }}</dd></div>
-        <div><dt>已确认关系</dt><dd>{{ summary.relationTotal }}</dd></div>
-        <div><dt>当前无证据</dt><dd>{{ summary.missing }}</dd></div>
-        <div><dt>重点薄弱</dt><dd>{{ summary.weak }}</dd></div>
-        <div><dt>需要讲评</dt><dd>{{ summary.review }}</dd></div>
-      </dl>
+      <div class="knowledge-graph-heading-scope">
+        <GraphScopeFilters
+          :sessions="sessionStore.sessions"
+          :current-session-id="sessionStore.selectedSessionId"
+          :students="students"
+          :model-value="activeQuery"
+          :applying="graphStore.graphState === 'loading'"
+          :score-profiles="graphStore.graph?.scope.student_score_profiles ?? {}"
+          @apply="applyQuery"
+        />
+        <dl v-if="graphStore.graph" class="knowledge-graph-summary" aria-label="知识图谱汇总">
+          <div><dt>知识点</dt><dd>{{ summary.total }}</dd></div>
+          <div><dt>已确认关系</dt><dd>{{ summary.relationTotal }}</dd></div>
+          <div><dt>当前无证据</dt><dd>{{ summary.missing }}</dd></div>
+          <div><dt>重点薄弱</dt><dd>{{ summary.weak }}</dd></div>
+          <div><dt>需要讲评</dt><dd>{{ summary.review }}</dd></div>
+        </dl>
+      </div>
     </header>
 
     <div v-if="studentsState === 'error'" class="knowledge-graph-inline-error" role="alert">
       <p>班级和学生列表暂时无法读取</p>
       <button type="button" @click="retryStudents">重新加载筛选项</button>
     </div>
-    <section class="knowledge-graph-scope-bar" aria-label="当前查看范围">
-      <div>
-        <span>当前范围</span>
-        <strong>{{ scopeLabel }}</strong>
-      </div>
-      <button
-        type="button"
-        :aria-expanded="scopeEditorOpen"
-        @click="scopeEditorOpen = !scopeEditorOpen"
-      >{{ scopeEditorOpen ? '收起筛选' : '更改范围' }}</button>
-    </section>
-    <GraphScopeFilters
-      v-if="scopeEditorOpen"
-      :sessions="sessionStore.sessions"
-      :current-session-id="sessionStore.selectedSessionId"
-      :students="students"
-      :model-value="activeQuery"
-      :applying="graphStore.graphState === 'loading'"
-      @apply="applyQuery"
-    />
-
     <details class="knowledge-graph-secondary-panel">
       <summary>关系异常与审核</summary>
       <GraphRelationReviewShortcut />
@@ -246,22 +282,30 @@ onBeforeUnmount(() => {
         当前范围没有可显示的已治理知识点。可调整考试或学生范围；未治理标签不会被伪装成关系节点。
       </p>
       <template v-if="graphStore.graph.nodes.length > 0">
+        <nav class="knowledge-graph-mobile-nav" aria-label="知识图谱查看步骤">
+          <button type="button" :class="{ 'is-active': mobilePane === 'directory' }" @click="mobilePane = 'directory'">1 目录</button>
+          <button type="button" :class="{ 'is-active': mobilePane === 'graph' }" @click="mobilePane = 'graph'">2 图谱</button>
+          <button type="button" :class="{ 'is-active': mobilePane === 'detail' }" :disabled="!selectedNode" @click="mobilePane = 'detail'">3 详情</button>
+        </nav>
         <div class="knowledge-graph-workspace">
           <GraphTextDirectory
+            :class="{ 'is-mobile-active': mobilePane === 'directory' }"
             :nodes="graphStore.graph.nodes"
             :edges="graphStore.graph.edges"
             :selected-key="graphStore.selectedNodeKey"
-            @select-node="selectNode"
+            @select-node="selectDirectoryNode"
           />
           <KnowledgeGraphCanvas
+            :class="{ 'is-mobile-active': mobilePane === 'graph' }"
             :nodes="graphStore.graph.nodes"
             :edges="graphStore.graph.edges"
             :selected-key="graphStore.selectedNodeKey"
             :scope-label="scopeLabel"
             :coverage="graphStore.graph.coverage"
-            @select-node="selectNode"
+            @select-node="selectCanvasNode"
           />
           <GraphNodeInspector
+            :class="{ 'is-mobile-active': mobilePane === 'detail' }"
             :node="selectedNode"
             :nodes="graphStore.graph.nodes"
             :edges="graphStore.graph.edges"

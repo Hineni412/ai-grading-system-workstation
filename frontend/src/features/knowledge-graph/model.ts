@@ -79,7 +79,11 @@ export function graphNodeStateLabel(state: GraphNodeState): string {
   return state === 'missing' ? '当前无证据' : masteryBandLabel(state)
 }
 
-export function buildGraphDisplayNodes(nodes: GraphNode[]): GraphDisplayNode[] {
+export function buildGraphDisplayNodes(
+  nodes: GraphNode[],
+  edges: GraphEdge[] = [],
+  focusKey: string | null = null,
+): GraphDisplayNode[] {
   const ordered = [...nodes].sort((left, right) => {
     const leftState = graphNodeState(left)
     const rightState = graphNodeState(right)
@@ -88,23 +92,50 @@ export function buildGraphDisplayNodes(nodes: GraphNode[]): GraphDisplayNode[] {
       || left.display_name.localeCompare(right.display_name, 'zh-CN')
       || left.stable_key.localeCompare(right.stable_key)
   })
-  const totals = new Map<GraphNodeState, number>()
-  for (const node of ordered) {
-    const state = graphNodeState(node)
-    totals.set(state, (totals.get(state) ?? 0) + 1)
+  const nodeKeys = new Set(ordered.map((node) => node.stable_key))
+  const levelByKey = new Map(ordered.map((node) => [node.stable_key, 0]))
+  const structuralEdges = edges.filter((edge) => (
+    edge.relation_type !== 'related'
+    && nodeKeys.has(edge.source_key)
+    && nodeKeys.has(edge.target_key)
+  ))
+  for (let pass = 0; pass < ordered.length; pass += 1) {
+    let changed = false
+    for (const edge of structuralEdges) {
+      const next = Math.min(5, (levelByKey.get(edge.source_key) ?? 0) + 1)
+      if (next > (levelByKey.get(edge.target_key) ?? 0)) {
+        levelByKey.set(edge.target_key, next)
+        changed = true
+      }
+    }
+    if (!changed) break
   }
-  const starts = new Map<GraphNodeState, number>()
-  let nextStart = 64
-  for (const state of STATE_ORDER) {
-    starts.set(state, nextStart)
-    nextStart += Math.max(1, Math.ceil((totals.get(state) ?? 0) / 9)) * 92 + 54
-  }
-  const counts = new Map<GraphNodeState, number>()
+  const counts = new Map<number, number>()
+  const focusNeighbours = focusKey
+    ? ordered.filter((node) => node.stable_key !== focusKey)
+    : []
   return ordered.map((node) => {
     const state = graphNodeState(node)
-    const order = counts.get(state) ?? 0
-    counts.set(state, order + 1)
+    const level = levelByKey.get(node.stable_key) ?? 0
+    const order = counts.get(level) ?? 0
+    counts.set(level, order + 1)
     const mastery = node.mastery.status === 'available' ? node.mastery.value : null
+    let x = 96 + level * 230
+    let y = 76 + order * 112
+    if (focusKey) {
+      if (node.stable_key === focusKey) {
+        x = 500
+        y = 320
+      } else {
+        const index = focusNeighbours.findIndex((item) => item.stable_key === node.stable_key)
+        const ring = Math.floor(index / 12)
+        const slot = index % 12
+        const count = Math.min(12, focusNeighbours.length - ring * 12)
+        const angle = -Math.PI / 2 + (2 * Math.PI * slot) / Math.max(1, count)
+        x = 500 + Math.cos(angle) * (270 + ring * 190)
+        y = 320 + Math.sin(angle) * (190 + ring * 135)
+      }
+    }
     return {
       stableKey: node.stable_key,
       label: node.display_name,
@@ -113,8 +144,8 @@ export function buildGraphDisplayNodes(nodes: GraphNode[]): GraphDisplayNode[] {
       state,
       stateLabel: graphNodeStateLabel(state),
       stateIndex: STATE_ORDER.indexOf(state),
-      x: 76 + (order % 9) * 126,
-      y: (starts.get(state) ?? 64) + Math.floor(order / 9) * 92,
+      x,
+      y,
       size: nodeEvidenceSize(node.evidence.item_count),
       studentCount: node.evidence.student_count,
       evidenceCount: node.evidence.item_count,

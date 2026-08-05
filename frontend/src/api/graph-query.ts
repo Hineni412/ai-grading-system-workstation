@@ -1,7 +1,16 @@
 export interface GraphScope {
-  mode: 'student' | 'selected' | 'class'
+  mode: 'all' | 'student' | 'selected' | 'class'
   student_ids: string[]
   class_id: string | null
+  class_ids?: string[]
+  score_rate_min?: number | null
+  score_rate_max?: number | null
+  include_student_ids?: string[]
+  exclude_student_ids?: string[]
+  use_historical_fallback?: boolean
+  matched_student_count?: number
+  scope_revision?: string
+  student_score_profiles?: Record<string, Record<string, unknown>>
 }
 
 export interface GraphExamScope {
@@ -10,9 +19,17 @@ export interface GraphExamScope {
   sessions: Array<{ session_id: number; session_name: string }>
 }
 
-export type GraphStudentScopeInput =
-  | { mode: 'class'; class_id: string; student_ids?: string[] }
-  | { mode: 'student' | 'selected'; student_ids: string[] }
+export interface GraphStudentScopeInput {
+  mode: 'all' | 'class' | 'student' | 'selected'
+  class_id?: string
+  class_ids?: string[]
+  student_ids?: string[]
+  score_rate_min?: number | null
+  score_rate_max?: number | null
+  include_student_ids?: string[]
+  exclude_student_ids?: string[]
+  use_historical_fallback?: boolean
+}
 
 export type GraphExamScopeInput =
   | { mode: 'current'; session_ids: [number] }
@@ -50,6 +67,12 @@ function normalizeStudentIds(values: string[]): string[] {
   return result
 }
 
+function normalizeOptionalRate(value: number | null | undefined, label: string): number | undefined {
+  if (value === null || value === undefined) return undefined
+  if (!Number.isFinite(value) || value < 0 || value > 1) throw new Error(`Invalid ${label}`)
+  return Math.round(value * 10_000) / 10_000
+}
+
 function normalizeSessionIds(values: number[]): number[] {
   const result: number[] = []
   for (const rawValue of values) {
@@ -60,20 +83,43 @@ function normalizeSessionIds(values: number[]): number[] {
 }
 
 export function normalizeGraphQuery(query: GraphQueryInput): GraphQueryInput {
+  const minimum = normalizeOptionalRate(query.scope.score_rate_min, 'minimum score rate')
+  const maximum = normalizeOptionalRate(query.scope.score_rate_max, 'maximum score rate')
+  if (minimum !== undefined && maximum !== undefined && minimum > maximum) {
+    throw new Error('Invalid score rate range')
+  }
+  const common = {
+    ...(minimum !== undefined ? { score_rate_min: minimum } : {}),
+    ...(maximum !== undefined ? { score_rate_max: maximum } : {}),
+    ...(normalizeStudentIds(query.scope.include_student_ids ?? []).length
+      ? { include_student_ids: normalizeStudentIds(query.scope.include_student_ids ?? []) }
+      : {}),
+    ...(normalizeStudentIds(query.scope.exclude_student_ids ?? []).length
+      ? { exclude_student_ids: normalizeStudentIds(query.scope.exclude_student_ids ?? []) }
+      : {}),
+    ...(query.scope.use_historical_fallback === false
+      ? { use_historical_fallback: false }
+      : {}),
+  }
   let scope: GraphStudentScopeInput
-  if (query.scope.mode === 'class') {
-    const studentIds = query.scope.student_ids
-      ? normalizeStudentIds(query.scope.student_ids)
-      : undefined
+  if (query.scope.mode === 'all') {
+    scope = { mode: 'all', ...common }
+  } else if (query.scope.mode === 'class') {
+    const classIds = normalizeStudentIds([
+      ...(query.scope.class_ids ?? []),
+      ...(query.scope.class_id ? [query.scope.class_id] : []),
+    ])
+    if (!classIds.length) throw new Error('Invalid class scope')
     scope = {
       mode: 'class',
-      class_id: requireText(query.scope.class_id, 'class name'),
-      ...(studentIds && studentIds.length > 0 ? { student_ids: studentIds } : {}),
+      class_ids: classIds,
+      ...(classIds.length === 1 ? { class_id: classIds[0] } : {}),
+      ...common,
     }
   } else {
-    const studentIds = normalizeStudentIds(query.scope.student_ids)
+    const studentIds = normalizeStudentIds(query.scope.student_ids ?? [])
     if (studentIds.length === 0) throw new Error('Invalid student scope')
-    scope = { mode: query.scope.mode, student_ids: studentIds }
+    scope = { mode: query.scope.mode, student_ids: studentIds, ...common }
   }
 
   let examScope: GraphExamScopeInput

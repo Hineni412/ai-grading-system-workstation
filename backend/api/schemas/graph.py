@@ -138,6 +138,10 @@ class CurrentGraphMastery(_GraphModel):
         pattern=r"^[0-9a-f]{64}$",
     )
     reason: str | None = None
+    contributing_student_count: int = Field(default=0, ge=0)
+    effective_weight: float = Field(default=0.0, ge=0.0)
+    exam_evidence_count: int = Field(default=0, ge=0)
+    training_evidence_count: int = Field(default=0, ge=0)
 
 
 class CurrentGraphNode(_GraphModel):
