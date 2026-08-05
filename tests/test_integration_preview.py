@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import json
 import subprocess
 
 import pytest
 
-from tools import teacher_platform_preview as preview
+from tools import integration_preview as preview
 
 
 def _git_repo(repo, *args: str) -> None:
@@ -17,7 +18,7 @@ def _git_repo(repo, *args: str) -> None:
     )
 
 
-def test_tracked_code_changes_ignore_preview_data_but_not_source(
+def test_code_changes_ignore_preview_data_but_not_source(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
 ) -> None:
@@ -48,36 +49,117 @@ def test_tracked_code_changes_ignore_preview_data_but_not_source(
     monkeypatch.setattr(preview, "_git", preview_git)
 
     database.write_text("runtime change", encoding="utf-8")
-    assert preview._tracked_code_changes() == ""
+    assert preview._code_changes() == ""
 
     source.write_text("source change", encoding="utf-8")
-    assert "app.py" in preview._tracked_code_changes()
+    assert "app.py" in preview._code_changes()
+
+    source.write_text("baseline", encoding="utf-8")
+    untracked_source = tmp_path / "new_source.py"
+    untracked_source.write_text("new source", encoding="utf-8")
+    assert "new_source.py" in preview._code_changes()
+
+
+def test_preview_workspace_uses_the_current_branch_and_head(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(preview, "_code_changes", lambda: "")
+    monkeypatch.setattr(preview, "_current_branch", lambda: "codex/any-feature")
+    monkeypatch.setattr(preview, "_current_head", lambda: "a" * 40)
+    monkeypatch.setattr(preview, "_assert_local_data_boundary", lambda: None)
+
+    assert preview._assert_preview_workspace() == (
+        "codex/any-feature",
+        "a" * 40,
+    )
+
+
+def test_preview_workspace_rejects_dirty_code(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(preview, "_code_changes", lambda: " M app.py")
+
+    with pytest.raises(preview.PreviewGuardError, match="尚未形成检查点"):
+        preview._assert_preview_workspace()
 
 
 def test_check_preview_rejects_a_build_from_an_older_preview_head(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    source_heads = {
-        branch: f"head-{index}"
-        for index, branch in enumerate(preview.SOURCE_BRANCHES)
-    }
     monkeypatch.setattr(
         preview,
         "_assert_preview_workspace",
-        lambda: ("current-preview-head", source_heads),
+        lambda: ("codex/current", "current-preview-head"),
     )
     monkeypatch.setattr(preview, "_assert_workspace_labels", lambda: None)
     monkeypatch.setattr(
         preview,
         "_read_stamp",
         lambda: {
+            "preview_branch": "codex/current",
             "preview_head": "older-preview-head",
-            "source_checkpoints": source_heads,
         },
     )
 
     with pytest.raises(preview.PreviewGuardError, match="页面仍是旧构建"):
         preview.check_preview()
+
+
+def test_check_preview_rejects_a_build_from_another_branch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        preview,
+        "_assert_preview_workspace",
+        lambda: ("codex/current", "a" * 40),
+    )
+    monkeypatch.setattr(preview, "_assert_workspace_labels", lambda: None)
+    monkeypatch.setattr(
+        preview,
+        "_read_stamp",
+        lambda: {
+            "preview_branch": "codex/another",
+            "preview_head": "a" * 40,
+        },
+    )
+
+    with pytest.raises(preview.PreviewGuardError, match="其他分支"):
+        preview.check_preview()
+
+
+def test_build_stamp_records_only_the_current_branch_and_head(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    frontend = tmp_path / "frontend"
+    frontend.mkdir()
+    stamp_path = tmp_path / "integration-preview-build.json"
+    monkeypatch.setattr(preview, "FRONTEND_DIR", frontend)
+    monkeypatch.setattr(preview, "STAMP_PATH", stamp_path)
+    monkeypatch.setattr(
+        preview,
+        "_assert_preview_workspace",
+        lambda: ("codex/any-feature", "b" * 40),
+    )
+    monkeypatch.setattr(preview, "_npm_command", lambda: "npm")
+    monkeypatch.setattr(preview, "_run", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(preview, "_assert_workspace_labels", lambda: None)
+    monkeypatch.setattr(
+        preview,
+        "check_preview",
+        lambda: json.loads(stamp_path.read_text(encoding="utf-8")),
+    )
+
+    stamp = preview.build_preview()
+
+    assert stamp["preview_branch"] == "codex/any-feature"
+    assert stamp["preview_head"] == "b" * 40
+    assert set(stamp) == {
+        "schema_version",
+        "preview_branch",
+        "preview_head",
+        "built_at_utc",
+    }
 
 
 def test_workspace_label_check_requires_both_new_workspaces(
@@ -114,7 +196,7 @@ def test_open_running_preview_reuses_the_current_healthy_service(
         lambda _port: {
             "status": "ok",
             "service": "ai-grading-api",
-            "preview_instance_id": "teacher-platform-integration",
+            "preview_instance_id": "integration-preview",
             "preview_head": "84c2e183" + "0" * 32,
         },
     )
@@ -145,7 +227,23 @@ def test_open_running_preview_distinguishes_stopped_and_wrong_services(
         "_fetch_preview_health",
         lambda _port: {"status": "ok", "service": "another-service"},
     )
-    with pytest.raises(preview.PreviewGuardError, match="不是三合一预览服务"):
+    with pytest.raises(preview.PreviewGuardError, match="不是集成预览服务"):
+        preview.open_running_preview(
+            port=8035,
+            browser_open=lambda _url: pytest.fail("browser should stay closed"),
+        )
+
+    monkeypatch.setattr(
+        preview,
+        "_fetch_preview_health",
+        lambda _port: {
+            "status": "ok",
+            "service": "ai-grading-api",
+            "preview_instance_id": "another-preview",
+            "preview_head": "84c2e183" + "0" * 32,
+        },
+    )
+    with pytest.raises(preview.PreviewGuardError, match="不是集成预览服务"):
         preview.open_running_preview(
             port=8035,
             browser_open=lambda _url: pytest.fail("browser should stay closed"),
@@ -166,12 +264,12 @@ def test_open_running_preview_rejects_an_old_preview_process(
         lambda _port: {
             "status": "ok",
             "service": "ai-grading-api",
-            "preview_instance_id": "teacher-platform-integration",
+            "preview_instance_id": "integration-preview",
             "preview_head": "older-head",
         },
     )
 
-    with pytest.raises(preview.PreviewGuardError, match="旧版三合一预览"):
+    with pytest.raises(preview.PreviewGuardError, match="旧版集成预览"):
         preview.open_running_preview(
             port=8035,
             browser_open=lambda _url: pytest.fail("browser should stay closed"),
@@ -230,114 +328,6 @@ def test_preview_guard_accepts_its_forced_isolated_runtime_paths(
     preview._assert_local_data_boundary()
 
 
-def test_preview_guard_accepts_a_recorded_cherry_pick_checkpoint(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    source_heads = {
-        branch: f"{index + 1:040x}"
-        for index, branch in enumerate(preview.SOURCE_BRANCHES)
-    }
-    monkeypatch.setattr(preview, "_current_branch", lambda: preview.EXPECTED_BRANCH)
-    monkeypatch.setattr(preview, "_current_head", lambda: "f" * 40)
-    monkeypatch.setattr(preview, "_source_heads", lambda: source_heads)
-    monkeypatch.setattr(preview, "_tracked_code_changes", lambda: "")
-    teaching_head = source_heads["codex/teaching-prep-iteration"]
-    integration_commit = "e" * 40
-    monkeypatch.setattr(
-        preview,
-        "_source_is_ancestor",
-        lambda candidate, _preview: candidate != teaching_head,
-    )
-    monkeypatch.setattr(
-        preview,
-        "_source_checkpoint_receipts",
-        lambda: {
-            "codex/teaching-prep-iteration": {
-                "source_head": teaching_head,
-                "integration_commit": integration_commit,
-            }
-        },
-    )
-    monkeypatch.setattr(
-        preview,
-        "_source_matches_integration",
-        lambda source, integrated, _paths: (
-            source == teaching_head and integrated == integration_commit
-        ),
-    )
-    monkeypatch.setattr(preview, "_assert_local_data_boundary", lambda: None)
-
-    assert preview._assert_preview_workspace() == ("f" * 40, source_heads)
-
-
-def test_preview_guard_rejects_when_a_recorded_source_advances(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    source_heads = {
-        branch: f"{index + 1:040x}"
-        for index, branch in enumerate(preview.SOURCE_BRANCHES)
-    }
-    teaching_branch = "codex/teaching-prep-iteration"
-    teaching_head = source_heads[teaching_branch]
-    recorded = {
-        teaching_branch: {
-            "source_head": "a" * 40,
-            "integration_commit": "e" * 40,
-        }
-    }
-    monkeypatch.setattr(preview, "_current_branch", lambda: preview.EXPECTED_BRANCH)
-    monkeypatch.setattr(preview, "_current_head", lambda: "f" * 40)
-    monkeypatch.setattr(preview, "_source_heads", lambda: source_heads)
-    monkeypatch.setattr(preview, "_tracked_code_changes", lambda: "")
-    monkeypatch.setattr(
-        preview,
-        "_source_is_ancestor",
-        lambda candidate, _preview: candidate != teaching_head,
-    )
-    monkeypatch.setattr(preview, "_source_checkpoint_receipts", lambda: recorded)
-
-    with pytest.raises(preview.PreviewGuardError, match="尚未进入组合预览"):
-        preview._assert_preview_workspace()
-
-
-def test_preview_guard_rejects_a_receipt_without_matching_integrated_content(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    source_heads = {
-        branch: f"{index + 1:040x}"
-        for index, branch in enumerate(preview.SOURCE_BRANCHES)
-    }
-    teaching_branch = "codex/teaching-prep-iteration"
-    teaching_head = source_heads[teaching_branch]
-    monkeypatch.setattr(preview, "_current_branch", lambda: preview.EXPECTED_BRANCH)
-    monkeypatch.setattr(preview, "_current_head", lambda: "f" * 40)
-    monkeypatch.setattr(preview, "_source_heads", lambda: source_heads)
-    monkeypatch.setattr(preview, "_tracked_code_changes", lambda: "")
-    monkeypatch.setattr(
-        preview,
-        "_source_is_ancestor",
-        lambda candidate, _preview: candidate != teaching_head,
-    )
-    monkeypatch.setattr(
-        preview,
-        "_source_checkpoint_receipts",
-        lambda: {
-            teaching_branch: {
-                "source_head": teaching_head,
-                "integration_commit": "e" * 40,
-            }
-        },
-    )
-    monkeypatch.setattr(
-        preview,
-        "_source_matches_integration",
-        lambda *_args: False,
-    )
-
-    with pytest.raises(preview.PreviewGuardError, match="尚未进入组合预览"):
-        preview._assert_preview_workspace()
-
-
 def test_git_executable_falls_back_to_the_standard_windows_install(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
@@ -354,7 +344,7 @@ def test_git_executable_falls_back_to_the_standard_windows_install(
 
 
 def test_preview_launcher_reuses_a_running_service_before_starting_another() -> None:
-    launcher = (preview.PROJECT_ROOT / "运行三合一预览.bat").read_text(
+    launcher = (preview.PROJECT_ROOT / "运行集成预览.bat").read_text(
         encoding="utf-8",
     )
 
@@ -364,26 +354,24 @@ def test_preview_launcher_reuses_a_running_service_before_starting_another() -> 
     assert 'if "%RUNNING_STATUS%"=="0" goto done' in launcher
     assert 'if not "%RUNNING_STATUS%"=="3" goto running_probe_error' in launcher
     assert 'set "AI_GRADING_WORKTREE_DATA_DIR=%~dp0user_data"' in launcher
-    assert 'set "AI_GRADING_PREVIEW_INSTANCE_ID=teacher-platform-integration"' in launcher
+    assert 'set "AI_GRADING_PREVIEW_INSTANCE_ID=integration-preview"' in launcher
     assert 'set "AI_GRADING_PREVIEW_HEAD="' in launcher
 
 
 def test_preview_launcher_does_not_misreport_all_failures_as_stale() -> None:
-    launcher = (preview.PROJECT_ROOT / "运行三合一预览.bat").read_text(
+    launcher = (preview.PROJECT_ROOT / "运行集成预览.bat").read_text(
         encoding="utf-8",
     )
 
-    ensure = launcher.index("teacher_platform_preview.py\" ensure")
-    read_head = launcher.index("teacher_platform_preview.py\" print-head")
+    ensure = launcher.index("integration_preview.py\" ensure")
+    read_head = launcher.index("integration_preview.py\" print-head")
     assert ensure < read_head
     assert "git -C" not in launcher
     assert "in ('call \"%PYTHON_EXE%\"" in launcher
     assert "goto preview_prepare_error" in launcher
     assert "goto running_probe_error" in launcher
-    assert "The three-workspace preview is not current." not in launcher
     assert "Preview preparation or frontend update failed." in launcher
     assert "See the detailed error above." in launcher
-    assert "三合一不是最新" not in launcher
 
     failure_messages = launcher[launcher.index(":missing_runtime") :]
     for line in failure_messages.splitlines():
@@ -391,8 +379,9 @@ def test_preview_launcher_does_not_misreport_all_failures_as_stale() -> None:
             line.encode("ascii")
 
 
-def test_preview_launcher_uses_windows_crlf_line_endings() -> None:
-    launcher = (preview.PROJECT_ROOT / "运行三合一预览.bat").read_bytes()
+def test_preview_launcher_uses_consistent_line_endings() -> None:
+    launcher = (preview.PROJECT_ROOT / "运行集成预览.bat").read_bytes()
 
-    assert b"\r\n" in launcher
-    assert b"\n" not in launcher.replace(b"\r\n", b"")
+    has_crlf = b"\r\n" in launcher
+    has_bare_lf = b"\n" in launcher.replace(b"\r\n", b"")
+    assert not (has_crlf and has_bare_lf)

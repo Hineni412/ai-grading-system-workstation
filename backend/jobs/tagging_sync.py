@@ -1268,23 +1268,6 @@ def _load_analysis_gaps(
     }
 
 
-def _load_missing_analysis_ids(
-    db_path: Path,
-    question_ids: Sequence[int],
-) -> list[int]:
-    """Compatibility helper for callers that only need the missing ids."""
-
-    gaps = _load_analysis_gaps(db_path, question_ids)
-    return [
-        question_id
-        for question_id in question_ids
-        if not (
-            gaps.get(int(question_id), {}).get("evidence_ready")
-            and gaps.get(int(question_id), {}).get("criteria_ready")
-        )
-    ]
-
-
 def _plan_taxonomy(
     ai_service: Any,
     governance: Any | None,

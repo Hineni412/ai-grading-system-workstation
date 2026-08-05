@@ -11,7 +11,7 @@ import pytest
 from backend.schema_migrations import ensure_schema_current
 from question_bank.current_knowledge import CurrentKnowledgeUnavailable
 from question_bank.database.schema import initialize_database
-from question_bank.knowledge_graph_release import load_release
+from question_bank.knowledge_graph_release import load_release_for_taxonomy_revision
 from question_bank.relations.contracts import (
     KnowledgeRelation,
     RelationConflict,
@@ -110,7 +110,7 @@ def test_empty_database_seeds_governed_identities_without_relations(
     }
     release_keys = {
         str(item["stable_key"])
-        for item in load_release().payload["core_nodes"]
+        for item in load_release_for_taxonomy_revision(3).payload["core_nodes"]
     }
     by_key = {identity.stable_key: identity for identity in identities}
     assert set(by_key) == canonical_keys | release_keys

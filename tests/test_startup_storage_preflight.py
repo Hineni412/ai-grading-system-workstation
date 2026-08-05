@@ -12,14 +12,14 @@ from backend.startup_storage_preflight import (
     TaxonomyStoragePreflightError,
     preflight_taxonomy_storage,
 )
-from tools import start_p3_5_service
+from tools import start_service
 
 
 def test_detached_helper_prefers_the_owning_worktree_with_portable_python() -> None:
     completed = subprocess.run(
         [
             sys.executable,
-            str(Path("tools/start_p3_5_service.py").resolve()),
+            str(Path("tools/start_service.py").resolve()),
             "--help",
         ],
         cwd=Path.cwd().parent,
@@ -30,7 +30,7 @@ def test_detached_helper_prefers_the_owning_worktree_with_portable_python() -> N
     )
 
     assert completed.returncode == 0, completed.stderr
-    assert "Start the P3.5 API" in completed.stdout
+    assert "Start the AI grading API" in completed.stdout
 
 
 def test_preflight_preserves_existing_taxonomy_files_and_removes_probe(
@@ -116,29 +116,29 @@ def test_detached_helper_returns_stable_storage_reason_before_process_start(
         reason="existing_file_not_writable",
         cause=PermissionError("simulated restricted launcher"),
     )
-    monkeypatch.setattr(start_p3_5_service, "_listener_exists", lambda _port: False)
+    monkeypatch.setattr(start_service, "_listener_exists", lambda _port: False)
     monkeypatch.setattr(
-        start_p3_5_service,
+        start_service,
         "_taxonomy_state_path",
         lambda: state_path,
     )
     monkeypatch.setattr(
-        start_p3_5_service,
+        start_service,
         "preflight_taxonomy_storage",
         lambda _path: (_ for _ in ()).throw(failure),
     )
     monkeypatch.setattr(
-        start_p3_5_service.subprocess,
+        start_service.subprocess,
         "Popen",
         lambda *_args, **_kwargs: pytest.fail("API process must not start"),
     )
     monkeypatch.setattr(
         sys,
         "argv",
-        ["start_p3_5_service.py", "--port", "8035"],
+        ["start_service.py", "--port", "8035"],
     )
 
-    assert start_p3_5_service.main() == 5
+    assert start_service.main() == 5
     payload = json.loads(capsys.readouterr().out)
     assert payload["started"] is False
     assert payload["reason"] == "taxonomy_storage_unwritable"

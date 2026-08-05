@@ -1,7 +1,7 @@
 @echo off
 setlocal
 cd /d "%~dp0"
-title AI Grading P3.5 Acceptance
+title AI Grading System
 
 set "PYTHON_EXE=%~dp0runtime\python\python.exe"
 if not exist "%PYTHON_EXE%" set "PYTHON_EXE=%~dp0..\..\runtime\python\python.exe"
@@ -19,7 +19,7 @@ set "BROWSER_OPTION="
 if "%AI_GRADING_NO_BROWSER%"=="1" set "BROWSER_OPTION=--no-browser"
 set "PYTHONUTF8=1"
 
-"%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -Command "$client = New-Object System.Net.Sockets.TcpClient; try { $task = $client.ConnectAsync('127.0.0.1', [int]$env:API_PORT); if ($task.Wait(750) -and $client.Connected) { exit 0 }; exit 1 } catch { exit 1 } finally { $client.Dispose() }" >nul 2>nul
+"%PYTHON_EXE%" -c "import socket, sys; client = socket.socket(); client.settimeout(0.75); result = client.connect_ex(('127.0.0.1', int(sys.argv[1]))); client.close(); raise SystemExit(0 if result == 0 else 1)" "%API_PORT%" >nul 2>nul
 if not errorlevel 1 goto port_in_use
 
 "%PYTHON_EXE%" "%PROJECT_RUNNER%" backend.startup_storage_preflight
@@ -31,7 +31,7 @@ if errorlevel 1 goto frontend_error
 "%PYTHON_EXE%" "%PROJECT_RUNNER%" backend.ops.offline --apply-pending
 if errorlevel 1 goto offline_error
 
-echo AI Grading P3.5 acceptance build
+echo AI Grading System
 echo Data directory: %AI_GRADING_WORKTREE_DATA_DIR%
 echo URL: http://127.0.0.1:%API_PORT%/
 echo Close this window to stop the service.
@@ -46,18 +46,18 @@ echo Keep this worktree inside the main project and try again.
 goto failed
 
 :missing_runner
-echo P3.5 project launcher was not found.
+echo The project launcher was not found.
 echo Missing file: %PROJECT_RUNNER%
 goto failed
 
 :taxonomy_storage_error
 echo The machine-local taxonomy state cannot be saved.
-echo IMPORTANT: This launch did NOT start the P3.5 service.
+echo IMPORTANT: This launch did NOT start the service.
 echo Fix the folder permission shown above, then run this file again.
 goto failed
 
 :frontend_error
-echo The P3.5 frontend build is missing or incomplete.
+echo The frontend build is missing or incomplete.
 echo Rebuild frontend\dist and try again.
 goto failed
 
@@ -67,15 +67,15 @@ echo No service was started. Send this window's output to Codex.
 goto failed
 
 :server_error
-echo The P3.5 service stopped unexpectedly.
+echo The service stopped unexpectedly.
 echo Confirm that port %API_PORT% is free and send this output to Codex.
 goto failed
 
 :port_in_use
 echo Port %API_PORT% is already in use.
-echo IMPORTANT: This launch did NOT restart the P3.5 service.
-echo The open page may still be connected to an older P3.5 process.
-echo Close the existing P3.5 service window, then run this file again.
+echo IMPORTANT: This launch did NOT restart the service.
+echo The open page may still be connected to an older process.
+echo Close the existing service window, then run this file again.
 goto failed
 
 :failed

@@ -133,8 +133,8 @@ F0 是一个短期公共底座，不套用 P4/A/B 的长期逐包节奏。F0 内
 
 - 日常启动：双击 `运行.bat`。
 - 开发查看：按需启动 FastAPI/Vue 或构建前端，具体命令以当前项目脚本为准。
-- 需要后台启动当前应用时，继续使用
-  `runtime\python\python.exe tools\start_p3_5_service.py`；文件名保留历史兼容，不代表当前仍处于 P3.5。
+- 需要后台启动当前应用时，使用
+  `runtime\python\python.exe tools\start_service.py`。
 - 后台入口必须在用户对本次重启明确授权后，以能够访问本机 LocalAppData 标签状态的非受限方式运行。
 - 若返回 `taxonomy_storage_unwritable`，不得把标签状态临时改到工作树空目录；这会与教师现有待审词和审核记录分叉。
 - 禁止用 `Start-Process` 配合 `RedirectStandardOutput` / `RedirectStandardError` 启动长期 API，也禁止为此套新的 `pwsh -Command`。

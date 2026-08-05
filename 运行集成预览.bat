@@ -2,7 +2,7 @@
 setlocal
 chcp 65001 >nul
 cd /d "%~dp0"
-title AI Grading - Teacher Platform Preview
+title AI Grading - Integration Preview
 
 set "PYTHON_EXE=%~dp0runtime\python\python.exe"
 if not exist "%PYTHON_EXE%" set "PYTHON_EXE=%~dp0..\..\runtime\python\python.exe"
@@ -12,17 +12,17 @@ set "AI_GRADING_WORKTREE_DATA_DIR=%~dp0user_data"
 set "AI_GRADING_DATA_DIR=%AI_GRADING_WORKTREE_DATA_DIR%"
 set "AI_GRADING_OPS_STATE_DIR=%~dp0user_data\runtime_state\ops"
 set "AI_GRADING_API_PROFILES_PATH=%~dp0user_data\config\api_profiles.json"
-set "AI_GRADING_PREVIEW_INSTANCE_ID=teacher-platform-integration"
+set "AI_GRADING_PREVIEW_INSTANCE_ID=integration-preview"
 set "AI_GRADING_PREVIEW_HEAD="
 set "PYTHONUTF8=1"
 
-"%PYTHON_EXE%" "%~dp0tools\teacher_platform_preview.py" ensure
+"%PYTHON_EXE%" "%~dp0tools\integration_preview.py" ensure
 if errorlevel 1 goto preview_prepare_error
 
-for /f "delims=" %%I in ('call "%PYTHON_EXE%" "%~dp0tools\teacher_platform_preview.py" print-head') do set "AI_GRADING_PREVIEW_HEAD=%%I"
+for /f "delims=" %%I in ('call "%PYTHON_EXE%" "%~dp0tools\integration_preview.py" print-head') do set "AI_GRADING_PREVIEW_HEAD=%%I"
 if not defined AI_GRADING_PREVIEW_HEAD goto preview_prepare_error
 
-"%PYTHON_EXE%" "%~dp0tools\teacher_platform_preview.py" open-running
+"%PYTHON_EXE%" "%~dp0tools\integration_preview.py" open-running
 set "RUNNING_STATUS=%ERRORLEVEL%"
 if "%RUNNING_STATUS%"=="0" goto done
 if not "%RUNNING_STATUS%"=="3" goto running_probe_error

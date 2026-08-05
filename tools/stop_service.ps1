@@ -79,7 +79,7 @@ function Get-ProcessRecord {
     }
 }
 
-function Test-P35LauncherProcess {
+function Test-ServiceLauncherProcess {
     param(
         [Parameter(Mandatory = $true)]$ProcessRecord,
         [Parameter(Mandatory = $true)][string]$ExpectedRunner,
@@ -138,11 +138,11 @@ try {
         Sort-Object -Unique
 
     if (-not (Test-Path -LiteralPath $expectedRunner -PathType Leaf)) {
-        Write-Host "找不到当前 P3.5 工作区的启动入口，本次没有关闭任何进程。" -ForegroundColor Red
+        Write-Host "找不到当前 AI 阅卷系统的启动入口，本次没有关闭任何进程。" -ForegroundColor Red
         exit 2
     }
     if ($pythonCandidates.Count -eq 0) {
-        Write-Host "找不到当前 P3.5 工作区使用的 Python，本次没有关闭任何进程。" -ForegroundColor Red
+        Write-Host "找不到当前 AI 阅卷系统使用的 Python，本次没有关闭任何进程。" -ForegroundColor Red
         exit 2
     }
 
@@ -165,13 +165,13 @@ try {
         exit 0
     }
     if (
-        -not (Test-P35LauncherProcess `
+        -not (Test-ServiceLauncherProcess `
             -ProcessRecord $firstRecord `
             -ExpectedRunner $expectedRunner `
             -ExpectedPythonExecutables $pythonCandidates `
             -TargetPort $Port)
     ) {
-        Write-Host "端口 $Port 正被其他程序占用，不是当前 P3.5 工作区启动的 AI 阅卷系统。" -ForegroundColor Yellow
+        Write-Host "端口 $Port 正被其他程序占用，不是当前工作区启动的 AI 阅卷系统。" -ForegroundColor Yellow
         Write-Host "为避免误关其他程序，本次没有关闭任何进程。"
         exit 3
     }
@@ -199,7 +199,7 @@ try {
     if (
         [string]$secondRecord.CreationDate -ne [string]$firstRecord.CreationDate -or
         [string]$secondRecord.CommandLine -ne [string]$firstRecord.CommandLine -or
-        -not (Test-P35LauncherProcess `
+        -not (Test-ServiceLauncherProcess `
             -ProcessRecord $secondRecord `
             -ExpectedRunner $expectedRunner `
             -ExpectedPythonExecutables $pythonCandidates `

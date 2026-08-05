@@ -1,4 +1,4 @@
-"""Build and validate the local three-workspace preview frontend.
+"""Build and validate the local integration preview frontend.
 
 This tool intentionally manages only ignored frontend dependencies and build
 artifacts. It never starts the API or reads business data.
@@ -23,26 +23,8 @@ from typing import Any, Callable
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 FRONTEND_DIR = PROJECT_ROOT / "frontend"
 DIST_DIR = FRONTEND_DIR / "dist"
-STAMP_PATH = DIST_DIR / "teacher-platform-preview-build.json"
-SOURCE_CHECKPOINT_RECEIPTS_PATH = (
-    PROJECT_ROOT / "integration" / "teacher-platform-source-checkpoints.json"
-)
-EXPECTED_BRANCH = "codex/teacher-platform-integration"
-EXPECTED_PREVIEW_INSTANCE_ID = "teacher-platform-integration"
-SOURCE_BRANCHES = (
-    "codex/grading-system-iteration",
-    "codex/teaching-prep-iteration",
-    "codex/class-teacher-iteration",
-)
-SOURCE_PATH_SCOPES = {
-    "codex/teaching-prep-iteration": (
-        "backend/teaching_prep",
-        "frontend/src/workspaces/teaching-prep",
-        "tests/teaching_prep",
-        "migrations/teaching_prep",
-        "docs/product/TEACHING_PREP_WORKBENCH_IMPLEMENTATION_PLAN.md",
-    ),
-}
+STAMP_PATH = DIST_DIR / "integration-preview-build.json"
+EXPECTED_PREVIEW_INSTANCE_ID = "integration-preview"
 EXPECTED_LABELS = ("备课工作台", "班主任工作台")
 
 
@@ -112,158 +94,28 @@ def _current_head() -> str:
     return _git("rev-parse", "HEAD")
 
 
-def _source_heads() -> dict[str, str]:
-    return {branch: _git("rev-parse", branch) for branch in SOURCE_BRANCHES}
-
-
-def _source_checkpoint_receipts() -> dict[str, dict[str, str]]:
-    if not SOURCE_CHECKPOINT_RECEIPTS_PATH.is_file():
-        return {}
-    try:
-        payload = json.loads(
-            SOURCE_CHECKPOINT_RECEIPTS_PATH.read_text(encoding="utf-8")
-        )
-    except (OSError, json.JSONDecodeError) as exc:
-        raise PreviewGuardError("组合预览来源检查点记录无法读取。") from exc
-    if not isinstance(payload, dict):
-        raise PreviewGuardError("组合预览来源检查点记录格式无效。")
-    receipts = payload.get("source_checkpoints")
-    if not isinstance(receipts, dict):
-        raise PreviewGuardError("组合预览来源检查点记录格式无效。")
-    result: dict[str, dict[str, str]] = {}
-    for branch, receipt in receipts.items():
-        if (
-            branch not in SOURCE_PATH_SCOPES
-            or not isinstance(receipt, dict)
-            or set(receipt) != {"source_head", "integration_commit"}
-        ):
-            raise PreviewGuardError("组合预览来源检查点记录包含无效条目。")
-        clean_receipt: dict[str, str] = {}
-        for field in ("source_head", "integration_commit"):
-            value = receipt.get(field)
-            if not isinstance(value, str):
-                raise PreviewGuardError(
-                    "组合预览来源检查点记录包含无效提交号。"
-                )
-            clean_value = value.strip().lower()
-            if len(clean_value) not in (40, 64) or any(
-                character not in "0123456789abcdef"
-                for character in clean_value
-            ):
-                raise PreviewGuardError(
-                    "组合预览来源检查点记录包含无效提交号。"
-                )
-            clean_receipt[field] = clean_value
-        result[branch] = clean_receipt
-    return result
-
-
-def _source_is_ancestor(source_head: str, preview_head: str) -> bool:
-    completed = subprocess.run(
-        [
-            _git_executable(),
-            "-c",
-            f"safe.directory={PROJECT_ROOT.as_posix()}",
-            "merge-base",
-            "--is-ancestor",
-            source_head,
-            preview_head,
-        ],
-        cwd=PROJECT_ROOT,
-        check=False,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
-    return completed.returncode == 0
-
-
-def _source_matches_integration(
-    source_head: str,
-    integration_commit: str,
-    paths: tuple[str, ...],
-) -> bool:
-    completed = subprocess.run(
-        [
-            _git_executable(),
-            "-c",
-            f"safe.directory={PROJECT_ROOT.as_posix()}",
-            "diff",
-            "--quiet",
-            source_head,
-            integration_commit,
-            "--",
-            *paths,
-        ],
-        cwd=PROJECT_ROOT,
-        check=False,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
-    return completed.returncode == 0
-
-
-def _receipt_proves_integration(
-    *,
-    source_branch: str,
-    source_head: str,
-    preview_head: str,
-    receipts: dict[str, dict[str, str]],
-) -> bool:
-    receipt = receipts.get(source_branch)
-    paths = SOURCE_PATH_SCOPES.get(source_branch)
-    if receipt is None or paths is None:
-        return False
-    integration_commit = receipt["integration_commit"]
-    return (
-        receipt["source_head"] == source_head
-        and _source_is_ancestor(integration_commit, preview_head)
-        and _source_matches_integration(source_head, integration_commit, paths)
-    )
-
-
-def _tracked_code_changes() -> str:
+def _code_changes() -> str:
     return _git(
         "status",
         "--porcelain",
-        "--untracked-files=no",
+        "--untracked-files=all",
         "--",
         ".",
         ":(exclude)user_data/**",
     )
 
 
-def _assert_preview_workspace() -> tuple[str, dict[str, str]]:
-    branch = _current_branch()
-    if branch != EXPECTED_BRANCH:
+def _assert_preview_workspace() -> tuple[str, str]:
+    changes = _code_changes()
+    if changes:
         raise PreviewGuardError(
-            f"当前分支是 {branch or '未知'}，必须在 {EXPECTED_BRANCH} 中运行。"
+            "集成预览区存在尚未形成检查点的代码改动，请先处理后再构建。"
         )
 
-    tracked_changes = _tracked_code_changes()
-    if tracked_changes:
-        raise PreviewGuardError(
-            "组合预览区存在尚未形成检查点的代码改动，请先处理后再构建。"
-        )
-
+    branch = _current_branch() or "(detached)"
     preview_head = _current_head()
-    source_heads = _source_heads()
-    checkpoint_receipts = _source_checkpoint_receipts()
-    for source_branch, source_head in source_heads.items():
-        if (
-            not _source_is_ancestor(source_head, preview_head)
-            and not _receipt_proves_integration(
-                source_branch=source_branch,
-                source_head=source_head,
-                preview_head=preview_head,
-                receipts=checkpoint_receipts,
-            )
-        ):
-            raise PreviewGuardError(
-                f"{source_branch} 已有新检查点但尚未进入组合预览；请先刷新合并。"
-            )
-
     _assert_local_data_boundary()
-    return preview_head, source_heads
+    return branch, preview_head
 
 
 def _assert_local_data_boundary() -> None:
@@ -271,7 +123,7 @@ def _assert_local_data_boundary() -> None:
     repository_root = PROJECT_ROOT.parents[1]
     real_data = repository_root / "user_data"
     if local_data.exists() and local_data.resolve() == real_data.resolve():
-        raise PreviewGuardError("组合预览不能连接根目录的真实 user_data。")
+        raise PreviewGuardError("集成预览不能连接根目录的真实 user_data。")
 
     expected_paths = {
         "AI_GRADING_WORKTREE_DATA_DIR": local_data,
@@ -288,14 +140,14 @@ def _assert_local_data_boundary() -> None:
             candidate = PROJECT_ROOT / candidate
         if candidate.resolve() != expected.resolve():
             raise PreviewGuardError(
-                f"{variable} 指向组合预览之外，已拒绝继续。"
+                f"{variable} 指向集成预览之外，已拒绝继续。"
             )
 
 
 def _assert_workspace_labels() -> None:
     assets = DIST_DIR / "assets"
     if not (DIST_DIR / "index.html").is_file() or not assets.is_dir():
-        raise PreviewGuardError("组合预览页面尚未构建或构建不完整。")
+        raise PreviewGuardError("集成预览页面尚未构建或构建不完整。")
 
     javascript = "\n".join(
         path.read_text(encoding="utf-8", errors="ignore")
@@ -313,32 +165,32 @@ def _read_stamp() -> dict[str, Any]:
     try:
         payload = json.loads(STAMP_PATH.read_text(encoding="utf-8"))
     except (FileNotFoundError, json.JSONDecodeError) as exc:
-        raise PreviewGuardError("页面缺少有效的组合预览版本标记。") from exc
+        raise PreviewGuardError("页面缺少有效的集成预览版本标记。") from exc
     if not isinstance(payload, dict):
-        raise PreviewGuardError("组合预览版本标记格式无效。")
+        raise PreviewGuardError("集成预览版本标记格式无效。")
     return payload
 
 
 def check_preview() -> dict[str, Any]:
-    preview_head, source_heads = _assert_preview_workspace()
+    preview_branch, preview_head = _assert_preview_workspace()
     _assert_workspace_labels()
     stamp = _read_stamp()
     if stamp.get("preview_head") != preview_head:
         raise PreviewGuardError("代码已经更新，但页面仍是旧构建；必须重新构建。")
-    if stamp.get("source_checkpoints") != source_heads:
-        raise PreviewGuardError("三条业务线检查点已变化，当前页面不是最新组合。")
+    if stamp.get("preview_branch") != preview_branch:
+        raise PreviewGuardError("当前分支已经变化，但页面仍是其他分支的构建。")
     return stamp
 
 
 def _npm_command() -> str:
     command = shutil.which("npm.cmd") or shutil.which("npm")
     if command is None:
-        raise PreviewGuardError("未找到 Node.js/npm，无法构建组合预览页面。")
+        raise PreviewGuardError("未找到 Node.js/npm，无法构建集成预览页面。")
     return command
 
 
 def build_preview() -> dict[str, Any]:
-    preview_head, source_heads = _assert_preview_workspace()
+    preview_branch, preview_head = _assert_preview_workspace()
     npm = _npm_command()
     if not (FRONTEND_DIR / "node_modules").is_dir():
         _run(
@@ -350,9 +202,8 @@ def build_preview() -> dict[str, Any]:
 
     stamp: dict[str, Any] = {
         "schema_version": 1,
-        "preview_branch": EXPECTED_BRANCH,
+        "preview_branch": preview_branch,
         "preview_head": preview_head,
-        "source_checkpoints": source_heads,
         "built_at_utc": datetime.now(timezone.utc).isoformat(),
     }
     STAMP_PATH.write_text(
@@ -366,7 +217,7 @@ def ensure_preview() -> dict[str, Any]:
     try:
         return check_preview()
     except PreviewGuardError as exc:
-        print(f"组合预览需要刷新：{exc}")
+        print(f"集成预览需要刷新：{exc}")
         return build_preview()
 
 
@@ -416,16 +267,16 @@ def open_running_preview(
         return False
     if health.get("status") != "ok" or health.get("service") != "ai-grading-api":
         raise PreviewGuardError(
-            f"端口 {selected_port} 上的程序不是三合一预览服务。"
+            f"端口 {selected_port} 上的程序不是集成预览服务。"
         )
     if health.get("preview_instance_id") != EXPECTED_PREVIEW_INSTANCE_ID:
         raise PreviewGuardError(
-            f"端口 {selected_port} 上的程序不是三合一预览服务。"
+            f"端口 {selected_port} 上的程序不是集成预览服务。"
         )
     expected_head = str(stamp["preview_head"])
     if health.get("preview_head") != expected_head:
         raise PreviewGuardError(
-            f"端口 {selected_port} 上运行的是旧版三合一预览；"
+            f"端口 {selected_port} 上运行的是旧版集成预览；"
             "请先关闭旧服务窗口，再重新打开预览。"
         )
 
@@ -436,14 +287,14 @@ def open_running_preview(
     )
     if not browser_open(url):
         raise PreviewGuardError(
-            "三合一预览正在运行，但未能打开浏览器；请手动访问 " + url
+            "集成预览正在运行，但未能打开浏览器；请手动访问 " + url
         )
-    print(f"已复用正在运行的三合一预览：{url}")
+    print(f"已复用正在运行的集成预览：{url}")
     return True
 
 
 def _parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="三合一组合预览页面守卫")
+    parser = argparse.ArgumentParser(description="集成预览页面守卫")
     parser.add_argument(
         "action",
         choices=("build", "check", "ensure", "open-running", "print-head"),
@@ -460,7 +311,7 @@ def main() -> int:
         if args.action == "open-running":
             if open_running_preview():
                 return 0
-            print("当前没有正在运行的三合一预览服务。")
+            print("当前没有正在运行的集成预览服务。")
             return 3
         if args.action == "build":
             stamp = build_preview()
@@ -469,12 +320,12 @@ def main() -> int:
         else:
             stamp = ensure_preview()
     except (PreviewGuardError, subprocess.CalledProcessError, OSError) as exc:
-        print(f"组合预览未就绪：{exc}", file=sys.stderr)
+        print(f"集成预览未就绪：{exc}", file=sys.stderr)
         return 2
 
     print(
-        "组合预览页面已对齐："
-        f"{stamp['preview_head'][:8]}，三个业务检查点均已包含。"
+        "集成预览页面已对齐："
+        f"{stamp['preview_head'][:8]}，当前提交构建已确认。"
     )
     return 0
 

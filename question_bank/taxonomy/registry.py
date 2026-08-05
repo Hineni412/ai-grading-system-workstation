@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Iterable
 
 
 @dataclass(frozen=True, slots=True)
@@ -425,14 +424,6 @@ def canonicalize_knowledge_exact(value: object) -> CanonicalKnowledge | None:
     return _ALIAS_INDEX.get(_normalize(text))
 
 
-def canonicalize_knowledge_values(values: Iterable[object]) -> CanonicalKnowledge | None:
-    for value in values:
-        item = canonicalize_knowledge(value)
-        if item is not None:
-            return item
-    return None
-
-
 def canonicalize_error_type(value: object) -> str:
     text = _text(value)
     if not text:
@@ -443,21 +434,6 @@ def canonicalize_error_type(value: object) -> str:
         if any(keyword in text for keyword in keywords):
             return category
     return text
-
-
-def canonical_knowledge_options() -> list[str]:
-    return [item.canonical_name for item in CANONICAL_KNOWLEDGE]
-
-
-def canonical_knowledge_seed_rows() -> tuple[dict[str, object], ...]:
-    return tuple(
-        {
-            "canonical_key": item.canonical_id,
-            "name": item.canonical_name,
-            "aliases": item.aliases,
-        }
-        for item in CANONICAL_KNOWLEDGE
-    )
 
 
 def _normalize(value: object) -> str:
@@ -473,53 +449,4 @@ _ALIAS_INDEX = {
     for item in CANONICAL_KNOWLEDGE
     for alias in (item.canonical_id, item.canonical_name, *item.aliases)
 }
-
-
-def get_parent_knowledge_category(knowledge_point: str) -> str:
-    kp = str(knowledge_point or "").strip()
-    if not kp:
-        return ""
-    
-    # 1. First check if it matches existing canonical knowledge mapping
-    canonical = canonicalize_knowledge(kp)
-    if canonical is not None:
-        return canonical.canonical_name
-        
-    # 2. Keyword-based heuristics to merge child/sub-knowledge points to parent categories
-    if any(k in kp for k in ("二次函数", "抛物线")):
-        return "二次函数"
-    if "反比例" in kp:
-        return "反比例函数"
-    if any(k in kp for k in ("一次函数", "正比例")):
-        return "一次函数"
-    if "函数" in kp:
-        return "函数初步"
-    if any(k in kp for k in ("方程", "方程组", "解方程")):
-        return "方程与方程组"
-    if "不等式" in kp:
-        return "不等式与不等式组"
-    if any(k in kp for k in ("整式", "因式分解", "完全平方", "平方差", "幂")):
-        return "整式与因式分解"
-    if "分式" in kp:
-        return "分式"
-    if any(k in kp for k in ("有理数", "无理数", "实数", "相反数", "绝对值", "平方根", "算术平方根", "立方根", "估算", "数轴", "代数式", "单项式", "多项式", "科学记数")):
-        return "数与式（实数）"
-    if any(k in kp for k in ("相似", "位似", "比例线段")):
-        return "图形相似"
-    if any(k in kp for k in ("全等", "全等三角形")):
-        return "三角形全等"
-    if any(k in kp for k in ("等腰", "等边", "直角", "勾股", "中线", "角平分线", "线段垂直平分线", "高线", "三角形")):
-        return "三角形"
-    if any(k in kp for k in ("矩形", "菱形", "正方形", "平行四边形", "四边形")):
-        return "四边形"
-    if any(k in kp for k in ("圆", "切线", "弦", "弧", "扇形", "圆心角", "圆周角", "垂径定理")):
-        return "圆"
-    if any(k in kp for k in ("平行线", "相交线", "同位角", "内错角", "同旁内角", "对顶角", "垂直", "垂线")):
-        return "相交线与平行线"
-    if any(k in kp for k in ("对称", "平移", "旋转", "折叠", "投影", "视图")):
-        return "图形与变换"
-    if any(k in kp for k in ("统计", "概率", "中位数", "众数", "平均数", "方差", "样本", "频数", "频率", "图")):
-        return "统计与概率"
-        
-    return kp
 
