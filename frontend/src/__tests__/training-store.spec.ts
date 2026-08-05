@@ -220,6 +220,7 @@ describe('training store', () => {
     await oldRequest
 
     expect(store.diagnosis).toBeNull()
+    expect(store.hasCurrentDiagnosis).toBe(false)
     second.resolve({
       ...diagnosis,
       scope: { mode: 'student', student_ids: ['12'] },
@@ -257,7 +258,8 @@ describe('training store', () => {
 
     store.setExamScope({ mode: 'current', sessionIds: [15] })
 
-    expect(store.diagnosis).toBeNull()
+    expect(store.diagnosis).not.toBeNull()
+    expect(store.hasCurrentDiagnosis).toBe(false)
     expect(store.plan).toBeNull()
     expect(store.confirmationId).toBe('')
   })

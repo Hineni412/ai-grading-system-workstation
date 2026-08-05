@@ -190,6 +190,9 @@ def build_question_tag_graph_evidence(
                         "score_awarded": _number(reference.get("score_awarded")),
                         "full_score": _number(reference.get("full_score")),
                         "score_rate": _optional_number(reference.get("score_rate")),
+                        "source_kind": str(
+                            reference.get("source_kind") or "current_exam"
+                        ),
                         "tag_context": _normalized_tag_context(raw_context),
                         "actionable_reasons": _unique_text(
                             str(value or "").strip()
@@ -251,6 +254,7 @@ def _public_source_reference(value: Mapping[str, Any]) -> dict[str, Any]:
         "score_awarded": _number(value.get("score_awarded")),
         "full_score": _number(value.get("full_score")),
         "score_rate": _optional_number(value.get("score_rate")),
+        "source_kind": str(value.get("source_kind") or "current_exam"),
     }
 
 

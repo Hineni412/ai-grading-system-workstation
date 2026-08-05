@@ -5,7 +5,7 @@ import {
 } from './exports'
 import { assertNoPathLikeKeys, isRecord } from './validation'
 
-export type TrainingStudentScopeMode = 'student' | 'selected' | 'class'
+export type TrainingStudentScopeMode = 'all' | 'student' | 'selected' | 'class'
 export type TrainingExamScopeMode = 'current' | 'manual' | 'cross_exam'
 export type TrainingVariantMode = 'individual' | 'auto_group'
 export type TrainingStage = 'direct' | 'prerequisite' | 'transfer'
@@ -14,6 +14,12 @@ export interface TrainingStudentScopeRequest {
   mode: TrainingStudentScopeMode
   student_ids: string[]
   class_id?: string
+  class_ids?: string[]
+  score_rate_min?: number | null
+  score_rate_max?: number | null
+  include_student_ids?: string[]
+  exclude_student_ids?: string[]
+  use_historical_fallback?: boolean
 }
 
 export interface TrainingExamScopeRequest {
@@ -166,6 +172,7 @@ export interface PersonalizedPaperInstance {
   review_docx_sha256?: string | null
   reviewed_docx_sha256?: string | null
   frozen_pdf_sha256?: string | null
+  formula_fallbacks?: Array<Record<string, unknown>>
   downloads: {
     review_docx?: string | null
     reviewed_docx?: string | null
@@ -174,6 +181,22 @@ export interface PersonalizedPaperInstance {
   error_code?: string | null
   created_at: string
   frozen_at?: string | null
+}
+
+export interface PersonalizedPaperBatch {
+  batch_run_id: string
+  paper_batch_id: string
+  status: 'creating' | 'complete' | 'partial' | 'failed' | 'cancelled'
+  requested_count: number
+  succeeded_count: number
+  failed_count: number
+  items: PersonalizedPaperInstance[]
+  failures: Array<{ student_id: string; error_code: string }>
+  downloads: {
+    bundle?: string | null
+    manifest?: string | null
+    frozen_bundle?: string | null
+  }
 }
 
 export type TrainingScanIssue =
@@ -335,6 +358,7 @@ export interface TrainingEvidenceReference {
   score_awarded: number
   full_score: number
   score_rate?: number | null
+  source_kind?: 'current_exam' | 'historical_exam'
 }
 
 export interface TrainingWeakPoint {
@@ -345,11 +369,18 @@ export interface TrainingWeakPoint {
   full_score_sum: number
   deduction_count: number
   evidence_count: number
+  effective_weight?: number
   exam_count: number
   source_question_refs: TrainingEvidenceReference[]
   actionable_reasons: string[]
   tag_context: Record<string, string[]>
   error_counts: Record<string, Record<string, number>>
+  hierarchy_kind?: 'root' | 'child' | 'parent_summary'
+  parent_knowledge_key?: string | null
+  parent_knowledge_point?: string | null
+  child_knowledge_keys?: string[]
+  direct_evidence_count?: number
+  child_evidence_count?: number
 }
 
 export interface TrainingStudentProfile {
@@ -358,6 +389,9 @@ export interface TrainingStudentProfile {
   student_name: string
   class_id: string
   score_rate?: number | null
+  score_rate_source?: 'current_exam' | 'historical_fallback' | 'none'
+  historical_exam_count?: number
+  historical_latest_exam_at?: string | null
   weak_points: TrainingWeakPoint[]
 }
 
@@ -366,6 +400,15 @@ export interface TrainingDiagnosis {
     mode: TrainingStudentScopeMode
     student_ids: string[]
     class_id?: string | null
+    class_ids?: string[]
+    score_rate_min?: number | null
+    score_rate_max?: number | null
+    include_student_ids?: string[]
+    exclude_student_ids?: string[]
+    use_historical_fallback?: boolean
+    matched_student_count?: number
+    scope_revision?: string
+    student_score_profiles?: Record<string, Record<string, unknown>>
   }
   exam_scope: {
     mode: TrainingExamScopeMode
@@ -376,6 +419,13 @@ export interface TrainingDiagnosis {
     }>
   }
   students: TrainingStudentProfile[]
+  group_weak_points?: TrainingWeakPoint[]
+  knowledge_catalog?: Array<{
+    knowledge_key: string
+    knowledge_point: string
+    parent_knowledge_key?: string | null
+    parent_knowledge_point?: string | null
+  }>
   coverage: {
     covered_items: number
     total_items: number
@@ -468,12 +518,8 @@ function isRate(value: unknown): boolean {
   return isFiniteNumber(value) && value >= 0 && value <= 1
 }
 
-function isPercentage(value: unknown): boolean {
-  return isFiniteNumber(value) && value >= 0 && value <= 100
-}
-
 function isNullablePercentage(value: unknown): boolean {
-  return value === null || value === undefined || isPercentage(value)
+  return value === null || value === undefined || isRate(value)
 }
 
 function isNonEmptyString(value: unknown): value is string {
@@ -503,7 +549,7 @@ function isNestedCountRecord(
 }
 
 function isStudentScopeMode(value: unknown): value is TrainingStudentScopeMode {
-  return value === 'student' || value === 'selected' || value === 'class'
+  return value === 'all' || value === 'student' || value === 'selected' || value === 'class'
 }
 
 function isExamScopeMode(value: unknown): value is TrainingExamScopeMode {
@@ -529,6 +575,9 @@ function isEvidenceReference(value: unknown): value is TrainingEvidenceReference
       || value.score_rate === null
       || isRate(value.score_rate)
     )
+    && (value.source_kind === undefined
+      || value.source_kind === 'current_exam'
+      || value.source_kind === 'historical_exam')
   )
 }
 
@@ -543,12 +592,16 @@ function isWeakPoint(value: unknown): value is TrainingWeakPoint {
     && value.full_score_sum >= 0
     && isInteger(value.deduction_count)
     && isInteger(value.evidence_count)
+    && (value.effective_weight === undefined || (isFiniteNumber(value.effective_weight) && value.effective_weight >= 0))
     && isInteger(value.exam_count)
     && Array.isArray(value.source_question_refs)
     && value.source_question_refs.every(isEvidenceReference)
     && isStringArray(value.actionable_reasons)
     && isStringListRecord(value.tag_context)
     && isNestedCountRecord(value.error_counts)
+    && (value.child_knowledge_keys === undefined || isStringArray(value.child_knowledge_keys))
+    && (value.direct_evidence_count === undefined || isInteger(value.direct_evidence_count))
+    && (value.child_evidence_count === undefined || isInteger(value.child_evidence_count))
   )
 }
 
@@ -560,6 +613,15 @@ function isStudentProfile(value: unknown): value is TrainingStudentProfile {
     && typeof value.student_name === 'string'
     && typeof value.class_id === 'string'
     && isNullablePercentage(value.score_rate)
+    && (value.score_rate_source === undefined || (
+      value.score_rate_source === 'current_exam'
+      || value.score_rate_source === 'historical_fallback'
+      || value.score_rate_source === 'none'
+    ))
+    && (value.historical_exam_count === undefined || isInteger(value.historical_exam_count))
+    && (value.historical_latest_exam_at === null
+      || value.historical_latest_exam_at === undefined
+      || typeof value.historical_latest_exam_at === 'string')
     && Array.isArray(value.weak_points)
     && value.weak_points.every(isWeakPoint)
   )
@@ -575,6 +637,15 @@ function isNormalizedScope(value: unknown): value is TrainingDiagnosis['scope'] 
       || value.class_id === null
       || typeof value.class_id === 'string'
     )
+    && (value.class_ids === undefined || isStringArray(value.class_ids))
+    && (value.score_rate_min === null || value.score_rate_min === undefined || isRate(value.score_rate_min))
+    && (value.score_rate_max === null || value.score_rate_max === undefined || isRate(value.score_rate_max))
+    && (value.include_student_ids === undefined || isStringArray(value.include_student_ids))
+    && (value.exclude_student_ids === undefined || isStringArray(value.exclude_student_ids))
+    && (value.use_historical_fallback === undefined || typeof value.use_historical_fallback === 'boolean')
+    && (value.matched_student_count === undefined || isInteger(value.matched_student_count))
+    && (value.scope_revision === undefined || typeof value.scope_revision === 'string')
+    && (value.student_score_profiles === undefined || isRecord(value.student_score_profiles))
   )
 }
 
@@ -616,6 +687,11 @@ export function decodeTrainingDiagnosis(value: unknown): TrainingDiagnosis {
     || !isNormalizedExamScope(value.exam_scope)
     || !Array.isArray(value.students)
     || !value.students.every(isStudentProfile)
+    || (value.group_weak_points !== undefined && (
+      !Array.isArray(value.group_weak_points)
+      || !value.group_weak_points.every(isWeakPoint)
+    ))
+    || (value.knowledge_catalog !== undefined && !Array.isArray(value.knowledge_catalog))
     || !isCoverage(value.coverage)
     || !isPositiveIntegerArray(value.confirmed_concept_ids)
     || !isStringArray(value.suggested_terms)
@@ -894,6 +970,8 @@ export function decodePersonalizedPaperInstance(
     || !isNullableString(value.review_docx_sha256)
     || !isNullableString(value.reviewed_docx_sha256)
     || !isNullableString(value.frozen_pdf_sha256)
+    || (value.formula_fallbacks !== undefined
+      && (!Array.isArray(value.formula_fallbacks) || !value.formula_fallbacks.every(isRecord)))
     || !isRecord(value.downloads)
     || !isNullableString(value.downloads.review_docx)
     || !isNullableString(value.downloads.reviewed_docx)
@@ -917,6 +995,40 @@ function decodePersonalizedPaperList(
     throw new Error('Invalid personalized paper list')
   }
   return { items: value.items.map(decodePersonalizedPaperInstance) }
+}
+
+function decodePersonalizedPaperBatch(value: unknown): PersonalizedPaperBatch {
+  assertNoPathLikeKeys(value)
+  if (!isRecord(value)
+    || !/^[0-9a-f]{64}$/.test(String(value.batch_run_id || ''))
+    || !/^[0-9a-f]{64}$/.test(String(value.paper_batch_id || ''))
+    || !['creating', 'complete', 'partial', 'failed', 'cancelled'].includes(String(value.status))
+    || !isInteger(value.requested_count)
+    || !isInteger(value.succeeded_count)
+    || !isInteger(value.failed_count)
+    || !Array.isArray(value.items)
+    || !value.items.every((item) => {
+      try { decodePersonalizedPaperInstance(item); return true } catch { return false }
+    })
+    || !Array.isArray(value.failures)
+    || !value.failures.every((item) => isRecord(item)
+      && isNonEmptyString(item.student_id) && isNonEmptyString(item.error_code))
+    || !isRecord(value.downloads)
+    || !isNullableString(value.downloads.bundle)
+    || !isNullableString(value.downloads.manifest)
+    || !isNullableString(value.downloads.frozen_bundle)) {
+    throw new Error('Invalid personalized paper batch')
+  }
+  return value as unknown as PersonalizedPaperBatch
+}
+
+function decodePersonalizedPaperBatchList(
+  value: unknown,
+): { items: PersonalizedPaperBatch[] } {
+  if (!isRecord(value) || !Array.isArray(value.items)) {
+    throw new Error('Invalid personalized paper batch list')
+  }
+  return { items: value.items.map(decodePersonalizedPaperBatch) }
 }
 
 function decodeTrainingScanBatch(value: unknown): TrainingScanBatch {
@@ -1265,6 +1377,69 @@ export const trainingApi = {
         body,
         decode: decodePersonalizedPaperInstance,
         timeoutMs: 120_000,
+      },
+    )
+  },
+
+  createPaperBatch(
+    draftId: string,
+    body: {
+      operation_token: string
+      expected_draft_revision: number
+      student_ids: string[]
+      context_window_tokens: 32768 | 65536 | 128000
+    },
+  ): Promise<PersonalizedPaperBatch> {
+    return apiClient.request(
+      `/api/training/personalized-drafts/${draftId}/paper-batches`,
+      {
+        method: 'POST',
+        body,
+        decode: decodePersonalizedPaperBatch,
+        timeoutMs: 600_000,
+      },
+    )
+  },
+
+  async listPaperBatches(
+    draftId: string,
+  ): Promise<PersonalizedPaperBatch[]> {
+    const result = await apiClient.request(
+      `/api/training/personalized-drafts/${draftId}/paper-batches`,
+      {
+        decode: decodePersonalizedPaperBatchList,
+        timeoutMs: 30_000,
+      },
+    )
+    return result.items
+  },
+
+  cancelPaperBatch(
+    batchRunId: string,
+    operationToken: string,
+  ): Promise<PersonalizedPaperBatch> {
+    return apiClient.request(
+      `/api/training/paper-batches/${batchRunId}/cancel`,
+      {
+        method: 'POST',
+        body: { operation_token: operationToken },
+        decode: decodePersonalizedPaperBatch,
+        timeoutMs: 30_000,
+      },
+    )
+  },
+
+  retryPaperBatch(
+    batchRunId: string,
+    studentIds: string[] = [],
+  ): Promise<PersonalizedPaperBatch> {
+    return apiClient.request(
+      `/api/training/paper-batches/${batchRunId}/retry`,
+      {
+        method: 'POST',
+        body: { student_ids: studentIds },
+        decode: decodePersonalizedPaperBatch,
+        timeoutMs: 600_000,
       },
     )
   },

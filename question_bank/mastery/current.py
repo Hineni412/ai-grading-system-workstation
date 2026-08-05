@@ -30,16 +30,26 @@ class CurrentMastery:
     status: str
     value: float | None
     evidence_count: int
+    effective_weight: float
     parameter_version: str
     reason: str | None = None
+    contributing_student_count: int = 1
+    exam_evidence_count: int = 0
+    training_evidence_count: int = 0
+    evidence_contributions: tuple[tuple[str, float, float], ...] = ()
+    direct_evidence_count: int = 0
 
     def to_dict(self) -> dict[str, object]:
         return {
             "status": self.status,
             "value": self.value,
             "evidence_count": self.evidence_count,
+            "effective_weight": self.effective_weight,
             "parameter_version": self.parameter_version,
             "reason": self.reason,
+            "contributing_student_count": self.contributing_student_count,
+            "exam_evidence_count": self.exam_evidence_count,
+            "training_evidence_count": self.training_evidence_count,
         }
 
 
@@ -64,12 +74,14 @@ class CurrentMasteryCalculator:
         profile: Mapping[str, Any],
         *,
         exclude_training_evidence_ids: frozenset[str] = frozenset(),
+        allowed_student_ids: frozenset[str] | None = None,
     ) -> dict[tuple[str, str], CurrentMastery]:
         if self.parameters is None:
             raise ValueError("current mastery parameters are unavailable")
         exam = self._exam_evidence(profile)
         training = self._training_evidence(
-            exclude_evidence_ids=exclude_training_evidence_ids
+            exclude_evidence_ids=exclude_training_evidence_ids,
+            allowed_student_ids=allowed_student_ids,
         )
         identities = set(exam) | set(training)
         as_of = self.clock()
@@ -101,11 +113,99 @@ class CurrentMasteryCalculator:
                 status=calculated.status.value,
                 value=calculated.value,
                 evidence_count=calculated.direct_evidence_count,
+                effective_weight=calculated.effective_sample_weight,
                 parameter_version=calculated.parameter_version,
                 reason=(
                     None
                     if calculated.value is not None
                     else "current_mastery_evidence_missing"
+                ),
+                exam_evidence_count=sum(
+                    1 for item in calculated.contributions
+                    if item.included and item.evidence_id.startswith("exam:")
+                ),
+                training_evidence_count=sum(
+                    1 for item in calculated.contributions
+                    if item.included and not item.evidence_id.startswith("exam:")
+                ),
+                evidence_contributions=tuple(
+                    (
+                        item.evidence_id,
+                        float(item.effective_weight),
+                        float(item.weighted_value),
+                    )
+                    for item in calculated.contributions
+                    if item.included
+                ),
+                direct_evidence_count=calculated.direct_evidence_count,
+            )
+        return self._with_parent_rollups(result)
+
+    def _with_parent_rollups(
+        self,
+        direct: dict[tuple[str, str], CurrentMastery],
+    ) -> dict[tuple[str, str], CurrentMastery]:
+        """Roll every stable evidence identity into each governed parent once."""
+
+        parent_by_child = {
+            relation.source_key: relation.target_key
+            for relation in self.resolver.relations
+            if relation.relation_type == "parent"
+        }
+        node_by_key = {node.stable_key: node for node in self.resolver.nodes}
+        buckets: dict[
+            tuple[str, str], dict[str, tuple[float, float]]
+        ] = defaultdict(dict)
+        for (student_id, stable_key), item in direct.items():
+            lineage: list[str] = [stable_key]
+            seen = {stable_key}
+            parent = parent_by_child.get(stable_key)
+            while parent and parent not in seen:
+                lineage.append(parent)
+                seen.add(parent)
+                parent = parent_by_child.get(parent)
+            for target_key in lineage:
+                bucket = buckets[(student_id, target_key)]
+                for evidence_id, weight, weighted_value in item.evidence_contributions:
+                    bucket.setdefault(evidence_id, (weight, weighted_value))
+
+        result = dict(direct)
+        for identity, evidence in buckets.items():
+            student_id, stable_key = identity
+            node = node_by_key.get(stable_key)
+            if node is None or not evidence:
+                continue
+            effective_weight = sum(item[0] for item in evidence.values())
+            if effective_weight <= 0:
+                continue
+            numerator = (
+                self.parameters.prior_mean * self.parameters.prior_strength
+                + sum(item[1] for item in evidence.values())
+            )
+            denominator = self.parameters.prior_strength + effective_weight
+            result[(student_id, stable_key)] = CurrentMastery(
+                stable_key=stable_key,
+                display_name=node.display_name,
+                status="available",
+                value=round(min(1.0, max(0.0, numerator / denominator)), 6),
+                evidence_count=len(evidence),
+                effective_weight=round(effective_weight, 6),
+                parameter_version=self.parameters.version,
+                exam_evidence_count=sum(
+                    1 for evidence_id in evidence
+                    if evidence_id.startswith("exam:")
+                ),
+                training_evidence_count=sum(
+                    1 for evidence_id in evidence
+                    if not evidence_id.startswith("exam:")
+                ),
+                evidence_contributions=tuple(
+                    (evidence_id, values[0], values[1])
+                    for evidence_id, values in sorted(evidence.items())
+                ),
+                direct_evidence_count=(
+                    direct.get((student_id, stable_key)).evidence_count
+                    if (student_id, stable_key) in direct else 0
                 ),
             )
         return result
@@ -162,6 +262,7 @@ class CurrentMasteryCalculator:
         self,
         *,
         exclude_evidence_ids: frozenset[str],
+        allowed_student_ids: frozenset[str] | None,
     ) -> dict[tuple[str, str], list[TrainingEvidence]]:
         if not self.db_path.is_file():
             raise sqlite3.OperationalError("question bank database is missing")
@@ -187,6 +288,8 @@ class CurrentMasteryCalculator:
             if str(row["evidence_id"]) in exclude_evidence_ids:
                 continue
             student_id = str(row["student_id"])
+            if allowed_student_ids is not None and student_id not in allowed_student_ids:
+                continue
             for target in self.resolver.resolve(row["stable_key"]):
                 identity = (student_id, target.stable_key, str(row["evidence_id"]))
                 if identity in seen:
@@ -217,11 +320,30 @@ def aggregate_current_mastery(
         available = [item for item in items if item.value is not None]
         exemplar = items[0]
         if not available:
-            result[stable_key] = exemplar
+            result[stable_key] = CurrentMastery(
+                stable_key=stable_key,
+                display_name=exemplar.display_name,
+                status=exemplar.status,
+                value=None,
+                evidence_count=0,
+                effective_weight=0.0,
+                parameter_version=exemplar.parameter_version,
+                contributing_student_count=0,
+                exam_evidence_count=0,
+                training_evidence_count=0,
+                evidence_contributions=(),
+                direct_evidence_count=0,
+            )
             continue
-        total_weight = sum(max(item.evidence_count, 1) for item in available)
+        total_weight = sum(max(item.effective_weight, 0.0) for item in available)
+        if total_weight <= 0:
+            total_weight = float(len(available))
         value = sum(
-            float(item.value) * max(item.evidence_count, 1)
+            float(item.value) * (
+                max(item.effective_weight, 0.0)
+                if any(candidate.effective_weight > 0 for candidate in available)
+                else 1.0
+            )
             for item in available
             if item.value is not None
         ) / total_weight
@@ -231,7 +353,17 @@ def aggregate_current_mastery(
             status="available",
             value=round(value, 6),
             evidence_count=sum(item.evidence_count for item in available),
+            effective_weight=round(sum(item.effective_weight for item in available), 6),
             parameter_version=exemplar.parameter_version,
+            contributing_student_count=len(available),
+            exam_evidence_count=sum(
+                item.exam_evidence_count for item in available
+            ),
+            training_evidence_count=sum(
+                item.training_evidence_count for item in available
+            ),
+            evidence_contributions=(),
+            direct_evidence_count=sum(item.direct_evidence_count for item in available),
         )
     return result
 

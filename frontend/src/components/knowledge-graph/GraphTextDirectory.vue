@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
 
 import type { GraphEdge, GraphNode, GraphRelationType } from '../../api/graph'
 import {
@@ -20,6 +20,7 @@ const emit = defineEmits<{ selectNode: [stableKey: string] }>()
 const search = ref('')
 const relationType = ref<GraphRelationType | 'all'>('all')
 const page = ref(1)
+const directory = ref<HTMLElement | null>(null)
 
 const relationCounts = computed(() => {
   const counts = new Map<string, number>()
@@ -52,6 +53,20 @@ watch([search, relationType, () => props.nodes, () => props.edges], () => {
   page.value = 1
 }, { deep: true })
 watch(totalPages, (value) => { page.value = Math.min(page.value, value) })
+watch(
+  () => props.selectedKey,
+  async (selectedKey) => {
+    if (!selectedKey) return
+    const index = filteredNodes.value.findIndex((node) => node.stableKey === selectedKey)
+    if (index < 0) return
+    page.value = Math.floor(index / props.pageSize) + 1
+    await nextTick()
+    const selected = [...(directory.value?.querySelectorAll<HTMLElement>(
+      '[data-stable-key]',
+    ) ?? [])].find((element) => element.dataset.stableKey === selectedKey)
+    selected?.scrollIntoView?.({ block: 'nearest' })
+  },
+)
 
 function onDirectoryKeydown(event: KeyboardEvent): void {
   const target = event.target
@@ -73,7 +88,7 @@ function onDirectoryKeydown(event: KeyboardEvent): void {
 </script>
 
 <template>
-  <section class="knowledge-graph-directory" aria-labelledby="knowledge-graph-directory-title">
+  <section ref="directory" class="knowledge-graph-directory" aria-labelledby="knowledge-graph-directory-title">
     <header>
       <div>
         <h2 id="knowledge-graph-directory-title">知识点文字目录</h2>
