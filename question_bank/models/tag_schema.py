@@ -18,7 +18,7 @@ LIST_FIELDS = (
     "error_prone_points",
     "prerequisite_points",
 )
-MAX_TAG_LENGTH = 36
+MAX_TAG_LENGTH = 160
 PROPOSABLE_TAG_DIMENSIONS = (
     "curriculum",
     "knowledge",

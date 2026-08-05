@@ -12,6 +12,7 @@ from question_bank.knowledge_graph_release import (
     active_release_id,
     activate_release,
     load_release,
+    load_release_for_taxonomy_revision,
     load_taxonomy_catalog,
     preview_install,
     rollback_release,
@@ -51,22 +52,22 @@ def test_checked_in_release_covers_every_governed_knowledge_term() -> None:
     report = validate_release(release, load_taxonomy_catalog())
 
     assert report.valid, report.to_dict()
-    assert len(release.payload["fine_term_dispositions"]) == 294
-    assert len(release.payload["core_nodes"]) == 77
+    assert len(release.payload["fine_term_dispositions"]) == 1124
+    assert len(release.payload["core_nodes"]) == 1124
     assert sum(
         item["status"] == "active"
         for item in release.payload["core_nodes"]
-    ) == 70
-    assert len(release.payload["mappings"]) == 301
-    assert len(release.payload["relations"]) == 48
+    ) == 1124
+    assert len(release.payload["mappings"]) == 1124
+    assert len(release.payload["relations"]) == 1088
 
 
 def test_release_can_be_staged_activated_and_rolled_back_atomically(
     tmp_path: Path,
 ) -> None:
     db_path = _database(tmp_path)
-    first = load_release()
-    second = _next_release(first, "kgr_junior_math_test_v2")
+    first = load_release_for_taxonomy_revision(3)
+    second = load_release()
     with connect(db_path) as connection:
         active_before_stage = connection.execute(
             """
@@ -147,7 +148,7 @@ def test_release_can_be_staged_activated_and_rolled_back_atomically(
 
 def test_activation_rejects_stale_expected_release(tmp_path: Path) -> None:
     db_path = _database(tmp_path)
-    release = load_release()
+    release = load_release_for_taxonomy_revision(3)
     stage_release(
         db_path,
         release,
@@ -198,7 +199,7 @@ def test_legacy_mapping_baseline_stops_after_graph_activation(
     tmp_path: Path,
 ) -> None:
     db_path = _database(tmp_path)
-    release = load_release()
+    release = load_release_for_taxonomy_revision(3)
     stage_release(
         db_path,
         release,
@@ -230,8 +231,8 @@ def test_tagging_contract_follows_activation_and_rollback(
         state_path=tmp_path / "taxonomy-state.json",
         knowledge_graph_db_path=db_path,
     )
-    first = load_release()
-    second = _next_release(first, "kgr_junior_math_contract_test_v2")
+    first = load_release_for_taxonomy_revision(3)
+    second = load_release()
 
     assert governance.prompt_contract()["knowledge_graph_release_id"] == ""
     stage_release(

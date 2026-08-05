@@ -44,7 +44,7 @@ def question_bank_fixture(
     initialize_database(db_path)
     install_current_knowledge(db_path)
 
-    with sqlite3.connect(db_path) as conn:
+    with closing(sqlite3.connect(db_path)) as conn:
         conn.executemany(
             """
             INSERT INTO papers (

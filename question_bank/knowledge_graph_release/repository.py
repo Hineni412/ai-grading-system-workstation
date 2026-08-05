@@ -16,7 +16,7 @@ from question_bank.knowledge_graph_release.contracts import (
 )
 from question_bank.knowledge_graph_release.loader import (
     load_release,
-    load_taxonomy_catalog,
+    load_taxonomy_catalog_for_release,
 )
 from question_bank.knowledge_graph_release.validation import validate_release
 
@@ -101,7 +101,9 @@ def preview_install(
     taxonomy_catalog: Mapping[str, Any] | None = None,
 ) -> InstallPreview:
     candidate = release or load_release()
-    catalog = dict(taxonomy_catalog or load_taxonomy_catalog())
+    catalog = dict(
+        taxonomy_catalog or load_taxonomy_catalog_for_release(candidate)
+    )
     validation = validate_release(candidate, catalog)
     issues = [
         InstallIssue(issue.code, f"{issue.path}: {issue.message}")
@@ -169,7 +171,10 @@ def stage_release(
     candidate = release or load_release()
     validation = validate_release(
         candidate,
-        dict(taxonomy_catalog or load_taxonomy_catalog()),
+        dict(
+            taxonomy_catalog
+            or load_taxonomy_catalog_for_release(candidate)
+        ),
     )
     validation.raise_for_errors()
     actor = _required(actor_ref, "actor_ref")
@@ -256,7 +261,9 @@ def bootstrap_release(
     """
 
     candidate = release or load_release()
-    catalog = dict(taxonomy_catalog or load_taxonomy_catalog())
+    catalog = dict(
+        taxonomy_catalog or load_taxonomy_catalog_for_release(candidate)
+    )
     validation = validate_release(candidate, catalog)
     validation.raise_for_errors()
     actor = _required(actor_ref, "actor_ref")
@@ -276,18 +283,15 @@ def bootstrap_release(
             active = KnowledgeGraphRelease.from_mapping(
                 json.loads(str(active_row["payload_json"]))
             )
-            active_validation = validate_release(active, catalog)
+            active_validation = validate_release(
+                active,
+                load_taxonomy_catalog_for_release(active),
+            )
             if not active_validation.valid:
                 raise KnowledgeGraphReleaseConflict(
                     "当前活动图谱无法通过结构校验"
                 )
             return active.release_id
-
-        predecessor = _optional(candidate.payload.get("predecessor_release_id"))
-        if predecessor is not None:
-            raise KnowledgeGraphReleaseConflict(
-                "首次安装的知识标准不能指定前序版本"
-            )
 
         row = connection.execute(
             "SELECT * FROM knowledge_graph_releases WHERE release_id = ?",

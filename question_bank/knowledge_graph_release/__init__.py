@@ -8,7 +8,9 @@ from question_bank.knowledge_graph_release.loader import (
     DEFAULT_RELEASE_PATH,
     DEFAULT_TAXONOMY_PATH,
     load_release,
+    load_release_for_taxonomy_revision,
     load_taxonomy_catalog,
+    load_taxonomy_catalog_for_release,
 )
 from question_bank.knowledge_graph_release.repository import (
     InstallIssue,
@@ -43,7 +45,9 @@ __all__ = [
     "bootstrap_release",
     "load_active_release",
     "load_release",
+    "load_release_for_taxonomy_revision",
     "load_taxonomy_catalog",
+    "load_taxonomy_catalog_for_release",
     "preview_install",
     "rollback_release",
     "stage_release",

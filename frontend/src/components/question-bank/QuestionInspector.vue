@@ -149,7 +149,7 @@ function removeTag(index: number): void {
 function validTags(): boolean {
   return store.tagDraft.every((tag) => (
     tag.tag_value.trim().length > 0 &&
-    tag.tag_value.trim().length <= 36 &&
+    tag.tag_value.trim().length <= 160 &&
     (
       tag.confidence === null ||
       (
@@ -338,7 +338,7 @@ async function removeCurrent(): Promise<void> {
                     <input
                       v-else
                       v-model="tag.tag_value"
-                      maxlength="36"
+                      maxlength="160"
                       :aria-label="`${group.label}标签值`"
                       placeholder="标签值"
                     >

@@ -988,7 +988,8 @@ def test_gateway_prompt_turns_teacher_retry_into_targeted_repair() -> None:
     assert "repair" in prompt["rules"].casefold()
     assert "fresh dependency namespace" in prompt["rules"]
     assert "full_answer" in prompt["rules"]
-    assert "at least two distinct non-empty evidence points" in prompt["rules"]
+    assert "If only one milestone can be confirmed" in prompt["rules"]
+    assert "never invent steps just to satisfy a count" in prompt["rules"]
     assert "Do not infer an exact evidence point count" in prompt["rules"]
 
 

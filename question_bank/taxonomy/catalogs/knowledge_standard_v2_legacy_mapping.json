@@ -1,0 +1,3125 @@
+{
+  "schema_version": 1,
+  "mapping_id": "bnu-math-curriculum-knowledge-v2-legacy-mapping",
+  "source_taxonomy_revision": 3,
+  "target_taxonomy_revision": 4,
+  "policy": "只采用精确且唯一的名称或来源末级名称匹配；多目标和无目标不自动迁移。",
+  "statistics": {
+    "split": 176,
+    "unique_alias": 24,
+    "retired": 66,
+    "exact": 28
+  },
+  "items": [
+    {
+      "legacy_id": "kp_alg_inequality_appl",
+      "legacy_name": "一元一次不等式应用",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g8_lower_2_2_7",
+        "kp_bnu24_math_g8_lower_2_2_9",
+        "kp_bnu24_math_g8_lower_2_2_8",
+        "kp_bnu24_math_g8_lower_2_4_15",
+        "kp_bnu24_math_g8_lower_2_4_12",
+        "kp_bnu24_math_g8_lower_2_4_10",
+        "kp_bnu24_math_g8_lower_2_4_13",
+        "kp_bnu24_math_g8_lower_2_4_11",
+        "kp_bnu24_math_g8_lower_2_4_9",
+        "kp_bnu24_math_g8_lower_2_4_14",
+        "kp_bnu24_math_g8_lower_2_4_8"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "kp_alg_inequality_system",
+      "legacy_name": "一元一次不等式组",
+      "disposition": "unique_alias",
+      "target_ids": [
+        "kp_bnu24_math_g8_lower_2_1_3"
+      ],
+      "reason": "旧词通过精确且唯一的名称匹配到一个教材路径节点。"
+    },
+    {
+      "legacy_id": "kp_alg_linear_equation",
+      "legacy_name": "一元一次方程",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g7_upper_5_2_5",
+        "kp_bnu24_math_g7_upper_5_2_4",
+        "kp_bnu24_math_g7_upper_5_2_1",
+        "kp_bnu24_math_g7_upper_5_2_3",
+        "kp_bnu24_math_g7_upper_5_2_2"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "kp_alg_linear_equation_appl",
+      "legacy_name": "一元一次方程应用",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g7_upper_5_3_13",
+        "kp_bnu24_math_g7_upper_5_3_6",
+        "kp_bnu24_math_g7_upper_5_3_7",
+        "kp_bnu24_math_g7_upper_5_3_12",
+        "kp_bnu24_math_g7_upper_5_3_15",
+        "kp_bnu24_math_g7_upper_5_3_1",
+        "kp_bnu24_math_g7_upper_5_3_5",
+        "kp_bnu24_math_g7_upper_5_3_4",
+        "kp_bnu24_math_g7_upper_5_3_11",
+        "kp_bnu24_math_g7_upper_5_3_10",
+        "kp_bnu24_math_g7_upper_5_3_3",
+        "kp_bnu24_math_g7_upper_5_3_8",
+        "kp_bnu24_math_g7_upper_5_3_9",
+        "kp_bnu24_math_g7_upper_5_3_14",
+        "kp_bnu24_math_g7_upper_5_3_2"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-d9863751050c8e27",
+      "legacy_name": "一元一次方程的定义",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g7_upper_5_1_5",
+        "kp_bnu24_math_g7_upper_5_1_6"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "kp_alg_quadratic_equation",
+      "legacy_name": "一元二次方程",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g9_upper_2_2_4",
+        "kp_bnu24_math_g9_upper_2_2_7",
+        "kp_bnu24_math_g9_upper_2_2_8",
+        "kp_bnu24_math_g9_upper_2_2_1",
+        "kp_bnu24_math_g9_upper_2_2_2",
+        "kp_bnu24_math_g9_upper_2_2_3",
+        "kp_bnu24_math_g9_upper_2_3_1"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-cd0452b23eda4e8a",
+      "legacy_name": "一元二次方程根的判别式",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g9_upper_2_2_6",
+        "kp_bnu24_math_g9_upper_2_2_5"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-a6abea63cb4ca7c7",
+      "legacy_name": "一元二次方程的一般形式",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g9_upper_2_1_2",
+        "kp_bnu24_math_g9_upper_2_1_3"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-294bac89d8e78e73",
+      "legacy_name": "一元二次方程的相关概念",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g9_upper_2_1_1",
+        "kp_bnu24_math_g9_upper_2_1_6"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-75106a64444b2a2e",
+      "legacy_name": "一元二次方程的解",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g9_upper_2_1_4",
+        "kp_bnu24_math_g9_upper_2_1_5"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "kp_fun_linear",
+      "legacy_name": "一次函数",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g8_upper_5_4_1",
+        "kp_bnu24_math_g8_upper_4_4_6"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-d80db0e943918569",
+      "legacy_name": "一次函数与一元一次不等式",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g8_lower_2_3_2",
+        "kp_bnu24_math_g8_lower_2_3_1"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-7a2451f5258dec40",
+      "legacy_name": "一次函数与一元一次方程",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g8_upper_4_4_9",
+        "kp_bnu24_math_g8_upper_4_4_7",
+        "kp_bnu24_math_g8_upper_4_4_8"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-b94312109a36037e",
+      "legacy_name": "一次函数与二元一次方程（组）",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g8_upper_5_4_2",
+        "kp_bnu24_math_g8_upper_5_4_3",
+        "kp_bnu24_math_g8_upper_5_4_4"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "kp_fun_linear_appl",
+      "legacy_name": "一次函数应用",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g8_upper_4_4_5",
+        "kp_bnu24_math_g8_upper_4_4_1",
+        "kp_bnu24_math_g8_upper_4_4_2",
+        "kp_bnu24_math_g8_upper_4_4_4",
+        "kp_bnu24_math_g8_upper_4_4_3"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-52e3b96d59ed1a02",
+      "legacy_name": "一次函数的定义",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g8_upper_4_2_5",
+        "kp_bnu24_math_g8_upper_4_2_3",
+        "kp_bnu24_math_g8_upper_4_2_4",
+        "kp_bnu24_math_g8_upper_4_2_2"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-b198a3eb78a510cd",
+      "legacy_name": "一次函数的性质",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g8_upper_4_3_15",
+        "kp_bnu24_math_g8_upper_4_3_11",
+        "kp_bnu24_math_g8_upper_4_3_12",
+        "kp_bnu24_math_g8_upper_4_3_13",
+        "kp_bnu24_math_g8_upper_4_3_14"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-eb20964c827792f9",
+      "legacy_name": "三元一次方程组",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g8_upper_5_5_1",
+        "kp_bnu24_math_g8_upper_5_5_2"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-4cac58da9feb7b90",
+      "legacy_name": "三角形",
+      "disposition": "retired",
+      "target_ids": [],
+      "reason": "未找到精确且唯一的教材路径对应项，不进行猜测迁移。"
+    },
+    {
+      "legacy_id": "kp_geo_triangle_congruence",
+      "legacy_name": "三角形全等",
+      "disposition": "unique_alias",
+      "target_ids": [
+        "kp_bnu24_math_g7_lower_4_2_2"
+      ],
+      "reason": "旧词通过精确且唯一的名称匹配到一个教材路径节点。"
+    },
+    {
+      "legacy_id": "kp_geo_angle_sum_theorem",
+      "legacy_name": "三角形内角和与外角定理",
+      "disposition": "retired",
+      "target_ids": [],
+      "reason": "未找到精确且唯一的教材路径对应项，不进行猜测迁移。"
+    },
+    {
+      "legacy_id": "kp_geo_triangle_properties",
+      "legacy_name": "三角形性质",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g8_lower_6_3_3",
+        "kp_bnu24_math_g8_lower_6_3_1",
+        "kp_bnu24_math_g8_lower_6_3_2"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-75dc50c11800e50f",
+      "legacy_name": "三角形的三边关系",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g7_lower_4_1_14",
+        "kp_bnu24_math_g7_lower_4_1_8",
+        "kp_bnu24_math_g7_lower_4_1_9"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-d49cf571f8860900",
+      "legacy_name": "三角形的中线",
+      "disposition": "retired",
+      "target_ids": [],
+      "reason": "未找到精确且唯一的教材路径对应项，不进行猜测迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-9f79436f8cab7f68",
+      "legacy_name": "三角形的内角和定理",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g7_lower_4_1_3",
+        "kp_bnu24_math_g7_lower_4_1_4",
+        "kp_bnu24_math_g8_lower_1_1_4",
+        "kp_bnu24_math_g8_lower_1_1_1",
+        "kp_bnu24_math_g8_lower_1_1_5",
+        "kp_bnu24_math_g8_lower_1_1_2",
+        "kp_bnu24_math_g8_lower_1_1_3"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-2030754d4d76f549",
+      "legacy_name": "三角形的外接圆",
+      "disposition": "retired",
+      "target_ids": [],
+      "reason": "未找到精确且唯一的教材路径对应项，不进行猜测迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-21b243fdb9ff5c11",
+      "legacy_name": "三角形的稳定性",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g7_lower_4_3_5",
+        "kp_bnu24_math_g7_lower_4_3_6"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-4760d52ebc9013af",
+      "legacy_name": "三角形的角平分线",
+      "disposition": "unique_alias",
+      "target_ids": [
+        "kp_bnu24_math_g7_lower_4_1_12"
+      ],
+      "reason": "旧词通过精确且唯一的名称匹配到一个教材路径节点。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-d3b6309c30ba7ed5",
+      "legacy_name": "三角形的认识",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g7_lower_4_1_2",
+        "kp_bnu24_math_g7_lower_4_1_1"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-9c9fb3faea54e5e4",
+      "legacy_name": "三角形的重心",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g7_lower_4_1_17",
+        "kp_bnu24_math_g7_lower_4_1_13"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-49a9605ca5dbc344",
+      "legacy_name": "三角形的高",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g7_lower_4_1_15",
+        "kp_bnu24_math_g7_lower_4_1_16",
+        "kp_bnu24_math_g7_lower_4_1_11"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "kp_geo_triangle_area",
+      "legacy_name": "三角形面积",
+      "disposition": "retired",
+      "target_ids": [],
+      "reason": "未找到精确且唯一的教材路径对应项，不进行猜测迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-c2a2e3745328c0da",
+      "legacy_name": "不等式",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g8_lower_2_1_1",
+        "kp_bnu24_math_g8_lower_2_1_2"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-d742d4155f48070e",
+      "legacy_name": "不等式与不等式组",
+      "disposition": "retired",
+      "target_ids": [],
+      "reason": "未找到精确且唯一的教材路径对应项，不进行猜测迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-e3bc68a2d66c1074",
+      "legacy_name": "与三角形有关的线段",
+      "disposition": "unique_alias",
+      "target_ids": [
+        "kp_bnu24_math_g7_lower_4_1_5"
+      ],
+      "reason": "旧词通过精确且唯一的名称匹配到一个教材路径节点。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-84cdb7dd1ba19137",
+      "legacy_name": "与三角形有关的角",
+      "disposition": "unique_alias",
+      "target_ids": [
+        "kp_bnu24_math_g8_lower_1_1_6"
+      ],
+      "reason": "旧词通过精确且唯一的名称匹配到一个教材路径节点。"
+    },
+    {
+      "legacy_id": "kp_geo_circle_tangent",
+      "legacy_name": "与圆有关的位置关系",
+      "disposition": "retired",
+      "target_ids": [],
+      "reason": "未找到精确且唯一的教材路径对应项，不进行猜测迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-0e03da13787cd161",
+      "legacy_name": "中心对称图形",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g8_lower_3_2_22",
+        "kp_bnu24_math_g8_lower_3_2_25",
+        "kp_bnu24_math_g8_lower_3_2_23",
+        "kp_bnu24_math_g8_lower_3_2_24"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-7ffd8410581869cb",
+      "legacy_name": "中心对称的性质",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g8_lower_3_2_21",
+        "kp_bnu24_math_g8_lower_3_2_20",
+        "kp_bnu24_math_g8_lower_3_2_19"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-78846b8e5de5c223",
+      "legacy_name": "乘法公式",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g7_lower_1_3_4",
+        "kp_bnu24_math_g7_lower_1_3_2",
+        "kp_bnu24_math_g7_lower_1_3_7",
+        "kp_bnu24_math_g7_lower_1_4_5"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "kp_alg_equation_system",
+      "legacy_name": "二元一次方程组",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g8_upper_5_2_3",
+        "kp_bnu24_math_g8_upper_5_2_4",
+        "kp_bnu24_math_g8_upper_5_2_1",
+        "kp_bnu24_math_g8_upper_5_2_2",
+        "kp_bnu24_math_g8_upper_5_2_6",
+        "kp_bnu24_math_g8_upper_5_2_7",
+        "kp_bnu24_math_g8_upper_5_2_5"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-fb37efaeeb84c384",
+      "legacy_name": "二元一次方程组定义",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g8_upper_5_1_3",
+        "kp_bnu24_math_g8_upper_5_1_4",
+        "kp_bnu24_math_g8_upper_5_1_5"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "kp_alg_system_appl",
+      "legacy_name": "二元一次方程组应用",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g8_upper_5_1_7",
+        "kp_bnu24_math_g8_upper_5_1_6",
+        "kp_bnu24_math_g8_upper_5_3_13",
+        "kp_bnu24_math_g8_upper_5_3_9",
+        "kp_bnu24_math_g8_upper_5_3_6",
+        "kp_bnu24_math_g8_upper_5_3_11",
+        "kp_bnu24_math_g8_upper_5_3_8",
+        "kp_bnu24_math_g8_upper_5_3_10",
+        "kp_bnu24_math_g8_upper_5_3_3",
+        "kp_bnu24_math_g8_upper_5_3_5",
+        "kp_bnu24_math_g8_upper_5_3_12",
+        "kp_bnu24_math_g8_upper_5_3_4",
+        "kp_bnu24_math_g8_upper_5_3_1",
+        "kp_bnu24_math_g8_upper_5_3_2",
+        "kp_bnu24_math_g8_upper_5_3_7"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-cc9054b51015c48e",
+      "legacy_name": "二元一次方程（组）的相关概念",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g8_upper_5_1_1",
+        "kp_bnu24_math_g8_upper_5_1_2"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "kp_fun_quadratic",
+      "legacy_name": "二次函数",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g9_upper_5_4_17",
+        "kp_bnu24_math_g9_upper_5_4_14",
+        "kp_bnu24_math_g9_upper_5_4_15",
+        "kp_bnu24_math_g9_upper_5_4_16",
+        "kp_bnu24_math_g9_upper_5_4_11",
+        "kp_bnu24_math_g9_upper_5_4_13",
+        "kp_bnu24_math_g9_upper_5_4_12"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-4b30c2812d76da38",
+      "legacy_name": "二次函数y=ax²+bx+c的图象和性质",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g9_upper_5_2_7",
+        "kp_bnu24_math_g9_upper_5_2_5",
+        "kp_bnu24_math_g9_upper_5_2_6"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-87ff142c9834e609",
+      "legacy_name": "二次函数与不等式",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g9_upper_5_4_9",
+        "kp_bnu24_math_g9_upper_5_4_8",
+        "kp_bnu24_math_g9_upper_5_4_10"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "kp_fun_quadratic_relation",
+      "legacy_name": "二次函数与方程不等式",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g9_upper_5_4_3",
+        "kp_bnu24_math_g9_upper_5_4_4",
+        "kp_bnu24_math_g9_upper_5_4_7",
+        "kp_bnu24_math_g9_upper_5_4_5",
+        "kp_bnu24_math_g9_upper_5_4_1",
+        "kp_bnu24_math_g9_upper_5_4_2"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-206ae828b3202a18",
+      "legacy_name": "二次函数图象的平移",
+      "disposition": "exact",
+      "target_ids": [
+        "kp_bnu24_math_g9_upper_5_2_17"
+      ],
+      "reason": "旧词通过精确且唯一的名称匹配到一个教材路径节点。"
+    },
+    {
+      "legacy_id": "kp_fun_quadratic_appl",
+      "legacy_name": "二次函数应用",
+      "disposition": "retired",
+      "target_ids": [],
+      "reason": "未找到精确且唯一的教材路径对应项，不进行猜测迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-845a302a4fa0658f",
+      "legacy_name": "二次函数的图象与系数的关系",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g9_upper_5_2_11",
+        "kp_bnu24_math_g9_upper_5_2_13",
+        "kp_bnu24_math_g9_upper_5_2_9",
+        "kp_bnu24_math_g9_upper_5_2_12",
+        "kp_bnu24_math_g9_upper_5_2_10"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-e1b2cb810112ee75",
+      "legacy_name": "二次函数的图象和性质",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g9_upper_5_2_2",
+        "kp_bnu24_math_g9_upper_5_2_1",
+        "kp_bnu24_math_g9_upper_5_2_4",
+        "kp_bnu24_math_g9_upper_5_2_3"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-9c28bbe11223262c",
+      "legacy_name": "二次函数的定义",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g9_upper_5_1_2",
+        "kp_bnu24_math_g9_upper_5_1_1",
+        "kp_bnu24_math_g9_upper_5_1_3"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-cae301dca7f9f4b8",
+      "legacy_name": "二次函数的对称",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g9_upper_5_2_14",
+        "kp_bnu24_math_g9_upper_5_2_15"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-dd3b28a1ed58318d",
+      "legacy_name": "二次函数的最值",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g9_upper_5_2_8",
+        "kp_bnu24_math_g9_upper_5_2_16"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "kp_alg_radical",
+      "legacy_name": "二次根式",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g8_upper_2_3_11",
+        "kp_bnu24_math_g8_upper_2_3_12",
+        "kp_bnu24_math_g8_upper_2_3_10"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-ffe5697cc4affcf3",
+      "legacy_name": "二次根式的乘除",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g8_upper_2_3_7",
+        "kp_bnu24_math_g8_upper_2_3_9",
+        "kp_bnu24_math_g8_upper_2_3_8"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-bff17231b385d1a7",
+      "legacy_name": "二次根式的加减",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g8_upper_2_3_14",
+        "kp_bnu24_math_g8_upper_2_3_15",
+        "kp_bnu24_math_g8_upper_2_3_16",
+        "kp_bnu24_math_g8_upper_2_3_13",
+        "kp_bnu24_math_g8_upper_2_3_19"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-ad6052b40702c81e",
+      "legacy_name": "二次根式的化简求值",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g8_upper_2_3_17",
+        "kp_bnu24_math_g8_upper_2_3_18"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-ae0abee478cb57dd",
+      "legacy_name": "二次根式的定义",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g8_upper_2_3_1",
+        "kp_bnu24_math_g8_upper_2_3_3",
+        "kp_bnu24_math_g8_upper_2_3_2"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-42f9f1bec541e0c8",
+      "legacy_name": "二次根式的应用",
+      "disposition": "exact",
+      "target_ids": [
+        "kp_bnu24_math_g8_upper_2_3_20"
+      ],
+      "reason": "旧词通过精确且唯一的名称匹配到一个教材路径节点。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-dd8043faeaa46017",
+      "legacy_name": "二次根式的性质和化简",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g8_upper_2_3_5",
+        "kp_bnu24_math_g8_upper_2_3_6"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-3f005520a385e3b5",
+      "legacy_name": "二次根式的概念及性质",
+      "disposition": "unique_alias",
+      "target_ids": [
+        "kp_bnu24_math_g8_upper_2_3_4"
+      ],
+      "reason": "旧词通过精确且唯一的名称匹配到一个教材路径节点。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-88908a99378a3b7f",
+      "legacy_name": "二项方程",
+      "disposition": "retired",
+      "target_ids": [],
+      "reason": "未找到精确且唯一的教材路径对应项，不进行猜测迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-ef9a8becdc9c413e",
+      "legacy_name": "互余两角三角函数的关系",
+      "disposition": "retired",
+      "target_ids": [],
+      "reason": "未找到精确且唯一的教材路径对应项，不进行猜测迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-d710456f7b5d44ea",
+      "legacy_name": "从算式到方程",
+      "disposition": "retired",
+      "target_ids": [],
+      "reason": "未找到精确且唯一的教材路径对应项，不进行猜测迁移。"
+    },
+    {
+      "legacy_id": "kp_fun_comprehensive",
+      "legacy_name": "代数与函数综合",
+      "disposition": "retired",
+      "target_ids": [],
+      "reason": "未找到精确且唯一的教材路径对应项，不进行猜测迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-dd8a1261cdba6252",
+      "legacy_name": "代数式及其应用",
+      "disposition": "retired",
+      "target_ids": [],
+      "reason": "未找到精确且唯一的教材路径对应项，不进行猜测迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-190e46af9ec4d46c",
+      "legacy_name": "代数式求值",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g7_upper_3_1_7",
+        "kp_bnu24_math_g7_upper_3_1_8",
+        "kp_bnu24_math_g7_upper_3_1_9"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-dfecc0f966240721",
+      "legacy_name": "代数式的概念及意义",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g7_upper_3_1_5",
+        "kp_bnu24_math_g7_upper_3_1_4",
+        "kp_bnu24_math_g7_upper_3_1_6"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-16a45f4d7d738a9d",
+      "legacy_name": "余角和补角",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g7_lower_2_1_8",
+        "kp_bnu24_math_g7_lower_2_1_9",
+        "kp_bnu24_math_g7_lower_2_1_6",
+        "kp_bnu24_math_g7_lower_2_1_7"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-8554fb24cf398a30",
+      "legacy_name": "全面调查与抽样调查",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g7_upper_6_2_1",
+        "kp_bnu24_math_g7_upper_6_2_2"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-49433ebc5c848a71",
+      "legacy_name": "公因式",
+      "disposition": "exact",
+      "target_ids": [
+        "kp_bnu24_math_g8_lower_4_2_1"
+      ],
+      "reason": "旧词通过精确且唯一的名称匹配到一个教材路径节点。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-ec51f3c39be7306f",
+      "legacy_name": "公式法分解因式",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g8_lower_4_3_1",
+        "kp_bnu24_math_g8_lower_4_3_3",
+        "kp_bnu24_math_g8_lower_4_3_2",
+        "kp_bnu24_math_g8_lower_4_3_4"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-2408a845fea76ec6",
+      "legacy_name": "关于原点对称的点的坐标",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g8_lower_3_2_28",
+        "kp_bnu24_math_g8_lower_3_2_27",
+        "kp_bnu24_math_g8_lower_3_2_26"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-72304eba6da2ce12",
+      "legacy_name": "几何体的展开图",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g7_upper_1_2_2",
+        "kp_bnu24_math_g7_upper_1_2_7",
+        "kp_bnu24_math_g7_upper_1_2_5",
+        "kp_bnu24_math_g7_upper_1_2_6",
+        "kp_bnu24_math_g7_upper_1_2_8",
+        "kp_bnu24_math_g7_upper_1_2_4",
+        "kp_bnu24_math_g7_upper_1_2_3",
+        "kp_bnu24_math_g7_upper_1_2_9"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-8f1f020bb8e0e626",
+      "legacy_name": "几何图形初步",
+      "disposition": "retired",
+      "target_ids": [],
+      "reason": "未找到精确且唯一的教材路径对应项，不进行猜测迁移。"
+    },
+    {
+      "legacy_id": "kp_geo_comprehensive",
+      "legacy_name": "几何综合",
+      "disposition": "retired",
+      "target_ids": [],
+      "reason": "未找到精确且唯一的教材路径对应项，不进行猜测迁移。"
+    },
+    {
+      "legacy_id": "kp_fun_function_graph",
+      "legacy_name": "函数图像",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g8_upper_4_1_7",
+        "kp_bnu24_math_g8_upper_4_1_6",
+        "kp_bnu24_math_g8_upper_4_1_8",
+        "kp_bnu24_math_g8_upper_4_3_6",
+        "kp_bnu24_math_g8_upper_4_3_10",
+        "kp_bnu24_math_g8_upper_4_3_9",
+        "kp_bnu24_math_g8_upper_4_3_3",
+        "kp_bnu24_math_g8_upper_4_3_5",
+        "kp_bnu24_math_g8_upper_4_3_4",
+        "kp_bnu24_math_g8_upper_4_3_7",
+        "kp_bnu24_math_g8_upper_4_3_8"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-3044ba2bf4eb0463",
+      "legacy_name": "函数基础知识",
+      "disposition": "unique_alias",
+      "target_ids": [
+        "kp_bnu24_math_g8_upper_4_1_4"
+      ],
+      "reason": "旧词通过精确且唯一的名称匹配到一个教材路径节点。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-5f8611a2f651cc71",
+      "legacy_name": "函数的概念",
+      "disposition": "exact",
+      "target_ids": [
+        "kp_bnu24_math_g8_upper_4_1_1"
+      ],
+      "reason": "旧词通过精确且唯一的名称匹配到一个教材路径节点。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-64d61105c8933f4e",
+      "legacy_name": "函数解析式",
+      "disposition": "exact",
+      "target_ids": [
+        "kp_bnu24_math_g8_upper_4_1_5"
+      ],
+      "reason": "旧词通过精确且唯一的名称匹配到一个教材路径节点。"
+    },
+    {
+      "legacy_id": "kp_alg_fraction",
+      "legacy_name": "分式",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g8_lower_5_1_10",
+        "kp_bnu24_math_g8_lower_5_1_12",
+        "kp_bnu24_math_g8_lower_5_1_14",
+        "kp_bnu24_math_g8_lower_5_1_13",
+        "kp_bnu24_math_g8_lower_5_1_11",
+        "kp_bnu24_math_g8_lower_5_2_4",
+        "kp_bnu24_math_g8_lower_5_2_14",
+        "kp_bnu24_math_g8_lower_5_2_15",
+        "kp_bnu24_math_g8_lower_5_2_16",
+        "kp_bnu24_math_g8_lower_5_2_5"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "kp_alg_fraction_equation",
+      "legacy_name": "分式方程及其应用",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g9_upper_2_2_9",
+        "kp_bnu24_math_g8_lower_5_3_2"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-cb8fe95767673fdb",
+      "legacy_name": "分式方程的定义",
+      "disposition": "exact",
+      "target_ids": [
+        "kp_bnu24_math_g8_lower_5_3_1"
+      ],
+      "reason": "旧词通过精确且唯一的名称匹配到一个教材路径节点。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-d996eca959010eb6",
+      "legacy_name": "分式方程的应用",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g8_lower_5_3_9",
+        "kp_bnu24_math_g8_lower_5_3_10",
+        "kp_bnu24_math_g8_lower_5_3_7",
+        "kp_bnu24_math_g8_lower_5_3_8",
+        "kp_bnu24_math_g8_lower_5_3_6",
+        "kp_bnu24_math_g8_lower_5_3_5"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-0d69ad113049763f",
+      "legacy_name": "分式方程的解",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g8_lower_5_3_4",
+        "kp_bnu24_math_g8_lower_5_3_3"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-42d14762d21cfd88",
+      "legacy_name": "分式有无意义的条件",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g8_lower_5_1_4",
+        "kp_bnu24_math_g8_lower_5_1_5"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-e9d79e214c36611d",
+      "legacy_name": "分式的乘除",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g8_lower_5_2_1",
+        "kp_bnu24_math_g8_lower_5_2_3",
+        "kp_bnu24_math_g8_lower_5_2_2"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-ad678989c8e192d9",
+      "legacy_name": "分式的值",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g8_lower_5_1_7",
+        "kp_bnu24_math_g8_lower_5_1_9",
+        "kp_bnu24_math_g8_lower_5_1_8"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-08ecff50e1004bd1",
+      "legacy_name": "分式的加减法则",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g8_lower_5_2_12",
+        "kp_bnu24_math_g8_lower_5_2_13",
+        "kp_bnu24_math_g8_lower_5_2_6",
+        "kp_bnu24_math_g8_lower_5_2_11",
+        "kp_bnu24_math_g8_lower_5_2_9",
+        "kp_bnu24_math_g8_lower_5_2_10"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-bd4435bb1faf9d33",
+      "legacy_name": "分式的定义",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g8_lower_5_1_1",
+        "kp_bnu24_math_g8_lower_5_1_2",
+        "kp_bnu24_math_g8_lower_5_1_3"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-d24eb130ffdf8000",
+      "legacy_name": "分式的概念及性质",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g8_lower_5_1_6",
+        "kp_bnu24_math_g8_lower_5_1_16",
+        "kp_bnu24_math_g8_lower_5_1_15",
+        "kp_bnu24_math_g8_lower_5_2_7",
+        "kp_bnu24_math_g8_lower_5_2_8"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "kp_geo_circle_tangent_appl",
+      "legacy_name": "切线与圆的综合",
+      "disposition": "retired",
+      "target_ids": [],
+      "reason": "未找到精确且唯一的教材路径对应项，不进行猜测迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-69f8f3d971f05b43",
+      "legacy_name": "切线的判定定理",
+      "disposition": "retired",
+      "target_ids": [],
+      "reason": "未找到精确且唯一的教材路径对应项，不进行猜测迁移。"
+    },
+    {
+      "legacy_id": "kp_fun_dynamic_point",
+      "legacy_name": "动点与综合函数题",
+      "disposition": "retired",
+      "target_ids": [],
+      "reason": "未找到精确且唯一的教材路径对应项，不进行猜测迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-847b2df7ab7e4f68",
+      "legacy_name": "勾股定理及逆定理",
+      "disposition": "retired",
+      "target_ids": [],
+      "reason": "未找到精确且唯一的教材路径对应项，不进行猜测迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-c88b2eeeda07c937",
+      "legacy_name": "勾股定理的应用",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g8_upper_1_1_10",
+        "kp_bnu24_math_g8_upper_1_1_9",
+        "kp_bnu24_math_g8_upper_1_1_8",
+        "kp_bnu24_math_g8_upper_1_3_9",
+        "kp_bnu24_math_g8_upper_1_3_8",
+        "kp_bnu24_math_g8_upper_1_3_7",
+        "kp_bnu24_math_g8_upper_1_3_11",
+        "kp_bnu24_math_g8_upper_1_3_3",
+        "kp_bnu24_math_g8_upper_1_3_6",
+        "kp_bnu24_math_g8_upper_1_3_4",
+        "kp_bnu24_math_g8_upper_1_3_5",
+        "kp_bnu24_math_g8_upper_1_3_10"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-9d1cc8db6574f108",
+      "legacy_name": "勾股定理的逆定理",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g8_upper_1_2_2",
+        "kp_bnu24_math_g8_upper_1_2_4",
+        "kp_bnu24_math_g8_upper_1_2_5",
+        "kp_bnu24_math_g8_upper_1_2_3",
+        "kp_bnu24_math_g8_upper_1_3_12"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-3bb3dfe3e6ed898e",
+      "legacy_name": "单项式乘单项式",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g7_lower_1_2_7",
+        "kp_bnu24_math_g7_lower_1_2_1"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-9a686b17ca0bf222",
+      "legacy_name": "单项式乘多项式",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g7_lower_1_2_8",
+        "kp_bnu24_math_g7_lower_1_2_3",
+        "kp_bnu24_math_g7_lower_1_2_2"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-a570826570646326",
+      "legacy_name": "单项式除以单项式",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g7_lower_1_4_3",
+        "kp_bnu24_math_g7_lower_1_4_1"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "kp_fun_inverse",
+      "legacy_name": "反比例函数",
+      "disposition": "retired",
+      "target_ids": [],
+      "reason": "未找到精确且唯一的教材路径对应项，不进行猜测迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-5aac5f606f8609c5",
+      "legacy_name": "反比例函数的图象",
+      "disposition": "retired",
+      "target_ids": [],
+      "reason": "未找到精确且唯一的教材路径对应项，不进行猜测迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-f10b66bf3828ce1f",
+      "legacy_name": "反比例函数的定义",
+      "disposition": "retired",
+      "target_ids": [],
+      "reason": "未找到精确且唯一的教材路径对应项，不进行猜测迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-7c98d3248d12c269",
+      "legacy_name": "反比例函数的性质",
+      "disposition": "retired",
+      "target_ids": [],
+      "reason": "未找到精确且唯一的教材路径对应项，不进行猜测迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-a0344daa6b949a2a",
+      "legacy_name": "反比例函数系数k的几何意义",
+      "disposition": "retired",
+      "target_ids": [],
+      "reason": "未找到精确且唯一的教材路径对应项，不进行猜测迁移。"
+    },
+    {
+      "legacy_id": "kp_fun_variables",
+      "legacy_name": "变量与函数",
+      "disposition": "retired",
+      "target_ids": [],
+      "reason": "未找到精确且唯一的教材路径对应项，不进行猜测迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-d7f67c5a4a8d1ffd",
+      "legacy_name": "可能性的大小",
+      "disposition": "unique_alias",
+      "target_ids": [
+        "kp_bnu24_math_g7_lower_3_1_2"
+      ],
+      "reason": "旧词通过精确且唯一的名称匹配到一个教材路径节点。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-0da3215e454ae942",
+      "legacy_name": "同角三角函数关系",
+      "disposition": "retired",
+      "target_ids": [],
+      "reason": "未找到精确且唯一的教材路径对应项，不进行猜测迁移。"
+    },
+    {
+      "legacy_id": "kp_geo_proposition_proof",
+      "legacy_name": "命题与证明",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g8_upper_7_2_4",
+        "kp_bnu24_math_g8_upper_7_2_5",
+        "kp_bnu24_math_g8_upper_7_2_7",
+        "kp_bnu24_math_g8_upper_7_2_8",
+        "kp_bnu24_math_g8_upper_7_2_2",
+        "kp_bnu24_math_g8_upper_7_2_3",
+        "kp_bnu24_math_g8_upper_7_2_1",
+        "kp_bnu24_math_g8_upper_7_2_9",
+        "kp_bnu24_math_g8_upper_7_2_10",
+        "kp_bnu24_math_g8_lower_1_2_12",
+        "kp_bnu24_math_g8_lower_1_2_13",
+        "kp_bnu24_math_g8_lower_1_3_3",
+        "kp_bnu24_math_g8_lower_1_3_4"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-073962cf00027708",
+      "legacy_name": "四分位数",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g8_upper_6_2_4",
+        "kp_bnu24_math_g8_upper_6_2_5"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "kp_geo_quadrilateral",
+      "legacy_name": "四边形",
+      "disposition": "retired",
+      "target_ids": [],
+      "reason": "未找到精确且唯一的教材路径对应项，不进行猜测迁移。"
+    },
+    {
+      "legacy_id": "kp_alg_factorization",
+      "legacy_name": "因式分解",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g8_lower_4_3_9",
+        "kp_bnu24_math_g8_lower_4_3_8",
+        "kp_bnu24_math_g8_lower_4_3_5"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-7834d303adc16771",
+      "legacy_name": "因式分解在有理数简算中的应用",
+      "disposition": "exact",
+      "target_ids": [
+        "kp_bnu24_math_g8_lower_4_3_7"
+      ],
+      "reason": "旧词通过精确且唯一的名称匹配到一个教材路径节点。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-1e3f98a9f4b6b62b",
+      "legacy_name": "因式分解的定义",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g8_lower_4_1_1",
+        "kp_bnu24_math_g8_lower_4_1_2"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-06e57ef893f2ea59",
+      "legacy_name": "因式分解的应用",
+      "disposition": "exact",
+      "target_ids": [
+        "kp_bnu24_math_g8_lower_4_3_10"
+      ],
+      "reason": "旧词通过精确且唯一的名称匹配到一个教材路径节点。"
+    },
+    {
+      "legacy_id": "kp_geo_transformation",
+      "legacy_name": "图形变换",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g8_lower_3_1_3",
+        "kp_bnu24_math_g8_lower_3_1_4",
+        "kp_bnu24_math_g8_lower_3_1_5",
+        "kp_bnu24_math_g8_lower_3_1_11",
+        "kp_bnu24_math_g8_lower_3_2_17",
+        "kp_bnu24_math_g8_lower_3_2_30",
+        "kp_bnu24_math_g8_lower_3_2_5",
+        "kp_bnu24_math_g8_lower_3_2_6",
+        "kp_bnu24_math_g8_lower_3_2_8",
+        "kp_bnu24_math_g8_lower_3_2_14",
+        "kp_bnu24_math_g8_lower_3_2_16",
+        "kp_bnu24_math_g8_lower_3_2_29",
+        "kp_bnu24_math_g8_lower_3_2_15",
+        "kp_bnu24_math_g8_lower_3_3_1"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-62be0df457fb5dde",
+      "legacy_name": "图形的平移",
+      "disposition": "exact",
+      "target_ids": [
+        "kp_bnu24_math_g8_lower_3_1_2"
+      ],
+      "reason": "旧词通过精确且唯一的名称匹配到一个教材路径节点。"
+    },
+    {
+      "legacy_id": "kp_geo_similarity",
+      "legacy_name": "图形相似",
+      "disposition": "unique_alias",
+      "target_ids": [
+        "kp_bnu24_math_g9_upper_3_4_8"
+      ],
+      "reason": "旧词通过精确且唯一的名称匹配到一个教材路径节点。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-4160d9d98e35176b",
+      "legacy_name": "图案设计",
+      "disposition": "retired",
+      "target_ids": [],
+      "reason": "未找到精确且唯一的教材路径对应项，不进行猜测迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-590cd4b538280731",
+      "legacy_name": "图象法确定一元二次方程的近似根",
+      "disposition": "exact",
+      "target_ids": [
+        "kp_bnu24_math_g9_upper_5_4_6"
+      ],
+      "reason": "旧词通过精确且唯一的名称匹配到一个教材路径节点。"
+    },
+    {
+      "legacy_id": "kp_geo_circle_angle",
+      "legacy_name": "圆心角圆周角与垂径定理",
+      "disposition": "unique_alias",
+      "target_ids": [
+        "kp_bnu24_math_g7_upper_4_3_10"
+      ],
+      "reason": "旧词通过精确且唯一的名称匹配到一个教材路径节点。"
+    },
+    {
+      "legacy_id": "kp_geo_circle_properties",
+      "legacy_name": "圆的基本性质",
+      "disposition": "retired",
+      "target_ids": [],
+      "reason": "未找到精确且唯一的教材路径对应项，不进行猜测迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-3bb4d5d96ae5d0b5",
+      "legacy_name": "圆的基本认识",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g7_upper_4_3_9",
+        "kp_bnu24_math_g7_upper_4_3_8"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-378d119076b47759",
+      "legacy_name": "圆锥的定义及面积",
+      "disposition": "retired",
+      "target_ids": [],
+      "reason": "未找到精确且唯一的教材路径对应项，不进行猜测迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-fd1019e430cfbf10",
+      "legacy_name": "坐标与图形",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g8_upper_3_2_9",
+        "kp_bnu24_math_g8_upper_3_3_3",
+        "kp_bnu24_math_g8_upper_3_3_1",
+        "kp_bnu24_math_g8_lower_3_1_12",
+        "kp_bnu24_math_g8_lower_3_2_9"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-cff952d20c77fe30",
+      "legacy_name": "坐标与图形变化——平移",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g8_upper_3_2_13",
+        "kp_bnu24_math_g8_upper_3_2_14",
+        "kp_bnu24_math_g8_upper_3_2_12",
+        "kp_bnu24_math_g8_upper_3_2_10",
+        "kp_bnu24_math_g8_upper_3_2_11",
+        "kp_bnu24_math_g8_lower_3_1_9",
+        "kp_bnu24_math_g8_lower_3_1_10",
+        "kp_bnu24_math_g8_lower_3_1_8",
+        "kp_bnu24_math_g8_lower_3_1_6",
+        "kp_bnu24_math_g8_lower_3_1_7"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-cfbec3d2ab2e6d68",
+      "legacy_name": "坐标与图形变化——轴对称",
+      "disposition": "exact",
+      "target_ids": [
+        "kp_bnu24_math_g8_upper_3_3_2"
+      ],
+      "reason": "旧词通过精确且唯一的名称匹配到一个教材路径节点。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-5634852695801ebc",
+      "legacy_name": "坐标与图形变换——旋转",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g8_lower_3_2_13",
+        "kp_bnu24_math_g8_lower_3_2_10",
+        "kp_bnu24_math_g8_lower_3_2_12",
+        "kp_bnu24_math_g8_lower_3_2_11"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-12472025bd6db663",
+      "legacy_name": "坐标方法的简单应用",
+      "disposition": "unique_alias",
+      "target_ids": [
+        "kp_bnu24_math_g8_upper_3_1_4"
+      ],
+      "reason": "旧词通过精确且唯一的名称匹配到一个教材路径节点。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-3eb30f16141c11df",
+      "legacy_name": "坐标系与位似图形",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g9_upper_3_5_7",
+        "kp_bnu24_math_g9_upper_3_5_9",
+        "kp_bnu24_math_g9_upper_3_5_8",
+        "kp_bnu24_math_g9_upper_3_5_6"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-cef26a91220bbcba",
+      "legacy_name": "坐标系中描点",
+      "disposition": "exact",
+      "target_ids": [
+        "kp_bnu24_math_g8_upper_3_2_5"
+      ],
+      "reason": "旧词通过精确且唯一的名称匹配到一个教材路径节点。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-24c5835504d69e95",
+      "legacy_name": "垂径定理的实际应用",
+      "disposition": "retired",
+      "target_ids": [],
+      "reason": "未找到精确且唯一的教材路径对应项，不进行猜测迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-7282a56c23fa2819",
+      "legacy_name": "垂径定理的推论",
+      "disposition": "retired",
+      "target_ids": [],
+      "reason": "未找到精确且唯一的教材路径对应项，不进行猜测迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-8cbe7a99175a5c55",
+      "legacy_name": "垂线",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g7_lower_2_1_10",
+        "kp_bnu24_math_g7_lower_2_1_11"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-e549325069924963",
+      "legacy_name": "多边形及其内角和",
+      "disposition": "unique_alias",
+      "target_ids": [
+        "kp_bnu24_math_g8_lower_1_1_22"
+      ],
+      "reason": "旧词通过精确且唯一的名称匹配到一个教材路径节点。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-d13e2584fdaf6c8f",
+      "legacy_name": "多边形的内角和",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g8_lower_1_1_18",
+        "kp_bnu24_math_g8_lower_1_1_14",
+        "kp_bnu24_math_g8_lower_1_1_17",
+        "kp_bnu24_math_g8_lower_1_1_16",
+        "kp_bnu24_math_g8_lower_1_1_15"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-3611e90d9b050657",
+      "legacy_name": "多边形的外角和",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g8_lower_1_1_21",
+        "kp_bnu24_math_g8_lower_1_1_20",
+        "kp_bnu24_math_g8_lower_1_1_19"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-c2714d7073783303",
+      "legacy_name": "多边形的对角线",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g7_upper_4_3_6",
+        "kp_bnu24_math_g7_upper_4_3_7",
+        "kp_bnu24_math_g8_lower_1_1_12",
+        "kp_bnu24_math_g8_lower_1_1_13"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-8242fb066c6b28ae",
+      "legacy_name": "多项式乘多项式",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g7_lower_1_2_5",
+        "kp_bnu24_math_g7_lower_1_2_10",
+        "kp_bnu24_math_g7_lower_1_2_9",
+        "kp_bnu24_math_g7_lower_1_2_4",
+        "kp_bnu24_math_g7_lower_1_2_6",
+        "kp_bnu24_math_g7_lower_1_3_6"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "kp_alg_letter_number",
+      "legacy_name": "字母表示数",
+      "disposition": "unique_alias",
+      "target_ids": [
+        "kp_bnu24_math_g7_upper_3_1_1"
+      ],
+      "reason": "旧词通过精确且唯一的名称匹配到一个教材路径节点。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-53b1f5c77a03092f",
+      "legacy_name": "完全平方式",
+      "disposition": "unique_alias",
+      "target_ids": [
+        "kp_bnu24_math_g7_lower_1_3_8"
+      ],
+      "reason": "旧词通过精确且唯一的名称匹配到一个教材路径节点。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-38fbc892fd09624e",
+      "legacy_name": "定理与逆定理",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g8_upper_7_2_6",
+        "kp_bnu24_math_g8_lower_1_3_6",
+        "kp_bnu24_math_g8_lower_1_3_5"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "kp_alg_real_numbers",
+      "legacy_name": "实数",
+      "disposition": "unique_alias",
+      "target_ids": [
+        "kp_bnu24_math_g8_upper_2_1_1"
+      ],
+      "reason": "旧词通过精确且唯一的名称匹配到一个教材路径节点。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-9cc22d19aeabfa92",
+      "legacy_name": "实数的运算",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g8_upper_2_2_19",
+        "kp_bnu24_math_g8_upper_2_3_24",
+        "kp_bnu24_math_g8_upper_2_3_21",
+        "kp_bnu24_math_g8_upper_2_3_23",
+        "kp_bnu24_math_g8_upper_2_3_22"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-4aa5bbd70c61355e",
+      "legacy_name": "实数范围内分解因式",
+      "disposition": "exact",
+      "target_ids": [
+        "kp_bnu24_math_g8_lower_4_3_6"
+      ],
+      "reason": "旧词通过精确且唯一的名称匹配到一个教材路径节点。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-d83f6847c7933dd1",
+      "legacy_name": "实际问题与一元二次方程",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g9_upper_2_4_3",
+        "kp_bnu24_math_g9_upper_2_4_1",
+        "kp_bnu24_math_g9_upper_2_4_11",
+        "kp_bnu24_math_g9_upper_2_4_6",
+        "kp_bnu24_math_g9_upper_2_4_9",
+        "kp_bnu24_math_g9_upper_2_4_2",
+        "kp_bnu24_math_g9_upper_2_4_7",
+        "kp_bnu24_math_g9_upper_2_4_10",
+        "kp_bnu24_math_g9_upper_2_4_4",
+        "kp_bnu24_math_g9_upper_2_4_5",
+        "kp_bnu24_math_g9_upper_2_4_8"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-c87bebe93c5ae539",
+      "legacy_name": "实际问题与二次函数",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g9_upper_5_3_8",
+        "kp_bnu24_math_g9_upper_5_3_6",
+        "kp_bnu24_math_g9_upper_5_3_2",
+        "kp_bnu24_math_g9_upper_5_3_1",
+        "kp_bnu24_math_g9_upper_5_3_7",
+        "kp_bnu24_math_g9_upper_5_3_5",
+        "kp_bnu24_math_g9_upper_5_3_3",
+        "kp_bnu24_math_g9_upper_5_3_4"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-8598db50368a3b8f",
+      "legacy_name": "实际问题与反比例函数",
+      "disposition": "retired",
+      "target_ids": [],
+      "reason": "未找到精确且唯一的教材路径对应项，不进行猜测迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-719dd6234bce0ef9",
+      "legacy_name": "实际问题中用坐标表示位置",
+      "disposition": "exact",
+      "target_ids": [
+        "kp_bnu24_math_g8_upper_3_2_7"
+      ],
+      "reason": "旧词通过精确且唯一的名称匹配到一个教材路径节点。"
+    },
+    {
+      "legacy_id": "kp_geo_construction",
+      "legacy_name": "尺规作图",
+      "disposition": "retired",
+      "target_ids": [],
+      "reason": "未找到精确且唯一的教材路径对应项，不进行猜测迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-c49f7fe78fcfd9d0",
+      "legacy_name": "常量与变量",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g7_lower_6_2_1",
+        "kp_bnu24_math_g7_lower_6_3_1",
+        "kp_bnu24_math_g7_lower_6_4_1"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-1dfd4c8887071cc5",
+      "legacy_name": "平行公理及推论",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g7_lower_2_2_5",
+        "kp_bnu24_math_g7_lower_2_2_4",
+        "kp_bnu24_math_g8_upper_7_3_6",
+        "kp_bnu24_math_g8_upper_7_3_5"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "kp_geo_parallelogram",
+      "legacy_name": "平行四边形",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g8_lower_6_2_7",
+        "kp_bnu24_math_g8_lower_6_2_6",
+        "kp_bnu24_math_g8_lower_6_2_8"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-0bf96fc6cb3f7946",
+      "legacy_name": "平行四边形的判定",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g8_lower_6_1_6",
+        "kp_bnu24_math_g8_lower_6_2_5",
+        "kp_bnu24_math_g8_lower_6_2_1",
+        "kp_bnu24_math_g8_lower_6_2_3",
+        "kp_bnu24_math_g8_lower_6_2_2",
+        "kp_bnu24_math_g8_lower_6_2_4"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-90f0f679c5bfe935",
+      "legacy_name": "平行四边形的性质",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g8_lower_6_1_1",
+        "kp_bnu24_math_g8_lower_6_1_2",
+        "kp_bnu24_math_g8_lower_6_1_3"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-277d6852d3454d61",
+      "legacy_name": "平行线",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g7_lower_2_1_1",
+        "kp_bnu24_math_g7_lower_2_1_2",
+        "kp_bnu24_math_g7_lower_2_2_3"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-e2d7532fc2f421f6",
+      "legacy_name": "平行线之间的距离",
+      "disposition": "retired",
+      "target_ids": [],
+      "reason": "未找到精确且唯一的教材路径对应项，不进行猜测迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-7f27164ec729eb93",
+      "legacy_name": "平行线分线段成比例定理",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g9_upper_3_3_1",
+        "kp_bnu24_math_g9_upper_3_3_2"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-db520de62415c5fd",
+      "legacy_name": "平行线及其判定",
+      "disposition": "retired",
+      "target_ids": [],
+      "reason": "未找到精确且唯一的教材路径对应项，不进行猜测迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-bd9e59bedf8ad8bb",
+      "legacy_name": "平行线性质的应用",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g7_lower_2_3_6",
+        "kp_bnu24_math_g7_lower_2_3_4",
+        "kp_bnu24_math_g7_lower_2_3_5"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-487edb08d0f585e6",
+      "legacy_name": "平行线的判定与性质",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g7_lower_2_3_7",
+        "kp_bnu24_math_g7_lower_2_3_8",
+        "kp_bnu24_math_g8_upper_7_3_10"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-d244d5b667d47e70",
+      "legacy_name": "平行线的性质定理",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g7_lower_2_3_2",
+        "kp_bnu24_math_g7_lower_2_3_1",
+        "kp_bnu24_math_g7_lower_2_3_3",
+        "kp_bnu24_math_g8_upper_7_3_8",
+        "kp_bnu24_math_g8_upper_7_3_7",
+        "kp_bnu24_math_g8_upper_7_3_9"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-bf804b81543fcd55",
+      "legacy_name": "平面图形的认识",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g7_upper_1_2_11",
+        "kp_bnu24_math_g7_upper_1_2_12"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "kp_fun_coordinate_system",
+      "legacy_name": "平面直角坐标系",
+      "disposition": "retired",
+      "target_ids": [],
+      "reason": "未找到精确且唯一的教材路径对应项，不进行猜测迁移。"
+    },
+    {
+      "legacy_id": "kp_geo_circle_measure",
+      "legacy_name": "弧长与面积计算",
+      "disposition": "retired",
+      "target_ids": [],
+      "reason": "未找到精确且唯一的教材路径对应项，不进行猜测迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-584a374fdfeed441",
+      "legacy_name": "弧长和扇形面积",
+      "disposition": "retired",
+      "target_ids": [],
+      "reason": "未找到精确且唯一的教材路径对应项，不进行猜测迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-bca42e9838d4cdbf",
+      "legacy_name": "归纳与类比",
+      "disposition": "exact",
+      "target_ids": [
+        "kp_bnu24_math_g8_upper_7_1_2"
+      ],
+      "reason": "旧词通过精确且唯一的名称匹配到一个教材路径节点。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-46c465e05e16f529",
+      "legacy_name": "待定系数法求二次函数解析式",
+      "disposition": "exact",
+      "target_ids": [
+        "kp_bnu24_math_g9_upper_5_2_18"
+      ],
+      "reason": "旧词通过精确且唯一的名称匹配到一个教材路径节点。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-1f3e469e3544c1c8",
+      "legacy_name": "成中心对称",
+      "disposition": "exact",
+      "target_ids": [
+        "kp_bnu24_math_g8_lower_3_2_18"
+      ],
+      "reason": "旧词通过精确且唯一的名称匹配到一个教材路径节点。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-40b9b6fa42375f0b",
+      "legacy_name": "成轴对称的两个图形的识别",
+      "disposition": "exact",
+      "target_ids": [
+        "kp_bnu24_math_g7_lower_5_1_2"
+      ],
+      "reason": "旧词通过精确且唯一的名称匹配到一个教材路径节点。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-b8d207be4adfd650",
+      "legacy_name": "截一个几何体",
+      "disposition": "exact",
+      "target_ids": [
+        "kp_bnu24_math_g7_upper_1_2_10"
+      ],
+      "reason": "旧词通过精确且唯一的名称匹配到一个教材路径节点。"
+    },
+    {
+      "legacy_id": "kp_geo_sector_cone",
+      "legacy_name": "扇形弧长与圆锥",
+      "disposition": "retired",
+      "target_ids": [],
+      "reason": "未找到精确且唯一的教材路径对应项，不进行猜测迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-118fcc88c19112d3",
+      "legacy_name": "扇形的定义及面积",
+      "disposition": "retired",
+      "target_ids": [],
+      "reason": "未找到精确且唯一的教材路径对应项，不进行猜测迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-a17c902ecac00b05",
+      "legacy_name": "投影与视图",
+      "disposition": "retired",
+      "target_ids": [],
+      "reason": "未找到精确且唯一的教材路径对应项，不进行猜测迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-3065577aac43fd46",
+      "legacy_name": "推理与论证",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g8_upper_7_2_12",
+        "kp_bnu24_math_g8_upper_7_2_11",
+        "kp_bnu24_math_g8_upper_7_2_13"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-b546eaaec78ebdb4",
+      "legacy_name": "提公因式法分解因式",
+      "disposition": "exact",
+      "target_ids": [
+        "kp_bnu24_math_g8_lower_4_2_2"
+      ],
+      "reason": "旧词通过精确且唯一的名称匹配到一个教材路径节点。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-7115f558522eabc5",
+      "legacy_name": "数学常识",
+      "disposition": "retired",
+      "target_ids": [],
+      "reason": "未找到精确且唯一的教材路径对应项，不进行猜测迁移。"
+    },
+    {
+      "legacy_id": "kp_syn_modeling",
+      "legacy_name": "数学建模与应用",
+      "disposition": "retired",
+      "target_ids": [],
+      "reason": "未找到精确且唯一的教材路径对应项，不进行猜测迁移。"
+    },
+    {
+      "legacy_id": "kp_alg_number_sense",
+      "legacy_name": "数感与估算",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g7_upper_2_5_5",
+        "kp_bnu24_math_g7_upper_2_5_6",
+        "kp_bnu24_math_g7_upper_2_5_7"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "kp_data_analysis",
+      "legacy_name": "数据分析",
+      "disposition": "retired",
+      "target_ids": [],
+      "reason": "未找到精确且唯一的教材路径对应项，不进行猜测迁移。"
+    },
+    {
+      "legacy_id": "kp_sta_data_display",
+      "legacy_name": "数据的描述",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g7_upper_6_3_11",
+        "kp_bnu24_math_g7_upper_6_3_21"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "kp_sta_data_collection",
+      "legacy_name": "数据的收集与整理",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g7_upper_6_3_19",
+        "kp_bnu24_math_g7_upper_6_3_17",
+        "kp_bnu24_math_g7_upper_6_3_18"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-28ff8d9f30335764",
+      "legacy_name": "数据的波动程度",
+      "disposition": "unique_alias",
+      "target_ids": [
+        "kp_bnu24_math_g8_upper_6_1_18"
+      ],
+      "reason": "旧词通过精确且唯一的名称匹配到一个教材路径节点。"
+    },
+    {
+      "legacy_id": "kp_sta_data_dispersion",
+      "legacy_name": "数据的离散程度",
+      "disposition": "unique_alias",
+      "target_ids": [
+        "kp_bnu24_math_g8_upper_6_1_17"
+      ],
+      "reason": "旧词通过精确且唯一的名称匹配到一个教材路径节点。"
+    },
+    {
+      "legacy_id": "kp_sta_data_representative",
+      "legacy_name": "数据的集中趋势",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g8_upper_6_1_11",
+        "kp_bnu24_math_g8_upper_6_1_2",
+        "kp_bnu24_math_g8_upper_6_1_9",
+        "kp_bnu24_math_g8_upper_6_1_1",
+        "kp_bnu24_math_g8_upper_6_1_8",
+        "kp_bnu24_math_g8_upper_6_1_12",
+        "kp_bnu24_math_g8_upper_6_1_3",
+        "kp_bnu24_math_g8_upper_6_1_10",
+        "kp_bnu24_math_g8_upper_6_2_2",
+        "kp_bnu24_math_g8_upper_6_2_1",
+        "kp_bnu24_math_g8_upper_6_2_3"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-0330b94c971afa87",
+      "legacy_name": "数轴",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g7_upper_2_1_10",
+        "kp_bnu24_math_g7_upper_2_1_12",
+        "kp_bnu24_math_g7_upper_2_1_13",
+        "kp_bnu24_math_g7_upper_2_1_11",
+        "kp_bnu24_math_g7_upper_2_1_14",
+        "kp_bnu24_math_g7_upper_2_1_8",
+        "kp_bnu24_math_g7_upper_2_1_9",
+        "kp_bnu24_math_g7_upper_2_2_12",
+        "kp_bnu24_math_g7_upper_2_2_11",
+        "kp_bnu24_math_g7_upper_2_3_13",
+        "kp_bnu24_math_g7_upper_2_3_12"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-7d1ffd3c4094c039",
+      "legacy_name": "整式",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g7_upper_3_1_18",
+        "kp_bnu24_math_g7_upper_3_3_2",
+        "kp_bnu24_math_g7_upper_3_3_1"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-818a039118847d89",
+      "legacy_name": "整式的加减及运用",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g7_upper_3_2_8",
+        "kp_bnu24_math_g7_upper_3_2_9",
+        "kp_bnu24_math_g7_upper_3_2_7",
+        "kp_bnu24_math_g7_upper_3_2_6"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "kp_alg_polynomial",
+      "legacy_name": "整式运算",
+      "disposition": "unique_alias",
+      "target_ids": [
+        "kp_bnu24_math_g7_upper_3_2_3"
+      ],
+      "reason": "旧词通过精确且唯一的名称匹配到一个教材路径节点。"
+    },
+    {
+      "legacy_id": "kp_alg_power_rules",
+      "legacy_name": "整数指数幂",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g7_lower_1_1_8",
+        "kp_bnu24_math_g7_lower_1_1_7"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-ab6692fa073a56ea",
+      "legacy_name": "方向角",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g7_upper_4_2_7",
+        "kp_bnu24_math_g7_upper_4_2_6"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-f3a8865e6947e16a",
+      "legacy_name": "方程",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g7_upper_5_1_2",
+        "kp_bnu24_math_g7_upper_5_1_1"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-e40ec9cc5633e23a",
+      "legacy_name": "方程的解",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g7_upper_5_1_3",
+        "kp_bnu24_math_g7_upper_5_1_4"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-a147c8a24b285311",
+      "legacy_name": "旋转三要素",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g8_lower_3_2_3",
+        "kp_bnu24_math_g8_lower_3_2_4"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-134daf929b124f4f",
+      "legacy_name": "旋转中的规律性问题",
+      "disposition": "exact",
+      "target_ids": [
+        "kp_bnu24_math_g8_lower_3_2_7"
+      ],
+      "reason": "旧词通过精确且唯一的名称匹配到一个教材路径节点。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-ada3f9dd8652b9d2",
+      "legacy_name": "旋转对称图形",
+      "disposition": "retired",
+      "target_ids": [],
+      "reason": "未找到精确且唯一的教材路径对应项，不进行猜测迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-5c24d46dbe2cefe0",
+      "legacy_name": "无理数与实数",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g8_upper_2_1_6",
+        "kp_bnu24_math_g8_upper_2_1_3",
+        "kp_bnu24_math_g8_upper_2_1_4",
+        "kp_bnu24_math_g8_upper_2_1_7",
+        "kp_bnu24_math_g8_upper_2_1_5"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-8ebde15e86562775",
+      "legacy_name": "无理数的估算",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g8_upper_2_1_2",
+        "kp_bnu24_math_g8_upper_2_2_4"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-552092f93b449628",
+      "legacy_name": "无理方程",
+      "disposition": "retired",
+      "target_ids": [],
+      "reason": "未找到精确且唯一的教材路径对应项，不进行猜测迁移。"
+    },
+    {
+      "legacy_id": "kp_sta_survey",
+      "legacy_name": "普查与抽样调查",
+      "disposition": "retired",
+      "target_ids": [],
+      "reason": "未找到精确且唯一的教材路径对应项，不进行猜测迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-45c6dd713ccf9bea",
+      "legacy_name": "有序数对",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g8_upper_3_1_1",
+        "kp_bnu24_math_g8_upper_3_1_2"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-53af01d2cd83ba41",
+      "legacy_name": "有理数加减混合运算",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g7_upper_2_2_8",
+        "kp_bnu24_math_g7_upper_2_2_9",
+        "kp_bnu24_math_g7_upper_2_2_7"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-84b0061cdc1a983c",
+      "legacy_name": "有理数比较大小",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g7_upper_2_1_22",
+        "kp_bnu24_math_g7_upper_2_1_23"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-87500c5475bd43c1",
+      "legacy_name": "有理数的乘方",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g7_upper_2_4_5",
+        "kp_bnu24_math_g7_upper_2_4_4",
+        "kp_bnu24_math_g7_upper_2_4_3",
+        "kp_bnu24_math_g7_upper_2_4_1",
+        "kp_bnu24_math_g7_upper_2_4_2"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-7e4eb69131acb154",
+      "legacy_name": "有理数的乘法法则",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g7_upper_2_3_1",
+        "kp_bnu24_math_g7_upper_2_3_2",
+        "kp_bnu24_math_g7_upper_2_3_3"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-cd63a93019ca25b0",
+      "legacy_name": "有理数的乘除",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g7_upper_2_3_4",
+        "kp_bnu24_math_g7_upper_2_3_5",
+        "kp_bnu24_math_g7_upper_2_5_4"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-7a0e7bf657fa7aef",
+      "legacy_name": "有理数的减法法则",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g7_upper_2_2_6",
+        "kp_bnu24_math_g7_upper_2_2_5",
+        "kp_bnu24_math_g7_upper_2_2_10"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-0211579d3376f1d9",
+      "legacy_name": "有理数的初步认识",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g7_upper_2_1_5",
+        "kp_bnu24_math_g7_upper_2_1_7",
+        "kp_bnu24_math_g7_upper_2_1_6",
+        "kp_bnu24_math_g7_upper_2_1_4"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-e8e264caa36bd142",
+      "legacy_name": "有理数的加减",
+      "disposition": "unique_alias",
+      "target_ids": [
+        "kp_bnu24_math_g7_upper_2_2_4"
+      ],
+      "reason": "旧词通过精确且唯一的名称匹配到一个教材路径节点。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-7571904947185027",
+      "legacy_name": "有理数的加法法则",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g7_upper_2_2_2",
+        "kp_bnu24_math_g7_upper_2_2_3",
+        "kp_bnu24_math_g7_upper_2_2_1"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-bf4d9e1c7d0d4a6a",
+      "legacy_name": "有理数的混合运算法则",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g7_upper_2_3_10",
+        "kp_bnu24_math_g7_upper_2_3_11",
+        "kp_bnu24_math_g7_upper_2_5_2",
+        "kp_bnu24_math_g7_upper_2_5_3",
+        "kp_bnu24_math_g7_upper_2_5_1"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-d7d08c2b5a2a9127",
+      "legacy_name": "有理数的运算",
+      "disposition": "retired",
+      "target_ids": [],
+      "reason": "未找到精确且唯一的教材路径对应项，不进行猜测迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-ad5c124ef88b02a4",
+      "legacy_name": "有理数的除法法则",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g7_upper_2_3_9",
+        "kp_bnu24_math_g7_upper_2_3_8",
+        "kp_bnu24_math_g7_upper_2_3_6",
+        "kp_bnu24_math_g7_upper_2_3_7"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-e7a3f18a46951828",
+      "legacy_name": "梯形",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g8_lower_6_1_4",
+        "kp_bnu24_math_g8_lower_6_1_5"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "kp_probability",
+      "legacy_name": "概率初步",
+      "disposition": "retired",
+      "target_ids": [],
+      "reason": "未找到精确且唯一的教材路径对应项，不进行猜测迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-7ec1ba26369c4b65",
+      "legacy_name": "概率的意义",
+      "disposition": "unique_alias",
+      "target_ids": [
+        "kp_bnu24_math_g7_lower_3_2_2"
+      ],
+      "reason": "旧词通过精确且唯一的名称匹配到一个教材路径节点。"
+    },
+    {
+      "legacy_id": "kp_probability_calc",
+      "legacy_name": "概率计算与应用",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g7_lower_3_2_3",
+        "kp_bnu24_math_g7_lower_3_2_1",
+        "kp_bnu24_math_g7_lower_3_2_5",
+        "kp_bnu24_math_g7_lower_3_2_4",
+        "kp_bnu24_math_g7_lower_3_3_10",
+        "kp_bnu24_math_g7_lower_3_3_9",
+        "kp_bnu24_math_g7_lower_3_3_11",
+        "kp_bnu24_math_g7_lower_3_3_7",
+        "kp_bnu24_math_g9_upper_6_1_5",
+        "kp_bnu24_math_g9_upper_6_1_6",
+        "kp_bnu24_math_g9_upper_6_1_8",
+        "kp_bnu24_math_g9_upper_6_1_7",
+        "kp_bnu24_math_g9_upper_6_1_9",
+        "kp_bnu24_math_g9_upper_6_1_4",
+        "kp_bnu24_math_g9_upper_6_2_1",
+        "kp_bnu24_math_g9_upper_6_2_3",
+        "kp_bnu24_math_g9_upper_6_2_2"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-6466dcf5be815096",
+      "legacy_name": "正多边形和圆",
+      "disposition": "retired",
+      "target_ids": [],
+      "reason": "未找到精确且唯一的教材路径对应项，不进行猜测迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-fc32c22cecedf6db",
+      "legacy_name": "正多边形的中心角",
+      "disposition": "retired",
+      "target_ids": [],
+      "reason": "未找到精确且唯一的教材路径对应项，不进行猜测迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-ce338da91263875c",
+      "legacy_name": "正数和负数",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g7_upper_2_1_1",
+        "kp_bnu24_math_g7_upper_2_1_3",
+        "kp_bnu24_math_g7_upper_2_1_2"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "kp_geo_square",
+      "legacy_name": "正方形",
+      "disposition": "retired",
+      "target_ids": [],
+      "reason": "未找到精确且唯一的教材路径对应项，不进行猜测迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-0b22724aff39c387",
+      "legacy_name": "正方形的判定",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g9_upper_1_4_8",
+        "kp_bnu24_math_g9_upper_1_4_9",
+        "kp_bnu24_math_g9_upper_1_4_10"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-ce6eccd25d2023b5",
+      "legacy_name": "正方形的性质",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g9_upper_1_4_3",
+        "kp_bnu24_math_g9_upper_1_4_2",
+        "kp_bnu24_math_g9_upper_1_4_4",
+        "kp_bnu24_math_g9_upper_1_4_5",
+        "kp_bnu24_math_g9_upper_1_4_1",
+        "kp_bnu24_math_g9_upper_1_4_6",
+        "kp_bnu24_math_g9_upper_1_4_7"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-f966aa5d1ba69d0a",
+      "legacy_name": "正比例函数图象和性质",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g8_upper_4_3_1",
+        "kp_bnu24_math_g8_upper_4_3_2"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-0d426e002f0a1800",
+      "legacy_name": "正比例函数的定义",
+      "disposition": "exact",
+      "target_ids": [
+        "kp_bnu24_math_g8_upper_4_2_1"
+      ],
+      "reason": "旧词通过精确且唯一的名称匹配到一个教材路径节点。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-a1a5ca8398299bc8",
+      "legacy_name": "点、直线、圆的位置关系",
+      "disposition": "retired",
+      "target_ids": [],
+      "reason": "未找到精确且唯一的教材路径对应项，不进行猜测迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-f8db8bf21102d601",
+      "legacy_name": "点、线、面、体",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g7_upper_1_1_6",
+        "kp_bnu24_math_g7_upper_1_1_5"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-be1bf802b5036779",
+      "legacy_name": "点和圆的位置关系",
+      "disposition": "retired",
+      "target_ids": [],
+      "reason": "未找到精确且唯一的教材路径对应项，不进行猜测迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-d0648ca23a924310",
+      "legacy_name": "点坐标规律探索",
+      "disposition": "exact",
+      "target_ids": [
+        "kp_bnu24_math_g8_upper_3_2_8"
+      ],
+      "reason": "旧词通过精确且唯一的名称匹配到一个教材路径节点。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-04320b82141f169f",
+      "legacy_name": "点所在的象限",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g8_upper_3_2_3",
+        "kp_bnu24_math_g8_upper_3_2_4"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-13f05784291dcd9f",
+      "legacy_name": "点的坐标",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g8_upper_3_2_1",
+        "kp_bnu24_math_g8_upper_3_2_2"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "kp_geo_quadrilateral_properties",
+      "legacy_name": "特殊四边形性质综合",
+      "disposition": "unique_alias",
+      "target_ids": [
+        "kp_bnu24_math_g9_upper_1_4_15"
+      ],
+      "reason": "旧词通过精确且唯一的名称匹配到一个教材路径节点。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-e1e4427d7d69d61e",
+      "legacy_name": "特殊的平行四边形",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g9_upper_1_2_8",
+        "kp_bnu24_math_g9_upper_1_2_7",
+        "kp_bnu24_math_g9_upper_1_2_9",
+        "kp_bnu24_math_g9_upper_1_3_13",
+        "kp_bnu24_math_g9_upper_1_3_12",
+        "kp_bnu24_math_g9_upper_1_3_14",
+        "kp_bnu24_math_g9_upper_1_4_17",
+        "kp_bnu24_math_g9_upper_1_4_18",
+        "kp_bnu24_math_g9_upper_1_4_19",
+        "kp_bnu24_math_g9_upper_1_4_12",
+        "kp_bnu24_math_g9_upper_1_4_11",
+        "kp_bnu24_math_g9_upper_1_4_13",
+        "kp_bnu24_math_g9_upper_1_4_14",
+        "kp_bnu24_math_g9_upper_1_4_16"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-702112b75aecb068",
+      "legacy_name": "特殊角的三角函数",
+      "disposition": "retired",
+      "target_ids": [],
+      "reason": "未找到精确且唯一的教材路径对应项，不进行猜测迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-dd7e114c787a4878",
+      "legacy_name": "猜想与证明",
+      "disposition": "exact",
+      "target_ids": [
+        "kp_bnu24_math_g8_upper_7_1_3"
+      ],
+      "reason": "旧词通过精确且唯一的名称匹配到一个教材路径节点。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-6dd0de516f85beda",
+      "legacy_name": "生活中的平移现象",
+      "disposition": "exact",
+      "target_ids": [
+        "kp_bnu24_math_g8_lower_3_1_1"
+      ],
+      "reason": "旧词通过精确且唯一的名称匹配到一个教材路径节点。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-342348e078ce4a92",
+      "legacy_name": "生活中的旋转现象",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g8_lower_3_2_1",
+        "kp_bnu24_math_g8_lower_3_2_2"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-f4d071b638c47abc",
+      "legacy_name": "用列举法求概率",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g7_lower_3_3_3",
+        "kp_bnu24_math_g9_upper_6_1_2",
+        "kp_bnu24_math_g9_upper_6_1_3"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-c3658863a3dc824c",
+      "legacy_name": "用方向角和距离确定物体的位置",
+      "disposition": "exact",
+      "target_ids": [
+        "kp_bnu24_math_g8_upper_3_1_3"
+      ],
+      "reason": "旧词通过精确且唯一的名称匹配到一个教材路径节点。"
+    },
+    {
+      "legacy_id": "kp_sta_estimate",
+      "legacy_name": "用样本估计总体",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g7_upper_6_2_7",
+        "kp_bnu24_math_g7_upper_6_2_8",
+        "kp_bnu24_math_g7_upper_6_2_5",
+        "kp_bnu24_math_g7_upper_6_2_6",
+        "kp_bnu24_math_g8_upper_6_1_21"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-79b5f7cd312c88d7",
+      "legacy_name": "由三角函数值求锐角",
+      "disposition": "retired",
+      "target_ids": [],
+      "reason": "未找到精确且唯一的教材路径对应项，不进行猜测迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-146d50f2f3940619",
+      "legacy_name": "直方图",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g7_upper_6_3_22",
+        "kp_bnu24_math_g7_upper_6_3_20"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-5571ddd2cc5ae0df",
+      "legacy_name": "直线、射线、线段",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g7_upper_4_1_13",
+        "kp_bnu24_math_g7_upper_4_1_7",
+        "kp_bnu24_math_g7_upper_4_1_14",
+        "kp_bnu24_math_g7_upper_4_1_15",
+        "kp_bnu24_math_g7_upper_4_1_6",
+        "kp_bnu24_math_g7_upper_4_1_5",
+        "kp_bnu24_math_g7_upper_4_1_4",
+        "kp_bnu24_math_g7_upper_4_1_8",
+        "kp_bnu24_math_g7_lower_5_2_7"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-491c29238311608e",
+      "legacy_name": "直线、射线、线段的定义",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g7_upper_4_1_1",
+        "kp_bnu24_math_g7_upper_4_1_2",
+        "kp_bnu24_math_g7_upper_4_1_3"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-ad01c70171aedb45",
+      "legacy_name": "直线和圆的位置关系",
+      "disposition": "retired",
+      "target_ids": [],
+      "reason": "未找到精确且唯一的教材路径对应项，不进行猜测迁移。"
+    },
+    {
+      "legacy_id": "kp_geo_right_triangle",
+      "legacy_name": "直角三角形与勾股定理",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g7_lower_4_1_6",
+        "kp_bnu24_math_g7_lower_4_1_7",
+        "kp_bnu24_math_g9_upper_1_3_8",
+        "kp_bnu24_math_g8_upper_1_1_6",
+        "kp_bnu24_math_g8_upper_1_1_2",
+        "kp_bnu24_math_g8_upper_1_1_3",
+        "kp_bnu24_math_g8_upper_1_1_4",
+        "kp_bnu24_math_g8_upper_1_1_5",
+        "kp_bnu24_math_g8_upper_1_1_7",
+        "kp_bnu24_math_g8_upper_1_1_1",
+        "kp_bnu24_math_g8_upper_1_2_1",
+        "kp_bnu24_math_g8_upper_1_3_2",
+        "kp_bnu24_math_g8_upper_1_3_1",
+        "kp_bnu24_math_g8_upper_3_2_6",
+        "kp_bnu24_math_g8_upper_2_1_8",
+        "kp_bnu24_math_g8_lower_1_2_16",
+        "kp_bnu24_math_g8_lower_1_3_1",
+        "kp_bnu24_math_g8_lower_1_3_2"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "kp_geo_parallel_lines",
+      "legacy_name": "相交线与平行线",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g7_lower_2_1_4",
+        "kp_bnu24_math_g7_lower_2_1_5",
+        "kp_bnu24_math_g7_lower_2_2_6",
+        "kp_bnu24_math_g7_lower_2_2_2",
+        "kp_bnu24_math_g7_lower_2_2_7",
+        "kp_bnu24_math_g7_lower_2_2_8",
+        "kp_bnu24_math_g8_upper_7_3_2",
+        "kp_bnu24_math_g8_upper_7_3_1",
+        "kp_bnu24_math_g8_upper_7_3_3",
+        "kp_bnu24_math_g8_upper_7_3_4"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-ac212b87fb5ddda0",
+      "legacy_name": "相交线及其所成的角",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g7_lower_2_1_12",
+        "kp_bnu24_math_g7_lower_2_1_13",
+        "kp_bnu24_math_g7_lower_2_1_3",
+        "kp_bnu24_math_g7_lower_2_2_1"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "kp_geo_similar_triangle",
+      "legacy_name": "相似三角形",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g9_upper_3_4_7",
+        "kp_bnu24_math_g9_upper_3_4_3"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "kp_geo_similar_appl",
+      "legacy_name": "相似三角形应用",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g9_upper_3_5_2",
+        "kp_bnu24_math_g9_upper_3_5_1",
+        "kp_bnu24_math_g9_upper_3_5_3",
+        "kp_bnu24_math_g9_upper_3_5_4",
+        "kp_bnu24_math_g9_upper_3_5_5"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-fbfe9f04f52f4217",
+      "legacy_name": "相似三角形的判定",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g9_upper_3_2_3",
+        "kp_bnu24_math_g9_upper_3_2_1",
+        "kp_bnu24_math_g9_upper_3_2_2",
+        "kp_bnu24_math_g9_upper_3_2_5",
+        "kp_bnu24_math_g9_upper_3_2_4",
+        "kp_bnu24_math_g9_upper_3_3_3"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-ab4ebf32e3e779df",
+      "legacy_name": "相似三角形的性质",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g9_upper_3_4_2",
+        "kp_bnu24_math_g9_upper_3_4_4",
+        "kp_bnu24_math_g9_upper_3_4_5",
+        "kp_bnu24_math_g9_upper_3_4_6",
+        "kp_bnu24_math_g9_upper_3_4_1"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-ae25bc80b77b7e2e",
+      "legacy_name": "相似图形的相关概念及性质",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g9_upper_3_1_1",
+        "kp_bnu24_math_g9_upper_3_1_2",
+        "kp_bnu24_math_g9_upper_3_1_3",
+        "kp_bnu24_math_g9_upper_3_2_6"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "kp_geo_rectangle",
+      "legacy_name": "矩形",
+      "disposition": "retired",
+      "target_ids": [],
+      "reason": "未找到精确且唯一的教材路径对应项，不进行猜测迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-3c3e506a67142e3a",
+      "legacy_name": "矩形的判定",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g9_upper_1_3_10",
+        "kp_bnu24_math_g9_upper_1_3_9",
+        "kp_bnu24_math_g9_upper_1_3_11"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-8f30553e8e93e3c0",
+      "legacy_name": "矩形的性质",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g9_upper_1_3_2",
+        "kp_bnu24_math_g9_upper_1_3_5",
+        "kp_bnu24_math_g9_upper_1_3_3",
+        "kp_bnu24_math_g9_upper_1_3_4",
+        "kp_bnu24_math_g9_upper_1_3_6",
+        "kp_bnu24_math_g9_upper_1_3_7",
+        "kp_bnu24_math_g9_upper_1_3_1"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-a831266958f72417",
+      "legacy_name": "确定圆的条件",
+      "disposition": "retired",
+      "target_ids": [],
+      "reason": "未找到精确且唯一的教材路径对应项，不进行猜测迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-021d13aa2bda6060",
+      "legacy_name": "离差平方和",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g8_upper_6_1_19",
+        "kp_bnu24_math_g8_upper_6_1_20"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-a61a9f24e80d0852",
+      "legacy_name": "科学记数法—表示较大的数",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g7_upper_2_4_7",
+        "kp_bnu24_math_g7_upper_2_4_6",
+        "kp_bnu24_math_g7_lower_1_1_9"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-697dc04caa9ef139",
+      "legacy_name": "科学记数法—表示较小的数",
+      "disposition": "unique_alias",
+      "target_ids": [
+        "kp_bnu24_math_g7_lower_1_1_10"
+      ],
+      "reason": "旧词通过精确且唯一的名称匹配到一个教材路径节点。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-5e16e8d50573b3d0",
+      "legacy_name": "立体图形",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g7_upper_1_1_4",
+        "kp_bnu24_math_g7_upper_1_1_1",
+        "kp_bnu24_math_g7_upper_1_1_3",
+        "kp_bnu24_math_g7_upper_1_1_2",
+        "kp_bnu24_math_g7_upper_1_2_1"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-99930b3a33351ff2",
+      "legacy_name": "等可能事件",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g7_lower_3_3_1",
+        "kp_bnu24_math_g7_lower_3_3_2"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "kp_alg_equation_properties",
+      "legacy_name": "等式的性质",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g7_upper_5_1_7",
+        "kp_bnu24_math_g7_upper_5_1_8"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "kp_geo_isosceles_triangle",
+      "legacy_name": "等腰三角形",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g7_lower_5_2_2",
+        "kp_bnu24_math_g7_lower_5_2_1",
+        "kp_bnu24_math_g8_lower_1_2_2",
+        "kp_bnu24_math_g8_lower_1_2_1"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-de9b846ee239e8f6",
+      "legacy_name": "等腰三角形的判定",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g8_lower_1_2_9",
+        "kp_bnu24_math_g8_lower_1_2_6",
+        "kp_bnu24_math_g8_lower_1_2_4",
+        "kp_bnu24_math_g8_lower_1_2_5",
+        "kp_bnu24_math_g8_lower_1_2_8",
+        "kp_bnu24_math_g8_lower_1_2_11",
+        "kp_bnu24_math_g8_lower_1_2_10"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-ef75aa2ed4bba13a",
+      "legacy_name": "等腰三角形的定义及性质",
+      "disposition": "unique_alias",
+      "target_ids": [
+        "kp_bnu24_math_g7_lower_4_1_10"
+      ],
+      "reason": "旧词通过精确且唯一的名称匹配到一个教材路径节点。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-b571e7a82c1ef6cd",
+      "legacy_name": "算术平均数",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g8_upper_6_1_6",
+        "kp_bnu24_math_g8_upper_6_1_7",
+        "kp_bnu24_math_g8_upper_6_1_5",
+        "kp_bnu24_math_g8_upper_6_1_4"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "kp_geo_line_angle",
+      "legacy_name": "线段与角",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g7_upper_4_2_16",
+        "kp_bnu24_math_g7_upper_4_2_15",
+        "kp_bnu24_math_g7_upper_4_2_10",
+        "kp_bnu24_math_g7_upper_4_2_5",
+        "kp_bnu24_math_g7_lower_5_2_4",
+        "kp_bnu24_math_g7_lower_5_2_3",
+        "kp_bnu24_math_g8_lower_1_4_2",
+        "kp_bnu24_math_g8_lower_1_4_1"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-838491d5d6897672",
+      "legacy_name": "线段的中点",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g7_upper_4_1_12",
+        "kp_bnu24_math_g7_upper_4_1_10",
+        "kp_bnu24_math_g7_upper_4_1_9",
+        "kp_bnu24_math_g7_upper_4_1_11"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "kp_sta_chart_reading",
+      "legacy_name": "统计图表分析",
+      "disposition": "retired",
+      "target_ids": [],
+      "reason": "未找到精确且唯一的教材路径对应项，不进行猜测迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-86b1d833f0faa942",
+      "legacy_name": "统计调查",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g7_upper_6_1_1",
+        "kp_bnu24_math_g7_upper_6_2_3",
+        "kp_bnu24_math_g7_upper_6_2_4",
+        "kp_bnu24_math_g7_upper_6_3_15",
+        "kp_bnu24_math_g7_upper_6_3_16",
+        "kp_bnu24_math_g7_upper_6_3_1",
+        "kp_bnu24_math_g7_upper_6_3_12"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-07b71ec8c469422c",
+      "legacy_name": "统计量的选择",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g8_upper_6_3_2",
+        "kp_bnu24_math_g8_upper_6_3_1"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-4a5d64e8c47fb322",
+      "legacy_name": "自变量和函数值",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g8_upper_4_1_3",
+        "kp_bnu24_math_g8_upper_4_1_2"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "kp_geo_rhombus",
+      "legacy_name": "菱形",
+      "disposition": "retired",
+      "target_ids": [],
+      "reason": "未找到精确且唯一的教材路径对应项，不进行猜测迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-0851f1eeaa3acef2",
+      "legacy_name": "菱形的判定",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g9_upper_1_2_5",
+        "kp_bnu24_math_g9_upper_1_2_6"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-b66849a9df16fe34",
+      "legacy_name": "菱形的性质",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g9_upper_1_2_2",
+        "kp_bnu24_math_g9_upper_1_2_1",
+        "kp_bnu24_math_g9_upper_1_2_3",
+        "kp_bnu24_math_g9_upper_1_2_4"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-d5db47f385e99194",
+      "legacy_name": "观察与实验",
+      "disposition": "exact",
+      "target_ids": [
+        "kp_bnu24_math_g8_upper_7_1_1"
+      ],
+      "reason": "旧词通过精确且唯一的名称匹配到一个教材路径节点。"
+    },
+    {
+      "legacy_id": "kp_geo_view_projection",
+      "legacy_name": "视图与投影",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g9_upper_4_1_3",
+        "kp_bnu24_math_g9_upper_4_1_2",
+        "kp_bnu24_math_g9_upper_4_2_8"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-bc043985e9c2f549",
+      "legacy_name": "角平分线的性质与判定",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g7_lower_5_2_5",
+        "kp_bnu24_math_g8_lower_1_5_3",
+        "kp_bnu24_math_g8_lower_1_5_2",
+        "kp_bnu24_math_g8_lower_1_5_1"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-0d3566b7c5599b2c",
+      "legacy_name": "角的度量",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g7_upper_4_2_8",
+        "kp_bnu24_math_g7_upper_4_2_9"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-cff00df0bbb6c47b",
+      "legacy_name": "角的概念",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g7_upper_4_2_4",
+        "kp_bnu24_math_g7_upper_4_2_3",
+        "kp_bnu24_math_g7_upper_4_2_1",
+        "kp_bnu24_math_g7_upper_4_2_2"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-e0d7ab77a8fdafc4",
+      "legacy_name": "角的运算",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g7_upper_4_2_11",
+        "kp_bnu24_math_g7_upper_4_2_12",
+        "kp_bnu24_math_g7_upper_4_2_14",
+        "kp_bnu24_math_g7_upper_4_2_13"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-dee4534466885e96",
+      "legacy_name": "解直角三角形及其应用",
+      "disposition": "retired",
+      "target_ids": [],
+      "reason": "未找到精确且唯一的教材路径对应项，不进行猜测迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-8dbf430a3793ea7c",
+      "legacy_name": "认识多边形",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g7_upper_4_3_3",
+        "kp_bnu24_math_g7_upper_4_3_4",
+        "kp_bnu24_math_g7_upper_4_3_1",
+        "kp_bnu24_math_g7_upper_4_3_2",
+        "kp_bnu24_math_g7_upper_4_3_5",
+        "kp_bnu24_math_g8_lower_1_1_9",
+        "kp_bnu24_math_g8_lower_1_1_10",
+        "kp_bnu24_math_g8_lower_1_1_7",
+        "kp_bnu24_math_g8_lower_1_1_8",
+        "kp_bnu24_math_g8_lower_1_1_11"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "kp_geo_axis_symmetry",
+      "legacy_name": "轴对称",
+      "disposition": "unique_alias",
+      "target_ids": [
+        "kp_bnu24_math_g7_lower_5_1_6"
+      ],
+      "reason": "旧词通过精确且唯一的名称匹配到一个教材路径节点。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-eb0536359e46f356",
+      "legacy_name": "轴对称图形的识别",
+      "disposition": "exact",
+      "target_ids": [
+        "kp_bnu24_math_g7_lower_5_1_1"
+      ],
+      "reason": "旧词通过精确且唯一的名称匹配到一个教材路径节点。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-b65b770612ee3878",
+      "legacy_name": "轴对称的性质",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g7_lower_5_1_13",
+        "kp_bnu24_math_g7_lower_5_1_3",
+        "kp_bnu24_math_g7_lower_5_1_4",
+        "kp_bnu24_math_g7_lower_5_1_14"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "kp_geo_trigonometry",
+      "legacy_name": "锐角三角函数与解直角三角形",
+      "disposition": "retired",
+      "target_ids": [],
+      "reason": "未找到精确且唯一的教材路径对应项，不进行猜测迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-397703e02c12acc9",
+      "legacy_name": "锐角三角函数的增减性",
+      "disposition": "retired",
+      "target_ids": [],
+      "reason": "未找到精确且唯一的教材路径对应项，不进行猜测迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-4c76587cfd74f992",
+      "legacy_name": "镜面对称",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g7_lower_5_1_12",
+        "kp_bnu24_math_g7_lower_5_1_10",
+        "kp_bnu24_math_g7_lower_5_1_11"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    },
+    {
+      "legacy_id": "kp_syn_reading",
+      "legacy_name": "阅读理解与规律探究",
+      "disposition": "retired",
+      "target_ids": [],
+      "reason": "未找到精确且唯一的教材路径对应项，不进行猜测迁移。"
+    },
+    {
+      "legacy_id": "xkw-knowledge-4120828f721217a8",
+      "legacy_name": "随机事件与概率",
+      "disposition": "split",
+      "target_ids": [
+        "kp_bnu24_math_g7_lower_3_1_1",
+        "kp_bnu24_math_g7_lower_3_3_8",
+        "kp_bnu24_math_g7_lower_3_3_6",
+        "kp_bnu24_math_g7_lower_3_3_5",
+        "kp_bnu24_math_g7_lower_3_3_4",
+        "kp_bnu24_math_g9_upper_6_1_1"
+      ],
+      "reason": "旧词精确命中多个教材路径，必须保留歧义，不能自动迁移。"
+    }
+  ],
+  "content_hash": "fc0de9beae0df3e45f80b588bfae1c7dfd76741a1fdf9b3455208f389cf45a19"
+}

@@ -5,14 +5,23 @@ from pathlib import Path
 from question_bank.knowledge_graph_release import (
     bootstrap_release,
     load_active_release,
-    load_release,
+    load_release_for_taxonomy_revision,
 )
 
 
-def install_current_knowledge(db_path: Path) -> str:
-    """Install the checked-in standard into a temporary test database."""
+def install_current_knowledge(
+    db_path: Path,
+    *,
+    taxonomy_revision: int = 3,
+) -> str:
+    """Install a pinned standard into a temporary historical test fixture.
 
-    release = load_release()
+    Existing suites were authored against revision 3's 294-term vocabulary.
+    New-standard behavior is covered by the dedicated revision 4 tests rather
+    than silently changing the meaning of those historical fixtures.
+    """
+
+    release = load_release_for_taxonomy_revision(taxonomy_revision)
     active = load_active_release(Path(db_path))
     if active is not None:
         assert active.release_id == release.release_id

@@ -8,17 +8,29 @@ import QuestionBankSyncPanel from '../QuestionBankSyncPanel.vue'
 import type { CurriculumCatalog } from '../../../api/question-bank'
 
 const curriculum: CurriculumCatalog = {
-  schema_version: 1,
+  schema_version: 2,
   catalog_id: 'test',
+  knowledge_standard_id: 'test-standard',
   publisher: '北师大',
   subject: '数学',
   edition: '2024',
+  statistics: {
+    raw_nodes: 1,
+    excluded_nodes: 0,
+    retained_nodes: 1,
+    chapters: 0,
+    sections: 0,
+    knowledge_points: 0,
+  },
   volumes: [{
     id: 'bnu24-math-g7-upper',
+    order: 1,
     label: '七年级上册',
     grade: '七年级',
     semester: '上学期',
     textbook_version: '北师大版（2024）',
+    source: { provider: '组卷网' },
+    statistics: { raw_nodes: 1, excluded_nodes: 0, retained_nodes: 1 },
     chapters: [],
   }],
 }
@@ -129,7 +141,7 @@ describe('QuestionBankSyncPanel', () => {
 
     app.mount(host)
     await nextTick()
-    expect(host.textContent).toContain('入库 12 题')
+    expect(host.textContent).toContain('题目入库成功 12 题')
     host.querySelector<HTMLButtonElement>('button')!.click()
     await settle()
 
@@ -269,7 +281,7 @@ describe('QuestionBankSyncPanel', () => {
 
     expect(host.textContent).toContain('1 题标签待补充或归并')
     expect(host.textContent).toContain('含 1 个新标签')
-    expect(host.textContent).toContain('试卷已入库，标签仍待补充或归并')
+    expect(host.textContent).toContain('试卷已入库，部分标签仍待归并')
     expect(host.textContent).not.toContain('试卷已入库并完成标签治理')
     expect(host.textContent).toContain('待处理：Q1')
     const retryButton = [...host.querySelectorAll('button')]

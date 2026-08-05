@@ -22,6 +22,15 @@ from question_bank.training_criteria import GatewayBatchResponse
 from tests.current_knowledge_support import install_current_knowledge
 
 
+LEGACY_CATALOG_PATH = (
+    Path(__file__).resolve().parents[1]
+    / "question_bank"
+    / "taxonomy"
+    / "catalogs"
+    / "tag_vocabulary_v2.json"
+)
+
+
 def _analysis(*, confidence: float = 0.88) -> TagAnalysis:
     return TagAnalysis.from_dict(
         {
@@ -230,6 +239,7 @@ def test_production_tagging_uses_one_combined_call_and_persists_point_evidence(
         FakeCombinedGateway,
     )
     governance = TaxonomyGovernance(
+        catalog_path=LEGACY_CATALOG_PATH,
         state_path=tmp_path / "taxonomy-state.json"
     )
     service = AITaggingService(
@@ -339,12 +349,17 @@ def test_unified_tagging_exposes_evidence_failure_in_retry_ids(
         "CombinedQuestionAnalysisModule",
         StubCombinedModule,
     )
+    governance = TaxonomyGovernance(
+        catalog_path=LEGACY_CATALOG_PATH,
+        state_path=tmp_path / "taxonomy-state.json",
+    )
     service = AITaggingService(
         env={
             "QUESTION_BANK_TAGGING_API_KEY": "synthetic-key",
             "QUESTION_BANK_TAGGING_MODEL": "synthetic-model",
         },
         protocol_adapter=object(),
+        taxonomy_governance=governance,
     )
 
     result = run_tagging_sync_job(
@@ -352,6 +367,7 @@ def test_unified_tagging_exposes_evidence_failure_in_retry_ids(
         question_bank_db_path=db_path,
         data_root=data_root,
         ai_service_factory=lambda: service,
+        taxonomy_governance=governance,
     )
 
     assert result["successful_question_ids"] == ids

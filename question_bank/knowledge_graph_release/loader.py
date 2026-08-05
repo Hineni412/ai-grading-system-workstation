@@ -11,18 +11,43 @@ DEFAULT_RELEASE_PATH = (
     Path(__file__).resolve().parents[1]
     / "taxonomy"
     / "catalogs"
-    / "knowledge_graph_release_v1.json"
+    / "knowledge_graph_release_v2.json"
 )
 DEFAULT_TAXONOMY_PATH = (
     Path(__file__).resolve().parents[1]
     / "taxonomy"
     / "catalogs"
-    / "tag_vocabulary_v2.json"
+    / "tag_vocabulary_v3.json"
 )
+_RELEASE_PATHS_BY_TAXONOMY_REVISION = {
+    3: (
+        Path(__file__).resolve().parents[1]
+        / "taxonomy"
+        / "catalogs"
+        / "knowledge_graph_release_v1.json"
+    ),
+    4: DEFAULT_RELEASE_PATH,
+}
+_TAXONOMY_PATHS_BY_REVISION = {
+    3: (
+        Path(__file__).resolve().parents[1]
+        / "taxonomy"
+        / "catalogs"
+        / "tag_vocabulary_v2.json"
+    ),
+    4: DEFAULT_TAXONOMY_PATH,
+}
 
 
 def load_release(path: Path | None = None) -> KnowledgeGraphRelease:
     return KnowledgeGraphRelease.from_path(path or DEFAULT_RELEASE_PATH)
+
+
+def load_release_for_taxonomy_revision(revision: int) -> KnowledgeGraphRelease:
+    source = _RELEASE_PATHS_BY_TAXONOMY_REVISION.get(int(revision))
+    if source is None:
+        raise ValueError(f"no knowledge release is bundled for revision {revision}")
+    return load_release(source)
 
 
 def load_taxonomy_catalog(path: Path | None = None) -> dict[str, Any]:
@@ -30,9 +55,24 @@ def load_taxonomy_catalog(path: Path | None = None) -> dict[str, Any]:
     return json.loads(Path(source).read_text(encoding="utf-8"))
 
 
+def load_taxonomy_catalog_for_release(
+    release: KnowledgeGraphRelease,
+) -> dict[str, Any]:
+    """Load the immutable governed vocabulary paired with one release."""
+
+    source = _TAXONOMY_PATHS_BY_REVISION.get(release.taxonomy_revision)
+    if source is None:
+        raise ValueError(
+            f"no governed taxonomy is bundled for revision {release.taxonomy_revision}"
+        )
+    return load_taxonomy_catalog(source)
+
+
 __all__ = [
     "DEFAULT_RELEASE_PATH",
     "DEFAULT_TAXONOMY_PATH",
     "load_release",
+    "load_release_for_taxonomy_revision",
     "load_taxonomy_catalog",
+    "load_taxonomy_catalog_for_release",
 ]

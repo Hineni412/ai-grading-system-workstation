@@ -17,6 +17,22 @@ from question_bank.taxonomy.governance import TaxonomyGovernance
 from question_bank.training_criteria.analysis import combined_response_format
 
 
+LEGACY_CATALOG_PATH = (
+    Path(__file__).resolve().parents[2]
+    / "question_bank"
+    / "taxonomy"
+    / "catalogs"
+    / "tag_vocabulary_v2.json"
+)
+
+
+def _legacy_governance(state_path: Path) -> TaxonomyGovernance:
+    return TaxonomyGovernance(
+        catalog_path=LEGACY_CATALOG_PATH,
+        state_path=state_path,
+    )
+
+
 class _Resolver:
     def resolve(self, fine_term_id: str) -> CoreResolution:
         return CoreResolution(status="unmapped", reason=f"test:{fine_term_id}")
@@ -67,7 +83,7 @@ def _link(term_id: str, name: str, role: str = "direct") -> dict[str, str]:
 def test_convergence_uses_full_vocabulary_and_keeps_unknown_out_of_formal_links(
     tmp_path: Path,
 ) -> None:
-    governance = TaxonomyGovernance(state_path=tmp_path / "taxonomy-state.json")
+    governance = _legacy_governance(tmp_path / "taxonomy-state.json")
 
     convergence = converge_evidence_terms(
         _payload(
@@ -130,9 +146,7 @@ def test_conflicting_model_id_and_name_are_not_silently_saved(
     convergence = converge_evidence_terms(
         _payload(_link("kp_alg_polynomial", "一元一次方程")),
         taxonomy_contract={"taxonomy_revision": 2, "candidates": {"knowledge": []}},
-        governance=TaxonomyGovernance(
-            state_path=tmp_path / "taxonomy-state.json"
-        ),
+        governance=_legacy_governance(tmp_path / "taxonomy-state.json"),
         question_ref="config-source:Q1",
         model_name="synthetic-model",
         operation_id="test:conflicting-link",
@@ -164,8 +178,8 @@ def test_unambiguous_id_or_name_match_is_repaired_locally(
     convergence = converge_evidence_terms(
         _payload(_link(submitted_id, submitted_name)),
         taxonomy_contract={"taxonomy_revision": 2, "candidates": {"knowledge": []}},
-        governance=TaxonomyGovernance(
-            state_path=tmp_path / f"taxonomy-{correction}.json"
+        governance=_legacy_governance(
+            tmp_path / f"taxonomy-{correction}.json"
         ),
         question_ref="Q1",
         model_name="synthetic-model",
@@ -199,9 +213,7 @@ def test_same_term_keeps_distinct_roles_and_deduplicates_only_exact_links(
             _link("kp_alg_linear_equation", "一元一次方程", "direct"),
         ),
         taxonomy_contract={"taxonomy_revision": 2, "candidates": {"knowledge": []}},
-        governance=TaxonomyGovernance(
-            state_path=tmp_path / "taxonomy-roles.json"
-        ),
+        governance=_legacy_governance(tmp_path / "taxonomy-roles.json"),
         question_ref="Q1",
         model_name="synthetic-model",
         operation_id="test:distinct-roles",
@@ -228,9 +240,7 @@ def test_free_text_does_not_turn_short_alias_substrings_into_formal_links(
     convergence = converge_evidence_terms(
         payload,
         taxonomy_contract={"taxonomy_revision": 2, "candidates": {"knowledge": []}},
-        governance=TaxonomyGovernance(
-            state_path=tmp_path / "taxonomy-short-alias.json"
-        ),
+        governance=_legacy_governance(tmp_path / "taxonomy-short-alias.json"),
         question_ref="Q1",
         model_name="synthetic-model",
         operation_id="test:no-free-text-substring-inference",
@@ -286,14 +296,18 @@ def test_formal_writer_saves_sound_scoring_without_unresolved_formal_links(
     writer = SolutionEvidenceProjectionWriter(
         mapping_repository=_Resolver(),
         evidence_repository=repository,  # type: ignore[arg-type]
-        taxonomy_governance=TaxonomyGovernance(
-            state_path=tmp_path / "taxonomy-state.json"
+        taxonomy_governance=_legacy_governance(
+            tmp_path / "taxonomy-state.json"
         ),
     )
 
     evidence = writer.write(
         SimpleNamespace(
             question_id=1,
+            question_type_group="subjective",
+            question_type_confirmed=True,
+            explicit_part_labels=(),
+            objective_response_shape=None,
             taxonomy_contract={
                 "taxonomy_revision": 2,
                 "candidates": {"knowledge": []},
@@ -320,7 +334,7 @@ def test_formal_writer_saves_sound_scoring_without_unresolved_formal_links(
     assert audit["missing_link_points"] == [
         {
             "part_id": "part-1",
-            "evidence_point_id": "step-1",
+            "evidence_point_id": "part-1-step-1",
             "reason_code": "missing_formal_link",
         }
     ]

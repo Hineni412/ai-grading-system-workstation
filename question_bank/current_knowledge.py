@@ -14,7 +14,7 @@ from question_bank.knowledge_graph_release.contracts import (
 )
 from question_bank.knowledge_graph_release.loader import (
     load_release,
-    load_taxonomy_catalog,
+    load_taxonomy_catalog_for_release,
 )
 from question_bank.knowledge_graph_release.repository import (
     KnowledgeGraphReleaseConflict,
@@ -274,7 +274,9 @@ class CurrentKnowledgeResolver:
             )
             raw = json.loads(str(raw_value))
             release = KnowledgeGraphRelease.from_mapping(raw)
-            catalog = dict(taxonomy_catalog or load_taxonomy_catalog())
+            catalog = dict(
+                taxonomy_catalog or load_taxonomy_catalog_for_release(release)
+            )
             return cls(release, catalog)
         except (
             json.JSONDecodeError,
@@ -390,12 +392,18 @@ def ensure_checked_in_current_standard(db_path: Path) -> str:
 
     path = Path(db_path)
     checked_in = load_release()
-    report = validate_release(checked_in, load_taxonomy_catalog())
+    report = validate_release(
+        checked_in,
+        load_taxonomy_catalog_for_release(checked_in),
+    )
     if not report.valid:
         raise CurrentKnowledgeUnavailable("current_knowledge_checked_in_invalid")
     active = load_active_release(path)
     if active is not None:
-        active_report = validate_release(active, load_taxonomy_catalog())
+        active_report = validate_release(
+            active,
+            load_taxonomy_catalog_for_release(active),
+        )
         if not active_report.valid:
             raise CurrentKnowledgeUnavailable("current_knowledge_active_invalid")
         # Do not replace an explicitly selected current release during startup.
@@ -408,6 +416,7 @@ def ensure_checked_in_current_standard(db_path: Path) -> str:
             actor_ref="system-current-standard",
             source_reference="checked-in-current-standard",
             reason="内部启用唯一当前知识标准",
+            taxonomy_catalog=load_taxonomy_catalog_for_release(checked_in),
         )
     except KnowledgeGraphReleaseConflict:
         # A concurrent starter may have completed the same activation.
