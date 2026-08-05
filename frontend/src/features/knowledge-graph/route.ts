@@ -19,6 +19,7 @@ export interface ParsedGraphRouteScope {
 
 const CONTROLLED_KEYS = new Set([
   'exam', 'sessions', 'scope', 'class', 'students', 'session',
+  'min', 'max', 'include', 'exclude', 'history',
 ])
 
 function singleText(value: unknown): string | null {
@@ -42,15 +43,10 @@ function parseStudentList(value: unknown): string[] | null {
 export function serializeGraphRouteScope(query: GraphQueryInput): Record<string, string> {
   const result: Record<string, string> = {
     exam: query.exam_scope.mode,
-    scope: query.scope.mode,
+    scope: 'snapshot',
   }
   if (query.exam_scope.mode !== 'cross_exam') {
     result.sessions = query.exam_scope.session_ids.join(',')
-  }
-  if (query.scope.mode === 'class') {
-    result.class = query.scope.class_id
-  } else {
-    result.students = query.scope.student_ids.join(',')
   }
   return result
 }
@@ -73,6 +69,20 @@ export function parseGraphRouteScope(
     }
   }
 
+  if (singleText(routeQuery.scope) === 'snapshot') {
+    const exam = singleText(routeQuery.exam)
+    const sessionsValue = singleText(routeQuery.sessions)
+    return {
+      query: null,
+      canonical: {
+        ...(exam ? { exam } : {}),
+        scope: 'snapshot',
+        ...(sessionsValue ? { sessions: sessionsValue } : {}),
+      },
+      notice: hasUnknownKeys ? '已忽略无效地址参数' : '',
+    }
+  }
+
   let query: GraphQueryInput | null = null
   if (usesLegacyFormat) {
     const sessionId = parseIntegerList(routeQuery.session)
@@ -90,7 +100,7 @@ export function parseGraphRouteScope(
       const sessionIds = parseIntegerList(routeQuery.sessions)
       if (sessionIds?.length === 1) {
         query = {
-          scope: { mode: 'class', class_id: '' },
+          scope: { mode: 'all' },
           exam_scope: { mode: 'current', session_ids: [sessionIds[0]!] },
         }
       }
@@ -98,18 +108,20 @@ export function parseGraphRouteScope(
       const sessionIds = parseIntegerList(routeQuery.sessions)
       if (sessionIds?.length) {
         query = {
-          scope: { mode: 'class', class_id: '' },
+          scope: { mode: 'all' },
           exam_scope: { mode: 'manual', session_ids: sessionIds },
         }
       }
     } else if (examMode === 'cross_exam') {
       query = {
-        scope: { mode: 'class', class_id: '' },
+        scope: { mode: 'all' },
         exam_scope: { mode: 'cross_exam' },
       }
     }
 
-    if (query && scopeMode === 'class') {
+    if (query && scopeMode === 'all') {
+      query = { ...query, scope: { mode: 'all' } }
+    } else if (query && scopeMode === 'class') {
       const classId = singleText(routeQuery.class)
       query = classId ? { ...query, scope: { mode: 'class', class_id: classId } } : null
     } else if (query && (scopeMode === 'student' || scopeMode === 'selected')) {
@@ -119,6 +131,31 @@ export function parseGraphRouteScope(
         : null
     } else {
       query = null
+    }
+    if (query) {
+      const minimum = singleText(routeQuery.min)
+      const maximum = singleText(routeQuery.max)
+      const minValue = minimum === null ? undefined : Number(minimum)
+      const maxValue = maximum === null ? undefined : Number(maximum)
+      const include = parseStudentList(routeQuery.include) ?? []
+      const exclude = parseStudentList(routeQuery.exclude) ?? []
+      const history = singleText(routeQuery.history)
+      if ((minValue !== undefined && (!Number.isFinite(minValue) || minValue < 0 || minValue > 1))
+        || (maxValue !== undefined && (!Number.isFinite(maxValue) || maxValue < 0 || maxValue > 1))) {
+        query = null
+      } else {
+        query = {
+          ...query,
+          scope: {
+            ...query.scope,
+            ...(minValue !== undefined ? { score_rate_min: minValue } : {}),
+            ...(maxValue !== undefined ? { score_rate_max: maxValue } : {}),
+            ...(include.length ? { include_student_ids: include } : {}),
+            ...(exclude.length ? { exclude_student_ids: exclude } : {}),
+            ...(history !== null ? { use_historical_fallback: history !== '0' } : {}),
+          },
+        }
+      }
     }
   }
 
@@ -132,9 +169,13 @@ export function parseGraphRouteScope(
     : query?.exam_scope.session_ids ?? []
   const valid = query !== null &&
     requestedSessions.every((id) => validSessions.has(id)) &&
-    (query.scope.mode === 'class'
-      ? validClasses.has(query.scope.class_id)
-      : query.scope.student_ids.every((id) => validStudents.has(id)))
+    (query.scope.mode === 'all'
+      ? true
+      : query.scope.mode === 'class'
+        ? !query.scope.class_id || validClasses.has(query.scope.class_id)
+        : (query.scope.student_ids ?? []).every((id) => validStudents.has(id)))
+    && (query.scope.include_student_ids ?? []).every((id) => validStudents.has(id))
+    && (query.scope.exclude_student_ids ?? []).every((id) => validStudents.has(id))
 
   if (!valid || query === null) {
     return {

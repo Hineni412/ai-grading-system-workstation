@@ -28,6 +28,11 @@ from backend.api.dependencies import (
 from backend.api.routers.jobs import _job_response
 from backend.api.schemas.jobs import JobResponse
 from backend.api.schemas.training import (
+    PersonalizedPaperBatchCreateRequest,
+    PersonalizedPaperBatchCancelRequest,
+    PersonalizedPaperBatchRetryRequest,
+    PersonalizedPaperBatchListResponse,
+    PersonalizedPaperBatchResponse,
     PersonalizedPaperCreateRequest,
     PersonalizedPaperInstanceListResponse,
     PersonalizedPaperInstanceResponse,
@@ -224,6 +229,17 @@ def create_personalized_recommendation_draft(
             scope=body.scope.model_dump(exclude_none=True),
             exam_scope=body.exam_scope.model_dump(exclude_none=True),
         )
+        explicitly_included = set(body.scope.include_student_ids)
+        diagnosis["students"] = [
+            student
+            for student in diagnosis.get("students", [])
+            if student.get("weak_points")
+            or str(student.get("student_id") or "") in explicitly_included
+        ]
+        if not diagnosis["students"]:
+            raise ValueError(
+                "no students with evidence were selected for a recommendation draft"
+            )
         draft = module.create(
             request_token=body.request_token.lower(),
             diagnosis=diagnosis,
@@ -425,6 +441,123 @@ def create_personalized_paper_instance(
     ) as exc:
         _raise_paper_api_error(exc)
     return _paper_instance_response(instance)
+
+
+@router.post(
+    "/personalized-drafts/{draft_id}/paper-batches",
+    response_model=PersonalizedPaperBatchResponse,
+    status_code=201,
+    responses={
+        404: {"model": ErrorResponse, "description": "Draft was not found"},
+        409: {"model": ErrorResponse, "description": "Draft or sources changed"},
+        422: {"model": ErrorResponse, "description": "Paper preflight failed"},
+        **TRAINING_DATABASE_RESPONSES,
+    },
+)
+def create_personalized_paper_batch(
+    draft_id: str,
+    body: PersonalizedPaperBatchCreateRequest,
+    module: PersonalizedPaperModule = Depends(get_personalized_paper_module),
+) -> PersonalizedPaperBatchResponse:
+    try:
+        result = module.create_review_batch(
+            draft_id,
+            operation_token=body.operation_token.lower(),
+            expected_draft_revision=body.expected_draft_revision,
+            student_ids=body.student_ids,
+            actor_ref="local_teacher",
+            context_window_tokens=body.context_window_tokens,
+        )
+    except (
+        PersonalizedPaperError,
+        OSError,
+        sqlite3.Error,
+        TypeError,
+        ValueError,
+    ) as exc:
+        _raise_paper_api_error(exc)
+    return _paper_batch_response(result)
+
+
+@router.get(
+    "/personalized-drafts/{draft_id}/paper-batches",
+    response_model=PersonalizedPaperBatchListResponse,
+    responses=TRAINING_DATABASE_RESPONSES,
+)
+def list_personalized_paper_batches(
+    draft_id: str,
+    module: PersonalizedPaperModule = Depends(get_personalized_paper_module),
+) -> PersonalizedPaperBatchListResponse:
+    try:
+        batches = module.list_batches_for_draft(draft_id)
+    except (PersonalizedPaperError, OSError, sqlite3.Error, ValueError) as exc:
+        _raise_paper_api_error(exc)
+    return PersonalizedPaperBatchListResponse(
+        items=[_paper_batch_response(item) for item in batches]
+    )
+
+
+@router.get(
+    "/paper-batches/{batch_run_id}",
+    response_model=PersonalizedPaperBatchResponse,
+    responses={
+        404: {"model": ErrorResponse, "description": "Batch was not found"},
+        **TRAINING_DATABASE_RESPONSES,
+    },
+)
+def get_personalized_paper_batch(
+    batch_run_id: str,
+    module: PersonalizedPaperModule = Depends(get_personalized_paper_module),
+) -> PersonalizedPaperBatchResponse:
+    try:
+        batch = module.get_batch(batch_run_id)
+    except (PersonalizedPaperError, OSError, sqlite3.Error, ValueError) as exc:
+        _raise_paper_api_error(exc)
+    return _paper_batch_response(batch)
+
+
+@router.post(
+    "/paper-batches/{batch_run_id}/cancel",
+    response_model=PersonalizedPaperBatchResponse,
+    responses={
+        404: {"model": ErrorResponse, "description": "Batch was not found"},
+        **TRAINING_DATABASE_RESPONSES,
+    },
+)
+def cancel_personalized_paper_batch(
+    batch_run_id: str,
+    _body: PersonalizedPaperBatchCancelRequest,
+    module: PersonalizedPaperModule = Depends(get_personalized_paper_module),
+) -> PersonalizedPaperBatchResponse:
+    try:
+        batch = module.cancel_batch(batch_run_id)
+    except (PersonalizedPaperError, OSError, sqlite3.Error, ValueError) as exc:
+        _raise_paper_api_error(exc)
+    return _paper_batch_response(batch)
+
+
+@router.post(
+    "/paper-batches/{batch_run_id}/retry",
+    response_model=PersonalizedPaperBatchResponse,
+    responses={
+        404: {"model": ErrorResponse, "description": "Batch was not found"},
+        422: {"model": ErrorResponse, "description": "Retry scope was invalid"},
+        **TRAINING_DATABASE_RESPONSES,
+    },
+)
+def retry_personalized_paper_batch(
+    batch_run_id: str,
+    body: PersonalizedPaperBatchRetryRequest,
+    module: PersonalizedPaperModule = Depends(get_personalized_paper_module),
+) -> PersonalizedPaperBatchResponse:
+    try:
+        batch = module.retry_batch(
+            batch_run_id,
+            student_ids=body.student_ids,
+        )
+    except (PersonalizedPaperError, OSError, sqlite3.Error, ValueError) as exc:
+        _raise_paper_api_error(exc)
+    return _paper_batch_response(batch)
 
 
 @router.get(
@@ -639,6 +772,35 @@ def download_personalized_paper_artifact(
         f"personalized-paper-{paper_instance_id[:12]}-"
         f"v{int(instance['series_version'])}{extension}"
     )
+    return FileResponse(
+        path,
+        filename=filename,
+        media_type=media_type,
+        headers=NO_STORE_HEADERS,
+    )
+
+
+@router.get(
+    "/paper-batches/{batch_run_id}/files/{kind}",
+    response_class=FileResponse,
+    responses={404: {"model": ErrorResponse, "description": "File was not found"}},
+)
+def download_personalized_paper_batch(
+    batch_run_id: str,
+    kind: str,
+    module: PersonalizedPaperModule = Depends(get_personalized_paper_module),
+) -> FileResponse:
+    try:
+        path, media_type = module.batch_artifact_path(batch_run_id, kind)
+    except (
+        PersonalizedPaperError,
+        OSError,
+        sqlite3.Error,
+        TypeError,
+        ValueError,
+    ) as exc:
+        _raise_paper_api_error(exc)
+    filename = "个性化训练卷-批量审核稿.zip" if kind == "bundle" else "个性化训练卷-生成清单.json"
     return FileResponse(
         path,
         filename=filename,
@@ -1572,6 +1734,18 @@ def _paper_instance_response(
     return PersonalizedPaperInstanceResponse.model_validate(
         _public_training_mapping(instance)
     )
+
+
+def _paper_batch_response(
+    batch: dict[str, Any],
+) -> PersonalizedPaperBatchResponse:
+    return PersonalizedPaperBatchResponse.model_validate({
+        **_public_training_mapping(batch),
+        "items": [
+            _paper_instance_response(item).model_dump()
+            for item in batch["items"]
+        ],
+    })
 
 
 def _raise_paper_api_error(exc: Exception) -> NoReturn:

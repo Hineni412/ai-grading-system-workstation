@@ -79,8 +79,23 @@ class CurrentKnowledgeGraphQueryService:
         }
         mastery_warning: str | None = None
         try:
+            scope = profile.get("scope")
+            if isinstance(scope, Mapping):
+                allowed_student_ids = frozenset(
+                    str(value) for value in scope.get("student_ids", [])
+                )
+            else:
+                allowed_student_ids = frozenset(
+                    str(student.get("student_id") or "")
+                    for student in profile.get("students", [])
+                    if isinstance(student, Mapping)
+                    and str(student.get("student_id") or "").strip()
+                )
             mastery_by_key = aggregate_current_mastery(
-                self.mastery_calculator.calculate(profile)
+                self.mastery_calculator.calculate(
+                    profile,
+                    allowed_student_ids=allowed_student_ids,
+                )
             )
         except (OSError, sqlite3.Error, TypeError, ValueError):
             mastery_by_key = {}
@@ -102,7 +117,9 @@ class CurrentKnowledgeGraphQueryService:
                     continue
                 seed_keys.add(key)
         else:
-            seed_keys = set(evidence_nodes).intersection(node_by_key)
+            seed_keys = (
+                set(evidence_nodes) | set(mastery_by_key)
+            ).intersection(node_by_key)
 
         included_keys = _expand_prerequisites(
             seed_keys,
@@ -337,18 +354,37 @@ def _node_payload(
     *,
     mastery_available: bool,
 ) -> dict[str, object]:
+    mastery_evidence_count = int(
+        getattr(mastery, "evidence_count", 0) or 0
+    )
+    mastery_student_count = int(
+        getattr(mastery, "contributing_student_count", 0) or 0
+    )
+    has_mastery_evidence = (
+        mastery_evidence_count > 0 and mastery_student_count > 0
+    )
     evidence_summary = (
         {
-            "student_count": 0,
-            "item_count": 0,
+            "student_count": (
+                mastery_student_count if has_mastery_evidence else 0
+            ),
+            "item_count": (
+                mastery_evidence_count if has_mastery_evidence else 0
+            ),
             "deduction_count": 0,
             "tag_context": {},
             "error_counts": {"primary": {}, "secondary": {}},
         }
         if evidence is None
         else {
-            "student_count": int(evidence.get("student_count") or 0),
-            "item_count": int(evidence.get("item_count") or 0),
+            "student_count": max(
+                int(evidence.get("student_count") or 0),
+                mastery_student_count,
+            ),
+            "item_count": max(
+                int(evidence.get("item_count") or 0),
+                mastery_evidence_count,
+            ),
             "deduction_count": int(evidence.get("deduction_count") or 0),
             "tag_context": dict(evidence.get("tag_context") or {}),
             "error_counts": dict(evidence.get("error_counts") or {}),
@@ -361,6 +397,9 @@ def _node_payload(
             "evidence_count": 0,
             "parameter_version": None,
             "reason": "current_mastery_unavailable",
+            "contributing_student_count": 0,
+            "exam_evidence_count": 0,
+            "training_evidence_count": 0,
         }
     elif mastery is None:
         mastery_payload = {
@@ -369,6 +408,9 @@ def _node_payload(
             "evidence_count": 0,
             "parameter_version": None,
             "reason": "current_mastery_evidence_missing",
+            "contributing_student_count": 0,
+            "exam_evidence_count": 0,
+            "training_evidence_count": 0,
         }
     else:
         mastery_payload = mastery.to_dict()
@@ -385,7 +427,8 @@ def _node_payload(
         "mastery": mastery_payload,
         "evidence": evidence_summary,
         "missing_reasons": (
-            ["no_evidence_in_scope"] if evidence is None else []
+            ["no_evidence_in_scope"]
+            if evidence is None and not has_mastery_evidence else []
         ),
     }
 

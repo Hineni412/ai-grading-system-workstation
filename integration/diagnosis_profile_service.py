@@ -7,9 +7,18 @@ from typing import Any, Iterable, Mapping
 
 from backend.repositories.access import GradingRepositoryAccess, as_grading_repositories
 from backend.repositories.compat import open_grading_repositories
+from integration.evidence_scope import EvidenceScopeResolver
 from integration.question_tag_projection_service import (
     QuestionTagProjection,
     QuestionTagProjectionService,
+)
+from question_bank.current_knowledge import (
+    CurrentKnowledgeResolver,
+    CurrentKnowledgeUnavailable,
+)
+from question_bank.mastery.current import (
+    CurrentMasteryCalculator,
+    aggregate_current_mastery,
 )
 
 
@@ -52,18 +61,40 @@ class DiagnosisProfileService:
         scope: Mapping[str, Any],
         exam_scope: Mapping[str, Any],
     ) -> dict[str, Any]:
-        warnings: list[str] = []
-        sessions = self._resolve_sessions(exam_scope, warnings)
-        students = self._resolve_students(scope, warnings)
+        resolved = EvidenceScopeResolver(self.db).resolve(
+            scope=scope,
+            exam_scope=exam_scope,
+        )
+        warnings = list(resolved.warnings)
+        sessions = list(resolved.sessions)
+        students = list(resolved.students)
         session_ids = [int(item["id"]) for item in sessions]
         student_ids = [str(item["id"]) for item in students]
-        score_rates = self._score_rates(students, session_ids)
-        projection_by_session = self._tag_projections(session_ids)
+        historical_by_student = {
+            student_id: set(resolved.historical_session_ids_by_student.get(student_id, ()))
+            for student_id in student_ids
+        }
+        evidence_session_ids = list(dict.fromkeys([
+            *session_ids,
+            *(
+                session_id
+                for values in historical_by_student.values()
+                for session_id in values
+            ),
+        ]))
+        projection_by_session = self._tag_projections(evidence_session_ids)
         evidence_rows = self._projected_tag_evidence(
             student_ids=student_ids,
-            session_ids=session_ids,
+            session_ids=evidence_session_ids,
             projection_by_session=projection_by_session,
         )
+        selected_session_ids = set(session_ids)
+        evidence_rows = [
+            row for row in evidence_rows
+            if int(row.get("session_id") or 0) in selected_session_ids
+            or int(row.get("session_id") or 0)
+            in historical_by_student.get(str(row.get("student_id") or ""), set())
+        ]
 
         grouped_by_student: dict[str, dict[str, dict[str, Any]]] = defaultdict(dict)
         for row in evidence_rows:
@@ -103,6 +134,11 @@ class DiagnosisProfileService:
                     "score_awarded": awarded,
                     "full_score": full_score,
                     "score_rate": round(awarded / full_score, 4) if full_score > 0 else None,
+                    "source_kind": (
+                        "current_exam"
+                        if int(row.get("session_id") or 0) in selected_session_ids
+                        else "historical_exam"
+                    ),
                 }
                 if reference not in item["source_question_refs"]:
                     item["source_question_refs"].append(reference)
@@ -171,22 +207,86 @@ class DiagnosisProfileService:
                         },
                     }
                 )
-            weak_points.sort(key=lambda item: (item["mastery"], item["knowledge_point"]))
+            self._apply_governed_hierarchy(weak_points)
+            weak_points = self._dedupe_governed_points(weak_points)
+            weak_points.sort(key=lambda item: (
+                item.get("parent_knowledge_point") or item["knowledge_point"],
+                item["knowledge_point"],
+            ))
             student_profiles.append(
                 {
                     "student_id": student_id,
                     "student_code": str(student.get("student_code") or ""),
                     "student_name": str(student.get("name") or ""),
                     "class_id": str(student.get("class_name") or ""),
-                    "score_rate": score_rates.get(student_id),
+                    **resolved.score_profiles.get(student_id, {}),
                     "weak_points": weak_points,
                 }
             )
 
+        group_weak_points: list[dict[str, Any]] = []
+        knowledge_catalog: list[dict[str, Any]] = []
+        try:
+            resolver = CurrentKnowledgeResolver.from_active_database(
+                self.question_bank_db_path
+            )
+            mastery_profile = {
+                "scope": {"student_ids": student_ids},
+                "students": student_profiles,
+                "_mastery_session_times": self.mastery_session_times(
+                    exam_scope=exam_scope
+                ),
+            }
+            per_student_mastery = CurrentMasteryCalculator(
+                self.question_bank_db_path,
+                resolver,
+            ).calculate(
+                mastery_profile,
+                allowed_student_ids=frozenset(student_ids),
+            )
+            self._merge_current_mastery(
+                student_profiles,
+                per_student_mastery,
+                resolver=resolver,
+            )
+            group_weak_points = self._group_mastery_payload(
+                student_profiles,
+                aggregate_current_mastery(per_student_mastery),
+                resolver=resolver,
+            )
+            parent_by_child = {
+                relation.source_key: relation.target_key
+                for relation in resolver.relations
+                if relation.relation_type == "parent"
+            }
+            node_by_key = {node.stable_key: node for node in resolver.nodes}
+            knowledge_catalog = [
+                {
+                    "knowledge_key": node.stable_key,
+                    "knowledge_point": node.display_name,
+                    "parent_knowledge_key": parent_by_child.get(node.stable_key),
+                    "parent_knowledge_point": (
+                        node_by_key[parent_by_child[node.stable_key]].display_name
+                        if node.stable_key in parent_by_child else None
+                    ),
+                }
+                for node in resolver.nodes
+            ]
+        except (
+            CurrentKnowledgeUnavailable,
+            OSError,
+            sqlite3.Error,
+            TypeError,
+            ValueError,
+        ):
+            warnings.append("当前掌握度参数或训练证据暂不可用，已保留考试证据诊断。")
+
         coverage_missing: dict[str, str] = {}
         covered_items = 0
         total_items = 0
-        for projection in projection_by_session.values():
+        for session_id, projection in projection_by_session.items():
+            if session_id not in set(session_ids):
+                continue
             covered_items += projection.covered_items
             total_items += projection.total_items
             coverage_missing.update(projection.missing_items)
@@ -197,14 +297,7 @@ class DiagnosisProfileService:
         if not any(item["weak_points"] for item in student_profiles):
             warnings.append("所选范围内没有已关联且带知识点标签的诊断证据。")
 
-        normalized_scope = {
-            "mode": str(scope.get("mode") or "student"),
-            "student_ids": [item["student_id"] for item in student_profiles],
-        }
-        if scope.get("class_id") or scope.get("class_name"):
-            normalized_scope["class_id"] = str(
-                scope.get("class_id") or scope.get("class_name")
-            )
+        normalized_scope = resolved.normalized_scope(scope)
         return {
             "scope": normalized_scope,
             "exam_scope": {
@@ -219,6 +312,8 @@ class DiagnosisProfileService:
                 ],
             },
             "students": student_profiles,
+            "group_weak_points": group_weak_points,
+            "knowledge_catalog": knowledge_catalog,
             "coverage": {
                 "covered_items": covered_items,
                 "total_items": total_items,
@@ -231,6 +326,227 @@ class DiagnosisProfileService:
             "diagnosis_identity": "question_tag",
         }
 
+    def _merge_current_mastery(
+        self,
+        student_profiles: list[dict[str, Any]],
+        mastery: Mapping[tuple[str, str], Any],
+        *,
+        resolver: CurrentKnowledgeResolver,
+    ) -> None:
+        parent_by_child = {
+            relation.source_key: relation.target_key
+            for relation in resolver.relations
+            if relation.relation_type == "parent"
+        }
+        children_by_parent: dict[str, list[str]] = defaultdict(list)
+        for child, parent in parent_by_child.items():
+            children_by_parent[parent].append(child)
+        node_by_key = {node.stable_key: node for node in resolver.nodes}
+        for student in student_profiles:
+            student_id = str(student["student_id"])
+            points = {
+                str(item["knowledge_key"]): item
+                for item in student.get("weak_points") or []
+            }
+            for (candidate_student_id, stable_key), current in mastery.items():
+                if candidate_student_id != student_id or current.value is None:
+                    continue
+                node = node_by_key.get(stable_key)
+                if node is None:
+                    continue
+                parent_key = parent_by_child.get(stable_key)
+                parent = node_by_key.get(parent_key) if parent_key else None
+                is_parent_summary = stable_key in children_by_parent
+                point = points.get(stable_key)
+                if point is None:
+                    point = {
+                        "knowledge_key": stable_key,
+                        "knowledge_point": node.display_name,
+                        "score_sum": 0.0,
+                        "full_score_sum": 0.0,
+                        "deduction_count": 0,
+                        "exam_count": 0,
+                        "source_question_refs": [],
+                        "actionable_reasons": [],
+                        "tag_context": {},
+                        "error_counts": {"primary": {}, "secondary": {}},
+                        "parent_knowledge_key": parent.stable_key if parent else None,
+                        "parent_knowledge_point": parent.display_name if parent else None,
+                    }
+                    student["weak_points"].append(point)
+                    points[stable_key] = point
+                point.update({
+                    "mastery": float(current.value),
+                    "evidence_count": int(current.evidence_count),
+                    "effective_weight": float(current.effective_weight),
+                    "hierarchy_kind": (
+                        "parent_summary" if is_parent_summary
+                        else "child" if parent else "root"
+                    ),
+                    "child_knowledge_keys": sorted(children_by_parent.get(stable_key, [])),
+                    "direct_evidence_count": int(current.direct_evidence_count),
+                    "child_evidence_count": max(
+                        int(current.evidence_count) - int(current.direct_evidence_count),
+                        0,
+                    ),
+                })
+            student["weak_points"].sort(key=lambda item: (
+                item.get("parent_knowledge_point") or item["knowledge_point"],
+                item.get("hierarchy_kind") != "parent_summary",
+                item["knowledge_point"],
+            ))
+
+    def _group_mastery_payload(
+        self,
+        student_profiles: list[dict[str, Any]],
+        mastery: Mapping[str, Any],
+        *,
+        resolver: CurrentKnowledgeResolver,
+    ) -> list[dict[str, Any]]:
+        exemplars = {
+            str(point["knowledge_key"]): point
+            for student in student_profiles
+            for point in student.get("weak_points") or []
+        }
+        node_by_key = {node.stable_key: node for node in resolver.nodes}
+        result: list[dict[str, Any]] = []
+        for stable_key, current in mastery.items():
+            if current.value is None:
+                continue
+            exemplar = exemplars.get(stable_key, {})
+            result.append({
+                "knowledge_key": stable_key,
+                "knowledge_point": str(
+                    exemplar.get("knowledge_point")
+                    or node_by_key[stable_key].display_name
+                ),
+                "mastery": float(current.value),
+                "score_sum": 0.0,
+                "full_score_sum": 0.0,
+                "deduction_count": 0,
+                "evidence_count": int(current.evidence_count),
+                "effective_weight": float(current.effective_weight),
+                "exam_count": 0,
+                "source_question_refs": [],
+                "actionable_reasons": [],
+                "tag_context": {},
+                "error_counts": {"primary": {}, "secondary": {}},
+                "hierarchy_kind": exemplar.get("hierarchy_kind", "root"),
+                "parent_knowledge_key": exemplar.get("parent_knowledge_key"),
+                "parent_knowledge_point": exemplar.get("parent_knowledge_point"),
+                "child_knowledge_keys": list(exemplar.get("child_knowledge_keys") or []),
+                "direct_evidence_count": int(current.direct_evidence_count),
+                "child_evidence_count": max(
+                    int(current.evidence_count) - int(current.direct_evidence_count),
+                    0,
+                ),
+            })
+        result.sort(key=lambda item: (item["mastery"], item["knowledge_point"]))
+        return result
+
+    def _apply_governed_hierarchy(self, weak_points: list[dict[str, Any]]) -> None:
+        try:
+            resolver = CurrentKnowledgeResolver.from_active_database(
+                self.question_bank_db_path
+            )
+        except (
+            CurrentKnowledgeUnavailable,
+            OSError,
+            sqlite3.Error,
+            TypeError,
+            ValueError,
+        ):
+            for item in weak_points:
+                item.update({
+                    "hierarchy_kind": "root",
+                    "parent_knowledge_key": None,
+                    "parent_knowledge_point": None,
+                })
+            return
+        parent_by_child = {
+            relation.source_key: relation.target_key
+            for relation in resolver.relations
+            if relation.relation_type == "parent"
+        }
+        node_by_key = {node.stable_key: node for node in resolver.nodes}
+        for item in weak_points:
+            targets = resolver.resolve(
+                item.get("knowledge_point") or item.get("knowledge_key")
+            )
+            target = targets[0] if targets else None
+            if target is None:
+                item.update({
+                    "hierarchy_kind": "root",
+                    "parent_knowledge_key": None,
+                    "parent_knowledge_point": None,
+                })
+                continue
+            item["knowledge_key"] = target.stable_key
+            item["knowledge_point"] = target.display_name
+            parent_key = parent_by_child.get(target.stable_key)
+            parent = node_by_key.get(parent_key) if parent_key else None
+            item.update({
+                "hierarchy_kind": "child" if parent is not None else "root",
+                "parent_knowledge_key": parent.stable_key if parent else None,
+                "parent_knowledge_point": parent.display_name if parent else None,
+            })
+
+    def _dedupe_governed_points(
+        self,
+        weak_points: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        grouped: dict[str, dict[str, Any]] = {}
+        for item in weak_points:
+            key = str(item["knowledge_key"])
+            target = grouped.setdefault(key, {
+                **item,
+                "source_question_refs": [],
+                "actionable_reasons": [],
+                "tag_context": {},
+                "error_counts": {"primary": {}, "secondary": {}},
+            })
+            references = {
+                (int(reference["session_id"]), str(reference["question_id"])): reference
+                for reference in target["source_question_refs"]
+            }
+            for reference in item.get("source_question_refs") or []:
+                references.setdefault(
+                    (int(reference["session_id"]), str(reference["question_id"])),
+                    reference,
+                )
+            target["source_question_refs"] = sorted(
+                references.values(),
+                key=lambda reference: (
+                    int(reference["session_id"]), str(reference["question_id"])
+                ),
+            )
+            target["actionable_reasons"] = _unique([
+                *target["actionable_reasons"],
+                *(item.get("actionable_reasons") or []),
+            ])
+            for tag_type, values in (item.get("tag_context") or {}).items():
+                target["tag_context"][tag_type] = _unique([
+                    *target["tag_context"].get(tag_type, []), *values,
+                ])
+            for level in ("primary", "secondary"):
+                counts = target["error_counts"][level]
+                for label, count in (item.get("error_counts") or {}).get(level, {}).items():
+                    counts[label] = max(int(counts.get(label, 0)), int(count))
+        result: list[dict[str, Any]] = []
+        for item in grouped.values():
+            references = item["source_question_refs"]
+            score_sum = sum(float(reference.get("score_awarded") or 0) for reference in references)
+            full_score_sum = sum(float(reference.get("full_score") or 0) for reference in references)
+            item.update({
+                "mastery": round(score_sum / full_score_sum, 4) if full_score_sum > 0 else 1.0,
+                "score_sum": round(score_sum, 4),
+                "full_score_sum": round(full_score_sum, 4),
+                "evidence_count": len(references),
+                "exam_count": len({int(reference["session_id"]) for reference in references}),
+            })
+            result.append(item)
+        return result
+
     def mastery_session_times(
         self,
         *,
@@ -238,7 +554,14 @@ class DiagnosisProfileService:
     ) -> dict[str, str]:
         """Expose evidence time only to the internal mastery adapter."""
 
-        sessions = self._resolve_sessions(exam_scope, [])
+        # The profile can contain explicitly labelled historical fallback evidence.
+        # Return timestamps for all active sessions; only references already present
+        # in the resolved profile are consumed by the mastery calculator.
+        sessions = [
+            item
+            for item in self.db.list_grading_sessions()
+            if not item.get("is_deleted")
+        ]
         return {
             str(int(item["id"])): str(item.get("created_at") or "")
             for item in sessions

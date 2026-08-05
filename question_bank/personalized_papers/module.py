@@ -7,9 +7,11 @@ import math
 import os
 import re
 import secrets
+import sqlite3
 import subprocess
 import tempfile
 import threading
+import zipfile
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
@@ -17,6 +19,7 @@ from pathlib import Path
 from typing import Any, BinaryIO, Literal
 
 from question_bank.database.schema import connect, initialize_database
+from question_bank.document_pipeline import build_math_expression
 from question_bank.recommendation.personalized import (
     PersonalizedRecommendationModule,
     RecommendationDraftNotFound,
@@ -59,6 +62,7 @@ _HASH_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 _INSTANCE_PATTERN = _HASH_PATTERN
 _LOCKS_GUARD = threading.Lock()
 _LOCKS: dict[str, threading.Lock] = {}
+_MATH_RUN = re.compile(r"\$\$(.+?)\$\$|\$(.+?)\$", re.DOTALL)
 
 
 class PersonalizedPaperError(RuntimeError):
@@ -414,6 +418,9 @@ class PersonalizedPaperModule:
                     paper_instance_id=clean_id,
                     paper_batch_id=str(row["paper_batch_id"]),
                     series_version=int(row["series_version"]),
+                    student_name=str(row["student_name_snapshot"] or ""),
+                    student_code=str(row["student_code_snapshot"] or ""),
+                    class_id=str(row["class_id_snapshot"] or ""),
                     signing_secret=str(row["signing_secret"]),
                     reviewed_docx_sha256=received_hash,
                     layout_version=str(row["layout_version"]),
@@ -470,6 +477,803 @@ class PersonalizedPaperModule:
                 (clean_id,),
             ).fetchall()
         return tuple(self._public_instance(row) for row in rows)
+
+    def create_review_batch(
+        self,
+        draft_id: str,
+        *,
+        operation_token: str,
+        expected_draft_revision: int,
+        student_ids: Sequence[str] = (),
+        actor_ref: str,
+        context_window_tokens: int = 32_768,
+    ) -> dict[str, Any]:
+        clean_draft_id = _identifier(draft_id, "draft_id")
+        clean_token = _token(operation_token)
+        initialize_database(self.db_path)
+        requested = tuple(dict.fromkeys(
+            str(value or "").strip() for value in student_ids if str(value or "").strip()
+        ))
+        fingerprint = _hash_payload({
+            "kind": "personalized-paper-review-batch",
+            "draft_id": clean_draft_id,
+            "draft_revision": int(expected_draft_revision),
+            "requested_student_ids": list(requested),
+            "actor_ref": _required_text(actor_ref, "actor_ref", 100),
+            "context_window_tokens": int(context_window_tokens),
+        })
+        existing = self._batch_by_operation(clean_token)
+        if existing is not None:
+            if str(existing["operation_fingerprint"]) != fingerprint:
+                raise PaperRequestConflict("paper batch operation token was reused")
+            if str(existing["status"]) != "creating":
+                return self._public_batch(str(existing["batch_run_id"]))
+        recommendation = PersonalizedRecommendationModule(
+            db_path=self.db_path,
+            data_root=self.data_root,
+            clock=self.clock,
+        )
+        try:
+            draft = recommendation.ensure_current(clean_draft_id)
+        except RecommendationDraftNotFound as exc:
+            raise PaperInstanceNotFound(clean_draft_id) from exc
+        except RecommendationSourceChanged as exc:
+            raise PaperSourceChanged(
+                "recommendation sources changed before paper batch creation"
+            ) from exc
+        if int(draft["revision"]) != int(expected_draft_revision):
+            raise PaperRevisionConflict(
+                int(expected_draft_revision), int(draft["revision"])
+            )
+        available = {
+            str(item.get("student_id") or ""): item
+            for item in _mappings(draft.get("students"))
+        }
+        targets = requested or tuple(available)
+        batch_run_id = _hash_payload({
+            "kind": "personalized-paper-review-batch",
+            "draft_id": clean_draft_id,
+            "draft_revision": int(expected_draft_revision),
+            "operation_token": clean_token,
+            "student_ids": list(targets),
+        })
+        paper_batch_id = _hash_payload({
+            "draft_id": clean_draft_id,
+            "draft_result_version": draft["result_version"],
+        })
+        self._reserve_batch(
+            batch_run_id=batch_run_id,
+            operation_token=clean_token,
+            operation_fingerprint=fingerprint,
+            draft_id=clean_draft_id,
+            draft_revision=int(expected_draft_revision),
+            paper_batch_id=paper_batch_id,
+            targets=targets,
+            actor_ref=actor_ref,
+            request_json=_json({
+                "requested_student_ids": list(requested),
+                "context_window_tokens": int(context_window_tokens),
+                "actor_ref": actor_ref,
+            }),
+        )
+        created: list[dict[str, Any]] = []
+        failed: list[dict[str, str]] = []
+        with connect(self.db_path) as connection:
+            saved_items = connection.execute(
+                """
+                SELECT * FROM personalized_paper_batch_items
+                WHERE batch_run_id = ? ORDER BY item_order
+                """,
+                (batch_run_id,),
+            ).fetchall()
+        for saved in saved_items:
+            if self._batch_is_cancelled(batch_run_id):
+                break
+            student_id = str(saved["student_id"])
+            if str(saved["status"]) == "succeeded":
+                created.append(self.get(str(saved["paper_instance_id"])))
+                continue
+            if str(saved["status"]) == "failed":
+                failed.append({
+                    "student_id": student_id,
+                    "error_code": str(saved["error_code"]),
+                })
+                continue
+            self._start_batch_item(batch_run_id, student_id)
+            if student_id not in available:
+                failure = {"student_id": student_id, "error_code": "student_not_in_draft"}
+                failed.append(failure)
+                self._finish_batch_item(batch_run_id, **failure)
+                continue
+            per_student_token = hashlib.sha256(
+                f"{clean_token}:{student_id}".encode("utf-8")
+            ).hexdigest()[:32]
+            try:
+                lock_id = hashlib.sha256(
+                    f"batch:{clean_draft_id}:{expected_draft_revision}:{student_id}".encode("utf-8")
+                ).hexdigest()
+                with _instance_lock(lock_id):
+                    instance = self._current_instance_for_student(
+                        clean_draft_id,
+                        student_id=student_id,
+                        draft_revision=int(expected_draft_revision),
+                    )
+                    if instance is not None:
+                        try:
+                            self.artifact_path(
+                                str(instance["paper_instance_id"]),
+                                "review-docx",
+                            )
+                        except PaperArtifactNotFound:
+                            row = self._instance_row(str(instance["paper_instance_id"]))
+                            if str(row["status"]) == "frozen":
+                                raise
+                            repair_command = CreatePaperCommand(
+                                operation_token=per_student_token,
+                                expected_draft_revision=int(expected_draft_revision),
+                                student_id=student_id,
+                                actor_ref=actor_ref,
+                                context_window_tokens=context_window_tokens,
+                            )
+                            instance = self._resume_review_document(
+                                row,
+                                snapshot=json.loads(str(row["snapshot_json"])),
+                                command=repair_command,
+                                fingerprint=str(row["operation_fingerprint"]),
+                                record_event=False,
+                            )
+                    else:
+                        instance = self.create_review_instance(
+                            clean_draft_id,
+                            CreatePaperCommand(
+                                operation_token=per_student_token,
+                                expected_draft_revision=int(expected_draft_revision),
+                                student_id=student_id,
+                                actor_ref=actor_ref,
+                                context_window_tokens=context_window_tokens,
+                            ),
+                        )
+                created.append(instance)
+                self._finish_batch_item(
+                    batch_run_id,
+                    student_id=student_id,
+                    paper_instance_id=str(instance["paper_instance_id"]),
+                )
+            except (
+                PersonalizedPaperError,
+                OSError,
+                sqlite3.Error,
+                TypeError,
+                ValueError,
+            ) as exc:
+                failure = {
+                    "student_id": student_id,
+                    "error_code": type(exc).__name__,
+                }
+                failed.append(failure)
+                self._finish_batch_item(batch_run_id, **failure)
+        self._fail_missing_batch_artifacts(batch_run_id)
+        created, failed = self._batch_results(batch_run_id)
+        downloads = self._publish_review_batch(
+            batch_run_id,
+            draft=draft,
+            instances=created,
+            failures=failed,
+        )
+        status = (
+            "cancelled" if self._batch_is_cancelled(batch_run_id)
+            else "complete" if created and not failed
+            else "partial" if created else "failed"
+        )
+        with connect(self.db_path) as connection:
+            connection.execute(
+                """
+                UPDATE personalized_paper_batches
+                SET status = ?, succeeded_count = ?, failed_count = ?,
+                    manifest_path = ?, bundle_path = ?,
+                    updated_at = datetime('now','localtime')
+                WHERE batch_run_id = ?
+                """,
+                (
+                    status,
+                    len(created),
+                    len(failed),
+                    str(downloads.get("manifest_path") or "") or None,
+                    str(downloads.get("bundle_path") or "") or None,
+                    batch_run_id,
+                ),
+            )
+        return self._public_batch(batch_run_id)
+
+    def cancel_batch(self, batch_run_id: str) -> dict[str, Any]:
+        clean_id = _identifier(batch_run_id, "batch_run_id")
+        initialize_database(self.db_path)
+        with connect(self.db_path) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            batch = connection.execute(
+                """
+                SELECT * FROM personalized_paper_batches
+                WHERE batch_run_id = ?
+                """,
+                (clean_id,),
+            ).fetchone()
+            if batch is None:
+                raise PaperInstanceNotFound(clean_id)
+            if str(batch["status"]) == "creating":
+                connection.execute(
+                    """
+                    UPDATE personalized_paper_batch_items
+                    SET status = 'failed', error_code = 'batch_cancelled',
+                        updated_at = datetime('now','localtime')
+                    WHERE batch_run_id = ? AND status IN ('pending', 'running')
+                    """,
+                    (clean_id,),
+                )
+                counts = connection.execute(
+                    """
+                    SELECT
+                        SUM(CASE WHEN status = 'succeeded' THEN 1 ELSE 0 END),
+                        SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END)
+                    FROM personalized_paper_batch_items WHERE batch_run_id = ?
+                    """,
+                    (clean_id,),
+                ).fetchone()
+                connection.execute(
+                    """
+                    UPDATE personalized_paper_batches
+                    SET status = 'cancelled', succeeded_count = ?, failed_count = ?,
+                        updated_at = datetime('now','localtime')
+                    WHERE batch_run_id = ?
+                    """,
+                    (int(counts[0] or 0), int(counts[1] or 0), clean_id),
+                )
+        return self._public_batch(clean_id)
+
+    def get_batch(self, batch_run_id: str) -> dict[str, Any]:
+        clean_id = _identifier(batch_run_id, "batch_run_id")
+        initialize_database(self.db_path)
+        return self._public_batch(clean_id)
+
+    def retry_batch(
+        self,
+        batch_run_id: str,
+        *,
+        student_ids: Sequence[str] = (),
+    ) -> dict[str, Any]:
+        """Resume interrupted items or explicitly retry failed students only."""
+
+        clean_id = _identifier(batch_run_id, "batch_run_id")
+        requested_retry = set(
+            str(value or "").strip() for value in student_ids if str(value or "").strip()
+        )
+        initialize_database(self.db_path)
+        with connect(self.db_path) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            batch = connection.execute(
+                "SELECT * FROM personalized_paper_batches WHERE batch_run_id = ?",
+                (clean_id,),
+            ).fetchone()
+            if batch is None:
+                raise PaperInstanceNotFound(clean_id)
+            available_failures = {
+                str(row["student_id"])
+                for row in connection.execute(
+                    """
+                    SELECT student_id FROM personalized_paper_batch_items
+                    WHERE batch_run_id = ? AND status IN ('failed', 'running', 'pending')
+                    """,
+                    (clean_id,),
+                ).fetchall()
+            }
+            targets = requested_retry or available_failures
+            invalid = targets - available_failures
+            if invalid:
+                raise PaperInvalid("retry scope contains students without a failed item")
+            if not targets:
+                operation_token = ""
+                draft_id = ""
+                draft_revision = 0
+                original_requested = ()
+                context_window_tokens = 32768
+                actor_ref = "local_teacher"
+            else:
+                connection.execute(
+                    f"""
+                    UPDATE personalized_paper_batch_items
+                    SET status = 'pending', paper_instance_id = NULL, error_code = NULL,
+                        updated_at = datetime('now','localtime')
+                    WHERE batch_run_id = ? AND student_id IN ({','.join('?' for _ in targets)})
+                      AND status IN ('failed', 'running', 'pending')
+                    """,
+                    (clean_id, *sorted(targets)),
+                )
+                connection.execute(
+                    """
+                    UPDATE personalized_paper_batches
+                    SET status = 'creating', manifest_path = NULL, bundle_path = NULL,
+                        updated_at = datetime('now','localtime')
+                    WHERE batch_run_id = ?
+                    """,
+                    (clean_id,),
+                )
+                request = json.loads(str(batch["request_json"]))
+                original_requested = tuple(request.get("requested_student_ids") or ())
+                context_window_tokens = int(request.get("context_window_tokens") or 32768)
+                actor_ref = str(request.get("actor_ref") or "local_teacher")
+                operation_token = str(batch["operation_token"])
+                draft_id = str(batch["draft_id"])
+                draft_revision = int(batch["draft_revision"])
+        if not targets:
+            return self._public_batch(clean_id)
+        return self.create_review_batch(
+            draft_id,
+            operation_token=operation_token,
+            expected_draft_revision=draft_revision,
+            student_ids=original_requested,
+            actor_ref=actor_ref,
+            context_window_tokens=context_window_tokens,
+        )
+
+    def _fail_missing_batch_artifacts(self, batch_run_id: str) -> None:
+        with connect(self.db_path) as connection:
+            rows = connection.execute(
+                """
+                SELECT student_id, paper_instance_id
+                FROM personalized_paper_batch_items
+                WHERE batch_run_id = ? AND status = 'succeeded'
+                """,
+                (batch_run_id,),
+            ).fetchall()
+        missing: list[str] = []
+        for row in rows:
+            try:
+                self.artifact_path(str(row["paper_instance_id"]), "review-docx")
+            except PaperArtifactNotFound:
+                missing.append(str(row["student_id"]))
+        if not missing:
+            return
+        with connect(self.db_path) as connection:
+            connection.executemany(
+                """
+                UPDATE personalized_paper_batch_items
+                SET status = 'failed', paper_instance_id = NULL,
+                    error_code = 'review_artifact_missing',
+                    updated_at = datetime('now','localtime')
+                WHERE batch_run_id = ? AND student_id = ? AND status = 'succeeded'
+                """,
+                ((batch_run_id, student_id) for student_id in missing),
+            )
+
+    def list_batches_for_draft(self, draft_id: str) -> tuple[dict[str, Any], ...]:
+        clean_id = _identifier(draft_id, "draft_id")
+        initialize_database(self.db_path)
+        with connect(self.db_path) as connection:
+            rows = connection.execute(
+                """
+                SELECT batch_run_id
+                FROM personalized_paper_batches
+                WHERE draft_id = ?
+                ORDER BY created_at DESC, batch_run_id DESC
+                """,
+                (clean_id,),
+            ).fetchall()
+        return tuple(self._public_batch(str(row["batch_run_id"])) for row in rows)
+
+    def _batch_by_operation(self, operation_token: str) -> Mapping[str, Any] | None:
+        with connect(self.db_path) as connection:
+            return connection.execute(
+                """
+                SELECT * FROM personalized_paper_batches
+                WHERE operation_token = ?
+                """,
+                (operation_token,),
+            ).fetchone()
+
+    def _batch_is_cancelled(self, batch_run_id: str) -> bool:
+        with connect(self.db_path) as connection:
+            row = connection.execute(
+                """
+                SELECT status FROM personalized_paper_batches
+                WHERE batch_run_id = ?
+                """,
+                (batch_run_id,),
+            ).fetchone()
+        return row is not None and str(row["status"]) == "cancelled"
+
+    def _batch_results(
+        self,
+        batch_run_id: str,
+    ) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
+        with connect(self.db_path) as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM personalized_paper_batch_items
+                WHERE batch_run_id = ? ORDER BY item_order
+                """,
+                (batch_run_id,),
+            ).fetchall()
+        created = [
+            self.get(str(row["paper_instance_id"]))
+            for row in rows if str(row["status"]) == "succeeded"
+        ]
+        failed = [
+            {
+                "student_id": str(row["student_id"]),
+                "error_code": str(row["error_code"]),
+            }
+            for row in rows if str(row["status"]) == "failed"
+        ]
+        return created, failed
+
+    def _current_instance_for_student(
+        self,
+        draft_id: str,
+        *,
+        student_id: str,
+        draft_revision: int,
+    ) -> dict[str, Any] | None:
+        with connect(self.db_path) as connection:
+            row = connection.execute(
+                """
+                SELECT * FROM personalized_paper_instances
+                WHERE draft_id = ? AND student_id = ? AND draft_revision = ?
+                  AND status IN ('review_pending', 'frozen')
+                ORDER BY series_version DESC LIMIT 1
+                """,
+                (draft_id, student_id, draft_revision),
+            ).fetchone()
+        return self._public_instance(row) if row is not None else None
+
+    def _reserve_batch(
+        self,
+        *,
+        batch_run_id: str,
+        operation_token: str,
+        operation_fingerprint: str,
+        draft_id: str,
+        draft_revision: int,
+        paper_batch_id: str,
+        targets: Sequence[str],
+        actor_ref: str,
+        request_json: str,
+    ) -> None:
+        with connect(self.db_path) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            existing = connection.execute(
+                """
+                SELECT * FROM personalized_paper_batches
+                WHERE operation_token = ?
+                """,
+                (operation_token,),
+            ).fetchone()
+            if existing is not None:
+                if str(existing["operation_fingerprint"]) != operation_fingerprint:
+                    raise PaperRequestConflict("paper batch operation token was reused")
+                return
+            connection.execute(
+                """
+                INSERT INTO personalized_paper_batches (
+                    batch_run_id, operation_token, operation_fingerprint,
+                    draft_id, draft_revision, paper_batch_id, status, request_json,
+                    requested_count, created_by
+                ) VALUES (?, ?, ?, ?, ?, ?, 'creating', ?, ?, ?)
+                """,
+                (
+                    batch_run_id,
+                    operation_token,
+                    operation_fingerprint,
+                    draft_id,
+                    draft_revision,
+                    paper_batch_id,
+                    request_json,
+                    len(targets),
+                    actor_ref,
+                ),
+            )
+            connection.executemany(
+                """
+                INSERT INTO personalized_paper_batch_items (
+                    batch_run_id, student_id, item_order, status
+                ) VALUES (?, ?, ?, 'pending')
+                """,
+                (
+                    (batch_run_id, student_id, index)
+                    for index, student_id in enumerate(targets, start=1)
+                ),
+            )
+
+    def _finish_batch_item(
+        self,
+        batch_run_id: str,
+        *,
+        student_id: str,
+        paper_instance_id: str | None = None,
+        error_code: str | None = None,
+    ) -> None:
+        status = "succeeded" if paper_instance_id else "failed"
+        with connect(self.db_path) as connection:
+            connection.execute(
+                """
+                UPDATE personalized_paper_batch_items
+                SET status = ?, paper_instance_id = ?, error_code = ?,
+                    updated_at = datetime('now','localtime')
+                WHERE batch_run_id = ? AND student_id = ?
+                  AND status IN ('pending', 'running')
+                """,
+                (status, paper_instance_id, error_code, batch_run_id, student_id),
+            )
+
+    def _start_batch_item(self, batch_run_id: str, student_id: str) -> None:
+        with connect(self.db_path) as connection:
+            connection.execute(
+                """
+                UPDATE personalized_paper_batch_items
+                SET status = 'running', updated_at = datetime('now','localtime')
+                WHERE batch_run_id = ? AND student_id = ? AND status = 'pending'
+                """,
+                (batch_run_id, student_id),
+            )
+
+    def _public_batch(self, batch_run_id: str) -> dict[str, Any]:
+        with connect(self.db_path) as connection:
+            batch = connection.execute(
+                """
+                SELECT * FROM personalized_paper_batches
+                WHERE batch_run_id = ?
+                """,
+                (batch_run_id,),
+            ).fetchone()
+            if batch is None:
+                raise PaperInstanceNotFound(batch_run_id)
+            rows = connection.execute(
+                """
+                SELECT * FROM personalized_paper_batch_items
+                WHERE batch_run_id = ? ORDER BY item_order
+                """,
+                (batch_run_id,),
+            ).fetchall()
+            instances = [
+                connection.execute(
+                    """
+                    SELECT * FROM personalized_paper_instances
+                    WHERE paper_instance_id = ?
+                    """,
+                    (row["paper_instance_id"],),
+                ).fetchone()
+                for row in rows if str(row["status"]) == "succeeded"
+            ]
+        items = [self._public_instance(row) for row in instances if row is not None]
+        failures = [
+            {
+                "student_id": str(row["student_id"]),
+                "error_code": str(row["error_code"]),
+            }
+            for row in rows if str(row["status"]) == "failed"
+        ]
+        return {
+            "batch_run_id": str(batch["batch_run_id"]),
+            "paper_batch_id": str(batch["paper_batch_id"]),
+            "status": str(batch["status"]),
+            "requested_count": int(batch["requested_count"]),
+            "succeeded_count": int(batch["succeeded_count"]),
+            "failed_count": int(batch["failed_count"]),
+            "items": items,
+            "failures": failures,
+            "downloads": {
+                "bundle": (
+                    f"/api/training/paper-batches/{batch_run_id}/files/bundle"
+                    if batch["bundle_path"] else None
+                ),
+                "manifest": (
+                    f"/api/training/paper-batches/{batch_run_id}/files/manifest"
+                    if batch["manifest_path"] else None
+                ),
+                "frozen_bundle": (
+                    f"/api/training/paper-batches/{batch_run_id}/files/frozen-bundle"
+                    if any(item["status"] == "frozen" for item in items) else None
+                ),
+            },
+        }
+
+    def batch_artifact_path(self, batch_run_id: str, kind: str) -> tuple[Path, str]:
+        clean_id = _identifier(batch_run_id, "batch_run_id")
+        initialize_database(self.db_path)
+        columns = {
+            "bundle": ("bundle_path", "application/zip"),
+            "manifest": ("manifest_path", "application/json"),
+            "frozen-bundle": ("frozen_bundle_path", "application/zip"),
+        }
+        if kind not in columns:
+            raise PaperArtifactNotFound(kind)
+        column, media_type = columns[kind]
+        if kind == "frozen-bundle":
+            self._publish_frozen_batch(clean_id)
+        with connect(self.db_path) as connection:
+            row = connection.execute(
+                """
+                SELECT bundle_path, manifest_path, frozen_bundle_path
+                FROM personalized_paper_batches WHERE batch_run_id = ?
+                """,
+                (clean_id,),
+            ).fetchone()
+        if row is None or not row[column]:
+            raise PaperArtifactNotFound(kind)
+        relative = str(row[column])
+        path = self._absolute_artifact(relative)
+        if not path.is_file():
+            raise PaperArtifactNotFound(kind)
+        return path, media_type
+
+    def _publish_frozen_batch(self, batch_run_id: str) -> None:
+        with connect(self.db_path) as connection:
+            rows = connection.execute(
+                """
+                SELECT paper_instance_id, student_id
+                FROM personalized_paper_batch_items
+                WHERE batch_run_id = ? AND status = 'succeeded'
+                ORDER BY item_order
+                """,
+                (batch_run_id,),
+            ).fetchall()
+        instances: list[dict[str, Any]] = []
+        for row in rows:
+            instance = self.get(str(row["paper_instance_id"]))
+            if instance["status"] == "frozen" and instance["downloads"]["frozen_pdf"]:
+                instances.append(instance)
+        if not instances:
+            raise PaperArtifactNotFound("frozen-bundle")
+        relative = (
+            Path("question_bank") / "personalized_papers" / "batches"
+            / batch_run_id / "frozen-papers.zip"
+        ).as_posix()
+        destination = self._absolute_artifact(relative)
+        temporary_root = self.artifact_root / ".tmp"
+        temporary_root.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(
+            prefix=f"frozen-batch-{batch_run_id[:12]}-",
+            dir=temporary_root,
+            ignore_cleanup_errors=True,
+        ) as temporary:
+            staged = Path(temporary) / "frozen-papers.zip"
+            used_names: set[str] = set()
+            frozen_manifest: list[dict[str, Any]] = []
+            with zipfile.ZipFile(staged, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+                for item in instances:
+                    source, _ = self.artifact_path(str(item["paper_instance_id"]), "frozen-pdf")
+                    stem = _safe_filename(
+                        str(item.get("student_name") or item.get("student_code") or item["student_id"])
+                    )
+                    stable = _safe_filename(str(item.get("student_code") or item["student_id"]))
+                    candidate = f"{stem}-{stable}-个性化训练卷-V{item['series_version']}.pdf"
+                    suffix = 2
+                    while candidate.casefold() in used_names:
+                        candidate = f"{stem}-{stable}-个性化训练卷-V{item['series_version']}-{suffix}.pdf"
+                        suffix += 1
+                    used_names.add(candidate.casefold())
+                    archive.write(source, candidate)
+                    frozen_manifest.append({
+                        "paper_instance_id": item["paper_instance_id"],
+                        "student_id": item["student_id"],
+                        "student_code": item.get("student_code"),
+                        "student_name": item.get("student_name"),
+                        "class_id": item.get("class_id"),
+                        "series_version": item["series_version"],
+                        "page_count": len(item["pages"]),
+                        "frozen_pdf_sha256": item["frozen_pdf_sha256"],
+                    })
+                archive.writestr("frozen-manifest.json", _json({
+                    "schema_version": "personalized-paper-frozen-batch-v1",
+                    "batch_run_id": batch_run_id,
+                    "created_at": self.clock().isoformat(),
+                    "items": frozen_manifest,
+                }))
+            _atomic_publish(staged, destination)
+        with connect(self.db_path) as connection:
+            connection.execute(
+                """
+                UPDATE personalized_paper_batches
+                SET frozen_bundle_path = ?, updated_at = datetime('now','localtime')
+                WHERE batch_run_id = ?
+                """,
+                (relative, batch_run_id),
+            )
+
+    def _publish_review_batch(
+        self,
+        batch_run_id: str,
+        *,
+        draft: Mapping[str, Any],
+        instances: Sequence[Mapping[str, Any]],
+        failures: Sequence[Mapping[str, str]],
+    ) -> dict[str, str | None]:
+        relative_root = (
+            Path("question_bank") / "personalized_papers" / "batches" / batch_run_id
+        )
+        destination_root = self._absolute_artifact(relative_root.as_posix())
+        destination_root.mkdir(parents=True, exist_ok=True)
+        manifest = {
+            "schema_version": "personalized-paper-review-batch-v1",
+            "batch_run_id": batch_run_id,
+            "draft_id": str(draft.get("draft_id") or ""),
+            "draft_revision": int(draft.get("revision") or 0),
+            "created_at": self.clock().isoformat(),
+            "status": (
+                "complete" if instances and not failures
+                else "partial" if instances else "failed"
+            ),
+            "requested_count": len(instances) + len(failures),
+            "succeeded_count": len(instances),
+            "failed_count": len(failures),
+            "items": [
+                {
+                    "paper_instance_id": str(item.get("paper_instance_id") or ""),
+                    "student_id": str(item.get("student_id") or ""),
+                    "student_code": str(item.get("student_code") or ""),
+                    "student_name": str(item.get("student_name") or ""),
+                    "class_id": str(item.get("class_id") or ""),
+                    "series_version": int(item.get("series_version") or 0),
+                    "status": str(item.get("status") or ""),
+                    "question_count": int(item.get("question_count") or 0),
+                    "page_count": int(_mapping(item.get("budget")).get("page_count") or 0),
+                    "formula_fallback_count": len(item.get("formula_fallbacks") or []),
+                    "formula_fallbacks": list(item.get("formula_fallbacks") or []),
+                    "review_docx_sha256": str(item.get("review_docx_sha256") or ""),
+                }
+                for item in instances
+            ],
+            "failures": [dict(item) for item in failures],
+        }
+        manifest_path = destination_root / "manifest.json"
+        bundle_path = destination_root / "papers.zip"
+        temporary_root = self.artifact_root / ".tmp"
+        temporary_root.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(
+            prefix=f"batch-{batch_run_id[:12]}-",
+            dir=temporary_root,
+            ignore_cleanup_errors=True,
+        ) as temporary:
+            staged_manifest = Path(temporary) / "manifest.json"
+            staged_manifest.write_text(_json(manifest), encoding="utf-8")
+            staged_bundle = Path(temporary) / "papers.zip"
+            used_names: set[str] = set()
+            name_counts: dict[str, int] = {}
+            for item in instances:
+                stem = _safe_filename(
+                    str(item.get("student_name") or item.get("student_code") or item.get("student_id") or "学生")
+                )
+                name_counts[stem.casefold()] = name_counts.get(stem.casefold(), 0) + 1
+            with zipfile.ZipFile(staged_bundle, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+                archive.write(staged_manifest, "manifest.json")
+                for item in instances:
+                    paper_id = str(item.get("paper_instance_id") or "")
+                    try:
+                        source, _ = self.artifact_path(paper_id, "review-docx")
+                    except PaperArtifactNotFound:
+                        continue
+                    stem = _safe_filename(
+                        str(item.get("student_name") or item.get("student_code") or item.get("student_id") or "学生")
+                    )
+                    if name_counts.get(stem.casefold(), 0) > 1:
+                        stable = _safe_filename(
+                            str(item.get("student_code") or item.get("student_id") or "编号")
+                        )
+                        stem = f"{stem}-{stable}"
+                    version = int(item.get("series_version") or 1)
+                    candidate = f"{stem}-个性化训练卷-V{version}.docx"
+                    suffix = 2
+                    while candidate.casefold() in used_names:
+                        candidate = f"{stem}-个性化训练卷-V{version}-{suffix}.docx"
+                        suffix += 1
+                    used_names.add(candidate.casefold())
+                    archive.write(source, candidate)
+            _atomic_publish(staged_manifest, manifest_path)
+            _atomic_publish(staged_bundle, bundle_path)
+        return {
+            "bundle": f"/api/training/paper-batches/{batch_run_id}/files/bundle" if instances else None,
+            "manifest": f"/api/training/paper-batches/{batch_run_id}/files/manifest",
+            "bundle_path": (relative_root / "papers.zip").as_posix() if instances else None,
+            "manifest_path": (relative_root / "manifest.json").as_posix(),
+        }
 
     def artifact_path(
         self,
@@ -639,6 +1443,19 @@ class PersonalizedPaperModule:
                     "asset_path": relative,
                 }
             )
+        fallback_asset = images[0]["asset_path"] if images else None
+        fallback_sha256 = images[0]["sha256"] if images else None
+        math_expressions = []
+        for index, match in enumerate(
+            _MATH_RUN.finditer(question.tagging_context.question_text)
+        ):
+            source = match.group(1) if match.group(1) is not None else match.group(2)
+            math_expressions.append(asdict(build_math_expression(
+                expression_id=f"p4-{question.question_id}-math-{index + 1}",
+                source=source,
+                fallback_asset=fallback_asset,
+                fallback_sha256=fallback_sha256,
+            )))
         return {
             "question_id": question.question_id,
             "tagging_context": question.tagging_context.to_dict(),
@@ -649,6 +1466,7 @@ class PersonalizedPaperModule:
                 dict(item) for item in question.rich_answer_blocks
             ],
             "images": images,
+            "math_expressions": math_expressions,
             "source_content_hash": question.criterion_source_content_hash,
         }
 
@@ -910,6 +1728,7 @@ class PersonalizedPaperModule:
         snapshot: Mapping[str, Any],
         command: CreatePaperCommand,
         fingerprint: str,
+        record_event: bool = True,
     ) -> dict[str, Any]:
         paper_instance_id = str(row["paper_instance_id"])
         relative = self._relative_artifact(
@@ -927,13 +1746,15 @@ class PersonalizedPaperModule:
                 ignore_cleanup_errors=True,
             ) as temporary:
                 staged = Path(temporary) / "review.docx"
-                render_review_docx(
+                formula_fallbacks = render_review_docx(
                     snapshot,
                     data_root=self.data_root,
                     output_path=staged,
                 )
                 review_hash = _file_sha256(staged)
                 _atomic_publish(staged, destination)
+            rendered_snapshot = dict(snapshot)
+            rendered_snapshot["formula_fallbacks"] = list(formula_fallbacks)
             with connect(self.db_path) as connection:
                 connection.execute("BEGIN IMMEDIATE")
                 updated = connection.execute(
@@ -942,6 +1763,7 @@ class PersonalizedPaperModule:
                     SET status = 'review_pending',
                         review_docx_path = ?,
                         review_docx_sha256 = ?,
+                        snapshot_json = ?,
                         error_code = NULL,
                         updated_at = datetime('now','localtime')
                     WHERE paper_instance_id = ?
@@ -950,6 +1772,7 @@ class PersonalizedPaperModule:
                     (
                         relative,
                         review_hash,
+                        _json(rendered_snapshot),
                         paper_instance_id,
                     ),
                 )
@@ -970,21 +1793,23 @@ class PersonalizedPaperModule:
                     connection,
                     paper_instance_id,
                 )
-                self._insert_event(
-                    connection,
-                    paper_instance_id=paper_instance_id,
-                    operation_token=command.operation_token,
-                    operation_fingerprint=fingerprint,
-                    event_type="created",
-                    actor_ref=command.actor_ref,
-                    expected_revision=0,
-                    resulting_revision=int(result["revision"]),
-                    details={
-                        "review_docx_sha256": review_hash,
-                        "student_id": command.student_id,
-                    },
-                    result=result,
-                )
+                if record_event:
+                    self._insert_event(
+                        connection,
+                        paper_instance_id=paper_instance_id,
+                        operation_token=command.operation_token,
+                        operation_fingerprint=fingerprint,
+                        event_type="created",
+                        actor_ref=command.actor_ref,
+                        expected_revision=0,
+                        resulting_revision=int(result["revision"]),
+                        details={
+                            "review_docx_sha256": review_hash,
+                            "student_id": command.student_id,
+                            "formula_fallback_count": len(formula_fallbacks),
+                        },
+                        result=result,
+                    )
             return result
         except Exception as exc:
             with connect(self.db_path) as connection:
@@ -1252,6 +2077,7 @@ class PersonalizedPaperModule:
             """,
             (paper_instance_id,),
         ).fetchall()
+        snapshot = json.loads(str(row["snapshot_json"]))
         return {
             "paper_instance_id": str(row["paper_instance_id"]),
             "paper_batch_id": str(row["paper_batch_id"]),
@@ -1302,6 +2128,7 @@ class PersonalizedPaperModule:
             "review_docx_sha256": row["review_docx_sha256"],
             "reviewed_docx_sha256": row["reviewed_docx_sha256"],
             "frozen_pdf_sha256": row["frozen_pdf_sha256"],
+            "formula_fallbacks": list(snapshot.get("formula_fallbacks") or []),
             "downloads": {
                 "review_docx": (
                     f"/api/training/paper-instances/{paper_instance_id}"
@@ -1597,6 +2424,12 @@ def _required_text(value: object, name: str, maximum: int) -> str:
 def _optional_text(value: object) -> str | None:
     result = str(value or "").strip()
     return result or None
+
+
+def _safe_filename(value: object) -> str:
+    cleaned = re.sub(r'[<>:"/\\|?*\x00-\x1f]+', "-", str(value or "").strip())
+    cleaned = cleaned.strip(" .-")
+    return (cleaned or "学生")[:80]
 
 
 def _hash_payload(value: object) -> str:

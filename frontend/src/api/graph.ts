@@ -37,6 +37,10 @@ export interface GraphMastery {
   evidence_count: number
   parameter_version: string | null
   reason: string | null
+  contributing_student_count?: number
+  effective_weight?: number
+  exam_evidence_count?: number
+  training_evidence_count?: number
 }
 
 export interface GraphEvidenceSummary {
@@ -109,6 +113,7 @@ export interface GraphEvidenceItem {
   score_awarded: number
   full_score: number
   score_rate: number | null
+  source_kind?: 'current_exam' | 'historical_exam'
   tag_context: Record<string, string[]>
   actionable_reasons: string[]
   error_counts: Record<string, Record<string, number>>
@@ -212,10 +217,18 @@ function isSha256(value: unknown): value is string {
 
 function isScope(value: unknown): value is GraphScope {
   return isRecord(value)
-    && hasExactKeys(value, ['mode', 'student_ids', 'class_id'])
-    && (value.mode === 'student' || value.mode === 'selected' || value.mode === 'class')
+    && ['all', 'student', 'selected', 'class'].includes(String(value.mode))
     && isStringArray(value.student_ids)
     && (value.class_id === null || typeof value.class_id === 'string')
+    && (value.class_ids === undefined || isStringArray(value.class_ids))
+    && (value.score_rate_min === undefined || value.score_rate_min === null || isRate(value.score_rate_min))
+    && (value.score_rate_max === undefined || value.score_rate_max === null || isRate(value.score_rate_max))
+    && (value.include_student_ids === undefined || isStringArray(value.include_student_ids))
+    && (value.exclude_student_ids === undefined || isStringArray(value.exclude_student_ids))
+    && (value.use_historical_fallback === undefined || typeof value.use_historical_fallback === 'boolean')
+    && (value.matched_student_count === undefined || isInteger(value.matched_student_count))
+    && (value.scope_revision === undefined || isSha256(value.scope_revision))
+    && (value.student_score_profiles === undefined || isRecord(value.student_score_profiles))
 }
 
 function isExamScope(value: unknown): value is GraphExamScope {
@@ -247,9 +260,15 @@ function isCoverage(value: unknown): value is GraphCoverage {
 
 function isMastery(value: unknown): value is GraphMastery {
   if (!isRecord(value)
-    || !hasExactKeys(value, ['status', 'value', 'evidence_count', 'parameter_version', 'reason'])
+    || !['status', 'value', 'evidence_count', 'parameter_version', 'reason'].every(
+      (key) => Object.prototype.hasOwnProperty.call(value, key),
+    )
     || !['available', 'missing', 'unavailable'].includes(String(value.status))
     || !isInteger(value.evidence_count)
+    || (value.contributing_student_count !== undefined && !isInteger(value.contributing_student_count))
+    || (value.effective_weight !== undefined && (!isNumber(value.effective_weight) || value.effective_weight < 0))
+    || (value.exam_evidence_count !== undefined && !isInteger(value.exam_evidence_count))
+    || (value.training_evidence_count !== undefined && !isInteger(value.training_evidence_count))
     || (value.parameter_version !== null && !isSha256(value.parameter_version))
     || (value.reason !== null && typeof value.reason !== 'string')) return false
   if (value.status === 'available') {
@@ -336,9 +355,19 @@ function isOrderedSubset<T>(actual: T[], requested: T[]): boolean {
 function matchesQuery(scope: GraphScope, examScope: GraphExamScope, query: GraphQueryInput): boolean {
   if (scope.mode !== query.scope.mode || examScope.mode !== query.exam_scope.mode) return false
   if (query.scope.mode === 'class') {
-    if (scope.class_id !== query.scope.class_id) return false
-    if (query.scope.student_ids && !isOrderedSubset(scope.student_ids, query.scope.student_ids)) return false
-  } else if (!isOrderedSubset(scope.student_ids, query.scope.student_ids)) return false
+    const expectedClasses = [...new Set([
+      ...(query.scope.class_ids ?? []),
+      ...(query.scope.class_id ? [query.scope.class_id] : []),
+    ])].sort()
+    const actualClasses = [...(scope.class_ids ?? (scope.class_id ? [scope.class_id] : []))].sort()
+    if (JSON.stringify(actualClasses) !== JSON.stringify(expectedClasses)) return false
+  } else if (
+    (query.scope.mode === 'student' || query.scope.mode === 'selected')
+    && !isOrderedSubset(
+      scope.student_ids,
+      [...(query.scope.student_ids ?? []), ...(query.scope.include_student_ids ?? [])],
+    )
+  ) return false
   return query.exam_scope.mode === 'cross_exam'
     || isOrderedSubset(examScope.session_ids, query.exam_scope.session_ids)
 }
@@ -389,6 +418,9 @@ function isEvidenceItem(value: unknown): value is GraphEvidenceItem {
     && isNumber(value.score_awarded)
     && isNumber(value.full_score)
     && (value.score_rate === null || isRate(value.score_rate))
+    && (value.source_kind === undefined
+      || value.source_kind === 'current_exam'
+      || value.source_kind === 'historical_exam')
     && isStringArrayMap(value.tag_context)
     && isStringArray(value.actionable_reasons)
     && isCountMap(value.error_counts)

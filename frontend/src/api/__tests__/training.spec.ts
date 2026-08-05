@@ -22,7 +22,7 @@ const diagnosisPayload = {
     student_code: '20260012',
     student_name: '张同学',
     class_id: '七年级一班',
-    score_rate: 55,
+    score_rate: 0.55,
     weak_points: [{
       knowledge_key: 'knowledge_point:三角形全等',
       knowledge_point: '三角形全等',
