@@ -21,6 +21,15 @@ sys.path.insert(0, str(PROJECT_ROOT / "update_tools"))
 from migrate_db import run_migrations  # noqa: E402
 
 
+def _migrations_through(tmp_path: Path, maximum_order: int) -> Path:
+    selected = tmp_path / f"migrations-through-{maximum_order:03d}"
+    selected.mkdir()
+    for source in sorted(GRADING_MIGRATIONS.glob("*.sql")):
+        if int(source.name.split("_", 1)[0]) <= maximum_order:
+            shutil.copy2(source, selected / source.name)
+    return selected
+
+
 def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
@@ -72,11 +81,7 @@ def _seed_legacy_database(database: Path) -> None:
 
 
 def _bootstrap_through_007(tmp_path: Path) -> Path:
-    migrations = tmp_path / "migrations-through-007"
-    migrations.mkdir()
-    for source in sorted(GRADING_MIGRATIONS.glob("*.sql")):
-        if int(source.name.split("_", 1)[0]) <= 7:
-            shutil.copy2(source, migrations / source.name)
+    migrations = _migrations_through(tmp_path, 7)
     database = tmp_path / "grading-through-007.db"
     report = run_migrations(
         "grading",
@@ -259,6 +264,7 @@ def test_008_drops_only_legacy_tables_and_backup_restores_rows(
     tmp_path: Path,
 ) -> None:
     database = _bootstrap_through_007(tmp_path)
+    migrations = _migrations_through(tmp_path, 9)
     with sqlite3.connect(database) as connection:
         connection.execute(
             """
@@ -281,7 +287,7 @@ def test_008_drops_only_legacy_tables_and_backup_restores_rows(
     report = run_migrations(
         "grading",
         db_path=database,
-        migrations_dir=GRADING_MIGRATIONS,
+        migrations_dir=migrations,
     )
 
     assert report.error is None, report.error
@@ -320,7 +326,7 @@ def test_008_drops_only_legacy_tables_and_backup_restores_rows(
     repeated = run_migrations(
         "grading",
         db_path=database,
-        migrations_dir=GRADING_MIGRATIONS,
+        migrations_dir=migrations,
     )
     assert repeated.error is None
     assert repeated.results == []

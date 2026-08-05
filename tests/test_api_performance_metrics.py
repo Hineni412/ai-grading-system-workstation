@@ -369,6 +369,9 @@ def test_supplied_path_manager_drives_app_health_and_lifespan_factories(
     class Manager:
         is_shutdown = False
 
+        def __init__(self) -> None:
+            self.store = SimpleNamespace(db_path=supplied_paths.db_path)
+
         def register(self, _name, _handler) -> None:
             return None
 

@@ -1,8 +1,9 @@
 """P3-19 phase-gate checks that compose existing strict validators.
 
 The generic migration rehearsal intentionally fails on every business-table row
-count change.  P3-19 keeps that validator strict and adds a narrower judgment:
-question-bank migration 009 may remove only the exact tables retired by P3-17.
+count change. P3-19 keeps that validator strict and adds two narrow judgments:
+question-bank migration 009 may remove only the exact tables retired by P3-17,
+and migration 015 may seed its one required rollout-state row.
 """
 
 from __future__ import annotations
@@ -38,6 +39,9 @@ RETIRED_QUESTION_BANK_TABLES = frozenset(
         "skill_migration_runs",
     }
 )
+EXPECTED_QUESTION_BANK_SEEDS = {
+    "mastery_v2_rollout_state": (0, 1),
+}
 
 
 class _SilentMigrationLogger:
@@ -53,6 +57,7 @@ class _SilentMigrationLogger:
 def assess_rehearsal_result(result: RehearsalResult) -> dict[str, object]:
     """Return a path-free P3-19 judgment for one execute rehearsal."""
     expected_retired: list[str] = []
+    expected_seeded: list[str] = []
     unexpected: list[str] = []
     for table, (before, after) in sorted(result.business_row_count_changes.items()):
         if (
@@ -62,6 +67,11 @@ def assess_rehearsal_result(result: RehearsalResult) -> dict[str, object]:
             and after == 0
         ):
             expected_retired.append(table)
+        elif (
+            result.target == "question_bank"
+            and EXPECTED_QUESTION_BANK_SEEDS.get(table) == (before, after)
+        ):
+            expected_seeded.append(table)
         else:
             unexpected.append(table)
 
@@ -75,8 +85,12 @@ def assess_rehearsal_result(result: RehearsalResult) -> dict[str, object]:
     )
     if base_checks_pass and result.ok:
         status = "passed"
+    elif base_checks_pass and expected_retired and expected_seeded:
+        status = "passed_expected_migration_changes"
     elif base_checks_pass and expected_retired:
         status = "passed_expected_retirement"
+    elif base_checks_pass and expected_seeded:
+        status = "passed_expected_seed"
     else:
         status = "failed"
 
@@ -86,6 +100,7 @@ def assess_rehearsal_result(result: RehearsalResult) -> dict[str, object]:
         "integrity_ok": result.integrity_ok,
         "schema_matches_current": result.schema_matches_runtime,
         "expected_retired_tables": expected_retired,
+        "expected_seeded_tables": expected_seeded,
         "unexpected_changed_tables": unexpected,
     }
 

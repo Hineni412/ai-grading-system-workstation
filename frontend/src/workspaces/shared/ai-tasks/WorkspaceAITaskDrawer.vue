@@ -137,8 +137,8 @@ async function returnToTask(task: WorkspaceAITask): Promise<void> {
 </template>
 
 <style scoped>
-.workspace-ai-drawer-toggle{display:flex;align-items:center;gap:8px;min-height:38px;margin-left:auto;padding:0 13px;border:1px solid var(--color-accent);border-radius:999px;background:var(--color-accent);color:#fff;font:inherit;font-weight:700;white-space:nowrap}
-.workspace-ai-drawer-toggle span{display:grid;place-items:center;min-width:22px;height:22px;padding:0 6px;border-radius:999px;background:#fff;color:var(--color-accent)}
+.workspace-ai-drawer-toggle{display:flex;align-items:center;gap:8px;min-height:38px;margin-left:auto;padding:0 13px;border:1px solid var(--color-accent);border-radius:999px;background:var(--color-accent);color:var(--color-bg-surface);font:inherit;font-weight:700;white-space:nowrap}
+.workspace-ai-drawer-toggle span{display:grid;place-items:center;min-width:22px;height:22px;padding:0 6px;border-radius:999px;background:var(--color-bg-surface);color:var(--color-accent)}
 .workspace-ai-task-drawer{position:fixed;inset:0 0 0 auto;z-index:70;width:min(430px,100vw);overflow:auto;padding:20px;background:var(--color-bg-canvas);border-left:1px solid var(--color-border-default);box-shadow:var(--shadow-floating)}
 .workspace-ai-task-drawer>header{display:flex;justify-content:space-between;gap:16px;align-items:flex-start;position:sticky;top:-20px;z-index:1;padding:20px 0 14px;background:var(--color-bg-canvas)}
 .workspace-ai-task-drawer>header div{display:grid;gap:4px}.workspace-ai-task-drawer>header span{color:var(--color-text-secondary);font-size:var(--font-size-dense)}

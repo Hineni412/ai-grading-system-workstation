@@ -4,6 +4,7 @@ from pathlib import Path
 
 from tools.migration_rehearsal import RehearsalResult
 from tools.p3_19_acceptance import (
+    EXPECTED_QUESTION_BANK_SEEDS,
     RETIRED_QUESTION_BANK_TABLES,
     assess_rehearsal_result,
     run_historical_version_matrix,
@@ -37,6 +38,7 @@ def test_phase_gate_accepts_an_ordinary_green_rehearsal() -> None:
         "integrity_ok": True,
         "schema_matches_current": True,
         "expected_retired_tables": [],
+        "expected_seeded_tables": [],
         "unexpected_changed_tables": [],
     }
 
@@ -53,6 +55,7 @@ def test_phase_gate_accepts_only_exact_retired_question_bank_table_removal() -> 
 
     assert assessment["status"] == "passed_expected_retirement"
     assert assessment["expected_retired_tables"] == retired
+    assert assessment["expected_seeded_tables"] == []
     assert assessment["unexpected_changed_tables"] == []
     assert "source_db" not in assessment
     assert "copy_db" not in assessment
@@ -65,11 +68,31 @@ def test_phase_gate_rejects_unapproved_or_nonempty_table_changes() -> None:
     nonempty_retired = assess_rehearsal_result(
         _result(business_row_count_changes={"knowledge_concepts": (5, 1)})
     )
+    invalid_seed = assess_rehearsal_result(
+        _result(business_row_count_changes={"mastery_v2_rollout_state": (1, 2)})
+    )
 
     assert unapproved["status"] == "failed"
     assert unapproved["unexpected_changed_tables"] == ["questions"]
     assert nonempty_retired["status"] == "failed"
     assert nonempty_retired["unexpected_changed_tables"] == ["knowledge_concepts"]
+    assert invalid_seed["status"] == "failed"
+    assert invalid_seed["unexpected_changed_tables"] == [
+        "mastery_v2_rollout_state"
+    ]
+
+
+def test_phase_gate_accepts_only_the_exact_question_bank_system_seed() -> None:
+    assessment = assess_rehearsal_result(
+        _result(business_row_count_changes=dict(EXPECTED_QUESTION_BANK_SEEDS))
+    )
+
+    assert assessment["status"] == "passed_expected_seed"
+    assert assessment["expected_retired_tables"] == []
+    assert assessment["expected_seeded_tables"] == [
+        "mastery_v2_rollout_state"
+    ]
+    assert assessment["unexpected_changed_tables"] == []
 
 
 def test_phase_gate_rejects_failed_integrity_schema_or_migration() -> None:
@@ -94,21 +117,24 @@ def test_phase_gate_upgrades_every_supported_historical_version(
     }
     assert set(by_target) == {"grading", "question_bank"}
     for target, expected_count, latest_version in (
-        ("grading", 11, "009_add_teacher_score_locks"),
+        ("grading", 12, "010_workspace_ai_tasks"),
         (
             "question_bank",
-            13,
-            "011_add_paper_permanent_delete_receipts",
+            32,
+            "030_add_personalized_paper_batches",
         ),
     ):
         item = by_target[target]
         assert len(item["versions"]) == expected_count
-        assert item["versions"][0] == {
-            "start_version": "empty",
-            "status": "passed",
-        }
+        assert item["versions"][0]["start_version"] == "empty"
         assert all(
-            version["status"] in {"passed", "passed_expected_retirement"}
+            version["status"]
+            in {
+                "passed",
+                "passed_expected_migration_changes",
+                "passed_expected_retirement",
+                "passed_expected_seed",
+            }
             for version in item["versions"]
         )
         assert item["versions"][-1]["start_version"] == latest_version

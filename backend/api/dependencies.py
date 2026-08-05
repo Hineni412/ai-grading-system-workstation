@@ -62,7 +62,10 @@ from question_bank.services.taxonomy_review_service import TaxonomyReviewService
 from question_bank.services.taxonomy_review_suggestions import (
     TaxonomySuggestionService,
 )
-from question_bank.taxonomy.governance import get_taxonomy_governance
+from question_bank.taxonomy.governance import (
+    TaxonomyGovernance,
+    get_taxonomy_governance,
+)
 from question_bank.services.assembly_workspace_service import AssemblyWorkspaceService
 from question_bank.training_criteria import TrainingCriterionModule
 
@@ -434,6 +437,11 @@ def create_job_manager(path_manager: PathManager | None = None) -> JobManager:
         "qb_db_path",
         Path(paths.data_root) / "databases" / "question_bank.db",
     )
+    taxonomy_state_path = getattr(
+        paths,
+        "taxonomy_state_path",
+        Path(paths.data_root) / "config" / "taxonomy_state_v2.json",
+    )
     manager = JobManager(
         JobStore(paths.db_path),
         interrupted_input_root=Path(upload_config_dir),
@@ -455,6 +463,10 @@ def create_job_manager(path_manager: PathManager | None = None) -> JobManager:
                 Path(paths.data_root) / "outputs",
             )
             / "training",
+            taxonomy_governance=TaxonomyGovernance(
+                state_path=Path(taxonomy_state_path),
+                knowledge_graph_db_path=Path(question_bank_db_path),
+            ),
         )
         register_ops_job_handlers(manager, paths=paths)
     except Exception:

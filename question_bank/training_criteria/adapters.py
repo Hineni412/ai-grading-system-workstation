@@ -534,7 +534,9 @@ def _combined_prompt(
         "intermediate results, return one evidence point for each result instead "
         "of placing the whole derivation inside one target or observable_evidence. "
         "Do not split trivial algebraic typography or restate the same result. "
-        "A genuinely atomic answer may contain one evidence point. Follow the "
+        "A genuinely atomic answer may contain one evidence point, but it must use "
+        "the matching non-process response_mode. Every process_required part must "
+        "contain at least two distinct, non-empty evidence points. Follow the "
         "complete positive and negative evidence_examples supplied with this task; "
         "the negative example is explicitly forbidden. For every point, "
         "step_index must start at 1 and follow array order, justification must name "
@@ -587,12 +589,11 @@ def _combined_prompt(
         "one complete replacement result for the requested projection. When "
         "expected_projection is training_criteria, return solution_evidence only; "
         "the application preserves the already accepted tag_analysis. "
-        "Do not copy the rejected structure blindly. Process-required parts should "
-         "be split into independently verifiable evidence points when the answer "
-         "shows more than one meaningful milestone. If only one milestone can be "
-         "confirmed, one evidence point is allowed; never invent steps just to "
-         "satisfy a count. Do not infer an exact evidence point count from punctuation, "
-         "equations, angle symbols, or connective words. "
+        "Do not copy the rejected structure blindly. Process-required parts need at "
+        "least two distinct non-empty evidence points. If only one milestone can be "
+        "confirmed, choose the matching non-process response_mode; never invent steps "
+        "just to satisfy a count. Do not infer an exact evidence point count from "
+        "punctuation, equations, angle symbols, or connective words. "
         "A local question_type with question_type_confirmed=false is only a preview hint, "
         "not a grading fact. Decide response_mode separately for every part from the "
         "question, its complete answer and analysis. One blank in part (1) must never "
@@ -777,14 +778,15 @@ def _combined_evidence_examples() -> dict[str, Any]:
                 }
             ],
         },
-        "atomic_process_positive": {
+        "atomic_non_process_positive": {
             "why_correct": (
                 "Moving one term and obtaining the only required result is one "
-                "independently scorable milestone; do not split typography."
+                "independently scorable milestone, so this part uses a non-process "
+                "response mode instead of inventing a second step."
             ),
             "part_id": "part-1",
             "label": "第1问",
-            "response_mode": "process_required",
+            "response_mode": "short_answer_points",
             "canonical_answer": "x=1",
             "accepted_forms": ["x=1"],
             "full_answer": "由x+1=2移项得到x=1。",

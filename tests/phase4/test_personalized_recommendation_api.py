@@ -26,7 +26,13 @@ class FakeDiagnosis:
                     "student_code": "S01",
                     "student_name": "合成学生",
                     "class_id": "SYN-C01",
-                    "weak_points": [],
+                    "weak_points": [
+                        {
+                            "knowledge_key": "kp_alg_linear_equation",
+                            "knowledge_point": "一元一次方程",
+                            "mastery": 0.4,
+                        }
+                    ],
                 }
             ],
             "exam_scope": exam_scope,

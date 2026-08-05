@@ -447,7 +447,7 @@ describe('workbench view', () => {
     await settleUi()
     expect(fetchGraphEvidence).toHaveBeenLastCalledWith(
       {
-        scope: { mode: 'class', class_id: '七年级一班' },
+        scope: { mode: 'class', class_id: '七年级一班', class_ids: ['七年级一班'] },
         exam_scope: { mode: 'current', session_ids: [7] },
       },
       'kp_fraction',
@@ -607,7 +607,7 @@ describe('workbench view', () => {
     await settleUi()
     expect(fetchGraphEvidence).toHaveBeenCalledWith(
       {
-        scope: { mode: 'class', class_id: '七年级一班' },
+        scope: { mode: 'class', class_id: '七年级一班', class_ids: ['七年级一班'] },
         exam_scope: { mode: 'current', session_ids: [7] },
       },
       'kp_fraction',

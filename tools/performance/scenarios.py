@@ -86,10 +86,13 @@ def build_scenarios(
             "question_bank.questions.filtered",
             "GET",
             "/api/question-bank/questions",
-            lambda _dataset: ScenarioRequest(
+            lambda active_dataset: ScenarioRequest(
                 "/api/question-bank/questions",
                 params=(
-                    ("knowledge_point", "knowledge-01"),
+                    (
+                        "knowledge_point",
+                        active_dataset.representative_knowledge_term_id,
+                    ),
                     ("tag_status", "tagged"),
                     ("sort", "difficulty"),
                     ("page_size", "100"),
@@ -184,11 +187,11 @@ def build_scenarios(
             "graph.evidence",
             "POST",
             "/api/graph/evidence",
-            lambda _dataset: ScenarioRequest(
+            lambda active_dataset: ScenarioRequest(
                 "/api/graph/evidence",
                 json_body={
                     **training_body,
-                    "stable_key": "kp_alg_linear_equation",
+                    "stable_key": active_dataset.representative_stable_key,
                     "page": 1,
                     "page_size": 100,
                 },

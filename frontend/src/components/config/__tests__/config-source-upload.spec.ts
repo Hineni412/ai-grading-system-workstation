@@ -294,8 +294,8 @@ describe('ConfigSourceUpload', () => {
 
     expect(mounted.host.textContent).toContain('未识别到题目')
     expect(mounted.host.textContent).toContain('4 KiB')
-    expect(mounted.host.textContent).toContain('c'.repeat(12))
-    expect(mounted.host.textContent).toContain('b'.repeat(64))
+    expect(mounted.host.textContent).not.toContain('c'.repeat(12))
+    expect(mounted.host.textContent).not.toContain('b'.repeat(64))
     expect(mounted.host.textContent).not.toMatch(/[A-Z]:\\|source_path|storage_path/i)
   })
 

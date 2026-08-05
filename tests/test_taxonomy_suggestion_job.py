@@ -73,6 +73,7 @@ def _governance(tmp_path: Path) -> TaxonomyGovernance:
     return TaxonomyGovernance(
         catalog_path=CATALOG_PATH,
         state_path=tmp_path / "taxonomy-state.json",
+        knowledge_graph_db_path=tmp_path / "question-bank.db",
     )
 
 

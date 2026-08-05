@@ -593,7 +593,8 @@ def test_low_confidence_objective_batch_creates_review_detail_not_fallback(tmp_p
         assert items[0].question_id == "Q7"
         assert items[0].score_awarded == 0
         assert items[0].confidence_score == 50
-        assert "unclear" in (items[0].deduction_reason or "")
+        assert items[0].deduction_reason == "客观题结果存在不确定性，需要教师确认。"
+        assert items[0].error_summary == "unclear"
 
 
 def test_objective_confidence_079_correct_answer_needs_review(tmp_path: Path) -> None:
