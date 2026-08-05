@@ -134,6 +134,18 @@ def _job_summary_response(job: JobRecord) -> JobSummaryResponse:
 
 
 def public_job_detail(job: JobRecord) -> str:
+    if job.job_type.startswith("workspace_ai."):
+        details = {
+            "queued": "工作台 AI 任务已排队。",
+            "workspace_ai": "工作台 AI 任务正在处理。",
+        }
+        if job.status == "succeeded":
+            return "工作台 AI 任务的本地处理已结束。"
+        if job.status == "failed":
+            return "工作台 AI 任务没有完成；请从任务抽屉查看安全说明。"
+        if job.status == "cancelled":
+            return "工作台 AI 任务的本地后续处理已停止。"
+        return details.get(job.stage, "")
     if (
         job.job_type == "config_generation"
         and str(job.payload.get("source_id") or "").strip()
@@ -149,6 +161,11 @@ def public_job_detail(job: JobRecord) -> str:
 
 
 def public_job_result(job: JobRecord) -> dict[str, Any]:
+    if job.job_type.startswith("workspace_ai."):
+        allowed = ("task_id", "status")
+        return sanitize_public_mapping(
+            {key: job.result[key] for key in allowed if key in job.result}
+        )
     if job.job_type.startswith("ops_"):
         allowed = (
             "operation_id",
@@ -362,6 +379,8 @@ def public_job_result(job: JobRecord) -> dict[str, Any]:
 def public_job_error(job: JobRecord) -> str | None:
     if not job.error:
         return None
+    if job.job_type.startswith("workspace_ai."):
+        return "工作台 AI 任务没有完成；请从任务抽屉查看安全说明。"
     if job.job_type == "config_generation" and job.status == "failed":
         for prefix, public_error in _CONFIG_TRUNCATION_PUBLIC_ERRORS.items():
             if job.error.startswith(prefix):
@@ -382,6 +401,11 @@ def public_job_error(job: JobRecord) -> str | None:
 
 
 def public_job_payload(job: JobRecord) -> dict[str, Any]:
+    if job.job_type.startswith("workspace_ai."):
+        task_id = job.payload.get("task_id")
+        return sanitize_public_mapping(
+            {"task_id": task_id} if task_id is not None else {}
+        )
     if job.job_type == "report_export":
         allowed = (
             "session_id",
@@ -554,6 +578,7 @@ def submit_job(
         "ops_transfer_import_prepare",
         "ops_transfer_export",
         "teaching_prep.semester_mapping",
+        "workspace_ai.run",
     }:
         raise ApiError(
             422,
