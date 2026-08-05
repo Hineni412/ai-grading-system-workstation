@@ -894,6 +894,232 @@ class WorkGraph:
                 connection.rollback()
                 raise
 
+    def create_confirmed_plan(
+        self,
+        *,
+        plan_id: str,
+        action_ids: list[str],
+        plan_title: str,
+        final_deadline: str,
+        actions: list[dict[str, object]],
+        operation_id: str,
+    ) -> dict[str, object]:
+        """Project one teacher-confirmed plan into the calendar work graph.
+
+        The encrypted planning store remains the formal plan ledger.  Reusing
+        its plan/action ids here gives the plan page and calendar one stable
+        business identity, while ``work_operations`` makes a lost response or
+        later receipt recovery safe to replay without duplicate nodes.
+        """
+
+        self._validate_operation_id(operation_id)
+        identifiers = [str(plan_id), *[str(item) for item in action_ids]]
+        if any(_OPERATION_ID.fullmatch(item) is None for item in identifiers):
+            raise VaultError(
+                "class_teacher_plan_projection_id_invalid",
+                "计划或行动编号无效",
+                status_code=422,
+            )
+        if not actions or len(actions) != len(action_ids):
+            raise VaultError(
+                "class_teacher_plan_projection_actions_invalid",
+                "计划行动与日历身份不一致",
+                status_code=422,
+            )
+        clean_title = " ".join(str(plan_title or "").split())
+        if not clean_title or len(clean_title) > 240:
+            raise VaultError(
+                "class_teacher_plan_projection_title_invalid",
+                "计划名称不能为空且不能超过 240 个字符",
+                status_code=422,
+            )
+        goal_due = self._confirmed_plan_date(final_deadline, label="计划截止时间")
+
+        normalized: list[dict[str, object]] = []
+        action_id_by_draft: dict[str, str] = {}
+        for action_id, raw in zip(action_ids, actions, strict=True):
+            draft_action_id = str(raw.get("draft_action_id") or "").strip()
+            title = " ".join(str(raw.get("title") or "").split())
+            if (
+                not draft_action_id
+                or draft_action_id in action_id_by_draft
+                or not title
+                or len(title) > 240
+            ):
+                raise VaultError(
+                    "class_teacher_plan_projection_actions_invalid",
+                    "计划行动名称或身份无效",
+                    status_code=422,
+                )
+            action_id_by_draft[draft_action_id] = str(action_id)
+            normalized.append(
+                {
+                    "action_id": str(action_id),
+                    "draft_action_id": draft_action_id,
+                    "title": title,
+                    "details": str(raw.get("details") or "").strip() or None,
+                    "due_date": self._confirmed_plan_date(
+                        str(raw.get("due_at") or ""),
+                        label="行动截止时间",
+                    ),
+                    "dependencies": [
+                        str(item)
+                        for item in list(raw.get("depends_on_draft_action_ids") or [])
+                    ],
+                }
+            )
+        for item in normalized:
+            dependencies = set(item["dependencies"])
+            if (
+                str(item["draft_action_id"]) in dependencies
+                or not dependencies.issubset(action_id_by_draft)
+            ):
+                raise VaultError(
+                    "class_teacher_plan_projection_dependencies_invalid",
+                    "计划行动依赖关系无效",
+                    status_code=422,
+                )
+
+        payload = {
+            "plan_id": str(plan_id),
+            "plan_title": clean_title,
+            "final_deadline": goal_due,
+            "actions": normalized,
+        }
+        operation_type = self._mutation_operation_type(
+            "work.intake_plan.confirm",
+            node_id=str(plan_id),
+            payload=payload,
+        )
+        self.database.initialize_schema() if not self.database.exists else None
+        with closing(self.database.connect()) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                replay = self._replay(connection, operation_id, operation_type)
+                if replay is not None:
+                    connection.commit()
+                    return replay
+                placeholders = ",".join("?" for _ in identifiers)
+                collision = connection.execute(
+                    f"SELECT node_id FROM work_nodes WHERE node_id IN ({placeholders}) LIMIT 1",
+                    identifiers,
+                ).fetchone()
+                if collision is not None:
+                    raise VaultError(
+                        "class_teacher_plan_projection_conflict",
+                        "计划日历身份已经被其他工作占用",
+                        status_code=409,
+                    )
+                timestamp = _now()
+                connection.execute(
+                    """
+                    INSERT INTO work_nodes (
+                        node_id, kind, classification, title, details,
+                        status, due_date, revision, created_at, updated_at
+                    ) VALUES (?, 'goal', 'ordinary', ?, NULL, 'pending', ?, 1, ?, ?)
+                    """,
+                    (str(plan_id), clean_title, goal_due, timestamp, timestamp),
+                )
+                nodes: list[dict[str, object]] = [
+                    {
+                        "node_id": str(plan_id),
+                        "kind": "goal",
+                        "classification": "ordinary",
+                        "title": clean_title,
+                        "details": None,
+                        "status": "pending",
+                        "due_date": goal_due,
+                        "revision": 1,
+                        "created_at": timestamp,
+                        "updated_at": timestamp,
+                    }
+                ]
+                edges: list[dict[str, str]] = []
+                for item in normalized:
+                    action_id = str(item["action_id"])
+                    connection.execute(
+                        """
+                        INSERT INTO work_nodes (
+                            node_id, kind, classification, title, details,
+                            status, due_date, revision, created_at, updated_at
+                        ) VALUES (?, 'task', 'ordinary', ?, ?, 'pending', ?, 1, ?, ?)
+                        """,
+                        (
+                            action_id,
+                            str(item["title"]),
+                            item["details"],
+                            str(item["due_date"]),
+                            timestamp,
+                            timestamp,
+                        ),
+                    )
+                    nodes.append(
+                        {
+                            "node_id": action_id,
+                            "kind": "task",
+                            "classification": "ordinary",
+                            "title": str(item["title"]),
+                            "details": item["details"],
+                            "status": "pending",
+                            "due_date": str(item["due_date"]),
+                            "revision": 1,
+                            "created_at": timestamp,
+                            "updated_at": timestamp,
+                        }
+                    )
+                    connection.execute(
+                        "INSERT INTO work_edges VALUES (?, ?, 'contains', ?)",
+                        (str(plan_id), action_id, timestamp),
+                    )
+                    edges.append(
+                        {
+                            "source_node_id": str(plan_id),
+                            "target_node_id": action_id,
+                            "relation": "contains",
+                        }
+                    )
+                for item in normalized:
+                    action_id = str(item["action_id"])
+                    for dependency in list(item["dependencies"]):
+                        dependency_id = action_id_by_draft[str(dependency)]
+                        connection.execute(
+                            "INSERT INTO work_edges VALUES (?, ?, 'depends_on', ?)",
+                            (action_id, dependency_id, timestamp),
+                        )
+                        edges.append(
+                            {
+                                "source_node_id": action_id,
+                                "target_node_id": dependency_id,
+                                "relation": "depends_on",
+                            }
+                        )
+                result = {
+                    "created": True,
+                    "plan_id": str(plan_id),
+                    "goal_id": str(plan_id),
+                    "nodes": nodes,
+                    "edges": edges,
+                }
+                self._remember(connection, operation_id, operation_type, result)
+                connection.commit()
+                return result
+            except Exception:
+                connection.rollback()
+                raise
+
+    @staticmethod
+    def _confirmed_plan_date(value: str, *, label: str) -> str:
+        text = str(value or "").strip()
+        try:
+            parsed = datetime.fromisoformat(text)
+        except ValueError as exc:
+            raise VaultError(
+                "class_teacher_plan_projection_date_invalid",
+                f"{label}无效",
+                status_code=422,
+            ) from exc
+        return parsed.date().isoformat()
+
     def create_manual_fallback(
         self,
         *,

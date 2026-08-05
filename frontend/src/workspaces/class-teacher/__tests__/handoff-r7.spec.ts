@@ -88,7 +88,7 @@ describe('B-UI-R7 handoff workspaces', () => {
   it('keeps a student record as a draft until the teacher selects one opaque subject and confirms', async () => {
     const initial = draft()
     const update = vi.spyOn(intakeApi, 'updateDraft').mockImplementation(async (_current, content, refs) => ({
-      ...initial, draft_revision: 2, content, subject_refs: refs,
+      ...initial, draft_revision: 2, content, subject_refs: refs ?? initial.subject_refs,
     }))
     const adopt = vi.spyOn(intakeApi, 'adopt').mockResolvedValue({ formal_object_id: 'record-1' })
     const host = await mountHandoff(initial)
@@ -151,7 +151,7 @@ describe('B-UI-R7 handoff workspaces', () => {
       missing_fields: [],
     })
     vi.spyOn(intakeApi, 'updateDraft').mockImplementation(async (_current, content, refs) => ({
-      ...initial, draft_revision: 2, content, subject_refs: refs,
+      ...initial, draft_revision: 2, content, subject_refs: refs ?? initial.subject_refs,
     }))
     const requestRevision = vi.spyOn(intakeApi, 'requestDraftRevision').mockResolvedValue({
       request_id: 'revision-request-01', handoff_id: initial.handoff_id, source_draft_revision: 2,

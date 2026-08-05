@@ -17,9 +17,9 @@
 | B 线 | 班主任工作台 | `completed` | B01—B11 自动测试、正式复审和 16 步隔离合成页面验收均已完成；P4/B 组合检查通过；PR #112 已 squash 合入，主线提交 `52fbde5c`，云端和本地 `main` 已同步 |
 | UI-I1 | 题目统一分析、训练筛选、文档底座、导出与班主任工作台迭代 | `repair_candidate_local` | 2026-08-04 已在 `codex/grading-system-iteration` 形成统一修复候选：题库持久化链复用评分依据侧的批次规划、模型网关、证据规范化、证据转判定点与质量门；补标按共享并发上限逐批推进，入库与分析状态分离，冲突判定点转待审核；知识图谱和训练推荐采用 A 三栏工作台。只完成 Python 语法、Vue/TypeScript 类型和差异静态检查，未运行测试、正式复审、真实数据/模型验证或服务重启。权威实施契约与剩余验收见 `docs/product/UI_OPTIMIZATION_UNIFIED_ITERATION.md` 第 21 节 |
 | P4-UI-R1 | 知识图谱与训练推荐范围、分层诊断和批量一人一卷 | `candidate_ready_for_teacher_validation` | 2026-08-05 教师授权的训练回流图谱详情限定修复已经完成：当前掌握度分别返回考试和训练证据数，图谱摘要采用实际贡献学生数；右侧明确区分“已有训练回流证据”和“当前考试没有对应题目证据”。定向复现先失败后通过，图谱相关后端 11 项、前端 12 项、类型和规范检查通过；限定需求与质量复审均为 `Critical 0 / Important 0 / Suggestion 0`。P4-UI-R1 当前代码候选已关闭自动验收阻塞，等待教师另行授权合入集成预览和重启人工验收。未读写真实 `user_data`，未执行真实迁移或模型调用，未重启服务，未合入集成预览。权威契约见 `docs/product/UI_OPTIMIZATION_UNIFIED_ITERATION.md` 第 22 节及 `docs/product/GRADING_GENERATION_AND_TAXONOMY_GOVERNANCE_R1_PLAN.md` 第 15 节 R6 |
-| TW-F1 | 两个教师工作台共用的 AI 任务、页面交接与子导航地基 | `integration_fix_pending` | metadata-only AI Task/Handoff、最多一次发送证据、重启恢复、逐 Handoff Adoption Receipt 协调、安全 API/Job 投影、混合 Job 索引兼容、统一任务抽屉和 manifest 子导航已固化在公共检查点 `8a71fa78`；当前集成候选还需补齐班主任首次分诊与草稿调整的精确公共任务分类。公共分支保持停在纯地基检查点，未触碰真实数据、模型或服务。权威契约见 [AI 任务与页面交接契约](../../product/teacher-workspaces/AI_TASK_AND_HANDOFF_CONTRACT.md) |
-| A-I1-R7 | C 型备课首页与 A 型单课时工作页 | `completed_local_pending_integration` | 已从公共检查点 `8a71fa78` 建立独立 A 分支并完成两级页面、课时矩阵、三栏工作页、资料原页主画布、AI 修改检查器和 A Adapter；后端 166 项、前端 75 项、类型检查、限定 lint、生产构建及桌面/窄屏合成浏览器冒烟通过，最终限定双复审 `Critical 0 / Important 0`。未合并集成分支，未触碰真实数据、模型、WPS 或服务。权威计划见 [A-I1-R7 实施计划](../../product/teaching-prep/A_I1_R7_IMPLEMENTATION_PLAN.md) |
-| B-UI-R7 | A 型班主任对话首页、六域三样式和学生管理整合 | `completed_local_pending_integration` | 已完成持续会话、六域分诊、登记/计划/SOP 三种样式、受控页面交接、学生管理和班主任班级偏好，并接入共同 AI Task；B 后端完整回归 294 项通过、9 项旧验收按 R7 跳过，公共合同 82 项、前端 38 项、类型检查、lint、生产构建和合成浏览器冒烟通过，最终限定双复审 `Critical 0 / Important 0`。本地完成提交为 `530958dd`，未触碰真实数据、真实模型或服务。权威计划见 [B-UI-R7 实施计划](../../product/class-teacher/B_UI_R7_IMPLEMENTATION_PLAN.md) |
+| TW-F1 | 两个教师工作台共用的 AI 任务、页面交接与子导航地基 | `integration_candidate_ready_for_review` | A/B 已在独立干净候选中完成组合：班主任新任务使用精确公共分类，历史通用任务仍可本地恢复；草稿重绑、采用冲突、手动分流与计划日历投影均按稳定 Receipt 收敛。共同合同回归、A/B 回归、类型检查、lint、生产构建和隔离合成浏览器冒烟均已通过，当前只待冻结版本双复审和快进集成预览。未触碰真实数据、模型或服务。权威契约见 [AI 任务与页面交接契约](../../product/teacher-workspaces/AI_TASK_AND_HANDOFF_CONTRACT.md) |
+| A-I1-R7 | C 型备课首页与 A 型单课时工作页 | `completed_local_integration_candidate` | A 分支已合入独立干净组合候选；C 型首页、A 型单课时三栏工作页、资料原页主画布、AI 修改检查器和 A Adapter 均保留。组合候选中 A 后端 `154 passed`，共同前端合并验证、类型检查、lint、生产构建及桌面/窄屏合成浏览器冒烟通过，当前待冻结版本双复审后快进集成预览。未触碰真实数据、模型、WPS 或服务。权威计划见 [A-I1-R7 实施计划](../../product/teaching-prep/A_I1_R7_IMPLEMENTATION_PLAN.md) |
+| B-UI-R7 | A 型班主任对话首页、六域三样式和学生管理整合 | `completed_local_integration_candidate` | B 分支已合入独立干净组合候选；持续会话、六域分诊、登记／计划／SOP 三样式、学生管理、班主任班级偏好和共同 AI Task 已贯通。B 后端 `302 passed / 9 skipped`，隔离浏览器走通模型结果不明后的手动分流、编辑、采用及同身份日历恢复；当前待冻结版本双复审后快进集成预览。未触碰真实数据、真实模型或服务。权威计划见 [B-UI-R7 实施计划](../../product/class-teacher/B_UI_R7_IMPLEMENTATION_PLAN.md) |
 | 当前知识标准 | 294 词权威标准、当前图谱与标签治理闭环 | `completed_local_integration` | 老师侧只保留一套当前知识图谱，不再显示版本开关或旧掌握度；294 词、70 个活动核心和 48 条确认关系作为当前计算依据。评分依据 R1—R2、候选生命周期 R3、批量归并 R4、单一图谱 R5 已完成定向复测和正式双复审；真实迁移、真实模型、服务重启、push、PR 与 `main` 仍未授权 |
 | Phase 5 | 教师命题训练 | `planned` | 不在当前三路队列 |
 
@@ -217,7 +217,7 @@ F0 验收轮当时没有授权：
 
 **P4-UI-R1 当前下一动作：** 自动验证和限定复审均已通过，阅卷迭代分支候选可建立本地检查点。下一步由教师决定是否授权把精确提交单向合入 `codex/teacher-platform-integration`，以及是否另行授权重启服务进行真实页面人工验收。真实数据写入或迁移、真实模型与费用、服务重启、远端 push、PR 和 `main` 同步仍按当次精确目标逐项授权。
 
-**教师工作台 R7 当前下一动作：** 在独立干净的集成候选中按 A-I1-R7、B-UI-R7 顺序合并，补齐班主任两类精确公共任务分类后，集中运行共同合同、A/B 回归、类型检查、生产构建和合成浏览器冒烟。组合候选通过后只把 `codex/teacher-platform-integration` 快进到该候选；脏集成工作区中的真实 `user_data` 和本地预览产物保持不读取、不暂存、不覆盖。真实模型、真实迁移、服务重启、远端 push、PR 与 `main` 仍未授权。
+**教师工作台 R7 当前下一动作：** A-I1-R7、B-UI-R7 和共同任务接线已在独立干净候选完成合并，组合回归、类型检查、生产构建和隔离合成浏览器冒烟均通过。当前冻结该候选并并行进行一次需求符合性和一次代码质量复审；通过后只把 `codex/teacher-platform-integration` 快进到该候选。脏集成工作区中的真实 `user_data` 和本地预览产物保持不读取、不暂存、不覆盖。真实模型、真实迁移、服务重启、远端 push、PR 与 `main` 仍未授权。
 
 **B-UI-R2 当前下一动作：** 等待用户另行授权重启 8035 并进行页面人工验收。集成预览工作树中已有的真实运行数据改动继续保持未暂存、未提交；真实数据库迁移、真实学生数据操作、真实模型、push、创建 PR 或同步 `main` 均需分别授权。
 

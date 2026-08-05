@@ -3,16 +3,19 @@ from __future__ import annotations
 import json
 import sqlite3
 from contextlib import closing
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
-from backend.class_teacher.intake.ports import SharedWorkspaceAITaskPort
+from backend.class_teacher.errors import VaultError
+from backend.class_teacher.intake.ports import PreparedTask, SharedWorkspaceAITaskPort
 from backend.class_teacher.vault_service import VaultService
 from backend.jobs.manager import JobManager
 from backend.jobs.store import JobStore
 from backend.workspaces.ai_tasks.job_adapter import register_workspace_ai_job
+from backend.workspaces.ai_tasks.models import OpaqueRef, PrepareRequest
 from backend.workspaces.ai_tasks.service import WorkspaceAITaskService
 from backend.workspaces.ai_tasks.store import WorkspaceAITaskStore
 from backend.workspaces.contracts import WorkspaceContext
@@ -66,6 +69,9 @@ def _wired(tmp_path: Path, result: dict[str, object] | Exception):
         connection.execute(
             "CREATE TABLE students (id INTEGER PRIMARY KEY, student_code TEXT, name TEXT, class_name TEXT)"
         )
+        connection.execute(
+            "INSERT INTO students VALUES (1, 'SYN001', '合成共享学生', '一班')"
+        )
         connection.commit()
     context = WorkspaceContext(
         module_id="class-teacher",
@@ -89,9 +95,15 @@ def _wired(tmp_path: Path, result: dict[str, object] | Exception):
         common,
         model_identity=configured,
         conversations=domain.intake.conversations,
+        adoption=domain.intake.adoption,
     )
     domain.intake.bind_ai_tasks(port)
-    common.register_adapter("class_teacher.intake", domain.intake.ai_task_adapter)
+    for task_kind in (
+        "class_teacher.intake_triage",
+        "class_teacher.draft_revision",
+        "class_teacher.intake",
+    ):
+        common.register_adapter(task_kind, domain.intake.ai_task_adapter)
     return domain, common, manager, configured
 
 
@@ -114,6 +126,7 @@ def test_b_adapter_uses_shared_task_and_adoption_coordinator(tmp_path: Path) -> 
         finished = common.get(task_id=task_id)
         restored = domain.intake.get_conversation(str(conversation["conversation_id"]))
         assert finished.status == "proposal_ready"
+        assert finished.task_kind == "class_teacher.intake_triage"
         assert finished.send_attempt_count == 1
         assert finished.dispatch_evidence == "response_persisted"
         assert finished.handoff_total == 1
@@ -122,6 +135,16 @@ def test_b_adapter_uses_shared_task_and_adoption_coordinator(tmp_path: Path) -> 
         assert marker.encode() not in common.store.db_path.read_bytes()
 
         handoff = domain.intake.open_handoff(str(restored["handoffs"][0]["handoff_id"]))
+        handoff = domain.intake.update_draft(
+            handoff_id=str(handoff["handoff_id"]),
+            expected_revision=int(handoff["draft_revision"]),
+            content={
+                "summary": "合成正式登记内容（教师已核对）",
+                "observed_at": "2026-08-05T08:30:00+08:00",
+            },
+        )
+        rebound = common.get(task_id=task_id).handoffs[0]
+        assert rebound.draft_ref.revision == str(handoff["draft_revision"])
         receipt = domain.intake.adopt_handoff(
             token="",
             handoff_id=str(handoff["handoff_id"]),
@@ -169,6 +192,88 @@ def test_shared_failure_is_synchronized_without_a_second_model_send(tmp_path: Pa
             prepared_task_id=failed.task_id,
         )
         assert replay.send_attempt_count == 1
+        assert len(configured.calls) == 1
+    finally:
+        manager.shutdown()
+
+
+def test_manual_handoff_without_common_projection_can_be_edited_and_adopted(
+    tmp_path: Path,
+) -> None:
+    domain, common, manager, configured = _wired(
+        tmp_path,
+        RuntimeError("synthetic transport loss"),
+    )
+    try:
+        conversation = domain.intake.start_conversation()
+        queued = domain.intake.append_turn(
+            conversation_id=str(conversation["conversation_id"]),
+            expected_revision=int(conversation["revision"]),
+            message="合成黑板报两周后检查",
+            operation_id="shared-manual-route-task",
+        )
+        turn = queued["turns"][-1]
+        task_id = str(turn["task_id"])
+        started = common.get(task_id=task_id)
+        assert started.job_id is not None
+        manager.wait(started.job_id, timeout=5)
+        assert common.get(task_id=task_id).handoff_total == 0
+        domain.intake.get_conversation(str(conversation["conversation_id"]))
+
+        routed = domain.intake.manual_route(
+            turn_id=str(turn["turn_id"]),
+            mode="plan_calendar",
+        )
+        handoff = domain.intake.open_handoff(
+            str(routed["handoffs"][0]["handoff_id"])
+        )
+        updated = domain.intake.update_draft(
+            handoff_id=str(handoff["handoff_id"]),
+            expected_revision=int(handoff["draft_revision"]),
+            content={
+                "summary": "合成黑板报两周后检查",
+                "manual_routing": True,
+                "final_deadline": "2026-08-19T16:00",
+                "actions": [
+                    {
+                        "draft_action_id": "action-1",
+                        "title": "检查黑板报初稿",
+                        "details": "",
+                        "due_at": "2026-08-12T16:00",
+                        "depends_on_draft_action_ids": [],
+                    }
+                ],
+            },
+        )
+        assert updated["draft_revision"] == 2
+        assert common.get(task_id=task_id).handoff_total == 0
+
+        receipt = domain.intake.adopt_handoff(
+            token="",
+            handoff_id=str(updated["handoff_id"]),
+            draft_revision=int(updated["draft_revision"]),
+            target_revision="new",
+            operation_id="ignored-manual-domain-operation",
+        )
+        replay = domain.intake.adopt_handoff(
+            token="",
+            handoff_id=str(updated["handoff_id"]),
+            draft_revision=int(updated["draft_revision"]),
+            target_revision="new",
+            operation_id="ignored-manual-domain-replay",
+        )
+
+        assert replay["formal_object_id"] == receipt["formal_object_id"]
+        assert replay["adoption_id"] == receipt["adoption_id"]
+        assert domain.intake.open_handoff(str(updated["handoff_id"]))[
+            "adoption_state"
+        ] == "adopted"
+        calendar = domain.work.read(view="all", anchor="2026-08-12")
+        assert {item["title"] for item in calendar["nodes"]} == {
+            "合成黑板报两周后检查",
+            "检查黑板报初稿",
+        }
+        assert {item["relation"] for item in calendar["edges"]} == {"contains"}
         assert len(configured.calls) == 1
     finally:
         manager.shutdown()
@@ -244,7 +349,6 @@ def test_successful_draft_revision_supersedes_only_the_old_common_handoff(tmp_pa
         manager.wait(first_started.job_id, timeout=5)
         ready = domain.intake.get_conversation(str(conversation["conversation_id"]))
         handoff = domain.intake.open_handoff(str(ready["handoffs"][0]["handoff_id"]))
-
         configured.result = {
             "contract_version": "class_teacher_draft_revision.v1",
             "content": {
@@ -268,6 +372,7 @@ def test_successful_draft_revision_supersedes_only_the_old_common_handoff(tmp_pa
 
         old = common.get(task_id=first_task_id)
         current = common.get(task_id=revised_task_id)
+        assert current.task_kind == "class_teacher.draft_revision"
         assert old.handoffs[0].adoption_state == "stale"
         assert current.handoffs[0].adoption_state == "pending"
         revised = domain.intake.open_handoff(str(handoff["handoff_id"]))
@@ -279,5 +384,326 @@ def test_successful_draft_revision_supersedes_only_the_old_common_handoff(tmp_pa
             operation_id="ignored-after-revision",
         )
         assert receipt["adoption_id"] == common.get(task_id=revised_task_id).handoffs[0].adoption_id
+    finally:
+        manager.shutdown()
+
+
+def test_draft_rebind_recovers_after_cross_store_projection_interruption(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    domain, common, manager, _configured = _wired(tmp_path, _triage())
+    try:
+        conversation = domain.intake.start_conversation()
+        queued = domain.intake.append_turn(
+            conversation_id=str(conversation["conversation_id"]),
+            expected_revision=int(conversation["revision"]),
+            message="合成跨库恢复内容",
+            operation_id="shared-rebind-interruption-task",
+        )
+        task_id = str(queued["turns"][-1]["task_id"])
+        started = common.get(task_id=task_id)
+        assert started.job_id is not None
+        manager.wait(started.job_id, timeout=5)
+        ready = domain.intake.get_conversation(str(conversation["conversation_id"]))
+        handoff = domain.intake.open_handoff(str(ready["handoffs"][0]["handoff_id"]))
+
+        port = domain.intake.conversations.ai_tasks
+        original_rebind = port.service.rebind_handoff_draft
+        interrupted = False
+
+        def interrupt_once(*args, **kwargs):
+            nonlocal interrupted
+            if not interrupted:
+                interrupted = True
+                raise RuntimeError("synthetic rebind projection interruption")
+            return original_rebind(*args, **kwargs)
+
+        monkeypatch.setattr(port.service, "rebind_handoff_draft", interrupt_once)
+        with pytest.raises(RuntimeError, match="synthetic rebind projection interruption"):
+            domain.intake.update_draft(
+                handoff_id=str(handoff["handoff_id"]),
+                expected_revision=int(handoff["draft_revision"]),
+                content={
+                    "summary": "合成跨库恢复内容（已保存）",
+                    "observed_at": "2026-08-05T10:00:00+08:00",
+                },
+            )
+
+        restored = domain.intake.open_handoff(str(handoff["handoff_id"]))
+        assert common.get(task_id=task_id).handoffs[0].draft_ref.revision != str(
+            restored["draft_revision"]
+        )
+        receipt = domain.intake.adopt_handoff(
+            token="",
+            handoff_id=str(restored["handoff_id"]),
+            draft_revision=int(restored["draft_revision"]),
+            target_revision="new",
+            operation_id="ignored-rebind-recovered",
+        )
+        shared = common.get(task_id=task_id).handoffs[0]
+        assert shared.draft_ref.revision == str(restored["draft_revision"])
+        assert receipt["adoption_id"] == common.get(task_id=task_id).handoffs[0].adoption_id
+    finally:
+        manager.shutdown()
+
+
+def test_legacy_intake_task_recovers_locally_without_a_second_model_send(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    domain, common, manager, configured = _wired(tmp_path, _triage())
+    def prepare_as_legacy(*, operation_id: str, request: dict[str, object]):
+        source = dict(request["source_ref"])
+        contexts = [dict(item) for item in list(request["context_refs"])]
+        prepared = common.prepare(
+            operation_id,
+            PrepareRequest(
+                module="class_teacher",
+                task_kind="class_teacher.intake",
+                source_ref=OpaqueRef(
+                    str(source["kind"]), str(source["id"]), str(source["revision"])
+                ),
+                context_refs=tuple(
+                    OpaqueRef(str(item["kind"]), str(item["id"]), str(item["revision"]))
+                    for item in contexts
+                ),
+                prompt_contract_version=str(request["prompt_contract_version"]),
+                model_destination_fingerprint="a" * 64,
+                return_target=str(request["return_target"]),
+            ),
+        )
+        return PreparedTask(prepared.task_id, "")
+
+    monkeypatch.setattr(domain.intake.conversations.ai_tasks, "prepare", prepare_as_legacy)
+    original_complete = common.store.complete
+    interrupted = False
+
+    def interrupt_complete(*args, **kwargs):
+        nonlocal interrupted
+        if not interrupted:
+            interrupted = True
+            raise RuntimeError("synthetic common projection interruption")
+        return original_complete(*args, **kwargs)
+
+    monkeypatch.setattr(common.store, "complete", interrupt_complete)
+    conversation = domain.intake.start_conversation()
+    queued = domain.intake.append_turn(
+        conversation_id=str(conversation["conversation_id"]),
+        expected_revision=int(conversation["revision"]),
+        message="合成旧任务恢复正文",
+        operation_id="shared-legacy-intake-recovery",
+    )
+    task_id = str(queued["turns"][-1]["task_id"])
+    started = common.get(task_id=task_id)
+    assert started.task_kind == "class_teacher.intake"
+    assert started.job_id is not None
+    manager.wait(started.job_id, timeout=5)
+    assert len(configured.calls) == 1
+    manager.shutdown()
+
+    restarted_manager = JobManager(JobStore(common.store.db_path), max_workers=1, cleanup_interrupted=False)
+    restarted = WorkspaceAITaskService(
+        store=WorkspaceAITaskStore(common.store.db_path),
+        manager=restarted_manager,
+        adapters=(("class_teacher.intake", domain.intake.ai_task_adapter),),
+    )
+    try:
+        restarted.recover_interrupted()
+        recovered = restarted.get(task_id=task_id)
+        assert recovered.status == "proposal_ready"
+        assert recovered.task_kind == "class_teacher.intake"
+        assert len(configured.calls) == 1
+    finally:
+        restarted_manager.shutdown()
+
+
+def test_student_target_conflict_rebinds_shared_handoff_and_adopts_once(tmp_path: Path) -> None:
+    domain, common, manager, configured = _wired(tmp_path, _triage())
+    try:
+        preference = domain.intake.preferences.get()
+        domain.intake.preferences.set(
+            homeroom_class="一班",
+            expected_revision=int(preference["revision"]),
+            expected_source_revision=str(preference["source_revision"]),
+            operation_id="shared-homeroom-class",
+        )
+        subject = domain.class_roster.ai_candidates(token="", class_label="一班")[0]
+        configured.result = {
+            "contract_version": "class_teacher_triage.v1",
+            "assistant_message": "已整理为合成学生登记草稿。",
+            "clarification_questions": [],
+            "work_items": [{
+                "work_item_id": "shared-student-record-001",
+                "domain": "student_growth",
+                "primary_mode": "record",
+                "secondary_modes": [],
+                "intent": "create",
+                "reason_summary": "合成学生版本冲突验证",
+                "subject_refs": [{
+                    "kind": "student",
+                    "id": str(subject["id"]),
+                    "revision": str(subject["revision"]),
+                }],
+                "time_facts": [],
+                "safety_level": "normal",
+                "missing_fields": [],
+                "draft": {
+                    "summary": "合成学生观察",
+                    "observed_at": "2026-08-05T08:00:00+08:00",
+                },
+            }],
+        }
+        conversation = domain.intake.start_conversation()
+        queued = domain.intake.append_turn(
+            conversation_id=str(conversation["conversation_id"]),
+            expected_revision=int(conversation["revision"]),
+            message="请登记合成学生观察",
+            operation_id="shared-student-target-task",
+        )
+        task_id = str(queued["turns"][-1]["task_id"])
+        started = common.get(task_id=task_id)
+        assert started.job_id is not None
+        manager.wait(started.job_id, timeout=5)
+        ready = domain.intake.get_conversation(str(conversation["conversation_id"]))
+        handoff = domain.intake.open_handoff(str(ready["handoffs"][0]["handoff_id"]))
+
+        roster_db = domain.class_roster.source.database_path
+        with closing(sqlite3.connect(roster_db)) as connection:
+            connection.execute("UPDATE students SET name='合成共享学生新名' WHERE id=1")
+            connection.commit()
+        with pytest.raises(VaultError, match="学生资料已变化"):
+            domain.intake.adopt_handoff(
+                token="",
+                handoff_id=str(handoff["handoff_id"]),
+                draft_revision=int(handoff["draft_revision"]),
+                target_revision=str(subject["revision"]),
+                operation_id="ignored-shared-target-conflict",
+            )
+        conflicted_common = common.get(task_id=task_id).handoffs[0]
+        conflicted_domain = domain.intake.open_handoff(str(handoff["handoff_id"]))
+        assert conflicted_common.adoption_state == "opened"
+        assert conflicted_common.target_revision is None
+        assert conflicted_domain["adoption_state"] == "stale"
+
+        current = domain.class_roster.ai_candidates(token="", class_label="一班")[0]
+        rebound = domain.intake.update_draft(
+            handoff_id=str(handoff["handoff_id"]),
+            expected_revision=int(conflicted_domain["draft_revision"]),
+            content={
+                "summary": "合成学生观察已重新核对",
+                "observed_at": "2026-08-05T08:30:00+08:00",
+            },
+            subject_refs=[{
+                "kind": "student",
+                "id": str(current["id"]),
+                "revision": str(current["revision"]),
+            }],
+        )
+        rebound_common = common.get(task_id=task_id).handoffs[0]
+        assert rebound_common.draft_ref.revision == str(rebound["draft_revision"])
+        assert rebound_common.subject_refs == (
+            OpaqueRef("student", str(current["id"]), str(current["revision"])),
+        )
+
+        def adopt_once(_index: int):
+            return domain.intake.adopt_handoff(
+                token="",
+                handoff_id=str(rebound["handoff_id"]),
+                draft_revision=int(rebound["draft_revision"]),
+                target_revision=str(current["revision"]),
+                operation_id="ignored-shared-rebound",
+            )
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            receipts = list(executor.map(adopt_once, range(2)))
+        assert receipts[0]["adoption_id"] == receipts[1]["adoption_id"]
+        assert common.get(task_id=task_id).handoffs[0].adoption_state == "adopted"
+        with closing(domain.database.connect()) as connection:
+            assert connection.execute("SELECT COUNT(*) FROM support_records").fetchone()[0] == 1
+            assert connection.execute("SELECT COUNT(*) FROM handoff_adoption_receipts").fetchone()[0] == 1
+    finally:
+        manager.shutdown()
+
+
+def test_plan_validation_failure_reopens_both_layers_and_can_be_corrected(tmp_path: Path) -> None:
+    domain, common, manager, configured = _wired(tmp_path, _triage())
+    try:
+        configured.result = {
+            "contract_version": "class_teacher_triage.v1",
+            "assistant_message": "已整理为合成计划草稿。",
+            "clarification_questions": [],
+            "work_items": [{
+                "work_item_id": "shared-plan-validation-001",
+                "domain": "activities_culture",
+                "primary_mode": "plan_calendar",
+                "secondary_modes": [],
+                "intent": "plan",
+                "reason_summary": "合成计划补齐验证",
+                "subject_refs": [],
+                "time_facts": [],
+                "safety_level": "normal",
+                "missing_fields": ["请至少保留一个行动"],
+                "draft": {
+                    "summary": "合成黑板报计划",
+                    "plan_title": "合成黑板报",
+                    "final_deadline": "2026-08-20T16:00:00+08:00",
+                    "actions": [],
+                },
+            }],
+        }
+        conversation = domain.intake.start_conversation()
+        queued = domain.intake.append_turn(
+            conversation_id=str(conversation["conversation_id"]),
+            expected_revision=int(conversation["revision"]),
+            message="安排合成黑板报检查",
+            operation_id="shared-plan-validation-task",
+        )
+        task_id = str(queued["turns"][-1]["task_id"])
+        started = common.get(task_id=task_id)
+        assert started.job_id is not None
+        manager.wait(started.job_id, timeout=5)
+        ready = domain.intake.get_conversation(str(conversation["conversation_id"]))
+        handoff = domain.intake.open_handoff(str(ready["handoffs"][0]["handoff_id"]))
+
+        with pytest.raises(VaultError, match="至少保留一个行动"):
+            domain.intake.adopt_handoff(
+                token="",
+                handoff_id=str(handoff["handoff_id"]),
+                draft_revision=int(handoff["draft_revision"]),
+                target_revision="new",
+                operation_id="ignored-plan-validation",
+            )
+        assert common.get(task_id=task_id).handoffs[0].adoption_state == "opened"
+        assert domain.intake.open_handoff(str(handoff["handoff_id"]))["adoption_state"] == "opened"
+
+        corrected = domain.intake.update_draft(
+            handoff_id=str(handoff["handoff_id"]),
+            expected_revision=int(handoff["draft_revision"]),
+            content={
+                "summary": "合成黑板报计划",
+                "plan_title": "合成黑板报",
+                "final_deadline": "2026-08-20T16:00:00+08:00",
+                "actions": [{
+                    "draft_action_id": "shared-action-1",
+                    "title": "检查合成初稿",
+                    "details": "",
+                    "due_at": "2026-08-15T16:00:00+08:00",
+                    "depends_on_draft_action_ids": [],
+                }],
+            },
+        )
+        receipt = domain.intake.adopt_handoff(
+            token="",
+            handoff_id=str(corrected["handoff_id"]),
+            draft_revision=int(corrected["draft_revision"]),
+            target_revision="new",
+            operation_id="ignored-plan-corrected",
+        )
+        assert str(receipt["object_ref"]).startswith("class_teacher:plan:")
+        assert common.get(task_id=task_id).handoffs[0].adoption_state == "adopted"
+        with closing(domain.database.connect()) as connection:
+            assert connection.execute("SELECT COUNT(*) FROM work_plans").fetchone()[0] == 1
+            assert connection.execute("SELECT COUNT(*) FROM handoff_adoption_receipts").fetchone()[0] == 1
     finally:
         manager.shutdown()

@@ -434,6 +434,82 @@ class WorkspaceAITaskStore:
             connection.commit()
         return self.require_handoff(handoff_id)
 
+    def rebind_handoff_draft(
+        self,
+        handoff_id: str,
+        *,
+        module: str,
+        expected_draft_revision: str,
+        draft_revision: str,
+        subject_refs: tuple[OpaqueRef, ...],
+    ) -> HandoffSnapshot:
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT * FROM workspace_ai_handoffs WHERE handoff_id = ?",
+                (handoff_id,),
+            ).fetchone()
+            if row is None:
+                raise HandoffNotFoundError("workspace AI handoff was not found")
+            handoff = _handoff(row)
+            if handoff.module != module:
+                raise ValueError("handoff module does not match domain endpoint")
+            if handoff.draft_ref.revision == draft_revision:
+                if handoff.subject_refs != subject_refs:
+                    from .models import RevisionConflictError
+
+                    raise RevisionConflictError(
+                        "handoff subjects changed without a new draft revision"
+                    )
+                if handoff.adoption_state in {"pending", "stale"}:
+                    connection.execute(
+                        """
+                        UPDATE workspace_ai_handoffs
+                        SET adoption_state = 'opened', target_revision = NULL,
+                            revision = revision + 1,
+                            updated_at = datetime('now','localtime')
+                        WHERE handoff_id = ?
+                          AND adoption_state IN ('pending','stale')
+                        """,
+                        (handoff_id,),
+                    )
+                    connection.commit()
+                    return self.require_handoff(handoff_id)
+                connection.commit()
+                return handoff
+            if handoff.draft_ref.revision != expected_draft_revision:
+                from .models import RevisionConflictError
+
+                raise RevisionConflictError("handoff draft revision changed")
+            if handoff.adoption_state not in {"pending", "opened", "stale"}:
+                from .models import RevisionConflictError
+
+                raise RevisionConflictError("handoff draft cannot be rebound")
+            connection.execute(
+                """
+                UPDATE workspace_ai_handoffs
+                SET draft_revision = ?, subject_refs_json = ?,
+                    adoption_state = 'opened', target_revision = NULL,
+                    revision = revision + 1,
+                    updated_at = datetime('now','localtime')
+                WHERE handoff_id = ?
+                  AND draft_revision = ?
+                  AND adoption_state IN ('pending','opened','stale')
+                """,
+                (
+                    draft_revision,
+                    _json_refs(subject_refs),
+                    handoff_id,
+                    expected_draft_revision,
+                ),
+            )
+            if connection.total_changes != 1:
+                from .models import RevisionConflictError
+
+                raise RevisionConflictError("handoff draft rebind lost its race")
+            connection.commit()
+        return self.require_handoff(handoff_id)
+
     def set_handoff_state(self, handoff_id: str, state: str) -> HandoffSnapshot:
         if state not in {"opened", "discarded", "stale"}:
             raise ValueError("handoff lifecycle state is invalid")

@@ -1927,3 +1927,29 @@ B01 的完成清单以详细实施计划第 9.5 节为准，累计到 B11 集中
 - 相邻 TW-F1 registry 合同差异未被当前代码自然解决：公共存储仍以已注册的 `class_teacher.intake` 表示首次分诊和草稿调整，B 只在自有 context refs 内区分 `class_teacher.intake_triage` / `class_teacher.draft_revision`。触发公共任务记录或抽屉时，公共审计不能直接按两类操作分组；证据在 `backend/class_teacher/intake/ports.py`、`backend/class_teacher/feature.py` 与 `backend/workspaces/ai_tasks/registry.py`。该缺口属公共注册表契约，B 分支不越界修改，不阻塞 B 自有候选。
 - 本轮集中调查与候选恢复约 8 分钟，首轮并行复审约 7 分钟，统一修复与直接验证约 18 分钟，限定终审约 3 分钟。B-UI-R7 自动验收通过，当前剩余工作量为用户/父任务的最终集成与人工验收；整个版本仍未获发布授权。
 - 本轮未读写真实 `user_data`、真实学生档案、成绩或答卷；未调用真实模型或密钥；未执行真实迁移、重启服务、push、PR、`main` 同步或集成分支合并。
+
+## 2026-08-05 A/B 组合候选接线修正
+
+### 冻结范围与根因
+
+- 本批次只修正两个组合问题：B 新任务在公共账本中仍被统一记为 `class_teacher.intake`；B 草稿编辑、学生目标版本冲突或计划必填校验失败后，领域 Handoff 与共同 Handoff 可能保留不同的草稿版本或未提交占用；
+- 不新增事务域、处理样式、页面、权限或迁移，不改变模型最多一次发送、教师确认正式写入、无 PIN/无匿名化以及高影响决定边界；
+- 风险为中高，集中检查了重复采用、并发采用、调用中断、进程重启、失败重试、教师取消、部分完成、引用缺失与两库状态冲突；全部验证只使用临时数据库、合成学生和合成正文。
+
+### 已实现行为
+
+- 新任务分别持久化 `class_teacher.intake_triage` 和 `class_teacher.draft_revision`；公共 registry、B feature 与 Adapter 同步注册两类。历史 `class_teacher.intake` 仍保留固定安全标题和 Adapter 注册，只用于恢复旧任务；
+- Adapter 对精确 task kind 以公共账本为准，只有历史通用 kind 才根据不透明 context refs 判断旧任务用途；旧任务在领域 proposal 已保存、共同投影中断后可以本地恢复，不发生第二次模型发送；
+- 教师保存 B 草稿后，共同 Handoff 同步新的 draft revision 和不透明 subject refs。B 草稿已经提交但共同投影中断时，下一次 adopt 会先补做该投影，不要求教师重复编辑；
+- 领域采用出现可恢复校验或目标冲突时，先查询 Adoption Receipt。已有 Receipt 时收敛同一正式对象；没有 Receipt 时释放未提交占用。学生版本变化仍把 B 草稿标为 stale，只有教师明确选择最新学生并保存新草稿后才重新打开；
+- 采用进行中禁止同时修改草稿；重复或并发采用继续复用稳定 adoption_id，正式对象和领域 Receipt 各只创建一份。
+
+### 当前验证
+
+- 新增合成端到端覆盖精确 task kind、历史任务中断恢复、普通草稿编辑、两库投影中断、学生版本冲突后重绑、计划缺字段后补齐和并发重复采用；
+- 模型失败后的手动分流不创建虚假的共同 Handoff；教师仍可编辑并采用领域草稿，采用失败按领域 Receipt 恢复；计划采用后以正式 plan/action id 投影到普通日历，Receipt 已提交而投影中断时可补齐同一组节点和依赖边；
+- 后端完整组合验证：B `302 passed / 9 skipped`，A `154 passed`，共同任务、地基、Job 存储与迁移门 `82 passed`；跳过项仍是 R7 已明确撤销的旧同步首页／旧 WorkGraph 模型计划验收；
+- 前端共同任务、A、B 合并验证为 `18 files / 114 passed`；Vue/TypeScript 类型检查、定向 ESLint 和 Vite 生产构建通过；
+- 隔离合成浏览器走通班主任模型结果不明、手动分流、草稿编辑、教师采用和日历恢复；计划与行动在计划页、日历和依赖图使用同一组编号。班主任首页、学生页、备课首页在 1280px 与 390px 均无横向溢出，完整流程控制台无错误；
+- 本节记录时组合候选正准备冻结并进入一次需求符合性与一次代码质量并行评审，评审期间不再修改代码；
+- 未读取或写入真实 `user_data`，未调用真实模型，未执行真实迁移或服务重启，也未 push、创建 PR 或同步 `main`。

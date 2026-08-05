@@ -29,6 +29,7 @@ class HandoffAdoption:
         key_provider,
         support: SupportRecordService,
         planning: PlanningService,
+        work,
         sop: SopWorkflowService,
         sop_baselines: SopBaselineService,
         class_roster,
@@ -39,6 +40,7 @@ class HandoffAdoption:
         self._key_provider = key_provider
         self.support = support
         self.planning = planning
+        self.work = work
         self.sop = sop
         self.sop_baselines = sop_baselines
         self.class_roster = class_roster
@@ -60,7 +62,7 @@ class HandoffAdoption:
             self._bind_adoption_id(handoff_id, adoption_id)
             handoff = self.conversations.handoff_for_adapter(handoff_id)
         resolved_adoption_id = str(handoff["adoption_id"])
-        receipt = self._receipt(resolved_adoption_id)
+        receipt = self.find_receipt(resolved_adoption_id)
         if receipt is not None:
             self._mark_adopted(handoff_id, receipt)
             return {**receipt, "replayed": True}
@@ -82,13 +84,47 @@ class HandoffAdoption:
         return {**receipt, "replayed": False}
 
     def find_receipt(self, adoption_id: str) -> dict[str, object] | None:
+        if not self.database.exists:
+            return None
         receipt = self._receipt(adoption_id)
         if receipt is not None:
+            if str(receipt["formal_object_type"]) == "plan":
+                handoff = self.conversations.handoff_for_adapter(
+                    str(receipt["handoff_id"])
+                )
+                self._confirm_and_project_plan(
+                    token="",
+                    handoff=handoff,
+                    target_revision=str(receipt["target_revision"]),
+                    operation_id=adoption_id,
+                )
             # The formal object and receipt commit in the domain transaction.
             # A crash can still happen before the ordinary intake projection is
             # updated, so receipt lookup is also the idempotent recovery seam.
             self._mark_adopted(str(receipt["handoff_id"]), receipt)
         return receipt
+
+    def release_uncommitted(
+        self,
+        *,
+        handoff_id: str,
+        adoption_id: str,
+        target_revision: str,
+    ) -> None:
+        if self.find_receipt(adoption_id) is not None:
+            return
+        with closing(self.conversations.database.connect()) as connection:
+            with connection:
+                connection.execute(
+                    """
+                    UPDATE intake_handoffs
+                    SET adoption_state='opened', target_revision=NULL, updated_at=?
+                    WHERE handoff_id=? AND adoption_id=?
+                      AND adoption_state='adoption_started'
+                      AND target_revision=?
+                    """,
+                    (_iso(), handoff_id, adoption_id, str(target_revision)),
+                )
 
     def _bind_adoption_id(self, handoff_id: str, adoption_id: str) -> None:
         with closing(self.conversations.database.connect()) as connection:
@@ -205,6 +241,22 @@ class HandoffAdoption:
         target_revision: str,
         operation_id: str,
     ) -> dict[str, object]:
+        self._confirm_and_project_plan(
+            token=token,
+            handoff=handoff,
+            target_revision=target_revision,
+            operation_id=operation_id,
+        )
+        return self._receipt(str(handoff["adoption_id"])) or {}
+
+    def _confirm_and_project_plan(
+        self,
+        *,
+        token: str,
+        handoff: dict[str, object],
+        target_revision: str,
+        operation_id: str,
+    ) -> None:
         content = dict(handoff["content"])
         actions = content.get("actions")
         if not isinstance(actions, list) or not actions:
@@ -220,7 +272,7 @@ class HandoffAdoption:
             final_deadline=deadline,
         )
         hook = self._receipt_hook(handoff, target_revision, "plan")
-        self.planning.confirm_draft(
+        confirmed = self.planning.confirm_draft(
             token=token,
             draft_id=str(draft["draft_id"]),
             operation_id=operation_id,
@@ -229,7 +281,14 @@ class HandoffAdoption:
             actions=[dict(item) for item in actions if isinstance(item, dict)],
             transaction_hook=lambda connection, vmk, plan_id: hook(connection, vmk, plan_id),
         )
-        return self._receipt(str(handoff["adoption_id"])) or {}
+        self.work.create_confirmed_plan(
+            plan_id=str(confirmed["plan_id"]),
+            action_ids=[str(item) for item in list(confirmed["action_ids"])],
+            plan_title=str(content.get("plan_title") or content.get("summary") or "班主任计划"),
+            final_deadline=deadline,
+            actions=[dict(item) for item in actions if isinstance(item, dict)],
+            operation_id=f"handoff_plan_{handoff['adoption_id']}",
+        )
 
     def _adopt_sop(
         self,

@@ -1,9 +1,16 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from collections.abc import Mapping
 from typing import Callable, Protocol
 
-from backend.workspaces.ai_tasks.models import OpaqueRef, PrepareRequest
+from backend.workspaces.ai_tasks.models import (
+    OpaqueRef,
+    PrepareRequest,
+    RevisionConflictError,
+)
+
+from ..errors import VaultError
 
 
 @dataclass(frozen=True, slots=True)
@@ -44,6 +51,14 @@ class WorkspaceAITaskPort(Protocol):
 
     def mark_handoff(self, *, handoff_id: str, state: str) -> None: ...
 
+    def rebind_handoff(
+        self,
+        *,
+        handoff_id: str,
+        draft_revision: int,
+        subject_refs: list[dict[str, str]],
+    ) -> None: ...
+
 
 class UnavailableWorkspaceAITaskPort:
     def prepare(self, *, operation_id: str, request: dict[str, object]) -> PreparedTask:
@@ -70,27 +85,43 @@ class UnavailableWorkspaceAITaskPort:
     def mark_handoff(self, *, handoff_id: str, state: str) -> None:
         raise RuntimeError("workspace_ai_task_port_unavailable")
 
+    def rebind_handoff(
+        self,
+        *,
+        handoff_id: str,
+        draft_revision: int,
+        subject_refs: list[dict[str, str]],
+    ) -> None:
+        del handoff_id, draft_revision, subject_refs
+
 
 class SharedWorkspaceAITaskPort:
     """B-owned translation from the frozen domain seam to TW-F1.
 
-    TW-F1 intentionally stores only opaque references.  The two B operations
-    share its registered ``class_teacher.intake`` presentation; the Adapter
-    distinguishes triage from draft revision by the domain context refs.
+    TW-F1 intentionally stores only opaque references.  New B operations use
+    their precise registered kind; the legacy ``class_teacher.intake`` kind
+    remains registered only so already-persisted tasks can recover locally.
     """
 
-    def __init__(self, service, *, model_identity, conversations) -> None:
+    def __init__(self, service, *, model_identity, conversations, adoption=None) -> None:
         self.service = service
         self.model_identity = model_identity
         self.conversations = conversations
+        self.adoption = adoption
 
     def prepare(self, *, operation_id: str, request: dict[str, object]) -> PreparedTask:
         destination = self.model_identity.destination_snapshot()
+        task_kind = str(request.get("task_kind") or "")
+        if task_kind not in {
+            "class_teacher.intake_triage",
+            "class_teacher.draft_revision",
+        }:
+            raise ValueError("class-teacher workspace AI task kind is invalid")
         snapshot = self.service.prepare(
             operation_id,
             PrepareRequest(
                 module="class_teacher",
-                task_kind="class_teacher.intake",
+                task_kind=task_kind,
                 source_ref=_ref(request.get("source_ref")),
                 context_refs=tuple(_ref(item) for item in _refs(request.get("context_refs"))),
                 prompt_contract_version=str(request.get("prompt_contract_version") or ""),
@@ -121,13 +152,35 @@ class SharedWorkspaceAITaskPort:
         return _snapshot(self.service.cancel(operation_id))
 
     def adopt(self, *, handoff_id: str, draft_revision: int, target_revision: str) -> dict[str, object]:
-        common = self._common_handoff(handoff_id)
-        result = self.service.adopt(
-            common.handoff_id,
-            module="class_teacher",
-            draft_revision=str(draft_revision),
-            target_revision=str(target_revision),
+        domain = self.conversations.handoff_for_adapter(handoff_id)
+        self.rebind_handoff(
+            handoff_id=handoff_id,
+            draft_revision=int(domain["draft_revision"]),
+            subject_refs=[dict(item) for item in list(domain["subject_refs"])],
         )
+        common = self._common_handoff(handoff_id, domain=domain)
+        if common is None:
+            return self._adopt_manual_handoff(
+                domain,
+                draft_revision=draft_revision,
+                target_revision=target_revision,
+            )
+        try:
+            result = self.service.adopt(
+                common.handoff_id,
+                module="class_teacher",
+                draft_revision=str(draft_revision),
+                target_revision=str(target_revision),
+            )
+        except RevisionConflictError as exc:
+            cause = exc.__cause__
+            if isinstance(cause, VaultError):
+                raise cause
+            raise VaultError(
+                "class_teacher_adoption_conflict",
+                "草稿或目标已经变化，请刷新后重新核对",
+                status_code=409,
+            ) from exc
         return {
             "adoption_id": result.adoption_id,
             "object_ref": result.object_ref,
@@ -136,13 +189,51 @@ class SharedWorkspaceAITaskPort:
         }
 
     def mark_handoff(self, *, handoff_id: str, state: str) -> None:
-        common = self._common_handoff(handoff_id)
+        domain = self.conversations.handoff_for_adapter(handoff_id)
+        common = self._common_handoff(handoff_id, domain=domain)
+        if common is None:
+            return
         if common.adoption_state == state:
             return
         self.service.mark_handoff(common.handoff_id, state)
 
-    def _common_handoff(self, domain_handoff_id: str):
-        domain = self.conversations.handoff_for_adapter(domain_handoff_id)
+    def rebind_handoff(
+        self,
+        *,
+        handoff_id: str,
+        draft_revision: int,
+        subject_refs: list[dict[str, str]],
+    ) -> None:
+        domain = self.conversations.handoff_for_adapter(handoff_id)
+        common = self._common_handoff(handoff_id, domain=domain)
+        if common is None:
+            return
+        if common.draft_ref.revision == str(draft_revision):
+            return
+        refs = tuple(_ref(item) for item in subject_refs)
+        try:
+            self.service.rebind_handoff_draft(
+                common.handoff_id,
+                module="class_teacher",
+                expected_draft_revision=common.draft_ref.revision,
+                draft_revision=str(draft_revision),
+                subject_refs=refs,
+            )
+        except RevisionConflictError as exc:
+            refreshed = self._common_handoff(handoff_id)
+            if (
+                refreshed.draft_ref.revision == str(draft_revision)
+                and refreshed.subject_refs == refs
+            ):
+                return
+            raise VaultError(
+                "class_teacher_draft_conflict",
+                "草稿已经变化，请刷新后继续",
+                status_code=409,
+            ) from exc
+
+    def _common_handoff(self, domain_handoff_id: str, *, domain=None):
+        domain = domain or self.conversations.handoff_for_adapter(domain_handoff_id)
         task_id = self.conversations.task_id_for_handoff(domain_handoff_id)
         snapshot = self.service.get(task_id=task_id)
         self._bind_handoffs(snapshot)
@@ -151,8 +242,42 @@ class SharedWorkspaceAITaskPort:
             None,
         )
         if match is None:
+            content = domain.get("content")
+            if isinstance(content, Mapping) and content.get("manual_routing") is True:
+                return None
             raise RuntimeError("workspace_ai_handoff_unavailable")
         return match
+
+    def _adopt_manual_handoff(
+        self,
+        domain: Mapping[str, object],
+        *,
+        draft_revision: int,
+        target_revision: str,
+    ) -> dict[str, object]:
+        if self.adoption is None:
+            raise RuntimeError("class_teacher_manual_adoption_unavailable")
+        handoff_id = str(domain["handoff_id"])
+        adoption_id = str(domain["adoption_id"])
+        try:
+            return self.adoption.adopt(
+                token="",
+                handoff_id=handoff_id,
+                draft_revision=draft_revision,
+                target_revision=target_revision,
+                operation_id=adoption_id,
+                adoption_id=adoption_id,
+            )
+        except VaultError:
+            persisted = self.adoption.find_receipt(adoption_id)
+            if persisted is not None:
+                return persisted
+            self.adoption.release_uncommitted(
+                handoff_id=handoff_id,
+                adoption_id=adoption_id,
+                target_revision=target_revision,
+            )
+            raise
 
     def _bind_handoffs(self, snapshot) -> None:
         for handoff in snapshot.handoffs:
@@ -178,6 +303,7 @@ class FakeWorkspaceAITaskPort:
         self.dispatch_calls: list[dict[str, str]] = []
         self.adopt_calls: list[dict[str, object]] = []
         self.mark_calls: list[dict[str, str]] = []
+        self.rebind_calls: list[dict[str, object]] = []
         self._by_operation: dict[str, PreparedTask] = {}
         self._adopt_handler: Callable[..., dict[str, object]] | None = None
 
@@ -241,6 +367,19 @@ class FakeWorkspaceAITaskPort:
 
     def mark_handoff(self, *, handoff_id: str, state: str) -> None:
         self.mark_calls.append({"handoff_id": handoff_id, "state": state})
+
+    def rebind_handoff(
+        self,
+        *,
+        handoff_id: str,
+        draft_revision: int,
+        subject_refs: list[dict[str, str]],
+    ) -> None:
+        self.rebind_calls.append({
+            "handoff_id": handoff_id,
+            "draft_revision": draft_revision,
+            "subject_refs": [dict(item) for item in subject_refs],
+        })
 
 
 def _refs(value: object) -> list[object]:

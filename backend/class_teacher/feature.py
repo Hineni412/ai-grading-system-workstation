@@ -42,9 +42,15 @@ def _register_ai_tasks(registrar, service: object | None) -> None:
         registrar,
         model_identity=service.workspace_model_gateway,
         conversations=service.intake.conversations,
+        adoption=service.intake.adoption,
     )
     service.intake.bind_ai_tasks(port)
-    registrar.register_adapter("class_teacher.intake", service.intake.ai_task_adapter)
+    for task_kind in (
+        "class_teacher.intake_triage",
+        "class_teacher.draft_revision",
+        "class_teacher.intake",
+    ):
+        registrar.register_adapter(task_kind, service.intake.ai_task_adapter)
 
 
 def create_workspace_feature() -> WorkspaceFeature:
