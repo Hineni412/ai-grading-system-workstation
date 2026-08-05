@@ -182,9 +182,16 @@ async function changeHomeroom(): Promise<void> {
   busy.value = true; error.value = ''
   try {
     preference.value = await intakeApi.setHomeroom(preference.value, selectedClass.value || null)
-    notice.value = selectedClass.value
-      ? `默认班级已改为 ${selectedClass.value}。学生和历史关系没有删除。`
-      : '已取消默认班级筛选。学生和历史关系没有删除。'
+    const currentHasContent = Boolean(conversation.value?.turns.length)
+    const successNotice = selectedClass.value
+      ? currentHasContent
+        ? `默认班级已改为 ${selectedClass.value}。当前对话仍保留原班级，点击“新对话”即可使用新设置。`
+        : `默认班级已改为 ${selectedClass.value}，正在为这个班建立新对话。`
+      : currentHasContent
+        ? '已取消默认班级筛选。当前对话保持不变，新对话将不限定班级。'
+        : '已取消默认班级筛选，正在建立不限定班级的新对话。学生和历史关系没有删除。'
+    if (!currentHasContent) await start()
+    notice.value = successNotice
   } catch { error.value = '默认班级没有更新。学生库可能已经变化，请刷新后再选。' }
   finally { busy.value = false }
 }
@@ -220,8 +227,7 @@ onMounted(async () => {
     <div class="desk__body">
       <article class="conversation" aria-label="持续会话">
         <div v-if="!conversation?.turns.length" class="opening">
-          <p>学生、班级、活动、学校任务都可以直接说，不必先选分类。</p>
-          <ul><li>“补录某同学最近的课堂状态”</li><li>“黑板报两周后检查，帮我拆一下”</li><li>“两个学生课间发生冲突，目前没人受伤”</li></ul>
+          <p>直接输入今天需要处理的班务即可，不必先选分类。系统只负责整理和起草，正式记录与处置仍由你确认。</p>
         </div>
         <ol v-else class="messages" aria-live="polite">
           <li v-for="turn in conversation.turns" :key="turn.turn_id" class="turn">

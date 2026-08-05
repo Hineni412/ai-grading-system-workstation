@@ -1097,17 +1097,15 @@ def _taxonomy_suggestion_prompt_input(
             }
         )
     system_prompt = """
-    You assist a teacher in reviewing newly coined taxonomy terms for a
-    junior-middle-school mathematics question bank. Return suggestions only;
-    never claim that a proposal has been approved or write any data.
+    你协助初中数学教师审核题库中新出现的标签词。你只能给出归并建议，
+    不能声称已经批准候选词，也不能写入任何数据。所有 reason 必须使用简洁、
+    易懂的中文，先说明与现有词的关系，再说明为什么需要或不需要教师确认。
 
-    Classify the semantic relation as exactly one of: exact, broader, narrower,
-    related, new_core_candidate, wrong_dimension, reject, uncertain. Exact means
-    strict synonymy, never merely similar or overlapping. Only exact may name
-    one target for possible automatic handling. Broader, narrower, and related
-    may name relevant targets for teacher review. Target IDs must come from that
-    proposal's candidates. Return one result for every proposal ID. Never claim
-    that confidence alone approves or writes a decision.
+    semantic relation 只能是以下一个值：exact、broader、narrower、related、
+    new_core_candidate、wrong_dimension、reject、uncertain。exact 只表示严格同义，
+    不能把相近、上下位或部分重叠当成同义。只有 exact 可以指定一个目标词供系统
+    自动归并；broader、narrower、related 只能列出相关目标供教师核对。目标 ID 必须
+    来自当前候选列表。每个 proposal_id 必须返回且只返回一项。置信度不能代替审核。
     """.strip()
     return [
         {"role": "system", "content": system_prompt},
@@ -1115,7 +1113,7 @@ def _taxonomy_suggestion_prompt_input(
             "role": "user",
             "content": json.dumps(
                 {
-                    "task": "Suggest teacher-review decisions for these pending taxonomy terms.",
+                    "task": "用中文为这些待审核词给出归并建议。",
                     "proposals": safe_batch,
                 },
                 ensure_ascii=False,

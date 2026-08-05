@@ -327,19 +327,19 @@ async function fillPaperTags(paper: QuestionBankPaper): Promise<void> {
   retagBusyPaperId.value = paper.id
   taggingMode.value = 'fill'
   try {
-    const ids = await loadQuestionIds([paper.id], 'all')
+    const ids = await loadQuestionIds([paper.id], 'untagged')
     if (ids.length === 0) {
       retagMessage.value = '这份试卷没有可补齐的题目。'
       return
     }
     if (!window.confirm(
-      `将补齐“${paper.title || `试卷 #${paper.id}`}”中 ${ids.length} 道题的标签、解题证据和训练判定点，可能产生模型费用；已有标签和人工修改会保留。确认继续吗？`,
+      `已检查这份试卷：仅有 ${ids.length} 道题缺少核心标签。将只提交这些题，完整题和人工修改不会重做；可能产生模型费用。确认继续吗？`,
     )) return
     const count = await submitTaggingBatches(ids, {
       forceRetag: false,
       scope: `paper-${paper.id}-fill`,
     })
-    retagMessage.value = `已提交 ${ids.length} 道题的标签与训练点补齐任务，共 ${count} 个任务；进度会在这里自动更新。`
+    retagMessage.value = `已只提交 ${ids.length} 道缺少核心标签的题，共 ${count} 个任务；离开页面后可从顶部任务中心继续查看。`
   } catch {
     retagMessage.value = '补齐标签任务没有完整提交；已提交的任务会保留，请先查看任务记录。'
   } finally {
@@ -381,19 +381,19 @@ async function fillAllTags(): Promise<void> {
   retagAllBusy.value = true
   taggingMode.value = 'fill'
   try {
-    const ids = await loadQuestionIds(undefined, 'all')
+    const ids = await loadQuestionIds(undefined, 'untagged')
     if (ids.length === 0) {
       retagMessage.value = '题库中没有可补齐的题目。'
       return
     }
     if (!window.confirm(
-      `将补齐题库中 ${ids.length} 道题的标签、解题证据和训练判定点，可能产生模型费用；已有标签和人工修改会保留。确认继续吗？`,
+      `已检查全库：仅有 ${ids.length} 道题缺少核心标签。将只提交这些题，完整题和人工修改不会重做；可能产生模型费用。确认继续吗？`,
     )) return
     const count = await submitTaggingBatches(ids, {
       forceRetag: false,
       scope: 'all-fill',
     })
-    retagMessage.value = `已提交全库 ${ids.length} 道题的标签与训练点补齐任务，共 ${count} 个任务；进度会在这里自动更新。`
+    retagMessage.value = `已只提交全库 ${ids.length} 道缺少核心标签的题，共 ${count} 个任务；离开页面后可从顶部任务中心继续查看。`
   } catch {
     retagMessage.value = '全库补齐标签没有完整提交；已提交的任务会保留，请先查看任务记录。'
   } finally {
@@ -600,7 +600,7 @@ async function confirmPermanentDelete(): Promise<void> {
           class="paper-button is-quiet"
           :disabled="retagAllBusy || retagBusyPaperId !== null"
           @click="fillAllTags"
-        >{{ retagAllBusy && taggingMode === 'fill' ? '正在准备…' : '补齐标签与训练点' }}</button>
+        >{{ retagAllBusy && taggingMode === 'fill' ? '正在检查缺失题…' : '只补缺失标签' }}</button>
         <button
           type="button"
           class="paper-button is-review"
@@ -611,13 +611,12 @@ async function confirmPermanentDelete(): Promise<void> {
         </button>
         <button
           type="button"
-          class="paper-button is-quiet paper-icon-button"
+          class="paper-button is-quiet"
           aria-label="打开回收站"
           title="回收站"
           @click="openTrashDrawer"
         >
-          <span aria-hidden="true">♲</span>
-          <span class="sr-only">回收站</span>
+          试卷回收站
         </button>
         <button
           type="button"
@@ -768,18 +767,17 @@ async function confirmPermanentDelete(): Promise<void> {
               >{{
                 retagBusyPaperId === paper.id && taggingMode === 'fill'
                   ? '准备中…'
-                  : '补齐标签与训练点'
+                  : '只补缺失标签'
               }}</button>
               <button
                 type="button"
-                class="paper-button is-danger-quiet paper-icon-button"
+                class="paper-button is-danger-quiet"
                 :disabled="store.paperTrashBusyId === paper.id"
                 :aria-label="`将${paper.title || `试卷 ${paper.id}`}移入回收站`"
                 title="移入回收站"
                 @click="requestPaperTrash(paper)"
               >
-                <span aria-hidden="true">♲</span>
-                <span class="sr-only">移入回收站</span>
+                移入回收站
               </button>
               <button
                 type="button"

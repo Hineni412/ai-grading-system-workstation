@@ -87,6 +87,10 @@ def request_read_context(paths: _ReadPaths) -> Iterator[RequestReadContext]:
             question_bank_candidate,
             grading_db=grading_db,
             question_bank_connection=question_bank_connection,
+            cache_identity=(
+                *_database_generation(Path(paths.db_path)),
+                *_database_generation(Path(paths.qb_db_path)),
+            ),
         )
         practice_service = PracticePlanService(
             question_bank_candidate,
@@ -126,6 +130,18 @@ def _main_candidate_path(connection: sqlite3.Connection) -> Path:
         raise QuestionBankSnapshotUnavailable(
             "Question bank snapshot is unavailable"
         ) from exc
+
+
+def _database_generation(path: Path) -> tuple[str, ...]:
+    source = path.resolve(strict=False)
+    values = [str(source)]
+    for candidate in (source, Path(f"{source}-wal")):
+        try:
+            stat = candidate.stat()
+            values.append(f"{candidate.name}:{stat.st_size}:{stat.st_mtime_ns}")
+        except FileNotFoundError:
+            values.append(f"{candidate.name}:missing")
+    return tuple(values)
 
 
 __all__ = [

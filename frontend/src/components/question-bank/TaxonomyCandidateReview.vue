@@ -323,6 +323,22 @@ function suggestionManualHint(suggestion: TaxonomySuggestion): string {
     : '这项没有可自动预填的结论，请结合题目预览人工判断。'
 }
 
+function localizedSuggestionReason(suggestion: TaxonomySuggestion): string {
+  const reason = suggestion.reason.trim()
+  if (/[\u3400-\u9fff]/u.test(reason)) return reason
+  const relation: Record<TaxonomySuggestion['relation_kind'], string> = {
+    exact: '系统判断它与现有词严格同义，可核对目标词后归并。',
+    broader: '系统判断它比现有词范围更宽，需要教师确认是否保留。',
+    narrower: '系统判断它是现有词下更细的概念，需要教师确认是否有必要单列。',
+    related: '系统只找到相关词，不能安全自动归并。',
+    new_core_candidate: '系统未找到可复用的现有词，建议作为新核心词候选核对。',
+    wrong_dimension: '系统判断这个词可能放错了标签类别，需要教师确认。',
+    reject: '系统判断这个词不适合作为规范标签，建议拒绝。',
+    uncertain: '现有证据不足，系统无法给出可靠归并结论。',
+  }
+  return relation[suggestion.relation_kind]
+}
+
 async function startSuggestions(): Promise<void> {
   const started = await store.startSuggestions(
     pendingProposals.value.slice(0, 200).map(({ id }) => id),
@@ -558,7 +574,7 @@ onBeforeUnmount(() => {
               <div>
                 <strong>{{ item.proposed_name }}</strong>
                 <span>{{ suggestionLabel(item.suggestion) }} · {{ Math.round(item.suggestion.confidence * 100) }}%</span>
-                <p>{{ item.suggestion.reason }}</p>
+                <p>{{ localizedSuggestionReason(item.suggestion) }}</p>
               </div>
               <label>
                 <span>本批决定</span>
@@ -598,7 +614,7 @@ onBeforeUnmount(() => {
             <article v-for="item in automaticBatchItems" :key="item.proposal_id">
               <strong>{{ item.proposed_name }}</strong>
               <span>{{ suggestionLabel(item.suggestion) }} · {{ Math.round(item.suggestion.confidence * 100) }}%</span>
-              <p>{{ item.suggestion.reason }}</p>
+              <p>{{ localizedSuggestionReason(item.suggestion) }}</p>
             </article>
           </details>
 

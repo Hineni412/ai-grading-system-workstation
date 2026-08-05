@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import sqlite3
+import threading
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Depends
@@ -51,6 +53,11 @@ GRAPH_DATABASE_RESPONSES = {
         "description": "Current graph data is temporarily unavailable",
     }
 }
+_GRAPH_SERVICE_CACHE_LOCK = threading.RLock()
+_GRAPH_SERVICE_CACHE: tuple[
+    tuple[str, ...],
+    CurrentKnowledgeGraphQueryService,
+] | None = None
 
 
 def get_relation_review_service() -> RelationReviewService:
@@ -74,7 +81,26 @@ GraphServiceProvider = CurrentKnowledgeGraphQueryService | Callable[
 
 
 def get_current_graph_query_service() -> GraphServiceProvider:
-    return lambda: CurrentKnowledgeGraphQueryService(question_bank_db_path())
+    return lambda: _cached_current_graph_service(question_bank_db_path())
+
+
+def _cached_current_graph_service(db_path: Path) -> CurrentKnowledgeGraphQueryService:
+    global _GRAPH_SERVICE_CACHE
+    source = Path(db_path).resolve(strict=False)
+    generation: list[str] = [str(source)]
+    for candidate in (source, Path(f"{source}-wal")):
+        try:
+            stat = candidate.stat()
+            generation.append(f"{candidate.name}:{stat.st_size}:{stat.st_mtime_ns}")
+        except FileNotFoundError:
+            generation.append(f"{candidate.name}:missing")
+    key = tuple(generation)
+    with _GRAPH_SERVICE_CACHE_LOCK:
+        if _GRAPH_SERVICE_CACHE is not None and _GRAPH_SERVICE_CACHE[0] == key:
+            return _GRAPH_SERVICE_CACHE[1]
+        service = CurrentKnowledgeGraphQueryService(source)
+        _GRAPH_SERVICE_CACHE = (key, service)
+        return service
 
 
 def _materialize_graph_service(
@@ -115,6 +141,11 @@ def query_current_graph(
             CurrentGraphQuery(
                 knowledge_keys=tuple(body.knowledge_keys),
                 prerequisite_depth=body.prerequisite_depth,
+            ),
+            mastery_by_key=getattr(
+                diagnosis_service,
+                "latest_aggregated_mastery",
+                None,
             ),
         )
     except ValueError as exc:
