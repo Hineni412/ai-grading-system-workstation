@@ -1,14 +1,14 @@
 <script setup lang="ts">
 import type { ClassTeacherSurface } from './useClassTeacherRouteState'
 
-defineProps<{ active: ClassTeacherSurface; locked: boolean }>()
+defineProps<{ active: ClassTeacherSurface }>()
 const emit = defineEmits<{ select: [surface: ClassTeacherSurface] }>()
 
-const tabs: Array<{ id: ClassTeacherSurface; label: string; protected: boolean }> = [
-  { id: 'today', label: '今日', protected: false },
-  { id: 'calendar', label: '日历与工作图', protected: false },
-  { id: 'affairs', label: '事务', protected: true },
-  { id: 'students', label: '学生', protected: true },
+const tabs: Array<{ id: ClassTeacherSurface; label: string }> = [
+  { id: 'home', label: '首页' },
+  { id: 'calendar', label: '日历' },
+  { id: 'affairs', label: '事务' },
+  { id: 'students', label: '学生' },
 ]
 </script>
 
@@ -23,7 +23,6 @@ const tabs: Array<{ id: ClassTeacherSurface; label: string; protected: boolean }
       @click="emit('select', tab.id)"
     >
       {{ tab.label }}
-      <span v-if="tab.protected && locked" class="surface-tabs__lock" aria-label="需要解锁">锁</span>
     </button>
   </nav>
 </template>
@@ -67,12 +66,6 @@ const tabs: Array<{ id: ClassTeacherSurface; label: string; protected: boolean }
 
 .surface-tabs__tab.is-active::after {
   background: var(--color-accent);
-}
-
-.surface-tabs__lock {
-  margin-left: var(--space-1);
-  color: var(--color-text-muted);
-  font-size: var(--font-size-caption);
 }
 
 @media (max-width: 760px) {

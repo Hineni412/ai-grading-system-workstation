@@ -262,6 +262,8 @@ class SupportRecordService:
         observed_at: str,
         review_at: str | None,
         expires_at: str | None,
+        subject_identity: dict[str, str] | None = None,
+        transaction_hook: Callable[[Any, bytes, str], None] | None = None,
     ) -> dict[str, object]:
         vmk = self._key_provider(token)
         replay = self._idempotent(operation_id, "support.record.create")
@@ -285,21 +287,33 @@ class SupportRecordService:
         record_id = uuid4().hex
         with closing(self.database.connect()) as connection:
             with connection:
-                self._subject_row(connection, subject_id)
+                resolved_subject_id = subject_id
+                if subject_identity is not None:
+                    resolved_subject_id = self.ensure_subject_in_connection(
+                        connection,
+                        vmk=vmk,
+                        source_student_id=str(subject_identity.get("source_student_id") or ""),
+                        display_name=str(subject_identity.get("display_name") or ""),
+                        class_label=str(subject_identity.get("class_label") or "").strip() or None,
+                    )
+                else:
+                    self._subject_row(connection, resolved_subject_id)
                 self._create_record_in_connection(
                     connection,
                     vmk=vmk,
                     record_id=record_id,
-                    subject_id=subject_id,
+                    subject_id=resolved_subject_id,
                     normalized=normalized,
                 )
-                self._rebuild_summary(connection, vmk, subject_id)
+                self._rebuild_summary(connection, vmk, resolved_subject_id)
                 self._remember(
                     connection,
                     operation_id,
                     "support.record.create",
                     {"record_id": record_id},
                 )
+                if transaction_hook is not None:
+                    transaction_hook(connection, vmk, record_id)
         return self.get_record(token=token, record_id=record_id)
 
     def get_record(self, *, token: str, record_id: str) -> dict[str, object]:

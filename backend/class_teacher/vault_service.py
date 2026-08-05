@@ -138,9 +138,12 @@ class VaultService:
         protection_provider=None,
         model_gateway=None,
         protection_enabled: bool = True,
+        workspace_ai_task_port=None,
     ) -> None:
         self._operation_lock = asyncio.Lock()
         self.protection_enabled = bool(protection_enabled)
+        self.workspace_ai_task_port = workspace_ai_task_port
+        self.workspace_model_gateway = model_gateway
         self.database = EncryptedDatabase(context)
         self.repository = EncryptedObjectRepository(
             plaintext=not self.protection_enabled,
@@ -285,6 +288,21 @@ class VaultService:
         self._previews: dict[str, _RestorePreview] = {}
         self._initialization_replays: dict[str, dict[str, object]] = {}
         self._initialize_session_bound_services()
+        from .intake import ClassTeacherIntake
+
+        self.intake = ClassTeacherIntake(
+            ordinary_database=self.ordinary_database,
+            class_roster=self.class_roster,
+            domain_database=self.database,
+            repository=self.repository,
+            key_provider=self.session_key,
+            support=self.support,
+            planning=self.planning,
+            sop=self.sop,
+            sop_baselines=self.sop_baselines,
+            model_gateway=self.workspace_model_gateway,
+            ai_tasks=self.workspace_ai_task_port,
+        )
 
     def _initialize_session_bound_services(self) -> None:
         """Build stateless protected-work facades for every runtime mode.

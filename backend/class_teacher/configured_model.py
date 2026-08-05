@@ -146,6 +146,52 @@ class ActiveProfileApprovedModelGateway:
         with self._request_counts_lock:
             return int(self._request_counts.get(str(operation_id), 0))
 
+    def invoke_workspace_task(
+        self,
+        *,
+        task_gateway,
+        messages: tuple[dict[str, str], ...],
+        operation_id: str,
+        purpose: str,
+        expected_destination_fingerprint: str,
+    ) -> str:
+        """Call through TW-F1's enforced metadata-only, zero-retry gateway."""
+
+        resolved = self._resolve()
+        current = _destination_snapshot(resolved)
+        if current["destination_fingerprint"] != expected_destination_fingerprint:
+            raise ModelDestinationChanged("model destination changed after prepare")
+        gateway = self.gateway_factory(
+            context=self.context,
+            profile=resolved.policy_profile,
+            config_key=gateway_config_key(resolved.api_key, resolved.base_url),
+            metadata_only=False,
+            claim_operations=False,
+            allow_retry=True,
+        )
+        client = self.client_factory(resolved.api_key, resolved.base_url)
+        try:
+            response = task_gateway.chat_completions(
+                gateway=gateway,
+                request=WorkspaceModelRequest(
+                    purpose=purpose,
+                    data_classification="restricted",
+                    operation_id=operation_id,
+                ),
+                client=client,
+                model=resolved.model,
+                kwargs={
+                    "messages": list(messages),
+                    "response_format": {"type": "json_object"},
+                },
+                timeout_override_seconds=110,
+            )
+        finally:
+            count = max(1, int(getattr(gateway, "physical_request_count", 0) or 0))
+            with self._request_counts_lock:
+                self._request_counts[operation_id] = count
+        return _response_text(response)
+
     def _resolve(self) -> _ResolvedModel:
         try:
             profile = active_api_profile(self.profile_store.load())
