@@ -81,6 +81,7 @@ class WorkspaceAITaskResponse(BaseModel):
     module: str
     task_kind: str
     source_ref: OpaqueRefResponse
+    context_refs: tuple[OpaqueRefResponse, ...]
     return_target: str
     status: str
     phase: str

@@ -17,6 +17,7 @@ def project_task(store: WorkspaceAITaskStore, task: StoredTask) -> TaskSnapshot:
         module=task.module,
         task_kind=task.task_kind,
         source_ref=task.source_ref,
+        context_refs=task.context_refs,
         return_target=task.return_target,
         status=task.status,
         phase=task.phase,

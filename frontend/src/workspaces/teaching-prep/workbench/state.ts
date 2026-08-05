@@ -28,6 +28,10 @@ export interface WorkbenchStageState {
   explanation: string
 }
 
+export type TeachingPrepView = 'overview' | 'lesson' | 'library'
+export type TeachingPrepPanel = 'sources' | 'exercises' | 'plan' | 'slides' | 'package'
+export type TeachingPrepPane = 'source' | 'preview' | 'review'
+
 export interface NavigationTarget {
   workspace: TeachingPrepWorkspace
   stage: TeachingPrepStage
@@ -41,7 +45,7 @@ export interface NavigationDecision {
 
 const STAGES: Array<Pick<WorkbenchStageState, 'id' | 'label' | 'workspace'>> = [
   { id: 'select', label: '选课时', workspace: 'lesson-tree' },
-  { id: 'materials', label: '核资料', workspace: 'materials' },
+  { id: 'materials', label: '核资料', workspace: 'lesson-prep' },
   { id: 'plan', label: '定方案', workspace: 'lesson-prep' },
   { id: 'slides', label: '审课件', workspace: 'versions' },
   { id: 'package', label: '上课包', workspace: 'versions' },
@@ -61,8 +65,12 @@ export function useTeachingPrepWorkbench() {
   const route = useRoute()
   const router = useRouter()
   const catalog = useTeachingPrepCatalogStore()
+  const view = ref<TeachingPrepView>('overview')
   const workspace = ref<TeachingPrepWorkspace>('lesson-tree')
   const stage = ref<TeachingPrepStage>('select')
+  const panel = ref<TeachingPrepPanel>('sources')
+  const focusRef = ref<string | null>(null)
+  const pane = ref<TeachingPrepPane>('preview')
   const lessonStatuses = ref<LessonPreparationStatus[]>([])
   const referencePreflight = shallowRef<ReferenceSelectionPreflight | null>(null)
   const activeSuggestionRun = shallowRef<ExerciseSuggestionRun | null>(null)
@@ -71,8 +79,10 @@ export function useTeachingPrepWorkbench() {
   const workbenchError = ref('')
   const loading = ref(false)
   let contextGeneration = 0
-  let suggestionTimer: ReturnType<typeof setTimeout> | null = null
+  let disposed = false
   let executionTimer: ReturnType<typeof setTimeout> | null = null
+  let applyingRoute = false
+  let routeApplicationQueued = false
 
   const selectedStatus = computed(
     () => lessonStatuses.value.find(
@@ -110,33 +120,42 @@ export function useTeachingPrepWorkbench() {
     workbenchError.value = ''
     try {
       await catalog.load()
+      const linkedSemesterId = typeof route.query.semester === 'string'
+        ? route.query.semester
+        : null
+      if (
+        linkedSemesterId
+        && catalog.semesters.some(item => item.id === linkedSemesterId)
+        && catalog.selectedSemester?.id !== linkedSemesterId
+      ) {
+        await catalog.selectSemester(linkedSemesterId)
+      }
+      await loadSemesterStatuses()
       const restoreLibrary = route.query.view === 'library'
       if (restoreLibrary) {
+        view.value = 'library'
         workspace.value = 'materials'
         stage.value = 'materials'
-      } else if (!isWorkspace(route.query.workspace) && !isStage(route.query.stage)) {
-        if (hasFormalLessonTree(catalog.lessonNodes)) {
-          workspace.value = 'lesson-tree'
-          stage.value = 'select'
+      } else if (route.query.view === 'lesson') {
+        await restoreLessonDeepLink()
+      } else if (isWorkspace(route.query.workspace)) {
+        if (route.query.workspace === 'materials') {
+          view.value = 'library'
+          restoreRouteContext()
+        } else if (route.query.workspace === 'lesson-tree') {
+          view.value = 'overview'
+          restoreRouteContext()
         } else {
-          workspace.value = 'materials'
-          stage.value = 'materials'
+          await restoreLessonDeepLink()
         }
+      } else if (!isWorkspace(route.query.workspace) && !isStage(route.query.stage)) {
+        view.value = 'overview'
+        workspace.value = 'lesson-tree'
+        stage.value = 'select'
       }
-      if (!restoreLibrary) restoreRouteContext()
-      await loadSemesterStatuses()
-      const lessonId = route.query.lesson
-      if (typeof lessonId === 'string' && lessonId) {
-        const lesson = catalog.lessonNodes.find(item => item.id === lessonId)
-        if (lesson) await catalog.selectLesson(lesson)
-      }
-      if (!catalog.selectedLessonId) {
-        const firstLesson = catalog.lessonNodes.find(
-          item => item.node_type === 'lesson' && item.is_active,
-        )
-        if (firstLesson) await catalog.selectLesson(firstLesson)
-      }
+      const routeNotice = workbenchError.value
       await refreshCurrentWorkspace()
+      if (routeNotice) workbenchError.value = routeNotice
       await syncRoute()
     } catch {
       workbenchError.value = catalog.errorMessage || '备课工作台暂时无法载入。'
@@ -150,6 +169,48 @@ export function useTeachingPrepWorkbench() {
     const nextStage = route.query.stage
     if (isWorkspace(nextWorkspace)) workspace.value = nextWorkspace
     if (isStage(nextStage)) stage.value = nextStage
+    if (isPanel(route.query.panel)) panel.value = route.query.panel
+    focusRef.value = safeFocusRef(route.query.focus_ref)
+  }
+
+  async function restoreLessonDeepLink(): Promise<void> {
+    const semester = route.query.semester
+    if (typeof semester === 'string' && semester) {
+      const targetSemester = catalog.semesters.find(item => item.id === semester)
+      if (!targetSemester) {
+        returnToOverviewForInvalidDeepLink()
+        return
+      }
+      if (catalog.selectedSemester?.id !== targetSemester.id) {
+        await catalog.selectSemester(targetSemester.id)
+        await loadSemesterStatuses()
+      }
+    }
+    const lessonId = route.query.lesson
+    const lesson = typeof lessonId === 'string'
+      ? catalog.lessonNodes.find(item => item.id === lessonId && item.is_active)
+      : null
+    if (
+      !lesson
+    ) {
+      returnToOverviewForInvalidDeepLink()
+      return
+    }
+    view.value = 'lesson'
+    restoreRouteContext()
+    if (stage.value === 'select') stage.value = 'materials'
+    const definition = STAGES.find(item => item.id === stage.value)
+    workspace.value = definition?.workspace ?? 'lesson-prep'
+    if (catalog.selectedLessonId !== lesson.id) await catalog.selectLesson(lesson)
+  }
+
+  function returnToOverviewForInvalidDeepLink(): void {
+    view.value = 'overview'
+    workspace.value = 'lesson-tree'
+    stage.value = 'select'
+    panel.value = 'sources'
+    focusRef.value = null
+    workbenchError.value = '原链接中的学期或课时已不存在，已返回备课首页；没有改选其他课时。'
   }
 
   async function loadSemesterStatuses(): Promise<void> {
@@ -173,11 +234,24 @@ export function useTeachingPrepWorkbench() {
     if (!decision.allowed) return
     contextGeneration += 1
     await catalog.selectLesson(lesson)
+    const lessonStatus = lessonStatuses.value.find(item => item.lesson_node_id === lessonId)
+    const nextStage = lessonStatus?.preparation_stage === 'select'
+      ? 'materials'
+      : lessonStatus?.preparation_stage ?? 'materials'
+    view.value = 'lesson'
+    const definition = STAGES.find(item => item.id === nextStage)
+    if (definition) {
+      workspace.value = definition.workspace
+      stage.value = nextStage
+    }
     await refreshCurrentWorkspace()
     await syncRoute()
   }
 
-  async function openStage(nextStage: TeachingPrepStage): Promise<void> {
+  async function openStage(
+    nextStage: TeachingPrepStage,
+    options: { panel?: TeachingPrepPanel; focusRef?: string | null } = {},
+  ): Promise<void> {
     const definition = STAGES.find(item => item.id === nextStage)
     if (!definition) return
     const decision = await requestNavigation({
@@ -188,6 +262,9 @@ export function useTeachingPrepWorkbench() {
     if (!decision.allowed) return
     workspace.value = definition.workspace
     stage.value = nextStage
+    view.value = nextStage === 'select' ? 'overview' : 'lesson'
+    panel.value = options.panel ?? defaultPanel(nextStage)
+    focusRef.value = options.focusRef ?? null
     await refreshCurrentWorkspace()
     await syncRoute()
     requestAnimationFrame(() => {
@@ -196,6 +273,17 @@ export function useTeachingPrepWorkbench() {
   }
 
   async function openWorkspace(nextWorkspace: TeachingPrepWorkspace): Promise<void> {
+    if (nextWorkspace === 'materials') {
+      const decision = await requestNavigation({ workspace: 'materials', stage: 'materials' })
+      if (!decision.allowed) return
+      view.value = 'library'
+      workspace.value = 'materials'
+      stage.value = 'materials'
+      panel.value = 'sources'
+      focusRef.value = null
+      await syncRoute()
+      return
+    }
     const fallbackStage: Record<TeachingPrepWorkspace, TeachingPrepStage> = {
       'lesson-tree': 'select',
       materials: 'materials',
@@ -203,6 +291,17 @@ export function useTeachingPrepWorkbench() {
       versions: stage.value === 'package' ? 'package' : 'slides',
     }
     await openStage(fallbackStage[nextWorkspace])
+  }
+
+  async function openPanel(nextPanel: TeachingPrepPanel, nextFocusRef: string | null = null): Promise<void> {
+    const nextStage: TeachingPrepStage = nextPanel === 'exercises' || nextPanel === 'sources'
+      ? 'materials'
+      : nextPanel
+    await openStage(nextStage, { panel: nextPanel, focusRef: nextFocusRef })
+  }
+
+  function setPane(nextPane: TeachingPrepPane): void {
+    pane.value = nextPane
   }
 
   async function requestNavigation(
@@ -252,16 +351,6 @@ export function useTeachingPrepWorkbench() {
 
   function watchSuggestionRun(run: ExerciseSuggestionRun | null): void {
     activeSuggestionRun.value = run
-    if (suggestionTimer) clearTimeout(suggestionTimer)
-    if (!run || run.status !== 'running') return
-    suggestionTimer = setTimeout(async () => {
-      try {
-        const next = await teachingPrepWorkbenchApi.exerciseSuggestionRun(run.id)
-        watchSuggestionRun(next)
-      } catch {
-        suggestionTimer = setTimeout(() => watchSuggestionRun(run), 2000)
-      }
-    }, 1000)
   }
 
   function scheduleExecutionRefresh(): void {
@@ -280,12 +369,17 @@ export function useTeachingPrepWorkbench() {
   }
 
   async function syncRoute(): Promise<void> {
+    if (disposed) return
     await router.replace({
       query: {
         ...route.query,
+        view: view.value,
         workspace: workspace.value,
         stage: stage.value,
-        lesson: catalog.selectedLessonId ?? undefined,
+        semester: catalog.selectedSemester?.id ?? undefined,
+        lesson: view.value === 'lesson' ? catalog.selectedLessonId ?? undefined : undefined,
+        panel: view.value === 'lesson' ? panel.value : undefined,
+        focus_ref: view.value === 'lesson' ? focusRef.value ?? undefined : undefined,
       },
     })
   }
@@ -296,28 +390,95 @@ export function useTeachingPrepWorkbench() {
   }
   globalThis.addEventListener('beforeunload', beforeUnload)
 
-  watch(
-    () => [route.query.workspace, route.query.stage, route.query.view],
-    () => {
-      if (route.query.view === 'library') {
-        workspace.value = 'materials'
-        stage.value = 'materials'
+  const removeNavigationGuard = router.beforeEach(async (to, from) => {
+    if (disposed || !dirtyReason.value || to.fullPath === from.fullPath) return true
+    return (await requestNavigation({
+      workspace: workspace.value,
+      stage: stage.value,
+      lessonId: catalog.selectedLessonId,
+    })).allowed
+  })
+
+  async function selectRouteSemester(): Promise<void> {
+    const semesterId = route.query.semester
+    if (typeof semesterId !== 'string' || !semesterId) return
+    const targetSemester = catalog.semesters.find(item => item.id === semesterId)
+    if (!targetSemester || catalog.selectedSemester?.id === targetSemester.id) return
+    await catalog.selectSemester(targetSemester.id)
+    await loadSemesterStatuses()
+  }
+
+  async function applyCurrentRoute(): Promise<void> {
+    const requestedPath = route.fullPath
+    if (route.query.view === 'library' || route.query.view === 'overview') {
+      await selectRouteSemester()
+      if (route.fullPath !== requestedPath) {
+        routeApplicationQueued = true
         return
       }
-      restoreRouteContext()
+    }
+    if (route.query.view === 'library') {
+      view.value = 'library'
+      workspace.value = 'materials'
+      stage.value = 'materials'
+      panel.value = 'sources'
+      focusRef.value = null
+      if (route.query.workspace !== 'materials' || route.query.stage !== 'materials') await syncRoute()
+      return
+    }
+    if (route.query.view === 'overview') {
+      view.value = 'overview'
+      workspace.value = 'lesson-tree'
+      stage.value = 'select'
+      panel.value = 'sources'
+      focusRef.value = null
+      if (route.query.workspace !== 'lesson-tree' || route.query.stage !== 'select') await syncRoute()
+      return
+    }
+    if (route.query.view === 'lesson') {
+      await restoreLessonDeepLink()
+      await refreshCurrentWorkspace()
+    } else restoreRouteContext()
+  }
+
+  async function applyRoute(): Promise<void> {
+    if (applyingRoute) {
+      routeApplicationQueued = true
+      return
+    }
+    applyingRoute = true
+    try {
+      do {
+        routeApplicationQueued = false
+        await applyCurrentRoute()
+      } while (routeApplicationQueued && !disposed)
+    } finally {
+      applyingRoute = false
+    }
+  }
+
+  watch(
+    () => [route.query.workspace, route.query.stage, route.query.view, route.query.semester, route.query.lesson, route.query.panel, route.query.focus_ref],
+    () => {
+      void applyRoute()
     },
   )
 
   onBeforeUnmount(() => {
+    disposed = true
     globalThis.removeEventListener('beforeunload', beforeUnload)
-    if (suggestionTimer) clearTimeout(suggestionTimer)
     if (executionTimer) clearTimeout(executionTimer)
+    removeNavigationGuard()
   })
 
   return {
     catalog,
+    view: readonly(view) as Readonly<Ref<TeachingPrepView>>,
     workspace: readonly(workspace) as Readonly<Ref<TeachingPrepWorkspace>>,
     stage: readonly(stage) as Readonly<Ref<TeachingPrepStage>>,
+    panel: readonly(panel) as Readonly<Ref<TeachingPrepPanel>>,
+    focusRef: readonly(focusRef) as Readonly<Ref<string | null>>,
+    pane: readonly(pane) as Readonly<Ref<TeachingPrepPane>>,
     stages,
     lessonStatuses,
     selectedStatus,
@@ -331,6 +492,8 @@ export function useTeachingPrepWorkbench() {
     openLesson,
     openStage,
     openWorkspace,
+    openPanel,
+    setPane,
     requestNavigation,
     refreshCurrentWorkspace,
     setDirty,
@@ -351,4 +514,18 @@ function isWorkspace(value: unknown): value is TeachingPrepWorkspace {
     'lesson-prep',
     'versions',
   ].includes(String(value))
+}
+
+function isPanel(value: unknown): value is TeachingPrepPanel {
+  return ['sources', 'exercises', 'plan', 'slides', 'package'].includes(String(value))
+}
+
+function safeFocusRef(value: unknown): string | null {
+  return typeof value === 'string' && /^[A-Za-z0-9._:-]{1,160}$/.test(value) ? value : null
+}
+
+function defaultPanel(stage: TeachingPrepStage): TeachingPrepPanel {
+  return stage === 'materials' ? 'sources'
+    : stage === 'select' ? 'sources'
+      : stage
 }

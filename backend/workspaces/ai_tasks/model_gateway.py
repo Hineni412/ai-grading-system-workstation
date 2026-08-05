@@ -63,6 +63,9 @@ class WorkspaceAITaskModelGateway:
             timeout_override_seconds=timeout_override_seconds,
         )
 
+    def bind(self, gateway: WorkspaceModelGateway) -> "BoundWorkspaceAITaskGateway":
+        return BoundWorkspaceAITaskGateway(self, gateway)
+
     def _secure_and_claim(
         self,
         gateway: WorkspaceModelGateway,
@@ -91,4 +94,28 @@ class WorkspaceAITaskModelGateway:
         gateway.allow_retry = False
 
 
-__all__ = ["WorkspaceAITaskModelGateway"]
+class BoundWorkspaceAITaskGateway:
+    """WorkspaceModelGateway-compatible view with Task safety sealed in."""
+
+    def __init__(
+        self,
+        task_gateway: WorkspaceAITaskModelGateway,
+        gateway: WorkspaceModelGateway,
+    ) -> None:
+        self._task_gateway = task_gateway
+        self._gateway = gateway
+
+    def chat_completions(self, **kwargs: object) -> object:
+        return self._task_gateway.chat_completions(
+            gateway=self._gateway,
+            **kwargs,  # type: ignore[arg-type]
+        )
+
+    def responses(self, **kwargs: object) -> object:
+        return self._task_gateway.responses(
+            gateway=self._gateway,
+            **kwargs,  # type: ignore[arg-type]
+        )
+
+
+__all__ = ["BoundWorkspaceAITaskGateway", "WorkspaceAITaskModelGateway"]

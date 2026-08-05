@@ -25,6 +25,48 @@ export function returnLocation(task: WorkspaceAITask): {
   query: Record<string, string>
 } {
   const path = task.module === 'teaching_prep' ? '/teaching-prep' : '/class-teacher'
+  if (task.module === 'teaching_prep') {
+    const semesterRef = task.context_refs.find(ref => ref.kind === 'semester')
+      ?? task.handoffs.flatMap(handoff => handoff.subject_refs).find(ref => ref.kind === 'semester')
+    const destination = task.return_target
+    if (destination === 'teaching_prep.library') {
+      return {
+        path,
+        query: {
+          view: 'library',
+          ...(task.source_ref.kind === 'semester'
+            ? { semester: task.source_ref.id }
+            : semesterRef ? { semester: semesterRef.id } : {}),
+          source_task_id: task.task_id,
+        },
+      }
+    }
+    if (destination === 'teaching_prep.overview') {
+      return { path, query: { view: 'overview', source_task_id: task.task_id } }
+    }
+    const lessonRoutes: Partial<Record<string, readonly [string, string]>> = {
+      'teaching_prep.lesson.materials': ['materials', 'sources'],
+      'teaching_prep.lesson.plan': ['plan', 'plan'],
+      'teaching_prep.lesson.exercises': ['materials', 'exercises'],
+      'teaching_prep.lesson.slides': ['slides', 'slides'],
+      'teaching_prep.lesson.package': ['package', 'package'],
+    }
+    const route = lessonRoutes[destination]
+    if (route && task.source_ref.kind === 'lesson') {
+      const focus = task.handoffs[0]?.return_focus_ref ?? task.proposal_ref_id
+      return {
+        path,
+        query: {
+          view: 'lesson',
+          ...(semesterRef ? { semester: semesterRef.id } : {}),
+          lesson: task.source_ref.id,
+          stage: route[0], panel: route[1],
+          ...(focus ? { focus_ref: focus } : {}),
+          source_task_id: task.task_id,
+        },
+      }
+    }
+  }
   return {
     path,
     query: {

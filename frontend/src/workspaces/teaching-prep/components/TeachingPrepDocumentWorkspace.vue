@@ -1,11 +1,19 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
+
+type DocumentPane = 'source' | 'preview' | 'review'
 
 const props = defineProps<{
   title: string
   subtitle?: string
   previewUrl?: string | null
   emptyMessage?: string
+  activePane?: DocumentPane
+  previewZoom?: number
+  fitWidth?: boolean
+}>()
+const emit = defineEmits<{
+  'update:activePane': [value: DocumentPane]
 }>()
 
 const previewState = ref<'idle' | 'loading' | 'ready' | 'error'>(
@@ -16,14 +24,31 @@ watch(
   () => props.previewUrl,
   value => { previewState.value = value ? 'loading' : 'idle' },
 )
+
+const previewStyle = computed(() => {
+  if (props.fitWidth) return { inlineSize: '100%', maxInlineSize: '100%' }
+  const zoom = Math.min(200, Math.max(50, props.previewZoom ?? 100))
+  return { inlineSize: `${zoom}%`, maxInlineSize: 'none' }
+})
 </script>
 
 <template>
-  <section class="tp-document-workspace">
-    <aside class="tp-document-workspace__rail">
+  <section class="tp-document-workspace" :class="{ 'is-mobile-controlled': activePane }">
+    <nav v-if="activePane" class="tp-document-workspace__mobile-tabs" aria-label="窄屏资料工作栏">
+      <button
+        v-for="item in ([['source', '来源'], ['preview', '预览'], ['review', '审阅']] as const)"
+        :key="item[0]"
+        type="button"
+        :aria-current="activePane === item[0] ? 'page' : undefined"
+        @click="emit('update:activePane', item[0])"
+      >
+        {{ item[1] }}
+      </button>
+    </nav>
+    <aside class="tp-document-workspace__rail" :class="{ 'is-mobile-active': activePane === 'source' }">
       <slot name="rail" />
     </aside>
-    <main class="tp-document-workspace__canvas">
+    <main class="tp-document-workspace__canvas" :class="{ 'is-mobile-active': activePane === 'preview' }">
       <header>
         <div>
           <h2>{{ title }}</h2>
@@ -37,6 +62,7 @@ watch(
         class="tp-document-workspace__preview"
         :src="previewUrl"
         :alt="`${title}原页预览`"
+        :style="previewStyle"
         @load="previewState = 'ready'"
         @error="previewState = 'error'"
       >
@@ -54,7 +80,7 @@ watch(
       </div>
       <slot name="overlay" />
     </main>
-    <aside class="tp-document-workspace__inspector">
+    <aside class="tp-document-workspace__inspector" :class="{ 'is-mobile-active': activePane === 'review' }">
       <slot name="inspector" />
     </aside>
   </section>

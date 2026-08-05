@@ -18,6 +18,7 @@ function task(overrides: Partial<WorkspaceAITask> = {}): WorkspaceAITask {
     module: 'teaching_prep',
     task_kind: 'teaching_prep.lesson_plan',
     source_ref: { kind: 'lesson', id: 'lesson-001', revision: '2' },
+    context_refs: [],
     return_target: 'teaching_prep.lesson.plan',
     status: 'running',
     phase: 'claimed',

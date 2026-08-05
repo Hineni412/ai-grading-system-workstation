@@ -17,6 +17,7 @@ from backend.llm.trace import safe_endpoint_host
 from backend.teaching_prep.domain.errors import TeachingPrepValidationError
 from backend.workspaces.contracts import WorkspaceContext
 from backend.workspaces.model_policy import WorkspaceModelGateway
+from backend.workspaces.ai_tasks.model_gateway import WorkspaceAITaskModelGateway
 
 from .lesson_model import WorkspaceLessonModelAdapter
 from .exercise_suggestions import WorkspaceExerciseSuggestionModelAdapter
@@ -55,9 +56,12 @@ class _ActiveProfileRuntime:
             return False
         return True
 
-    def lesson_adapter(self) -> WorkspaceLessonModelAdapter:
+    def lesson_adapter(
+        self,
+        task_gateway: WorkspaceAITaskModelGateway | None = None,
+    ) -> WorkspaceLessonModelAdapter:
         resolved = self._resolve()
-        gateway, client = self._gateway_and_client(resolved)
+        gateway, client = self._gateway_and_client(resolved, task_gateway)
         return WorkspaceLessonModelAdapter(
             gateway=gateway,
             client=client,
@@ -66,9 +70,10 @@ class _ActiveProfileRuntime:
 
     def semester_mapping_adapter(
         self,
+        task_gateway: WorkspaceAITaskModelGateway | None = None,
     ) -> WorkspaceSemesterMappingModelAdapter:
         resolved = self._resolve()
-        gateway, client = self._gateway_and_client(resolved)
+        gateway, client = self._gateway_and_client(resolved, task_gateway)
         return WorkspaceSemesterMappingModelAdapter(
             gateway=gateway,
             client=client,
@@ -77,9 +82,10 @@ class _ActiveProfileRuntime:
 
     def exercise_suggestion_adapter(
         self,
+        task_gateway: WorkspaceAITaskModelGateway | None = None,
     ) -> WorkspaceExerciseSuggestionModelAdapter:
         resolved = self._resolve()
-        gateway, client = self._gateway_and_client(resolved)
+        gateway, client = self._gateway_and_client(resolved, task_gateway)
         return WorkspaceExerciseSuggestionModelAdapter(
             gateway=gateway,
             client=client,
@@ -124,7 +130,8 @@ class _ActiveProfileRuntime:
     def _gateway_and_client(
         self,
         resolved: _ResolvedModel,
-    ) -> tuple[WorkspaceModelGateway, object]:
+        task_gateway: WorkspaceAITaskModelGateway | None = None,
+    ) -> tuple[object, object]:
         config_key = gateway_config_key(
             resolved.api_key,
             resolved.base_url,
@@ -134,8 +141,7 @@ class _ActiveProfileRuntime:
             config_key=config_key,
             endpoint_host=safe_endpoint_host(resolved.base_url),
         )
-        return (
-            WorkspaceModelGateway(
+        workspace_gateway = WorkspaceModelGateway(
                 context=self.context,
                 profile=resolved.policy_profile,
                 config_key=config_key,
@@ -143,7 +149,9 @@ class _ActiveProfileRuntime:
                 metadata_only=False,
                 claim_operations=True,
                 allow_retry=False,
-            ),
+            )
+        return (
+            task_gateway.bind(workspace_gateway) if task_gateway else workspace_gateway,
             create_openai_client(
                 resolved.api_key,
                 resolved.base_url,
@@ -171,8 +179,9 @@ class ActiveProfileLessonModelAdapter:
         *,
         operation_id: str,
         resource_pack: dict[str, Any],
+        task_model_gateway: WorkspaceAITaskModelGateway | None = None,
     ) -> dict[str, Any]:
-        return self._runtime.lesson_adapter().generate(
+        return self._runtime.lesson_adapter(task_model_gateway).generate(
             operation_id=operation_id,
             resource_pack=resource_pack,
         )
@@ -199,8 +208,9 @@ class ActiveProfileSemesterMappingModelAdapter:
         operation_id: str,
         semester_snapshot: dict[str, Any],
         dispatch_callback: Callable[[], None] | None = None,
+        task_model_gateway: WorkspaceAITaskModelGateway | None = None,
     ) -> dict[str, Any]:
-        return self._runtime.semester_mapping_adapter().generate(
+        return self._runtime.semester_mapping_adapter(task_model_gateway).generate(
             operation_id=operation_id,
             semester_snapshot=semester_snapshot,
             dispatch_callback=dispatch_callback,
@@ -227,8 +237,9 @@ class ActiveProfileExerciseSuggestionModelAdapter:
         *,
         operation_id: str,
         reference_snapshot: dict[str, Any],
+        task_model_gateway: WorkspaceAITaskModelGateway | None = None,
     ) -> dict[str, Any]:
-        return self._runtime.exercise_suggestion_adapter().generate(
+        return self._runtime.exercise_suggestion_adapter(task_model_gateway).generate(
             operation_id=operation_id,
             reference_snapshot=reference_snapshot,
         )
