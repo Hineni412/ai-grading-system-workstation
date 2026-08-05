@@ -26,9 +26,17 @@ from typing import Any, Iterator
 
 from path_manager import get_path_manager
 from question_bank.database.paths import question_bank_db_path
-from question_bank.knowledge_graph_release.loader import load_release
+from question_bank.knowledge_graph_release.loader import (
+    DEFAULT_TAXONOMY_PATH,
+    load_release_for_taxonomy_revision,
+    load_taxonomy_catalog_for_release,
+)
 from question_bank.knowledge_graph_release.repository import load_active_release
-from question_bank.taxonomy.curriculum_catalog import curriculum_volume_contract
+from question_bank.taxonomy.curriculum_catalog import (
+    curriculum_knowledge_ancestors,
+    curriculum_volume_contract,
+    eligible_curriculum_knowledge_nodes,
+)
 
 
 ALLOWED_DIMENSIONS = (
@@ -47,13 +55,12 @@ _PROPOSAL_STATUSES = frozenset({"pending", "approved", "merged", "rejected"})
 _REVIEW_ACTIONS = frozenset(
     {"approve", "edit", "merge", "map_many", "reject", "retire"}
 )
-_CATALOG_PATH = (
-    Path(__file__).resolve().parent / "catalogs" / "tag_vocabulary_v2.json"
-)
+_CATALOG_PATH = DEFAULT_TAXONOMY_PATH
 _PROCESS_LOCK = threading.RLock()
 _LOCK_TIMEOUT_SECONDS = 10.0
 _MAX_OPERATION_RECEIPTS = 5000
-_MAX_TERM_NAME_LENGTH = 36
+_MAX_TERM_NAME_LENGTH = 160
+_KNOWLEDGE_RETRIEVAL_LIMIT = 64
 
 _RAW_FIELD_DIMENSIONS: dict[str, str] = {
     "curriculum": "curriculum",
@@ -340,6 +347,7 @@ def _validate_catalog(payload: object, *, source: Path) -> dict[str, Any]:
                 "reference_candidates",
             }
         ),
+        optional=frozenset({"expected_approved_knowledge_count"}),
         label="catalog",
     )
     if payload.get("schema_version") != 2:
@@ -409,7 +417,7 @@ def _validate_catalog(payload: object, *, source: Path) -> dict[str, Any]:
                     f"Ambiguous catalog alias in {term['dimension']}: {value}"
                 )
             aliases[key] = term["id"]
-    return {
+    result = {
         "schema_version": 2,
         "catalog_id": _required_string(
             payload.get("catalog_id"), label="catalog.catalog_id"
@@ -420,6 +428,14 @@ def _validate_catalog(payload: object, *, source: Path) -> dict[str, Any]:
         "terms": terms,
         "reference_candidates": reference_candidates,
     }
+    if "expected_approved_knowledge_count" in payload:
+        expected_count = payload.get("expected_approved_knowledge_count")
+        if type(expected_count) is not int or expected_count <= 0:
+            raise TaxonomyValidationError(
+                "Catalog expected_approved_knowledge_count must be positive"
+            )
+        result["expected_approved_knowledge_count"] = expected_count
+    return result
 
 
 def _validate_proposal(raw: object, *, index: int) -> dict[str, Any]:
@@ -956,10 +972,14 @@ def _bigrams(value: object) -> set[str]:
     return {text[index : index + 2] for index in range(len(text) - 1)}
 
 
-def _knowledge_release_prompt_contract(db_path: Path) -> dict[str, Any]:
+def _knowledge_release_prompt_contract(
+    db_path: Path,
+    *,
+    taxonomy_revision: int,
+) -> dict[str, Any]:
     """Return the compact, immutable knowledge catalog shared by a batch."""
 
-    packaged_release = load_release()
+    packaged_release = load_release_for_taxonomy_revision(taxonomy_revision)
     database_exists = Path(db_path).is_file()
     active_release = load_active_release(db_path) if database_exists else None
     release = active_release or packaged_release
@@ -1074,19 +1094,36 @@ class TaxonomyGovernance:
         state_path: Path | None = None,
         knowledge_graph_db_path: Path | None = None,
     ) -> None:
-        self.catalog_path = Path(catalog_path or _CATALOG_PATH)
         self.state_path = Path(
             state_path or get_path_manager().taxonomy_state_path
         )
         self.knowledge_graph_db_path = Path(
             knowledge_graph_db_path or question_bank_db_path()
         )
+        self.catalog_path = Path(catalog_path or _CATALOG_PATH)
         try:
-            catalog_payload = _read_json(self.catalog_path)
+            if catalog_path is not None:
+                catalog_payload = _read_json(self.catalog_path)
+            else:
+                active_release = (
+                    load_active_release(self.knowledge_graph_db_path)
+                    if self.knowledge_graph_db_path.is_file()
+                    else None
+                )
+                catalog_payload = (
+                    load_taxonomy_catalog_for_release(active_release)
+                    if active_release is not None
+                    else _read_json(self.catalog_path)
+                )
             self._catalog = _validate_catalog(
                 catalog_payload, source=self.catalog_path
             )
-        except (OSError, json.JSONDecodeError, TaxonomyValidationError) as exc:
+        except (
+            OSError,
+            ValueError,
+            json.JSONDecodeError,
+            TaxonomyValidationError,
+        ) as exc:
             raise TaxonomyStorageError(
                 f"Controlled taxonomy catalog is unavailable: {self.catalog_path}"
             ) from exc
@@ -1332,7 +1369,8 @@ class TaxonomyGovernance:
             for dimension in ALLOWED_DIMENSIONS
         }
         knowledge_release = _knowledge_release_prompt_contract(
-            self.knowledge_graph_db_path
+            self.knowledge_graph_db_path,
+            taxonomy_revision=int(self._catalog["revision"]),
         )
         return {
             key: self._prompt_contract_from_snapshot(
@@ -1359,6 +1397,14 @@ class TaxonomyGovernance:
         volume_contract = curriculum_volume_contract(
             values.get("curriculum_volume_id")
         )
+        scoped_knowledge_nodes = (
+            eligible_curriculum_knowledge_nodes(volume_contract["id"])
+            if volume_contract is not None
+            else ()
+        )
+        scoped_knowledge_by_id = {
+            str(item["id"]): item for item in scoped_knowledge_nodes
+        }
         question_text = _text(values.get("question_text") or values.get("text"))
         answer_text = _text(values.get("answer_text"))
         question_type = _text(values.get("question_type"))
@@ -1384,7 +1430,7 @@ class TaxonomyGovernance:
         has_query = any(query for query, _weight, _pairs in weighted_queries)
         limits = {
             "curriculum": 8,
-            "knowledge": 32,
+            "knowledge": _KNOWLEDGE_RETRIEVAL_LIMIT,
             "ability": 10,
             "method": 32,
             "thought": 20,
@@ -1489,6 +1535,27 @@ class TaxonomyGovernance:
                     if item[1]["id"] in release_term_ids
                     or item[1].get("origin") == "teacher"
                 ]
+                governed_curriculum_ids = {
+                    term["id"]
+                    for _score, term in eligible
+                    if term.get("origin")
+                    == "xkw_bnu_curriculum_2026_08_05"
+                }
+                if governed_curriculum_ids:
+                    if volume_contract is None:
+                        eligible = [
+                            item
+                            for item in eligible
+                            if item[1].get("origin") == "teacher"
+                        ]
+                    else:
+                        allowed_knowledge_ids = set(scoped_knowledge_by_id)
+                        eligible = [
+                            item
+                            for item in eligible
+                            if item[1]["id"] in allowed_knowledge_ids
+                            or item[1].get("origin") == "teacher"
+                        ]
             elif dimension in {
                 "ability",
                 "method",
@@ -1501,13 +1568,45 @@ class TaxonomyGovernance:
                 eligible = []
             else:
                 eligible = [item for item in ranked if item[0] > 0]
-            selected = [
-                term
-                for _score, term in (
-                    eligible if dimension == "knowledge"
-                    else eligible[: limits[dimension]]
-                )
-            ]
+            if dimension == "knowledge" and scoped_knowledge_by_id:
+                positive = [item for item in eligible if item[0] > 0]
+                base = positive[: limits[dimension]]
+                if not base:
+                    base = [
+                        item
+                        for item in eligible
+                        if int(
+                            scoped_knowledge_by_id.get(
+                                item[1]["id"], {}
+                            ).get("level", 0)
+                        )
+                        == 1
+                    ][: limits[dimension]]
+                term_by_id = {term["id"]: term for _score, term in eligible}
+                selected = []
+                selected_ids: set[str] = set()
+
+                def append_term(term_id: str) -> None:
+                    term = term_by_id.get(term_id)
+                    if term is None or term_id in selected_ids:
+                        return
+                    selected_ids.add(term_id)
+                    selected.append(term)
+
+                for _score, term in base:
+                    append_term(term["id"])
+                    for ancestor_id in curriculum_knowledge_ancestors(
+                        term["id"]
+                    ):
+                        append_term(ancestor_id)
+            else:
+                selected = [
+                    term
+                    for _score, term in (
+                        eligible if dimension == "knowledge"
+                        else eligible[: limits[dimension]]
+                    )
+                ]
             truncated[dimension] = len(eligible) > len(selected)
             if dimension == "knowledge":
                 release_terms = knowledge_release["terms"]
@@ -1523,6 +1622,21 @@ class TaxonomyGovernance:
                                     "usage": "temporary_observation",
                                 },
                             )
+                        ),
+                        **(
+                            {
+                                "volume_id": metadata["volume_id"],
+                                "level": metadata["level"],
+                                "parent_id": metadata["parent_id"],
+                                "label": metadata["label"],
+                            }
+                            if (
+                                metadata := scoped_knowledge_by_id.get(
+                                    term["id"]
+                                )
+                            )
+                            is not None
+                            else {}
                         ),
                     }
                     for term in selected
@@ -1566,7 +1680,10 @@ class TaxonomyGovernance:
                 "special_type": (
                     "特殊题型/考法描述可复用的呈现方式，不等同于选择、填空等基本题型。"
                 ),
-                "knowledge": "只选题目直接考查的概念、性质、定理、公式或运算规则。",
+                "knowledge": (
+                    "知识点只能从教师所选册别及以前册别的教材路径候选中选择；"
+                    "优先选择能够可靠确定的最深节点，不能确定时选择最近的父节点。"
+                ),
                 "method": "只选本题实际使用的具体解题程序或构造办法。",
                 "thought": "只选跨知识主题复用的通用思考策略，不与具体方法混放。",
                 "model": "只选题目满足明确条件的稳定结构，不按图形外观或网络绰号自由命名。",
@@ -2228,7 +2345,8 @@ class TaxonomyGovernance:
         state = self._read_state()
         lifecycle = state["observation_lifecycle"]
         release = _knowledge_release_prompt_contract(
-            self.knowledge_graph_db_path
+            self.knowledge_graph_db_path,
+            taxonomy_revision=int(self._catalog["revision"]),
         )
         refs_by_proposal: dict[str, list[int]] = {}
         for observation in lifecycle["observations"]:

@@ -40,6 +40,27 @@ CATALOG_PATH = (
 )
 
 
+@pytest.fixture(autouse=True)
+def _pin_historical_taxonomy_for_legacy_gateway_tests(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    governance = TaxonomyGovernance(
+        catalog_path=CATALOG_PATH,
+        state_path=tmp_path / "legacy-taxonomy-state.json",
+        knowledge_graph_db_path=tmp_path / "legacy-question-bank.db",
+    )
+    monkeypatch.setattr(
+        ai_tagging_module,
+        "get_taxonomy_governance",
+        lambda: governance,
+    )
+    monkeypatch.setattr(
+        "question_bank.taxonomy.governance.get_taxonomy_governance",
+        lambda: governance,
+    )
+
+
 def _analysis(**overrides) -> TagAnalysis:
     payload = {
         "knowledge_points": ["整式运算"],

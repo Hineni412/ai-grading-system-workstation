@@ -60,17 +60,29 @@ function deferred<T>() {
 
 function curriculum(): CurriculumCatalog {
   return {
-    schema_version: 1,
+    schema_version: 2,
     catalog_id: 'test-catalog',
+    knowledge_standard_id: 'test-standard',
     publisher: '北京师范大学出版社',
     subject: '数学',
     edition: '2024',
+    statistics: {
+      raw_nodes: 1,
+      excluded_nodes: 0,
+      retained_nodes: 1,
+      chapters: 0,
+      sections: 0,
+      knowledge_points: 0,
+    },
     volumes: [{
       id: 'bnu24-math-g7-upper',
+      order: 1,
       label: '七年级数学上册',
       grade: '七年级',
       semester: '上册',
       textbook_version: '北师大版',
+      source: { provider: '组卷网' },
+      statistics: { raw_nodes: 1, excluded_nodes: 0, retained_nodes: 1 },
       chapters: [],
     }],
   }

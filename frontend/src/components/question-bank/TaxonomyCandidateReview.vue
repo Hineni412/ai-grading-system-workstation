@@ -877,7 +877,7 @@ onBeforeUnmount(() => {
                     <input
                       v-model="draftFor(proposal).editedName"
                       type="text"
-                      maxlength="36"
+                      maxlength="160"
                       autocomplete="off"
                       :disabled="store.busyProposalId === proposal.id"
                     >

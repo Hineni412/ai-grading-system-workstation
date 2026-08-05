@@ -75,12 +75,26 @@ def validate_release(
         and _text(term.get("status")) == "approved"
         and _text(term.get("id"))
     }
-    if len(taxonomy_terms) != 294:
+    expected_term_count = _integer(
+        taxonomy_catalog.get("expected_approved_knowledge_count"),
+        294 if catalog_revision == 3 else -1,
+    )
+    if expected_term_count <= 0:
+        _error(
+            issues,
+            "taxonomy_snapshot_size_missing",
+            "$.taxonomy_revision",
+            "taxonomy must declare expected_approved_knowledge_count",
+        )
+    elif len(taxonomy_terms) != expected_term_count:
         _error(
             issues,
             "taxonomy_snapshot_size",
             "$.taxonomy_revision",
-            f"expected 294 approved knowledge terms, found {len(taxonomy_terms)}",
+            (
+                f"expected {expected_term_count} approved knowledge terms, "
+                f"found {len(taxonomy_terms)}"
+            ),
         )
 
     sources = _validate_sources(payload.get("sources"), issues)

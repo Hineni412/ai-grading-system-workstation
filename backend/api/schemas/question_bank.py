@@ -109,8 +109,23 @@ class QuestionPaperPermanentDeleteResponse(_QuestionBankModel):
     storage_cleanup_pending: bool
 
 
+class CurriculumSourceRef(_QuestionBankModel):
+    node_id: str
+    relative_url: str
+
+
+class CurriculumKnowledgePoint(_QuestionBankModel):
+    id: str
+    order: int = Field(ge=1)
+    label: str
+    display_name: str
+    parent_knowledge_id: str
+    source_ref: CurriculumSourceRef
+
+
 class CurriculumSection(_QuestionBankModel):
     id: str
+    knowledge_id: str
     order: int = Field(ge=1)
     number: str | None = None
     title: str
@@ -124,34 +139,57 @@ class CurriculumSection(_QuestionBankModel):
         "reflection",
         "review",
     ]
+    display_name: str
+    source_ref: CurriculumSourceRef
+    knowledge_points: list[CurriculumKnowledgePoint]
 
 
 class CurriculumChapter(_QuestionBankModel):
     id: str
+    knowledge_id: str
     order: int = Field(ge=1)
     number: str | None = None
     title: str
     label: str
     kind: Literal["chapter", "activity"]
+    display_name: str
+    source_ref: CurriculumSourceRef
     exam_scope_values: list[str]
     sections: list[CurriculumSection]
 
 
+class CurriculumVolumeStatistics(_QuestionBankModel):
+    raw_nodes: int = Field(ge=0)
+    excluded_nodes: int = Field(ge=0)
+    retained_nodes: int = Field(ge=0)
+
+
+class CurriculumCatalogStatistics(CurriculumVolumeStatistics):
+    chapters: int = Field(ge=0)
+    sections: int = Field(ge=0)
+    knowledge_points: int = Field(ge=0)
+
+
 class CurriculumVolume(_QuestionBankModel):
     id: str
+    order: int = Field(ge=1)
     label: str
     grade: str
     semester: str
     textbook_version: str
+    source: dict[str, Any]
+    statistics: CurriculumVolumeStatistics
     chapters: list[CurriculumChapter]
 
 
 class CurriculumCatalog(_QuestionBankModel):
-    schema_version: Literal[1]
+    schema_version: Literal[2]
     catalog_id: str
+    knowledge_standard_id: str
     publisher: str
     subject: str
     edition: str
+    statistics: CurriculumCatalogStatistics
     volumes: list[CurriculumVolume]
 
 
@@ -327,7 +365,7 @@ class QuestionTagWriteRequest(_QuestionBankModel):
 
 
 class QuestionTagWriteItem(QuestionTagResponse):
-    tag_value: str = Field(min_length=1, max_length=36)
+    tag_value: str = Field(min_length=1, max_length=160)
     confidence: float | None = Field(default=None, ge=0.0, le=1.0)
 
 
@@ -604,7 +642,7 @@ class TaxonomyProposalListResponse(_QuestionBankModel):
 
 class TaxonomyProposalReviewRequest(_QuestionBankModel):
     decision: Literal["approve", "edit", "merge", "reject"]
-    edited_name: str | None = Field(default=None, min_length=1, max_length=36)
+    edited_name: str | None = Field(default=None, min_length=1, max_length=160)
     target_term_id: str | None = Field(default=None, min_length=1, max_length=100)
     target_term_ids: list[str] = Field(default_factory=list, max_length=12)
     question_ids: list[int] | None = Field(
@@ -767,7 +805,7 @@ class TaxonomySuggestionBatchManualDecision(_QuestionBankModel):
     proposal_id: str
     decision: Literal["merge", "approve", "reject", "defer"]
     target_term_ids: list[str] = Field(default_factory=list, max_length=12)
-    edited_name: str | None = Field(default=None, max_length=36)
+    edited_name: str | None = Field(default=None, max_length=160)
 
 
 class TaxonomySuggestionBatchApplyRequest(_QuestionBankModel):

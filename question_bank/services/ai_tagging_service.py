@@ -1374,9 +1374,10 @@ def _batch_system_prompt(
     You must analyze each question in the batch and return the list of analyses under the "results" key in your JSON response.
     Each analysis object in "results" must include the exact "question_id" that was provided in the input.
     The shared_knowledge_catalog is sent exactly once for the whole batch and
-    is the only knowledge vocabulary for every question. Every batch input also
-    contains its own candidate_contract for curriculum and the other dimensions.
-    Do not borrow those per-question candidates from another question.
+    is the union of this batch's locally retrieved knowledge candidates. Every
+    batch input keeps its own allowed_term_ids.knowledge list; select a shared
+    knowledge entry only when its ID is allowed for the current question. Every
+    other dimension also stays inside the current question's candidate contract.
     """.strip()
 
 
@@ -1396,12 +1397,15 @@ def _batch_shared_contract(
     if len(revisions) > 1:
         raise ValueError("Per-question taxonomy contracts must share one revision")
     first = contracts[0] if contracts else {}
-    first_candidates = first.get("candidates")
-    shared_knowledge_catalog = (
-        list(first_candidates.get("knowledge") or [])
-        if isinstance(first_candidates, Mapping)
-        else []
-    )
+    shared_knowledge_catalog: list[dict[str, Any]] = []
+    seen_knowledge_ids: set[str] = set()
+    for contract in contracts:
+        for item in _contract_candidates(contract, "knowledge"):
+            item_id = str(item.get("id") or "").strip()
+            if not item_id or item_id in seen_knowledge_ids:
+                continue
+            seen_knowledge_ids.add(item_id)
+            shared_knowledge_catalog.append(dict(item))
     return {
         "schema_version": 1,
         "taxonomy_revision": next(iter(revisions), 0),
@@ -1412,8 +1416,9 @@ def _batch_shared_contract(
         "allowed_dimensions": list(first.get("allowed_dimensions", [])),
         "rules": {
             "selection": (
-                "Knowledge uses shared_knowledge_catalog; every other dimension "
-                "uses only the candidate_contract attached to the current question."
+                "Knowledge uses shared_knowledge_catalog intersected with the "
+                "current question's allowed_term_ids.knowledge; every other "
+                "dimension uses only that question's candidate_contract."
             ),
             "unknown": "Return at most 1 knowledge proposal for the current question.",
         },
@@ -1447,13 +1452,19 @@ def _batch_question_contract(
     """Remove the batch-shared knowledge catalog from a per-question payload."""
 
     compact = dict(contract)
-    for field in ("candidates", "allowed_term_ids", "truncated"):
+    for field in ("candidates", "truncated"):
         raw = compact.get(field)
         if not isinstance(raw, Mapping):
             continue
         values = dict(raw)
         values.pop("knowledge", None)
         compact[field] = values
+    raw_allowed = compact.get("allowed_term_ids")
+    if isinstance(raw_allowed, Mapping):
+        compact["allowed_term_ids"] = {
+            dimension: list(values) if isinstance(values, list) else values
+            for dimension, values in raw_allowed.items()
+        }
     return compact
 
 

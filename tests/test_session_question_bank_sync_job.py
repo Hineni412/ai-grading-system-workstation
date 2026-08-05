@@ -41,6 +41,15 @@ from question_bank.training_criteria import (
 )
 
 
+LEGACY_CATALOG_PATH = (
+    Path(__file__).resolve().parents[1]
+    / "question_bank"
+    / "taxonomy"
+    / "catalogs"
+    / "tag_vocabulary_v2.json"
+)
+
+
 def _request_payload(
     *,
     token: str = "a" * 32,
@@ -1482,6 +1491,7 @@ def test_sync_keeps_taxonomy_review_artifact_for_local_retry(
     tmp_path: Path,
 ) -> None:
     governance = TaxonomyGovernance(
+        catalog_path=LEGACY_CATALOG_PATH,
         state_path=tmp_path / "taxonomy-state.json"
     )
     result, gateway, imported_ids, question_bank_db, artifact_path = (
@@ -1496,7 +1506,8 @@ def test_sync_keeps_taxonomy_review_artifact_for_local_retry(
     assert result["outcome"] == "complete", result
     assert result["failed_count"] == 0
     assert result["successful_question_ids"] == imported_ids
-    assert result["tagged_count"] == 1
+    assert result["tagged_count"] == 0
+    assert result["complete_tagged_count"] == 1
     assert result["evidence_count"] == 1
     assert result["review_count"] == 1
     assert result["taxonomy_review_count"] == 1

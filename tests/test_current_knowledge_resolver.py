@@ -14,7 +14,9 @@ from question_bank.current_knowledge import (
 from question_bank.database.schema import initialize_database
 from question_bank.knowledge_graph_release.loader import (
     load_release,
+    load_release_for_taxonomy_revision,
     load_taxonomy_catalog,
+    load_taxonomy_catalog_for_release,
 )
 from question_bank.knowledge_graph_release import activate_release, stage_release
 from question_bank.knowledge_graph_release.contracts import (
@@ -24,8 +26,8 @@ from question_bank.knowledge_graph_release.contracts import (
 
 
 def test_resolver_uses_current_canonical_output_and_expands_all_targets() -> None:
-    release = load_release()
-    catalog = load_taxonomy_catalog()
+    release = load_release_for_taxonomy_revision(3)
+    catalog = load_taxonomy_catalog_for_release(release)
     resolver = CurrentKnowledgeResolver(release, catalog)
     multi = next(
         item
@@ -52,8 +54,8 @@ def test_resolver_uses_current_canonical_output_and_expands_all_targets() -> Non
 
 
 def test_resolver_excludes_non_current_dispositions_and_ambiguous_aliases() -> None:
-    release = load_release()
-    catalog = copy.deepcopy(load_taxonomy_catalog())
+    release = load_release_for_taxonomy_revision(3)
+    catalog = copy.deepcopy(load_taxonomy_catalog_for_release(release))
     excluded = next(
         item
         for item in release.payload["fine_term_dispositions"]
@@ -102,7 +104,7 @@ def test_active_database_loader_is_read_only_and_fails_closed(tmp_path) -> None:
 
     resolver = CurrentKnowledgeResolver.from_active_database(database)
     assert resolver.release_id == release.release_id
-    assert len(resolver.nodes) == 70
+    assert len(resolver.nodes) == 1124
 
 
 def test_internal_startup_installs_only_when_no_active_release(tmp_path) -> None:

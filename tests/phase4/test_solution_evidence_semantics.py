@@ -49,6 +49,20 @@ from question_bank.training_criteria import (
 
 
 VOLUME_ID = "pep-7-up"
+LEGACY_CATALOG_PATH = (
+    Path(__file__).resolve().parents[2]
+    / "question_bank"
+    / "taxonomy"
+    / "catalogs"
+    / "tag_vocabulary_v2.json"
+)
+
+
+def _legacy_governance(state_path: Path) -> TaxonomyGovernance:
+    return TaxonomyGovernance(
+        catalog_path=LEGACY_CATALOG_PATH,
+        state_path=state_path,
+    )
 
 
 class Resolver:
@@ -1263,9 +1277,7 @@ def test_in_memory_unknown_taxonomy_does_not_block_scoring_evidence(
 ) -> None:
     payload = _combined_payload(1, invented_term=True)
     gateway = QueueGateway([payload])
-    governance = TaxonomyGovernance(
-        state_path=tmp_path / "taxonomy-state.json"
-    )
+    governance = _legacy_governance(tmp_path / "taxonomy-state.json")
 
     bundle = InMemoryCombinedQuestionAnalysisModule(
         gateway=gateway,
@@ -1634,9 +1646,7 @@ def test_in_memory_empty_shortlist_uses_full_vocabulary_without_blocking(
         ][0]["fine_term_links"][0]
     ]
     gateway = QueueGateway([payload])
-    governance = TaxonomyGovernance(
-        state_path=tmp_path / "taxonomy-state.json"
-    )
+    governance = _legacy_governance(tmp_path / "taxonomy-state.json")
 
     bundle = InMemoryCombinedQuestionAnalysisModule(
         gateway=gateway,
@@ -1676,9 +1686,7 @@ def test_in_memory_all_unknown_links_keep_sound_scoring_point(
     point["observable_evidence"] = "写出正确的中间式"
     point["equivalent_rules"] = ["中间步骤顺序可以不同"]
     point["counterexamples"] = ["只写结论而没有过程"]
-    governance = TaxonomyGovernance(
-        state_path=tmp_path / "taxonomy-state.json"
-    )
+    governance = _legacy_governance(tmp_path / "taxonomy-state.json")
 
     bundle = InMemoryCombinedQuestionAnalysisModule(
         gateway=QueueGateway([payload]),
@@ -1723,8 +1731,8 @@ def test_in_memory_missing_links_are_review_work_not_scoring_failure(
     bundle = InMemoryCombinedQuestionAnalysisModule(
         gateway=QueueGateway([payload]),
         resolver=Resolver(),
-        taxonomy_governance=TaxonomyGovernance(
-            state_path=tmp_path / "taxonomy-state.json"
+        taxonomy_governance=_legacy_governance(
+            tmp_path / "taxonomy-state.json"
         ),
     ).analyze(
         operation_id="config-source-analysis:missing-taxonomy-links",
@@ -1753,8 +1761,8 @@ def test_in_memory_malformed_tags_do_not_block_sound_scoring_evidence(
     bundle = InMemoryCombinedQuestionAnalysisModule(
         gateway=QueueGateway([payload]),
         resolver=Resolver(),
-        taxonomy_governance=TaxonomyGovernance(
-            state_path=tmp_path / "taxonomy-state.json"
+        taxonomy_governance=_legacy_governance(
+            tmp_path / "taxonomy-state.json"
         ),
     ).analyze(
         operation_id="config-source-analysis:tag-contract-nonblocking",
@@ -1780,8 +1788,8 @@ def test_in_memory_structured_low_quality_tags_stay_visible_for_review(
     bundle = InMemoryCombinedQuestionAnalysisModule(
         gateway=QueueGateway([payload]),
         resolver=Resolver(),
-        taxonomy_governance=TaxonomyGovernance(
-            state_path=tmp_path / "taxonomy-state.json"
+        taxonomy_governance=_legacy_governance(
+            tmp_path / "taxonomy-state.json"
         ),
     ).analyze(
         operation_id="config-source-analysis:tag-quality-review",
@@ -2236,7 +2244,7 @@ def test_evidence_writer_saves_governed_scoring_and_audits_unknown_links(
         build_fine_term_mapping_baseline(),
         actor_ref="system:test-baseline",
     )
-    governance = TaxonomyGovernance(state_path=tmp_path / "taxonomy-state.json")
+    governance = _legacy_governance(tmp_path / "taxonomy-state.json")
     question_id = QuestionService(database).add_question(
         QuestionCreate(
             question_number="1",

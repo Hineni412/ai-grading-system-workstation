@@ -158,41 +158,79 @@ export type CurriculumSectionKind =
   | 'reflection'
   | 'review'
 
+export interface CurriculumSourceRef {
+  node_id: string
+  relative_url: string
+}
+
+export interface CurriculumKnowledgePoint {
+  id: string
+  order: number
+  label: string
+  display_name: string
+  parent_knowledge_id: string
+  source_ref: CurriculumSourceRef
+}
+
 export interface CurriculumSection {
   id: string
+  knowledge_id: string
   order: number
   number: string | null
   title: string
   label: string
   kind: CurriculumSectionKind
+  display_name: string
+  source_ref: CurriculumSourceRef
+  knowledge_points: CurriculumKnowledgePoint[]
 }
 
 export interface CurriculumChapter {
   id: string
+  knowledge_id: string
   order: number
   number: string | null
   title: string
   label: string
   kind: 'chapter' | 'activity'
+  display_name: string
+  source_ref: CurriculumSourceRef
   exam_scope_values: string[]
   sections: CurriculumSection[]
 }
 
+export interface CurriculumVolumeStatistics {
+  raw_nodes: number
+  excluded_nodes: number
+  retained_nodes: number
+}
+
+export interface CurriculumCatalogStatistics extends CurriculumVolumeStatistics {
+  chapters: number
+  sections: number
+  knowledge_points: number
+}
+
 export interface CurriculumVolume {
   id: string
+  order: number
   label: string
   grade: string
   semester: string
   textbook_version: string
+  source: Record<string, unknown>
+  statistics: CurriculumVolumeStatistics
   chapters: CurriculumChapter[]
 }
 
 export interface CurriculumCatalog {
-  schema_version: 1
+  schema_version: 2
   catalog_id: string
+  knowledge_standard_id: string
   publisher: string
   subject: string
   edition: string
+  statistics: CurriculumCatalogStatistics
   volumes: CurriculumVolume[]
 }
 
@@ -852,12 +890,94 @@ const CURRICULUM_SECTION_KINDS = [
   'review',
 ] as const satisfies readonly CurriculumSectionKind[]
 
+function isCurriculumSourceRef(value: unknown): value is CurriculumSourceRef {
+  return (
+    isRecord(value) &&
+    hasExactKeys(value, ['node_id', 'relative_url']) &&
+    typeof value.node_id === 'string' &&
+    value.node_id.trim().length > 0 &&
+    typeof value.relative_url === 'string' &&
+    value.relative_url.trim().length > 0
+  )
+}
+
+function isCurriculumKnowledgePoint(value: unknown): value is CurriculumKnowledgePoint {
+  return (
+    isRecord(value) &&
+    hasExactKeys(value, [
+      'id',
+      'order',
+      'label',
+      'display_name',
+      'parent_knowledge_id',
+      'source_ref',
+    ]) &&
+    typeof value.id === 'string' &&
+    value.id.trim().length > 0 &&
+    isPositiveInteger(value.order) &&
+    typeof value.label === 'string' &&
+    value.label.trim().length > 0 &&
+    typeof value.display_name === 'string' &&
+    value.display_name.trim().length > 0 &&
+    typeof value.parent_knowledge_id === 'string' &&
+    value.parent_knowledge_id.trim().length > 0 &&
+    isCurriculumSourceRef(value.source_ref)
+  )
+}
+
+function isCurriculumVolumeStatistics(
+  value: unknown,
+): value is CurriculumVolumeStatistics {
+  return (
+    isRecord(value) &&
+    hasExactKeys(value, ['raw_nodes', 'excluded_nodes', 'retained_nodes']) &&
+    isNonnegativeInteger(value.raw_nodes) &&
+    isNonnegativeInteger(value.excluded_nodes) &&
+    isNonnegativeInteger(value.retained_nodes)
+  )
+}
+
+function isCurriculumCatalogStatistics(
+  value: unknown,
+): value is CurriculumCatalogStatistics {
+  return (
+    isRecord(value) &&
+    hasExactKeys(value, [
+      'raw_nodes',
+      'excluded_nodes',
+      'retained_nodes',
+      'chapters',
+      'sections',
+      'knowledge_points',
+    ]) &&
+    isNonnegativeInteger(value.raw_nodes) &&
+    isNonnegativeInteger(value.excluded_nodes) &&
+    isNonnegativeInteger(value.retained_nodes) &&
+    isNonnegativeInteger(value.chapters) &&
+    isNonnegativeInteger(value.sections) &&
+    isNonnegativeInteger(value.knowledge_points)
+  )
+}
+
 function isCurriculumSection(value: unknown): value is CurriculumSection {
   return (
     isRecord(value) &&
-    hasExactKeys(value, ['id', 'order', 'number', 'title', 'label', 'kind']) &&
+    hasExactKeys(value, [
+      'id',
+      'knowledge_id',
+      'order',
+      'number',
+      'title',
+      'label',
+      'kind',
+      'display_name',
+      'source_ref',
+      'knowledge_points',
+    ]) &&
     typeof value.id === 'string' &&
     value.id.trim().length > 0 &&
+    typeof value.knowledge_id === 'string' &&
+    value.knowledge_id.trim().length > 0 &&
     isPositiveInteger(value.order) &&
     isNullableString(value.number) &&
     typeof value.title === 'string' &&
@@ -865,7 +985,12 @@ function isCurriculumSection(value: unknown): value is CurriculumSection {
     typeof value.label === 'string' &&
     value.label.trim().length > 0 &&
     typeof value.kind === 'string' &&
-    CURRICULUM_SECTION_KINDS.some((kind) => kind === value.kind)
+    CURRICULUM_SECTION_KINDS.some((kind) => kind === value.kind) &&
+    typeof value.display_name === 'string' &&
+    value.display_name.trim().length > 0 &&
+    isCurriculumSourceRef(value.source_ref) &&
+    Array.isArray(value.knowledge_points) &&
+    value.knowledge_points.every(isCurriculumKnowledgePoint)
   )
 }
 
@@ -874,16 +999,21 @@ function isCurriculumChapter(value: unknown): value is CurriculumChapter {
     isRecord(value) &&
     hasExactKeys(value, [
       'id',
+      'knowledge_id',
       'order',
       'number',
       'title',
       'label',
       'kind',
+      'display_name',
+      'source_ref',
       'exam_scope_values',
       'sections',
     ]) &&
     typeof value.id === 'string' &&
     value.id.trim().length > 0 &&
+    typeof value.knowledge_id === 'string' &&
+    value.knowledge_id.trim().length > 0 &&
     isPositiveInteger(value.order) &&
     isNullableString(value.number) &&
     typeof value.title === 'string' &&
@@ -891,6 +1021,9 @@ function isCurriculumChapter(value: unknown): value is CurriculumChapter {
     typeof value.label === 'string' &&
     value.label.trim().length > 0 &&
     (value.kind === 'chapter' || value.kind === 'activity') &&
+    typeof value.display_name === 'string' &&
+    value.display_name.trim().length > 0 &&
+    isCurriculumSourceRef(value.source_ref) &&
     isStringArray(value.exam_scope_values) &&
     value.exam_scope_values.length > 0 &&
     value.exam_scope_values.every((item) => item.trim().length > 0) &&
@@ -904,14 +1037,18 @@ function isCurriculumVolume(value: unknown): value is CurriculumVolume {
     isRecord(value) &&
     hasExactKeys(value, [
       'id',
+      'order',
       'label',
       'grade',
       'semester',
       'textbook_version',
+      'source',
+      'statistics',
       'chapters',
     ]) &&
     typeof value.id === 'string' &&
     value.id.trim().length > 0 &&
+    isPositiveInteger(value.order) &&
     typeof value.label === 'string' &&
     value.label.trim().length > 0 &&
     typeof value.grade === 'string' &&
@@ -920,6 +1057,8 @@ function isCurriculumVolume(value: unknown): value is CurriculumVolume {
     value.semester.trim().length > 0 &&
     typeof value.textbook_version === 'string' &&
     value.textbook_version.trim().length > 0 &&
+    isRecord(value.source) &&
+    isCurriculumVolumeStatistics(value.statistics) &&
     Array.isArray(value.chapters) &&
     value.chapters.length > 0 &&
     value.chapters.every(isCurriculumChapter)
@@ -932,22 +1071,27 @@ export function decodeCurriculumCatalog(value: unknown): CurriculumCatalog {
     !hasExactKeys(value, [
       'schema_version',
       'catalog_id',
+      'knowledge_standard_id',
       'publisher',
       'subject',
       'edition',
+      'statistics',
       'volumes',
     ]) ||
-    value.schema_version !== 1 ||
+    value.schema_version !== 2 ||
     typeof value.catalog_id !== 'string' ||
     value.catalog_id.trim().length === 0 ||
+    typeof value.knowledge_standard_id !== 'string' ||
+    value.knowledge_standard_id.trim().length === 0 ||
     typeof value.publisher !== 'string' ||
     value.publisher.trim().length === 0 ||
     typeof value.subject !== 'string' ||
     value.subject.trim().length === 0 ||
     typeof value.edition !== 'string' ||
     value.edition.trim().length === 0 ||
+    !isCurriculumCatalogStatistics(value.statistics) ||
     !Array.isArray(value.volumes) ||
-    value.volumes.length !== 4 ||
+    value.volumes.length !== 5 ||
     !value.volumes.every(isCurriculumVolume)
   ) {
     throw new Error('Invalid curriculum catalog')
