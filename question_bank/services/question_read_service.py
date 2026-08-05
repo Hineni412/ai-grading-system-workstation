@@ -1437,7 +1437,16 @@ def _question_filter_parts(
             values,
         )
 
-    return build_question_filter_query(
+    requested_knowledge = tuple(
+        value
+        for value in (
+            *filters.knowledge_points,
+            filters.knowledge_point,
+        )
+        if value
+    )
+    expanded_knowledge = expand("knowledge", requested_knowledge)
+    joins, where, params = build_question_filter_query(
         question_number=filters.question_number,
         keyword=filters.keyword,
         knowledge_point=None,
@@ -1457,17 +1466,7 @@ def _question_filter_parts(
                 ("curriculum_section", filters.curriculum_sections),
                 (
                     "knowledge_point",
-                    expand(
-                        "knowledge",
-                        tuple(
-                            value
-                            for value in (
-                                *filters.knowledge_points,
-                                filters.knowledge_point,
-                            )
-                            if value
-                        ),
-                    ),
+                    expanded_knowledge,
                 ),
                 (
                     "ability",
@@ -1498,6 +1497,9 @@ def _question_filter_parts(
         is_deleted=False,
         tag_status=_TAG_STATUS_MAP[filters.tag_status],
     )
+    if requested_knowledge and not expanded_knowledge:
+        where.append("1 = 0")
+    return joins, where, params
 
 
 def _taxonomy_filter_expansions(

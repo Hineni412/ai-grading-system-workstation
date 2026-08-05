@@ -95,6 +95,6 @@ onMounted(() => {
 .homeroom-setting{display:grid;grid-template-columns:minmax(260px,1fr) minmax(180px,280px) auto;align-items:end;gap:12px;margin:0 0 20px;padding:18px 20px;border:1px solid var(--color-border-default);border-radius:var(--radius-panel);background:var(--color-bg-surface)}
 .homeroom-setting>div{display:grid;gap:5px}.homeroom-setting span,.homeroom-setting p{color:var(--color-text-secondary)}
 .homeroom-setting select,.homeroom-setting button{min-height:42px;padding:0 12px;border:1px solid var(--color-border-default);border-radius:var(--radius-control);background:var(--color-bg-surface);font:inherit}
-.homeroom-setting button{border-color:var(--color-accent);background:var(--color-accent);color:#fff;font-weight:700}.homeroom-setting p{grid-column:1/-1;margin:0}
+.homeroom-setting button{border-color:var(--color-accent);background:var(--color-accent);color:var(--color-bg-surface);font-weight:700}.homeroom-setting p{grid-column:1/-1;margin:0}
 @media(max-width:800px){.homeroom-setting{grid-template-columns:1fr}.homeroom-setting p{grid-column:auto}}
 </style>

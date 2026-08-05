@@ -89,7 +89,7 @@ def test_007_drops_legacy_column_and_preserves_detail_contract(
     report = run_migrations(
         "grading",
         db_path=database,
-        migrations_dir=GRADING_MIGRATIONS,
+        migrations_dir=_migrations_through(tmp_path, 9),
     )
 
     assert report.error is None, report.error

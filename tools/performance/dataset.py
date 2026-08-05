@@ -7,6 +7,7 @@ import tempfile
 from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
+from functools import lru_cache
 from itertools import islice
 from pathlib import Path
 from types import FunctionType
@@ -14,10 +15,23 @@ from types import FunctionType
 from backend.performance.metrics import instrument_sqlite_connection
 from backend.schema_migrations import ensure_schema_current
 from db_manager import DBManager
+from question_bank.current_knowledge import (
+    CurrentKnowledgeResolver,
+    ensure_checked_in_current_standard,
+)
 from question_bank.database.schema import initialize_database
+from question_bank.knowledge_graph_release.loader import (
+    load_release,
+    load_taxonomy_catalog_for_release,
+)
+from question_bank.taxonomy.curriculum_catalog import (
+    eligible_curriculum_knowledge_nodes,
+)
 
 
 _BATCH_SIZE = 1_000
+_BENCHMARK_KNOWLEDGE_TERM_COUNT = 50
+_BENCHMARK_CURRICULUM_VOLUME_ID = "bnu24-math-g9-upper"
 _GENERATED_TIME = "generated-time"
 _SQLITE_CONNECT = sqlite3.connect
 _PNG_BYTES = base64.b64decode(
@@ -227,7 +241,8 @@ class BenchmarkDataset:
     manifest: DatasetManifest
     representative_question_id: int
     representative_task_id: int
-    knowledge_key: str
+    representative_knowledge_term_id: str
+    representative_stable_key: str
 
 
 def build_benchmark_dataset(
@@ -245,6 +260,7 @@ def build_benchmark_dataset(
     with _explicit_path_manager(paths):
         _initialize_grading_database(paths.db_path)
     _initialize_question_bank_database(paths.qb_db_path)
+    ensure_checked_in_current_standard(paths.qb_db_path)
 
     _write_session_rubrics(paths, scale)
     _populate_grading_database(paths.db_path, scale)
@@ -282,8 +298,40 @@ def build_benchmark_dataset(
         manifest=manifest,
         representative_question_id=representative_question_id,
         representative_task_id=representative_task_id,
-        knowledge_key="knowledge_point:knowledge-01",
+        representative_knowledge_term_id=_benchmark_knowledge_term_ids()[0],
+        representative_stable_key=_benchmark_representative_stable_key(),
     )
+
+
+@lru_cache(maxsize=1)
+def _benchmark_knowledge_term_ids() -> tuple[str, ...]:
+    term_ids = tuple(
+        str(node["id"])
+        for node in eligible_curriculum_knowledge_nodes(
+            _BENCHMARK_CURRICULUM_VOLUME_ID
+        )[:_BENCHMARK_KNOWLEDGE_TERM_COUNT]
+    )
+    if len(term_ids) != _BENCHMARK_KNOWLEDGE_TERM_COUNT:
+        raise RuntimeError("bundled benchmark knowledge terms are unavailable")
+    return term_ids
+
+
+@lru_cache(maxsize=1)
+def _benchmark_representative_stable_key() -> str:
+    release = load_release()
+    resolver = CurrentKnowledgeResolver(
+        release,
+        load_taxonomy_catalog_for_release(release),
+    )
+    stable_keys = tuple(
+        dict.fromkeys(
+            match.stable_key
+            for match in resolver.resolve(_benchmark_knowledge_term_ids()[0])
+        )
+    )
+    if len(stable_keys) != 1:
+        raise RuntimeError("benchmark knowledge term has no unique stable key")
+    return stable_keys[0]
 
 
 def _validate_scale(scale: ScaleDefinition) -> None:
@@ -438,12 +486,19 @@ def _populate_grading_database(db_path: Path, scale: ScaleDefinition) -> None:
 
 
 def _write_session_rubrics(paths: BenchmarkPaths, scale: ScaleDefinition) -> None:
+    knowledge_term_ids = _benchmark_knowledge_term_ids()
     questions = [
         {
             "question_id": f"Q{question_index:03d}",
             "max_score": 10.0,
-            "knowledge_id": f"knowledge-{question_index % 50:02d}",
-            "knowledge_ids": [f"knowledge-{question_index % 50:02d}"],
+            "knowledge_id": knowledge_term_ids[
+                (question_index - 1) % len(knowledge_term_ids)
+            ],
+            "knowledge_ids": [
+                knowledge_term_ids[
+                    (question_index - 1) % len(knowledge_term_ids)
+                ]
+            ],
         }
         for question_index in range(1, scale.questions_per_session + 1)
     ]
@@ -500,13 +555,16 @@ def _detail_rows(
     scale: ScaleDefinition,
     result_count: int,
 ) -> Iterator[tuple[object, ...]]:
+    knowledge_term_ids = _benchmark_knowledge_term_ids()
     for detail_id in range(1, scale.grading_details + 1):
         result_id = (((detail_id - 1) // scale.questions_per_session) % result_count) + 1
         session_id = ((result_id - 1) // scale.students) + 1
         student_id = ((result_id - 1) % scale.students) + 1
         question_index = ((detail_id - 1) % scale.questions_per_session) + 1
         question_id = f"Q{question_index:03d}"
-        knowledge_label = f"knowledge-{question_index % 50:02d}"
+        knowledge_label = knowledge_term_ids[
+            (question_index - 1) % len(knowledge_term_ids)
+        ]
         score = float((student_id + session_id + question_index) % 11)
         yield (
             detail_id,
@@ -660,9 +718,15 @@ def _question_bank_paper_rows(
 
 def _question_tag_rows(scale: ScaleDefinition) -> Iterator[tuple[object, ...]]:
     tag_id = 0
+    knowledge_term_ids = _benchmark_knowledge_term_ids()
     for question_index in range(1, scale.question_bank_questions + 1):
         tag_values = (
-            ("knowledge_point", f"knowledge-{question_index % 50:02d}"),
+            (
+                "knowledge_point",
+                knowledge_term_ids[
+                    (question_index - 1) % len(knowledge_term_ids)
+                ],
+            ),
             ("ability", f"generated-ability-{question_index % 10:02d}"),
             ("exam_scope", f"generated-exam-scope-{question_index % 10:02d}"),
             ("student_level", f"generated-student-level-{question_index % 3:02d}"),

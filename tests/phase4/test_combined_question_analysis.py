@@ -1032,7 +1032,9 @@ def test_gateway_keeps_each_questions_candidate_contract_isolated() -> None:
     assert len(examples["q11_process_positive"]["evidence_points"]) == 3
     assert len(examples["q11_process_negative"]["evidence_points"]) == 1
     assert "do_not_return" in examples["q11_process_negative"]
-    assert len(examples["atomic_process_positive"]["evidence_points"]) == 1
+    atomic = examples["atomic_non_process_positive"]
+    assert atomic["response_mode"] == "short_answer_points"
+    assert len(atomic["evidence_points"]) == 1
     objective = examples["objective_positive"]
     assert objective["response_mode"] == "exact_objective"
     assert objective["canonical_answer"] == "B"
@@ -1097,6 +1099,7 @@ def test_gateway_prompt_turns_teacher_retry_into_targeted_repair() -> None:
     assert "fresh dependency namespace" in prompt["rules"]
     assert "full_answer" in prompt["rules"]
     assert "If only one milestone can be confirmed" in prompt["rules"]
+    assert "choose the matching non-process response_mode" in prompt["rules"]
     assert "never invent steps just to satisfy a count" in prompt["rules"]
     assert "Do not infer an exact evidence point count" in prompt["rules"]
 

@@ -337,7 +337,14 @@ def test_training_diagnosis_uses_question_tag_identity(
     assert response.status_code == 200
     payload = response.json()
     assert payload["diagnosis_identity"] == "question_tag"
-    assert payload["scope"] == {"mode": "student", "student_ids": ["12"]}
+    assert payload["scope"]["mode"] == "student"
+    assert payload["scope"]["student_ids"] == ["12"]
+    assert payload["scope"]["matched_student_count"] == 1
+    assert re.fullmatch(r"[0-9a-f]{64}", payload["scope"]["scope_revision"])
+    assert (
+        payload["scope"]["student_score_profiles"]["12"]["score_rate_source"]
+        == "current_exam"
+    )
     assert payload["exam_scope"]["session_ids"] == [14]
     weak = payload["students"][0]["weak_points"][0]
     assert weak["knowledge_point"] == "三角形全等"

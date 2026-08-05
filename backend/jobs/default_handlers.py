@@ -77,6 +77,7 @@ def register_default_job_handlers(
     criterion_backfill_runner: Callable[
         ..., dict[str, object]
     ] = run_criterion_backfill_job,
+    taxonomy_governance: Any | None = None,
     tagging_ai_service_factory: Callable[[], Any] = AITaggingService,
     llm_client_factory: Callable[[], Any] | None = None,
 ) -> None:
@@ -92,9 +93,17 @@ def register_default_job_handlers(
         if upload_config_dir is not None
         else base_data_root / "config" / "uploaded"
     )
-    taxonomy_governance = get_taxonomy_governance()
+    resolved_taxonomy_governance = (
+        taxonomy_governance
+        if taxonomy_governance is not None
+        else get_taxonomy_governance()
+    )
     resolved_tagging_factory = (
-        (lambda: AITaggingService(taxonomy_governance=taxonomy_governance))
+        (
+            lambda: AITaggingService(
+                taxonomy_governance=resolved_taxonomy_governance
+            )
+        )
         if tagging_ai_service_factory is AITaggingService
         else tagging_ai_service_factory
     )
@@ -145,7 +154,7 @@ def register_default_job_handlers(
             config_generation_runner=config_generation_runner,
             llm_client_factory=scan_llm_client_factory,
             tagging_ai_service_factory=resolved_tagging_factory,
-            taxonomy_governance=taxonomy_governance,
+            taxonomy_governance=resolved_taxonomy_governance,
         ),
     )
     manager.register(
@@ -163,7 +172,7 @@ def register_default_job_handlers(
             data_root=base_data_root,
             tagging_sync_runner=tagging_sync_runner,
             ai_service_factory=resolved_tagging_factory,
-            taxonomy_governance=taxonomy_governance,
+            taxonomy_governance=resolved_taxonomy_governance,
         ),
     )
     manager.register(
@@ -182,7 +191,7 @@ def register_default_job_handlers(
             data_root=base_data_root,
             taxonomy_suggestion_runner=taxonomy_suggestion_runner,
             ai_service_factory=resolved_tagging_factory,
-            taxonomy_governance=taxonomy_governance,
+            taxonomy_governance=resolved_taxonomy_governance,
         ),
     )
     manager.register(
@@ -195,7 +204,7 @@ def register_default_job_handlers(
             question_import_runner=question_import_runner,
             tagging_sync_runner=tagging_sync_runner,
             ai_service_factory=resolved_tagging_factory,
-            taxonomy_governance=taxonomy_governance,
+            taxonomy_governance=resolved_taxonomy_governance,
             analysis_artifact_root=resolved_upload_config_dir,
         ),
     )

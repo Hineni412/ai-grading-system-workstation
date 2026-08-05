@@ -25,6 +25,15 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 GRADING_MIGRATIONS = PROJECT_ROOT / "migrations" / "grading"
 
 
+def _migrations_through(tmp_path: Path, maximum_order: int) -> Path:
+    selected = tmp_path / f"migrations-through-{maximum_order:03d}"
+    selected.mkdir()
+    for source in sorted(GRADING_MIGRATIONS.glob("*.sql")):
+        if int(source.name.split("_", 1)[0]) <= maximum_order:
+            shutil.copy2(source, selected / source.name)
+    return selected
+
+
 def test_pytest_default_data_root_is_isolated_from_repository_user_data() -> None:
     from path_manager import get_path_manager
 
@@ -440,11 +449,12 @@ def test_005_rebuild_preserves_legal_rows_and_restores_schema_objects(
 ) -> None:
     database, _ = _bootstrap_through_004(tmp_path)
     _seed_legal_status_rows(database)
+    migrations = _migrations_through(tmp_path, 9)
 
     report = run_migrations(
         "grading",
         db_path=database,
-        migrations_dir=GRADING_MIGRATIONS,
+        migrations_dir=migrations,
     )
 
     assert report.error is None, report.error
@@ -520,7 +530,7 @@ def test_005_rebuild_preserves_legal_rows_and_restores_schema_objects(
     repeated = run_migrations(
         "grading",
         db_path=database,
-        migrations_dir=GRADING_MIGRATIONS,
+        migrations_dir=migrations,
     )
     assert repeated.error is None
     assert repeated.results == []

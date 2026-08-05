@@ -69,7 +69,7 @@ SCENARIO_CONTRACTS = (
         "/api/question-bank/questions",
         "/api/question-bank/questions",
         (
-            ("knowledge_point", "knowledge-01"),
+            ("knowledge_point", "kp_bnu24_math_g7_upper_1"),
             ("tag_status", "tagged"),
             ("sort", "difficulty"),
             ("page_size", "100"),
@@ -166,7 +166,7 @@ SCENARIO_CONTRACTS = (
         (),
         {
             **TRAINING_BODY,
-            "stable_key": "kp_alg_linear_equation",
+            "stable_key": "kp_bnu24_math_g7_upper_1",
             "page": 1,
             "page_size": 100,
         },
@@ -316,8 +316,29 @@ def test_each_scenario_has_the_exact_request_and_counter_contract(
     assert scenario.method == method
     assert scenario.route_template == route_template
     assert request.path == path
-    assert request.params == params
-    assert request.json_body == json_body
+    expected_params = (
+        tuple(
+            (
+                key,
+                micro_dataset.representative_knowledge_term_id
+                if key == "knowledge_point"
+                else value,
+            )
+            for key, value in params
+        )
+        if name == "question_bank.questions.filtered"
+        else params
+    )
+    assert request.params == expected_params
+    expected_json_body = (
+        {
+            **json_body,
+            "stable_key": micro_dataset.representative_stable_key,
+        }
+        if name == "graph.evidence" and json_body is not None
+        else json_body
+    )
+    assert request.json_body == expected_json_body
     assert scenario.count_records(response) == expected_records
 
 
@@ -330,7 +351,7 @@ def test_scenario_requests_use_only_deterministic_allowlisted_inputs(
         micro_dataset
     )
     assert dict(filtered.params) == {
-        "knowledge_point": "knowledge-01",
+        "knowledge_point": micro_dataset.representative_knowledge_term_id,
         "tag_status": "tagged",
         "sort": "difficulty",
         "page_size": "100",
@@ -339,8 +360,7 @@ def test_scenario_requests_use_only_deterministic_allowlisted_inputs(
     for name in (
         "training.diagnosis",
         "training.plan.preview",
-        "graph.profiles",
-        "graph.rows",
+        "graph.query",
         "graph.evidence",
     ):
         request = by_name[name].build_request(micro_dataset)
@@ -352,7 +372,7 @@ def test_scenario_requests_use_only_deterministic_allowlisted_inputs(
     assert evidence.json_body == {
         "scope": SCOPE,
         "exam_scope": EXAM_SCOPE,
-        "knowledge_key": micro_dataset.knowledge_key,
+        "stable_key": micro_dataset.representative_stable_key,
         "page": 1,
         "page_size": 100,
     }
@@ -368,6 +388,7 @@ def test_runner_overrides_only_the_brief_allowlist(micro_dataset) -> None:
         get_question_bank_read_service,
         get_training_task_service,
     )
+    from backend.api.routers.graph import get_current_graph_query_service
     from path_manager import get_path_manager
 
     app = runner_module._build_app(micro_dataset, InMemoryPerformanceSink())
@@ -378,6 +399,7 @@ def test_runner_overrides_only_the_brief_allowlist(micro_dataset) -> None:
         get_diagnosis_profile_service,
         get_practice_plan_service,
         get_training_task_service,
+        get_current_graph_query_service,
     }
     assert get_graph_diagnosis_profile_service not in app.dependency_overrides
     assert get_ops_self_check_service not in app.dependency_overrides

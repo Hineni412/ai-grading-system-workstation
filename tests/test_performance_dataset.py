@@ -119,8 +119,8 @@ def _assert_generated_content(dataset: BenchmarkDataset) -> None:
         for name, rubric, answer in sessions
     )
     assert all(
-        str(json.loads(knowledge_ids)[0]).startswith("knowledge-")
-        and knowledge_ids.startswith('["knowledge-')
+        str(json.loads(knowledge_ids)[0]).startswith("kp_bnu24_math_")
+        and knowledge_ids.startswith('["kp_bnu24_math_')
         for (knowledge_ids,) in details
     )
 
@@ -167,7 +167,10 @@ def _assert_generated_content(dataset: BenchmarkDataset) -> None:
         }
         for question_tags in grouped_tags.values()
     )
-    assert grouped_tags[1]["knowledge_point"] == "knowledge-01"
+    assert (
+        grouped_tags[1]["knowledge_point"]
+        == dataset.representative_knowledge_term_id
+    )
     assert all(code.startswith("GEN-") and creator.startswith("generated-") for code, creator in tasks)
 
 
@@ -224,7 +227,11 @@ def test_micro_dataset_is_deterministic_valid_and_confined_to_temp_roots(
     assert first.manifest == second.manifest
     assert first.representative_question_id == second.representative_question_id
     assert first.representative_task_id == second.representative_task_id
-    assert first.knowledge_key == second.knowledge_key
+    assert (
+        first.representative_knowledge_term_id
+        == second.representative_knowledge_term_id
+    )
+    assert first.representative_stable_key == second.representative_stable_key
 
     expected_counts = dict(first.manifest.table_counts)
     grading_tables = (
@@ -267,7 +274,7 @@ def test_micro_dataset_is_deterministic_valid_and_confined_to_temp_roots(
         papers = read_service.list_papers()
         filtered = read_service.list_questions(
             QuestionReadFilters(
-                knowledge_point="knowledge-01",
+                knowledge_point=dataset.representative_knowledge_term_id,
                 tag_status="tagged",
                 sort="difficulty",
                 page_size=100,

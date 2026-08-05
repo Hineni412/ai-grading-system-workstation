@@ -350,6 +350,39 @@ def test_legacy_knowledge_value_filters_and_facets_as_current_canonical_term(
     assert "一次函数的实际应用" not in knowledge_facets
 
 
+def test_unknown_knowledge_filter_returns_no_questions(
+    question_bank_fixture,
+) -> None:
+    service, db_path, _ = question_bank_fixture
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO question_tags (question_id, tag_type, tag_value)
+            VALUES (1, 'knowledge_point', '一次函数的实际应用')
+            """
+        )
+        conn.commit()
+    client = _question_bank_client(service)
+
+    response = client.get(
+        "/api/question-bank/questions",
+        params=[("knowledge_points", "不存在的知识点")],
+    )
+    mixed = client.get(
+        "/api/question-bank/questions",
+        params=[
+            ("knowledge_points", "一次函数应用"),
+            ("knowledge_points", "不存在的知识点"),
+        ],
+    )
+
+    assert response.status_code == 200
+    assert response.json()["total"] == 0
+    assert response.json()["items"] == []
+    assert mixed.status_code == 200
+    assert [item["id"] for item in mixed.json()["items"]] == [1]
+
+
 def test_legacy_method_thought_projects_to_thought_display_filter_and_facet(
     question_bank_fixture,
 ) -> None:

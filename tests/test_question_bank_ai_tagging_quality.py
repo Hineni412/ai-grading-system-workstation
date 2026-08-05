@@ -347,7 +347,7 @@ def test_tagging_schema_limits_controlled_fields_to_contract_candidates() -> Non
     assert single["proposed_tags"]["maxItems"] == 1
 
 
-def test_full_governed_knowledge_catalog_accepts_non_recalled_standard_term(
+def test_governed_knowledge_catalog_accepts_standard_term(
     tmp_path: Path,
 ) -> None:
     governance = TaxonomyGovernance(
@@ -370,7 +370,8 @@ def test_full_governed_knowledge_catalog_accepts_non_recalled_standard_term(
     )
 
     assert "controlled_field_violation:knowledge_points" not in result.quality_notes
-    assert any("完整词表归并" in note for note in result.quality_notes)
+    assert result.analysis is not None
+    assert result.analysis.knowledge_points == ["轴对称的性质"]
 
 
 def test_tagging_schema_preserves_multiple_textbook_chapters() -> None:

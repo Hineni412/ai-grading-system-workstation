@@ -94,7 +94,7 @@ function handoffCompleted(conversationId: string): void {
 </template>
 
 <style scoped>
-.class-teacher-r7{min-height:100%;padding:18px clamp(12px,2.2vw,30px) 34px;background:linear-gradient(180deg,#edf2ef 0,#f6f7f5 220px)}
+.class-teacher-r7{min-height:100%;padding:18px clamp(12px,2.2vw,30px) 34px;background:linear-gradient(180deg,var(--color-teacher-subtle) 0,var(--color-bg-subtle) 220px)}
 .class-teacher-r7 :deep(.surface-tabs){margin:-18px calc(clamp(12px,2.2vw,30px) * -1) 18px}
 @media(max-width:640px){.class-teacher-r7{padding-inline:10px}}
 </style>

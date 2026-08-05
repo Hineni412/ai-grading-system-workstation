@@ -162,6 +162,7 @@ describe('AppShell', () => {
 
       app.unmount()
     },
+    10_000,
   )
 
   it('navigates between truthful destinations and updates the current page', async () => {

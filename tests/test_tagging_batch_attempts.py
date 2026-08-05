@@ -190,7 +190,8 @@ def test_batch_gateway_retry_does_not_multiply_logical_request_events(
     )
 
     assert provider_calls == 2
-    assert results[1].quality_status == "complete"
+    assert results[1].ok is True
+    assert results[1].error is None
     assert [(event.request_number, event.phase) for event in events] == [
         (1, "started"),
         (1, "succeeded"),

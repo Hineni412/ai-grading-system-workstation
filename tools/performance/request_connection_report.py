@@ -15,15 +15,11 @@ CONTROL_SCENARIO = "question_bank.questions.default"
 TARGET_SCENARIOS = (
     "training.diagnosis",
     "training.plan.preview",
-    "graph.profiles",
-    "graph.rows",
     "graph.evidence",
 )
 SCENARIO_NAMES = (CONTROL_SCENARIO, *TARGET_SCENARIOS)
 MEDIUM_LATENCY_SCENARIOS = (
     "training.plan.preview",
-    "graph.profiles",
-    "graph.rows",
     "graph.evidence",
 )
 

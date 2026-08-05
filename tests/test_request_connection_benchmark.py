@@ -435,7 +435,7 @@ def test_cli_supports_direct_script_execution() -> None:
     assert "--baseline" in completed.stdout
 
 
-def test_committed_baseline_loader_selects_only_six_allowlisted_scenarios() -> None:
+def test_committed_baseline_loader_selects_only_active_comparable_scenarios() -> None:
     repository_root = Path(__file__).resolve().parents[1]
     baseline = load_baseline_report(
         repository_root / "docs/performance/p1-26-api-db-baseline.json",
@@ -447,7 +447,7 @@ def test_committed_baseline_loader_selects_only_six_allowlisted_scenarios() -> N
     assert baseline.code_sha == "6bb53c338d23e530ed2890afbdecce0ae6ac9fb9"
     assert baseline.seed == 126
     assert baseline.repeatability == "passed"
-    assert len(baseline.measurements) == 3 * 2 * 6
+    assert len(baseline.measurements) == 3 * 2 * len(SCENARIO_NAMES)
     assert {item.scenario for item in baseline.measurements} == set(SCENARIO_NAMES)
     assert all(item.status_code == 200 and item.sample_count == 20 for item in baseline.measurements)
     assert "private" not in repr(baseline).casefold()
@@ -462,7 +462,7 @@ def test_baseline_loader_ignores_non_allowlisted_fields_and_rejects_bad_repeatab
         scenarios=SCENARIO_NAMES,
     )
 
-    assert len(baseline.measurements) == 24
+    assert len(baseline.measurements) == 2 * 2 * len(SCENARIO_NAMES)
     assert "private" not in repr(baseline).casefold()
     assert "select private" not in repr(baseline).casefold()
 
@@ -546,7 +546,7 @@ def test_report_compares_aggregates_and_emits_explicit_passing_gates(tmp_path: P
     }
     assert payload["package"] == "P1-27"
     assert payload["overall_gate"] == "passed"
-    assert len(payload["comparisons"]) == 2 * 2 * 6
+    assert len(payload["comparisons"]) == 2 * 2 * len(SCENARIO_NAMES)
     assert all(item["status"]["before"] == item["status"]["after"] == 200 for item in payload["comparisons"])
     assert all(item["response_records"]["equal"] for item in payload["comparisons"])
     assert all(gate["passed"] for gate in payload["gates"])
@@ -637,7 +637,7 @@ def test_required_statement_latency_status_and_record_gates_block_publication(
         )
 
     scenarios = list(passing.repetitions[0].scenarios)
-    graph_index = SCENARIO_NAMES.index("graph.rows")
+    graph_index = SCENARIO_NAMES.index("graph.evidence")
     scenarios[graph_index] = replace(
         scenarios[graph_index],
         latency_ms=TimingSummary(80.0, 90.0, 100.0, 110.0),
@@ -739,13 +739,14 @@ def test_equal_zero_response_records_block_publication_with_explicit_gate(
     equality_gate = next(
         gate for gate in report.gates if gate.name == "response_record_equality"
     )
-    assert equality_gate.required_count == equality_gate.passed_count == 12
+    expected_count = 2 * len(SCENARIO_NAMES)
+    assert equality_gate.required_count == equality_gate.passed_count == expected_count
     with pytest.raises(ComparisonGateError, match="nonzero_response_records"):
         ensure_report_passes(report)
     nonzero_gate = next(
         gate for gate in report.gates if gate.name == "nonzero_response_records"
     )
-    assert nonzero_gate.required_count == 12
+    assert nonzero_gate.required_count == expected_count
     assert nonzero_gate.passed_count == 0
     assert nonzero_gate.passed is False
 
@@ -796,7 +797,10 @@ def test_zero_minimum_response_sample_is_preserved_and_blocks_publication(
     nonzero_gate = next(
         gate for gate in report.gates if gate.name == "nonzero_response_records"
     )
-    assert (nonzero_gate.required_count, nonzero_gate.passed_count) == (12, 0)
+    assert (
+        nonzero_gate.required_count,
+        nonzero_gate.passed_count,
+    ) == (2 * len(SCENARIO_NAMES), 0)
     payload = json.loads(render_json(report))
     assert payload["comparisons"][0]["response_records"] == {
         "before": {"minimum": 0.0, "median": 1.0, "maximum": 1.0},
@@ -823,15 +827,19 @@ def test_unavailable_nonzero_sample_gate_is_not_reported_as_passed(
     unavailable_gate = next(
         gate for gate in payload["gates"] if gate["name"] == "nonzero_response_records"
     )
+    expected_count = 2 * 2 * len(SCENARIO_NAMES)
     assert unavailable_gate == {
         "name": "nonzero_response_records",
-        "required_count": 24,
+        "required_count": expected_count,
         "passed_count": None,
         "passed": None,
         "result": "not_evaluated",
     }
     markdown = render_markdown(diagnostic)
-    assert "| non-zero response records | 24 | unavailable | not_evaluated |" in markdown
+    assert (
+        f"| non-zero response records | {expected_count} | unavailable | "
+        "not_evaluated |"
+    ) in markdown
     assert "overall gate: `quick_diagnostic`" in markdown
 
 

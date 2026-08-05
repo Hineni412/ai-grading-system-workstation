@@ -57,6 +57,7 @@ def test_question_tag_projection_uses_exact_knowledge_identity() -> None:
                     "score_awarded": 0.0,
                     "full_score": 0.0,
                     "score_rate": None,
+                    "source_kind": "current_exam",
                 }
             ],
             "tag_context": {"method": ["构造辅助线"]},
@@ -191,6 +192,7 @@ def test_tag_graph_evidence_is_deduplicated_sorted_and_path_free() -> None:
         "score_awarded": 5.0,
         "full_score": 10.0,
         "score_rate": 0.5,
+        "source_kind": "current_exam",
         "tag_context": {"method": ["构造辅助线"]},
         "actionable_reasons": ["辅助线缺失"],
         "error_counts": {
@@ -213,6 +215,7 @@ def test_tag_graph_rows_explicitly_drop_unapproved_reference_fields() -> None:
             "score_awarded": 5.0,
             "full_score": 10.0,
             "score_rate": 0.5,
+            "source_kind": "current_exam",
         },
         {
             "session_id": 14,
@@ -222,6 +225,7 @@ def test_tag_graph_rows_explicitly_drop_unapproved_reference_fields() -> None:
             "score_awarded": 5.0,
             "full_score": 10.0,
             "score_rate": 0.5,
+            "source_kind": "current_exam",
         },
     ]
     assert "front_image" not in repr(rows)
