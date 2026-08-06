@@ -25,6 +25,15 @@ from .crypto import canonical_json
 from .model_approval import ModelDestinationChanged, ModelDispatchDisabled
 
 
+_DOUBAO_AUDIO_MODELS = frozenset(
+    {
+        "doubao-seed-2-0-lite-260428",
+        "doubao-seed-2-0-mini-260428",
+    }
+)
+_DOUBAO_ARK_HOST = "ark.cn-beijing.volces.com"
+
+
 class _ProfileStore(Protocol):
     def load(self) -> list[dict[str, Any]]: ...
 
@@ -75,6 +84,40 @@ class ActiveProfileApprovedModelGateway:
         except ModelDispatchDisabled:
             return _destination_snapshot(None)
         return _destination_snapshot(resolved)
+
+    def audio_input_capabilities(self) -> dict[str, object]:
+        """Report only explicitly documented Doubao audio combinations."""
+
+        try:
+            resolved = self._resolve()
+        except ModelDispatchDisabled:
+            empty = _destination_snapshot(None)
+            return {
+                "available": False,
+                "status": "profile_missing",
+                "provider": "volcengine_ark",
+                "model": None,
+                "destination_fingerprint": empty["destination_fingerprint"],
+            }
+        return self._audio_capability_for(resolved)
+
+    @staticmethod
+    def _audio_capability_for(resolved: _ResolvedModel) -> dict[str, object]:
+        snapshot = _destination_snapshot(resolved)
+        host = (urlsplit(resolved.base_url).hostname or "").casefold()
+        if host != _DOUBAO_ARK_HOST:
+            status = "endpoint_unsupported"
+        elif resolved.model.casefold() not in _DOUBAO_AUDIO_MODELS:
+            status = "model_unsupported"
+        else:
+            status = "ready"
+        return {
+            "available": status == "ready",
+            "status": status,
+            "provider": "volcengine_ark",
+            "model": resolved.model,
+            "destination_fingerprint": snapshot["destination_fingerprint"],
+        }
 
     def invoke(
         self,
@@ -188,6 +231,58 @@ class ActiveProfileApprovedModelGateway:
             )
         finally:
             count = max(1, int(getattr(gateway, "physical_request_count", 0) or 0))
+            with self._request_counts_lock:
+                self._request_counts[operation_id] = count
+        return _response_text(response)
+
+    def invoke_workspace_audio(
+        self,
+        *,
+        messages: tuple[dict[str, object], ...],
+        operation_id: str,
+        expected_destination_fingerprint: str,
+    ) -> str:
+        """Send one in-memory WAV to verified Doubao audio input, without retry."""
+
+        resolved = self._resolve()
+        capability = self._audio_capability_for(resolved)
+        if not capability["available"]:
+            raise ModelDispatchDisabled(
+                "active model does not support class-teacher audio input"
+            )
+        if capability["destination_fingerprint"] != expected_destination_fingerprint:
+            raise ModelDestinationChanged(
+                "model destination changed before audio dispatch"
+            )
+        gateway = self.gateway_factory(
+            context=self.context,
+            profile=resolved.policy_profile,
+            config_key=gateway_config_key(resolved.api_key, resolved.base_url),
+            metadata_only=True,
+            claim_operations=True,
+            allow_retry=False,
+        )
+        client = self.client_factory(resolved.api_key, resolved.base_url)
+        try:
+            response = gateway.chat_completions(
+                request=WorkspaceModelRequest(
+                    purpose="class_teacher_audio_intake",
+                    data_classification="restricted_audio",
+                    operation_id=operation_id,
+                ),
+                client=client,
+                model=resolved.model,
+                kwargs={
+                    "messages": list(messages),
+                    "response_format": {"type": "json_object"},
+                },
+                timeout_override_seconds=110,
+            )
+        finally:
+            count = max(
+                0,
+                int(getattr(gateway, "physical_request_count", 0) or 0),
+            )
             with self._request_counts_lock:
                 self._request_counts[operation_id] = count
         return _response_text(response)

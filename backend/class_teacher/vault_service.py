@@ -203,6 +203,7 @@ class VaultService:
         from .quick_inbox_service import QuickInboxService
         from .assessment_evidence_service import AssessmentEvidenceService
         from .attention_service import AttentionService
+        from .local_speech import LocalSpeechTranscriber
 
         self.actions = ActionLedgerService(
             self.database,
@@ -272,6 +273,9 @@ class VaultService:
             self.session_key,
             self.evidence,
             self.actions,
+        )
+        self.local_speech = LocalSpeechTranscriber(
+            Path(context.paths.project_root),
         )
         from .student_academic_analysis import StudentAcademicAnalysis
 

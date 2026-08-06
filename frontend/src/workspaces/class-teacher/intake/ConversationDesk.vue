@@ -6,6 +6,7 @@ import { intakeApi, type HandlingMode, type HomeroomPreference, type IntakeConve
 import { workApi, type WorkNode } from '../api/work'
 import { workspaceAITaskApi } from '../../shared/ai-tasks/api'
 import { useWorkspaceAITaskStore } from '../../shared/ai-tasks/store'
+import LocalVoiceInputButton from './LocalVoiceInputButton.vue'
 
 const props = defineProps<{ conversationId?: string | null; focusWorkItemId?: string | null }>()
 const emit = defineEmits<{
@@ -24,6 +25,8 @@ const busy = ref(false)
 const notice = ref('')
 const error = ref('')
 const composer = ref<HTMLTextAreaElement | null>(null)
+const voiceBusy = ref(false)
+const maxMessageChars = 4000
 let pollTimer: number | null = null
 let pollGeneration = 0
 
@@ -119,6 +122,7 @@ async function loadConversation(id: string): Promise<void> {
 }
 
 async function start(): Promise<void> {
+  if (voiceBusy.value) return
   stopPolling()
   busy.value = true; error.value = ''; notice.value = ''
   try {
@@ -132,7 +136,12 @@ async function start(): Promise<void> {
 }
 
 async function send(): Promise<void> {
-  if (!conversation.value || !message.value.trim() || busy.value || taskInFlight.value) return
+  if (!conversation.value || !message.value.trim() || busy.value || taskInFlight.value || voiceBusy.value) return
+  if (message.value.length > maxMessageChars) {
+    notice.value = ''
+    error.value = '现有文字加上语音转写超过 4000 字，请先删减后再发送；已回填内容不会丢失。'
+    return
+  }
   const outgoing = message.value.trim()
   busy.value = true; error.value = ''; notice.value = '正在整理；离开页面后仍可从最近会话返回。'
   try {
@@ -145,6 +154,67 @@ async function send(): Promise<void> {
     await loadRecent()
   } catch { error.value = errorText() }
   finally { busy.value = false }
+}
+
+async function applyVoiceTranscript(text: string): Promise<void> {
+  const current = message.value.trimEnd()
+  message.value = current ? `${current}\n${text}` : text
+  error.value = ''
+  await nextTick()
+  if (message.value.length > maxMessageChars) {
+    notice.value = ''
+    error.value = '现有文字加上语音转写超过 4000 字，请先删减后再发送；已回填内容不会丢失。'
+  }
+  composer.value?.focus()
+}
+
+function voiceInfo(value: string): void {
+  error.value = ''
+  notice.value = value
+}
+
+function voiceError(value: string): void {
+  notice.value = ''
+  error.value = value
+}
+
+function cloudVoiceError(value: unknown): string {
+  const code = value && typeof value === 'object' && 'code' in value
+    ? String((value as { code: unknown }).code)
+    : ''
+  if (code === 'class_teacher_cloud_audio_result_unknown') {
+    return '这次语音可能已经发给模型，但没有收到可靠结果。系统不会重复发送；录音仍可改为本机文字。'
+  }
+  if (code === 'class_teacher_model_destination_changed') {
+    return '模型配置已经变化，因此录音没有发送。录音仍可改为本机文字。'
+  }
+  if (code === 'class_teacher_cloud_audio_unavailable') {
+    return '当前模型不能直接接收语音。录音仍可改为本机文字。'
+  }
+  if (code === 'class_teacher_cloud_audio_invalid_result') {
+    return '模型没有返回可用的转写和草稿。录音仍可改为本机文字。'
+  }
+  return '这次语音发送没有完成，系统不会重复发送。录音仍可改为本机文字。'
+}
+
+async function submitCloudAudio(wav: Blob, operationId: string, fingerprint: string, signal: AbortSignal): Promise<boolean> {
+  if (!conversation.value || busy.value || taskInFlight.value) return false
+  error.value = ''
+  notice.value = '正在把录音交给模型整理；系统不会自动重试。'
+  try {
+    const next = await intakeApi.sendCloudAudio(conversation.value, wav, operationId, fingerprint, signal)
+    conversation.value = next
+    notice.value = next.state === 'needs_input'
+      ? '语音已转写，AI 还需要补充少量信息；请先核对原话，再继续回复。'
+      : '语音已转写并形成草稿，请先核对姓名、日期、数字和否定词，再决定是否保存。'
+    maybeOpenSingleHandoff(next)
+    await loadRecent()
+    return true
+  } catch (value) {
+    notice.value = ''
+    error.value = cloudVoiceError(value)
+    return false
+  }
 }
 
 async function manual(mode: HandlingMode): Promise<void> {
@@ -178,7 +248,7 @@ function dueLabel(value: string | null): string {
 }
 
 async function changeHomeroom(): Promise<void> {
-  if (!preference.value || busy.value) return
+  if (!preference.value || busy.value || voiceBusy.value) return
   busy.value = true; error.value = ''
   try {
     preference.value = await intakeApi.setHomeroom(preference.value, selectedClass.value || null)
@@ -216,8 +286,8 @@ onMounted(async () => {
     <header class="desk__masthead">
       <div><p>班主任案头</p><h1 id="desk-title">先把事情说清楚，再决定怎么处理</h1></div>
       <div class="desk__tools">
-        <label><span>我的班主任班级</span><select v-model="selectedClass" :disabled="busy" @change="changeHomeroom"><option value="">尚未选择</option><option v-for="item in preference?.classes ?? []" :key="item" :value="item">{{ item }}</option></select></label>
-        <button type="button" :disabled="busy" @click="start">新对话</button>
+        <label><span>我的班主任班级</span><select v-model="selectedClass" :disabled="busy || voiceBusy" @change="changeHomeroom"><option value="">尚未选择</option><option v-for="item in preference?.classes ?? []" :key="item" :value="item">{{ item }}</option></select></label>
+        <button type="button" :disabled="busy || voiceBusy" @click="start">新对话</button>
       </div>
     </header>
 
@@ -255,14 +325,20 @@ onMounted(async () => {
         <form class="composer" @submit.prevent="send">
           <label for="class-teacher-message">继续说明或补充</label>
           <textarea id="class-teacher-message" ref="composer" v-model="message" rows="3" maxlength="4000" :disabled="taskInFlight" placeholder="例如：月底提醒我复查；已确认双方目前都安全"></textarea>
-          <div><small>{{ taskInFlight ? '上一轮正在整理；结果返回后可继续补充。' : '发送后直接进入已配置模型任务，无需额外预览确认。' }}</small><button type="submit" :disabled="busy || taskInFlight || !message.trim()">{{ busy || taskInFlight ? '处理中…' : '发送并整理' }}</button></div>
+          <div class="composer__actions">
+            <small>{{ taskInFlight ? '上一轮正在整理；结果返回后可继续补充。' : '发送后直接进入已配置模型任务，无需额外预览确认。' }}</small>
+            <div class="composer__buttons">
+              <LocalVoiceInputButton :disabled="busy || taskInFlight" :context-key="conversation?.conversation_id" :submit-cloud-audio="submitCloudAudio" @transcript="applyVoiceTranscript" @info="voiceInfo" @error="voiceError" @busy-changed="voiceBusy = $event" />
+              <button type="submit" :disabled="busy || taskInFlight || voiceBusy || !message.trim() || message.length > maxMessageChars">{{ busy || taskInFlight ? '处理中…' : '发送并整理' }}</button>
+            </div>
+          </div>
         </form>
       </article>
 
       <aside class="side-notes" aria-label="今日与近期事项">
         <section class="near-work"><header><span>今日与接下来</span></header><button v-for="item in nearWork" :key="item.node_id" type="button" @click="emit('openCalendar')"><strong>{{ item.title }}</strong><small>{{ dueLabel(item.due_date) }}</small></button><p v-if="!nearWork.length">当前没有需要提醒的日历节点。</p></section>
         <section><header><span>待核对</span><strong>{{ pendingHandoffs.length }}</strong></header><p>{{ pendingHandoffs.length ? '草稿只有在你确认后才会成为正式记录。' : '当前没有等待确认的交接草稿。' }}</p></section>
-        <section class="recent"><header><span>最近会话</span></header><button v-for="item in recent.slice(0,6)" :key="item.conversation_id" type="button" @click="loadConversation(item.conversation_id)"><strong>{{ item.first_message || '尚未发送内容' }}</strong><small>{{ item.pending_count ? `${item.pending_count} 项待处理` : '暂无待处理草稿' }}</small></button><p v-if="!recent.length">开始第一段对话后，会在这里保留入口。</p></section>
+        <section class="recent"><header><span>最近会话</span></header><button v-for="item in recent.slice(0,6)" :key="item.conversation_id" type="button" :disabled="voiceBusy" @click="loadConversation(item.conversation_id)"><strong>{{ item.first_message || '尚未发送内容' }}</strong><small>{{ item.pending_count ? `${item.pending_count} 项待处理` : '暂无待处理草稿' }}</small></button><p v-if="!recent.length">开始第一段对话后，会在这里保留入口。</p></section>
       </aside>
     </div>
 
@@ -274,4 +350,5 @@ onMounted(async () => {
 
 <style scoped>
 .desk{--ink:var(--color-text-primary);--paper:var(--color-bg-subtle);--teal:var(--color-accent);--teal-soft:var(--color-accent-subtle);--amber:var(--color-warning);--red:var(--color-danger);color:var(--ink)}.desk__masthead{display:flex;align-items:end;justify-content:space-between;gap:24px;padding:22px 26px;border:1px solid var(--color-border-default);border-bottom:3px solid var(--teal);border-radius:18px 18px 0 0;background:linear-gradient(105deg,var(--color-teacher-subtle),var(--paper) 60%)}.desk__masthead p{margin:0 0 4px;color:var(--teal);font-size:12px;font-weight:800;letter-spacing:.12em}.desk__masthead h1{max-width:720px;margin:0;font-family:"Microsoft YaHei UI","Noto Sans CJK SC",sans-serif;font-size:clamp(24px,3vw,38px);font-weight:760;letter-spacing:-.03em}.desk__tools{display:flex;align-items:end;gap:10px}.desk__tools label{display:grid;gap:5px;font-size:12px;font-weight:700}.desk__tools select,.desk__tools button{min-height:40px;padding:0 12px;border:1px solid var(--color-border-default);border-radius:10px;background:var(--color-bg-surface);font:inherit}.desk__body{display:grid;grid-template-columns:minmax(0,1.75fr) minmax(260px,.72fr);border-right:1px solid var(--color-border-default);border-left:1px solid var(--color-border-default);background:var(--paper)}.conversation{min-width:0;padding:24px 26px;border-right:1px solid var(--color-border-default);background:repeating-linear-gradient(to bottom,transparent 0,transparent 37px,color-mix(in srgb,var(--color-accent) 5.5%,transparent) 38px)}.opening{min-height:230px;display:grid;align-content:center;justify-items:center;text-align:center}.opening p{font-size:18px;font-weight:700}.opening ul{display:grid;gap:8px;padding:0;list-style:none;color:var(--color-text-secondary)}.messages{display:grid;gap:22px;min-height:220px;margin:0;padding:0;list-style:none}.turn{display:grid;gap:10px}.turn blockquote{max-width:78%;margin:0 0 0 auto;padding:12px 15px;border-radius:14px 14px 3px 14px;background:var(--color-bg-selected)}.turn blockquote span,.assistant>span{display:block;margin-bottom:4px;color:var(--teal);font-size:11px;font-weight:800;letter-spacing:.08em}.assistant{max-width:86%;padding:14px 16px;border-left:4px solid var(--teal);background:color-mix(in srgb,var(--color-bg-surface) 90%,transparent);box-shadow:0 6px 18px color-mix(in srgb,var(--color-accent) 6%,transparent)}.assistant p{margin:0}.assistant[data-state="failed_before_dispatch"]{border-left-color:var(--amber)}.handoffs{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:10px;margin:22px 0}.handoffs button{display:grid;gap:5px;min-height:112px;padding:14px;border:1px solid var(--color-border-default);border-top:4px solid var(--teal);border-radius:11px;background:var(--color-bg-surface);text-align:left}.handoffs button[data-mode="plan_calendar"]{border-top-color:var(--color-info)}.handoffs button[data-mode="sop"]{border-top-color:var(--amber)}.handoffs span,.handoffs small{color:var(--color-text-secondary);font-size:12px}.manual-route{padding:14px;border:1px dashed var(--amber);background:var(--color-warning-subtle)}.manual-route p{margin-top:0}.manual-route button{margin-right:8px;min-height:36px}.composer{display:grid;gap:8px;margin-top:22px;padding-top:16px;border-top:1px solid var(--color-border-default);background:var(--paper)}.composer label{font-weight:750}.composer textarea{width:100%;resize:vertical;padding:12px;border:1px solid var(--color-border-strong);border-radius:12px;background:var(--color-bg-surface);font:inherit;line-height:1.6}.composer>div{display:flex;align-items:center;justify-content:space-between;gap:15px}.composer small{color:var(--color-text-secondary)}.composer button{min-height:42px;padding:0 18px;border:0;border-radius:10px;background:var(--teal);color:var(--color-bg-surface);font:inherit;font-weight:750}.side-notes{display:grid;align-content:start;gap:14px;padding:18px;background:var(--color-bg-app)}.side-notes section{padding:15px;border:1px solid var(--color-border-default);border-radius:12px;background:var(--color-bg-surface)}.side-notes header{display:flex;align-items:center;justify-content:space-between}.side-notes header strong{font-size:28px;color:var(--teal)}.side-notes p{color:var(--color-text-secondary);font-size:13px}.recent,.near-work{display:grid;gap:7px}.recent button,.near-work button{display:grid;gap:3px;padding:10px 0;border:0;border-bottom:1px solid var(--color-border-subtle);background:transparent;text-align:left}.recent strong,.near-work strong{display:-webkit-box;overflow:hidden;-webkit-line-clamp:2;-webkit-box-orient:vertical}.recent small,.near-work small{color:var(--color-text-secondary)}.domain-band{display:grid;grid-template-columns:repeat(6,1fr);border:1px solid var(--color-border-default);border-radius:0 0 18px 18px;overflow:hidden;background:var(--color-bg-surface)}.domain-band>div{display:grid;gap:3px;min-height:74px;padding:12px;border-right:1px solid var(--color-border-subtle);background:var(--color-bg-surface);text-align:left}.domain-band span{font-weight:750}.domain-band small{color:var(--color-text-secondary);font-size:11px}.notice,.error{margin:0;padding:10px 16px;border-inline:1px solid var(--color-border-default)}.notice{background:var(--teal-soft)}.error{background:var(--color-danger-subtle);color:var(--red)}button:focus-visible,select:focus-visible,textarea:focus-visible{outline:3px solid var(--color-warning);outline-offset:2px}@media(max-width:980px){.desk__masthead{align-items:flex-start;flex-direction:column}.desk__body{grid-template-columns:1fr}.conversation{border-right:0}.side-notes{grid-template-columns:1fr 1fr}.domain-band{grid-template-columns:repeat(3,1fr)}}@media(max-width:640px){.desk__masthead,.conversation{padding:18px}.desk__tools{width:100%;align-items:stretch;flex-direction:column}.desk__tools label{width:100%}.turn blockquote,.assistant{max-width:100%}.composer>div{align-items:stretch;flex-direction:column}.side-notes{grid-template-columns:1fr}.domain-band{grid-template-columns:repeat(2,1fr)}}
+.composer__buttons{display:flex;align-items:center;gap:9px}.composer__buttons>button[type="submit"]{flex:0 0 auto}@media(max-width:640px){.composer__buttons{width:100%;align-items:stretch;flex-direction:column}.composer__buttons>button[type="submit"]{width:100%}}
 </style>

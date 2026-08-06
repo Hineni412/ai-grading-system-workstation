@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import json
 import sqlite3
+import wave
 from contextlib import closing
+from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -15,6 +18,7 @@ from backend.class_teacher.api.router import create_router
 from backend.class_teacher.errors import VaultError
 from backend.class_teacher.intake.ports import FakeWorkspaceAITaskPort
 from backend.class_teacher.intake.triage_contract import parse_triage
+from backend.class_teacher.local_speech import LocalSpeechTranscriber
 from backend.class_teacher.vault_service import VaultService
 from backend.workspaces.contracts import WorkspaceContext
 
@@ -54,6 +58,228 @@ def _client(service: VaultService) -> TestClient:
     app.state.workspace_services = {"class-teacher": service}
     app.include_router(create_router(), prefix="/api/class-teacher")
     return TestClient(app)
+
+
+def _synthetic_wav() -> bytes:
+    output = BytesIO()
+    with wave.open(output, "wb") as target:
+        target.setnchannels(1)
+        target.setsampwidth(2)
+        target.setframerate(16_000)
+        target.writeframes(b"\x00\x00" * 4_000)
+    return output.getvalue()
+
+
+class _SpeechStream:
+    def __init__(self) -> None:
+        self.result = SimpleNamespace(text="合成本地语音转写。")
+
+    def accept_waveform(self, _sample_rate, _samples) -> None:
+        return None
+
+
+class _SpeechRecognizer:
+    def create_stream(self):
+        return _SpeechStream()
+
+    def decode_stream(self, _stream) -> None:
+        return None
+
+
+def test_local_speech_api_returns_text_without_creating_a_conversation(tmp_path: Path) -> None:
+    service, _port = _service(tmp_path)
+    service.local_speech = LocalSpeechTranscriber(
+        PROJECT_ROOT,
+        recognizer_factory=lambda _model_dir: _SpeechRecognizer(),
+    )
+    client = _client(service)
+    trusted = {"x-class-teacher-client": "class-teacher-browser-v1"}
+
+    capabilities = client.get("/api/class-teacher/intake/speech/capabilities")
+    transcription = client.post(
+        "/api/class-teacher/intake/speech/transcriptions",
+        headers={**trusted, "content-type": "audio/wav"},
+        content=_synthetic_wav(),
+    )
+
+    assert capabilities.status_code == 200
+    assert capabilities.json()["available"] is True
+    assert transcription.status_code == 200
+    assert transcription.json()["text"] == "合成本地语音转写。"
+    assert transcription.json()["audio_retained"] is False
+    assert service.intake.list_conversations()["items"] == []
+
+
+def test_local_speech_api_rejects_non_wav_without_invoking_engine(tmp_path: Path) -> None:
+    service, _port = _service(tmp_path)
+    client = _client(service)
+
+    response = client.post(
+        "/api/class-teacher/intake/speech/transcriptions",
+        headers={
+            "x-class-teacher-client": "class-teacher-browser-v1",
+            "content-type": "audio/webm",
+        },
+        content=b"synthetic-audio",
+    )
+
+    assert response.status_code == 415
+    assert response.json()["error"]["code"] == "speech_content_type_invalid"
+
+
+class _CloudAudioModel:
+    def __init__(self, *, available: bool = True, fail_after_dispatch: bool = False) -> None:
+        self.available = available
+        self.fail_after_dispatch = fail_after_dispatch
+        self.messages: tuple[dict[str, object], ...] | None = None
+        self.invocations = 0
+
+    def audio_input_capabilities(self) -> dict[str, object]:
+        return {
+            "available": self.available,
+            "status": "ready" if self.available else "model_unsupported",
+            "provider": "volcengine_ark",
+            "model": "doubao-seed-2-0-lite-260428",
+            "destination_fingerprint": "synthetic-audio-fingerprint",
+        }
+
+    def invoke_workspace_audio(self, *, messages, **_kwargs) -> str:
+        self.invocations += 1
+        self.messages = messages
+        if self.fail_after_dispatch:
+            raise RuntimeError("synthetic response loss")
+        return json.dumps(
+            {
+                "contract_version": "class_teacher_audio_triage.v1",
+                "transcript": "明天下午三点准备合成班会。",
+                "assistant_message": "已整理为班会计划草稿。",
+                "clarification_questions": [],
+                "work_items": [
+                    {
+                        "work_item_id": "synthetic-audio-work-001",
+                        "domain": "activities_culture",
+                        "primary_mode": "plan_calendar",
+                        "secondary_modes": ["record"],
+                        "intent": "plan",
+                        "reason_summary": "需要安排班会",
+                        "subject_refs": [],
+                        "time_facts": [],
+                        "safety_level": "normal",
+                        "missing_fields": [],
+                        "draft": {
+                            "summary": "准备合成班会",
+                            "start_at": "2026-08-07T15:00:00+08:00",
+                        },
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        )
+
+    def physical_request_count(self, _operation_id: str) -> int:
+        return 1 if self.fail_after_dispatch else self.invocations
+
+
+def test_cloud_audio_requires_confirmation_endpoint_and_persists_only_transcript(
+    tmp_path: Path,
+) -> None:
+    service, _port = _service(tmp_path)
+    model = _CloudAudioModel()
+    service.intake.model_gateway = model
+    client = _client(service)
+    trusted = {"x-class-teacher-client": "class-teacher-browser-v1"}
+    conversation = client.post(
+        "/api/class-teacher/intake/conversations",
+        headers=trusted,
+    ).json()
+
+    capabilities = client.get("/api/class-teacher/intake/speech/capabilities")
+    response = client.post(
+        f"/api/class-teacher/intake/conversations/{conversation['conversation_id']}/audio-turns",
+        headers={
+            **trusted,
+            "content-type": "audio/wav",
+            "x-class-teacher-conversation-revision": str(conversation["revision"]),
+            "x-class-teacher-operation-id": "synthetic-cloud-audio-operation",
+            "x-class-teacher-model-fingerprint": "synthetic-audio-fingerprint",
+        },
+        content=_synthetic_wav(),
+    )
+
+    assert capabilities.status_code == 200
+    assert capabilities.json()["cloud_audio"]["available"] is True
+    assert response.status_code == 200
+    result = response.json()
+    assert result["turns"][-1]["teacher_message"] == "明天下午三点准备合成班会。"
+    assert result["turns"][-1]["assistant_message"] == "已整理为班会计划草稿。"
+    assert len(result["handoffs"]) == 1
+    assert model.invocations == 1
+    assert model.messages is not None
+    user_content = model.messages[-1]["content"]
+    assert isinstance(user_content, list)
+    assert user_content[0]["type"] == "input_audio"
+    assert user_content[0]["input_audio"]["format"] == "wav"
+    assert not list(tmp_path.rglob("*.wav"))
+
+
+def test_cloud_audio_rejects_unsupported_model_without_dispatch(tmp_path: Path) -> None:
+    service, _port = _service(tmp_path)
+    model = _CloudAudioModel(available=False)
+    service.intake.model_gateway = model
+    client = _client(service)
+    trusted = {"x-class-teacher-client": "class-teacher-browser-v1"}
+    conversation = client.post(
+        "/api/class-teacher/intake/conversations",
+        headers=trusted,
+    ).json()
+
+    response = client.post(
+        f"/api/class-teacher/intake/conversations/{conversation['conversation_id']}/audio-turns",
+        headers={
+            **trusted,
+            "content-type": "audio/wav",
+            "x-class-teacher-conversation-revision": str(conversation["revision"]),
+            "x-class-teacher-operation-id": "unsupported-cloud-audio-operation",
+            "x-class-teacher-model-fingerprint": "synthetic-audio-fingerprint",
+        },
+        content=_synthetic_wav(),
+    )
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "class_teacher_cloud_audio_unavailable"
+    assert model.invocations == 0
+
+
+def test_cloud_audio_lost_response_is_not_retried(tmp_path: Path) -> None:
+    service, _port = _service(tmp_path)
+    model = _CloudAudioModel(fail_after_dispatch=True)
+    service.intake.model_gateway = model
+    client = _client(service)
+    trusted = {"x-class-teacher-client": "class-teacher-browser-v1"}
+    conversation = client.post(
+        "/api/class-teacher/intake/conversations",
+        headers=trusted,
+    ).json()
+
+    response = client.post(
+        f"/api/class-teacher/intake/conversations/{conversation['conversation_id']}/audio-turns",
+        headers={
+            **trusted,
+            "content-type": "audio/wav",
+            "x-class-teacher-conversation-revision": str(conversation["revision"]),
+            "x-class-teacher-operation-id": "lost-cloud-audio-operation",
+            "x-class-teacher-model-fingerprint": "synthetic-audio-fingerprint",
+        },
+        content=_synthetic_wav(),
+    )
+
+    assert response.status_code == 502
+    assert response.json()["error"]["code"] == "class_teacher_cloud_audio_result_unknown"
+    assert model.invocations == 1
+    restored = client.get(
+        f"/api/class-teacher/intake/conversations/{conversation['conversation_id']}"
+    ).json()
+    assert restored["turns"] == []
 
 
 def _triage(*, subject_id: str | None = None, handoff_key: str | None = None) -> dict[str, object]:

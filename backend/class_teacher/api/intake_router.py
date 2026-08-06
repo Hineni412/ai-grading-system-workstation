@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Header, Request, Response
+from starlette.concurrency import run_in_threadpool
 
 from .intake_schemas import (
     DraftAIRevisionRequest,
@@ -10,11 +11,47 @@ from .intake_schemas import (
     ManualRouteRequest,
     TurnAppendRequest,
 )
-from .router import _call, _no_store, _require_trusted_mutation, _service, _token
+from .router import _api_error, _call, _no_store, _require_trusted_mutation, _service, _token
 
 
 def create_intake_router() -> APIRouter:
     router = APIRouter(prefix="/intake")
+
+    @router.get("/speech/capabilities")
+    def speech_capabilities(request: Request, response: Response):
+        _no_store(response)
+        def capabilities():
+            service = _service(request)
+            result = dict(service.local_speech.capabilities())
+            result["cloud_audio"] = service.intake.cloud_audio_capabilities()
+            return result
+
+        return _call(capabilities)
+
+    @router.post("/speech/transcriptions")
+    async def transcribe_speech(request: Request, response: Response):
+        _require_trusted_mutation(request)
+        _no_store(response)
+        content_type = request.headers.get("content-type", "").split(";", 1)[0].strip().casefold()
+        if content_type not in {"audio/wav", "audio/wave", "audio/x-wav"}:
+            raise _api_error(415, "speech_content_type_invalid", "只接受本机生成的 WAV 录音")
+        service = _service(request).local_speech
+        try:
+            declared_size = int(request.headers.get("content-length") or 0)
+        except (TypeError, ValueError):
+            raise _api_error(400, "speech_content_length_invalid", "录音大小信息无效")
+        if declared_size < 0:
+            raise _api_error(400, "speech_content_length_invalid", "录音大小信息无效")
+        if declared_size > service.max_audio_bytes:
+            raise _api_error(413, "speech_audio_too_large", "录音超过本机语音输入允许的大小")
+        content = bytearray()
+        async for chunk in request.stream():
+            content.extend(chunk)
+            if len(content) > service.max_audio_bytes:
+                raise _api_error(413, "speech_audio_too_large", "录音超过本机语音输入允许的大小")
+        return await run_in_threadpool(
+            lambda: _call(lambda: service.transcribe_wav(bytes(content)))
+        )
 
     @router.get("/preferences/homeroom-class")
     def get_homeroom(request: Request, response: Response):
@@ -50,6 +87,69 @@ def create_intake_router() -> APIRouter:
         return _call(lambda: _service(request).intake.append_turn(
             conversation_id=conversation_id, **body.model_dump()
         ))
+
+    @router.post("/conversations/{conversation_id}/audio-turns")
+    async def append_audio_turn(
+        conversation_id: str,
+        request: Request,
+        response: Response,
+        expected_revision: str | None = Header(
+            None,
+            alias="x-class-teacher-conversation-revision",
+        ),
+        operation_id: str | None = Header(
+            None,
+            alias="x-class-teacher-operation-id",
+        ),
+        model_fingerprint: str | None = Header(
+            None,
+            alias="x-class-teacher-model-fingerprint",
+        ),
+    ):
+        _require_trusted_mutation(request)
+        _no_store(response)
+        content_type = request.headers.get("content-type", "").split(";", 1)[0].strip().casefold()
+        if content_type not in {"audio/wav", "audio/wave", "audio/x-wav"}:
+            raise _api_error(415, "speech_content_type_invalid", "只接受本机生成的 WAV 录音")
+        try:
+            revision = int(expected_revision or "")
+        except (TypeError, ValueError):
+            raise _api_error(400, "class_teacher_revision_invalid", "会话版本信息无效")
+        if revision < 0:
+            raise _api_error(400, "class_teacher_revision_invalid", "会话版本信息无效")
+        if not str(operation_id or "").strip():
+            raise _api_error(400, "class_teacher_operation_id_invalid", "录音操作编号无效")
+        if not str(model_fingerprint or "").strip():
+            raise _api_error(400, "class_teacher_model_fingerprint_invalid", "模型配置标识无效")
+
+        services = _service(request)
+        local_speech = services.local_speech
+        try:
+            declared_size = int(request.headers.get("content-length") or 0)
+        except (TypeError, ValueError):
+            raise _api_error(400, "speech_content_length_invalid", "录音大小信息无效")
+        if declared_size < 0:
+            raise _api_error(400, "speech_content_length_invalid", "录音大小信息无效")
+        if declared_size > local_speech.max_audio_bytes:
+            raise _api_error(413, "speech_audio_too_large", "录音超过语音输入允许的大小")
+        content = bytearray()
+        async for chunk in request.stream():
+            content.extend(chunk)
+            if len(content) > local_speech.max_audio_bytes:
+                raise _api_error(413, "speech_audio_too_large", "录音超过语音输入允许的大小")
+        wav_content = bytes(content)
+        await run_in_threadpool(
+            lambda: _call(lambda: local_speech.validate_wav(wav_content))
+        )
+        return await run_in_threadpool(
+            lambda: _call(lambda: services.intake.append_cloud_audio_turn(
+                conversation_id=conversation_id,
+                expected_revision=revision,
+                operation_id=str(operation_id).strip(),
+                expected_destination_fingerprint=str(model_fingerprint).strip(),
+                wav_content=wav_content,
+            ))
+        )
 
     @router.post("/turns/{turn_id}/manual-route")
     def manual_route(turn_id: str, request: Request, body: ManualRouteRequest, response: Response):
