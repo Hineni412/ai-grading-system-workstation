@@ -62,6 +62,33 @@ export interface IntakeConversationSummary {
   updated_at: string
 }
 
+export interface SpeechCapabilities {
+  available: boolean
+  status: 'ready' | 'dependency_missing' | 'model_missing'
+  engine: string
+  offline: true
+  sample_rate: 16000
+  max_duration_seconds: number
+  max_audio_bytes: number
+  accepted_content_type: 'audio/wav'
+  cloud_audio: CloudAudioCapabilities
+}
+
+export interface CloudAudioCapabilities {
+  available: boolean
+  status: 'ready' | 'profile_missing' | 'endpoint_unsupported' | 'model_unsupported'
+  provider: 'volcengine_ark'
+  model: string | null
+  destination_fingerprint: string
+}
+
+export interface SpeechTranscription {
+  text: string
+  duration_seconds: number
+  engine: string
+  audio_retained: false
+}
+
 export interface HandoffDraft {
   contract_version: 'teacher_workspace_handoff.v1'
   handoff_id: string
@@ -215,6 +242,54 @@ function decodePreference(value: unknown): HomeroomPreference {
   }
 }
 
+function decodeSpeechCapabilities(value: unknown): SpeechCapabilities {
+  const item = record(value)
+  if (typeof item.available !== 'boolean' || item.offline !== true || item.sample_rate !== 16000 || item.accepted_content_type !== 'audio/wav') return invalid()
+  const status = text(item.status)
+  const maxDuration = item.max_duration_seconds
+  const maxBytes = item.max_audio_bytes
+  if (!['ready', 'dependency_missing', 'model_missing'].includes(status)) return invalid()
+  if (typeof maxDuration !== 'number' || !Number.isFinite(maxDuration) || maxDuration <= 0) return invalid()
+  if (typeof maxBytes !== 'number' || !Number.isInteger(maxBytes) || maxBytes <= 0) return invalid()
+  const cloudItem = record(item.cloud_audio)
+  const cloudStatus = text(cloudItem.status)
+  if (
+    typeof cloudItem.available !== 'boolean'
+    || cloudItem.provider !== 'volcengine_ark'
+    || !['ready', 'profile_missing', 'endpoint_unsupported', 'model_unsupported'].includes(cloudStatus)
+  ) return invalid()
+  return {
+    available: item.available,
+    status: status as SpeechCapabilities['status'],
+    engine: text(item.engine),
+    offline: true,
+    sample_rate: 16000,
+    max_duration_seconds: maxDuration,
+    max_audio_bytes: maxBytes,
+    accepted_content_type: 'audio/wav',
+    cloud_audio: {
+      available: cloudItem.available,
+      status: cloudStatus as CloudAudioCapabilities['status'],
+      provider: 'volcengine_ark',
+      model: cloudItem.model === null ? null : text(cloudItem.model),
+      destination_fingerprint: text(cloudItem.destination_fingerprint),
+    },
+  }
+}
+
+function decodeSpeechTranscription(value: unknown): SpeechTranscription {
+  const item = record(value)
+  const transcript = text(item.text)
+  const duration = item.duration_seconds
+  if (!transcript.trim() || typeof duration !== 'number' || !Number.isFinite(duration) || duration < 0 || item.audio_retained !== false) return invalid()
+  return {
+    text: transcript,
+    duration_seconds: duration,
+    engine: text(item.engine),
+    audio_retained: false,
+  }
+}
+
 function decodeConversationSummary(value: unknown): IntakeConversationSummary {
   const item = record(value)
   return {
@@ -247,6 +322,18 @@ function headers(token = ''): Record<string, string> {
 }
 
 export const intakeApi = {
+  speechCapabilities() {
+    return apiClient.request('/api/class-teacher/intake/speech/capabilities', {
+      decode: decodeSpeechCapabilities,
+    })
+  },
+  transcribeSpeech(wav: Blob, signal?: AbortSignal) {
+    return apiClient.request('/api/class-teacher/intake/speech/transcriptions', {
+      method: 'POST', rawBody: wav, signal, timeoutMs: 90_000,
+      headers: { ...headers(), 'content-type': 'audio/wav' },
+      decode: decodeSpeechTranscription,
+    })
+  },
   homeroom() {
     return apiClient.request('/api/class-teacher/intake/preferences/homeroom-class', {
       decode: decodePreference,
@@ -284,6 +371,25 @@ export const intakeApi = {
     return apiClient.request(`/api/class-teacher/intake/conversations/${encodeURIComponent(conversation.conversation_id)}/turns`, {
       method: 'POST', headers: headers(),
       body: { expected_revision: conversation.revision, message, operation_id: operation },
+      decode: decodeIntakeConversation,
+    })
+  },
+  sendCloudAudio(
+    conversation: IntakeConversation,
+    wav: Blob,
+    operation: string,
+    modelFingerprint: string,
+    signal?: AbortSignal,
+  ) {
+    return apiClient.request(`/api/class-teacher/intake/conversations/${encodeURIComponent(conversation.conversation_id)}/audio-turns`, {
+      method: 'POST', rawBody: wav, signal, timeoutMs: 120_000,
+      headers: {
+        ...headers(),
+        'content-type': 'audio/wav',
+        'x-class-teacher-conversation-revision': String(conversation.revision),
+        'x-class-teacher-operation-id': operation,
+        'x-class-teacher-model-fingerprint': modelFingerprint,
+      },
       decode: decodeIntakeConversation,
     })
   },

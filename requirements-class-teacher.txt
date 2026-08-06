@@ -1,2 +1,3 @@
 # B-line-only dependencies. Keep this file separate from the shared runtime.
 cryptography==49.0.0
+sherpa-onnx==1.13.4

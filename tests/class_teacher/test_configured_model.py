@@ -142,6 +142,127 @@ def test_active_profile_gateway_is_default_off_until_configuration_exists(
     assert constructed == []
 
 
+@pytest.mark.parametrize(
+    ("base_url", "model", "expected_status"),
+    [
+        (
+            "https://ark.cn-beijing.volces.com/api/v3",
+            "doubao-seed-2-0-lite-260428",
+            "ready",
+        ),
+        (
+            "https://ark.cn-beijing.volces.com/api/v3",
+            "doubao-seed-2-0-mini-260428",
+            "ready",
+        ),
+        (
+            "https://ark.cn-beijing.volces.com/api/v3",
+            "doubao-seed-2-0-pro-260428",
+            "model_unsupported",
+        ),
+        (
+            "https://model.invalid/v1",
+            "doubao-seed-2-0-lite-260428",
+            "endpoint_unsupported",
+        ),
+    ],
+)
+def test_audio_capability_accepts_only_documented_doubao_combinations(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    base_url: str,
+    model: str,
+    expected_status: str,
+) -> None:
+    _clear_model_environment(monkeypatch)
+    gateway = ActiveProfileApprovedModelGateway(
+        context=_context(tmp_path),
+        profile_store=_ProfileStore(
+            [
+                {
+                    "name": "synthetic",
+                    "config_api_key": "synthetic-key",
+                    "config_base_url": base_url,
+                    "config_model": model,
+                }
+            ]
+        ),
+    )
+
+    capability = gateway.audio_input_capabilities()
+
+    assert capability["status"] == expected_status
+    assert capability["available"] is (expected_status == "ready")
+    assert capability["provider"] == "volcengine_ark"
+    assert capability["model"] == model
+    assert "synthetic-key" not in json.dumps(capability)
+
+
+def test_doubao_audio_call_uses_metadata_only_single_request_gateway(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clear_model_environment(monkeypatch)
+    constructed: list[_RecordingWorkspaceGateway] = []
+
+    def gateway_factory(**kwargs: object) -> _RecordingWorkspaceGateway:
+        gateway = _RecordingWorkspaceGateway(**kwargs)
+        gateway.physical_request_count = 1
+        constructed.append(gateway)
+        return gateway
+
+    gateway = ActiveProfileApprovedModelGateway(
+        context=_context(tmp_path),
+        profile_store=_ProfileStore(
+            [
+                {
+                    "name": "synthetic",
+                    "config_api_key": "synthetic-key",
+                    "config_base_url": "https://ark.cn-beijing.volces.com/api/v3",
+                    "config_model": "doubao-seed-2-0-lite-260428",
+                }
+            ]
+        ),
+        gateway_factory=gateway_factory,
+        client_factory=lambda _key, _url: object(),
+    )
+    capability = gateway.audio_input_capabilities()
+    messages = (
+        {"role": "system", "content": "return json"},
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "input_audio",
+                    "input_audio": {"data": "synthetic-base64", "format": "wav"},
+                }
+            ],
+        },
+    )
+
+    result = gateway.invoke_workspace_audio(
+        messages=messages,
+        operation_id="doubao-audio-operation-001",
+        expected_destination_fingerprint=str(
+            capability["destination_fingerprint"]
+        ),
+    )
+
+    assert json.loads(result) == {"kind": "follow_up", "questions": ["哪一天？"]}
+    assert len(constructed) == 1
+    assert constructed[0].construction["metadata_only"] is True
+    assert constructed[0].construction["claim_operations"] is True
+    assert constructed[0].construction["allow_retry"] is False
+    call = constructed[0].calls[0]
+    request = call["request"]
+    assert isinstance(request, WorkspaceModelRequest)
+    assert request.data_classification == "restricted_audio"
+    assert call["kwargs"] == {
+        "messages": list(messages),
+        "response_format": {"type": "json_object"},
+    }
+
+
 def test_active_profile_gateway_sends_only_confirmed_canonical_payload(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

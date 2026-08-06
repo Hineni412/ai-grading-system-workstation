@@ -243,7 +243,10 @@ class SharedWorkspaceAITaskPort:
         )
         if match is None:
             content = domain.get("content")
-            if isinstance(content, Mapping) and content.get("manual_routing") is True:
+            if isinstance(content, Mapping) and (
+                content.get("manual_routing") is True
+                or content.get("direct_audio_result") is True
+            ):
                 return None
             raise RuntimeError("workspace_ai_handoff_unavailable")
         return match

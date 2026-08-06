@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { decodeHandoffDraft, intakeApi, type IntakeConversation } from '../api/intake'
 import { workApi, type WorkNode } from '../api/work'
 import ConversationDesk from '../intake/ConversationDesk.vue'
+import * as browserVoice from '../intake/browserVoiceRecorder'
 
 const mounted: Array<ReturnType<typeof createApp>> = []
 
@@ -25,6 +26,15 @@ async function mountDesk(startValue = conversation(), workNodes: WorkNode[] = []
   })
   vi.spyOn(intakeApi, 'listConversations').mockResolvedValue([])
   vi.spyOn(intakeApi, 'startConversation').mockResolvedValue(startValue)
+  vi.spyOn(intakeApi, 'speechCapabilities').mockResolvedValue({
+    available: true, status: 'ready', engine: 'synthetic-local-speech', offline: true,
+    sample_rate: 16000, max_duration_seconds: 60, max_audio_bytes: 2_100_000,
+    accepted_content_type: 'audio/wav',
+    cloud_audio: {
+      available: true, status: 'ready', provider: 'volcengine_ark',
+      model: 'doubao-seed-2-0-lite-260428', destination_fingerprint: 'fingerprint-1234',
+    },
+  })
   vi.spyOn(workApi, 'read').mockResolvedValue({
     as_of: '2026-08-05T00:00:00Z', start_date: '2026-08-04', end_date: '2026-08-10',
     nodes: workNodes, edges: [], today: workNodes, overdue: [], waiting: [], review_due: [],
@@ -83,6 +93,186 @@ describe('B-UI-R7 conversation desk', () => {
     expect(host.textContent).toContain('计划／日历')
   })
 
+  it('records locally, fills the composer, and waits for the teacher to send', async () => {
+    const recorder: browserVoice.VoiceRecorder = {
+      start: vi.fn().mockResolvedValue(undefined),
+      stop: vi.fn().mockResolvedValue(new Blob(['synthetic-wave'], { type: 'audio/wav' })),
+      cancel: vi.fn(),
+    }
+    vi.spyOn(browserVoice, 'browserVoiceRecordingSupported').mockReturnValue(true)
+    vi.spyOn(browserVoice, 'createVoiceRecorder').mockReturnValue(recorder)
+    const transcribe = vi.spyOn(intakeApi, 'transcribeSpeech').mockResolvedValue({
+      text: '合成本地语音转写。', duration_seconds: 1.2,
+      engine: 'synthetic-local-speech', audio_retained: false,
+    })
+    const append = vi.spyOn(intakeApi, 'appendTurn')
+    const storage = vi.spyOn(Storage.prototype, 'setItem')
+    const host = await mountDesk()
+
+    host.querySelector<HTMLButtonElement>('[aria-label="语音输入"]')!.click()
+    await settle()
+    expect(host.textContent).toContain('停止录音')
+    const voiceStatus = host.querySelector<HTMLElement>('.voice-input__status')!
+    const stopButton = host.querySelector<HTMLButtonElement>('[aria-label="停止录音"]')!
+    expect(voiceStatus.textContent).toContain('正在录音')
+    expect(voiceStatus.compareDocumentPosition(stopButton) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(host.querySelector<HTMLButtonElement>('button[type="submit"]')!.disabled).toBe(true)
+
+    host.querySelector<HTMLButtonElement>('[aria-label="停止录音"]')!.click()
+    await settle()
+
+    expect(transcribe).toHaveBeenCalledWith(expect.any(Blob), expect.any(AbortSignal))
+    expect(host.querySelector<HTMLTextAreaElement>('.composer textarea')!.value).toBe('合成本地语音转写。')
+    expect(host.textContent).toContain('语音已转成文字并回填')
+    expect(append).not.toHaveBeenCalled()
+    expect(storage).not.toHaveBeenCalled()
+  })
+
+  it('defaults to local text and requires a second confirmation before sending audio to the model', async () => {
+    const wav = new Blob(['synthetic-wave'], { type: 'audio/wav' })
+    const recorder: browserVoice.VoiceRecorder = {
+      start: vi.fn().mockResolvedValue(undefined),
+      stop: vi.fn().mockResolvedValue(wav),
+      cancel: vi.fn(),
+    }
+    vi.spyOn(browserVoice, 'browserVoiceRecordingSupported').mockReturnValue(true)
+    vi.spyOn(browserVoice, 'createVoiceRecorder').mockReturnValue(recorder)
+    const transcribe = vi.spyOn(intakeApi, 'transcribeSpeech')
+    const sendAudio = vi.spyOn(intakeApi, 'sendCloudAudio').mockResolvedValue({
+      ...conversation('handoff_ready'), revision: 3,
+      turns: [{
+        turn_id: 'turn-audio-01', conversation_id: 'conversation-1234', sequence: 1,
+        operation_id: 'operation-audio-01', teacher_message: '合成语音转写', assistant_message: '已形成草稿',
+        clarification_questions: [], task_id: 'audio-operation-audio-01', task_state: 'response_persisted',
+        created_at: '2026-08-05T00:00:00Z', updated_at: '2026-08-05T00:00:00Z',
+      }],
+    })
+    const host = await mountDesk()
+
+    expect(host.querySelector<HTMLButtonElement>('.voice-mode button.is-active')!.textContent).toContain('本机转文字')
+    const cloudMode = [...host.querySelectorAll<HTMLButtonElement>('.voice-mode button')]
+      .find((item) => item.textContent?.includes('语音给模型'))!
+    cloudMode.click()
+    await settle()
+    host.querySelector<HTMLButtonElement>('[aria-label="录制给模型"]')!.click()
+    await settle()
+    host.querySelector<HTMLButtonElement>('[aria-label="停止录音"]')!.click()
+    await settle()
+
+    expect(host.textContent).toContain('尚未发送')
+    expect(sendAudio).not.toHaveBeenCalled()
+    expect(transcribe).not.toHaveBeenCalled()
+
+    const sendButton = [...host.querySelectorAll<HTMLButtonElement>('button')]
+      .find((item) => item.textContent?.includes('发送录音'))!
+    sendButton.click()
+    await settle()
+
+    expect(sendAudio).toHaveBeenCalledTimes(1)
+    expect(sendAudio).toHaveBeenCalledWith(
+      expect.objectContaining({ conversation_id: 'conversation-1234', revision: 1 }),
+      wav,
+      expect.any(String),
+      'fingerprint-1234',
+      expect.any(AbortSignal),
+    )
+    expect(host.textContent).toContain('语音已转写并形成草稿')
+    expect(host.textContent).not.toContain('尚未发送')
+  })
+
+  it('keeps failed cloud audio in memory for one local transcription and never resends it', async () => {
+    const wav = new Blob(['synthetic-wave'], { type: 'audio/wav' })
+    const recorder: browserVoice.VoiceRecorder = {
+      start: vi.fn().mockResolvedValue(undefined),
+      stop: vi.fn().mockResolvedValue(wav),
+      cancel: vi.fn(),
+    }
+    vi.spyOn(browserVoice, 'browserVoiceRecordingSupported').mockReturnValue(true)
+    vi.spyOn(browserVoice, 'createVoiceRecorder').mockReturnValue(recorder)
+    const sendAudio = vi.spyOn(intakeApi, 'sendCloudAudio').mockRejectedValue({
+      code: 'class_teacher_cloud_audio_result_unknown',
+    })
+    const transcribe = vi.spyOn(intakeApi, 'transcribeSpeech').mockResolvedValue({
+      text: '失败后保留的本机转写', duration_seconds: 1,
+      engine: 'synthetic-local-speech', audio_retained: false,
+    })
+    const host = await mountDesk()
+
+    const cloudMode = [...host.querySelectorAll<HTMLButtonElement>('.voice-mode button')]
+      .find((item) => item.textContent?.includes('语音给模型'))!
+    cloudMode.click(); await settle()
+    host.querySelector<HTMLButtonElement>('[aria-label="录制给模型"]')!.click(); await settle()
+    host.querySelector<HTMLButtonElement>('[aria-label="停止录音"]')!.click(); await settle()
+    ;[...host.querySelectorAll<HTMLButtonElement>('button')]
+      .find((item) => item.textContent?.includes('发送录音'))!.click()
+    await settle()
+
+    expect(sendAudio).toHaveBeenCalledTimes(1)
+    expect(host.textContent).toContain('不会重复发送')
+    expect(host.textContent).toContain('不再重复发送')
+    ;[...host.querySelectorAll<HTMLButtonElement>('button')]
+      .find((item) => item.textContent?.includes('转为本机文字'))!.click()
+    await settle()
+
+    expect(transcribe).toHaveBeenCalledWith(wav, expect.any(AbortSignal))
+    expect(sendAudio).toHaveBeenCalledTimes(1)
+    expect(host.querySelector<HTMLTextAreaElement>('.composer textarea')!.value).toBe('失败后保留的本机转写')
+  })
+
+  it('keeps an over-limit voice transcript visible but prevents sending until edited', async () => {
+    const recorder: browserVoice.VoiceRecorder = {
+      start: vi.fn().mockResolvedValue(undefined),
+      stop: vi.fn().mockResolvedValue(new Blob(['synthetic-wave'], { type: 'audio/wav' })),
+      cancel: vi.fn(),
+    }
+    vi.spyOn(browserVoice, 'browserVoiceRecordingSupported').mockReturnValue(true)
+    vi.spyOn(browserVoice, 'createVoiceRecorder').mockReturnValue(recorder)
+    vi.spyOn(intakeApi, 'transcribeSpeech').mockResolvedValue({
+      text: '补充内容', duration_seconds: 1,
+      engine: 'synthetic-local-speech', audio_retained: false,
+    })
+    const append = vi.spyOn(intakeApi, 'appendTurn')
+    const host = await mountDesk()
+    const textarea = host.querySelector<HTMLTextAreaElement>('.composer textarea')!
+    textarea.value = '原'.repeat(3998)
+    textarea.dispatchEvent(new Event('input', { bubbles: true }))
+    await nextTick()
+
+    host.querySelector<HTMLButtonElement>('[aria-label="语音输入"]')!.click()
+    await settle()
+    host.querySelector<HTMLButtonElement>('[aria-label="停止录音"]')!.click()
+    await settle()
+
+    expect(textarea.value).toBe(`${'原'.repeat(3998)}\n补充内容`)
+    expect(host.textContent).toContain('超过 4000 字')
+    expect(host.querySelector<HTMLButtonElement>('button[type="submit"]')!.disabled).toBe(true)
+    expect(append).not.toHaveBeenCalled()
+  })
+
+  it('cancels a pending microphone permission request when the page closes', async () => {
+    let allowMicrophone!: () => void
+    const pendingPermission = new Promise<void>((resolve) => { allowMicrophone = resolve })
+    const recorder: browserVoice.VoiceRecorder = {
+      start: vi.fn().mockReturnValue(pendingPermission),
+      stop: vi.fn(),
+      cancel: vi.fn(),
+    }
+    vi.spyOn(browserVoice, 'browserVoiceRecordingSupported').mockReturnValue(true)
+    vi.spyOn(browserVoice, 'createVoiceRecorder').mockReturnValue(recorder)
+    const host = await mountDesk()
+
+    host.querySelector<HTMLButtonElement>('[aria-label="语音输入"]')!.click()
+    await nextTick()
+    expect(host.querySelector<HTMLButtonElement>('[aria-label="等待麦克风"]')!.disabled).toBe(true)
+    expect(host.querySelector<HTMLButtonElement>('button[type="submit"]')!.disabled).toBe(true)
+
+    mounted.pop()!.unmount()
+    allowMicrophone()
+    await settle()
+
+    expect(recorder.cancel).toHaveBeenCalled()
+  })
+
   it('can clear the default class without deleting roster history', async () => {
     const setHomeroom = vi.spyOn(intakeApi, 'setHomeroom').mockResolvedValue({
       homeroom_class: null, revision: 2, classes: ['一班', '二班'], source_revision: 'a'.repeat(64),
@@ -123,7 +313,7 @@ describe('B-UI-R7 conversation desk', () => {
     })
 
     expect(host.querySelector<HTMLTextAreaElement>('.composer textarea')!.disabled).toBe(true)
-    expect(host.querySelector<HTMLButtonElement>('.composer button')!.disabled).toBe(true)
+    expect(host.querySelector<HTMLButtonElement>('.composer button[type="submit"]')!.disabled).toBe(true)
     expect(host.textContent).toContain('结果返回后可继续补充')
   })
 

@@ -222,6 +222,186 @@ class ConversationStore:
                     )
         return self.get(conversation_id)
 
+    def append_resolved_audio_turn(
+        self,
+        *,
+        conversation_id: str,
+        expected_revision: int,
+        transcript: str,
+        operation_id: str,
+        payload: dict[str, object],
+    ) -> dict[str, object]:
+        """Atomically persist one paid audio result without retaining its audio."""
+
+        self._id(operation_id, "操作编号")
+        clean_message = str(transcript or "").strip()
+        if not clean_message or len(clean_message) > 4000:
+            raise VaultError(
+                "class_teacher_audio_transcript_invalid",
+                "模型没有返回可用的语音转写文字",
+                status_code=422,
+            )
+        direct_payload = json.loads(_json(payload))
+        for item in (
+            direct_payload.get("work_items", [])
+            if isinstance(direct_payload, dict)
+            else []
+        ):
+            if not isinstance(item, dict):
+                continue
+            draft = item.get("draft")
+            if isinstance(draft, dict):
+                draft["direct_audio_result"] = True
+        result = parse_triage(direct_payload)
+        self._sync_conversation_tasks(conversation_id)
+        timestamp = _iso()
+        stale_handoff_ids: list[str] = []
+        with closing(self.database.connect()) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                replay = connection.execute(
+                    "SELECT conversation_id, source_revision, teacher_message FROM intake_turns WHERE operation_id=?",
+                    (operation_id,),
+                ).fetchone()
+                if replay is not None:
+                    if (
+                        str(replay["conversation_id"]) != conversation_id
+                        or int(replay["source_revision"]) != int(expected_revision)
+                        or str(replay["teacher_message"]) != clean_message
+                    ):
+                        raise VaultError(
+                            "class_teacher_operation_conflict",
+                            "同一操作编号已用于不同输入",
+                            status_code=409,
+                        )
+                    connection.rollback()
+                    return self.get(conversation_id)
+                row = connection.execute(
+                    "SELECT revision, state FROM intake_conversations WHERE conversation_id=?",
+                    (conversation_id,),
+                ).fetchone()
+                if row is None:
+                    raise VaultError(
+                        "class_teacher_conversation_not_found",
+                        "会话不存在",
+                        status_code=404,
+                    )
+                if int(row["revision"]) != int(expected_revision):
+                    raise VaultError(
+                        "class_teacher_conversation_conflict",
+                        "会话已在其他页面更新；录音没有再次发送",
+                        status_code=409,
+                    )
+                if str(row["state"]) == "ai_running":
+                    raise VaultError(
+                        "class_teacher_turn_in_progress",
+                        "上一轮仍在整理；录音没有再次发送",
+                        status_code=409,
+                    )
+                adopting = connection.execute(
+                    """
+                    SELECT COUNT(*) FROM intake_handoffs h
+                    JOIN intake_drafts d ON d.draft_id=h.draft_id
+                    WHERE d.conversation_id=? AND h.adoption_state='adoption_started'
+                    """,
+                    (conversation_id,),
+                ).fetchone()[0]
+                if int(adopting):
+                    raise VaultError(
+                        "class_teacher_adoption_in_progress",
+                        "正在保存上一份正式内容；录音没有再次发送",
+                        status_code=409,
+                    )
+                stale_handoff_ids = [
+                    str(item["handoff_id"])
+                    for item in connection.execute(
+                        """
+                        SELECT h.handoff_id FROM intake_handoffs h
+                        JOIN intake_drafts d ON d.draft_id=h.draft_id
+                        WHERE d.conversation_id=?
+                          AND h.adoption_state IN ('pending','opened')
+                        """,
+                        (conversation_id,),
+                    ).fetchall()
+                ]
+                if stale_handoff_ids:
+                    placeholders = ",".join("?" for _ in stale_handoff_ids)
+                    connection.execute(
+                        f"UPDATE intake_handoffs SET adoption_state='stale', updated_at=? WHERE handoff_id IN ({placeholders})",
+                        (timestamp, *stale_handoff_ids),
+                    )
+                    connection.execute(
+                        f"""
+                        UPDATE intake_drafts SET state='stale', updated_at=?
+                        WHERE draft_id IN (
+                            SELECT draft_id FROM intake_handoffs
+                            WHERE handoff_id IN ({placeholders})
+                        )
+                        """,
+                        (timestamp, *stale_handoff_ids),
+                    )
+                sequence = int(
+                    connection.execute(
+                        "SELECT COUNT(*) FROM intake_turns WHERE conversation_id=?",
+                        (conversation_id,),
+                    ).fetchone()[0]
+                ) + 1
+                turn_id = uuid4().hex
+                task_id = f"audio-{operation_id}"
+                connection.execute(
+                    """
+                    INSERT INTO intake_turns (
+                        turn_id, conversation_id, sequence, operation_id,
+                        source_revision, teacher_message, assistant_message,
+                        clarification_questions_json, task_id, task_state,
+                        created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'response_persisted', ?, ?)
+                    """,
+                    (
+                        turn_id,
+                        conversation_id,
+                        sequence,
+                        operation_id,
+                        expected_revision,
+                        clean_message,
+                        result.assistant_message,
+                        _json(result.clarification_questions),
+                        task_id,
+                        timestamp,
+                        timestamp,
+                    ),
+                )
+                self._insert_work_items(
+                    connection,
+                    conversation_id,
+                    turn_id,
+                    result,
+                    timestamp,
+                )
+                state = (
+                    "needs_input"
+                    if result.clarification_questions and not result.work_items
+                    else "handoff_ready"
+                )
+                connection.execute(
+                    """
+                    UPDATE intake_conversations
+                    SET revision=revision+2, state=?, updated_at=?
+                    WHERE conversation_id=?
+                    """,
+                    (state, timestamp, conversation_id),
+                )
+                connection.commit()
+            except Exception:
+                connection.rollback()
+                raise
+        for handoff_id in stale_handoff_ids:
+            try:
+                self.ai_tasks.mark_handoff(handoff_id=handoff_id, state="stale")
+            except Exception:
+                pass
+        return self.get(conversation_id)
+
     def apply_triage_result(
         self,
         *,
