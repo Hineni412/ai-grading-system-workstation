@@ -3,6 +3,15 @@ from __future__ import annotations
 from pathlib import Path
 
 
+def test_root_exposes_only_daily_start_and_shutdown_batch_files() -> None:
+    launchers = {path.name for path in Path(".").glob("*.bat")}
+
+    assert launchers == {"运行.bat", "关闭系统.bat"}
+    content = Path("运行.bat").read_text(encoding="utf-8")
+    assert "integration_preview" not in content
+    assert "npm" not in content.lower()
+
+
 def test_run_bat_starts_fastapi_frontend_by_default() -> None:
     content = Path("运行.bat").read_text(encoding="utf-8")
 
