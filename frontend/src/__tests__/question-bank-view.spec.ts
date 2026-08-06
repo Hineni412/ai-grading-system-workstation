@@ -58,6 +58,7 @@ const paper: QuestionBankPaper = {
   exam_type: '期末',
   grade: '九年级',
   semester: '下学期',
+  folder_name: null,
   textbook_version: null,
   import_status: 'imported',
   created_at: '2026-07-18T08:00:00Z',
@@ -102,6 +103,48 @@ afterEach(() => {
 })
 
 describe('question bank workspace', () => {
+  it('groups papers by semester, honors manual folders, and lets teachers collapse a group', async () => {
+    const host = document.createElement('div')
+    document.body.append(host)
+    const pinia = createPinia()
+    const app = createApp(PaperLibrary)
+    app.use(pinia)
+    const store = useQuestionBankStore(pinia)
+    store.papers = [
+      paper,
+      {
+        ...paper,
+        id: 5,
+        title: '同学期练习卷',
+        updated_at: '2026-07-18T08:30:00Z',
+      },
+      {
+        ...paper,
+        id: 6,
+        title: '中考函数专题',
+        folder_name: '中考专题',
+        updated_at: '2026-07-18T08:00:00Z',
+      },
+    ]
+    store.papersState = 'ready'
+    app.mount(host)
+    mounted.push(app)
+
+    expect(host.textContent).toContain('2025 · 下学期')
+    expect(host.textContent).toContain('按学期自动归类')
+    expect(host.textContent).toContain('中考专题')
+    expect(host.textContent).toContain('自定义文件夹')
+
+    const semesterHeader = [...host.querySelectorAll<HTMLButtonElement>('.paper-folder__header')]
+      .find((button) => button.textContent?.includes('2025 · 下学期'))!
+    expect(semesterHeader.getAttribute('aria-expanded')).toBe('true')
+    semesterHeader.click()
+    await nextTick()
+    expect(semesterHeader.getAttribute('aria-expanded')).toBe('false')
+    expect(host.textContent).not.toContain('同学期练习卷')
+    expect(host.textContent).toContain('中考函数专题')
+  })
+
   it('waits for applied filters and explicit AI cost confirmation', async () => {
     const queuedJob = {
       id: 41,
@@ -433,6 +476,7 @@ describe('question bank workspace', () => {
       exam_type: '阶段练习',
       grade: '七年级',
       semester: '下学期',
+      folder_name: '中考专题',
       textbook_version: null,
       updated_at: '2026-07-29 10:30:00.123456',
     }))
@@ -447,6 +491,9 @@ describe('question bank workspace', () => {
     const examType = document.body.querySelector<HTMLInputElement>('input[name="paper-exam-type"]')!
     examType.value = '阶段练习'
     examType.dispatchEvent(new Event('input', { bubbles: true }))
+    const folderName = document.body.querySelector<HTMLInputElement>('input[name="paper-folder-name"]')!
+    folderName.value = '中考专题'
+    folderName.dispatchEvent(new Event('input', { bubbles: true }))
     const save = [...document.body.querySelectorAll<HTMLButtonElement>('button')]
       .find((button) => button.textContent?.includes('保存资料'))!
     save.click()
@@ -458,6 +505,7 @@ describe('question bank workspace', () => {
       metadata: {
         title: '0526test2',
         exam_type: '阶段练习',
+        folder_name: '中考专题',
       },
     })
     expect(document.body.querySelector('[role="dialog"]')).toBeNull()

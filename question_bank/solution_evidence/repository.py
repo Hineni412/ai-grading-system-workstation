@@ -576,6 +576,22 @@ class SolutionEvidenceProjectionWriter:
         self._audit_lock = threading.Lock()
         self._audits: dict[tuple[str, int], dict[str, Any]] = {}
 
+    def load_current(
+        self,
+        question: "QuestionAnalysisInput",
+    ) -> QuestionSolutionEvidence | None:
+        """Load the evidence matching this exact analysis input."""
+
+        from question_bank.training_criteria.analysis import (
+            solution_evidence_source_content_hash,
+        )
+
+        return self.evidence_repository.load_current(
+            question.question_id,
+            source_content_hash=solution_evidence_source_content_hash(question),
+            resolver=self.mapping_repository,
+        )
+
     def write(
         self,
         question: "QuestionAnalysisInput",
@@ -592,7 +608,7 @@ class SolutionEvidenceProjectionWriter:
             payload,
             question_id=question.question_id,
             question_type=question.question_type_group,
-            taxonomy_contract=question.taxonomy_contract,
+            taxonomy_contract=question.taxonomy_snapshot,
             question_type_confirmed=question.question_type_confirmed,
             expected_part_count=(
                 len(question.explicit_part_labels)
@@ -613,7 +629,7 @@ class SolutionEvidenceProjectionWriter:
         if self.taxonomy_governance is not None:
             convergence = converge_evidence_terms(
                 normalized_payload,
-                taxonomy_contract=question.taxonomy_contract,
+                taxonomy_contract=question.taxonomy_snapshot,
                 governance=self.taxonomy_governance,
                 question_ref=str(question.question_id),
                 model_name=model_name,
@@ -634,7 +650,7 @@ class SolutionEvidenceProjectionWriter:
         )
         validate_evidence_fine_terms(
             evidence,
-            question.taxonomy_contract,
+            question.taxonomy_snapshot,
             additional_allowed_term_ids=additional_allowed,
         )
         with self._audit_lock:
@@ -645,9 +661,9 @@ class SolutionEvidenceProjectionWriter:
                 operation_id=operation_id,
             )
             self._audits[(str(operation_id), question.question_id)] = audit
-        requested_graph_release_id = str(
-            question.taxonomy_contract.get("knowledge_graph_release_id") or ""
-        ).strip()
+        requested_graph_release_id = (
+            question.taxonomy_snapshot.knowledge_graph_release_id
+        )
         active_graph_release_id = ""
         if requested_graph_release_id:
             db_path = getattr(self.evidence_repository, "db_path", None)

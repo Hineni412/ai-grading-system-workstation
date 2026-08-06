@@ -12,7 +12,7 @@ from backend.api.dependencies import (
     get_taxonomy_review_service,
 )
 from question_bank.models.question import QuestionCreate
-from question_bank.services.question_service import QuestionService
+from tests.question_bank_support import QuestionBankTestStore
 from question_bank.services.question_write_service import QuestionBankWriteService
 from question_bank.services.taxonomy_review_service import TaxonomyReviewService
 from question_bank.taxonomy.governance import (
@@ -46,7 +46,7 @@ def _client_with_curriculum_proposal(
     tmp_path: Path,
 ) -> tuple[TestClient, TaxonomyGovernance, int, str]:
     db_path = tmp_path / "question-bank.db"
-    question_id = QuestionService(db_path).add_question(
+    question_id = QuestionBankTestStore(db_path).add_question(
         QuestionCreate(
             question_number="1",
             question_text="一道同时涉及平行线和三角形的综合题",

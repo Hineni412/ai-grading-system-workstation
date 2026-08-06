@@ -18,7 +18,7 @@ from backend.config_generation.normalization import (
 from question_bank.database.schema import connect, initialize_database
 from question_bank.models.question import QuestionCreate
 from question_bank.models.tag_schema import TaggingContext
-from question_bank.services.question_service import QuestionService
+from tests.question_bank_support import QuestionBankTestStore
 from question_bank.taxonomy.governance import TaxonomyGovernance
 from question_bank.solution_evidence import (
     CoreResolution,
@@ -2114,7 +2114,7 @@ def test_deferred_linked_adoption_allows_format_changes_but_rechecks_candidates(
 
     database = tmp_path / "question-bank.db"
     initialize_database(database)
-    actual_id = QuestionService(database).add_question(
+    actual_id = QuestionBankTestStore(database).add_question(
         QuestionCreate(
             question_number="1",
             question_text="证明：等式成立。\n（排版整理后）",
@@ -2199,7 +2199,7 @@ def test_combined_tag_succeeds_when_hallucinated_evidence_term_is_rejected(
 ) -> None:
     database = tmp_path / "question-bank.db"
     initialize_database(database)
-    question_id = QuestionService(database).add_question(
+    question_id = QuestionBankTestStore(database).add_question(
         QuestionCreate(
             question_number="1",
             question_text="证明等式成立。",
@@ -2245,7 +2245,7 @@ def test_evidence_writer_saves_governed_scoring_and_audits_unknown_links(
         actor_ref="system:test-baseline",
     )
     governance = _legacy_governance(tmp_path / "taxonomy-state.json")
-    question_id = QuestionService(database).add_question(
+    question_id = QuestionBankTestStore(database).add_question(
         QuestionCreate(
             question_number="1",
             question_text="解一元一次方程。",

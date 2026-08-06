@@ -63,6 +63,7 @@ _INSTANCE_PATTERN = _HASH_PATTERN
 _LOCKS_GUARD = threading.Lock()
 _LOCKS: dict[str, threading.Lock] = {}
 _MATH_RUN = re.compile(r"\$\$(.+?)\$\$|\$(.+?)\$", re.DOTALL)
+_GOVERNED_IMAGE_REFERENCE = re.compile(r"^sha256:([0-9a-f]{64})$")
 
 
 class PersonalizedPaperError(RuntimeError):
@@ -378,12 +379,8 @@ class PersonalizedPaperModule:
                         task_item_codes=tuple(
                             str(item["task_item_code"]) for item in items
                         ),
-                        question_texts=tuple(
-                            str(
-                                _mapping(item["question_snapshot"])[
-                                    "tagging_context"
-                                ]["question_text"]
-                            )
+                        question_snapshots=tuple(
+                            _mapping(item["question_snapshot"])
                             for item in items
                         ),
                     )
@@ -1422,6 +1419,7 @@ class PersonalizedPaperModule:
         paper_instance_id: str,
     ) -> dict[str, Any]:
         images: list[dict[str, Any]] = []
+        frozen_assets_by_sha256: dict[str, str] = {}
         for image in question.images:
             extension = {
                 "image/jpeg": ".jpg",
@@ -1443,6 +1441,7 @@ class PersonalizedPaperModule:
                     "asset_path": relative,
                 }
             )
+            frozen_assets_by_sha256[image.sha256] = relative
         fallback_asset = images[0]["asset_path"] if images else None
         fallback_sha256 = images[0]["sha256"] if images else None
         math_expressions = []
@@ -1460,10 +1459,16 @@ class PersonalizedPaperModule:
             "question_id": question.question_id,
             "tagging_context": question.tagging_context.to_dict(),
             "rich_question_blocks": [
-                dict(item) for item in question.rich_question_blocks
+                *_frozen_word_blocks(
+                    question.word_question_blocks,
+                    frozen_assets_by_sha256,
+                )
             ],
             "rich_answer_blocks": [
-                dict(item) for item in question.rich_answer_blocks
+                *_frozen_word_blocks(
+                    question.word_answer_blocks,
+                    frozen_assets_by_sha256,
+                )
             ],
             "images": images,
             "math_expressions": math_expressions,
@@ -2361,6 +2366,35 @@ def _copy_upload(
     if received <= 0:
         raise PaperInvalid("reviewed DOCX is empty")
     return digest.hexdigest()
+
+
+def _frozen_word_blocks(
+    blocks: Sequence[Mapping[str, Any]],
+    frozen_assets_by_sha256: Mapping[str, str],
+) -> list[dict[str, Any]]:
+    frozen: list[dict[str, Any]] = []
+    for source_block in blocks:
+        block = dict(source_block)
+        relationships = block.get("image_relationships")
+        if isinstance(relationships, Mapping):
+            governed: dict[str, str] = {}
+            for relationship_id, reference in relationships.items():
+                match = _GOVERNED_IMAGE_REFERENCE.fullmatch(
+                    str(reference or "").strip()
+                )
+                if match is None:
+                    raise PaperSourceChanged(
+                        "rich question image reference is not governed"
+                    )
+                asset_path = frozen_assets_by_sha256.get(match.group(1))
+                if not asset_path:
+                    raise PaperSourceChanged(
+                        "rich question image is absent from the frozen snapshot"
+                    )
+                governed[str(relationship_id)] = asset_path
+            block["image_relationships"] = governed
+        frozen.append(block)
+    return frozen
 
 
 def _atomic_write_bytes(destination: Path, payload: bytes) -> None:

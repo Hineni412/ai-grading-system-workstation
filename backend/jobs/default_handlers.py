@@ -5,7 +5,7 @@ import tempfile
 from pathlib import Path
 from typing import Any, Callable, Protocol
 
-from api_profiles import active_api_profile, get_api_profile_store
+from api_profiles import get_api_profile_store, resolve_profile_for_task
 from backend.llm.policy import policy_overrides_from_profile
 from backend.repositories.access import GradingRepositoryAccess
 from backend.repositories.compat import open_grading_repositories
@@ -636,7 +636,9 @@ def _active_llm_client() -> LLMClient:
 
 
 def _active_llm_settings() -> LLMSettings | None:
-    profile = active_api_profile(get_api_profile_store().load())
+    store = get_api_profile_store()
+    profile = resolve_profile_for_task(store, "grading")
+    content_profile = resolve_profile_for_task(store, "content_generation")
     api_key = str(profile.get("api_key") or os.getenv("LLM_API_KEY") or "").strip()
     if not api_key:
         return None
@@ -649,10 +651,10 @@ def _active_llm_settings() -> LLMSettings | None:
         base_url=base_url,
         ocr_model=str(profile.get("ocr_model") or os.getenv("LLM_OCR_MODEL") or grading_model),
         grading_model=grading_model,
-        config_model=str(profile.get("config_model") or os.getenv("LLM_CONFIG_MODEL") or grading_model),
-        config_api_key=str(profile.get("config_api_key") or os.getenv("LLM_CONFIG_API_KEY") or api_key),
+        config_model=str(content_profile.get("config_model") or os.getenv("LLM_CONFIG_MODEL") or grading_model),
+        config_api_key=str(content_profile.get("config_api_key") or content_profile.get("api_key") or os.getenv("LLM_CONFIG_API_KEY") or api_key),
         config_base_url=normalize_openai_base_url(
-            str(profile.get("config_base_url") or os.getenv("LLM_CONFIG_BASE_URL") or base_url)
+            str(content_profile.get("config_base_url") or content_profile.get("base_url") or os.getenv("LLM_CONFIG_BASE_URL") or base_url)
         ),
         policy_profile=policy_overrides_from_profile(profile),
     )

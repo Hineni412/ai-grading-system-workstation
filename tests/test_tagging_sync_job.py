@@ -15,7 +15,8 @@ from backend.jobs.tagging_sync import run_tagging_sync_job
 from question_bank.models.question import QuestionCreate
 from question_bank.models.tag_schema import TagAnalysis
 from question_bank.services.ai_tagging_service import AITaggingResult, AITaggingService
-from question_bank.services.question_service import QuestionService
+from question_bank.services.question_write_service import QuestionBankWriteService
+from tests.question_bank_support import QuestionBankTestStore
 from question_bank.solution_evidence import SolutionEvidenceRepository
 from question_bank.taxonomy.governance import TaxonomyGovernance
 from question_bank.training_criteria import GatewayBatchResponse
@@ -88,7 +89,7 @@ class FakeAI:
 
 
 def _seed(db_path: Path, count: int) -> list[int]:
-    service = QuestionService(db_path)
+    service = QuestionBankTestStore(db_path)
     question_ids = [
         service.add_question(
             QuestionCreate(
@@ -127,8 +128,8 @@ def test_tagging_sync_saves_only_complete_results(tmp_path: Path) -> None:
     assert result["successful_question_ids"] == [ids[0]]
     assert result["failed_question_ids"] == [ids[1]]
     assert result["failures"][0]["category"] == "quality"
-    assert QuestionService(db_path).get_question(ids[0])["tags"]
-    assert QuestionService(db_path).get_question(ids[1])["tags"] == []
+    assert QuestionBankTestStore(db_path).get_question(ids[0])["tags"]
+    assert QuestionBankTestStore(db_path).get_question(ids[1])["tags"] == []
     assert "fake-tag-model" not in json.dumps(result)
 
 
@@ -207,7 +208,7 @@ def test_production_tagging_uses_one_combined_call_and_persists_point_evidence(
 ) -> None:
     db_path = tmp_path / "qb.db"
     data_root = tmp_path / "data"
-    question_id = QuestionService(db_path).add_question(
+    question_id = QuestionBankTestStore(db_path).add_question(
         QuestionCreate(
             question_number="1",
             question_text="计算整式运算并化简。",
@@ -332,7 +333,7 @@ def test_production_tagging_uses_one_combined_call_and_persists_point_evidence(
     assert result["outcome"] == "complete"
     assert result["analysis_contract"] == "combined-v3"
     assert result["evidence_succeeded_question_ids"] == [question_id]
-    assert QuestionService(db_path).get_question(question_id)["tags"]
+    assert QuestionBankTestStore(db_path).get_question(question_id)["tags"]
     stored = SolutionEvidenceRepository(db_path).latest(question_id)
     assert stored is not None
     assert stored["evidence"]["parts"][0]["evidence_points"][0]["target"] == (
@@ -400,7 +401,7 @@ def test_unified_tagging_exposes_evidence_failure_in_retry_ids(
         def __init__(self, **_kwargs) -> None:
             pass
 
-        def analyze(self, **_kwargs):
+        def analyze_work_items(self, **_kwargs):
             return {
                 "items": [
                     {
@@ -410,7 +411,17 @@ def test_unified_tagging_exposes_evidence_failure_in_retry_ids(
                         "criteria_status": "failed",
                         "criteria_error_category": "evidence_validation",
                     }
-                ]
+                ],
+                "criterion_audit": {"items": []},
+                "projection_audit": {
+                    "retrieval_misses": [],
+                    "proposals": [],
+                    "secondary_matches": [],
+                    "relation_hints": [],
+                    "retrieval_miss_question_ids": [],
+                    "proposal_question_ids": [],
+                },
+                "question_projection_audits": {},
             }
 
     monkeypatch.setattr(
@@ -453,7 +464,7 @@ def test_unified_evidence_retry_preserves_existing_successful_tags(
     db_path = tmp_path / "qb.db"
     data_root = tmp_path / "data"
     question_id = _seed(db_path, 1)[0]
-    service = QuestionService(db_path)
+    service = QuestionBankTestStore(db_path)
     assert service.save_tag_analysis(
         question_id,
         _analysis(),
@@ -473,9 +484,14 @@ def test_unified_evidence_retry_preserves_existing_successful_tags(
         def __init__(self, **_kwargs) -> None:
             pass
 
-        def analyze(self, *, questions, projection, **_kwargs):
-            calls.append(
-                (projection, tuple(item.question_id for item in questions))
+        def analyze_work_items(self, *, work_items, **_kwargs):
+            calls.extend(
+                (
+                    item.projection,
+                    (item.question.question_id,),
+                )
+                for item in work_items
+                if item.projection is not None
             )
             return {
                 "items": [
@@ -486,7 +502,17 @@ def test_unified_evidence_retry_preserves_existing_successful_tags(
                         "criteria_status": "succeeded",
                         "criteria_error_category": "",
                     }
-                ]
+                ],
+                "criterion_audit": {"items": []},
+                "projection_audit": {
+                    "retrieval_misses": [],
+                    "proposals": [],
+                    "secondary_matches": [],
+                    "relation_hints": [],
+                    "retrieval_miss_question_ids": [],
+                    "proposal_question_ids": [],
+                },
+                "question_projection_audits": {},
             }
 
     monkeypatch.setattr(
@@ -523,7 +549,7 @@ def test_tagging_sync_skips_complete_questions_and_retries_only_missing(
 ) -> None:
     db_path = tmp_path / "qb.db"
     ids = _seed(db_path, 2)
-    service = QuestionService(db_path)
+    service = QuestionBankTestStore(db_path)
     assert service.save_tag_analysis(ids[0], _analysis(), model_name="existing")
     fake_ai = FakeAI({ids[1]: _complete()})
     context, _store = _context(tmp_path, {"question_ids": ids})
@@ -547,7 +573,7 @@ def test_tagging_sync_skips_complete_questions_and_retries_only_missing(
 def test_tagging_sync_classifies_missing_and_deleted_questions(tmp_path: Path) -> None:
     db_path = tmp_path / "qb.db"
     ids = _seed(db_path, 1)
-    service = QuestionService(db_path)
+    service = QuestionBankTestStore(db_path)
     assert service.delete_question(ids[0])
     fake_ai = FakeAI({})
     context, _store = _context(
@@ -586,8 +612,8 @@ def test_tagging_sync_cancellation_during_batch_discards_batch_and_stops_next(
         )
 
     assert fake_ai.calls == [[ids[0]]]
-    assert QuestionService(db_path).get_question(ids[0])["tags"] == []
-    assert QuestionService(db_path).get_question(ids[1])["tags"] == []
+    assert QuestionBankTestStore(db_path).get_question(ids[0])["tags"] == []
+    assert QuestionBankTestStore(db_path).get_question(ids[1])["tags"] == []
 
 
 def test_tagging_sync_honours_cancellation_before_first_batch(tmp_path: Path) -> None:
@@ -669,7 +695,7 @@ def test_tagging_sync_serializes_reversed_partially_overlapping_question_ids(
     assert first_result["tagged_count"] == 2
     assert second_result["skipped_complete_count"] == 1
     assert second_result["tagged_count"] == 1
-    assert all(QuestionService(db_path).get_question(item)["tags"] for item in ids)
+    assert all(QuestionBankTestStore(db_path).get_question(item)["tags"] for item in ids)
 
 
 def test_tagging_sync_cancels_while_waiting_for_overlapping_question_lock(
@@ -769,7 +795,7 @@ def test_tagging_sync_classifies_save_failure_without_raising(
     def fail_save(*_args, **_kwargs):
         raise RuntimeError(f"database failed at {tmp_path}")
 
-    monkeypatch.setattr(QuestionService, "save_tag_analysis", fail_save)
+    monkeypatch.setattr(QuestionBankWriteService, "save_tag_analysis", fail_save)
     result = run_tagging_sync_job(
         context=context,
         question_bank_db_path=db_path,
@@ -895,7 +921,7 @@ def test_tagging_sync_explicit_retag_reanalyzes_complete_question(
 ) -> None:
     db_path = tmp_path / "qb.db"
     ids = _seed(db_path, 1)
-    service = QuestionService(db_path)
+    service = QuestionBankTestStore(db_path)
     assert service.save_tag_analysis(ids[0], _analysis(), model_name="existing")
     fake_ai = FakeAI({ids[0]: _complete()})
     context, _store = _context(

@@ -11,6 +11,29 @@ export const MODEL_PROFILE_LIMITS = {
 } as const
 
 export type RequestSpeedMode = 'automatic' | 'conservative' | 'custom'
+export type ModelTaskKey =
+  | 'content_generation'
+  | 'grading'
+  | 'teaching_prep'
+  | 'class_teacher'
+
+export interface ModelTaskBinding {
+  profile_name: string | null
+  model: string
+}
+
+export type ModelTaskBindings = Record<ModelTaskKey, ModelTaskBinding>
+
+export function copyModelTaskBindings(
+  bindings: ModelTaskBindings,
+): ModelTaskBindings {
+  return {
+    content_generation: { ...bindings.content_generation },
+    grading: { ...bindings.grading },
+    teaching_prep: { ...bindings.teaching_prep },
+    class_teacher: { ...bindings.class_teacher },
+  }
+}
 
 export interface ModelProfile {
   name: string
@@ -32,6 +55,7 @@ export interface ModelProfilesState {
   profiles: ModelProfile[]
   active_profile_name: string | null
   active_profile: ModelProfile | null
+  task_bindings: ModelTaskBindings
 }
 
 export type ModelExecutionLimitingReason =
@@ -196,10 +220,12 @@ export function decodeModelProfilesState(value: unknown): ModelProfilesState {
       'profiles',
       'active_profile_name',
       'active_profile',
+      'task_bindings',
     ])
     || !Array.isArray(value.profiles)
     || !value.profiles.every(isModelProfile)
     || !(value.active_profile === null || isModelProfile(value.active_profile))
+    || !isModelTaskBindings(value.task_bindings)
     || !(
       value.active_profile_name === null
       || isBoundedText(
@@ -236,7 +262,20 @@ export function decodeModelProfilesState(value: unknown): ModelProfilesState {
     profiles: profiles.map((profile) => ({ ...profile })),
     active_profile_name: activeProfileName,
     active_profile: activeProfile === null ? null : { ...activeProfile },
+    task_bindings: copyModelTaskBindings(value.task_bindings as ModelTaskBindings),
   }
+}
+
+function isModelTaskBindings(value: unknown): value is ModelTaskBindings {
+  if (!isRecord(value) || !hasExactKeys(value, [
+    'content_generation', 'grading', 'teaching_prep', 'class_teacher',
+  ])) return false
+  return Object.values(value).every((binding) => (
+    isRecord(binding)
+    && hasExactKeys(binding, ['profile_name', 'model'])
+    && (binding.profile_name === null || isBoundedText(binding.profile_name, 1, MODEL_PROFILE_LIMITS.name))
+    && isBoundedText(binding.model, 0, MODEL_PROFILE_LIMITS.model)
+  ))
 }
 
 const EXECUTION_STATUS_KEYS = [
@@ -392,13 +431,15 @@ export function normalizeModelProfileInput(
     base_url: normalizeUrl(input.base_url, 'API 地址', true),
     ocr_model: normalizeBoundedText(
       input.ocr_model,
-      'OCR 模型',
+      '旧版姓名识别模型',
       MODEL_PROFILE_LIMITS.model,
+      false,
     ),
     grading_model: normalizeBoundedText(
       input.grading_model,
       '批改模型',
       MODEL_PROFILE_LIMITS.model,
+      false,
     ),
     config_base_url: normalizeUrl(
       input.config_base_url,
@@ -498,6 +539,23 @@ export const modelProfilesApi = {
     const pathName = requireProfilePathName(profileName)
     return apiClient.request(`/api/model-profiles/${pathName}/activate`, {
       method: 'POST',
+      decode: decodeModelProfilesState,
+      signal,
+    })
+  },
+
+  saveTaskBindings(
+    bindings: ModelTaskBindings,
+    signal?: AbortSignal,
+  ): Promise<ModelProfilesState> {
+    for (const binding of Object.values(bindings)) {
+      if (!binding.profile_name || !binding.model.trim()) {
+        throw new ModelProfileInputError('请为四类工作分别选择 API 站点并填写模型名称。')
+      }
+    }
+    return apiClient.request('/api/model-profiles/routing/task-bindings', {
+      method: 'PUT',
+      body: bindings,
       decode: decodeModelProfilesState,
       signal,
     })

@@ -11,7 +11,11 @@ import backend.llm as backend_llm
 import pytest
 import question_bank.services.ai_tagging_service as ai_tagging_module
 
-from question_bank.models.question import QuestionCreate, TagCreate
+from question_bank.models.question import (
+    QuestionCreate,
+    TagCreate,
+    has_complete_analysis_tags,
+)
 from question_bank.models.tag_schema import TagAnalysis, TaggingContext
 from question_bank.services.ai_tagging_service import (
     AITaggingResult,
@@ -26,7 +30,7 @@ from question_bank.services.ai_tagging_service import (
     _taxonomy_suggestion_response_format,
     converge_tag_analysis,
 )
-from question_bank.services.question_service import QuestionService, has_complete_analysis_tags
+from tests.question_bank_support import QuestionBankTestStore
 from question_bank.taxonomy.governance import TaxonomyGovernance
 from tests.current_knowledge_support import install_current_knowledge
 
@@ -892,7 +896,7 @@ def test_tag_analysis_normalizes_confidence_and_string_list_fields() -> None:
 
 def test_save_tag_analysis_persists_model_name_and_confidence(tmp_path: Path) -> None:
     db_path = tmp_path / "question_bank.db"
-    service = QuestionService(db_path)
+    service = QuestionBankTestStore(db_path)
     question_id = service.add_question(
         QuestionCreate(question_number="1", question_text="计算 a^2 · a^3。", answer_text="a^5")
     )
@@ -918,7 +922,7 @@ def test_save_tag_analysis_persists_model_name_and_confidence(tmp_path: Path) ->
 
 
 def test_only_scope_and_student_level_is_not_complete_analysis_tags(tmp_path: Path) -> None:
-    service = QuestionService(tmp_path / "question_bank.db")
+    service = QuestionBankTestStore(tmp_path / "question_bank.db")
     question_id = service.add_question(
         QuestionCreate(
             question_number="1",
@@ -937,7 +941,7 @@ def test_only_scope_and_student_level_is_not_complete_analysis_tags(tmp_path: Pa
 
 
 def test_exact_duplicate_complete_tags_can_be_reused_with_confidence_cap(tmp_path: Path) -> None:
-    service = QuestionService(tmp_path / "question_bank.db")
+    service = QuestionBankTestStore(tmp_path / "question_bank.db")
     source_id = service.add_question(
         QuestionCreate(question_number="1", question_text="计算 a^2 · a^3。", answer_text="a^5")
     )
@@ -947,7 +951,7 @@ def test_exact_duplicate_complete_tags_can_be_reused_with_confidence_cap(tmp_pat
     install_current_knowledge(service.db_path)
     assert service.save_tag_analysis(source_id, _analysis(confidence=0.97), model_name="doubao-main", confidence=0.97)
 
-    duplicate = service.find_exact_duplicate_tag_analysis(target_id)
+    duplicate = service.reader.find_exact_duplicate_tag_analysis(target_id)
 
     assert duplicate is not None
     analysis, model_name = duplicate

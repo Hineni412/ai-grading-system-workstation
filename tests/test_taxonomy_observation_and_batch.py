@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from question_bank.models.question import QuestionCreate
-from question_bank.services.question_service import QuestionService
+from tests.question_bank_support import QuestionBankTestStore
 from question_bank.services.question_write_service import (
     ConfirmedQuestionTag,
     QuestionBankWriteService,
@@ -147,7 +147,7 @@ def test_exact_batch_advances_once_is_idempotent_and_undo_keeps_preexisting_tag(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     db_path = tmp_path / "question-bank.db"
-    question_id = QuestionService(db_path).add_question(
+    question_id = QuestionBankTestStore(db_path).add_question(
         QuestionCreate(question_number="1", question_text="一元二次方程测试题")
     )
     governance = _governance(tmp_path)
@@ -267,7 +267,7 @@ def test_batch_undo_removes_only_its_insert_and_keeps_the_audit_row(
     tmp_path: Path,
 ) -> None:
     db_path = tmp_path / "question-bank.db"
-    question_id = QuestionService(db_path).add_question(
+    question_id = QuestionBankTestStore(db_path).add_question(
         QuestionCreate(question_number="2", question_text="一元二次方程练习")
     )
     governance = _governance(tmp_path)

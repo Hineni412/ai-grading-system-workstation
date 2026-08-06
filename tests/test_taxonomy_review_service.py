@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from question_bank.models.question import QuestionCreate
-from question_bank.services.question_service import QuestionService
+from tests.question_bank_support import QuestionBankTestStore
 from question_bank.services.question_write_service import (
     ConfirmedQuestionTag,
     QuestionBankWriteService,
@@ -64,7 +64,7 @@ def _review_service(
     int,
 ]:
     db_path = tmp_path / "question-bank.db"
-    question_service = QuestionService(db_path)
+    question_service = QuestionBankTestStore(db_path)
     question_id = question_service.add_question(
         QuestionCreate(question_number="1", question_text="跨章节综合题")
     )

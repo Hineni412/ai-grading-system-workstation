@@ -226,7 +226,10 @@ def _normalized_member(name: str, allowed_roots: set[str]) -> tuple[str, ...]:
         parts[0].casefold() == "user_data"
         and len(parts) > 1
         and parts[1].casefold() == "workspaces"
-        and (len(parts) < 4 or parts[2].casefold() != "class-teacher")
+        and (
+            len(parts) < 4
+            or parts[2].casefold() not in {"class-teacher", "teaching-prep"}
+        )
     ):
         raise OpsArchiveInvalid("workspace_data_not_allowed")
     return tuple(parts)

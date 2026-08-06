@@ -7,6 +7,8 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
+from question_bank.taxonomy.snapshot import QuestionTaxonomySnapshot
+
 
 @dataclass(frozen=True, slots=True)
 class EvidenceTermConvergence:
@@ -402,6 +404,10 @@ def _term_sort_key(item: Mapping[str, Any]) -> tuple[int, str]:
 
 
 def _allowed_term_ids(contract: Mapping[str, Any]) -> dict[str, list[str]]:
+    if isinstance(contract, QuestionTaxonomySnapshot):
+        knowledge = list(contract.allowed_term_ids("knowledge"))
+        if knowledge:
+            return {"knowledge": knowledge}
     raw_allowed = contract.get("allowed_term_ids")
     if isinstance(raw_allowed, Mapping):
         return {
@@ -422,6 +428,8 @@ def _allowed_term_ids(contract: Mapping[str, Any]) -> dict[str, list[str]]:
 
 
 def _taxonomy_revision(contract: Mapping[str, Any]) -> int:
+    if isinstance(contract, QuestionTaxonomySnapshot):
+        return contract.taxonomy_revision
     try:
         return max(0, int(contract.get("taxonomy_revision", 0) or 0))
     except (TypeError, ValueError):

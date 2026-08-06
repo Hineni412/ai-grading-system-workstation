@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Iterable
 
 from question_bank.services.assembly_basket_state import SectionSpec
-from question_bank.services.question_service import QuestionService
+from question_bank.services.question_read_service import QuestionBankReadService
 
 
 _IMAGE_MARKER = re.compile(r"\[\[IMAGE:(?P<path>.+?)\]\]")
@@ -45,10 +45,9 @@ def export_question_paper_markdown(
     header_text: str | None = None,
     sections: Iterable[SectionSpec] | None = None,
 ) -> Path:
-    service = QuestionService(Path(db_path))
-    service.initialize_database()
+    service = QuestionBankReadService(Path(db_path))
     ordered_ids = _dedupe_ids(question_ids)
-    questions = [service.get_question(question_id) for question_id in ordered_ids]
+    questions = service.get_questions_for_export(ordered_ids)
     questions = [question for question in questions if question is not None]
     if not questions:
         raise ValueError("试题篮为空，无法导出 Markdown")

@@ -62,6 +62,38 @@ def test_model_profile_saves_custom_request_speed_settings(tmp_path) -> None:
     }
 
 
+def test_four_work_types_can_use_different_saved_api_sites(tmp_path) -> None:
+    store = ApiProfileStore(tmp_path / "profiles.json")
+    service = ModelProfileService(store)
+    service.upsert("站点甲", {
+        "api_key": "key-a", "base_url": "https://a.test/v1",
+        "grading_model": "legacy-a",
+    })
+    service.upsert("站点乙", {
+        "api_key": "key-b", "base_url": "https://b.test/v1",
+        "grading_model": "legacy-b",
+    })
+
+    state = service.update_task_bindings({
+        "content_generation": {"profile_name": "站点甲", "model": "content-a"},
+        "grading": {"profile_name": "站点乙", "model": "grading-b"},
+        "teaching_prep": {"profile_name": "站点甲", "model": "prep-a"},
+        "class_teacher": {"profile_name": "站点乙", "model": "teacher-b"},
+    })
+
+    assert state["task_bindings"]["grading"] == {
+        "profile_name": "站点乙", "model": "grading-b",
+    }
+    grading = store.profile_for_task("grading")
+    assert grading["base_url"] == "https://b.test/v1"
+    assert grading["api_key"] == "key-b"
+    assert grading["ocr_model"] == grading["grading_model"] == "grading-b"
+    content = store.profile_for_task("content_generation")
+    assert content["config_base_url"] == "https://a.test/v1"
+    assert content["config_api_key"] == "key-a"
+    assert content["config_model"] == "content-a"
+
+
 def test_model_profile_reports_shared_runtime_execution_status(tmp_path) -> None:
     governors = LLMExecutionGovernorRegistry()
     service = ModelProfileService(

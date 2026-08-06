@@ -1,7 +1,7 @@
 from pathlib import Path
 
 from question_bank.database.schema import connect, initialize_database
-from question_bank.services.question_service import QuestionService
+from question_bank.services.question_read_service import QuestionBankReadService
 
 
 def test_tag_value_counts_are_exact_and_ignore_deleted_content(tmp_path: Path) -> None:
@@ -33,7 +33,7 @@ def test_tag_value_counts_are_exact_and_ignore_deleted_content(tmp_path: Path) -
                 (question_id, value),
             )
 
-    counts = QuestionService(db_path).tag_value_counts(
+    counts = QuestionBankReadService(db_path).tag_value_counts(
         "knowledge_point",
         ["三角形全等", "三角形全等判定", "不存在"],
     )

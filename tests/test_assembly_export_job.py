@@ -8,7 +8,7 @@ from backend.jobs.manager import JobManager
 from backend.jobs.store import JobStore
 from question_bank.models.question import QuestionCreate
 from question_bank.services.assembly_workspace_service import AssemblyWorkspaceService
-from question_bank.services.question_service import QuestionService
+from tests.question_bank_support import QuestionBankTestStore
 
 
 def test_assembly_export_job_publishes_markdown_records_and_clears_same_draft(
@@ -16,7 +16,7 @@ def test_assembly_export_job_publishes_markdown_records_and_clears_same_draft(
 ) -> None:
     data_root = tmp_path / "data"
     db_path = data_root / "databases" / "question_bank.db"
-    question_service = QuestionService(db_path)
+    question_service = QuestionBankTestStore(db_path)
     question_id = question_service.add_question(
         QuestionCreate(
             question_number="1",
@@ -81,7 +81,7 @@ def test_assembly_export_cancel_after_generation_does_not_publish_or_clear_draft
 ) -> None:
     data_root = tmp_path / "data"
     db_path = data_root / "databases" / "question_bank.db"
-    question_service = QuestionService(db_path)
+    question_service = QuestionBankTestStore(db_path)
     question_id = question_service.add_question(
         QuestionCreate(
             question_number="1",

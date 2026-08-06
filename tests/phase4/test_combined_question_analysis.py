@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -23,13 +24,14 @@ from question_bank.training_criteria import (
     QuestionAnalysisImage,
     QuestionAnalysisInput,
     QuestionAnalysisInputLoader,
+    QuestionAnalysisWorkItem,
     TagOnlyV1ResultAdapter,
     TrainingCriteriaDraft,
     combined_response_format,
     criteria_from_confirmed_rubric,
     plan_analysis_batches,
 )
-from question_bank.services.question_service import QuestionService
+from question_bank.services.question_write_service import QuestionBankWriteService
 from tests.current_knowledge_support import install_current_knowledge
 
 
@@ -208,6 +210,77 @@ def _criteria_payload(
         "rationale": "合成判定点",
         "confidence": 0.9,
     }
+
+
+def test_question_taxonomy_snapshot_is_bound_and_deeply_immutable() -> None:
+    contract = {
+        "taxonomy_revision": 7,
+        "candidate_fingerprint": "snapshot-7",
+        "allowed_term_ids": {"knowledge": ["kp-1"]},
+        "candidates": {"knowledge": [{"id": "kp-1", "name": "一次方程"}]},
+    }
+    question = QuestionAnalysisInput(
+        question_id=17,
+        tagging_context=TaggingContext(question_text="解方程。", answer_text="x=1"),
+        taxonomy_contract=contract,
+    )
+
+    contract["allowed_term_ids"]["knowledge"].append("kp-2")
+    exported = question.taxonomy_snapshot.to_dict()
+    exported["allowed_term_ids"]["knowledge"].append("kp-3")
+
+    assert question.taxonomy_snapshot.question_id == 17
+    assert question.taxonomy_snapshot.taxonomy_revision == 7
+    assert question.taxonomy_snapshot.candidate_fingerprint == "snapshot-7"
+    assert question.taxonomy_snapshot.allowed_term_ids("knowledge") == ("kp-1",)
+
+
+def test_mixed_projection_work_is_grouped_behind_one_module_call(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "question-bank.db"
+    _seed_questions(database, count=2)
+    gateway = QueueGateway(
+        [
+            {
+                "results": [
+                    {
+                        "question_id": 1,
+                        "tag_analysis": _tag_payload(),
+                        "training_criteria": _criteria_payload(1),
+                    }
+                ]
+            },
+            {
+                "results": [
+                    {"question_id": 2, "tag_analysis": _tag_payload()}
+                ]
+            },
+        ]
+    )
+    module = CombinedQuestionAnalysisModule(
+        repository=CombinedAnalysisRepository(database),
+        gateway=gateway,
+        tag_writer=FakeTagWriter(),
+    )
+
+    outcome = module.analyze_work_items(
+        operation_id="mixed-analysis",
+        work_items=(
+            QuestionAnalysisWorkItem(question=_question(1)),
+            QuestionAnalysisWorkItem(
+                question=_question(2),
+                analyze_solution_evidence=False,
+            ),
+        ),
+    )
+
+    assert [call["projection"] for call in gateway.calls] == ["both", "tag"]
+    assert outcome["operation_ids"] == {
+        "both": "mixed-analysis",
+        "tag": "mixed-analysis:tag",
+    }
+    assert [item["question_id"] for item in outcome["items"]] == [1, 2]
 
 
 def test_combined_projection_partial_success_and_single_projection_retry(
@@ -734,7 +807,10 @@ def test_existing_tag_writer_reuses_quality_gate_and_question_save_seam(
     payload = _tag_payload()
     payload["textbook_chapters"] = ["七年级上册 一元一次方程"]
     writer = ExistingTagProjectionWriter(
-        question_service=QuestionService(database),
+        write_service=QuestionBankWriteService(
+            database,
+            data_root=database.parent,
+        ),
         tagging_service=ExistingWriterTaggingStub(),  # type: ignore[arg-type]
     )
 
@@ -845,7 +921,10 @@ def test_existing_tag_writer_persists_proposals_with_the_question_contract(
         }
     ]
     writer = ExistingTagProjectionWriter(
-        question_service=QuestionService(database),
+        write_service=QuestionBankWriteService(
+            database,
+            data_root=database.parent,
+        ),
         tagging_service=ProposalTaggingStub(),  # type: ignore[arg-type]
     )
 
@@ -1132,8 +1211,27 @@ def test_input_loader_includes_rich_text_and_controlled_actual_images(
                             "[[IMAGE:question_bank/extracted_images/"
                             "synthetic.png]]"
                         ),
-                        "image_relationships": {},
-                    }
+                        "xml": (
+                            '<w:p xmlns:w="http://schemas.openxmlformats.org/'
+                            'wordprocessingml/2006/main"><w:r><w:t>富内容题干</w:t>'
+                            "</w:r></w:p>"
+                        ),
+                        "image_relationships": {
+                            "rId5": (
+                                "question_bank/extracted_images/"
+                                "synthetic.png"
+                            )
+                        },
+                    },
+                    {
+                        "text": "三、解答题（本题共7小题，共61分）",
+                        "xml": (
+                            '<w:p xmlns:w="http://schemas.openxmlformats.org/'
+                            'wordprocessingml/2006/main"><w:r><w:t>'
+                            "三、解答题（本题共7小题，共61分）"
+                            "</w:t></w:r></w:p>"
+                        ),
+                    },
                 ],
                 "answer_blocks": [{"text": "富内容答案"}],
             },
@@ -1168,6 +1266,26 @@ def test_input_loader_includes_rich_text_and_controlled_actual_images(
     assert loaded[0].tagging_context.curriculum_volume_id == "pep-7-up"
     assert loaded[0].rich_question_blocks == (
         {"text": "富内容题干"},
+        {"text": "三、解答题（本题共7小题，共61分）"},
+    )
+    assert loaded[0].word_question_blocks == (
+        {
+            "text": (
+                "富内容题干"
+                "[[IMAGE:question_bank/extracted_images/synthetic.png]]"
+            ),
+            "xml": (
+                '<w:p xmlns:w="http://schemas.openxmlformats.org/'
+                'wordprocessingml/2006/main"><w:r><w:t>富内容题干</w:t>'
+                "</w:r></w:p>"
+            ),
+            "image_relationships": {
+                "rId5": (
+                    "sha256:"
+                    + hashlib.sha256(asset.read_bytes()).hexdigest()
+                )
+            },
+        },
     )
     assert len(loaded[0].images) == 1
     assert loaded[0].images[0].content.endswith(b"loader-synthetic")

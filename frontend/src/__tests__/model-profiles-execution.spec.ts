@@ -1,10 +1,12 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import {
   decodeModelExecutionStatus,
   decodeModelProfilesState,
   normalizeModelProfileInput,
 } from '../api/model-profiles'
+
+afterEach(() => vi.restoreAllMocks())
 
 function profile(overrides: Record<string, unknown> = {}) {
   return {
@@ -25,6 +27,15 @@ function profile(overrides: Record<string, unknown> = {}) {
   }
 }
 
+function taskBindings() {
+  return {
+    content_generation: { profile_name: '校内模型', model: 'content-model' },
+    grading: { profile_name: '校内模型', model: 'grading-model' },
+    teaching_prep: { profile_name: '校内模型', model: 'prep-model' },
+    class_teacher: { profile_name: '校内模型', model: 'teacher-model' },
+  }
+}
+
 describe('model profile request speed contract', () => {
   it('accepts the public automatic execution settings', () => {
     const active = profile()
@@ -32,6 +43,7 @@ describe('model profile request speed contract', () => {
       profiles: [active],
       active_profile_name: '校内模型',
       active_profile: active,
+      task_bindings: taskBindings(),
     }).active_profile).toMatchObject({
       request_speed_mode: 'automatic',
       max_concurrent_requests: 20,
@@ -95,5 +107,26 @@ describe('model profile request speed contract', () => {
       physical_request_count: 120,
       limiting_reason: 'configured',
     })
+  })
+
+  it('saves four work bindings without returning or sending API keys', async () => {
+    const { modelProfilesApi } = await import('../api/model-profiles')
+    const active = profile()
+    const bindings = taskBindings()
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(
+      JSON.stringify({
+        profiles: [active],
+        active_profile_name: '校内模型',
+        active_profile: active,
+        task_bindings: bindings,
+      }),
+      { status: 200, headers: { 'content-type': 'application/json' } },
+    ))
+
+    await expect(modelProfilesApi.saveTaskBindings(bindings)).resolves.toMatchObject({
+      task_bindings: bindings,
+    })
+    expect(String(fetchSpy.mock.calls[0]?.[0])).toBe('/api/model-profiles/routing/task-bindings')
+    expect(JSON.stringify(fetchSpy.mock.calls[0]?.[1]?.body)).not.toContain('api_key')
   })
 })

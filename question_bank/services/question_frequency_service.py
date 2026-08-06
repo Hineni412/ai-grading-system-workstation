@@ -12,7 +12,7 @@ from question_bank.current_knowledge import (
     CurrentKnowledgeUnavailable,
 )
 from question_bank.database.schema import connect, initialize_database
-from question_bank.services.question_service import CORE_ANALYSIS_TAG_TYPES
+from question_bank.models.question import CORE_ANALYSIS_TAG_TYPES
 
 
 FINGERPRINT_VERSION = 5
