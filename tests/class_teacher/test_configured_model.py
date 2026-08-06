@@ -143,36 +143,23 @@ def test_active_profile_gateway_is_default_off_until_configuration_exists(
 
 
 @pytest.mark.parametrize(
-    ("base_url", "model", "expected_status"),
+    ("base_url", "model"),
     [
         (
             "https://ark.cn-beijing.volces.com/api/v3",
-            "doubao-seed-2-0-lite-260428",
-            "ready",
-        ),
-        (
-            "https://ark.cn-beijing.volces.com/api/v3",
-            "doubao-seed-2-0-mini-260428",
-            "ready",
-        ),
-        (
-            "https://ark.cn-beijing.volces.com/api/v3",
-            "doubao-seed-2-0-pro-260428",
-            "model_unsupported",
+            "doubao-seed",
         ),
         (
             "https://model.invalid/v1",
-            "doubao-seed-2-0-lite-260428",
-            "endpoint_unsupported",
+            "synthetic-audio-capable-model",
         ),
     ],
 )
-def test_audio_capability_accepts_only_documented_doubao_combinations(
+def test_audio_capability_allows_any_configured_model(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     base_url: str,
     model: str,
-    expected_status: str,
 ) -> None:
     _clear_model_environment(monkeypatch)
     gateway = ActiveProfileApprovedModelGateway(
@@ -191,14 +178,14 @@ def test_audio_capability_accepts_only_documented_doubao_combinations(
 
     capability = gateway.audio_input_capabilities()
 
-    assert capability["status"] == expected_status
-    assert capability["available"] is (expected_status == "ready")
-    assert capability["provider"] == "volcengine_ark"
+    assert capability["status"] == "ready"
+    assert capability["available"] is True
+    assert capability["provider"] == "configured_model"
     assert capability["model"] == model
     assert "synthetic-key" not in json.dumps(capability)
 
 
-def test_doubao_audio_call_uses_metadata_only_single_request_gateway(
+def test_configured_audio_call_uses_metadata_only_single_request_gateway(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

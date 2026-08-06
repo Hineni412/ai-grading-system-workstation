@@ -50,7 +50,6 @@ const statusLabel = computed(() => {
   return ''
 })
 const busy = computed(() => starting.value || recording.value || transcribing.value || cloudSending.value || Boolean(pendingAudio.value))
-const cloudAvailable = computed(() => capabilities.value?.cloud_audio.available === true)
 
 function setBusy(): void {
   emit('busyChanged', busy.value)
@@ -76,13 +75,7 @@ function localUnavailableMessage(value: SpeechCapabilities | null): string {
 }
 
 function cloudUnavailableMessage(): string {
-  const cloud = capabilities.value?.cloud_audio
-  if (!cloud || cloud.status === 'profile_missing') {
-    return '请先在模型配置中设置火山方舟，以及支持语音的 Doubao Seed 2.0 Lite 或 Mini 260428。'
-  }
-  if (cloud.status === 'endpoint_unsupported') return '当前模型地址不是火山方舟，暂不能直接发送语音。'
-  if (cloud.status === 'model_unsupported') return '当前模型不支持直接语音；请改用 Doubao Seed 2.0 Lite 或 Mini 260428。'
-  return '直接发送语音暂时不可用，请使用本机转文字。'
+  return '请先在模型配置中设置班主任工作台模型；该模型需要支持语音输入。'
 }
 
 function transcriptionError(value: unknown): string {
@@ -99,13 +92,6 @@ function transcriptionError(value: unknown): string {
 
 async function chooseMode(next: VoiceMode): Promise<void> {
   if (busy.value || props.disabled || next === mode.value) return
-  if (next === 'cloud' && !cloudAvailable.value) {
-    await loadCapabilities()
-    if (!cloudAvailable.value) {
-      emit('error', cloudUnavailableMessage())
-      return
-    }
-  }
   mode.value = next
   emit('info', next === 'cloud'
     ? '语音给模型模式：整段原始录音会发给已配置模型；停止录音后仍需你再次确认。'
@@ -122,13 +108,6 @@ async function startRecording(): Promise<void> {
     await loadCapabilities()
     if (!capabilities.value?.available) {
       emit('error', localUnavailableMessage(capabilities.value))
-      return
-    }
-  }
-  if (mode.value === 'cloud' && !cloudAvailable.value) {
-    await loadCapabilities()
-    if (!cloudAvailable.value) {
-      emit('error', cloudUnavailableMessage())
       return
     }
   }
@@ -211,8 +190,13 @@ async function finishRecording(): Promise<void> {
 
 async function sendPendingAudio(): Promise<void> {
   const pending = pendingAudio.value
+  if (!pending || pending.attempted || !props.submitCloudAudio) return
+  if (!capabilities.value?.cloud_audio) await loadCapabilities()
   const cloud = capabilities.value?.cloud_audio
-  if (!pending || pending.attempted || !cloud?.available || !props.submitCloudAudio) return
+  if (!cloud) {
+    emit('error', cloudUnavailableMessage())
+    return
+  }
   pending.attempted = true
   cloudSending.value = true
   setBusy()
@@ -277,10 +261,13 @@ onMounted(() => { void loadCapabilities() })
 
 <template>
   <div class="voice-input">
-    <div class="voice-mode" :data-mode="mode" role="group" aria-label="语音输入方式">
-      <span class="voice-mode__slider" aria-hidden="true" />
-      <button type="button" :class="{ 'is-active': mode === 'local' }" :aria-pressed="mode === 'local'" :disabled="busy || disabled" @click="chooseMode('local')">本机转文字</button>
-      <button type="button" :class="{ 'is-active': mode === 'cloud' }" :aria-pressed="mode === 'cloud'" :aria-disabled="!cloudAvailable" :disabled="busy || disabled" @click="chooseMode('cloud')">语音给模型</button>
+    <div class="voice-mode-wrap">
+      <div class="voice-mode" :data-mode="mode" role="group" aria-label="语音输入方式">
+        <span class="voice-mode__slider" aria-hidden="true" />
+        <button type="button" :class="{ 'is-active': mode === 'local' }" :aria-pressed="mode === 'local'" :disabled="busy || disabled" @click="chooseMode('local')">本机转文字</button>
+        <button type="button" :class="{ 'is-active': mode === 'cloud' }" :aria-pressed="mode === 'cloud'" :disabled="busy || disabled" @click="chooseMode('cloud')">语音给模型</button>
+      </div>
+      <small class="voice-mode__hint">语音给模型要求当前模型支持语音输入</small>
     </div>
     <div class="voice-input__controls">
       <span v-if="statusLabel" class="voice-input__status" role="status">{{ statusLabel }}</span>
@@ -298,5 +285,5 @@ onMounted(() => { void loadCapabilities() })
 </template>
 
 <style scoped>
-.voice-input{display:flex;align-items:center;justify-content:flex-end;gap:12px;min-width:0}.voice-mode{position:relative;display:grid;grid-template-columns:1fr 1fr;min-width:218px;padding:3px;border:1px solid var(--color-border-default);border-radius:11px;background:var(--color-bg-subtle);isolation:isolate}.voice-mode__slider{position:absolute;z-index:-1;inset:3px auto 3px 3px;width:calc(50% - 3px);border-radius:8px;background:var(--color-bg-surface);box-shadow:0 1px 4px color-mix(in srgb,var(--color-text-primary) 14%,transparent);transition:transform .18s ease}.voice-mode[data-mode="cloud"] .voice-mode__slider{transform:translateX(100%)}.voice-mode button{min-height:34px;padding:0 9px;border:0;border-radius:8px;background:transparent;color:var(--color-text-secondary);font:inherit;font-size:12px;font-weight:700;white-space:nowrap}.voice-mode button.is-active{color:var(--color-text-primary)}.voice-mode button[aria-disabled="true"]:not(.is-active){color:var(--color-text-tertiary)}.voice-input__controls{display:flex;align-items:center;justify-content:flex-end;gap:8px;min-width:0}.voice-input__status{color:var(--color-text-secondary);font-size:12px;font-variant-numeric:tabular-nums;font-weight:700;white-space:nowrap}.voice-input__button,.voice-input__send,.voice-input__secondary,.voice-input__quiet{display:inline-flex;align-items:center;justify-content:center;gap:7px;min-height:42px;padding:0 13px;border-radius:10px;font:inherit;font-weight:700;white-space:nowrap}.voice-input__button{border:1px solid var(--color-border-strong);background:var(--color-bg-surface);color:var(--color-text-primary)}.voice-input__button svg{width:18px;height:18px;fill:currentColor}.voice-input__button--recording{border-color:var(--color-danger);background:var(--color-danger-subtle);color:var(--color-danger)}.voice-input__send{border:1px solid var(--color-accent);background:var(--color-accent);color:var(--color-bg-surface)}.voice-input__secondary{border:1px solid var(--color-border-strong);background:var(--color-bg-surface);color:var(--color-text-primary)}.voice-input__quiet{border:0;background:transparent;color:var(--color-text-secondary)}button:focus-visible{outline:3px solid var(--color-warning);outline-offset:2px}button:disabled{cursor:not-allowed;opacity:.62}@media(max-width:800px){.voice-input{width:100%;align-items:stretch;flex-direction:column}.voice-mode{width:100%}.voice-input__controls{width:100%;flex-wrap:wrap}.voice-input__status{flex:1 0 100%;text-align:center}.voice-input__button,.voice-input__send,.voice-input__secondary{flex:1}}
+.voice-input{display:flex;align-items:center;justify-content:flex-end;gap:12px;min-width:0}.voice-mode-wrap{display:grid;gap:3px}.voice-mode{position:relative;display:grid;grid-template-columns:1fr 1fr;min-width:218px;padding:3px;border:1px solid var(--color-border-default);border-radius:11px;background:var(--color-bg-subtle);isolation:isolate}.voice-mode__slider{position:absolute;z-index:-1;inset:3px auto 3px 3px;width:calc(50% - 3px);border-radius:8px;background:var(--color-bg-surface);box-shadow:0 1px 4px color-mix(in srgb,var(--color-text-primary) 14%,transparent);transition:transform .18s ease}.voice-mode[data-mode="cloud"] .voice-mode__slider{transform:translateX(100%)}.voice-mode button{min-height:34px;padding:0 9px;border:0;border-radius:8px;background:transparent;color:var(--color-text-secondary);font:inherit;font-size:12px;font-weight:700;white-space:nowrap}.voice-mode button.is-active{color:var(--color-text-primary)}.voice-mode button[aria-disabled="true"]:not(.is-active){color:var(--color-text-tertiary)}.voice-mode__hint{color:var(--color-text-secondary);font-size:11px;line-height:1.3;text-align:center}.voice-input__controls{display:flex;align-items:center;justify-content:flex-end;gap:8px;min-width:0}.voice-input__status{color:var(--color-text-secondary);font-size:12px;font-variant-numeric:tabular-nums;font-weight:700;white-space:nowrap}.voice-input__button,.voice-input__send,.voice-input__secondary,.voice-input__quiet{display:inline-flex;align-items:center;justify-content:center;gap:7px;min-height:42px;padding:0 13px;border-radius:10px;font:inherit;font-weight:700;white-space:nowrap}.voice-input__button{border:1px solid var(--color-border-strong);background:var(--color-bg-surface);color:var(--color-text-primary)}.voice-input__button svg{width:18px;height:18px;fill:currentColor}.voice-input__button--recording{border-color:var(--color-danger);background:var(--color-danger-subtle);color:var(--color-danger)}.voice-input__send{border:1px solid var(--color-accent);background:var(--color-accent);color:var(--color-bg-surface)}.voice-input__secondary{border:1px solid var(--color-border-strong);background:var(--color-bg-surface);color:var(--color-text-primary)}.voice-input__quiet{border:0;background:transparent;color:var(--color-text-secondary)}button:focus-visible{outline:3px solid var(--color-warning);outline-offset:2px}button:disabled{cursor:not-allowed;opacity:.62}@media(max-width:800px){.voice-input{width:100%;align-items:stretch;flex-direction:column}.voice-mode-wrap,.voice-mode{width:100%}.voice-input__controls{width:100%;flex-wrap:wrap}.voice-input__status{flex:1 0 100%;text-align:center}.voice-input__button,.voice-input__send,.voice-input__secondary{flex:1}}
 </style>

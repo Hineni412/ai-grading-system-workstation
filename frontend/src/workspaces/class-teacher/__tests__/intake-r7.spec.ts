@@ -20,7 +20,7 @@ async function settle(): Promise<void> {
   await Promise.resolve(); await Promise.resolve(); await new Promise((resolve) => setTimeout(resolve, 0)); await nextTick()
 }
 
-async function mountDesk(startValue = conversation(), workNodes: WorkNode[] = []) {
+async function mountDesk(startValue = conversation(), workNodes: WorkNode[] = [], cloudConfigured = true) {
   vi.spyOn(intakeApi, 'homeroom').mockResolvedValue({
     homeroom_class: '一班', revision: 1, classes: ['一班', '二班'], source_revision: 'a'.repeat(64),
   })
@@ -30,9 +30,12 @@ async function mountDesk(startValue = conversation(), workNodes: WorkNode[] = []
     available: true, status: 'ready', engine: 'synthetic-local-speech', offline: true,
     sample_rate: 16000, max_duration_seconds: 60, max_audio_bytes: 2_100_000,
     accepted_content_type: 'audio/wav',
-    cloud_audio: {
-      available: true, status: 'ready', provider: 'volcengine_ark',
-      model: 'doubao-seed-2-0-lite-260428', destination_fingerprint: 'fingerprint-1234',
+    cloud_audio: cloudConfigured ? {
+      available: true, status: 'ready', provider: 'configured_model',
+      model: 'synthetic-audio-model', destination_fingerprint: 'fingerprint-1234',
+    } : {
+      available: false, status: 'profile_missing', provider: 'configured_model',
+      model: null, destination_fingerprint: 'unconfigured-fingerprint',
     },
   })
   vi.spyOn(workApi, 'read').mockResolvedValue({
@@ -150,6 +153,7 @@ describe('B-UI-R7 conversation desk', () => {
     const host = await mountDesk()
 
     expect(host.querySelector<HTMLButtonElement>('.voice-mode button.is-active')!.textContent).toContain('本机转文字')
+    expect(host.textContent).toContain('要求当前模型支持语音输入')
     const cloudMode = [...host.querySelectorAll<HTMLButtonElement>('.voice-mode button')]
       .find((item) => item.textContent?.includes('语音给模型'))!
     cloudMode.click()
@@ -178,6 +182,19 @@ describe('B-UI-R7 conversation desk', () => {
     )
     expect(host.textContent).toContain('语音已转写并形成草稿')
     expect(host.textContent).not.toContain('尚未发送')
+  })
+
+  it('allows choosing cloud mode without a model whitelist and shows the support reminder', async () => {
+    const host = await mountDesk(conversation(), [], false)
+    const cloudMode = [...host.querySelectorAll<HTMLButtonElement>('.voice-mode button')]
+      .find((item) => item.textContent?.includes('语音给模型'))!
+
+    cloudMode.click()
+    await settle()
+
+    expect(cloudMode.classList.contains('is-active')).toBe(true)
+    expect(host.textContent).toContain('要求当前模型支持语音输入')
+    expect(host.textContent).toContain('整段原始录音会发给已配置模型')
   })
 
   it('keeps failed cloud audio in memory for one local transcription and never resends it', async () => {
