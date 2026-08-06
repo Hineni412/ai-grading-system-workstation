@@ -49,6 +49,7 @@ const retagAllBusy = ref(false)
 const taggingMode = ref<'fill' | 'retag' | null>(null)
 const retagMessage = ref('')
 const refreshedTerminalJobs = new Set<string>()
+const collapsedFolderKeys = ref(new Set<string>())
 const paperDraft = ref({
   title: '',
   year: '',
@@ -58,6 +59,7 @@ const paperDraft = ref({
   exam_type: '',
   grade: '',
   semester: '',
+  folder_name: '',
   textbook_version: '',
 })
 
@@ -115,6 +117,7 @@ const filteredPapers = computed(() => {
         paper.exam_type,
         paper.grade,
         paper.semester,
+        paper.folder_name,
         paper.textbook_version,
         paper.province,
         paper.city,
@@ -123,6 +126,42 @@ const filteredPapers = computed(() => {
     })
     .sort((left, right) => right.updated_at.localeCompare(left.updated_at))
 })
+
+interface PaperFolder {
+  key: string
+  label: string
+  manual: boolean
+  papers: QuestionBankPaper[]
+}
+
+const paperFolders = computed<PaperFolder[]>(() => {
+  const groups = new Map<string, PaperFolder>()
+  for (const paper of filteredPapers.value) {
+    const manualName = paper.folder_name?.trim() ?? ''
+    const automaticName = [paper.year, paper.semester].filter(Boolean).join(' · ')
+      || paper.semester
+      || paper.year
+      || '未归类'
+    const label = manualName || automaticName
+    const key = `${manualName ? 'manual' : 'semester'}:${label}`
+    const group = groups.get(key) ?? {
+      key,
+      label,
+      manual: Boolean(manualName),
+      papers: [],
+    }
+    group.papers.push(paper)
+    groups.set(key, group)
+  }
+  return [...groups.values()]
+})
+
+function toggleFolder(key: string): void {
+  const next = new Set(collapsedFolderKeys.value)
+  if (next.has(key)) next.delete(key)
+  else next.add(key)
+  collapsedFolderKeys.value = next
+}
 
 const totalQuestions = computed(() => store.papers.reduce(
   (total, paper) => total + paper.question_count,
@@ -413,6 +452,7 @@ function editPaper(paper: QuestionBankPaper): void {
     exam_type: paper.exam_type ?? '',
     grade: paper.grade ?? '',
     semester: paper.semester ?? '',
+    folder_name: paper.folder_name ?? '',
     textbook_version: paper.textbook_version ?? '',
   }
   formError.value = ''
@@ -447,6 +487,7 @@ async function savePaperMetadata(): Promise<void> {
     exam_type: optional(paperDraft.value.exam_type),
     grade: optional(paperDraft.value.grade),
     semester: optional(paperDraft.value.semester),
+    folder_name: optional(paperDraft.value.folder_name),
     textbook_version: optional(paperDraft.value.textbook_version),
   }
   if (await store.updatePaperMetadata(editingPaperId.value, metadata)) {
@@ -708,8 +749,21 @@ async function confirmPermanentDelete(): Promise<void> {
       <p>{{ store.papers.length ? '可以清除筛选后再查看。' : '上传 Word 或 PDF 后，会在这里生成一张试卷卡片。' }}</p>
     </div>
 
-    <div v-else class="paper-library__grid">
-      <article v-for="paper in filteredPapers" :key="paper.id" class="paper-card">
+    <div v-else class="paper-folders">
+      <section v-for="folder in paperFolders" :key="folder.key" class="paper-folder">
+        <button
+          type="button"
+          class="paper-folder__header"
+          :aria-expanded="!collapsedFolderKeys.has(folder.key)"
+          @click="toggleFolder(folder.key)"
+        >
+          <span class="paper-folder__chevron" aria-hidden="true">{{ collapsedFolderKeys.has(folder.key) ? '›' : '⌄' }}</span>
+          <strong>{{ folder.label }}</strong>
+          <span class="paper-folder__kind">{{ folder.manual ? '自定义文件夹' : '按学期自动归类' }}</span>
+          <span class="paper-folder__count">{{ folder.papers.length }} 份</span>
+        </button>
+        <div v-if="!collapsedFolderKeys.has(folder.key)" class="paper-library__grid">
+          <article v-for="paper in folder.papers" :key="paper.id" class="paper-card">
         <div class="paper-card__cover" :class="`is-${paper.source_type}`" aria-hidden="true">
           <span>{{ sourceLabel(paper.source_type) }}</span>
           <strong>试卷</strong>
@@ -798,7 +852,9 @@ async function confirmPermanentDelete(): Promise<void> {
             </div>
           </footer>
         </div>
-      </article>
+          </article>
+        </div>
+      </section>
     </div>
 
     <Teleport to="body">
@@ -899,6 +955,17 @@ async function confirmPermanentDelete(): Promise<void> {
                 <option value="上学期" />
                 <option value="下学期" />
               </datalist>
+            </label>
+
+            <label class="is-wide">
+              <span>自定义文件夹（可选）</span>
+              <input
+                v-model="paperDraft.folder_name"
+                name="paper-folder-name"
+                maxlength="80"
+                placeholder="如：中考专题卷"
+              >
+              <small>留空时，系统会按上面的年份和学期自动归类。</small>
             </label>
 
             <label class="is-wide">
@@ -1306,6 +1373,61 @@ async function confirmPermanentDelete(): Promise<void> {
   display: grid;
   gap: 14px;
   grid-template-columns: repeat(auto-fit, minmax(min(100%, 520px), 1fr));
+}
+
+.paper-folders {
+  display: grid;
+  gap: 18px;
+}
+
+.paper-folder {
+  display: grid;
+  gap: 10px;
+}
+
+.paper-folder__header {
+  align-items: center;
+  background: #f6f8f8;
+  border: 1px solid var(--color-border, #e2e4e7);
+  border-radius: 10px;
+  color: var(--color-text-primary, #1c2733);
+  cursor: pointer;
+  display: flex;
+  font: inherit;
+  gap: 9px;
+  min-height: 46px;
+  padding: 9px 13px;
+  text-align: left;
+  width: 100%;
+}
+
+.paper-folder__header:hover,
+.paper-folder__header:focus-visible {
+  background: #edf4f3;
+  border-color: rgb(19 94 107 / 35%);
+  outline: none;
+}
+
+.paper-folder__chevron {
+  color: var(--color-accent, #135e6b);
+  font-size: 22px;
+  line-height: 1;
+  width: 16px;
+}
+
+.paper-folder__kind {
+  background: #fff;
+  border: 1px solid var(--color-border, #e2e4e7);
+  border-radius: 999px;
+  color: var(--color-text-secondary, #64707d);
+  font-size: 11px;
+  padding: 3px 8px;
+}
+
+.paper-folder__count {
+  color: var(--color-text-secondary, #64707d);
+  font-size: 12px;
+  margin-left: auto;
 }
 
 .paper-card {

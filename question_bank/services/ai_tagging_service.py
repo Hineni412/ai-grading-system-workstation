@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
-from api_profiles import get_api_profile_store
+from api_profiles import get_api_profile_store, resolve_profile_for_task
 from backend.llm import (
     LLMProtocolAdapter,
     LLMRequestKind,
@@ -1253,8 +1253,7 @@ def _llm_settings_from_profile() -> LLMSettings | None:
 
 
 def _active_saved_profile() -> dict[str, Any]:
-    profiles = get_api_profile_store().load()
-    return dict(profiles[-1]) if profiles else {}
+    return resolve_profile_for_task(get_api_profile_store(), "content_generation")
 
 
 def _model_for_llm_client(llm_client: Any, fallback: str) -> str:

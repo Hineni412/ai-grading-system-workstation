@@ -50,7 +50,7 @@ def test_inspect_zip_rejects_unknown_root(tmp_path: Path) -> None:
         )
 
 
-def test_inspect_zip_rejects_workspace_data_in_ordinary_packages(
+def test_inspect_zip_allows_teaching_prep_workspace_in_protected_packages(
     tmp_path: Path,
 ) -> None:
     archive = _zip_with_member(
@@ -59,12 +59,13 @@ def test_inspect_zip_rejects_workspace_data_in_ordinary_packages(
         b"private",
     )
 
-    with pytest.raises(OpsArchiveInvalid, match="workspace_data_not_allowed"):
-        inspect_zip(
-            archive,
-            policy=OpsArchivePolicy(),
-            allowed_roots={"user_data", "config"},
-        )
+    inspection = inspect_zip(
+        archive,
+        policy=OpsArchivePolicy(),
+        allowed_roots={"user_data", "config"},
+    )
+
+    assert inspection.file_count == 1
 
 
 def test_inspect_zip_allows_class_teacher_workspace_in_ordinary_packages(

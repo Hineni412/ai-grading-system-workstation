@@ -285,17 +285,21 @@ describe('settings and Ops view', () => {
     expect(host.textContent).not.toContain('操作已经应用')
   })
 
-  it('shows a readable system ledger and all five protected operation entries', async () => {
+  it('keeps everyday backup and restore prominent while preserving advanced tools', async () => {
     const host = await mountView()
 
-    expect(host.textContent).toContain('设置与运维')
-    expect(host.textContent).toContain('系统状态账本')
+    expect(host.textContent).toContain('备份与维护')
+    expect(host.textContent).toContain('系统是否可以正常使用')
     expect(host.textContent).toContain('阅卷数据库')
     expect(host.textContent).toContain('待迁移 1')
     expect(host.textContent).toContain('API 配置未完成')
     expect(host.textContent).toContain('Microsoft Word')
     expect(host.textContent).toContain('创建备份')
     expect(host.textContent).toContain('恢复备份')
+    expect(host.textContent).toContain('阅卷系统数据（含题库）')
+    expect(host.textContent).toContain('备课工作台数据')
+    expect(host.textContent).toContain('班主任工作台数据')
+    expect(host.textContent).toContain('更多维护工具（一般无需使用）')
     expect(host.textContent).toContain('数据库迁移')
     expect(host.textContent).toContain('导出数据包')
     expect(host.textContent).toContain('导入数据包')
@@ -331,7 +335,7 @@ describe('settings and Ops view', () => {
 
     const gate = host.querySelector<HTMLElement>('[data-testid="ops-safety-gate"]')!
     const confirm = host.querySelector<HTMLButtonElement>('[data-testid="confirm-operation"]')!
-    expect(gate.textContent).toContain('安全闸门')
+    expect(gate.textContent).toContain('核对后再执行')
     expect(gate.textContent).toContain('预检完成')
     expect(gate.textContent).toContain('本次操作需要重启应用后才会生效')
     expect(gate.textContent).toContain('覆盖备份包内的同名数据')

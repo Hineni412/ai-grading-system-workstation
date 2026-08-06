@@ -157,6 +157,38 @@ def test_ops_backup_publishes_valid_zip_with_consistent_databases(tmp_path: Path
     assert result["file_path"] == str(published)
 
 
+def test_ops_backup_publishes_only_the_selected_teaching_prep_scope(
+    tmp_path: Path,
+) -> None:
+    paths = _paths(tmp_path)
+    teaching_root = paths.data_root / "workspaces" / "teaching-prep"
+    teaching_root.mkdir(parents=True)
+    (teaching_root / "lesson-note.json").write_text(
+        '{"title": "synthetic"}',
+        encoding="utf-8",
+    )
+    context = _Context(
+        _payload(
+            _service(paths),
+            "backup",
+            reason="manual",
+            scopes=["teaching_prep"],
+        )
+    )
+
+    result = run_ops_backup_job(context=context, paths=paths)
+
+    published = paths.backups_dir / str(result["filename"])
+    with zipfile.ZipFile(published, "r") as archive:
+        names = set(archive.namelist())
+    assert "user_data/workspaces/teaching-prep/lesson-note.json" in names
+    assert not any(name.startswith("user_data/databases/") for name in names)
+    assert not any(
+        name.startswith("user_data/workspaces/class-teacher/")
+        for name in names
+    )
+
+
 def test_ops_backup_cancel_before_publish_leaves_no_zip(tmp_path: Path) -> None:
     paths = _paths(tmp_path)
     context = _Context(
