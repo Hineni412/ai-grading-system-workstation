@@ -37,7 +37,7 @@ const label = computed(() => {
   if (transcribing.value) return '正在转写'
   if (starting.value) return '等待麦克风'
   if (recording.value) return '停止录音'
-  return mode.value === 'cloud' ? '录制给模型' : '语音输入'
+  return '语音输入'
 })
 const timeLabel = computed(() => `00:${String(elapsedSeconds.value % 60).padStart(2, '0')} / 01:00`)
 const statusLabel = computed(() => {
@@ -46,7 +46,6 @@ const statusLabel = computed(() => {
   if (transcribing.value) return '正在本机转写…'
   if (cloudSending.value) return '正在发送给模型…'
   if (pendingAudio.value) return `录音 ${pendingAudio.value.seconds} 秒，尚未发送`
-  if (mode.value === 'cloud') return '整段录音将发给模型'
   return ''
 })
 const busy = computed(() => starting.value || recording.value || transcribing.value || cloudSending.value || Boolean(pendingAudio.value))
@@ -269,21 +268,19 @@ onMounted(() => { void loadCapabilities() })
       </div>
       <small class="voice-mode__hint">语音给模型要求当前模型支持语音输入</small>
     </div>
-    <div class="voice-input__controls">
-      <span v-if="statusLabel" class="voice-input__status" role="status">{{ statusLabel }}</span>
-      <button v-if="!pendingAudio" type="button" class="voice-input__button" :class="{ 'voice-input__button--recording': recording }" :disabled="disabled || starting || transcribing || cloudSending" :aria-pressed="recording" :aria-label="label" @click="toggle">
-        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15.5a3.5 3.5 0 0 0 3.5-3.5V6a3.5 3.5 0 1 0-7 0v6a3.5 3.5 0 0 0 3.5 3.5Zm-6-4a1 1 0 0 1 2 0 4 4 0 0 0 8 0 1 1 0 1 1 2 0 6 6 0 0 1-5 5.92V20h2.5a1 1 0 1 1 0 2h-7a1 1 0 1 1 0-2H11v-2.58A6 6 0 0 1 6 11.5Z" /></svg>
-        <span>{{ label }}</span>
-      </button>
-      <template v-else>
-        <button type="button" class="voice-input__send" :disabled="cloudSending || pendingAudio.attempted" @click="sendPendingAudio">{{ pendingAudio.attempted ? '不再重复发送' : '发送录音' }}</button>
-        <button type="button" class="voice-input__secondary" :disabled="cloudSending || transcribing" @click="convertPendingToText">转为本机文字</button>
-        <button type="button" class="voice-input__quiet" :disabled="cloudSending || transcribing" @click="cancelRecording">取消</button>
-      </template>
+    <span class="voice-input__status" role="status">{{ statusLabel }}</span>
+    <button type="button" class="voice-input__button" :class="{ 'voice-input__button--recording': recording }" :disabled="disabled || starting || transcribing || cloudSending || Boolean(pendingAudio)" :aria-pressed="recording" :aria-label="label" @click="toggle">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15.5a3.5 3.5 0 0 0 3.5-3.5V6a3.5 3.5 0 1 0-7 0v6a3.5 3.5 0 0 0 3.5 3.5Zm-6-4a1 1 0 0 1 2 0 4 4 0 0 0 8 0 1 1 0 1 1 2 0 6 6 0 0 1-5 5.92V20h2.5a1 1 0 1 1 0 2h-7a1 1 0 1 1 0-2H11v-2.58A6 6 0 0 1 6 11.5Z" /></svg>
+      <span>{{ label }}</span>
+    </button>
+    <div v-if="pendingAudio" class="voice-input__pending" aria-label="尚未发送的录音">
+      <button type="button" class="voice-input__send" :disabled="cloudSending || pendingAudio.attempted" @click="sendPendingAudio">{{ pendingAudio.attempted ? '不再重复发送' : '发送录音' }}</button>
+      <button type="button" class="voice-input__secondary" :disabled="cloudSending || transcribing" @click="convertPendingToText">转为本机文字</button>
+      <button type="button" class="voice-input__quiet" :disabled="cloudSending || transcribing" @click="cancelRecording">取消</button>
     </div>
   </div>
 </template>
 
 <style scoped>
-.voice-input{display:flex;align-items:center;justify-content:flex-end;gap:12px;min-width:0}.voice-mode-wrap{display:grid;gap:3px}.voice-mode{position:relative;display:grid;grid-template-columns:1fr 1fr;min-width:218px;padding:3px;border:1px solid var(--color-border-default);border-radius:11px;background:var(--color-bg-subtle);isolation:isolate}.voice-mode__slider{position:absolute;z-index:-1;inset:3px auto 3px 3px;width:calc(50% - 3px);border-radius:8px;background:var(--color-bg-surface);box-shadow:0 1px 4px color-mix(in srgb,var(--color-text-primary) 14%,transparent);transition:transform .18s ease}.voice-mode[data-mode="cloud"] .voice-mode__slider{transform:translateX(100%)}.voice-mode button{min-height:34px;padding:0 9px;border:0;border-radius:8px;background:transparent;color:var(--color-text-secondary);font:inherit;font-size:12px;font-weight:700;white-space:nowrap}.voice-mode button.is-active{color:var(--color-text-primary)}.voice-mode button[aria-disabled="true"]:not(.is-active){color:var(--color-text-tertiary)}.voice-mode__hint{color:var(--color-text-secondary);font-size:11px;line-height:1.3;text-align:center}.voice-input__controls{display:flex;align-items:center;justify-content:flex-end;gap:8px;min-width:0}.voice-input__status{color:var(--color-text-secondary);font-size:12px;font-variant-numeric:tabular-nums;font-weight:700;white-space:nowrap}.voice-input__button,.voice-input__send,.voice-input__secondary,.voice-input__quiet{display:inline-flex;align-items:center;justify-content:center;gap:7px;min-height:42px;padding:0 13px;border-radius:10px;font:inherit;font-weight:700;white-space:nowrap}.voice-input__button{border:1px solid var(--color-border-strong);background:var(--color-bg-surface);color:var(--color-text-primary)}.voice-input__button svg{width:18px;height:18px;fill:currentColor}.voice-input__button--recording{border-color:var(--color-danger);background:var(--color-danger-subtle);color:var(--color-danger)}.voice-input__send{border:1px solid var(--color-accent);background:var(--color-accent);color:var(--color-bg-surface)}.voice-input__secondary{border:1px solid var(--color-border-strong);background:var(--color-bg-surface);color:var(--color-text-primary)}.voice-input__quiet{border:0;background:transparent;color:var(--color-text-secondary)}button:focus-visible{outline:3px solid var(--color-warning);outline-offset:2px}button:disabled{cursor:not-allowed;opacity:.62}@media(max-width:800px){.voice-input{width:100%;align-items:stretch;flex-direction:column}.voice-mode-wrap,.voice-mode{width:100%}.voice-input__controls{width:100%;flex-wrap:wrap}.voice-input__status{flex:1 0 100%;text-align:center}.voice-input__button,.voice-input__send,.voice-input__secondary{flex:1}}
+.voice-input{display:grid;grid-template-columns:218px 140px;grid-template-areas:"mode microphone" "hint status" "pending pending";justify-content:end;align-items:start;column-gap:12px;row-gap:3px;width:370px;max-width:100%;min-width:0}.voice-mode-wrap{display:contents}.voice-mode{position:relative;display:grid;grid-area:mode;grid-template-columns:1fr 1fr;width:218px;padding:3px;border:1px solid var(--color-border-default);border-radius:11px;background:var(--color-bg-subtle);isolation:isolate}.voice-mode__slider{position:absolute;z-index:-1;inset:3px auto 3px 3px;width:calc(50% - 3px);border-radius:8px;background:var(--color-bg-surface);box-shadow:0 1px 4px color-mix(in srgb,var(--color-text-primary) 14%,transparent);transition:transform .18s ease}.voice-mode[data-mode="cloud"] .voice-mode__slider{transform:translateX(100%)}.voice-mode button{min-height:34px;padding:0 9px;border:0;border-radius:8px;background:transparent;color:var(--color-text-secondary);font:inherit;font-size:12px;font-weight:700;white-space:nowrap}.voice-mode button.is-active{color:var(--color-text-primary)}.voice-mode__hint{grid-area:hint;color:var(--color-text-secondary);font-size:11px;line-height:1.3;text-align:center}.voice-input__status{grid-area:status;min-height:15px;color:var(--color-text-secondary);font-size:11px;font-variant-numeric:tabular-nums;font-weight:700;line-height:1.3;text-align:center;white-space:nowrap}.voice-input__button,.voice-input__send,.voice-input__secondary,.voice-input__quiet{display:inline-flex;align-items:center;justify-content:center;gap:7px;min-height:42px;padding:0 13px;border-radius:10px;font:inherit;font-weight:700;white-space:nowrap}.voice-input__button{grid-area:microphone;width:140px;border:1px solid var(--color-border-strong);background:var(--color-bg-surface);color:var(--color-text-primary)}.voice-input__button svg{width:18px;height:18px;fill:currentColor}.voice-input__button--recording{border-color:var(--color-danger);background:var(--color-danger-subtle);color:var(--color-danger)}.voice-input__pending{display:flex;grid-area:pending;justify-content:flex-end;gap:8px;padding-top:5px}.voice-input__send{border:1px solid var(--color-accent);background:var(--color-accent);color:var(--color-bg-surface)}.voice-input__secondary{border:1px solid var(--color-border-strong);background:var(--color-bg-surface);color:var(--color-text-primary)}.voice-input__quiet{border:0;background:transparent;color:var(--color-text-secondary)}button:focus-visible{outline:3px solid var(--color-warning);outline-offset:2px}button:disabled{cursor:not-allowed;opacity:.62}@media(max-width:800px){.voice-input{grid-template-columns:minmax(0,1fr) minmax(140px,1fr);width:100%}.voice-mode{width:100%}.voice-input__button{width:100%}.voice-input__pending{flex-wrap:wrap}.voice-input__send,.voice-input__secondary{flex:1}}
 </style>

@@ -152,18 +152,25 @@ describe('B-UI-R7 conversation desk', () => {
     })
     const host = await mountDesk()
 
+    const sharedMicrophone = host.querySelector<HTMLButtonElement>('.voice-input__button')!
+    expect(sharedMicrophone.getAttribute('aria-label')).toBe('语音输入')
     expect(host.querySelector<HTMLButtonElement>('.voice-mode button.is-active')!.textContent).toContain('本机转文字')
     expect(host.textContent).toContain('要求当前模型支持语音输入')
     const cloudMode = [...host.querySelectorAll<HTMLButtonElement>('.voice-mode button')]
       .find((item) => item.textContent?.includes('语音给模型'))!
     cloudMode.click()
     await settle()
-    host.querySelector<HTMLButtonElement>('[aria-label="录制给模型"]')!.click()
+    expect(host.querySelector<HTMLButtonElement>('.voice-input__button')).toBe(sharedMicrophone)
+    expect(sharedMicrophone.getAttribute('aria-label')).toBe('语音输入')
+    sharedMicrophone.click()
     await settle()
     host.querySelector<HTMLButtonElement>('[aria-label="停止录音"]')!.click()
     await settle()
 
     expect(host.textContent).toContain('尚未发送')
+    expect(host.querySelector<HTMLButtonElement>('.voice-input__button')).toBe(sharedMicrophone)
+    expect(sharedMicrophone.getAttribute('aria-label')).toBe('语音输入')
+    expect(host.querySelector('.voice-input__pending')).not.toBeNull()
     expect(sendAudio).not.toHaveBeenCalled()
     expect(transcribe).not.toHaveBeenCalled()
 
@@ -218,7 +225,7 @@ describe('B-UI-R7 conversation desk', () => {
     const cloudMode = [...host.querySelectorAll<HTMLButtonElement>('.voice-mode button')]
       .find((item) => item.textContent?.includes('语音给模型'))!
     cloudMode.click(); await settle()
-    host.querySelector<HTMLButtonElement>('[aria-label="录制给模型"]')!.click(); await settle()
+    host.querySelector<HTMLButtonElement>('[aria-label="语音输入"]')!.click(); await settle()
     host.querySelector<HTMLButtonElement>('[aria-label="停止录音"]')!.click(); await settle()
     ;[...host.querySelectorAll<HTMLButtonElement>('button')]
       .find((item) => item.textContent?.includes('发送录音'))!.click()
