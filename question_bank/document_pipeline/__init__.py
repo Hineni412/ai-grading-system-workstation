@@ -55,7 +55,16 @@ from .pipeline import (
     QuestionDocumentPipeline,
 )
 from .publication import QuestionBankPublicationAdapter
-from .word_renderer import SharedWordQuestionRenderer, WordStyleProfile, validate_docx
+from .word_renderer import (
+    RichBlockRenderResult,
+    SharedWordQuestionRenderer,
+    WordStyleProfile,
+    add_answer_space,
+    answer_space_lines,
+    compact_source_label,
+    rich_block_text,
+    validate_docx,
+)
 
 __all__ = [
     "AnswerLink",
@@ -91,6 +100,7 @@ __all__ = [
     "QuestionDraft",
     "QuestionReviewDecision",
     "RapidOcrAdapter",
+    "RichBlockRenderResult",
     "RecognitionSource",
     "RestrictedMathError",
     "ReviewState",
@@ -99,13 +109,17 @@ __all__ = [
     "SourceRegion",
     "TextLayerState",
     "WordStyleProfile",
+    "add_answer_space",
+    "answer_space_lines",
     "build_math_expression",
+    "compact_source_label",
     "data_root_for_database",
     "export_receipt_path",
     "load_legacy_export_receipt",
     "published_math_metadata",
     "restricted_latex_to_mathml",
     "restricted_latex_to_omml",
+    "rich_block_text",
     "save_validated_legacy_export",
     "validate_docx",
 ]
