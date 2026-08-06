@@ -411,7 +411,7 @@ def test_only_question_tag_runtime_contracts_remain() -> None:
         PracticePlanService,
     )
     from question_bank.services.ai_tagging_service import AITaggingService
-    from question_bank.services.question_service import QuestionService
+    from question_bank.services.question_write_service import QuestionBankWriteService
     import session_manager
 
     assert hasattr(DiagnosisProfileService, "build_tag_profiles")
@@ -423,10 +423,10 @@ def test_only_question_tag_runtime_contracts_remain() -> None:
     assert not hasattr(session_manager, "iter_rubric_skill_requests")
     assert "seed_skills" not in inspect.signature(initialize_database).parameters
     assert "resolve_skills" not in inspect.signature(
-        QuestionService.save_tag_analysis
+        QuestionBankWriteService.save_tag_analysis
     ).parameters
     assert "skill_resolver" not in inspect.signature(
-        QuestionService.save_tag_analysis
+        QuestionBankWriteService.save_tag_analysis
     ).parameters
     assert build_question_tag_graph_rows({"students": []}) == []
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 
 
@@ -21,6 +22,26 @@ ALLOWED_TAG_TYPES = {
     "measured_skill_name",
     "supporting_skill_name",
 }
+
+CORE_ANALYSIS_TAG_TYPES = ("knowledge_point", "ability", "exam_scope")
+
+
+def has_complete_analysis_tags(question: Mapping[str, object]) -> bool:
+    raw_tags = question.get("tags")
+    tags = raw_tags if isinstance(raw_tags, (list, tuple)) else ()
+    seen = {
+        str(tag.get("tag_type") or "").strip()
+        for tag in tags
+        if isinstance(tag, Mapping) and str(tag.get("tag_value") or "").strip()
+    }
+    try:
+        difficulty = float(question.get("difficulty") or 0)
+    except (TypeError, ValueError):
+        difficulty = 0
+    return (
+        all(tag_type in seen for tag_type in CORE_ANALYSIS_TAG_TYPES)
+        and 1 <= difficulty <= 10
+    )
 
 
 @dataclass(frozen=True)

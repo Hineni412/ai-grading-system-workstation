@@ -10,7 +10,7 @@ from docx.oxml import parse_xml
 from docx.oxml.ns import qn
 from docx.shared import Cm, Inches, Pt
 
-from question_bank.services.question_service import QuestionService
+from question_bank.services.question_read_service import QuestionBankReadService
 from question_bank.services.assembly_basket_state import SectionSpec
 from question_bank.exporters.base_exporter import (
     _resolve_image_path,
@@ -185,9 +185,8 @@ def export_question_paper_docx(
     sections: list[SectionSpec] | None = None,
     config: ExportConfig | None = None,
 ) -> Path:
-    service = QuestionService(Path(db_path))
-    service.initialize_database()
-    questions = [service.get_question(int(question_id)) for question_id in question_ids]
+    service = QuestionBankReadService(Path(db_path))
+    questions = service.get_questions_for_export(question_ids)
     questions = [question for question in questions if question is not None]
     if not questions:
         raise ValueError("试题篮为空，无法导出 Word")

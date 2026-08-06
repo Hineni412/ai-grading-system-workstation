@@ -7,12 +7,12 @@ from docx import Document
 
 from question_bank.exporters.paper_docx_exporter import export_question_paper_docx
 from question_bank.models.question import QuestionCreate
-from question_bank.services.question_service import QuestionService
+from tests.question_bank_support import QuestionBankTestStore
 
 
 def test_grouped_docx_export_renumbers_questions_after_grouping(tmp_path: Path) -> None:
     db_path = tmp_path / "question_bank.db"
-    service = QuestionService(db_path)
+    service = QuestionBankTestStore(db_path)
     solution_id = service.add_question(
         QuestionCreate(
             question_number="3",
