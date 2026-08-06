@@ -89,12 +89,9 @@ function transcriptionError(value: unknown): string {
   return '本地语音转写没有完成，已有文字不会丢失。'
 }
 
-async function chooseMode(next: VoiceMode): Promise<void> {
+function chooseMode(next: VoiceMode): void {
   if (busy.value || props.disabled || next === mode.value) return
   mode.value = next
-  emit('info', next === 'cloud'
-    ? '语音给模型模式：整段原始录音会发给已配置模型；停止录音后仍需你再次确认。'
-    : '本机转文字模式：录音只在本机转成文字，不会自动发送。')
 }
 
 async function startRecording(): Promise<void> {
