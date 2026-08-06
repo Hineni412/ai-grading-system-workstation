@@ -77,7 +77,7 @@ class ClassTeacherIntake:
             return {
                 "available": False,
                 "status": "profile_missing",
-                "provider": "volcengine_ark",
+                "provider": "configured_model",
                 "model": None,
                 "destination_fingerprint": "",
             }

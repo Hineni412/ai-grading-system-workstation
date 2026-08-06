@@ -25,15 +25,6 @@ from .crypto import canonical_json
 from .model_approval import ModelDestinationChanged, ModelDispatchDisabled
 
 
-_DOUBAO_AUDIO_MODELS = frozenset(
-    {
-        "doubao-seed-2-0-lite-260428",
-        "doubao-seed-2-0-mini-260428",
-    }
-)
-_DOUBAO_ARK_HOST = "ark.cn-beijing.volces.com"
-
-
 class _ProfileStore(Protocol):
     def load(self) -> list[dict[str, Any]]: ...
 
@@ -86,7 +77,7 @@ class ActiveProfileApprovedModelGateway:
         return _destination_snapshot(resolved)
 
     def audio_input_capabilities(self) -> dict[str, object]:
-        """Report only explicitly documented Doubao audio combinations."""
+        """Report whether a model is configured; the provider owns modality support."""
 
         try:
             resolved = self._resolve()
@@ -95,7 +86,7 @@ class ActiveProfileApprovedModelGateway:
             return {
                 "available": False,
                 "status": "profile_missing",
-                "provider": "volcengine_ark",
+                "provider": "configured_model",
                 "model": None,
                 "destination_fingerprint": empty["destination_fingerprint"],
             }
@@ -104,17 +95,10 @@ class ActiveProfileApprovedModelGateway:
     @staticmethod
     def _audio_capability_for(resolved: _ResolvedModel) -> dict[str, object]:
         snapshot = _destination_snapshot(resolved)
-        host = (urlsplit(resolved.base_url).hostname or "").casefold()
-        if host != _DOUBAO_ARK_HOST:
-            status = "endpoint_unsupported"
-        elif resolved.model.casefold() not in _DOUBAO_AUDIO_MODELS:
-            status = "model_unsupported"
-        else:
-            status = "ready"
         return {
-            "available": status == "ready",
-            "status": status,
-            "provider": "volcengine_ark",
+            "available": True,
+            "status": "ready",
+            "provider": "configured_model",
             "model": resolved.model,
             "destination_fingerprint": snapshot["destination_fingerprint"],
         }
@@ -242,7 +226,7 @@ class ActiveProfileApprovedModelGateway:
         operation_id: str,
         expected_destination_fingerprint: str,
     ) -> str:
-        """Send one in-memory WAV to verified Doubao audio input, without retry."""
+        """Send one in-memory WAV to the configured model, without retry."""
 
         resolved = self._resolve()
         capability = self._audio_capability_for(resolved)

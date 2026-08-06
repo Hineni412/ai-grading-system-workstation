@@ -137,9 +137,9 @@ class _CloudAudioModel:
     def audio_input_capabilities(self) -> dict[str, object]:
         return {
             "available": self.available,
-            "status": "ready" if self.available else "model_unsupported",
-            "provider": "volcengine_ark",
-            "model": "doubao-seed-2-0-lite-260428",
+            "status": "ready" if self.available else "profile_missing",
+            "provider": "configured_model",
+            "model": "synthetic-audio-model" if self.available else None,
             "destination_fingerprint": "synthetic-audio-fingerprint",
         }
 
@@ -222,7 +222,7 @@ def test_cloud_audio_requires_confirmation_endpoint_and_persists_only_transcript
     assert not list(tmp_path.rglob("*.wav"))
 
 
-def test_cloud_audio_rejects_unsupported_model_without_dispatch(tmp_path: Path) -> None:
+def test_cloud_audio_requires_a_configured_model_without_dispatch(tmp_path: Path) -> None:
     service, _port = _service(tmp_path)
     model = _CloudAudioModel(available=False)
     service.intake.model_gateway = model

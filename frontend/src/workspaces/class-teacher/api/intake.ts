@@ -76,8 +76,8 @@ export interface SpeechCapabilities {
 
 export interface CloudAudioCapabilities {
   available: boolean
-  status: 'ready' | 'profile_missing' | 'endpoint_unsupported' | 'model_unsupported'
-  provider: 'volcengine_ark'
+  status: 'ready' | 'profile_missing'
+  provider: 'configured_model'
   model: string | null
   destination_fingerprint: string
 }
@@ -255,8 +255,8 @@ function decodeSpeechCapabilities(value: unknown): SpeechCapabilities {
   const cloudStatus = text(cloudItem.status)
   if (
     typeof cloudItem.available !== 'boolean'
-    || cloudItem.provider !== 'volcengine_ark'
-    || !['ready', 'profile_missing', 'endpoint_unsupported', 'model_unsupported'].includes(cloudStatus)
+    || cloudItem.provider !== 'configured_model'
+    || !['ready', 'profile_missing'].includes(cloudStatus)
   ) return invalid()
   return {
     available: item.available,
@@ -270,7 +270,7 @@ function decodeSpeechCapabilities(value: unknown): SpeechCapabilities {
     cloud_audio: {
       available: cloudItem.available,
       status: cloudStatus as CloudAudioCapabilities['status'],
-      provider: 'volcengine_ark',
+      provider: 'configured_model',
       model: cloudItem.model === null ? null : text(cloudItem.model),
       destination_fingerprint: text(cloudItem.destination_fingerprint),
     },
