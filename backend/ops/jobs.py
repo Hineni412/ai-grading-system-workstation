@@ -81,7 +81,8 @@ def run_ops_backup_job(*, context: JobContext, paths: Any) -> dict[str, object]:
         ) as staging_value:
             staging_root = Path(staging_value)
             archive_path = staging_root / "backup.zip"
-            entries = _backup_entries(paths, staging_root)
+            scopes = list(parameters.get("scopes") or [])
+            entries = _backup_entries(paths, staging_root, scopes=scopes)
             write_export_zip(entries, archive_path)
             _validate_zip(archive_path)
             context.report(0.9, "ops_backup", "ready_to_publish")
@@ -175,7 +176,14 @@ def create_safety_backup(
         ) as staging_value:
             staging_root = Path(staging_value)
             archive_path = staging_root / "safety.zip"
-            write_export_zip(_backup_entries(paths, staging_root), archive_path)
+            write_export_zip(
+                _backup_entries(
+                    paths,
+                    staging_root,
+                    scopes=["grading", "class_teacher"],
+                ),
+                archive_path,
+            )
             _validate_zip(archive_path, require_all_databases=True)
             os.replace(archive_path, destination)
     except Exception as exc:
@@ -335,8 +343,13 @@ def _validate_online_payload(
     return dict(parameters)
 
 
-def _backup_entries(paths: Any, staging_root: Path) -> list[ExportEntry]:
-    preview = preview_backup(path_manager=paths)
+def _backup_entries(
+    paths: Any,
+    staging_root: Path,
+    *,
+    scopes: list[object],
+) -> list[ExportEntry]:
+    preview = preview_backup(path_manager=paths, scopes=[str(item) for item in scopes])
     entries: list[ExportEntry] = []
     snapshots = {
         "user_data/databases/grading_system.db": (
@@ -354,6 +367,10 @@ def _backup_entries(paths: Any, staging_root: Path) -> list[ExportEntry]:
         "user_data/workspaces/class-teacher/class_teacher_work.db": (
             Path(paths.data_root) / "workspaces" / "class-teacher" / "class_teacher_work.db",
             staging_root / "class_teacher_work.db",
+        ),
+        "user_data/workspaces/teaching-prep/teaching_prep.db": (
+            Path(paths.data_root) / "workspaces" / "teaching-prep" / "teaching_prep.db",
+            staging_root / "teaching_prep.db",
         ),
     }
     for arc_name in preview["files"]:

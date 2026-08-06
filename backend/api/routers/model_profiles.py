@@ -11,6 +11,7 @@ from backend.api.schemas.model_profiles import (
     ModelExecutionStatusResponse,
     ModelProfileStateResponse,
     ModelProfileUpdateRequest,
+    ModelTaskBindingsUpdateRequest,
 )
 from backend.model_profiles import (
     ModelProfileInvalid,
@@ -125,6 +126,27 @@ def activate_model_profile(
             "model_profile_not_found",
             "Model profile not found",
         ) from exc
+    except (ApiProfileStorageError, OSError, TimeoutError) as exc:
+        _raise_profile_storage_error(exc)
+    return ModelProfileStateResponse(**state)
+
+
+@router.put(
+    "/routing/task-bindings",
+    response_model=ModelProfileStateResponse,
+    responses={
+        422: MODEL_PROFILE_ERROR_RESPONSES[422],
+        503: MODEL_PROFILE_ERROR_RESPONSES[503],
+    },
+)
+def update_model_task_bindings(
+    body: ModelTaskBindingsUpdateRequest,
+    service: ModelProfileService = Depends(get_model_profile_service),
+) -> ModelProfileStateResponse:
+    try:
+        state = service.update_task_bindings(body.model_dump())
+    except ModelProfileInvalid as exc:
+        raise ApiError(422, "model_profile_invalid", str(exc)) from exc
     except (ApiProfileStorageError, OSError, TimeoutError) as exc:
         _raise_profile_storage_error(exc)
     return ModelProfileStateResponse(**state)

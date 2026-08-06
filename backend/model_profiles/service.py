@@ -47,6 +47,12 @@ _SECRET_FIELDS = frozenset({"api_key", "config_api_key"})
 _MAX_ENDPOINT_LENGTH = 2048
 _MAX_MODEL_LENGTH = 200
 _MAX_SECRET_LENGTH = 8192
+_TASK_KEYS = (
+    "content_generation",
+    "grading",
+    "teaching_prep",
+    "class_teacher",
+)
 
 
 class ModelProfileInvalid(ValueError):
@@ -83,6 +89,63 @@ class ModelProfileService:
             "profiles": public_profiles,
             "active_profile_name": active_name,
             "active_profile": public_profiles[-1] if public_profiles else None,
+            "task_bindings": self._public_task_bindings(profiles),
+        }
+
+    def update_task_bindings(
+        self,
+        bindings: Mapping[str, Mapping[str, Any]],
+    ) -> dict[str, Any]:
+        if set(bindings) != set(_TASK_KEYS):
+            raise ModelProfileInvalid("All model task bindings are required")
+        profiles = self.store.load()
+        profile_names = {
+            _clean_existing_text(profile.get("name")) for profile in profiles
+        }
+        normalized: dict[str, dict[str, str]] = {}
+        for task in _TASK_KEYS:
+            value = bindings.get(task)
+            if not isinstance(value, Mapping):
+                raise ModelProfileInvalid("Model task binding is invalid")
+            profile_name = _validated_profile_name(value.get("profile_name"))
+            model = _clean_existing_text(value.get("model"))
+            if profile_name not in profile_names or not model or len(model) > _MAX_MODEL_LENGTH:
+                raise ModelProfileInvalid("Model task binding is invalid")
+            normalized[task] = {"profile_name": profile_name, "model": model}
+        self.store.replace_task_bindings(normalized)
+        return self.list_state()
+
+    def _public_task_bindings(
+        self,
+        profiles: list[dict[str, Any]],
+    ) -> dict[str, dict[str, str | None]]:
+        saved = self.store.load_task_bindings()
+        active = profiles[-1] if profiles else {}
+        active_name = _clean_existing_text(active.get("name")) or None
+        defaults = {
+            "content_generation": _clean_existing_text(
+                active.get("config_model") or active.get("grading_model")
+            ),
+            "grading": _clean_existing_text(
+                active.get("grading_model") or active.get("ocr_model")
+            ),
+            "teaching_prep": _clean_existing_text(
+                active.get("teaching_prep_model")
+                or active.get("config_model")
+                or active.get("grading_model")
+            ),
+            "class_teacher": _clean_existing_text(
+                active.get("class_teacher_model")
+                or active.get("config_model")
+                or active.get("grading_model")
+            ),
+        }
+        return {
+            task: {
+                "profile_name": saved.get(task, {}).get("profile_name") or active_name,
+                "model": saved.get(task, {}).get("model") or defaults[task],
+            }
+            for task in _TASK_KEYS
         }
 
     def upsert(

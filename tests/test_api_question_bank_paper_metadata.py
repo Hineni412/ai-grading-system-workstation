@@ -53,6 +53,7 @@ def _payload(updated_at: str, *, title: str) -> dict[str, object]:
             "exam_type": "阶段练习",
             "grade": "七年级",
             "semester": "下学期",
+            "folder_name": "中考专题",
             "textbook_version": "北师大版 2024",
         },
     }
@@ -74,6 +75,7 @@ def test_paper_metadata_patch_returns_the_server_confirmed_card_values(
     assert body["title"] == "0526test2"
     assert body["year"] == "2026"
     assert body["exam_type"] == "阶段练习"
+    assert body["folder_name"] == "中考专题"
     assert body["updated_at"] != updated_at
     assert "source_file" not in body
 

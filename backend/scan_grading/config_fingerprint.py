@@ -4,7 +4,7 @@ import json
 import os
 from pathlib import Path
 
-from api_profiles import active_api_profile, get_api_profile_store
+from api_profiles import get_api_profile_store, resolve_profile_for_task
 from answer_region_geometry import answer_regions_with_template_source_sizes
 from backend.repositories.access import GradingRepositoryAccess, as_grading_repositories
 from grading_run_identity import grading_config_fingerprint
@@ -12,7 +12,7 @@ from path_manager import resolve_stored_file_path
 
 
 def active_grading_model() -> str:
-    profile = active_api_profile(get_api_profile_store().load())
+    profile = resolve_profile_for_task(get_api_profile_store(), "grading")
     return str(
         profile.get("grading_model")
         or os.getenv("LLM_GRADING_MODEL")

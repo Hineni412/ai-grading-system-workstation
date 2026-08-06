@@ -55,6 +55,19 @@ function returnToConversation(conversationId: string, workItemId: string): void 
 function handoffCompleted(conversationId: string): void {
   void navigate({ surface: 'home', conversationId, handoffId: null })
 }
+
+function openDomain(domain: string): void {
+  const destinations = {
+    student_growth: { surface: 'students' as const, panel: 'academic' as const },
+    student_support: { surface: 'students' as const, panel: 'support' as const },
+    conflict_safety: { surface: 'affairs' as const },
+    class_operations: { surface: 'calendar' as const },
+    activities_culture: { surface: 'calendar' as const },
+    school_coordination: { surface: 'affairs' as const },
+  }
+  const destination = destinations[domain as keyof typeof destinations]
+  if (destination) void navigate({ ...destination, handoffId: null })
+}
 </script>
 
 <template>
@@ -75,6 +88,7 @@ function handoffCompleted(conversationId: string): void {
         @conversation-changed="rememberConversation"
         @open-handoff="openHandoff"
         @open-calendar="selectSurface('calendar')"
+        @open-domain="openDomain"
       />
       <CalendarSurface
         v-else-if="routeState.surface === 'calendar'"

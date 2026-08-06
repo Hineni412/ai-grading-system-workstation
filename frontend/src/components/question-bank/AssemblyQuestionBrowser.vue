@@ -312,14 +312,19 @@ const activeFilters = computed<ActiveFilter[]>(() => {
 
 const activeFilterCount = computed(() => activeFilters.value.length)
 
-onMounted(async () => {
-  await Promise.all([
+onMounted(() => {
+  // The first question page is independent from the catalog and facet
+  // aggregates. Start it immediately so slow taxonomy statistics never keep
+  // teachers staring at an empty browser.
+  const initialQuestions = loadQuestions(false, false)
+  void Promise.all([
     assembly.loadState === 'idle' ? assembly.load() : Promise.resolve(),
     loadCatalog(),
-    loadFacets(),
-  ])
-  chooseInitialVolume()
-  await loadQuestions(false, false)
+    // Facet aggregation uses the same database snapshot path. Starting it
+    // after the small first-page query keeps both reads from competing for
+    // disk bandwidth during the visible load.
+    initialQuestions.then(loadFacets),
+  ]).then(chooseInitialVolume)
 })
 
 onBeforeUnmount(() => {
@@ -644,7 +649,16 @@ function closeSimilar(): void {
 function tagsFor(question: QuestionBankListItem, tagType: string): string[] {
   return question.tags
     .filter((tag) => tag.tag_type === tagType)
-    .map((tag) => tag.tag_value)
+    .map((tag) => (
+      tagType === 'knowledge_point'
+        ? knowledgeLeafLabel(tag.tag_value)
+        : tag.tag_value
+    ))
+}
+
+function knowledgeLeafLabel(value: string): string {
+  const parts = value.split('｜').map((part) => part.trim()).filter(Boolean)
+  return parts[parts.length - 1] ?? value
 }
 </script>
 

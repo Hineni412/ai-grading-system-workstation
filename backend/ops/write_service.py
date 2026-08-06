@@ -223,7 +223,18 @@ class OpsWriteService:
         reason = str(getattr(request, "reason", "") or "")
         if reason not in VALID_REASONS:
             raise OpsRequestInvalid("invalid backup reason")
-        preview = preview_backup(path_manager=self.paths)
+        allowed_scopes = ("grading", "teaching_prep", "class_teacher")
+        requested_scopes = list(
+            getattr(request, "scopes", ()) or allowed_scopes
+        )
+        if (
+            not requested_scopes
+            or len(set(requested_scopes)) != len(requested_scopes)
+            or set(requested_scopes) - set(allowed_scopes)
+        ):
+            raise OpsRequestInvalid("invalid backup scopes")
+        scopes = [scope for scope in allowed_scopes if scope in requested_scopes]
+        preview = preview_backup(path_manager=self.paths, scopes=scopes)
         summary = {
             "file_count": int(preview["file_count"]),
             "total_size_bytes": int(preview["total_size"]),
@@ -235,7 +246,7 @@ class OpsWriteService:
             "sensitive_skipped_count": len(preview["skipped_sensitive"]),
             "warnings": [],
         }
-        parameters = {"reason": reason}
+        parameters = {"reason": reason, "scopes": scopes}
         return self._plan(OpsOperation.BACKUP, parameters, summary)
 
     def _preflight_restore(self, request: Any) -> OpsInternalPlan:
@@ -386,7 +397,12 @@ class OpsWriteService:
                     digest.update(migration.name.encode("utf-8"))
                     digest.update(_file_sha256(migration).encode("ascii"))
             return digest.hexdigest()
-        preview = preview_backup(path_manager=self.paths)
+        scopes = (
+            list(plan.parameters.get("scopes") or [])
+            if plan.operation is OpsOperation.BACKUP
+            else None
+        )
+        preview = preview_backup(path_manager=self.paths, scopes=scopes)
         return _path_entries_fingerprint(
             [
                 (str(name), self._path_for_backup_name(str(name)))

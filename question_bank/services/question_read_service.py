@@ -833,6 +833,23 @@ class QuestionBankReadService:
         with _read_connection(self.db_path) as conn:
             rows = conn.execute(
                 f"""
+                WITH tag_summary AS (
+                    SELECT
+                        question_id,
+                        1 AS has_analysis_tag,
+                        COUNT(DISTINCT CASE
+                            WHEN tag_type IN (
+                                'knowledge_point',
+                                'ability',
+                                'exam_scope'
+                            )
+                            THEN tag_type
+                        END) AS core_tag_count
+                    FROM question_tags
+                    WHERE tag_type IN ({tag_placeholders})
+                      AND COALESCE(tag_value, '') <> ''
+                    GROUP BY question_id
+                )
                 SELECT
                     p.id,
                     p.title,
@@ -844,41 +861,29 @@ class QuestionBankReadService:
                     p.exam_type,
                     p.grade,
                     p.semester,
+                    p.folder_name,
                     p.textbook_version,
                     p.import_status,
                     p.created_at,
                     p.updated_at,
-                    COUNT(DISTINCT CASE
+                    COUNT(CASE
                         WHEN {visible_question_sql}
-                        THEN q.id
+                        THEN 1
                     END) AS question_count,
-                    COUNT(DISTINCT CASE
+                    COUNT(CASE
                         WHEN {visible_question_sql}
-                         AND t.id IS NOT NULL
-                        THEN q.id
+                         AND ts.has_analysis_tag = 1
+                        THEN 1
                     END) AS tagged_any_question_count,
-                    COUNT(DISTINCT CASE
+                    COUNT(CASE
                         WHEN {visible_question_sql}
-                         AND (
-                            SELECT COUNT(DISTINCT core_tags.tag_type)
-                            FROM question_tags core_tags
-                            WHERE core_tags.question_id = q.id
-                              AND core_tags.tag_type IN (
-                                  'knowledge_point',
-                                  'ability',
-                                  'exam_scope'
-                              )
-                              AND COALESCE(core_tags.tag_value, '') <> ''
-                         ) = 3
+                         AND ts.core_tag_count = 3
                          AND CAST(q.difficulty AS REAL) BETWEEN 1 AND 10
-                        THEN q.id
+                        THEN 1
                     END) AS tagged_question_count
                 FROM papers p
                 LEFT JOIN questions q ON q.paper_id = p.id
-                LEFT JOIN question_tags t
-                  ON t.question_id = q.id
-                 AND t.tag_type IN ({tag_placeholders})
-                 AND COALESCE(t.tag_value, '') <> ''
+                LEFT JOIN tag_summary ts ON ts.question_id = q.id
                 WHERE {paper_state_sql}
                 GROUP BY p.id
                 ORDER BY {order_sql}

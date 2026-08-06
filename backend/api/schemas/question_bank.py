@@ -22,6 +22,7 @@ class QuestionPaperListItem(_QuestionBankModel):
     exam_type: str | None = None
     grade: str | None = None
     semester: str | None = None
+    folder_name: str | None = None
     textbook_version: str | None = None
     import_status: str | None = None
     created_at: str
@@ -45,6 +46,7 @@ class QuestionPaperMetadataInput(_QuestionBankModel):
     exam_type: str | None = Field(default=None, max_length=48)
     grade: str | None = Field(default=None, max_length=48)
     semester: str | None = Field(default=None, max_length=48)
+    folder_name: str | None = Field(default=None, max_length=80)
     textbook_version: str | None = Field(default=None, max_length=100)
 
 

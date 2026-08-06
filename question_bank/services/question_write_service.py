@@ -68,6 +68,7 @@ class PaperMetadataUpdate:
     exam_type: str | None = None
     grade: str | None = None
     semester: str | None = None
+    folder_name: str | None = None
     textbook_version: str | None = None
 
 
@@ -82,6 +83,7 @@ class PaperMetadataWriteResult:
     exam_type: str | None
     grade: str | None
     semester: str | None
+    folder_name: str | None
     textbook_version: str | None
     updated_at: str
 
@@ -456,6 +458,7 @@ class QuestionBankWriteService:
                     exam_type = ?,
                     grade = ?,
                     semester = ?,
+                    folder_name = ?,
                     textbook_version = ?,
                     updated_at = ?
                 WHERE id = ?
@@ -471,6 +474,7 @@ class QuestionBankWriteService:
                     target.exam_type,
                     target.grade,
                     target.semester,
+                    target.folder_name,
                     target.textbook_version,
                     next_updated_at,
                     paper_id,
@@ -1210,6 +1214,7 @@ def _normalize_paper_metadata(
         exam_type=optional(metadata.exam_type, max_length=48),
         grade=optional(metadata.grade, max_length=48),
         semester=optional(metadata.semester, max_length=48),
+        folder_name=optional(metadata.folder_name, max_length=80),
         textbook_version=optional(
             metadata.textbook_version,
             max_length=100,
@@ -1225,7 +1230,7 @@ def _load_paper_metadata(
         """
         SELECT
             id, title, year, province, city, district, exam_type, grade,
-            semester, textbook_version, updated_at
+            semester, folder_name, textbook_version, updated_at
         FROM papers
         WHERE id = ?
           AND COALESCE(import_status, '') <> 'deleted'
@@ -1293,6 +1298,7 @@ def _paper_metadata_result(row: sqlite3.Row) -> PaperMetadataWriteResult:
         exam_type=_optional_row_text(row["exam_type"]),
         grade=_optional_row_text(row["grade"]),
         semester=_optional_row_text(row["semester"]),
+        folder_name=_optional_row_text(row["folder_name"]),
         textbook_version=_optional_row_text(row["textbook_version"]),
         updated_at=str(row["updated_at"] or ""),
     )
@@ -1318,6 +1324,7 @@ def _same_paper_metadata(
             "exam_type",
             "grade",
             "semester",
+            "folder_name",
             "textbook_version",
         )
     )

@@ -1719,6 +1719,7 @@ def update_paper_metadata(
                 exam_type=body.metadata.exam_type,
                 grade=body.metadata.grade,
                 semester=body.metadata.semester,
+                folder_name=body.metadata.folder_name,
                 textbook_version=body.metadata.textbook_version,
             ),
         )
@@ -2241,6 +2242,7 @@ def _paper_metadata_write_response(
         exam_type=result.exam_type,
         grade=result.grade,
         semester=result.semester,
+        folder_name=result.folder_name,
         textbook_version=result.textbook_version,
         updated_at=result.updated_at,
     )

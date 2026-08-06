@@ -13,6 +13,9 @@ const confirmationPhrase = ref('')
 const copied = ref(false)
 const selectedBackup = ref('')
 const backupReason = ref<'before_exam' | 'before_update' | 'before_import' | 'before_restore' | 'manual' | 'after_exam'>('manual')
+const backupScopes = ref<Array<'grading' | 'teaching_prep' | 'class_teacher'>>([
+  'grading', 'teaching_prep', 'class_teacher',
+])
 const migrationTarget = ref<'grading' | 'question_bank' | 'all'>('all')
 const exportScope = ref<'lean' | 'full'>('lean')
 let finalizedJobVersion = ''
@@ -46,6 +49,12 @@ const DATABASE_LABELS: Record<string, string> = {
   grading: '阅卷数据库',
   question_bank: '题库数据库',
 }
+
+const BACKUP_SCOPE_LABELS = {
+  grading: '阅卷系统数据（含题库）',
+  teaching_prep: '备课工作台数据',
+  class_teacher: '班主任工作台数据',
+} as const
 
 const TOOL_LABELS: Record<string, string> = {
   microsoft_word: 'Microsoft Word',
@@ -254,9 +263,9 @@ onMounted(async () => {
   <section class="settings-ops">
     <header class="settings-ops__header">
       <div>
-        <p class="settings-ops__eyebrow">System control ledger</p>
-        <h1 tabindex="-1">设置与运维</h1>
-        <p>先查看系统健康状态，再通过预检和明确确认执行受保护操作。</p>
+        <p class="settings-ops__eyebrow">设置中心</p>
+        <h1 tabindex="-1">备份与维护</h1>
+        <p>日常主要使用备份与恢复；其他维护工具已收起，需要时再展开。</p>
       </div>
       <button class="ops-button is-secondary" type="button" :disabled="ops.selfCheckLoading || ops.backupsLoading" @click="refreshLedger">
         {{ ops.selfCheckLoading || ops.backupsLoading ? '正在刷新…' : '刷新状态' }}
@@ -268,8 +277,8 @@ onMounted(async () => {
         <section class="ops-section" aria-labelledby="system-ledger-title">
           <div class="ops-section__heading">
             <div>
-              <p class="settings-ops__eyebrow">Read-only status</p>
-              <h2 id="system-ledger-title">系统状态账本</h2>
+              <p class="settings-ops__eyebrow">本机状态</p>
+              <h2 id="system-ledger-title">系统是否可以正常使用</h2>
             </div>
             <button
               class="ops-button is-secondary"
@@ -278,7 +287,7 @@ onMounted(async () => {
               :disabled="!ops.diagnosticText"
               @click="copyDiagnostic"
             >
-              复制脱敏诊断
+              复制排查信息
             </button>
           </div>
 
@@ -344,14 +353,21 @@ onMounted(async () => {
         <section class="ops-section" aria-labelledby="operations-title">
           <div class="ops-section__heading">
             <div>
-              <p class="settings-ops__eyebrow">Protected operations</p>
-              <h2 id="operations-title">受保护操作</h2>
+              <p class="settings-ops__eyebrow">数据保护</p>
+              <h2 id="operations-title">备份与恢复</h2>
             </div>
             <span>所有操作均需预检</span>
           </div>
 
           <article class="ops-action">
-            <div><h3>创建备份</h3><p>将当前数据制作成可下载的完整备份。</p></div>
+            <div><h3>创建备份</h3><p>勾选要保护的数据，制作成一个可恢复的 ZIP 备份。</p></div>
+            <fieldset>
+              <legend>选择备份内容</legend>
+              <label v-for="(label, scope) in BACKUP_SCOPE_LABELS" :key="scope" class="ops-radio">
+                <input v-model="backupScopes" type="checkbox" :value="scope">
+                <span>{{ label }}</span>
+              </label>
+            </fieldset>
             <label>备份原因
               <select v-model="backupReason">
                 <option value="manual">手动备份</option>
@@ -361,13 +377,13 @@ onMounted(async () => {
                 <option value="before_import">导入前</option>
               </select>
             </label>
-            <button class="ops-button is-secondary" type="button" :disabled="ops.hasBlockingOperation" @click="begin({ operation: 'backup', reason: backupReason })">开始预检</button>
+            <button class="ops-button is-secondary" type="button" :disabled="ops.hasBlockingOperation || backupScopes.length === 0" @click="begin({ operation: 'backup', reason: backupReason, scopes: [...backupScopes] })">开始预检</button>
           </article>
 
           <article class="ops-action is-danger">
-            <div><h3>恢复备份</h3><p>准备恢复完整 ZIP 备份；重启前不会改动现有数据。</p></div>
+            <div><h3>恢复备份</h3><p>恢复备份包中实际包含的数据；重启前不会改动现有数据。</p></div>
             <fieldset>
-              <legend>选择完整备份</legend>
+              <legend>选择备份包</legend>
               <label v-for="item in zipBackups" :key="item.filename" class="ops-radio">
                 <input v-model="selectedBackup" type="radio" name="restore-backup" :value="item.filename">
                 <span>{{ item.filename }}</span>
@@ -377,11 +393,13 @@ onMounted(async () => {
               可用备份暂时无法读取：{{ ops.backupsError.message }}
             </p>
             <p v-else-if="zipBackups.length === 0" class="ops-feedback is-warning">
-              当前没有可恢复的完整备份。
+              当前没有可恢复的备份包。
             </p>
             <button class="ops-button is-danger" type="button" data-testid="preflight-restore" :disabled="!selectedBackup || ops.hasBlockingOperation" @click="preflightRestore">检查恢复影响</button>
           </article>
 
+          <details class="ops-advanced-tools">
+            <summary>更多维护工具（一般无需使用）</summary>
           <article class="ops-action is-danger">
             <div><h3>数据库迁移</h3><p>检查并准备数据库结构更新；在重启应用后执行。</p></div>
             <label>迁移范围
@@ -422,12 +440,13 @@ onMounted(async () => {
               检查导入影响
             </button>
           </article>
+          </details>
         </section>
       </main>
 
       <aside class="ops-gate" data-testid="ops-safety-gate" aria-labelledby="ops-gate-title">
-        <p class="settings-ops__eyebrow">Single safety gate</p>
-        <h2 id="ops-gate-title">安全闸门</h2>
+        <p class="settings-ops__eyebrow">操作确认</p>
+        <h2 id="ops-gate-title">核对后再执行</h2>
 
         <ol class="ops-gate__steps">
           <li :class="{ 'is-current': !ops.preflight && !ops.activeJob && !ops.operationState }"><span>1</span>选择操作</li>
@@ -445,7 +464,10 @@ onMounted(async () => {
           <h3>{{ OPERATION_LABELS[ops.preflight.operation] }}</h3>
           <p class="ops-gate__impact">{{ preflightImpact(ops.preflight.operation) }}</p>
           <dl>
-            <template v-if="ops.preflightRequest?.operation === 'backup'"><dt>备份原因</dt><dd>{{ BACKUP_REASON_LABELS[ops.preflightRequest.reason] }}</dd></template>
+            <template v-if="ops.preflightRequest?.operation === 'backup'">
+              <dt>备份内容</dt><dd>{{ (ops.preflightRequest.scopes ?? []).map((scope) => BACKUP_SCOPE_LABELS[scope]).join('、') }}</dd>
+              <dt>备份原因</dt><dd>{{ BACKUP_REASON_LABELS[ops.preflightRequest.reason] }}</dd>
+            </template>
             <template v-if="ops.preflight.summary.file_count !== null"><dt>文件</dt><dd>{{ ops.preflight.summary.file_count }} 个</dd></template>
             <template v-if="ops.preflight.summary.database_count !== null"><dt>数据库</dt><dd>{{ ops.preflight.summary.database_count }} 个</dd></template>
             <template v-if="ops.preflight.summary.total_size_bytes !== null"><dt>预计大小</dt><dd>{{ bytes(ops.preflight.summary.total_size_bytes) }}</dd></template>

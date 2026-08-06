@@ -86,6 +86,7 @@ function paper(overrides: Partial<QuestionBankPaper> = {}): QuestionBankPaper {
     exam_type: '阶段练习',
     grade: null,
     semester: null,
+    folder_name: null,
     textbook_version: null,
     import_status: 'imported',
     created_at: '2026-07-29 10:00:00',
@@ -262,6 +263,7 @@ describe('question bank store', () => {
       exam_type: '阶段练习',
       grade: '七年级',
       semester: '下学期',
+      folder_name: '中考专题',
       textbook_version: null,
     }, {
       async updatePaperMetadata(_paperId, expectedUpdatedAt) {
@@ -276,6 +278,7 @@ describe('question bank store', () => {
           exam_type: '阶段练习',
           grade: '七年级',
           semester: '下学期',
+          folder_name: '中考专题',
           textbook_version: null,
           updated_at: '2026-07-29 10:01:00.123456',
         }
@@ -306,6 +309,7 @@ describe('question bank store', () => {
       exam_type: '阶段练习',
       grade: null,
       semester: null,
+      folder_name: null,
       textbook_version: null,
     }
 

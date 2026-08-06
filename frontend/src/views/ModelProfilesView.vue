@@ -20,6 +20,7 @@ import {
   type ModelExecutionStatus,
   type ModelProfile,
   type ModelProfileUpsertInput,
+  type ModelTaskBindings,
   type RequestSpeedMode,
 } from '../api/model-profiles'
 import { useModelProfilesStore } from '../stores/model-profiles'
@@ -63,6 +64,18 @@ const diagnosticTab = ref<DiagnosticTab>('request')
 const executionStatus = ref<ModelExecutionStatus | null>(null)
 const executionStatusState = ref<'idle' | 'loading' | 'ready' | 'error'>('idle')
 const executionStatusError = ref('')
+const taskBindingsDraft = ref<ModelTaskBindings>({
+  content_generation: { profile_name: null, model: '' },
+  grading: { profile_name: null, model: '' },
+  teaching_prep: { profile_name: null, model: '' },
+  class_teacher: { profile_name: null, model: '' },
+})
+const taskRows = [
+  { key: 'content_generation', title: '题库与评分标准生成', detail: '题库标注、试题和评分标准使用同一个模型' },
+  { key: 'grading', title: '识别姓名与批改试卷', detail: '姓名识别和批改共用同一个模型与站点' },
+  { key: 'teaching_prep', title: '备课工作台', detail: '备课对话、资料整理与生成' },
+  { key: 'class_teacher', title: '班主任工作台', detail: '班主任对话与草稿整理' },
+] as const
 let diagnosticsController: AbortController | null = null
 let diagnosticDetailController: AbortController | null = null
 let executionStatusController: AbortController | null = null
@@ -244,11 +257,18 @@ function applyBlankProfile(): void {
 }
 
 function syncFromSelection(): void {
+  taskBindingsDraft.value = structuredClone(profilesStore.taskBindings)
   if (profilesStore.selectedProfile) {
     applyProfile(profilesStore.selectedProfile)
   } else {
     applyBlankProfile()
   }
+}
+
+async function saveTaskBindings(): Promise<void> {
+  localError.value = ''
+  await profilesStore.saveTaskBindings(taskBindingsDraft.value)
+  taskBindingsDraft.value = structuredClone(profilesStore.taskBindings)
 }
 
 function confirmDiscard(message: string): boolean {
@@ -468,6 +488,13 @@ async function loadDiagnostics(): Promise<void> {
   }
 }
 
+function handleDiagnosticsToggle(event: Event): void {
+  const disclosure = event.currentTarget as HTMLDetailsElement
+  if (disclosure.open && diagnosticsState.value === 'idle' && diagnostics.value.length === 0) {
+    void loadDiagnostics()
+  }
+}
+
 onMounted(async () => {
   window.addEventListener('beforeunload', handleBeforeUnload)
   const loaded = await profilesStore.load()
@@ -475,7 +502,6 @@ onMounted(async () => {
     syncFromSelection()
     void loadExecutionStatus()
   }
-  void loadDiagnostics()
 })
 
 onBeforeUnmount(() => {
@@ -491,13 +517,13 @@ onBeforeUnmount(() => {
     <header class="model-profiles-view__header">
       <div>
         <p class="model-profiles-view__eyebrow">LOCAL MODEL ROUTING</p>
-        <h1 tabindex="-1">大模型 API 配置</h1>
-        <p>按用途保存多套本机配置，需要时切换当前使用的模型服务。</p>
+        <h1 tabindex="-1">API 站点与工作模型</h1>
+        <p>先保存可用的 API 站点，再为四类工作分别指定站点和模型。</p>
       </div>
       <div class="model-profiles-view__current" aria-live="polite">
         <span class="model-profiles-view__beacon" aria-hidden="true" />
         <span>
-          <small>当前配置</small>
+          <small>兼容旧任务的默认站点</small>
           <strong>{{ currentProfileLabel }}</strong>
         </span>
       </div>
@@ -512,6 +538,39 @@ onBeforeUnmount(() => {
         <strong>密钥只保存在本机且页面无法读回。</strong>
         已保存的密钥只显示“已保存”，不会以明文返回页面。
       </p>
+    </section>
+
+    <section
+      v-if="profilesStore.loadState === 'ready' || profilesStore.loadState === 'empty'"
+      class="model-task-routing"
+      aria-labelledby="model-task-routing-title"
+    >
+      <header>
+        <div>
+          <p class="model-profiles-view__eyebrow">工作模型</p>
+          <h2 id="model-task-routing-title">四类工作，各自选择站点和模型</h2>
+          <p>一个站点就是一组 API 地址和密钥；不同工作可以使用不同站点。</p>
+        </div>
+        <button
+          type="button"
+          class="model-profiles-button model-profiles-button--primary"
+          :disabled="isBusy || profilesStore.profiles.length === 0"
+          @click="saveTaskBindings"
+        >保存工作模型</button>
+      </header>
+      <p v-if="profilesStore.profiles.length === 0" class="model-task-routing__empty">
+        请先在下方新增一个 API 站点，再安排工作模型。
+      </p>
+      <div v-else class="model-task-routing__grid">
+        <label v-for="row in taskRows" :key="row.key" class="model-task-row">
+          <span class="model-task-row__title"><strong>{{ row.title }}</strong><small>{{ row.detail }}</small></span>
+          <select v-model="taskBindingsDraft[row.key].profile_name" :aria-label="`${row.title}使用的 API 站点`">
+            <option :value="null" disabled>选择 API 站点</option>
+            <option v-for="profile in profilesStore.profiles" :key="profile.name" :value="profile.name">{{ profile.name }}</option>
+          </select>
+          <input v-model="taskBindingsDraft[row.key].model" type="text" :maxlength="MODEL_PROFILE_LIMITS.model" :aria-label="`${row.title}使用的模型`" placeholder="填写模型名称">
+        </label>
+      </div>
     </section>
 
     <p
@@ -551,11 +610,11 @@ onBeforeUnmount(() => {
     </section>
 
     <div v-else class="model-profiles-workspace">
-      <aside class="model-profiles-index" aria-label="模型配置列表">
+      <aside class="model-profiles-index" aria-label="API 站点列表">
         <header>
           <div>
-            <p>配置列表</p>
-            <span>{{ profilesStore.profiles.length }} 套</span>
+            <p>API 站点</p>
+            <span>{{ profilesStore.profiles.length }} 个</span>
           </div>
           <button
             type="button"
@@ -563,7 +622,7 @@ onBeforeUnmount(() => {
             :disabled="isBusy"
             @click="beginNewProfile"
           >
-            新增配置
+            新增站点
           </button>
         </header>
 
@@ -571,7 +630,7 @@ onBeforeUnmount(() => {
           v-if="profilesStore.profiles.length === 0"
           class="model-profiles-index__empty"
         >
-          还没有模型配置。先在右侧填写第一套配置。
+          还没有 API 站点。先在右侧填写第一个站点。
         </p>
         <ul v-else class="model-profiles-index__list">
           <li v-for="profile in profilesStore.profiles" :key="profile.name">
@@ -612,8 +671,8 @@ onBeforeUnmount(() => {
       >
         <header class="model-profile-editor__header">
           <div>
-            <p>{{ isNew ? 'NEW LOCAL PROFILE' : 'LOCAL PROFILE' }}</p>
-            <h2>{{ isNew ? '新增模型配置' : draft.sourceName }}</h2>
+            <p>{{ isNew ? 'NEW API SITE' : 'API SITE' }}</p>
+            <h2>{{ isNew ? '新增 API 站点' : draft.sourceName }}</h2>
             <span>{{ editStatus }}</span>
           </div>
           <span
@@ -626,7 +685,7 @@ onBeforeUnmount(() => {
 
         <div class="model-profile-fields">
           <label class="model-profile-field model-profile-field--wide">
-            <span>配置名称</span>
+            <span>站点名称</span>
             <input
               ref="nameInput"
               v-model="draft.name"
@@ -634,13 +693,13 @@ onBeforeUnmount(() => {
               type="text"
               autocomplete="off"
               :maxlength="MODEL_PROFILE_LIMITS.name"
-              placeholder="例如：校内批改模型"
+              placeholder="例如：校内模型站点"
               :disabled="isBusy"
               :readonly="!isNew"
               required
             >
             <small v-if="!isNew">已保存配置的名称固定；需要新名称时请新建一套配置。</small>
-            <small>用于区分不同服务商、校内代理或模型组合。</small>
+            <small>用于区分不同服务商或校内代理。</small>
           </label>
 
           <label class="model-profile-field model-profile-field--wide">
@@ -678,33 +737,36 @@ onBeforeUnmount(() => {
             </small>
           </label>
 
+          <details class="model-profile-legacy model-profile-field--wide">
+            <summary>旧版配置兼容（通常不用填写）</summary>
+            <div class="model-profile-fields">
           <label class="model-profile-field">
-            <span>OCR 模型</span>
+            <span>旧任务的姓名识别模型</span>
             <input
               v-model="draft.ocrModel"
               name="ocr-model"
               type="text"
               autocomplete="off"
               :maxlength="MODEL_PROFILE_LIMITS.model"
-              placeholder="用于答卷识别的模型"
+              placeholder="新安排请在上方“工作模型”填写"
               :disabled="isBusy"
-              required
             >
           </label>
 
           <label class="model-profile-field">
-            <span>批改模型</span>
+            <span>旧任务的批改模型</span>
             <input
               v-model="draft.gradingModel"
               name="grading-model"
               type="text"
               autocomplete="off"
               :maxlength="MODEL_PROFILE_LIMITS.model"
-              placeholder="用于评分与反馈的模型"
+              placeholder="新安排请在上方“工作模型”填写"
               :disabled="isBusy"
-              required
             >
           </label>
+            </div>
+          </details>
         </div>
 
         <fieldset class="model-profile-execution">
@@ -981,6 +1043,8 @@ onBeforeUnmount(() => {
       </form>
     </div>
 
+    <details class="ai-diagnostics-disclosure" @toggle="handleDiagnosticsToggle">
+      <summary>调用记录与排查工具（需要时展开）</summary>
     <section class="ai-diagnostics" aria-labelledby="ai-diagnostics-title">
       <header class="ai-diagnostics__header">
         <div>
@@ -1273,5 +1337,6 @@ onBeforeUnmount(() => {
         </article>
       </div>
     </section>
+    </details>
   </article>
 </template>
