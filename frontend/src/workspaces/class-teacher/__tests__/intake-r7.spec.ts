@@ -201,7 +201,8 @@ describe('B-UI-R7 conversation desk', () => {
 
     expect(cloudMode.classList.contains('is-active')).toBe(true)
     expect(host.textContent).toContain('要求当前模型支持语音输入')
-    expect(host.textContent).toContain('整段原始录音会发给已配置模型')
+    expect(host.textContent).not.toContain('整段原始录音会发给已配置模型')
+    expect(host.querySelector('.notice')).toBeNull()
   })
 
   it('keeps failed cloud audio in memory for one local transcription and never resends it', async () => {
