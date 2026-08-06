@@ -211,10 +211,19 @@ def _npm_command() -> str:
     return command
 
 
+def _frontend_dependencies_ready() -> bool:
+    command_suffix = ".cmd" if os.name == "nt" else ""
+    bin_dir = FRONTEND_DIR / "node_modules" / ".bin"
+    return all(
+        (bin_dir / f"{command}{command_suffix}").is_file()
+        for command in ("vue-tsc", "vite")
+    )
+
+
 def build_preview() -> dict[str, Any]:
     preview_branch, preview_head = _assert_preview_workspace()
     npm = _npm_command()
-    if not (FRONTEND_DIR / "node_modules").is_dir():
+    if not _frontend_dependencies_ready():
         _run(
             [npm, "ci", "--prefer-offline", "--no-audit", "--no-fund"],
             cwd=FRONTEND_DIR,

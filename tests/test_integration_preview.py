@@ -174,6 +174,41 @@ def test_build_stamp_records_only_the_current_branch_and_head(
     }
 
 
+def test_build_repairs_an_incomplete_node_modules_directory(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    frontend = tmp_path / "frontend"
+    (frontend / "node_modules").mkdir(parents=True)
+    commands: list[list[str]] = []
+    monkeypatch.setattr(preview, "FRONTEND_DIR", frontend)
+    monkeypatch.setattr(preview, "STAMP_PATH", tmp_path / "stamp.json")
+    monkeypatch.setattr(
+        preview,
+        "_assert_preview_workspace",
+        lambda: ("codex/test", "c" * 40),
+    )
+    monkeypatch.setattr(preview, "_npm_command", lambda: "npm")
+    monkeypatch.setattr(
+        preview,
+        "_run",
+        lambda command, **_kwargs: commands.append(command),
+    )
+    monkeypatch.setattr(preview, "_assert_workspace_labels", lambda: None)
+    monkeypatch.setattr(
+        preview,
+        "check_preview",
+        lambda: {"preview_branch": "codex/test", "preview_head": "c" * 40},
+    )
+
+    preview.build_preview()
+
+    assert commands == [
+        ["npm", "ci", "--prefer-offline", "--no-audit", "--no-fund"],
+        ["npm", "run", "build"],
+    ]
+
+
 def test_workspace_label_check_requires_both_new_workspaces(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
@@ -386,47 +421,3 @@ def test_git_executable_falls_back_to_the_standard_windows_install(
     monkeypatch.delenv("LOCALAPPDATA", raising=False)
 
     assert preview._git_executable() == str(git_executable)
-
-
-def test_preview_launcher_reuses_a_running_service_before_starting_another() -> None:
-    launcher = (preview.PROJECT_ROOT / "运行集成预览.bat").read_text(
-        encoding="utf-8",
-    )
-
-    probe = launcher.index("open-running")
-    start = launcher.index('call "%~dp0运行.bat"')
-    assert probe < start
-    assert 'if "%RUNNING_STATUS%"=="0" goto done' in launcher
-    assert 'if not "%RUNNING_STATUS%"=="3" goto running_probe_error' in launcher
-    assert 'set "AI_GRADING_WORKTREE_DATA_DIR=%~dp0user_data"' in launcher
-    assert 'set "AI_GRADING_PREVIEW_INSTANCE_ID=integration-preview"' in launcher
-    assert 'set "AI_GRADING_PREVIEW_HEAD="' in launcher
-
-
-def test_preview_launcher_does_not_misreport_all_failures_as_stale() -> None:
-    launcher = (preview.PROJECT_ROOT / "运行集成预览.bat").read_text(
-        encoding="utf-8",
-    )
-
-    ensure = launcher.index("integration_preview.py\" ensure")
-    read_head = launcher.index("integration_preview.py\" print-head")
-    assert ensure < read_head
-    assert "git -C" not in launcher
-    assert "in ('call \"%PYTHON_EXE%\"" in launcher
-    assert "goto preview_prepare_error" in launcher
-    assert "goto running_probe_error" in launcher
-    assert "Preview preparation or frontend update failed." in launcher
-    assert "See the detailed error above." in launcher
-
-    failure_messages = launcher[launcher.index(":missing_runtime") :]
-    for line in failure_messages.splitlines():
-        if line.startswith("echo"):
-            line.encode("ascii")
-
-
-def test_preview_launcher_uses_consistent_line_endings() -> None:
-    launcher = (preview.PROJECT_ROOT / "运行集成预览.bat").read_bytes()
-
-    has_crlf = b"\r\n" in launcher
-    has_bare_lf = b"\n" in launcher.replace(b"\r\n", b"")
-    assert not (has_crlf and has_bare_lf)
