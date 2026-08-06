@@ -14,14 +14,33 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from collections.abc import AsyncIterable, Iterable
 
-from question_bank.database.schema import connect
-from question_bank.models.question import ALLOWED_TAG_TYPES
-from question_bank.models.tag_schema import MAX_TAG_LENGTH
+from question_bank.current_knowledge import CurrentKnowledgeResolver
+from question_bank.database.schema import connect, initialize_database
+from question_bank.models.question import (
+    ALLOWED_TAG_TYPES,
+    QuestionCreate,
+    TagCreate,
+)
+from question_bank.models.tag_schema import MAX_TAG_LENGTH, TagAnalysis
 from question_bank.services.question_revision import question_revision
 
 
 _REQUEST_LOCKS_GUARD = threading.Lock()
 _REQUEST_LOCKS: dict[str, threading.Lock] = {}
+_TAG_ANALYSIS_MAP = {
+    "knowledge_points": "knowledge_point",
+    "method_tags": "method",
+    "thought_tags": "thought",
+    "ability_tags": "ability",
+    "math_model_tags": "model",
+    "special_type_tags": "special_type",
+    "error_prone_points": "error_type",
+    "prerequisite_points": "prerequisite",
+    "textbook_chapters": "exam_scope",
+    "curriculum_sections": "curriculum_section",
+}
+_ANSWERED_AI_CONFIDENCE = 0.8
+_ANSWERLESS_AI_CONFIDENCE = 0.55
 
 
 @dataclass(frozen=True)
@@ -229,6 +248,168 @@ class QuestionBankWriteService:
         self.db_path = Path(db_path)
         self.data_root = Path(data_root)
         self.max_upload_bytes = int(max_upload_bytes)
+
+    def add_question(self, question: QuestionCreate) -> int:
+        """Insert an imported question through the canonical write boundary."""
+
+        _validate_question_create(question)
+        initialize_database(self.db_path)
+        with connect(self.db_path) as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO questions (
+                    paper_id, question_number, question_type, question_text,
+                    answer_text, source_file, page_range, image_paths,
+                    difficulty, needs_review, has_images, needs_image_review
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    question.paper_id,
+                    question.question_number.strip(),
+                    _clean_optional(question.question_type),
+                    question.question_text.strip(),
+                    _clean_optional(question.answer_text),
+                    _clean_optional(question.source_file),
+                    _clean_optional(question.page_range),
+                    json.dumps(question.image_paths, ensure_ascii=False),
+                    _clean_optional(question.difficulty),
+                    int(question.needs_review),
+                    int(question.has_images),
+                    int(question.needs_image_review),
+                ),
+            )
+            question_id = int(cursor.lastrowid)
+            _insert_imported_tags(conn, question_id, question.tags)
+        return question_id
+
+    def save_tag_analysis(
+        self,
+        question_id: int,
+        analysis: TagAnalysis,
+        *,
+        overwrite_manual: bool = False,
+        edited_fields: set[str] | None = None,
+        model_name: str | None = None,
+        confidence: float | None = None,
+        taxonomy_governance: object | None = None,
+    ) -> bool:
+        """Persist one governed analysis without rewriting unrelated tags."""
+
+        initialize_database(self.db_path)
+        resolver = CurrentKnowledgeResolver.from_active_database(self.db_path)
+        with connect(self.db_path) as conn:
+            question = conn.execute(
+                "SELECT id, answer_text FROM questions WHERE id = ? AND is_deleted = 0",
+                (int(question_id),),
+            ).fetchone()
+            if question is None:
+                return False
+            covered = tuple(_TAG_ANALYSIS_MAP.values()) + (
+                "canonical_knowledge_id",
+            )
+            placeholders = ", ".join("?" for _ in covered)
+            conn.execute(
+                f"""
+                DELETE FROM question_tags
+                WHERE question_id = ?
+                  AND tag_type IN ({placeholders})
+                  AND (source = 'ai' OR ? = 1)
+                """,
+                (int(question_id), *covered, int(overwrite_manual)),
+            )
+            fallback = (
+                _ANSWERED_AI_CONFIDENCE
+                if _clean_optional(question["answer_text"])
+                else _ANSWERLESS_AI_CONFIDENCE
+            )
+            resolved_confidence = _normalize_confidence(
+                confidence
+                if confidence is not None
+                else getattr(analysis, "confidence", fallback)
+            )
+            rows = _tag_analysis_rows(
+                question_id=int(question_id),
+                analysis=analysis,
+                confidence=resolved_confidence,
+                edited_fields=edited_fields or set(),
+                model_name=_clean_optional(model_name),
+                resolver=resolver,
+                taxonomy_governance=taxonomy_governance,
+            )
+            conn.executemany(
+                """
+                INSERT INTO question_tags (
+                    question_id, tag_type, tag_value, confidence, source,
+                    model_name
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                rows,
+            )
+            conn.execute(
+                """
+                UPDATE questions
+                SET difficulty = ?, reason = ?,
+                    updated_at = datetime('now','localtime')
+                WHERE id = ? AND is_deleted = 0
+                """,
+                (
+                    (
+                        str(analysis.difficulty)
+                        if analysis.difficulty is not None
+                        else None
+                    ),
+                    _clean_optional(analysis.reason),
+                    int(question_id),
+                ),
+            )
+        from question_bank.services.question_frequency_service import (
+            QuestionFrequencyService,
+        )
+
+        QuestionFrequencyService(self.db_path).invalidate_frequency_cache_for_question(
+            int(question_id)
+        )
+        return True
+
+    def save_question_preview(
+        self,
+        question_id: int,
+        *,
+        preview_type: str,
+        source_file: str | None = None,
+        page_number: int | None = None,
+        image_path: str | None = None,
+        bbox: dict[str, object] | None = None,
+        status: str = "ready",
+        message: str | None = None,
+    ) -> None:
+        initialize_database(self.db_path)
+        with connect(self.db_path) as conn:
+            conn.execute(
+                """
+                DELETE FROM question_previews
+                WHERE question_id = ? AND preview_type = ?
+                """,
+                (int(question_id), str(preview_type)),
+            )
+            conn.execute(
+                """
+                INSERT INTO question_previews (
+                    question_id, preview_type, source_file, page_number,
+                    image_path, bbox_json, status, message
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    int(question_id),
+                    str(preview_type),
+                    _clean_optional(source_file),
+                    page_number,
+                    _clean_optional(image_path),
+                    json.dumps(dict(bbox or {}), ensure_ascii=False),
+                    str(status),
+                    _clean_optional(message),
+                ),
+            )
 
     def get_revision(self, question_id: int) -> str:
         conn = sqlite3.connect(self.db_path)
@@ -1755,3 +1936,129 @@ def _recover_pending_paper_deletes(db_path: Path, data_root: Path) -> None:
             ) from exc
         finally:
             lock.release()
+
+
+def _validate_question_create(question: QuestionCreate) -> None:
+    if not str(question.question_number or "").strip():
+        raise ValueError("题号不能为空")
+    if not str(question.question_text or "").strip():
+        raise ValueError("题干不能为空")
+
+
+def _clean_optional(value: object) -> str | None:
+    text = str(value or "").strip()
+    return text or None
+
+
+def _insert_imported_tags(
+    conn: sqlite3.Connection,
+    question_id: int,
+    tags: list[TagCreate],
+) -> None:
+    rows: list[tuple[object, ...]] = []
+    for tag in tags:
+        tag_type = tag.tag_type.strip()
+        tag_value = tag.tag_value.strip()
+        if tag_type not in ALLOWED_TAG_TYPES:
+            raise ValueError(f"未知题目标签类型: {tag_type}")
+        if tag_value:
+            rows.append(
+                (
+                    question_id,
+                    tag_type,
+                    tag_value,
+                    tag.confidence,
+                    _clean_optional(tag.source),
+                )
+            )
+    conn.executemany(
+        """
+        INSERT INTO question_tags (
+            question_id, tag_type, tag_value, confidence, source
+        ) VALUES (?, ?, ?, ?, ?)
+        """,
+        rows,
+    )
+
+
+def _normalize_confidence(value: object) -> float:
+    try:
+        confidence = float(value)
+    except (TypeError, ValueError):
+        confidence = _ANSWERED_AI_CONFIDENCE
+    return round(min(1.0, max(0.0, confidence)), 4)
+
+
+def _tag_analysis_rows(
+    *,
+    question_id: int,
+    analysis: TagAnalysis,
+    confidence: float,
+    edited_fields: set[str],
+    model_name: str | None,
+    resolver: CurrentKnowledgeResolver,
+    taxonomy_governance: object | None,
+) -> list[tuple[int, str, str, float, str, str | None]]:
+    rows: list[tuple[int, str, str, float, str, str | None]] = []
+    payload = analysis.to_dict()
+    for field_name, tag_type in _TAG_ANALYSIS_MAP.items():
+        source = "manual" if field_name in edited_fields else "ai"
+        values = payload.get(field_name)
+        if isinstance(values, str):
+            values = [values] if values.strip() else []
+        if field_name == "knowledge_points":
+            governed_values: list[str] = []
+            for value in values or []:
+                term = resolver.canonical_term(value)
+                if term is not None:
+                    governed_values.append(term[1])
+                    continue
+                resolve_teacher_term = getattr(
+                    taxonomy_governance,
+                    "resolve_teacher_term",
+                    None,
+                )
+                if callable(resolve_teacher_term):
+                    approved = resolve_teacher_term("knowledge", value)
+                    if approved is not None:
+                        governed_values.append(str(approved["name"]))
+            values = list(dict.fromkeys(governed_values))
+        rows.extend(
+            (
+                question_id,
+                tag_type,
+                str(tag_value),
+                confidence,
+                source,
+                model_name if source == "ai" else None,
+            )
+            for tag_value in values or []
+            if str(tag_value or "").strip()
+        )
+    canonical_id = _resolve_canonical_id(analysis, resolver)
+    if canonical_id:
+        rows.append(
+            (
+                question_id,
+                "canonical_knowledge_id",
+                canonical_id,
+                confidence,
+                "taxonomy",
+                model_name,
+            )
+        )
+    return rows
+
+
+def _resolve_canonical_id(
+    analysis: TagAnalysis,
+    resolver: CurrentKnowledgeResolver,
+) -> str:
+    for value in (
+        analysis.canonical_knowledge_id,
+        *analysis.knowledge_points,
+    ):
+        term = resolver.canonical_term(value)
+        if term is not None:
+            return term[0]
+    return ""

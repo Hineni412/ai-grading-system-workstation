@@ -5,12 +5,14 @@ import hashlib
 import json
 import math
 import re
+import threading
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass, field
 from typing import Any, Callable, Literal, Mapping, Protocol, Sequence
 
 from question_bank.models.tag_schema import TagAnalysis, TaggingContext
 from question_bank.solution_evidence.contracts import QuestionSolutionEvidence
+from question_bank.taxonomy.snapshot import QuestionTaxonomySnapshot
 
 
 AnalysisProjection = Literal["both", "tag", "training_criteria"]
@@ -108,7 +110,9 @@ class QuestionAnalysisInput:
     rich_question_blocks: tuple[Mapping[str, Any], ...] = ()
     rich_answer_blocks: tuple[Mapping[str, Any], ...] = ()
     images: tuple[QuestionAnalysisImage, ...] = ()
-    taxonomy_contract: Mapping[str, Any] = field(default_factory=dict)
+    taxonomy_contract: QuestionTaxonomySnapshot | Mapping[str, Any] = field(
+        default_factory=dict
+    )
     reference_solution: Mapping[str, Any] = field(default_factory=dict)
     repair_context: Mapping[str, Any] = field(default_factory=dict)
 
@@ -137,7 +141,10 @@ class QuestionAnalysisInput:
         object.__setattr__(
             self,
             "taxonomy_contract",
-            dict(self.taxonomy_contract),
+            QuestionTaxonomySnapshot.capture(
+                self.question_id,
+                self.taxonomy_contract,
+            ),
         )
         reference_solution = dict(self.reference_solution)
         if reference_solution:
@@ -212,6 +219,13 @@ class QuestionAnalysisInput:
         return any(image.role == "question" for image in self.images)
 
     @property
+    def taxonomy_snapshot(self) -> QuestionTaxonomySnapshot:
+        snapshot = self.taxonomy_contract
+        if not isinstance(snapshot, QuestionTaxonomySnapshot):
+            raise RuntimeError("question taxonomy snapshot was not captured")
+        return snapshot
+
+    @property
     def source_content_hash(self) -> str:
         return _hash_payload(
             {
@@ -229,7 +243,7 @@ class QuestionAnalysisInput:
                     }
                     for image in self.images
                 ],
-                "taxonomy_contract": self.taxonomy_contract,
+                "taxonomy_contract": self.taxonomy_snapshot.to_dict(),
                 "reference_solution": self.reference_solution,
             }
         )
@@ -315,6 +329,40 @@ class QuestionAnalysisInput:
         empty_brackets = re.findall(r"[（(]\s*[）)]", text)
         blank_count = max(len(named), len(underscores) + len(empty_brackets), 1)
         return "single_blank" if blank_count == 1 else "multiple_blank"
+
+
+@dataclass(frozen=True, slots=True)
+class QuestionAnalysisWorkItem:
+    """One question and the projections still required by its caller.
+
+    Callers describe the missing outcomes; the analysis module owns grouping,
+    operation identities, progress aggregation, persistence, and audit merging.
+    """
+
+    question: QuestionAnalysisInput
+    analyze_tag: bool = True
+    analyze_solution_evidence: bool = True
+    publish_saved_criterion: bool = False
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.question, QuestionAnalysisInput):
+            raise TypeError("question must be a QuestionAnalysisInput")
+        if not (
+            self.analyze_tag
+            or self.analyze_solution_evidence
+            or self.publish_saved_criterion
+        ):
+            raise ValueError("analysis work item must request at least one outcome")
+
+    @property
+    def projection(self) -> AnalysisProjection | None:
+        if self.analyze_tag and self.analyze_solution_evidence:
+            return "both"
+        if self.analyze_tag:
+            return "tag"
+        if self.analyze_solution_evidence:
+            return "training_criteria"
+        return None
 
 
 @dataclass(frozen=True, slots=True)
@@ -517,6 +565,12 @@ class SolutionEvidenceWriter(Protocol):
     ) -> QuestionSolutionEvidence:
         ...
 
+    def load_current(
+        self,
+        question: QuestionAnalysisInput,
+    ) -> QuestionSolutionEvidence | None:
+        ...
+
 
 class AnalysisProjectionRepository(Protocol):
     def begin_operation(
@@ -594,6 +648,187 @@ class CombinedQuestionAnalysisModule:
         self.evidence_writer = evidence_writer
         self.criterion_module = criterion_module
         self._criterion_audits: dict[tuple[str, int], dict[str, Any]] = {}
+        self._criterion_audit_lock = threading.Lock()
+
+    def analyze_work_items(
+        self,
+        *,
+        operation_id: str,
+        work_items: Sequence[QuestionAnalysisWorkItem],
+        progress_callback: AnalysisProgressCallback | None = None,
+    ) -> Mapping[str, Any]:
+        """Run mixed missing projections behind one stable module boundary.
+
+        The persistence repository still stores one projection shape per
+        operation.  This method deliberately hides those internal child
+        operations and returns one question-oriented outcome to the caller.
+        """
+
+        clean_operation = _required_text(operation_id, "operation_id")
+        normalized = tuple(work_items)
+        if not normalized:
+            return {
+                "operation_id": clean_operation,
+                "items": [],
+                "projection_audit": _merge_projection_audits(),
+                "question_projection_audits": {},
+                "criterion_audit": self.criterion_audit_summary(
+                    clean_operation,
+                    (),
+                ),
+                "operation_ids": {},
+            }
+        question_ids = [item.question.question_id for item in normalized]
+        if len(question_ids) != len(set(question_ids)):
+            raise ValueError("analysis work items must have unique question ids")
+
+        groups: dict[AnalysisProjection, list[QuestionAnalysisInput]] = {
+            "both": [],
+            "tag": [],
+            "training_criteria": [],
+        }
+        for item in normalized:
+            if item.publish_saved_criterion:
+                audit = self._publish_saved_criterion(item.question)
+                with self._criterion_audit_lock:
+                    self._criterion_audits[
+                        (clean_operation, item.question.question_id)
+                    ] = audit
+            projection = item.projection
+            if projection is not None:
+                groups[projection].append(item.question)
+
+        operation_ids: dict[str, str] = {}
+        summaries: list[Mapping[str, Any]] = []
+        projection_audits: list[Mapping[str, Any]] = []
+        question_projection_audits: dict[int, list[Mapping[str, Any]]] = {
+            question_id: [] for question_id in question_ids
+        }
+        total_questions = sum(len(group) for group in groups.values())
+        completed_questions = 0
+
+        for projection in ("both", "tag", "training_criteria"):
+            questions = tuple(groups[projection])
+            if not questions:
+                continue
+            child_operation = _child_operation_id(clean_operation, projection)
+            operation_ids[projection] = child_operation
+            group_start = completed_questions
+
+            def report(
+                update: Mapping[str, Any],
+                *,
+                start: int = group_start,
+                size: int = len(questions),
+            ) -> None:
+                if progress_callback is None:
+                    return
+                processed = min(
+                    size,
+                    max(0, int(update.get("processed_questions") or 0)),
+                )
+                progress_callback(
+                    {
+                        **dict(update),
+                        "operation_id": clean_operation,
+                        "processed_questions": start + processed,
+                        "total_questions": total_questions,
+                    }
+                )
+
+            summary = self.analyze(
+                operation_id=child_operation,
+                questions=questions,
+                projection=projection,
+                progress_callback=report,
+            )
+            summaries.append(summary)
+            ids = [question.question_id for question in questions]
+            if projection in {"both", "tag"}:
+                projection_audits.append(
+                    _writer_audit_summary(self.tag_writer, child_operation, ids)
+                )
+                for question_id in ids:
+                    question_projection_audits[question_id].append(
+                        _writer_audit_summary(
+                            self.tag_writer,
+                            child_operation,
+                            [question_id],
+                        )
+                    )
+            if projection in {"both", "training_criteria"}:
+                projection_audits.append(
+                    _writer_audit_summary(
+                        self.evidence_writer,
+                        child_operation,
+                        ids,
+                    )
+                )
+                for question_id in ids:
+                    question_projection_audits[question_id].append(
+                        _writer_audit_summary(
+                            self.evidence_writer,
+                            child_operation,
+                            [question_id],
+                        )
+                    )
+                child_criteria = self.criterion_audit_summary(
+                    child_operation,
+                    ids,
+                )
+                with self._criterion_audit_lock:
+                    for row in child_criteria.get("items", []):
+                        if not isinstance(row, Mapping):
+                            continue
+                        question_id = int(row.get("question_id") or 0)
+                        audit = {
+                            key: value
+                            for key, value in row.items()
+                            if key != "question_id"
+                        }
+                        self._criterion_audits[(clean_operation, question_id)] = audit
+            completed_questions += len(questions)
+
+        items_by_id: dict[int, dict[str, Any]] = {}
+        for summary in summaries:
+            for row in summary.get("items", []):
+                if isinstance(row, Mapping):
+                    items_by_id[int(row["question_id"])] = dict(row)
+        for item in normalized:
+            question_id = item.question.question_id
+            row = items_by_id.setdefault(
+                question_id,
+                {
+                    "question_id": question_id,
+                    "tag_status": "not_requested",
+                    "tag_error_category": "",
+                    "criteria_status": "not_requested",
+                    "criteria_error_category": "",
+                },
+            )
+            if item.publish_saved_criterion and not item.analyze_solution_evidence:
+                # Stored evidence remains a successful evidence projection even
+                # when publishing its independent criterion version fails.
+                row["criteria_status"] = "succeeded"
+                row["criteria_error_category"] = ""
+
+        return {
+            "operation_id": clean_operation,
+            "items": [
+                items_by_id[question_id]
+                for question_id in question_ids
+            ],
+            "projection_audit": _merge_projection_audits(*projection_audits),
+            "question_projection_audits": {
+                question_id: _merge_projection_audits(*audits)
+                for question_id, audits in question_projection_audits.items()
+            },
+            "criterion_audit": self.criterion_audit_summary(
+                clean_operation,
+                question_ids,
+            ),
+            "operation_ids": operation_ids,
+        }
 
     def criterion_audit_summary(
         self,
@@ -613,12 +848,13 @@ class CombinedQuestionAnalysisModule:
         failed: list[int] = []
         needs_review: list[int] = []
         for question_id in question_ids:
-            audit = dict(
-                self._criterion_audits.get(
-                    (str(operation_id), int(question_id)),
+            with self._criterion_audit_lock:
+                audit = dict(
+                    self._criterion_audits.get(
+                        (str(operation_id), int(question_id)),
+                    )
+                    or {"status": "not_requested"},
                 )
-                or {"status": "not_requested"},
-            )
             row = {"question_id": int(question_id), **audit}
             rows.append(row)
             if audit.get("status") == "succeeded":
@@ -1081,80 +1317,28 @@ class CombinedQuestionAnalysisModule:
                 ),
             )
             return
-        criterion_audit: dict[str, Any] = {"status": "not_requested"}
-        if self.criterion_module is not None:
-            try:
-                workspace = self.criterion_module.propose(
-                    question=question,
-                    draft=draft,
-                    source_kind="combined_model",
-                    source_reference=training_criterion_source_reference(
-                        question.question_id,
-                        draft,
-                    ),
-                    actor_ref=f"model:{str(model_name or 'combined-analysis')}",
-                    reason="联合题目解析自动发布训练判定点",
-                )
-                current = (
-                    workspace.get("current_version")
-                    if isinstance(workspace, Mapping)
-                    else None
-                )
-                quality_status = (
-                    str(current.get("quality_status") or "")
-                    if isinstance(current, Mapping)
-                    else ""
-                )
-                quality_codes = (
-                    list(current.get("quality_codes") or [])
-                    if isinstance(current, Mapping)
-                    else []
-                )
-                evidence_review_required = bool(
-                    self.evidence_writer is not None
-                    and getattr(
-                        self.evidence_writer,
-                        "criterion_review_required",
-                        lambda *_args: False,
-                    )(operation_id, question.question_id)
-                )
-                reference_conflict = (
-                    str(raw.get("reference_assessment") or "")
-                    .strip()
-                    .casefold()
-                    == "conflict"
-                )
-                needs_review = (
-                    quality_status != "passed"
-                    or evidence_review_required
-                    or reference_conflict
-                )
-                criterion_audit = {
-                    "status": "needs_review" if needs_review else "succeeded",
-                    "version_id": (
-                        str(current.get("version_id") or "")
-                        if isinstance(current, Mapping)
-                        else ""
-                    ),
-                    "quality_codes": quality_codes,
-                    "review_reasons": [
-                        reason
-                        for reason, active in (
-                            ("quality_gate", quality_status != "passed"),
-                            ("objective_answer_conflict", evidence_review_required),
-                            ("reference_conflict", reference_conflict),
-                        )
-                        if active
-                    ],
-                }
-            except Exception as exc:  # noqa: BLE001
-                criterion_audit = {
-                    "status": "failed",
-                    "error_category": type(exc).__name__,
-                }
-        self._criterion_audits[(str(operation_id), question.question_id)] = (
-            criterion_audit
+        criterion_audit = self._publish_criterion_draft(
+            question=question,
+            draft=draft,
+            actor_ref=f"model:{str(model_name or 'combined-analysis')}",
+            reason="联合题目解析自动发布训练判定点",
+            evidence_review_required=bool(
+                self.evidence_writer is not None
+                and getattr(
+                    self.evidence_writer,
+                    "criterion_review_required",
+                    lambda *_args: False,
+                )(operation_id, question.question_id)
+            ),
+            reference_conflict=(
+                str(raw.get("reference_assessment") or "").strip().casefold()
+                == "conflict"
+            ),
         )
+        with self._criterion_audit_lock:
+            self._criterion_audits[(str(operation_id), question.question_id)] = (
+                criterion_audit
+            )
         self.repository.save_projection(
             operation_id=operation_id,
             question_id=question.question_id,
@@ -1162,6 +1346,105 @@ class CombinedQuestionAnalysisModule:
             status="succeeded",
             payload=draft.to_dict(),
         )
+
+    def _publish_saved_criterion(
+        self,
+        question: QuestionAnalysisInput,
+    ) -> dict[str, Any]:
+        """Publish from the current evidence version without another model call."""
+
+        if self.criterion_module is None or self.evidence_writer is None:
+            return {"status": "not_available"}
+        load_current = getattr(self.evidence_writer, "load_current", None)
+        if not callable(load_current):
+            return {"status": "not_available"}
+        try:
+            evidence = load_current(question)
+            if evidence is None:
+                return {"status": "not_available"}
+            draft = training_criteria_from_solution_evidence(
+                evidence,
+                question=question,
+            )
+            return self._publish_criterion_draft(
+                question=question,
+                draft=draft,
+                actor_ref="model:stored-analysis",
+                reason="从已保存解题证据发布训练判定点",
+            )
+        except Exception as exc:  # noqa: BLE001
+            return {
+                "status": "failed",
+                "error_category": type(exc).__name__,
+            }
+
+    def _publish_criterion_draft(
+        self,
+        *,
+        question: QuestionAnalysisInput,
+        draft: TrainingCriteriaDraft,
+        actor_ref: str,
+        reason: str,
+        evidence_review_required: bool = False,
+        reference_conflict: bool = False,
+    ) -> dict[str, Any]:
+        if self.criterion_module is None:
+            return {"status": "not_requested"}
+        try:
+            workspace = self.criterion_module.propose(
+                question=question,
+                draft=draft,
+                source_kind="combined_model",
+                source_reference=training_criterion_source_reference(
+                    question.question_id,
+                    draft,
+                ),
+                actor_ref=actor_ref,
+                reason=reason,
+            )
+            current = (
+                workspace.get("current_version")
+                if isinstance(workspace, Mapping)
+                else None
+            )
+            quality_status = (
+                str(current.get("quality_status") or "")
+                if isinstance(current, Mapping)
+                else ""
+            )
+            quality_codes = (
+                list(current.get("quality_codes") or [])
+                if isinstance(current, Mapping)
+                else []
+            )
+            needs_review = (
+                quality_status != "passed"
+                or evidence_review_required
+                or reference_conflict
+            )
+            return {
+                "status": "needs_review" if needs_review else "succeeded",
+                "version_id": (
+                    str(current.get("version_id") or "")
+                    if isinstance(current, Mapping)
+                    else ""
+                ),
+                "quality_codes": quality_codes,
+                "review_reasons": [
+                    review_reason
+                    for review_reason, active in (
+                        ("quality_gate", quality_status != "passed"),
+                        ("objective_answer_conflict", evidence_review_required),
+                        ("reference_conflict", reference_conflict),
+                    )
+                    if active
+                ],
+            }
+        except Exception as exc:  # noqa: BLE001
+            return {
+                "status": "failed",
+                "error_category": type(exc).__name__,
+            }
 
     def _fail_batch(
         self,
@@ -2055,6 +2338,69 @@ def _hash_payload(value: object) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
+def _child_operation_id(
+    operation_id: str,
+    projection: AnalysisProjection,
+) -> str:
+    if projection == "both":
+        return operation_id
+    if projection == "tag":
+        return f"{operation_id}:tag"
+    return f"{operation_id}:evidence"
+
+
+def _writer_audit_summary(
+    writer: object,
+    operation_id: str,
+    question_ids: Sequence[int],
+) -> Mapping[str, Any]:
+    method = getattr(writer, "audit_summary", None)
+    if not callable(method):
+        return {}
+    result = method(operation_id, question_ids)
+    return dict(result) if isinstance(result, Mapping) else {}
+
+
+def _merge_projection_audits(
+    *audits: Mapping[str, Any],
+) -> dict[str, Any]:
+    list_fields = (
+        "retrieval_misses",
+        "proposals",
+        "secondary_matches",
+        "relation_hints",
+    )
+    merged: dict[str, list[Any]] = {field_name: [] for field_name in list_fields}
+    seen: dict[str, set[str]] = {field_name: set() for field_name in list_fields}
+    for audit in audits:
+        for field_name in list_fields:
+            for item in audit.get(field_name, []):
+                if not isinstance(item, Mapping):
+                    continue
+                signature = _hash_payload(dict(item))
+                if signature in seen[field_name]:
+                    continue
+                seen[field_name].add(signature)
+                merged[field_name].append(dict(item))
+    merged["retrieval_miss_question_ids"] = sorted(
+        {
+            int(question_id)
+            for audit in audits
+            for question_id in audit.get("retrieval_miss_question_ids", [])
+            if int(question_id) > 0
+        }
+    )
+    merged["proposal_question_ids"] = sorted(
+        {
+            int(question_id)
+            for audit in audits
+            for question_id in audit.get("proposal_question_ids", [])
+            if int(question_id) > 0
+        }
+    )
+    return merged
+
+
 __all__ = [
     "AnalysisConflictError",
     "AnalysisProjection",
@@ -2067,6 +2413,7 @@ __all__ = [
     "QuestionAnalysisGateway",
     "QuestionAnalysisImage",
     "QuestionAnalysisInput",
+    "QuestionAnalysisWorkItem",
     "TagOnlyV1ResultAdapter",
     "TagProjectionWriter",
     "TrainingCriteriaDraft",

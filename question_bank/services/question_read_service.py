@@ -9,6 +9,7 @@ import stat
 import tempfile
 import time
 import unicodedata
+from collections.abc import Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, replace
@@ -25,7 +26,8 @@ from question_bank.current_knowledge import (
     CurrentKnowledgeResolver,
     CurrentKnowledgeUnavailable,
 )
-from question_bank.models.question import ALLOWED_TAG_TYPES
+from question_bank.models.question import ALLOWED_TAG_TYPES, has_complete_analysis_tags
+from question_bank.models.tag_schema import TagAnalysis
 from question_bank.services.asset_path_service import (
     AmbiguousQuestionBankAssetPathError,
     resolve_question_bank_asset_path,
@@ -33,7 +35,6 @@ from question_bank.services.asset_path_service import (
 from question_bank.services.question_frequency_service import (
     calculate_question_similarity,
 )
-from question_bank.services.question_service import build_question_filter_query
 from question_bank.services.question_revision import question_revision, question_revisions
 from question_bank.services.similarity_service import text_similarity
 from question_bank.taxonomy.curriculum_catalog import (
@@ -86,6 +87,178 @@ _TAG_STATUS_MAP = {
     "tagged": "已打标签",
     "untagged": "未打标签",
 }
+
+
+def build_question_filter_query(
+    *,
+    question_number: str | None = None,
+    keyword: str | None = None,
+    knowledge_point: str | None = None,
+    difficulty: str | None = None,
+    difficulty_range: tuple[int, int] | None = None,
+    question_types: list[str] | None = None,
+    paper_ids: list[int] | None = None,
+    years: list[str] | None = None,
+    exam_types: list[str] | None = None,
+    grades: list[str] | None = None,
+    tag_filters: dict[str, list[str]] | None = None,
+    is_deleted: bool = False,
+    tag_status: str | None = None,
+) -> tuple[list[str], list[str], list[Any]]:
+    """Build the shared read query without depending on the retired service."""
+
+    joins = ["LEFT JOIN papers p ON p.id = q.paper_id"]
+    where = ["q.is_deleted = ?", "COALESCE(p.import_status, '') <> 'deleted'"]
+    params: list[Any] = [1 if is_deleted else 0]
+    if clean := _filter_text(knowledge_point):
+        joins.append(
+            "JOIN question_tags kt ON kt.question_id = q.id "
+            "AND kt.tag_type = 'knowledge_point' AND kt.tag_value LIKE ?"
+        )
+        params.append(f"%{clean}%")
+    if clean := _filter_text(question_number):
+        where.append("q.question_number = ?")
+        params.append(clean)
+    if clean := _filter_text(keyword):
+        where.append("(q.question_text LIKE ? OR COALESCE(q.answer_text, '') LIKE ?)")
+        params.extend([f"%{clean}%", f"%{clean}%"])
+    if clean := _filter_text(difficulty):
+        where.append("q.difficulty = ?")
+        params.append(clean)
+    if difficulty_range is not None:
+        first, second = (int(difficulty_range[0]), int(difficulty_range[1]))
+        where.append("CAST(q.difficulty AS REAL) BETWEEN ? AND ?")
+        params.extend([min(first, second), max(first, second)])
+    for column, values in (
+        ("q.question_type", question_types),
+        ("CAST(p.year AS TEXT)", years),
+        ("p.exam_type", exam_types),
+        ("p.grade", grades),
+    ):
+        cleaned = [item for value in values or [] if (item := _filter_text(value))]
+        if cleaned:
+            placeholders = ", ".join("?" for _ in cleaned)
+            where.append(f"{column} IN ({placeholders})")
+            params.extend(cleaned)
+    cleaned_paper_ids = [int(value) for value in paper_ids or [] if int(value) > 0]
+    if cleaned_paper_ids:
+        placeholders = ", ".join("?" for _ in cleaned_paper_ids)
+        where.append(f"q.paper_id IN ({placeholders})")
+        params.extend(cleaned_paper_ids)
+    for tag_type, tag_values in (tag_filters or {}).items():
+        cleaned = [item for value in tag_values if (item := _filter_text(value))]
+        if not cleaned:
+            continue
+        placeholders = ", ".join("?" for _ in cleaned)
+        if tag_type == "thought":
+            where.append(
+                "EXISTS (SELECT 1 FROM question_tags tf "
+                "WHERE tf.question_id = q.id "
+                "AND tf.tag_type IN ('thought', 'method') "
+                f"AND tf.tag_value IN ({placeholders}))"
+            )
+            params.extend(cleaned)
+        else:
+            where.append(
+                "EXISTS (SELECT 1 FROM question_tags tf "
+                "WHERE tf.question_id = q.id AND tf.tag_type = ? "
+                f"AND tf.tag_value IN ({placeholders}))"
+            )
+            params.extend([tag_type, *cleaned])
+    if (clean := _filter_text(tag_status)) and clean != "全部":
+        complete = """
+            EXISTS (SELECT 1 FROM question_tags t WHERE t.question_id = q.id
+                    AND t.tag_type = 'knowledge_point' AND COALESCE(t.tag_value, '') <> '')
+            AND EXISTS (SELECT 1 FROM question_tags t WHERE t.question_id = q.id
+                    AND t.tag_type = 'ability' AND COALESCE(t.tag_value, '') <> '')
+            AND EXISTS (SELECT 1 FROM question_tags t WHERE t.question_id = q.id
+                    AND t.tag_type = 'exam_scope' AND COALESCE(t.tag_value, '') <> '')
+            AND CAST(q.difficulty AS REAL) BETWEEN 1 AND 10
+        """
+        if clean == "已打标签":
+            where.append(complete)
+        elif clean == "未打标签":
+            where.append(f"NOT ({complete})")
+    return joins, where, params
+
+
+def _filter_text(value: object) -> str:
+    return str(value or "").strip()
+
+
+def _duplicate_question_key(question: Mapping[str, Any]) -> str:
+    question_text = re.sub(
+        r"\s+",
+        "",
+        str(question.get("question_text") or ""),
+    ).strip()
+    answer_text = re.sub(
+        r"\s+",
+        "",
+        str(question.get("answer_text") or ""),
+    ).strip()
+    return f"{question_text}\n{answer_text}" if question_text else ""
+
+
+def _analysis_from_question(
+    question: Mapping[str, Any],
+) -> tuple[TagAnalysis, str | None]:
+    grouped: dict[str, list[str]] = {}
+    model_name: str | None = None
+    confidences: list[float] = []
+    for tag in question.get("tags", []):
+        if not isinstance(tag, dict):
+            continue
+        tag_type = str(tag.get("tag_type") or "").strip()
+        tag_value = str(tag.get("tag_value") or "").strip()
+        if tag_type and tag_value:
+            grouped.setdefault(tag_type, [])
+            if tag_value not in grouped[tag_type]:
+                grouped[tag_type].append(tag_value)
+        if model_name is None:
+            model_name = str(tag.get("model_name") or "").strip() or None
+        try:
+            confidences.append(float(tag.get("confidence")))
+        except (TypeError, ValueError):
+            pass
+    confidence = min(max(confidences), 0.9) if confidences else 0.9
+    return (
+        TagAnalysis.from_dict(
+            {
+                "knowledge_points": grouped.get("knowledge_point", []),
+                "method_tags": grouped.get("method", []),
+                "thought_tags": grouped.get("thought", []),
+                "ability_tags": grouped.get("ability", []),
+                "math_model_tags": grouped.get("model", []),
+                "special_type_tags": grouped.get("special_type", []),
+                "difficulty": question.get("difficulty") or 1,
+                "error_prone_points": grouped.get("error_type", []),
+                "prerequisite_points": grouped.get("prerequisite", []),
+                "textbook_chapters": grouped.get("exam_scope", []),
+                "curriculum_sections": grouped.get("curriculum_section", []),
+                "teaching_stage": _first_grouped_value(grouped, "teaching_stage"),
+                "suitable_student_level": _first_grouped_value(
+                    grouped,
+                    "student_level",
+                ),
+                "reason": question.get("reason") or "",
+                "confidence": confidence,
+                "canonical_knowledge_id": _first_grouped_value(
+                    grouped,
+                    "canonical_knowledge_id",
+                ),
+                "sub_skills": grouped.get("sub_skill", []),
+                "measured_skills": grouped.get("measured_skill_name", []),
+                "supporting_skills": grouped.get("supporting_skill_name", []),
+            }
+        ),
+        model_name,
+    )
+
+
+def _first_grouped_value(grouped: dict[str, list[str]], key: str) -> str:
+    values = grouped.get(key, [])
+    return str(values[0] if values else "").strip()
 _QUESTION_SORT_CLAUSES = {
     "newest": "q.created_at DESC, q.id DESC",
     "paper_order": """
@@ -817,6 +990,43 @@ class QuestionBankReadService:
         with _read_connection(self.db_path):
             return self._list_facets(filters)
 
+    def tag_value_counts(
+        self,
+        tag_type: str,
+        tag_values: Iterable[str],
+    ) -> dict[str, int]:
+        normalized_type = str(tag_type or "").strip()
+        normalized_values = list(
+            dict.fromkeys(
+                str(value or "").strip()
+                for value in tag_values
+                if str(value or "").strip()
+            )
+        )
+        if not normalized_values:
+            return {}
+        placeholders = ", ".join("?" for _ in normalized_values)
+        with _read_connection(self.db_path) as conn:
+            rows = conn.execute(
+                f"""
+                SELECT t.tag_value, COUNT(DISTINCT t.question_id) AS question_count
+                FROM question_tags t
+                JOIN questions q ON q.id = t.question_id
+                LEFT JOIN papers p ON p.id = q.paper_id
+                WHERE t.tag_type = ?
+                  AND t.tag_value IN ({placeholders})
+                  AND COALESCE(q.is_deleted, 0) = 0
+                  AND COALESCE(p.import_status, '') <> 'deleted'
+                GROUP BY t.tag_value
+                """,
+                [normalized_type, *normalized_values],
+            ).fetchall()
+        counts = {
+            str(row["tag_value"]): int(row["question_count"] or 0)
+            for row in rows
+        }
+        return {value: counts.get(value, 0) for value in normalized_values}
+
     def _list_facets(
         self,
         filters: QuestionReadFilters,
@@ -1204,7 +1414,81 @@ class QuestionBankReadService:
         item["previews"] = previews
         return item
 
+    def find_exact_duplicate_tag_analysis(
+        self,
+        question_id: int,
+    ) -> tuple[TagAnalysis, str | None] | None:
+        with _read_connection(self.db_path) as conn:
+            target = conn.execute(
+                """
+                SELECT id, question_text, answer_text, difficulty, reason
+                FROM questions
+                WHERE id = ? AND COALESCE(is_deleted, 0) = 0
+                """,
+                (int(question_id),),
+            ).fetchone()
+            if target is None:
+                return None
+            target_key = _duplicate_question_key(dict(target))
+            if not target_key:
+                return None
+            rows = conn.execute(
+                """
+                SELECT q.id, q.question_text, q.answer_text, q.difficulty, q.reason
+                FROM questions q
+                LEFT JOIN papers p ON p.id = q.paper_id
+                WHERE q.id <> ? AND q.is_deleted = 0
+                  AND COALESCE(p.import_status, '') <> 'deleted'
+                ORDER BY q.updated_at DESC, q.id DESC
+                """,
+                (int(question_id),),
+            ).fetchall()
+            for row in rows:
+                if _duplicate_question_key(dict(row)) != target_key:
+                    continue
+                tags = [
+                    dict(tag)
+                    for tag in conn.execute(
+                        """
+                        SELECT tag_type, tag_value, confidence, source, model_name
+                        FROM question_tags
+                        WHERE question_id = ?
+                        ORDER BY id
+                        """,
+                        (int(row["id"]),),
+                    ).fetchall()
+                ]
+                candidate = {**dict(row), "tags": tags}
+                if has_complete_analysis_tags(candidate):
+                    return _analysis_from_question(candidate)
+        return None
+
     def get_questions(self, question_ids: Iterable[int]) -> list[dict[str, Any]]:
+        return self._get_questions_by_id(question_ids, include_storage_fields=False)
+
+    def get_questions_for_export(
+        self,
+        question_ids: Iterable[int],
+    ) -> list[dict[str, Any]]:
+        """Return the private storage fields needed by local document exporters."""
+
+        return self._get_questions_by_id(question_ids, include_storage_fields=True)
+
+    def get_question_for_preview(self, question_id: int) -> dict[str, Any] | None:
+        """Return one question with its private source reference for preview rendering."""
+
+        questions = self._get_questions_by_id(
+            [int(question_id)],
+            include_storage_fields=True,
+        )
+        return questions[0] if questions else None
+
+    def _get_questions_by_id(
+        self,
+        question_ids: Iterable[int],
+        *,
+        include_storage_fields: bool,
+    ) -> list[dict[str, Any]]:
         ordered_ids: list[int] = []
         for value in question_ids:
             question_id = int(value)
@@ -1226,6 +1510,8 @@ class QuestionBankReadService:
                     q.question_type,
                     q.question_text,
                     q.answer_text,
+                    q.source_file AS _source_file,
+                    q.page_range,
                     q.image_paths AS _image_paths,
                     q.difficulty,
                     q.typicality,
@@ -1260,15 +1546,38 @@ class QuestionBankReadService:
             )
             revisions = question_revisions(conn, list(rows_by_id))
 
-        return [
-            self._public_question_with_rich_content(
+        items: list[dict[str, Any]] = []
+        for question_id in ordered_ids:
+            row = rows_by_id.get(question_id)
+            if row is None:
+                continue
+            item = self._public_question_with_rich_content(
                 rows_by_id[question_id],
                 tags_by_question.get(question_id, []),
                 revision=revisions[question_id],
             )
-            for question_id in ordered_ids
-            if question_id in rows_by_id
-        ]
+            if include_storage_fields:
+                raw_question_text = str(row["question_text"] or "")
+                raw_answer_text = (
+                    str(row["answer_text"] or "")
+                    if row["answer_text"] is not None
+                    else None
+                )
+                item.update(
+                    {
+                        "question_text": raw_question_text,
+                        "answer_text": raw_answer_text,
+                        "source_file": row["_source_file"],
+                        "page_range": row["page_range"],
+                        "image_paths": _question_asset_paths(
+                            row["_image_paths"],
+                            raw_question_text,
+                            raw_answer_text or "",
+                        ),
+                    }
+                )
+            items.append(item)
+        return items
 
     def _public_question_with_rich_content(
         self,

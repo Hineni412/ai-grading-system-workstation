@@ -16,10 +16,8 @@ from question_bank.services.ai_tagging_service import (
     classify_tagging_error,
     is_auto_saveable_result,
 )
-from question_bank.services.question_service import (
-    CORE_ANALYSIS_TAG_TYPES,
-    QuestionService,
-)
+from question_bank.models.question import CORE_ANALYSIS_TAG_TYPES
+from question_bank.services.question_write_service import QuestionBankWriteService
 from question_bank.solution_evidence import (
     SolutionEvidenceProjectionWriter,
     SolutionEvidenceRepository,
@@ -30,11 +28,10 @@ from question_bank.training_criteria import (
     ExistingTagProjectionWriter,
     OpenAICombinedAnalysisGateway,
     QuestionAnalysisInputLoader,
+    QuestionAnalysisWorkItem,
     TrainingCriterionModule,
-    solution_evidence_source_content_hash,
-    training_criteria_from_solution_evidence,
-    training_criterion_source_reference,
 )
+from question_bank.taxonomy.snapshot import QuestionTaxonomySnapshot
 
 from .execution_locks import keyed_execution_locks
 from .manager import JobContext
@@ -187,11 +184,14 @@ def _run_tagging_sync_job_locked(
         ai_service = ai_service_factory() if pending_ids else None
     except Exception:
         raise RuntimeError("tagging sync setup failed") from None
-    service = QuestionService(db_path)
+    write_service = QuestionBankWriteService(
+        db_path,
+        data_root=(data_root or db_path.parent),
+    )
     governance = taxonomy_governance
     taxonomy_revision = 0
     knowledge_graph_release_id = ""
-    taxonomy_contracts: dict[int, dict[str, Any]] = {}
+    taxonomy_contracts: dict[int, QuestionTaxonomySnapshot] = {}
     if ai_service is not None:
         if governance is None and isinstance(ai_service, AITaggingService):
             governance = ai_service.taxonomy_governance
@@ -322,7 +322,7 @@ def _run_tagging_sync_job_locked(
                     review_question_ids.append(question_id)
             try:
                 assert result.analysis is not None
-                saved = service.save_tag_analysis(
+                saved = write_service.save_tag_analysis(
                     question_id,
                     result.analysis,
                     model_name=result.model_name,
@@ -503,7 +503,7 @@ def _run_unified_tagging_analysis(
     )
     mapping_repository = CurrentFineTermResolver.from_active_database(db_path)
     tag_writer = ExistingTagProjectionWriter(
-        question_service=QuestionService(db_path),
+        write_service=QuestionBankWriteService(db_path, data_root=data_root),
         tagging_service=ai_service,
     )
     evidence_writer = SolutionEvidenceProjectionWriter(
@@ -514,7 +514,6 @@ def _run_unified_tagging_analysis(
         ),
     )
     criterion_module = TrainingCriterionModule(db_path)
-    evidence_repository = SolutionEvidenceRepository(db_path)
     module = CombinedQuestionAnalysisModule(
         repository=CombinedAnalysisRepository(db_path),
         gateway=gateway,
@@ -522,194 +521,87 @@ def _run_unified_tagging_analysis(
         evidence_writer=evidence_writer,
         criterion_module=criterion_module,
     )
-    criterion_audits: list[Mapping[str, Any]] = []
-    local_criterion_only_ids: set[int] = set()
-    locally_repaired_criterion_ids: set[int] = set()
-    for question in loaded_by_id.values():
-        gap = analysis_gaps.get(question.question_id, {})
-        if not gap.get("evidence_ready") or gap.get("criteria_ready"):
-            continue
-        audit = _publish_saved_criterion(
-            question=question,
-            evidence_repository=evidence_repository,
-            criterion_module=criterion_module,
-        )
-        criterion_audits.append(
-            {
-                "items": [
-                    {
-                        "question_id": question.question_id,
-                        **audit,
-                    }
-                ]
-            }
-        )
-        if audit.get("status") in {"succeeded", "needs_review"}:
-            locally_repaired_criterion_ids.add(question.question_id)
-        elif audit.get("status") == "failed" and question.question_id in set(
-            complete_ids
-        ):
-            # The saved evidence is still usable, but a complete tag set must
-            # not be sent through the model again just to retry publication.
-            local_criterion_only_ids.add(question.question_id)
-
     explicit_evidence_retry_set = set(retry_evidence_question_ids)
-    evidence_only_set = {
-        question_id
-        for question_id in evidence_only_ids
-        if question_id not in locally_repaired_criterion_ids
-        and question_id not in local_criterion_only_ids
-    }
-    tag_only_set = {
-        question_id
-        for question_id in pending_ids
-        if question_id not in evidence_only_set
-        and question_id not in set(complete_ids)
-        and question_id not in explicit_evidence_retry_set
-        and bool(analysis_gaps.get(question_id, {}).get("evidence_ready"))
-    }
-    # An explicit evidence retry is always projection-scoped, even if its tag
-    # projection is incomplete.  Automatic gap repair keeps new questions on
-    # the combined path until the first evidence version exists.
-    evidence_only_set.update(
-        question_id
-        for question_id in pending_ids
-        if question_id in explicit_evidence_retry_set
-        and question_id not in locally_repaired_criterion_ids
-        and question_id not in local_criterion_only_ids
-    )
-    regular_loaded = tuple(
-        loaded_by_id[question_id]
-        for question_id in pending_ids
-        if (
-            question_id in loaded_by_id
-            and question_id not in evidence_only_set
-            and question_id not in tag_only_set
-            and question_id not in local_criterion_only_ids
-            and question_id not in locally_repaired_criterion_ids
+    evidence_only_set = set(evidence_only_ids) | explicit_evidence_retry_set
+    complete_set = set(complete_ids)
+    work_items: list[QuestionAnalysisWorkItem] = []
+    tag_only_set: set[int] = set()
+    saved_criterion_ids: set[int] = set()
+    for question_id in pending_ids:
+        question = loaded_by_id.get(question_id)
+        if question is None:
+            continue
+        gap = analysis_gaps.get(question_id, {})
+        evidence_ready = bool(gap.get("evidence_ready"))
+        criteria_ready = bool(gap.get("criteria_ready"))
+        publish_saved = evidence_ready and not criteria_ready
+        analyze_tag = (
+            question_id not in complete_set
+            and question_id not in explicit_evidence_retry_set
+            and question_id not in set(evidence_only_ids)
         )
-    )
-    tag_only_loaded = tuple(
-        loaded_by_id[question_id]
-        for question_id in pending_ids
-        if question_id in loaded_by_id and question_id in tag_only_set
-    )
-    evidence_loaded = tuple(
-        loaded_by_id[question_id]
-        for question_id in pending_ids
-        if question_id in loaded_by_id and question_id in evidence_only_set
-    )
-    summaries: list[Mapping[str, Any]] = []
-    audit_rows: list[Mapping[str, Any]] = []
-    analysis_total = sum(
-        len(group)
-        for group in (regular_loaded, tag_only_loaded, evidence_loaded)
-    )
-    analysis_completed = 0
+        analyze_evidence = (
+            not publish_saved
+            and (
+                question_id in evidence_only_set
+                or not evidence_ready
+            )
+        )
+        if analyze_tag and not analyze_evidence and not publish_saved:
+            tag_only_set.add(question_id)
+        if publish_saved:
+            saved_criterion_ids.add(question_id)
+        work_items.append(
+            QuestionAnalysisWorkItem(
+                question=question,
+                analyze_tag=analyze_tag,
+                analyze_solution_evidence=analyze_evidence,
+                publish_saved_criterion=publish_saved,
+            )
+        )
 
-    def analysis_progress(group_size: int):
-        group_start = analysis_completed
+    analysis_total = sum(item.projection is not None for item in work_items)
 
-        def report(update: Mapping[str, Any]) -> None:
-            processed = min(
-                group_size,
-                max(0, int(update.get("processed_questions") or 0)),
-            )
-            overall = min(analysis_total, group_start + processed)
-            fraction = overall / max(analysis_total, 1)
-            context.report(
-                0.1 + 0.72 * fraction,
-                "tagging_sync",
-                f"AI 分析已处理 {overall}/{analysis_total} 道题",
-            )
+    def analysis_progress(update: Mapping[str, Any]) -> None:
+        processed = min(
+            analysis_total,
+            max(0, int(update.get("processed_questions") or 0)),
+        )
+        fraction = processed / max(analysis_total, 1)
+        context.report(
+            0.1 + 0.72 * fraction,
+            "tagging_sync",
+            f"AI 分析已处理 {processed}/{analysis_total} 道题",
+        )
 
-        return report
-
-    if regular_loaded:
-        regular_operation_id = f"tagging-sync:{context.job_id}"
-        observation_sequences = _allocate_observation_sequences(
-            taxonomy_governance or ai_service.taxonomy_governance,
-            generation_id=regular_operation_id,
-            question_ids=[item.question_id for item in regular_loaded],
-        )
-        summaries.append(
-            module.analyze(
-                operation_id=regular_operation_id,
-                questions=regular_loaded,
-                projection="both",
-                progress_callback=analysis_progress(len(regular_loaded)),
-            )
-        )
-        analysis_completed += len(regular_loaded)
-        regular_ids = [item.question_id for item in regular_loaded]
-        audit_rows.extend(
-            (
-                tag_writer.audit_summary(regular_operation_id, regular_ids),
-                evidence_writer.audit_summary(
-                    regular_operation_id,
-                    regular_ids,
-                ),
-            )
-        )
-        criterion_audits.append(
-            _criterion_audit_summary(module, regular_operation_id, regular_ids)
-        )
-    if tag_only_loaded:
-        tag_only_operation_id = f"tagging-sync:{context.job_id}:tag"
-        summaries.append(
-            module.analyze(
-                operation_id=tag_only_operation_id,
-                questions=tag_only_loaded,
-                projection="tag",
-                progress_callback=analysis_progress(len(tag_only_loaded)),
-            )
-        )
-        analysis_completed += len(tag_only_loaded)
-        tag_only_ids = [item.question_id for item in tag_only_loaded]
-        audit_rows.append(tag_writer.audit_summary(tag_only_operation_id, tag_only_ids))
-    if evidence_loaded:
-        evidence_operation_id = f"tagging-sync:{context.job_id}:evidence"
-        summaries.append(
-            module.analyze(
-                operation_id=evidence_operation_id,
-                questions=evidence_loaded,
-                projection="training_criteria",
-                progress_callback=analysis_progress(len(evidence_loaded)),
-            )
-        )
-        analysis_completed += len(evidence_loaded)
-        audit_rows.append(
-            evidence_writer.audit_summary(
-                evidence_operation_id,
-                [item.question_id for item in evidence_loaded],
-            )
-        )
-        criterion_audits.append(
-            _criterion_audit_summary(
-                module,
-                evidence_operation_id,
-                [item.question_id for item in evidence_loaded],
-            )
-        )
+    operation_id = f"tagging-sync:{context.job_id}"
+    tag_request_ids = [
+        item.question.question_id for item in work_items if item.analyze_tag
+    ]
+    tag_request_set = set(tag_request_ids)
+    observation_sequences = _allocate_observation_sequences(
+        taxonomy_governance or ai_service.taxonomy_governance,
+        generation_id=operation_id,
+        question_ids=tag_request_ids,
+    )
+    workflow = module.analyze_work_items(
+        operation_id=operation_id,
+        work_items=work_items,
+        progress_callback=analysis_progress,
+    )
     context.raise_if_cancelled()
-    items: dict[int, Mapping[str, Any]] = {}
-    for summary in summaries:
-        for item in summary.get("items", []):
-            if isinstance(item, Mapping):
-                items[int(item["question_id"])] = item
-    for question_id in local_criterion_only_ids | locally_repaired_criterion_ids:
-        items.setdefault(
-            question_id,
-            {
-                "question_id": question_id,
-                "tag_status": "not_requested",
-                "tag_error_category": "",
-                # The stored evidence is already valid; only publishing its
-                # score-free training version failed.
-                "criteria_status": "succeeded",
-                "criteria_error_category": "",
-            },
-        )
+    items = {
+        int(item["question_id"]): item
+        for item in workflow.get("items", [])
+        if isinstance(item, Mapping)
+    }
+    criterion_audits = [
+        workflow.get("criterion_audit", {"items": []})
+    ]
+    question_projection_audits = workflow.get(
+        "question_projection_audits",
+        {},
+    )
     failures = list(input_failures)
     tag_success = list(complete_ids)
     newly_tagged: list[int] = []
@@ -731,14 +623,12 @@ def _run_unified_tagging_analysis(
                 failures.append(_failure(question_id, "validation"))
             evidence_failed.append(question_id)
             continue
-        if (
-            question_id not in evidence_only_set
-            and question_id not in local_criterion_only_ids
-            and question_id not in locally_repaired_criterion_ids
-        ):
+        if question_id in tag_request_set:
             if str(item.get("tag_status")) == "succeeded":
-                question_audit = tag_writer.audit_summary(
-                    f"tagging-sync:{context.job_id}", [question_id]
+                question_audit = (
+                    question_projection_audits.get(question_id, {})
+                    if isinstance(question_projection_audits, Mapping)
+                    else {}
                 )
                 try:
                     _record_successful_observation(
@@ -753,7 +643,7 @@ def _run_unified_tagging_analysis(
                         ],
                         taxonomy_revision=taxonomy_revision,
                         graph_release_id=knowledge_graph_release_id,
-                        allocated=locals().get("observation_sequences", {}),
+                        allocated=observation_sequences,
                     )
                 except Exception:  # noqa: BLE001
                     failures.append(_failure(question_id, "save"))
@@ -794,7 +684,6 @@ def _run_unified_tagging_analysis(
         elif (
             question_id in tag_only_set
             and not analysis_gaps.get(question_id, {}).get("criteria_ready")
-            and question_id not in locally_repaired_criterion_ids
         ):
             criterion_failed.append(question_id)
             if not any(
@@ -808,7 +697,7 @@ def _run_unified_tagging_analysis(
         int(item["question_id"]) for item in failures
     } | set(evidence_failed)
     failed_ids = [item for item in requested_ids if item in failed_set]
-    audits = _merge_governance_audits(*audit_rows)
+    audits = dict(workflow.get("projection_audit") or {})
     if retry_relation_question_ids:
         audits["relation_hints"].extend(
             SolutionEvidenceRepository(db_path).relation_hints(
@@ -967,146 +856,6 @@ def _combined_public_category(category: str) -> str:
     if normalized in {"timeout", "parse"}:
         return normalized
     return "unknown"
-
-
-def _criterion_audit_summary(
-    module: Any,
-    operation_id: str,
-    question_ids: Sequence[int],
-) -> dict[str, Any]:
-    """Keep the job seam compatible with older test/extension modules."""
-
-    method = getattr(module, "criterion_audit_summary", None)
-    if not callable(method):
-        return {
-            "items": [
-                {"question_id": int(question_id), "status": "not_requested"}
-                for question_id in question_ids
-            ]
-        }
-    result = method(operation_id, question_ids)
-    return dict(result) if isinstance(result, Mapping) else {"items": []}
-
-
-def _publish_saved_criterion(
-    *,
-    question: Any,
-    evidence_repository: SolutionEvidenceRepository,
-    criterion_module: TrainingCriterionModule,
-) -> dict[str, Any]:
-    """Publish training points from saved evidence without another AI call."""
-
-    try:
-        source_hash = solution_evidence_source_content_hash(question)
-        resolver = CurrentFineTermResolver.from_active_database(
-            evidence_repository.db_path
-        )
-        evidence = evidence_repository.load_current(
-            question.question_id,
-            source_content_hash=source_hash,
-            resolver=resolver,
-        )
-        if evidence is None:
-            return {"status": "not_available"}
-        draft = training_criteria_from_solution_evidence(
-            evidence,
-            question=question,
-        )
-        workspace = criterion_module.propose(
-            question=question,
-            draft=draft,
-            source_kind="combined_model",
-            source_reference=training_criterion_source_reference(
-                question.question_id,
-                draft,
-            ),
-            actor_ref="model:stored-analysis",
-            reason="从已保存解题证据发布训练判定点",
-        )
-        current = workspace.get("current_version") if isinstance(workspace, Mapping) else None
-        quality_status = (
-            str(current.get("quality_status") or "")
-            if isinstance(current, Mapping)
-            else ""
-        )
-        return {
-            "status": (
-                "succeeded" if quality_status == "passed" else "needs_review"
-            ),
-            "version_id": (
-                str(current.get("version_id") or "")
-                if isinstance(current, Mapping)
-                else ""
-            ),
-            "quality_codes": (
-                list(current.get("quality_codes") or [])
-                if isinstance(current, Mapping)
-                else []
-            ),
-        }
-    except Exception as exc:  # noqa: BLE001
-        return {
-            "status": "failed",
-            "error_category": type(exc).__name__,
-        }
-
-
-def _merge_governance_audits(*audits: Mapping[str, Any]) -> dict[str, Any]:
-    retrieval_misses: list[dict[str, Any]] = []
-    proposals: list[dict[str, Any]] = []
-    secondary_matches: list[dict[str, Any]] = []
-    relation_hints: list[dict[str, Any]] = []
-    retrieval_question_ids: list[int] = []
-    proposal_question_ids: list[int] = []
-    seen_misses: set[str] = set()
-    seen_proposals: set[str] = set()
-    seen_secondary: set[str] = set()
-    seen_relation_hints: set[str] = set()
-    for audit in audits:
-        for item in audit.get("retrieval_misses", []):
-            if not isinstance(item, Mapping):
-                continue
-            signature = repr(sorted(dict(item).items()))
-            if signature not in seen_misses:
-                seen_misses.add(signature)
-                retrieval_misses.append(dict(item))
-        for item in audit.get("proposals", []):
-            if not isinstance(item, Mapping):
-                continue
-            signature = _proposal_key(item)
-            if signature not in seen_proposals:
-                seen_proposals.add(signature)
-                proposals.append(dict(item))
-        for item in audit.get("secondary_matches", []):
-            if not isinstance(item, Mapping):
-                continue
-            signature = repr(sorted(dict(item).items()))
-            if signature not in seen_secondary:
-                seen_secondary.add(signature)
-                secondary_matches.append(dict(item))
-        for item in audit.get("relation_hints", []):
-            if not isinstance(item, Mapping):
-                continue
-            signature = repr(sorted(dict(item).items()))
-            if signature not in seen_relation_hints:
-                seen_relation_hints.add(signature)
-                relation_hints.append(dict(item))
-        for key, target in (
-            ("retrieval_miss_question_ids", retrieval_question_ids),
-            ("proposal_question_ids", proposal_question_ids),
-        ):
-            for question_id in audit.get(key, []):
-                value = int(question_id)
-                if value not in target:
-                    target.append(value)
-    return {
-        "retrieval_misses": retrieval_misses,
-        "proposals": proposals,
-        "secondary_matches": secondary_matches,
-        "relation_hints": relation_hints,
-        "retrieval_miss_question_ids": retrieval_question_ids,
-        "proposal_question_ids": proposal_question_ids,
-    }
 
 
 def _normalize_question_ids(value: object) -> list[int]:
@@ -1273,7 +1022,7 @@ def _plan_taxonomy(
     governance: Any | None,
     *,
     contexts: Mapping[int, TaggingContext],
-) -> tuple[dict[int, dict[str, Any]], int]:
+) -> tuple[dict[int, QuestionTaxonomySnapshot], int]:
     if governance is None:
         freeze = getattr(ai_service, "freeze_taxonomy", None)
         if callable(freeze):
@@ -1292,14 +1041,18 @@ def _plan_taxonomy(
     if callable(planner):
         planned = planner(prompt_contexts)
         contracts = {
-            int(question_id): dict(contract)
+            int(question_id): QuestionTaxonomySnapshot.capture(
+                int(question_id),
+                contract,
+            )
             for question_id, contract in planned.items()
             if question_id in contexts and isinstance(contract, Mapping)
         }
     else:
         contracts = {
-            question_id: dict(
-                governance.prompt_contract(context.to_dict())
+            question_id: QuestionTaxonomySnapshot.capture(
+                question_id,
+                governance.prompt_contract(context.to_dict()),
             )
             for question_id, context in contexts.items()
         }
@@ -1315,9 +1068,17 @@ def _planned_graph_release_id(
     contracts: Mapping[int, Mapping[str, Any]],
 ) -> str:
     release_ids = {
-        str(contract.get("knowledge_graph_release_id") or "").strip()
+        (
+            contract.knowledge_graph_release_id
+            if isinstance(contract, QuestionTaxonomySnapshot)
+            else str(contract.get("knowledge_graph_release_id") or "").strip()
+        )
         for contract in contracts.values()
-        if str(contract.get("knowledge_graph_release_id") or "").strip()
+        if (
+            contract.knowledge_graph_release_id
+            if isinstance(contract, QuestionTaxonomySnapshot)
+            else str(contract.get("knowledge_graph_release_id") or "").strip()
+        )
     }
     if len(release_ids) > 1:
         raise ValueError(
@@ -1426,6 +1187,8 @@ def _proposal_key(item: Mapping[str, Any]) -> str:
 
 
 def _taxonomy_revision(contract: object) -> int:
+    if isinstance(contract, QuestionTaxonomySnapshot):
+        return contract.taxonomy_revision
     if not isinstance(contract, Mapping):
         return 0
     raw = contract.get("taxonomy_revision", contract.get("revision", 0))

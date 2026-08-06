@@ -201,8 +201,8 @@ def test_intake_reuses_one_taxonomy_contract_for_analysis_and_proposals(
                 )
             }
 
-    class FakeQuestionService:
-        def __init__(self, _database):
+    class FakeQuestionWriteService:
+        def __init__(self, _database, **_kwargs):
             pass
 
         @staticmethod
@@ -241,8 +241,8 @@ def test_intake_reuses_one_taxonomy_contract_for_analysis_and_proposals(
     )
     monkeypatch.setattr(
         grading_paper_intake_service,
-        "QuestionService",
-        FakeQuestionService,
+        "QuestionBankWriteService",
+        FakeQuestionWriteService,
     )
 
     result = intake_grading_paper_to_question_bank(

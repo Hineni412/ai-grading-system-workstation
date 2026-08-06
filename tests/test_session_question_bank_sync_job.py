@@ -27,7 +27,7 @@ from db_manager import DBManager
 from question_bank.database.schema import connect, initialize_database
 from tests.current_knowledge_support import install_current_knowledge
 from question_bank.services.question_write_service import QuestionBankWriteService
-from question_bank.services.question_service import QuestionService
+from tests.question_bank_support import QuestionBankTestStore
 from question_bank.services.source_question_link_service import SourceQuestionLinkService
 from question_bank.solution_evidence import SolutionEvidenceRepository
 from question_bank.taxonomy.governance import TaxonomyGovernance
@@ -1375,7 +1375,7 @@ def test_sync_adopts_deferred_tags_and_evidence_without_tagging_model(
     assert result["retryable"] is False
     assert result["analysis_artifact_consumed"] is True
     assert gateway.calls == [(1,)]
-    saved = QuestionService(question_bank_db).get_question(imported_ids[0])
+    saved = QuestionBankTestStore(question_bank_db).get_question(imported_ids[0])
     assert saved is not None
     assert any(
         tag["tag_type"] == "knowledge_point"
@@ -1405,7 +1405,7 @@ def test_score_pending_intake_imports_tags_and_evidence_without_grading_links(
     assert result["provisional_match_count"] == 1
     assert result["config_link_pending"] is True
     assert SourceQuestionLinkService(question_bank_db).list_links() == []
-    saved = QuestionService(question_bank_db).get_question(imported_ids[0])
+    saved = QuestionBankTestStore(question_bank_db).get_question(imported_ids[0])
     assert saved is not None
     assert any(
         tag["tag_type"] == "knowledge_point"
@@ -1462,8 +1462,8 @@ def test_partial_analysis_intake_keeps_paper_and_tags_only_successful_questions(
     assert len(imported_ids) == 2
     assert gateway.calls == [(1,)]
     assert artifact_path.exists()
-    assert QuestionService(question_bank_db).get_question(imported_ids[0])["tags"]
-    assert QuestionService(question_bank_db).get_question(imported_ids[1])["tags"] == []
+    assert QuestionBankTestStore(question_bank_db).get_question(imported_ids[0])["tags"]
+    assert QuestionBankTestStore(question_bank_db).get_question(imported_ids[1])["tags"] == []
 
 
 def test_score_pending_intake_cancelled_after_import_does_not_start_adoption(
@@ -1481,7 +1481,7 @@ def test_score_pending_intake_cancelled_after_import_does_not_start_adoption(
     assert imported_ids == [1]
     assert gateway.calls == [(1,)]
     assert artifact_path.exists()
-    saved = QuestionService(question_bank_db).get_question(imported_ids[0])
+    saved = QuestionBankTestStore(question_bank_db).get_question(imported_ids[0])
     assert saved is not None
     assert saved["tags"] == []
     assert SolutionEvidenceRepository(question_bank_db).latest(imported_ids[0]) is None

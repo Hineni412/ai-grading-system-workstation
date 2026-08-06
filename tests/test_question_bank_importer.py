@@ -21,7 +21,7 @@ from question_bank.database.schema import initialize_database
 from question_bank.importers.types import ExtractedDocument
 from question_bank.importers.docx_importer import _get_paragraph_rich_text
 from question_bank.models.question import QuestionCreate
-from question_bank.services.question_service import QuestionService
+from tests.question_bank_support import QuestionBankTestStore
 
 
 def test_scanned_pdf_without_text_is_reported_as_needing_ocr(tmp_path: Path, monkeypatch) -> None:
@@ -89,7 +89,7 @@ def test_parse_paper_text_only_skips_blocks_shorter_than_six_visible_chars() -> 
 
 def test_cross_paper_duplicate_question_is_kept_for_complete_paper_import(tmp_path: Path) -> None:
     db_path = tmp_path / "question_bank.db"
-    service = QuestionService(db_path)
+    service = QuestionBankTestStore(db_path)
     service.add_question(
         QuestionCreate(
             question_number="2",

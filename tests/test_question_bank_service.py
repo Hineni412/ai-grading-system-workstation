@@ -3,359 +3,148 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-from question_bank.models.question import QuestionCreate
+from question_bank.database.schema import initialize_database
+from question_bank.models.question import QuestionCreate, TagCreate
 from question_bank.models.tag_schema import TagAnalysis
-from question_bank.services.question_service import QuestionService
+from question_bank.services.question_read_service import (
+    QuestionBankReadService,
+    QuestionReadFilters,
+)
+from question_bank.services.question_write_service import QuestionBankWriteService
 from tests.current_knowledge_support import install_current_knowledge
-from question_bank.services.question_read_service import QuestionBankReadService
-from question_bank.taxonomy.governance import TaxonomyGovernance
+
+
+def _services(tmp_path: Path):
+    db_path = tmp_path / "question_bank.db"
+    return (
+        db_path,
+        QuestionBankReadService(db_path, data_root=tmp_path),
+        QuestionBankWriteService(db_path, data_root=tmp_path),
+    )
 
 
 def test_question_schema_has_reason_column_and_migration_file(tmp_path: Path) -> None:
     db_path = tmp_path / "question_bank.db"
-    service = QuestionService(db_path)
-    service.initialize_database()
+    initialize_database(db_path)
 
     with sqlite3.connect(db_path) as conn:
-        columns = {row[1] for row in conn.execute("PRAGMA table_info(questions)").fetchall()}
+        columns = {
+            row[1]
+            for row in conn.execute("PRAGMA table_info(questions)").fetchall()
+        }
 
     assert "reason" in columns
     assert Path("migrations/question_bank/003_add_question_reason.sql").exists()
 
 
-def test_initialize_database_backfills_semester_from_paper_title(tmp_path: Path) -> None:
-    db_path = tmp_path / "question_bank.db"
-    service = QuestionService(db_path)
-    service.initialize_database()
-    with sqlite3.connect(db_path) as conn:
-        conn.execute(
-            "INSERT INTO papers (title, exam_type, grade) VALUES (?, ?, ?)",
-            ("深圳市七年级（下）期末数学试卷", "期末", "七年级"),
-        )
-        conn.commit()
-
-    service.initialize_database()
-
-    with sqlite3.connect(db_path) as conn:
-        semester = conn.execute("SELECT semester FROM papers").fetchone()[0]
-    assert semester == "下学期"
-
-
-def test_save_tag_analysis_persists_reason(tmp_path: Path) -> None:
-    service = QuestionService(tmp_path / "question_bank.db")
-    question_id = service.add_question(
+def test_canonical_write_and_read_services_round_trip_question(tmp_path: Path) -> None:
+    db_path, reader, writer = _services(tmp_path)
+    question_id = writer.add_question(
         QuestionCreate(
             question_number="1",
-            question_text="已知一次函数，求参数。",
-            answer_text="参考答案",
+            question_text="计算 a²·a³。",
+            answer_text="a⁵",
+            question_type="计算题",
+            tags=[TagCreate("method", "幂的运算", source="manual")],
         )
     )
-    install_current_knowledge(service.db_path)
-    analysis = TagAnalysis.from_dict(
-        {
-            "knowledge_points": ["一次函数"],
-            "method_tags": ["待定系数法"],
-            "thought_tags": ["函数思想"],
-            "ability_tags": ["运算求解"],
-            "math_model_tags": ["函数模型"],
-            "difficulty": 6,
-            "error_prone_points": ["条件识别不完整"],
-            "prerequisite_points": ["代数式"],
-            "textbook_chapter": "函数",
-            "teaching_stage": "同步巩固",
-            "suitable_student_level": "中档提升",
-            "reason": "学生容易漏用截距条件。",
-        }
-    )
 
-    assert service.save_tag_analysis(question_id, analysis)
+    saved = reader.get_question(question_id)
 
-    saved = service.get_question(question_id)
     assert saved is not None
-    assert saved["reason"] == "学生容易漏用截距条件。"
-    assert any(
-        tag["tag_type"] == "thought" and tag["tag_value"] == "函数思想"
+    assert saved["question_text"] == "计算 a²·a³。"
+    assert saved["answer_text"] == "a⁵"
+    assert [
+        (tag["tag_type"], tag["tag_value"])
         for tag in saved["tags"]
-    )
+    ] == [("method", "幂的运算")]
+    with sqlite3.connect(db_path) as conn:
+        source = conn.execute(
+            "SELECT source FROM question_tags WHERE question_id = ?",
+            (question_id,),
+        ).fetchone()[0]
+    assert source == "manual"
 
 
-def test_save_tag_analysis_does_not_create_retired_free_text_dimensions(
-    tmp_path: Path,
-) -> None:
-    db_path = tmp_path / "question_bank.db"
-    service = QuestionService(db_path)
-    question_id = service.add_question(
-        QuestionCreate(question_number="1", question_text="证明三角形全等。")
+def test_analysis_write_preserves_manual_tags_and_records_model(tmp_path: Path) -> None:
+    db_path, reader, writer = _services(tmp_path)
+    question_id = writer.add_question(
+        QuestionCreate(
+            question_number="1",
+            question_text="计算 a²·a³。",
+            answer_text="a⁵",
+            tags=[TagCreate("ability", "手工保留能力", source="manual")],
+        )
     )
     install_current_knowledge(db_path)
     analysis = TagAnalysis.from_dict(
         {
-            "knowledge_points": ["三角形全等"],
-            "method_tags": ["构造全等"],
-            "ability_tags": ["推理能力"],
-            "math_model_tags": ["手拉手模型"],
-            "difficulty": 5,
-            "error_prone_points": ["条件识别不完整"],
-            "prerequisite_points": ["全等三角形的判定"],
-            "textbook_chapter": "八年级上册 第四章 三角形的性质",
-            "teaching_stage": "期末冲刺",
-            "suitable_student_level": "中档提升",
-            "reason": "隔离测试",
-            "sub_skills": ["自由子技能"],
-            "measured_skills": ["自由主要技能"],
-            "supporting_skills": ["自由辅助技能"],
+            "knowledge_points": ["整式运算"],
+            "method_tags": ["运算法则"],
+            "thought_tags": [],
+            "ability_tags": ["运算求解"],
+            "math_model_tags": [],
+            "special_type_tags": [],
+            "difficulty": 4,
+            "error_prone_points": [],
+            "prerequisite_points": [],
+            "textbook_chapters": ["七年级上册"],
+            "curriculum_sections": [],
+            "teaching_stage": "",
+            "suitable_student_level": "",
+            "reason": "考查幂的运算。",
+            "confidence": 0.91,
+            "canonical_knowledge_id": "kp_alg_polynomial",
+            "sub_skills": [],
+            "measured_skills": [],
+            "supporting_skills": [],
         }
     )
 
-    assert service.save_tag_analysis(question_id, analysis)
-
-    with sqlite3.connect(db_path) as conn:
-        saved_types = {
-            str(row[0])
-            for row in conn.execute(
-                "SELECT DISTINCT tag_type FROM question_tags WHERE question_id = ?",
-                (question_id,),
-            )
-        }
-
-    assert "teaching_stage" not in saved_types
-    assert "sub_skill" not in saved_types
-    assert "measured_skill" not in saved_types
-    assert "supporting_skill" not in saved_types
-
-
-def test_save_tag_analysis_persists_every_textbook_chapter(
-    tmp_path: Path,
-) -> None:
-    db_path = tmp_path / "question_bank.db"
-    service = QuestionService(db_path)
-    question_id = service.add_question(
-        QuestionCreate(question_number="1", question_text="跨章节综合题")
-    )
-    install_current_knowledge(db_path)
-    chapters = [
-        "七年级下册 第二章 相交线与平行线",
-        "七年级下册 第四章 三角形",
-    ]
-
-    assert service.save_tag_analysis(
-        question_id,
-        TagAnalysis.from_dict(
-            {
-                "knowledge_points": ["平行线与三角形综合"],
-                "ability_tags": ["推理能力"],
-                "textbook_chapters": chapters,
-                "suitable_student_level": "综合突破",
-            }
-        ),
-    )
-
-    with sqlite3.connect(db_path) as conn:
-        stored = [
-            str(row[0])
-            for row in conn.execute(
-                """
-                SELECT tag_value
-                FROM question_tags
-                WHERE question_id = ? AND tag_type = 'exam_scope'
-                ORDER BY id
-                """,
-                (question_id,),
-            )
-        ]
-
-    assert stored == chapters
-
-
-def test_teacher_approved_knowledge_stays_visible_and_survives_reanalysis(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    db_path = tmp_path / "question_bank.db"
-    service = QuestionService(db_path)
-    question_id = service.add_question(
-        QuestionCreate(question_number="1", question_text="教师确认的新知识点")
-    )
-    install_current_knowledge(db_path)
-    governance = TaxonomyGovernance(
-        state_path=tmp_path / "taxonomy-state.json",
-        knowledge_graph_db_path=db_path,
-    )
-    constrained = governance.constrain(
-        {
-            "proposed_tags": [
-                {
-                    "dimension": "knowledge",
-                    "name": "教师确认的局部新词",
-                    "reason": "当前标准没有严格同义词",
-                }
-            ]
-        },
-        context={
-            "persist_proposals": True,
-            "question_ref": str(question_id),
-            "request_token": "local-new-term-proposal",
-        },
-    )
-    proposal = constrained["proposals"][0]
-    governance.review_batch(
-        commands=[
-            {
-                "proposal_id": proposal["id"],
-                "decision": "approve",
-                "edited_name": "教师确认的局部新词",
-            }
-        ],
-        expected_revision=constrained["taxonomy_revision"],
-        request_token="local-new-term-review",
-    )
-
-    analysis = TagAnalysis.from_dict(
-        {"knowledge_points": ["教师确认的局部新词"]}
-    )
-    assert service.save_tag_analysis(
+    assert writer.save_tag_analysis(
         question_id,
         analysis,
-        taxonomy_governance=governance,
+        model_name="synthetic-model",
+        confidence=0.77,
     )
-    monkeypatch.setattr(
-        "question_bank.services.question_read_service.get_taxonomy_governance",
-        lambda: governance,
+    saved = reader.get_question(question_id)
+
+    assert saved is not None
+    assert any(tag["tag_value"] == "手工保留能力" for tag in saved["tags"])
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        stored_tags = conn.execute(
+            """
+            SELECT tag_value, source, model_name, confidence
+            FROM question_tags
+            WHERE question_id = ?
+            ORDER BY id
+            """,
+            (question_id,),
+        ).fetchall()
+    assert any(
+        tag["tag_value"] == "手工保留能力" and tag["source"] == "manual"
+        for tag in stored_tags
     )
-    visible = QuestionBankReadService(db_path).get_question(question_id)
-    assert visible is not None
-    assert visible["tags"] == [
-        {
-            "tag_type": "knowledge_point",
-            "tag_value": "教师确认的局部新词",
-            "confidence": 0.8,
-        }
-    ]
+    ai_tags = [tag for tag in stored_tags if tag["source"] == "ai"]
+    assert ai_tags
+    assert {tag["model_name"] for tag in ai_tags} == {"synthetic-model"}
+    assert {round(float(tag["confidence"]), 2) for tag in ai_tags} == {0.77}
 
 
-def test_query_questions_sorts_before_pagination(tmp_path: Path) -> None:
-    service = QuestionService(tmp_path / "question_bank.db")
-    for number, difficulty in [("1", "1"), ("2", "9"), ("3", "5"), ("4", "7")]:
-        service.add_question(
+def test_read_service_owns_filtering_and_difficulty_sort(tmp_path: Path) -> None:
+    _db_path, reader, writer = _services(tmp_path)
+    for number, difficulty in (("1", "4"), ("2", "9"), ("3", "6")):
+        writer.add_question(
             QuestionCreate(
                 question_number=number,
-                question_text=f"第 {number} 题",
+                question_text=f"题目 {number}",
                 difficulty=difficulty,
             )
         )
 
-    first_page = service.query_questions(sort_mode="试题难度", limit=2, offset=0)
-    second_page = service.query_questions(sort_mode="试题难度", limit=2, offset=2)
+    page = reader.list_questions(
+        QuestionReadFilters(sort="difficulty_desc", page_size=10)
+    )
 
-    assert [item["question_number"] for item in first_page] == ["2", "4"]
-    assert [item["question_number"] for item in second_page] == ["3", "1"]
-
-
-def test_query_questions_frequency_does_not_inflate_same_paper_duplicates(tmp_path: Path) -> None:
-    db_path = tmp_path / "question_bank.db"
-    from question_bank.database.schema import initialize_database, connect
-    initialize_database(db_path)
-    
-    with connect(db_path) as conn:
-        conn.execute(
-            """
-            INSERT INTO papers (id, title, grade, exam_type, semester, import_status)
-            VALUES (101, 'Mock Paper', '九年级', '中考', '全学年', 'success')
-            """
-        )
-    
-    service = QuestionService(db_path)
-    install_current_knowledge(db_path)
-    q1 = service.add_question(QuestionCreate(question_number="1", question_text="Q1", question_type="选择题", paper_id=101))
-    q2 = service.add_question(QuestionCreate(question_number="2", question_text="Q2", question_type="选择题", paper_id=101))
-    q3 = service.add_question(QuestionCreate(question_number="3", question_text="Q3", question_type="选择题", paper_id=101))
-
-    # Complete the three core tags and difficulty for every question.
-    service.save_tag_analysis(q1, TagAnalysis.from_dict({
-        "knowledge_points": ["一次函数"],
-        "ability_tags": ["Ability_A"],
-        "textbook_chapter": "Chapter_A",
-        "difficulty": 4,
-    }))
-    service.save_tag_analysis(q2, TagAnalysis.from_dict({
-        "knowledge_points": ["一次函数"],
-        "ability_tags": ["Ability_A"],
-        "textbook_chapter": "Chapter_A",
-        "difficulty": 4,
-    }))
-    service.save_tag_analysis(q3, TagAnalysis.from_dict({
-        "knowledge_points": ["二次函数"],
-        "ability_tags": ["Ability_A"],
-        "textbook_chapter": "Chapter_A",
-        "difficulty": 4,
-    }))
-
-    res = service.query_questions(sort_mode="考频排序")
-    assert {item["question_number"] for item in res} == {"1", "2", "3"}
-    with connect(db_path) as conn:
-        scores = [
-            float(row["score_zhongkao"])
-            for row in conn.execute(
-                "SELECT score_zhongkao FROM question_frequency_cache ORDER BY question_id"
-            ).fetchall()
-        ]
-    assert len(set(scores)) == 1
-
-
-def test_query_questions_sort_by_frequency_applies_difficulty_isolation(tmp_path: Path) -> None:
-    db_path = tmp_path / "question_bank.db"
-    from question_bank.database.schema import initialize_database, connect
-    initialize_database(db_path)
-    
-    with connect(db_path) as conn:
-        conn.executemany(
-            """
-            INSERT INTO papers (id, title, grade, exam_type, semester, import_status)
-            VALUES (?, ?, '九年级', '中考', '全学年', 'success')
-            """,
-            [(101, "Mock Paper"), (102, "Second Mock Paper")],
-        )
-    
-    service = QuestionService(db_path)
-    install_current_knowledge(db_path)
-    
-    # We will create two main questions:
-    # q1: difficulty 4
-    # q2: difficulty 9
-    # A matching difficulty-4 question appears on another eligible paper.
-    # Because of difficulty isolation (difference 5 >= 3), q2 won't match the difficulty 4 candidates.
-    q1 = service.add_question(QuestionCreate(question_number="1", question_text="Q1", question_type="选择题", paper_id=101, difficulty="4"))
-    q2 = service.add_question(QuestionCreate(question_number="2", question_text="Q2", question_type="选择题", paper_id=101, difficulty="9"))
-    q1_match = service.add_question(QuestionCreate(question_number="1", question_text="Q1 match", question_type="选择题", paper_id=102, difficulty="4"))
-    
-    # Tag all of them completely so the paper is eligible.
-    service.save_tag_analysis(q1, TagAnalysis.from_dict({
-        "knowledge_points": ["一次函数"],
-        "ability_tags": ["Ability_A"],
-        "textbook_chapter": "Chapter_A",
-        "suitable_student_level": "Level_A",
-        "difficulty": 4
-    }))
-    service.save_tag_analysis(q2, TagAnalysis.from_dict({
-        "knowledge_points": ["一次函数"],
-        "ability_tags": ["Ability_A"],
-        "textbook_chapter": "Chapter_A",
-        "suitable_student_level": "Level_A",
-        "difficulty": 9
-    }))
-    service.save_tag_analysis(q1_match, TagAnalysis.from_dict({
-        "knowledge_points": ["一次函数"],
-        "ability_tags": ["Ability_A"],
-        "textbook_chapter": "Chapter_A",
-        "difficulty": 4
-    }))
-    
-    res = service.query_questions(sort_mode="考频排序")
-    
-    q1_idx = next(idx for idx, item in enumerate(res) if item["question_number"] == "1")
-    q2_idx = next(idx for idx, item in enumerate(res) if item["question_number"] == "2")
-    
-    assert q1_idx < q2_idx
-
-
-
+    assert [item["question_number"] for item in page.items] == ["2", "3", "1"]

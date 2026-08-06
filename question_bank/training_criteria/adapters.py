@@ -20,7 +20,7 @@ from question_bank.services.ai_tagging_service import (
 from question_bank.services.asset_path_service import (
     resolve_question_bank_asset_path,
 )
-from question_bank.services.question_service import QuestionService
+from question_bank.services.question_write_service import QuestionBankWriteService
 from question_bank.services.rich_content_service import (
     load_question_rich_content,
 )
@@ -47,10 +47,10 @@ class ExistingTagProjectionWriter:
     def __init__(
         self,
         *,
-        question_service: QuestionService,
+        write_service: QuestionBankWriteService,
         tagging_service: AITaggingService,
     ) -> None:
-        self.question_service = question_service
+        self.write_service = write_service
         self.tagging_service = tagging_service
         self._audit_lock = threading.Lock()
         self._audits: dict[tuple[str, int], dict[str, Any]] = {}
@@ -64,12 +64,9 @@ class ExistingTagProjectionWriter:
         operation_id: str,
     ) -> Mapping[str, Any]:
         analysis = TagAnalysis.from_dict(dict(payload))
-        contract = dict(
-            question.taxonomy_contract
-            or self.tagging_service.taxonomy_contract(
-                question.tagging_context
-            )
-        )
+        contract = question.taxonomy_snapshot
+        if not contract:
+            raise ValueError("question taxonomy snapshot is unavailable")
         checked = _with_quality(
             AITaggingResult(
                 ok=True,
@@ -104,9 +101,9 @@ class ExistingTagProjectionWriter:
                         f"combined-tag:{operation_id}:question:"
                         f"{question.question_id}:taxonomy:{checked.taxonomy_revision}:"
                         "candidates:"
-                        f"{str(contract.get('candidate_fingerprint') or 'none')}"
+                        f"{contract.candidate_fingerprint or 'none'}"
                     ),
-                    "expected_revision": int(checked.taxonomy_revision or 0),
+                    "expected_revision": contract.taxonomy_revision,
                     "allowed_term_ids": contract.get("allowed_term_ids", {}),
                     "knowledge_catalog_revision": contract.get(
                         "knowledge_catalog_revision"
@@ -127,7 +124,7 @@ class ExistingTagProjectionWriter:
                 ],
                 "proposals": persisted_proposals,
             }
-        if not self.question_service.save_tag_analysis(
+        if not self.write_service.save_tag_analysis(
             question.question_id,
             checked.analysis,
             model_name=model_name,
@@ -384,7 +381,7 @@ class QuestionAnalysisInputLoader:
                         _public_block(item) for item in answer_blocks
                     ),
                     images=images,
-                    taxonomy_contract=dict(
+                    taxonomy_contract=(
                         (taxonomy_contracts or {}).get(question_id, {})
                     ),
                 )
@@ -504,7 +501,7 @@ def question_analysis_input_from_config_source(
         rich_question_blocks=tuple(_public_block(item) for item in question_blocks),
         rich_answer_blocks=tuple(_public_block(item) for item in answer_blocks),
         images=normalized_images,
-        taxonomy_contract=dict(taxonomy_contract or {}),
+        taxonomy_contract=taxonomy_contract or {},
         reference_solution=(
             dict(reference_solution)
             if isinstance(reference_solution, Mapping)
