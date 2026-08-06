@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -1210,8 +1211,27 @@ def test_input_loader_includes_rich_text_and_controlled_actual_images(
                             "[[IMAGE:question_bank/extracted_images/"
                             "synthetic.png]]"
                         ),
-                        "image_relationships": {},
-                    }
+                        "xml": (
+                            '<w:p xmlns:w="http://schemas.openxmlformats.org/'
+                            'wordprocessingml/2006/main"><w:r><w:t>富内容题干</w:t>'
+                            "</w:r></w:p>"
+                        ),
+                        "image_relationships": {
+                            "rId5": (
+                                "question_bank/extracted_images/"
+                                "synthetic.png"
+                            )
+                        },
+                    },
+                    {
+                        "text": "三、解答题（本题共7小题，共61分）",
+                        "xml": (
+                            '<w:p xmlns:w="http://schemas.openxmlformats.org/'
+                            'wordprocessingml/2006/main"><w:r><w:t>'
+                            "三、解答题（本题共7小题，共61分）"
+                            "</w:t></w:r></w:p>"
+                        ),
+                    },
                 ],
                 "answer_blocks": [{"text": "富内容答案"}],
             },
@@ -1246,6 +1266,26 @@ def test_input_loader_includes_rich_text_and_controlled_actual_images(
     assert loaded[0].tagging_context.curriculum_volume_id == "pep-7-up"
     assert loaded[0].rich_question_blocks == (
         {"text": "富内容题干"},
+        {"text": "三、解答题（本题共7小题，共61分）"},
+    )
+    assert loaded[0].word_question_blocks == (
+        {
+            "text": (
+                "富内容题干"
+                "[[IMAGE:question_bank/extracted_images/synthetic.png]]"
+            ),
+            "xml": (
+                '<w:p xmlns:w="http://schemas.openxmlformats.org/'
+                'wordprocessingml/2006/main"><w:r><w:t>富内容题干</w:t>'
+                "</w:r></w:p>"
+            ),
+            "image_relationships": {
+                "rId5": (
+                    "sha256:"
+                    + hashlib.sha256(asset.read_bytes()).hexdigest()
+                )
+            },
+        },
     )
     assert len(loaded[0].images) == 1
     assert loaded[0].images[0].content.endswith(b"loader-synthetic")

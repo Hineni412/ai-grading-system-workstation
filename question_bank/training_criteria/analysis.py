@@ -109,6 +109,8 @@ class QuestionAnalysisInput:
     question_type_confirmed: bool = False
     rich_question_blocks: tuple[Mapping[str, Any], ...] = ()
     rich_answer_blocks: tuple[Mapping[str, Any], ...] = ()
+    word_question_blocks: tuple[Mapping[str, Any], ...] = ()
+    word_answer_blocks: tuple[Mapping[str, Any], ...] = ()
     images: tuple[QuestionAnalysisImage, ...] = ()
     taxonomy_contract: QuestionTaxonomySnapshot | Mapping[str, Any] = field(
         default_factory=dict
@@ -136,6 +138,16 @@ class QuestionAnalysisInput:
             self,
             "rich_answer_blocks",
             tuple(dict(item) for item in self.rich_answer_blocks),
+        )
+        object.__setattr__(
+            self,
+            "word_question_blocks",
+            tuple(dict(item) for item in self.word_question_blocks),
+        )
+        object.__setattr__(
+            self,
+            "word_answer_blocks",
+            tuple(dict(item) for item in self.word_answer_blocks),
         )
         object.__setattr__(self, "images", tuple(self.images))
         object.__setattr__(

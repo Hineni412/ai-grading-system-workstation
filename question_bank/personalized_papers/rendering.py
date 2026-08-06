@@ -17,17 +17,24 @@ import cv2
 import fitz
 from docx import Document
 from docx.enum.section import WD_SECTION
-from docx.enum.table import WD_CELL_VERTICAL_ALIGNMENT
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.shared import Mm, Pt, RGBColor
+from docx.text.paragraph import Paragraph
 from PIL import Image
-from question_bank.document_pipeline import SharedWordQuestionRenderer, WordStyleProfile, build_math_expression
+from question_bank.document_pipeline import (
+    SharedWordQuestionRenderer,
+    WordStyleProfile,
+    add_answer_space,
+    answer_space_lines,
+    build_math_expression,
+    rich_block_text,
+)
 from question_bank.document_pipeline.contracts import math_expression_from_payload
 
 
-LAYOUT_VERSION = "personalized-paper-school-a4-v1"
+LAYOUT_VERSION = "personalized-paper-school-a4-v3"
 PAGE_IDENTITY_VERSION = "P4P2"
 LEGACY_PAGE_IDENTITY_VERSION = "P4P1"
 DOCX_MEDIA_TYPE = (
@@ -38,7 +45,6 @@ PDF_MEDIA_TYPE = "application/pdf"
 _INK = RGBColor(30, 41, 59)
 _BLUE = RGBColor(30, 84, 120)
 _MUTED = RGBColor(100, 116, 139)
-_LIGHT = "E8EEF5"
 _FONT_LATIN = "Calibri"
 _FONT_EAST_ASIA = "Microsoft YaHei"
 _MATH_RUN = re.compile(r"\$\$(.+?)\$\$|\$(.+?)\$", re.DOTALL)
@@ -127,8 +133,6 @@ def render_review_docx(
     student = _mapping(snapshot.get("student"))
     items = _mappings(snapshot.get("items"))
     paper_id = str(snapshot["paper_instance_id"])
-    series_version = int(snapshot["series_version"])
-    budget = _mapping(snapshot.get("budget"))
     formula_fallbacks: list[dict[str, Any]] = []
     renderer = SharedWordQuestionRenderer(
         style=WordStyleProfile(
@@ -136,7 +140,7 @@ def render_review_docx(
             body_font_ascii=_FONT_LATIN,
             body_size_pt=11,
             formula_size_pt=11,
-            line_spacing=1.25,
+            line_spacing=1.1,
         ),
         asset_resolver=lambda value: _controlled_asset_path(data_root, value),
     )
@@ -147,7 +151,7 @@ def render_review_docx(
         header,
         (
             f"{student.get('student_name') or student.get('student_code') or student.get('student_id')}"
-            f"  ·  个性化训练卷 V{series_version}"
+            "  ·  个性化训练卷"
         ),
         size=9,
         color=_MUTED,
@@ -155,155 +159,114 @@ def render_review_docx(
 
     title = document.add_paragraph()
     title.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    title.paragraph_format.space_after = Pt(4)
-    _add_run(title, "个性化训练卷（审核稿）", size=22, bold=True, color=_BLUE)
-    subtitle = document.add_paragraph()
-    subtitle.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    subtitle.paragraph_format.space_after = Pt(12)
-    _add_run(
-        subtitle,
-        "请在 WPS 中检查题目、分页与留白；确认后再生成冻结 PDF。",
-        size=10,
-        color=_MUTED,
-    )
-
-    metadata = document.add_table(rows=2, cols=3)
-    metadata.autofit = False
-    _set_fixed_table_geometry(
-        metadata,
-        column_widths=(3288, 3288, 3289),
-        total_width=9865,
-        indent=120,
-    )
-    cells = [
-        ("学生", str(student.get("student_name") or student.get("student_code") or "学生")),
-        ("班级", str(student.get("class_id") or "-")),
-        ("版本", f"V{series_version}"),
-        ("题量", f"{len(items)} 题"),
-        ("预计时长", f"{int(snapshot.get('estimated_minutes') or 0)} 分钟"),
-        (
-            "判定预算",
-            f"{int(budget.get('estimated_total_tokens') or 0)} / "
-            f"{int(budget.get('context_window_tokens') or 0)}",
-        ),
-    ]
-    for index, (label, value) in enumerate(cells):
-        cell = metadata.cell(index // 3, index % 3)
-        cell.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.CENTER
-        cell.text = ""
-        paragraph = cell.paragraphs[0]
-        paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        paragraph.paragraph_format.space_before = Pt(3)
-        paragraph.paragraph_format.space_after = Pt(3)
-        _add_run(paragraph, f"{label}\n", size=8.5, color=_MUTED)
-        _add_run(paragraph, value, size=10.5, bold=True, color=_INK)
-        _cell_shading(cell, _LIGHT)
-    _set_table_borders(metadata, "D7DEE8")
+    title.paragraph_format.space_after = Pt(3)
+    _add_run(title, "个性化训练卷", size=18, bold=True, color=_BLUE)
 
     identity = document.add_paragraph()
-    identity.paragraph_format.space_before = Pt(8)
-    identity.paragraph_format.space_after = Pt(10)
+    identity.paragraph_format.space_before = Pt(1)
+    identity.paragraph_format.space_after = Pt(7)
+    identity.paragraph_format.keep_with_next = True
     _add_run(
         identity,
-        f"卷实例：{paper_id}  ·  版式：{LAYOUT_VERSION}",
-        size=7.5,
-        color=_MUTED,
+        (
+            f"姓名：{student.get('student_name') or student.get('student_code') or '学生'}"
+            f"    班级：{student.get('class_id') or '________'}"
+            "    日期：____年__月__日"
+        ),
+        size=10.5,
+        color=_INK,
     )
+    _add_hidden_run(identity, paper_id)
+    _paragraph_bottom_border(identity, color="94A3B8", size="5")
 
     for index, item in enumerate(items, start=1):
-        if index > 1:
-            separator = document.add_paragraph()
-            separator.paragraph_format.keep_with_next = True
-            separator.paragraph_format.space_before = Pt(8)
-            separator.paragraph_format.space_after = Pt(6)
-            _paragraph_bottom_border(separator, color="CBD5E1", size="6")
         question = _mapping(item.get("question_snapshot"))
         context = _mapping(question.get("tagging_context"))
-        recommendation = _mapping(item.get("recommendation_snapshot"))
-        question_number = str(
-            recommendation.get("question_number")
-            or context.get("question_number")
-            or index
+        question_type = str(context.get("question_type") or "")
+        inline_prefix = f"{index}. "
+        question_paragraph_start = len(document.paragraphs)
+        rich_result = renderer.add_rich_blocks(
+            document,
+            _mappings(question.get("rich_question_blocks")),
+            strip_leading_number=True,
+            inline_prefix=inline_prefix,
+            compact_standalone_images_with_text=(
+                answer_space_lines(question_type) == 0
+            ),
         )
-        source = str(recommendation.get("source_paper") or "")
-        heading = document.add_paragraph()
-        heading.paragraph_format.keep_with_next = True
-        heading.paragraph_format.space_before = Pt(4)
-        heading.paragraph_format.space_after = Pt(4)
-        _add_run(
-            heading,
-            f"{index}. {source + ' · ' if source else ''}原题第 {question_number} 题",
-            size=12,
-            bold=True,
-            color=_INK,
-        )
-        body = document.add_paragraph()
-        body.paragraph_format.keep_with_next = True
-        body.paragraph_format.space_after = Pt(6)
-        body.paragraph_format.line_spacing = 1.25
-        expressions = tuple(
-            math_expression_from_payload(value)
-            for value in _mappings(question.get("math_expressions"))
-        )
-        if not expressions:
-            images = _mappings(question.get("images"))
-            fallback_asset = images[0].get("asset_path") if images else None
-            fallback_sha256 = images[0].get("sha256") if images else None
+        if not rich_result.appended:
+            body = document.add_paragraph()
+            body.paragraph_format.keep_with_next = True
+            body.paragraph_format.space_after = Pt(0)
+            body.paragraph_format.line_spacing = 1.1
+            _add_run(body, inline_prefix, size=11, bold=True, color=_INK)
             expressions = tuple(
-                build_math_expression(
-                    expression_id=f"p4-{question.get('question_id') or index}-math-{expression_index}",
-                    source=match.group(1) if match.group(1) is not None else match.group(2),
-                    fallback_asset=str(fallback_asset) if fallback_asset else None,
-                    fallback_sha256=str(fallback_sha256) if fallback_sha256 else None,
+                math_expression_from_payload(value)
+                for value in _mappings(question.get("math_expressions"))
+            )
+            if not expressions:
+                images = _mappings(question.get("images"))
+                fallback_asset = images[0].get("asset_path") if images else None
+                fallback_sha256 = images[0].get("sha256") if images else None
+                expressions = tuple(
+                    build_math_expression(
+                        expression_id=f"p4-{question.get('question_id') or index}-math-{expression_index}",
+                        source=match.group(1) if match.group(1) is not None else match.group(2),
+                        fallback_asset=str(fallback_asset) if fallback_asset else None,
+                        fallback_sha256=str(fallback_sha256) if fallback_sha256 else None,
+                    )
+                    for expression_index, match in enumerate(
+                        _MATH_RUN.finditer(str(context.get("question_text") or "")),
+                        start=1,
+                    )
                 )
-                for expression_index, match in enumerate(
-                    _MATH_RUN.finditer(str(context.get("question_text") or "")),
-                    start=1,
+            if any(
+                not expression.omml and not expression.fallback_asset
+                for expression in expressions
+            ):
+                raise PaperRenderError(
+                    "unsupported formula has no governed source image fallback"
+                )
+            formula_fallbacks.extend(
+                asdict(fallback)
+                for fallback in renderer.add_to_paragraph(
+                    body,
+                    str(context.get("question_text") or ""),
+                    question_id=str(
+                        question.get("question_id")
+                        or item.get("question_id")
+                        or index
+                    ),
+                    expressions=expressions,
                 )
             )
-        if any(not expression.omml and not expression.fallback_asset for expression in expressions):
-            raise PaperRenderError(
-                "unsupported formula has no governed source image fallback"
-            )
-        formula_fallbacks.extend(
-            asdict(item)
-            for item in renderer.add_to_paragraph(
-                body,
-                str(context.get("question_text") or ""),
-                question_id=str(question.get("question_id") or item.get("question_id") or index),
-                expressions=expressions,
-            )
-        )
         image_paragraph_start = len(document.paragraphs)
         _add_question_images(
             document,
             question,
             data_root=Path(data_root),
+            skip_assets=set(rich_result.embedded_assets),
         )
         for image_paragraph in document.paragraphs[image_paragraph_start:]:
-            image_paragraph.paragraph_format.keep_with_next = True
-        marker = document.add_paragraph()
-        marker.paragraph_format.keep_with_next = True
-        marker.paragraph_format.space_after = Pt(3)
-        _add_run(
-            marker,
-            f"任务题码：{item['task_item_code']}",
-            size=7.5,
-            color=_MUTED,
-        )
-        answer_lines = _answer_line_count(str(context.get("question_type") or ""))
-        for line_index in range(answer_lines):
-            line = document.add_paragraph()
-            line.paragraph_format.keep_with_next = (
-                line_index < answer_lines - 1
+            image_paragraph.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+            image_paragraph.paragraph_format.keep_together = True
+        question_paragraphs = document.paragraphs[question_paragraph_start:]
+        minimum_lines = answer_space_lines(question_type)
+        if minimum_lines:
+            add_answer_space(
+                document,
+                question_paragraphs=question_paragraphs,
+                minimum_lines=minimum_lines,
+                content_width_dxa=renderer.style.content_width_dxa,
             )
-            line.paragraph_format.space_before = Pt(5)
-            line.paragraph_format.space_after = Pt(5)
-            _paragraph_bottom_border(line, color="CBD5E1", size="4")
+        marker_target = _last_document_body_paragraph(document)
+        if marker_target is None:
+            marker_target = document.add_paragraph()
+            marker_target.paragraph_format.space_after = Pt(0)
+        _add_hidden_run(marker_target, f"任务题码：{item['task_item_code']}")
 
     footer = document.sections[0].footer.paragraphs[0]
     footer.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    _add_run(footer, "审核稿 · 尚未冻结 · ", size=8, color=_MUTED)
     _add_run(footer, "第 ", size=8, color=_MUTED)
     _add_field(footer, "PAGE")
     _add_run(footer, " 页 / 共 ", size=8, color=_MUTED)
@@ -550,16 +513,17 @@ def inspect_docx(
     *,
     paper_instance_id: str,
     task_item_codes: Sequence[str],
-    question_texts: Sequence[str],
+    question_snapshots: Sequence[Mapping[str, Any]],
 ) -> None:
     try:
         document = Document(source)
     except Exception as exc:  # noqa: BLE001
         raise PaperRenderError("reviewed file is not a readable DOCX") from exc
-    text = "\n".join(
-        paragraph.text
-        for paragraph in _all_paragraphs(document)
-        if paragraph.text
+    text_tags = {qn("w:t"), qn("m:t")}
+    text = "".join(
+        child.text or ""
+        for child in document._body._element.iter()  # noqa: SLF001
+        if child.tag in text_tags
     )
     normalized = _normalized_text(text)
     instance_marker = _normalized_text(paper_instance_id)
@@ -568,6 +532,18 @@ def inspect_docx(
             "reviewed DOCX no longer matches the frozen question list"
         )
     _assert_ordered_text(normalized, task_item_codes)
+    question_texts = []
+    for question in question_snapshots:
+        rich_text = rich_block_text(
+            _mappings(question.get("rich_question_blocks")),
+            strip_leading_number=True,
+        )
+        context = _mapping(question.get("tagging_context"))
+        question_texts.append(
+            rich_text
+            if rich_text is not None
+            else str(context.get("question_text") or "")
+        )
     _assert_ordered_text(normalized, question_texts)
 
 
@@ -584,7 +560,7 @@ def _configure_document(document: Document) -> None:
     section.page_width = Mm(210)
     section.page_height = Mm(297)
     section.top_margin = Mm(20)
-    section.bottom_margin = Mm(22)
+    section.bottom_margin = Mm(28)
     section.left_margin = Mm(18)
     section.right_margin = Mm(18)
     section.header_distance = Mm(8)
@@ -596,8 +572,8 @@ def _configure_document(document: Document) -> None:
     normal.font.size = Pt(11)
     normal.font.color.rgb = _INK
     normal._element.rPr.rFonts.set(qn("w:eastAsia"), _FONT_EAST_ASIA)
-    normal.paragraph_format.space_after = Pt(6)
-    normal.paragraph_format.line_spacing = 1.25
+    normal.paragraph_format.space_after = Pt(3)
+    normal.paragraph_format.line_spacing = 1.1
     for name, size, color, before, after in (
         ("Heading 1", 16, _BLUE, 18, 10),
         ("Heading 2", 13, _BLUE, 14, 7),
@@ -617,6 +593,7 @@ def _add_question_images(
     question: Mapping[str, Any],
     *,
     data_root: Path,
+    skip_assets: set[str] | None = None,
 ) -> None:
     images = _mappings(question.get("images"))
     for image in images:
@@ -627,6 +604,8 @@ def _add_question_images(
         root = data_root.resolve()
         if root not in resolved.parents or not resolved.is_file():
             raise PaperRenderError("frozen question image is missing")
+        if str(resolved) in (skip_assets or set()):
+            continue
         payload = resolved.read_bytes()
         try:
             document.add_picture(BytesIO(payload), width=Mm(120))
@@ -636,15 +615,6 @@ def _add_question_images(
                 source.convert("RGB").save(converted, format="PNG")
                 converted.seek(0)
                 document.add_picture(converted, width=Mm(120))
-
-
-def _answer_line_count(question_type: str) -> int:
-    value = str(question_type or "").casefold()
-    if any(token in value for token in ("选择", "choice", "填空", "fill")):
-        return 2
-    if any(token in value for token in ("证明", "proof", "作图", "construction")):
-        return 7
-    return 5
 
 
 def _add_run(
@@ -661,6 +631,22 @@ def _add_run(
     run.font.color.rgb = color
     run.bold = bold
     run._element.rPr.rFonts.set(qn("w:eastAsia"), _FONT_EAST_ASIA)
+
+
+def _add_hidden_run(paragraph, text: str) -> None:
+    run = paragraph.add_run(str(text or ""))
+    run.font.hidden = True
+
+
+def _last_document_body_paragraph(document: Document) -> Paragraph | None:
+    for element in reversed(document._body._element):  # noqa: SLF001
+        if element.tag == qn("w:p"):
+            return Paragraph(element, document._body)  # noqa: SLF001
+        if element.tag == qn("w:tbl"):
+            paragraphs = element.xpath(".//w:p")
+            if paragraphs:
+                return Paragraph(paragraphs[-1], document._body)  # noqa: SLF001
+    return None
 
 
 def _add_field(paragraph, instruction: str) -> None:
@@ -691,68 +677,6 @@ def _paragraph_bottom_border(paragraph, *, color: str, size: str) -> None:
     bottom.set(qn("w:space"), "1")
     bottom.set(qn("w:color"), color)
     borders.append(bottom)
-
-
-def _cell_shading(cell, fill: str) -> None:
-    properties = cell._tc.get_or_add_tcPr()
-    shading = OxmlElement("w:shd")
-    shading.set(qn("w:fill"), fill)
-    properties.append(shading)
-
-
-def _set_table_borders(table, color: str) -> None:
-    properties = table._tbl.tblPr
-    borders = OxmlElement("w:tblBorders")
-    for edge in ("top", "left", "bottom", "right", "insideH", "insideV"):
-        element = OxmlElement(f"w:{edge}")
-        element.set(qn("w:val"), "single")
-        element.set(qn("w:sz"), "4")
-        element.set(qn("w:space"), "0")
-        element.set(qn("w:color"), color)
-        borders.append(element)
-    properties.append(borders)
-
-
-def _set_fixed_table_geometry(
-    table,
-    *,
-    column_widths: Sequence[int],
-    total_width: int,
-    indent: int,
-) -> None:
-    properties = table._tbl.tblPr
-    for tag, value, width_type in (
-        ("w:tblW", total_width, "dxa"),
-        ("w:tblInd", indent, "dxa"),
-    ):
-        element = properties.find(qn(tag))
-        if element is None:
-            element = OxmlElement(tag)
-            properties.append(element)
-        element.set(qn("w:w"), str(int(value)))
-        element.set(qn("w:type"), width_type)
-    layout = properties.find(qn("w:tblLayout"))
-    if layout is None:
-        layout = OxmlElement("w:tblLayout")
-        properties.append(layout)
-    layout.set(qn("w:type"), "fixed")
-    grid_columns = list(table._tbl.tblGrid)
-    for index, width in enumerate(column_widths):
-        if index < len(grid_columns):
-            grid_column = grid_columns[index]
-        else:
-            grid_column = OxmlElement("w:gridCol")
-            table._tbl.tblGrid.append(grid_column)
-        grid_column.set(qn("w:w"), str(int(width)))
-    for row in table.rows:
-        for index, cell in enumerate(row.cells):
-            properties = cell._tc.get_or_add_tcPr()
-            width = properties.find(qn("w:tcW"))
-            if width is None:
-                width = OxmlElement("w:tcW")
-                properties.append(width)
-            width.set(qn("w:w"), str(int(column_widths[index])))
-            width.set(qn("w:type"), "dxa")
 
 
 def _qr_png(payload: str) -> bytes:

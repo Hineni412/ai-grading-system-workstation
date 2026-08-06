@@ -12,8 +12,10 @@ import fitz
 import numpy as np
 import pytest
 from docx import Document
+from PIL import Image
 
 from question_bank.database.schema import connect, initialize_database
+from question_bank.models.tag_schema import TaggingContext
 from question_bank.personalized_papers import (
     CreatePaperCommand,
     FreezePaperCommand,
@@ -32,6 +34,7 @@ from question_bank.recommendation.personalized import (
     PersonalizedRecommendationConfig,
     PersonalizedRecommendationModule,
 )
+from question_bank.training_criteria import QuestionAnalysisImage, QuestionAnalysisInput
 from tests.phase4.test_personalized_recommendation import (
     NOW,
     _diagnosis,
@@ -118,6 +121,49 @@ def test_page_identity_uses_compact_v2_qr_format_and_reads_legacy_v1() -> None:
     assert decode_page_identity(legacy)["identity_version"] == "P4P1"
 
 
+def test_question_snapshot_rewrites_word_images_to_frozen_assets(
+    tmp_path: Path,
+) -> None:
+    buffer = BytesIO()
+    Image.new("RGB", (80, 40), "white").save(buffer, format="PNG")
+    image = QuestionAnalysisImage(
+        role="question",
+        mime_type="image/png",
+        content=buffer.getvalue(),
+    )
+    question = QuestionAnalysisInput(
+        question_id=1,
+        tagging_context=TaggingContext(question_text="富文本题干", has_images=True),
+        word_question_blocks=({
+            "text": "富文本题干",
+            "xml": (
+                '<w:p xmlns:w="http://schemas.openxmlformats.org/'
+                'wordprocessingml/2006/main"><w:r><w:t>富文本题干</w:t>'
+                "</w:r></w:p>"
+            ),
+            "image_relationships": {"rId9": f"sha256:{image.sha256}"},
+        },),
+        images=(image,),
+    )
+    module = PersonalizedPaperModule(
+        db_path=tmp_path / "question-bank.db",
+        data_root=tmp_path / "data",
+        pdf_converter=SyntheticPdfConverter(),
+    )
+
+    snapshot = module._question_snapshot(  # noqa: SLF001
+        question,
+        paper_instance_id="synthetic",
+    )
+
+    asset_path = snapshot["images"][0]["asset_path"]
+    assert snapshot["rich_question_blocks"][0]["image_relationships"] == {
+        "rId9": asset_path,
+    }
+    assert "sha256:" not in json.dumps(snapshot, ensure_ascii=False)
+    assert (tmp_path / "data" / asset_path).is_file()
+
+
 def test_create_review_docx_is_idempotent_versioned_and_immutable(
     paper_workspace,
 ) -> None:
@@ -141,7 +187,16 @@ def test_create_review_docx_is_idempotent_versioned_and_immutable(
     )
     review_hash = hashlib.sha256(review_path.read_bytes()).hexdigest()
     document = Document(review_path)
-    all_text = "\n".join(paragraph.text for paragraph in document.paragraphs)
+    all_text = "\n".join(
+        [*(paragraph.text for paragraph in document.paragraphs)]
+        + [
+            paragraph.text
+            for table in document.tables
+            for row in table.rows
+            for cell in row.cells
+            for paragraph in cell.paragraphs
+        ]
+    )
     assert first["paper_instance_id"] in all_text
     assert "任务题码" in all_text
     assert "分值" not in all_text
@@ -385,6 +440,7 @@ def test_freeze_stamps_every_page_and_rejects_identity_tampering(
         instance["paper_instance_id"],
         "frozen-pdf",
     )
+    decoded_pages: list[str] = []
     with fitz.open(pdf_path) as pdf:
         assert pdf.page_count == 2
         assert "Synthetic reviewed page 1" in pdf[0].get_text()
@@ -394,23 +450,25 @@ def test_freeze_stamps_every_page_and_rejects_identity_tampering(
             str(instance["student_name"]) in visible_identity
             or str(instance["student_code"]) in visible_identity
         )
-        pixmap = pdf[0].get_pixmap(matrix=fitz.Matrix(4, 4), alpha=False)
-        image = cv2.cvtColor(
-            np.frombuffer(pixmap.samples, dtype=np.uint8).reshape(
-                pixmap.height,
-                pixmap.width,
-                pixmap.n,
-            ),
-            cv2.COLOR_RGB2BGR,
-        )
-        height, width = image.shape[:2]
-        qr_region = image[
-            int(height * 0.88) : height,
-            int(width * 0.82) : width,
-        ]
-        decoded, _points, _straight = cv2.QRCodeDetector().detectAndDecode(
-            qr_region
-        )
+        for page in pdf:
+            pixmap = page.get_pixmap(matrix=fitz.Matrix(4, 4), alpha=False)
+            image = cv2.cvtColor(
+                np.frombuffer(pixmap.samples, dtype=np.uint8).reshape(
+                    pixmap.height,
+                    pixmap.width,
+                    pixmap.n,
+                ),
+                cv2.COLOR_RGB2BGR,
+            )
+            height, width = image.shape[:2]
+            qr_region = image[
+                int(height * 0.88) : height,
+                int(width * 0.82) : width,
+            ]
+            decoded, _points, _straight = cv2.QRCodeDetector().detectAndDecode(
+                qr_region
+            )
+            decoded_pages.append(decoded)
     with connect(db_path) as connection:
         identities = [
             str(row["page_identity"])
@@ -424,8 +482,8 @@ def test_freeze_stamps_every_page_and_rejects_identity_tampering(
                 (instance["paper_instance_id"],),
             ).fetchall()
         ]
-    assert decoded == identities[0]
-    assert "SYN-S01" not in decoded
+    assert decoded_pages == identities
+    assert all("SYN-S01" not in decoded for decoded in decoded_pages)
     assert module.verify_page_identity(identities[0])["page_number"] == 1
     tampered = f"{identities[0][:-1]}{'0' if identities[0][-1] != '0' else '1'}"
     with pytest.raises(PaperInvalid):
