@@ -5,7 +5,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
-from api_profiles import ApiProfileStorageError, ApiProfileStore, active_api_profile
+from api_profiles import ApiProfileStorageError, ApiProfileStore, resolve_profile_for_task
 from backend.llm import (
     LLMGateway,
     create_openai_client,
@@ -93,7 +93,7 @@ class _ActiveProfileRuntime:
         )
 
     def _resolve(self) -> _ResolvedModel:
-        profile = active_api_profile(self.profile_store.load())
+        profile = resolve_profile_for_task(self.profile_store, "teaching_prep")
         api_key = _first_text(
             profile.get("config_api_key"),
             profile.get("api_key"),

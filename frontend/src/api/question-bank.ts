@@ -81,6 +81,7 @@ export interface QuestionBankPaper {
   exam_type: string | null
   grade: string | null
   semester: string | null
+  folder_name: string | null
   textbook_version: string | null
   import_status: string | null
   created_at: string
@@ -105,6 +106,7 @@ export interface QuestionBankPaperMetadataInput {
   exam_type: string | null
   grade: string | null
   semester: string | null
+  folder_name: string | null
   textbook_version: string | null
 }
 
@@ -758,6 +760,7 @@ function isQuestionBankPaper(value: unknown): value is QuestionBankPaper {
       'exam_type',
       'grade',
       'semester',
+      'folder_name',
       'textbook_version',
       'import_status',
       'created_at',
@@ -776,6 +779,7 @@ function isQuestionBankPaper(value: unknown): value is QuestionBankPaper {
     isNullableString(value.exam_type) &&
     isNullableString(value.grade) &&
     isNullableString(value.semester) &&
+    isNullableString(value.folder_name) &&
     isNullableString(value.textbook_version) &&
     isNullableString(value.import_status) &&
     typeof value.created_at === 'string' &&
@@ -805,6 +809,7 @@ function isQuestionBankPaperMetadataResult(
       'exam_type',
       'grade',
       'semester',
+      'folder_name',
       'textbook_version',
       'updated_at',
     ]) &&
@@ -818,6 +823,7 @@ function isQuestionBankPaperMetadataResult(
     isNullableString(value.exam_type) &&
     isNullableString(value.grade) &&
     isNullableString(value.semester) &&
+    isNullableString(value.folder_name) &&
     isNullableString(value.textbook_version) &&
     typeof value.updated_at === 'string' &&
     value.updated_at.trim().length > 0
@@ -845,6 +851,7 @@ function normalizePaperMetadata(
     exam_type: optional(metadata.exam_type, 48),
     grade: optional(metadata.grade, 48),
     semester: optional(metadata.semester, 48),
+    folder_name: optional(metadata.folder_name, 80),
     textbook_version: optional(metadata.textbook_version, 100),
   }
 }

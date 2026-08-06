@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 from urllib.parse import urlsplit, urlunsplit
 
-from api_profiles import ApiProfileStorageError, ApiProfileStore, active_api_profile
+from api_profiles import ApiProfileStorageError, ApiProfileStore, resolve_profile_for_task
 from backend.llm import (
     create_openai_client,
     gateway_config_key,
@@ -273,7 +273,7 @@ class ActiveProfileApprovedModelGateway:
 
     def _resolve(self) -> _ResolvedModel:
         try:
-            profile = active_api_profile(self.profile_store.load())
+            profile = resolve_profile_for_task(self.profile_store, "class_teacher")
             api_key = _first_text(
                 profile.get("config_api_key"),
                 profile.get("api_key"),

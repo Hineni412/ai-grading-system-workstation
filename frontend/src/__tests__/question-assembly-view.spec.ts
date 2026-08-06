@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import QuestionAssemblyView from '../views/QuestionAssemblyView.vue'
 import { useAssemblyStore } from '../stores/assembly'
+import type { QuestionBankListItem } from '../api/question-bank'
 
 const revisionA = 'a'.repeat(64)
 const revisionB = 'b'.repeat(64)
@@ -58,6 +59,42 @@ afterEach(() => {
 })
 
 describe('question assembly view', () => {
+  it('shows the first question page without waiting for slow catalog and facet requests', async () => {
+    const slowCatalog = deferred<Response>()
+    const slowFacets = deferred<Response>()
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input)
+      if (url === '/api/question-assembly/draft' && init?.method !== 'PUT') {
+        return json(draft())
+      }
+      if (url === '/api/question-assembly/records?limit=100') {
+        return json({ items: [], total: 0 })
+      }
+      if (url === '/api/question-bank/curriculum') return slowCatalog.promise
+      if (url.startsWith('/api/question-bank/facets?')) return slowFacets.promise
+      if (url.startsWith('/api/question-bank/questions?')) {
+        return json(questionPage(bankQuestion(17, '无需等待筛选统计的题目')))
+      }
+      throw new Error(`unexpected request: ${url}`)
+    })
+
+    const host = document.createElement('div')
+    document.body.append(host)
+    const app = createApp(QuestionAssemblyView)
+    app.use(createPinia())
+    app.mount(host)
+    mounted.push(app)
+
+    try {
+      await vi.waitFor(() => expect(host.textContent).toContain('无需等待筛选统计的题目'))
+      expect(host.textContent).toContain('正在读取教材目录')
+    } finally {
+      slowCatalog.resolve(await json(curriculumCatalog()))
+      slowFacets.resolve(await json(questionFacets()))
+      await settle()
+    }
+  })
+
   it('loads the initial question facets once while opening the workspace', async () => {
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
       const url = String(input)
@@ -93,6 +130,37 @@ describe('question assembly view', () => {
       ([input]) => String(input).startsWith('/api/question-bank/facets?'),
     )
     expect(facetCalls).toHaveLength(1)
+  })
+
+  it('shows only the most specific knowledge point on question cards', async () => {
+    const taggedQuestion: QuestionBankListItem = {
+      ...bankQuestion(17, '带层级知识点的题目'),
+      tags: [{
+        tag_type: 'knowledge_point',
+        tag_value: '七年级上册｜第一章 丰富的图形世界｜1 生活中的立体图形｜常见的几何体',
+        confidence: 0.96,
+      }],
+    }
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input)
+      if (url === '/api/question-assembly/draft' && init?.method !== 'PUT') return json(draft())
+      if (url === '/api/question-assembly/records?limit=100') return json({ items: [], total: 0 })
+      if (url === '/api/question-bank/curriculum') return json(curriculumCatalog())
+      if (url.startsWith('/api/question-bank/facets?')) return json(questionFacets())
+      if (url.startsWith('/api/question-bank/questions?')) return json(questionPage(taggedQuestion))
+      throw new Error(`unexpected request: ${url}`)
+    })
+
+    const host = document.createElement('div')
+    document.body.append(host)
+    const app = createApp(QuestionAssemblyView)
+    app.use(createPinia())
+    app.mount(host)
+    mounted.push(app)
+
+    await vi.waitFor(() => expect(host.textContent).toContain('常见的几何体'))
+    const card = host.querySelector('.assembly-result-card')
+    expect(card?.textContent).not.toContain('七年级上册｜第一章')
   })
 
   it('shows selected chapter questions before a slow facet refresh and keeps the chapter tree visible', async () => {
@@ -434,7 +502,7 @@ function question(id: number, text: string, score: number) {
   }
 }
 
-function bankQuestion(id: number, text: string) {
+function bankQuestion(id: number, text: string): QuestionBankListItem {
   return {
     id,
     revision: revisionA,

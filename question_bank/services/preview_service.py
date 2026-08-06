@@ -15,7 +15,8 @@ import fitz
 
 from question_bank.database.paths import project_data_root
 from question_bank.services.asset_path_service import resolve_question_bank_asset_path
-from question_bank.services.question_service import QuestionService
+from question_bank.services.question_read_service import QuestionBankReadService
+from question_bank.services.question_write_service import QuestionBankWriteService
 
 
 LOGGER = logging.getLogger(__name__)
@@ -43,27 +44,32 @@ def generate_question_previews(
     *,
     output_root: str | Path | None = None,
 ) -> list[PreviewResult]:
-    service = QuestionService(Path(db_path))
-    service.initialize_database()
-    output_dir = Path(output_root or project_data_root() / "question_bank" / "previews")
+    data_root = project_data_root()
+    reader = QuestionBankReadService(Path(db_path), data_root=data_root)
+    writer = QuestionBankWriteService(Path(db_path), data_root=data_root)
+    output_dir = Path(output_root or data_root / "question_bank" / "previews")
     results: list[PreviewResult] = []
     for question_id in question_ids:
-        question = service.get_question(int(question_id))
+        question = reader.get_question_for_preview(int(question_id))
         if question is None:
             results.append(PreviewResult(int(question_id), "missing", "missing", "题目不存在"))
             continue
         try:
-            result = _generate_one(service, question, output_dir)
+            result = _generate_one(writer, question, output_dir)
         except Exception as exc:  # noqa: BLE001
             LOGGER.exception("Failed to generate preview for question %s", question_id)
-            _save_failed(service, int(question_id), question, "question", str(exc))
-            _save_failed(service, int(question_id), question, "answer", str(exc))
+            _save_failed(writer, int(question_id), question, "question", str(exc))
+            _save_failed(writer, int(question_id), question, "answer", str(exc))
             result = PreviewResult(int(question_id), "failed", "failed", str(exc))
         results.append(result)
     return results
 
 
-def _generate_one(service: QuestionService, question: dict[str, Any], output_dir: Path) -> PreviewResult:
+def _generate_one(
+    service: QuestionBankWriteService,
+    question: dict[str, Any],
+    output_dir: Path,
+) -> PreviewResult:
     source_file = _resolve_source_file(question)
     stored_source_file = str(question.get("source_file") or source_file)
     if not source_file.exists():
@@ -259,7 +265,7 @@ def _answer_heading_position(lines: list[_Line]) -> tuple[int, float] | None:
 
 
 def _render_preview(
-    service: QuestionService,
+    service: QuestionBankWriteService,
     document: fitz.Document,
     question: dict[str, Any],
     lines: list[_Line],
@@ -354,7 +360,7 @@ def _is_after(line: _Line, position: tuple[int, float]) -> bool:
 
 
 def _save_failed(
-    service: QuestionService,
+    service: QuestionBankWriteService,
     question_id: int,
     question: dict[str, Any],
     preview_type: str,

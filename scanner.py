@@ -15,7 +15,7 @@ from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any, Callable, List
 
-from PIL import Image
+from PIL import Image, ImageDraw
 
 from answer_region_geometry import scaled_region_bbox
 from backend.domain_models import ExamPaperGroup
@@ -26,6 +26,7 @@ from llm_client import LLMClient
 
 STUDENT_NAME_REGION_ID = "__student_name__"
 STUDENT_NAME_REGION_ALIASES = {STUDENT_NAME_REGION_ID, "student_name", "name", "姓名", "姓名区域"}
+STUDENT_NAME_BATCH_SIZE = 10
 
 
 @dataclass
@@ -386,12 +387,22 @@ class Scanner:
         legacy_detected_names: dict[int, str | None] = {}
         if image_files:
             paired_page_count = len(image_files) - (len(image_files) % 2)
-            for index in range(0, paired_page_count, 2):
-                legacy_detected_names[index] = self._extract_student_name(
-                    image_files[index],
+            front_indices = list(range(0, paired_page_count, 2))
+            if type(self)._extract_student_name is Scanner._extract_student_name:
+                names = self._extract_student_names_batch(
+                    [image_files[index] for index in front_indices],
                     student_lookup,
                 )
-                progress.recognition_page_done()
+                for index, name in zip(front_indices, names, strict=True):
+                    legacy_detected_names[index] = name
+                    progress.recognition_page_done()
+            else:
+                for index in front_indices:
+                    legacy_detected_names[index] = self._extract_student_name(
+                        image_files[index],
+                        student_lookup,
+                    )
+                    progress.recognition_page_done()
 
         all_pdf_page_sets = pdf_page_sets + rendered_page_sets
         for _source_name, pages in all_pdf_page_sets:
@@ -731,6 +742,15 @@ class Scanner:
         if not pending:
             return
 
+        if type(self)._extract_student_name is Scanner._extract_student_name:
+            paths = [pages[idx].enhanced_image_path or pages[idx].image_path for idx in pending]
+            detected = self._extract_student_names_batch(paths, student_lookup)
+            for idx, name in zip(pending, detected, strict=True):
+                pages[idx].detected_name = name
+                if on_page_processed is not None:
+                    on_page_processed()
+            return
+
         worker_count = min(self.ocr_workers, len(pending))
         if worker_count <= 1:
             for idx in pending:
@@ -761,6 +781,104 @@ class Scanner:
                     page.detected_name = None
                 if on_page_processed is not None:
                     on_page_processed()
+
+    def _extract_student_names_batch(
+        self,
+        image_paths: list[Path],
+        student_lookup: dict[str, dict[str, Any]] | None = None,
+    ) -> list[str | None]:
+        results: list[str | None] = [None] * len(image_paths)
+        pending: list[tuple[int, Path, bytes, str | None, float]] = []
+        for index, image_path in enumerate(image_paths):
+            image_bytes, local_text, local_score, exact_name = self._prepare_name_crop(
+                image_path, student_lookup
+            )
+            if exact_name is not None:
+                results[index] = exact_name
+            elif local_text and not student_lookup:
+                results[index] = local_text
+            else:
+                pending.append((index, image_path, image_bytes, local_text, local_score))
+
+        for offset in range(0, len(pending), STUDENT_NAME_BATCH_SIZE):
+            chunk = pending[offset:offset + STUDENT_NAME_BATCH_SIZE]
+            recognized = self._recognize_name_batch(chunk, student_lookup)
+            for item, name in zip(chunk, recognized, strict=True):
+                results[item[0]] = name
+        return results
+
+    def _prepare_name_crop(
+        self,
+        image_path: Path,
+        student_lookup: dict[str, dict[str, Any]] | None,
+    ) -> tuple[bytes, str | None, float, str | None]:
+        with Image.open(image_path) as image:
+            rgb_image = image.convert("RGB")
+            crop = rgb_image.crop(
+                _student_name_crop_box(self.name_region, *rgb_image.size)
+            )
+            local_text = _clean_student_name_text(self._do_local_ocr(crop))
+            buffer = io.BytesIO()
+            crop.save(buffer, format="JPEG", quality=82)
+        local_score = 0.0
+        exact_name: str | None = None
+        if local_text and student_lookup:
+            match = _match_student(local_text, student_lookup)
+            if match and match.student:
+                exact_name = str(match.student.get("name") or "") or None
+            elif match:
+                local_score = match.suggested_score or 0.0
+        return buffer.getvalue(), local_text, local_score, exact_name
+
+    def _recognize_name_batch(
+        self,
+        entries: list[tuple[int, Path, bytes, str | None, float]],
+        student_lookup: dict[str, dict[str, Any]] | None,
+    ) -> list[str | None]:
+        if not entries:
+            return []
+        try:
+            atlas = _student_name_atlas([entry[2] for entry in entries])
+            prompt = (
+                f"这张合并图共有 {len(entries)} 个编号姓名框。"
+                "请逐个识别学生姓名；无法确定时写 NOT_FOUND。"
+                "只返回 JSON 对象，键为编号 1、2、3……，值为姓名或 NOT_FOUND。"
+            )
+            system_prompt = None
+            if student_lookup:
+                system_prompt = (
+                    "只能从以下学生名单选择；明显不符时返回 NOT_FOUND：\n"
+                    f"{json.dumps(list(student_lookup.keys()), ensure_ascii=False)}"
+                )
+            text = self.llm_client.text_from_images(
+                prompt,
+                [atlas],
+                model=self.ocr_model,
+                system_prompt=system_prompt,
+            )
+            payload = _student_name_batch_payload(text, len(entries))
+            return [
+                _choose_student_name(
+                    payload[str(index + 1)],
+                    best_local=entry[3],
+                    local_match_score=entry[4],
+                    student_lookup=student_lookup,
+                )
+                for index, entry in enumerate(entries)
+            ]
+        except Exception as exc:  # noqa: BLE001
+            if len(entries) == 1:
+                try:
+                    return [self._call_extract_student_name(entries[0][1], student_lookup)]
+                except Exception as single_exc:  # noqa: BLE001
+                    print(f"[WARNING] 单份姓名识别失败: {single_exc}")
+                    return [entries[0][3]]
+            midpoint = len(entries) // 2
+            print(f"[WARNING] 批量姓名识别失败，拆分后重试: {exc}")
+            return [
+                *self._recognize_name_batch(entries[:midpoint], student_lookup),
+                *self._recognize_name_batch(entries[midpoint:], student_lookup),
+            ]
 
     def _call_extract_student_name(
         self,
@@ -903,6 +1021,81 @@ class Scanner:
         except Exception as exc:  # noqa: BLE001
             print(f"[WARNING] 图像增强失败，改用原图: {image_path} ({exc})")
             return image_path
+
+
+def _clean_student_name_text(value: object) -> str | None:
+    cleaned = str(value or "").strip().replace("\n", "")
+    for prefix in ["姓名", "学生", "考生", ":", "：", " "]:
+        cleaned = cleaned.replace(prefix, "")
+    cleaned = cleaned.strip("`\"' ：:，,。 ")
+    return cleaned or None
+
+
+def _student_name_atlas(crops: list[bytes]) -> bytes:
+    tiles: list[Image.Image] = []
+    for raw in crops:
+        with Image.open(io.BytesIO(raw)) as image:
+            tile = image.convert("RGB")
+            tile.thumbnail((900, 220), Image.Resampling.LANCZOS)
+            tiles.append(tile.copy())
+    columns = 2 if len(tiles) > 1 else 1
+    rows = math.ceil(len(tiles) / columns)
+    cell_width = max((tile.width for tile in tiles), default=1) + 24
+    cell_height = max((tile.height for tile in tiles), default=1) + 52
+    atlas = Image.new("RGB", (cell_width * columns, cell_height * rows), "white")
+    draw = ImageDraw.Draw(atlas)
+    for index, tile in enumerate(tiles):
+        column = index % columns
+        row = index // columns
+        x = column * cell_width + 12
+        y = row * cell_height + 34
+        draw.text((x, row * cell_height + 8), str(index + 1), fill="black")
+        atlas.paste(tile, (x, y))
+    output = io.BytesIO()
+    atlas.save(output, format="JPEG", quality=86)
+    return output.getvalue()
+
+
+def _student_name_batch_payload(text: object, expected: int) -> dict[str, str]:
+    raw = str(text or "").strip()
+    start = raw.find("{")
+    end = raw.rfind("}")
+    if start < 0 or end < start:
+        raise ValueError("batch name response is not JSON")
+    payload = json.loads(raw[start:end + 1])
+    expected_keys = {str(index) for index in range(1, expected + 1)}
+    if not isinstance(payload, dict) or set(payload) != expected_keys:
+        raise ValueError("batch name response has invalid indexes")
+    if not all(isinstance(value, str) for value in payload.values()):
+        raise ValueError("batch name response has invalid values")
+    return {str(key): str(value) for key, value in payload.items()}
+
+
+def _choose_student_name(
+    raw_value: object,
+    *,
+    best_local: str | None,
+    local_match_score: float,
+    student_lookup: dict[str, dict[str, Any]] | None,
+) -> str | None:
+    normalized = str(raw_value or "").strip().replace("\n", "")
+    normalized = normalized.strip("`\"' ：:，,。 ")
+    lowered = normalized.casefold()
+    if (
+        not normalized
+        or normalized.upper() == "NOT_FOUND"
+        or any(token in lowered for token in {"not found", "unknown", "none"})
+        or any(token in normalized for token in {"未识别", "无法识别", "看不清", "无姓名"})
+    ):
+        return best_local
+    if student_lookup and best_local and local_match_score > 0:
+        ai_match = _match_student(normalized, student_lookup)
+        ai_score = 0.0
+        if ai_match:
+            ai_score = ai_match.score if ai_match.student else ai_match.suggested_score or 0.0
+        if local_match_score > ai_score:
+            return best_local
+    return normalized
 
 
 def _build_student_lookup(students: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:

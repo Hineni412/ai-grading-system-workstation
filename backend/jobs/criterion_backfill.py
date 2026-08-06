@@ -6,7 +6,7 @@ from typing import Any
 
 from question_bank.services.ai_tagging_service import AITaggingService
 from question_bank.current_knowledge import CurrentFineTermResolver
-from question_bank.services.question_service import QuestionService
+from question_bank.services.question_write_service import QuestionBankWriteService
 from question_bank.solution_evidence import (
     SolutionEvidenceProjectionWriter,
     SolutionEvidenceRepository,
@@ -142,7 +142,10 @@ def run_criterion_backfill_job(
                 repository=CombinedAnalysisRepository(db_path),
                 gateway=gateway,
                 tag_writer=ExistingTagProjectionWriter(
-                    question_service=QuestionService(db_path),
+                    write_service=QuestionBankWriteService(
+                        db_path,
+                        data_root=root,
+                    ),
                     tagging_service=tagging_service,
                 ),
                 evidence_writer=SolutionEvidenceProjectionWriter(

@@ -56,6 +56,8 @@ def _get_logger() -> logging.Logger:
 # ── 常量 ──────────────────────────────────────────────
 
 VALID_REASONS = ("before_exam", "before_update", "before_import", "before_restore", "manual", "after_exam")
+VALID_BACKUP_SCOPES = ("grading", "teaching_prep", "class_teacher")
+DEFAULT_BACKUP_SCOPES = ("grading", "class_teacher")
 
 # 不备份的模式
 _SKIP_PATTERNS = {
@@ -127,25 +129,37 @@ def preview_backup(
     path_manager: Any,
     include_api_keys: bool = False,
     include_logs: bool = False,
+    scopes: tuple[str, ...] | list[str] | None = None,
 ) -> dict[str, Any]:
     """Collect the existing backup manifest without creating logs or directories."""
     pm = path_manager
-    backup_sources: list[tuple[Path, str]] = [
-        (pm.data_root / "databases", "user_data/databases"),
-        (pm.data_root / "exams", "user_data/exams"),
-        (pm.data_root / "question_bank", "user_data/question_bank"),
-        (pm.data_root / "outputs", "user_data/outputs"),
-        (pm.data_root / "config", "user_data/config"),
-        (pm.data_root / "templates", "user_data/templates"),
-        (pm.data_root / "annotated", "user_data/annotated"),
-        (pm.data_root / "reports", "user_data/reports"),
-        (pm.data_root / "snapshots", "user_data/snapshots"),
-        (
+    selected = set(scopes or DEFAULT_BACKUP_SCOPES)
+    if not selected or selected - set(VALID_BACKUP_SCOPES):
+        raise ValueError("invalid backup scopes")
+    backup_sources: list[tuple[Path, str]] = []
+    if "grading" in selected:
+        backup_sources.extend([
+            (pm.data_root / "databases", "user_data/databases"),
+            (pm.data_root / "exams", "user_data/exams"),
+            (pm.data_root / "question_bank", "user_data/question_bank"),
+            (pm.data_root / "outputs", "user_data/outputs"),
+            (pm.data_root / "config", "user_data/config"),
+            (pm.data_root / "templates", "user_data/templates"),
+            (pm.data_root / "annotated", "user_data/annotated"),
+            (pm.data_root / "reports", "user_data/reports"),
+            (pm.data_root / "snapshots", "user_data/snapshots"),
+            (pm.project_root / "config", "config"),
+        ])
+    if "teaching_prep" in selected:
+        backup_sources.append((
+            pm.data_root / "workspaces" / "teaching-prep",
+            "user_data/workspaces/teaching-prep",
+        ))
+    if "class_teacher" in selected:
+        backup_sources.append((
             pm.data_root / "workspaces" / "class-teacher",
             "user_data/workspaces/class-teacher",
-        ),
-        (pm.project_root / "config", "config"),
-    ]
+        ))
     if include_logs:
         backup_sources.append((pm.logs_dir, "logs"))
 
@@ -212,7 +226,9 @@ def _safe_restore_destination(
 
     if parts[0] == "user_data":
         if len(parts) > 1 and parts[1].casefold() == "workspaces":
-            if len(parts) < 4 or parts[2].casefold() != "class-teacher":
+            if len(parts) < 4 or parts[2].casefold() not in {
+                "class-teacher", "teaching-prep",
+            }:
                 return None
         dest = data_root.joinpath(*parts[1:])
         return dest if _is_relative_to(dest, data_root) else None
@@ -231,6 +247,7 @@ def create_backup(
     include_api_keys: bool = False,
     include_logs: bool = False,
     dry_run: bool = False,
+    scopes: tuple[str, ...] | list[str] | None = None,
 ) -> dict[str, Any]:
     """创建 user_data + config 的 zip 备份。
 
@@ -281,23 +298,28 @@ def create_backup(
     zip_path = backup_dir / zip_name
 
     # 收集要备份的目录
-    backup_sources: list[tuple[Path, str]] = [
-        # (源目录, zip 内前缀)
-        (pm.data_root / "databases", "user_data/databases"),
-        (pm.data_root / "exams", "user_data/exams"),
-        (pm.data_root / "question_bank", "user_data/question_bank"),
-        (pm.data_root / "outputs", "user_data/outputs"),
-        (pm.data_root / "config", "user_data/config"),
-        (pm.data_root / "templates", "user_data/templates"),
-        (pm.data_root / "annotated", "user_data/annotated"),
-        (pm.data_root / "reports", "user_data/reports"),
-        (pm.data_root / "snapshots", "user_data/snapshots"),
-        (
-            pm.data_root / "workspaces" / "class-teacher",
-            "user_data/workspaces/class-teacher",
-        ),
-        (pm.project_root / "config", "config"),
-    ]
+    selected = set(scopes or DEFAULT_BACKUP_SCOPES)
+    if not selected or selected - set(VALID_BACKUP_SCOPES):
+        result["error"] = "备份范围无效"
+        return result
+    backup_sources: list[tuple[Path, str]] = []
+    if "grading" in selected:
+        backup_sources.extend([
+            (pm.data_root / "databases", "user_data/databases"),
+            (pm.data_root / "exams", "user_data/exams"),
+            (pm.data_root / "question_bank", "user_data/question_bank"),
+            (pm.data_root / "outputs", "user_data/outputs"),
+            (pm.data_root / "config", "user_data/config"),
+            (pm.data_root / "templates", "user_data/templates"),
+            (pm.data_root / "annotated", "user_data/annotated"),
+            (pm.data_root / "reports", "user_data/reports"),
+            (pm.data_root / "snapshots", "user_data/snapshots"),
+            (pm.project_root / "config", "config"),
+        ])
+    if "teaching_prep" in selected:
+        backup_sources.append((pm.data_root / "workspaces" / "teaching-prep", "user_data/workspaces/teaching-prep"))
+    if "class_teacher" in selected:
+        backup_sources.append((pm.data_root / "workspaces" / "class-teacher", "user_data/workspaces/class-teacher"))
     if include_logs:
         backup_sources.append((pm.logs_dir, "logs"))
 

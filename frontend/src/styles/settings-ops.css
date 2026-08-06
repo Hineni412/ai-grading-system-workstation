@@ -217,6 +217,27 @@
   border-left: var(--border-selected-width) solid var(--color-danger);
 }
 
+.ops-advanced-tools {
+  margin-top: var(--space-3);
+  border-top: var(--border-width) solid var(--color-border-subtle);
+}
+
+.ops-advanced-tools > summary {
+  width: fit-content;
+  margin-top: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-control);
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-dense);
+  font-weight: var(--font-weight-medium);
+  cursor: pointer;
+}
+
+.ops-advanced-tools > summary:hover {
+  background: var(--color-bg-subtle);
+  color: var(--color-text-primary);
+}
+
 .ops-action h3 {
   font-size: var(--font-size-h3);
 }

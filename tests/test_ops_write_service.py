@@ -176,6 +176,39 @@ def test_preview_backup_includes_class_teacher_workspace_in_debug_mode(tmp_path:
     assert "user_data/workspaces/class-teacher/student_affairs.db" in preview["files"]
 
 
+def test_preview_backup_can_select_the_three_teacher_facing_data_groups(
+    tmp_path: Path,
+) -> None:
+    paths = _paths(tmp_path)
+    teaching_file = paths.data_root / "workspaces" / "teaching-prep" / "notes.json"
+    class_file = paths.data_root / "workspaces" / "class-teacher" / "notes.json"
+    teaching_file.parent.mkdir(parents=True)
+    class_file.parent.mkdir(parents=True)
+    teaching_file.write_text("teaching", encoding="utf-8")
+    class_file.write_text("class", encoding="utf-8")
+
+    teaching_only = preview_backup(
+        path_manager=paths,
+        scopes=["teaching_prep"],
+    )
+    assert teaching_only["files"] == [
+        "user_data/workspaces/teaching-prep/notes.json"
+    ]
+
+    class_only = preview_backup(
+        path_manager=paths,
+        scopes=["class_teacher"],
+    )
+    assert class_only["files"] == [
+        "user_data/workspaces/class-teacher/notes.json"
+    ]
+
+    grading_only = preview_backup(path_manager=paths, scopes=["grading"])
+    assert "user_data/databases/grading_system.db" in grading_only["files"]
+    assert "user_data/databases/question_bank.db" in grading_only["files"]
+    assert not any("workspaces/" in name for name in grading_only["files"])
+
+
 def test_restore_preflight_accepts_only_controlled_backup_name(tmp_path: Path) -> None:
     paths = _paths(tmp_path)
     archive = _write_zip(

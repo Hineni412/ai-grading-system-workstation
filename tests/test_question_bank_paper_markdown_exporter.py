@@ -7,14 +7,14 @@ from question_bank.exporters.paper_markdown_exporter import (
 )
 from question_bank.models.question import QuestionCreate
 from question_bank.services.assembly_basket_state import SectionSpec
-from question_bank.services.question_service import QuestionService
+from tests.question_bank_support import QuestionBankTestStore
 
 
 def test_markdown_export_preserves_sections_answers_and_hides_asset_paths(
     tmp_path: Path,
 ) -> None:
     db_path = tmp_path / "question_bank.db"
-    service = QuestionService(db_path)
+    service = QuestionBankTestStore(db_path)
     first_id = service.add_question(
         QuestionCreate(
             question_number="1",

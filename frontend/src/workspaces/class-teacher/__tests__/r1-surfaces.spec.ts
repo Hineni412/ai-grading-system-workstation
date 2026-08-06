@@ -57,6 +57,24 @@ describe('B UI R1 surfaces', () => {
     expect(vaultStatus).not.toHaveBeenCalled()
   })
 
+  it('opens the existing workspace from a home card while keeping the conversation home intact', async () => {
+    window.history.replaceState({}, '', '/class-teacher?surface=home')
+    vi.spyOn(intakeApi, 'homeroom').mockResolvedValue({ homeroom_class:null, revision:0, classes:[], source_revision:'r'.repeat(64) })
+    vi.spyOn(intakeApi, 'listConversations').mockResolvedValue([])
+    vi.spyOn(intakeApi, 'startConversation').mockResolvedValue({
+      conversation_id:'conversation-1234', revision:1, state:'collecting', homeroom_class:null,
+      created_at:'2026-08-05T00:00:00Z', updated_at:'2026-08-05T00:00:00Z', turns:[], handoffs:[],
+    })
+    const host = await mount(ClassTeacherWorkbenchView, {})
+
+    expect(host.querySelector('form.composer')).toBeTruthy()
+    clickByText(host, '成长记录')
+    await nextTick()
+    const query = new URLSearchParams(window.location.search)
+    expect(query.get('surface')).toBe('students')
+    expect(query.get('panel')).toBe('academic')
+  })
+
   it('lets ordinary work leave and return to the calendar without deleting its history', async () => {
     const node: WorkNode = { node_id:'ordinary-1', kind:'task', classification:'ordinary', title:'准备开学材料', details:null, status:'pending', due_date:'2026-08-25', revision:1, created_at:'2026-08-01', updated_at:'2026-08-01', projection_type:null }
     const selected = ref<WorkNodeDetail | null>({ node, upstream:[], downstream:[], progress_events:[], collection_summary:null, pending_ai_branches:[], allowed_commands:['update_status'], projection_id:null })

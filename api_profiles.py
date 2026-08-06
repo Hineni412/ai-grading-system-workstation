@@ -21,6 +21,12 @@ _DEPRECATED_OBJECTIVE_PROFILE_KEYS = {
 }
 _PROFILE_PROCESS_LOCK = threading.RLock()
 _LOCK_TIMEOUT_SECONDS = 10.0
+MODEL_TASK_KEYS = (
+    "content_generation",
+    "grading",
+    "teaching_prep",
+    "class_teacher",
+)
 logger = logging.getLogger(__name__)
 
 
@@ -142,12 +148,113 @@ def _is_blank(value: Any) -> bool:
     return value is None or (isinstance(value, str) and not value.strip())
 
 
+def _validated_task_bindings(data: Any) -> dict[str, dict[str, str]]:
+    if not isinstance(data, dict) or set(data) - set(MODEL_TASK_KEYS):
+        raise ValueError("Model task bindings are invalid")
+    normalized: dict[str, dict[str, str]] = {}
+    for task, value in data.items():
+        if not isinstance(value, dict) or set(value) != {"profile_name", "model"}:
+            raise ValueError("Model task binding is invalid")
+        profile_name = str(value.get("profile_name") or "").strip()
+        model = str(value.get("model") or "").strip()
+        if not profile_name or len(profile_name) > 80 or not model or len(model) > 200:
+            raise ValueError("Model task binding is invalid")
+        normalized[str(task)] = {
+            "profile_name": profile_name,
+            "model": model,
+        }
+    return normalized
+
+
 class ApiProfileStore:
     """Single persistence boundary for machine-local API profiles."""
 
     def __init__(self, path: Path, *, legacy_paths: Iterable[Path] = ()) -> None:
         self.path = Path(path)
         self.legacy_paths = tuple(Path(item) for item in legacy_paths)
+
+    @property
+    def task_bindings_path(self) -> Path:
+        return self.path.with_name("model_task_bindings.json")
+
+    def load_task_bindings(self) -> dict[str, dict[str, str]]:
+        path = self.task_bindings_path
+        with _exclusive_profile_lock(path):
+            if not path.exists():
+                return {}
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+                return _validated_task_bindings(data)
+            except (OSError, ValueError, json.JSONDecodeError) as exc:
+                raise ApiProfileStorageError(
+                    f"Unable to read model task bindings from {path}"
+                ) from exc
+
+    def replace_task_bindings(
+        self,
+        bindings: Mapping[str, Mapping[str, Any]],
+    ) -> None:
+        normalized = _validated_task_bindings(dict(bindings))
+        path = self.task_bindings_path
+        with _exclusive_profile_lock(path):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            descriptor, temporary_name = tempfile.mkstemp(
+                prefix=f"{path.name}.", suffix=".tmp", dir=path.parent
+            )
+            temporary_path = Path(temporary_name)
+            try:
+                with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+                    json.dump(normalized, handle, ensure_ascii=False, indent=2)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                _validated_task_bindings(
+                    json.loads(temporary_path.read_text(encoding="utf-8"))
+                )
+                os.replace(temporary_path, path)
+            finally:
+                if temporary_path.exists():
+                    temporary_path.unlink()
+
+    def profile_for_task(self, task: str) -> dict[str, Any]:
+        profiles = self.load()
+        fallback = active_api_profile(profiles)
+        binding = self.load_task_bindings().get(str(task), {})
+        profile_name = str(binding.get("profile_name") or "").strip()
+        selected = next(
+            (
+                profile
+                for profile in profiles
+                if str(profile.get("name") or "").strip() == profile_name
+            ),
+            fallback,
+        )
+        result = dict(selected)
+        model = str(binding.get("model") or "").strip()
+        if not model:
+            return result
+        if task == "content_generation":
+            result.update({
+                "config_base_url": result.get("base_url"),
+                "config_api_key": result.get("api_key"),
+                "config_model": model,
+            })
+        elif task == "grading":
+            result.update({"ocr_model": model, "grading_model": model})
+        elif task == "teaching_prep":
+            result.update({
+                "config_base_url": result.get("base_url"),
+                "config_api_key": result.get("api_key"),
+                "teaching_prep_model": model,
+                "config_model": model,
+            })
+        elif task == "class_teacher":
+            result.update({
+                "config_base_url": result.get("base_url"),
+                "config_api_key": result.get("api_key"),
+                "class_teacher_model": model,
+                "config_model": model,
+            })
+        return result
 
     def _ensure_migrated_unlocked(self) -> None:
         if not self.legacy_paths or _migration_marker_path(self.path).exists():
@@ -377,6 +484,14 @@ def delete_api_profile(file_path: Path, profile_name: str) -> bool:
 
 def active_api_profile(profiles: list[dict[str, Any]]) -> dict[str, Any]:
     return profiles[-1] if profiles else {}
+
+
+def resolve_profile_for_task(store: Any, task: str) -> dict[str, Any]:
+    """Resolve task routing while keeping older injected stores compatible."""
+    resolver = getattr(store, "profile_for_task", None)
+    if callable(resolver):
+        return dict(resolver(task))
+    return dict(active_api_profile(store.load()))
 
 
 def normalize_question_allowlist(value: Any) -> list[str]:

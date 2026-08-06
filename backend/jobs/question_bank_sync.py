@@ -15,7 +15,6 @@ from path_manager import resolve_stored_file_path
 from question_bank.database.schema import connect
 from question_bank.current_knowledge import CurrentFineTermResolver
 from question_bank.services.question_write_service import QuestionBankWriteService
-from question_bank.services.question_service import QuestionService
 from question_bank.services.source_question_link_service import (
     SourceQuestionLinkService,
 )
@@ -721,7 +720,10 @@ def _adopt_deferred_analysis_with_links(
         "release_id": mapping_repository.release_id,
     }
     tag_writer = ExistingTagProjectionWriter(
-        question_service=QuestionService(question_bank_db_path),
+        write_service=QuestionBankWriteService(
+            question_bank_db_path,
+            data_root=data_root,
+        ),
         tagging_service=ai_service,
     )
     writer = DeferredCombinedProjectionWriter(

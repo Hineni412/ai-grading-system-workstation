@@ -44,10 +44,31 @@ class ModelProfileResponse(_ModelProfileModel):
     requests_per_minute: int
 
 
+class ModelTaskBinding(_ModelProfileModel):
+    profile_name: str | None = Field(default=None, max_length=80)
+    model: str = Field(default="", max_length=200)
+
+
+class ModelTaskBindingsUpdateRequest(_ModelProfileModel):
+    content_generation: ModelTaskBinding
+    grading: ModelTaskBinding
+    teaching_prep: ModelTaskBinding
+    class_teacher: ModelTaskBinding
+
+
 class ModelProfileStateResponse(_ModelProfileModel):
     profiles: list[ModelProfileResponse]
     active_profile_name: str | None = None
     active_profile: ModelProfileResponse | None = None
+    task_bindings: dict[
+        Literal[
+            "content_generation",
+            "grading",
+            "teaching_prep",
+            "class_teacher",
+        ],
+        ModelTaskBinding,
+    ]
 
 
 class ModelExecutionStatusResponse(_ModelProfileModel):

@@ -80,6 +80,7 @@ export type OpsPreflightRequest =
     operation: 'backup'
     reason: 'before_exam' | 'before_update' | 'before_import'
       | 'before_restore' | 'manual' | 'after_exam'
+    scopes?: Array<'grading' | 'teaching_prep' | 'class_teacher'>
   }
   | { operation: 'restore'; backup_filename: string }
   | { operation: 'migration'; target: 'grading' | 'question_bank' | 'all' }
@@ -399,6 +400,17 @@ function requirePreflightRequest(request: OpsPreflightRequest): OpsPreflightRequ
   if (!isOperation(request.operation)) throw new Error('Invalid Ops preflight request')
   if (request.operation === 'restore' && !safeFilename(request.backup_filename)) {
     throw new Error('Invalid Ops backup filename')
+  }
+  if (request.operation === 'backup') {
+    const allowed = new Set(['grading', 'teaching_prep', 'class_teacher'])
+    const scopes = request.scopes
+    if (scopes === undefined) return request
+    if (
+      scopes.length < 1
+      || scopes.length > 3
+      || new Set(scopes).size !== scopes.length
+      || scopes.some((scope) => !allowed.has(scope))
+    ) throw new Error('Invalid Ops backup scopes')
   }
   if (request.operation === 'transfer_import' && !UPLOAD_ID_PATTERN.test(request.upload_id)) {
     throw new Error('Invalid Ops upload id')

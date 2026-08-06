@@ -159,6 +159,7 @@ describe('question bank API contracts', () => {
       exam_type: '期末',
       grade: '九年级',
       semester: '下学期',
+      folder_name: null,
       textbook_version: null,
       import_status: 'imported',
       created_at: '2026-07-18T08:00:00Z',
@@ -191,6 +192,7 @@ describe('question bank API contracts', () => {
       exam_type: '阶段练习',
       grade: '七年级',
       semester: '下学期',
+      folder_name: '期末复习',
       textbook_version: '北师大版',
       updated_at: '2026-07-29 10:30:00.123456',
     }
@@ -211,6 +213,7 @@ describe('question bank API contracts', () => {
         exam_type: '阶段练习',
         grade: '七年级',
         semester: '下学期',
+        folder_name: '期末复习',
         textbook_version: '北师大版',
       },
     )).resolves.toEqual(updated)
@@ -229,6 +232,7 @@ describe('question bank API contracts', () => {
         exam_type: '阶段练习',
         grade: '七年级',
         semester: '下学期',
+        folder_name: '期末复习',
         textbook_version: '北师大版',
       },
     })

@@ -3,11 +3,13 @@ import { defineStore } from 'pinia'
 
 import { ApiError } from '../api/errors'
 import {
+  copyModelTaskBindings,
   ModelProfileInputError,
   modelProfilesApi,
   type ModelProfile,
   type ModelProfilesState,
   type ModelProfileUpsertInput,
+  type ModelTaskBindings,
 } from '../api/model-profiles'
 
 export type ModelProfilesApi = typeof modelProfilesApi
@@ -67,6 +69,12 @@ export const useModelProfilesStore = defineStore('model-profiles', () => {
   const operationState = ref<ModelProfilesOperationState>('idle')
   const errorMessage = ref('')
   const noticeMessage = ref('')
+  const taskBindings = ref<ModelTaskBindings>({
+    content_generation: { profile_name: null, model: '' },
+    grading: { profile_name: null, model: '' },
+    teaching_prep: { profile_name: null, model: '' },
+    class_teacher: { profile_name: null, model: '' },
+  })
 
   let loadGeneration = 0
   let loadController: AbortController | null = null
@@ -85,6 +93,7 @@ export const useModelProfilesStore = defineStore('model-profiles', () => {
   ): void {
     profiles.value = state.profiles.map((profile) => ({ ...profile }))
     activeProfileName.value = state.active_profile_name
+    taskBindings.value = copyModelTaskBindings(state.task_bindings)
     const candidate = preferredSelection === undefined
       ? selectedProfileName.value
       : preferredSelection
@@ -189,6 +198,26 @@ export const useModelProfilesStore = defineStore('model-profiles', () => {
     }
   }
 
+  async function saveTaskBindings(
+    bindings: ModelTaskBindings,
+    api: ModelProfilesApi = modelProfilesApi,
+  ): Promise<boolean> {
+    if (operationState.value !== 'idle') return false
+    operationState.value = 'saving'
+    errorMessage.value = ''
+    noticeMessage.value = ''
+    try {
+      applyState(await api.saveTaskBindings(copyModelTaskBindings(bindings)))
+      noticeMessage.value = '四类工作的模型安排已保存；保存过程不会调用模型。'
+      return true
+    } catch (error) {
+      errorMessage.value = friendlyModelProfileError(error, 'save')
+      return false
+    } finally {
+      operationState.value = 'idle'
+    }
+  }
+
   function clearMessages(): void {
     errorMessage.value = ''
     noticeMessage.value = ''
@@ -204,10 +233,12 @@ export const useModelProfilesStore = defineStore('model-profiles', () => {
     operationState,
     errorMessage,
     noticeMessage,
+    taskBindings,
     load,
     selectProfile,
     saveProfile,
     activateProfile,
+    saveTaskBindings,
     clearMessages,
   }
 })

@@ -120,8 +120,8 @@ def test_phase_gate_upgrades_every_supported_historical_version(
         ("grading", 12, "010_workspace_ai_tasks"),
         (
             "question_bank",
-            32,
-            "030_add_personalized_paper_batches",
+            33,
+            "031_add_paper_folder",
         ),
     ):
         item = by_target[target]

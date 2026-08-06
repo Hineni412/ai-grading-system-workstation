@@ -13,6 +13,7 @@ from question_bank.importers.batch_importer import (
     import_scanned_papers,
     infer_metadata_from_filename,
 )
+from question_bank.models.question import CORE_ANALYSIS_TAG_TYPES
 from question_bank.models.tag_schema import TaggingContext
 from question_bank.services.ai_tagging_service import (
     AITaggingService,
@@ -20,7 +21,7 @@ from question_bank.services.ai_tagging_service import (
     is_auto_saveable_result,
 )
 from question_bank.services.asset_path_service import resolve_question_bank_asset_path
-from question_bank.services.question_service import CORE_ANALYSIS_TAG_TYPES, QuestionService
+from question_bank.services.question_write_service import QuestionBankWriteService
 from question_bank.services.source_paper_archive_service import (
     ArchivedSourcePaper,
     archive_source_bytes,
@@ -147,7 +148,10 @@ def intake_grading_paper_to_question_bank(
     failed_tagging = 0
     pending_questions = _questions_needing_complete_tags(database_path, questions)
     if run_ai_tagging and pending_questions:
-        service = QuestionService(database_path)
+        write_service = QuestionBankWriteService(
+            database_path,
+            data_root=Path(data_root or database_path.parent),
+        )
         contexts = {int(item["id"]): _tagging_context(item) for item in pending_questions}
         tagger = ai_service or AITaggingService()
         taxonomy_contracts = tagger.taxonomy_contracts(contexts)
@@ -215,7 +219,7 @@ def intake_grading_paper_to_question_bank(
                         failed_tagging += 1
                         failed_question_ids.append(str(question_id))
                         continue
-                if service.save_tag_analysis(
+                if write_service.save_tag_analysis(
                     question_id,
                     result.analysis,
                     model_name=result.model_name,

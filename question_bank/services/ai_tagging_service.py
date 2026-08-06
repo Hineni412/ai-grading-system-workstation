@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
-from api_profiles import get_api_profile_store
+from api_profiles import get_api_profile_store, resolve_profile_for_task
 from backend.llm import (
     LLMProtocolAdapter,
     LLMRequestKind,
@@ -30,6 +30,7 @@ from question_bank.services.taxonomy_review_suggestions import (
 )
 from question_bank.taxonomy.governance import get_taxonomy_governance
 from question_bank.taxonomy.curriculum_catalog import curriculum_volume_contract
+from question_bank.taxonomy.snapshot import QuestionTaxonomySnapshot
 
 
 DEFAULT_TAGGING_MODEL = "gpt-4o"
@@ -622,12 +623,16 @@ def _resolve_prompt_contract(
     context: TaggingContext | None = None,
 ) -> dict[str, Any]:
     if taxonomy_contract is not None:
+        if isinstance(taxonomy_contract, QuestionTaxonomySnapshot):
+            return taxonomy_contract.to_dict()
         return dict(taxonomy_contract)
     prompt_context = _taxonomy_context(context) if context is not None else None
     return dict(get_taxonomy_governance().prompt_contract(prompt_context))
 
 
 def _taxonomy_revision(contract: Mapping[str, Any]) -> int:
+    if isinstance(contract, QuestionTaxonomySnapshot):
+        return contract.taxonomy_revision
     return _coerce_nonnegative_int(
         contract.get("taxonomy_revision", contract.get("revision")),
         fallback=0,
@@ -1248,8 +1253,7 @@ def _llm_settings_from_profile() -> LLMSettings | None:
 
 
 def _active_saved_profile() -> dict[str, Any]:
-    profiles = get_api_profile_store().load()
-    return dict(profiles[-1]) if profiles else {}
+    return resolve_profile_for_task(get_api_profile_store(), "content_generation")
 
 
 def _model_for_llm_client(llm_client: Any, fallback: str) -> str:

@@ -19,7 +19,7 @@ class ExportConfig:
     body_font: str = "宋体"
     body_font_ascii: str = "Times New Roman"
     body_size_pt: float = 10.5
-    line_spacing: float = 1.15
+    line_spacing: float = 1.1
 
     # Numbering and Choices
     numbering_mode: str = "global"  # "global" or "per_section"
