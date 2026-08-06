@@ -39,6 +39,11 @@ from question_bank.training_criteria.analysis import (
 
 
 _IMAGE_MARKER = re.compile(r"\[\[IMAGE:(?P<path>[^\]]+)\]\]")
+_SOURCE_SECTION_HEADING = re.compile(
+    r"^\s*[一二三四五六七八九十百]+[、.．]\s*"
+    r"(?:单项选择题|选择题|填空题|解答题|计算题|证明题|作图题|综合题|判断题|简答题)"
+    r"(?:\s*[（(].*)?$"
+)
 
 
 class ExistingTagProjectionWriter:
@@ -332,8 +337,17 @@ class QuestionAnalysisInputLoader:
                     *_rich_paths(answer_blocks),
                 ]
             )
-            question_images = self._images(question_paths, role="question")
-            answer_images = self._images(answer_paths, role="answer")
+            image_hashes_by_path: dict[str, str] = {}
+            question_images = self._images(
+                question_paths,
+                role="question",
+                image_hashes_by_path=image_hashes_by_path,
+            )
+            answer_images = self._images(
+                answer_paths,
+                role="answer",
+                image_hashes_by_path=image_hashes_by_path,
+            )
             # Some DOCX/PDF extractors attach a diagram to the answer-side
             # rich blocks even though it is the figure the question refers to.
             # Keep the original answer image and expose a question-role copy
@@ -380,6 +394,14 @@ class QuestionAnalysisInputLoader:
                     rich_answer_blocks=tuple(
                         _public_block(item) for item in answer_blocks
                     ),
+                    word_question_blocks=tuple(
+                        _word_block(item, image_hashes_by_path)
+                        for item in _question_content_blocks(question_blocks)
+                    ),
+                    word_answer_blocks=tuple(
+                        _word_block(item, image_hashes_by_path)
+                        for item in answer_blocks
+                    ),
                     images=images,
                     taxonomy_contract=(
                         (taxonomy_contracts or {}).get(question_id, {})
@@ -393,6 +415,7 @@ class QuestionAnalysisInputLoader:
         paths: Sequence[str],
         *,
         role: str,
+        image_hashes_by_path: dict[str, str] | None = None,
     ) -> list[QuestionAnalysisImage]:
         result: list[QuestionAnalysisImage] = []
         for saved_path in paths:
@@ -414,13 +437,14 @@ class QuestionAnalysisInputLoader:
                 or "application/octet-stream"
             )
             try:
-                result.append(
-                    QuestionAnalysisImage(
-                        role=role,  # type: ignore[arg-type]
-                        mime_type=mime,
-                        content=resolved.read_bytes(),
-                    )
+                image = QuestionAnalysisImage(
+                    role=role,  # type: ignore[arg-type]
+                    mime_type=mime,
+                    content=resolved.read_bytes(),
                 )
+                result.append(image)
+                if image_hashes_by_path is not None:
+                    image_hashes_by_path[str(saved_path)] = image.sha256
             except (OSError, ValueError):
                 continue
         return result
@@ -500,6 +524,11 @@ def question_analysis_input_from_config_source(
         # to an external model.
         rich_question_blocks=tuple(_public_block(item) for item in question_blocks),
         rich_answer_blocks=tuple(_public_block(item) for item in answer_blocks),
+        word_question_blocks=tuple(
+            _word_block(item, {})
+            for item in _question_content_blocks(question_blocks)
+        ),
+        word_answer_blocks=tuple(_word_block(item, {}) for item in answer_blocks),
         images=normalized_images,
         taxonomy_contract=taxonomy_contract or {},
         reference_solution=(
@@ -897,6 +926,16 @@ def _safe_blocks(value: object) -> list[dict[str, Any]]:
     ]
 
 
+def _question_content_blocks(value: object) -> list[dict[str, Any]]:
+    return [
+        block
+        for block in _safe_blocks(value)
+        if not _SOURCE_SECTION_HEADING.fullmatch(
+            _IMAGE_MARKER.sub("", str(block.get("text") or "")).strip()
+        )
+    ]
+
+
 def _rich_paths(blocks: Sequence[Mapping[str, Any]]) -> list[str]:
     paths: list[str] = []
     for block in blocks:
@@ -919,6 +958,29 @@ def _public_block(value: Mapping[str, Any]) -> dict[str, Any]:
     return {
         "text": _IMAGE_MARKER.sub("", str(value.get("text") or "")),
     }
+
+
+def _word_block(
+    value: Mapping[str, Any],
+    image_hashes_by_path: Mapping[str, str],
+) -> dict[str, Any]:
+    block: dict[str, Any] = {"text": str(value.get("text") or "")}
+    xml = str(value.get("xml") or "").strip()
+    if xml:
+        block["xml"] = xml
+    relationships = value.get("image_relationships")
+    if isinstance(relationships, Mapping):
+        governed: dict[str, str] = {}
+        for relationship_id, source in relationships.items():
+            source_text = str(source or "").strip()
+            image_hash = image_hashes_by_path.get(source_text)
+            if image_hash:
+                governed[str(relationship_id)] = f"sha256:{image_hash}"
+            elif re.fullmatch(r"sha256:[0-9a-f]{64}", source_text):
+                governed[str(relationship_id)] = source_text
+        if governed:
+            block["image_relationships"] = governed
+    return block
 
 
 __all__ = [
