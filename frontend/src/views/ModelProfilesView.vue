@@ -15,6 +15,7 @@ import {
   type AiDiagnosticSummary,
 } from '../api/ai-diagnostics'
 import {
+  copyModelTaskBindings,
   MODEL_PROFILE_LIMITS,
   modelProfilesApi,
   type ModelExecutionStatus,
@@ -257,7 +258,7 @@ function applyBlankProfile(): void {
 }
 
 function syncFromSelection(): void {
-  taskBindingsDraft.value = structuredClone(profilesStore.taskBindings)
+  taskBindingsDraft.value = copyModelTaskBindings(profilesStore.taskBindings)
   if (profilesStore.selectedProfile) {
     applyProfile(profilesStore.selectedProfile)
   } else {
@@ -268,7 +269,7 @@ function syncFromSelection(): void {
 async function saveTaskBindings(): Promise<void> {
   localError.value = ''
   await profilesStore.saveTaskBindings(taskBindingsDraft.value)
-  taskBindingsDraft.value = structuredClone(profilesStore.taskBindings)
+  taskBindingsDraft.value = copyModelTaskBindings(profilesStore.taskBindings)
 }
 
 function confirmDiscard(message: string): boolean {
@@ -561,14 +562,25 @@ onBeforeUnmount(() => {
       <p v-if="profilesStore.profiles.length === 0" class="model-task-routing__empty">
         请先在下方新增一个 API 站点，再安排工作模型。
       </p>
-      <div v-else class="model-task-routing__grid">
+      <div class="model-task-routing__grid">
         <label v-for="row in taskRows" :key="row.key" class="model-task-row">
           <span class="model-task-row__title"><strong>{{ row.title }}</strong><small>{{ row.detail }}</small></span>
-          <select v-model="taskBindingsDraft[row.key].profile_name" :aria-label="`${row.title}使用的 API 站点`">
+          <select
+            v-model="taskBindingsDraft[row.key].profile_name"
+            :aria-label="`${row.title}使用的 API 站点`"
+            :disabled="profilesStore.profiles.length === 0 || isBusy"
+          >
             <option :value="null" disabled>选择 API 站点</option>
             <option v-for="profile in profilesStore.profiles" :key="profile.name" :value="profile.name">{{ profile.name }}</option>
           </select>
-          <input v-model="taskBindingsDraft[row.key].model" type="text" :maxlength="MODEL_PROFILE_LIMITS.model" :aria-label="`${row.title}使用的模型`" placeholder="填写模型名称">
+          <input
+            v-model="taskBindingsDraft[row.key].model"
+            type="text"
+            :maxlength="MODEL_PROFILE_LIMITS.model"
+            :aria-label="`${row.title}使用的模型`"
+            :disabled="profilesStore.profiles.length === 0 || isBusy"
+            placeholder="填写模型名称"
+          >
         </label>
       </div>
     </section>

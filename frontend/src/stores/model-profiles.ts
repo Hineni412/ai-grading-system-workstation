@@ -3,6 +3,7 @@ import { defineStore } from 'pinia'
 
 import { ApiError } from '../api/errors'
 import {
+  copyModelTaskBindings,
   ModelProfileInputError,
   modelProfilesApi,
   type ModelProfile,
@@ -92,7 +93,7 @@ export const useModelProfilesStore = defineStore('model-profiles', () => {
   ): void {
     profiles.value = state.profiles.map((profile) => ({ ...profile }))
     activeProfileName.value = state.active_profile_name
-    taskBindings.value = structuredClone(state.task_bindings)
+    taskBindings.value = copyModelTaskBindings(state.task_bindings)
     const candidate = preferredSelection === undefined
       ? selectedProfileName.value
       : preferredSelection
@@ -206,7 +207,7 @@ export const useModelProfilesStore = defineStore('model-profiles', () => {
     errorMessage.value = ''
     noticeMessage.value = ''
     try {
-      applyState(await api.saveTaskBindings(structuredClone(bindings)))
+      applyState(await api.saveTaskBindings(copyModelTaskBindings(bindings)))
       noticeMessage.value = '四类工作的模型安排已保存；保存过程不会调用模型。'
       return true
     } catch (error) {
