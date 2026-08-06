@@ -24,6 +24,17 @@ export interface ModelTaskBinding {
 
 export type ModelTaskBindings = Record<ModelTaskKey, ModelTaskBinding>
 
+export function copyModelTaskBindings(
+  bindings: ModelTaskBindings,
+): ModelTaskBindings {
+  return {
+    content_generation: { ...bindings.content_generation },
+    grading: { ...bindings.grading },
+    teaching_prep: { ...bindings.teaching_prep },
+    class_teacher: { ...bindings.class_teacher },
+  }
+}
+
 export interface ModelProfile {
   name: string
   base_url: string
@@ -251,7 +262,7 @@ export function decodeModelProfilesState(value: unknown): ModelProfilesState {
     profiles: profiles.map((profile) => ({ ...profile })),
     active_profile_name: activeProfileName,
     active_profile: activeProfile === null ? null : { ...activeProfile },
-    task_bindings: structuredClone(value.task_bindings as ModelTaskBindings),
+    task_bindings: copyModelTaskBindings(value.task_bindings as ModelTaskBindings),
   }
 }
 
