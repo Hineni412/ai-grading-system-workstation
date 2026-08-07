@@ -126,6 +126,10 @@ describe('question assembly view', () => {
     await vi.waitFor(() => expect(host.textContent).toContain('初始题目'))
     await vi.waitFor(() => expect(host.querySelector('.assembly-curriculum-tree')).toBeTruthy())
 
+    const difficultyRow = host.querySelector('.assembly-filter-row.is-difficulty')
+    expect(difficultyRow?.querySelector('.difficulty-range')).toBeTruthy()
+    expect(difficultyRow?.querySelector('.assembly-filter-label')).toBeNull()
+
     const facetCalls = fetchSpy.mock.calls.filter(
       ([input]) => String(input).startsWith('/api/question-bank/facets?'),
     )

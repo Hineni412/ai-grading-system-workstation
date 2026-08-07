@@ -620,8 +620,14 @@
   min-height: 58px;
 }
 
-.assembly-filter-row.is-difficulty { align-items: start; }
-.assembly-filter-row.is-difficulty .difficulty-range { grid-column: auto; }
+.assembly-filter-row.is-difficulty {
+  align-items: start;
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.assembly-filter-row.is-difficulty .difficulty-range {
+  grid-column: 1 / -1;
+}
 
 .assembly-filter-panel > .assembly-filter-row:last-child {
   border: 0;

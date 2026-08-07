@@ -145,7 +145,7 @@ describe('question bank workspace', () => {
     expect(host.textContent).toContain('中考函数专题')
   })
 
-  it('waits for applied filters and explicit AI cost confirmation', async () => {
+  it('applies difficulty on release but waits for explicit text filters and AI cost confirmation', async () => {
     const queuedJob = {
       id: 41,
       job_type: 'tagging_sync',
@@ -197,6 +197,15 @@ describe('question bank workspace', () => {
     expect(host.querySelector<HTMLButtonElement>('.question-sort button.is-active')?.textContent)
       .toContain('难度')
 
+    const lowerDifficulty = host.querySelector<HTMLInputElement>('input[aria-label="最低难度"]')!
+    lowerDifficulty.value = '4'
+    lowerDifficulty.dispatchEvent(new Event('input', { bubbles: true }))
+    await nextTick()
+    lowerDifficulty.dispatchEvent(new Event('change', { bubbles: true }))
+    await vi.waitFor(() => expect(fetchSpy).toHaveBeenCalledTimes(baselineCalls + 1))
+    expect(String(fetchSpy.mock.calls[baselineCalls]?.[0])).toContain('difficulty_min=4')
+
+    const callsAfterDifficulty = fetchSpy.mock.calls.length
     const search = host.querySelector<HTMLInputElement>('input[type="search"]')!
     search.value = '二次函数'
     search.dispatchEvent(new Event('input', { bubbles: true }))
@@ -206,13 +215,13 @@ describe('question bank workspace', () => {
     examScope.value = '期中'
     examScope.dispatchEvent(new Event('input', { bubbles: true }))
     await nextTick()
-    expect(fetchSpy).toHaveBeenCalledTimes(baselineCalls)
+    expect(fetchSpy).toHaveBeenCalledTimes(callsAfterDifficulty)
 
     const apply = [...host.querySelectorAll('button')]
       .find((button) => button.textContent?.includes('应用筛选'))!
     apply.click()
-    await vi.waitFor(() => expect(fetchSpy).toHaveBeenCalledTimes(baselineCalls + 1))
-    expect(String(fetchSpy.mock.calls[baselineCalls]?.[0])).toContain(
+    await vi.waitFor(() => expect(fetchSpy).toHaveBeenCalledTimes(callsAfterDifficulty + 1))
+    expect(String(fetchSpy.mock.calls[callsAfterDifficulty]?.[0])).toContain(
       'exam_scopes=%E6%9C%9F%E4%B8%AD',
     )
 
@@ -228,14 +237,14 @@ describe('question bank workspace', () => {
     aiButton.click()
     await nextTick()
     expect(confirmSpy).toHaveBeenCalledWith(expect.stringContaining('已选 1 道题'))
-    expect(fetchSpy).toHaveBeenCalledTimes(baselineCalls + 1)
+    expect(fetchSpy).toHaveBeenCalledTimes(callsAfterDifficulty + 1)
 
     confirmSpy.mockReturnValue(true)
     aiButton.click()
     aiButton.click()
-    await vi.waitFor(() => expect(fetchSpy).toHaveBeenCalledTimes(baselineCalls + 2))
-    expect(String(fetchSpy.mock.calls[baselineCalls + 1]?.[0])).toBe('/api/question-bank/tagging-jobs')
-    expect(JSON.parse(String(fetchSpy.mock.calls[baselineCalls + 1]?.[1]?.body))).toEqual({
+    await vi.waitFor(() => expect(fetchSpy).toHaveBeenCalledTimes(callsAfterDifficulty + 2))
+    expect(String(fetchSpy.mock.calls[callsAfterDifficulty + 1]?.[0])).toBe('/api/question-bank/tagging-jobs')
+    expect(JSON.parse(String(fetchSpy.mock.calls[callsAfterDifficulty + 1]?.[1]?.body))).toEqual({
       question_ids: [17],
     })
   })
