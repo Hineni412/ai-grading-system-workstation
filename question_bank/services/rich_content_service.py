@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from pathlib import Path
 
 from question_bank.database.paths import project_data_root
@@ -9,6 +10,25 @@ from question_bank.database.paths import project_data_root
 
 LOGGER = logging.getLogger(__name__)
 RICH_CONTENT_VERSION = 3
+_QUESTION_SECTION_HEADING = re.compile(
+    r"^\s*(?:[一二三四五六七八九十]+|\d+)\s*[、.．]\s*"
+    r"(?:选择|填空|解答|计算|证明|作图)题[^\n]*\s*$"
+)
+_IMAGE_MARKER = re.compile(r"\[\[IMAGE:.+?\]\]", re.IGNORECASE | re.DOTALL)
+
+
+def clean_question_blocks(
+    blocks: list[dict[str, object]] | None,
+) -> list[dict[str, object]]:
+    return [
+        block
+        for block in blocks or []
+        if not _QUESTION_SECTION_HEADING.fullmatch(
+            _IMAGE_MARKER.sub(
+                "", str(block.get("text") or "").replace("\r", "")
+            ).strip()
+        )
+    ]
 
 
 def rich_content_root(root: str | Path | None = None) -> Path:
@@ -33,7 +53,7 @@ def save_question_rich_content(
     payload = {
         "version": RICH_CONTENT_VERSION,
         "question_id": int(question_id),
-        "question_blocks": question_blocks or [],
+        "question_blocks": clean_question_blocks(question_blocks),
         "answer_blocks": answer_blocks or [],
     }
     output_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -53,6 +73,11 @@ def load_question_rich_content(question_id: int, root: str | Path | None = None)
         return None
     if int(payload.get("version") or 0) != RICH_CONTENT_VERSION:
         return None
+    question_blocks = payload.get("question_blocks")
+    if isinstance(question_blocks, list):
+        payload["question_blocks"] = clean_question_blocks(
+            [item for item in question_blocks if isinstance(item, dict)]
+        )
     return payload
 
 
@@ -60,4 +85,9 @@ def is_question_rich_content_current(question_id: int, root: str | Path | None =
     return load_question_rich_content(question_id, root) is not None
 
 
-__all__ = ["is_question_rich_content_current", "load_question_rich_content", "save_question_rich_content"]
+__all__ = [
+    "clean_question_blocks",
+    "is_question_rich_content_current",
+    "load_question_rich_content",
+    "save_question_rich_content",
+]

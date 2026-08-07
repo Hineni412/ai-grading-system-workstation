@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from backend.llm.json_repair import parse_json_object_locally
@@ -38,6 +40,17 @@ def test_local_json_repair_does_not_close_truncated_content_or_leak_it() -> None
 
     assert "private answer" not in str(raised.value)
     assert "响应字符数" in str(raised.value)
+
+
+def test_local_json_repair_replaces_only_malformed_terminal_closer_sequence() -> None:
+    expected = {"results": [{"solution": {"parts": [{"points": []}]}}]}
+    serialized = json.dumps(expected)
+    malformed = serialized[:-3] + serialized[-2:]
+
+    result = parse_json_object_locally(malformed)
+
+    assert result.payload == expected
+    assert result.report.operations == ("repair_terminal_closers",)
 
 
 def test_local_json_repair_does_not_guess_unquoted_business_value() -> None:

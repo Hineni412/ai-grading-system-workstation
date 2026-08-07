@@ -2053,16 +2053,31 @@ def _normalize_scoped_curriculum(
         for item in section_rows
         if str(item.get("id") or "").strip()
     }
+    ids_by_display_key: dict[str, list[str]] = {}
+    for section_id, item in by_id.items():
+        name = str(item.get("name") or "").strip()
+        chapter_name = str(item.get("chapter_name") or "").strip()
+        for alias in (name, f"{chapter_name} {name}".strip()):
+            key = _curriculum_display_key(alias)
+            if key:
+                ids_by_display_key.setdefault(key, []).append(section_id)
     selected_ids: list[str] = []
     invalid_ids: list[str] = []
     for raw in analysis.curriculum_sections:
         section_id = str(raw or "").strip()
         if not section_id or section_id in selected_ids:
             continue
-        if section_id not in by_id:
-            invalid_ids.append(section_id)
-            continue
-        selected_ids.append(section_id)
+        resolved_id = section_id
+        if resolved_id not in by_id:
+            matches = ids_by_display_key.get(
+                _curriculum_display_key(section_id), []
+            )
+            if len(matches) != 1:
+                invalid_ids.append(section_id)
+                continue
+            resolved_id = matches[0]
+        if resolved_id not in selected_ids:
+            selected_ids.append(resolved_id)
     if invalid_ids:
         selected_ids = []
     chapters: list[str] = []
@@ -2083,6 +2098,10 @@ def _normalize_scoped_curriculum(
     if not selected_ids:
         notes.append("未返回当前册别中的教材小节")
     return TagAnalysis.from_dict(payload), notes
+
+
+def _curriculum_display_key(value: object) -> str:
+    return re.sub(r"[^0-9a-z\u4e00-\u9fff]+", "", str(value or "").casefold())
 
 
 def _evaluate_analysis_quality(

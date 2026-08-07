@@ -55,3 +55,22 @@ def test_task_bindings_route_persists_multiple_api_sites_without_exposing_keys(
     assert reloaded.store.profile_for_task("grading")["grading_model"] == (
         "grading-model"
     )
+
+
+def test_delete_profile_route_returns_safe_remaining_state(tmp_path) -> None:
+    profile_path = tmp_path / "api_profiles.json"
+    service = ModelProfileService(ApiProfileStore(profile_path))
+    service.upsert(
+        "旧站点",
+        {"base_url": "https://old.example/v1", "api_key": "old-secret"},
+    )
+    app = FastAPI()
+    app.include_router(router)
+    app.dependency_overrides[get_model_profile_service] = lambda: service
+    client = TestClient(app)
+
+    response = client.delete("/api/model-profiles/%E6%97%A7%E7%AB%99%E7%82%B9")
+
+    assert response.status_code == 200
+    assert response.json()["profiles"] == []
+    assert "old-secret" not in response.text
