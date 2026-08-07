@@ -24,6 +24,7 @@ const sessionStore = useSessionStore()
 
 function isActive(item: WorkspaceRouteDefinition): boolean {
   if (route.name === gradingRunRouteDefinition.id) return item.id === 'grading'
+  if (item.id === 'knowledge-graph' && route.name === 'training') return true
   return route.path === item.path || route.path.startsWith(`${item.path}/`)
 }
 

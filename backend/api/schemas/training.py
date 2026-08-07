@@ -141,8 +141,9 @@ class PersonalizedRecommendationCreateRequest(TrainingDiagnosisRequest):
     stage_ratios: TrainingStageRatios = Field(
         default_factory=TrainingStageRatios
     )
-    target_keys: list[str] = Field(default_factory=list, max_length=20)
-    target_names: list[str] = Field(default_factory=list, max_length=20)
+    paper_mode: Literal["individual", "shared"] = "individual"
+    target_keys: list[str] = Field(default_factory=list, max_length=50)
+    target_names: list[str] = Field(default_factory=list, max_length=50)
     exclude_current_exam_originals: bool = True
 
     @field_validator("target_keys")
@@ -180,6 +181,12 @@ class PersonalizedRecommendationCreateRequest(TrainingDiagnosisRequest):
         if self.target_keys and self.target_names:
             raise ValueError(
                 "target_keys and target_names cannot both be provided"
+            )
+        if self.paper_mode == "shared" and not (
+            self.target_keys or self.target_names
+        ):
+            raise ValueError(
+                "shared paper mode requires teacher-selected targets"
             )
         return self
 

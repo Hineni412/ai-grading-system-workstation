@@ -23,17 +23,24 @@ const props = defineProps<{
   questionCount: number
   stageRatios: TrainingStageRatios
   excludeCurrentExamOriginals: boolean
+  paperMode?: 'individual' | 'shared'
+  targetKeys?: string[]
   disabled?: boolean
+  externalSetup?: boolean
+  expectedMinutes?: number
+  difficultyMin?: number
+  difficultyMax?: number
 }>()
 const emit = defineEmits<{
   stageChange: [stage: 'diagnosis' | 'draft' | 'wps' | 'scan']
+  stateChange: [state: RequestState]
 }>()
 
 type RequestState = 'idle' | 'loading' | 'ready' | 'error' | 'editing'
 
-const expectedMinutes = ref(45)
-const difficultyMin = ref(1)
-const difficultyMax = ref(10)
+const expectedMinutes = ref(props.expectedMinutes ?? 45)
+const difficultyMin = ref(props.difficultyMin ?? 1)
+const difficultyMax = ref(props.difficultyMax ?? 10)
 const selectedTargets = ref<string[]>([])
 const editReason = ref('教师根据课堂安排调整推荐草稿')
 const state = ref<RequestState>('idle')
@@ -50,15 +57,27 @@ const includeConservativeStudents = ref(false)
 const paperCancelBusy = ref(false)
 let paperBatchPollGeneration = 0
 
-const targetOptions = computed(() => [...new Set(
-  (props.diagnosis?.students ?? [])
-    .flatMap((student) => student.weak_points)
-    .map((weak) => weak.knowledge_point.trim())
-    .filter(Boolean),
-)].sort((left, right) => left.localeCompare(right, 'zh-CN')))
+const targetOptions = computed(() => {
+  const options = new Map<string, string>()
+  for (const weak of (props.diagnosis?.students ?? []).flatMap((student) => student.weak_points)) {
+    if (weak.knowledge_key && weak.knowledge_point.trim()) {
+      options.set(weak.knowledge_key, weak.knowledge_point.trim())
+    }
+  }
+  return [...options].map(([key, label]) => ({ key, label })).sort((left, right) => (
+    left.label.localeCompare(right.label, 'zh-CN')
+  ))
+})
 const selectedDraftStudent = computed(() => draft.value?.students.find(
   (student) => student.student_id === selectedDraftStudentId.value,
 ) ?? draft.value?.students[0] ?? null)
+const selectedTargetLabels = computed(() => {
+  const labels = new Map(targetOptions.value.map((item) => [item.key, item.label]))
+  return selectedTargets.value.map((key) => labels.get(key) ?? key)
+})
+const selectedTargetsAreGoverned = computed(() => selectedTargets.value.every((key) => (
+  key.startsWith('kp_') || key.startsWith('ki_')
+)))
 
 const canGenerate = computed(() => (
   Boolean(props.diagnosis)
@@ -70,6 +89,7 @@ const canGenerate = computed(() => (
   && difficultyMin.value >= 1
   && difficultyMax.value <= 10
   && difficultyMin.value <= difficultyMax.value
+  && (!targetOptions.value.length || selectedTargets.value.length > 0)
 ))
 const workflowStage = computed<'diagnosis' | 'draft' | 'wps' | 'scan'>(() => {
   if (!draft.value) return 'diagnosis'
@@ -79,9 +99,19 @@ const workflowStage = computed<'diagnosis' | 'draft' | 'wps' | 'scan'>(() => {
 })
 
 watch(workflowStage, (stage) => emit('stageChange', stage), { immediate: true })
+watch(state, (nextState) => emit('stateChange', nextState), { immediate: true })
+watch(() => props.expectedMinutes, (value) => {
+  if (value !== undefined) expectedMinutes.value = value
+})
+watch(() => props.difficultyMin, (value) => {
+  if (value !== undefined) difficultyMin.value = value
+})
+watch(() => props.difficultyMax, (value) => {
+  if (value !== undefined) difficultyMax.value = value
+})
 
 watch(
-  () => props.diagnosis,
+  [() => props.diagnosis, () => props.targetKeys],
   () => {
     draft.value = null
     selectedDraftStudentId.value = ''
@@ -93,7 +123,7 @@ watch(
     paperBusy.value = ''
     paperBatch.value = null
     paperBatchPollGeneration += 1
-    selectedTargets.value = [...targetOptions.value]
+    selectedTargets.value = [...(props.targetKeys ?? [])]
   },
   { immediate: true },
 )
@@ -150,7 +180,9 @@ async function generate(): Promise<void> {
       difficulty_min: difficultyMin.value,
       difficulty_max: difficultyMax.value,
       stage_ratios: props.stageRatios,
-      target_names: selectedTargets.value,
+      paper_mode: props.paperMode ?? 'individual',
+      target_keys: selectedTargetsAreGoverned.value ? selectedTargets.value : [],
+      target_names: selectedTargetsAreGoverned.value ? [] : selectedTargetLabels.value,
       exclude_current_exam_originals: props.excludeCurrentExamOriginals,
     })
     paperInstances.value = []
@@ -166,6 +198,8 @@ async function generate(): Promise<void> {
     )
   }
 }
+
+defineExpose({ generate })
 
 async function openNextDraft(draftId: string): Promise<void> {
   if (state.value === 'loading' || state.value === 'editing') return
@@ -476,17 +510,23 @@ async function editItem(
 </script>
 
 <template>
-  <section class="personalized-draft" aria-labelledby="personalized-draft-title">
-    <header>
+  <section
+    :class="['personalized-draft', { 'is-external-setup': externalSetup }]"
+    :aria-labelledby="externalSetup ? undefined : 'personalized-draft-title'"
+    :aria-label="externalSetup ? '个性化训练草稿' : undefined"
+  >
+    <header v-if="!externalSetup">
       <div>
-        <p class="training-eyebrow">P4 · 一人一卷草稿</p>
-        <h3 id="personalized-draft-title">个性化推荐草稿</h3>
-        <p>只使用已确认关系和已批准判定点；题目不足时会保留空缺。</p>
+        <p class="training-eyebrow">P4 · 教师确认后出卷</p>
+        <h3 id="personalized-draft-title">{{ paperMode === 'shared' ? '多人同题草稿' : '一人一卷草稿' }}</h3>
+        <p>{{ paperMode === 'shared'
+          ? '题目和顺序一致，但每名学生仍保留独立姓名、二维码与回收身份。'
+          : '按每名学生证据分别选题；题目不足时会明确保留空缺。' }}</p>
       </div>
       <span v-if="draft">版本 {{ draft.revision }}</span>
     </header>
 
-    <details class="personalized-settings" :open="!draft">
+    <details v-if="!externalSetup" class="personalized-settings" :open="!draft">
       <summary>训练设置</summary>
       <section>
     <div class="personalized-controls">
@@ -505,13 +545,18 @@ async function editItem(
       </label>
     </div>
 
-    <fieldset v-if="targetOptions.length" class="personalized-targets">
+    <fieldset v-if="targetOptions.length && targetKeys === undefined" class="personalized-targets">
       <legend>本次训练目标</legend>
-      <label v-for="target in targetOptions" :key="target">
-        <input v-model="selectedTargets" type="checkbox" :value="target">
-        {{ target }}
+      <label v-for="target in targetOptions" :key="target.key">
+        <input v-model="selectedTargets" type="checkbox" :value="target.key">
+        {{ target.label }}
       </label>
-      <p v-if="!selectedTargets.length">未勾选时，将按每名学生当前薄弱证据自动选择。</p>
+      <p v-if="!selectedTargets.length">请先人工勾选至少一个知识点；系统不会替教师默认决定训练重点。</p>
+    </fieldset>
+    <fieldset v-else-if="targetOptions.length" class="personalized-targets is-summary">
+      <legend>从知识结构中已选目标</legend>
+      <span v-for="target in selectedTargetLabels" :key="target">{{ target }}</span>
+      <p v-if="!selectedTargets.length">请回到上方知识结构，人工勾选至少一个知识点。</p>
     </fieldset>
     <p v-else class="training-empty is-compact">
       当前没有可确认的薄弱目标；生成后会明确标注为保守复习，不会补造薄弱点。
@@ -567,7 +612,7 @@ async function editItem(
 
       <section class="personalized-batch-panel" aria-labelledby="personalized-batch-title">
         <div>
-          <strong id="personalized-batch-title">批量生成实名一人一卷</strong>
+          <strong id="personalized-batch-title">{{ paperMode === 'shared' ? '批量生成实名同题卷' : '批量生成实名一人一卷' }}</strong>
           <p>每名学生保持独立卷实例；成功卷不会因其他学生失败而丢失。</p>
         </div>
         <label>
@@ -629,7 +674,7 @@ async function editItem(
                 {{ item.relation.rationale }}
               </small>
             </div>
-            <div class="personalized-item-actions">
+            <div v-if="paperMode !== 'shared'" class="personalized-item-actions">
               <button
                 type="button"
                 class="training-link"
@@ -655,6 +700,7 @@ async function editItem(
                 排除
               </button>
             </div>
+            <p v-else class="personalized-shared-note">同题模式不允许只改某一名学生；如需换题，请调整设置后重新生成整组草稿。</p>
           </li>
         </ol>
 
@@ -787,6 +833,13 @@ async function editItem(
   background: var(--color-bg-subtle);
 }
 
+.personalized-draft.is-external-setup {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
 .personalized-draft > header,
 .personalized-student > header {
   display: flex;
@@ -907,6 +960,14 @@ async function editItem(
   color: var(--color-warning);
 }
 
+.personalized-targets.is-summary > span {
+  padding: .35rem .55rem;
+  border-radius: 999px;
+  background: var(--color-accent-subtle);
+  color: var(--color-accent);
+  font-size: .84rem;
+}
+
 .personalized-edit-reason {
   margin: 1rem 0;
 }
@@ -945,6 +1006,12 @@ async function editItem(
   flex-wrap: wrap;
   gap: 0.8rem;
   margin-top: 0.55rem;
+}
+
+.personalized-shared-note {
+  margin-top: .55rem !important;
+  color: var(--color-text-secondary);
+  font-size: .84rem;
 }
 
 .personalized-paper-panel {

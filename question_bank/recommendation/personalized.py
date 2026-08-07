@@ -61,6 +61,7 @@ class RecommendationEditInvalid(PersonalizedRecommendationError):
 
 @dataclass(frozen=True, slots=True)
 class PersonalizedRecommendationConfig:
+    paper_mode: Literal["individual", "shared"] = "individual"
     question_count: int = 10
     expected_minutes: int = 45
     difficulty_min: int = 1
@@ -72,6 +73,8 @@ class PersonalizedRecommendationConfig:
     exclude_current_exam_originals: bool = True
 
     def __post_init__(self) -> None:
+        if self.paper_mode not in {"individual", "shared"}:
+            raise ValueError("paper_mode is invalid")
         if not 8 <= int(self.question_count) <= 12:
             raise ValueError("question_count must be between 8 and 12")
         if not 10 <= int(self.expected_minutes) <= 180:
@@ -98,7 +101,7 @@ class PersonalizedRecommendationConfig:
                 if str(value or "").strip()
             )
         )
-        if len(normalized_targets) > 20:
+        if len(normalized_targets) > 50:
             raise ValueError("target_keys contains too many values")
         if any(
             not (value.startswith("kp_") or value.startswith("ki_"))
@@ -112,6 +115,10 @@ class PersonalizedRecommendationConfig:
         object.__setattr__(self, "difficulty_min", int(self.difficulty_min))
         object.__setattr__(self, "difficulty_max", int(self.difficulty_max))
         object.__setattr__(self, "target_keys", normalized_targets)
+        if self.paper_mode == "shared" and not normalized_targets:
+            raise ValueError(
+                "shared paper mode requires teacher-selected targets"
+            )
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -419,6 +426,12 @@ class PersonalizedRecommendationModule:
         if source_row is None:
             raise RecommendationDraftNotFound(clean_id)
         source_request = json.loads(str(source_row["request_json"]))
+        if (
+            source_request.get("config", {}).get("paper_mode") == "shared"
+        ):
+            raise RecommendationEditInvalid(
+                "shared paper questions cannot be edited per student"
+            )
         source_candidates, current_source = (
             self._current_source_for_request(
                 source_request,
@@ -592,6 +605,9 @@ class PersonalizedRecommendationModule:
         stage_counts = _stage_counts(config)
         relation_index = _relation_index(relations)
         students: list[dict[str, Any]] = []
+        shared_selected: dict[Stage, list[dict[str, Any]]] = {}
+        shared_shortages: dict[Stage, tuple[int, str]] = {}
+        shared_recent = set().union(*recent.values()) if recent else set()
         for profile in diagnosis["students"]:
             student_id = str(profile["student_id"])
             targets = _student_targets(
@@ -613,26 +629,39 @@ class PersonalizedRecommendationModule:
 
             for stage in ("direct", "prerequisite", "transfer"):
                 requested = stage_counts[stage]
-                eligible = self._eligible_candidates(
-                    candidates,
-                    stage=stage,
-                    target_keys=stage_targets[stage],
-                    maintenance=maintenance,
-                    used=used,
-                    recent=recent.get(student_id, set()),
-                    excluded=excluded_question_ids,
-                    config=config,
-                )
-                selected: list[dict[str, Any]] = []
-                for candidate in eligible:
-                    minutes = int(candidate["estimated_minutes"])
-                    if elapsed + minutes > config.expected_minutes:
-                        continue
-                    selected.append(candidate)
-                    used.add(int(candidate["question_id"]))
-                    elapsed += minutes
-                    if len(selected) >= requested:
-                        break
+                eligible: list[dict[str, Any]] = []
+                if config.paper_mode == "shared" and stage in shared_selected:
+                    selected = shared_selected[stage]
+                    for candidate in selected:
+                        used.add(int(candidate["question_id"]))
+                        elapsed += int(candidate["estimated_minutes"])
+                else:
+                    eligible = self._eligible_candidates(
+                        candidates,
+                        stage=stage,
+                        target_keys=stage_targets[stage],
+                        maintenance=maintenance,
+                        used=used,
+                        recent=(
+                            shared_recent
+                            if config.paper_mode == "shared"
+                            else recent.get(student_id, set())
+                        ),
+                        excluded=excluded_question_ids,
+                        config=config,
+                    )
+                    selected = []
+                    for candidate in eligible:
+                        minutes = int(candidate["estimated_minutes"])
+                        if elapsed + minutes > config.expected_minutes:
+                            continue
+                        selected.append(candidate)
+                        used.add(int(candidate["question_id"]))
+                        elapsed += minutes
+                        if len(selected) >= requested:
+                            break
+                    if config.paper_mode == "shared":
+                        shared_selected[stage] = selected
                 for slot, candidate in enumerate(selected, start=1):
                     matched_key = _matched_key(
                         candidate["stable_keys"],
@@ -657,16 +686,21 @@ class PersonalizedRecommendationModule:
                     )
                 missing = requested - len(selected)
                 if missing:
-                    code = (
-                        "time_limit_reached"
-                        if any(
-                            elapsed + int(item["estimated_minutes"])
-                            > config.expected_minutes
-                            for item in eligible
-                            if int(item["question_id"]) not in used
+                    if config.paper_mode == "shared" and stage in shared_shortages:
+                        missing, code = shared_shortages[stage]
+                    else:
+                        code = (
+                            "time_limit_reached"
+                            if any(
+                                elapsed + int(item["estimated_minutes"])
+                                > config.expected_minutes
+                                for item in eligible
+                                if int(item["question_id"]) not in used
+                            )
+                            else "approved_candidate_shortage"
                         )
-                        else "approved_candidate_shortage"
-                    )
+                        if config.paper_mode == "shared":
+                            shared_shortages[stage] = (missing, code)
                     shortages.append(
                         {
                             "stage": stage,
@@ -1292,7 +1326,7 @@ def _student_targets(
                 ],
             }
         )
-    return targets[:5]
+    return targets[:50]
 
 
 def _relation_index(
@@ -1590,6 +1624,7 @@ def _add_edit_shortage(student: dict[str, Any], stage: str) -> None:
 def _config_constructor(value: Mapping[str, Any]) -> dict[str, Any]:
     ratios = value.get("stage_ratios")
     return {
+        "paper_mode": value.get("paper_mode", "individual"),
         "question_count": value["question_count"],
         "expected_minutes": value["expected_minutes"],
         "difficulty_min": value["difficulty_min"],
