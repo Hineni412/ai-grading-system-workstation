@@ -31,7 +31,6 @@ const topLevelDefinitions = [
   trainingRouteDefinition,
   ...workspaceRegistry.navigationItems,
   studentsRouteDefinition,
-  modelProfilesRouteDefinition,
   settingsRouteDefinition,
 ] as const
 
@@ -50,7 +49,6 @@ describe('source-recalibrated navigation', () => {
       ['teaching-prep', '/teaching-prep'],
       ['class-teacher', '/class-teacher'],
       ['students', '/students'],
-      ['model-profiles', '/model-profiles'],
       ['settings', '/settings'],
     ])
   })
@@ -84,7 +82,7 @@ describe('source-recalibrated navigation', () => {
     ['/files', '/results?tab=exports'],
     ['/results', '/results'],
     ['/grading', '/grading'],
-    ['/model-profiles', '/model-profiles'],
+    ['/model-profiles', '/settings?section=models'],
     ['/settings', '/settings'],
     ['/design-system', '/design-system'],
     ['/missing/deep/path', '/missing/deep/path'],
@@ -123,8 +121,8 @@ describe('source-recalibrated navigation', () => {
     ['/training', 'training', 'TrainingRecommendationsView'],
     ['/knowledge-graph', 'knowledge-graph', 'KnowledgeGraphView'],
     ['/results', 'results', 'ResultsCenterView'],
-    ['/model-profiles', 'model-profiles', 'ModelProfilesView'],
-    ['/settings', 'settings', 'SettingsOpsView'],
+    ['/model-profiles', 'settings', 'SettingsHubView'],
+    ['/settings', 'settings', 'SettingsHubView'],
   ])(
     'loads %s as %s',
     async (path, routeName, componentName) => {

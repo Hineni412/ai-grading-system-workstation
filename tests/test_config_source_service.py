@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import copy
 import hashlib
 import io
 import json
@@ -11,6 +12,7 @@ import subprocess
 import threading
 import zipfile
 from collections.abc import AsyncIterator
+from dataclasses import replace
 from pathlib import Path
 
 import fitz
@@ -43,6 +45,27 @@ async def chunks(*parts: bytes) -> AsyncIterator[bytes]:
 
 def service(tmp_path: Path, **kwargs: object) -> ConfigSourceService:
     return ConfigSourceService(tmp_path, **kwargs)
+
+
+def test_preview_removes_detected_next_section_heading_and_summarizes_answer() -> None:
+    import backend.config_workspace.sources as sources_module
+
+    block = {
+        "question_id": "Q4",
+        "question_type": "single_choice",
+        "question_text": "等腰三角形的优美比为（ ）。\n二、填空题（共5小题）",
+        "question_html": "等腰三角形的优美比为（ ）。\n二、填空题（共5小题）",
+        "canonical_answer": "C",
+        "analysis": "腰长为5cm与底边长为5cm两种情况分别计算。" * 12,
+    }
+    sources_module._strip_embedded_question_section_heading(block)
+    preview = sources_module._question_previews([block], {})[0]
+
+    assert "填空题" not in preview.question_preview
+    assert "填空题" not in block["question_html"]
+    assert preview.question_type_review_required is False
+    assert preview.answer_preview == "答案 C"
+    assert len(preview.answer_preview) <= 220
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows service root junction regression")
@@ -124,6 +147,79 @@ def _docx_with_multiline_proof_answer() -> bytes:
     output = io.BytesIO()
     document.save(output)
     return output.getvalue()
+
+
+def test_load_accepts_v2_manifest_with_legacy_answer_preview(tmp_path: Path) -> None:
+    import backend.config_workspace.sources as sources_module
+
+    source_service = service(tmp_path)
+    record = asyncio.run(
+        source_service.stage_and_parse(
+            session_id=7,
+            filename="legacy-preview.docx",
+            chunks=chunks(_docx_with_multiline_proof_answer()),
+        )
+    )
+    manifest = json.loads(record.manifest_path.read_text(encoding="utf-8"))
+    block = manifest["private_blocks"][0]
+    block["canonical_answer"] = "C"
+    block["answer_text"] = "C。完整解析：先分类讨论，再逐步计算并核对结果。"
+    block["answer_html"] = "C。完整解析：先分类讨论，再逐步计算并核对结果。"
+    legacy_answer = sources_module._public_preview(
+        block.get("answer_html")
+        or block.get("answer_text")
+        or block.get("canonical_answer")
+        or ""
+    )
+    assert legacy_answer != manifest["questions"][0]["answer_preview"]
+    manifest["questions"][0]["answer_preview"] = legacy_answer
+    revision = sources_module._canonical_source_revision(manifest)
+    manifest["source_revision"] = revision
+    record.manifest_path.write_text(
+        json.dumps(manifest, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    (record.manifest_path.parent.parent / "active.json").write_text(
+        json.dumps({"source_id": record.source_id, "source_revision": revision}),
+        encoding="utf-8",
+    )
+
+    loaded = source_service.load(
+        session_id=7,
+        source_id=record.source_id,
+        require_active=True,
+    )
+
+    public_question = loaded.public_snapshot()["questions"][0]
+    assert public_question["answer_preview"] == "答案 C"
+
+
+def test_whole_document_preparation_cleans_embedded_next_section_heading(
+    tmp_path: Path,
+) -> None:
+    source_service = service(tmp_path)
+    record = asyncio.run(
+        source_service.stage_and_parse(
+            session_id=7,
+            filename="whole-document.docx",
+            chunks=chunks(_docx_bytes()),
+        )
+    )
+    dirty_blocks = copy.deepcopy(list(record.private_blocks))
+    dirty_blocks[0]["question_html"] = (
+        str(dirty_blocks[0].get("question_html") or "")
+        + "\n二、填空题（共5小题）"
+    )
+    legacy_record = replace(record, private_blocks=tuple(dirty_blocks))
+
+    prepared = source_service.prepare_generation_input(
+        legacy_record,
+        (),
+        "whole_document",
+    )
+
+    assert prepared.confirmed_blocks
+    assert "填空题" not in str(prepared.confirmed_blocks[0]["question_html"])
 
 
 def _docx_with_ambiguous_floating_image() -> bytes:

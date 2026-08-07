@@ -103,6 +103,8 @@ function shouldReplaceJob(
 export const useJobStore = defineStore('jobs', () => {
   const jobs = ref<Record<number, JobResponse>>({})
   const syncErrors = ref<Record<number, JobSyncError>>({})
+  const latestTrackedJobId = ref<number | null>(null)
+  const jobNoticeRevision = ref(0)
   const references = new Map<number, PersistedJobReference>()
   const timers = new Map<number, ReturnType<typeof setTimeout>>()
   const controllers = new Map<number, AbortController>()
@@ -239,13 +241,16 @@ export const useJobStore = defineStore('jobs', () => {
     configure(next)
     jobs.value[job.id] = job
     delete syncErrors.value[job.id]
-    if (!references.has(job.id)) {
+    const isNew = !references.has(job.id)
+    if (isNew) {
       references.set(job.id, {
         id: job.id,
         jobType: job.job_type,
         trackedAt: dependencies.now().toISOString(),
       })
       persistReferences()
+      latestTrackedJobId.value = job.id
+      jobNoticeRevision.value += 1
     }
     if (TERMINAL_JOB_STATUSES.has(job.status)) stopPolling(job.id)
     else schedulePolling(job.id)
@@ -302,6 +307,8 @@ export const useJobStore = defineStore('jobs', () => {
   return {
     jobs,
     syncErrors,
+    latestTrackedJobId,
+    jobNoticeRevision,
     initialize,
     track,
     refresh,

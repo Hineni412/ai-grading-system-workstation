@@ -423,7 +423,7 @@ def test_question_facets_do_not_expand_empty_taxonomy_filters_repeatedly(
     service, _, _ = question_bank_fixture
     governance = question_read_module.get_taxonomy_governance()
     original_expand = governance.expand_filter_values
-    original_snapshot = governance.snapshot
+    original_snapshot = governance.snapshot_and_identity_lookup
     expand_calls: list[tuple[str, tuple[object, ...]]] = []
     snapshot_calls = 0
 
@@ -434,13 +434,13 @@ def test_question_facets_do_not_expand_empty_taxonomy_filters_repeatedly(
         expand_calls.append((dimension, tuple(values)))
         return original_expand(dimension, values)
 
-    def counted_snapshot() -> dict[str, object]:
+    def counted_snapshot():
         nonlocal snapshot_calls
         snapshot_calls += 1
         return original_snapshot()
 
     monkeypatch.setattr(governance, "expand_filter_values", counted_expand)
-    monkeypatch.setattr(governance, "snapshot", counted_snapshot)
+    monkeypatch.setattr(governance, "snapshot_and_identity_lookup", counted_snapshot)
     monkeypatch.setattr(
         question_read_module,
         "get_taxonomy_governance",

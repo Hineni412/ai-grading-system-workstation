@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 
 import { useWorkspaceAITaskStore } from './store'
@@ -18,6 +18,9 @@ const store = useWorkspaceAITaskStore()
 const jobs = useJobStore()
 const router = useRouter()
 const open = ref(false)
+const peekOpen = ref(false)
+const peekTaskId = ref<string | null>(null)
+const peekJobId = ref<number | null>(null)
 const ordinaryJobs = computed(() => Object.values(jobs.jobs)
   .filter(job => !job.job_type.startsWith('workspace_ai.'))
   .sort((left, right) => Date.parse(right.updated_at) - Date.parse(left.updated_at)))
@@ -25,6 +28,22 @@ const totalCount = computed(() => store.orderedTasks.length + ordinaryJobs.value
 const activeCount = computed(() => store.activeCount + ordinaryJobs.value.filter(
   job => !TERMINAL_JOB_STATUSES.has(job.status),
 ).length)
+const peekTask = computed(() => peekTaskId.value ? store.tasks[peekTaskId.value] ?? null : null)
+const peekJob = computed(() => peekJobId.value ? jobs.jobs[peekJobId.value] ?? null : null)
+
+watch(() => store.taskNoticeRevision, () => {
+  if (!store.latestStartedTaskId) return
+  peekTaskId.value = store.latestStartedTaskId
+  peekJobId.value = null
+  peekOpen.value = true
+})
+
+watch(() => jobs.jobNoticeRevision, () => {
+  if (!jobs.latestTrackedJobId) return
+  peekJobId.value = jobs.latestTrackedJobId
+  peekTaskId.value = null
+  peekOpen.value = true
+})
 
 const jobTitles: Record<string, string> = {
   config_generation: '生成评分依据',
@@ -59,38 +78,65 @@ function jobLocation(job: JobResponse): string {
 
 async function returnToJob(job: JobResponse): Promise<void> {
   open.value = false
+  peekOpen.value = false
   await router.push(jobLocation(job))
 }
 
 async function returnToTask(task: WorkspaceAITask): Promise<void> {
   open.value = false
+  peekOpen.value = false
   await router.push(returnLocation(task))
+}
+
+function toggleDrawer(): void {
+  open.value = !open.value
+  if (open.value) peekOpen.value = false
 }
 </script>
 
 <template>
-  <button
-    v-if="totalCount > 0"
-    class="workspace-ai-drawer-toggle"
-    type="button"
-    :aria-expanded="open"
-    aria-controls="workspace-ai-task-drawer"
-    @click="open = !open"
-  >
-    任务中心<span v-if="activeCount">{{ activeCount }}</span>
-  </button>
+  <div class="workspace-ai-drawer-host">
+    <button
+      class="workspace-ai-drawer-toggle"
+      type="button"
+      :aria-expanded="open"
+      aria-controls="workspace-ai-task-drawer"
+      @click="toggleDrawer"
+    >
+      任务中心<span v-if="activeCount">{{ activeCount }}</span>
+    </button>
 
-  <aside
-    v-if="open"
-    id="workspace-ai-task-drawer"
-    class="workspace-ai-task-drawer"
-    aria-label="任务中心"
-  >
+    <aside v-if="peekOpen && (peekTask || peekJob)" class="workspace-ai-task-peek" aria-live="polite">
+      <header>
+        <strong>{{ peekTask?.safe_title ?? (peekJob ? jobTitle(peekJob) : '后台任务') }}</strong>
+        <button type="button" aria-label="缩到任务中心" @click="peekOpen = false">—</button>
+      </header>
+      <progress
+        :value="peekTask?.progress ?? peekJob?.progress ?? 0"
+        max="1"
+        aria-label="最新任务进度"
+      />
+      <p v-if="peekTask">{{ peekTask.teacher_message }}</p>
+      <p v-else-if="peekJob">{{ Math.round(peekJob.progress * 100) }}% · {{ jobStatus(peekJob) }}</p>
+      <footer>
+        <button v-if="peekTask" type="button" @click="returnToTask(peekTask)">返回相关页面</button>
+        <button v-else-if="peekJob" type="button" @click="returnToJob(peekJob)">返回相关页面</button>
+        <button type="button" @click="peekOpen = false">缩到任务中心</button>
+      </footer>
+    </aside>
+
+    <aside
+      v-if="open"
+      id="workspace-ai-task-drawer"
+      class="workspace-ai-task-drawer"
+      aria-label="任务中心"
+    >
     <header>
       <div><strong>任务中心</strong><span>汇总上传、批改、题库与教师工作台任务</span></div>
       <button type="button" aria-label="关闭任务中心" @click="open = false">×</button>
     </header>
-    <article v-for="task in store.orderedTasks" :key="task.task_id">
+      <p v-if="totalCount === 0" class="workspace-ai-task-drawer__empty">当前没有任务。新任务开始后会在这里持续显示进度。</p>
+      <article v-for="task in store.orderedTasks" :key="task.task_id">
       <div class="workspace-ai-task-drawer__heading">
         <strong>{{ task.safe_title }}</strong><span>{{ task.safe_source }}</span>
       </div>
@@ -115,8 +161,8 @@ async function returnToTask(task: WorkspaceAITask): Promise<void> {
         </button>
         <button v-else type="button" @click="store.remove(task.task_id)">从列表移除</button>
       </footer>
-    </article>
-    <article v-for="job in ordinaryJobs" :key="`job-${job.id}`">
+      </article>
+      <article v-for="job in ordinaryJobs" :key="`job-${job.id}`">
       <div class="workspace-ai-task-drawer__heading">
         <strong>{{ jobTitle(job) }}</strong><span>{{ jobStatus(job) }}</span>
       </div>
@@ -132,15 +178,17 @@ async function returnToTask(task: WorkspaceAITask): Promise<void> {
         >停止任务</button>
         <button v-else type="button" @click="jobs.remove(job.id)">从列表移除</button>
       </footer>
-    </article>
-  </aside>
+      </article>
+    </aside>
+  </div>
 </template>
 
 <style scoped>
-.workspace-ai-drawer-toggle{display:flex;align-items:center;gap:8px;min-height:38px;margin-left:auto;padding:0 13px;border:1px solid var(--color-accent);border-radius:999px;background:var(--color-accent);color:var(--color-bg-surface);font:inherit;font-weight:700;white-space:nowrap}
+.workspace-ai-drawer-host{position:relative;display:flex;justify-content:flex-end}.workspace-ai-drawer-toggle{display:flex;align-items:center;gap:8px;min-height:38px;padding:0 13px;border:1px solid var(--color-accent);border-radius:999px;background:var(--color-accent);color:var(--color-bg-surface);font:inherit;font-weight:700;white-space:nowrap}
 .workspace-ai-drawer-toggle span{display:grid;place-items:center;min-width:22px;height:22px;padding:0 6px;border-radius:999px;background:var(--color-bg-surface);color:var(--color-accent)}
-.workspace-ai-task-drawer{position:fixed;inset:0 0 0 auto;z-index:70;width:min(430px,100vw);overflow:auto;padding:20px;background:var(--color-bg-canvas);border-left:1px solid var(--color-border-default);box-shadow:var(--shadow-floating)}
-.workspace-ai-task-drawer>header{display:flex;justify-content:space-between;gap:16px;align-items:flex-start;position:sticky;top:-20px;z-index:1;padding:20px 0 14px;background:var(--color-bg-canvas)}
+.workspace-ai-task-peek{position:absolute;z-index:72;inset-block-start:calc(100% + 14px);inset-inline-end:0;display:grid;width:min(370px,calc(100vw - 24px));gap:10px;padding:16px;border:1px solid var(--color-border-default);border-inline-start:4px solid var(--color-accent);border-radius:var(--radius-panel);background:var(--color-bg-surface);box-shadow:var(--shadow-floating)}.workspace-ai-task-peek header,.workspace-ai-task-peek footer{display:flex;align-items:center;justify-content:space-between;gap:10px}.workspace-ai-task-peek header button{border:0;background:transparent;font-size:22px}.workspace-ai-task-peek progress{width:100%}.workspace-ai-task-peek p{margin:0;color:var(--color-text-secondary)}.workspace-ai-task-peek footer{justify-content:flex-start}.workspace-ai-task-peek footer button{min-height:34px;padding:0 10px;border:1px solid var(--color-border-default);border-radius:var(--radius-control);background:var(--color-bg-surface);font:inherit}
+.workspace-ai-task-drawer{position:fixed;inset:0 0 0 auto;z-index:70;width:min(430px,100vw);overflow:auto;padding:20px;background:var(--color-bg-app);border-left:1px solid var(--color-border-default);box-shadow:var(--shadow-floating)}
+.workspace-ai-task-drawer>header{display:flex;justify-content:space-between;gap:16px;align-items:flex-start;position:sticky;top:-20px;z-index:1;padding:20px 0 14px;background:var(--color-bg-app)}
 .workspace-ai-task-drawer>header div{display:grid;gap:4px}.workspace-ai-task-drawer>header span{color:var(--color-text-secondary);font-size:var(--font-size-dense)}
 .workspace-ai-task-drawer>header button{border:0;background:transparent;font-size:28px;line-height:1}
 .workspace-ai-task-drawer article{display:grid;gap:10px;margin:12px 0;padding:16px;border:1px solid var(--color-border-default);border-radius:var(--radius-panel);background:var(--color-bg-surface)}

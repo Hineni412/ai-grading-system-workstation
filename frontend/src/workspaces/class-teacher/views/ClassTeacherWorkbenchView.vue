@@ -101,7 +101,8 @@ function openDomain(domain: string): void {
         token=""
         :panel="routeState.panel"
         :status="null"
-        @navigate="(panel) => navigate({ surface: 'students', panel })"
+        :subject-id="routeState.subjectId"
+        @navigate="(panel, subjectId) => navigate({ surface: 'students', panel, subjectId })"
       />
     </template>
   </main>

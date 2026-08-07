@@ -72,6 +72,20 @@ export interface ExistingRosterStudent {
   student_revision: string
 }
 
+export interface StudentCardEntry {
+  entry_id: string
+  teacher_confirmed_at: string
+  portrait: { summary: string; strengths: string[]; needs: string[]; open_questions: string[] }
+  sop: { title: string; steps: string[]; review_date: string | null }
+}
+
+export interface StudentCard {
+  subject: DirectorySubject
+  entries: StudentCardEntry[]
+  existing_records: JsonRecord[]
+  support_plans: JsonRecord[]
+}
+
 export interface AcademicAnalysis {
   contract_version: string
   source_version: string
@@ -129,6 +143,11 @@ export const projectionR1Api = {
 }
 
 export const studentR1Api = {
+  studentCard(token: string, subjectId: string) {
+    return apiClient.request(`/api/class-teacher/support/subjects/${subjectId}/student-card`, {
+      headers: readHeaders(token), decode: value => record(value) as unknown as StudentCard,
+    })
+  },
   rosterSource(token: string, input: { q?: string; classLabel?: string; cursor?: string; pageSize?: number } = {}) {
     const query = new URLSearchParams()
     if (input.q) query.set('q', input.q)

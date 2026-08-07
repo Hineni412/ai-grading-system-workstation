@@ -123,6 +123,7 @@ baseline.value = draftSnapshot()
 
 const isNew = computed(() => draft.sourceName === null)
 const isDirty = computed(() => draftSnapshot() !== baseline.value)
+defineExpose({ hasUnsavedChanges: isDirty })
 const isBusy = computed(() => profilesStore.operationState !== 'idle')
 const isCurrent = computed(() => (
   draft.sourceName !== null

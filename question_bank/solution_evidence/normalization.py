@@ -482,18 +482,26 @@ def _collapse_single_choice(
 ) -> tuple[list[dict[str, Any]], list[str]]:
     if not parts:
         return [], []
-    canonical_answers = _unique_text(
-        [_text(part.get("canonical_answer")) for part in parts]
-    )
-    if len(canonical_answers) > 1:
+    submitted_choices = {
+        choice
+        for part in parts
+        if (choice := _choice_letter(part.get("canonical_answer")))
+    }
+    if len(submitted_choices) > 1:
         raise ValueError("single-choice parts contain conflicting canonical answers")
     primary_source = next(
         (
             part
             for part in parts
-            if _text(part.get("canonical_answer"))
+            if _choice_letter(part.get("canonical_answer"))
         ),
-        parts[0],
+        next(
+            (
+                part for part in parts
+                if _text(part.get("response_mode")) == "exact_objective"
+            ),
+            parts[0],
+        ),
     )
     explanations = _unique_text(
         [
@@ -503,6 +511,8 @@ def _collapse_single_choice(
         ]
     )
     primary = dict(primary_source)
+    if submitted_choices:
+        primary["canonical_answer"] = next(iter(submitted_choices))
     primary["full_answer"] = "；".join(explanations)
     collapsed = _collapse_objective_part(primary, notes=notes)
     auxiliary = [

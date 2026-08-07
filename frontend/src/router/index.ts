@@ -153,8 +153,10 @@ const routes: RouteRecordRaw[] = [
   },
   {
     path: modelProfilesRouteDefinition.path,
-    name: modelProfilesRouteDefinition.id,
-    component: () => import('../views/ModelProfilesView.vue'),
+    redirect: (to) => ({
+      path: settingsRouteDefinition.path,
+      query: { ...to.query, section: 'models' },
+    }),
     meta: {
       title: modelProfilesRouteDefinition.title,
       description: modelProfilesRouteDefinition.description,
@@ -164,7 +166,7 @@ const routes: RouteRecordRaw[] = [
   {
     path: settingsRouteDefinition.path,
     name: settingsRouteDefinition.id,
-    component: () => import('../views/SettingsOpsView.vue'),
+    component: () => import('../views/SettingsHubView.vue'),
     meta: {
       title: settingsRouteDefinition.title,
       description: settingsRouteDefinition.description,

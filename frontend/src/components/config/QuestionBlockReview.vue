@@ -249,7 +249,7 @@ watch(() => props.source.source_revision, (_revision, previous) => {
     <header class="config-section-heading">
       <div>
         <h2 id="question-review-title">核对拆题结果</h2>
-        <p>题目与完整答案并排呈现。黄色图片请拖到对应区域；只有题面和解析冲突时才需要老师确认题型。</p>
+        <p>题目与答案摘要并排呈现，完整解析可从右侧打开；只有题面和解析冲突时才需要确认题型。</p>
       </div>
       <span v-if="source.questions.length" class="question-review__count">
         共 {{ source.questions.length }} 题
@@ -286,7 +286,7 @@ watch(() => props.source.source_revision, (_revision, previous) => {
           <div class="question-review__toggle">
             <span :class="`is-${stateOf(question.question_id) || 'idle'}`" aria-hidden="true">●</span>
             <strong class="question-review__id">{{ question.question_id }}</strong>
-            <span>题目与完整答案</span>
+            <span>题目与答案摘要</span>
           </div>
           <span v-if="question.needs_review" class="question-review__warning">建议留意预览</span>
         </header>
@@ -348,10 +348,10 @@ watch(() => props.source.source_revision, (_revision, previous) => {
             @dragover.prevent
             @drop.prevent="dropCandidate(question.question_id, 'answer', $event)"
           >
-            <header><strong>完整答案</strong><span>{{ answerStatus(question) }}</span></header>
+            <header><strong>答案摘要</strong><span>{{ answerStatus(question) }}</span></header>
             <div class="question-review__answer-preview" :data-answer-content="question.question_id">
               <QuestionContentRenderer
-                :blocks="textBlocks(question, 'answer')"
+                :blocks="[]"
                 :fallback="question.answer_preview"
                 empty-label="答案内容暂未识别。"
                 media-mode="review"
@@ -543,6 +543,7 @@ watch(() => props.source.source_revision, (_revision, previous) => {
 
 .question-review__paper-panel {
   display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
   align-content: start;
   gap: var(--space-3);
   min-width: 0;
@@ -556,18 +557,9 @@ watch(() => props.source.source_revision, (_revision, previous) => {
 
 .question-review__answer-preview {
   position: relative;
-  max-height: 260px;
+  min-height: 0;
+  max-height: 7.2em;
   overflow: hidden;
-}
-
-.question-review__answer-preview::after {
-  position: absolute;
-  inset-inline: 0;
-  inset-block-end: 0;
-  height: 42px;
-  background: linear-gradient(transparent, #f8fbfb);
-  content: '';
-  pointer-events: none;
 }
 
 .question-review__answer-expand {

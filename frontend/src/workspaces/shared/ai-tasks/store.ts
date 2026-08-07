@@ -61,6 +61,8 @@ function shouldReplace(current: WorkspaceAITask | undefined, next: WorkspaceAITa
 export const useWorkspaceAITaskStore = defineStore('workspace-ai-tasks', () => {
   const tasks = ref<Record<string, WorkspaceAITask>>({})
   const syncErrors = ref<Record<string, string>>({})
+  const latestStartedTaskId = ref<string | null>(null)
+  const taskNoticeRevision = ref(0)
   const references = new Map<string, PersistedTaskReference>()
   const timers = new Map<string, ReturnType<typeof setTimeout>>()
   const generations = new Map<string, number>()
@@ -192,6 +194,8 @@ export const useWorkspaceAITaskStore = defineStore('workspace-ai-tasks', () => {
   async function dispatch(task: WorkspaceAITask): Promise<WorkspaceAITask> {
     const next = await dependencies.api.dispatch(task.operation_id, task.task_id)
     track(next)
+    latestStartedTaskId.value = next.task_id
+    taskNoticeRevision.value += 1
     return next
   }
 
@@ -265,6 +269,8 @@ export const useWorkspaceAITaskStore = defineStore('workspace-ai-tasks', () => {
     orderedTasks,
     activeCount,
     syncErrors,
+    latestStartedTaskId,
+    taskNoticeRevision,
     initialize,
     prepare,
     dispatch,
