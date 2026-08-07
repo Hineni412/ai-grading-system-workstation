@@ -23,10 +23,11 @@ export type ModelProfilesOperationState =
   | 'idle'
   | 'saving'
   | 'activating'
+  | 'deleting'
 
 function friendlyModelProfileError(
   error: unknown,
-  action: 'load' | 'save' | 'activate',
+  action: 'load' | 'save' | 'activate' | 'delete',
 ): string {
   if (error instanceof ModelProfileInputError) return error.message
   if (error instanceof ApiError) {
@@ -50,7 +51,9 @@ function friendlyModelProfileError(
       }
       return action === 'save'
         ? '保存结果暂时无法确认。页面没有调用模型，也不会产生费用；请重新加载后核对。'
-        : '切换结果暂时无法确认。页面没有调用模型；请重新加载后核对当前标记。'
+        : action === 'delete'
+          ? '删除结果暂时无法确认。请重新加载配置列表后核对。'
+          : '切换结果暂时无法确认。页面没有调用模型；请重新加载后核对当前标记。'
     }
   }
   if (action === 'load') {
@@ -58,7 +61,9 @@ function friendlyModelProfileError(
   }
   return action === 'save'
     ? '配置没有保存完成，原配置保持不变。'
-    : '当前配置没有切换完成，请稍后重试。'
+    : action === 'delete'
+      ? '配置没有删除完成，请重新加载后核对。'
+      : '当前配置没有切换完成，请稍后重试。'
 }
 
 export const useModelProfilesStore = defineStore('model-profiles', () => {
@@ -198,6 +203,30 @@ export const useModelProfilesStore = defineStore('model-profiles', () => {
     }
   }
 
+  async function deleteProfile(
+    name: string,
+    api: ModelProfilesApi = modelProfilesApi,
+  ): Promise<boolean> {
+    if (
+      operationState.value !== 'idle'
+      || !profiles.value.some((profile) => profile.name === name)
+    ) return false
+    operationState.value = 'deleting'
+    errorMessage.value = ''
+    noticeMessage.value = ''
+    try {
+      const state = await api.deleteProfile(name)
+      applyState(state)
+      noticeMessage.value = `已删除“${name}”。这项操作没有调用模型，也不会产生费用。`
+      return true
+    } catch (error) {
+      errorMessage.value = friendlyModelProfileError(error, 'delete')
+      return false
+    } finally {
+      operationState.value = 'idle'
+    }
+  }
+
   async function saveTaskBindings(
     bindings: ModelTaskBindings,
     api: ModelProfilesApi = modelProfilesApi,
@@ -238,6 +267,7 @@ export const useModelProfilesStore = defineStore('model-profiles', () => {
     selectProfile,
     saveProfile,
     activateProfile,
+    deleteProfile,
     saveTaskBindings,
     clearMessages,
   }

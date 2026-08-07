@@ -123,6 +123,11 @@ export function decodeWorkspaceAITask(value: unknown): WorkspaceAITask {
   return value as unknown as WorkspaceAITask
 }
 
+export function decodeWorkspaceAITaskList(value: unknown): WorkspaceAITask[] {
+  if (!Array.isArray(value)) throw new Error('Invalid workspace AI task list')
+  return value.map(decodeWorkspaceAITask)
+}
+
 export const TERMINAL_WORKSPACE_AI_TASK_STATUSES = new Set<WorkspaceAITaskStatus>([
   'needs_input',
   'proposal_ready',

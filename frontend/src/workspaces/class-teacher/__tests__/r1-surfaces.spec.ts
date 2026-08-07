@@ -107,14 +107,29 @@ describe('B UI R1 surfaces', () => {
   it('directory calls only the lightweight directory interface before selection', async () => {
     vi.spyOn(intakeApi, 'homeroom').mockResolvedValue({ homeroom_class:'一班', revision:1, classes:['一班'], source_revision:'r'.repeat(64) })
     const directory = vi.spyOn(studentR1Api, 'directory').mockResolvedValue({ items:[{ subject_id:'s1', display_name:'合成学生', source_student_id:'S001', class_label:'一班', support_record_count:3, support_plan_count:1, confirmed_entry_count:2, projection_state:'applied', attention_pending_count:0, last_confirmed_at:'2026-08-01' }], cursor:null, total:1, page_size:20 })
-    vi.spyOn(studentR1Api, 'rosterSource').mockResolvedValue({ items:[], classes:['一班'], source_revision:'r1', total:0, cursor:null })
+    const rosterSource = vi.spyOn(studentR1Api, 'rosterSource').mockResolvedValue({ items:[{ source_key:'student:S001', student_code:'S001', display_name:'合成学生', class_label:'一班', subject_id:'s1', roster_state:'active', opaque_ref:'ref', student_revision:'r1' }], classes:['一班'], source_revision:'r1', total:1, cursor:null })
     const records = vi.spyOn(studentR1Api, 'records')
     const host = await mount(StudentDirectoryPanel, { token:'synthetic-token' })
     expect(host.textContent).toContain('点击卡片查看结构化概览')
     expect(host.textContent).toContain('合成学生')
     expect(host.textContent).toContain('一班')
     expect(directory).toHaveBeenCalledExactlyOnceWith('synthetic-token', expect.objectContaining({ classLabel:'一班', state:'active' }))
+    expect(rosterSource).toHaveBeenCalledExactlyOnceWith('synthetic-token', { classLabel:'一班', pageSize:100 })
     expect(records).not.toHaveBeenCalled()
+  })
+
+  it('shows roster students without confirmed records and never invents an AI overview', async () => {
+    vi.spyOn(intakeApi, 'homeroom').mockResolvedValue({ homeroom_class:'一班', revision:1, classes:['一班'], source_revision:'r'.repeat(64) })
+    vi.spyOn(studentR1Api, 'directory').mockResolvedValue({ items:[], cursor:null, total:0, page_size:100 })
+    vi.spyOn(studentR1Api, 'rosterSource').mockResolvedValue({ items:[{ source_key:'student:S002', student_code:'S002', display_name:'待整理学生', class_label:'一班', subject_id:null, roster_state:'available', opaque_ref:'ref', student_revision:'r1' }], classes:['一班'], source_revision:'r1', total:1, cursor:null })
+    const card = vi.spyOn(studentR1Api, 'studentCard')
+    const host = await mount(StudentDirectoryPanel, { token:'synthetic-token' })
+
+    clickByText(host, '待整理学生'); await nextTick()
+
+    expect(host.textContent).toContain('当前没有教师确认记录')
+    expect(host.textContent).toContain('不会虚构或自动生成 AI')
+    expect(card).not.toHaveBeenCalled()
   })
 
   it('opens an existing teacher-confirmed AI structure without starting a new AI task', async () => {

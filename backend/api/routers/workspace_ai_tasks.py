@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends
+from typing import Literal
+
+from fastapi import APIRouter, Depends, Query
 
 from backend.api.app import ApiError
 from backend.api.dependencies import get_workspace_ai_task_service
@@ -101,6 +103,18 @@ def dispatch_task(
         raise AssertionError("unreachable")
 
 
+@router.get("", response_model=list[WorkspaceAITaskResponse])
+def list_tasks(
+    module: Literal["teaching_prep", "class_teacher"] = Query(),
+    service: WorkspaceAITaskService = Depends(get_workspace_ai_task_service),
+) -> list[WorkspaceAITaskResponse]:
+    try:
+        return [_response(task) for task in service.list_module_tasks(module)]
+    except Exception as error:
+        _raise_public(error)
+        raise AssertionError("unreachable")
+
+
 @router.get("/{task_id}", response_model=WorkspaceAITaskResponse)
 def get_task(
     task_id: str,
@@ -132,6 +146,18 @@ def cancel_task(
 ) -> WorkspaceAITaskResponse:
     try:
         return _response(service.cancel(operation_id))
+    except Exception as error:
+        _raise_public(error)
+        raise AssertionError("unreachable")
+
+
+@router.post("/operations/{operation_id}/discard", response_model=WorkspaceAITaskResponse)
+def discard_result_unknown_task(
+    operation_id: str,
+    service: WorkspaceAITaskService = Depends(get_workspace_ai_task_service),
+) -> WorkspaceAITaskResponse:
+    try:
+        return _response(service.discard_result_unknown(operation_id))
     except Exception as error:
         _raise_public(error)
         raise AssertionError("unreachable")

@@ -4,7 +4,11 @@ import pytest
 
 from api_profiles import ApiProfileStore
 from backend.llm.execution import LLMExecutionGovernorRegistry
-from backend.model_profiles import ModelProfileInvalid, ModelProfileService
+from backend.model_profiles import (
+    ModelProfileInvalid,
+    ModelProfileNotFound,
+    ModelProfileService,
+)
 
 
 def test_model_profile_publishes_safe_default_request_speed_settings(
@@ -92,6 +96,37 @@ def test_four_work_types_can_use_different_saved_api_sites(tmp_path) -> None:
     assert content["config_base_url"] == "https://a.test/v1"
     assert content["config_api_key"] == "key-a"
     assert content["config_model"] == "content-a"
+
+
+def test_delete_profile_removes_its_saved_task_bindings(tmp_path) -> None:
+    store = ApiProfileStore(tmp_path / "profiles.json")
+    service = ModelProfileService(store)
+    service.upsert("站点甲", {
+        "api_key": "key-a", "base_url": "https://a.test/v1",
+        "grading_model": "model-a",
+    })
+    service.upsert("站点乙", {
+        "api_key": "key-b", "base_url": "https://b.test/v1",
+        "grading_model": "model-b",
+    })
+    service.update_task_bindings({
+        "content_generation": {"profile_name": "站点甲", "model": "content-a"},
+        "grading": {"profile_name": "站点乙", "model": "grading-b"},
+        "teaching_prep": {"profile_name": "站点甲", "model": "prep-a"},
+        "class_teacher": {"profile_name": "站点乙", "model": "teacher-b"},
+    })
+
+    state = service.delete("站点甲")
+
+    assert [profile["name"] for profile in state["profiles"]] == ["站点乙"]
+    assert state["task_bindings"]["grading"]["model"] == "grading-b"
+    assert state["task_bindings"]["teaching_prep"] == {
+        "profile_name": "站点乙",
+        "model": "model-b",
+    }
+    assert "teaching_prep" not in store.load_task_bindings()
+    with pytest.raises(ModelProfileNotFound):
+        service.delete("站点甲")
 
 
 def test_model_profile_reports_shared_runtime_execution_status(tmp_path) -> None:

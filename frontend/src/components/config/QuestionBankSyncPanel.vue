@@ -2,7 +2,7 @@
 import { computed, onMounted, ref, watch } from 'vue'
 
 import { createClientRequestToken } from '../../api/config-workspace'
-import type { JobResponse } from '../../api/jobs'
+import { findLatestJob, type JobResponse } from '../../api/jobs'
 import {
   retrySessionQuestionBankSync,
   submitSessionQuestionBankSync,
@@ -31,11 +31,16 @@ const props = withDefaults(defineProps<{
     request: SessionQuestionBankSyncRequest,
   ) => Promise<JobResponse>
   curriculumLoader?: () => Promise<CurriculumCatalog>
+  latestJobLoader?: (sessionId: number) => Promise<JobResponse | null>
 }>(), {
   autoStart: false,
   submitter: submitSessionQuestionBankSync,
   retryer: retrySessionQuestionBankSync,
   curriculumLoader: () => questionBankApi.getCurriculum(),
+  latestJobLoader: (sessionId: number) => findLatestJob(
+    sessionId,
+    'question_bank_sync',
+  ),
 })
 
 const emit = defineEmits<{
@@ -51,6 +56,7 @@ const curriculum = ref<CurriculumCatalog | null>(null)
 const selectedVolumeId = ref('')
 const metadataPanelOpen = ref(false)
 const curriculumLoading = ref(true)
+const restoringJob = ref(true)
 const deferredByTeacher = ref(false)
 let autoAttempted = false
 
@@ -88,8 +94,33 @@ onMounted(async () => {
   } finally {
     curriculumLoading.value = false
   }
+  await restoreLatestJob()
   await attemptAutoStart(props.autoStart)
 })
+
+async function restoreLatestJob(): Promise<void> {
+  if (latestTrackedJob.value !== null) {
+    activeJobId.value = latestTrackedJob.value.id
+    restoringJob.value = false
+    return
+  }
+  try {
+    const restored = await props.latestJobLoader(props.sessionId)
+    if (
+      restored !== null
+      && restored.job_type === 'question_bank_sync'
+      && restored.payload.session_id === props.sessionId
+      && restored.payload.config_revision === props.configRevision
+    ) {
+      jobStore.track(restored)
+      activeJobId.value = restored.id
+    }
+  } catch {
+    requestError.value = '已保存的题库任务暂时无法读取；当前不会重复入库或调用模型。'
+  } finally {
+    restoringJob.value = false
+  }
+}
 
 function safeCount(value: unknown): number {
   return Number.isSafeInteger(value) && Number(value) >= 0 ? Number(value) : 0
@@ -121,6 +152,23 @@ function statusCopy(current: JobResponse): string {
   }
   if (outcome.value === 'partial') return '已部分入库，仍有标签或训练判定点需要处理'
   return '题库流程未完成'
+}
+
+function failureCopy(current: JobResponse): string {
+  if (current.status !== 'failed') return ''
+  if (current.stage === 'question_bank_import') {
+    if (current.error?.includes('local_source_file_missing')) {
+      return '本地拆题入库时找不到来源文件或配套图片。尚未调用模型，因此模型记录中不会出现请求。'
+    }
+    if (current.error?.includes('local_storage_permission_denied')) {
+      return '本地题库目录没有写入权限。尚未调用模型，因此模型记录中不会出现请求。'
+    }
+    return '失败发生在本地拆题入库阶段，尚未调用模型，因此模型记录中不会出现请求。'
+  }
+  if (current.stage === 'question_bank_tagging') {
+    return '本地入库已完成，失败发生在 AI 标签阶段；可在设置中心的调用记录中继续核对。'
+  }
+  return '题库流程未完成；评分标准仍然保留。'
 }
 
 async function start(): Promise<boolean> {
@@ -202,25 +250,25 @@ watch(
         <p>这是评分标准之后的独立流程；失败不会撤销评分标准，也不会重新生成评分标准。</p>
       </div>
       <button
-        v-if="job === null"
+        v-if="job === null && !restoringJob"
         type="button"
         :disabled="submitting"
         @click="start"
       >{{ submitting ? '正在提交…' : '将试卷入库并打标签' }}</button>
     </div>
 
-    <p v-if="job === null" class="question-bank-sync__cost">
+    <p v-if="job === null && !restoringJob" class="question-bank-sync__cost">
       默认不自动执行。开始后会调用 AI 模型打标签，可能产生模型费用；新造标签会进入人工审核，不会直接污染正式词表。
     </p>
 
-    <div v-if="job === null && selectedVolume && !metadataPanelOpen && !deferredByTeacher" class="question-bank-sync__volume">
+    <div v-if="job === null && !restoringJob && selectedVolume && !metadataPanelOpen && !deferredByTeacher" class="question-bank-sync__volume">
       <span>教材范围：<strong>{{ selectedVolume.label }}</strong> · 标签模型只会看到本册章节和小节</span>
       <button type="button" class="question-bank-sync__link" @click="metadataPanelOpen = true">
         修改
       </button>
     </div>
 
-    <div v-if="job === null && metadataPanelOpen" class="question-bank-sync__metadata" role="group" aria-labelledby="question-bank-volume-title">
+    <div v-if="job === null && !restoringJob && metadataPanelOpen" class="question-bank-sync__metadata" role="group" aria-labelledby="question-bank-volume-title">
       <div>
         <strong id="question-bank-volume-title">入库前确认教材册别</strong>
         <p>文件标题无法可靠判断时，请老师补选。确认后，AI 只能从该册章节和小节中选择标签。</p>
@@ -243,7 +291,7 @@ watch(
         </button>
       </div>
     </div>
-    <p v-else-if="job === null && deferredByTeacher" class="question-bank-sync__deferred">
+    <p v-else-if="job === null && !restoringJob && deferredByTeacher" class="question-bank-sync__deferred">
       已暂缓入库；评分标准不受影响。需要时可在这里重新确认教材册别。
       <button type="button" class="question-bank-sync__link" @click="metadataPanelOpen = true">现在确认</button>
     </p>
@@ -268,6 +316,13 @@ watch(
         <template v-if="reviewRefs(job.result.taxonomy_review_source_refs)">
           · 待处理：{{ reviewRefs(job.result.taxonomy_review_source_refs) }}
         </template>
+      </p>
+      <p
+        v-if="job.status === 'failed'"
+        class="question-bank-sync__error"
+        role="alert"
+      >
+        {{ failureCopy(job) }}
       </p>
       <p
         v-if="terminal && job.result.restore_required === true"
