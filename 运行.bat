@@ -10,6 +10,19 @@ if not exist "%PYTHON_EXE%" goto missing_runtime
 set "PROJECT_RUNNER=%~dp0tools\run_project_module.py"
 if not exist "%PROJECT_RUNNER%" goto missing_runner
 
+set "FRONTEND_DIR=%~dp0frontend"
+if not exist "%FRONTEND_DIR%\package.json" goto missing_frontend_source
+where npm.cmd >nul 2>nul
+if errorlevel 1 goto missing_frontend_runtime
+
+echo Building the latest frontend...
+pushd "%FRONTEND_DIR%"
+call npm.cmd run build
+set "FRONTEND_BUILD_EXIT=%ERRORLEVEL%"
+popd
+if not "%FRONTEND_BUILD_EXIT%"=="0" goto frontend_build_error
+echo Frontend build completed.
+
 if "%API_PORT%"=="" set "API_PORT=8035"
 if "%AI_GRADING_WORKTREE_DATA_DIR%"=="" set "AI_GRADING_WORKTREE_DATA_DIR=%~dp0user_data"
 if "%AI_GRADING_DATA_DIR%"=="" set "AI_GRADING_DATA_DIR=%AI_GRADING_WORKTREE_DATA_DIR%"
@@ -48,6 +61,22 @@ goto failed
 :missing_runner
 echo The project launcher was not found.
 echo Missing file: %PROJECT_RUNNER%
+goto failed
+
+:missing_frontend_source
+echo The frontend source directory is missing or incomplete.
+echo Missing file: %FRONTEND_DIR%\package.json
+goto failed
+
+:missing_frontend_runtime
+echo Node.js and npm were not found.
+echo Install the required Node.js version, then run this file again.
+goto failed
+
+:frontend_build_error
+echo The latest frontend could not be built.
+echo IMPORTANT: This launch did NOT start the service or open the old page.
+echo Fix the frontend build error shown above, then run this file again.
 goto failed
 
 :taxonomy_storage_error

@@ -1496,6 +1496,7 @@ function questionListPath(filters: QuestionBankFilters): string {
   const parameters = new URLSearchParams({
     page: String(page),
     page_size: String(pageSize),
+    compact: 'true',
   })
   const textFilters: Array<[string, string | undefined]> = [
     ['question_number', filters.questionNumber],
@@ -1546,6 +1547,7 @@ function questionFacetPath(filters: QuestionBankFilters): string {
   parameters.delete('page')
   parameters.delete('page_size')
   parameters.delete('sort')
+  parameters.delete('compact')
   return `/api/question-bank/facets?${parameters.toString()}`
 }
 
@@ -1631,8 +1633,12 @@ export function questionJobRetryIds(job: JobResponse): number[] {
 }
 
 export const questionBankApi = {
-  getCurriculum(signal?: AbortSignal): Promise<CurriculumCatalog> {
-    return apiClient.request('/api/question-bank/curriculum', {
+  getCurriculum(
+    signal?: AbortSignal,
+    includeKnowledgePoints = true,
+  ): Promise<CurriculumCatalog> {
+    const query = includeKnowledgePoints ? '' : '?include_knowledge_points=false'
+    return apiClient.request(`/api/question-bank/curriculum${query}`, {
       decode: decodeCurriculumCatalog,
       signal,
     })

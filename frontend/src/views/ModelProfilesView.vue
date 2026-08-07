@@ -25,7 +25,11 @@ import {
   type RequestSpeedMode,
 } from '../api/model-profiles'
 import { useModelProfilesStore } from '../stores/model-profiles'
+import { workspaceAITaskApi } from '../workspaces/shared/ai-tasks/api'
+import type { WorkspaceAITask } from '../workspaces/shared/ai-tasks/contracts'
 import '../styles/model-profiles.css'
+
+const props = withDefaults(defineProps<{ compact?: boolean }>(), { compact: false })
 
 interface ModelProfileDraft {
   sourceName: string | null
@@ -56,6 +60,9 @@ const baseline = ref('')
 const diagnostics = ref<AiDiagnosticSummary[]>([])
 const diagnosticsState = ref<'idle' | 'loading' | 'error'>('idle')
 const diagnosticsError = ref('')
+const workspaceTaskRecords = ref<WorkspaceAITask[]>([])
+const workspaceTaskRecordsState = ref<'idle' | 'loading' | 'error'>('idle')
+const workspaceTaskRecordsError = ref('')
 const diagnosticOutcome = ref<'' | AiDiagnosticOutcome>('')
 const diagnosticKind = ref('')
 const selectedDiagnosticId = ref('')
@@ -80,6 +87,7 @@ const taskRows = [
 let diagnosticsController: AbortController | null = null
 let diagnosticDetailController: AbortController | null = null
 let executionStatusController: AbortController | null = null
+let workspaceTaskRecordsController: AbortController | null = null
 
 const draft = reactive<ModelProfileDraft>({
   sourceName: null,
@@ -143,13 +151,6 @@ const editStatus = computed(() => {
   }
   return isDirty.value ? '有未保存修改' : '已与本机保存内容同步'
 })
-const hasAdvancedConfiguration = computed(() => (
-  draft.configBaseUrl !== ''
-  || draft.configModel !== ''
-  || draft.teachingPrepModel !== ''
-  || draft.classTeacherModel !== ''
-  || draft.hasConfigApiKey
-))
 const requestSpeedSummary = computed(() => {
   if (draft.requestSpeedMode === 'conservative') {
     return '同时处理 1 个请求，每分钟最多启动 60 个请求。'
@@ -352,6 +353,18 @@ async function activateProfile(): Promise<void> {
   void loadExecutionStatus(draft.sourceName)
 }
 
+async function deleteProfile(): Promise<void> {
+  if (draft.sourceName === null || isBusy.value) return
+  const name = draft.sourceName
+  if (!window.confirm(
+    `确定永久删除模型配置“${name}”吗？\n\n使用它的工作模型安排会自动改用剩余的当前配置；如果没有其他配置，对应 AI 功能会暂时不可用。`,
+  )) return
+  const deleted = await profilesStore.deleteProfile(name)
+  if (!deleted) return
+  syncFromSelection()
+  void loadExecutionStatus()
+}
+
 async function reloadProfiles(): Promise<void> {
   if (
     !confirmDiscard('重新加载会丢弃当前未保存修改，是否继续？')
@@ -490,11 +503,59 @@ async function loadDiagnostics(): Promise<void> {
   }
 }
 
+async function loadWorkspaceTaskRecords(): Promise<void> {
+  workspaceTaskRecordsController?.abort()
+  const controller = new AbortController()
+  workspaceTaskRecordsController = controller
+  workspaceTaskRecordsState.value = 'loading'
+  workspaceTaskRecordsError.value = ''
+  try {
+    const [teachingPrep, classTeacher] = await Promise.all([
+      workspaceAITaskApi.list('teaching_prep', controller.signal),
+      workspaceAITaskApi.list('class_teacher', controller.signal),
+    ])
+    if (controller.signal.aborted) return
+    workspaceTaskRecords.value = [...teachingPrep, ...classTeacher]
+      .sort((left, right) => Date.parse(right.updated_at) - Date.parse(left.updated_at))
+      .slice(0, 20)
+    workspaceTaskRecordsState.value = 'idle'
+  } catch (error) {
+    if (controller.signal.aborted) return
+    workspaceTaskRecordsState.value = 'error'
+    workspaceTaskRecordsError.value = error instanceof Error
+      ? error.message
+      : '工作台 AI 任务记录没有加载成功。'
+  }
+}
+
+function workspaceTaskStatus(task: WorkspaceAITask): string {
+  if (task.status === 'proposal_ready') return '已返回可审核结果'
+  if (task.status === 'needs_input') return '等待补充信息'
+  if (task.status === 'prepared') return '尚未发送'
+  if (task.status === 'queued') return '等待发送'
+  if (task.status === 'running') return '处理中'
+  if (task.status === 'result_unknown') return '已尝试发送，结果无法确认'
+  if (task.status.startsWith('failed') || task.status === 'invalid_result') return '失败'
+  if (task.status.includes('cancel') || task.status === 'discarded') return '已取消'
+  return task.status
+}
+
+function workspaceDispatchCopy(task: WorkspaceAITask): string {
+  if (task.dispatch_evidence === 'response_persisted') return '已收到并保存响应'
+  if (task.dispatch_evidence === 'may_have_started') return '请求可能已发出'
+  return '尚无发送证据'
+}
+
 function handleDiagnosticsToggle(event: Event): void {
   const disclosure = event.currentTarget as HTMLDetailsElement
   if (disclosure.open && diagnosticsState.value === 'idle' && diagnostics.value.length === 0) {
     void loadDiagnostics()
   }
+  if (
+    disclosure.open
+    && workspaceTaskRecordsState.value === 'idle'
+    && workspaceTaskRecords.value.length === 0
+  ) void loadWorkspaceTaskRecords()
 }
 
 onMounted(async () => {
@@ -511,12 +572,13 @@ onBeforeUnmount(() => {
   diagnosticsController?.abort()
   diagnosticDetailController?.abort()
   executionStatusController?.abort()
+  workspaceTaskRecordsController?.abort()
 })
 </script>
 
 <template>
   <article class="model-profiles-view">
-    <header class="model-profiles-view__header">
+    <header v-if="!props.compact" class="model-profiles-view__header">
       <div>
         <p class="model-profiles-view__eyebrow">LOCAL MODEL ROUTING</p>
         <h1 tabindex="-1">API 站点与工作模型</h1>
@@ -531,7 +593,7 @@ onBeforeUnmount(() => {
       </div>
     </header>
 
-    <section class="model-profiles-notice" aria-label="费用与密钥说明">
+    <section v-if="!props.compact" class="model-profiles-notice" aria-label="费用与密钥说明">
       <p>
         <strong>保存配置不会调用模型，不会产生费用。</strong>
         只有之后真正执行识别、批改或标注任务时，才可能产生模型费用。
@@ -622,7 +684,9 @@ onBeforeUnmount(() => {
       </button>
     </section>
 
-    <div v-else class="model-profiles-workspace">
+    <details v-else class="model-profiles-advanced-shell" :open="!props.compact">
+      <summary>高级设置：API 站点、密钥与请求速度</summary>
+      <div class="model-profiles-workspace">
       <aside class="model-profiles-index" aria-label="API 站点列表">
         <header>
           <div>
@@ -750,36 +814,6 @@ onBeforeUnmount(() => {
             </small>
           </label>
 
-          <details class="model-profile-legacy model-profile-field--wide">
-            <summary>旧版配置兼容（通常不用填写）</summary>
-            <div class="model-profile-fields">
-          <label class="model-profile-field">
-            <span>旧任务的姓名识别模型</span>
-            <input
-              v-model="draft.ocrModel"
-              name="ocr-model"
-              type="text"
-              autocomplete="off"
-              :maxlength="MODEL_PROFILE_LIMITS.model"
-              placeholder="新安排请在上方“工作模型”填写"
-              :disabled="isBusy"
-            >
-          </label>
-
-          <label class="model-profile-field">
-            <span>旧任务的批改模型</span>
-            <input
-              v-model="draft.gradingModel"
-              name="grading-model"
-              type="text"
-              autocomplete="off"
-              :maxlength="MODEL_PROFILE_LIMITS.model"
-              placeholder="新安排请在上方“工作模型”填写"
-              :disabled="isBusy"
-            >
-          </label>
-            </div>
-          </details>
         </div>
 
         <fieldset class="model-profile-execution">
@@ -942,96 +976,23 @@ onBeforeUnmount(() => {
           </p>
         </fieldset>
 
-        <details
-          class="model-profile-advanced"
-          :open="hasAdvancedConfiguration"
-        >
-          <summary>
-            <span>
-              <strong>考试配置与题库标注</strong>
-              <small>高级配置，可与主批改服务分开</small>
-            </span>
-          </summary>
-          <div class="model-profile-fields model-profile-advanced__fields">
-            <label class="model-profile-field model-profile-field--wide">
-              <span>API 地址</span>
-              <input
-                v-model="draft.configBaseUrl"
-                name="config-base-url"
-                type="url"
-                inputmode="url"
-                autocomplete="off"
-                :maxlength="MODEL_PROFILE_LIMITS.url"
-                placeholder="留空时使用系统默认安排"
-                :disabled="isBusy"
-              >
-            </label>
-
-            <label class="model-profile-field model-profile-field--wide">
-              <span>API 密钥</span>
-              <input
-                v-model="draft.configApiKey"
-                name="config-api-key"
-                type="password"
-                autocomplete="new-password"
-                :maxlength="MODEL_PROFILE_LIMITS.apiKey"
-                :placeholder="draft.hasConfigApiKey ? '已保存；留空保持不变' : '可选'"
-                :disabled="isBusy"
-              >
-              <small>
-                {{ draft.hasConfigApiKey
-                  ? '高级配置密钥已保存；页面无法读回。'
-                  : '如不填写，将不新增或替换高级配置密钥。' }}
-              </small>
-            </label>
-
-            <label class="model-profile-field model-profile-field--wide">
-              <span>模型</span>
-              <input
-                v-model="draft.configModel"
-                name="config-model"
-                type="text"
-                autocomplete="off"
-                :maxlength="MODEL_PROFILE_LIMITS.model"
-                placeholder="用于考试配置与题库标注的模型"
-                :disabled="isBusy"
-              >
-            </label>
-
-            <label class="model-profile-field">
-              <span>备课工作台模型</span>
-              <input
-                v-model="draft.teachingPrepModel"
-                name="teaching-prep-model"
-                type="text"
-                autocomplete="off"
-                :maxlength="MODEL_PROFILE_LIMITS.model"
-                placeholder="留空时沿用上方模型"
-                :disabled="isBusy"
-              >
-            </label>
-
-            <label class="model-profile-field">
-              <span>班主任工作台模型</span>
-              <input
-                v-model="draft.classTeacherModel"
-                name="class-teacher-model"
-                type="text"
-                autocomplete="off"
-                :maxlength="MODEL_PROFILE_LIMITS.model"
-                placeholder="留空时沿用上方模型"
-                :disabled="isBusy"
-              >
-            </label>
-          </div>
-        </details>
-
         <footer class="model-profile-editor__actions">
           <div>
             <strong>{{ editStatus }}</strong>
             <span>保存和切换都只修改本机设置，不会测试连接。</span>
           </div>
           <div class="model-profile-editor__buttons">
+            <button
+              v-if="!isNew"
+              type="button"
+              class="model-profiles-button model-profiles-button--danger"
+              :disabled="isBusy"
+              @click="deleteProfile"
+            >
+              {{ profilesStore.operationState === 'deleting'
+                ? '正在删除…'
+                : '删除配置' }}
+            </button>
             <button
               type="button"
               class="model-profiles-button model-profiles-button--secondary"
@@ -1054,7 +1015,8 @@ onBeforeUnmount(() => {
           </div>
         </footer>
       </form>
-    </div>
+      </div>
+    </details>
 
     <details class="ai-diagnostics-disclosure" @toggle="handleDiagnosticsToggle">
       <summary>调用记录与排查工具（需要时展开）</summary>
@@ -1110,6 +1072,44 @@ onBeforeUnmount(() => {
         不会纳入代码提交；单个文件约 32 MB 时滚动，保留当前文件和最近 3 个旧文件。
         密钥和本机文件路径不会写入。
       </p>
+
+      <section class="workspace-ai-records" aria-labelledby="workspace-ai-records-title">
+        <header>
+          <div>
+            <strong id="workspace-ai-records-title">工作台 AI 任务记录</strong>
+            <span>备课与班主任工作台只保留安全元数据，不保存发送正文和模型原文。</span>
+          </div>
+          <button
+            type="button"
+            class="model-profiles-button model-profiles-button--quiet"
+            :disabled="workspaceTaskRecordsState === 'loading'"
+            @click="loadWorkspaceTaskRecords"
+          >
+            {{ workspaceTaskRecordsState === 'loading' ? '正在刷新…' : '刷新工作台记录' }}
+          </button>
+        </header>
+        <p v-if="workspaceTaskRecordsState === 'error'" class="workspace-ai-records__state is-error">
+          {{ workspaceTaskRecordsError }}
+        </p>
+        <p v-else-if="workspaceTaskRecordsState === 'loading' && workspaceTaskRecords.length === 0" class="workspace-ai-records__state">
+          正在读取工作台任务…
+        </p>
+        <p v-else-if="workspaceTaskRecords.length === 0" class="workspace-ai-records__state">
+          还没有工作台 AI 任务记录。
+        </p>
+        <ul v-else>
+          <li v-for="task in workspaceTaskRecords" :key="task.task_id">
+            <div>
+              <strong>{{ task.safe_title }}</strong>
+              <span>{{ task.module === 'teaching_prep' ? '备课工作台' : '班主任工作台' }} · {{ formatDiagnosticTime(task.updated_at) }}</span>
+            </div>
+            <div class="workspace-ai-records__result">
+              <strong>{{ workspaceTaskStatus(task) }}</strong>
+              <span>{{ workspaceDispatchCopy(task) }}<template v-if="task.error_code"> · {{ task.error_code }}</template></span>
+            </div>
+          </li>
+        </ul>
+      </section>
 
       <p
         v-if="diagnosticsState === 'error'"

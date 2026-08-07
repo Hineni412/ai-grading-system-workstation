@@ -752,6 +752,125 @@ def test_tag_retry_skips_import_and_failure_stays_in_the_sync_state(
     assert db.get_grading_session(session_id)["rubric_path"]
 
 
+def test_tag_retry_preserves_parent_links_and_reports_whole_paper(
+    tmp_path: Path,
+) -> None:
+    db, session_id, _source, source_sha256, revision = _configured_session(
+        tmp_path
+    )
+    question_bank_db = tmp_path / "data" / "databases" / "question_bank.db"
+    initialize_database(question_bank_db)
+    with connect(question_bank_db) as conn:
+        conn.execute(
+            """
+            INSERT INTO questions (
+                id, question_number, question_type, question_text, answer_text
+            ) VALUES (201, '1', 'choice', '1 + 1 = ?', 'B')
+            """
+        )
+    store = JobStore(db.db_path)
+    parent = store.create_job(
+        "question_bank_sync",
+        {
+            "session_id": session_id,
+            "mode": "sync",
+            "curriculum_volume_id": "bnu24-math-g7-upper",
+            "config_revision": revision,
+            "source_paper_sha256": source_sha256,
+        },
+    )
+    store.finish(
+        parent.id,
+        "succeeded",
+        result={
+            "outcome": "partial",
+            "imported_count": 1,
+            "question_count": 1,
+            "tagged_count": 0,
+            "complete_tagged_count": 0,
+            "evidence_count": 0,
+            "criteria_count": 0,
+            "linked_count": 1,
+            "successful_question_ids": [],
+            "failed_question_ids": [201],
+            "failed_count": 1,
+            "retryable": True,
+        },
+    )
+    links = SourceQuestionLinkService(question_bank_db)
+    links.confirm_imported_questions_for_session(
+        grading_session_id=session_id,
+        source_questions=[{"question_id": "Q1"}],
+        imported_bank_questions=[{"id": 201, "question_number": "1"}],
+        sync_job_id=parent.id,
+        sync_config_revision=revision,
+    )
+    job = store.create_job(
+        "question_bank_sync",
+        {
+            "session_id": session_id,
+            "mode": "tag_retry",
+            "curriculum_volume_id": "bnu24-math-g7-upper",
+            "question_ids": [201],
+            "config_revision": revision,
+            "source_paper_sha256": source_sha256,
+            "client_request_token": "8" * 32,
+            "client_request_fingerprint": "9" * 64,
+            "retry_of_job_id": parent.id,
+        },
+    )
+    assert store.mark_running(job.id)
+    context = JobContext(
+        job_id=job.id,
+        job_type=job.job_type,
+        payload=job.payload,
+        store=store,
+    )
+
+    result = run_session_question_bank_sync_job(
+        context=context,
+        grading_db=db,
+        question_bank_db_path=question_bank_db,
+        data_root=tmp_path / "data",
+        write_service=QuestionBankWriteService(
+            question_bank_db,
+            data_root=tmp_path / "data",
+        ),
+        question_import_runner=lambda **_kwargs: pytest.fail(
+            "tag retry must not import again"
+        ),
+        tagging_sync_runner=lambda **_kwargs: {
+            "outcome": "complete",
+            "requested_count": 1,
+            "tagged_count": 1,
+            "complete_tagged_count": 1,
+            "evidence_count": 1,
+            "criteria_count": 0,
+            "successful_question_ids": [201],
+            "failed_question_ids": [],
+            "failed_count": 0,
+            "review_count": 0,
+            "proposal_ids": [],
+            "retryable": False,
+        },
+        ai_service_factory=lambda: object(),
+        taxonomy_governance=object(),
+    )
+
+    assert result["outcome"] == "complete"
+    assert result["imported_count"] == 1
+    assert result["question_count"] == 1
+    assert result["linked_count"] == 1
+    assert result["successful_question_ids"] == [201]
+    assert result["failed_question_ids"] == []
+    assert result["retryable"] is False
+    assert db.get_grading_session(session_id)["question_bank_sync_state"] == "ready"
+    saved_links = links.list_links(session_id)
+    assert len(saved_links) == 1
+    assert saved_links[0]["bank_question_id"] == 201
+    assert saved_links[0]["evidence"]["sync_job_id"] == parent.id
+
+
 def test_cancellation_remains_cancelled_and_leaves_a_recoverable_sync_state(
     tmp_path: Path,
 ) -> None:

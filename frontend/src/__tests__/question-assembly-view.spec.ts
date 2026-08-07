@@ -70,7 +70,7 @@ describe('question assembly view', () => {
       if (url === '/api/question-assembly/records?limit=100') {
         return json({ items: [], total: 0 })
       }
-      if (url === '/api/question-bank/curriculum') return slowCatalog.promise
+      if (url === '/api/question-bank/curriculum?include_knowledge_points=false') return slowCatalog.promise
       if (url.startsWith('/api/question-bank/facets?')) return slowFacets.promise
       if (url.startsWith('/api/question-bank/questions?')) {
         return json(questionPage(bankQuestion(17, '无需等待筛选统计的题目')))
@@ -104,7 +104,7 @@ describe('question assembly view', () => {
       if (url === '/api/question-assembly/records?limit=100') {
         return json({ items: [], total: 0 })
       }
-      if (url === '/api/question-bank/curriculum') {
+      if (url === '/api/question-bank/curriculum?include_knowledge_points=false') {
         return json(curriculumCatalog())
       }
       if (url.startsWith('/api/question-bank/facets?')) {
@@ -145,7 +145,7 @@ describe('question assembly view', () => {
       const url = String(input)
       if (url === '/api/question-assembly/draft' && init?.method !== 'PUT') return json(draft())
       if (url === '/api/question-assembly/records?limit=100') return json({ items: [], total: 0 })
-      if (url === '/api/question-bank/curriculum') return json(curriculumCatalog())
+      if (url === '/api/question-bank/curriculum?include_knowledge_points=false') return json(curriculumCatalog())
       if (url.startsWith('/api/question-bank/facets?')) return json(questionFacets())
       if (url.startsWith('/api/question-bank/questions?')) return json(questionPage(taggedQuestion))
       throw new Error(`unexpected request: ${url}`)
@@ -163,6 +163,36 @@ describe('question assembly view', () => {
     expect(card?.textContent).not.toContain('七年级上册｜第一章')
   })
 
+  it('shows only the leaf knowledge label in assembly filter chips', async () => {
+    const facets = questionFacets()
+    facets.knowledge_points = [{
+      value: '八年级下册｜第五章 图形的轴对称｜1 轴对称及其性质｜折叠问题',
+      count: 3,
+    }]
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input)
+      if (url === '/api/question-assembly/draft' && init?.method !== 'PUT') return json(draft())
+      if (url === '/api/question-assembly/records?limit=100') return json({ items: [], total: 0 })
+      if (url === '/api/question-bank/curriculum?include_knowledge_points=false') return json(curriculumCatalog())
+      if (url.startsWith('/api/question-bank/facets?')) return json(facets)
+      if (url.startsWith('/api/question-bank/questions?')) return json(questionPage(bankQuestion(17, '折叠题')))
+      throw new Error(`unexpected request: ${url}`)
+    })
+
+    const host = document.createElement('div')
+    document.body.append(host)
+    const app = createApp(QuestionAssemblyView)
+    app.use(createPinia())
+    app.mount(host)
+    mounted.push(app)
+
+    await vi.waitFor(() => expect(host.textContent).toContain('折叠问题'))
+    const chip = [...host.querySelectorAll<HTMLButtonElement>('.assembly-filter-chips button')]
+      .find(button => button.textContent?.includes('折叠问题'))
+    expect(chip?.textContent).not.toContain('八年级下册')
+    expect(chip?.querySelector('span')?.title).toContain('八年级下册｜第五章')
+  })
+
   it('shows selected chapter questions before a slow facet refresh and keeps the chapter tree visible', async () => {
     const slowFacets = deferred<Response>()
     let holdFacetRefresh = false
@@ -174,7 +204,7 @@ describe('question assembly view', () => {
       if (url === '/api/question-assembly/records?limit=100') {
         return json({ items: [], total: 0 })
       }
-      if (url === '/api/question-bank/curriculum') {
+      if (url === '/api/question-bank/curriculum?include_knowledge_points=false') {
         return json(curriculumCatalog())
       }
       if (url.startsWith('/api/question-bank/facets?')) {
@@ -199,8 +229,10 @@ describe('question assembly view', () => {
     mounted.push(app)
 
     await vi.waitFor(() => expect(host.textContent).toContain('初始题目'))
+    await vi.waitFor(() => expect(
+      host.querySelector<HTMLButtonElement>('.assembly-curriculum-node__chapter'),
+    ).toBeTruthy())
     const chapter = host.querySelector<HTMLButtonElement>('.assembly-curriculum-node__chapter')
-    expect(chapter).toBeTruthy()
 
     holdFacetRefresh = true
     chapter!.click()
@@ -230,7 +262,7 @@ describe('question assembly view', () => {
       if (url === '/api/question-assembly/records?limit=100') {
         return json({ items: [], total: 0 })
       }
-      if (url === '/api/question-bank/curriculum') {
+      if (url === '/api/question-bank/curriculum?include_knowledge_points=false') {
         return json(curriculumCatalog())
       }
       if (url.startsWith('/api/question-bank/facets?')) {
@@ -255,6 +287,7 @@ describe('question assembly view', () => {
     const facetCallCount = () => fetchSpy.mock.calls.filter(
       ([input]) => String(input).startsWith('/api/question-bank/facets?'),
     ).length
+    await vi.waitFor(() => expect(facetCallCount()).toBeGreaterThan(0))
     const initialFacetCalls = facetCallCount()
 
     const nextPage = [...host.querySelectorAll<HTMLButtonElement>('button')]
@@ -275,10 +308,13 @@ describe('question assembly view', () => {
     )).toBe(true))
     expect(facetCallCount()).toBe(initialFacetCalls)
 
+    await vi.waitFor(() => expect(
+      [...host.querySelectorAll<HTMLButtonElement>('.assembly-filter-panel button')]
+        .find((button) => button.textContent?.includes('选择题')),
+    ).toBeTruthy())
     const questionType = [...host.querySelectorAll<HTMLButtonElement>(
       '.assembly-filter-panel button',
     )].find((button) => button.textContent?.includes('选择题'))
-    expect(questionType).toBeTruthy()
     questionType!.click()
     await vi.waitFor(() => expect(facetCallCount()).toBe(initialFacetCalls + 1))
     expect(fetchSpy.mock.calls.some(
@@ -308,7 +344,7 @@ describe('question assembly view', () => {
         })
       }
       if (
-        url === '/api/question-bank/curriculum'
+        url === '/api/question-bank/curriculum?include_knowledge_points=false'
         || url.startsWith('/api/question-bank/facets?')
       ) {
         return json({}, 400)

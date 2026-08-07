@@ -23,7 +23,7 @@ from backend.workspaces.model_policy import (
 )
 
 
-_MAX_OUTPUT_TOKENS = 12_288
+_MAX_OUTPUT_TOKENS = 4_096
 _CREATE_TREE_SYSTEM_INSTRUCTION = """\
 你是初中数学学期资料目录整理助手。只依据给出的学期快照工作。
 当前任务模式是“首次建立课时目录”。
@@ -39,8 +39,9 @@ tree、mappings、uncertainties。严格使用下面的字段结构：
 chapter_01_section_01、chapter_01_section_01_lesson_01 这种带完整层级的 key。
 tree 按章、节、课时三级给出，每个节点使用简短唯一 key；
 sections 只表示“节”，课时必须放入 lessons；禁止空 lessons。每个课时必须包含
-duration_minutes（1—300 的整数），通常使用 45。尽量贴近 planned_new_lesson_count；
-证据不足时减少课时并说明 uncertainty，不要用空数组占位。
+duration_minutes（1—300 的整数），通常使用 45。只建立目录证据能够支持的课时，
+课时数量不得超过 directory_evidence 中 anchors 数量的两倍；证据不足时减少课时并
+说明 uncertainty，不要用空数组占位，也不要为了凑满整学期计划数而猜测。
 mapping 的 lesson_ref 对新课时使用 proposal:<lesson key>，只能引用 lesson 的 key，
 不能引用 chapter 或 section 的 key。连续页段合并，不要为每页重复建立 mapping。
 每条 mapping 必须包含 material_record_id、lesson_ref、start_unit、end_unit、basis、
@@ -48,6 +49,8 @@ evidence_refs。basis 用一句短话说明依据；evidence_refs 只能引用 d
 真实存在的 evidence_id，不能编造。相邻且属于同一课时的页必须合并成一个连续页段。
 页码必须是快照中真实 unit_index 范围，不得编造页码、课时或资料。
 不能确定时写入 uncertainties，不要猜测。不要返回题目正文、答案或 WPS 指令。
+所有标题保持简短，basis 不超过 12 个汉字，uncertainties 最多 5 条；
+在信息完整的前提下尽量压缩 JSON，避免重复说明。
 """
 
 _MAP_EXISTING_SYSTEM_INSTRUCTION = """\
@@ -67,7 +70,8 @@ tree 必须始终是空数组。lesson_ref 只能原样复制 available_lessons 
 mapping。每条 mapping 必须包含 material_record_id、lesson_ref、start_unit、
 end_unit、basis、evidence_refs。evidence_refs 只能引用 directory_evidence 中真实
 存在的 evidence_id。页码必须是快照中真实 unit_index 范围。
-不要返回题目正文、答案或 WPS 指令。
+不要返回题目正文、答案或 WPS 指令。所有 basis 不超过 12 个汉字，
+uncertainties 最多 5 条；在信息完整的前提下尽量压缩 JSON，避免重复说明。
 """
 
 
@@ -178,8 +182,6 @@ def _compact_model_snapshot(
         "term",
         "curriculum_title",
     ]
-    if not has_existing_tree:
-        semester_fields.append("planned_new_lesson_count")
     semester = _selected_fields(
         snapshot.get("semester"),
         tuple(semester_fields),

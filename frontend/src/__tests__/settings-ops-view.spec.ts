@@ -141,12 +141,12 @@ async function settle(): Promise<void> {
   await nextTick()
 }
 
-async function mountView() {
+async function mountView(section: 'backup' | 'maintenance' = 'backup') {
   const pinia = createPinia()
   setActivePinia(pinia)
   const host = document.createElement('div')
   document.body.append(host)
-  const app = createApp(SettingsOpsView)
+  const app = createApp(SettingsOpsView, { section })
   app.use(pinia)
   app.mount(host)
   mounted.push(app)
@@ -285,30 +285,31 @@ describe('settings and Ops view', () => {
     expect(host.textContent).not.toContain('操作已经应用')
   })
 
-  it('keeps everyday backup and restore prominent while preserving advanced tools', async () => {
+  it('keeps everyday backup and restore prominent without legacy maintenance tools', async () => {
     const host = await mountView()
 
     expect(host.textContent).toContain('备份与维护')
-    expect(host.textContent).toContain('系统是否可以正常使用')
-    expect(host.textContent).toContain('阅卷数据库')
-    expect(host.textContent).toContain('待迁移 1')
-    expect(host.textContent).toContain('API 配置未完成')
-    expect(host.textContent).toContain('Microsoft Word')
     expect(host.textContent).toContain('创建备份')
     expect(host.textContent).toContain('恢复备份')
     expect(host.textContent).toContain('阅卷系统数据（含题库）')
     expect(host.textContent).toContain('备课工作台数据')
     expect(host.textContent).toContain('班主任工作台数据')
-    expect(host.textContent).toContain('更多维护工具（一般无需使用）')
-    expect(host.textContent).toContain('数据库迁移')
-    expect(host.textContent).toContain('导出数据包')
-    expect(host.textContent).toContain('导入数据包')
+    expect(host.textContent).not.toContain('更多维护工具（一般无需使用）')
+    expect(host.textContent).not.toContain('数据库迁移')
+    expect(host.textContent).not.toContain('导出数据包')
+    expect(host.textContent).not.toContain('导入数据包')
     expect(host.textContent).toContain('手动备份')
     expect(host.textContent).not.toMatch(/C:\\|\/user_data|sk-secret/i)
   })
 
   it('copies only the public diagnostic ledger', async () => {
-    const host = await mountView()
+    const host = await mountView('maintenance')
+
+    expect(host.textContent).toContain('系统是否可以正常使用')
+    expect(host.textContent).toContain('阅卷数据库')
+    expect(host.textContent).toContain('待迁移 1')
+    expect(host.textContent).toContain('API 配置未完成')
+    expect(host.textContent).toContain('Microsoft Word')
 
     click(host, '[data-testid="copy-diagnostic"]')
     await settle()
@@ -449,20 +450,4 @@ describe('settings and Ops view', () => {
     await vi.waitFor(() => expect(rolledBackHost.textContent).toContain('操作未生效，系统已回退'))
   })
 
-  it('stages an import before allowing its preflight', async () => {
-    const host = await mountView()
-    const input = host.querySelector<HTMLInputElement>('input[type="file"]')!
-    const file = new File(['zip'], '课堂数据.zip', { type: 'application/zip' })
-    Object.defineProperty(input, 'files', { value: [file] })
-    input.dispatchEvent(new Event('change', { bubbles: true }))
-    await vi.waitFor(() => expect(opsApiMock.stageImport).toHaveBeenCalled())
-    await settle()
-
-    expect(host.textContent).toContain('课堂数据.zip')
-    click(host, '[data-testid="preflight-import"]')
-    await vi.waitFor(() => expect(opsApiMock.preflight).toHaveBeenCalledWith({
-      operation: 'transfer_import',
-      upload_id: 'a'.repeat(32),
-    }, expect.any(AbortSignal)))
-  })
 })

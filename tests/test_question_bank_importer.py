@@ -21,7 +21,49 @@ from question_bank.database.schema import initialize_database
 from question_bank.importers.types import ExtractedDocument
 from question_bank.importers.docx_importer import _get_paragraph_rich_text
 from question_bank.models.question import QuestionCreate
+from question_bank.services.rich_content_service import (
+    load_question_rich_content,
+    save_question_rich_content,
+)
 from tests.question_bank_support import QuestionBankTestStore
+
+
+def test_rich_content_drops_next_question_section_heading_on_save_and_load(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "rich-content"
+    sidecar = save_question_rich_content(
+        4,
+        question_blocks=[
+            {"kind": "paragraph", "text": "优美比为（ ）。"},
+            {
+                "kind": "paragraph",
+                "text": "二．填空题（共5小题）\n[[IMAGE:D:/next-question.png]]",
+            },
+        ],
+        answer_blocks=[{"kind": "paragraph", "text": "答案 C"}],
+        root=root,
+    )
+
+    assert sidecar is not None
+    payload = load_question_rich_content(4, root=root)
+    assert payload is not None
+    assert [block["text"] for block in payload["question_blocks"]] == [
+        "优美比为（ ）。"
+    ]
+    assert [block["text"] for block in payload["answer_blocks"]] == ["答案 C"]
+
+
+def test_rich_mapping_treats_hashed_source_stem_as_paper_title_noise() -> None:
+    mapped = batch_importer.map_rich_content_by_number(
+        [
+            {"text": "1．第一题", "image_relationships": {}},
+            {"text": "0526学情小结", "image_relationships": {}},
+        ],
+        source_file="0526学情小结_852c34e4ef74.docx",
+    )
+
+    assert [block["text"] for block in mapped["question"]["1"]] == ["1．第一题"]
 
 
 def test_scanned_pdf_without_text_is_reported_as_needing_ocr(tmp_path: Path, monkeypatch) -> None:
@@ -32,7 +74,7 @@ def test_scanned_pdf_without_text_is_reported_as_needing_ocr(tmp_path: Path, mon
     monkeypatch.setattr(
         batch_importer,
         "_extract_paper",
-        lambda path: ExtractedDocument(
+        lambda path, **_kwargs: ExtractedDocument(
             source_file=str(path),
             page_range="",
             text="",
@@ -149,7 +191,7 @@ def test_import_archives_local_source_and_persists_data_relative_path(
     monkeypatch.setattr(
         batch_importer,
         "_extract_paper",
-        lambda path: ExtractedDocument(
+        lambda path, **_kwargs: ExtractedDocument(
             source_file=str(path),
             page_range="document",
             text="1. 这是长度足够的测试题目\n答案：\n1. 42",
@@ -183,6 +225,33 @@ def test_import_archives_local_source_and_persists_data_relative_path(
     assert result.files[0].source_file == paper_source
 
 
+def test_docx_image_assets_follow_the_import_data_root(tmp_path: Path, monkeypatch) -> None:
+    data_root = tmp_path / "isolated-data"
+    source = tmp_path / "paper.docx"
+    source.write_bytes(b"paper-content")
+    captured: dict[str, Path | None] = {}
+
+    def fake_import_docx(path: Path, *, asset_root: Path | None = None) -> ExtractedDocument:
+        captured["asset_root"] = asset_root
+        return ExtractedDocument(
+            source_file=str(path),
+            page_range="document",
+            text="1. 这是一道用于验证图片存储位置的测试题目",
+        )
+
+    monkeypatch.setattr(batch_importer, "import_docx", fake_import_docx)
+
+    result = batch_importer.import_scanned_papers(
+        [ScannedPaper(source_file=str(source), file_type="docx")],
+        data_root / "databases" / "question_bank.db",
+        data_root=data_root,
+        archive_sources=False,
+    )
+
+    assert result.failed_files == 0
+    assert captured["asset_root"] == data_root.resolve() / "question_bank" / "extracted_images"
+
+
 def test_archived_import_uses_original_title_for_legacy_duplicate_detection(
     tmp_path: Path,
     monkeypatch,
@@ -198,7 +267,7 @@ def test_archived_import_uses_original_title_for_legacy_duplicate_detection(
     monkeypatch.setattr(
         batch_importer,
         "_extract_paper",
-        lambda _path: (_ for _ in ()).throw(AssertionError("duplicate should skip parsing")),
+        lambda _path, **_kwargs: (_ for _ in ()).throw(AssertionError("duplicate should skip parsing")),
     )
 
     result = batch_importer._import_scanned_paper(
@@ -235,7 +304,7 @@ def test_exact_fingerprint_in_trash_creates_a_fresh_active_paper(
     monkeypatch.setattr(
         batch_importer,
         "_extract_paper",
-        lambda path: ExtractedDocument(
+        lambda path, **_kwargs: ExtractedDocument(
             source_file=str(path),
             page_range="document",
             text="1．这是一道全新入库的数学题目",
@@ -327,7 +396,7 @@ def test_same_title_with_different_fingerprint_imports_as_a_new_paper(
     monkeypatch.setattr(
         batch_importer,
         "_extract_paper",
-        lambda path: ExtractedDocument(
+        lambda path, **_kwargs: ExtractedDocument(
             source_file=str(path),
             page_range="document",
             text="1. 这是另一份内容不同的测试题目",

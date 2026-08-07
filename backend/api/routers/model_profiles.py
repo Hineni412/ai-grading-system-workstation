@@ -131,6 +131,30 @@ def activate_model_profile(
     return ModelProfileStateResponse(**state)
 
 
+@router.delete(
+    "/{profile_name}",
+    response_model=ModelProfileStateResponse,
+    responses=MODEL_PROFILE_ERROR_RESPONSES,
+)
+def delete_model_profile(
+    profile_name: Annotated[str, Path(min_length=1, max_length=80)],
+    service: ModelProfileService = Depends(get_model_profile_service),
+) -> ModelProfileStateResponse:
+    try:
+        state = service.delete(profile_name)
+    except ModelProfileInvalid as exc:
+        raise ApiError(422, "model_profile_invalid", str(exc)) from exc
+    except ModelProfileNotFound as exc:
+        raise ApiError(
+            404,
+            "model_profile_not_found",
+            "Model profile not found",
+        ) from exc
+    except (ApiProfileStorageError, OSError, TimeoutError) as exc:
+        _raise_profile_storage_error(exc)
+    return ModelProfileStateResponse(**state)
+
+
 @router.put(
     "/routing/task-bindings",
     response_model=ModelProfileStateResponse,

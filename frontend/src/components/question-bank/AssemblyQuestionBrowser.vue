@@ -311,6 +311,7 @@ const activeFilters = computed<ActiveFilter[]>(() => {
 })
 
 const activeFilterCount = computed(() => activeFilters.value.length)
+let secondaryLoadHandle: ReturnType<typeof setTimeout> | null = null
 
 onMounted(() => {
   // The first question page is independent from the catalog and facet
@@ -319,15 +320,22 @@ onMounted(() => {
   const initialQuestions = loadQuestions(false, false)
   void Promise.all([
     assembly.loadState === 'idle' ? assembly.load() : Promise.resolve(),
-    loadCatalog(),
-    // Facet aggregation uses the same database snapshot path. Starting it
-    // after the small first-page query keeps both reads from competing for
-    // disk bandwidth during the visible load.
-    initialQuestions.then(loadFacets),
-  ]).then(chooseInitialVolume)
+    initialQuestions,
+  ])
+  // The five-volume curriculum payload and facet aggregates are useful for
+  // filtering but not for the first question cards. Start them shortly after
+  // the first page resolves so they cannot monopolize parsing/network slots
+  // during repeated refreshes.
+  void initialQuestions.finally(() => {
+    secondaryLoadHandle = setTimeout(() => {
+      secondaryLoadHandle = null
+      void Promise.all([loadCatalog(), loadFacets()]).then(chooseInitialVolume)
+    }, 500)
+  })
 })
 
 onBeforeUnmount(() => {
+  if (secondaryLoadHandle !== null) clearTimeout(secondaryLoadHandle)
   questionAbortController?.abort()
   facetsAbortController?.abort()
 })
@@ -413,7 +421,7 @@ async function loadFilteredFacets(requestFilters: QuestionBankFilters): Promise<
 async function loadCatalog(): Promise<void> {
   catalogState.value = 'loading'
   try {
-    catalog.value = await questionBankApi.getCurriculum()
+    catalog.value = await questionBankApi.getCurriculum(undefined, false)
     catalogState.value = 'ready'
   } catch {
     catalog.value = null
@@ -657,7 +665,7 @@ function tagsFor(question: QuestionBankListItem, tagType: string): string[] {
 }
 
 function knowledgeLeafLabel(value: string): string {
-  const parts = value.split('｜').map((part) => part.trim()).filter(Boolean)
+  const parts = value.split(/[|｜]/).map((part) => part.trim()).filter(Boolean)
   return parts[parts.length - 1] ?? value
 }
 </script>
@@ -850,7 +858,9 @@ function knowledgeLeafLabel(value: string): string {
                 :aria-pressed="filters[activeTagRow.key].includes(item.value)"
                 @click="toggleTagFilter(activeTagRow.key, item.value)"
               >
-                {{ item.value }} <small>{{ item.count }}</small>
+                <span :title="activeTagRow.key === 'knowledgePoints' ? item.value : undefined">
+                  {{ activeTagRow.key === 'knowledgePoints' ? knowledgeLeafLabel(item.value) : item.value }}
+                </span> <small>{{ item.count }}</small>
               </button>
               <details
                 v-if="activeTagRow.items.length > activeTagRow.visibleLimit"
@@ -868,7 +878,9 @@ function knowledgeLeafLabel(value: string): string {
                     :aria-pressed="filters[activeTagRow.key].includes(item.value)"
                     @click="toggleTagFilter(activeTagRow.key, item.value)"
                   >
-                    {{ item.value }} <small>{{ item.count }}</small>
+                    <span :title="activeTagRow.key === 'knowledgePoints' ? item.value : undefined">
+                      {{ activeTagRow.key === 'knowledgePoints' ? knowledgeLeafLabel(item.value) : item.value }}
+                    </span> <small>{{ item.count }}</small>
                   </button>
                 </div>
               </details>
@@ -984,7 +996,7 @@ function knowledgeLeafLabel(value: string): string {
             @click="clearActiveFilter(filter)"
           >
             <small>{{ filter.label }}</small>
-            {{ filter.value }}
+            {{ filter.key === 'knowledgePoints' ? knowledgeLeafLabel(filter.value) : filter.value }}
             <b aria-hidden="true">×</b>
           </button>
           <button type="button" class="assembly-active-filters__clear" @click="resetFilters">

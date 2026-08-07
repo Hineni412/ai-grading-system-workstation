@@ -102,6 +102,12 @@ class RaisingGateway:
         raise self.error
 
 
+class SyntheticStatusError(RuntimeError):
+    def __init__(self, status_code: int, message: str) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+
+
 def _seed_questions(database: Path, count: int = 8) -> None:
     initialize_database(database)
     with connect(database) as connection:
@@ -454,6 +460,39 @@ def test_cancelled_model_call_preserves_cancelled_state_and_can_retry(
         item["criteria_status"] for item in cancelled["items"]
     } == {"cancelled"}
     assert cancelled_gateway.calls == 1
+
+
+def test_invalid_model_configuration_stops_after_single_canary_request(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "question-bank.db"
+    _seed_questions(database)
+    gateway = RaisingGateway(
+        SyntheticStatusError(400, "configured model is not supported")
+    )
+    gateway.max_parallel_requests = 6
+    module = CombinedQuestionAnalysisModule(
+        repository=CombinedAnalysisRepository(database),
+        gateway=gateway,
+        tag_writer=FakeTagWriter(),
+    )
+    questions = tuple(
+        _question(index, text=f"{index}:" + "长题干" * 170)
+        for index in range(1, 7)
+    )
+
+    failed = module.analyze(
+        operation_id="p4-09-invalid-model-canary",
+        questions=questions,
+        projection="tag",
+    )
+
+    assert failed["status"] == "failed"
+    assert failed["request_count"] == 1
+    assert gateway.calls == 1
+    assert {
+        item["tag_error_category"] for item in failed["items"]
+    } == {"invalid_request"}
 
 
 def test_cancelled_projection_retry_does_not_call_unrequested_projection(
@@ -1264,10 +1303,7 @@ def test_input_loader_includes_rich_text_and_controlled_actual_images(
 
     assert loaded[0].has_required_images is True
     assert loaded[0].tagging_context.curriculum_volume_id == "pep-7-up"
-    assert loaded[0].rich_question_blocks == (
-        {"text": "富内容题干"},
-        {"text": "三、解答题（本题共7小题，共61分）"},
-    )
+    assert loaded[0].rich_question_blocks == ({"text": "富内容题干"},)
     assert loaded[0].word_question_blocks == (
         {
             "text": (

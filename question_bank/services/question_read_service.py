@@ -7,11 +7,14 @@ import re
 import sqlite3
 import stat
 import tempfile
+import threading
 import time
 import unicodedata
+from collections import OrderedDict
 from collections.abc import Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
+from copy import deepcopy
 from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, BinaryIO, Iterable, Iterator
@@ -36,6 +39,7 @@ from question_bank.services.question_frequency_service import (
     calculate_question_similarity,
 )
 from question_bank.services.question_revision import question_revision, question_revisions
+from question_bank.services.rich_content_service import clean_question_blocks
 from question_bank.services.similarity_service import text_similarity
 from question_bank.taxonomy.curriculum_catalog import (
     curriculum_chapter_exam_scope_values,
@@ -333,6 +337,10 @@ _PUBLIC_TAG_TYPES = tuple(
 )
 _RICH_CONTENT_VERSION = 3
 _CURRENT_PREVIEW_ORDER_SQL = "updated_at DESC, id DESC"
+_READ_RESULT_CACHE_LIMIT = 48
+_READ_RESULT_CACHE_LOCK = threading.Lock()
+_READ_RESULT_CACHE: OrderedDict[tuple[object, ...], object] = OrderedDict()
+_CACHE_MISS = object()
 _ACTIVE_QUESTION_PREDICATE_SQL = """
     q.id = ?
     AND COALESCE(q.is_deleted, 0) = 0
@@ -792,10 +800,82 @@ def _open_snapshot_connection(
         ) from exc
 
 
+def _source_generation_token(db_path: Path) -> tuple[object, ...] | None:
+    source = Path(db_path).resolve(strict=False)
+    journal = Path(f"{source}-journal")
+    if journal.exists():
+        return None
+    token: list[object] = [str(source)]
+    for candidate in (source, Path(f"{source}-wal")):
+        try:
+            info = candidate.stat()
+        except FileNotFoundError:
+            if candidate == source:
+                return None
+            token.append(None)
+            continue
+        except OSError:
+            return None
+        if not stat.S_ISREG(info.st_mode):
+            return None
+        token.append(
+            (
+                int(info.st_size),
+                int(info.st_mtime_ns),
+                int(info.st_ctime_ns),
+            )
+        )
+    return tuple(token)
+
+
+def _taxonomy_generation_token() -> tuple[object, ...]:
+    state_path = get_taxonomy_governance().state_path.resolve(strict=False)
+    token: list[object] = [str(state_path)]
+    for candidate in (
+        state_path,
+        state_path.with_name(f"{state_path.name}.bak"),
+    ):
+        try:
+            info = candidate.stat()
+        except (FileNotFoundError, OSError):
+            token.append(None)
+            continue
+        token.append(
+            (
+                int(info.st_size),
+                int(info.st_mtime_ns),
+                int(info.st_ctime_ns),
+            )
+        )
+    return tuple(token)
+
+
+def _read_result_cache_get(key: tuple[object, ...]) -> object:
+    with _READ_RESULT_CACHE_LOCK:
+        value = _READ_RESULT_CACHE.get(key, _CACHE_MISS)
+        if value is _CACHE_MISS:
+            return _CACHE_MISS
+        _READ_RESULT_CACHE.move_to_end(key)
+        return deepcopy(value)
+
+
+def _read_result_cache_put(key: tuple[object, ...], value: object) -> None:
+    with _READ_RESULT_CACHE_LOCK:
+        _READ_RESULT_CACHE[key] = deepcopy(value)
+        _READ_RESULT_CACHE.move_to_end(key)
+        while len(_READ_RESULT_CACHE) > _READ_RESULT_CACHE_LIMIT:
+            _READ_RESULT_CACHE.popitem(last=False)
+
+
 class QuestionBankReadService:
     def __init__(self, db_path: Path, *, data_root: Path | None = None) -> None:
         self.db_path = Path(db_path)
         self.data_root = Path(data_root) if data_root is not None else None
+        self._cache_data_root = (
+            str(self.data_root.resolve(strict=False))
+            if self.data_root is not None
+            else None
+        )
 
     @property
     def current_knowledge(self) -> CurrentKnowledgeResolver | None:
@@ -808,6 +888,22 @@ class QuestionBankReadService:
         return active[2]
 
     def list_papers(self, *, deleted: bool = False) -> list[dict[str, Any]]:
+        generation = (
+            None
+            if _ACTIVE_READ_SCOPE.get() is not None
+            else _source_generation_token(self.db_path)
+        )
+        key = ("papers", generation, bool(deleted))
+        if generation is not None:
+            cached = _read_result_cache_get(key)
+            if cached is not _CACHE_MISS:
+                return cached  # type: ignore[return-value]
+        items = self._list_papers(deleted=deleted)
+        if generation is not None and generation == _source_generation_token(self.db_path):
+            _read_result_cache_put(key, items)
+        return items
+
+    def _list_papers(self, *, deleted: bool = False) -> list[dict[str, Any]]:
         tag_placeholders = ", ".join("?" for _ in ANALYSIS_TAG_TYPES)
         visible_question_sql = (
             """
@@ -898,8 +994,21 @@ class QuestionBankReadService:
         return items
 
     def list_questions(self, filters: QuestionReadFilters) -> QuestionReadPage:
+        generation = (
+            None
+            if _ACTIVE_READ_SCOPE.get() is not None
+            else _source_generation_token(self.db_path)
+        )
+        key = ("questions", generation, self._cache_data_root, filters)
+        if generation is not None:
+            cached = _read_result_cache_get(key)
+            if cached is not _CACHE_MISS:
+                return cached  # type: ignore[return-value]
         with _read_connection(self.db_path):
-            return self._list_questions(filters)
+            result = self._list_questions(filters)
+        if generation is not None and generation == _source_generation_token(self.db_path):
+            _read_result_cache_put(key, result)
+        return result
 
     def _list_questions(self, filters: QuestionReadFilters) -> QuestionReadPage:
         joins, where, params = _question_filter_parts(
@@ -992,8 +1101,21 @@ class QuestionBankReadService:
         self,
         filters: QuestionReadFilters,
     ) -> dict[str, list[dict[str, Any]]]:
+        generation = (
+            None
+            if _ACTIVE_READ_SCOPE.get() is not None
+            else _source_generation_token(self.db_path)
+        )
+        key = ("facets", generation, _taxonomy_generation_token(), filters)
+        if generation is not None:
+            cached = _read_result_cache_get(key)
+            if cached is not _CACHE_MISS:
+                return cached  # type: ignore[return-value]
         with _read_connection(self.db_path):
-            return self._list_facets(filters)
+            result = self._list_facets(filters)
+        if generation is not None and generation == _source_generation_token(self.db_path):
+            _read_result_cache_put(key, result)
+        return result
 
     def tag_value_counts(
         self,
@@ -1711,6 +1833,9 @@ class QuestionBankReadService:
             return None
         if not _valid_rich_block_list(payload.get("answer_blocks")):
             return None
+        payload["question_blocks"] = clean_question_blocks(
+            payload["question_blocks"]
+        )
         return payload
 
 

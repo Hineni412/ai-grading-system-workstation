@@ -120,6 +120,9 @@ class ModelProfileService:
         profiles: list[dict[str, Any]],
     ) -> dict[str, dict[str, str | None]]:
         saved = self.store.load_task_bindings()
+        profile_names = {
+            _clean_existing_text(profile.get("name")) for profile in profiles
+        }
         active = profiles[-1] if profiles else {}
         active_name = _clean_existing_text(active.get("name")) or None
         defaults = {
@@ -142,8 +145,16 @@ class ModelProfileService:
         }
         return {
             task: {
-                "profile_name": saved.get(task, {}).get("profile_name") or active_name,
-                "model": saved.get(task, {}).get("model") or defaults[task],
+                "profile_name": (
+                    saved.get(task, {}).get("profile_name")
+                    if saved.get(task, {}).get("profile_name") in profile_names
+                    else active_name
+                ),
+                "model": (
+                    saved.get(task, {}).get("model")
+                    if saved.get(task, {}).get("profile_name") in profile_names
+                    else defaults[task]
+                ),
             }
             for task in _TASK_KEYS
         }
@@ -172,6 +183,25 @@ class ModelProfileService:
         name = _validated_profile_name(profile_name)
         if self.store.activate(name) is None:
             raise ModelProfileNotFound("Model profile not found")
+        return self.list_state()
+
+    def delete(self, profile_name: str) -> dict[str, Any]:
+        name = _validated_profile_name(profile_name)
+        if not any(
+            _clean_existing_text(profile.get("name")) == name
+            for profile in self.store.load()
+        ):
+            raise ModelProfileNotFound("Model profile not found")
+        if not self.store.delete(name):
+            raise ModelProfileNotFound("Model profile not found")
+        saved = self.store.load_task_bindings()
+        retained = {
+            task: binding
+            for task, binding in saved.items()
+            if binding.get("profile_name") != name
+        }
+        if retained != saved:
+            self.store.replace_task_bindings(retained)
         return self.list_state()
 
     def execution_status(self, profile_name: str) -> dict[str, int | str]:
