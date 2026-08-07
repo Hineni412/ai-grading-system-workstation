@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import re
 from collections.abc import Iterable, Mapping
 
@@ -29,6 +30,7 @@ from .store import WorkspaceAITaskStore
 _OPERATION_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,159}$")
 _SAFE_REF = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
+LOGGER = logging.getLogger(__name__)
 
 
 class WorkspaceAITaskService:
@@ -150,6 +152,15 @@ class WorkspaceAITaskService:
             self.manager.cancel(task.job_id)
         return project_task(self.store, next_task)
 
+    def discard_result_unknown(self, operation_id: str) -> TaskSnapshot:
+        task = self.store.find_by_operation(operation_id)
+        if task is None:
+            raise TaskNotFoundError("workspace AI task was not found")
+        return project_task(
+            self.store,
+            self.store.discard_result_unknown(task.task_id),
+        )
+
     def run_task(self, task_id: str) -> dict[str, object]:
         task = self.store.claim(task_id)
         if task.status == "cancelled_before_dispatch":
@@ -194,6 +205,7 @@ class WorkspaceAITaskService:
                 response_persisted=True,
             )
         except Exception:
+            LOGGER.exception("Workspace AI adapter failed for task %s", task_id)
             if result is not None:
                 # The domain proposal exists. Leave it recoverable; never resend.
                 return {"task_id": task_id, "status": "running"}

@@ -412,6 +412,7 @@ class SemesterMappingPreflightResponse(BaseModel):
     will_call_model: bool
     model_available: bool
     model_label: str | None
+    model_destination_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
     material_count: int
     unit_count: int
     existing_lesson_count: int
@@ -1384,8 +1385,6 @@ class ReferenceSelectionPreflightResponse(BaseModel):
     model_available: bool
     model_label: str | None
     model_destination_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
-    model_destination_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
-    model_destination_fingerprint: str
     will_call_model: bool
 
 

@@ -105,6 +105,22 @@ beforeEach(() => {
 })
 
 describe('SessionConfigView source replacement guard', () => {
+  it('keeps upload first, question review second, and curriculum controls last', async () => {
+    const mounted = await mountDirtyView()
+    const sourceStage = [...mounted.host.querySelectorAll<HTMLButtonElement>('.config-stage-rail button')]
+      .find(button => button.textContent?.includes('上传与拆题'))
+    sourceStage?.click()
+    await settle()
+
+    const upload = mounted.host.querySelector<HTMLElement>('.config-source')!
+    const review = mounted.host.querySelector<HTMLElement>('.question-review')!
+    const curriculum = mounted.host.querySelector<HTMLElement>('#config-curriculum-volume-slot')!
+
+    expect(upload.compareDocumentPosition(review) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(review.compareDocumentPosition(curriculum) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    mounted.unmount()
+  })
+
   it('reanalyses only blocked questions without offering generation modes', async () => {
     const pinia = createPinia()
     setActivePinia(pinia)

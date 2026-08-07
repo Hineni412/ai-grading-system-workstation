@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { JobResponse } from '../../../api/jobs'
 import { useJobStore } from '../../../stores/jobs'
 import { useWorkspaceAITaskStore } from '../../shared/ai-tasks/store'
+import { workspaceAITaskApi } from '../../shared/ai-tasks/api'
 import * as aiAdoption from '../aiAdoption'
 import { adoptedTeachingPrepTask } from '../aiAdoptionTestFixture'
 import {
@@ -466,6 +467,93 @@ describe('MaterialLibraryWorkspace current-material safety', () => {
     expect(host.textContent).toContain('结果未知，禁止自动重试')
     expect(host.textContent).toContain('为避免重复费用')
     expect(host.textContent).not.toContain('重新检查并生成新建议')
+    app.unmount()
+  })
+
+  it('does not let a stale material result-unknown task block the current revision', async () => {
+    const curriculumItem = curriculum()
+    const semesterItem = semester(curriculumItem.id)
+    const selectedMaterial = material('a'.repeat(32), '当前教材')
+    const selectedRecord = record('r'.repeat(32), selectedMaterial)
+    const otherTask = adoptedTeachingPrepTask({
+      taskId: 'task-other-material',
+      taskKind: 'teaching_prep.semester_mapping',
+      proposalId: 'p'.repeat(32),
+      sourceRef: { kind: 'semester', id: semesterId, revision: 'a'.repeat(64) },
+      draftKind: 'semester_mapping',
+    })
+    otherTask.status = 'result_unknown'
+    otherTask.phase = 'result_unknown'
+    otherTask.context_refs = [{ kind: 'material', id: selectedRecord.id, revision: '0' }]
+    useWorkspaceAITaskStore().track(otherTask)
+    vi.spyOn(teachingPrepCatalogApi, 'semesterMappingPreflight').mockResolvedValue({
+      semester_id: semesterId, source_state_sha256: 'a'.repeat(64), will_call_model: true,
+      model_available: true, model_label: '合成模型',
+      model_destination_fingerprint: 'f'.repeat(64), material_count: 1, unit_count: 1,
+      existing_lesson_count: 1, creates_initial_tree: false, automatic_retry: false,
+    })
+    const { app, host, catalog } = mountWorkspace()
+    catalog.curricula = [curriculumItem]
+    catalog.semesters = [semesterItem]
+    catalog.selectedCurriculumId = curriculumItem.id
+    catalog.materials = [selectedMaterial]
+    catalog.semesterMaterials = [selectedRecord]
+    catalog.selectedMaterialId = selectedMaterial.id
+
+    await catalog.prepareSemesterMapping([selectedRecord.id])
+    await flush()
+
+    expect(host.textContent).toContain('交给 AI 整理课时树')
+    expect(host.textContent).not.toContain('结果未知，不能自动重试')
+    app.unmount()
+  })
+
+  it('lets the teacher explicitly discard an unknown result without sending again', async () => {
+    const curriculumItem = curriculum()
+    const semesterItem = semester(curriculumItem.id)
+    const selectedMaterial = material('a'.repeat(32), '当前教材')
+    const selectedRecord = record('r'.repeat(32), selectedMaterial)
+    const unknownTask = adoptedTeachingPrepTask({
+      taskId: 'task-current-material',
+      taskKind: 'teaching_prep.semester_mapping',
+      proposalId: 'p'.repeat(32),
+      sourceRef: { kind: 'semester', id: semesterId, revision: 'a'.repeat(64) },
+      draftKind: 'semester_mapping',
+    })
+    unknownTask.status = 'result_unknown'
+    unknownTask.phase = 'result_unknown'
+    unknownTask.context_refs = [{ kind: 'material', id: selectedRecord.id, revision: '1' }]
+    useWorkspaceAITaskStore().track(unknownTask)
+    vi.spyOn(teachingPrepCatalogApi, 'semesterMappingPreflight').mockResolvedValue({
+      semester_id: semesterId, source_state_sha256: 'a'.repeat(64), will_call_model: true,
+      model_available: true, model_label: '合成模型',
+      model_destination_fingerprint: 'f'.repeat(64), material_count: 1, unit_count: 1,
+      existing_lesson_count: 1, creates_initial_tree: false, automatic_retry: false,
+    })
+    const discard = vi.spyOn(workspaceAITaskApi, 'discard').mockResolvedValue({
+      ...unknownTask, status: 'discarded', phase: 'finished', revision: unknownTask.revision + 1,
+    })
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    const { app, host, catalog } = mountWorkspace()
+    catalog.curricula = [curriculumItem]
+    catalog.semesters = [semesterItem]
+    catalog.selectedCurriculumId = curriculumItem.id
+    catalog.materials = [selectedMaterial]
+    catalog.semesterMaterials = [selectedRecord]
+    catalog.selectedMaterialId = selectedMaterial.id
+
+    await catalog.prepareSemesterMapping([selectedRecord.id])
+    await flush()
+    const button = [...host.querySelectorAll('button')].find(item => (
+      item.textContent?.includes('放弃旧结果，重新准备')
+    ))
+    expect(button).toBeTruthy()
+    button?.click()
+    await flush()
+
+    expect(discard).toHaveBeenCalledWith(unknownTask.operation_id)
+    expect(host.textContent).toContain('旧结果已放弃')
+    expect(host.textContent).toContain('交给 AI 整理课时树')
     app.unmount()
   })
 })

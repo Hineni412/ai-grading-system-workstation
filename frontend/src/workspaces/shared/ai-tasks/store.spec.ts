@@ -75,6 +75,7 @@ function dependencies(
 ): WorkspaceAITaskStoreDependencies {
   return {
     api: {
+      list: vi.fn(async () => []),
       prepare: vi.fn(async () => task({ status: 'prepared' })),
       dispatch: vi.fn(async () => task()),
       get,
@@ -82,6 +83,10 @@ function dependencies(
       cancel: vi.fn(async () => task({
         status: 'cancelled_before_dispatch',
         revision: 3,
+      })),
+      discard: vi.fn(async () => task({
+        status: 'discarded',
+        revision: 4,
       })),
     },
     legacyJobApi: { getJob, cancelJob: vi.fn() },

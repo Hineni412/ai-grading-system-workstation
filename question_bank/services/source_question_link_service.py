@@ -243,6 +243,7 @@ class SourceQuestionLinkService:
         imported_bank_questions: Iterable[Mapping[str, Any]],
         sync_job_id: int | None = None,
         sync_config_revision: str | None = None,
+        preserve_existing_confirmed: bool = False,
     ) -> dict[str, object]:
         """Confirm only relationships proven by import metadata or a unique paper-local number."""
         self.initialize_database()
@@ -266,9 +267,16 @@ class SourceQuestionLinkService:
                 if existing is not None and existing["status"] == "confirmed":
                     existing_owner = _sync_owner(existing)
                     if (
+                        preserve_existing_confirmed
+                        or sync_job_id is None
+                        or existing_owner is None
+                        or existing_owner == int(sync_job_id)
+                    ):
+                        confirmed += 1
+                        continue
+                    if (
                         sync_job_id is not None
                         and existing_owner is not None
-                        and existing_owner != int(sync_job_id)
                     ):
                         if existing_owner > int(sync_job_id):
                             confirmed += 1
@@ -278,9 +286,6 @@ class SourceQuestionLinkService:
                                 [(grading_session_id, existing_owner)]
                             )
                             existing = None
-                    else:
-                        confirmed += 1
-                        continue
                 if existing is not None and existing["status"] == "rejected":
                     unresolved_ids.append(source_id)
                     continue

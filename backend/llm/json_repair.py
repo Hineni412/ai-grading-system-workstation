@@ -1,7 +1,9 @@
 """Deterministic, local-only repair for model JSON responses.
 
 The repairer only fixes syntax that can be decided without inventing business
-content. It never closes truncated objects and never asks a model for help.
+content. It never closes content that simply stops mid-value and never asks a
+model for help. A malformed final run made only of closing brackets may be
+replaced with the uniquely implied closer sequence.
 """
 
 from __future__ import annotations
@@ -74,6 +76,12 @@ def parse_json_object_locally(text: str) -> LocalJsonParseResult:
     candidate, inserted_commas = _insert_parser_confirmed_commas(candidate)
     if inserted_commas:
         operations.append("insert_missing_comma")
+
+    candidate, terminal_closers_repaired = _repair_terminal_closer_sequence(
+        candidate
+    )
+    if terminal_closers_repaired:
+        operations.append("repair_terminal_closers")
 
     parsed = _loads_object(candidate)
     if parsed is None:
@@ -253,6 +261,40 @@ def _insert_parser_confirmed_commas(text: str) -> tuple[str, int]:
             candidate = candidate[:position] + "," + candidate[position:]
             inserted += 1
     return candidate, inserted
+
+
+def _repair_terminal_closer_sequence(text: str) -> tuple[str, bool]:
+    """Replace a malformed closer-only suffix with its unique valid suffix."""
+    stack: list[str] = []
+    in_string = False
+    escaped = False
+    mismatch_at: int | None = None
+    for index, char in enumerate(text):
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+        elif char in "{[":
+            stack.append(char)
+        elif char in "}]":
+            if not stack or (stack[-1], char) not in {("{", "}"), ("[", "]")}:
+                mismatch_at = index
+                break
+            stack.pop()
+    if mismatch_at is None or in_string or not stack:
+        return text, False
+    suffix = text[mismatch_at:]
+    if len(suffix) > 64 or any(char not in "}] \t\r\n" for char in suffix):
+        return text, False
+    closers = "".join("}" if opener == "{" else "]" for opener in reversed(stack))
+    candidate = text[:mismatch_at] + closers
+    return (candidate, True) if _loads_object(candidate) is not None else (text, False)
 
 
 def _safe_parse_error(text: str, response_chars: int, response_sha256: str) -> ValueError:

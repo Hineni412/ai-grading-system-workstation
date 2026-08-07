@@ -100,6 +100,39 @@ def test_read_service_lists_active_papers_without_paths_or_writes(question_bank_
     assert db_path.read_bytes() == before
 
 
+def test_curriculum_compact_mode_keeps_navigation_without_knowledge_point_bodies(
+    question_bank_fixture,
+) -> None:
+    service, _, _ = question_bank_fixture
+    client = _question_bank_client(service)
+
+    full_response = client.get("/api/question-bank/curriculum")
+    compact_response = client.get(
+        "/api/question-bank/curriculum?include_knowledge_points=false"
+    )
+
+    assert full_response.status_code == 200
+    assert compact_response.status_code == 200
+    full = full_response.json()
+    compact = compact_response.json()
+    assert [item["id"] for item in compact["volumes"]] == [
+        item["id"] for item in full["volumes"]
+    ]
+    assert any(
+        section["knowledge_points"]
+        for volume in full["volumes"]
+        for chapter in volume["chapters"]
+        for section in chapter["sections"]
+    )
+    assert all(
+        not section["knowledge_points"]
+        for volume in compact["volumes"]
+        for chapter in volume["chapters"]
+        for section in chapter["sections"]
+    )
+    assert len(compact_response.content) < len(full_response.content) / 2
+
+
 def test_question_read_payload_exposes_stable_state_revision(
     question_bank_fixture,
 ) -> None:
@@ -1850,6 +1883,49 @@ def test_question_text_projection_preserves_whitespace_and_incomplete_markers(
     assert detail["question_text"] == expected_question
     assert detail["answer_text"] == expected_answer
     assert detail["rich_content"]["question_blocks"][0]["text"] == expected_rich
+
+
+def test_compact_question_list_omits_answer_document_blocks_but_detail_keeps_them(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "question_bank.db"
+    initialize_database(db_path)
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "INSERT INTO papers (id, title, import_status) VALUES (1, 'Paper', 'success')"
+        )
+        conn.execute(
+            """
+            INSERT INTO questions (
+                id, paper_id, question_number, question_text, answer_text
+            ) VALUES (21, 1, '21', 'Question', 'Concise answer fallback')
+            """
+        )
+        conn.commit()
+    rich_root = tmp_path / "question_bank" / "rich_content"
+    rich_root.mkdir(parents=True)
+    rich_root.joinpath("question_21.json").write_text(
+        json.dumps({
+            "version": 3,
+            "question_id": 21,
+            "question_blocks": [{"text": "Question", "image_relationships": {}}],
+            "answer_blocks": [{"text": "Full answer document", "image_relationships": {}}],
+        }),
+        encoding="utf-8",
+    )
+    client = _question_bank_client(
+        QuestionBankReadService(db_path, data_root=tmp_path)
+    )
+
+    compact = client.get("/api/question-bank/questions?compact=true").json()["items"][0]
+    detail = client.get("/api/question-bank/questions/21").json()
+
+    assert compact["answer_text"] == "Concise answer fallback"
+    assert compact["rich_content"]["answer_blocks"] == []
+    assert compact["rich_content"]["answer_block_count"] == 0
+    assert detail["rich_content"]["answer_blocks"][0]["text"] == (
+        "Full answer document"
+    )
 
 
 def test_question_detail_returns_only_current_preview_per_type(

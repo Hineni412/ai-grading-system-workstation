@@ -206,6 +206,12 @@ def test_cancel_and_restart_recovery_follow_send_evidence(tmp_path: Path) -> Non
         )
         assert repeated.job_id == recovered.job_id
         assert repeated.send_attempt_count == 1
+
+        discarded = service.discard_result_unknown(after.operation_id)
+        assert discarded.status == "discarded"
+        assert discarded.dispatch_evidence == "may_have_started"
+        assert discarded.send_attempt_count == 1
+        assert service.discard_result_unknown(after.operation_id).status == "discarded"
     finally:
         manager.shutdown()
 
@@ -484,6 +490,13 @@ def test_safe_api_is_idempotent_and_workspace_job_projection_is_allowlisted(
         assert [item.task_id for item in service.list_module_tasks("teaching_prep")] == [
             first.json()["task_id"]
         ]
+        listed = client.get(
+            "/api/workspace-ai-tasks",
+            params={"module": "teaching_prep"},
+        )
+        assert listed.status_code == 200
+        assert [item["task_id"] for item in listed.json()] == [first.json()["task_id"]]
+        assert "prompt" not in listed.text.casefold()
         assert "prompt" not in first.text.casefold()
         assert "prefill" not in first.text.casefold()
         dispatch = client.post(

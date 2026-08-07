@@ -68,6 +68,23 @@ def test_preview_removes_detected_next_section_heading_and_summarizes_answer() -
     assert len(preview.answer_preview) <= 220
 
 
+def test_preview_removes_section_heading_split_across_docx_spans() -> None:
+    import backend.config_workspace.sources as sources_module
+
+    block = {
+        "question_text": "优美比为（ ）。\n二．填空题（共5小题）",
+        "question_html": (
+            "<p><span>优美比为（ ）。</span></p>"
+            "<p><span>二．</span><span>填空题（共5小题）</span></p>"
+        ),
+    }
+
+    sources_module._strip_embedded_question_section_heading(block)
+
+    assert "填空题" not in str(block["question_text"])
+    assert "填空题" not in str(block["question_html"])
+
+
 @pytest.mark.skipif(os.name != "nt", reason="Windows service root junction regression")
 @pytest.mark.parametrize("junction_location", ["root", "parent"])
 def test_service_and_api_dependency_do_not_resolve_away_root_junction(

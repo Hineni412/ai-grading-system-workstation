@@ -13,7 +13,10 @@ import pytest
 from backend.api.routers.workspace_ai_tasks import router as workspace_ai_router
 from backend.jobs.manager import JobManager
 from backend.jobs.store import JobStore
-from backend.teaching_prep.domain.errors import TeachingPrepNotFoundError
+from backend.teaching_prep.domain.errors import (
+    TeachingPrepNotFoundError,
+    TeachingPrepRetryAvailableError,
+)
 from backend.teaching_prep.infrastructure.fakes import (
     FakeExerciseSuggestionModelAdapter,
 )
@@ -26,6 +29,7 @@ from backend.workspaces.ai_tasks.models import (
     AdoptionResult,
     AdapterResult,
     HandoffSnapshot,
+    KnownAdapterFailure,
     OpaqueRef,
     PrepareRequest,
     RevisionConflictError,
@@ -1140,3 +1144,25 @@ def test_all_four_task_kinds_use_the_shared_gateway_and_create_domain_handoffs(
         "teaching_prep.library", "teaching_prep.lesson.plan",
         "teaching_prep.lesson.exercises", "teaching_prep.lesson.slides",
     ]
+
+
+def test_semester_mapping_retryable_failure_stays_safe_to_retry(tmp_path: Path) -> None:
+    class RetryableService:
+        database_path = tmp_path / "teaching_prep.db"
+
+        def generate_semester_mapping_proposal(self, *_args, **_kwargs):
+            raise TeachingPrepRetryAvailableError("model response could not be validated")
+
+    task = replace(
+        _task(),
+        task_kind="teaching_prep.semester_mapping",
+        source_ref=OpaqueRef("semester", "s" * 32, "a" * 64),
+        context_refs=(OpaqueRef("material", "m" * 32, "1"),),
+        return_target="teaching_prep.library",
+    )
+    adapter = TeachingPrepAITaskAdapter(RetryableService())  # type: ignore[arg-type]
+
+    with pytest.raises(KnownAdapterFailure) as exc_info:
+        adapter.execute(task, model_gateway=WorkspaceAITaskModelGateway())
+
+    assert exc_info.value.code == "semester_mapping_retry_available"

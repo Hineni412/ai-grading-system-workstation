@@ -155,10 +155,11 @@ def test_active_profile_mapping_call_is_visible_in_ai_diagnostics(
     assert "合成目录片段" in str(call["request"])
     assert call["raw_response"].startswith('{"tree"')
     sent = completions.calls[0]
-    assert sent["max_tokens"] == 12_288
+    assert sent["max_tokens"] == 4_096
     messages = sent["messages"]
     assert isinstance(messages, list)
     model_snapshot = json.loads(str(messages[1]["content"]))
+    assert "planned_new_lesson_count" not in model_snapshot["semester"]
     material = model_snapshot["materials"][0]
     assert set(material) == {
         "display_name",
