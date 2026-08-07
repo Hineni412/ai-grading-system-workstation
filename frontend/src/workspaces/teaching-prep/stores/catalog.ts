@@ -1578,6 +1578,7 @@ export const useTeachingPrepCatalogStore = defineStore(
           ...curricula.value.filter(({ id }) => id !== created.id),
         ]
         selectedCurriculumId.value = created.id
+        selectedSemesterId.value = workspace.semester.id
         lessonNodes.value = []
         semesterLessonProgress.value = []
         semesterMaterials.value = []
@@ -1610,12 +1611,13 @@ export const useTeachingPrepCatalogStore = defineStore(
       saveState.value = 'saving'
       errorMessage.value = ''
       try {
-        await teachingPrepCatalogApi.createSemester({
+        const created = await teachingPrepCatalogApi.createSemester({
           ...input,
           curriculum_id: curriculumId,
         })
         semesters.value = await teachingPrepCatalogApi.listSemesters()
-        const semester = selectedSemester.value
+        selectedSemesterId.value = created.id
+        const semester = created
         if (semester) {
           ;[
             semesterLessonProgress.value,

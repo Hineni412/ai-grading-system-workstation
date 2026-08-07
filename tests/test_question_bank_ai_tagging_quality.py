@@ -118,6 +118,40 @@ def test_scoped_curriculum_uses_section_id_and_derives_chapter_locally() -> None
     assert normalized.textbook_chapters == ["七年级下册 第四章 三角形"]
 
 
+def test_scoped_curriculum_resolves_one_unique_display_path_locally() -> None:
+    analysis = _analysis(
+        textbook_chapters=["七年级下册 第五章 图形的轴对称"],
+        curriculum_sections=[
+            "七年级下册 第五章 图形的轴对称 1 轴对称及其性质"
+        ],
+    )
+    contract = {
+        "curriculum_volume": {
+            "sections": [
+                {
+                    "id": "bnu24-math-g7-lower-c05-s01",
+                    "name": "1 轴对称及其性质",
+                    "chapter_id": "bnu24-math-g7-lower-c05",
+                    "chapter_name": "七年级下册 第五章 图形的轴对称",
+                }
+            ]
+        }
+    }
+
+    normalized, notes = ai_tagging_module._normalize_scoped_curriculum(
+        analysis,
+        contract,
+    )
+
+    assert notes == []
+    assert normalized.curriculum_sections == [
+        "bnu24-math-g7-lower-c05-s01"
+    ]
+    assert normalized.textbook_chapters == [
+        "七年级下册 第五章 图形的轴对称"
+    ]
+
+
 def test_scoped_curriculum_rejects_section_outside_selected_volume() -> None:
     analysis = _analysis(
         curriculum_sections=["bnu24-math-g8-lower-c01-s01"],

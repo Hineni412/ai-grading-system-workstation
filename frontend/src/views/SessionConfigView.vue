@@ -564,7 +564,6 @@ watch(
                   :before-upload="confirmSourceUpload"
                   @uploaded="configStore.acceptUploadedSource"
                 />
-                <div v-if="configStore.source" id="config-curriculum-volume-slot" />
               </div>
               <QuestionBlockReview
                 v-if="configStore.source"
@@ -575,6 +574,7 @@ watch(
                 @update:decisions="configStore.updateDecisions"
                 @update:asset-decisions="configStore.updateAssetDecisions"
               />
+              <div v-if="configStore.source" id="config-curriculum-volume-slot" />
             </div>
             <div
               v-if="configStore.source || configStore.pendingJobRequestToken !== null || configStore.jobId !== null"

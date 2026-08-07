@@ -12,6 +12,8 @@ from question_bank.taxonomy.registry import (
 
 def bootstrap_governed_knowledge_identities(
     connection: sqlite3.Connection,
+    *,
+    preserve_conflicts: bool = False,
 ) -> None:
     """
     Seed the governed catalog and map only exact historical knowledge tags.
@@ -21,6 +23,7 @@ def bootstrap_governed_knowledge_identities(
     decide them without inventing stable identities.
     """
 
+    conflicting_keys: set[str] = set()
     for item in CANONICAL_KNOWLEDGE:
         stable_key = normalize_stable_key(item.canonical_id)
         existing = connection.execute(
@@ -44,6 +47,9 @@ def bootstrap_governed_knowledge_identities(
             str(existing[0]) != item.canonical_name
             or str(existing[1]) != "builtin"
         ):
+            if preserve_conflicts:
+                conflicting_keys.add(stable_key)
+                continue
             raise ValueError(
                 f"governed knowledge identity conflicts with {stable_key}"
             )
@@ -94,6 +100,8 @@ def bootstrap_governed_knowledge_identities(
         if canonical is None:
             continue
         stable_key = normalize_stable_key(canonical.canonical_id)
+        if stable_key in conflicting_keys:
+            continue
         connection.execute(
             """
             INSERT INTO knowledge_tag_identity_mappings (

@@ -6,6 +6,11 @@ import { TERMINAL_JOB_STATUSES } from '../api/jobs'
 import { useJobStore } from '../stores/jobs'
 import { useOpsStore } from '../stores/ops'
 
+const props = withDefaults(defineProps<{ embedded?: boolean; section?: 'backup' | 'maintenance' }>(), {
+  embedded: false,
+  section: 'backup',
+})
+
 const ops = useOpsStore()
 const jobs = useJobStore()
 
@@ -16,8 +21,6 @@ const backupReason = ref<'before_exam' | 'before_update' | 'before_import' | 'be
 const backupScopes = ref<Array<'grading' | 'teaching_prep' | 'class_teacher'>>([
   'grading', 'teaching_prep', 'class_teacher',
 ])
-const migrationTarget = ref<'grading' | 'question_bank' | 'all'>('all')
-const exportScope = ref<'lean' | 'full'>('lean')
 let finalizedJobVersion = ''
 
 const OPERATION_LABELS: Record<OpsOperation, string> = {
@@ -206,14 +209,6 @@ function preflightRestore(): void {
   begin({ operation: 'restore', backup_filename: selectedBackup.value })
 }
 
-async function selectImport(event: Event): Promise<void> {
-  const input = event.currentTarget as HTMLInputElement
-  const file = input.files?.[0]
-  if (!file) return
-  confirmationPhrase.value = ''
-  await ops.stageImport(file, opsApi)
-}
-
 async function confirmOperation(): Promise<void> {
   if (!canConfirm.value) return
   await ops.submitConfirmed(opsApi)
@@ -261,7 +256,7 @@ onMounted(async () => {
 
 <template>
   <section class="settings-ops">
-    <header class="settings-ops__header">
+    <header v-if="!props.embedded" class="settings-ops__header">
       <div>
         <p class="settings-ops__eyebrow">设置中心</p>
         <h1 tabindex="-1">备份与维护</h1>
@@ -274,7 +269,7 @@ onMounted(async () => {
 
     <div class="settings-ops__layout">
       <main class="ops-ledger">
-        <section class="ops-section" aria-labelledby="system-ledger-title">
+        <section v-if="props.section === 'maintenance'" class="ops-section" aria-labelledby="system-ledger-title">
           <div class="ops-section__heading">
             <div>
               <p class="settings-ops__eyebrow">本机状态</p>
@@ -350,7 +345,7 @@ onMounted(async () => {
           </template>
         </section>
 
-        <section class="ops-section" aria-labelledby="operations-title">
+        <section v-if="props.section === 'backup'" class="ops-section" aria-labelledby="operations-title">
           <div class="ops-section__heading">
             <div>
               <p class="settings-ops__eyebrow">数据保护</p>
@@ -398,53 +393,10 @@ onMounted(async () => {
             <button class="ops-button is-danger" type="button" data-testid="preflight-restore" :disabled="!selectedBackup || ops.hasBlockingOperation" @click="preflightRestore">检查恢复影响</button>
           </article>
 
-          <details class="ops-advanced-tools">
-            <summary>更多维护工具（一般无需使用）</summary>
-          <article class="ops-action is-danger">
-            <div><h3>数据库迁移</h3><p>检查并准备数据库结构更新；在重启应用后执行。</p></div>
-            <label>迁移范围
-              <select v-model="migrationTarget">
-                <option value="all">全部数据库</option>
-                <option value="grading">阅卷数据库</option>
-                <option value="question_bank">题库数据库</option>
-              </select>
-            </label>
-            <button class="ops-button is-danger" type="button" :disabled="ops.hasBlockingOperation" @click="begin({ operation: 'migration', target: migrationTarget })">检查迁移影响</button>
-          </article>
-
-          <article class="ops-action">
-            <div><h3>导出数据包</h3><p>制作便于迁移的数据包；敏感配置不会写入数据包。</p></div>
-            <label>导出范围
-              <select v-model="exportScope">
-                <option value="lean">精简数据</option>
-                <option value="full">完整数据</option>
-              </select>
-            </label>
-            <button class="ops-button is-secondary" type="button" :disabled="ops.hasBlockingOperation" @click="begin({ operation: 'transfer_export', scope: exportScope })">开始预检</button>
-          </article>
-
-          <article class="ops-action is-danger">
-            <div><h3>导入数据包</h3><p>先上传 ZIP 数据包并检查内容；通过后才可准备导入。</p></div>
-            <label class="ops-file">
-              <input type="file" accept=".zip,application/zip" :disabled="ops.hasBlockingOperation" @change="selectImport">
-              <span>{{ ops.uploadLoading ? '正在安全检查文件…' : '选择 ZIP 数据包' }}</span>
-              <strong v-if="ops.importUpload">{{ ops.importUpload.filename }}</strong>
-            </label>
-            <button
-              class="ops-button is-danger"
-              type="button"
-              data-testid="preflight-import"
-              :disabled="!ops.importUpload || ops.hasBlockingOperation"
-              @click="ops.importUpload && begin({ operation: 'transfer_import', upload_id: ops.importUpload.upload_id })"
-            >
-              检查导入影响
-            </button>
-          </article>
-          </details>
         </section>
       </main>
 
-      <aside class="ops-gate" data-testid="ops-safety-gate" aria-labelledby="ops-gate-title">
+      <aside v-if="props.section === 'backup'" class="ops-gate" data-testid="ops-safety-gate" aria-labelledby="ops-gate-title">
         <p class="settings-ops__eyebrow">操作确认</p>
         <h2 id="ops-gate-title">核对后再执行</h2>
 

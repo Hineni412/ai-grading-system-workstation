@@ -2838,7 +2838,20 @@ def _strip_embedded_question_section_heading(block: dict[str, Any]) -> None:
         if match:
             block[field] = value[: match.start()].rstrip()
     html_value = str(block.get("question_html") or "")
-    match = _HTML_QUESTION_SECTION_HEADING.search(html_value)
+    match = None
+    for paragraph in re.finditer(
+        r"<p\b[^>]*>.*?</p>",
+        html_value,
+        re.IGNORECASE | re.DOTALL,
+    ):
+        plain_paragraph = html.unescape(
+            _HTML_TAG.sub("", paragraph.group(0))
+        ).replace("\r", "").strip()
+        if _QUESTION_SECTION_HEADING.fullmatch(plain_paragraph):
+            match = paragraph
+            break
+    if match is None:
+        match = _HTML_QUESTION_SECTION_HEADING.search(html_value)
     if match is None:
         # DOCX rich text is sometimes stored as newline-delimited plain text in
         # question_html.  Treat that representation exactly like question_text.

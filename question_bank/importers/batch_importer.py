@@ -205,8 +205,18 @@ def import_scanned_papers(
     archive_sources: bool = True,
 ) -> BatchImportResult:
     database_path = Path(db_path)
-    initialize_database(database_path)
+    # Existing teacher-governed identities must not block an ordinary paper
+    # import. Preserve them and skip only the conflicting builtin seed.
+    initialize_database(
+        database_path,
+        preserve_governed_conflicts=True,
+    )
     rich_content_directory = _rich_content_root_for_database(
+        database_path,
+        data_root=data_root,
+        raw_papers_dir=raw_papers_dir,
+    )
+    asset_directory = _asset_root_for_database(
         database_path,
         data_root=data_root,
         raw_papers_dir=raw_papers_dir,
@@ -236,6 +246,7 @@ def import_scanned_papers(
                     metadata=_merge_metadata(default_metadata or PaperMetadata(), scanned.metadata),
                     question_range=question_range,
                     rich_content_root=rich_content_directory,
+                    asset_root=asset_directory,
                 )
             )
         except Exception as exc:  # noqa: BLE001
@@ -289,6 +300,7 @@ def _import_scanned_paper(
     metadata: PaperMetadata,
     question_range: str | None,
     rich_content_root: Path | None = None,
+    asset_root: Path | None = None,
 ) -> PaperImportFileResult:
     initialize_database(db_path)
     source_value = stored_source_file or str(path)
@@ -309,7 +321,11 @@ def _import_scanned_paper(
                 message="paper already imported",
             )
 
-    extracted = _extract_paper(path)
+    extracted = (
+        _extract_paper(path, asset_root=asset_root)
+        if asset_root is not None
+        else _extract_paper(path)
+    )
     parsed = parse_paper_text(
         extracted.text,
         source_file=source_value,
@@ -454,10 +470,31 @@ def _rich_content_root_for_database(
     return root / "question_bank" / "rich_content"
 
 
-def _extract_paper(path: Path):
+def _asset_root_for_database(
+    db_path: Path,
+    *,
+    data_root: str | Path | None = None,
+    raw_papers_dir: str | Path | None = None,
+) -> Path:
+    if data_root is not None:
+        root = Path(data_root).expanduser().resolve()
+    elif raw_papers_dir is not None:
+        raw_root = Path(raw_papers_dir).expanduser().resolve()
+        root = raw_root.parent.parent
+    else:
+        resolved_db = Path(db_path).expanduser().resolve()
+        root = (
+            resolved_db.parent.parent
+            if resolved_db.parent.name == "databases"
+            else resolved_db.parent
+        )
+    return root / "question_bank" / "extracted_images"
+
+
+def _extract_paper(path: Path, *, asset_root: Path | None = None):
     if path.suffix.lower() == ".pdf":
         return import_pdf(path)
-    return import_docx(path)
+    return import_docx(path, asset_root=asset_root)
 
 
 def _find_paper_collision(
@@ -576,7 +613,8 @@ def map_rich_content_by_number(
     clean_title = ""
     if source_file:
         raw_title = Path(source_file).stem
-        clean_title = re.sub(r'_\d{8}_\d{6}$', '', raw_title).strip()
+        clean_title = re.sub(r'_[0-9a-f]{12,64}$', '', raw_title, flags=re.IGNORECASE)
+        clean_title = re.sub(r'_\d{8}_\d{6}$', '', clean_title).strip()
         
     sectioned_paragraphs = _section_rich_paragraphs(
         _move_image_only_paragraphs_to_following_question(rich_paragraphs),
@@ -781,7 +819,13 @@ def _clean_block(
     clean_title = ""
     if source_file:
         raw_title = Path(source_file).name
-        clean_title = re.sub(r'_\d{8}_\d{6}$', '', Path(raw_title).stem).strip()
+        clean_title = re.sub(
+            r'_[0-9a-f]{12,64}$',
+            '',
+            Path(raw_title).stem,
+            flags=re.IGNORECASE,
+        )
+        clean_title = re.sub(r'_\d{8}_\d{6}$', '', clean_title).strip()
         
     for line in lines:
         line_clean = _IMAGE_MARKER.sub("", line).strip()

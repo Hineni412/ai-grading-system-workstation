@@ -354,6 +354,26 @@ def test_bootstrap_conflict_rolls_back_all_new_identity_rows(
         ).fetchall()
     assert rows == [(stable_key, "冲突名称", "local")]
 
+    initialize_database(database, preserve_governed_conflicts=True)
+
+    with sqlite3.connect(database) as connection:
+        preserved = connection.execute(
+            """
+            SELECT display_name, origin
+            FROM knowledge_tag_identities
+            WHERE stable_key = ?
+            """,
+            (stable_key,),
+        ).fetchone()
+        builtin_count = connection.execute(
+            """
+            SELECT COUNT(*) FROM knowledge_tag_identities
+            WHERE origin = 'builtin'
+            """
+        ).fetchone()[0]
+    assert preserved == ("冲突名称", "local")
+    assert builtin_count == len(CANONICAL_KNOWLEDGE) - 1
+
 
 def test_model_suggestion_requires_version_and_is_operation_idempotent(
     relation_store: tuple[Path, KnowledgeRelationRepository],

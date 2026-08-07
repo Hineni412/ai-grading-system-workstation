@@ -1,6 +1,7 @@
 import { apiClient } from '../../../api/client'
 import {
   decodeWorkspaceAITask,
+  decodeWorkspaceAITaskList,
   type PrepareWorkspaceAITaskInput,
   type WorkspaceAITask,
 } from './contracts'
@@ -16,11 +17,19 @@ export interface WorkspaceAITaskApi {
   get(taskId: string, signal?: AbortSignal): Promise<WorkspaceAITask>
   getByOperation(operationId: string, signal?: AbortSignal): Promise<WorkspaceAITask>
   cancel(operationId: string, signal?: AbortSignal): Promise<WorkspaceAITask>
+  discard(operationId: string, signal?: AbortSignal): Promise<WorkspaceAITask>
+  list(module: WorkspaceAITask['module'], signal?: AbortSignal): Promise<WorkspaceAITask[]>
 }
 
 const segment = (value: string) => encodeURIComponent(value)
 
 export const workspaceAITaskApi: WorkspaceAITaskApi = {
+  list(module, signal) {
+    return apiClient.request(
+      `/api/workspace-ai-tasks?module=${encodeURIComponent(module)}`,
+      { decode: decodeWorkspaceAITaskList, signal },
+    )
+  },
   prepare(input, signal) {
     return apiClient.request('/api/workspace-ai-tasks/prepare', {
       method: 'POST',
@@ -58,6 +67,12 @@ export const workspaceAITaskApi: WorkspaceAITaskApi = {
   cancel(operationId, signal) {
     return apiClient.request(
       `/api/workspace-ai-tasks/operations/${segment(operationId)}/cancel`,
+      { method: 'POST', decode: decodeWorkspaceAITask, signal },
+    )
+  },
+  discard(operationId, signal) {
+    return apiClient.request(
+      `/api/workspace-ai-tasks/operations/${segment(operationId)}/discard`,
       { method: 'POST', decode: decodeWorkspaceAITask, signal },
     )
   },

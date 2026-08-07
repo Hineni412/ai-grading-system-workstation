@@ -37,11 +37,18 @@ def connect(
         conn.close()
 
 
-def initialize_database(db_path: Path) -> None:
+def initialize_database(
+    db_path: Path,
+    *,
+    preserve_governed_conflicts: bool = False,
+) -> None:
     """Bring the question bank to the current migration version."""
     ensure_schema_current("question_bank", db_path)
     with connect(db_path) as conn:
-        bootstrap_governed_knowledge_identities(conn)
+        bootstrap_governed_knowledge_identities(
+            conn,
+            preserve_conflicts=preserve_governed_conflicts,
+        )
         conn.execute(
             """
             UPDATE papers

@@ -128,7 +128,7 @@ def test_import_collision_ignores_trashed_original_and_dedupes_new_active_copy(
     monkeypatch.setattr(
         batch_importer,
         "_extract_paper",
-        lambda path: ExtractedDocument(
+        lambda path, **_kwargs: ExtractedDocument(
             source_file=str(path),
             page_range="document",
             text="1. 回收站旧卷不阻止全新入库",
