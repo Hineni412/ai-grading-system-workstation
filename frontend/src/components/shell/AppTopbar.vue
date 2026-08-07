@@ -105,7 +105,6 @@ function retrySessions(): void {
         <strong>{{ pageTitle }}</strong>
         <span v-if="pageDescription">{{ pageDescription }}</span>
       </div>
-      <WorkspaceAITaskDrawer />
     </div>
 
     <div
@@ -127,6 +126,8 @@ function retrySessions(): void {
         </button>
       </nav>
     </div>
+
+    <WorkspaceAITaskDrawer class="app-topbar__tasks" />
 
     <div v-if="showCurrentExamContext" class="app-topbar__session">
       <label for="current-session">当前考试</label>

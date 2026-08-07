@@ -600,3 +600,30 @@ def test_normalizer_rejects_conflicting_single_choice_answers() -> None:
             question_type="single_choice",
             taxonomy_contract={},
         )
+
+
+def test_normalizer_treats_single_choice_process_text_as_explanation() -> None:
+    option = _part(
+        mode="exact_objective",
+        canonical_answer="C",
+        full_answer="答案为 C。",
+    )
+    process = _part(
+        part_id="process-explanation",
+        mode="process_required",
+        canonical_answer="腰长为5cm或底边长为5cm",
+        full_answer="分两种情况计算，得到3/5或5/4。",
+    )
+
+    normalized = normalize_model_solution_evidence(
+        _payload(option, process),
+        question_id=4,
+        question_type="single_choice",
+        taxonomy_contract={},
+        expected_answer="C",
+    )
+
+    evidence = _parse(normalized.payload)
+    assert len(evidence.parts) == 1
+    assert evidence.parts[0].canonical_answer == "C"
+    assert "分两种情况" in evidence.parts[0].full_answer

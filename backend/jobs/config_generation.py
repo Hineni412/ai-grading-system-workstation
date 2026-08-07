@@ -959,11 +959,7 @@ def _run_config_generation_job_impl(
             llm_client=client,
             model_name=_config_model(client),
             report=report,
-            question_blocks=(
-                list(source_record.private_blocks)
-                if source_record is not None
-                else confirmed_blocks
-            ),
+            question_blocks=confirmed_blocks,
         )
     else:
         client = llm_client_factory()
@@ -1011,7 +1007,8 @@ def _run_config_generation_job_impl(
     failed_ids = failed_grading_config_question_ids(payload)
     uncertain_ids = _deferred_uncertain_question_ids(payload)
     score_allocation = _score_allocation_summary(payload)
-    total_questions = _question_count(payload, confirmed_blocks)
+    summary_blocks = [] if generation_mode == "whole_document" else confirmed_blocks
+    total_questions = _question_count(payload, summary_blocks)
     summary = _summary(
         session_id,
         total_questions,
@@ -1027,7 +1024,7 @@ def _run_config_generation_job_impl(
     summary["questions"] = project_question_states(
         [
             str(block.get("question_id") or "").strip()
-            for block in confirmed_blocks
+            for block in summary_blocks
             if isinstance(block, dict)
         ],
         payload,

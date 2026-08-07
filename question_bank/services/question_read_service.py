@@ -1098,8 +1098,9 @@ class QuestionBankReadService:
             return sources[name]
 
         taxonomy_governance = get_taxonomy_governance()
-        taxonomy_snapshot = taxonomy_governance.snapshot()
-        taxonomy_identity_lookup = taxonomy_governance.identity_lookup()
+        taxonomy_snapshot, taxonomy_identity_lookup = (
+            taxonomy_governance.snapshot_and_identity_lookup()
+        )
         with _read_connection(self.db_path) as conn:
             filtered_sql, params = source("exam_scopes")
             curriculum_section_sql, curriculum_section_params = source(
@@ -2279,7 +2280,9 @@ def _load_page_tags(
         """,
         [*question_ids, *_PUBLIC_TAG_TYPES],
     ).fetchall()
-    identity_lookup = get_taxonomy_governance().identity_lookup()
+    identity_lookup, teacher_lookup = (
+        get_taxonomy_governance().identity_and_teacher_lookup()
+    )
     tags_by_question: dict[int, list[dict[str, Any]]] = {}
     for row in rows:
         tag_value = _public_tag_value(row["tag_value"])
@@ -2293,12 +2296,12 @@ def _load_page_tags(
             if term is not None and current_knowledge.resolve(term[0]):
                 tag_value = term[1]
             else:
-                teacher_term = get_taxonomy_governance().resolve_teacher_term(
-                    "knowledge", tag_value
+                teacher_name = teacher_lookup["knowledge"].get(
+                    _taxonomy_value_key(tag_value)
                 )
-                if teacher_term is None:
+                if teacher_name is None:
                     continue
-                tag_value = str(teacher_term["name"])
+                tag_value = teacher_name
         dimension = {
             "knowledge_point": "knowledge",
             "method": "method",

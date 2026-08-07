@@ -104,6 +104,21 @@ def create_support_router() -> APIRouter:
             )
         )
 
+    @router.get("/support/subjects/{subject_id}/student-card")
+    def student_card(
+        subject_id: str,
+        request: Request,
+        response: Response,
+        session_token: str | None = Header(None, alias="x-class-teacher-session"),
+    ):
+        _no_store(response)
+        return _call(
+            lambda: _service(request).student_cards.get_card(
+                token=session(session_token),
+                subject_id=subject_id,
+            )
+        )
+
     @router.get("/support/subjects/{subject_id}/academic-analysis")
     def academic_analysis(
         subject_id: str,

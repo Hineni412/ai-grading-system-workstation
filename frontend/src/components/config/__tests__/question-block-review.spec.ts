@@ -247,7 +247,7 @@ describe('QuestionBlockReview', () => {
     }])
   })
 
-  it('shows the complete question and answer side by side without an expand step', async () => {
+  it('keeps the full question beside a concise answer and opens the complete answer on demand', async () => {
     const onUpdate = vi.fn()
     const longQuestion = '完整题干不能折叠。'.repeat(30)
     const completeSolution = '完整解答第一步：由已知条件得到中间结论。'
@@ -284,14 +284,16 @@ describe('QuestionBlockReview', () => {
       .not.toContain('question-review__preview--clamped')
     expect(mounted.host.textContent).toContain(longQuestion)
     expect(mounted.host.textContent).toContain('结论成立')
-    expect(mounted.host.textContent).toContain(completeSolution)
-    expect(mounted.host.querySelector('[aria-label="展开 Q1 答案"]')).toBeNull()
+    expect(mounted.host.querySelector('[data-answer-content="Q1"]')?.textContent).toContain('结论成立')
+    expect(mounted.host.querySelector('[data-answer-content="Q1"]')?.textContent).not.toContain(completeSolution)
+    expect(mounted.host.textContent).toContain('查看完整答案')
     expect(mounted.host.querySelector('[data-question-panel="Q1"]')).not.toBeNull()
     expect(mounted.host.querySelector('[data-answer-panel="Q1"]')).not.toBeNull()
-    expect(
-      [...mounted.host.querySelectorAll('.question-content')]
-        .every((element) => element.classList.contains('is-dense')),
-    ).toBe(true)
+    const open = [...mounted.host.querySelectorAll<HTMLButtonElement>('button')]
+      .find(button => button.textContent?.includes('查看完整答案'))!
+    open.click()
+    await nextTick()
+    expect(document.body.textContent).toContain(completeSolution)
 
     mounted.state.value = source({
       ...reviewSource,
@@ -300,7 +302,7 @@ describe('QuestionBlockReview', () => {
     await nextTick()
 
     expect(onUpdate).toHaveBeenLastCalledWith([])
-    expect(mounted.host.querySelector('[aria-label="展开 Q1 答案"]')).toBeNull()
+    expect(mounted.host.textContent).toContain('查看完整答案')
   })
 
   it('renders a continuous list and an explicit zero-question state', async () => {

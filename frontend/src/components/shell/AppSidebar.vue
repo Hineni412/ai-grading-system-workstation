@@ -1,5 +1,4 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
 import { RouterLink, useRoute } from 'vue-router'
 
 import {
@@ -22,7 +21,6 @@ const emit = defineEmits<{
 
 const route = useRoute()
 const sessionStore = useSessionStore()
-const settingsOpen = ref(false)
 
 function isActive(item: WorkspaceRouteDefinition): boolean {
   if (route.name === gradingRunRouteDefinition.id) return item.id === 'grading'
@@ -35,18 +33,6 @@ function navigationTarget(item: WorkspaceRouteDefinition): string {
   }
   return item.path
 }
-
-const settingsActive = computed(() => (
-  settingsNavigationItems.some((item) => isActive(item))
-))
-
-watch(
-  settingsActive,
-  (active) => {
-    if (active) settingsOpen.value = true
-  },
-  { immediate: true },
-)
 
 function completeNavigation(): void {
   emit('navigate')
@@ -104,7 +90,6 @@ function completeNavigation(): void {
 
     <div class="app-sidebar__settings">
       <nav
-        v-show="settingsOpen"
         id="settings-navigation"
         class="app-sidebar__settings-links"
         aria-label="设置导航"
@@ -121,23 +106,6 @@ function completeNavigation(): void {
           <span>{{ item.label }}</span>
         </RouterLink>
       </nav>
-      <button
-        type="button"
-        class="app-sidebar__settings-toggle"
-        :class="{ 'is-active': settingsActive }"
-        aria-controls="settings-navigation"
-        :aria-expanded="settingsOpen"
-        @click="settingsOpen = !settingsOpen"
-      >
-        <AppIcon name="settings" />
-        <span>设置</span>
-        <AppIcon
-          class="app-sidebar__settings-chevron"
-          :class="{ 'is-open': settingsOpen }"
-          name="chevron-down"
-          :size="16"
-        />
-      </button>
     </div>
   </aside>
 </template>

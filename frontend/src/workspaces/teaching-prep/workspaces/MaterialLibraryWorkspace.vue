@@ -603,7 +603,12 @@ async function attachExistingMaterial(item: MaterialVersion): Promise<void> {
       : undefined
     await workbench.catalog.attachSemesterMaterial(item, role, workbook)
     manualMapping.purpose = rolePurpose(role)
-    mappingMessage.value = `已把“${item.display_name}”作为${roleLabel(role)}加入本学期。`
+    await openMaterial(item)
+    const record = semesterRecordFor(item)
+    if (record && ['textbook', 'exercise_workbook', 'homework_workbook'].includes(role)) {
+      await prepareSemesterMapping()
+    }
+    mappingMessage.value = `已把“${item.display_name}”作为${roleLabel(role)}加入本学期并选中。请核对发送范围后再交给 AI。`
   } catch {
     mappingMessage.value = workbench.catalog.errorMessage || '资料未能加入本学期。'
   } finally {
@@ -920,10 +925,10 @@ async function applyProposal(): Promise<void> {
       },
     )
     if (adopted) {
-      mappingMessage.value = '正式映射已写入，并已形成 AI 采用回执。'
+      mappingMessage.value = '正式映射已写入且已有回执。'
       const refreshes = await Promise.allSettled([
         aiTasks.refresh(adopted.match.task.task_id),
-        workbench.refreshCurrentWorkspace(),
+        workbench.catalog.load(),
       ])
       if (refreshes.some(result => result.status === 'rejected')) {
         mappingMessage.value = '正式映射已写入且已有回执；页面状态暂未刷新，请刷新页面。'
@@ -933,6 +938,10 @@ async function applyProposal(): Promise<void> {
       await workbench.refreshCurrentWorkspace()
       mappingMessage.value = '全部接受项已写入正式映射。'
     }
+    const firstLesson = workbench.catalog.lessonNodes.find(
+      item => item.node_type === 'lesson' && item.is_active,
+    )
+    if (firstLesson) await workbench.openLesson(firstLesson.id)
   } catch {
     mappingMessage.value = workbench.catalog.errorMessage
       || '正式映射尚未确认；已保存的逐条决定仍保留，请直接重试。'
@@ -1136,7 +1145,7 @@ async function saveManualMapping(): Promise<void> {
           :disabled="!activeSemesterRecord || workbench.catalog.loadState === 'loading'"
           @click="prepareSemesterMapping()"
         >
-          重新检查
+          检查发送范围
         </button>
         <button
           v-if="mappingRetryAvailable"
@@ -1160,7 +1169,7 @@ async function saveManualMapping(): Promise<void> {
               ? '后台生成中…'
               : mappingAwaitingProposal
                 ? '正在恢复审核内容…'
-                : '生成待确认建议' }}
+                : '交给 AI 整理课时树' }}
         </button>
       </div>
       <div
@@ -1333,7 +1342,7 @@ async function saveManualMapping(): Promise<void> {
               :disabled="!existingRoleDrafts[item.id] || attachingMaterialId === item.id"
               @click="attachExistingMaterial(item)"
             >
-              {{ attachingMaterialId === item.id ? '正在加入…' : '加入本学期' }}
+              {{ attachingMaterialId === item.id ? '正在加入…' : '加入本学期并选中' }}
             </button>
           </div>
           <details class="tp-material-card__manage">

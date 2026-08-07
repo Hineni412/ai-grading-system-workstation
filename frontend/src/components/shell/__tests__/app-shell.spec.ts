@@ -134,8 +134,7 @@ describe('AppShell', () => {
       '备课工作台',
       '班主任工作台',
       '学生管理',
-      '大模型 API',
-      '设置与运维',
+      '设置',
     ])
     expect(host.querySelector('[data-testid="navigation-toggle"]')).toBeNull()
     expect(host.querySelector('[data-testid="inspector-toggle"]')).toBeNull()
@@ -192,13 +191,14 @@ describe('AppShell', () => {
     const compactStart = css.indexOf('@media (max-width: 620px)')
 
     expect(css).toMatch(
-      /\.app-topbar\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)\s+minmax\(280px,\s*380px\);/s,
+      /\.app-topbar\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)\s+minmax\(280px,\s*380px\)\s+auto;/s,
     )
-    expect(css).toContain('"page session"')
-    expect(css).toContain('"status status"')
+    expect(css).toContain('"page session tasks"')
+    expect(css).toContain('"status status status"')
     expect(css).toMatch(/\.app-topbar__page\s*\{[^}]*grid-area:\s*page;/s)
     expect(css).toMatch(/\.app-topbar__session\s*\{[^}]*grid-area:\s*session;/s)
     expect(css).toMatch(/\.app-topbar__status\s*\{[^}]*grid-area:\s*status;/s)
+    expect(css).toMatch(/\.app-topbar__tasks\s*\{[^}]*grid-area:\s*tasks;/s)
     expect(css).toMatch(/\.app-sidebar__link\s*\{/)
     expect(css).toMatch(/\.app-sidebar__link\[aria-current='page'\]\s*\{/)
     expect(css).toMatch(/\.app-sidebar__link:focus-visible/)
@@ -213,9 +213,9 @@ describe('AppShell', () => {
 
     const compactRules = css.slice(compactStart)
     expect(compactRules).toContain('grid-template-columns: minmax(0, 1fr)')
-    expect(compactRules).toContain('"page"')
-    expect(compactRules).toContain('"session"')
-    expect(compactRules).toContain('"status"')
+    expect(compactRules).toContain('"page tasks"')
+    expect(compactRules).toContain('"session session"')
+    expect(compactRules).toContain('"status status"')
   })
 
   it.each(['review', 'config'] as const)('warns before leaving with dirty %s work', async (kind) => {

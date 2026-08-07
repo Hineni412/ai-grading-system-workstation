@@ -249,10 +249,10 @@
   grid-area: topbar;
   min-width: 0;
   min-height: var(--shell-topbar-height);
-  grid-template-columns: minmax(0, 1fr) minmax(280px, 380px);
+  grid-template-columns: minmax(0, 1fr) minmax(280px, 380px) auto;
   grid-template-areas:
-    "page session"
-    "status status";
+    "page session tasks"
+    "status status status";
   align-items: center;
   gap: var(--space-1) var(--space-5);
   padding: 10px var(--space-5);
@@ -261,14 +261,16 @@
 }
 
 .app-topbar--workspace-context {
-  grid-template-areas: 'page';
-  grid-template-columns: minmax(0, 1fr);
+  grid-template-areas: 'page tasks';
+  grid-template-columns: minmax(0, 1fr) auto;
 }
 
 .app-topbar--workspace-context:has(.app-topbar__workspace-navigation:not(:empty)) {
-  grid-template-areas: 'page workspace-navigation';
-  grid-template-columns: minmax(220px, 1fr) auto;
+  grid-template-areas: 'page workspace-navigation tasks';
+  grid-template-columns: minmax(220px, 1fr) auto auto;
 }
+
+.app-topbar__tasks { grid-area: tasks; justify-self: end; }
 
 .app-topbar__workspace-navigation {
   display: flex;
@@ -559,15 +561,15 @@
   }
 
   .app-topbar {
-    grid-template-columns: minmax(0, 1fr) minmax(250px, 360px);
+    grid-template-columns: minmax(0, 1fr) minmax(250px, 360px) auto;
     padding-inline: var(--space-4);
   }
 
   .app-topbar--workspace-context:has(.app-topbar__workspace-navigation:not(:empty)) {
     grid-template-areas:
-      "page"
-      "workspace-navigation";
-    grid-template-columns: minmax(0, 1fr);
+      "page tasks"
+      "workspace-navigation workspace-navigation";
+    grid-template-columns: minmax(0, 1fr) auto;
   }
 
   .app-topbar__workspace-navigation {
@@ -598,11 +600,11 @@
   }
 
   .app-topbar {
-    grid-template-columns: minmax(0, 1fr);
     grid-template-areas:
-      "page"
-      "session"
-      "status";
+      "page tasks"
+      "session session"
+      "status status";
+    grid-template-columns: minmax(0, 1fr) auto;
     gap: var(--space-2);
     padding: var(--space-3);
   }

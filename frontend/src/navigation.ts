@@ -183,11 +183,11 @@ export const modelProfilesRouteDefinition = {
 
 export const settingsRouteDefinition = {
   id: 'settings',
-  label: '设置与运维',
+  label: '设置',
   path: '/settings',
-  title: '设置与运维',
-  description: '查看系统状态，并通过安全预检执行受保护操作',
-  breadcrumb: '设置与运维',
+  title: '设置',
+  description: '管理模型使用方式、备份与本机维护',
+  breadcrumb: '设置',
   icon: 'settings',
 } as const satisfies WorkspaceRouteDefinition
 
@@ -243,7 +243,6 @@ export const navigationGroups: readonly WorkspaceNavigationGroup[] = [
 
 export const settingsNavigationItems: readonly WorkspaceRouteDefinition[] = [
   studentsRouteDefinition,
-  modelProfilesRouteDefinition,
   settingsRouteDefinition,
 ] as const
 

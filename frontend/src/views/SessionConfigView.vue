@@ -557,15 +557,6 @@ watch(
           <SessionDraftPanel />
           <template v-if="sessionStore.currentSession">
             <div id="config-source-stage" tabindex="-1">
-              <QuestionBlockReview
-                v-if="configStore.source"
-                :source="configStore.source"
-                :decisions="configStore.decisions"
-                :asset-decisions="configStore.assetDecisions"
-                :question-states="configStore.questionStates"
-                @update:decisions="configStore.updateDecisions"
-                @update:asset-decisions="configStore.updateAssetDecisions"
-              />
               <div class="config-source-stage__dock" aria-label="试卷来源与生成设置">
                 <ConfigSourceUpload
                   :session-id="sessionStore.currentSession.id"
@@ -575,6 +566,15 @@ watch(
                 />
                 <div v-if="configStore.source" id="config-curriculum-volume-slot" />
               </div>
+              <QuestionBlockReview
+                v-if="configStore.source"
+                :source="configStore.source"
+                :decisions="configStore.decisions"
+                :asset-decisions="configStore.assetDecisions"
+                :question-states="configStore.questionStates"
+                @update:decisions="configStore.updateDecisions"
+                @update:asset-decisions="configStore.updateAssetDecisions"
+              />
             </div>
             <div
               v-if="configStore.source || configStore.pendingJobRequestToken !== null || configStore.jobId !== null"

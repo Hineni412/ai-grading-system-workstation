@@ -1412,6 +1412,77 @@ class TaxonomyGovernance:
                 lookup[dimension][normalized] = term["name"]
         return lookup
 
+    def identity_and_teacher_lookup(
+        self,
+    ) -> tuple[dict[str, dict[str, str]], dict[str, dict[str, str]]]:
+        """Build every question-read lookup from one state snapshot."""
+
+        state = self._read_state()
+        _, alias_index, legacy_index = self._combined_terms(state)
+        identity = {dimension: {} for dimension in ALLOWED_DIMENSIONS}
+        for index in (alias_index, legacy_index):
+            for (dimension, normalized), term in index.items():
+                identity[dimension][normalized] = term["name"]
+        teacher = {dimension: {} for dimension in ALLOWED_DIMENSIONS}
+        for term in state["approved_terms"]:
+            dimension = str(term.get("dimension") or "")
+            if (
+                dimension not in teacher
+                or term.get("origin") != "teacher"
+                or term.get("status") != _ACTIVE_TERM_STATUS
+            ):
+                continue
+            values = [term.get("id"), term.get("name"), *term.get("aliases", [])]
+            for value in values:
+                normalized = _normalized_name(value)
+                if normalized:
+                    teacher[dimension][normalized] = str(term["name"])
+        return identity, teacher
+
+    def snapshot_and_identity_lookup(
+        self,
+    ) -> tuple[dict[str, Any], dict[str, dict[str, str]]]:
+        """Return the public taxonomy and stored-tag lookup from one read."""
+
+        catalog = self._prompt_catalog()
+        state = self._read_state(catalog=catalog)
+        terms, alias_index, legacy_index = self._combined_terms(
+            state,
+            catalog=catalog,
+        )
+        active_by_dimension = {
+            dimension: [
+                _term_public(term)
+                for term in terms
+                if term["dimension"] == dimension
+                and term["status"] == _ACTIVE_TERM_STATUS
+            ]
+            for dimension in ALLOWED_DIMENSIONS
+        }
+        snapshot = {
+            "schema_version": 1,
+            "revision": state["revision"],
+            "base_catalog_id": catalog["catalog_id"],
+            "base_catalog_revision": catalog["revision"],
+            "allowed_dimensions": list(ALLOWED_DIMENSIONS),
+            "terms_by_dimension": active_by_dimension,
+            "retired_terms": [
+                _term_public(term)
+                for term in terms
+                if term["status"] == "retired"
+            ],
+            "pending_proposal_count": sum(
+                proposal["status"] == "pending"
+                for proposal in state["proposals"]
+            ),
+            "reference_candidate_count": len(catalog["reference_candidates"]),
+        }
+        identity = {dimension: {} for dimension in ALLOWED_DIMENSIONS}
+        for index in (alias_index, legacy_index):
+            for (dimension, normalized), term in index.items():
+                identity[dimension][normalized] = term["name"]
+        return snapshot, identity
+
     def expand_filter_values(
         self, dimension: str, canonical_values: Iterable[object]
     ) -> tuple[str, ...]:

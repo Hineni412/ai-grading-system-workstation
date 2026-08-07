@@ -160,4 +160,28 @@ describe('workspace AI task store', () => {
     expect(stored).not.toContain('handoff-001')
     expect(stored).not.toContain('summary')
   })
+
+  it('announces an explicit dispatch but not a restored historical task', async () => {
+    localStorage.setItem(WORKSPACE_AI_TASK_STORAGE_KEY, JSON.stringify([{
+      taskId: 'task-001', operationId: 'operation-001', trackedAt: 'now',
+    }]))
+    const store = useWorkspaceAITaskStore()
+    const api = dependencies()
+
+    await store.initialize(api)
+    expect(store.taskNoticeRevision).toBe(0)
+
+    const prepared = await store.prepare({
+      operation_id: 'operation-new', module: 'teaching_prep',
+      task_kind: 'teaching_prep.lesson_plan',
+      source_ref: { kind: 'lesson', id: 'lesson-001', revision: '2' },
+      context_refs: [], prompt_contract_version: 'v1',
+      model_destination_fingerprint: 'fingerprint',
+      return_target: 'teaching_prep.lesson.plan',
+    })
+    await store.dispatch(prepared)
+
+    expect(store.latestStartedTaskId).toBe('task-001')
+    expect(store.taskNoticeRevision).toBe(1)
+  })
 })

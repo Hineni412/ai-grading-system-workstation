@@ -6,6 +6,7 @@ import type { DirectorySubject } from '../api/r1'
 import { studentR1Api } from '../api/r1'
 import AcademicAnalysisPanel from './AcademicAnalysisPanel.vue'
 import StudentDirectoryPanel from './StudentDirectoryPanel.vue'
+import StudentOverviewPanel from './StudentOverviewPanel.vue'
 import SupportReviewPanel from './SupportReviewPanel.vue'
 
 type Panel = 'directory' | 'support' | 'academic'
@@ -16,7 +17,7 @@ const props = defineProps<{
   subjectId?: string | null
 }>()
 const emit = defineEmits<{
-  navigate: [panel: Panel]
+  navigate: [panel: Panel, subjectId?: string | null]
   locked: [reason: string]
 }>()
 const selected = ref<DirectorySubject | null>(null)
@@ -25,7 +26,8 @@ async function restoreSelection() {
   const value = await studentR1Api.header(props.token, props.subjectId)
   selected.value = value as unknown as DirectorySubject
 }
-function choose(subject: DirectorySubject) { selected.value = subject; emit('navigate', 'support') }
+function choose(subject: DirectorySubject) { selected.value = subject; emit('navigate', 'directory', subject.subject_id) }
+function openPanel(panel: 'support' | 'academic') { emit('navigate', panel, selected.value?.subject_id ?? null) }
 watch(() => props.subjectId, () => { void restoreSelection() })
 onMounted(() => { void restoreSelection() })
 </script>
@@ -35,17 +37,24 @@ onMounted(() => { void restoreSelection() })
     <nav class="subnav" aria-label="学生工作区页面">
       <button v-for="item in ([['directory','学生目录'],['support','支持记录'],['academic','学业证据']] as const)" :key="item[0]" type="button" :aria-current="panel===item[0]?'page':undefined" @click="emit('navigate', item[0])">{{ item[1] }}</button>
       <span v-if="selected">当前学生：<strong>{{ selected.display_name }}</strong></span>
-      <span v-else>当前学生只保存在页面内存中</span>
+      <span v-else>选择学生后可查看已确认的结构化概览</span>
     </nav>
     <StudentDirectoryPanel v-if="panel==='directory'" :token="token" @select="choose" />
+    <StudentOverviewPanel
+      v-if="panel === 'directory' && selected"
+      :token="token"
+      :subject="selected"
+      @close="selected = null; emit('navigate', 'directory', null)"
+      @open="openPanel"
+    />
     <SupportReviewPanel
-      v-else-if="panel==='support' && selected"
+      v-if="panel==='support' && selected"
       :key="selected.subject_id"
       :token="token"
       :subject="selected"
     />
-    <AcademicAnalysisPanel v-else-if="panel==='academic' && selected" :key="selected.subject_id" :token="token" :subject="selected" />
-    <section v-else class="reselect"><span aria-hidden="true">↶</span><h2>请重新选择学生</h2><p>刷新或直接打开此页面时，不会从网址恢复真实学生编号。请回到目录重新选择。</p><button type="button" @click="emit('navigate','directory')">返回学生目录</button></section>
+    <AcademicAnalysisPanel v-if="panel==='academic' && selected" :key="selected.subject_id" :token="token" :subject="selected" />
+    <section v-if="panel !== 'directory' && !selected" class="reselect"><span aria-hidden="true">↶</span><h2>请重新选择学生</h2><p>刷新或直接打开此页面时，不会从网址恢复真实学生编号。请回到目录重新选择。</p><button type="button" @click="emit('navigate','directory')">返回学生目录</button></section>
   </section>
 </template>
 

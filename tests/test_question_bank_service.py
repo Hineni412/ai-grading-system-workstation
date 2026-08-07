@@ -3,6 +3,8 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
+import pytest
+
 from question_bank.database.schema import initialize_database
 from question_bank.models.question import QuestionCreate, TagCreate
 from question_bank.models.tag_schema import TagAnalysis
@@ -21,6 +23,60 @@ def _services(tmp_path: Path):
         QuestionBankReadService(db_path, data_root=tmp_path),
         QuestionBankWriteService(db_path, data_root=tmp_path),
     )
+
+
+def test_page_tags_reads_taxonomy_once_for_many_teacher_terms(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import question_bank.services.question_read_service as read_module
+    from question_bank.taxonomy.governance import ALLOWED_DIMENSIONS
+
+    connection = sqlite3.connect(":memory:")
+    connection.row_factory = sqlite3.Row
+    connection.execute(
+        "CREATE TABLE question_tags (id INTEGER PRIMARY KEY, question_id INTEGER, tag_type TEXT, tag_value TEXT, confidence REAL)"
+    )
+    connection.executemany(
+        "INSERT INTO question_tags (question_id, tag_type, tag_value, confidence) VALUES (?, 'knowledge_point', ?, 1)",
+        [(index, f"教师词{index}") for index in range(1, 101)],
+    )
+
+    class CurrentKnowledge:
+        @staticmethod
+        def canonical_term(_value: str):
+            return None
+
+        @staticmethod
+        def resolve(_value: str):
+            return None
+
+    class Governance:
+        calls = 0
+
+        def identity_and_teacher_lookup(self):
+            self.calls += 1
+            return (
+                {dimension: {} for dimension in ALLOWED_DIMENSIONS},
+                {
+                    **{dimension: {} for dimension in ALLOWED_DIMENSIONS},
+                    "knowledge": {
+                        read_module._taxonomy_value_key(f"教师词{index}"): f"教师词{index}"
+                        for index in range(1, 101)
+                    },
+                },
+            )
+
+    governance = Governance()
+    monkeypatch.setattr(read_module, "get_taxonomy_governance", lambda: governance)
+
+    tags = read_module._load_page_tags(
+        connection,
+        list(range(1, 101)),
+        current_knowledge=CurrentKnowledge(),
+    )
+
+    assert governance.calls == 1
+    assert len(tags) == 100
 
 
 def test_question_schema_has_reason_column_and_migration_file(tmp_path: Path) -> None:

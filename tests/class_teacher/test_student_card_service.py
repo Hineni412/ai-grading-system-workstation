@@ -260,8 +260,16 @@ def test_full_student_delete_removes_model_preview_and_result_ciphertexts(
 
 def test_legacy_anonymous_preview_and_student_card_routes_are_retired(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     service, token, subject_id = _unlocked(tmp_path, _proposal())
+
+    def reject_bulk_read(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("selected student read must not scan or drain the class")
+
+    monkeypatch.setattr(service.student_cards, "drain_projection_outbox", reject_bulk_read)
+    monkeypatch.setattr(service.student_cards.projections, "drain", reject_bulk_read)
+    monkeypatch.setattr(service.student_cards.support, "list_subjects", reject_bulk_read)
     app = FastAPI()
     app.state.workspace_services = {"class-teacher": service}
     app.include_router(create_router(), prefix="/api/class-teacher")
@@ -281,6 +289,12 @@ def test_legacy_anonymous_preview_and_student_card_routes_are_retired(
         },
     )
     cards = client.get("/api/class-teacher/student-cards", headers=headers)
+    selected_card = client.get(
+        f"/api/class-teacher/support/subjects/{subject_id}/student-card",
+        headers=headers,
+    )
 
     assert preview.status_code == 404
     assert cards.status_code == 404
+    assert selected_card.status_code == 200
+    assert selected_card.json()["subject"]["subject_id"] == subject_id

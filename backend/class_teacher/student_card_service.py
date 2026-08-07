@@ -65,54 +65,74 @@ class StudentCardService:
         for subject in subjects:
             if not isinstance(subject, dict):
                 continue
-            subject_id = str(subject["subject_id"])
-            with closing(self.database.connect()) as connection:
-                rows = connection.execute(
-                    """
-                    SELECT entry_id, payload_object_id, model_operation_id, created_at
-                    FROM student_card_entries
-                    WHERE subject_id = ? ORDER BY created_at, entry_id
-                    """,
-                    (subject_id,),
-                ).fetchall()
-                entries: list[dict[str, object]] = []
-                for row in rows:
-                    payload, revision = self.repository.get(
-                        connection,
-                        vmk=vmk,
-                        object_id=str(row["payload_object_id"]),
-                    )
-                    projection_rows = connection.execute(
-                        """
-                        SELECT projection_kind, state
-                        FROM student_card_projection_outbox
-                        WHERE entry_id = ? ORDER BY projection_kind
-                        """,
-                        (str(row["entry_id"]),),
-                    ).fetchall()
-                    entries.append(
-                        {
-                            "entry_id": str(row["entry_id"]),
-                            "revision": revision,
-                            "model_operation_id": str(row["model_operation_id"]),
-                            **payload,
-                            "projection_state": self._projection_state(
-                                connection, str(row["entry_id"]), projection_rows
-                            ),
-                            "created_at": str(row["created_at"]),
-                        }
-                    )
-            summary = self.support.get_summary(token=token, subject_id=subject_id)
-            plans = self.support.list_support_plans(token=token, subject_id=subject_id)
             cards.append(
-                {
-                    "subject": subject,
-                    "entries": entries,
-                    "existing_records": summary["items"],
-                    "support_plans": plans["items"],
-                }
+                self._card_for_subject(
+                    token=token,
+                    vmk=vmk,
+                    subject=subject,
+                )
             )
         return {"items": cards}
+
+    def get_card(self, *, token: str, subject_id: str) -> dict[str, object]:
+        """Read one selected student's sensitive card without loading the class."""
+        vmk = self._key_provider(token)
+        subject = self.support.get_subject(token=token, subject_id=subject_id)
+        return self._card_for_subject(token=token, vmk=vmk, subject=subject)
+
+    def _card_for_subject(
+        self,
+        *,
+        token: str,
+        vmk: bytes,
+        subject: dict[str, object],
+    ) -> dict[str, object]:
+        subject_id = str(subject["subject_id"])
+        with closing(self.database.connect()) as connection:
+            rows = connection.execute(
+                """
+                SELECT entry_id, payload_object_id, model_operation_id, created_at
+                FROM student_card_entries
+                WHERE subject_id = ? AND state = 'active'
+                ORDER BY created_at, entry_id
+                """,
+                (subject_id,),
+            ).fetchall()
+            entries: list[dict[str, object]] = []
+            for row in rows:
+                payload, revision = self.repository.get(
+                    connection,
+                    vmk=vmk,
+                    object_id=str(row["payload_object_id"]),
+                )
+                projection_rows = connection.execute(
+                    """
+                    SELECT projection_kind, state
+                    FROM student_card_projection_outbox
+                    WHERE entry_id = ? ORDER BY projection_kind
+                    """,
+                    (str(row["entry_id"]),),
+                ).fetchall()
+                entries.append(
+                    {
+                        "entry_id": str(row["entry_id"]),
+                        "revision": revision,
+                        "model_operation_id": str(row["model_operation_id"]),
+                        **payload,
+                        "projection_state": self._projection_state(
+                            connection, str(row["entry_id"]), projection_rows
+                        ),
+                        "created_at": str(row["created_at"]),
+                    }
+                )
+        summary = self.support.get_summary(token=token, subject_id=subject_id)
+        plans = self.support.list_support_plans(token=token, subject_id=subject_id)
+        return {
+            "subject": subject,
+            "entries": entries,
+            "existing_records": summary["items"],
+            "support_plans": plans["items"],
+        }
 
     def confirm_structure(
         self,

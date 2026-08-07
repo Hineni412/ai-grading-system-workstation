@@ -69,13 +69,14 @@ const stateLabels = { not_started: '未开始', in_progress: '进行中', needs_
       <div class="tp-overview-hero__next">
         <span>建议先处理</span>
         <strong>{{ workbench.lessonStatuses.value[0]?.next_action ?? '建立近期课时' }}</strong>
-        <button class="tp-button tp-button--primary" type="button" :disabled="!lessons[0]" @click="lessons[0] && workbench.openLesson(lessons[0].id)">继续备课</button>
+        <button class="tp-button tp-button--primary" type="button" @click="lessons[0] ? workbench.openLesson(lessons[0].id) : workbench.openWorkspace('materials')">{{ lessons[0] ? '继续备课' : '开始建立课时树' }}</button>
       </div>
     </header>
 
     <div v-if="!lessons.length" class="tp-empty-state">
-      <strong>还没有新授课课时</strong>
-      <p>先在资料库登记教材，或使用已有的新增课时能力逐步建立近期课时。</p>
+      <strong>建立近期课时</strong>
+      <p>选择一份已经解析的教材或教辅，检查发送范围后，再交给 AI 提出待审核的课时树。</p>
+      <button class="tp-button tp-button--primary" type="button" @click="workbench.openWorkspace('materials')">用已解析资料建立近期课时</button>
     </div>
 
     <div v-else class="tp-readiness-matrix" role="table" aria-label="近期课时准备度">

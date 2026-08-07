@@ -72,7 +72,7 @@ describe('ModelProfilesView', () => {
       expect(host.textContent).toContain('请先在下方新增一个 API 站点')
     })
 
-    expect(host.querySelector('h1')?.textContent).toBe('API 站点与工作模型')
+    expect(host.querySelector('.model-profiles-view h1')?.textContent).toBe('API 站点与工作模型')
     expect(host.querySelectorAll('.model-task-row')).toHaveLength(4)
     expect(host.querySelectorAll('.model-task-row select:disabled')).toHaveLength(4)
     expect(host.querySelectorAll('.model-task-row input:disabled')).toHaveLength(4)

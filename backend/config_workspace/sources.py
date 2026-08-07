@@ -14,7 +14,7 @@ import threading
 import uuid
 import zipfile
 from collections.abc import AsyncIterator, Collection, Sequence
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any, Callable, ContextManager, Literal
 from urllib.parse import unquote
@@ -420,6 +420,8 @@ class ConfigSourceService:
             self._enforce_asset_budget(
                 source_dir, asset_files, whole_page_files, blocks=blocks
             )
+            for block in blocks:
+                _strip_embedded_question_section_heading(block)
             questions = _question_previews(blocks, asset_files)
             source_sha256 = digest.hexdigest()
             manifest_path = source_dir / "manifest.json"
@@ -1189,8 +1191,14 @@ class ConfigSourceService:
                 raise ValueError("whole-document DOCX source has no readable text")
             if record.suffix == ".pdf" and not record.private_whole_page_images:
                 raise ValueError("whole-document PDF source has no readable pages")
+            confirmed_blocks: list[dict[str, Any]] = []
+            if record.suffix == ".docx":
+                for private_block in record.private_blocks:
+                    block = copy.deepcopy(private_block)
+                    _strip_embedded_question_section_heading(block)
+                    confirmed_blocks.append(block)
             return PreparedGenerationInput(
-                confirmed_blocks=(),
+                confirmed_blocks=tuple(confirmed_blocks),
                 document_text=record.private_document_text,
                 question_images={},
                 whole_page_images=record.private_whole_page_images,
@@ -1563,7 +1571,11 @@ class ConfigSourceService:
         if not set(normalized_assets).issubset(block_question_ids):
             raise ConfigSourceInvalidError()
         normalized_questions = _question_previews(private_blocks, normalized_assets)
-        if normalized_questions != questions:
+        if normalized_questions != questions and not _matches_legacy_question_previews(
+            questions,
+            normalized_questions,
+            private_blocks,
+        ):
             raise ConfigSourceInvalidError()
 
         expected_roles = _expected_inventory_roles(
@@ -2390,7 +2402,10 @@ def _public_questions_with_rich_content(
     result: list[dict[str, Any]] = []
     for question in questions:
         payload = asdict(question)
-        block = blocks_by_id.get(question.question_id)
+        original_block = blocks_by_id.get(question.question_id)
+        block = copy.deepcopy(original_block) if isinstance(original_block, dict) else None
+        if block is not None:
+            _strip_embedded_question_section_heading(block)
         image_semantic_source = source_suffix == ".pdf" or (
             isinstance(block, dict)
             and str(block.get("semantic_source") or "").strip() == "images"
@@ -2403,6 +2418,25 @@ def _public_questions_with_rich_content(
                     "answer_present": question.has_answer_asset,
                     "needs_review": True,
                     "local_answer_trusted": False,
+                }
+            )
+        elif block is not None:
+            question_value = (
+                block.get("question_html")
+                or block.get("question_text")
+                or block.get("text")
+                or ""
+            )
+            review_reason = _question_type_review_reason(
+                str(block.get("question_type") or question.question_type),
+                question_value,
+            )
+            payload.update(
+                {
+                    "question_preview": _public_preview(question_value),
+                    "answer_preview": _answer_summary(block),
+                    "question_type_review_required": bool(review_reason),
+                    "question_type_review_reason": review_reason,
                 }
             )
         payload["rich_content"] = _config_rich_content(
@@ -2682,12 +2716,6 @@ def _question_previews(
             or block.get("text")
             or ""
         )
-        answer_value = (
-            block.get("answer_html")
-            or block.get("answer_text")
-            or block.get("canonical_answer")
-            or ""
-        )
         type_review_reason = _question_type_review_reason(
             str(block.get("question_type") or "comprehensive"),
             question_value,
@@ -2703,9 +2731,7 @@ def _question_previews(
                 question_preview=(
                     "" if image_semantic_source else _public_preview(question_value)
                 ),
-                answer_preview=(
-                    "" if image_semantic_source else _public_preview(answer_value)
-                ),
+                answer_preview=("" if image_semantic_source else _answer_summary(block)),
                 answer_present=(
                     bool(assets.get("answer"))
                     if image_semantic_source
@@ -2738,6 +2764,39 @@ def _public_preview(value: Any) -> str:
     text = html.unescape(text)
     text = " ".join(text.split())
     return text[:PUBLIC_PREVIEW_CHARACTERS]
+
+
+def _answer_summary(block: dict[str, Any]) -> str:
+    canonical = _public_preview(block.get("canonical_answer") or "")
+    answer = _public_preview(
+        block.get("answer_html") or block.get("answer_text") or ""
+    )
+    lead = canonical or answer
+    if canonical and not canonical.startswith("答案"):
+        lead = f"答案 {canonical}"
+    return lead[:220]
+
+
+def _matches_legacy_question_previews(
+    stored: Sequence[ConfigQuestionPreview],
+    normalized: Sequence[ConfigQuestionPreview],
+    blocks: Sequence[dict[str, Any]],
+) -> bool:
+    """Accept version-2 manifests written before answer previews became summaries."""
+    if len(stored) != len(normalized) or len(stored) != len(blocks):
+        return False
+    legacy: list[ConfigQuestionPreview] = []
+    for question, block in zip(normalized, blocks, strict=True):
+        answer_value = (
+            block.get("answer_html")
+            or block.get("answer_text")
+            or block.get("canonical_answer")
+            or ""
+        )
+        legacy.append(
+            replace(question, answer_preview=_public_preview(answer_value))
+        )
+    return tuple(stored) == tuple(legacy)
 
 
 def _question_type_review_reason(question_type: str, question_value: Any) -> str:
@@ -2780,6 +2839,10 @@ def _strip_embedded_question_section_heading(block: dict[str, Any]) -> None:
             block[field] = value[: match.start()].rstrip()
     html_value = str(block.get("question_html") or "")
     match = _HTML_QUESTION_SECTION_HEADING.search(html_value)
+    if match is None:
+        # DOCX rich text is sometimes stored as newline-delimited plain text in
+        # question_html.  Treat that representation exactly like question_text.
+        match = _QUESTION_SECTION_HEADING.search(html_value.replace("\r", ""))
     if match:
         block["question_html"] = html_value[: match.start()].rstrip()
 

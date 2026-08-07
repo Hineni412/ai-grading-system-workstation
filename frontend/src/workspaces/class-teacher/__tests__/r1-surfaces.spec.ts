@@ -21,6 +21,7 @@ import type { WorkNode, WorkNodeDetail } from '../api/work'
 import WorkNodeInspector from '../ordinary/WorkNodeInspector.vue'
 import AcademicAnalysisPanel from '../students/AcademicAnalysisPanel.vue'
 import StudentDirectoryPanel from '../students/StudentDirectoryPanel.vue'
+import StudentOverviewPanel from '../students/StudentOverviewPanel.vue'
 import SupportReviewPanel from '../students/SupportReviewPanel.vue'
 import ClassTeacherWorkbenchView from '../views/ClassTeacherWorkbenchView.vue'
 
@@ -109,11 +110,31 @@ describe('B UI R1 surfaces', () => {
     vi.spyOn(studentR1Api, 'rosterSource').mockResolvedValue({ items:[], classes:['一班'], source_revision:'r1', total:0, cursor:null })
     const records = vi.spyOn(studentR1Api, 'records')
     const host = await mount(StudentDirectoryPanel, { token:'synthetic-token' })
-    expect(host.textContent).toContain('本页不读取支持正文')
+    expect(host.textContent).toContain('点击卡片查看结构化概览')
     expect(host.textContent).toContain('合成学生')
-    expect(host.textContent).toContain('一班 · 一直沿用到手动更改')
+    expect(host.textContent).toContain('一班')
     expect(directory).toHaveBeenCalledExactlyOnceWith('synthetic-token', expect.objectContaining({ classLabel:'一班', state:'active' }))
     expect(records).not.toHaveBeenCalled()
+  })
+
+  it('opens an existing teacher-confirmed AI structure without starting a new AI task', async () => {
+    const subject = { subject_id:'subject-1234', display_name:'合成学生', source_student_id:'S001', class_label:'一班', support_record_count:3, support_plan_count:1, confirmed_entry_count:2, projection_state:'applied', attention_pending_count:0, last_confirmed_at:'2026-08-01' }
+    const card = vi.spyOn(studentR1Api, 'studentCard').mockResolvedValue({
+      subject,
+      entries:[{
+        entry_id:'entry-1', teacher_confirmed_at:'2026-08-01',
+        portrait:{ summary:'做事认真，数学步骤完整。', strengths:['能按计划完成任务'], needs:['需要巩固计算准确性'], open_questions:['近期状态是否稳定'] },
+        sop:{ title:'两周支持计划', steps:['每周核对一次错题'], review_date:'2026-08-15' },
+      }],
+      existing_records:[], support_plans:[],
+    })
+
+    const host = await mount(StudentOverviewPanel, { token:'synthetic-token', subject })
+
+    expect(card).toHaveBeenCalledExactlyOnceWith('synthetic-token', 'subject-1234')
+    expect(host.textContent).toContain('教师已确认 · AI 结构化整理')
+    expect(host.textContent).toContain('做事认真，数学步骤完整。')
+    expect(host.textContent).toContain('两周支持计划')
   })
 
   it('academic charts obey server segment status and preserve a real zero', async () => {
