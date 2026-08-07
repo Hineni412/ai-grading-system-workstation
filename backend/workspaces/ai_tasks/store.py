@@ -344,6 +344,31 @@ class WorkspaceAITaskStore:
             connection.commit()
         return self.require_task(task_id)
 
+    def discard_result_unknown(self, task_id: str) -> StoredTask:
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            task = self._task_in(connection, task_id)
+            if task.status == "discarded":
+                connection.commit()
+                return task
+            if task.status != "result_unknown":
+                raise ValueError(
+                    "only a result-unknown workspace AI task can be discarded"
+                )
+            connection.execute(
+                """
+                UPDATE workspace_ai_tasks
+                SET status = 'discarded', phase = 'finished', progress = 1,
+                    error_code = NULL, revision = revision + 1,
+                    updated_at = datetime('now','localtime'),
+                    finished_at = datetime('now','localtime')
+                WHERE task_id = ?
+                """,
+                (task_id,),
+            )
+            connection.commit()
+        return self.require_task(task_id)
+
     def list_handoffs(self, task_id: str) -> tuple[HandoffSnapshot, ...]:
         with self._connect() as connection:
             rows = connection.execute(

@@ -40,6 +40,10 @@ export interface JobApi {
   cancelJob(id: number, signal?: AbortSignal): Promise<JobResponse>
 }
 
+interface JobIdListResponse {
+  items: Array<{ id: number; job_type: string }>
+}
+
 function isJobStatus(value: unknown): value is JobStatus {
   return typeof value === 'string' && JOB_STATUSES.some((status) => status === value)
 }
@@ -76,6 +80,52 @@ export function decodeJobResponse(value: unknown): JobResponse {
 function requireJobId(id: number): number {
   if (!Number.isSafeInteger(id) || id <= 0) throw new Error('Invalid Job id')
   return id
+}
+
+function decodeJobIdList(value: unknown): JobIdListResponse {
+  assertNoPathLikeKeys(value)
+  if (
+    !isRecord(value)
+    || !Array.isArray(value.items)
+    || !value.items.every((item) => (
+      isRecord(item)
+      && Number.isSafeInteger(item.id)
+      && Number(item.id) > 0
+      && typeof item.job_type === 'string'
+      && item.job_type.trim().length > 0
+    ))
+  ) {
+    throw new Error('Invalid job list response')
+  }
+  return {
+    items: value.items.map((item) => ({
+      id: Number(item.id),
+      job_type: String(item.job_type),
+    })),
+  }
+}
+
+export async function findLatestJob(
+  sessionId: number,
+  jobType: string,
+): Promise<JobResponse | null> {
+  if (!Number.isSafeInteger(sessionId) || sessionId <= 0) {
+    throw new Error('Invalid session id')
+  }
+  const cleanJobType = jobType.trim()
+  if (!cleanJobType) throw new Error('Invalid job type')
+  const query = new URLSearchParams({
+    session_id: String(sessionId),
+    job_type: cleanJobType,
+    page: '1',
+    page_size: '1',
+  })
+  const page = await apiClient.request(`/api/jobs?${query.toString()}`, {
+    decode: decodeJobIdList,
+  })
+  const summary = page.items[0]
+  if (!summary || summary.job_type !== cleanJobType) return null
+  return jobApi.getJob(summary.id)
 }
 
 export const jobApi: JobApi = {

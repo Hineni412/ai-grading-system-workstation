@@ -77,6 +77,43 @@ beforeEach(async () => {
 })
 
 describe('QuestionBankSyncPanel', () => {
+  it('restores the saved server job after a page refresh', async () => {
+    const restored = job({
+      id: 91,
+      status: 'succeeded',
+      progress: 1,
+      result: {
+        outcome: 'partial',
+        imported_count: 12,
+        question_count: 12,
+        tagged_count: 0,
+        complete_tagged_count: 0,
+        criteria_count: 0,
+        failed_count: 12,
+        retryable: true,
+      },
+    })
+    const latestJobLoader = vi.fn(async () => restored)
+    const host = document.createElement('div')
+    document.body.append(host)
+    const app = createApp(QuestionBankSyncPanel, {
+      sessionId: 7,
+      sessionName: '七年级上册阶段练习',
+      configRevision: 'd'.repeat(64),
+      latestJobLoader,
+      curriculumLoader: vi.fn(async () => curriculum),
+    })
+
+    app.mount(host)
+    await settle()
+
+    expect(latestJobLoader).toHaveBeenCalledExactlyOnceWith(7)
+    expect(host.textContent).toContain('题目入库成功 12 题')
+    expect(host.textContent).toContain('只重试未完成的题库流程')
+    expect(host.textContent).not.toContain('将试卷入库并打标签')
+    app.unmount()
+  })
+
   it('auto-starts the independent job once and exposes its own progress', async () => {
     const host = document.createElement('div')
     document.body.append(host)
@@ -88,6 +125,7 @@ describe('QuestionBankSyncPanel', () => {
       configRevision: 'd'.repeat(64),
       autoStart: true,
       submitter,
+      latestJobLoader: vi.fn(async () => null),
       curriculumLoader: vi.fn(async () => curriculum),
       onAutoStartConsumed: consumed,
     })

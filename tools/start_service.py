@@ -15,6 +15,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from collections.abc import Mapping
 from pathlib import Path
 
 
@@ -57,6 +58,32 @@ def _runtime_python() -> Path:
         if candidate.is_file():
             return candidate.resolve()
     raise FileNotFoundError("Portable Python runtime was not found.")
+
+
+def _service_data_dir(
+    environment: Mapping[str, str],
+    project_root: Path = PROJECT_ROOT,
+) -> Path:
+    """Keep an explicitly selected data directory across a detached restart."""
+
+    configured = (
+        environment.get("AI_GRADING_WORKTREE_DATA_DIR", "").strip()
+        or environment.get("AI_GRADING_DATA_DIR", "").strip()
+    )
+    return Path(configured).resolve() if configured else project_root / "user_data"
+
+
+def _service_api_profiles_path(
+    environment: Mapping[str, str],
+) -> Path:
+    """Use the machine-local profile store unless a full-file override is explicit."""
+
+    configured = environment.get("AI_GRADING_API_PROFILES_PATH", "").strip()
+    return (
+        Path(configured).resolve()
+        if configured
+        else PathManager().api_profiles_path.resolve()
+    )
 
 
 def _listener_exists(port: int) -> bool:
@@ -131,19 +158,18 @@ def main() -> int:
 
     python_exe = _runtime_python()
     runner = PROJECT_ROOT / "tools" / "run_project_module.py"
-    data_dir = PROJECT_ROOT / "user_data"
+    environment = os.environ.copy()
+    data_dir = _service_data_dir(environment)
+    api_profiles_path = _service_api_profiles_path(environment)
     log_dir = data_dir / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
 
-    environment = os.environ.copy()
     environment.update(
         {
             "AI_GRADING_WORKTREE_DATA_DIR": str(data_dir),
             "AI_GRADING_DATA_DIR": str(data_dir),
             "AI_GRADING_OPS_STATE_DIR": str(data_dir / "runtime_state" / "ops"),
-            "AI_GRADING_API_PROFILES_PATH": str(
-                data_dir / "config" / "api_profiles.json"
-            ),
+            "AI_GRADING_API_PROFILES_PATH": str(api_profiles_path),
             "AI_GRADING_NO_BROWSER": "1",
             "PYTHONUTF8": "1",
         }

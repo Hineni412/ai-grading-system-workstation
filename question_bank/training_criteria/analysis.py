@@ -1046,6 +1046,8 @@ class CombinedQuestionAnalysisModule:
         processed_batches = 0
         processed_questions = 0
         stop_scheduling = False
+        stop_category = "cancelled"
+        canary_succeeded = False
 
         def submit_next(
             executor: ThreadPoolExecutor,
@@ -1080,10 +1082,11 @@ class CombinedQuestionAnalysisModule:
         def fill_available_slots(
             executor: ThreadPoolExecutor,
         ) -> None:
+            active_limit = worker_count if canary_succeeded else 1
             while (
                 not stop_scheduling
                 and next_batch_index < len(batches)
-                and len(future_map) < worker_count
+                and len(future_map) < active_limit
             ):
                 submit_next(executor)
 
@@ -1112,9 +1115,11 @@ class CombinedQuestionAnalysisModule:
                         retry=retry,
                         category=category,
                     )
-                    if category == "cancelled":
+                    if _stops_batch_scheduling(category):
                         stop_scheduling = True
+                        stop_category = category
                 else:
+                    canary_succeeded = True
                     self.repository.record_request_finished(
                         request_id=request_id,
                         status="succeeded",
@@ -1186,7 +1191,7 @@ class CombinedQuestionAnalysisModule:
                     batch=remaining,
                     projection=projection,
                     retry=retry,
-                    category="cancelled",
+                    category=stop_category,
                 )
                 processed_batches += 1
                 processed_questions += len(remaining.questions)
@@ -2327,6 +2332,14 @@ def _required_text(value: object, field_name: str) -> str:
 
 
 def _error_category(exc: BaseException) -> str:
+    status_code = getattr(exc, "status_code", None)
+    if not isinstance(status_code, int):
+        response = getattr(exc, "response", None)
+        status_code = getattr(response, "status_code", None)
+    if status_code in {401, 403}:
+        return "authentication"
+    if isinstance(status_code, int) and 400 <= status_code < 500:
+        return "invalid_request"
     text = f"{type(exc).__name__} {exc}".casefold()
     if "timeout" in text:
         return "timeout"
@@ -2337,6 +2350,15 @@ def _error_category(exc: BaseException) -> str:
     if "cancel" in text:
         return "cancelled"
     return "model"
+
+
+def _stops_batch_scheduling(category: str) -> bool:
+    return category in {
+        "authentication",
+        "cancelled",
+        "invalid_request",
+        "parameter_incompatible",
+    }
 
 
 def _hash_payload(value: object) -> str:

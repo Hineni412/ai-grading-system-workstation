@@ -13,7 +13,6 @@ import {
   templateRegionRouteDefinition,
   gradingRunRouteDefinition,
   knowledgeGraphRouteDefinition,
-  modelProfilesRouteDefinition,
   settingsRouteDefinition,
   workbenchRouteDefinition,
 } from '../navigation'

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import math
 import os
 import re
@@ -123,6 +124,9 @@ from backend.teaching_prep.infrastructure.repositories import (
     WorkspaceAIAdoptionRepository,
 )
 from backend.workspaces.ai_tasks.models import RevisionConflictError
+
+
+LOGGER = logging.getLogger(__name__)
 
 
 _TOKEN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,95}$")
@@ -1352,6 +1356,17 @@ class TeachingPrepService:
                 raise TeachingPrepRetryAvailableError(
                     "semester mapping model request parameter is incompatible"
                 ) from exc
+            try:
+                error_category = classify_llm_error(exc).value
+            except Exception:
+                error_category = "unknown"
+            LOGGER.warning(
+                "semester mapping model call ended without a confirmed result "
+                "operation=%s error_type=%s error_category=%s",
+                clean_operation_id,
+                type(exc).__name__,
+                error_category,
+            )
             self.semester_mapping.mark_generation_result_unknown(
                 clean_operation_id,
                 "semester_mapping_model_result_unknown",

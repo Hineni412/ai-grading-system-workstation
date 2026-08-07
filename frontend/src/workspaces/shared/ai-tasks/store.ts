@@ -206,6 +206,13 @@ export const useWorkspaceAITaskStore = defineStore('workspace-ai-tasks', () => {
     track(next)
   }
 
+  async function discard(taskId: string): Promise<void> {
+    const current = tasks.value[taskId]
+    if (!current) throw new Error('Workspace AI task is not tracked')
+    const next = await dependencies.api.discard(current.operation_id)
+    track(next)
+  }
+
   function remove(taskId: string): void {
     stop(taskId)
     references.delete(taskId)
@@ -277,6 +284,7 @@ export const useWorkspaceAITaskStore = defineStore('workspace-ai-tasks', () => {
     track,
     refresh,
     cancel,
+    discard,
     remove,
     stopAll,
   }

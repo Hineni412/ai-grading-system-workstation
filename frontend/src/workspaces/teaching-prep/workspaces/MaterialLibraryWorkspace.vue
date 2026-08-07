@@ -46,6 +46,15 @@ const manualMapping = reactive<{
 })
 const mappingMessage = ref('先导入并解析资料，再逐份建立课时目录。')
 const reviewLessonRef = ref('')
+const semesterSetup = reactive({
+  title: '初中数学',
+  gradeLevel: 8,
+  volume: 'first' as 'first' | 'second' | 'whole_year',
+  schoolYear: '2026-2027',
+  term: 'first' as 'first' | 'second',
+  plannedLessonCount: 60,
+})
+const semesterSetupMessage = ref('')
 let refreshedMappingTaskRevision = ''
 
 const MATERIAL_ROLES: Array<{ value: SemesterMaterialRole; label: string }> = [
@@ -186,11 +195,20 @@ const currentMappingJob = computed(
 )
 const currentMappingTask = computed(() => {
   const semesterId = workbench.catalog.selectedSemester?.id
+  const record = activeSemesterRecord.value
+  const sourceRevision = currentMappingPreflight.value?.source_state_sha256
+  if (!semesterId || !record) return null
   return aiTasks.orderedTasks.find(task => (
     task.module === 'teaching_prep'
     && task.task_kind === 'teaching_prep.semester_mapping'
     && task.source_ref.kind === 'semester'
     && task.source_ref.id === semesterId
+    && (!sourceRevision || task.source_ref.revision === sourceRevision)
+    && task.context_refs.some(reference => (
+      reference.kind === 'material'
+      && reference.id === record.id
+      && reference.revision === String(record.revision)
+    ))
   )) ?? null
 })
 const currentMappingJobSyncError = computed(
@@ -385,9 +403,44 @@ function rolePurpose(role: SemesterMaterialRole): MaterialLinkPurpose {
 }
 
 function suggestedRole(name: string): SemesterMaterialRole {
-  return name.toLowerCase().endsWith('.pptx')
-    ? 'reference_ppt'
-    : 'supplement'
+  const normalized = name.toLowerCase()
+  if (normalized.endsWith('.pptx')) return 'reference_ppt'
+  if (/作业|练习册|同步练/.test(name)) return 'homework_workbook'
+  if (/教材|教科书/.test(name)) return 'textbook'
+  if (/答案|解析/.test(name)) return 'answer_book'
+  return 'supplement'
+}
+
+async function createSemesterContext(): Promise<void> {
+  semesterSetupMessage.value = '正在建立本学期资料容器…'
+  try {
+    if (workbench.catalog.selectedCurriculum) {
+      await workbench.catalog.createSemester({
+        request_token: `semester-${globalThis.crypto.randomUUID().replaceAll('-', '')}`,
+        school_year: semesterSetup.schoolYear.trim(),
+        term: semesterSetup.term,
+        planned_new_lesson_count: semesterSetup.plannedLessonCount,
+      })
+    } else {
+      await workbench.catalog.createSemesterWorkspace({
+        curriculum: {
+          title: semesterSetup.title.trim(),
+          grade_level: semesterSetup.gradeLevel,
+          volume: semesterSetup.volume,
+          publisher: null,
+          edition_label: null,
+        },
+        semester: {
+          school_year: semesterSetup.schoolYear.trim(),
+          term: semesterSetup.term,
+          planned_new_lesson_count: semesterSetup.plannedLessonCount,
+        },
+      })
+    }
+    semesterSetupMessage.value = '学期已建立。现在可在资料卡片上确认角色并加入本学期。'
+  } catch {
+    semesterSetupMessage.value = workbench.catalog.errorMessage || '学期没有建立，请检查填写内容。'
+  }
 }
 
 function fileSizeLabel(size: number): string {
@@ -856,6 +909,20 @@ async function retrySemesterMapping(): Promise<void> {
   }
 }
 
+async function discardUnknownMappingResult(): Promise<void> {
+  const task = currentMappingTask.value
+  if (!task || task.status !== 'result_unknown') return
+  if (!window.confirm(
+    '确定放弃这次无法确认的结果吗？旧记录会保留为“已放弃”，不会自动调用模型；之后可重新检查发送范围。',
+  )) return
+  try {
+    await aiTasks.discard(task.task_id)
+    mappingMessage.value = '旧结果已放弃。请重新检查发送范围；只有再次点击“交给 AI”才会产生新调用。'
+  } catch {
+    mappingMessage.value = '旧结果尚未放弃，请保留当前页面后重试。'
+  }
+}
+
 function editFor(item: SemesterMappingProposalRange) {
   const teacher = item.teacher_revision
   return mappingEdits[item.mapping_id] ??= {
@@ -1117,6 +1184,22 @@ async function saveManualMapping(): Promise<void> {
       </div>
     </section>
 
+    <section v-if="!workbench.catalog.selectedSemester" class="tp-section-block tp-semester-setup">
+      <div>
+        <p class="tp-eyebrow">首次使用</p>
+        <h2>先建立本学期，再选择已解析资料</h2>
+        <p>这一步只建立资料归属，不会调用 AI，也不会重复解析已有文件。</p>
+      </div>
+      <label v-if="!workbench.catalog.selectedCurriculum" class="tp-field">教材名称<input v-model="semesterSetup.title" type="text"></label>
+      <label v-if="!workbench.catalog.selectedCurriculum" class="tp-field">年级<input v-model.number="semesterSetup.gradeLevel" type="number" min="1" max="12"></label>
+      <label v-if="!workbench.catalog.selectedCurriculum" class="tp-field">册别<select v-model="semesterSetup.volume"><option value="first">上册</option><option value="second">下册</option><option value="whole_year">全一册</option></select></label>
+      <label class="tp-field">学年<input v-model="semesterSetup.schoolYear" type="text" placeholder="2026-2027"></label>
+      <label class="tp-field">学期<select v-model="semesterSetup.term"><option value="first">第一学期</option><option value="second">第二学期</option></select></label>
+      <label class="tp-field">计划课时数<input v-model.number="semesterSetup.plannedLessonCount" type="number" min="1" max="300"></label>
+      <div class="tp-inline-actions"><button class="tp-button--primary" type="button" :disabled="workbench.catalog.saveState === 'saving'" @click="createSemesterContext">{{ workbench.catalog.saveState === 'saving' ? '正在建立…' : '建立本学期' }}</button></div>
+      <p v-if="semesterSetupMessage" class="tp-muted" role="status">{{ semesterSetupMessage }}</p>
+    </section>
+
     <section class="tp-section-block tp-directory-actions">
       <div>
         <p class="tp-eyebrow">课时目录整理</p>
@@ -1217,8 +1300,15 @@ async function saveManualMapping(): Promise<void> {
           已确认本次失败。只有点击“重新检查并生成新建议”才会创建新的模型请求。
         </p>
         <p v-if="mappingResultUnknown" class="tp-error-text">
-          应用重启后无法确认模型结果；为避免重复费用，本页不提供重新生成入口。
+          应用重启后无法确认模型结果；为避免重复费用，系统不会自动重试。
         </p>
+        <button
+          v-if="currentMappingTask?.status === 'result_unknown'"
+          type="button"
+          @click="discardUnknownMappingResult"
+        >
+          放弃旧结果，重新准备
+        </button>
       </div>
       <details v-if="currentMappingPreflight" class="tp-mapping-scope-summary">
         <summary>

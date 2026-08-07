@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 
 import type { QuestionBankPaper } from '../api/question-bank'
 import PaperLibrary from '../components/question-bank/PaperLibrary.vue'
@@ -18,6 +18,7 @@ const taxonomyReview = useTaxonomyReviewStore()
 const activePaper = ref<QuestionBankPaper | null>(null)
 const showImport = ref(false)
 const showTaxonomyReview = ref(false)
+let secondaryLoadHandle: ReturnType<typeof setTimeout> | null = null
 
 const activeProgress = computed(() => {
   if (!activePaper.value?.question_count) return 0
@@ -27,11 +28,22 @@ const activeProgress = computed(() => {
 })
 
 onMounted(() => {
-  void Promise.all([
-    bank.loadPapers(),
-    jobStore.initialize(),
-    taxonomyReview.load(),
-  ])
+  // Give the visible paper list the first request slot. Restoring historical
+  // jobs and the review catalog can fan out into many local reads, but neither
+  // is needed to paint the library's first useful screen.
+  void bank.loadPapers().finally(() => {
+    secondaryLoadHandle = setTimeout(() => {
+      secondaryLoadHandle = null
+      void Promise.all([
+        jobStore.initialize(),
+        taxonomyReview.load(),
+      ])
+    }, 750)
+  })
+})
+
+onBeforeUnmount(() => {
+  if (secondaryLoadHandle !== null) clearTimeout(secondaryLoadHandle)
 })
 
 function openPaper(paper: QuestionBankPaper): void {

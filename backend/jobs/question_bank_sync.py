@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -37,6 +38,7 @@ from question_bank.training_criteria import (
 
 QuestionImportRunner = Callable[..., dict[str, object]]
 TaggingSyncRunner = Callable[..., dict[str, object]]
+LOGGER = logging.getLogger(__name__)
 
 
 class StaleQuestionBankSyncError(RuntimeError):
@@ -266,6 +268,7 @@ def run_session_question_bank_sync_job(
             imported_bank_questions=candidates,
             sync_job_id=context.job_id,
             sync_config_revision=config_revision,
+            preserve_existing_confirmed=mode == "tag_retry",
         )
         raw_rollback_changes = link_result.pop("_rollback_changes", [])
         link_rollback_changes = [
@@ -294,6 +297,12 @@ def run_session_question_bank_sync_job(
             tagging_result=tagging_result,
             link_result=link_result,
         )
+        if mode == "tag_retry":
+            result = _merge_tag_retry_result(
+                context=context,
+                current=result,
+                retried_question_ids=question_ids,
+            )
         state = {
             "complete": "ready",
             "partial": "partial",
@@ -395,6 +404,12 @@ def run_session_question_bank_sync_job(
         )
         raise
     except Exception as exc:
+        failure_code = _safe_sync_failure_code(exc)
+        LOGGER.exception(
+            "Session question-bank sync failed for session_id=%s job_id=%s",
+            session_id,
+            context.job_id,
+        )
         if link_rollback_changes:
             link_service.rollback_imported_question_links(
                 grading_session_id=session_id,
@@ -413,11 +428,26 @@ def run_session_question_bank_sync_job(
                 source_sha256=source_sha256,
                 config_revision=config_revision,
                 stage="failed",
+                failure_code=failure_code,
                 retryable=True,
             ),
             error="Question-bank import or tagging failed.",
         )
-        raise RuntimeError("session question-bank sync failed") from exc
+        raise RuntimeError(
+            f"session question-bank sync failed [{failure_code}]"
+        ) from exc
+
+
+def _safe_sync_failure_code(exc: Exception) -> str:
+    if isinstance(exc, FileNotFoundError):
+        return "local_source_file_missing"
+    if isinstance(exc, PermissionError):
+        return "local_storage_permission_denied"
+    if isinstance(exc, ValueError):
+        return "local_import_validation_failed"
+    if isinstance(exc, OSError):
+        return "local_storage_unavailable"
+    return "local_import_failed"
 
 
 def _load_current_inputs(
@@ -589,6 +619,170 @@ def _result(
             restore_paper_id=import_result.get("restore_paper_id"),
         )
     return result
+
+
+def _merge_tag_retry_result(
+    *,
+    context: JobContext,
+    current: dict[str, object],
+    retried_question_ids: list[int],
+) -> dict[str, object]:
+    """Report the whole paper after a retry, not only the retried subset."""
+
+    try:
+        retry_of_job_id = _positive_int(
+            context.payload.get("retry_of_job_id"),
+            "retry_of_job_id",
+        )
+    except (TypeError, ValueError):
+        return current
+    previous_job = context.store.get_job(retry_of_job_id)
+    if (
+        previous_job is None
+        or previous_job.job_type != "question_bank_sync"
+        or int(previous_job.payload.get("session_id") or 0)
+        != int(context.payload.get("session_id") or 0)
+    ):
+        return current
+    previous = dict(previous_job.result)
+    if not previous:
+        return current
+
+    retried = set(retried_question_ids)
+    successful_ids = sorted(
+        (
+            set(_question_ids(
+                previous.get("successful_question_ids"),
+                allow_empty=True,
+            ))
+            - retried
+        )
+        | set(_question_ids(
+            current.get("successful_question_ids"),
+            allow_empty=True,
+        ))
+    )
+    failed_ids = sorted(
+        (
+            set(_question_ids(
+                previous.get("failed_question_ids"),
+                allow_empty=True,
+            ))
+            - retried
+        )
+        | set(_question_ids(
+            current.get("failed_question_ids"),
+            allow_empty=True,
+        ))
+    )
+    question_count = max(
+        int(previous.get("question_count") or 0),
+        int(previous.get("imported_count") or 0),
+        int(current.get("question_count") or 0),
+        len(successful_ids) + len(failed_ids),
+    )
+    proposal_ids = list(dict.fromkeys([
+        *(
+            str(item).strip()
+            for item in previous.get("proposal_ids", [])
+            if str(item).strip()
+        ),
+        *(
+            str(item).strip()
+            for item in current.get("proposal_ids", [])
+            if str(item).strip()
+        ),
+    ]))
+    taxonomy_review_ids = sorted(
+        (
+            set(_question_ids(
+                previous.get("taxonomy_review_question_ids"),
+                allow_empty=True,
+            ))
+            - retried
+        )
+        | set(_question_ids(
+            current.get("taxonomy_review_question_ids"),
+            allow_empty=True,
+        ))
+    )
+    taxonomy_retry_ids = sorted(
+        (
+            set(_question_ids(
+                previous.get("taxonomy_retry_question_ids"),
+                allow_empty=True,
+            ))
+            - retried
+        )
+        | set(_question_ids(
+            current.get("taxonomy_retry_question_ids"),
+            allow_empty=True,
+        ))
+    )
+    criteria_failed_ids = sorted(
+        (
+            set(_question_ids(
+                previous.get("criteria_failed_question_ids"),
+                allow_empty=True,
+            ))
+            - retried
+        )
+        | set(_question_ids(
+            current.get("criteria_failed_question_ids"),
+            allow_empty=True,
+        ))
+    )
+    unresolved = [
+        str(item).strip()
+        for item in current.get("unresolved_question_ids", [])
+        if str(item).strip()
+    ]
+    failed_count = len(failed_ids)
+    complete = (
+        question_count > 0
+        and len(successful_ids) == question_count
+        and failed_count == 0
+        and not unresolved
+    )
+    merged = {
+        **current,
+        "outcome": "complete" if complete else (
+            "partial" if successful_ids else "failed"
+        ),
+        "imported_count": max(
+            int(previous.get("imported_count") or 0),
+            int(current.get("imported_count") or 0),
+        ),
+        "question_count": question_count,
+        "tagged_count": min(
+            question_count,
+            int(previous.get("tagged_count") or 0)
+            + int(current.get("tagged_count") or 0),
+        ),
+        "complete_tagged_count": len(successful_ids),
+        "evidence_count": len(successful_ids),
+        "criteria_count": min(
+            question_count,
+            int(previous.get("criteria_count") or 0)
+            + int(current.get("criteria_count") or 0),
+        ),
+        "criteria_failed_question_ids": criteria_failed_ids,
+        "linked_count": max(
+            int(previous.get("linked_count") or 0),
+            int(current.get("linked_count") or 0),
+        ),
+        "failed_count": failed_count,
+        "successful_question_ids": successful_ids,
+        "failed_question_ids": failed_ids,
+        "unresolved_question_ids": unresolved,
+        "review_count": len(proposal_ids),
+        "proposal_ids": proposal_ids,
+        "taxonomy_review_count": len(taxonomy_review_ids),
+        "taxonomy_review_question_ids": taxonomy_review_ids,
+        "taxonomy_retry_question_ids": taxonomy_retry_ids,
+        "retryable": bool(failed_ids or taxonomy_retry_ids),
+    }
+    return merged
 
 
 def _load_deferred_artifact(

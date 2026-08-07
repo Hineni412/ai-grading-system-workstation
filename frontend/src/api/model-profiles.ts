@@ -544,6 +544,18 @@ export const modelProfilesApi = {
     })
   },
 
+  deleteProfile(
+    profileName: string,
+    signal?: AbortSignal,
+  ): Promise<ModelProfilesState> {
+    const pathName = requireProfilePathName(profileName)
+    return apiClient.request(`/api/model-profiles/${pathName}`, {
+      method: 'DELETE',
+      decode: decodeModelProfilesState,
+      signal,
+    })
+  },
+
   saveTaskBindings(
     bindings: ModelTaskBindings,
     signal?: AbortSignal,

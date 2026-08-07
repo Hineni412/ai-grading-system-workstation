@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import errno
 from pathlib import Path
-from typing import Annotated, Literal, NoReturn
+from typing import Annotated, Any, Literal, NoReturn
 
 from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import FileResponse
@@ -217,7 +217,9 @@ CRITERION_WRITE_ERROR_RESPONSES = {
 
 
 @router.get("/curriculum", response_model=CurriculumCatalog)
-def get_curriculum() -> CurriculumCatalog:
+def get_curriculum(
+    include_knowledge_points: Annotated[bool, Query()] = True,
+) -> CurriculumCatalog:
     try:
         payload = load_curriculum_catalog()
     except CurriculumCatalogError as exc:
@@ -226,6 +228,26 @@ def get_curriculum() -> CurriculumCatalog:
             "curriculum_catalog_unavailable",
             "Curriculum catalog is temporarily unavailable",
         ) from exc
+    if not include_knowledge_points:
+        payload = {
+            **payload,
+            "volumes": [
+                {
+                    **volume,
+                    "chapters": [
+                        {
+                            **chapter,
+                            "sections": [
+                                {**section, "knowledge_points": []}
+                                for section in chapter["sections"]
+                            ],
+                        }
+                        for chapter in volume["chapters"]
+                    ],
+                }
+                for volume in payload["volumes"]
+            ],
+        }
     return CurriculumCatalog(**payload)
 
 
@@ -1894,6 +1916,7 @@ def list_questions(
         "frequency_zhongkao",
         "frequency_contextual",
     ] = "newest",
+    compact: bool = False,
     service: QuestionBankReadService = Depends(get_question_bank_read_service),
 ) -> QuestionListResponse:
     _validate_difficulty_range(difficulty_min, difficulty_max)
@@ -1930,13 +1953,27 @@ def list_questions(
         )
     except QuestionBankSnapshotError as exc:
         _raise_question_snapshot_api_error(exc)
+    items = result.items
+    if compact:
+        items = [_compact_question_list_item(item) for item in items]
     return QuestionListResponse(
-        items=[QuestionListItem(**item) for item in result.items],
+        items=[QuestionListItem(**item) for item in items],
         total=result.total,
         page=result.page,
         page_size=result.page_size,
         total_pages=result.total_pages,
     )
+
+
+def _compact_question_list_item(item: dict[str, Any]) -> dict[str, Any]:
+    """Drop answer document blocks from list previews; detail remains lossless."""
+
+    compact_item = dict(item)
+    rich_content = dict(compact_item.get("rich_content") or {})
+    rich_content["answer_blocks"] = []
+    rich_content["answer_block_count"] = 0
+    compact_item["rich_content"] = rich_content
+    return compact_item
 
 
 @router.get(

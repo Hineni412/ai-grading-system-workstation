@@ -13,10 +13,12 @@ from backend.workspaces.ai_tasks.models import (
     AdoptionResult,
     HandoffDraft,
     HandoffSnapshot,
+    KnownAdapterFailure,
     OpaqueRef,
     RevisionConflictError,
     StoredTask,
 )
+from backend.teaching_prep.domain.errors import TeachingPrepRetryAvailableError
 
 from .preparation_service import TeachingPrepService
 
@@ -32,6 +34,10 @@ _ADOPTION_COMMAND: ContextVar[Mapping[str, object] | None] = ContextVar(
     "teaching_prep_adoption_command",
     default=None,
 )
+
+
+class SemesterMappingRetryAvailableFailure(KnownAdapterFailure):
+    code = "semester_mapping_retry_available"
 
 
 @contextmanager
@@ -62,13 +68,16 @@ class TeachingPrepAITaskAdapter:
     ) -> AdapterResult:
         if task.task_kind == "teaching_prep.semester_mapping":
             material_ids = [ref.id for ref in task.context_refs if ref.kind == "material"]
-            proposal, _created = self.service.generate_semester_mapping_proposal(
-                task.source_ref.id,
-                operation_id=task.operation_id,
-                material_record_ids=material_ids,
-                expected_source_state_sha256=task.source_ref.revision,
-                task_model_gateway=model_gateway,
-            )
+            try:
+                proposal, _created = self.service.generate_semester_mapping_proposal(
+                    task.source_ref.id,
+                    operation_id=task.operation_id,
+                    material_record_ids=material_ids,
+                    expected_source_state_sha256=task.source_ref.revision,
+                    task_model_gateway=model_gateway,
+                )
+            except TeachingPrepRetryAvailableError as exc:
+                raise SemesterMappingRetryAvailableFailure(str(exc)) from exc
             result = self._result(task, proposal.id, str(proposal.revision))
         elif task.task_kind == "teaching_prep.lesson_plan":
             pack_ref = _require_context(task, "resource_pack")
