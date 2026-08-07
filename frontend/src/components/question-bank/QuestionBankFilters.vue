@@ -117,6 +117,7 @@ function changeSort(sort: QuestionBankSort): void {
       v-model:min="draft.difficultyMin"
       v-model:max="draft.difficultyMax"
       class="qb-difficulty-filter"
+      @change="apply"
     />
 
     <details class="qb-more-filters">

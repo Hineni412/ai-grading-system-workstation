@@ -879,7 +879,6 @@ function knowledgeLeafLabel(value: string): string {
           </div>
 
           <div class="assembly-filter-row is-difficulty">
-            <span class="assembly-filter-label">难度</span>
             <DifficultyRangeFilter
               v-model:min="filters.difficultyMin"
               v-model:max="filters.difficultyMax"
