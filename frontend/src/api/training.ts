@@ -59,6 +59,8 @@ export interface PersonalizedRecommendationCreateRequest
   difficulty_min: number
   difficulty_max: number
   stage_ratios: TrainingStageRatios
+  paper_mode?: 'individual' | 'shared'
+  target_keys?: string[]
   target_names: string[]
   exclude_current_exam_originals: boolean
 }

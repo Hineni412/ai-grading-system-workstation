@@ -199,13 +199,18 @@ describe('personalized recommendation draft', () => {
     const generate = host.querySelector<HTMLButtonElement>(
       '[data-testid="generate-personalized-draft"]',
     )
+    expect(generate?.disabled).toBe(true)
+    host.querySelector<HTMLInputElement>('.personalized-targets input[type="checkbox"]')?.click()
+    await settle()
     expect(generate?.disabled).toBe(false)
     generate?.click()
     await settle()
 
     expect(trainingApiMock.createPersonalizedDraft).toHaveBeenCalledWith(
       expect.objectContaining({
+        target_keys: [],
         target_names: ['一元一次方程'],
+        paper_mode: 'individual',
         question_count: 8,
       }),
     )

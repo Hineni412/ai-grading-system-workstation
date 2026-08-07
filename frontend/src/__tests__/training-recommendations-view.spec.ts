@@ -5,7 +5,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { TrainingDiagnosis, TrainingPlanResponse } from '../api/training'
 import { createAppRouter } from '../router'
-import { useJobStore } from '../stores/jobs'
 import { useSessionStore } from '../stores/session'
 import TrainingRecommendationsView from '../views/TrainingRecommendationsView.vue'
 
@@ -56,6 +55,9 @@ const diagnosis = {
     weak_points: [{
       knowledge_key: 'knowledge_point:三角形全等',
       knowledge_point: '三角形全等',
+      parent_knowledge_key: 'section:全等三角形',
+      parent_knowledge_point: '全等三角形',
+      hierarchy_kind: 'child',
       mastery: 0.55,
       score_sum: 11,
       full_score_sum: 20,
@@ -77,6 +79,38 @@ const diagnosis = {
     }],
   }],
   group_weak_points: [{
+    knowledge_key: 'chapter:三角形',
+    knowledge_point: '第四章 三角形',
+    mastery: 0.62,
+    score_sum: 0,
+    full_score_sum: 0,
+    deduction_count: 0,
+    evidence_count: 1,
+    effective_weight: 1,
+    exam_count: 1,
+    source_question_refs: [],
+    actionable_reasons: [],
+    tag_context: {},
+    error_counts: { primary: {}, secondary: {} },
+    hierarchy_kind: 'root',
+  }, {
+    knowledge_key: 'section:全等三角形',
+    knowledge_point: '全等三角形',
+    mastery: 0.58,
+    score_sum: 0,
+    full_score_sum: 0,
+    deduction_count: 0,
+    evidence_count: 1,
+    effective_weight: 1,
+    exam_count: 1,
+    source_question_refs: [],
+    actionable_reasons: [],
+    tag_context: {},
+    error_counts: { primary: {}, secondary: {} },
+    hierarchy_kind: 'parent_summary',
+    parent_knowledge_key: 'chapter:三角形',
+    parent_knowledge_point: '第四章 三角形',
+  }, {
     knowledge_key: 'knowledge_point:三角形全等',
     knowledge_point: '三角形全等',
     mastery: 0.55,
@@ -90,11 +124,23 @@ const diagnosis = {
     actionable_reasons: [],
     tag_context: {},
     error_counts: { primary: {}, secondary: {} },
-    hierarchy_kind: 'root',
+    hierarchy_kind: 'child',
+    parent_knowledge_key: 'section:全等三角形',
+    parent_knowledge_point: '全等三角形',
   }],
   knowledge_catalog: [{
+    knowledge_key: 'chapter:三角形',
+    knowledge_point: '第四章 三角形',
+  }, {
+    knowledge_key: 'section:全等三角形',
+    knowledge_point: '全等三角形',
+    parent_knowledge_key: 'chapter:三角形',
+    parent_knowledge_point: '第四章 三角形',
+  }, {
     knowledge_key: 'knowledge_point:三角形全等',
     knowledge_point: '三角形全等',
+    parent_knowledge_key: 'section:全等三角形',
+    parent_knowledge_point: '全等三角形',
   }],
   coverage: {
     covered_items: 1,
@@ -193,7 +239,7 @@ async function settle(): Promise<void> {
   await nextTick()
 }
 
-async function mountView() {
+async function mountView(path = '/training') {
   const pinia = createPinia()
   setActivePinia(pinia)
   useSessionStore(pinia).$patch({
@@ -210,7 +256,7 @@ async function mountView() {
     loadState: 'ready',
   })
   const router = createAppRouter(createMemoryHistory())
-  await router.push('/training')
+  await router.push(path)
   await router.isReady()
   const host = document.createElement('div')
   document.body.append(host)
@@ -276,14 +322,28 @@ afterEach(() => {
 })
 
 describe('training recommendations view', () => {
-  it('keeps the scope explicit and explains the tag-only recommendation basis', async () => {
+  it('keeps the scope explicit and presents the chapter heat matrix', async () => {
     const { host } = await mountView()
     await vi.waitFor(() => expect(fetchStudentsMock).toHaveBeenCalled())
 
-    expect(host.querySelector('h1')?.textContent).toBe('训练推荐')
-    expect(host.textContent).toContain('精确知识标签')
+    expect(host.querySelector('h1')?.textContent).toBe('按章节训练')
+    expect(host.textContent).toContain('章节学生热力图')
+    expect(host.textContent).toContain('学生 × 知识点')
+    expect(host.textContent).toContain('三角形全等')
     expect(host.textContent).toContain('当前证据范围')
     expect(host.textContent).toContain('缺考参考历史')
+    ;[...host.querySelectorAll<HTMLButtonElement>('button')]
+      .find((button) => button.textContent?.trim() === '群体加权')!
+      .click()
+    await nextTick()
+    expect(host.textContent).toContain('群体加权 × 知识点')
+    expect(host.textContent).toContain('全部班级 · 1 人')
+    expect(host.textContent).toContain('1 / 1 人有效')
+    expect(host.textContent).toContain('1 条证据')
+    ;[...host.querySelectorAll<HTMLButtonElement>('button')]
+      .find((button) => button.textContent?.trim() === '调整')!
+      .click()
+    expect(host.querySelector<HTMLDetailsElement>('.scope-disclosure')?.open).toBe(true)
     await vi.waitFor(() => expect(trainingApiMock.diagnose).toHaveBeenCalledOnce())
   })
 
@@ -330,12 +390,6 @@ describe('training recommendations view', () => {
     host.querySelector<HTMLButtonElement>('[data-testid="apply-evidence-scope"]')!.click()
     await vi.waitFor(() => expect(trainingApiMock.diagnose).toHaveBeenCalledTimes(2))
     resolveFirst(diagnosis)
-    await vi.waitFor(() => expect(
-      [...host.querySelectorAll<HTMLButtonElement>('.training-group-summary button')]
-        .some((button) => button.textContent?.includes('三角形全等')),
-    ).toBe(true))
-    ;[...host.querySelectorAll<HTMLButtonElement>('.training-group-summary button')]
-      .find((button) => button.textContent?.includes('三角形全等'))!.click()
     await vi.waitFor(() => expect(host.textContent).toContain('匿名学生乙'))
 
     expect(host.textContent).not.toContain('匿名学生甲55%')
@@ -406,97 +460,39 @@ describe('training recommendations view', () => {
     expect(trainingApiMock.diagnose.mock.calls[1]?.[0]).toMatchObject({
       scope: { mode: 'all', include_student_ids: ['12', '22'] },
     })
-    await vi.waitFor(() => expect(host.textContent).toContain('当前范围 2 人'))
+    await vi.waitFor(() => expect(host.textContent).toContain('所选 2 人'))
   })
 
-  it('connects diagnosis evidence to the recommendation path and teacher confirmation', async () => {
-    const { host } = await mountView()
-    await vi.waitFor(() => expect(host.textContent).toContain('三角形全等'))
-    ;[...host.querySelectorAll<HTMLButtonElement>('.training-group-summary button')]
-      .find((button) => button.textContent?.includes('三角形全等'))!.click()
-    await vi.waitFor(() => expect(host.textContent).toContain('匿名学生甲'))
-    await vi.waitFor(() => expect(host.textContent).toContain('55%'))
-    expect(host.textContent).toContain('1 条证据')
-    expect(host.textContent).toContain('Q2：题目尚未关联题库来源')
-    host.querySelector<HTMLButtonElement>('[data-testid="weak-point-12-knowledge_point:三角形全等"]')!.click()
-    await settle()
-    expect(host.textContent).toContain('证明步骤缺少依据')
-    expect(host.textContent).toContain('匿名阶段测验 · Q1 · 6 / 10')
+  it('uses a compact roster and a weighted structure in student mode', async () => {
+    const { host } = await mountView('/training?mode=student')
+    await vi.waitFor(() => expect(host.textContent).toContain('学生筛选与群体知识结构'))
 
-    host.querySelector<HTMLButtonElement>('[data-testid="preview-training"]')!.click()
-    await vi.waitFor(() => expect(host.textContent).toContain('与薄弱知识点标签完全相同'))
-    expect(host.textContent).toContain('提升应用阶段缺少 1 道精确标签候选题')
-    expect(host.querySelector('[data-testid="training-ratio-direct"]')).not.toBeNull()
-
-    selectValue(
-      host.querySelector<HTMLSelectElement>('[data-testid="training-question-count"]')!,
-      '8',
-    )
-    await settle()
-    expect(host.textContent).not.toContain('与薄弱知识点标签完全相同')
-    expect(host.querySelector<HTMLButtonElement>('[data-testid="confirm-training"]')).toBeNull()
-
-    host.querySelector<HTMLButtonElement>('[data-testid="preview-training"]')!.click()
-    await vi.waitFor(() => expect(host.textContent).toContain('与薄弱知识点标签完全相同'))
-    host.querySelector<HTMLButtonElement>('[data-testid="confirm-training"]')!.click()
-    await vi.waitFor(() => expect(trainingApiMock.confirm).toHaveBeenCalled())
-    await vi.waitFor(() => expect(host.textContent).toContain('训练任务已保存'))
+    expect(host.querySelector('h1')?.textContent).toBe('按学生训练')
+    expect(host.textContent).toContain('多选学生')
+    expect(host.textContent).toContain('所选学生的加权知识结构')
+    expect(host.querySelectorAll('.student-filter-strip__roster > label')).toHaveLength(1)
+    expect(host.textContent).not.toContain('薄弱原因与评分证据')
   })
 
-  it('exports a saved task and tracks the queued job', async () => {
-    const { host } = await mountView()
-    await vi.waitFor(() => expect(host.textContent).toContain(task.task_code))
-    host.querySelector<HTMLButtonElement>('[data-testid="task-31"]')!.click()
-    await vi.waitFor(() => expect(exportsApiMock.getTrainingTask).toHaveBeenCalled())
-    await vi.waitFor(() => expect(
-      host.querySelector('[data-testid="export-training-task"]'),
-    ).not.toBeNull())
-    expect(host.textContent).toContain('匿名学生甲')
-    expect(host.textContent).toContain('题 11 · 三角形全等')
+  it('uses the compact A paper console and carries selected targets into its summary', async () => {
+    const { host, router } = await mountView('/training?mode=chapter')
+    await vi.waitFor(() => expect(host.textContent).toContain('学生 × 知识点'))
+    host.querySelector<HTMLInputElement>('.chapter-training thead input[type="checkbox"]')!.click()
+    await nextTick()
+    await router.push('/training?mode=paper')
+    await nextTick()
+    await vi.waitFor(() => expect(host.textContent).toContain('出卷设置与草稿'))
 
-    selectValue(
-      host.querySelector<HTMLSelectElement>('[data-testid="training-export-mode"]')!,
-      'variant',
-    )
-    host.querySelector<HTMLButtonElement>('[data-testid="export-training-task"]')!.click()
-    await vi.waitFor(() => expect(exportsApiMock.submitTrainingExport).toHaveBeenCalledWith(
-      31,
-      {
-        variant_id: 301,
-        format: 'docx',
-        audience: 'student',
-      },
-    ))
-    await vi.waitFor(() => expect(host.textContent).toContain('训练材料已加入生成队列'))
-    await vi.waitFor(() => expect(host.textContent).toContain('排队中'))
-  })
-
-  it('shows a recovery action when a completed export can no longer be downloaded', async () => {
-    exportsApiMock.downloadJobFile.mockRejectedValueOnce(new Error('gone'))
-    const { host } = await mountView()
-    const jobStore = useJobStore()
-    jobStore.track({
-      id: 52,
-      job_type: 'training_export',
-      payload: { task_id: 31, format: 'docx' },
-      result: { download_url: '/api/jobs/52/download' },
-      status: 'succeeded',
-      progress: 1,
-      stage: 'completed',
-      detail: '',
-      error: null,
-      cancel_requested: false,
-      created_at: '2026-07-19T01:31:00Z',
-      started_at: '2026-07-19T01:31:00Z',
-      updated_at: '2026-07-19T01:32:00Z',
-      finished_at: '2026-07-19T01:32:00Z',
-    })
-    await settle()
-
-    const download = [...host.querySelectorAll<HTMLButtonElement>('button')]
-      .find((button) => button.textContent?.trim() === '下载')
-    download!.click()
-
-    await vi.waitFor(() => expect(host.textContent).toContain('请重新生成'))
+    expect(host.querySelector('h1')?.textContent).toBe('生成试卷')
+    expect(host.textContent).toContain('一人一卷')
+    expect(host.textContent).toContain('多人同一套卷')
+    expect(host.textContent).toContain('每卷题数')
+    expect(host.textContent).toContain('本次出卷摘要')
+    expect(host.textContent).toContain('预计试卷')
+    expect(host.textContent).toContain('三角形全等')
+    expect(host.querySelector<HTMLButtonElement>('[data-testid="generate-paper-draft"]')?.textContent).toContain('生成 1 份草稿')
+    expect(host.querySelector<HTMLButtonElement>('[data-testid="generate-paper-draft"]')?.disabled).toBe(false)
+    expect(host.textContent).not.toContain('章节学生热力图')
+    expect(host.textContent).not.toContain('薄弱原因与评分证据')
   })
 })

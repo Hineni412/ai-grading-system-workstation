@@ -104,6 +104,46 @@ def test_five_synthetic_students_receive_explainable_different_drafts(
     assert LOCAL_ONE not in serialized and LOCAL_TWO not in serialized
 
 
+def test_shared_mode_keeps_questions_and_order_identical_per_student(
+    recommendation_module: PersonalizedRecommendationModule,
+) -> None:
+    draft = recommendation_module.create(
+        request_token="9" * 32,
+        diagnosis=_diagnosis(student_ids=("SYN-S01", "SYN-S02", "SYN-S03")),
+        config=PersonalizedRecommendationConfig(
+            paper_mode="shared",
+            question_count=8,
+            expected_minutes=120,
+            direct_ratio=0.5,
+            prerequisite_ratio=0.25,
+            transfer_ratio=0.25,
+            target_keys=("kp_alg_linear_equation",),
+        ),
+        actor_ref="teacher-1",
+    )
+
+    question_sequences = [
+        [item["question_id"] for item in student["items"]]
+        for student in draft["students"]
+    ]
+    assert question_sequences[0]
+    assert all(sequence == question_sequences[0] for sequence in question_sequences)
+    assert draft["config"]["paper_mode"] == "shared"
+    with pytest.raises(RecommendationEditInvalid):
+        recommendation_module.edit(
+            draft["draft_id"],
+            RecommendationEditCommand(
+                request_token="8" * 32,
+                expected_revision=1,
+                action="lock",
+                student_id=draft["students"][0]["student_id"],
+                item_id=draft["students"][0]["items"][0]["item_id"],
+                actor_ref="teacher-1",
+                reason="同题模式不能只修改一人",
+            ),
+        )
+
+
 def test_shortage_unknown_difficulty_and_recent_use_fail_closed(
     recommendation_module: PersonalizedRecommendationModule,
 ) -> None:

@@ -107,11 +107,11 @@ export const questionAssemblyRouteDefinition = {
 
 export const trainingRouteDefinition = {
   id: 'training',
-  label: '训练推荐',
+  label: '知识与训练',
   path: '/training',
-  title: '训练推荐',
-  description: '核对薄弱证据、确认精确标签训练计划并生成训练材料',
-  breadcrumb: '训练推荐',
+  title: '知识与训练',
+  description: '按知识结构核对群体证据，人工确定训练范围并生成训练材料',
+  breadcrumb: '知识与训练',
   icon: 'training',
 } as const satisfies WorkspaceRouteDefinition
 
@@ -143,11 +143,11 @@ export const reviewRouteDefinition = {
 
 export const knowledgeGraphRouteDefinition = {
   id: 'knowledge-graph',
-  label: '知识图谱',
+  label: '知识与训练',
   path: '/knowledge-graph',
-  title: '知识图谱',
-  description: '按考试、班级和学生查看知识标签证据',
-  breadcrumb: '知识图谱',
+  title: '知识与训练',
+  description: '查看知识结构、章节学情并为所选学生安排训练',
+  breadcrumb: '知识与训练',
   icon: 'graph',
 } as const satisfies WorkspaceRouteDefinition
 
@@ -229,7 +229,6 @@ export const navigationGroups: readonly WorkspaceNavigationGroup[] = [
     label: '教学分析',
     items: [
       knowledgeGraphRouteDefinition,
-      trainingRouteDefinition,
     ],
   },
   ...(workspaceRegistry.navigationItems.length

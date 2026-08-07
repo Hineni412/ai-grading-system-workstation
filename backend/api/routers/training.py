@@ -244,6 +244,7 @@ def create_personalized_recommendation_draft(
             request_token=body.request_token.lower(),
             diagnosis=diagnosis,
             config=PersonalizedRecommendationConfig(
+                paper_mode=body.paper_mode,
                 question_count=body.question_count,
                 expected_minutes=body.expected_minutes,
                 difficulty_min=body.difficulty_min,
