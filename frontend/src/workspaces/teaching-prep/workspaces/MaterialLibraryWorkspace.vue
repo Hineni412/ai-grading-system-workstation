@@ -5,10 +5,12 @@ import type { JobResponse } from '../../../api/jobs'
 import type {
   MaterialLinkPurpose,
   MaterialVersion,
+  ReferencePptCollection,
   SemesterMappingProposalRange,
   SemesterMaterialRecord,
   SemesterMaterialRole,
 } from '../api/catalog'
+import { teachingPrepCatalogApi } from '../api/catalog'
 import { teachingPrepWorkbenchApi } from '../api/workbench'
 import { useWorkspaceAITaskStore } from '../../shared/ai-tasks/store'
 import { adoptTeachingPrepProposal } from '../aiAdoption'
@@ -91,9 +93,25 @@ interface PendingMaterialImport {
   state: PendingImportState
   materialId: string | null
   error: string
+  folderBatchId: string | null
+  relativePath: string
 }
 
 const pendingImports = ref<PendingMaterialImport[]>([])
+
+interface PendingPptFolderBatch {
+  id: string
+  requestToken: string
+  displayName: string
+  pptCount: number
+  ignoredFileCount: number
+  duplicatePptCount: number
+  state: 'pending' | 'creating' | 'done' | 'failed'
+  error: string
+}
+
+const pendingPptFolders = ref<PendingPptFolderBatch[]>([])
+const referencePptCollections = ref<ReferencePptCollection[]>([])
 
 const activeUnit = computed(
   () => workbench.catalog.materialUnits.find(item => item.id === activeUnitId.value)
@@ -169,6 +187,13 @@ const allMappingsDecided = computed(() => {
   return mappings.length > 0
     && mappings.every(item => item.decision !== 'pending')
 })
+const pendingLocalHighConfidenceCount = computed(() => (
+  activeProposal.value?.payload.generation_source === 'local_reference_ppt_names'
+    ? activeProposal.value.payload.mappings.filter(item => (
+        item.decision === 'pending' && item.confidence === 'high'
+      )).length
+    : 0
+))
 const eligibleSemesterMaterials = computed(
   () => workbench.catalog.semesterMaterials.filter(item => (
     item.is_active
@@ -284,6 +309,21 @@ function openMappingRange(startUnit: number): void {
   goToPage(startUnit)
 }
 
+async function openMappingItem(item: SemesterMappingProposalRange): Promise<void> {
+  const record = workbench.catalog.semesterMaterials.find(
+    value => value.id === item.material_record_id,
+  )
+  const material = record
+    ? workbench.catalog.materials.find(
+        value => value.id === record.current_material_version_id,
+      )
+    : null
+  if (material && material.id !== workbench.catalog.selectedMaterialId) {
+    await openMaterial(material)
+  }
+  openMappingRange(item.start_unit)
+}
+
 function evidenceDisplay(evidenceId: string): { label: string, unit: number | null } {
   const evidence = proposalEvidenceById.value.get(evidenceId)
   if (!evidence) return { label: `${evidenceId}（旧建议未保存证据详情）`, unit: null }
@@ -382,6 +422,7 @@ watch(
   async () => {
     const record = activeSemesterRecord.value
     if (!record || !eligibleSemesterMaterials.value.some(item => item.id === record.id)) return
+    if (record.material_role === 'reference_ppt') return
     await prepareSemesterMapping(true)
   },
   { immediate: true },
@@ -559,12 +600,168 @@ function queueFiles(event: Event): void {
       state: 'pending',
       materialId: null,
       error: '',
+      folderBatchId: null,
+      relativePath: file.name,
     })
   }
   if (files.length > 0) {
     mappingMessage.value = `已加入 ${files.length} 个文件，请逐份确认资料角色后开始导入。`
   }
 }
+
+function queuePptFolder(event: Event): void {
+  const input = event.target as HTMLInputElement
+  const selected = Array.from(input.files ?? [])
+  input.value = ''
+  if (selected.length === 0) return
+  const paths = selected.map(file => (
+    (file as File & { webkitRelativePath?: string }).webkitRelativePath
+      || file.name
+  ).replaceAll('\\', '/'))
+  const firstParts = paths[0]?.split('/').filter(Boolean) ?? []
+  const rootName = firstParts.length > 1 ? firstParts[0]! : '参考课件合集'
+  const pptFiles = selected.filter(file => file.name.toLowerCase().endsWith('.pptx'))
+  const batch: PendingPptFolderBatch = {
+    id: globalThis.crypto.randomUUID(),
+    requestToken: `ppt-folder-${globalThis.crypto.randomUUID().replaceAll('-', '')}`,
+    displayName: rootName,
+    pptCount: pptFiles.length,
+    ignoredFileCount: selected.length - pptFiles.length,
+    duplicatePptCount: 0,
+    state: 'pending',
+    error: '',
+  }
+  if (pptFiles.length === 0) {
+    mappingMessage.value = '这个文件夹中没有找到 PPTX，未导入任何文件。'
+    return
+  }
+  pendingPptFolders.value.push(batch)
+  for (const file of pptFiles) {
+    const rawPath = (
+      (file as File & { webkitRelativePath?: string }).webkitRelativePath
+        || file.name
+    ).replaceAll('\\', '/')
+    const parts = rawPath.split('/').filter(Boolean)
+    const relativePath = parts.length > 1 ? parts.slice(1).join('/') : file.name
+    pendingImports.value.push({
+      id: globalThis.crypto.randomUUID(),
+      file,
+      role: 'reference_ppt',
+      workbookSeries: '',
+      workbookVolume: 'A',
+      state: 'pending',
+      materialId: null,
+      error: '',
+      folderBatchId: batch.id,
+      relativePath,
+    })
+  }
+  mappingMessage.value = (
+    `已选择“${rootName}”：${pptFiles.length} 份 PPTX`
+    + (batch.ignoredFileCount > 0
+      ? `，${batch.ignoredFileCount} 个非 PPT 文件将忽略。`
+      : '。')
+  )
+}
+
+async function loadReferencePptCollections(): Promise<void> {
+  const semesterId = workbench.catalog.selectedSemester?.id
+  if (!semesterId) {
+    referencePptCollections.value = []
+    return
+  }
+  try {
+    referencePptCollections.value = await (
+      teachingPrepCatalogApi.listReferencePptCollections(semesterId)
+    )
+  } catch {
+    // A collection panel failure must not hide the rest of the material library.
+  }
+}
+
+async function createCompletedPptCollections(): Promise<void> {
+  const semesterId = workbench.catalog.selectedSemester?.id
+  if (!semesterId) return
+  for (const batch of pendingPptFolders.value) {
+    if (batch.state === 'done' || batch.state === 'creating') continue
+    const imports = pendingImports.value.filter(item => item.folderBatchId === batch.id)
+    if (imports.length !== batch.pptCount || imports.some(item => item.state !== 'done')) {
+      continue
+    }
+    const membersByRecord = new Map<string, { material_record_id: string; relative_path: string }>()
+    let missingMaterialCount = 0
+    for (const item of imports) {
+      const record = workbench.catalog.semesterMaterials.find(value => (
+        value.current_material_version_id === item.materialId
+      ))
+      if (!record) {
+        missingMaterialCount += 1
+        continue
+      }
+      if (!membersByRecord.has(record.id)) {
+        membersByRecord.set(record.id, {
+          material_record_id: record.id,
+          relative_path: item.relativePath,
+        })
+      }
+    }
+    if (missingMaterialCount > 0) {
+      batch.state = 'failed'
+      batch.error = '个别课件尚未加入本学期，请刷新后重试建立合集。'
+      continue
+    }
+    const members = Array.from(membersByRecord.values())
+    batch.duplicatePptCount = imports.length - members.length
+    batch.state = 'creating'
+    batch.error = ''
+    try {
+      await teachingPrepCatalogApi.createReferencePptCollection(
+        semesterId,
+        {
+          request_token: batch.requestToken,
+          display_name: batch.displayName,
+          ignored_file_count: batch.ignoredFileCount,
+          members,
+        },
+      )
+      batch.state = 'done'
+      await workbench.catalog.load()
+      await loadReferencePptCollections()
+      mappingMessage.value = (
+        `“${batch.displayName}”已收录为课件文件夹，并生成本地课时树建议；`
+        + '没有调用大模型，请在下方核对后确认。'
+      )
+    } catch (error) {
+      batch.state = 'failed'
+      batch.error = failureMessage(error)
+    }
+  }
+}
+
+async function retryPptCollection(batch: PendingPptFolderBatch): Promise<void> {
+  batch.state = 'pending'
+  batch.error = ''
+  await createCompletedPptCollections()
+}
+
+function collectionFolderGroups(collection: ReferencePptCollection): Array<{
+  name: string
+  members: ReferencePptCollection['members']
+}> {
+  const grouped = new Map<string, ReferencePptCollection['members']>()
+  for (const member of collection.members) {
+    const parts = member.relative_path.split('/').filter(Boolean)
+    const name = parts.length > 1 ? parts[0]! : '未分章课件'
+    grouped.set(name, [...(grouped.get(name) ?? []), member])
+  }
+  return [...grouped.entries()].map(([name, members]) => ({ name, members }))
+}
+
+watch(
+  () => workbench.catalog.selectedSemester?.id ?? '',
+  () => { void loadReferencePptCollections() },
+  { immediate: true },
+)
 
 function removePendingImport(id: string): void {
   pendingImports.value = pendingImports.value.filter(item => item.id !== id)
@@ -625,8 +822,17 @@ async function importQueuedFiles(): Promise<void> {
     importBatchRunning.value = false
     await Promise.allSettled(parseTasks)
     await workbench.refreshCurrentWorkspace()
+    const completedFolderCount = pendingPptFolders.value.filter(
+      batch => batch.state === 'done',
+    ).length
+    await createCompletedPptCollections()
+    const createdFolder = pendingPptFolders.value.filter(
+      batch => batch.state === 'done',
+    ).length > completedFolderCount
     mappingMessage.value = failed > 0
       ? `已完成 ${completed} 份，${failed} 份未完成；其余资料已保留，可单独重试失败项。`
+      : createdFolder
+        ? '课件文件夹已完整收录，并生成无需模型的课时树建议，请在下方核对。'
       : `已完成 ${completed} 份资料的受控复制、角色登记和页级解析。`
   } finally {
     importBatchRunning.value = false
@@ -1015,6 +1221,24 @@ async function applyProposal(): Promise<void> {
   }
 }
 
+async function acceptLocalHighConfidenceMappings(): Promise<void> {
+  const proposal = activeProposal.value
+  if (!proposal || pendingLocalHighConfidenceCount.value === 0) return
+  mappingMessage.value = '正在批量确认本机高置信课件命名建议…'
+  try {
+    const updated = await teachingPrepCatalogApi.acceptLocalReferencePptMappings(
+      proposal,
+    )
+    const index = workbench.catalog.semesterMappingProposals.findIndex(
+      item => item.id === updated.id,
+    )
+    if (index >= 0) workbench.catalog.semesterMappingProposals[index] = updated
+    mappingMessage.value = '高置信建议已确认；请继续核对剩余少量疑点。'
+  } catch {
+    mappingMessage.value = '批量确认没有保存，请刷新后重试。'
+  }
+}
+
 async function saveManualMapping(): Promise<void> {
   const material = activeMaterial.value
   const record = activeSemesterRecord.value
@@ -1067,19 +1291,36 @@ async function saveManualMapping(): Promise<void> {
         <h1 data-workbench-title tabindex="-1">建立可复用的学期资料目录</h1>
         <p>逐份确认角色并在本机解析成页级索引；以后备课只引用当前课时需要的几页。</p>
       </div>
-      <label
-        class="tp-button tp-button--secondary tp-file-button"
-        :class="{ 'is-disabled': importBatchRunning }"
-      >
-        选择多份资料
-        <input
-          type="file"
-          multiple
-          accept=".pdf,.pptx,.png,.jpg,.jpeg,.webp"
-          :disabled="importBatchRunning"
-          @change="queueFiles"
+      <div class="tp-inline-actions">
+        <label
+          class="tp-button tp-button--secondary tp-file-button"
+          :class="{ 'is-disabled': importBatchRunning || !workbench.catalog.selectedSemester }"
+          title="选择整个文件夹；只收录其中的 PPTX"
         >
-      </label>
+          导入课件文件夹
+          <input
+            type="file"
+            multiple
+            webkitdirectory
+            directory
+            :disabled="importBatchRunning || !workbench.catalog.selectedSemester"
+            @change="queuePptFolder"
+          >
+        </label>
+        <label
+          class="tp-button tp-button--secondary tp-file-button"
+          :class="{ 'is-disabled': importBatchRunning }"
+        >
+          选择多份资料
+          <input
+            type="file"
+            multiple
+            accept=".pdf,.pptx,.png,.jpg,.jpeg,.webp"
+            :disabled="importBatchRunning"
+            @change="queueFiles"
+          >
+        </label>
+      </div>
     </header>
 
     <div
@@ -1090,6 +1331,60 @@ async function saveManualMapping(): Promise<void> {
       <strong>部分资料信息未更新</strong>
       <span>{{ workbench.catalog.errorMessage }}</span>
     </div>
+
+    <section
+      v-if="pendingPptFolders.length || referencePptCollections.length"
+      class="tp-section-block"
+    >
+      <div class="tp-section-heading">
+        <div>
+          <p class="tp-eyebrow">参考课件文件夹</p>
+          <h2>保留原层级，按命名提出课时树</h2>
+          <p>系统只保存受控副本和虚拟目录；不会移动桌面原文件，也不会调用大模型。</p>
+        </div>
+      </div>
+      <article
+        v-for="batch in pendingPptFolders"
+        :key="batch.id"
+        class="tp-material-card"
+      >
+        <strong>{{ batch.displayName }}</strong>
+        <small>
+          {{ batch.pptCount }} 份 PPTX
+          <template v-if="batch.ignoredFileCount"> · 忽略 {{ batch.ignoredFileCount }} 个其他文件</template>
+          <template v-if="batch.duplicatePptCount"> · {{ batch.duplicatePptCount }} 份重复课件仅收录一次</template>
+          · {{ batch.state === 'done' ? '合集已建立' : batch.state === 'creating' ? '正在建立虚拟目录' : batch.state === 'failed' ? '合集未完成' : '等待导入' }}
+        </small>
+        <span v-if="batch.error" class="tp-error-text">{{ batch.error }}</span>
+        <button
+          v-if="batch.state === 'failed'"
+          type="button"
+          @click="retryPptCollection(batch)"
+        >
+          重试建立合集
+        </button>
+      </article>
+      <details
+        v-for="collection in referencePptCollections"
+        :key="collection.id"
+        class="tp-archive-list"
+        open
+      >
+        <summary>
+          {{ collection.display_name }}（{{ collection.members.length }} 份 PPT）
+        </summary>
+        <div v-for="folder in collectionFolderGroups(collection)" :key="folder.name">
+          <strong>{{ folder.name }}</strong>
+          <ul>
+            <li v-for="member in folder.members" :key="member.id">
+              {{ member.relative_path.split('/').at(-1) }}
+              · {{ member.kind === 'lesson' ? '课时候选' : '章内参考' }}
+              · {{ member.confidence === 'high' ? '高置信' : member.confidence === 'medium' ? '待核对' : '未对应' }}
+            </li>
+          </ul>
+        </div>
+      </details>
+    </section>
 
     <section v-if="pendingImports.length" class="tp-section-block tp-import-queue">
       <div class="tp-section-heading">
@@ -1124,6 +1419,7 @@ async function saveManualMapping(): Promise<void> {
         >
           <div class="tp-import-row__identity">
             <strong>{{ item.file.name }}</strong>
+            <small v-if="item.folderBatchId">{{ item.relativePath }}</small>
             <small>{{ fileSizeLabel(item.file.size) }} · {{ importStateLabel(item) }}</small>
             <small v-if="item.error" class="tp-error-text">{{ item.error }}</small>
             <div
@@ -1203,8 +1499,8 @@ async function saveManualMapping(): Promise<void> {
     <section class="tp-section-block tp-directory-actions">
       <div>
         <p class="tp-eyebrow">课时目录整理</p>
-        <h2>一次整理一份已解析资料</h2>
-        <p>先检查会参考哪些页，再由模型提出待审核建议；模型不会直接修改正式课时树。</p>
+        <h2>教材教辅逐份整理，课件文件夹批量整理</h2>
+        <p>教材教辅先检查发送页再由模型建议；课件合集只在本机按命名建议。两者都须确认后才修改正式课时树。</p>
       </div>
       <label class="tp-field">
         本次资料
@@ -1324,7 +1620,13 @@ async function saveManualMapping(): Promise<void> {
             · 建议需逐条确认后才会写入课时树
           </span>
           <span v-if="currentMappingPreflight.full_page_text_sent === false">
-            未发送全部逐页正文，只发送目录线索与抽样正文锚点。
+            未发送全部逐页正文；
+            <template v-if="currentMappingPreflight.directory_page_images_sent">
+              将发送 {{ currentMappingPreflight.directory_page_image_count ?? 0 }} 张已定位的目录页图片、目录线索与抽样正文锚点。
+            </template>
+            <template v-else>
+              只发送目录线索与抽样正文锚点。
+            </template>
           </span>
           <span
             v-for="issue in currentMappingPreflight.evidence_issues ?? []"
@@ -1527,7 +1829,10 @@ async function saveManualMapping(): Promise<void> {
             <span>{{ activeMappingGroup.pendingCount }} 条待确认</span>
           </div>
           <details v-if="activeProposal.payload.uncertainties.length" class="tp-mapping-uncertainties">
-            <summary>模型标记的疑点（{{ activeProposal.payload.uncertainties.length }}）</summary>
+            <summary>
+              {{ activeProposal.payload.generation_source === 'local_reference_ppt_names' ? '本机识别疑点' : '模型标记的疑点' }}
+              （{{ activeProposal.payload.uncertainties.length }}）
+            </summary>
             <ul><li v-for="item in activeProposal.payload.uncertainties" :key="item">{{ item }}</li></ul>
           </details>
         </template>
@@ -1538,14 +1843,18 @@ async function saveManualMapping(): Promise<void> {
           :class="`is-${item.decision}`"
         >
           <header>
-            <button type="button" @click="openMappingRange(item.start_unit)">
+            <button type="button" @click="openMappingItem(item)">
               {{ item.start_unit }}—{{ item.end_unit }} 页/张 · 查看原页
             </button>
             <span>{{ item.decision === 'pending' ? '待处理' : item.decision }}</span>
           </header>
           <div class="tp-mapping-basis">
-            <strong>模型映射依据</strong>
-            <p>{{ item.basis ?? '旧建议未保存模型依据，请结合原页人工复核。' }}</p>
+            <strong>{{ activeProposal?.payload.generation_source === 'local_reference_ppt_names' ? '本机命名依据' : '模型映射依据' }}</strong>
+            <p>
+              {{ item.basis ?? item.decision_reason ?? (activeProposal?.payload.generation_source === 'local_reference_ppt_names'
+                ? '依据文件夹层级、文件编号、课时标记和首屏标题提出。'
+                : '旧建议未保存模型依据，请结合原页人工复核。') }}
+            </p>
             <div v-if="item.evidence_refs?.length" class="tp-mapping-evidence-list">
               <span>证据</span>
               <button
@@ -1656,6 +1965,14 @@ async function saveManualMapping(): Promise<void> {
     >
       <button class="tp-button tp-button--secondary" type="button" @click="workbench.openStage('select')">
         返回选课时
+      </button>
+      <button
+        v-if="pendingLocalHighConfidenceCount > 0"
+        class="tp-button tp-button--secondary"
+        type="button"
+        @click="acceptLocalHighConfidenceMappings"
+      >
+        确认 {{ pendingLocalHighConfidenceCount }} 条高置信建议
       </button>
       <button
         class="tp-button tp-button--primary"

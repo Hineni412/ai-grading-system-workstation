@@ -401,6 +401,7 @@ class MaterialUnitRepository:
         extracted_text: str,
         formula_review_required: bool,
         printed_page_number: int | None,
+        layout_items: tuple[dict[str, object], ...] = (),
     ) -> MaterialUnit:
         with self._database.connect(immediate=True) as connection:
             row = connection.execute(
@@ -421,6 +422,13 @@ class MaterialUnitRepository:
             summary["ocr_status"] = "completed"
             if extracted_text:
                 summary["text_source"] = "local_ocr"
+            if layout_items:
+                summary["ocr_layout"] = {
+                    "version": 1,
+                    "items": list(layout_items),
+                }
+            else:
+                summary.pop("ocr_layout", None)
             if printed_page_number is not None:
                 summary.update(
                     {

@@ -221,7 +221,16 @@ export const useTeachingPrepCatalogStore = defineStore(
     const currentSemesterMappingProposal = computed(() => {
       const record = selectedSemesterMaterial.value
       const sourceState = currentSemesterMappingPreflight.value?.source_state_sha256
-      if (!record || !sourceState) return null
+      const latestLocalCollection = semesterMappingProposals.value
+        .filter(item => (
+          item.status === 'proposed'
+          && item.payload.generation_source === 'local_reference_ppt_names'
+          && (!record || item.payload.source_material_record_ids.includes(record.id))
+        ))
+        .sort((left, right) => (
+          Date.parse(right.updated_at) - Date.parse(left.updated_at)
+        ))[0] ?? null
+      if (!record || !sourceState) return latestLocalCollection
       const candidates = semesterMappingProposals.value.filter(item => (
         item.status === 'proposed'
         && item.payload.source_material_record_ids.length === 1
@@ -248,7 +257,7 @@ export const useTeachingPrepCatalogStore = defineStore(
       }
       return candidates.sort((left, right) => (
         Date.parse(right.updated_at) - Date.parse(left.updated_at)
-      ))[0] ?? null
+      ))[0] ?? latestLocalCollection
     })
     const currentSemesterMappingJobRecovered = computed(() => (
       currentSemesterMappingJob.value !== null

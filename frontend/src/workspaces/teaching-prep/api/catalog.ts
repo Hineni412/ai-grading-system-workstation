@@ -111,6 +111,35 @@ export interface SemesterMaterialRecord {
   updated_at: string
 }
 
+export interface ReferencePptCollectionMember {
+  id: string
+  collection_id: string
+  material_record_id: string
+  relative_path: string
+  kind: 'lesson' | 'review' | 'strategy' | 'practice'
+  confidence: 'high' | 'medium' | 'low'
+  chapter_number: number | null
+  section_number: number | null
+  subsection_number: number | null
+  lesson_number: number | null
+  normalized_title: string
+  evidence: string[]
+  issues: string[]
+  created_at: string
+}
+
+export interface ReferencePptCollection {
+  id: string
+  semester_id: string
+  display_name: string
+  mapping_proposal_id: string
+  ignored_file_count: number
+  revision: number
+  created_at: string
+  updated_at: string
+  members: ReferencePptCollectionMember[]
+}
+
 export interface SemesterMappingPreflight {
   semester_id: string
   source_state_sha256: string
@@ -126,6 +155,8 @@ export interface SemesterMappingPreflight {
   evidence_strategy?: 'toc_calibrated' | 'toc_unverified' | 'sparse_outline'
   evidence_confidence?: 'high' | 'medium' | 'low'
   scanned_unit_count?: number
+  directory_page_image_count?: number
+  directory_page_images_sent?: boolean
   toc_entry_count?: number
   anchor_count?: number
   estimated_input_characters?: number
@@ -167,6 +198,8 @@ export interface SemesterMappingProposalRange {
   decision_reason: string | null
   basis?: string
   evidence_refs?: string[]
+  confidence?: 'high' | 'medium' | 'low'
+  evidence?: string[]
 }
 
 export interface SemesterMappingProposal {
@@ -180,6 +213,15 @@ export interface SemesterMappingProposal {
     mappings: SemesterMappingProposalRange[]
     uncertainties: string[]
     source_material_record_ids: string[]
+    generation_source?: 'local_reference_ppt_names'
+    summary?: {
+      ppt_count: number
+      lesson_candidate_count: number
+      special_count: number
+      high_confidence_count: number
+      needs_review_count: number
+      chapter_count: number
+    }
     directory_evidence?: {
       strategy: string
       confidence: string
@@ -909,6 +951,8 @@ function semesterMappingPreflight(value: unknown): SemesterMappingPreflight {
     || (value.evidence_strategy !== undefined && !text(value.evidence_strategy))
     || (value.evidence_confidence !== undefined && !text(value.evidence_confidence))
     || (value.scanned_unit_count !== undefined && !integer(value.scanned_unit_count))
+    || (value.directory_page_image_count !== undefined && !integer(value.directory_page_image_count))
+    || (value.directory_page_images_sent !== undefined && typeof value.directory_page_images_sent !== 'boolean')
     || (value.toc_entry_count !== undefined && !integer(value.toc_entry_count))
     || (value.anchor_count !== undefined && !integer(value.anchor_count))
     || (value.estimated_input_characters !== undefined && !integer(value.estimated_input_characters))
@@ -973,6 +1017,48 @@ function semesterMappingProposal(value: unknown): SemesterMappingProposal {
     || !nullableText(value.applied_at)
   ) throw new Error('Invalid semester mapping proposal response')
   return value as unknown as SemesterMappingProposal
+}
+
+function referencePptCollection(value: unknown): ReferencePptCollection {
+  if (
+    !isRecord(value)
+    || !text(value.id)
+    || !text(value.semester_id)
+    || !text(value.display_name)
+    || !text(value.mapping_proposal_id)
+    || !integer(value.ignored_file_count, 0)
+    || !integer(value.revision, 1)
+    || !text(value.created_at)
+    || !text(value.updated_at)
+    || !Array.isArray(value.members)
+    || !value.members.every(referencePptCollectionMember)
+  ) throw new Error('Invalid reference PPT collection response')
+  return value as unknown as ReferencePptCollection
+}
+
+function referencePptCollectionMember(value: unknown): boolean {
+  const nullablePositiveInteger = (item: unknown): boolean => (
+    item === null || integer(item, 1)
+  )
+  return (
+    isRecord(value)
+    && text(value.id)
+    && text(value.collection_id)
+    && text(value.material_record_id)
+    && text(value.relative_path)
+    && ['lesson', 'review', 'strategy', 'practice'].includes(String(value.kind))
+    && ['high', 'medium', 'low'].includes(String(value.confidence))
+    && nullablePositiveInteger(value.chapter_number)
+    && nullablePositiveInteger(value.section_number)
+    && nullablePositiveInteger(value.subsection_number)
+    && nullablePositiveInteger(value.lesson_number)
+    && text(value.normalized_title)
+    && Array.isArray(value.evidence)
+    && value.evidence.every(text)
+    && Array.isArray(value.issues)
+    && value.issues.every(text)
+    && text(value.created_at)
+  )
 }
 
 function validSemesterProposalChapter(value: unknown): boolean {
@@ -1798,6 +1884,46 @@ export const teachingPrepCatalogApi = {
     )
   },
 
+  listReferencePptCollections(
+    semesterId: string,
+    signal?: AbortSignal,
+  ): Promise<ReferencePptCollection[]> {
+    return apiClient.request(
+      `/api/teaching-prep/semesters/${encodeURIComponent(semesterId)}/reference-ppt-collections`,
+      {
+        signal,
+        decode: (payload) => {
+          if (!isRecord(payload) || !Array.isArray(payload.items)) {
+            throw new Error('Invalid reference PPT collection list')
+          }
+          return payload.items.map(referencePptCollection)
+        },
+      },
+    )
+  },
+
+  createReferencePptCollection(
+    semesterId: string,
+    input: {
+      request_token: string
+      display_name: string
+      ignored_file_count: number
+      members: Array<{
+        material_record_id: string
+        relative_path: string
+      }>
+    },
+  ): Promise<ReferencePptCollection> {
+    return apiClient.request(
+      `/api/teaching-prep/semesters/${encodeURIComponent(semesterId)}/reference-ppt-collections`,
+      {
+        method: 'POST',
+        body: input,
+        decode: referencePptCollection,
+      },
+    )
+  },
+
   attachSemesterMaterial(
     semesterId: string,
     input: {
@@ -1920,6 +2046,19 @@ export const teachingPrepCatalogApi = {
           assertNoPathLikeKeys(payload)
           return semesterMappingProposal(payload)
         },
+      },
+    )
+  },
+
+  acceptLocalReferencePptMappings(
+    proposal: SemesterMappingProposal,
+  ): Promise<SemesterMappingProposal> {
+    return apiClient.request(
+      `/api/teaching-prep/semester-mapping-proposals/${encodeURIComponent(proposal.id)}/accept-local-high-confidence`,
+      {
+        method: 'POST',
+        body: { expected_revision: proposal.revision },
+        decode: semesterMappingProposal,
       },
     )
   },

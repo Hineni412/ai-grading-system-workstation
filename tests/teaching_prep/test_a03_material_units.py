@@ -277,21 +277,37 @@ def test_scanned_pdf_uses_local_ocr_without_a_model_call(
         def __init__(self) -> None:
             self.calls = 0
 
-        def __call__(self, _image):
+        def __call__(self, image):
             self.calls += 1
+            height, width = image.shape[:2]
             return (
                 [
                     (
                         [[80, 120], [300, 120], [300, 160], [80, 160]],
-                        "勾股定理",
+                        "目录",
+                        0.99,
+                    ),
+                    (
+                        [[80, 220], [300, 220], [300, 260], [80, 260]],
+                        "第1课时 探索勾股定理",
+                        0.99,
+                    ),
+                    (
+                        [[320, 220], [390, 220], [390, 260], [320, 260]],
+                        "听2",
+                        0.99,
+                    ),
+                    (
+                        [[400, 220], [470, 220], [470, 260], [400, 260]],
+                        "作1",
                         0.99,
                     ),
                     (
                         [
-                            [450, 1280],
-                            [510, 1280],
-                            [510, 1320],
-                            [450, 1320],
+                            [width * 0.45, height * 0.92],
+                            [width * 0.55, height * 0.92],
+                            [width * 0.55, height * 0.97],
+                            [width * 0.45, height * 0.97],
                         ],
                         "88",
                         0.99,
@@ -314,14 +330,178 @@ def test_scanned_pdf_uses_local_ocr_without_a_model_call(
 
     unit = service.parse_material_version(version.id)[0]
 
-    assert fake_ocr.calls == 1
+    assert fake_ocr.calls == 2
     assert unit.text_status == "empty"
-    assert "勾股定理" in unit.text_excerpt
+    assert "探索勾股定理" in unit.text_excerpt
     assert unit.object_summary["text_source"] == "local_ocr"
+    layout = unit.object_summary["ocr_layout"]
+    assert layout["version"] == 1
+    assert len(layout["items"]) == 5
+    assert all(
+        0 <= float(item[field]) <= 1
+        for item in layout["items"]
+        for field in ("x0", "y0", "x1", "y1")
+    )
     assert unit.object_summary["printed_page_number"] == 88
     assert unit.object_summary["printed_page_number_source"] == (
         "local_ocr_footer_or_header"
     )
+
+
+def test_plain_directory_continuation_preserves_right_page_number_layout() -> None:
+    from PIL import Image
+
+    buffer = io.BytesIO()
+    Image.new("RGB", (1000, 1600), "white").save(buffer, format="PNG")
+
+    def fake_ocr(_image):
+        rows = []
+        for index, title in enumerate(
+            (
+                "第1课时 探索勾股定理",
+                "第2课时 勾股定理的验证",
+                "小专题 方程思想",
+                "回顾与思考 勾股定理",
+            ),
+            start=1,
+        ):
+            y = 160 + index * 120
+            rows.extend(
+                [
+                    ([[80, y], [700, y], [700, y + 48], [80, y + 48]], title, 0.99),
+                    ([[900, y], [960, y], [960, y + 48], [900, y + 48]], str(index), 0.99),
+                ]
+            )
+        return rows, 0.01
+
+    parsed = MaterialParser.ocr_preview(buffer.getvalue(), fake_ocr)
+
+    assert len(parsed.layout_items) == 8
+    assert "第1课时 探索勾股定理" in parsed.extracted_text
+
+
+def test_pdf_directory_high_resolution_rechecks_right_page_column(
+    tmp_path: Path,
+) -> None:
+    class SplitColumnOcr:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def __call__(self, image):
+            self.calls += 1
+            height, width = image.shape[:2]
+            rows = []
+            if width < height * 0.2:
+                for index in range(1, 5):
+                    y = height * (0.18 + index * 0.08)
+                    rows.append(
+                        (
+                            [[20, y], [80, y], [80, y + 36], [20, y + 36]],
+                            str(index),
+                            0.99,
+                        )
+                    )
+                return rows, 0.01
+            for index in range(1, 5):
+                y = height * (0.18 + index * 0.08)
+                rows.append(
+                    (
+                        [[80, y], [700, y], [700, y + 36], [80, y + 36]],
+                        f"第{index}课时 合成标题",
+                        0.99,
+                    )
+                )
+                if index <= 3:
+                    rows.append(
+                        (
+                            [
+                                [width * 0.93, y],
+                                [width * 0.97, y],
+                                [width * 0.97, y + 36],
+                                [width * 0.93, y + 36],
+                            ],
+                            str(index),
+                            0.99,
+                        )
+                    )
+            return rows, 0.01
+
+    fake_ocr = SplitColumnOcr()
+    parsed = MaterialParser.ocr_pdf_page(
+        _scanned_pdf(tmp_path / "plain-directory.pdf"),
+        unit_index=1,
+        ocr_engine=fake_ocr,
+    )
+
+    assert fake_ocr.calls == 2
+    assert [
+        item["text"]
+        for item in parsed.layout_items
+        if str(item["text"]).isdigit()
+    ] == ["1", "2", "3", "4"]
+
+
+def test_landscape_directory_rechecks_listen_and_work_columns(
+    tmp_path: Path,
+) -> None:
+    from PIL import Image
+
+    buffer = io.BytesIO()
+    Image.new("RGB", (900, 600), "white").save(buffer, format="PNG")
+    document = fitz.open()
+    source = tmp_path / "landscape-directory.pdf"
+    try:
+        page = document.new_page(width=900, height=600)
+        page.insert_image(page.rect, stream=buffer.getvalue())
+        document.save(source)
+    finally:
+        document.close()
+
+    class TrackColumnOcr:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def __call__(self, image):
+            self.calls += 1
+            height, width = image.shape[:2]
+            if width < height * 0.3:
+                if self.calls == 2:
+                    return [
+                        (
+                            [[40, 1200], [180, 1200], [180, 1260], [40, 1260]],
+                            "听25",
+                            0.99,
+                        )
+                    ], 0.01
+                return [], 0.01
+            rows = []
+            for index in range(4):
+                y = 480 + index * 360
+                rows.extend(
+                    [
+                        (
+                            [[160, y], [900, y], [900, y + 80], [160, y + 80]],
+                            f"第{index + 1}课时 合成标题",
+                            0.99,
+                        ),
+                        (
+                            [[1600, y], [1740, y], [1740, y + 80], [1600, y + 80]],
+                            f"作{19 + index * 2}",
+                            0.99,
+                        ),
+                    ]
+                )
+            return rows, 0.01
+
+    fake_ocr = TrackColumnOcr()
+    parsed = MaterialParser.ocr_pdf_page(
+        source,
+        unit_index=1,
+        ocr_engine=fake_ocr,
+    )
+
+    assert fake_ocr.calls == 3
+    assert "听25" in [item["text"] for item in parsed.layout_items]
 
 
 def test_empty_ocr_result_is_persisted_and_not_repeated(

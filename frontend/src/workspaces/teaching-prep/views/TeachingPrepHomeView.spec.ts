@@ -375,11 +375,34 @@ describe('TeachingPrepHomeView workbench shell', () => {
 
   it('blocks manifest query navigation while the current lesson has unsaved edits', async () => {
     const { semesterId, lessonIds } = mockCatalogWithLessons()
+    vi.mocked(teachingPrepWorkbenchApi.referencePreflight).mockImplementation(async lessonId => ({
+      lesson_node_id: lessonId,
+      source_state_sha256: 'a'.repeat(64),
+      catalog: {
+        lesson: {},
+        material_links: ['主课件 A', '主课件 B'].map((name, index) => ({
+          link_id: `ppt-${index + 1}`,
+          link_revision: 1,
+          purpose: 'reference_ppt',
+          material_version_id: `version-${index + 1}`,
+          material_name: name,
+          material_type: 'pptx',
+          content_sha256: String(index + 1).repeat(64),
+          start_unit: 1,
+          end_unit: 10,
+          units: [],
+        })),
+      },
+      draft: null,
+      model_available: false,
+      model_label: null,
+      model_destination_fingerprint: 'f'.repeat(64),
+      will_call_model: false,
+    }))
     const confirm = vi.spyOn(globalThis, 'confirm').mockReturnValue(false)
     const { app, host, router } = await mountAt(`?view=lesson&semester=${semesterId}&lesson=${lessonIds[0]}&stage=materials&panel=sources`)
-    const textarea = host.querySelector('textarea') as HTMLTextAreaElement
-    textarea.value = '尚未保存的说明'
-    textarea.dispatchEvent(new Event('input', { bubbles: true }))
+    const radios = host.querySelectorAll<HTMLInputElement>('input[name="primary-reference-ppt"]')
+    radios[1]?.click()
     await nextTick()
 
     await router.push('/teaching-prep?view=library')

@@ -34,6 +34,10 @@ from backend.teaching_prep.application.pptx_execution import (
 from backend.teaching_prep.application.pptx_verification import (
     verify_candidate_with_deadline,
 )
+from backend.teaching_prep.application.reference_ppt_collections import (
+    ReferencePptInput,
+    infer_reference_ppt_collection,
+)
 from backend.teaching_prep.application.lesson_drafts import (
     build_local_template,
     calculate_capacity,
@@ -1176,6 +1180,13 @@ class TeachingPrepService:
             "evidence_strategy": directory_evidence["strategy"],
             "evidence_confidence": directory_evidence["confidence"],
             "scanned_unit_count": len(directory_evidence["scanned_unit_indices"]),
+            "directory_page_image_count": min(
+                6,
+                len(directory_evidence["directory_page_unit_indices"]),
+            ),
+            "directory_page_images_sent": bool(
+                directory_evidence["directory_page_unit_indices"]
+            ),
             "toc_entry_count": len(directory_evidence["toc_entries"]),
             "anchor_count": len(directory_evidence["anchors"]),
             "estimated_input_characters": evidence_character_estimate(
@@ -1293,6 +1304,12 @@ class TeachingPrepService:
             report("calling_model")
 
         try:
+            model_snapshot["directory_page_images"] = (
+                self._directory_page_images(
+                    snapshot,
+                    directory_evidence=directory_evidence,
+                )
+            )
             model_kwargs = {
                 "operation_id": clean_operation_id,
                 "semester_snapshot": model_snapshot,
@@ -1450,6 +1467,68 @@ class TeachingPrepService:
                 "semester mapping did not complete; the teacher may retry"
             ) from exc
 
+    def _directory_page_images(
+        self,
+        snapshot: Mapping[str, object],
+        *,
+        directory_evidence: Mapping[str, object],
+    ) -> list[dict[str, object]]:
+        source_units = {
+            int(item.get("source_unit") or 0)
+            for item in directory_evidence.get("toc_entries", [])
+            if isinstance(item, Mapping)
+        }
+        source_units.update(
+            int(item)
+            for item in directory_evidence.get(
+                "directory_page_unit_indices",
+                [],
+            )
+            if isinstance(item, int) and item > 0
+        )
+        source_units.discard(0)
+        if not source_units:
+            return []
+        materials = snapshot.get("materials")
+        if not isinstance(materials, list) or len(materials) != 1:
+            return []
+        material = materials[0]
+        if not isinstance(material, Mapping):
+            return []
+        version_id = str(material.get("current_version_id") or "").strip()
+        if not version_id:
+            return []
+        by_index = {
+            int(item.unit_index): item.id
+            for item in self.material_units.list_units(version_id)
+        }
+        result: list[dict[str, object]] = []
+        total_bytes = 0
+        for unit_index in sorted(source_units)[:6]:
+            unit_id = str(by_index.get(unit_index) or "").strip()
+            if not unit_id:
+                continue
+            preview = self.material_preview_path(unit_id)
+            content = preview.read_bytes()
+            total_bytes += len(content)
+            if total_bytes > 15_000_000:
+                break
+            mime_type = (
+                "image/jpeg"
+                if preview.suffix.lower() in {".jpg", ".jpeg"}
+                else "image/webp"
+                if preview.suffix.lower() == ".webp"
+                else "image/png"
+            )
+            result.append(
+                {
+                    "unit_index": unit_index,
+                    "mime_type": mime_type,
+                    "content": content,
+                }
+            )
+        return result
+
     def discard_semester_mapping_result_unknown(
         self,
         semester_id: str,
@@ -1496,6 +1575,105 @@ class TeachingPrepService:
     ) -> tuple[SemesterMappingProposal, ...]:
         return self.semester_mapping.list(
             _clean_entity_id(semester_id)
+        )
+
+    def create_reference_ppt_collection(
+        self,
+        semester_id: str,
+        *,
+        request_token: str,
+        display_name: str,
+        ignored_file_count: int,
+        members: Sequence[Mapping[str, object]],
+    ):
+        clean_semester_id = _clean_entity_id(semester_id)
+        if not 1 <= len(members) <= 500:
+            raise TeachingPrepValidationError(
+                "reference PPT collection requires 1 to 500 PPTX files"
+            )
+        clean_members: list[tuple[str, str]] = []
+        for member in members:
+            clean_members.append(
+                (
+                    _clean_entity_id(str(member.get("material_record_id") or "")),
+                    _clean_text(
+                        str(member.get("relative_path") or ""),
+                        "relative_path",
+                        maximum=600,
+                    ),
+                )
+            )
+        material_ids = tuple(record_id for record_id, _path in clean_members)
+        if len(set(material_ids)) != len(material_ids):
+            raise TeachingPrepValidationError(
+                "reference PPT collection contains duplicate materials"
+            )
+        snapshot, _digest_value = self.semester_mapping.snapshot(
+            clean_semester_id,
+            material_ids,
+        )
+        material_by_id = {
+            str(item["record_id"]): item for item in snapshot["materials"]
+        }
+        inputs: list[ReferencePptInput] = []
+        for record_id, relative_path in clean_members:
+            material = material_by_id[record_id]
+            units = list(material.get("units") or [])
+            first_unit = dict(units[0]) if units else {}
+            first_title = str(first_unit.get("title") or "").strip() or None
+            if first_title is None:
+                first_lines = str(
+                    first_unit.get("text_excerpt") or ""
+                ).splitlines()
+                first_title = (
+                    first_lines[0].strip() or None
+                    if first_lines
+                    else None
+                )
+            inputs.append(
+                ReferencePptInput(
+                    material_record_id=record_id,
+                    relative_path=relative_path,
+                    file_name=Path(relative_path).name,
+                    unit_count=int(material["unit_count"]),
+                    first_slide_title=first_title,
+                )
+            )
+        proposal_payload = infer_reference_ppt_collection(
+            inputs,
+            existing_lessons=list(snapshot["lessons"]),
+        )
+        return self.semester_mapping.create_local_reference_ppt_collection(
+            semester_id=clean_semester_id,
+            request_token=_clean_token(request_token),
+            display_name=_clean_text(
+                display_name,
+                "display_name",
+                maximum=160,
+            ),
+            ignored_file_count=_clean_nonnegative_int(
+                ignored_file_count,
+                "ignored_file_count",
+                maximum=10_000,
+            ),
+            material_record_ids=material_ids,
+            payload=proposal_payload,
+        )
+
+    def list_reference_ppt_collections(self, semester_id: str):
+        return self.semester_mapping.list_reference_ppt_collections(
+            _clean_entity_id(semester_id)
+        )
+
+    def accept_local_reference_ppt_mappings(
+        self,
+        proposal_id: str,
+        *,
+        expected_revision: int,
+    ) -> SemesterMappingProposal:
+        return self.semester_mapping.accept_local_high_confidence(
+            _clean_entity_id(proposal_id),
+            expected_revision=_clean_revision(expected_revision),
         )
 
     def apply_semester_mapping_proposal(
@@ -1963,6 +2141,17 @@ class TeachingPrepService:
                         preview.read_bytes(),
                         ocr_engine,
                     )
+                    if (
+                        parsed_text.layout_items
+                        and version.material_type == "pdf"
+                    ):
+                        high_resolution = self.material_parser.ocr_pdf_page(
+                            source_path,
+                            unit_index=item.unit_index,
+                            ocr_engine=ocr_engine,
+                        )
+                        if high_resolution.layout_items:
+                            parsed_text = high_resolution
                     self.material_units.update_local_ocr(
                         item.id,
                         source_version_sha256=version.content_sha256,
@@ -1973,6 +2162,7 @@ class TeachingPrepService:
                         printed_page_number=(
                             parsed_text.printed_page_number
                         ),
+                        layout_items=parsed_text.layout_items,
                     )
                 if progress_callback is not None:
                     progress_callback("ocr", completed_ocr, ocr_total)
@@ -4395,6 +4585,18 @@ def _clean_unit_count(value: int | None) -> int | None:
     clean = int(value)
     if clean < 0:
         raise TeachingPrepValidationError("unit_count is invalid")
+    return clean
+
+
+def _clean_nonnegative_int(
+    value: int,
+    field: str,
+    *,
+    maximum: int,
+) -> int:
+    clean = int(value)
+    if clean < 0 or clean > maximum:
+        raise TeachingPrepValidationError(f"{field} is invalid")
     return clean
 
 

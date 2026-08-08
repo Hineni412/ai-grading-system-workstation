@@ -12,7 +12,11 @@ from backend.teaching_prep.domain.errors import (
     TeachingPrepRetryAvailableError,
     TeachingPrepStateError,
 )
-from backend.teaching_prep.domain.models import SemesterMappingProposal
+from backend.teaching_prep.domain.models import (
+    ReferencePptCollection,
+    ReferencePptCollectionMember,
+    SemesterMappingProposal,
+)
 from backend.teaching_prep.infrastructure.database import TeachingPrepDatabase
 
 
@@ -318,6 +322,66 @@ class SemesterMappingRepository:
                 )
             return self._get(connection, proposal.id)
 
+    def accept_local_high_confidence(
+        self,
+        proposal_id: str,
+        *,
+        expected_revision: int,
+    ) -> SemesterMappingProposal:
+        with self._database.connect(immediate=True) as connection:
+            proposal = self._get(connection, proposal_id)
+            if proposal.status != "proposed" or proposal.revision != expected_revision:
+                raise TeachingPrepConflictError(
+                    "mapping proposal changed; refresh before reviewing"
+                )
+            payload = dict(proposal.payload)
+            if payload.get("generation_source") != "local_reference_ppt_names":
+                raise TeachingPrepConflictError(
+                    "only a local reference PPT proposal supports bulk review"
+                )
+            material_ids = tuple(
+                str(item) for item in payload["source_material_record_ids"]
+            )
+            _snapshot, digest = self._snapshot(
+                connection,
+                proposal.semester_id,
+                material_ids,
+            )
+            if digest != proposal.source_state_sha256:
+                raise TeachingPrepConflictError(
+                    "semester lessons or materials changed; review a new proposal"
+                )
+            mappings = [dict(item) for item in payload["mappings"]]
+            changed = 0
+            for mapping in mappings:
+                if (
+                    str(mapping.get("decision") or "pending") == "pending"
+                    and str(mapping.get("confidence") or "") == "high"
+                ):
+                    mapping["decision"] = "accepted"
+                    mapping["decision_reason"] = (
+                        "教师批量确认本机高置信课件命名建议"
+                    )
+                    mapping["teacher_revision"] = None
+                    changed += 1
+            if changed == 0:
+                return proposal
+            payload["mappings"] = mappings
+            updated = connection.execute(
+                """
+                UPDATE semester_mapping_proposals
+                SET payload_json = ?, revision = revision + 1,
+                    updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                WHERE id = ? AND revision = ? AND status = 'proposed'
+                """,
+                (_json(payload), proposal.id, expected_revision),
+            ).rowcount
+            if updated != 1:
+                raise TeachingPrepConflictError(
+                    "mapping proposal changed; refresh before reviewing"
+                )
+            return self._get(connection, proposal.id)
+
     def reject(
         self,
         proposal_id: str,
@@ -414,6 +478,288 @@ class SemesterMappingRepository:
                 (semester_id,),
             ).fetchall()
         return tuple(_proposal(row) for row in rows)
+
+    def create_local_reference_ppt_collection(
+        self,
+        *,
+        semester_id: str,
+        request_token: str,
+        display_name: str,
+        ignored_file_count: int,
+        material_record_ids: Sequence[str],
+        payload: dict[str, object],
+    ) -> tuple[ReferencePptCollection, bool]:
+        with self._database.connect(immediate=True) as connection:
+            snapshot, source_digest = self._snapshot(
+                connection,
+                semester_id,
+                material_record_ids,
+            )
+            request_values = {
+                "semester_id": semester_id,
+                "display_name": display_name,
+                "ignored_file_count": ignored_file_count,
+                "material_record_ids": list(material_record_ids),
+                "source_state_sha256": source_digest,
+                "members": payload.get("collection_members", []),
+            }
+            request_hash = _digest(request_values)
+            existing = connection.execute(
+                """
+                SELECT id, request_hash
+                FROM reference_ppt_collections
+                WHERE request_token = ?
+                """,
+                (request_token,),
+            ).fetchone()
+            if existing is not None:
+                if str(existing["request_hash"]) != request_hash:
+                    raise TeachingPrepConflictError(
+                        "reference PPT collection request token was reused"
+                    )
+                return self._get_reference_ppt_collection(
+                    connection,
+                    str(existing["id"]),
+                ), False
+            snapshot_ids = {
+                str(item["record_id"])
+                for item in snapshot["materials"]
+            }
+            if snapshot_ids != set(material_record_ids):
+                raise TeachingPrepConflictError(
+                    "reference PPT collection materials changed"
+                )
+            if any(
+                str(item.get("material_role") or "") != "reference_ppt"
+                for item in snapshot["materials"]
+            ):
+                raise TeachingPrepConflictError(
+                    "reference PPT collection only accepts reference PPT materials"
+                )
+            operation_id = f"ppt-collection-{uuid4().hex}"
+            collection_id = uuid4().hex
+            proposal_id = uuid4().hex
+            members = list(payload.get("collection_members") or [])
+            reviewable_payload = dict(payload)
+            reviewable_payload.pop("collection_members", None)
+            reviewable_payload["mappings"] = [
+                {
+                    **dict(item),
+                    "mapping_id": uuid4().hex,
+                    "decision": "pending",
+                    "teacher_revision": None,
+                    "decision_reason": item.get("decision_reason"),
+                }
+                for item in list(payload.get("mappings") or [])
+            ]
+            connection.execute(
+                """
+                INSERT INTO teaching_prep_operations (
+                    operation_id,
+                    operation_type,
+                    idempotency_key,
+                    request_hash,
+                    target_kind,
+                    target_id,
+                    status,
+                    error_code,
+                    finished_at
+                )
+                VALUES (?, 'reference_ppt_collection_local', ?, ?,
+                        'semester', ?, 'succeeded', NULL,
+                        strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+                """,
+                (
+                    operation_id,
+                    request_token,
+                    request_hash,
+                    semester_id,
+                ),
+            )
+            connection.execute(
+                """
+                INSERT INTO semester_mapping_proposals (
+                    id,
+                    semester_id,
+                    operation_id,
+                    source_state_sha256,
+                    payload_json
+                )
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    proposal_id,
+                    semester_id,
+                    operation_id,
+                    source_digest,
+                    _json(reviewable_payload),
+                ),
+            )
+            connection.execute(
+                """
+                INSERT INTO reference_ppt_collections (
+                    id,
+                    semester_id,
+                    request_token,
+                    request_hash,
+                    display_name,
+                    mapping_proposal_id,
+                    ignored_file_count
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    collection_id,
+                    semester_id,
+                    request_token,
+                    request_hash,
+                    display_name,
+                    proposal_id,
+                    ignored_file_count,
+                ),
+            )
+            if len(members) != len(material_record_ids):
+                raise TeachingPrepConflictError(
+                    "reference PPT collection member count is invalid"
+                )
+            for member in members:
+                item = dict(member)
+                record_id = str(item.get("material_record_id") or "")
+                if record_id not in snapshot_ids:
+                    raise TeachingPrepConflictError(
+                        "reference PPT collection contains an unknown material"
+                    )
+                connection.execute(
+                    """
+                    INSERT INTO reference_ppt_collection_members (
+                        id,
+                        collection_id,
+                        material_record_id,
+                        relative_path,
+                        kind,
+                        confidence,
+                        chapter_number,
+                        section_number,
+                        subsection_number,
+                        lesson_number,
+                        normalized_title,
+                        evidence_json,
+                        issues_json
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        uuid4().hex,
+                        collection_id,
+                        record_id,
+                        str(item["relative_path"]),
+                        str(item["kind"]),
+                        str(item["confidence"]),
+                        item.get("chapter_number"),
+                        item.get("section_number"),
+                        item.get("subsection_number"),
+                        item.get("lesson_number"),
+                        str(item["title"]),
+                        _json(list(item.get("evidence") or [])),
+                        _json(list(item.get("issues") or [])),
+                    ),
+                )
+            return self._get_reference_ppt_collection(
+                connection,
+                collection_id,
+            ), True
+
+    def list_reference_ppt_collections(
+        self,
+        semester_id: str,
+    ) -> tuple[ReferencePptCollection, ...]:
+        with self._database.connect() as connection:
+            if connection.execute(
+                "SELECT 1 FROM teaching_semesters WHERE id = ?",
+                (semester_id,),
+            ).fetchone() is None:
+                raise TeachingPrepNotFoundError("semester was not found")
+            rows = connection.execute(
+                """
+                SELECT id
+                FROM reference_ppt_collections
+                WHERE semester_id = ?
+                ORDER BY created_at DESC, id DESC
+                """,
+                (semester_id,),
+            ).fetchall()
+            return tuple(
+                self._get_reference_ppt_collection(connection, str(row["id"]))
+                for row in rows
+            )
+
+    @staticmethod
+    def _get_reference_ppt_collection(
+        connection: sqlite3.Connection,
+        collection_id: str,
+    ) -> ReferencePptCollection:
+        row = connection.execute(
+            "SELECT * FROM reference_ppt_collections WHERE id = ?",
+            (collection_id,),
+        ).fetchone()
+        if row is None:
+            raise TeachingPrepNotFoundError(
+                "reference PPT collection was not found"
+            )
+        member_rows = connection.execute(
+            """
+            SELECT *
+            FROM reference_ppt_collection_members
+            WHERE collection_id = ?
+            ORDER BY relative_path, id
+            """,
+            (collection_id,),
+        ).fetchall()
+        return ReferencePptCollection(
+            id=str(row["id"]),
+            semester_id=str(row["semester_id"]),
+            display_name=str(row["display_name"]),
+            mapping_proposal_id=str(row["mapping_proposal_id"]),
+            ignored_file_count=int(row["ignored_file_count"]),
+            revision=int(row["revision"]),
+            created_at=str(row["created_at"]),
+            updated_at=str(row["updated_at"]),
+            members=tuple(
+                ReferencePptCollectionMember(
+                    id=str(member["id"]),
+                    collection_id=str(member["collection_id"]),
+                    material_record_id=str(member["material_record_id"]),
+                    relative_path=str(member["relative_path"]),
+                    kind=str(member["kind"]),
+                    confidence=str(member["confidence"]),
+                    chapter_number=(
+                        int(member["chapter_number"])
+                        if member["chapter_number"] is not None
+                        else None
+                    ),
+                    section_number=(
+                        int(member["section_number"])
+                        if member["section_number"] is not None
+                        else None
+                    ),
+                    subsection_number=(
+                        int(member["subsection_number"])
+                        if member["subsection_number"] is not None
+                        else None
+                    ),
+                    lesson_number=(
+                        int(member["lesson_number"])
+                        if member["lesson_number"] is not None
+                        else None
+                    ),
+                    normalized_title=str(member["normalized_title"]),
+                    evidence=tuple(json.loads(str(member["evidence_json"]))),
+                    issues=tuple(json.loads(str(member["issues_json"]))),
+                    created_at=str(member["created_at"]),
+                )
+                for member in member_rows
+            ),
+        )
 
     def apply(
         self,
@@ -1013,6 +1359,7 @@ def _compact_object_summary(value: str) -> dict[str, object]:
         "printed_page_number",
         "printed_page_number_source",
         "text_source",
+        "ocr_layout",
     }
     return {
         str(key): item
