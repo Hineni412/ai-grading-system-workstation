@@ -1450,6 +1450,46 @@ class TeachingPrepService:
                 "semester mapping did not complete; the teacher may retry"
             ) from exc
 
+    def discard_semester_mapping_result_unknown(
+        self,
+        semester_id: str,
+        *,
+        material_record_ids: Sequence[str],
+        expected_source_state_sha256: str | None = None,
+    ) -> bool:
+        """Release the durable no-resend guard after explicit teacher discard."""
+        clean_semester_id = _clean_entity_id(semester_id)
+        clean_material_ids = tuple(
+            dict.fromkeys(
+                _clean_entity_id(item) for item in material_record_ids
+            )
+        )
+        if len(clean_material_ids) != 1:
+            raise TeachingPrepValidationError(
+                "semester mapping handles one material at a time"
+            )
+        _snapshot, source_digest = self.semester_mapping.snapshot(
+            clean_semester_id,
+            clean_material_ids,
+        )
+        if (
+            expected_source_state_sha256 is not None
+            and source_digest != str(expected_source_state_sha256).strip()
+        ):
+            raise TeachingPrepConflictError(
+                "semester lessons or materials changed; check the send scope again"
+            )
+        request_hash = _stable_hash(
+            {
+                "semester_id": clean_semester_id,
+                "material_record_ids": clean_material_ids,
+                "source_state_sha256": source_digest,
+            }
+        )
+        return self.semester_mapping.discard_interrupted_generation(
+            request_hash=request_hash,
+        )
+
     def list_semester_mapping_proposals(
         self,
         semester_id: str,

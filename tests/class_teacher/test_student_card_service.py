@@ -112,6 +112,106 @@ def test_existing_subjects_render_as_one_empty_card_each(tmp_path: Path) -> None
     assert card["entries"] == []
     assert card["existing_records"] == []
     assert card["support_plans"] == []
+    assert card["current_profile"] == {
+        "entry_id": None,
+        "revision": 0,
+        "summary": "",
+        "dimensions": [],
+        "open_questions": [],
+        "support_focus": [],
+        "updated_at": None,
+    }
+
+
+def test_current_profile_is_merged_in_place_without_creating_versions(
+    tmp_path: Path,
+) -> None:
+    service, token, subject_id = _unlocked(tmp_path, _proposal())
+    vmk = service.session_key(token)
+    first_profile = {
+        "summary": "当前愿意表达困难，也需要拆分长任务。",
+        "dimensions": [{
+            "key": "learning_ability",
+            "label": "学习与能力",
+            "items": ["长任务需要拆成短步骤"],
+        }],
+        "open_questions": ["书面步骤卡是否更有效"],
+        "support_focus": [{
+            "key": "focus_task_steps",
+            "title": "长任务支持",
+            "need": "降低开始长任务的困难",
+            "effective_methods": [],
+            "next_actions": ["尝试书面步骤卡"],
+        }],
+    }
+    second_profile = {
+        "summary": "愿意表达困难，书面步骤卡比连续口头提醒更有效。",
+        "dimensions": [{
+            "key": "effective_methods",
+            "label": "已验证有效的方法",
+            "items": ["书面步骤卡比连续口头提醒更有效"],
+        }],
+        "open_questions": [],
+        "support_focus": [{
+            "key": "focus_task_steps",
+            "title": "长任务支持",
+            "need": "逐步提升独立完成长任务的能力",
+            "effective_methods": ["书面步骤卡"],
+            "next_actions": ["逐渐减少步骤卡提示"],
+        }],
+    }
+
+    with closing(service.database.connect()) as connection:
+        with connection:
+            first = service.student_cards.upsert_current_profile_in_connection(
+                connection,
+                vmk=vmk,
+                subject_id=subject_id,
+                profile_update=first_profile,
+                expected_revision=0,
+                operation_id="profile-current-save-001",
+                model_operation_id="profile-model-result-001",
+                teacher_quote="合成第一轮输入",
+                model_draft="合成第一轮草稿",
+            )
+        with connection:
+            second = service.student_cards.upsert_current_profile_in_connection(
+                connection,
+                vmk=vmk,
+                subject_id=subject_id,
+                profile_update=second_profile,
+                expected_revision=int(first["revision"]),
+                operation_id="profile-current-save-002",
+                model_operation_id="profile-model-result-002",
+                teacher_quote="合成第二轮输入",
+                model_draft="合成第二轮草稿",
+            )
+        count = connection.execute(
+            "SELECT COUNT(*) FROM student_card_entries WHERE subject_id=? AND state='active'",
+            (subject_id,),
+        ).fetchone()[0]
+
+    card = service.student_cards.get_card(token=token, subject_id=subject_id)
+    current = card["current_profile"]
+
+    assert first["entry_id"] == second["entry_id"]
+    assert int(second["revision"]) == int(first["revision"]) + 1
+    assert count == 1
+    assert len(card["entries"]) == 1
+    assert current["summary"] == second_profile["summary"]
+    assert {item["key"] for item in current["dimensions"]} == {
+        "learning_ability",
+        "effective_methods",
+    }
+    assert current["support_focus"][0]["effective_methods"] == ["书面步骤卡"]
+    contexts = service.student_cards.model_contexts_for_mentions(
+        token=token,
+        class_label="合成一班",
+        text="合成学生甲和同学发生分歧，需要先了解双方情况。",
+    )
+    assert len(contexts) == 1
+    assert contexts[0]["display_name"] == "合成学生甲"
+    assert contexts[0]["profile"]["summary"] == second_profile["summary"]
 
 
 def test_teacher_confirmation_persists_card_and_only_anonymous_projections(

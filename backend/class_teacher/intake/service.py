@@ -28,6 +28,7 @@ class ClassTeacherIntake:
         work,
         sop,
         sop_baselines,
+        student_cards,
         model_gateway,
         ai_tasks: WorkspaceAITaskPort | None = None,
     ) -> None:
@@ -48,6 +49,7 @@ class ClassTeacherIntake:
             sop,
             sop_baselines,
             class_roster,
+            student_cards,
         )
         bind_adoption = getattr(task_port, "bind_adoption", None)
         if callable(bind_adoption):
@@ -57,6 +59,7 @@ class ClassTeacherIntake:
             class_roster,
             self.adoption,
             model_gateway,
+            student_cards,
         )
         self.model_gateway = model_gateway
         self._cloud_audio_lock = threading.Lock()
@@ -64,9 +67,26 @@ class ClassTeacherIntake:
     def bind_ai_tasks(self, ai_tasks: WorkspaceAITaskPort) -> None:
         self.conversations.ai_tasks = ai_tasks
 
-    def start_conversation(self) -> dict[str, object]:
+    def start_conversation(
+        self,
+        *,
+        token: str = "",
+        subject_id: str | None = None,
+    ) -> dict[str, object]:
         preference = self.preferences.get()
-        return self.conversations.start(homeroom_class=preference.get("homeroom_class"))
+        subject = (
+            None
+            if not str(subject_id or "").strip()
+            else self.ai_task_adapter.student_cards.support.get_subject(
+                token=token,
+                subject_id=str(subject_id),
+            )
+        )
+        return self.conversations.start(
+            homeroom_class=preference.get("homeroom_class"),
+            focused_subject_id=None if subject is None else str(subject["subject_id"]),
+            focused_subject_revision=None if subject is None else str(subject["revision"]),
+        )
 
     def append_turn(self, **kwargs) -> dict[str, object]:
         with self._cloud_audio_lock:

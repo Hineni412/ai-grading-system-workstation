@@ -182,7 +182,7 @@ class ActiveProfileApprovedModelGateway:
         purpose: str,
         expected_destination_fingerprint: str,
     ) -> str:
-        """Call through TW-F1's enforced metadata-only, zero-retry gateway."""
+        """Call through the local-diagnostic, zero-retry shared Task gateway."""
 
         resolved = self._resolve()
         current = _destination_snapshot(resolved)

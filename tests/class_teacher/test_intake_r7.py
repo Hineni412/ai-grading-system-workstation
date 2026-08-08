@@ -16,6 +16,7 @@ from fastapi.testclient import TestClient
 from backend.api.app import ApiError
 from backend.class_teacher.api.router import create_router
 from backend.class_teacher.errors import VaultError
+from backend.class_teacher.intake.ai_task_adapter import _parse_model_payload
 from backend.class_teacher.intake.ports import FakeWorkspaceAITaskPort
 from backend.class_teacher.intake.triage_contract import parse_triage
 from backend.class_teacher.local_speech import LocalSpeechTranscriber
@@ -24,6 +25,19 @@ from backend.workspaces.contracts import WorkspaceContext
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
+
+def test_class_teacher_uses_diagnostics_local_json_repair_for_terminal_closers() -> None:
+    expected = {
+        "contract_version": "class_teacher_triage.v1",
+        "assistant_message": "已整理",
+        "clarification_questions": [],
+        "work_items": [{"draft": {"summary": "合成事务"}}],
+    }
+    serialized = json.dumps(expected, ensure_ascii=False)
+    malformed = serialized[:-3] + serialized[-2:]
+
+    assert _parse_model_payload(malformed) == expected
 
 
 def _service(tmp_path: Path) -> tuple[VaultService, FakeWorkspaceAITaskPort]:
@@ -108,6 +122,99 @@ def test_local_speech_api_returns_text_without_creating_a_conversation(tmp_path:
     assert transcription.json()["text"] == "合成本地语音转写。"
     assert transcription.json()["audio_retained"] is False
     assert service.intake.list_conversations()["items"] == []
+
+
+def test_student_profile_conversation_keeps_the_selected_student_in_every_task(
+    tmp_path: Path,
+) -> None:
+    service, port = _service(tmp_path)
+    subject = service.support.create_subject(
+        token="",
+        operation_id="profile-conversation-subject",
+        source_student_id="SYN-PROFILE-001",
+        display_name="合成学生甲",
+        class_label="一班",
+    )
+
+    conversation = service.intake.start_conversation(
+        token="",
+        subject_id=str(subject["subject_id"]),
+    )
+    queued = service.intake.append_turn(
+        conversation_id=str(conversation["conversation_id"]),
+        expected_revision=int(conversation["revision"]),
+        message="最近更愿意在小组里主动分工。",
+        operation_id="profile-conversation-turn-001",
+    )
+
+    assert queued["focused_subject_id"] == subject["subject_id"]
+    assert queued["focused_subject_revision"] == str(subject["revision"])
+    assert port.prepare_calls[-1]["context_refs"] == [
+        {
+            "kind": "turn",
+            "id": queued["turns"][-1]["turn_id"],
+            "revision": "1",
+        },
+        {
+            "kind": "student_profile",
+            "id": subject["subject_id"],
+            "revision": str(subject["revision"]),
+        },
+    ]
+    request = service.intake.ai_task_adapter.build_model_request(
+        task_kind="class_teacher.intake_triage",
+        source_ref={
+            "kind": "conversation",
+            "id": queued["conversation_id"],
+            "revision": str(queued["revision"]),
+        },
+        context_refs=list(port.prepare_calls[-1]["context_refs"]),
+    )
+    joined = "\n".join(str(item["content"]) for item in request.messages)
+    assert "当前会话从一个已选学生的档案页发起" in joined
+    assert "当前学生档案与支持情况" in joined
+    assert str(subject["subject_id"]) in joined
+
+    normalized = service.intake.ai_task_adapter.normalize_triage_result(
+        conversation=queued,
+        result={
+            "contract_version": "class_teacher_triage.v1",
+            "assistant_message": "已整理到当前档案。",
+            "clarification_questions": [],
+            "work_items": [{
+                "work_item_id": "profile-work-item-001",
+                "domain": "student_growth",
+                "primary_mode": "record",
+                "secondary_modes": [],
+                "intent": "append",
+                "reason_summary": "补充学生当前档案",
+                "subject_refs": [],
+                "time_facts": [],
+                "safety_level": "normal",
+                "missing_fields": [],
+                "draft": {
+                    "summary": "最近更愿意在小组里主动分工。",
+                    "profile_update": {
+                        "summary": "在小组合作中开始表现出主动分工意愿。",
+                        "dimensions": [{
+                            "key": "peer_relationships",
+                            "label": "同伴与人际关系",
+                            "items": ["近期更愿意在小组中主动分工"],
+                        }],
+                        "open_questions": ["遇到意见不同时能否继续参与讨论"],
+                        "support_focus": [],
+                    },
+                },
+            }],
+        },
+    )
+    item = normalized["work_items"][0]
+    assert item["subject_refs"] == [{
+        "kind": "student",
+        "id": subject["subject_id"],
+        "revision": str(subject["revision"]),
+    }]
+    assert item["draft"]["profile_base_revision"] == 0
 
 
 def test_local_speech_api_rejects_non_wav_without_invoking_engine(tmp_path: Path) -> None:
@@ -400,6 +507,154 @@ def test_conversation_turn_uses_safe_task_reference_and_replays_operation(tmp_pa
         )
 
 
+def test_reused_model_work_item_id_is_namespaced_per_turn(tmp_path: Path) -> None:
+    service, port = _service(tmp_path)
+    first, first_turn = _conversation_with_turn(
+        service,
+        "reused-model-item-first",
+        message="第一段合成事务",
+    )
+    first_task = port.prepare_calls[-1]
+    first_outcome = service.intake.ai_task_adapter.persist_model_result(
+        task_id=str(first_turn["task_id"]),
+        source_ref=first_task["source_ref"],
+        context_refs=first_task["context_refs"],
+        result=_triage(),
+    )
+
+    second, second_turn = _conversation_with_turn(
+        service,
+        "reused-model-item-second",
+        message="第二段合成事务",
+    )
+    second_task = port.prepare_calls[-1]
+    second_outcome = service.intake.ai_task_adapter.persist_model_result(
+        task_id=str(second_turn["task_id"]),
+        source_ref=second_task["source_ref"],
+        context_refs=second_task["context_refs"],
+        result=_triage(),
+    )
+
+    first_saved = service.intake.conversations.get(str(first["conversation_id"]))
+    second_saved = service.intake.conversations.get(str(second["conversation_id"]))
+    assert first_outcome["handoff_ids"]
+    assert second_outcome["handoff_ids"]
+    assert first_saved["handoffs"][0]["work_item_id"] != second_saved["handoffs"][0]["work_item_id"]
+
+
+def test_explicit_teacher_sop_request_promotes_model_secondary_sop(
+    tmp_path: Path,
+) -> None:
+    service, port = _service(tmp_path)
+    conversation, turn = _conversation_with_turn(
+        service,
+        "explicit-sop-request",
+        message="请按 SOP 方式整理这次合成争执，不作欺凌认定。",
+    )
+    task = port.prepare_calls[-1]
+    result = {
+        "contract_version": "class_teacher_triage.v1",
+        "assistant_message": "已整理合成争执。",
+        "clarification_questions": [],
+        "work_items": [_work_item(
+            "model-record-with-sop-secondary",
+            domain="conflict_safety",
+            mode="record",
+            intent="create",
+            secondary=["sop"],
+            draft={"summary": "合成争执，当前没有即时危险。"},
+        )],
+    }
+
+    service.intake.ai_task_adapter.persist_model_result(
+        task_id=str(turn["task_id"]),
+        source_ref=task["source_ref"],
+        context_refs=task["context_refs"],
+        result=result,
+    )
+
+    saved = service.intake.conversations.get(str(conversation["conversation_id"]))
+    assert saved["handoffs"][0]["handling_mode"] == "sop"
+    assert saved["handoffs"][0]["destination_key"] == "class_teacher.affair.sop"
+
+
+def test_sop_adoption_reuses_legacy_student_code_subject_for_roster_candidate(
+    tmp_path: Path,
+) -> None:
+    service, port = _service(tmp_path)
+    preference = service.intake.preferences.get()
+    service.intake.preferences.set(
+        homeroom_class="一班",
+        expected_revision=0,
+        expected_source_revision=str(preference["source_revision"]),
+        operation_id="homeroom-for-sop-subject",
+    )
+    candidate = service.class_roster.ai_candidates(
+        token="",
+        class_label="一班",
+    )[0]
+    source = service.class_roster.resolve_opaque_ref(
+        token="",
+        opaque_ref=candidate["id"],
+        expected_revision=candidate["revision"],
+    )
+    subject = service.support.create_subject(
+        token="",
+        operation_id="existing-subject-for-sop",
+        source_student_id=source.student_code,
+        display_name=source.display_name,
+        class_label=source.class_label,
+    )
+    conversation, turn = _conversation_with_turn(
+        service,
+        "sop-current-roster-candidate",
+        message="请按 SOP 方式处理合成学生甲的争执。",
+    )
+    task = port.prepare_calls[-1]
+    result = {
+        "contract_version": "class_teacher_triage.v1",
+        "assistant_message": "已整理合成 SOP。",
+        "clarification_questions": [],
+        "work_items": [_work_item(
+            "sop-current-roster-item",
+            domain="conflict_safety",
+            mode="sop",
+            intent="follow_up",
+            refs=[{
+                "kind": "student",
+                "id": candidate["id"],
+                "revision": candidate["revision"],
+            }],
+            draft={
+                "summary": "合成学生争执，目前没有即时危险。",
+                "template_key": "baseline.student_conflict",
+            },
+        )],
+    }
+    outcome = service.intake.ai_task_adapter.persist_model_result(
+        task_id=str(turn["task_id"]),
+        source_ref=task["source_ref"],
+        context_refs=task["context_refs"],
+        result=result,
+    )
+    handoff = service.intake.open_handoff(str(outcome["handoff_ids"][0]))
+
+    receipt = service.intake.adopt_handoff(
+        token="",
+        handoff_id=str(handoff["handoff_id"]),
+        draft_revision=int(handoff["draft_revision"]),
+        target_revision="new",
+        operation_id="adopt-sop-current-roster-candidate",
+    )
+
+    assert receipt["formal_object_type"] == "sop_affair"
+    affair = service.sop.get_affair(
+        token="",
+        affair_id=str(receipt["formal_object_id"]),
+    )
+    assert affair["participants"][0]["subject_id"] == subject["subject_id"]
+
+
 def test_conversation_waits_for_running_turn_and_stales_previous_handoffs_on_new_source(tmp_path: Path) -> None:
     service, port = _service(tmp_path)
     conversation, turn = _conversation_with_turn(service, "conversation-running-guard")
@@ -501,6 +756,81 @@ def test_b_adapter_reads_full_domain_text_but_forces_metadata_only_and_zero_retr
     assert request.metadata_only is True
     assert request.automatic_retry is False
     assert request.max_send_attempts == 1
+
+
+def test_general_affair_keeps_mentioned_student_profile_context_on_follow_up(
+    tmp_path: Path,
+) -> None:
+    service, _ = _service(tmp_path)
+    subject = service.support.create_subject(
+        token="",
+        operation_id="general-affair-profile-subject",
+        source_student_id="SYN-GENERAL-001",
+        display_name="合成学生甲",
+        class_label="一班",
+    )
+    with closing(service.database.connect()) as connection:
+        with connection:
+            service.student_cards.upsert_current_profile_in_connection(
+                connection,
+                vmk=service.student_cards._key_provider(""),
+                subject_id=str(subject["subject_id"]),
+                profile_update={
+                    "summary": "遇到分歧时需要先给出安静表达的时间。",
+                    "dimensions": [{
+                        "key": "peer_relationships",
+                        "label": "同伴与人际关系",
+                        "items": ["在多人争论中容易暂时退出"],
+                    }],
+                    "open_questions": [],
+                    "support_focus": [],
+                },
+                expected_revision=0,
+                operation_id="general_affair_profile_create",
+                model_operation_id="synthetic-model-context",
+                teacher_quote="合成档案原话",
+                model_draft="合成档案草稿",
+            )
+
+    conversation, first_turn = _conversation_with_turn(
+        service,
+        "general-affair-first-turn",
+        message="合成学生甲和同学发生分歧。",
+    )
+    ready = service.intake.apply_triage_result(
+        turn_id=str(first_turn["turn_id"]),
+        task_id=str(first_turn["task_id"]),
+        payload={
+            "contract_version": "class_teacher_triage.v1",
+            "assistant_message": "还需要了解后续情况。",
+            "clarification_questions": ["之后发生了什么？"],
+            "work_items": [],
+        },
+    )
+    continued = service.intake.append_turn(
+        conversation_id=str(conversation["conversation_id"]),
+        expected_revision=int(ready["revision"]),
+        message="他后来愿意重新回到讨论中。",
+        operation_id="general-affair-follow-up",
+    )
+    request = service.intake.ai_task_adapter.build_model_request(
+        task_kind="class_teacher.intake_triage",
+        source_ref={
+            "kind": "conversation",
+            "id": continued["conversation_id"],
+            "revision": str(continued["revision"]),
+        },
+        context_refs=[{
+            "kind": "turn",
+            "id": continued["turns"][-1]["turn_id"],
+            "revision": "1",
+        }],
+    )
+    joined = "\n".join(str(item["content"]) for item in request.messages)
+
+    assert "本机找到的涉事学生当前档案" in joined
+    assert "遇到分歧时需要先给出安静表达的时间" in joined
+    assert "他后来愿意重新回到讨论中" in joined
 
 
 def test_first_global_roster_student_is_linked_only_inside_confirmed_record_transaction(tmp_path: Path) -> None:
@@ -703,6 +1033,86 @@ def test_student_record_adoption_receipt_is_idempotent(tmp_path: Path) -> None:
     assert replay["replayed"] is True
     with closing(service.database.connect()) as connection:
         assert connection.execute("SELECT COUNT(*) FROM support_records").fetchone()[0] == 1
+        assert connection.execute("SELECT COUNT(*) FROM handoff_adoption_receipts").fetchone()[0] == 1
+
+
+def test_focused_student_handoff_updates_the_one_current_profile_atomically(
+    tmp_path: Path,
+) -> None:
+    service, _ = _service(tmp_path)
+    subject = service.support.create_subject(
+        token="",
+        operation_id="subject-for-current-profile",
+        source_student_id="SYNTHETIC-PROFILE-001",
+        display_name="合成学生甲",
+        class_label="一班",
+    )
+    conversation = service.intake.start_conversation(
+        token="",
+        subject_id=str(subject["subject_id"]),
+    )
+    conversation = service.intake.append_turn(
+        conversation_id=str(conversation["conversation_id"]),
+        expected_revision=1,
+        message="最近开始主动承担小组分工。",
+        operation_id="current-profile-turn-001",
+    )
+    turn = conversation["turns"][0]
+    completed = service.intake.apply_triage_result(
+        turn_id=str(turn["turn_id"]),
+        task_id=str(turn["task_id"]),
+        payload={
+            "contract_version": "class_teacher_triage.v1",
+            "assistant_message": "已整理到当前学生档案。",
+            "clarification_questions": ["意见不同时通常会怎样？"],
+            "work_items": [_work_item(
+                "current-profile-item-001",
+                domain="student_growth",
+                mode="record",
+                intent="append",
+                refs=[{
+                    "kind": "student",
+                    "id": str(subject["subject_id"]),
+                    "revision": str(subject["revision"]),
+                }],
+                draft={
+                    "summary": "最近开始主动承担小组分工。",
+                    "observed_at": "2026-08-08T09:00:00+08:00",
+                    "profile_base_revision": 0,
+                    "profile_update": {
+                        "summary": "在小组任务中开始表现出主动承担分工的意愿。",
+                        "dimensions": [{
+                            "key": "peer_relationships",
+                            "label": "同伴与人际关系",
+                            "items": ["近期开始主动承担小组分工"],
+                        }],
+                        "open_questions": ["遇到意见不同时能否继续参与"],
+                        "support_focus": [],
+                    },
+                },
+            )],
+        },
+    )
+    handoff = service.intake.open_handoff(str(completed["handoffs"][0]["handoff_id"]))
+
+    service.intake.adopt_handoff(
+        token="",
+        handoff_id=str(handoff["handoff_id"]),
+        draft_revision=int(handoff["draft_revision"]),
+        target_revision=str(subject["revision"]),
+        operation_id="adopt-current-profile-001",
+    )
+    card = service.student_cards.get_card(
+        token="",
+        subject_id=str(subject["subject_id"]),
+    )
+
+    assert card["current_profile"]["summary"] == "在小组任务中开始表现出主动承担分工的意愿。"
+    assert card["current_profile"]["revision"] == 1
+    assert len(card["entries"]) == 1
+    with closing(service.database.connect()) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM support_records").fetchone()[0] == 1
+        assert connection.execute("SELECT COUNT(*) FROM student_card_entries").fetchone()[0] == 1
         assert connection.execute("SELECT COUNT(*) FROM handoff_adoption_receipts").fetchone()[0] == 1
 
 

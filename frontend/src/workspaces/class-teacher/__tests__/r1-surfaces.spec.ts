@@ -106,34 +106,42 @@ describe('B UI R1 surfaces', () => {
 
   it('directory calls only the lightweight directory interface before selection', async () => {
     vi.spyOn(intakeApi, 'homeroom').mockResolvedValue({ homeroom_class:'一班', revision:1, classes:['一班'], source_revision:'r'.repeat(64) })
-    const directory = vi.spyOn(studentR1Api, 'directory').mockResolvedValue({ items:[{ subject_id:'s1', display_name:'合成学生', source_student_id:'S001', class_label:'一班', support_record_count:3, support_plan_count:1, confirmed_entry_count:2, projection_state:'applied', attention_pending_count:0, last_confirmed_at:'2026-08-01' }], cursor:null, total:1, page_size:20 })
+    const directory = vi.spyOn(studentR1Api, 'directory').mockResolvedValue({ items:[{ subject_id:'s1', display_name:'合成学生', source_student_id:'student:S001', class_label:'一班', support_record_count:3, support_plan_count:1, confirmed_entry_count:2, projection_state:'none', attention_pending_count:0, last_confirmed_at:'2026-08-01' }], cursor:null, total:1, page_size:20 })
     const rosterSource = vi.spyOn(studentR1Api, 'rosterSource').mockResolvedValue({ items:[{ source_key:'student:S001', student_code:'S001', display_name:'合成学生', class_label:'一班', subject_id:'s1', roster_state:'active', opaque_ref:'ref', student_revision:'r1' }], classes:['一班'], source_revision:'r1', total:1, cursor:null })
     const records = vi.spyOn(studentR1Api, 'records')
     const host = await mount(StudentDirectoryPanel, { token:'synthetic-token' })
-    expect(host.textContent).toContain('点击卡片查看结构化概览')
+    expect(host.textContent).toContain('点击卡片进入学生当前档案')
     expect(host.textContent).toContain('合成学生')
     expect(host.textContent).toContain('一班')
+    expect(host.textContent).toContain('当前档案已建立')
     expect(directory).toHaveBeenCalledExactlyOnceWith('synthetic-token', expect.objectContaining({ classLabel:'一班', state:'active' }))
+    expect(directory.mock.calls[0]?.[1]).not.toHaveProperty('rosterState')
     expect(rosterSource).toHaveBeenCalledExactlyOnceWith('synthetic-token', { classLabel:'一班', pageSize:100 })
     expect(records).not.toHaveBeenCalled()
   })
 
-  it('shows roster students without confirmed records and never invents an AI overview', async () => {
+  it('opens an empty current dossier for a roster student without confirmed records', async () => {
     vi.spyOn(intakeApi, 'homeroom').mockResolvedValue({ homeroom_class:'一班', revision:1, classes:['一班'], source_revision:'r'.repeat(64) })
     vi.spyOn(studentR1Api, 'directory').mockResolvedValue({ items:[], cursor:null, total:0, page_size:100 })
     vi.spyOn(studentR1Api, 'rosterSource').mockResolvedValue({ items:[{ source_key:'student:S002', student_code:'S002', display_name:'待整理学生', class_label:'一班', subject_id:null, roster_state:'available', opaque_ref:'ref', student_revision:'r1' }], classes:['一班'], source_revision:'r1', total:1, cursor:null })
-    const card = vi.spyOn(studentR1Api, 'studentCard')
-    const host = await mount(StudentDirectoryPanel, { token:'synthetic-token' })
+    const createSubject = vi.spyOn(supportApi, 'createSubject').mockResolvedValue({ subject_id:'new-subject', revision:1, source_student_id:'student:S002', display_name:'待整理学生', class_label:'一班' })
+    const select = vi.fn()
+    const host = await mount(StudentDirectoryPanel, { token:'synthetic-token', onSelect:select })
 
     clickByText(host, '待整理学生'); await nextTick()
+    await new Promise((resolve)=>setTimeout(resolve,0)); await nextTick()
 
-    expect(host.textContent).toContain('当前没有教师确认记录')
-    expect(host.textContent).toContain('不会虚构或自动生成 AI')
-    expect(card).not.toHaveBeenCalled()
+    expect(createSubject).toHaveBeenCalledExactlyOnceWith('synthetic-token', {
+      source_student_id:'student:S002', display_name:'待整理学生', class_label:'一班',
+    })
+    expect(select).toHaveBeenCalledWith(expect.objectContaining({
+      subject_id:'new-subject', display_name:'待整理学生', confirmed_entry_count:0,
+    }))
   })
 
-  it('opens an existing teacher-confirmed AI structure without starting a new AI task', async () => {
+  it('opens one current student dossier without starting a new AI task', async () => {
     const subject = { subject_id:'subject-1234', display_name:'合成学生', source_student_id:'S001', class_label:'一班', support_record_count:3, support_plan_count:1, confirmed_entry_count:2, projection_state:'applied', attention_pending_count:0, last_confirmed_at:'2026-08-01' }
+    const start = vi.spyOn(intakeApi, 'startStudentConversation')
     const card = vi.spyOn(studentR1Api, 'studentCard').mockResolvedValue({
       subject,
       entries:[{
@@ -141,15 +149,109 @@ describe('B UI R1 surfaces', () => {
         portrait:{ summary:'做事认真，数学步骤完整。', strengths:['能按计划完成任务'], needs:['需要巩固计算准确性'], open_questions:['近期状态是否稳定'] },
         sop:{ title:'两周支持计划', steps:['每周核对一次错题'], review_date:'2026-08-15' },
       }],
+      current_profile:{
+        entry_id:'entry-1', revision:2, summary:'做事认真，数学步骤完整。', updated_at:'2026-08-01',
+        dimensions:[{ key:'learning_ability', label:'学习与能力', items:['能按计划完成任务'] }],
+        open_questions:['近期状态是否稳定'],
+        support_focus:[{ key:'math_support', title:'计算准确性支持', need:'巩固计算准确性', effective_methods:[], next_actions:['每周核对一次错题'] }],
+      },
       existing_records:[], support_plans:[],
     })
 
     const host = await mount(StudentOverviewPanel, { token:'synthetic-token', subject })
 
     expect(card).toHaveBeenCalledExactlyOnceWith('synthetic-token', 'subject-1234')
-    expect(host.textContent).toContain('教师已确认 · AI 结构化整理')
+    expect(start).not.toHaveBeenCalled()
+    expect(host.textContent).toContain('学生当前档案')
+    expect(host.textContent).toContain('告诉我最近又了解到了什么')
     expect(host.textContent).toContain('做事认真，数学步骤完整。')
-    expect(host.textContent).toContain('两周支持计划')
+    expect(host.textContent).toContain('计算准确性支持')
+  })
+
+  it('continues a student-scoped AI conversation and applies the proposal in place', async () => {
+    const subject = { subject_id:'subject-1234', revision:1, display_name:'合成学生', source_student_id:'S001', class_label:'一班', support_record_count:0, support_plan_count:0, confirmed_entry_count:1, projection_state:'applied', attention_pending_count:0, last_confirmed_at:'2026-08-01' }
+    const before = {
+      subject, entries:[], existing_records:[], support_plans:[],
+      current_profile:{ entry_id:'entry-1', revision:1, summary:'愿意参与小组任务。', dimensions:[], open_questions:[], support_focus:[], updated_at:'2026-08-01' },
+    }
+    const after = {
+      ...before,
+      current_profile:{
+        entry_id:'entry-1', revision:2, summary:'在小组任务中开始主动分工。', updated_at:'2026-08-08',
+        dimensions:[{ key:'peer_relationships', label:'同伴与人际关系', items:['近期开始主动分工'] }],
+        open_questions:['遇到意见不同时能否继续参与'], support_focus:[],
+      },
+    }
+    vi.spyOn(studentR1Api, 'studentCard').mockResolvedValueOnce(before).mockResolvedValueOnce(after)
+    const collecting = { conversation_id:'profile-conversation', revision:1, state:'collecting', homeroom_class:'一班', focused_subject_id:'subject-1234', focused_subject_revision:'1', created_at:'2026-08-08', updated_at:'2026-08-08', turns:[], handoffs:[] }
+    const ready = {
+      ...collecting, revision:2, state:'handoff_ready',
+      turns:[{ turn_id:'turn-profile', conversation_id:'profile-conversation', sequence:1, operation_id:'operation-profile', teacher_message:'最近开始主动分工', assistant_message:'已整理到同伴关系。', clarification_questions:['遇到意见不同时会怎样？'], task_id:'task-profile', task_state:'proposal_ready', created_at:'2026-08-08', updated_at:'2026-08-08' }],
+      handoffs:[{ handoff_id:'handoff-profile', draft_id:'draft-profile', work_item_id:'work-profile', turn_id:'turn-profile', domain:'student_growth' as const, handling_mode:'record' as const, intent:'append', destination_key:'class_teacher.student.record', draft_revision:1, adoption_state:'pending' as const, missing_fields:[], subject_ref_count:1, auto_open_allowed:true }],
+    }
+    vi.spyOn(intakeApi, 'startStudentConversation').mockResolvedValue(collecting)
+    vi.spyOn(intakeApi, 'appendTurn').mockResolvedValue(ready)
+    vi.spyOn(intakeApi, 'handoff').mockResolvedValue({
+      contract_version:'teacher_workspace_handoff.v1', handoff_id:'handoff-profile', work_item_id:'work-profile', conversation_id:'profile-conversation', turn_id:'turn-profile', draft_id:'draft-profile', draft_revision:1,
+      domain:'student_growth', handling_mode:'record', intent:'append', destination_key:'class_teacher.student.record', adoption_id:'adoption-profile', adoption_state:'opened',
+      content:{ summary:'最近开始主动分工', profile_update:after.current_profile },
+      subject_refs:[{ kind:'student', id:'subject-1234', revision:'1' }], missing_fields:[], return_context:{ destination_key:'class_teacher.home', focus_ref:'work-profile' },
+    })
+    const adopt = vi.spyOn(intakeApi, 'adopt').mockResolvedValue({ saved:true })
+    vi.spyOn(intakeApi, 'conversation').mockResolvedValue({ ...ready, state:'teacher_confirmed' })
+
+    const host = await mount(StudentOverviewPanel, { token:'synthetic-token', subject })
+    const textarea = host.querySelector('textarea')!
+    textarea.value = '最近开始主动分工'
+    textarea.dispatchEvent(new Event('input', { bubbles:true }))
+    host.querySelector('form.composer')!.dispatchEvent(new Event('submit', { bubbles:true, cancelable:true }))
+    await new Promise((resolve)=>setTimeout(resolve,0)); await nextTick(); await nextTick()
+
+    expect(host.textContent).toContain('把新认识并入当前档案')
+    expect(host.textContent).toContain('同伴与人际关系')
+    clickByText(host, '应用到当前档案')
+    await new Promise((resolve)=>setTimeout(resolve,0)); await nextTick(); await nextTick()
+
+    expect(adopt).toHaveBeenCalledWith('synthetic-token', expect.objectContaining({ handoff_id:'handoff-profile' }), '1')
+    expect(host.textContent).toContain('当前学生档案已经更新')
+    expect(host.textContent).toContain('在小组任务中开始主动分工')
+  })
+
+  it('discards a proposed student profile update without changing the current profile', async () => {
+    const subject = { subject_id:'subject-1234', revision:1, display_name:'合成学生', source_student_id:'S001', class_label:'一班', support_record_count:0, support_plan_count:0, confirmed_entry_count:1, projection_state:'applied', attention_pending_count:0, last_confirmed_at:'2026-08-01' }
+    vi.spyOn(studentR1Api, 'studentCard').mockResolvedValue({
+      subject, entries:[], existing_records:[], support_plans:[],
+      current_profile:{ entry_id:'entry-1', revision:1, summary:'原有档案内容。', dimensions:[], open_questions:[], support_focus:[], updated_at:'2026-08-01' },
+    })
+    const collecting = { conversation_id:'profile-conversation', revision:1, state:'collecting', homeroom_class:'一班', focused_subject_id:'subject-1234', focused_subject_revision:'1', created_at:'2026-08-08', updated_at:'2026-08-08', turns:[], handoffs:[] }
+    const ready = {
+      ...collecting, revision:2, state:'handoff_ready', turns:[],
+      handoffs:[{ handoff_id:'handoff-profile', draft_id:'draft-profile', work_item_id:'work-profile', turn_id:'turn-profile', domain:'student_growth' as const, handling_mode:'record' as const, intent:'append', destination_key:'class_teacher.student.record', draft_revision:1, adoption_state:'pending' as const, missing_fields:[], subject_ref_count:1, auto_open_allowed:true }],
+    }
+    vi.spyOn(intakeApi, 'startStudentConversation').mockResolvedValue(collecting)
+    vi.spyOn(intakeApi, 'appendTurn').mockResolvedValue(ready)
+    vi.spyOn(intakeApi, 'handoff').mockResolvedValue({
+      contract_version:'teacher_workspace_handoff.v1', handoff_id:'handoff-profile', work_item_id:'work-profile', conversation_id:'profile-conversation', turn_id:'turn-profile', draft_id:'draft-profile', draft_revision:1,
+      domain:'student_growth', handling_mode:'record', intent:'append', destination_key:'class_teacher.student.record', adoption_id:'adoption-profile', adoption_state:'opened',
+      content:{ summary:'拟更新内容', profile_update:{ summary:'拟更新内容', dimensions:[], open_questions:[], support_focus:[] } },
+      subject_refs:[{ kind:'student', id:'subject-1234', revision:'1' }], missing_fields:[], return_context:{ destination_key:'class_teacher.home', focus_ref:'work-profile' },
+    })
+    const discard = vi.spyOn(intakeApi, 'discard').mockResolvedValue({ discarded:true })
+    vi.spyOn(intakeApi, 'conversation').mockResolvedValue({ ...ready, state:'collecting', handoffs:[{ ...ready.handoffs[0]!, adoption_state:'discarded' }] })
+
+    const host = await mount(StudentOverviewPanel, { token:'synthetic-token', subject })
+    const textarea = host.querySelector('textarea')!
+    textarea.value = '这是一条新情况'
+    textarea.dispatchEvent(new Event('input', { bubbles:true }))
+    host.querySelector('form.composer')!.dispatchEvent(new Event('submit', { bubbles:true, cancelable:true }))
+    await new Promise((resolve)=>setTimeout(resolve,0)); await nextTick(); await nextTick()
+    clickByText(host, '放弃本轮更新')
+    await new Promise((resolve)=>setTimeout(resolve,0)); await nextTick(); await nextTick()
+
+    expect(discard).toHaveBeenCalledExactlyOnceWith('handoff-profile')
+    expect(host.textContent).toContain('当前档案没有改变')
+    expect(host.textContent).toContain('原有档案内容')
+    expect(host.textContent).not.toContain('拟更新内容')
   })
 
   it('academic charts obey server segment status and preserve a real zero', async () => {

@@ -10,6 +10,10 @@ class HomeroomPreferenceUpdate(BaseModel):
     operation_id: str = Field(min_length=8, max_length=128)
 
 
+class ConversationStartRequest(BaseModel):
+    subject_id: str | None = Field(default=None, min_length=8, max_length=128)
+
+
 class TurnAppendRequest(BaseModel):
     expected_revision: int = Field(ge=1)
     message: str = Field(min_length=1, max_length=4000)
@@ -39,6 +43,7 @@ class HandoffAdoptRequest(BaseModel):
 
 
 __all__ = [
+    "ConversationStartRequest",
     "DraftAIRevisionRequest",
     "DraftUpdateRequest",
     "HandoffAdoptRequest",

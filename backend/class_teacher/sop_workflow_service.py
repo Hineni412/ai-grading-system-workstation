@@ -216,6 +216,7 @@ class SopWorkflowService:
         summary: str | None,
         participant_refs: list[str],
         subject_ids: list[str] | None = None,
+        verified_current_subject_ids: list[str] | None = None,
         idempotency_fingerprint: str | None = None,
         transaction_hook: Callable[[Any, bytes, str, str], None] | None = None,
     ) -> dict[str, object]:
@@ -239,6 +240,15 @@ class SopWorkflowService:
             for item in list(dict.fromkeys(participant_refs))
         ]
         unique_subject_ids = list(dict.fromkeys(str(item) for item in list(subject_ids or [])))
+        verified_subject_ids = set(
+            str(item) for item in list(verified_current_subject_ids or [])
+        )
+        if not verified_subject_ids.issubset(set(unique_subject_ids)):
+            raise VaultError(
+                "sop_verified_subject_invalid",
+                "已核对学生引用与本次事务不一致",
+                status_code=422,
+            )
         if (not participants and not unique_subject_ids) or len(participants) + len(unique_subject_ids) > 50:
             raise VaultError(
                 "sop_participants_invalid",
@@ -353,15 +363,25 @@ class SopWorkflowService:
                     (participant, None) for participant in participants
                 ]
                 for subject_id in unique_subject_ids:
-                    subject_row = connection.execute(
-                        """
-                        SELECT s.payload_object_id
-                        FROM student_subject_links s
-                        JOIN class_roster_memberships m ON m.subject_id=s.subject_id
-                        WHERE s.subject_id=? AND s.state='active' AND m.state='active'
-                        """,
-                        (subject_id,),
-                    ).fetchone()
+                    if subject_id in verified_subject_ids:
+                        subject_row = connection.execute(
+                            """
+                            SELECT payload_object_id
+                            FROM student_subject_links
+                            WHERE subject_id=? AND state='active'
+                            """,
+                            (subject_id,),
+                        ).fetchone()
+                    else:
+                        subject_row = connection.execute(
+                            """
+                            SELECT s.payload_object_id
+                            FROM student_subject_links s
+                            JOIN class_roster_memberships m ON m.subject_id=s.subject_id
+                            WHERE s.subject_id=? AND s.state='active' AND m.state='active'
+                            """,
+                            (subject_id,),
+                        ).fetchone()
                     if subject_row is None:
                         raise VaultError(
                             "sop_subject_not_current_roster",

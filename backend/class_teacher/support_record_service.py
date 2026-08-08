@@ -97,6 +97,104 @@ class SupportRecordService:
                 )
         return self.get_subject(token=token, subject_id=subject_id)
 
+    def create_subject_for_roster_source(
+        self,
+        *,
+        token: str,
+        operation_id: str,
+        source_student_id: str,
+        legacy_student_code: str,
+        display_name: str,
+        class_label: str | None,
+    ) -> dict[str, object]:
+        """Use the roster key while reusing a subject created with the old student code."""
+        vmk = self._key_provider(token)
+        replay = self._idempotent(operation_id, "support.subject.create")
+        if replay is not None:
+            return self.get_subject(
+                token=token,
+                subject_id=str(replay["subject_id"]),
+            )
+        with closing(self.database.connect()) as connection:
+            with connection:
+                subject_id = self.ensure_roster_subject_in_connection(
+                    connection,
+                    vmk=vmk,
+                    source_student_id=source_student_id,
+                    legacy_student_code=legacy_student_code,
+                    display_name=display_name,
+                    class_label=class_label,
+                )
+                self._remember(
+                    connection,
+                    operation_id,
+                    "support.subject.create",
+                    {"subject_id": subject_id},
+                )
+        return self.get_subject(token=token, subject_id=subject_id)
+
+    def ensure_roster_subject_in_connection(
+        self,
+        connection: Any,
+        *,
+        vmk: bytes,
+        source_student_id: str,
+        legacy_student_code: str,
+        display_name: str,
+        class_label: str | None,
+    ) -> str:
+        """Normalize a legacy student-code identity to the roster source key."""
+        source_id = self._text(source_student_id, "来源学生编号", 240)
+        clean_name = self._text(display_name, "显示名称", 240)
+        fingerprint = self._subject_fingerprint(vmk, source_id)
+        current = connection.execute(
+            "SELECT subject_id FROM student_subject_links WHERE source_fingerprint = ?",
+            (fingerprint,),
+        ).fetchone()
+        if current is not None:
+            return str(current["subject_id"])
+
+        legacy_id = str(legacy_student_code or "").strip()
+        if legacy_id and legacy_id != source_id:
+            legacy = connection.execute(
+                """
+                SELECT subject_id, payload_object_id
+                FROM student_subject_links WHERE source_fingerprint = ?
+                """,
+                (self._subject_fingerprint(vmk, legacy_id),),
+            ).fetchone()
+            if legacy is not None:
+                timestamp = _iso()
+                self.repository.put(
+                    connection,
+                    vmk=vmk,
+                    object_id=str(legacy["payload_object_id"]),
+                    object_type="student_subject",
+                    payload={
+                        "source_student_id": source_id,
+                        "display_name": clean_name,
+                        "class_label": str(class_label or "").strip() or None,
+                        "identity_snapshot_at": timestamp,
+                    },
+                )
+                connection.execute(
+                    """
+                    UPDATE student_subject_links
+                    SET source_fingerprint = ?, state = 'active', updated_at = ?
+                    WHERE subject_id = ?
+                    """,
+                    (fingerprint, timestamp, str(legacy["subject_id"])),
+                )
+                return str(legacy["subject_id"])
+
+        return self.ensure_subject_in_connection(
+            connection,
+            vmk=vmk,
+            source_student_id=source_id,
+            display_name=clean_name,
+            class_label=class_label,
+        )
+
     def ensure_subject_in_connection(
         self,
         connection: Any,

@@ -305,6 +305,7 @@ class VaultService:
             work=self.work,
             sop=self.sop,
             sop_baselines=self.sop_baselines,
+            student_cards=self.student_cards,
             model_gateway=self.workspace_model_gateway,
             ai_tasks=self.workspace_ai_task_port,
         )

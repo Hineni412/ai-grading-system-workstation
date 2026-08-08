@@ -136,6 +136,18 @@ class TeachingPrepAITaskAdapter:
             handoffs=tuple(_handoff_from_dict(item) for item in values),
         )
 
+    def discard_result_unknown(self, task: StoredTask) -> None:
+        if task.task_kind != "teaching_prep.semester_mapping":
+            return
+        material_ids = [
+            ref.id for ref in task.context_refs if ref.kind == "material"
+        ]
+        self.service.discard_semester_mapping_result_unknown(
+            task.source_ref.id,
+            material_record_ids=material_ids,
+            expected_source_state_sha256=task.source_ref.revision,
+        )
+
     def adopt(
         self,
         handoff: HandoffSnapshot,

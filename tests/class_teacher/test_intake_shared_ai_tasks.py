@@ -63,6 +63,30 @@ def _triage() -> dict[str, object]:
     }
 
 
+def _simplified_provider_triage() -> dict[str, object]:
+    """Shape returned by the configured model during the 2026-08-08 repro."""
+    return {
+        "contract_version": "class_teacher_triage.v1",
+        "domain": "student_support",
+        "category": "record",
+        "assistant_message": "已形成一份待教师核对的支持记录草稿。",
+        "clarification_questions": ["是否需要补充已核验材料？"],
+        "work_items": [{
+            "subject_refs": ["synthetic-provider-student-reference"],
+            "content": "合成学生支持事项摘要，后续信息仍需教师核对。",
+        }],
+    }
+
+
+def _structured_provider_triage_with_text_time_fact() -> dict[str, object]:
+    """Structured shape returned by the configured model on acceptance."""
+    result = _triage()
+    result["work_items"][0]["time_facts"] = [
+        "合成暑假期间计划复查",
+    ]
+    return result
+
+
 def _wired(tmp_path: Path, result: dict[str, object] | Exception):
     roster_db = tmp_path / "roster.db"
     with closing(sqlite3.connect(roster_db)) as connection:
@@ -162,6 +186,83 @@ def test_b_adapter_uses_shared_task_and_adoption_coordinator(tmp_path: Path) -> 
         assert row is not None
         assert row[0] == adopted.handoffs[0].adoption_id
         assert row[1] == "new"
+    finally:
+        manager.shutdown()
+
+
+def test_simplified_provider_triage_becomes_review_only_draft(
+    tmp_path: Path,
+) -> None:
+    domain, common, manager, configured = _wired(
+        tmp_path,
+        _simplified_provider_triage(),
+    )
+    try:
+        conversation = domain.intake.start_conversation()
+        queued = domain.intake.append_turn(
+            conversation_id=str(conversation["conversation_id"]),
+            expected_revision=int(conversation["revision"]),
+            message="合成学生支持信息",
+            operation_id="shared-simplified-provider-result",
+        )
+        task_id = str(queued["turns"][-1]["task_id"])
+        started = common.get(task_id=task_id)
+        assert started.job_id is not None
+        manager.wait(started.job_id, timeout=5)
+
+        finished = common.get(task_id=task_id)
+        restored = domain.intake.get_conversation(
+            str(conversation["conversation_id"])
+        )
+        system_prompt = str(configured.calls[0]["messages"][0]["content"])
+
+        assert finished.status == "proposal_ready"
+        assert finished.dispatch_evidence == "response_persisted"
+        assert restored["state"] == "handoff_ready"
+        assert finished.handoffs[0].destination_key == (
+            "class_teacher.student.record"
+        )
+        assert finished.handoffs[0].subject_refs == ()
+        assert finished.handoffs[0].missing_fields
+        assert '"work_item_id"' in system_prompt
+        assert '"draft"' in system_prompt
+    finally:
+        manager.shutdown()
+
+
+def test_structured_provider_text_time_fact_becomes_review_only_metadata(
+    tmp_path: Path,
+) -> None:
+    domain, common, manager, _configured = _wired(
+        tmp_path,
+        _structured_provider_triage_with_text_time_fact(),
+    )
+    try:
+        conversation = domain.intake.start_conversation()
+        queued = domain.intake.append_turn(
+            conversation_id=str(conversation["conversation_id"]),
+            expected_revision=int(conversation["revision"]),
+            message="合成带时间说明的班主任事项",
+            operation_id="shared-structured-text-time-fact",
+        )
+        task_id = str(queued["turns"][-1]["task_id"])
+        started = common.get(task_id=task_id)
+        assert started.job_id is not None
+        manager.wait(started.job_id, timeout=5)
+
+        finished = common.get(task_id=task_id)
+        restored = domain.intake.get_conversation(
+            str(conversation["conversation_id"])
+        )
+        handoff = domain.intake.open_handoff(
+            str(restored["handoffs"][0]["handoff_id"])
+        )
+
+        assert finished.status == "proposal_ready"
+        assert restored["state"] == "handoff_ready"
+        assert handoff["content"]["time_facts"] == [
+            {"text": "合成暑假期间计划复查"},
+        ]
     finally:
         manager.shutdown()
 

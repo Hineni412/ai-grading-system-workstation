@@ -154,7 +154,7 @@ class _WorkspaceOperationClaimStore:
 
 
 class WorkspaceModelGateway:
-    """One-request, metadata-only model seam for A/B workspaces."""
+    """Controlled one-request model seam for A/B workspaces."""
 
     def __init__(
         self,

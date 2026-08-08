@@ -156,6 +156,18 @@ class WorkspaceAITaskService:
         task = self.store.find_by_operation(operation_id)
         if task is None:
             raise TaskNotFoundError("workspace AI task was not found")
+        if task.status == "result_unknown":
+            adapter = self._adapters.get(task.task_kind)
+            discard_domain_result = getattr(
+                adapter,
+                "discard_result_unknown",
+                None,
+            )
+            if callable(discard_domain_result):
+                # Clear the domain-owned indeterminate guard first. If that
+                # fails, keep the shared task blocked instead of presenting a
+                # false "discarded" state that still cannot be retried.
+                discard_domain_result(task)
         return project_task(
             self.store,
             self.store.discard_result_unknown(task.task_id),

@@ -29,7 +29,13 @@ class ConversationStore:
         self.database = database
         self.ai_tasks = ai_tasks
 
-    def start(self, *, homeroom_class: str | None = None) -> dict[str, object]:
+    def start(
+        self,
+        *,
+        homeroom_class: str | None = None,
+        focused_subject_id: str | None = None,
+        focused_subject_revision: str | None = None,
+    ) -> dict[str, object]:
         conversation_id = uuid4().hex
         timestamp = _iso()
         with closing(self.database.connect(create=True)) as connection:
@@ -38,10 +44,18 @@ class ConversationStore:
                     """
                     INSERT INTO intake_conversations (
                         conversation_id, revision, state, homeroom_class,
+                        focused_subject_id, focused_subject_revision,
                         created_at, updated_at
-                    ) VALUES (?, 1, 'collecting', ?, ?, ?)
+                    ) VALUES (?, 1, 'collecting', ?, ?, ?, ?, ?)
                     """,
-                    (conversation_id, str(homeroom_class or "").strip() or None, timestamp, timestamp),
+                    (
+                        conversation_id,
+                        str(homeroom_class or "").strip() or None,
+                        str(focused_subject_id or "").strip() or None,
+                        str(focused_subject_revision or "").strip() or None,
+                        timestamp,
+                        timestamp,
+                    ),
                 )
         return self.get(conversation_id)
 
@@ -53,6 +67,7 @@ class ConversationStore:
             rows = connection.execute(
                 """
                 SELECT c.conversation_id, c.revision, c.state, c.homeroom_class,
+                       c.focused_subject_id, c.focused_subject_revision,
                        c.created_at, c.updated_at,
                        (SELECT teacher_message FROM intake_turns t
                         WHERE t.conversation_id=c.conversation_id
@@ -84,6 +99,8 @@ class ConversationStore:
         self._sync_conversation_tasks(conversation_id)
         timestamp = _iso()
         stale_handoff_ids: list[str] = []
+        focused_subject_id: str | None = None
+        focused_subject_revision: str | None = None
         with closing(self.database.connect()) as connection:
             connection.execute("BEGIN IMMEDIATE")
             try:
@@ -101,7 +118,11 @@ class ConversationStore:
                     connection.rollback()
                     return self.get(conversation_id)
                 row = connection.execute(
-                    "SELECT revision, state FROM intake_conversations WHERE conversation_id=?",
+                    """
+                    SELECT revision, state, focused_subject_id,
+                           focused_subject_revision
+                    FROM intake_conversations WHERE conversation_id=?
+                    """,
                     (conversation_id,),
                 ).fetchone()
                 if row is None:
@@ -114,6 +135,16 @@ class ConversationStore:
                         "上一轮仍在整理，请等待结果后再继续补充",
                         status_code=409,
                     )
+                focused_subject_id = (
+                    str(row["focused_subject_id"])
+                    if row["focused_subject_id"]
+                    else None
+                )
+                focused_subject_revision = (
+                    str(row["focused_subject_revision"])
+                    if row["focused_subject_revision"]
+                    else None
+                )
                 adopting = connection.execute(
                     """
                     SELECT COUNT(*) FROM intake_handoffs h
@@ -190,7 +221,18 @@ class ConversationStore:
             "module": "class_teacher",
             "task_kind": "class_teacher.intake_triage",
             "source_ref": {"kind": "conversation", "id": conversation_id, "revision": str(expected_revision + 1)},
-            "context_refs": [{"kind": "turn", "id": turn_id, "revision": "1"}],
+            "context_refs": [
+                {"kind": "turn", "id": turn_id, "revision": "1"},
+                *(
+                    [{
+                        "kind": "student_profile",
+                        "id": focused_subject_id,
+                        "revision": focused_subject_revision,
+                    }]
+                    if focused_subject_id and focused_subject_revision
+                    else []
+                ),
+            ],
             "prompt_contract_version": "class_teacher_triage.v1",
             "model_destination_fingerprint": "configured-workspace-model",
             "return_target": "class_teacher.home",
