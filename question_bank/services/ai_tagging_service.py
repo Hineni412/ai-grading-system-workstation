@@ -712,8 +712,9 @@ def _system_prompt(
     contract = _resolve_prompt_contract(taxonomy_contract)
     contract_json = json.dumps(contract, ensure_ascii=False, separators=(",", ":"))
     return f"""
-    You analyze junior middle-school math questions.
-    Return one JSON object only with the requested schema.
+    你负责分析初中数学题。只返回符合指定结构的一个 JSON 对象。
+    除公式、数学变量、选项字母、机器标识和原答案片段外，所有可供教师阅读的自由文本字段必须使用简体中文，不得返回英文说明。
+    当知识候选包含教材目录树时，该列表已经是所选册别及以前册别的完整“章—小节—细分知识点”树；必须先在整棵树中按稳定 ID 选择最准确节点，不能因为题干用词不同就新造近义标签。
     The local taxonomy contract below is the only source for curriculum,
     knowledge, ability, method, thought, model, and special-type tags:
     {contract_json}
@@ -1040,18 +1041,45 @@ def _taxonomy_suggestion_prompt_input(
     batch: Sequence[Mapping[str, Any]],
 ) -> list[dict[str, str]]:
     safe_batch: list[dict[str, Any]] = []
+    shared_catalogs: list[dict[str, Any]] = []
+    catalog_keys: dict[str, str] = {}
     for raw in list(batch)[:20]:
         if not isinstance(raw, Mapping):
             continue
         candidates = []
-        for candidate in list(raw.get("candidates") or [])[:12]:
+        for candidate in list(raw.get("candidates") or [])[:1500]:
             if not isinstance(candidate, Mapping):
                 continue
-            candidates.append(
-                {
-                    "id": _limited_text(candidate.get("id"), 100),
-                    "name": _limited_text(candidate.get("name"), 160),
-                }
+            item = {
+                "id": _limited_text(candidate.get("id"), 100),
+                "name": _limited_text(candidate.get("name"), 160),
+            }
+            for key, limit in (
+                ("label", 160),
+                ("parent_id", 100),
+                ("volume_id", 100),
+            ):
+                value = _limited_text(candidate.get(key), limit)
+                if value:
+                    item[key] = value
+            if candidate.get("level") is not None:
+                try:
+                    item["level"] = int(candidate.get("level"))
+                except (TypeError, ValueError):
+                    pass
+            candidates.append(item)
+        catalog_fingerprint = json.dumps(
+            candidates,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        catalog_key = catalog_keys.get(catalog_fingerprint)
+        if catalog_key is None:
+            catalog_key = f"catalog-{len(shared_catalogs) + 1}"
+            catalog_keys[catalog_fingerprint] = catalog_key
+            shared_catalogs.append(
+                {"catalog_key": catalog_key, "terms": candidates}
             )
         summaries = []
         for summary in list(raw.get("question_summaries") or [])[:6]:
@@ -1091,20 +1119,24 @@ def _taxonomy_suggestion_prompt_input(
                 "nearest_id": _limited_text(
                     raw.get("nearest_id"), 100
                 ),
-                "candidates": candidates,
+                "candidate_catalog_key": catalog_key,
+                "allowed_target_ids": [item["id"] for item in candidates],
                 "question_summaries": summaries,
             }
         )
     system_prompt = """
     你协助初中数学教师审核题库中新出现的标签词。你只能给出归并建议，
-    不能声称已经批准候选词，也不能写入任何数据。所有 reason 必须使用简洁、
-    易懂的中文，先说明与现有词的关系，再说明为什么需要或不需要教师确认。
+    不能声称已经批准候选词，也不能写入任何数据。所有 reason 必须只写一句中文，
+    不超过 40 个汉字；直接说明与现有词的关系和是否需要教师确认，不要复述候选词。
 
     semantic relation 只能是以下一个值：exact、broader、narrower、related、
     new_core_candidate、wrong_dimension、reject、uncertain。exact 只表示严格同义，
     不能把相近、上下位或部分重叠当成同义。只有 exact 可以指定一个目标词供系统
     自动归并；broader、narrower、related 只能列出相关目标供教师核对。目标 ID 必须
-    来自当前候选列表。每个 proposal_id 必须返回且只返回一项。置信度不能代替审核。
+    来自该待审词 candidate_catalog_key 对应的完整词表，并且必须出现在
+    allowed_target_ids 中。shared_candidate_catalogs 中 level 1/2/3 分别代表章、
+    小节、细分知识点，parent_id 表示树状父节点。每个 proposal_id 必须返回且只
+    返回一项。置信度不能代替审核，不要返回英文说明。
     """.strip()
     return [
         {"role": "system", "content": system_prompt},
@@ -1113,6 +1145,7 @@ def _taxonomy_suggestion_prompt_input(
             "content": json.dumps(
                 {
                     "task": "用中文为这些待审核词给出归并建议。",
+                    "shared_candidate_catalogs": shared_catalogs,
                     "proposals": safe_batch,
                 },
                 ensure_ascii=False,
@@ -1368,14 +1401,11 @@ def _batch_system_prompt(
     return f"""
     {base}
     
-    CRITICAL: You are analyzing a BATCH of junior middle-school math questions.
-    You must analyze each question in the batch and return the list of analyses under the "results" key in your JSON response.
-    Each analysis object in "results" must include the exact "question_id" that was provided in the input.
-    The shared_knowledge_catalog is sent exactly once for the whole batch and
-    is the union of this batch's locally retrieved knowledge candidates. Every
-    batch input keeps its own allowed_term_ids.knowledge list; select a shared
-    knowledge entry only when its ID is allowed for the current question. Every
-    other dimension also stays inside the current question's candidate contract.
+    这是一个批量任务。必须逐题分析，并把结果列表放在 JSON 的 results 字段中。
+    每个结果必须原样带回输入中的 question_id，不得漏题、串题或互相借用标签。
+    shared_knowledge_catalog 在整批中只发送一次，它是本批各题所选教材册别完整知识树的并集。
+    每题仍只能选择该题 allowed_term_ids.knowledge 中允许的稳定 ID；其他维度也必须留在该题自己的候选契约内。
+    所有教师可见的自由文本必须使用简体中文。
     """.strip()
 
 
@@ -2169,6 +2199,7 @@ def _analysis_from_constraint(
     fallback_revision: int,
 ) -> tuple[TagAnalysis, list[dict[str, Any]], str, list[str]]:
     payload = original.to_dict()
+    requested_canonical_id = str(original.canonical_knowledge_id or "").strip()
     accepted_fields = constrained.get("accepted_fields")
     if isinstance(accepted_fields, Mapping):
         for field_name in (
@@ -2221,9 +2252,31 @@ def _analysis_from_constraint(
         and isinstance(knowledge_values, list)
         and knowledge_values
     ):
-        primary_name = str(knowledge_values[0] or "").strip()
         knowledge_terms = accepted_terms.get("knowledge")
         if isinstance(knowledge_terms, list):
+            requested_primary = next(
+                (
+                    item
+                    for item in knowledge_terms
+                    if isinstance(item, Mapping)
+                    and str(item.get("id") or "").strip()
+                    == requested_canonical_id
+                ),
+                None,
+            )
+            if isinstance(requested_primary, Mapping):
+                requested_name = str(requested_primary.get("name") or "").strip()
+                if requested_name in knowledge_values:
+                    payload["knowledge_points"] = [
+                        requested_name,
+                        *[
+                            value
+                            for value in knowledge_values
+                            if value != requested_name
+                        ],
+                    ]
+                    knowledge_values = payload["knowledge_points"]
+            primary_name = str(knowledge_values[0] or "").strip()
             primary_term = next(
                 (
                     item

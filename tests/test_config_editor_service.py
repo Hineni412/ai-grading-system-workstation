@@ -10,6 +10,9 @@ from backend.config_workspace.editor import (
     ConfigEditorEdit,
     ConfigEditorValidationError,
     ManualPartInput,
+    ManualQuestionPartInput,
+    ManualStepInput,
+    ReplaceQuestionStructureCommand,
     ReplaceScoringUnitsCommand,
     SplitScoringUnitCommand,
     apply_config_editor_changes,
@@ -358,6 +361,38 @@ def test_replace_parts_normalizes_legacy_ids_and_does_not_mutate_source() -> Non
             commands=(ambiguous_aliases,),
         )
     assert exc.value.issues[0]["code"] == "duplicate_part_id"
+
+
+def test_solution_structure_can_replace_subquestions_and_each_scoring_step() -> None:
+    command = ReplaceQuestionStructureCommand(
+        kind="replace_question_structure",
+        question_id="Q12",
+        parts=(
+            ManualQuestionPartInput(
+                part_id="P1",
+                steps=(
+                    ManualStepInput(step_id="S1", score=1, core_goal="写出已知条件"),
+                    ManualStepInput(step_id="S2", score=2, core_goal="完成关键推理"),
+                ),
+            ),
+            ManualQuestionPartInput(
+                part_id="P2",
+                steps=(
+                    ManualStepInput(step_id="S1", score=3, core_goal="得出最终结论"),
+                ),
+            ),
+        ),
+    )
+
+    updated = apply_config_editor_changes(_payload(), edits=(), commands=(command,))
+    rows = [row for row in project_config_editor(updated) if row.question_id == "Q12"]
+
+    assert [(row.part_id, row.step_id, row.score, row.core_goal) for row in rows] == [
+        ("Q12(P1)", "S1", 1, "写出已知条件"),
+        ("Q12(P1)", "S2", 2, "完成关键推理"),
+        ("Q12(P2)", "S1", 3, "得出最终结论"),
+    ]
+    assert updated["rubric"]["questions"][0]["max_score"] == 6
 
 
 def test_replace_parts_rejects_opaque_internal_id_without_guessing() -> None:

@@ -42,6 +42,7 @@ const previewQuestionId = ref<number | null>(null)
 const previewState = ref<'idle' | 'loading' | 'ready' | 'error'>('idle')
 const previewReturnFocus = ref<HTMLElement | null>(null)
 const previewCloseButton = ref<HTMLButtonElement | null>(null)
+const showHistoricalRun = ref(false)
 let previewController: AbortController | null = null
 let suggestionTimer: ReturnType<typeof setTimeout> | null = null
 
@@ -134,6 +135,7 @@ watch(
     if (!open) {
       closeQuestionPreview()
       clearSuggestionTimer()
+      showHistoricalRun.value = false
       return
     }
     if (store.loadState !== 'loading' && store.writeState !== 'saving') void store.load()
@@ -325,7 +327,6 @@ function suggestionManualHint(suggestion: TaxonomySuggestion): string {
 
 function localizedSuggestionReason(suggestion: TaxonomySuggestion): string {
   const reason = suggestion.reason.trim()
-  if (/[\u3400-\u9fff]/u.test(reason)) return reason
   const relation: Record<TaxonomySuggestion['relation_kind'], string> = {
     exact: '系统判断它与现有词严格同义，可核对目标词后归并。',
     broader: '系统判断它比现有词范围更宽，需要教师确认是否保留。',
@@ -336,7 +337,9 @@ function localizedSuggestionReason(suggestion: TaxonomySuggestion): string {
     reject: '系统判断这个词不适合作为规范标签，建议拒绝。',
     uncertain: '现有证据不足，系统无法给出可靠归并结论。',
   }
-  return relation[suggestion.relation_kind]
+  if (!/[\u3400-\u9fff]/u.test(reason)) return relation[suggestion.relation_kind]
+  const firstSentence = reason.split(/(?<=[。！？!?；;])/u, 1)[0]?.trim() || reason
+  return firstSentence.length > 48 ? `${firstSentence.slice(0, 47)}…` : firstSentence
 }
 
 async function startSuggestions(): Promise<void> {
@@ -466,9 +469,8 @@ onBeforeUnmount(() => {
       >
         <header class="taxonomy-review__header">
           <div>
-            <p class="qb-eyebrow">CONTROLLED VOCABULARY</p>
-            <h2 id="taxonomy-review-title">审核 AI 新造词</h2>
-            <p>这些词尚未进入正式词表，也不会自动写入题目。请逐个批准、修改、合并或拒绝。</p>
+            <h2 id="taxonomy-review-title">标签治理</h2>
+            <p>当前候选只在确认后写入；历史 AI 批次单独查看。</p>
           </div>
           <button
             ref="closeButton"
@@ -486,14 +488,16 @@ onBeforeUnmount(() => {
             <strong>{{ store.pendingCount }}</strong>
             <span>个词等待教师确认</span>
             <small>词表版本 {{ store.revision }}</small>
-            <small v-if="store.pendingCount < 30">
-              建议积累到 30—50 个候选或月底再集中请 AI 判断
-            </small>
-            <small v-else>
-              已达到集中治理建议数量；单批最多处理 200 个
-            </small>
           </div>
           <div class="taxonomy-review__toolbar-actions">
+            <button
+              v-if="store.historicalSuggestionRun"
+              type="button"
+              class="qb-button is-quiet"
+              @click="showHistoricalRun = !showHistoricalRun"
+            >
+              {{ showHistoricalRun ? '返回当前候选' : '查看历史批次' }}
+            </button>
             <button
               v-if="!suggestionIsActive"
               type="button"
@@ -540,7 +544,7 @@ onBeforeUnmount(() => {
         </p>
 
         <section
-          v-if="store.suggestionRun || store.suggestionMessage"
+          v-if="store.suggestionRun && !showHistoricalRun"
           class="taxonomy-review__suggestion-progress"
           aria-live="polite"
         >
@@ -556,11 +560,34 @@ onBeforeUnmount(() => {
           <p>{{ store.suggestionMessage }}</p>
         </section>
 
-        <section v-if="store.batchPreview" class="taxonomy-ai-results" aria-labelledby="taxonomy-ai-results-title">
+        <section
+          v-if="showHistoricalRun && store.historicalSuggestionRun"
+          class="taxonomy-ai-history"
+          aria-labelledby="taxonomy-ai-history-title"
+        >
           <header>
             <div>
-              <p class="qb-eyebrow">AI 归并结果</p>
-              <h3 id="taxonomy-ai-results-title">先核对疑难项，再一次保存</h3>
+              <h3 id="taxonomy-ai-history-title">上次 AI 批次</h3>
+              <p>历史记录，不影响当前候选，也不能在这里保存。</p>
+            </div>
+            <span>{{ formatDate(store.historicalSuggestionRun.updated_at) }}</span>
+          </header>
+          <article v-for="item in store.historicalSuggestionRun.items" :key="item.proposal_id">
+            <strong>{{ item.proposed_name }}</strong>
+            <span v-if="item.suggestion">
+              {{ suggestionLabel(item.suggestion) }} · {{ Math.round(item.suggestion.confidence * 100) }}%
+            </span>
+            <span v-else>该项未完成</span>
+            <p v-if="item.suggestion">{{ localizedSuggestionReason(item.suggestion) }}</p>
+            <p v-else-if="item.error">{{ item.error.message }}</p>
+          </article>
+        </section>
+
+        <section v-else-if="store.batchPreview" class="taxonomy-ai-results" aria-labelledby="taxonomy-ai-results-title">
+          <header>
+            <div>
+              <h3 id="taxonomy-ai-results-title">AI 归并结果</h3>
+              <p>先核对疑难项，再一次保存</p>
             </div>
             <p>
               自动归并 {{ store.batchPreview.counts.automatic }} ｜
@@ -571,41 +598,48 @@ onBeforeUnmount(() => {
           <div class="taxonomy-ai-results__manual">
             <h4>需人工确认</h4>
             <article v-for="item in manualBatchItems" :key="item.proposal_id">
-              <div>
-                <strong>{{ item.proposed_name }}</strong>
-                <span>{{ suggestionLabel(item.suggestion) }} · {{ Math.round(item.suggestion.confidence * 100) }}%</span>
-                <p>{{ localizedSuggestionReason(item.suggestion) }}</p>
-              </div>
-              <label>
-                <span>本批决定</span>
-                <select v-model="batchDraft(item.proposal_id, item.suggestion.target_term_ids).decision">
-                  <option value="defer">暂缓</option>
-                  <option value="merge">归并到现有词</option>
-                  <option value="approve">保留为新词</option>
-                  <option value="reject">拒绝</option>
-                </select>
-              </label>
-              <label v-if="batchDraft(item.proposal_id, item.suggestion.target_term_ids).decision === 'merge'">
-                <span>目标词</span>
-                <select v-model="batchDraft(item.proposal_id, item.suggestion.target_term_ids).targetTermId">
-                  <option value="">请选择</option>
-                  <option v-for="term in batchTerms(item.dimension)" :key="term.id" :value="term.id">
-                    {{ term.name }}
-                  </option>
-                </select>
-              </label>
-              <details>
-                <summary>查看证据</summary>
-                <button
-                  v-for="questionId in item.question_ids"
-                  :key="questionId"
-                  type="button"
-                  class="taxonomy-question-link"
-                  @click="openQuestionPreview(questionId, $event)"
+              <header class="taxonomy-ai-results__candidate-head">
+                <div>
+                  <strong>{{ item.proposed_name }}</strong>
+                  <span>{{ suggestionLabel(item.suggestion) }} · {{ Math.round(item.suggestion.confidence * 100) }}%</span>
+                </div>
+                <details class="taxonomy-ai-results__evidence">
+                  <summary>查看依据</summary>
+                  <button
+                    v-for="questionId in item.question_ids"
+                    :key="questionId"
+                    type="button"
+                    class="taxonomy-question-link"
+                    @click="openQuestionPreview(questionId, $event)"
+                  >
+                    题目 #{{ questionId }}
+                  </button>
+                </details>
+              </header>
+              <p class="taxonomy-ai-results__reason">{{ localizedSuggestionReason(item.suggestion) }}</p>
+              <div class="taxonomy-ai-results__controls">
+                <label class="taxonomy-ai-results__decision">
+                  <span>处理方式</span>
+                  <select v-model="batchDraft(item.proposal_id, item.suggestion.target_term_ids).decision">
+                    <option value="defer">暂缓</option>
+                    <option value="merge">归并到现有词</option>
+                    <option value="approve">保留为新词</option>
+                    <option value="reject">拒绝</option>
+                  </select>
+                </label>
+                <label
+                  v-if="batchDraft(item.proposal_id, item.suggestion.target_term_ids).decision === 'merge'"
+                  class="taxonomy-ai-results__target"
                 >
-                  题目 #{{ questionId }}
-                </button>
-              </details>
+                  <span>目标词</span>
+                  <select v-model="batchDraft(item.proposal_id, item.suggestion.target_term_ids).targetTermId">
+                    <option value="">请选择</option>
+                    <option v-for="term in batchTerms(item.dimension)" :key="term.id" :value="term.id">
+                      {{ term.name }}
+                    </option>
+                  </select>
+                </label>
+              </div>
             </article>
           </div>
 
@@ -640,7 +674,7 @@ onBeforeUnmount(() => {
           </footer>
         </section>
 
-        <nav v-if="!store.batchPreview" class="taxonomy-review__dimensions" aria-label="按标签维度筛选">
+        <nav v-if="!store.batchPreview && !showHistoricalRun" class="taxonomy-review__dimensions" aria-label="按标签维度筛选">
           <button
             type="button"
             :class="{ 'is-active': activeDimension === 'all' }"
@@ -672,24 +706,24 @@ onBeforeUnmount(() => {
           {{ store.message }}
         </p>
 
-        <div v-if="!store.batchPreview && store.loadState === 'loading' && !store.proposals.length" class="taxonomy-review__state">
+        <div v-if="!store.batchPreview && !showHistoricalRun && store.loadState === 'loading' && !store.proposals.length" class="taxonomy-review__state">
           正在读取新词候选…
         </div>
-        <div v-else-if="!store.batchPreview && store.loadState === 'error' && !store.proposals.length" class="taxonomy-review__state is-error">
+        <div v-else-if="!store.batchPreview && !showHistoricalRun && store.loadState === 'error' && !store.proposals.length" class="taxonomy-review__state is-error">
           <strong>候选清单暂时无法读取</strong>
           <p>可以保留当前窗口，稍后重新读取。</p>
           <button type="button" class="qb-button" @click="store.load()">重新读取</button>
         </div>
-        <div v-else-if="!store.batchPreview && (store.loadState === 'empty' || pendingProposals.length === 0)" class="taxonomy-review__state">
+        <div v-else-if="!store.batchPreview && !showHistoricalRun && (store.loadState === 'empty' || pendingProposals.length === 0)" class="taxonomy-review__state">
           <strong>当前没有待审核新词</strong>
           <p>AI 继续使用现有规范词；以后出现新候选时会在这里集中显示。</p>
         </div>
-        <div v-else-if="!store.batchPreview && visibleGroups.length === 0" class="taxonomy-review__state">
+        <div v-else-if="!store.batchPreview && !showHistoricalRun && visibleGroups.length === 0" class="taxonomy-review__state">
           <strong>这个维度暂时没有候选</strong>
           <button type="button" class="qb-link" @click="activeDimension = 'all'">查看全部候选</button>
         </div>
 
-        <div v-else-if="!store.batchPreview" class="taxonomy-review__groups">
+        <div v-else-if="!store.batchPreview && !showHistoricalRun" class="taxonomy-review__groups">
           <section
             v-for="group in visibleGroups"
             :key="group.dimension"
@@ -772,7 +806,7 @@ onBeforeUnmount(() => {
                   <strong>
                     {{ suggestionLabel(store.suggestionFor(proposal.id)!.suggestion!) }}
                   </strong>
-                  <p>{{ store.suggestionFor(proposal.id)?.suggestion?.reason }}</p>
+                  <p>{{ localizedSuggestionReason(store.suggestionFor(proposal.id)!.suggestion!) }}</p>
                 </div>
                 <button
                   v-if="suggestionCanPrefill(

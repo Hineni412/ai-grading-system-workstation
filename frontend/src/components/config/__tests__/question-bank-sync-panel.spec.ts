@@ -109,7 +109,7 @@ describe('QuestionBankSyncPanel', () => {
 
     expect(latestJobLoader).toHaveBeenCalledExactlyOnceWith(7)
     expect(host.textContent).toContain('题目入库成功 12 题')
-    expect(host.textContent).toContain('只重试未完成的题库流程')
+    expect(host.textContent).toContain('继续完成未完成题目')
     expect(host.textContent).not.toContain('将试卷入库并打标签')
     app.unmount()
   })
@@ -178,7 +178,7 @@ describe('QuestionBankSyncPanel', () => {
     })
 
     app.mount(host)
-    await nextTick()
+    await settle()
     expect(host.textContent).toContain('题目入库成功 12 题')
     host.querySelector<HTMLButtonElement>('button')!.click()
     await settle()
@@ -227,7 +227,7 @@ describe('QuestionBankSyncPanel', () => {
 
     expect(host.textContent).toContain('旧版流程曾被回收站中的同卷阻塞')
     expect(host.textContent).toContain('全新入库')
-    expect(host.textContent).toContain('只重试未完成的题库流程')
+    expect(host.textContent).toContain('继续完成未完成题目')
     host.querySelector<HTMLButtonElement>('button')!.click()
     await settle()
     expect(retryer).toHaveBeenCalledOnce()
@@ -270,7 +270,7 @@ describe('QuestionBankSyncPanel', () => {
 
     expect(host.textContent).toContain('题库流程异常结束')
     const retryButton = [...host.querySelectorAll('button')]
-      .find((button) => button.textContent?.includes('只重试未完成的题库流程'))
+      .find((button) => button.textContent?.includes('继续完成未完成题目'))
     expect(retryButton).toBeDefined()
     retryButton!.click()
     await settle()
@@ -286,7 +286,7 @@ describe('QuestionBankSyncPanel', () => {
     app.unmount()
   })
 
-  it('keeps taxonomy-only evidence work visible and locally retryable', async () => {
+  it('shows the current taxonomy queue instead of the saved job snapshot', async () => {
     useJobStore().track(job({
       status: 'succeeded',
       progress: 1,
@@ -303,31 +303,167 @@ describe('QuestionBankSyncPanel', () => {
         retryable: true,
       },
     }))
-    const retryer = vi.fn(async () => job({ id: 84 }))
+    const statusLoader = vi.fn(async () => ({
+      question_count: 1,
+      tagged_count: 1,
+      evidence_count: 1,
+      criteria_count: 1,
+      complete_count: 1,
+      pending_taxonomy_count: 9,
+      incomplete_question_ids: [],
+      incomplete_source_refs: [],
+    }))
     const host = document.createElement('div')
     document.body.append(host)
     const app = createApp(QuestionBankSyncPanel, {
       sessionId: 7,
       sessionName: '七年级上册阶段练习',
       configRevision: 'd'.repeat(64),
-      retryer,
       curriculumLoader: vi.fn(async () => curriculum),
+      statusLoader,
     })
 
     app.mount(host)
-    await nextTick()
-
-    expect(host.textContent).toContain('1 题标签待补充或归并')
-    expect(host.textContent).toContain('含 1 个新标签')
-    expect(host.textContent).toContain('试卷已入库，部分标签仍待归并')
-    expect(host.textContent).not.toContain('试卷已入库并完成标签治理')
-    expect(host.textContent).toContain('待处理：Q1')
-    const retryButton = [...host.querySelectorAll('button')]
-      .find((button) => button.textContent?.includes('标签处理后重新本地校验'))
-    expect(retryButton).toBeDefined()
-    retryButton!.click()
     await settle()
-    expect(retryer).toHaveBeenCalledOnce()
+
+    expect(host.textContent).toContain('当前待审核新词 9 个')
+    expect(host.textContent).not.toContain('含 1 个新标签')
+    expect(host.textContent).toContain('试卷已入库，标签与训练判定点已保存')
+    expect(host.textContent).not.toContain('试卷已入库并完成标签治理')
+    expect(host.textContent).not.toContain('待处理：Q1')
+    app.unmount()
+  })
+
+  it('refreshes current saved counts after a question-bank tagging job finishes', async () => {
+    const saved = job({
+      status: 'succeeded',
+      progress: 1,
+      result: {
+        outcome: 'partial',
+        imported_count: 12,
+        question_count: 12,
+        complete_tagged_count: 8,
+        evidence_count: 6,
+        criteria_count: 6,
+        failed_count: 4,
+        retryable: true,
+      },
+    })
+    useJobStore().track(saved)
+    const statusLoader = vi.fn()
+      .mockResolvedValueOnce({
+        question_count: 12,
+        tagged_count: 9,
+        evidence_count: 10,
+        criteria_count: 10,
+        complete_count: 9,
+        pending_taxonomy_count: 9,
+        incomplete_question_ids: [2, 3, 6],
+        incomplete_source_refs: ['Q2', 'Q3', 'Q6'],
+      })
+      .mockResolvedValueOnce({
+        question_count: 12,
+        tagged_count: 12,
+        evidence_count: 12,
+        criteria_count: 12,
+        complete_count: 12,
+        pending_taxonomy_count: 8,
+        incomplete_question_ids: [],
+        incomplete_source_refs: [],
+      })
+    const host = document.createElement('div')
+    document.body.append(host)
+    const app = createApp(QuestionBankSyncPanel, {
+      sessionId: 7,
+      sessionName: '七年级上册阶段练习',
+      configRevision: 'd'.repeat(64),
+      curriculumLoader: vi.fn(async () => curriculum),
+      statusLoader,
+    })
+
+    app.mount(host)
+    await settle()
+    expect(host.textContent).toContain('当前标签 9/12')
+    expect(host.textContent).toContain('待处理：Q2、Q3、Q6')
+
+    useJobStore().track(job({
+      id: 99,
+      job_type: 'tagging_sync',
+      status: 'succeeded',
+      progress: 1,
+      updated_at: '2026-07-26T00:03:00Z',
+    }))
+    await settle()
+
+    expect(statusLoader).toHaveBeenCalledTimes(2)
+    expect(host.textContent).toContain('当前标签 12/12')
+    expect(host.textContent).toContain('联合分析完整 12/12')
+    expect(host.textContent).not.toContain('继续完成未完成题目')
+    app.unmount()
+  })
+
+  it('continues the current incomplete questions instead of replaying old failures', async () => {
+    useJobStore().track(job({
+      status: 'succeeded',
+      progress: 1,
+      payload: {
+        session_id: 7,
+        mode: 'sync',
+        config_revision: 'd'.repeat(64),
+        curriculum_volume_id: 'bnu24-math-g7-upper',
+      },
+      result: {
+        outcome: 'complete',
+        imported_count: 12,
+        failed_count: 0,
+        retryable: false,
+      },
+    }))
+    const statusLoader = vi.fn(async () => ({
+      question_count: 12,
+      tagged_count: 9,
+      evidence_count: 12,
+      criteria_count: 12,
+      complete_count: 9,
+      pending_taxonomy_count: 9,
+      incomplete_question_ids: [2, 3, 6],
+      incomplete_source_refs: ['Q2', 'Q3', 'Q6'],
+    }))
+    const retryer = vi.fn()
+    const continuationSubmitter = vi.fn(async () => job({
+      id: 100,
+      job_type: 'tagging_sync',
+      payload: {
+        question_ids: [2, 3, 6],
+        curriculum_volume_id: 'bnu24-math-g7-upper',
+      },
+    }))
+    const host = document.createElement('div')
+    document.body.append(host)
+    const app = createApp(QuestionBankSyncPanel, {
+      sessionId: 7,
+      sessionName: '无法从标题推断册别',
+      configRevision: 'd'.repeat(64),
+      retryer,
+      continuationSubmitter,
+      curriculumLoader: vi.fn(async () => curriculum),
+      statusLoader,
+    })
+
+    app.mount(host)
+    await settle()
+    const continueButton = [...host.querySelectorAll('button')]
+      .find((button) => button.textContent?.includes('继续完成未完成题目'))
+    expect(continueButton).toBeDefined()
+    continueButton!.click()
+    await settle()
+
+    expect(continuationSubmitter).toHaveBeenCalledWith(
+      [2, 3, 6],
+      'bnu24-math-g7-upper',
+      expect.stringMatching(/^[0-9a-f]{32}$/),
+    )
+    expect(retryer).not.toHaveBeenCalled()
     app.unmount()
   })
 })

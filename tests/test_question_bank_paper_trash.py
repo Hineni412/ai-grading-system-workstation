@@ -175,6 +175,48 @@ def test_import_collision_ignores_trashed_original_and_dedupes_new_active_copy(
         ).fetchone()[0] == "deleted"
 
 
+def test_reupload_after_direct_permanent_delete_creates_a_new_independent_paper(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    writer, _reader, paper_id, version, source_path = _seed_paper(tmp_path)
+    upload_copy = tmp_path / "same-paper-again.docx"
+    upload_copy.write_bytes(source_path.read_bytes())
+    writer.permanently_delete_papers(
+        [PaperPermanentDeleteSelection(paper_id, version)],
+        confirmation_phrase="彻底删除 1 份试卷",
+        request_token="9" * 32,
+    )
+    monkeypatch.setattr(
+        batch_importer,
+        "_extract_paper",
+        lambda path, **_kwargs: ExtractedDocument(
+            source_file=str(path),
+            page_range="document",
+            text="1. 删除后重新上传会生成新的题库记录",
+        ),
+    )
+
+    imported = batch_importer._import_scanned_paper(
+        upload_copy,
+        writer.db_path,
+        stored_source_file="question_bank/raw_papers/same-paper-again.docx",
+        source_title="same-paper-again",
+        metadata=PaperMetadata(),
+        question_range=None,
+    )
+
+    assert imported.status == "needs_review"
+    assert imported.paper_id != paper_id
+    with connect(writer.db_path) as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM papers WHERE id = ?", (paper_id,)
+        ).fetchone()[0] == 0
+        assert conn.execute(
+            "SELECT COUNT(*) FROM papers WHERE id = ?", (imported.paper_id,)
+        ).fetchone()[0] == 1
+
+
 def test_permanent_delete_removes_owned_file_tags_and_statistic_links(
     tmp_path: Path,
 ) -> None:

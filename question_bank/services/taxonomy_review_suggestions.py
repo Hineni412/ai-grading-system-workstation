@@ -10,10 +10,13 @@ import threading
 import uuid
 from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime, timezone
-from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any, Protocol
 
+from question_bank.taxonomy.curriculum_catalog import (
+    curriculum_volume,
+    eligible_curriculum_knowledge_nodes,
+)
 from question_bank.taxonomy.governance import TaxonomyGovernance
 
 
@@ -523,7 +526,8 @@ class TaxonomySuggestionService:
         self,
         item: Mapping[str, Any],
     ) -> dict[str, Any] | None:
-        if item.get("dimension") != "curriculum":
+        dimension = str(item.get("dimension") or "")
+        if dimension not in {"curriculum", "knowledge"}:
             return None
         parts = _unique_strings(
             _COMPOSITE_SEPARATOR.split(
@@ -533,7 +537,7 @@ class TaxonomySuggestionService:
         if len(parts) < 2:
             return None
         terms = [
-            self.governance.resolve_term("curriculum", part)
+            self.governance.resolve_term(dimension, part)
             for part in parts
         ]
         if any(term is None for term in terms):
@@ -543,10 +547,29 @@ class TaxonomySuggestionService:
         )
         if len(target_ids) < 2:
             return None
+        if dimension == "knowledge":
+            summaries = self._question_summaries(
+                item.get("question_refs", [])
+            )
+            volume_ids = self._curriculum_volume_ids(summaries)
+            if volume_ids:
+                allowed_ids = {
+                    str(node["id"])
+                    for volume_id in volume_ids
+                    for node in eligible_curriculum_knowledge_nodes(
+                        volume_id
+                    )
+                }
+                if not set(target_ids).issubset(allowed_ids):
+                    return None
         return {
             "relation_kind": "related",
             "target_term_ids": target_ids,
-            "reason": "名称可安全拆分并精确匹配到多个现有教材章节。",
+            "reason": (
+                "名称已在本地拆分，并精确匹配到多个现有知识点。"
+                if dimension == "knowledge"
+                else "名称可安全拆分并精确匹配到多个现有教材章节。"
+            ),
             "confidence": 1.0,
             "source": "local_exact",
             "legacy_format": False,
@@ -681,49 +704,77 @@ class TaxonomySuggestionService:
         proposal = self.governance.get_proposal(
             str(item["proposal_id"])
         ) or dict(item)
+        question_summaries = self._question_summaries(
+            item.get("question_refs", [])
+        )
+        curriculum_volume_ids = self._curriculum_volume_ids(question_summaries)
         return {
             "proposal_id": item["proposal_id"],
             "dimension": item["dimension"],
             "proposed_name": item["proposed_name"],
             "reason": str(proposal.get("reason") or "")[:300],
             "nearest_id": str(proposal.get("nearest_id") or ""),
-            "candidates": self._nearby_terms(
+            "candidates": self._candidate_terms(
                 dimension=str(item["dimension"]),
-                proposed_name=str(item["proposed_name"]),
-                nearest_id=str(proposal.get("nearest_id") or ""),
+                curriculum_volume_ids=curriculum_volume_ids,
             ),
-            "question_summaries": self._question_summaries(
-                item.get("question_refs", [])
-            ),
+            "curriculum_volume_ids": curriculum_volume_ids,
+            "question_summaries": question_summaries,
             "taxonomy_revision": int(item.get("taxonomy_revision") or 0),
             "evidence_revision": int(item.get("evidence_revision") or 0),
             "graph_release_id": str(item.get("graph_release_id") or ""),
         }
 
-    def _nearby_terms(
+    def _candidate_terms(
         self,
         *,
         dimension: str,
-        proposed_name: str,
-        nearest_id: str,
-        limit: int = 12,
-    ) -> list[dict[str, str]]:
+        curriculum_volume_ids: Sequence[str],
+    ) -> list[dict[str, Any]]:
+        if dimension == "knowledge" and curriculum_volume_ids:
+            seen: set[str] = set()
+            scoped: list[dict[str, Any]] = []
+            for volume_id in curriculum_volume_ids:
+                for node in eligible_curriculum_knowledge_nodes(volume_id):
+                    node_id = str(node["id"])
+                    if node_id in seen:
+                        continue
+                    seen.add(node_id)
+                    scoped.append(
+                        {
+                            "id": node_id,
+                            "name": str(node["name"]),
+                            "label": str(node.get("label") or ""),
+                            "level": int(node.get("level") or 0),
+                            "parent_id": str(node.get("parent_id") or ""),
+                            "volume_id": str(node.get("volume_id") or ""),
+                        }
+                    )
+            if scoped:
+                return scoped
         terms = self.governance.catalog()["dimensions"].get(dimension, [])
-        ranked = sorted(
-            terms,
-            key=lambda term: (
-                0 if term.get("id") == nearest_id else 1,
-                -_name_similarity(proposed_name, term.get("name")),
-                str(term.get("name") or ""),
-            ),
-        )
         return [
             {
                 "id": str(term["id"]),
                 "name": str(term["name"]),
             }
-            for term in ranked[:limit]
+            for term in terms
         ]
+
+    @staticmethod
+    def _curriculum_volume_ids(
+        question_summaries: Sequence[Mapping[str, Any]],
+    ) -> list[str]:
+        volume_ids: list[str] = []
+        for summary in question_summaries:
+            volume = curriculum_volume(
+                grade=summary.get("grade"),
+                semester=summary.get("semester"),
+                textbook_version=summary.get("textbook_version"),
+            )
+            if volume is not None and str(volume["id"]) not in volume_ids:
+                volume_ids.append(str(volume["id"]))
+        return volume_ids
 
     def _question_summaries(
         self,
@@ -751,23 +802,30 @@ class TaxonomySuggestionService:
             raw = by_id.get(question_id)
             if raw is None:
                 continue
-            summaries.append(
-                {
-                    "id": question_id,
-                    "question_number": _trim_text(
-                        raw.get("question_number"), 40
-                    ),
-                    "question_type": _trim_text(
-                        raw.get("question_type"), 40
-                    ),
-                    "question_text": _trim_text(
-                        raw.get("question_text"), 600
-                    ),
-                    "answer_text": _trim_text(
-                        raw.get("answer_text"), 400
-                    ),
-                }
-            )
+            summary = {
+                "id": question_id,
+                "question_number": _trim_text(
+                    raw.get("question_number"), 40
+                ),
+                "question_type": _trim_text(
+                    raw.get("question_type"), 40
+                ),
+                "question_text": _trim_text(
+                    raw.get("question_text"), 600
+                ),
+                "answer_text": _trim_text(
+                    raw.get("answer_text"), 400
+                ),
+            }
+            for key, limit in (
+                ("grade", 40),
+                ("semester", 40),
+                ("textbook_version", 80),
+            ):
+                value = _trim_text(raw.get(key), limit)
+                if value:
+                    summary[key] = value
+            summaries.append(summary)
         return summaries
 
     def _validated_gateway_response(
@@ -817,10 +875,19 @@ class TaxonomySuggestionService:
                 and not isinstance(raw.get("target_term_ids"), (str, bytes))
                 else []
             )
-            if not set(target_ids).issubset(allowed_targets):
-                continue
+            invalid_target_ids = [
+                target_id
+                for target_id in target_ids
+                if target_id not in allowed_targets
+            ]
+            target_ids = [
+                target_id
+                for target_id in target_ids
+                if target_id in allowed_targets
+            ]
             if relation_kind == "exact" and len(target_ids) != 1:
-                continue
+                relation_kind = "uncertain"
+                target_ids = []
             if relation_kind in {
                 "new_core_candidate", "reject", "uncertain", "wrong_dimension"
             }:
@@ -829,10 +896,14 @@ class TaxonomySuggestionService:
                 confidence = float(raw.get("confidence", 0))
             except (TypeError, ValueError):
                 confidence = 0.0
+            reason_source = raw.get("reason")
+            if invalid_target_ids:
+                reason_source = "模型返回了本试卷册别范围外的目标，已忽略，请教师核对。"
+            reason = _short_chinese_reason(reason_source, relation_kind)
             suggestions[proposal_id] = {
                 "relation_kind": relation_kind,
                 "target_term_ids": target_ids,
-                "reason": _trim_text(raw.get("reason"), 300),
+                "reason": reason,
                 "confidence": max(0.0, min(1.0, confidence)),
                 "source": "ai",
                 "legacy_format": legacy_format,
@@ -969,30 +1040,24 @@ def _trim_text(value: object, limit: int) -> str:
     return text[:limit]
 
 
-def _normalized_name(value: object) -> str:
-    return re.sub(r"[\s\W_]+", "", str(value or "").casefold())
-
-
-def _name_similarity(left: object, right: object) -> float:
-    normalized_left = _normalized_name(left)
-    normalized_right = _normalized_name(right)
-    if not normalized_left or not normalized_right:
-        return 0.0
-    sequence = SequenceMatcher(
-        None, normalized_left, normalized_right
-    ).ratio()
-    left_bigrams = {
-        normalized_left[index : index + 2]
-        for index in range(max(1, len(normalized_left) - 1))
+def _short_chinese_reason(value: object, relation_kind: str) -> str:
+    defaults = {
+        "exact": "与现有词严格同义，可核对目标词后归并。",
+        "broader": "候选范围比现有词更宽，需要教师确认是否保留。",
+        "narrower": "候选是现有词下的细分概念，需要教师确认是否单列。",
+        "related": "只找到相关词，不能安全自动归并。",
+        "new_core_candidate": "未找到可复用的现有词，建议核对是否新增。",
+        "wrong_dimension": "候选可能放错标签类别，需要教师调整。",
+        "reject": "候选不适合作为规范标签，建议拒绝。",
+        "uncertain": "现有证据不足，无法给出可靠归并结论。",
     }
-    right_bigrams = {
-        normalized_right[index : index + 2]
-        for index in range(max(1, len(normalized_right) - 1))
-    }
-    overlap = len(left_bigrams & right_bigrams)
-    union = len(left_bigrams | right_bigrams)
-    jaccard = overlap / union if union else 0.0
-    return sequence * 0.6 + jaccard * 0.4
+    reason = " ".join(str(value or "").split())
+    if not re.search(r"[\u3400-\u9fff]", reason):
+        return defaults.get(relation_kind, defaults["uncertain"])
+    first_sentence = re.split(r"(?<=[。！？!?；;])", reason, maxsplit=1)[0].strip()
+    if len(first_sentence) <= 48:
+        return first_sentence
+    return f"{first_sentence[:47]}…"
 
 
 def _request_token(value: object) -> str:

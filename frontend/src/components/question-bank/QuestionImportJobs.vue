@@ -13,8 +13,16 @@ import { useQuestionBankStore } from '../../stores/question-bank'
 
 const props = withDefaults(defineProps<{
   pendingTaxonomyCount?: number
+  pendingTaxonomyState?: 'idle' | 'loading' | 'ready' | 'empty' | 'error'
 }>(), {
   pendingTaxonomyCount: 0,
+  pendingTaxonomyState: 'ready',
+})
+
+const pendingTaxonomyLabel = computed(() => {
+  if (props.pendingTaxonomyState === 'idle' || props.pendingTaxonomyState === 'loading') return '读取中'
+  if (props.pendingTaxonomyState === 'error') return '读取失败'
+  return String(props.pendingTaxonomyCount)
 })
 
 const emit = defineEmits<{
@@ -94,7 +102,19 @@ async function startTagging(): Promise<void> {
   busy.value = true
   feedback.value = ''
   try {
-    const job = await questionBankApi.submitTagging(bank.selectedQuestionIds)
+    const selected = new Set(bank.selectedQuestionIds)
+    const selectedItems = bank.questions.filter((item) => selected.has(item.id))
+    const volumeIds = [...new Set(selectedItems.map((item) => (
+      bank.papers.find((paper) => paper.id === item.paper_id)?.curriculum_volume_id ?? ''
+    )).filter(Boolean))]
+    if (selectedItems.length !== count || volumeIds.length !== 1) {
+      feedback.value = '请选择同一份且教材资料完整的试卷题目，或从试卷卡片点击“继续完成未完成题目”。'
+      return
+    }
+    const job = await questionBankApi.submitTagging(
+      bank.selectedQuestionIds,
+      volumeIds[0]!,
+    )
     jobStore.track(job)
     feedback.value = `已提交 ${count} 道题的 AI 标注任务。`
   } catch {
@@ -147,8 +167,8 @@ async function restoreRequiredPaper(job: JobResponse): Promise<void> {
   try {
     const restored = await bank.restorePaperFromTrash(paperId)
     feedback.value = restored
-      ? '原试卷及其随试卷移入回收站的题目已经恢复。'
-      : '原试卷没有恢复，请打开试卷回收站核对当前状态。'
+      ? '旧记录已恢复到试卷库。若要重新上传，请先在试卷卡片中将它永久删除。'
+      : '旧记录没有恢复，也没有删除任何数据。请刷新任务后再试。'
   } finally {
     busy.value = false
   }
@@ -181,7 +201,7 @@ function downloadFailures(job: JobResponse): void {
           @click="emit('reviewTaxonomy')"
         >
           待审核新词
-          <strong>{{ props.pendingTaxonomyCount }}</strong>
+          <strong>{{ pendingTaxonomyLabel }}</strong>
         </button>
       </div>
     </header>
@@ -241,7 +261,7 @@ function downloadFailures(job: JobResponse): void {
             v-if="job.job_type === 'question_import' && job.result.restore_required === true"
             class="qb-feedback is-warning"
           >
-            相同试卷已在回收站。请恢复原试卷，避免重新入库后产生重复题目。
+            这是旧版删除流程留下的同卷记录。先恢复到试卷库，再从试卷卡片永久删除，之后即可重新上传。
           </p>
           <p v-if="job.error" class="qb-feedback is-error">{{ job.error }}</p>
           <p v-if="jobStore.syncErrors[job.id]" class="qb-feedback is-error" role="alert">
@@ -267,7 +287,7 @@ function downloadFailures(job: JobResponse): void {
               :disabled="busy"
               @click="restoreRequiredPaper(job)"
             >
-              恢复原试卷
+              恢复旧记录
             </button>
             <button
               v-if="questionJobFailures(job.result).length"

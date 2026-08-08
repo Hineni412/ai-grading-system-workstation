@@ -447,6 +447,7 @@ def public_job_payload(job: JobRecord) -> dict[str, Any]:
     if job.job_type == "tagging_sync":
         allowed = (
             "question_ids",
+            "curriculum_volume_id",
             "source_job_id",
             "retry_of_job_id",
             "retry_evidence_question_ids",
@@ -467,6 +468,7 @@ def public_job_payload(job: JobRecord) -> dict[str, Any]:
             "session_id",
             "mode",
             "config_revision",
+            "curriculum_volume_id",
             "retry_of_job_id",
             "question_ids",
         )

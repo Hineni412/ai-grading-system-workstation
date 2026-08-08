@@ -93,11 +93,53 @@ def test_read_service_lists_active_papers_without_paths_or_writes(question_bank_
     assert papers[0]["question_count"] == 1
     assert papers[0]["tagged_question_count"] == 0
     assert papers[0]["tagged_any_question_count"] == 1
+    assert papers[0]["evidence_question_count"] == 0
+    assert papers[0]["criteria_question_count"] == 0
+    assert papers[0]["complete_analysis_count"] == 0
     assert papers[1]["question_count"] == 0
     assert papers[1]["tagged_question_count"] == 0
     assert "source_file" not in repr(papers)
     assert "content_fingerprint" not in repr(papers)
     assert db_path.read_bytes() == before
+
+
+def test_session_analysis_status_does_not_treat_complete_tags_as_complete_analysis(
+    question_bank_fixture,
+) -> None:
+    service, db_path, _ = question_bank_fixture
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("UPDATE questions SET difficulty = '6' WHERE id = 1")
+        conn.executemany(
+            """
+            INSERT INTO question_tags (question_id, tag_type, tag_value)
+            VALUES (1, ?, ?)
+            """,
+            [
+                ("ability", "逻辑推理"),
+                ("exam_scope", "七年级下册"),
+            ],
+        )
+        conn.execute(
+            """
+            INSERT INTO grading_question_links (
+                grading_session_id, source_question_id, bank_question_id,
+                link_method, confidence, status
+            ) VALUES ('7', 'Q1', 1, 'paper_question_number', 1.0, 'confirmed')
+            """
+        )
+        conn.commit()
+
+    status = service.session_analysis_status(7)
+
+    assert status == {
+        "question_count": 1,
+        "tagged_count": 1,
+        "evidence_count": 0,
+        "criteria_count": 0,
+        "complete_count": 0,
+        "incomplete_question_ids": [1],
+        "incomplete_source_refs": ["1"],
+    }
 
 
 def test_curriculum_compact_mode_keeps_navigation_without_knowledge_point_bodies(

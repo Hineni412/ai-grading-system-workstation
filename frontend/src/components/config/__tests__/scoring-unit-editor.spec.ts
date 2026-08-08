@@ -1,79 +1,91 @@
 import { createApp, nextTick } from 'vue'
 import { describe, expect, it } from 'vitest'
 
-import type { ConfigEditorCommand, ManualPartInput } from '../../../api/config-workspace'
+import type { ConfigEditorCommand, ConfigEditorRow } from '../../../api/config-workspace'
 import ScoringUnitEditor from '../ScoringUnitEditor.vue'
 
-async function mountEditor(parts: ManualPartInput[] = []) {
+const baseRow = {
+  question_id: 'Q12', question_type: 'proof', part_label: '第1问',
+  standard_answer: '', accepted_answers: [], match_rule: '', answer_only_max_score: 1,
+  require_final_answer: true, required_elements: [], deduction_rules: [],
+  part_deduction_rules: [], final_answer_rule: '',
+}
+const rows: ConfigEditorRow[] = [
+  { ...baseRow, row_id: 'r1', part_id: 'Q12(P1)', step_id: 'S1', core_goal: '写出条件', score: 2 },
+  { ...baseRow, row_id: 'r2', part_id: 'Q12(P1)', step_id: 'S2', core_goal: '完成推理', score: 1 },
+  { ...baseRow, row_id: 'r3', part_id: 'Q12(P2)', part_label: '第2问', step_id: 'S1', core_goal: '得出结论', score: 3 },
+]
+
+async function mountEditor(options: { rows?: ConfigEditorRow[]; scoreReviewRequired?: boolean } = {}) {
   const host = document.createElement('div')
   document.body.append(host)
   const commands: ConfigEditorCommand[] = []
-  const refinements: ConfigEditorCommand[] = []
+  const retries: string[] = []
   const app = createApp(ScoringUnitEditor, {
-    questionId: 'Q12', parts,
+    questionId: 'Q12', rows: options.rows ?? rows,
+    scoreReviewRequired: options.scoreReviewRequired ?? false,
     onCommand: (command: ConfigEditorCommand) => commands.push(command),
-    onRefine: (command: ConfigEditorCommand) => refinements.push(command),
+    onRetry: (questionId: string) => retries.push(questionId),
   })
   app.mount(host)
   await nextTick()
-  return { host, commands, refinements }
+  return { host, commands, retries }
 }
 
 describe('ScoringUnitEditor', () => {
-  it('emits a bounded split command with the selected style', async () => {
+  it('loads the current subquestions and scoring steps and preserves the question total', async () => {
     const mounted = await mountEditor()
-    const count = mounted.host.querySelector<HTMLInputElement>('[aria-label="Q12 拆分数量"]')!
-    count.value = '20'
-    count.dispatchEvent(new Event('input', { bubbles: true }))
-    mounted.host.querySelector<HTMLInputElement>('[aria-label="按空格拆分"]')!.click()
-    mounted.host.querySelector<HTMLButtonElement>('button[name="应用拆分"]')!.click()
-    await nextTick()
-    expect(mounted.commands).toEqual([
-      { kind: 'split', question_id: 'Q12', count: 20, style: 'blank' },
-    ])
-    expect(count.min).toBe('2')
-    expect(count.max).toBe('20')
-  })
+    expect(mounted.host.textContent).toContain('6 / 6 分')
+    expect(mounted.host.textContent).toContain('第 1 小问')
+    expect(mounted.host.textContent).toContain('步骤 2')
 
-  it('requires unique part ids, non-negative finite scores and can request refine', async () => {
-    const mounted = await mountEditor([
-      { part_id: 'P1', score: 40, core_goal: '第一问' },
-      { part_id: 'P1', score: 60, core_goal: '第二问' },
-    ])
-    mounted.host.querySelector<HTMLButtonElement>('button[name="替换评分单元"]')!.click()
+    mounted.host.querySelector<HTMLButtonElement>('button[name="保存本题结构"]')!.click()
     await nextTick()
-    expect(mounted.host.querySelector('[role="alert"]')?.textContent).toContain('不能重复')
-    expect(mounted.commands).toHaveLength(0)
-
-    const ids = mounted.host.querySelectorAll<HTMLInputElement>('[aria-label$="评分单元 ID"]')
-    ids[1]!.value = 'P2'
-    ids[1]!.dispatchEvent(new Event('input', { bubbles: true }))
-    await nextTick()
-    mounted.host.querySelector<HTMLButtonElement>('button[name="AI 完善评分单元"]')!.click()
-    await nextTick()
-    expect(mounted.refinements).toEqual([{
-      kind: 'replace_parts', question_id: 'Q12',
+    expect(mounted.commands).toEqual([{
+      kind: 'replace_question_structure', question_id: 'Q12',
       parts: [
-        { part_id: 'P1', score: 40, core_goal: '第一问' },
-        { part_id: 'P2', score: 60, core_goal: '第二问' },
+        { part_id: 'P1', steps: [
+          { step_id: 'S1', score: 2, core_goal: '写出条件' },
+          { step_id: 'S2', score: 1, core_goal: '完成推理' },
+        ] },
+        { part_id: 'P2', steps: [
+          { step_id: 'S1', score: 3, core_goal: '得出结论' },
+        ] },
       ],
     }])
   })
 
-  it('disables invalid default parts and enforces positive bounded scores and nonblank goals', async () => {
+  it('uses compact step cards instead of stretching every step across a full row', async () => {
     const mounted = await mountEditor()
-    const replace = mounted.host.querySelector<HTMLButtonElement>('button[name="替换评分单元"]')!
-    const refine = mounted.host.querySelector<HTMLButtonElement>('button[name="AI 完善评分单元"]')!
-    expect(replace.disabled).toBe(true)
-    expect(refine.disabled).toBe(true)
-    expect(mounted.host.querySelector('[role="alert"]')?.textContent).toContain('大于 0 且不超过 100')
+    const grids = mounted.host.querySelectorAll('.scoring-unit-editor__step-grid')
 
-    const mountedInvalid = await mountEditor([
-      { part_id: 'P1', score: 101, core_goal: '有效目标' },
-      { part_id: 'P2', score: 1, core_goal: '   ' },
-    ])
-    expect(mountedInvalid.host.querySelector<HTMLButtonElement>('button[name="替换评分单元"]')!.disabled).toBe(true)
-    expect(mountedInvalid.host.querySelector('[role="alert"]')?.textContent).toContain('大于 0 且不超过 100')
-    expect(mountedInvalid.commands).toEqual([])
+    expect(grids).toHaveLength(2)
+    expect(grids[0]?.querySelectorAll('.scoring-unit-editor__step-card')).toHaveLength(2)
+    expect(grids[1]?.querySelectorAll('.scoring-unit-editor__step-card')).toHaveLength(1)
+    expect(mounted.host.textContent).toContain('2 个步骤点')
+    expect(mounted.host.textContent).not.toContain('先调整小问')
+  })
+
+  it('lets the teacher add and remove steps but blocks an unassigned score', async () => {
+    const mounted = await mountEditor()
+    const addStep = [...mounted.host.querySelectorAll<HTMLButtonElement>('button')]
+      .find((button) => button.textContent?.includes('添加步骤点'))!
+    addStep.click()
+    await nextTick()
+    expect(mounted.host.textContent).toContain('步骤 3')
+    expect(mounted.host.querySelector<HTMLButtonElement>('button[name="保存本题结构"]')!.disabled).toBe(true)
+    expect(mounted.host.querySelector('[role="alert"]')?.textContent).toContain('需要填写大于 0')
+
+    const remove = mounted.host.querySelector<HTMLButtonElement>('[aria-label="删除第 1 小问步骤 3"]')!
+    remove.click()
+    await nextTick()
+    expect(mounted.host.querySelector<HTMLButtonElement>('button[name="保存本题结构"]')!.disabled).toBe(false)
+  })
+
+  it('requests AI for this question only and explains that scores need review', async () => {
+    const mounted = await mountEditor({ scoreReviewRequired: true })
+    expect(mounted.host.textContent).toContain('请逐项确认步骤并重新赋分')
+    mounted.host.querySelector<HTMLButtonElement>('button[name="单题AI重试"]')!.click()
+    expect(mounted.retries).toEqual(['Q12'])
   })
 })

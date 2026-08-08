@@ -1659,10 +1659,6 @@ def _validate_permanent_paper_selection(
         raise PaperStateNotFound("Paper not found")
     expected = {selection.id: selection.expected_updated_at for selection in selections}
     for row in rows:
-        if str(row["import_status"] or "") != "deleted":
-            raise PaperPermanentDeleteRequiresTrash(
-                "Paper must be in trash before permanent deletion"
-            )
         if str(row["updated_at"] or "") != expected[int(row["id"])]:
             raise PaperPermanentDeleteConflict(
                 "Paper changed before permanent deletion"

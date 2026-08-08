@@ -250,6 +250,32 @@ describe('RubricEditorTable', () => {
     expect(document.activeElement).toBe(score)
   })
 
+  it('applies choice score per question and fill score as each question total', async () => {
+    const mounted = await mountTable({ rows: [
+      row({ row_id: 'choice-1', question_id: 'Q1', question_type: 'choice', score: 2 }),
+      row({ row_id: 'choice-2', question_id: 'Q2', question_type: 'choice', score: 2 }),
+      row({ row_id: 'fill-1a', question_id: 'Q3', question_type: 'fill_blank', score: 1 }),
+      row({ row_id: 'fill-1b', question_id: 'Q3', question_type: 'fill_blank', step_id: 'S2', score: 1 }),
+    ] })
+    const choice = mounted.host.querySelector<HTMLInputElement>('[aria-label="选择题每题分值"]')!
+    choice.value = '3'
+    choice.dispatchEvent(new Event('input', { bubbles: true }))
+    const fill = mounted.host.querySelector<HTMLInputElement>('[aria-label="填空题每题总分"]')!
+    fill.value = '5'
+    fill.dispatchEvent(new Event('input', { bubbles: true }))
+    await nextTick()
+    const applyButtons = [...mounted.host.querySelectorAll<HTMLButtonElement>('.rubric-ledger__bulk-scores button')]
+    applyButtons[0]!.click()
+    applyButtons[1]!.click()
+
+    expect(mounted.emitted).toEqual([
+      { row_id: 'choice-1', score: 3 },
+      { row_id: 'choice-2', score: 3 },
+      { row_id: 'fill-1a', score: 2.5 },
+      { row_id: 'fill-1b', score: 2.5 },
+    ])
+  })
+
   it.each(['', 'NaN', 'Infinity', '-1', '100.1'])(
     'rejects an out-of-contract rubric score %s without emitting it',
     async (raw) => {
