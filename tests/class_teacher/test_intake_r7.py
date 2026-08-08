@@ -17,6 +17,7 @@ from backend.api.app import ApiError
 from backend.class_teacher.api.router import create_router
 from backend.class_teacher.errors import VaultError
 from backend.class_teacher.intake.ai_task_adapter import _parse_model_payload
+from backend.class_teacher.intake.preferences import HomeroomPreference
 from backend.class_teacher.intake.ports import FakeWorkspaceAITaskPort
 from backend.class_teacher.intake.triage_contract import parse_triage
 from backend.class_teacher.local_speech import LocalSpeechTranscriber
@@ -477,6 +478,36 @@ def test_homeroom_preference_changes_filter_without_mutating_roster_history(tmp_
     assert cleared["homeroom_class"] is None
     with closing(sqlite3.connect(tmp_path / "grading.db")) as connection:
         assert connection.execute("SELECT COUNT(*) FROM students").fetchone()[0] == 2
+
+
+def test_saved_homeroom_remains_available_when_roster_is_temporarily_unavailable(
+    tmp_path: Path,
+) -> None:
+    service, _ = _service(tmp_path)
+    initial = service.intake.preferences.get()
+    saved = service.intake.preferences.set(
+        homeroom_class="一班",
+        expected_revision=0,
+        expected_source_revision=str(initial["source_revision"]),
+        operation_id="homeroom-startup-recovery",
+    )
+
+    class UnavailableRoster:
+        def snapshot(self):
+            raise VaultError(
+                "existing_student_roster_unavailable",
+                "现有学生库暂时无法读取，请稍后重试",
+                status_code=503,
+            )
+
+    restarted = HomeroomPreference(service.ordinary_database, UnavailableRoster())
+
+    restored = restarted.get()
+
+    assert restored["homeroom_class"] == saved["homeroom_class"] == "一班"
+    assert restored["revision"] == saved["revision"]
+    assert restored["classes"] == ["一班"]
+    assert restored["source_revision"] == initial["source_revision"]
 
 
 def test_conversation_turn_uses_safe_task_reference_and_replays_operation(tmp_path: Path) -> None:

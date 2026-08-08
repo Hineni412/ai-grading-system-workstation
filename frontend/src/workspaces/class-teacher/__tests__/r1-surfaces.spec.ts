@@ -22,6 +22,7 @@ import WorkNodeInspector from '../ordinary/WorkNodeInspector.vue'
 import AcademicAnalysisPanel from '../students/AcademicAnalysisPanel.vue'
 import StudentDirectoryPanel from '../students/StudentDirectoryPanel.vue'
 import StudentOverviewPanel from '../students/StudentOverviewPanel.vue'
+import StudentSurface from '../students/StudentSurface.vue'
 import SupportReviewPanel from '../students/SupportReviewPanel.vue'
 import ClassTeacherWorkbenchView from '../views/ClassTeacherWorkbenchView.vue'
 
@@ -120,6 +121,42 @@ describe('B UI R1 surfaces', () => {
     expect(records).not.toHaveBeenCalled()
   })
 
+  it('recovers the saved homeroom inside the student page after a temporary roster read failure', async () => {
+    vi.spyOn(intakeApi, 'homeroom').mockResolvedValue({ homeroom_class:'一班', revision:1, classes:['一班'], source_revision:'r'.repeat(64) })
+    vi.spyOn(studentR1Api, 'directory').mockResolvedValue({ items:[{ subject_id:'s1', display_name:'合成学生', source_student_id:'student:S001', class_label:'一班', support_record_count:3, support_plan_count:1, confirmed_entry_count:2, projection_state:'none', attention_pending_count:0, last_confirmed_at:'2026-08-01' }], cursor:null, total:1, page_size:20 })
+    vi.spyOn(studentR1Api, 'rosterSource')
+      .mockRejectedValueOnce(new Error('temporary unavailable'))
+      .mockResolvedValue({ items:[{ source_key:'student:S001', student_code:'S001', display_name:'合成学生', class_label:'一班', subject_id:'s1', roster_state:'active', opaque_ref:'ref', student_revision:'r1' }], classes:['一班'], source_revision:'r1', total:1, cursor:null })
+
+    const host = await mount(StudentDirectoryPanel, { token:'synthetic-token' })
+
+    expect(host.textContent).toContain('学生基本信息暂时无法读取')
+    clickByText(host, '重新读取学生名单')
+    await new Promise((resolve)=>setTimeout(resolve,0)); await nextTick(); await nextTick()
+
+    expect(host.textContent).toContain('合成学生')
+    expect(host.textContent).not.toContain('学生基本信息暂时无法读取')
+  })
+
+  it('restores the selected student drawer when returning to the student page', async () => {
+    const subject = { subject_id:'subject-1234', display_name:'合成学生', source_student_id:'student:S001', class_label:'一班', support_record_count:2, support_plan_count:1, confirmed_entry_count:2, projection_state:'applied', attention_pending_count:0, last_confirmed_at:'2026-08-01' }
+    vi.spyOn(intakeApi, 'homeroom').mockResolvedValue({ homeroom_class:'一班', revision:1, classes:['一班'], source_revision:'r'.repeat(64) })
+    vi.spyOn(studentR1Api, 'directory').mockResolvedValue({ items:[subject], cursor:null, total:1, page_size:20 })
+    vi.spyOn(studentR1Api, 'rosterSource').mockResolvedValue({ items:[{ source_key:'student:S001', student_code:'S001', display_name:'合成学生', class_label:'一班', subject_id:'subject-1234', roster_state:'active', opaque_ref:'ref', student_revision:'r1' }], classes:['一班'], source_revision:'r1', total:1, cursor:null })
+    const header = vi.spyOn(studentR1Api, 'header').mockResolvedValue(subject)
+    vi.spyOn(studentR1Api, 'studentCard').mockResolvedValue({
+      subject, entries:[], existing_records:[], support_plans:[],
+      current_profile:{ entry_id:'entry-1', revision:1, summary:'能按计划完成任务。', dimensions:[], open_questions:[], support_focus:[], updated_at:'2026-08-01' },
+    })
+
+    const host = await mount(StudentSurface, { token:'synthetic-token', panel:'directory', status:null, subjectId:'subject-1234' })
+
+    expect(header).toHaveBeenCalledExactlyOnceWith('synthetic-token', 'subject-1234')
+    expect(host.querySelector('[role="dialog"]')).toBeTruthy()
+    expect(host.textContent).toContain('合成学生')
+    expect(host.textContent).toContain('能按计划完成任务。')
+  })
+
   it('opens an empty current dossier for a roster student without confirmed records', async () => {
     vi.spyOn(intakeApi, 'homeroom').mockResolvedValue({ homeroom_class:'一班', revision:1, classes:['一班'], source_revision:'r'.repeat(64) })
     vi.spyOn(studentR1Api, 'directory').mockResolvedValue({ items:[], cursor:null, total:0, page_size:100 })
@@ -158,14 +195,34 @@ describe('B UI R1 surfaces', () => {
       existing_records:[], support_plans:[],
     })
 
-    const host = await mount(StudentOverviewPanel, { token:'synthetic-token', subject })
+    const close = vi.fn()
+    const open = vi.fn()
+    const host = await mount(StudentOverviewPanel, {
+      token:'synthetic-token', subject, onClose:close, onOpen:open,
+    })
 
     expect(card).toHaveBeenCalledExactlyOnceWith('synthetic-token', 'subject-1234')
     expect(start).not.toHaveBeenCalled()
     expect(host.textContent).toContain('学生当前档案')
+    expect(host.querySelector('[role="dialog"]')).toBeTruthy()
+    expect(host.textContent).toContain('当前概览')
+    expect(host.textContent).toContain('成长与支持')
+    expect(host.textContent).toContain('学业证据')
     expect(host.textContent).toContain('告诉我最近又了解到了什么')
     expect(host.textContent).toContain('做事认真，数学步骤完整。')
     expect(host.textContent).toContain('计算准确性支持')
+
+    clickByText(host, '成长与支持')
+    await nextTick()
+    expect(host.querySelector('[aria-label="成长与支持"]')?.getAttribute('style')).not.toContain('display: none')
+
+    clickByText(host, '学业证据')
+    await nextTick()
+    clickByText(host, '打开完整学业证据')
+    expect(open).toHaveBeenCalledWith('academic')
+
+    window.dispatchEvent(new KeyboardEvent('keydown', { key:'Escape' }))
+    expect(close).toHaveBeenCalledOnce()
   })
 
   it('continues a student-scoped AI conversation and applies the proposal in place', async () => {

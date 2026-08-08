@@ -25,24 +25,52 @@ class HomeroomPreference:
         self.roster_source = roster_source
 
     def get(self) -> dict[str, object]:
-        items, source_revision = self.roster_source.snapshot()
+        saved = self._saved_preference()
+        try:
+            items, source_revision = self.roster_source.snapshot()
+        except VaultError:
+            if saved is None:
+                raise
+            selected = str(saved.get("homeroom_class") or "").strip()
+            return {
+                "homeroom_class": saved.get("homeroom_class"),
+                "revision": int(saved["revision"]),
+                "updated_at": str(saved["updated_at"]),
+                "classes": [selected] if selected else [],
+                "source_revision": str(saved.get("saved_source_revision") or ""),
+            }
         classes = sorted({item.class_label for item in items if item.class_label})
+        if saved is None:
+            return {
+                "homeroom_class": None,
+                "revision": 0,
+                "classes": classes,
+                "source_revision": source_revision,
+            }
+        return {
+            "homeroom_class": saved.get("homeroom_class"),
+            "revision": int(saved["revision"]),
+            "updated_at": str(saved["updated_at"]),
+            "classes": classes,
+            "source_revision": source_revision,
+        }
+
+    def _saved_preference(self) -> dict[str, object] | None:
         if not self.database.exists:
-            return {"homeroom_class": None, "revision": 0, "classes": classes, "source_revision": source_revision}
+            return None
         with closing(self.database.connect()) as connection:
             row = connection.execute(
                 "SELECT value_json, revision, updated_at FROM class_teacher_preferences WHERE preference_key=?",
                 (self.KEY,),
             ).fetchone()
         if row is None:
-            return {"homeroom_class": None, "revision": 0, "classes": classes, "source_revision": source_revision}
+            return None
         payload = json.loads(str(row["value_json"]))
         return {
             "homeroom_class": payload.get("homeroom_class"),
+            "saved_source_revision": payload.get("source_revision"),
             "revision": int(row["revision"]),
             "updated_at": str(row["updated_at"]),
-            "classes": classes,
-            "source_revision": source_revision,
         }
 
     def set(
@@ -64,7 +92,11 @@ class HomeroomPreference:
         if selected and selected not in {item.class_label for item in items}:
             raise VaultError("class_teacher_homeroom_invalid", "所选班级已不在学生库中", status_code=422)
         timestamp = _iso()
-        payload = json.dumps({"homeroom_class": selected or None}, ensure_ascii=False, separators=(",", ":"))
+        payload_value = {
+            "homeroom_class": selected or None,
+            "source_revision": source_revision,
+        }
+        payload = json.dumps(payload_value, ensure_ascii=False, separators=(",", ":"))
         with closing(self.database.connect(create=True)) as connection:
             connection.execute("BEGIN IMMEDIATE")
             try:
@@ -99,7 +131,15 @@ class HomeroomPreference:
                 )
                 connection.execute(
                     "INSERT INTO work_operations (operation_id, operation_type, result_json, created_at) VALUES (?, 'class_teacher.preference.homeroom', ?, ?)",
-                    (operation_id, payload, timestamp),
+                    (
+                        operation_id,
+                        json.dumps(
+                            {"homeroom_class": selected or None},
+                            ensure_ascii=False,
+                            separators=(",", ":"),
+                        ),
+                        timestamp,
+                    ),
                 )
                 connection.commit()
             except Exception:
