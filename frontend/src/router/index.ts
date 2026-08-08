@@ -171,6 +171,7 @@ const routes: RouteRecordRaw[] = [
       title: settingsRouteDefinition.title,
       description: settingsRouteDefinition.description,
       breadcrumb: settingsRouteDefinition.breadcrumb,
+      curriculumScope: false,
     },
   },
   ...workspaceRegistry.modules.map(({ manifest, route }) => ({
@@ -184,6 +185,7 @@ const routes: RouteRecordRaw[] = [
       dataClassifications: manifest.dataClassifications,
       featureFlags: manifest.featureFlags,
       topbarContext: route.topbarContext,
+      curriculumScope: route.curriculumScope,
     },
   })),
   {
@@ -194,6 +196,7 @@ const routes: RouteRecordRaw[] = [
       title: '设计系统展示',
       description: '查看基础控件、状态和视觉规范',
       breadcrumb: '设计系统展示',
+      curriculumScope: false,
     },
   },
   {
@@ -204,6 +207,7 @@ const routes: RouteRecordRaw[] = [
       title: '页面未找到',
       description: '请求的页面不存在，当前数据没有改变',
       breadcrumb: '页面未找到',
+      curriculumScope: false,
     },
   },
 ]

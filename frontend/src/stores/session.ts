@@ -5,8 +5,10 @@ import {
   createSessionDraft,
   fetchSessions,
   renameSession,
+  updateSessionMetadata,
   type SessionDraftCreator,
   type SessionLoader,
+  type SessionMetadataUpdater,
   type SessionRenamer,
   type SessionSummary,
 } from '../api/sessions'
@@ -78,13 +80,16 @@ export const useSessionStore = defineStore('session', () => {
     name: string,
     creator: SessionDraftCreator = createSessionDraft,
     loader: SessionLoader = fetchSessions,
+    curriculumVolumeId: string | null = null,
   ): Promise<SessionSummary> {
     const normalized = name.trim()
     if (!normalized) throw new Error('考试名称不能为空')
     const knownIds = new Set(sessions.value.map((session) => session.id))
     let created: SessionSummary
     try {
-      created = await creator(normalized)
+      created = curriculumVolumeId
+        ? await creator(normalized, curriculumVolumeId)
+        : await creator(normalized)
     } catch (error) {
       if (!isAmbiguousWriteError(error)) throw error
       let loaded: SessionSummary[]
@@ -94,7 +99,9 @@ export const useSessionStore = defineStore('session', () => {
         throw new SessionDraftOutcomeUnknownError()
       }
       const reconciled = loaded.find((session) => !knownIds.has(session.id)
-        && session.name.trim() === normalized && !session.is_deleted)
+        && session.name.trim() === normalized
+        && (!curriculumVolumeId || session.curriculum_volume_id === curriculumVolumeId)
+        && !session.is_deleted)
       sessions.value = loaded
       loadState.value = 'ready'
       if (!reconciled) throw new Error('考试草稿创建请求已核对，服务器未出现新草稿')
@@ -138,6 +145,43 @@ export const useSessionStore = defineStore('session', () => {
     return renamed
   }
 
+  async function saveSelectedMetadata(
+    name: string,
+    curriculumVolumeId: string | null,
+    updater: SessionMetadataUpdater = updateSessionMetadata,
+    loader: SessionLoader = fetchSessions,
+  ): Promise<SessionSummary> {
+    if (selectedSessionId.value === null) throw new Error('请先选择考试')
+    const sessionId = selectedSessionId.value
+    const normalized = name.trim()
+    if (!normalized) throw new Error('考试名称不能为空')
+
+    let updated: SessionSummary
+    try {
+      updated = await updater(sessionId, {
+        name: normalized,
+        curriculum_volume_id: curriculumVolumeId,
+      })
+    } catch (error) {
+      if (!isAmbiguousWriteError(error)) throw error
+      const loaded = await loader()
+      sessions.value = loaded
+      loadState.value = 'ready'
+      const confirmed = loaded.find((session) => (
+        session.id === sessionId
+        && session.name.trim() === normalized
+        && session.curriculum_volume_id === curriculumVolumeId
+        && !session.is_deleted
+      ))
+      if (!confirmed) throw error
+      updated = confirmed
+    }
+
+    const index = sessions.value.findIndex((session) => session.id === updated.id)
+    if (index >= 0) sessions.value[index] = updated
+    return updated
+  }
+
   function selectSession(id: number | null): void {
     if (id === null) {
       clearSelection()
@@ -167,6 +211,7 @@ export const useSessionStore = defineStore('session', () => {
     initialize,
     createDraft,
     renameSelected,
+    saveSelectedMetadata,
     selectSession,
     clearSelection,
   }

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, shallowRef, watch } from 'vue'
 
 import {
   questionBankApi,
@@ -13,6 +13,10 @@ import {
   type SimilarQuestionItem,
 } from '../../api/question-bank'
 import { useAssemblyStore } from '../../stores/assembly'
+import {
+  CURRICULUM_SCOPE_STORAGE_KEY,
+  useCurriculumScopeStore,
+} from '../../stores/curriculum-scope'
 import DifficultyRangeFilter from './DifficultyRangeFilter.vue'
 import QuestionContentRenderer from './QuestionContentRenderer.vue'
 import QuestionSortControl from './QuestionSortControl.vue'
@@ -22,13 +26,14 @@ const emit = defineEmits<{
 }>()
 
 const assembly = useAssemblyStore()
-const questions = ref<QuestionBankListItem[]>([])
+const curriculumScope = useCurriculumScopeStore()
+const questions = shallowRef<QuestionBankListItem[]>([])
 const total = ref(0)
 const totalPages = ref(0)
 const state = ref<'loading' | 'ready' | 'empty' | 'error'>('loading')
 const baseFacetsState = ref<'loading' | 'ready' | 'error'>('loading')
 const facetsState = ref<'loading' | 'ready' | 'error'>('loading')
-const facets = ref<QuestionBankFacets>({
+const facets = shallowRef<QuestionBankFacets>({
   exam_scopes: [],
   curriculum_sections: [],
   curriculum_chapters: [],
@@ -46,7 +51,7 @@ const facets = ref<QuestionBankFacets>({
   exam_types: [],
   grades: [],
 })
-const baseFacets = ref<QuestionBankFacets>({
+const baseFacets = shallowRef<QuestionBankFacets>({
   exam_scopes: [],
   curriculum_sections: [],
   curriculum_chapters: [],
@@ -64,9 +69,11 @@ const baseFacets = ref<QuestionBankFacets>({
   exam_types: [],
   grades: [],
 })
-const catalog = ref<CurriculumCatalog | null>(null)
+const hasFacetData = ref(false)
+const catalog = shallowRef<CurriculumCatalog | null>(null)
 const catalogState = ref<'loading' | 'ready' | 'error'>('loading')
 const selectedVolumeId = ref('')
+const volumeFilterActive = ref(false)
 const selectedChapterId = ref('')
 const selectedSectionId = ref('')
 const selectedHistoricalScope = ref('')
@@ -312,29 +319,47 @@ const activeFilters = computed<ActiveFilter[]>(() => {
 
 const activeFilterCount = computed(() => activeFilters.value.length)
 let secondaryLoadHandle: ReturnType<typeof setTimeout> | null = null
+let browserUnmounted = false
 
 onMounted(() => {
+  void initializeQuestionBrowser()
+})
+
+async function initializeQuestionBrowser(): Promise<void> {
+  const rememberedVolumeId = globalThis.localStorage
+    ?.getItem(CURRICULUM_SCOPE_STORAGE_KEY)
+    ?.trim()
+  const scopeInitialization = curriculumScope.initialize()
+  if (curriculumScope.selectedVolumeId || rememberedVolumeId) {
+    await scopeInitialization
+    if (browserUnmounted) return
+    if (curriculumScope.selectedVolumeId) {
+      selectedVolumeId.value = curriculumScope.selectedVolumeId
+      volumeFilterActive.value = true
+    }
+  }
   // The first question page is independent from the catalog and facet
-  // aggregates. Start it immediately so slow taxonomy statistics never keep
-  // teachers staring at an empty browser.
+  // aggregates. When a teaching term is remembered, wait only for that term
+  // to be validated so the first visible page never flashes unscoped rows.
   const initialQuestions = loadQuestions(false, false)
   void Promise.all([
     assembly.loadState === 'idle' ? assembly.load() : Promise.resolve(),
     initialQuestions,
   ])
-  // The five-volume curriculum payload and facet aggregates are useful for
-  // filtering but not for the first question cards. Start them shortly after
-  // the first page resolves so they cannot monopolize parsing/network slots
-  // during repeated refreshes.
-  void initialQuestions.finally(() => {
-    secondaryLoadHandle = setTimeout(() => {
-      secondaryLoadHandle = null
-      void Promise.all([loadCatalog(), loadFacets()]).then(chooseInitialVolume)
-    }, 500)
-  })
-})
+  // Start the filter data shortly after the visible request begins. The
+  // endpoints are small and independent, so there is no reason to keep the
+  // filter shell empty for an additional fixed half-second after the cards
+  // arrive. The short delay still lets the question request take the first
+  // network/parser slot on a cold page.
+  secondaryLoadHandle = setTimeout(() => {
+    secondaryLoadHandle = null
+    if (browserUnmounted) return
+    void Promise.all([loadCatalog(), loadFacets()]).then(chooseInitialVolume)
+  }, 120)
+}
 
 onBeforeUnmount(() => {
+  browserUnmounted = true
   if (secondaryLoadHandle !== null) clearTimeout(secondaryLoadHandle)
   questionAbortController?.abort()
   facetsAbortController?.abort()
@@ -359,6 +384,9 @@ function queryFilters(): QuestionBankFilters {
     years: filters.year ? [filters.year] : [],
     examTypes: filters.examType ? [filters.examType] : [],
     grades: filters.grade ? [filters.grade] : [],
+    curriculumVolumeIds: volumeFilterActive.value && selectedVolumeId.value
+      ? [selectedVolumeId.value]
+      : [],
     examScopes: selectedExamScopes.value,
     curriculumSections: selectedSectionId.value ? [selectedSectionId.value] : [],
     tagStatus: filters.tagStatus,
@@ -409,6 +437,7 @@ async function loadFilteredFacets(requestFilters: QuestionBankFilters): Promise<
     )
     if (controller.signal.aborted || requestSerial !== facetsRequestSerial) return
     facets.value = loaded
+    hasFacetData.value = true
     facetsState.value = 'ready'
   } catch {
     if (controller.signal.aborted || requestSerial !== facetsRequestSerial) return
@@ -436,6 +465,7 @@ async function loadFacets(): Promise<void> {
     const loaded = await questionBankApi.listFacets({ tagStatus: 'all' })
     baseFacets.value = loaded
     facets.value = loaded
+    hasFacetData.value = true
     baseFacetsState.value = 'ready'
     facetsState.value = 'ready'
   } catch {
@@ -450,7 +480,16 @@ async function retryCurriculum(): Promise<void> {
 }
 
 function chooseInitialVolume(): void {
-  if (selectedVolumeId.value || !catalog.value?.volumes.length) return
+  if (!catalog.value?.volumes.length) return
+  const globalVolumeId = curriculumScope.selectedVolumeId
+  if (globalVolumeId && catalog.value.volumes.some(volume => volume.id === globalVolumeId)) {
+    const changed = selectedVolumeId.value !== globalVolumeId || !volumeFilterActive.value
+    selectedVolumeId.value = globalVolumeId
+    volumeFilterActive.value = true
+    if (changed) void loadQuestions(true)
+    return
+  }
+  if (selectedVolumeId.value) return
   const ranked = catalog.value.volumes.map((volume, index) => ({
     id: volume.id,
     index,
@@ -464,12 +503,24 @@ function chooseInitialVolume(): void {
 
 function chooseVolume(value: string): void {
   selectedVolumeId.value = value
+  volumeFilterActive.value = true
   selectedChapterId.value = ''
   selectedSectionId.value = ''
   selectedHistoricalScope.value = ''
   expandedChapterIds.value = new Set()
   void loadQuestions(true)
 }
+
+watch(() => curriculumScope.selectedVolumeId, (value) => {
+  if (catalogState.value !== 'ready' || !catalog.value) return
+  if (value && catalog.value.volumes.some(volume => volume.id === value)) {
+    chooseVolume(value)
+    return
+  }
+  if (!volumeFilterActive.value) return
+  volumeFilterActive.value = false
+  void loadQuestions(true)
+})
 
 function toggleChapter(chapterId: string): void {
   const next = new Set(expandedChapterIds.value)
@@ -781,7 +832,11 @@ function knowledgeLeafLabel(value: string): string {
     </aside>
 
     <main class="assembly-browser__main">
-      <section class="assembly-filter-panel" aria-label="试题筛选">
+      <section
+        class="assembly-filter-panel"
+        aria-label="试题筛选"
+        :aria-busy="facetsState === 'loading'"
+      >
         <header class="assembly-filter-panel__heading">
           <div>
             <p class="assembly-kicker">QUESTION LABELS</p>
@@ -791,10 +846,18 @@ function knowledgeLeafLabel(value: string): string {
           <strong v-if="activeFilterCount">{{ activeFilterCount }} 项已选</strong>
         </header>
 
-        <div v-if="facetsState === 'loading'" class="assembly-filter-state" role="status">
+        <div
+          v-if="facetsState === 'loading' && !hasFacetData"
+          class="assembly-filter-state"
+          role="status"
+        >
           正在读取筛选标签…
         </div>
-        <div v-else-if="facetsState === 'error'" class="assembly-filter-state" role="alert">
+        <div
+          v-else-if="facetsState === 'error' && !hasFacetData"
+          class="assembly-filter-state"
+          role="alert"
+        >
           <span>筛选标签暂时无法读取。</span>
           <button type="button" class="assembly-link" @click="loadFacets">重新读取</button>
         </div>
@@ -894,6 +957,7 @@ function knowledgeLeafLabel(value: string): string {
             <DifficultyRangeFilter
               v-model:min="filters.difficultyMin"
               v-model:max="filters.difficultyMax"
+              class="assembly-difficulty-filter"
               @change="loadQuestions(true)"
             />
           </div>

@@ -84,6 +84,7 @@ class SessionRepository:
         *,
         source_paper_path: str = "",
         source_paper_sha256: str = "",
+        curriculum_volume_id: str | None = None,
     ) -> int:
         source_path, source_sha256 = _validated_source_binding(
             source_paper_path,
@@ -93,9 +94,10 @@ class SessionRepository:
             """
             INSERT INTO grading_sessions (
                 session_name, rubric_path, answer_key_path, status, is_deleted,
-                source_paper_path, source_paper_sha256, updated_at
+                source_paper_path, source_paper_sha256, curriculum_volume_id,
+                updated_at
             )
-            VALUES (?, ?, ?, 'created', 0, ?, ?, datetime('now','localtime'))
+            VALUES (?, ?, ?, 'created', 0, ?, ?, ?, datetime('now','localtime'))
             """,
             (
                 session_name,
@@ -103,6 +105,7 @@ class SessionRepository:
                 answer_key_path,
                 source_path or None,
                 source_sha256 or None,
+                str(curriculum_volume_id or "").strip() or None,
             ),
         )
         return int(cursor.lastrowid)
@@ -115,6 +118,31 @@ class SessionRepository:
             WHERE id = ?
             """,
             (new_name, session_id),
+        )
+
+    def update_grading_session(
+        self,
+        session_id: int,
+        *,
+        name: str | None = None,
+        curriculum_volume_id: str | None = None,
+        curriculum_volume_provided: bool = False,
+    ) -> None:
+        assignments: list[str] = []
+        parameters: list[Any] = []
+        if name is not None:
+            assignments.append("session_name = ?")
+            parameters.append(str(name))
+        if curriculum_volume_provided:
+            assignments.append("curriculum_volume_id = ?")
+            parameters.append(str(curriculum_volume_id or "").strip() or None)
+        if not assignments:
+            raise ValueError("at least one session field must be updated")
+        assignments.append("updated_at = datetime('now','localtime')")
+        parameters.append(int(session_id))
+        self.session.connection.execute(
+            f"UPDATE grading_sessions SET {', '.join(assignments)} WHERE id = ?",
+            tuple(parameters),
         )
 
     def soft_delete_grading_session(self, session_id: int) -> None:
@@ -150,6 +178,7 @@ class SessionRepository:
                    status, is_deleted, deleted_at, source_paper_path, source_paper_sha256,
                    question_bank_sync_state, question_bank_sync_details_json,
                    question_bank_sync_error, question_bank_sync_updated_at,
+                   curriculum_volume_id,
                    created_at, updated_at
             FROM grading_sessions
         """
@@ -166,6 +195,7 @@ class SessionRepository:
                    status, is_deleted, deleted_at, source_paper_path, source_paper_sha256,
                    question_bank_sync_state, question_bank_sync_details_json,
                    question_bank_sync_error, question_bank_sync_updated_at,
+                   curriculum_volume_id,
                    created_at, updated_at
             FROM grading_sessions
             WHERE id = ?
@@ -343,6 +373,7 @@ class SessionRepositoryGateway:
         *,
         source_paper_path: str = "",
         source_paper_sha256: str = "",
+        curriculum_volume_id: str | None = None,
     ) -> int:
         with self._sessions.session() as session:
             with session.transaction():
@@ -352,10 +383,28 @@ class SessionRepositoryGateway:
                     answer_key_path,
                     source_paper_path=source_paper_path,
                     source_paper_sha256=source_paper_sha256,
+                    curriculum_volume_id=curriculum_volume_id,
                 )
 
     def rename_grading_session(self, session_id: int, new_name: str) -> None:
         self._write("rename_grading_session", session_id, new_name)
+
+    def update_grading_session(
+        self,
+        session_id: int,
+        *,
+        name: str | None = None,
+        curriculum_volume_id: str | None = None,
+        curriculum_volume_provided: bool = False,
+    ) -> None:
+        with self._sessions.session() as session:
+            with session.transaction():
+                SessionRepository(session).update_grading_session(
+                    session_id,
+                    name=name,
+                    curriculum_volume_id=curriculum_volume_id,
+                    curriculum_volume_provided=curriculum_volume_provided,
+                )
 
     def soft_delete_grading_session(self, session_id: int) -> None:
         self._write("soft_delete_grading_session", session_id)

@@ -15,6 +15,7 @@ const manifest: WorkspaceManifest = {
   description: '持续对话整理班级事务，正式保存始终由教师确认',
   breadcrumb: '班主任工作台',
   topbarContext: 'workspace',
+  curriculumScope: false,
 }
 
 export default manifest

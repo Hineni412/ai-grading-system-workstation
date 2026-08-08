@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
 import AppButton from '../design-system/AppButton.vue'
@@ -7,6 +7,7 @@ import AppIconButton from '../design-system/AppIconButton.vue'
 import SessionManagementDrawer from '../sessions/SessionManagementDrawer.vue'
 import { useConfigWorkspaceStore } from '../../stores/config-workspace'
 import { useSessionStore } from '../../stores/session'
+import { useCurriculumScopeStore } from '../../stores/curriculum-scope'
 import { workspaceRegistry } from '../../workspaces/registry'
 import type { WorkspaceSubNavigationItem } from '../../workspaces/contracts'
 import WorkspaceAITaskDrawer from '../../workspaces/shared/ai-tasks/WorkspaceAITaskDrawer.vue'
@@ -22,7 +23,9 @@ const emit = defineEmits<{
 const route = useRoute()
 const router = useRouter()
 const sessionStore = useSessionStore()
+const curriculumScope = useCurriculumScopeStore()
 const configStore = useConfigWorkspaceStore()
+const showOtherSessions = ref(false)
 const pageTitle = computed(() => String(route.meta.title ?? '工作台'))
 const pageDescription = computed(() => String(route.meta.description ?? ''))
 const showCurrentExamContext = computed(
@@ -32,9 +35,36 @@ const currentWorkspace = computed(() => workspaceRegistry.modules.find(
   ({ manifest }) => route.path === manifest.routePrefix
     || route.path.startsWith(`${manifest.routePrefix}/`),
 ))
+const showCurriculumScope = computed(() => (
+  currentWorkspace.value?.manifest.curriculumScope
+  ?? route.meta.curriculumScope !== false
+))
 const workspaceSubNavigation = computed(() => [
   ...(currentWorkspace.value?.manifest.subNavigation ?? []),
 ].sort((left, right) => left.order - right.order))
+const scopedSessions = computed(() => {
+  const selectedVolumeId = curriculumScope.selectedVolumeId
+  if (!showCurriculumScope.value || !selectedVolumeId || showOtherSessions.value) {
+    return sessionStore.sessions
+  }
+  return sessionStore.sessions.filter((session) => (
+    session.curriculum_volume_id === selectedVolumeId
+    || session.id === sessionStore.selectedSessionId
+  ))
+})
+const otherSessionCount = computed(() => {
+  const selectedVolumeId = curriculumScope.selectedVolumeId
+  if (!selectedVolumeId) return 0
+  return sessionStore.sessions.filter(
+    session => session.curriculum_volume_id !== selectedVolumeId,
+  ).length
+})
+const currentSessionOutsideScope = computed(() => Boolean(
+  showCurriculumScope.value
+  && curriculumScope.selectedVolumeId
+  && sessionStore.currentSession
+  && sessionStore.currentSession.curriculum_volume_id !== curriculumScope.selectedVolumeId,
+))
 
 function isCurrentSubNavigation(item: WorkspaceSubNavigationItem): boolean {
   return Object.entries(item.query).every(
@@ -81,12 +111,58 @@ function selectSession(event: Event): void {
 function retrySessions(): void {
   void sessionStore.initialize()
 }
+
+function selectCurriculumVolume(event: Event): void {
+  const selector = event.currentTarget as HTMLSelectElement
+  const nextVolumeId = selector.value || null
+  const currentSession = sessionStore.currentSession
+  const changesCurrentExam = Boolean(
+    nextVolumeId
+    && currentSession
+    && currentSession.curriculum_volume_id !== nextVolumeId,
+  )
+  const restoreScopeSelection = () => {
+    selector.value = curriculumScope.selectedVolumeId ?? ''
+  }
+  if (changesCurrentExam && configStore.hasPendingSubmission) {
+    window.alert('当前考试仍有上传或生成结果等待核对。请先完成核对，再切换教学学期。')
+    restoreScopeSelection()
+    return
+  }
+  if (changesCurrentExam && configStore.hasDirtyEditor) {
+    const discard = window.confirm('当前评分依据有未保存修改。切换教学学期会收起当前考试并丢弃这些修改，是否继续？')
+    if (!discard) {
+      restoreScopeSelection()
+      return
+    }
+    configStore.discardEditorDraft()
+  }
+  if (changesCurrentExam) {
+    if (!configStore.selectSession(null, true)) {
+      restoreScopeSelection()
+      return
+    }
+    sessionStore.clearSelection()
+  }
+  curriculumScope.selectVolume(nextVolumeId)
+}
+
+watch(() => curriculumScope.selectedVolumeId, () => {
+  showOtherSessions.value = false
+})
+
+watch(showCurriculumScope, (visible) => {
+  if (visible) void curriculumScope.initialize()
+}, { immediate: true })
 </script>
 
 <template>
   <header
     class="app-topbar"
-    :class="{ 'app-topbar--workspace-context': !showCurrentExamContext }"
+    :class="{
+      'app-topbar--workspace-context': !showCurrentExamContext,
+      'app-topbar--curriculum-context': showCurriculumScope,
+    }"
     data-testid="app-topbar"
   >
     <a class="app-topbar__skip-link" href="#main-workspace">跳到主要工作区</a>
@@ -105,6 +181,21 @@ function retrySessions(): void {
         <strong>{{ pageTitle }}</strong>
         <span v-if="pageDescription">{{ pageDescription }}</span>
       </div>
+    </div>
+
+    <div v-if="showCurriculumScope" class="app-topbar__curriculum">
+      <label for="current-curriculum-volume">教学学期</label>
+      <select
+        id="current-curriculum-volume"
+        :value="curriculumScope.selectedVolumeId ?? ''"
+        :disabled="curriculumScope.loadState === 'loading' || curriculumScope.loadState === 'error'"
+        @change="selectCurriculumVolume"
+      >
+        <option value="">未选择（显示全部）</option>
+        <option v-for="volume in curriculumScope.volumes" :key="volume.id" :value="volume.id">
+          {{ volume.label }}
+        </option>
+      </select>
     </div>
 
     <div
@@ -138,10 +229,19 @@ function retrySessions(): void {
         @change="selectSession"
       >
         <option value="">未选择</option>
-        <option v-for="session in sessionStore.sessions" :key="session.id" :value="session.id">
+        <option v-for="session in scopedSessions" :key="session.id" :value="session.id">
           {{ session.name }}
         </option>
       </select>
+      <button
+        v-if="curriculumScope.selectedVolumeId && otherSessionCount > 0"
+        class="app-topbar__other-sessions"
+        type="button"
+        :aria-expanded="showOtherSessions"
+        @click="showOtherSessions = !showOtherSessions"
+      >
+        {{ showOtherSessions ? '收起其他学期' : `其他学期 ${otherSessionCount}` }}
+      </button>
       <SessionManagementDrawer />
     </div>
 
@@ -153,12 +253,27 @@ function retrySessions(): void {
       正在读取考试列表
     </div>
     <div
+      v-else-if="showCurrentExamContext && currentSessionOutsideScope"
+      class="app-topbar__status"
+      role="status"
+    >
+      当前考试不属于所选教学学期，已保留当前选择。
+    </div>
+    <div
       v-else-if="showCurrentExamContext && sessionStore.loadState === 'error'"
       class="app-topbar__status"
       role="alert"
     >
       <span>考试列表加载失败。</span>
       <AppButton variant="secondary" @click="retrySessions">重新加载</AppButton>
+    </div>
+    <div
+      v-if="showCurriculumScope && curriculumScope.loadState === 'error'"
+      class="app-topbar__curriculum-status"
+      role="alert"
+    >
+      <span>{{ curriculumScope.errorMessage }}</span>
+      <AppButton variant="secondary" @click="curriculumScope.initialize()">重新加载</AppButton>
     </div>
   </header>
 </template>

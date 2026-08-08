@@ -17,6 +17,7 @@ def create_session_draft(
     upload_config_dir: Path,
     *,
     name: str,
+    curriculum_volume_id: str | None = None,
 ) -> int:
     clean_name = str(name or "").strip()
     if not clean_name:
@@ -46,6 +47,7 @@ def create_session_draft(
             clean_name,
             str(rubric_path),
             str(answer_path),
+            curriculum_volume_id=curriculum_volume_id,
         )
     except Exception:
         remove_exact_files(created)

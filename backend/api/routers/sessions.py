@@ -128,6 +128,9 @@ def _session_summary(row: dict[str, Any]) -> SessionSummary:
         id=int(row["id"]),
         name=str(row["session_name"]),
         status=str(row["status"]),
+        curriculum_volume_id=(
+            str(row.get("curriculum_volume_id") or "").strip() or None
+        ),
         is_deleted=_bool(row.get("is_deleted")),
         deleted_at=row.get("deleted_at"),
         created_at=row.get("created_at"),
@@ -233,7 +236,9 @@ def _resolve_sync_curriculum_volume(
     session: dict[str, Any],
     requested_volume_id: object,
 ) -> dict[str, Any]:
-    requested = str(requested_volume_id or "").strip()
+    requested = str(
+        requested_volume_id or session.get("curriculum_volume_id") or ""
+    ).strip()
     if requested:
         volume = curriculum_volume(volume_id=requested)
         if volume is None:
@@ -260,6 +265,21 @@ def _resolve_sync_curriculum_volume(
             {},
         )
     return volume
+
+
+def _explicit_curriculum_volume_id(value: object) -> str | None:
+    requested = str(value or "").strip()
+    if not requested:
+        return None
+    volume = curriculum_volume(volume_id=requested)
+    if volume is None:
+        raise ApiError(
+            422,
+            "curriculum_volume_invalid",
+            "所选教材册别不在当前本地教材目录中。",
+            {},
+        )
+    return str(volume["id"])
 
 
 def _require_current_sync_inputs(
@@ -443,12 +463,14 @@ def create_session(
     sessions: SessionRepositoryGateway = Depends(get_session_repository),
 ) -> SessionDetail:
     try:
+        volume_id = _explicit_curriculum_volume_id(request.curriculum_volume_id)
         session_id = sessions.create_grading_session(
             request.name,
             request.rubric_path,
             request.answer_key_path,
             source_paper_path=request.source_paper_path,
             source_paper_sha256=request.source_paper_sha256,
+            curriculum_volume_id=volume_id,
         )
     except ValueError as exc:
         raise ApiError(400, "invalid_session", str(exc)) from exc
@@ -462,10 +484,12 @@ def create_session_draft_route(
     upload_config_dir: Path = Depends(get_upload_config_dir),
 ) -> SessionSummary:
     try:
+        volume_id = _explicit_curriculum_volume_id(request.curriculum_volume_id)
         session_id = create_session_draft(
             sessions,
             upload_config_dir,
             name=request.name,
+            curriculum_volume_id=volume_id,
         )
     except ValueError as exc:
         raise ApiError(400, "invalid_session_draft", str(exc)) from exc
@@ -479,7 +503,20 @@ def rename_session(
     sessions: SessionRepositoryGateway = Depends(get_session_repository),
 ) -> SessionSummary:
     _require_active_session(sessions, session_id)
-    sessions.rename_grading_session(int(session_id), request.name)
+    curriculum_provided = "curriculum_volume_id" in request.model_fields_set
+    if request.name is None and not curriculum_provided:
+        raise ApiError(400, "invalid_session_update", "No session fields were provided.")
+    volume_id = (
+        _explicit_curriculum_volume_id(request.curriculum_volume_id)
+        if curriculum_provided
+        else None
+    )
+    sessions.update_grading_session(
+        int(session_id),
+        name=request.name,
+        curriculum_volume_id=volume_id,
+        curriculum_volume_provided=curriculum_provided,
+    )
     return _session_summary(_require_active_session(sessions, session_id))
 
 
@@ -492,6 +529,7 @@ def submit_session_question_bank_sync(
     session_id: int,
     request: QuestionBankSyncRequest,
     db: GradingRepositoryAccess = Depends(get_grading_db),
+    sessions: SessionRepositoryGateway = Depends(get_session_repository),
     manager: JobManager = Depends(get_job_manager),
 ) -> JobResponse:
     session, source_sha256 = _require_current_sync_inputs(
@@ -502,6 +540,11 @@ def submit_session_question_bank_sync(
     volume = _resolve_sync_curriculum_volume(
         session,
         request.curriculum_volume_id,
+    )
+    sessions.update_grading_session(
+        int(session_id),
+        curriculum_volume_id=str(volume["id"]),
+        curriculum_volume_provided=True,
     )
     payload = _question_bank_sync_payload(
         session_id=session_id,
@@ -524,6 +567,7 @@ def retry_session_question_bank_sync(
     job_id: int,
     request: QuestionBankSyncRequest,
     db: GradingRepositoryAccess = Depends(get_grading_db),
+    sessions: SessionRepositoryGateway = Depends(get_session_repository),
     manager: JobManager = Depends(get_job_manager),
 ) -> JobResponse:
     session, source_sha256 = _require_current_sync_inputs(
@@ -564,6 +608,11 @@ def retry_session_question_bank_sync(
         session,
         request.curriculum_volume_id
         or source_job.payload.get("curriculum_volume_id"),
+    )
+    sessions.update_grading_session(
+        int(session_id),
+        curriculum_volume_id=str(volume["id"]),
+        curriculum_volume_provided=True,
     )
     raw_failed_ids = source_job.result.get("failed_question_ids")
     failed_ids = (

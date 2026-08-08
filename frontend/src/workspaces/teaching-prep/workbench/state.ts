@@ -9,6 +9,8 @@ import {
 } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
+import { useCurriculumScopeStore } from '../../../stores/curriculum-scope'
+import type { CurriculumVolume as GlobalCurriculumVolume } from '../../../api/question-bank'
 import { useTeachingPrepCatalogStore } from '../stores/catalog'
 import {
   teachingPrepWorkbenchApi,
@@ -65,6 +67,7 @@ export function useTeachingPrepWorkbench() {
   const route = useRoute()
   const router = useRouter()
   const catalog = useTeachingPrepCatalogStore()
+  const curriculumScope = useCurriculumScopeStore()
   const view = ref<TeachingPrepView>('overview')
   const workspace = ref<TeachingPrepWorkspace>('lesson-tree')
   const stage = ref<TeachingPrepStage>('select')
@@ -119,6 +122,7 @@ export function useTeachingPrepWorkbench() {
     loading.value = true
     workbenchError.value = ''
     try {
+      void curriculumScope.initialize()
       await catalog.load()
       const linkedSemesterId = typeof route.query.semester === 'string'
         ? route.query.semester
@@ -129,6 +133,8 @@ export function useTeachingPrepWorkbench() {
         && catalog.selectedSemester?.id !== linkedSemesterId
       ) {
         await catalog.selectSemester(linkedSemesterId)
+      } else if (curriculumScope.loadState === 'ready') {
+        await selectSemesterForGlobalScope(false)
       }
       await loadSemesterStatuses()
       const restoreLibrary = route.query.view === 'library'
@@ -318,6 +324,63 @@ export function useTeachingPrepWorkbench() {
       : { allowed: false, reason: '存在未保存内容' }
   }
 
+  function semesterForGlobalScope(): { id: string } | null {
+    const volume = curriculumScope.selectedVolume
+    if (!volume) return null
+    const gradeLevel = gradeLevelForVolume(volume)
+    const curriculumVolume = volume.semester.includes('上') ? 'first' : 'second'
+    const curricula = catalog.curricula
+      .filter(item => item.grade_level === gradeLevel && item.volume === curriculumVolume)
+      .sort((left, right) => (
+        curriculumMatchScore(right, volume) - curriculumMatchScore(left, volume)
+        || Number(right.is_active) - Number(left.is_active)
+        || right.updated_at.localeCompare(left.updated_at)
+      ))
+    const curriculum = curricula[0]
+    if (!curriculum) return null
+    const expectedTerm = curriculumVolume === 'first' ? 'first' : 'second'
+    const statusOrder = { active: 0, planning: 1, completed: 2, archived: 3 } as const
+    return [...catalog.semesters]
+      .filter(item => item.curriculum_id === curriculum.id && item.term === expectedTerm)
+      .sort((left, right) => (
+        statusOrder[left.status] - statusOrder[right.status]
+        || right.updated_at.localeCompare(left.updated_at)
+      ))[0] ?? null
+  }
+
+  async function selectSemesterForGlobalScope(confirmDirty: boolean): Promise<void> {
+    const target = semesterForGlobalScope()
+    if (!curriculumScope.selectedVolumeId) return
+    if (!target) {
+      workbenchError.value = `备课工作台还没有“${curriculumScope.selectedVolume?.label ?? '所选学期'}”的学期资料，已保留当前内容。`
+      return
+    }
+    if (catalog.selectedSemester?.id === target.id) return
+    if (confirmDirty) {
+      const decision = await requestNavigation({
+        workspace: workspace.value,
+        stage: stage.value,
+        lessonId: catalog.selectedLessonId,
+      })
+      if (!decision.allowed) {
+        workbenchError.value = '当前备课内容尚未保存，已保留原学期；保存后可再次选择教学学期。'
+        return
+      }
+    }
+    const requestedVolumeId = curriculumScope.selectedVolumeId
+    await catalog.selectSemester(target.id)
+    if (curriculumScope.selectedVolumeId !== requestedVolumeId) return
+    contextGeneration += 1
+    view.value = 'overview'
+    workspace.value = 'lesson-tree'
+    stage.value = 'select'
+    panel.value = 'sources'
+    focusRef.value = null
+    await loadSemesterStatuses()
+    await refreshCurrentWorkspace()
+    await syncRoute()
+  }
+
   async function refreshCurrentWorkspace(): Promise<void> {
     const generation = ++contextGeneration
     workbenchError.value = ''
@@ -464,6 +527,15 @@ export function useTeachingPrepWorkbench() {
     },
   )
 
+  watch(
+    () => [curriculumScope.loadState, curriculumScope.selectedVolumeId] as const,
+    ([scopeState]) => {
+      if (scopeState === 'ready' && catalog.loadState === 'ready') {
+        void selectSemesterForGlobalScope(true)
+      }
+    },
+  )
+
   onBeforeUnmount(() => {
     disposed = true
     globalThis.removeEventListener('beforeunload', beforeUnload)
@@ -499,6 +571,27 @@ export function useTeachingPrepWorkbench() {
     setDirty,
     watchSuggestionRun,
   }
+}
+
+function gradeLevelForVolume(volume: GlobalCurriculumVolume): number {
+  const digit = Number(volume.grade.match(/\d+/)?.[0])
+  if (Number.isSafeInteger(digit) && digit > 0) return digit
+  const labels: Record<string, number> = {
+    一: 1, 二: 2, 三: 3, 四: 4, 五: 5, 六: 6,
+    七: 7, 八: 8, 九: 9, 十: 10, 十一: 11, 十二: 12,
+  }
+  const match = Object.entries(labels)
+    .sort(([left], [right]) => right.length - left.length)
+    .find(([label]) => volume.grade.includes(label))
+  return match?.[1] ?? 0
+}
+
+function curriculumMatchScore(
+  curriculum: { title: string; publisher: string | null; edition_label: string | null },
+  volume: GlobalCurriculumVolume,
+): number {
+  const haystack = `${curriculum.title} ${curriculum.publisher ?? ''} ${curriculum.edition_label ?? ''}`
+  return haystack.includes(volume.textbook_version) ? 1 : 0
 }
 
 export type TeachingPrepWorkbench = ReturnType<typeof useTeachingPrepWorkbench>

@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import QuestionAssemblyView from '../views/QuestionAssemblyView.vue'
 import { useAssemblyStore } from '../stores/assembly'
+import { CURRICULUM_SCOPE_STORAGE_KEY } from '../stores/curriculum-scope'
 import type { QuestionBankListItem } from '../api/question-bank'
 
 const revisionA = 'a'.repeat(64)
@@ -95,6 +96,52 @@ describe('question assembly view', () => {
     }
   })
 
+  it('uses a remembered teaching term for the first question request without flashing all questions', async () => {
+    const slowCatalog = deferred<Response>()
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input)
+      if (url === '/api/question-assembly/draft' && init?.method !== 'PUT') {
+        return json(draft())
+      }
+      if (url === '/api/question-assembly/records?limit=100') {
+        return json({ items: [], total: 0 })
+      }
+      if (url === '/api/question-bank/curriculum?include_knowledge_points=false') {
+        return slowCatalog.promise
+      }
+      if (url.startsWith('/api/question-bank/facets?')) return json(questionFacets())
+      if (url.startsWith('/api/question-bank/questions?')) {
+        return json(questionPage(bankQuestion(17, '已按学期读取的题目')))
+      }
+      throw new Error(`unexpected request: ${url}`)
+    })
+    localStorage.setItem(CURRICULUM_SCOPE_STORAGE_KEY, 'volume-1')
+
+    const host = document.createElement('div')
+    document.body.append(host)
+    const app = createApp(QuestionAssemblyView)
+    app.use(createPinia())
+    app.mount(host)
+    mounted.push(app)
+    await settle()
+
+    expect(fetchSpy.mock.calls.some(
+      ([input]) => String(input).startsWith('/api/question-bank/questions?'),
+    )).toBe(false)
+
+    slowCatalog.resolve(await json(curriculumCatalog()))
+    await vi.waitFor(() => expect(fetchSpy.mock.calls.some(
+      ([input]) => (
+        String(input).startsWith('/api/question-bank/questions?')
+        && String(input).includes('curriculum_volume_ids=volume-1')
+      ),
+    )).toBe(true))
+    expect(fetchSpy.mock.calls.filter(
+      ([input]) => String(input).startsWith('/api/question-bank/questions?'),
+    )).toHaveLength(1)
+    expect(host.textContent).toContain('已按学期读取的题目')
+  })
+
   it('loads the initial question facets once while opening the workspace', async () => {
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
       const url = String(input)
@@ -127,7 +174,7 @@ describe('question assembly view', () => {
     await vi.waitFor(() => expect(host.querySelector('.assembly-curriculum-tree')).toBeTruthy())
 
     const difficultyRow = host.querySelector('.assembly-filter-row.is-difficulty')
-    expect(difficultyRow?.querySelector('.difficulty-range')).toBeTruthy()
+    expect(difficultyRow?.querySelector('.difficulty-range.assembly-difficulty-filter')).toBeTruthy()
     expect(difficultyRow?.querySelector('.assembly-filter-label')).toBeNull()
 
     const facetCalls = fetchSpy.mock.calls.filter(
@@ -253,6 +300,61 @@ describe('question assembly view', () => {
         status: 200,
         headers: { 'content-type': 'application/json' },
       }))
+      await settle()
+    }
+  })
+
+  it('keeps filter controls mounted while a difficulty change refreshes facet counts', async () => {
+    const slowFacets = deferred<Response>()
+    let holdFacetRefresh = false
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input)
+      if (url === '/api/question-assembly/draft' && init?.method !== 'PUT') {
+        return json(draft())
+      }
+      if (url === '/api/question-assembly/records?limit=100') {
+        return json({ items: [], total: 0 })
+      }
+      if (url === '/api/question-bank/curriculum?include_knowledge_points=false') {
+        return json(curriculumCatalog())
+      }
+      if (url.startsWith('/api/question-bank/facets?')) {
+        if (holdFacetRefresh) return slowFacets.promise
+        return json(questionFacets())
+      }
+      if (url.startsWith('/api/question-bank/questions?')) {
+        return json(questionPage(bankQuestion(17, '难度筛选后的题目')))
+      }
+      throw new Error(`unexpected request: ${url}`)
+    })
+
+    const host = document.createElement('div')
+    document.body.append(host)
+    const app = createApp(QuestionAssemblyView)
+    app.use(createPinia())
+    app.mount(host)
+    mounted.push(app)
+
+    await vi.waitFor(() => expect(host.querySelector('.difficulty-range')).toBeTruthy())
+    const initialFacetCalls = fetchSpy.mock.calls.filter(
+      ([input]) => String(input).startsWith('/api/question-bank/facets?'),
+    ).length
+    const lowerDifficulty = host.querySelector<HTMLInputElement>('input[aria-label="最低难度"]')!
+
+    holdFacetRefresh = true
+    lowerDifficulty.value = '3'
+    lowerDifficulty.dispatchEvent(new Event('input', { bubbles: true }))
+    lowerDifficulty.dispatchEvent(new Event('change', { bubbles: true }))
+    await vi.waitFor(() => expect(fetchSpy.mock.calls.filter(
+      ([input]) => String(input).startsWith('/api/question-bank/facets?'),
+    )).toHaveLength(initialFacetCalls + 1))
+
+    try {
+      expect(host.querySelector('.difficulty-range')).toBeTruthy()
+      expect(host.querySelector('.difficulty-range legend strong')?.textContent).toBe('3–10')
+      expect(host.textContent).not.toContain('正在读取筛选标签…')
+    } finally {
+      slowFacets.resolve(await json(questionFacets()))
       await settle()
     }
   })

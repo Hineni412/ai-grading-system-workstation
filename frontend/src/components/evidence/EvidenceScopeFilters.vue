@@ -15,7 +15,12 @@ const props = withDefaults(defineProps<{
   applying: boolean
   applyLabel?: string
   scoreProfiles?: Record<string, Record<string, unknown>>
-}>(), { applyLabel: '立即更新', scoreProfiles: () => ({}) })
+  curriculumVolumeId?: string | null
+}>(), {
+  applyLabel: '立即更新',
+  scoreProfiles: () => ({}),
+  curriculumVolumeId: null,
+})
 
 const emit = defineEmits<{
   apply: [query: GraphQueryInput]
@@ -51,6 +56,12 @@ const visibleStudents = computed(() => {
 const currentSessionName = computed(() => props.sessions.find(
   (item) => item.id === props.currentSessionId,
 )?.name ?? '尚未选择考试')
+const primarySessions = computed(() => props.curriculumVolumeId
+  ? props.sessions.filter(item => item.curriculum_volume_id === props.curriculumVolumeId)
+  : props.sessions)
+const otherSessions = computed(() => props.curriculumVolumeId
+  ? props.sessions.filter(item => item.curriculum_volume_id !== props.curriculumVolumeId)
+  : [])
 
 const snapshotText = computed(() => {
   const exam = examMode.value === 'current'
@@ -257,9 +268,17 @@ onBeforeUnmount(() => {
     </div>
 
     <div v-if="examMode === 'manual'" class="evidence-scope__sessions">
-      <button v-for="session in sessions" :key="session.id" type="button" :class="{ active: manualSessionIds.includes(session.id) }" @click="toggleSession(session.id)">
+      <button v-for="session in primarySessions" :key="session.id" type="button" :class="{ active: manualSessionIds.includes(session.id) }" @click="toggleSession(session.id)">
         {{ session.name }}
       </button>
+      <details v-if="otherSessions.length" class="evidence-scope__other-sessions">
+        <summary>其他学期或未归类考试（{{ otherSessions.length }}）</summary>
+        <div>
+          <button v-for="session in otherSessions" :key="session.id" type="button" :class="{ active: manualSessionIds.includes(session.id) }" @click="toggleSession(session.id)">
+            {{ session.name }}
+          </button>
+        </div>
+      </details>
     </div>
 
     <div v-if="rosterOpen" class="evidence-scope__roster">
@@ -317,6 +336,9 @@ select, input { width: 100%; min-height: 40px; border: 1px solid var(--color-bor
 .evidence-scope__sessions { display: flex; flex-wrap: wrap; gap: 8px; padding: 0 16px 16px; }
 .evidence-scope__sessions button { min-height: 34px; border: 1px solid var(--color-border-default); background: var(--color-bg-surface); }
 .evidence-scope__sessions button.active { border-color: var(--color-accent); background: var(--color-bg-selected); color: var(--color-accent); }
+.evidence-scope__other-sessions { flex-basis: 100%; color: var(--color-text-secondary); }
+.evidence-scope__other-sessions summary { width: max-content; padding-block: 6px; cursor: pointer; }
+.evidence-scope__other-sessions > div { display: flex; flex-wrap: wrap; gap: 8px; padding-top: 6px; }
 .evidence-scope__roster { border-top: 1px solid var(--color-border-subtle); padding: 16px; }
 .evidence-scope__roster header { display: flex; justify-content: space-between; gap: 16px; margin-bottom: 12px; }
 .evidence-scope__roster p { margin: 4px 0 0; color: var(--color-text-secondary); font-size: 13px; }

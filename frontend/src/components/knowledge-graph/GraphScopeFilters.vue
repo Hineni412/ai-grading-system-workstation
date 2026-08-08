@@ -11,6 +11,7 @@ defineProps<{
   modelValue: GraphQueryInput | null
   applying: boolean
   scoreProfiles?: Record<string, Record<string, unknown>>
+  curriculumVolumeId?: string | null
 }>()
 
 const emit = defineEmits<{ apply: [query: GraphQueryInput] }>()
@@ -24,6 +25,7 @@ const emit = defineEmits<{ apply: [query: GraphQueryInput] }>()
     :model-value="modelValue"
     :applying="applying"
     :score-profiles="scoreProfiles ?? {}"
+    :curriculum-volume-id="curriculumVolumeId"
     apply-label="更新知识图谱"
     @apply="emit('apply', $event)"
   />

@@ -1,24 +1,38 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 
+import { useCurriculumScopeStore } from '../../stores/curriculum-scope'
 import { SessionDraftOutcomeUnknownError, useSessionStore } from '../../stores/session'
 
 const sessionStore = useSessionStore()
+const curriculumScope = useCurriculumScopeStore()
 const name = ref('')
+const curriculumVolumeId = ref<string | null>(null)
 const busy = ref(false)
 const message = ref('')
 
 watch(
-  () => sessionStore.currentSession?.name,
-  (value) => { name.value = value ?? '' },
+  () => sessionStore.currentSession,
+  (value) => {
+    name.value = value?.name ?? ''
+    curriculumVolumeId.value = value?.curriculum_volume_id
+      ?? curriculumScope.selectedVolumeId
+  },
   { immediate: true },
 )
+
+const curriculumOptions = computed(() => curriculumScope.volumes)
 
 async function createDraft(): Promise<void> {
   busy.value = true
   message.value = ''
   try {
-    await sessionStore.createDraft(name.value)
+    await sessionStore.createDraft(
+      name.value,
+      undefined,
+      undefined,
+      curriculumVolumeId.value,
+    )
     message.value = '考试草稿已创建。'
   } catch (error) {
     message.value = error instanceof SessionDraftOutcomeUnknownError
@@ -33,9 +47,12 @@ async function renameDraft(): Promise<void> {
   busy.value = true
   message.value = ''
   try {
-    const renamed = await sessionStore.renameSelected(name.value)
+    const renamed = await sessionStore.saveSelectedMetadata(
+      name.value,
+      curriculumVolumeId.value,
+    )
     name.value = renamed.name
-    message.value = `考试名称已保存为“${renamed.name}”。`
+    message.value = `考试信息已保存为“${renamed.name}”。`
   } catch {
     message.value = '考试名称未更新，请重试。'
   } finally {
@@ -59,6 +76,17 @@ async function renameDraft(): Promise<void> {
           {{ sessionStore.currentSession ? '保存名称' : '创建考试草稿' }}
         </button>
       </div>
+      <label for="session-draft-curriculum">所属教学学期</label>
+      <select
+        id="session-draft-curriculum"
+        v-model="curriculumVolumeId"
+        :disabled="busy || curriculumScope.loadState === 'loading'"
+      >
+        <option :value="null">暂不归类</option>
+        <option v-for="volume in curriculumOptions" :key="volume.id" :value="volume.id">
+          {{ volume.label }}
+        </option>
+      </select>
       <p v-if="message" role="status">{{ message }}</p>
     </form>
   </section>
@@ -81,8 +109,10 @@ async function renameDraft(): Promise<void> {
 .session-draft-panel label { font-size: var(--font-size-dense); font-weight: var(--font-weight-medium); }
 .session-draft-panel__controls { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--space-2); }
 .session-draft-panel input,
+.session-draft-panel select,
 .session-draft-panel button { min-height: var(--control-height-large); border: var(--border-width) solid var(--color-border-default); border-radius: var(--radius-control); }
-.session-draft-panel input { min-width: 0; padding-inline: var(--space-3); }
+.session-draft-panel input,
+.session-draft-panel select { min-width: 0; padding-inline: var(--space-3); background: var(--color-bg-surface); }
 .session-draft-panel button { padding-inline: var(--space-4); background: var(--color-accent); color: var(--color-bg-surface); font-weight: var(--font-weight-medium); cursor: pointer; }
 .session-draft-panel button:disabled { cursor: not-allowed; opacity: var(--opacity-disabled); }
 @media (max-width: 1100px) { .session-draft-panel { grid-template-columns: 1fr; gap: var(--space-4); } }

@@ -526,17 +526,21 @@ describe('workbench view', () => {
       .toBeGreaterThanOrEqual(2)
   })
 
-  it('shows the approved analysis-first structure without decorative metric cards', async () => {
+  it('shows the approved action-first home while preserving the detailed exam analysis', async () => {
     const { host } = await mountView()
 
     const view = host.querySelector('.workbench-view')
     const heading = host.querySelector('h1')
     expect(view?.tagName).toBe('SECTION')
     expect(view?.getAttribute('aria-labelledby')).toBe('workbench-title')
-    expect(heading?.textContent).toBe('工作台')
+    expect(heading?.textContent).toContain('今天先完成这三件事')
     expect(heading?.id).toBe('workbench-title')
     expect(heading?.getAttribute('tabindex')).toBe('-1')
     expect(host.querySelector('[data-testid="progress-action-rail"]')).not.toBeNull()
+    expect(host.querySelector('.workbench-focus-board')).not.toBeNull()
+    expect(host.querySelector('.workbench-pulse')).not.toBeNull()
+    expect(host.querySelector('.workbench-workflow')).not.toBeNull()
+    expect(host.querySelectorAll('.workbench-focus-list > li')).toHaveLength(3)
     expect(host.textContent).toContain('本题基于 12 份已批改作答')
     expect(host.textContent).toContain('班级题目分析')
     expect(host.textContent).toContain('最近考试')
@@ -638,7 +642,8 @@ describe('workbench view', () => {
 
   it('distinguishes no session, no grading, no review, no anomalies and unknown values', async () => {
     const noSession = await mountView({ sessionId: null, overviewValue: null, overviewState: 'empty' })
-    expect(noSession.host.textContent).toContain('请选择考试后查看工作台')
+    expect(noSession.host.textContent).toContain('还没有选择考试')
+    expect(noSession.host.textContent).toContain('备课和班主任工作台不受影响')
     noSession.host.remove()
 
     const emptyOverview: WorkbenchOverview = {
@@ -666,9 +671,9 @@ describe('workbench view', () => {
 
   it('keeps the last successful overview usable when its refresh fails', async () => {
     const stale = await mountView({ overviewState: 'stale-error' })
-    expect(stale.host.textContent).toContain('数据可能不是最新 · 上次更新')
+    expect(stale.host.textContent).toContain('考试数据可能不是最新 · 上次更新')
     expect(stale.host.textContent).toContain('七年级数学期末质量监测')
-    clickButton(stale.host, '重新加载工作台')
+    clickButton(stale.host, '重新加载考试概况')
     expect(stale.loadOverview).toHaveBeenCalledTimes(2)
   })
 

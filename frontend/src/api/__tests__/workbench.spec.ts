@@ -11,6 +11,7 @@ const session = {
   id: 7,
   name: '期中考试',
   status: 'completed',
+  curriculum_volume_id: 'bnu24-math-g7-upper',
   is_deleted: false,
   deleted_at: null,
   created_at: '2026-07-15T08:00:00Z',
@@ -79,6 +80,17 @@ describe('workbench API contract', () => {
     expect(decodeWorkbenchOverview(overview)).toEqual(overview)
     expect(decodeSessionAnomalyResponse(anomalies)).toEqual(anomalies)
     expect(JSON.stringify(overview)).not.toMatch(/(?:rubric|answer_key|payload|result|path)/)
+  })
+
+  it('accepts an unassigned curriculum volume in a session summary', () => {
+    const unassignedSession = { ...session, curriculum_volume_id: null }
+    const payload = {
+      ...overview,
+      current_session: unassignedSession,
+      recent_sessions: [{ session: unassignedSession, progress }],
+    }
+
+    expect(decodeWorkbenchOverview(payload)).toEqual(payload)
   })
 
   it('accepts empty and out-of-range anomaly pages', () => {

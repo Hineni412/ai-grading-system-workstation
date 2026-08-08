@@ -15,10 +15,12 @@ import {
 } from '../features/knowledge-graph/route'
 import { useKnowledgeGraphStore } from '../stores/knowledge-graph'
 import { useSessionStore } from '../stores/session'
+import { useCurriculumScopeStore } from '../stores/curriculum-scope'
 
 const route = useRoute()
 const router = useRouter()
 const sessionStore = useSessionStore()
+const curriculumScope = useCurriculumScopeStore()
 const graphStore = useKnowledgeGraphStore()
 
 const students = ref<StudentSummary[]>([])
@@ -178,6 +180,7 @@ onBeforeUnmount(() => {
             :model-value="activeQuery"
             :applying="graphStore.graphState === 'loading'"
             :score-profiles="graphStore.graph?.scope.student_score_profiles ?? {}"
+            :curriculum-volume-id="curriculumScope.selectedVolumeId"
             @apply="applyQuery"
           />
         </details>

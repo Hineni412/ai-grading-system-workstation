@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 
 import { useWorkspaceAITaskStore } from './store'
@@ -30,6 +30,42 @@ const activeCount = computed(() => store.activeCount + ordinaryJobs.value.filter
 ).length)
 const peekTask = computed(() => peekTaskId.value ? store.tasks[peekTaskId.value] ?? null : null)
 const peekJob = computed(() => peekJobId.value ? jobs.jobs[peekJobId.value] ?? null : null)
+const AUTO_MINIMIZE_DELAY_MS = 1000
+let autoMinimizeTimer: ReturnType<typeof setTimeout> | null = null
+
+function cancelAutoMinimize(): void {
+  if (autoMinimizeTimer !== null) clearTimeout(autoMinimizeTimer)
+  autoMinimizeTimer = null
+}
+
+function canAutoMinimizePeek(): boolean {
+  if (!peekOpen.value) return false
+  if (peekJob.value) {
+    return peekJob.value.status === 'succeeded' && peekJob.value.progress >= 1
+  }
+  if (peekTask.value) {
+    return peekTask.value.status === 'proposal_ready'
+      && peekTask.value.progress >= 1
+      && peekTask.value.pending_count === 0
+  }
+  return false
+}
+
+function scheduleAutoMinimize(): void {
+  cancelAutoMinimize()
+  if (!canAutoMinimizePeek()) return
+  const taskId = peekTaskId.value
+  const jobId = peekJobId.value
+  autoMinimizeTimer = setTimeout(() => {
+    autoMinimizeTimer = null
+    if (
+      peekTaskId.value !== taskId
+      || peekJobId.value !== jobId
+      || !canAutoMinimizePeek()
+    ) return
+    peekOpen.value = false
+  }, AUTO_MINIMIZE_DELAY_MS)
+}
 
 watch(() => store.taskNoticeRevision, () => {
   if (!store.latestStartedTaskId) return
@@ -44,6 +80,20 @@ watch(() => jobs.jobNoticeRevision, () => {
   peekTaskId.value = null
   peekOpen.value = true
 })
+
+watch(
+  () => [
+    peekOpen.value,
+    peekTask.value?.status,
+    peekTask.value?.progress,
+    peekTask.value?.pending_count,
+    peekJob.value?.status,
+    peekJob.value?.progress,
+  ],
+  scheduleAutoMinimize,
+)
+
+onBeforeUnmount(cancelAutoMinimize)
 
 const jobTitles: Record<string, string> = {
   config_generation: '生成评分依据',

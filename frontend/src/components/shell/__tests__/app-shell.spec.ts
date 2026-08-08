@@ -9,6 +9,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import AppShell from '../../../layouts/AppShell.vue'
 import { createAppRouter } from '../../../router'
 import { useSessionStore } from '../../../stores/session'
+import { useCurriculumScopeStore } from '../../../stores/curriculum-scope'
 import { useConfigWorkspaceStore } from '../../../stores/config-workspace'
 import { useReviewDraftStore } from '../../../stores/review-drafts'
 import type { SessionSummary } from '../../../api/sessions'
@@ -19,6 +20,20 @@ async function settleUi(): Promise<void> {
   await nextTick()
   await Promise.resolve()
   await nextTick()
+}
+
+function sessionSummary(
+  overrides: Pick<SessionSummary, 'id' | 'name'> & Partial<SessionSummary>,
+): SessionSummary {
+  return {
+    status: 'created',
+    curriculum_volume_id: null,
+    is_deleted: false,
+    deleted_at: null,
+    created_at: null,
+    updated_at: null,
+    ...overrides,
+  }
 }
 
 async function mountShell({
@@ -89,7 +104,8 @@ describe('AppShell', () => {
 
     expect(initialize).toHaveBeenCalledTimes(1)
     expect(host.querySelector('[data-testid="app-shell"]')).not.toBeNull()
-    expect(host.querySelector('[data-testid="app-shell"]')?.textContent).toContain('AI 阅卷系统')
+    expect(host.querySelector('[data-testid="app-shell"]')?.textContent).toContain('知衡')
+    expect(host.querySelector('.app-sidebar__brand-copy small')?.textContent).toBe('教师教学工作台')
     expect(host.querySelector('[data-testid="app-topbar"]')?.textContent).toContain('考试批改')
     expect(host.querySelector('.app-sidebar__brand')).not.toBeNull()
     expect(host.querySelector('.app-sidebar__navigation')).not.toBeNull()
@@ -110,6 +126,21 @@ describe('AppShell', () => {
       ['班主任工作台', '/class-teacher'],
     ])
     expect(
+      [...host.querySelectorAll<HTMLAnchorElement>('[data-testid="app-navigation"] a')].map(
+        link => link.getAttribute('aria-label'),
+      ),
+    ).toEqual([
+      '工作台',
+      '考试配置',
+      '考试批改',
+      '成绩中心',
+      '题库管理',
+      '组卷工作台',
+      '知识与训练',
+      '备课工作台',
+      '班主任工作台',
+    ])
+    expect(
       host.querySelector('[data-testid="app-navigation"] a[href="/grading"]')?.getAttribute(
         'aria-current',
       ),
@@ -121,6 +152,8 @@ describe('AppShell', () => {
     ).toBe(false)
     expect(host.querySelector('label[for="current-session"]')?.textContent).toBe('当前考试')
     expect(host.querySelector('#current-session')).not.toBeNull()
+    expect(host.querySelector('label[for="current-curriculum-volume"]')?.textContent).toBe('教学学期')
+    expect(host.querySelector('#current-curriculum-volume')).not.toBeNull()
     expect([...host.querySelectorAll('nav a')].map((link) => link.textContent)).toEqual([
       '工作台',
       '考试配置',
@@ -156,6 +189,9 @@ describe('AppShell', () => {
       expect([...workspaceNavigation?.querySelectorAll('button') ?? []].map(
         button => button.textContent?.trim(),
       )).toEqual(path === '/teaching-prep' ? ['备课首页', '资料库'] : [])
+      expect(topbar?.querySelector('#current-curriculum-volume') !== null).toBe(
+        path === '/teaching-prep',
+      )
 
       app.unmount()
     },
@@ -200,6 +236,9 @@ describe('AppShell', () => {
     expect(css).toMatch(/\.app-sidebar__link\s*\{/)
     expect(css).toMatch(/\.app-sidebar__link\[aria-current='page'\]\s*\{/)
     expect(css).toMatch(/\.app-sidebar__link:focus-visible/)
+    expect(css).not.toMatch(
+      /\.app-sidebar__group\s*>\s*p\s*\{[^}]*height:\s*0[^}]*\}/s,
+    )
     expect(css).not.toMatch(/#[\da-f]{3,8}\b|(?:rgb|hsl)a?\s*\(/i)
 
     expect(tabletStart).toBeGreaterThanOrEqual(0)
@@ -260,6 +299,140 @@ describe('AppShell', () => {
 
     expect(sessionStore.selectedSessionId).toBe(7)
     expect(configStore.sessionId).toBe(7)
+    expect(configStore.editorEdits[0]?.standard_answer).toBe('未保存答案')
+    app.unmount()
+  })
+
+  it('folds other-term exams after a global teaching term is selected', async () => {
+    const { app, host } = await mountShell()
+    const sessionStore = useSessionStore()
+    const curriculumScope = useCurriculumScopeStore()
+    const volumeId = 'xkw-bnu-math-8-first'
+    curriculumScope.volumes = [{
+      id: volumeId,
+      order: 1,
+      label: '八年级上册',
+      grade: '八年级',
+      semester: '上册',
+      textbook_version: '北师大版',
+      source: {},
+      statistics: { raw_nodes: 0, excluded_nodes: 0, retained_nodes: 0 },
+      chapters: [],
+    }]
+    curriculumScope.loadState = 'ready'
+    sessionStore.sessions = [
+      sessionSummary({ id: 7, name: '八年级上册期中', curriculum_volume_id: volumeId }),
+      sessionSummary({ id: 9, name: '七年级下册期末', curriculum_volume_id: 'other-volume' }),
+      sessionSummary({ id: 11, name: '历史未归类考试' }),
+    ]
+
+    curriculumScope.selectVolume(volumeId)
+    await settleUi()
+
+    const selector = host.querySelector<HTMLSelectElement>('#current-session')!
+    expect([...selector.options].map(option => option.textContent)).toEqual([
+      '未选择',
+      '八年级上册期中',
+    ])
+    const otherButton = host.querySelector<HTMLButtonElement>('.app-topbar__other-sessions')!
+    expect(otherButton.textContent).toContain('其他学期 2')
+
+    otherButton.click()
+    await settleUi()
+    expect([...selector.options].map(option => option.textContent)).toEqual([
+      '未选择',
+      '八年级上册期中',
+      '七年级下册期末',
+      '历史未归类考试',
+    ])
+    app.unmount()
+  })
+
+  it('moves a selected other-term exam into the folded list when the teaching term changes', async () => {
+    const { app, host } = await mountShell()
+    const sessionStore = useSessionStore()
+    const configStore = useConfigWorkspaceStore()
+    const curriculumScope = useCurriculumScopeStore()
+    const volumeId = 'xkw-bnu-math-7-first'
+    curriculumScope.volumes = [{
+      id: volumeId,
+      order: 1,
+      label: '七年级上册',
+      grade: '七年级',
+      semester: '上册',
+      textbook_version: '北师大版',
+      source: {},
+      statistics: { raw_nodes: 0, excluded_nodes: 0, retained_nodes: 0 },
+      chapters: [],
+    }]
+    curriculumScope.loadState = 'ready'
+    sessionStore.sessions = [
+      sessionSummary({ id: 7, name: '七年级上册期中', curriculum_volume_id: volumeId }),
+      sessionSummary({ id: 9, name: '七年级下册期末', curriculum_volume_id: 'other-volume' }),
+    ]
+    sessionStore.selectSession(9)
+    configStore.selectSession(9)
+    await settleUi()
+
+    const scopeSelector = host.querySelector<HTMLSelectElement>('#current-curriculum-volume')!
+    scopeSelector.value = volumeId
+    scopeSelector.dispatchEvent(new Event('change'))
+    await settleUi()
+
+    expect(curriculumScope.selectedVolumeId).toBe(volumeId)
+    expect(sessionStore.selectedSessionId).toBeNull()
+    expect(configStore.sessionId).toBeNull()
+    expect([...host.querySelectorAll<HTMLOptionElement>('#current-session option')].map(
+      option => option.textContent,
+    )).toEqual(['未选择', '七年级上册期中'])
+    expect(host.querySelector('.app-topbar__other-sessions')?.textContent).toContain('其他学期 1')
+    app.unmount()
+  })
+
+  it('keeps the previous teaching term when folding the current exam would discard edits', async () => {
+    const { app, host } = await mountShell()
+    const sessionStore = useSessionStore()
+    const configStore = useConfigWorkspaceStore()
+    const curriculumScope = useCurriculumScopeStore()
+    const volumeId = 'xkw-bnu-math-7-first'
+    curriculumScope.volumes = [{
+      id: volumeId,
+      order: 1,
+      label: '七年级上册',
+      grade: '七年级',
+      semester: '上册',
+      textbook_version: '北师大版',
+      source: {},
+      statistics: { raw_nodes: 0, excluded_nodes: 0, retained_nodes: 0 },
+      chapters: [],
+    }]
+    curriculumScope.loadState = 'ready'
+    sessionStore.sessions = [
+      sessionSummary({ id: 9, name: '七年级下册期末', curriculum_volume_id: 'other-volume' }),
+    ]
+    sessionStore.selectSession(9)
+    configStore.selectSession(9)
+    configStore.setEditor({
+      session_id: 9,
+      configured: true,
+      revision: 'a'.repeat(64),
+      rows: [],
+      total_score: 0,
+      issues: [],
+      source: null,
+    })
+    configStore.updateEditor({ row_id: 'row-1', standard_answer: '未保存答案' })
+    vi.stubGlobal('confirm', vi.fn(() => false))
+    await settleUi()
+
+    const scopeSelector = host.querySelector<HTMLSelectElement>('#current-curriculum-volume')!
+    scopeSelector.value = volumeId
+    scopeSelector.dispatchEvent(new Event('change'))
+    await settleUi()
+
+    expect(curriculumScope.selectedVolumeId).toBeNull()
+    expect(scopeSelector.value).toBe('')
+    expect(sessionStore.selectedSessionId).toBe(9)
     expect(configStore.editorEdits[0]?.standard_answer).toBe('未保存答案')
     app.unmount()
   })

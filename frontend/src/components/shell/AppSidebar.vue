@@ -49,11 +49,18 @@ function completeNavigation(): void {
     :inert="open ? undefined : true"
     aria-label="应用导航"
   >
-    <RouterLink class="app-sidebar__brand" to="/workbench" @click="completeNavigation">
-      <span class="app-sidebar__brand-mark" aria-hidden="true">AI</span>
+    <RouterLink class="app-sidebar__brand" to="/workbench" aria-label="知衡首页" @click="completeNavigation">
+      <span class="app-sidebar__brand-mark" aria-hidden="true">
+        <svg viewBox="0 0 48 48" focusable="false">
+          <path d="M7 14 25 5v10l-8 4v18L7 32V14Z" />
+          <path d="m18 20 9-5 14 8v16l-7 4-9-5 8-5V25l-8-4v17l-7-4V20Z" />
+          <circle cx="12" cy="19" r="1.7" class="app-sidebar__brand-accent" />
+          <circle cx="12" cy="25" r="1.7" class="app-sidebar__brand-accent" />
+        </svg>
+      </span>
       <span class="app-sidebar__brand-copy">
-        <strong>AI 阅卷系统</strong>
-        <small>P3.5 协作验收</small>
+        <strong>知衡</strong>
+        <small>教师教学工作台</small>
       </span>
     </RouterLink>
 
@@ -61,6 +68,7 @@ function completeNavigation(): void {
       <RouterLink
         class="app-sidebar__link app-sidebar__link--workbench"
         :to="workbenchRouteDefinition.path"
+        :aria-label="workbenchRouteDefinition.label"
         :aria-current="isActive(workbenchRouteDefinition) ? 'page' : undefined"
         @click="completeNavigation"
       >
@@ -80,6 +88,7 @@ function completeNavigation(): void {
           :key="item.id"
           class="app-sidebar__link"
           :to="navigationTarget(item)"
+          :aria-label="item.label"
           :aria-current="isActive(item) ? 'page' : undefined"
           @click="completeNavigation"
         >
@@ -100,6 +109,7 @@ function completeNavigation(): void {
           :key="item.id"
           class="app-sidebar__link"
           :to="item.path"
+          :aria-label="item.label"
           :aria-current="isActive(item) ? 'page' : undefined"
           @click="completeNavigation"
         >

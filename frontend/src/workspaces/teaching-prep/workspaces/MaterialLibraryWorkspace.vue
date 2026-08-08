@@ -15,8 +15,10 @@ import { adoptTeachingPrepProposal } from '../aiAdoption'
 import TeachingPrepDocumentWorkspace from '../components/TeachingPrepDocumentWorkspace.vue'
 import TeachingPrepStickyActions from '../components/TeachingPrepStickyActions.vue'
 import { useTeachingPrepWorkbenchContext } from '../workbench/context'
+import { useCurriculumScopeStore } from '../../../stores/curriculum-scope'
 
 const workbench = useTeachingPrepWorkbenchContext()
+const curriculumScope = useCurriculumScopeStore()
 const aiTasks = useWorkspaceAITaskStore()
 const activeUnitId = ref<string | null>(null)
 const importBatchRunning = ref(false)
@@ -106,6 +108,20 @@ const printedPageNumber = computed(() => {
   return typeof value === 'number' && Number.isInteger(value) ? value : null
 })
 const activeMaterials = computed(() => workbench.catalog.materials.filter(item => !item.source_archived_at))
+const showOtherTermMaterials = ref(false)
+const currentTermMaterials = computed(() => activeMaterials.value.filter(item => Boolean(
+  semesterRecordFor(item),
+)))
+const otherTermMaterials = computed(() => activeMaterials.value.filter(item => !semesterRecordFor(item)))
+const visibleMaterials = computed(() => {
+  if (!curriculumScope.selectedVolumeId) return activeMaterials.value
+  return showOtherTermMaterials.value
+    ? [...currentTermMaterials.value, ...otherTermMaterials.value]
+    : currentTermMaterials.value
+})
+watch(() => curriculumScope.selectedVolumeId, () => {
+  showOtherTermMaterials.value = false
+})
 const archivedMaterials = computed(() => workbench.catalog.materials.filter(item => Boolean(item.source_archived_at)))
 const activeMaterial = computed(
   () => workbench.catalog.materials.find(
@@ -1379,7 +1395,7 @@ async function saveManualMapping(): Promise<void> {
           尚未导入教材、教辅或课件。
         </p>
         <article
-          v-for="item in activeMaterials"
+          v-for="item in visibleMaterials"
           :key="item.id"
           class="tp-material-card"
           :class="{ 'is-selected': item.id === workbench.catalog.selectedMaterialId }"
@@ -1458,6 +1474,17 @@ async function saveManualMapping(): Promise<void> {
             </div>
           </details>
         </article>
+        <button
+          v-if="curriculumScope.selectedVolumeId && otherTermMaterials.length"
+          class="tp-button tp-button--secondary"
+          type="button"
+          :aria-expanded="showOtherTermMaterials"
+          @click="showOtherTermMaterials = !showOtherTermMaterials"
+        >
+          {{ showOtherTermMaterials
+            ? '收起其他学期或未归类资料'
+            : `展开其他学期或未归类资料（${otherTermMaterials.length}）` }}
+        </button>
         <details v-if="archivedMaterials.length" class="tp-archive-list">
           <summary>回收区（{{ archivedMaterials.length }}）</summary>
           <article v-for="item in archivedMaterials" :key="item.id" class="tp-material-card is-archived">

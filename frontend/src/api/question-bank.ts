@@ -472,6 +472,7 @@ export interface QuestionBankFilters {
   years?: string[]
   examTypes?: string[]
   grades?: string[]
+  curriculumVolumeIds?: string[]
   examScopes?: string[]
   curriculumSections?: string[]
   tagStatus?: QuestionBankTagStatus
@@ -1542,6 +1543,7 @@ function questionListPath(filters: QuestionBankFilters): string {
   appendTexts(parameters, 'years', filters.years)
   appendTexts(parameters, 'exam_types', filters.examTypes)
   appendTexts(parameters, 'grades', filters.grades)
+  appendTexts(parameters, 'curriculum_volume_ids', filters.curriculumVolumeIds)
   appendTexts(parameters, 'exam_scopes', filters.examScopes)
   appendTexts(parameters, 'curriculum_sections', filters.curriculumSections)
   appendTexts(parameters, 'knowledge_points', filters.knowledgePoints)
