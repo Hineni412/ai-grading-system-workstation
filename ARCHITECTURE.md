@@ -202,8 +202,11 @@ A 启用后只在 `user_data/workspaces/teaching-prep/` 内使用 `temp`、`stag
   `dispatch_evidence=may_have_started`。此后崩溃只进入 `result_unknown`，不会自动或沿用同一 operation 重发。
   通用 Job API 对 `workspace_ai.*` 使用最小允许列表，不回落返回原始 payload/result/detail/error。
 - A Adapter 注册学期目录、课堂方案、候选练习和课件修改四类 task kind。模型调用通过公共 Task Gateway 在物理
-  请求前强制 metadata-only 诊断、零自动重试和单 operation 单请求；A 库的
+  请求前强制写入受控的本机敏感调用诊断，同时保持零自动重试和单 operation 单请求；共同 Task/Job 库仍只保存
+  安全元数据，A 库的
   `teaching_prep_ai_task_results` 只保存领域 proposal/Handoff 引用，重启只读回该引用补做本地交接。
+  教师明确放弃 `result_unknown` 时，共同 Task 必须先通知 A Adapter 同步取消同一请求摘要的领域 operation，
+  再解除共同层阻塞；任一层未完成都不能伪装成已经可以重新发送。
 - A 的四类教师最终确认通过领域采用命令与共同 Handoff 合一：命令先按稳定 adoption_id 持久到 A 库，
   领域动作可幂等重放，正式对象采用标记与 Adoption Receipt 同事务提交。进程在领域动作后、Receipt 或共同
   投影前退出时，服务端可从已存命令收敛同一对象；候选练习只有整轮建议都已决定后才完成 Handoff。
@@ -211,6 +214,15 @@ A 启用后只在 `user_data/workspaces/teaching-prep/` 内使用 `temp`、`stag
   `class_teacher.intake` 是 recovery-only，只能恢复已经持久化的兼容任务；prepare、dispatch 和运行入口都不能
   由它产生新的模型发送。共同层仍只保存 conversation、turn、draft 和 student 的不透明引用，不保存教师原话、
   学生姓名或草稿正文；历史任务只有同时匹配当前 draft revision 与当前 task_id 才能重新绑定 Handoff。
+  班主任分诊提示词给出完整 JSON 合同；对已经实测出现的两个窄变体，本地只做保守兼容：简化草稿转成
+  待教师选择学生的 review-only 草稿，字符串时间说明转成 `{text: ...}` 元数据。未知字段、未知枚举、伪造或
+  失效学生引用仍按无效结果拒绝，兼容结果也不会自动写入正式学生记录。
+- B 的学生档案页使用同一 `class_teacher.intake_triage` 任务链，不另建直调模型通道。档案页会话在 B 普通库只保存
+  已选学生的不透明关联和身份 revision；Adapter 在物理调用前从 `StudentCardService` 读取这名学生唯一的当前档案、
+  支持重点与现行支持方案。合格结果必须包含完整 `profile_update`，教师采用时在学生记录、Adoption Receipt 与当前档案
+  同一领域事务中提交。`StudentCardService` 更新同一个 active 加密对象，只递增并发 revision，不新增可见历史版本；旧
+  `portrait/sop` 条目读取时投影为当前档案兼容形态。普通事务会话还会在教师最新原文中本机匹配唯一学生姓名，并把已
+  存在的当前档案作为矛盾、家校沟通和支持建议的模型背景；同名时不自动选人。
 - 教师修改 B 草稿后，B 先提交自身草稿版本，再把新 draft revision 和不透明学生引用幂等投影到共同 Handoff；
   若两库之间中断，下一次 adopt 会先补齐该安全投影。采用失败时先查询领域 Receipt：已有 Receipt 就收敛为同一
   正式对象；确定没有 Receipt 的校验或目标冲突会释放共同占用，学生目标冲突仍保持 B 草稿 stale，直到教师明确
@@ -684,8 +696,9 @@ A 启用后只在 `user_data/workspaces/teaching-prep/` 内使用 `temp`、`stag
 - 配置生成、整卷批改和题库打标的额外调用必须有清晰预算；失败、截断或坏 JSON 不自动追加“修复”模型请求。
 - A/B 工作台使用独立模型安全入口：每次调用必须声明用途、数据分类和 operation ID；同一 operation ID
   最多一次物理请求。调用前会在对应受控工作台目录写入只含散列文件名的持久声明，因此跨实例或应用重启
-  仍会拒绝重复 operation ID；自动重试固定为 0，正文诊断、普通 trace 和普通 usage sink 默认关闭，
-  只记录模型、耗时、用量、operation ID 与脱敏错误类别。A/B 仍各自负责匿名化、发送预览和教师确认。
+  仍会拒绝重复 operation ID；自动重试固定为 0，普通 trace 和普通 usage sink 关闭。公共 Task Gateway 强制把
+  实际文本请求、模型原始文本响应、解析状态和调用错误写入既有的本机敏感诊断日志，模型设置页可按工作台、
+  具体任务和结果筛选；密钥、本机路径和附件正文仍不写入。共同 Task/Job 库继续只保存安全元数据。
 - B 普通工作的分类、语义拆解、依赖、追问和日期倒排由教师配置的 AI 提出，本地不保存会议、收集、PPT
   等业务步骤模板。本地只先拦截敏感内容，解析教师明确写出的日期约束（包括 `8月30日`、`8.30`、
   `8/30`、`8-30` 及带年份写法），再展示完整 JSON、服务商、去凭据端点和模型；确认指纹同时绑定请求

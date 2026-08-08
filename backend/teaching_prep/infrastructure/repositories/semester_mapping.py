@@ -376,6 +376,27 @@ class SemesterMappingRepository:
                 (error_code, operation_id),
             )
 
+    def discard_interrupted_generation(self, *, request_hash: str) -> bool:
+        """Release one semantic request only after the teacher discards it."""
+        with self._database.connect(immediate=True) as connection:
+            changed = connection.execute(
+                """
+                UPDATE teaching_prep_operations
+                SET status = 'cancelled',
+                    error_code = 'semester_mapping_result_discarded',
+                    updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+                    finished_at = COALESCE(
+                        finished_at,
+                        strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                    )
+                WHERE operation_type = 'semester_mapping_model'
+                  AND request_hash = ?
+                  AND status = 'interrupted'
+                """,
+                (request_hash,),
+            ).rowcount
+        return changed > 0
+
     def list(self, semester_id: str) -> tuple[SemesterMappingProposal, ...]:
         with self._database.connect() as connection:
             if connection.execute(

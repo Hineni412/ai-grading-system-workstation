@@ -37,7 +37,7 @@ onMounted(() => { void restoreSelection() })
     <nav class="subnav" aria-label="学生工作区页面">
       <button v-for="item in ([['directory','学生目录'],['support','支持记录'],['academic','学业证据']] as const)" :key="item[0]" type="button" :aria-current="panel===item[0]?'page':undefined" @click="emit('navigate', item[0])">{{ item[1] }}</button>
       <span v-if="selected">当前学生：<strong>{{ selected.display_name }}</strong></span>
-      <span v-else>选择学生后可查看已确认的结构化概览</span>
+      <span v-else>选择学生后可进入这名学生的当前档案</span>
     </nav>
     <StudentDirectoryPanel v-if="panel==='directory'" :token="token" @select="choose" />
     <StudentOverviewPanel

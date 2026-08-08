@@ -20,6 +20,7 @@ class FakeWorkspaceAITaskAdapter:
     fail_execute: Exception | None = None
     fail_after_receipt: bool = False
     persisted_results: dict[str, AdapterResult] = field(default_factory=dict)
+    discarded_unknown_operations: list[str] = field(default_factory=list)
 
     def execute(
         self,
@@ -36,6 +37,9 @@ class FakeWorkspaceAITaskAdapter:
 
     def recover(self, task: StoredTask) -> AdapterResult | None:
         return self.persisted_results.get(task.task_id)
+
+    def discard_result_unknown(self, task: StoredTask) -> None:
+        self.discarded_unknown_operations.append(task.operation_id)
 
     def adopt(
         self,

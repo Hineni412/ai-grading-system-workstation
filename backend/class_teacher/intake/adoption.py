@@ -33,6 +33,7 @@ class HandoffAdoption:
         sop: SopWorkflowService,
         sop_baselines: SopBaselineService,
         class_roster,
+        student_cards,
     ) -> None:
         self.conversations = conversations
         self.database = database
@@ -44,6 +45,7 @@ class HandoffAdoption:
         self.sop = sop
         self.sop_baselines = sop_baselines
         self.class_roster = class_roster
+        self.student_cards = student_cards
 
     def adopt(
         self,
@@ -190,7 +192,42 @@ class HandoffAdoption:
                 if str(subject["revision"]) != str(target_revision):
                     self._mark_stale(str(handoff["handoff_id"]), str(target_revision))
                     raise VaultError("class_teacher_target_conflict", "学生资料已变化，请刷新后重新核对", status_code=409)
-            hook = self._receipt_hook(handoff, target_revision, "student_record")
+            receipt_hook = self._receipt_hook(handoff, target_revision, "student_record")
+            profile_update = content.get("profile_update")
+            profile_base_revision = content.get("profile_base_revision")
+
+            def hook(connection: Any, vmk: bytes, record_id: str) -> None:
+                receipt_hook(connection, vmk, record_id)
+                if not isinstance(profile_update, dict):
+                    return
+                subject_row = connection.execute(
+                    "SELECT subject_id FROM support_records WHERE record_id=?",
+                    (record_id,),
+                ).fetchone()
+                if subject_row is None:
+                    raise VaultError(
+                        "support_record_not_found",
+                        "学生记录没有完成，档案未更新",
+                        status_code=409,
+                    )
+                self.student_cards.upsert_current_profile_in_connection(
+                    connection,
+                    vmk=vmk,
+                    subject_id=str(subject_row["subject_id"]),
+                    profile_update=profile_update,
+                    expected_revision=(
+                        int(profile_base_revision)
+                        if isinstance(profile_base_revision, int)
+                        else None
+                    ),
+                    operation_id=f"profile_{operation_id}",
+                    model_operation_id=self.conversations.task_id_for_handoff(
+                        str(handoff["handoff_id"])
+                    ),
+                    teacher_quote=str(content.get("teacher_quote") or content.get("summary") or ""),
+                    model_draft=json.dumps(profile_update, ensure_ascii=False),
+                    source_record_id=record_id,
+                )
             record = self.support.create_record(
                 token=token,
                 operation_id=operation_id,
@@ -206,7 +243,7 @@ class HandoffAdoption:
                 review_at=str(content.get("review_at") or "").strip() or None,
                 expires_at=str(content.get("expires_at") or "").strip() or None,
                 subject_identity=subject_identity,
-                transaction_hook=lambda connection, vmk, record_id: hook(connection, vmk, record_id),
+                transaction_hook=hook,
             )
             return self._receipt(str(handoff["adoption_id"])) or {
                 "formal_object_type": "student_record", "formal_object_id": str(record["record_id"])
@@ -309,7 +346,40 @@ class HandoffAdoption:
         selected = next((item for item in baselines if item.get("template_key") == template_key), None)
         if selected is None:
             raise VaultError("class_teacher_sop_template_invalid", "请选择可用的学校流程模板", status_code=422)
-        refs = [str(item.get("id")) for item in list(handoff.get("subject_refs") or []) if isinstance(item, dict) and item.get("id")]
+        refs: list[str] = []
+        verified_current_subject_ids: list[str] = []
+        for index, item in enumerate(list(handoff.get("subject_refs") or [])):
+            if not isinstance(item, dict) or not item.get("id"):
+                continue
+            candidate_id = str(item.get("id") or "")
+            candidate_revision = str(item.get("revision") or "")
+            try:
+                subject = self.support.get_subject(
+                    token=token,
+                    subject_id=candidate_id,
+                )
+            except VaultError as exc:
+                if exc.code != "support_subject_not_found":
+                    raise
+                source = self.class_roster.resolve_opaque_ref(
+                    token=token,
+                    opaque_ref=candidate_id,
+                    expected_revision=candidate_revision,
+                )
+                subject = self.support.create_subject_for_roster_source(
+                    token=token,
+                    operation_id=(
+                        f"sop-subject-{handoff['adoption_id']}-{index + 1}"
+                    ),
+                    source_student_id=source.source_key,
+                    legacy_student_code=source.student_code,
+                    display_name=source.display_name,
+                    class_label=source.class_label,
+                )
+                verified_current_subject_ids.append(
+                    str(subject["subject_id"])
+                )
+            refs.append(str(subject["subject_id"]))
         participant_refs = [str(item) for item in list(content.get("participant_refs") or []) if str(item).strip()]
         if not refs and not participant_refs:
             raise VaultError("class_teacher_sop_participants_required", "进入 SOP 前请确认参与对象", status_code=422)
@@ -322,6 +392,7 @@ class HandoffAdoption:
             summary=str(content.get("summary") or "").strip() or None,
             participant_refs=participant_refs,
             subject_ids=refs,
+            verified_current_subject_ids=verified_current_subject_ids,
             idempotency_fingerprint=str(handoff["adoption_id"]),
             transaction_hook=lambda connection, vmk, affair_id, _occurrence_id: hook(connection, vmk, affair_id),
         )

@@ -3,7 +3,7 @@ from __future__ import annotations
 import threading
 from collections.abc import Mapping
 
-from backend.llm.diagnostics import NullDiagnosticSink
+from backend.llm.diagnostics import JsonlDiagnosticJournal
 from backend.llm.trace import NullCallTraceSink
 from backend.llm.usage import NullUsageSink
 from backend.workspaces.model_policy import (
@@ -16,14 +16,20 @@ from backend.workspaces.model_policy import (
 class WorkspaceAITaskModelGateway:
     """The only model-call capability handed to workspace AI Task adapters.
 
-    It applies the shared privacy policy immediately before the physical call,
-    so an adapter cannot turn diagnostics or automatic retries back on through
-    constructor flags. A task operation can cross this gateway only once.
+    It applies the shared privacy policy immediately before the physical call.
+    Complete text diagnostics are written to the approved local journal, while
+    automatic retries and the secondary trace/usage sinks stay disabled. A task
+    operation can cross this gateway only once.
     """
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        diagnostic_sink: JsonlDiagnosticJournal | None = None,
+    ) -> None:
         self._claimed_operations: set[str] = set()
         self._lock = threading.Lock()
+        self._diagnostic_sink = diagnostic_sink or JsonlDiagnosticJournal()
 
     def chat_completions(
         self,
@@ -88,7 +94,9 @@ class WorkspaceAITaskModelGateway:
             self._claimed_operations.add(operation_id)
 
         # Enforce on the actual low-level call path, including supplied gateways.
-        gateway.gateway.diagnostic_sink = NullDiagnosticSink()
+        # The shared task/job stores remain metadata-only; sensitive request and
+        # response bodies live only in the bounded, Git-ignored local journal.
+        gateway.gateway.diagnostic_sink = self._diagnostic_sink
         gateway.gateway.trace_sink = NullCallTraceSink()
         gateway.gateway.usage_sink = NullUsageSink()
         gateway.allow_retry = False

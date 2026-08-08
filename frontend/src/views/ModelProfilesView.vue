@@ -65,6 +65,8 @@ const workspaceTaskRecordsState = ref<'idle' | 'loading' | 'error'>('idle')
 const workspaceTaskRecordsError = ref('')
 const diagnosticOutcome = ref<'' | AiDiagnosticOutcome>('')
 const diagnosticKind = ref('')
+const workspaceModuleFilter = ref<'' | WorkspaceAITask['module']>('')
+const workspaceTaskKindFilter = ref('')
 const selectedDiagnosticId = ref('')
 const selectedDiagnostic = ref<AiDiagnosticDetail | null>(null)
 const diagnosticDetailState = ref<'idle' | 'loading' | 'error'>('idle')
@@ -388,7 +390,40 @@ const diagnosticKinds = [
   { value: 'grading', label: '批改' },
   { value: 'config_generation', label: '评分标准' },
   { value: 'tagging', label: '题库标注' },
+  { value: 'workspace', label: '工作台' },
 ] as const
+const workspaceModules = [
+  { value: '', label: '全部工作台' },
+  { value: 'teaching_prep', label: '备课工作台' },
+  { value: 'class_teacher', label: '班主任工作台' },
+] as const
+const workspaceTaskKinds = [
+  { value: '', module: '', label: '全部功能' },
+  { value: 'teaching_prep.semester_mapping', module: 'teaching_prep', label: '学期资料整理' },
+  { value: 'teaching_prep.lesson_plan', module: 'teaching_prep', label: '课时备课方案' },
+  { value: 'teaching_prep.exercise_suggestions', module: 'teaching_prep', label: '练习建议' },
+  { value: 'teaching_prep.slide_change_proposal', module: 'teaching_prep', label: '课件改编方案' },
+  { value: 'class_teacher.intake_triage', module: 'class_teacher', label: '事项整理' },
+  { value: 'class_teacher.draft_revision', module: 'class_teacher', label: '草稿修订' },
+  { value: 'class_teacher.intake', module: 'class_teacher', label: '旧版事项整理' },
+] as const
+const availableWorkspaceTaskKinds = computed(() => workspaceTaskKinds.filter(
+  ({ module }) => !module || !workspaceModuleFilter.value || module === workspaceModuleFilter.value,
+))
+const workspaceTasksByOperation = computed(() => new Map(
+  workspaceTaskRecords.value.map((task) => [task.operation_id, task]),
+))
+const recentWorkspaceTaskRecords = computed(() => workspaceTaskRecords.value.slice(0, 20))
+const visibleDiagnostics = computed(() => diagnostics.value.filter((call) => {
+  if (!workspaceModuleFilter.value && !workspaceTaskKindFilter.value) return true
+  if (call.request_kind !== 'workspace') return false
+  const task = workspaceTasksByOperation.value.get(call.operation_id)
+  if (!task) return false
+  return (
+    (!workspaceModuleFilter.value || task.module === workspaceModuleFilter.value)
+    && (!workspaceTaskKindFilter.value || task.task_kind === workspaceTaskKindFilter.value)
+  )
+}))
 const diagnosticTabs: readonly {
   value: DiagnosticTab
   label: string
@@ -406,6 +441,56 @@ function selectDiagnosticTab(tab: DiagnosticTab): void {
 
 function diagnosticKindLabel(value: string): string {
   return diagnosticKinds.find((item) => item.value === value)?.label ?? value
+}
+
+function workspaceModuleLabel(module: WorkspaceAITask['module']): string {
+  return module === 'teaching_prep' ? '备课' : '班主任'
+}
+
+function workspaceTaskKindLabel(taskKind: string): string {
+  return workspaceTaskKinds.find(({ value }) => value === taskKind)?.label ?? '其他功能'
+}
+
+function diagnosticDisplayLabel(call: AiDiagnosticSummary): string {
+  if (call.request_kind !== 'workspace') return diagnosticKindLabel(call.request_kind)
+  const task = workspaceTasksByOperation.value.get(call.operation_id)
+  if (!task) return '工作台 · 功能未知'
+  return `${workspaceModuleLabel(task.module)} · ${workspaceTaskKindLabel(task.task_kind)}`
+}
+
+function clearHiddenDiagnosticSelection(): void {
+  if (
+    selectedDiagnosticId.value
+    && !visibleDiagnostics.value.some(({ call_id: callId }) => callId === selectedDiagnosticId.value)
+  ) {
+    selectedDiagnosticId.value = ''
+    selectedDiagnostic.value = null
+    diagnosticDetailState.value = 'idle'
+  }
+}
+
+function handleDiagnosticKindChange(): void {
+  if (diagnosticKind.value !== 'workspace') {
+    workspaceModuleFilter.value = ''
+    workspaceTaskKindFilter.value = ''
+  }
+  void loadDiagnostics()
+}
+
+function handleWorkspaceModuleChange(): void {
+  const selected = workspaceTaskKinds.find(
+    ({ value }) => value === workspaceTaskKindFilter.value,
+  )
+  if (
+    selected?.module
+    && workspaceModuleFilter.value
+    && selected.module !== workspaceModuleFilter.value
+  ) workspaceTaskKindFilter.value = ''
+  clearHiddenDiagnosticSelection()
+}
+
+function handleWorkspaceTaskKindChange(): void {
+  clearHiddenDiagnosticSelection()
 }
 
 function diagnosticOutcomeLabel(value: AiDiagnosticOutcome): string {
@@ -479,14 +564,14 @@ async function loadDiagnostics(): Promise<void> {
   diagnosticsError.value = ''
   try {
     const result = await aiDiagnosticsApi.list({
-      limit: 60,
+      limit: 100,
       requestKind: diagnosticKind.value,
       outcome: diagnosticOutcome.value,
       signal: controller.signal,
     })
     diagnostics.value = result.items
     diagnosticsState.value = 'idle'
-    const selectedStillVisible = result.items.some(
+    const selectedStillVisible = visibleDiagnostics.value.some(
       ({ call_id: callId }) => callId === selectedDiagnosticId.value,
     )
     if (!selectedStillVisible) {
@@ -517,7 +602,7 @@ async function loadWorkspaceTaskRecords(): Promise<void> {
     if (controller.signal.aborted) return
     workspaceTaskRecords.value = [...teachingPrep, ...classTeacher]
       .sort((left, right) => Date.parse(right.updated_at) - Date.parse(left.updated_at))
-      .slice(0, 20)
+    clearHiddenDiagnosticSelection()
     workspaceTaskRecordsState.value = 'idle'
   } catch (error) {
     if (controller.signal.aborted) return
@@ -1025,18 +1110,42 @@ onBeforeUnmount(() => {
         <div>
           <p class="model-profiles-view__eyebrow">LOCAL AI TRACE</p>
           <h2 id="ai-diagnostics-title">AI 调用记录</h2>
-          <p>还原每次发送、等待、返回和解析过程，便于定位识别与评分问题。</p>
+          <p>按用途、工作台、具体功能和结果分类查询每次发送、返回与解析过程。</p>
         </div>
         <div class="ai-diagnostics__filters">
           <label>
-            <span>用途</span>
-            <select v-model="diagnosticKind" @change="loadDiagnostics">
+            <span>来源</span>
+            <select v-model="diagnosticKind" @change="handleDiagnosticKindChange">
               <option
                 v-for="kind in diagnosticKinds"
                 :key="kind.value"
                 :value="kind.value"
               >
                 {{ kind.label }}
+              </option>
+            </select>
+          </label>
+          <label v-if="diagnosticKind === 'workspace'">
+            <span>工作台</span>
+            <select v-model="workspaceModuleFilter" @change="handleWorkspaceModuleChange">
+              <option
+                v-for="module in workspaceModules"
+                :key="module.value"
+                :value="module.value"
+              >
+                {{ module.label }}
+              </option>
+            </select>
+          </label>
+          <label v-if="diagnosticKind === 'workspace'">
+            <span>具体功能</span>
+            <select v-model="workspaceTaskKindFilter" @change="handleWorkspaceTaskKindChange">
+              <option
+                v-for="taskKind in availableWorkspaceTaskKinds"
+                :key="taskKind.value"
+                :value="taskKind.value"
+              >
+                {{ taskKind.label }}
               </option>
             </select>
           </label>
@@ -1077,7 +1186,7 @@ onBeforeUnmount(() => {
         <header>
           <div>
             <strong id="workspace-ai-records-title">工作台 AI 任务记录</strong>
-            <span>备课与班主任工作台只保留安全元数据，不保存发送正文和模型原文。</span>
+            <span>这里保留安全任务摘要；上方调用记录保存并展示实际发送正文和模型原文。</span>
           </div>
           <button
             type="button"
@@ -1098,7 +1207,7 @@ onBeforeUnmount(() => {
           还没有工作台 AI 任务记录。
         </p>
         <ul v-else>
-          <li v-for="task in workspaceTaskRecords" :key="task.task_id">
+          <li v-for="task in recentWorkspaceTaskRecords" :key="task.task_id">
             <div>
               <strong>{{ task.safe_title }}</strong>
               <span>{{ task.module === 'teaching_prep' ? '备课工作台' : '班主任工作台' }} · {{ formatDiagnosticTime(task.updated_at) }}</span>
@@ -1123,7 +1232,7 @@ onBeforeUnmount(() => {
         <aside class="ai-diagnostics-ledger" aria-label="AI 调用列表">
           <header>
             <strong>最近调用</strong>
-            <span>{{ diagnostics.length }} 条</span>
+            <span>{{ visibleDiagnostics.length }} 条</span>
           </header>
           <p
             v-if="diagnosticsState === 'loading' && diagnostics.length === 0"
@@ -1132,13 +1241,13 @@ onBeforeUnmount(() => {
             正在读取本机记录…
           </p>
           <p
-            v-else-if="diagnostics.length === 0"
+            v-else-if="visibleDiagnostics.length === 0"
             class="ai-diagnostics-ledger__state"
           >
-            还没有符合当前筛选条件的调用。执行一次识别、批改或标注后再刷新。
+            还没有符合当前筛选条件的调用。执行相应功能后再刷新。
           </p>
           <ul v-else>
-            <li v-for="call in diagnostics" :key="call.call_id">
+            <li v-for="call in visibleDiagnostics" :key="call.call_id">
               <button
                 type="button"
                 class="ai-diagnostic-call"
@@ -1152,7 +1261,7 @@ onBeforeUnmount(() => {
                 @click="loadDiagnosticDetail(call.call_id)"
               >
                 <span class="ai-diagnostic-call__heading">
-                  <strong>{{ diagnosticKindLabel(call.request_kind) }}</strong>
+                  <strong>{{ diagnosticDisplayLabel(call) }}</strong>
                   <span
                     class="ai-diagnostic-status"
                     :class="`ai-diagnostic-status--${call.outcome}`"
@@ -1196,7 +1305,7 @@ onBeforeUnmount(() => {
             <header class="ai-diagnostic-detail__header">
               <div>
                 <span>
-                  {{ diagnosticKindLabel(selectedDiagnostic.request_kind) }}
+                  {{ diagnosticDisplayLabel(selectedDiagnostic) }}
                   · 第 {{ selectedDiagnostic.attempt }} 次尝试
                 </span>
                 <h3>{{ selectedDiagnostic.model || '模型未知' }}</h3>

@@ -4,8 +4,11 @@ import { createMemoryHistory } from 'vue-router'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import App from '../App.vue'
+import { aiDiagnosticsApi, type AiDiagnosticSummary } from '../api/ai-diagnostics'
 import { modelProfilesApi } from '../api/model-profiles'
 import { createAppRouter } from '../router'
+import { workspaceAITaskApi } from '../workspaces/shared/ai-tasks/api'
+import type { WorkspaceAITask } from '../workspaces/shared/ai-tasks/contracts'
 
 vi.mock('../api/sessions', () => ({
   fetchSessions: vi.fn(async () => []),
@@ -77,5 +80,145 @@ describe('ModelProfilesView', () => {
     expect(host.querySelectorAll('.model-task-row')).toHaveLength(4)
     expect(host.querySelectorAll('.model-task-row select:disabled')).toHaveLength(4)
     expect(host.querySelectorAll('.model-task-row input:disabled')).toHaveLength(4)
+  })
+
+  it('filters workbench call records by workbench and task category', async () => {
+    vi.spyOn(modelProfilesApi, 'getState').mockResolvedValue({
+      profiles: [],
+      active_profile_name: null,
+      active_profile: null,
+      task_bindings: {
+        content_generation: { profile_name: null, model: '' },
+        grading: { profile_name: null, model: '' },
+        teaching_prep: { profile_name: null, model: '' },
+        class_teacher: { profile_name: null, model: '' },
+      },
+    })
+    const diagnostic = (
+      operationId: string,
+      callId: string,
+    ): AiDiagnosticSummary => ({
+      call_id: callId,
+      operation_id: operationId,
+      request_id: operationId,
+      attempt: 1,
+      request_kind: 'workspace',
+      protocol: 'chat_completions',
+      model: 'synthetic-model',
+      started_at_utc: '2026-08-07T12:00:00Z',
+      finished_at_utc: '2026-08-07T12:00:01Z',
+      outcome: 'success',
+      elapsed_ms: 1000,
+      image_count: 0,
+      response_chars: 20,
+      will_retry: false,
+    })
+    const task = (
+      module: WorkspaceAITask['module'],
+      taskKind: string,
+      operationId: string,
+    ): WorkspaceAITask => ({
+      contract_version: 'teacher_workspace_ai_task.v1',
+      task_id: `task-${operationId}`,
+      operation_id: operationId,
+      module,
+      task_kind: taskKind,
+      source_ref: { kind: 'synthetic', id: 'source-1', revision: '1' },
+      context_refs: [],
+      return_target: `${module}.home`,
+      status: 'proposal_ready',
+      phase: 'handoff_ready',
+      progress: 1,
+      send_attempt_count: 1,
+      dispatch_evidence: 'response_persisted',
+      cancel_requested: false,
+      job_id: 1,
+      proposal_ref_id: 'proposal-1',
+      proposal_revision: '1',
+      error_code: null,
+      revision: 1,
+      safe_title: '合成任务',
+      safe_source: '合成来源',
+      teacher_message: '',
+      next_action: '',
+      handoffs: [],
+      handoff_total: 0,
+      adopted_count: 0,
+      discarded_count: 0,
+      stale_count: 0,
+      pending_count: 0,
+      created_at: '2026-08-07T12:00:00Z',
+      updated_at: '2026-08-07T12:00:01Z',
+      finished_at: '2026-08-07T12:00:01Z',
+    })
+    const diagnostics = [
+      diagnostic('operation-teaching-prep', 'a'.repeat(24)),
+      diagnostic('operation-class-teacher', 'b'.repeat(24)),
+    ]
+    const listDiagnostics = vi.spyOn(aiDiagnosticsApi, 'list').mockResolvedValue({
+      items: diagnostics,
+      returned: diagnostics.length,
+      matching: diagnostics.length,
+      scanned_event_count: 4,
+      truncated: false,
+    })
+    vi.spyOn(workspaceAITaskApi, 'list').mockImplementation(async (module) => (
+      module === 'teaching_prep'
+        ? [task('teaching_prep', 'teaching_prep.lesson_plan', 'operation-teaching-prep')]
+        : [task('class_teacher', 'class_teacher.intake_triage', 'operation-class-teacher')]
+    ))
+
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const router = createAppRouter(createMemoryHistory())
+    await router.push('/model-profiles')
+    await router.isReady()
+    const host = document.createElement('div')
+    document.body.append(host)
+    const app = createApp(App)
+    app.use(pinia)
+    app.use(router)
+    app.mount(host)
+    mounted.push(app)
+    await settle()
+
+    const disclosure = host.querySelector<HTMLDetailsElement>('.ai-diagnostics-disclosure')
+    expect(disclosure).not.toBeNull()
+    disclosure!.open = true
+    disclosure!.dispatchEvent(new Event('toggle'))
+    await vi.waitFor(() => expect(listDiagnostics).toHaveBeenCalled())
+    await settle()
+
+    const sourceSelect = host.querySelector<HTMLSelectElement>(
+      '.ai-diagnostics__filters label:first-child select',
+    )
+    expect(sourceSelect?.textContent).toContain('工作台')
+    sourceSelect!.value = 'workspace'
+    sourceSelect!.dispatchEvent(new Event('change', { bubbles: true }))
+    await vi.waitFor(() => {
+      expect(listDiagnostics).toHaveBeenLastCalledWith(
+        expect.objectContaining({ requestKind: 'workspace' }),
+      )
+    })
+    await settle()
+
+    const workbenchSelect = [...host.querySelectorAll<HTMLLabelElement>(
+      '.ai-diagnostics__filters label',
+    )].find((label) => label.querySelector('span')?.textContent === '工作台')
+      ?.querySelector<HTMLSelectElement>('select')
+    expect(workbenchSelect).toBeDefined()
+    workbenchSelect!.value = 'class_teacher'
+    workbenchSelect!.dispatchEvent(new Event('change', { bubbles: true }))
+    await settle()
+
+    const ledger = host.querySelector('.ai-diagnostics-ledger')
+    expect(ledger?.textContent).toContain('班主任 · 事项整理')
+    expect(ledger?.textContent).not.toContain('备课 · 课时备课方案')
+
+    const categorySelect = [...host.querySelectorAll<HTMLLabelElement>(
+      '.ai-diagnostics__filters label',
+    )].find((label) => label.querySelector('span')?.textContent === '具体功能')
+      ?.querySelector<HTMLSelectElement>('select')
+    expect(categorySelect?.textContent).toContain('事项整理')
   })
 })

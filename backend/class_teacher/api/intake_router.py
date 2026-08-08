@@ -4,6 +4,7 @@ from fastapi import APIRouter, Header, Request, Response
 from starlette.concurrency import run_in_threadpool
 
 from .intake_schemas import (
+    ConversationStartRequest,
     DraftAIRevisionRequest,
     DraftUpdateRequest,
     HandoffAdoptRequest,
@@ -65,10 +66,20 @@ def create_intake_router() -> APIRouter:
         return _call(lambda: _service(request).intake.preferences.set(**body.model_dump()))
 
     @router.post("/conversations")
-    def start_conversation(request: Request, response: Response):
+    def start_conversation(
+        request: Request,
+        response: Response,
+        body: ConversationStartRequest | None = None,
+        session_token: str | None = Header(None, alias="x-class-teacher-session"),
+    ):
         _require_trusted_mutation(request)
         _no_store(response)
-        return _call(lambda: _service(request).intake.start_conversation())
+        return _call(
+            lambda: _service(request).intake.start_conversation(
+                token=_token(session_token),
+                subject_id=None if body is None else body.subject_id,
+            )
+        )
 
     @router.get("/conversations")
     def list_conversations(request: Request, response: Response, limit: int = 12):

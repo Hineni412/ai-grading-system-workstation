@@ -180,10 +180,11 @@ class ClassRosterService:
             connection.execute("BEGIN IMMEDIATE")
             try:
                 subject_by_key = {
-                    item.source_key: self.support.ensure_subject_in_connection(
+                    item.source_key: self.support.ensure_roster_subject_in_connection(
                         connection,
                         vmk=vmk,
                         source_student_id=item.source_key,
+                        legacy_student_code=item.student_code,
                         display_name=item.display_name,
                         class_label=item.class_label,
                     )

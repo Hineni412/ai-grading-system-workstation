@@ -16,6 +16,8 @@ from backend.api.routers.jobs import public_job_error, public_job_payload, publi
 from backend.api.routers.workspace_ai_tasks import router as workspace_ai_router
 from backend.jobs.manager import JobManager
 from backend.jobs.store import JobStore
+from backend.llm import LLMGateway
+from backend.llm.diagnostics import JsonlDiagnosticJournal
 from backend.workspaces.ai_tasks.fakes import FakeWorkspaceAITaskAdapter
 from backend.workspaces.ai_tasks.job_adapter import register_workspace_ai_job
 from backend.workspaces.ai_tasks.model_gateway import WorkspaceAITaskModelGateway
@@ -31,7 +33,6 @@ from backend.workspaces.ai_tasks.store import WorkspaceAITaskStore
 from backend.workspaces.contracts import WorkspaceContext, WorkspaceFeature
 from backend.workspaces.model_policy import WorkspaceModelGateway, WorkspaceModelRequest
 from backend.workspaces.registry import WorkspaceRegistry
-from backend.llm.diagnostics import NullDiagnosticSink
 from backend.llm.trace import NullCallTraceSink
 from backend.llm.usage import NullUsageSink
 
@@ -211,7 +212,9 @@ def test_cancel_and_restart_recovery_follow_send_evidence(tmp_path: Path) -> Non
         assert discarded.status == "discarded"
         assert discarded.dispatch_evidence == "may_have_started"
         assert discarded.send_attempt_count == 1
+        assert _adapter.discarded_unknown_operations == [after.operation_id]
         assert service.discard_result_unknown(after.operation_id).status == "discarded"
+        assert _adapter.discarded_unknown_operations == [after.operation_id]
     finally:
         manager.shutdown()
 
@@ -322,19 +325,47 @@ def test_startup_registers_domain_adapters_before_local_recovery(tmp_path: Path)
         manager.shutdown()
 
 
-def test_task_gateway_forces_metadata_only_and_zero_retry_at_call_time(
+@pytest.mark.parametrize(
+    ("module_id", "purpose", "response_text", "parse_status"),
+    [
+        (
+            "teaching-prep",
+            "lesson_plan",
+            '{"synthetic":"model-return"}',
+            "parsed",
+        ),
+        (
+            "class-teacher",
+            "intake_triage",
+            "model-return-that-fails-business-validation",
+            "not_json",
+        ),
+    ],
+)
+def test_task_gateway_records_complete_local_diagnostics_and_zero_retry(
     tmp_path: Path,
+    module_id: str,
+    purpose: str,
+    response_text: str,
+    parse_status: str,
 ) -> None:
-    class RecordingGateway:
+    class Completions:
         def __init__(self) -> None:
-            self.diagnostic_sink = object()
-            self.trace_sink = object()
-            self.usage_sink = object()
             self.calls: list[dict[str, object]] = []
 
-        def chat_completions(self, **kwargs):
+        def create(self, **kwargs: object) -> dict[str, object]:
             self.calls.append(kwargs)
-            return SimpleNamespace(usage=None)
+            return {
+                "model": "synthetic-model",
+                "choices": [
+                    {
+                        "finish_reason": "stop",
+                        "message": {
+                            "content": response_text,
+                        },
+                    }
+                ],
+            }
 
     class Paths:
         def workspace_dir(self, module_id: str, *, create: bool = False) -> Path:
@@ -343,37 +374,50 @@ def test_task_gateway_forces_metadata_only_and_zero_retry_at_call_time(
                 root.mkdir(parents=True, exist_ok=True)
             return root
 
+    journal = JsonlDiagnosticJournal(tmp_path / "llm_diagnostics.jsonl")
+    completions = Completions()
+    client = SimpleNamespace(chat=SimpleNamespace(completions=completions))
     paths = Paths()
     context = WorkspaceContext(
-        module_id="teaching-prep",
-        root=paths.workspace_dir("teaching-prep"),
+        module_id=module_id,
+        root=paths.workspace_dir(module_id),
         paths=paths,
     )
-    low_level = RecordingGateway()
+    low_level = LLMGateway()
     unsafe_gateway = WorkspaceModelGateway(
         context=context,
-        gateway=low_level,  # type: ignore[arg-type]
+        gateway=low_level,
         metadata_only=False,
         claim_operations=False,
         allow_retry=True,
     )
-    task_gateway = WorkspaceAITaskModelGateway()
+    task_gateway = WorkspaceAITaskModelGateway(diagnostic_sink=journal)
     request = WorkspaceModelRequest(
-        purpose="lesson_plan",
+        purpose=purpose,
         data_classification="confidential",
-        operation_id="operation-secure-gateway",
+        operation_id=f"operation-{module_id}-diagnostics",
     )
 
     task_gateway.chat_completions(
         gateway=unsafe_gateway,
         request=request,
-        client=object(),
+        client=client,
         model="synthetic-model",
         kwargs={"messages": [{"role": "user", "content": "synthetic body"}]},
     )
 
-    assert low_level.calls[0]["allow_retry"] is False
-    assert isinstance(low_level.diagnostic_sink, NullDiagnosticSink)
+    assert len(completions.calls) == 1
+    listed = journal.list_calls(limit=10, request_kind="workspace")
+    assert listed["returned"] == 1
+    call = journal.get_call(str(listed["items"][0]["call_id"]))
+    assert call is not None
+    assert call["operation_id"] == request.operation_id
+    assert call["outcome"] == "success"
+    assert call["retry_limit"] == 0
+    assert "synthetic body" in str(call["request"])
+    assert call["raw_response"] == response_text
+    assert call["parse_status"] == parse_status
+    assert low_level.diagnostic_sink is journal
     assert isinstance(low_level.trace_sink, NullCallTraceSink)
     assert isinstance(low_level.usage_sink, NullUsageSink)
     with pytest.raises(Exception, match="already used"):
@@ -384,6 +428,66 @@ def test_task_gateway_forces_metadata_only_and_zero_retry_at_call_time(
             model="synthetic-model",
             kwargs={},
         )
+
+
+def test_task_gateway_records_transport_failure_without_retry(
+    tmp_path: Path,
+) -> None:
+    class FailingCompletions:
+        def __init__(self) -> None:
+            self.call_count = 0
+
+        def create(self, **_kwargs: object) -> object:
+            self.call_count += 1
+            raise RuntimeError("synthetic upstream failure")
+
+    class Paths:
+        def workspace_dir(self, module_id: str, *, create: bool = False) -> Path:
+            root = tmp_path / module_id
+            if create:
+                root.mkdir(parents=True, exist_ok=True)
+            return root
+
+    journal = JsonlDiagnosticJournal(tmp_path / "llm_diagnostics.jsonl")
+    completions = FailingCompletions()
+    context = WorkspaceContext(
+        module_id="teaching-prep",
+        root=tmp_path / "teaching-prep",
+        paths=Paths(),
+    )
+    gateway = WorkspaceModelGateway(
+        context=context,
+        gateway=LLMGateway(),
+        metadata_only=False,
+        claim_operations=False,
+        allow_retry=True,
+    )
+
+    with pytest.raises(RuntimeError, match="synthetic upstream failure"):
+        WorkspaceAITaskModelGateway(diagnostic_sink=journal).chat_completions(
+            gateway=gateway,
+            request=WorkspaceModelRequest(
+                purpose="semester_mapping",
+                data_classification="confidential",
+                operation_id="operation-teaching-prep-failure",
+            ),
+            client=SimpleNamespace(
+                chat=SimpleNamespace(completions=completions),
+            ),
+            model="synthetic-model",
+            kwargs={"messages": [{"role": "user", "content": "synthetic body"}]},
+        )
+
+    assert completions.call_count == 1
+    listed = journal.list_calls(limit=10, request_kind="workspace")
+    assert listed["returned"] == 1
+    call = journal.get_call(str(listed["items"][0]["call_id"]))
+    assert call is not None
+    assert call["outcome"] == "failure"
+    assert call["retry_limit"] == 0
+    assert call["will_retry"] is False
+    assert "synthetic body" in str(call["request"])
+    assert call["error"]["message"] == "synthetic upstream failure"
 
 
 def test_constructor_adapter_path_uses_registration_validation(tmp_path: Path) -> None:

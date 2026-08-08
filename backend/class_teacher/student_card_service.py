@@ -16,6 +16,19 @@ from .work_graph import WorkGraph
 
 
 _OPERATION_ID = re.compile(r"[A-Za-z0-9_-]{8,128}")
+_PROFILE_KEY = re.compile(r"[A-Za-z0-9_-]{2,64}")
+
+CORE_PROFILE_DIMENSIONS = (
+    ("learning_ability", "学习与能力"),
+    ("interests_strengths", "兴趣与优势"),
+    ("personality_behavior", "性格与行为特点"),
+    ("peer_relationships", "同伴与人际关系"),
+    ("family_communication", "家庭与家校沟通"),
+    ("physical_emotional", "身心与情绪状态"),
+    ("experiences_changes", "重要经历与近期变化"),
+    ("support_needs", "当前需要支持"),
+    ("effective_methods", "已验证有效的方法"),
+)
 
 
 def _iso() -> str:
@@ -80,6 +93,62 @@ class StudentCardService:
         subject = self.support.get_subject(token=token, subject_id=subject_id)
         return self._card_for_subject(token=token, vmk=vmk, subject=subject)
 
+    def model_context(self, *, token: str, subject_id: str) -> dict[str, object]:
+        """Return the one current profile used by every class-teacher AI flow."""
+
+        card = self.get_card(token=token, subject_id=subject_id)
+        profile = dict(card["current_profile"])
+        return {
+            "subject_ref": {
+                "kind": "student",
+                "id": subject_id,
+                "revision": str(card["subject"]["revision"]),
+            },
+            "display_name": str(card["subject"].get("display_name") or ""),
+            "class_label": str(card["subject"].get("class_label") or ""),
+            "profile": profile,
+            "support_plans": list(card["support_plans"])[:8],
+        }
+
+    def model_contexts_for_mentions(
+        self,
+        *,
+        token: str,
+        class_label: str | None,
+        text: str,
+        maximum: int = 4,
+    ) -> list[dict[str, object]]:
+        """Match unique, exact student names before a general affair model call."""
+
+        message = str(text or "")
+        requested_class = str(class_label or "").strip()
+        candidates = [
+            item
+            for item in self.support.list_subjects(token=token)["items"]
+            if (
+                not requested_class
+                or str(item.get("class_label") or "").strip() == requested_class
+            )
+            and str(item.get("display_name") or "").strip()
+            and str(item.get("display_name") or "").strip() in message
+        ]
+        counts: dict[str, int] = {}
+        for item in candidates:
+            name = str(item.get("display_name") or "").strip()
+            counts[name] = counts.get(name, 0) + 1
+        unique = [
+            item for item in candidates
+            if counts.get(str(item.get("display_name") or "").strip()) == 1
+        ]
+        unique.sort(
+            key=lambda item: len(str(item.get("display_name") or "")),
+            reverse=True,
+        )
+        return [
+            self.model_context(token=token, subject_id=str(item["subject_id"]))
+            for item in unique[: max(1, min(int(maximum), 8))]
+        ]
+
     def _card_for_subject(
         self,
         *,
@@ -127,11 +196,131 @@ class StudentCardService:
                 )
         summary = self.support.get_summary(token=token, subject_id=subject_id)
         plans = self.support.list_support_plans(token=token, subject_id=subject_id)
+        latest = entries[-1] if entries else None
         return {
             "subject": subject,
             "entries": entries,
+            "current_profile": self._current_profile(latest),
             "existing_records": summary["items"],
             "support_plans": plans["items"],
+        }
+
+    def validate_profile_update(self, value: object) -> dict[str, object]:
+        if not isinstance(value, dict):
+            raise VaultError(
+                "student_profile_invalid",
+                "AI 返回的学生档案结构无效",
+                status_code=422,
+            )
+        return self._profile(value)
+
+    def upsert_current_profile_in_connection(
+        self,
+        connection: Any,
+        *,
+        vmk: bytes,
+        subject_id: str,
+        profile_update: dict[str, object],
+        expected_revision: int | None,
+        operation_id: str,
+        model_operation_id: str,
+        teacher_quote: str,
+        model_draft: str,
+        source_record_id: str | None = None,
+    ) -> dict[str, object]:
+        """Merge into one current profile without creating visible history versions."""
+
+        self._validate_operation_id(operation_id)
+        incoming = self._profile(profile_update)
+        row = connection.execute(
+            """
+            SELECT * FROM student_card_entries
+            WHERE subject_id=? AND state='active'
+            ORDER BY created_at DESC, entry_id DESC LIMIT 1
+            """,
+            (subject_id,),
+        ).fetchone()
+        timestamp = _iso()
+        if row is None:
+            if expected_revision not in (None, 0):
+                raise VaultError(
+                    "student_profile_conflict",
+                    "学生档案已经变化，请重新整理后再保存",
+                    status_code=409,
+                )
+            entry_id = uuid4().hex
+            object_id = f"student-card-current-{entry_id}"
+            merged = incoming
+            self.repository.put(
+                connection,
+                vmk=vmk,
+                object_id=object_id,
+                object_type="student_card_current_profile",
+                payload={
+                    "profile": merged,
+                    "teacher_quote": self._optional_text(teacher_quote, 4000),
+                    "model_draft": self._optional_text(model_draft, 12_000),
+                    "teacher_confirmed_at": timestamp,
+                },
+            )
+            connection.execute(
+                """
+                INSERT INTO student_card_entries (
+                    entry_id, subject_id, payload_object_id, operation_id,
+                    model_operation_id, created_at, source_record_id, state
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, 'active')
+                """,
+                (
+                    entry_id,
+                    subject_id,
+                    object_id,
+                    operation_id,
+                    model_operation_id,
+                    timestamp,
+                    source_record_id,
+                ),
+            )
+            revision = 1
+        else:
+            entry_id = str(row["entry_id"])
+            object_id = str(row["payload_object_id"])
+            payload, revision = self.repository.get(
+                connection,
+                vmk=vmk,
+                object_id=object_id,
+            )
+            if expected_revision is not None and int(expected_revision) != int(revision):
+                raise VaultError(
+                    "student_profile_conflict",
+                    "学生档案已经变化，请重新整理后再保存",
+                    status_code=409,
+                )
+            current = self._profile_from_payload(payload)
+            merged = self._merge_profile(current, incoming)
+            revision = self.repository.put(
+                connection,
+                vmk=vmk,
+                object_id=object_id,
+                object_type="student_card_current_profile",
+                payload={
+                    "profile": merged,
+                    "teacher_quote": self._optional_text(teacher_quote, 4000),
+                    "model_draft": self._optional_text(model_draft, 12_000),
+                    "teacher_confirmed_at": timestamp,
+                    "last_model_operation_id": model_operation_id,
+                },
+                expected_revision=revision,
+            )
+            if source_record_id:
+                connection.execute(
+                    "UPDATE student_card_entries SET source_record_id=? WHERE entry_id=?",
+                    (source_record_id, entry_id),
+                )
+        return {
+            "entry_id": entry_id,
+            "revision": int(revision),
+            "profile": merged,
+            "teacher_confirmed_at": timestamp,
         }
 
     def confirm_structure(
@@ -362,6 +551,143 @@ class StudentCardService:
                 "待核实问题",
             ),
         }
+
+    @staticmethod
+    def _current_profile(entry: dict[str, object] | None) -> dict[str, object]:
+        if entry is None:
+            return {
+                "entry_id": None,
+                "revision": 0,
+                "summary": "",
+                "dimensions": [],
+                "open_questions": [],
+                "support_focus": [],
+                "updated_at": None,
+            }
+        profile = StudentCardService._profile_from_payload(entry)
+        return {
+            "entry_id": str(entry.get("entry_id") or "") or None,
+            "revision": int(entry.get("revision") or 0),
+            **profile,
+            "updated_at": entry.get("teacher_confirmed_at") or entry.get("created_at"),
+        }
+
+    @staticmethod
+    def _profile_from_payload(payload: dict[str, object]) -> dict[str, object]:
+        profile = payload.get("profile")
+        if isinstance(profile, dict):
+            return StudentCardService._profile(profile)
+        portrait = payload.get("portrait") if isinstance(payload.get("portrait"), dict) else {}
+        sop = payload.get("sop") if isinstance(payload.get("sop"), dict) else {}
+        dimensions: list[dict[str, object]] = []
+        strengths = StudentCardService._text_list(portrait.get("strengths"), "优势")
+        needs = StudentCardService._text_list(portrait.get("needs"), "待支持事项")
+        if strengths:
+            dimensions.append({"key": "interests_strengths", "label": "兴趣与优势", "items": strengths})
+        if needs:
+            dimensions.append({"key": "support_needs", "label": "当前需要支持", "items": needs})
+        steps = StudentCardService._text_list(sop.get("steps"), "支持步骤")
+        support_focus = []
+        if steps:
+            support_focus.append({
+                "key": "legacy_support",
+                "title": str(sop.get("title") or "现有支持建议").strip(),
+                "need": needs[0] if needs else "继续结合实际情况观察",
+                "effective_methods": [],
+                "next_actions": steps,
+            })
+        summary = " ".join(str(portrait.get("summary") or "").split())
+        return {
+            "summary": summary,
+            "dimensions": dimensions,
+            "open_questions": StudentCardService._text_list(
+                portrait.get("open_questions"), "待了解问题"
+            ),
+            "support_focus": support_focus,
+        }
+
+    @staticmethod
+    def _profile(value: dict[str, object]) -> dict[str, object]:
+        summary = StudentCardService._text(value.get("summary"), "学生档案摘要", 4000)
+        raw_dimensions = value.get("dimensions")
+        if not isinstance(raw_dimensions, list) or len(raw_dimensions) > 24:
+            raise VaultError("student_profile_invalid", "学生档案维度格式无效", status_code=422)
+        dimensions: list[dict[str, object]] = []
+        seen: set[str] = set()
+        for raw in raw_dimensions:
+            if not isinstance(raw, dict):
+                raise VaultError("student_profile_invalid", "学生档案维度格式无效", status_code=422)
+            key = str(raw.get("key") or "").strip()
+            if _PROFILE_KEY.fullmatch(key) is None or key in seen:
+                raise VaultError("student_profile_invalid", "学生档案维度编号无效", status_code=422)
+            seen.add(key)
+            label = StudentCardService._text(raw.get("label"), "学生档案维度名称", 80)
+            items = StudentCardService._text_list(raw.get("items"), label, required=True)
+            dimensions.append({"key": key, "label": label, "items": items})
+        raw_focus = value.get("support_focus", [])
+        if not isinstance(raw_focus, list) or len(raw_focus) > 20:
+            raise VaultError("student_profile_invalid", "学生支持重点格式无效", status_code=422)
+        focus: list[dict[str, object]] = []
+        focus_seen: set[str] = set()
+        for raw in raw_focus:
+            if not isinstance(raw, dict):
+                raise VaultError("student_profile_invalid", "学生支持重点格式无效", status_code=422)
+            key = str(raw.get("key") or "").strip()
+            if _PROFILE_KEY.fullmatch(key) is None or key in focus_seen:
+                raise VaultError("student_profile_invalid", "学生支持重点编号无效", status_code=422)
+            focus_seen.add(key)
+            focus.append({
+                "key": key,
+                "title": StudentCardService._text(raw.get("title"), "学生支持重点", 200),
+                "need": StudentCardService._text(raw.get("need"), "学生支持需要", 1000),
+                "effective_methods": StudentCardService._text_list(
+                    raw.get("effective_methods"), "有效支持方法"
+                ),
+                "next_actions": StudentCardService._text_list(
+                    raw.get("next_actions"), "后续支持行动"
+                ),
+            })
+        return {
+            "summary": summary,
+            "dimensions": dimensions,
+            "open_questions": StudentCardService._text_list(
+                value.get("open_questions"), "待了解问题"
+            ),
+            "support_focus": focus,
+        }
+
+    @staticmethod
+    def _merge_profile(
+        current: dict[str, object],
+        incoming: dict[str, object],
+    ) -> dict[str, object]:
+        current_dimensions = {
+            str(item["key"]): dict(item)
+            for item in current.get("dimensions", [])
+            if isinstance(item, dict) and item.get("key")
+        }
+        for item in incoming.get("dimensions", []):
+            if isinstance(item, dict):
+                current_dimensions[str(item["key"])] = dict(item)
+        current_focus = {
+            str(item["key"]): dict(item)
+            for item in current.get("support_focus", [])
+            if isinstance(item, dict) and item.get("key")
+        }
+        for item in incoming.get("support_focus", []):
+            if isinstance(item, dict):
+                current_focus[str(item["key"])] = dict(item)
+        return {
+            "summary": incoming["summary"],
+            "dimensions": list(current_dimensions.values()),
+            "open_questions": list(incoming.get("open_questions", [])),
+            "support_focus": list(current_focus.values()),
+        }
+
+    @staticmethod
+    def _optional_text(value: object, maximum: int) -> str:
+        clean = " ".join(str(value or "").split())
+        return clean[:maximum]
 
     @staticmethod
     def _sop(value: dict[str, object]) -> dict[str, object]:

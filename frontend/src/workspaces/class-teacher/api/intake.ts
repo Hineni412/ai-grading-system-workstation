@@ -46,6 +46,8 @@ export interface IntakeConversation {
   revision: number
   state: string
   homeroom_class: string | null
+  focused_subject_id?: string | null
+  focused_subject_revision?: string | null
   created_at: string
   updated_at: string
   turns: IntakeTurn[]
@@ -57,6 +59,8 @@ export interface IntakeConversationSummary {
   revision: number
   state: string
   homeroom_class: string | null
+  focused_subject_id?: string | null
+  focused_subject_revision?: string | null
   first_message: string | null
   pending_count: number
   updated_at: string
@@ -206,6 +210,8 @@ export function decodeIntakeConversation(value: unknown): IntakeConversation {
   return {
     conversation_id: text(item.conversation_id), revision: integer(item.revision), state: text(item.state),
     homeroom_class: item.homeroom_class === null ? null : text(item.homeroom_class),
+    focused_subject_id: item.focused_subject_id == null ? null : text(item.focused_subject_id),
+    focused_subject_revision: item.focused_subject_revision == null ? null : text(item.focused_subject_revision),
     created_at: text(item.created_at), updated_at: text(item.updated_at),
     turns: list(item.turns).map(decodeTurn), handoffs: list(item.handoffs).map(decodeHandoffSummary),
   }
@@ -295,6 +301,8 @@ function decodeConversationSummary(value: unknown): IntakeConversationSummary {
   return {
     conversation_id: text(item.conversation_id), revision: integer(item.revision), state: text(item.state),
     homeroom_class: item.homeroom_class === null ? null : text(item.homeroom_class),
+    focused_subject_id: item.focused_subject_id == null ? null : text(item.focused_subject_id),
+    focused_subject_revision: item.focused_subject_revision == null ? null : text(item.focused_subject_revision),
     first_message: item.first_message === null ? null : text(item.first_message),
     pending_count: integer(item.pending_count), updated_at: text(item.updated_at),
   }
@@ -355,6 +363,11 @@ export const intakeApi = {
   startConversation() {
     return apiClient.request('/api/class-teacher/intake/conversations', {
       method: 'POST', headers: headers(), decode: decodeIntakeConversation,
+    })
+  },
+  startStudentConversation(token: string, subjectId: string) {
+    return apiClient.request('/api/class-teacher/intake/conversations', {
+      method: 'POST', headers: headers(token), body: { subject_id: subjectId }, decode: decodeIntakeConversation,
     })
   },
   listConversations() {

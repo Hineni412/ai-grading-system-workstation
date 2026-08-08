@@ -3,12 +3,13 @@ import { computed, onMounted, ref } from 'vue'
 
 import { intakeApi } from '../api/intake'
 import { studentR1Api, type DirectorySubject, type ExistingRosterStudent } from '../api/r1'
+import { supportApi } from '../api/support'
 
 const props = defineProps<{ token: string }>()
 const emit = defineEmits<{ select: [subject: DirectorySubject] }>()
 const items = ref<DirectorySubject[]>([])
 const rosterItems = ref<ExistingRosterStudent[]>([])
-const selectedAvailable = ref<ExistingRosterStudent | null>(null)
+const openingStudentCode = ref('')
 const classLabel = ref('')
 const loading = ref(false)
 const message = ref('')
@@ -16,10 +17,14 @@ const showHistory = ref(false)
 const total = ref(0)
 const subjectByStudentId = computed(() => new Map(items.value.map(item => [item.source_student_id, item])))
 
+function subjectForRosterStudent(student: ExistingRosterStudent): DirectorySubject | undefined {
+  return subjectByStudentId.value.get(student.source_key)
+    || subjectByStudentId.value.get(student.student_code)
+}
+
 async function load(): Promise<void> {
   loading.value = true
   message.value = ''
-  selectedAvailable.value = null
   try {
     const preference = await intakeApi.homeroom()
     classLabel.value = preference.homeroom_class || ''
@@ -40,7 +45,7 @@ async function load(): Promise<void> {
       const [roster, directory] = await Promise.all([
         studentR1Api.rosterSource(props.token, { classLabel: classLabel.value, pageSize: 100 }),
         studentR1Api.directory(props.token, {
-          classLabel: classLabel.value, state: 'active', rosterState: 'active', sort: 'name_asc', pageSize: 100,
+          classLabel: classLabel.value, state: 'active', sort: 'name_asc', pageSize: 100,
         }),
       ])
       rosterItems.value = roster.items
@@ -62,15 +67,40 @@ async function toggleHistory(): Promise<void> {
   await load()
 }
 
-function openRosterStudent(student: ExistingRosterStudent): void {
+async function openRosterStudent(student: ExistingRosterStudent): Promise<void> {
   const subject = student.subject_id
     ? items.value.find(item => item.subject_id === student.subject_id)
-    : subjectByStudentId.value.get(student.student_code)
+    : subjectForRosterStudent(student)
   if (subject) {
     emit('select', subject)
     return
   }
-  selectedAvailable.value = student
+  if (openingStudentCode.value) return
+  openingStudentCode.value = student.student_code
+  message.value = ''
+  try {
+    const created = await supportApi.createSubject(props.token, {
+      source_student_id: student.source_key,
+      display_name: student.display_name,
+      class_label: student.class_label || null,
+    })
+    const emptyDossier: DirectorySubject = {
+      ...created,
+      support_record_count: 0,
+      support_plan_count: 0,
+      confirmed_entry_count: 0,
+      projection_state: 'none',
+      attention_pending_count: 0,
+      last_confirmed_at: null,
+      roster_state: 'active',
+    }
+    items.value = [...items.value, emptyDossier]
+    emit('select', emptyDossier)
+  } catch {
+    message.value = '这名学生的空白档案暂时无法打开，原有学生资料没有改变。'
+  } finally {
+    openingStudentCode.value = ''
+  }
 }
 
 onMounted(() => { void load() })
@@ -82,7 +112,7 @@ onMounted(() => { void load() })
       <div>
         <p>我的班主任班级</p>
         <h2>{{ classLabel || '尚未设置班级' }}</h2>
-        <span v-if="classLabel">{{ total }} 名学生 · 点击卡片查看结构化概览</span>
+        <span v-if="classLabel">{{ total }} 名学生 · 点击卡片进入学生当前档案</span>
       </div>
       <a href="/students">去学生管理更换班级</a>
     </header>
@@ -101,11 +131,11 @@ onMounted(() => { void load() })
       <strong>当前班级还没有学生</strong><p>请先在学生管理中导入或调整学生班级。</p>
     </div>
     <div v-else-if="!showHistory" class="student-overview-list__grid" aria-label="当前班学生">
-      <button v-for="student in rosterItems" :key="student.source_key" type="button" @click="openRosterStudent(student)">
+      <button v-for="student in rosterItems" :key="student.source_key" type="button" :disabled="openingStudentCode === student.student_code" @click="openRosterStudent(student)">
         <span class="student-overview-list__rail" aria-hidden="true" />
         <strong>{{ student.display_name }}</strong>
-        <small>{{ subjectByStudentId.get(student.student_code)?.projection_state === 'applied' ? '结构化概览已确认' : '暂无结构化概览' }}</small>
-        <span>{{ subjectByStudentId.get(student.student_code)?.attention_pending_count ? `${subjectByStudentId.get(student.student_code)!.attention_pending_count} 项待跟进` : student.student_code }}</span>
+        <small>{{ subjectForRosterStudent(student) ? '当前档案已建立' : '当前档案待建立' }}</small>
+        <span>{{ subjectForRosterStudent(student)?.attention_pending_count ? `${subjectForRosterStudent(student)!.attention_pending_count} 项待跟进` : student.student_code }}</span>
       </button>
     </div>
     <div v-else class="student-overview-list__grid" aria-label="历史学生">
@@ -114,11 +144,6 @@ onMounted(() => { void load() })
         <strong>{{ item.display_name }}</strong><small>历史学生记录</small><span>{{ item.confirmed_entry_count }} 条已确认记录</span>
       </button>
     </div>
-    <aside v-if="selectedAvailable" class="student-overview-list__available" aria-live="polite">
-      <div><strong>{{ selectedAvailable.display_name }}</strong><span>{{ selectedAvailable.class_label }} · {{ selectedAvailable.student_code }}</span></div>
-      <p>学生管理中的基本信息已经读取。当前没有教师确认记录，因此不会虚构或自动生成 AI 结构化概览。</p>
-      <button type="button" @click="selectedAvailable = null">收起</button>
-    </aside>
     <footer v-if="classLabel"><button type="button" @click="toggleHistory">{{ showHistory ? '返回当前班学生' : '查看历史学生与旧记录' }}</button></footer>
   </section>
 </template>

@@ -770,7 +770,9 @@
 .ai-diagnostics__filters {
   display: flex;
   flex: 0 0 auto;
+  flex-wrap: wrap;
   align-items: flex-end;
+  justify-content: flex-end;
   gap: var(--space-2);
 }
 

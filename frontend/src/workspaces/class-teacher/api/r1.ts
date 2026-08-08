@@ -59,6 +59,7 @@ export interface DirectorySubject {
   attention_pending_count: number
   last_confirmed_at: string | null
   roster_state?: 'active' | 'historical' | 'manual'
+  revision?: number
 }
 
 export interface ExistingRosterStudent {
@@ -79,9 +80,34 @@ export interface StudentCardEntry {
   sop: { title: string; steps: string[]; review_date: string | null }
 }
 
+export interface StudentProfileDimension {
+  key: string
+  label: string
+  items: string[]
+}
+
+export interface StudentSupportFocus {
+  key: string
+  title: string
+  need: string
+  effective_methods: string[]
+  next_actions: string[]
+}
+
+export interface CurrentStudentProfile {
+  entry_id: string | null
+  revision: number
+  summary: string
+  dimensions: StudentProfileDimension[]
+  open_questions: string[]
+  support_focus: StudentSupportFocus[]
+  updated_at: string | null
+}
+
 export interface StudentCard {
   subject: DirectorySubject
   entries: StudentCardEntry[]
+  current_profile?: CurrentStudentProfile
   existing_records: JsonRecord[]
   support_plans: JsonRecord[]
 }

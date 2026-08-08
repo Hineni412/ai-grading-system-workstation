@@ -1286,6 +1286,21 @@ def test_indeterminate_semester_mapping_model_failure_blocks_a_new_call(
         )
     assert len(fake.calls) == 1
 
+    assert service.discard_semester_mapping_result_unknown(
+        semester.id,
+        material_record_ids=[record.id],
+    ) is True
+    fake.failure = None
+    proposal, created = service.generate_semester_mapping_proposal(
+        semester.id,
+        operation_id="semester-mapping-after-discard-0003",
+        material_record_ids=[record.id],
+    )
+
+    assert created is True
+    assert proposal.status == "proposed"
+    assert len(fake.calls) == 2
+
 
 def test_semester_mapping_cancellation_after_model_return_discards_proposal(
     tmp_path: Path,
