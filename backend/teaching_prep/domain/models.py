@@ -150,6 +150,37 @@ class SemesterMappingProposal:
 
 
 @dataclass(frozen=True, slots=True)
+class ReferencePptCollectionMember:
+    id: str
+    collection_id: str
+    material_record_id: str
+    relative_path: str
+    kind: str
+    confidence: str
+    chapter_number: int | None
+    section_number: int | None
+    subsection_number: int | None
+    lesson_number: int | None
+    normalized_title: str
+    evidence: tuple[str, ...]
+    issues: tuple[str, ...]
+    created_at: str
+
+
+@dataclass(frozen=True, slots=True)
+class ReferencePptCollection:
+    id: str
+    semester_id: str
+    display_name: str
+    mapping_proposal_id: str
+    ignored_file_count: int
+    revision: int
+    created_at: str
+    updated_at: str
+    members: tuple[ReferencePptCollectionMember, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class MaterialUnit:
     id: str
     material_version_id: str

@@ -43,7 +43,7 @@ class SemesterMappingModelAdapter(Protocol):
         semester_snapshot: dict[str, Any],
         dispatch_callback: Callable[[], None] | None = None,
     ) -> dict[str, Any]:
-        """Generate one reviewable lesson-tree and page-range proposal."""
+        """Annotate local directory evidence without owning page ranges."""
 
 
 class ExerciseSuggestionModelAdapter(Protocol):

@@ -147,6 +147,61 @@ afterEach(() => {
 })
 
 describe('MaterialLibraryWorkspace current-material safety', () => {
+  it('offers a semester-scoped PPT folder picker and keeps ordinary multi-file import', async () => {
+    const { app, host, catalog } = mountWorkspace()
+    const folderInput = host.querySelector<HTMLInputElement>('input[webkitdirectory]')
+    expect(folderInput).not.toBeNull()
+    expect(folderInput?.disabled).toBe(true)
+    expect(host.textContent).toContain('导入课件文件夹')
+    expect(host.textContent).toContain('选择多份资料')
+
+    const curriculumItem = curriculum()
+    catalog.curricula = [curriculumItem]
+    catalog.semesters = [semester(curriculumItem.id)]
+    catalog.selectedCurriculumId = curriculumItem.id
+    await flush()
+
+    expect(folderInput?.disabled).toBe(false)
+    app.unmount()
+  })
+
+  it('bulk-confirms only high-confidence local PPT mappings', async () => {
+    const curriculumItem = curriculum()
+    const semesterItem = semester(curriculumItem.id)
+    const materialItem = material('a'.repeat(32), '参考课件')
+    const materialRecord = record('r'.repeat(32), materialItem)
+    materialRecord.material_role = 'reference_ppt'
+    const item = proposal('2'.repeat(32), materialRecord.id)
+    item.payload.generation_source = 'local_reference_ppt_names'
+    item.payload.mappings[0]!.purpose = 'reference_ppt'
+    item.payload.mappings[0]!.confidence = 'high'
+    const updated = structuredClone(item)
+    updated.revision = 2
+    updated.payload.mappings[0]!.decision = 'accepted'
+    const accept = vi.spyOn(
+      teachingPrepCatalogApi,
+      'acceptLocalReferencePptMappings',
+    ).mockResolvedValue(updated)
+    const { app, host, catalog } = mountWorkspace()
+    catalog.curricula = [curriculumItem]
+    catalog.semesters = [semesterItem]
+    catalog.selectedCurriculumId = curriculumItem.id
+    catalog.materials = [materialItem]
+    catalog.semesterMaterials = [materialRecord]
+    catalog.selectedMaterialId = materialItem.id
+    catalog.semesterMappingProposals = [item]
+    await flush()
+
+    const button = [...host.querySelectorAll<HTMLButtonElement>('button')]
+      .find(value => value.textContent?.includes('确认 1 条高置信建议'))
+    expect(button).toBeDefined()
+    button?.click()
+    await vi.waitFor(() => expect(accept).toHaveBeenCalledWith(item))
+    expect(catalog.semesterMappingProposals[0]?.payload.mappings[0]?.decision)
+      .toBe('accepted')
+    app.unmount()
+  })
+
   it('recovers an adopted mapping handoff instead of applying the stale proposal directly', async () => {
     const curriculumItem = curriculum()
     const semesterItem = semester(curriculumItem.id)

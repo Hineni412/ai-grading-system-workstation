@@ -15,6 +15,7 @@ const reviewMessage = ref('逐项审核课件建议；只有全部决定后才�
 const activatingId = ref<string | null>(null)
 const activeOperationId = ref<string | null>(null)
 const activeSlideIndex = ref(0)
+const handledTaskRevisions = new Set<string>()
 
 const selectedPlan = computed(() => workbench.catalog.slidePlans.find(
   item => item.id === workbench.catalog.selectedSlidePlanId,
@@ -22,6 +23,29 @@ const selectedPlan = computed(() => workbench.catalog.slidePlans.find(
 const preview = computed(() => workbench.catalog.slidePlanPreview)
 const latestRun = computed(() => workbench.catalog.pptxExecutions[0] ?? null)
 const packageMode = computed(() => workbench.stage.value === 'package')
+const currentSlideTask = computed(() => {
+  const lessonId = workbench.catalog.selectedLessonId
+  if (!lessonId) return null
+  return aiTasks.orderedTasks.find(task => (
+    task.module === 'teaching_prep'
+    && task.task_kind === 'teaching_prep.slide_change_proposal'
+    && task.source_ref.kind === 'lesson'
+    && task.source_ref.id === lessonId
+    && task.status !== 'discarded'
+  )) ?? null
+})
+const taskPresentation = computed(() => {
+  const task = currentSlideTask.value
+  if (!task) return { title: '还没有发送改编任务', detail: '返回上一步，确认主课件和参考资料后再发送。', tone: 'idle' }
+  if (task.status === 'prepared' || task.status === 'queued') return { title: '改编任务正在排队', detail: '资料范围已经锁定，可以离开此页面；任务不会重复发送。', tone: 'running' }
+  if (task.status === 'running') return { title: 'AI 正在逐页分析课件', detail: task.teacher_message || '完成后会在这里显示保留、删除、调整和新增建议。', tone: 'running' }
+  if (task.status === 'proposal_ready') return { title: '改编建议已经返回', detail: '正在载入逐页审核内容。', tone: 'ready' }
+  if (task.status === 'needs_input') return { title: '需要教师确认后继续', detail: task.teacher_message || task.next_action, tone: 'attention' }
+  if (['failed', 'failed_before_dispatch', 'invalid_result', 'result_unknown'].includes(task.status)) {
+    return { title: '本次改编没有完成', detail: task.teacher_message || '没有改动原 PPT。返回确认资料后，可由教师明确重新发送。', tone: 'error' }
+  }
+  return { title: '正在恢复改编状态', detail: task.teacher_message || '请稍候。', tone: 'idle' }
+})
 const activeOperation = computed(() => selectedPlan.value?.payload.operations.find(
   item => item.operation_id === activeOperationId.value,
 ) ?? selectedPlan.value?.payload.operations[0] ?? null)
@@ -126,6 +150,18 @@ watch(selectedPlan, (plan) => {
   activeOperationId.value = first?.operation_id ?? null
   activeSlideIndex.value = first ? Math.max(0, slideIndexFor(first)) : 0
 }, { immediate: true })
+
+watch(
+  () => currentSlideTask.value ? `${currentSlideTask.value.task_id}:${currentSlideTask.value.revision}` : '',
+  async (key) => {
+    const task = currentSlideTask.value
+    if (!key || !task || handledTaskRevisions.has(key) || task.status !== 'proposal_ready' || !task.proposal_ref_id) return
+    handledTaskRevisions.add(key)
+    const lesson = workbench.catalog.selectedLesson
+    if (lesson) await workbench.catalog.selectLesson(lesson)
+  },
+  { immediate: true },
+)
 
 async function selectPlan(plan: SlidePlan): Promise<void> {
   await workbench.catalog.selectSlidePlan(plan)
@@ -235,10 +271,21 @@ async function createPackage(version: TrustedPptxVersion): Promise<void> {
         >
           <strong>计划 {{ plan.version_number }}</strong><small>{{ plan.status }}</small>
         </button>
-        <p v-if="!workbench.catalog.slidePlans.length" class="tp-muted">先确认课堂草稿并创建课件计划。</p>
+        <p v-if="!workbench.catalog.slidePlans.length" class="tp-muted">确认资料并发送后，改编建议会显示在这里。</p>
       </aside>
 
-      <main v-if="!packageMode" class="tp-slide-checker">
+      <main v-if="!packageMode && !selectedPlan" class="tp-ai-waiting" :class="`is-${taskPresentation.tone}`" role="status">
+        <span class="tp-ai-waiting__pulse" aria-hidden="true" />
+        <p class="tp-eyebrow">第 2 步 · AI 改编</p>
+        <h2>{{ taskPresentation.title }}</h2>
+        <p>{{ taskPresentation.detail }}</p>
+        <div class="tp-inline-actions">
+          <button class="tp-button tp-button--secondary" type="button" @click="workbench.openStage('materials')">返回确认资料</button>
+          <button v-if="currentSlideTask" type="button" @click="aiTasks.refresh(currentSlideTask.task_id)">刷新任务状态</button>
+        </div>
+      </main>
+
+      <main v-else-if="!packageMode" class="tp-slide-checker">
         <aside class="tp-slide-checker__thumbs" aria-label="源幻灯片缩略图">
           <button v-for="(item, index) in preview?.before ?? []" :key="`source-${index}`" type="button" :class="{ 'is-active': index === activeSlideIndex }" @click="activeSlideIndex = index">
             <span>{{ index + 1 }}</span><strong>{{ describeSlide(item, index) }}</strong>
@@ -326,8 +373,8 @@ async function createPackage(version: TrustedPptxVersion): Promise<void> {
     </div>
 
     <TeachingPrepStickyActions :state="workbench.catalog.saveState === 'saving' ? 'saving' : 'saved'" :message="reviewMessage">
-      <button class="tp-button tp-button--secondary" type="button" @click="workbench.openStage(packageMode ? 'slides' : 'plan')">{{ packageMode ? '返回审课件' : '返回定方案' }}</button>
-      <button v-if="!packageMode" class="tp-button tp-button--primary" type="button" @click="workbench.openStage('package')">查看 PPTX 与上课包</button>
+      <button class="tp-button tp-button--secondary" type="button" @click="workbench.openStage(packageMode ? 'slides' : 'materials')">{{ packageMode ? '返回审核改编' : '返回确认资料' }}</button>
+      <button v-if="!packageMode && selectedPlan" class="tp-button tp-button--primary" type="button" @click="workbench.openStage('package')">进入生成副本</button>
     </TeachingPrepStickyActions>
   </section>
 </template>

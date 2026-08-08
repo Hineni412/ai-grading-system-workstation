@@ -2196,3 +2196,41 @@ button:disabled { cursor: not-allowed; opacity: 0.46; }
 @media(max-width:760px){.tp-slide-checker{display:block}.tp-slide-checker__thumbs{display:flex;overflow-x:auto;margin-bottom:10px}.tp-slide-checker__thumbs button{min-width:110px}.tp-slide-checker__canvas{position:static}.tp-slide-checker__inspector{display:grid;grid-template-columns:1fr;margin-top:12px}}
 @media(max-width:720px){.tp-document-workspace__mobile-tabs{display:grid;grid-template-columns:repeat(3,1fr);gap:4px;position:sticky;top:64px;z-index:4;padding:4px;border-block-end:1px solid var(--color-border-default);background:var(--color-bg-surface)}.tp-document-workspace__mobile-tabs button{min-height:40px;border:0;border-radius:7px;background:transparent}.tp-document-workspace__mobile-tabs button[aria-current="page"]{background:var(--color-accent-subtle);color:var(--color-accent);font-weight:700}.tp-document-workspace.is-mobile-controlled>.tp-document-workspace__rail,.tp-document-workspace.is-mobile-controlled>.tp-document-workspace__canvas,.tp-document-workspace.is-mobile-controlled>.tp-document-workspace__inspector{display:none}.tp-document-workspace.is-mobile-controlled>.tp-document-workspace__rail.is-mobile-active,.tp-document-workspace.is-mobile-controlled>.tp-document-workspace__inspector.is-mobile-active{display:grid}.tp-document-workspace.is-mobile-controlled>.tp-document-workspace__canvas.is-mobile-active{display:grid}.tp-document-toolbar{justify-content:start}}
 .tp-operation-row__selector{display:grid;gap:5px;width:100%;padding:0;border:0;background:transparent;color:inherit;text-align:left}.tp-operation-row__selector span{line-height:1.45}.tp-local-panels{display:flex;gap:6px;margin-bottom:12px}.tp-local-panels button{min-height:38px;padding:0 14px;border:1px solid var(--color-border-default);border-radius:999px;background:var(--color-bg-surface)}.tp-local-panels button[aria-current="page"]{border-color:var(--color-accent);background:var(--color-accent-subtle);color:var(--color-accent);font-weight:700}.tp-readiness-cell{display:grid!important;gap:2px}.tp-readiness-cell small{color:var(--color-text-secondary);font-size:10px}.tp-readiness-cell.is-needs_teacher{border-color:var(--color-warning);background:var(--color-warning-subtle)}.tp-readiness-cell.is-failed,.tp-readiness-cell.is-stale{border-color:var(--color-danger);background:var(--color-danger-subtle)}
+
+/* Confirm sources → review AI changes → create a copy. The legacy plan state remains backend-only. */
+.tp-readiness-matrix__head,
+.tp-readiness-matrix__row { grid-template-columns: minmax(250px, 2fr) repeat(3, minmax(98px, 0.8fr)) minmax(130px, 0.9fr); }
+.tp-material-confirmation { display: grid; gap: 14px; }
+.tp-material-confirmation .tp-document-workspace { block-size: min(690px, calc(100vh - 250px)); }
+.tp-source-group { display: grid; align-content: start; gap: 8px; }
+.tp-source-group + .tp-source-group { margin-block-start: 18px; padding-block-start: 16px; border-block-start: 1px solid var(--color-border-subtle); }
+.tp-source-group > div > small { display: block; margin-block-start: 2px; color: var(--color-text-secondary); line-height: 1.4; }
+.tp-check-row--primary { border-inline-start: 3px solid var(--color-accent); }
+.tp-confirmation-summary { display: grid; align-content: start; gap: 12px; }
+.tp-confirmation-summary h2 { margin: 0; font-size: 24px; }
+.tp-confirmation-summary dl { display: grid; gap: 0; margin: 0; }
+.tp-confirmation-summary dl div { display: grid; gap: 4px; padding: 10px 0; border-block-start: 1px solid var(--color-border-subtle); }
+.tp-confirmation-summary dt { color: var(--color-text-secondary); font-size: 11px; }
+.tp-confirmation-summary dd { overflow-wrap: anywhere; margin: 0; font-weight: 700; }
+.tp-ai-task-note { display: flex; align-items: center; gap: 10px; padding: 12px; border: 1px solid var(--color-border-default); border-radius: 10px; background: var(--color-accent-subtle); }
+.tp-ai-task-note > span { inline-size: 10px; aspect-ratio: 1; flex: 0 0 auto; border-radius: 50%; background: var(--color-accent); box-shadow: 0 0 0 4px color-mix(in srgb, var(--color-accent) 14%, transparent); }
+.tp-ai-task-note div { display: grid; gap: 2px; }
+.tp-ai-task-note small { color: var(--color-text-secondary); }
+@media (max-width: 1100px) { .tp-readiness-matrix__head, .tp-readiness-matrix__row { min-width: 760px; } }
+@media (max-width: 720px) { .tp-material-confirmation .tp-document-workspace { block-size: auto; } }
+.tp-material-workspace > .tp-workspace__header > div:first-child { min-inline-size: 0; }
+@media (max-width: 760px) {
+  .tp-material-workspace > .tp-workspace__header { flex-direction: column; gap: 0.85rem; }
+  .tp-material-workspace > .tp-workspace__header > div { inline-size: 100%; }
+  .tp-material-workspace > .tp-workspace__header .tp-inline-actions { flex-direction: column; align-items: stretch; }
+  .tp-material-workspace > .tp-workspace__header .tp-file-button { inline-size: 100%; }
+}
+.tp-ai-waiting { display: grid; min-block-size: 430px; place-content: center; justify-items: center; gap: 10px; padding: 48px; border: 1px solid var(--color-border-default); border-radius: 14px; background: var(--color-bg-surface); text-align: center; }
+.tp-ai-waiting h2 { margin: 0; font-size: clamp(24px, 3vw, 34px); }
+.tp-ai-waiting > p:not(.tp-eyebrow) { max-inline-size: 560px; margin: 0; color: var(--color-text-secondary); line-height: 1.7; }
+.tp-ai-waiting__pulse { inline-size: 18px; aspect-ratio: 1; border: 4px solid color-mix(in srgb, var(--color-accent) 24%, transparent); border-block-start-color: var(--color-accent); border-radius: 50%; }
+.tp-ai-waiting.is-ready .tp-ai-waiting__pulse { border: 0; background: var(--color-success); box-shadow: 0 0 0 7px color-mix(in srgb, var(--color-success) 15%, transparent); }
+.tp-ai-waiting.is-attention .tp-ai-waiting__pulse { border: 0; background: var(--color-warning); box-shadow: 0 0 0 7px var(--color-warning-subtle); }
+.tp-ai-waiting.is-error .tp-ai-waiting__pulse { border: 0; background: var(--color-danger); box-shadow: 0 0 0 7px var(--color-danger-subtle); }
+@media (prefers-reduced-motion: no-preference) { .tp-ai-waiting.is-running .tp-ai-waiting__pulse { animation: tp-spin 1s linear infinite; } }
+@keyframes tp-spin { to { transform: rotate(360deg); } }
