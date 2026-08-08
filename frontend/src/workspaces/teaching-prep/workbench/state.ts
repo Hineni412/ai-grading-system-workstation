@@ -45,10 +45,10 @@ export interface NavigationDecision {
 
 const STAGES: Array<Pick<WorkbenchStageState, 'id' | 'label' | 'workspace'>> = [
   { id: 'select', label: '选课时', workspace: 'lesson-tree' },
-  { id: 'materials', label: '核资料', workspace: 'lesson-prep' },
+  { id: 'materials', label: '确认资料', workspace: 'lesson-prep' },
   { id: 'plan', label: '定方案', workspace: 'lesson-prep' },
-  { id: 'slides', label: '审课件', workspace: 'versions' },
-  { id: 'package', label: '上课包', workspace: 'versions' },
+  { id: 'slides', label: '审核改编', workspace: 'versions' },
+  { id: 'package', label: '生成副本', workspace: 'versions' },
 ]
 
 const STAGE_ORDER = Object.fromEntries(
@@ -91,7 +91,7 @@ export function useTeachingPrepWorkbench() {
   )
 
   const stages = computed<WorkbenchStageState[]>(() => {
-    const reached = selectedStatus.value?.preparation_stage ?? 'select'
+    const reached = normalizeVisibleStage(selectedStatus.value?.preparation_stage ?? 'select')
     const reachedIndex = STAGE_ORDER[reached]
     return STAGES.map((item) => {
       const index = STAGE_ORDER[item.id]
@@ -168,7 +168,7 @@ export function useTeachingPrepWorkbench() {
     const nextWorkspace = route.query.workspace
     const nextStage = route.query.stage
     if (isWorkspace(nextWorkspace)) workspace.value = nextWorkspace
-    if (isStage(nextStage)) stage.value = nextStage
+    if (isStage(nextStage)) stage.value = normalizeVisibleStage(nextStage)
     if (isPanel(route.query.panel)) panel.value = route.query.panel
     focusRef.value = safeFocusRef(route.query.focus_ref)
   }
@@ -198,10 +198,11 @@ export function useTeachingPrepWorkbench() {
     }
     view.value = 'lesson'
     restoreRouteContext()
-    if (stage.value === 'select') stage.value = 'materials'
+    stage.value = stage.value === 'select' ? 'materials' : normalizeVisibleStage(stage.value)
     const definition = STAGES.find(item => item.id === stage.value)
     workspace.value = definition?.workspace ?? 'lesson-prep'
     if (catalog.selectedLessonId !== lesson.id) await catalog.selectLesson(lesson)
+    if (route.query.stage === 'plan') await syncRoute()
   }
 
   function returnToOverviewForInvalidDeepLink(): void {
@@ -237,7 +238,7 @@ export function useTeachingPrepWorkbench() {
     const lessonStatus = lessonStatuses.value.find(item => item.lesson_node_id === lessonId)
     const nextStage = lessonStatus?.preparation_stage === 'select'
       ? 'materials'
-      : lessonStatus?.preparation_stage ?? 'materials'
+      : normalizeVisibleStage(lessonStatus?.preparation_stage ?? 'materials')
     view.value = 'lesson'
     const definition = STAGES.find(item => item.id === nextStage)
     if (definition) {
@@ -252,6 +253,7 @@ export function useTeachingPrepWorkbench() {
     nextStage: TeachingPrepStage,
     options: { panel?: TeachingPrepPanel; focusRef?: string | null } = {},
   ): Promise<void> {
+    nextStage = normalizeVisibleStage(nextStage)
     const definition = STAGES.find(item => item.id === nextStage)
     if (!definition) return
     const decision = await requestNavigation({
@@ -287,14 +289,14 @@ export function useTeachingPrepWorkbench() {
     const fallbackStage: Record<TeachingPrepWorkspace, TeachingPrepStage> = {
       'lesson-tree': 'select',
       materials: 'materials',
-      'lesson-prep': 'plan',
+      'lesson-prep': 'materials',
       versions: stage.value === 'package' ? 'package' : 'slides',
     }
     await openStage(fallbackStage[nextWorkspace])
   }
 
   async function openPanel(nextPanel: TeachingPrepPanel, nextFocusRef: string | null = null): Promise<void> {
-    const nextStage: TeachingPrepStage = nextPanel === 'exercises' || nextPanel === 'sources'
+    const nextStage: TeachingPrepStage = nextPanel === 'exercises' || nextPanel === 'sources' || nextPanel === 'plan'
       ? 'materials'
       : nextPanel
     await openStage(nextStage, { panel: nextPanel, focusRef: nextFocusRef })
@@ -505,6 +507,11 @@ export type TeachingPrepWorkbench = ReturnType<typeof useTeachingPrepWorkbench>
 
 function isStage(value: unknown): value is TeachingPrepStage {
   return typeof value === 'string' && value in STAGE_ORDER
+}
+
+function normalizeVisibleStage(value: TeachingPrepStage): TeachingPrepStage {
+  // “课堂方案”保留为后端兼容状态，但教师主流程不再显示文字方案步骤。
+  return value === 'plan' ? 'materials' : value
 }
 
 function isWorkspace(value: unknown): value is TeachingPrepWorkspace {

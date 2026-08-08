@@ -53,7 +53,7 @@ class _Completions:
                     "finish_reason": "stop",
                     "message": {
                         "content": (
-                            '{"tree":[],"mappings":[],"uncertainties":[]}'
+                            '{"annotations":[],"matches":[],"uncertainties":[]}'
                         )
                     },
                 }
@@ -153,9 +153,9 @@ def test_active_profile_mapping_call_is_visible_in_ai_diagnostics(
     assert call["outcome"] == "success"
     assert call["retry_limit"] == 0
     assert "合成目录片段" in str(call["request"])
-    assert call["raw_response"].startswith('{"tree"')
+    assert call["raw_response"].startswith('{"annotations"')
     sent = completions.calls[0]
-    assert sent["max_tokens"] == 4_096
+    assert sent["max_tokens"] == 20_000
     messages = sent["messages"]
     assert isinstance(messages, list)
     model_snapshot = json.loads(str(messages[1]["content"]))
@@ -171,7 +171,8 @@ def test_active_profile_mapping_call_is_visible_in_ai_diagnostics(
     assert model_snapshot["directory_evidence"]["anchors"][0]["text_excerpt"] == (
         "合成目录片段"
     )
-    assert "duration_minutes" in str(messages[0]["content"])
+    assert "课时分钟数" in str(messages[0]["content"])
+    assert "不能返回任何页码" in str(messages[0]["content"])
 
 
 def test_existing_tree_mapping_call_only_offers_formal_lesson_ids() -> None:
@@ -184,7 +185,7 @@ def test_existing_tree_mapping_call_only_offers_formal_lesson_ids() -> None:
                 {
                     "message": {
                         "content": (
-                            '{"tree":[],"mappings":[],"uncertainties":'
+                            '{"annotations":[],"matches":[],"uncertainties":'
                             '["资料内容无法对应已有课时"]}'
                         )
                     }
@@ -254,7 +255,8 @@ def test_existing_tree_mapping_call_only_offers_formal_lesson_ids() -> None:
     system_instruction = str(messages[0]["content"])
     model_snapshot = json.loads(str(messages[1]["content"]))
     assert "proposal:" not in system_instruction
-    assert '"tree":[]' in system_instruction
+    assert '"matches"' in system_instruction
+    assert "不能返回任何页码" in system_instruction
     assert model_snapshot["mapping_mode"] == "map_existing_lessons"
     assert model_snapshot["available_lessons"] == [
         {
@@ -265,6 +267,76 @@ def test_existing_tree_mapping_call_only_offers_formal_lesson_ids() -> None:
     ]
     assert "lessons" not in model_snapshot
     assert "planned_new_lesson_count" not in model_snapshot["semester"]
+
+
+def test_mapping_adapter_sends_located_page_image_but_materializes_local_range() -> None:
+    captured: dict[str, object] = {}
+
+    def chat_completions(**kwargs: object) -> dict[str, object]:
+        captured.update(kwargs)
+        return {
+            "choices": [{
+                "message": {
+                    "content": (
+                        '{"annotations":[{"evidence_id":"toc-001",'
+                        '"title":"第1课时 探索勾股定理","chapter_title":"第一章",'
+                        '"section_title":"第一节","kind":"lesson"}],'
+                        '"matches":[],"uncertainties":[]}'
+                    )
+                }
+            }]
+        }
+
+    adapter = WorkspaceSemesterMappingModelAdapter(
+        gateway=SimpleNamespace(chat_completions=chat_completions),
+        client=object(),
+        model="synthetic-model",
+    )
+    result = adapter.generate(
+        operation_id="semester-mapping-image-contract-0001",
+        semester_snapshot={
+            "semester": {"school_year": "2026", "term": "first"},
+            "lessons": [],
+            "materials": [{
+                "record_id": "m" * 32,
+                "display_name": "合成教辅",
+                "material_role": "exercise_workbook",
+                "unit_count": 10,
+            }],
+            "directory_evidence": {
+                "strategy": "toc_calibrated",
+                "toc_entries": [{
+                    "evidence_id": "toc-001",
+                    "title": "探索勾股定理",
+                    "printed_page": 1,
+                    "source_unit": 2,
+                }],
+                "resolved_ranges": [{
+                    "evidence_id": "range-001",
+                    "toc_evidence_id": "toc-001",
+                    "start_unit": 3,
+                    "end_unit": 5,
+                }],
+                "anchors": [],
+            },
+            "directory_page_images": [{
+                "unit_index": 2,
+                "mime_type": "image/png",
+                "content": b"synthetic-image",
+            }],
+        },
+    )
+
+    assert result["mappings"][0]["start_unit"] == 3
+    assert result["mappings"][0]["end_unit"] == 5
+    messages = captured["kwargs"]["messages"]
+    content = messages[1]["content"]
+    assert isinstance(content, list)
+    assert content[-1]["type"] == "image_url"
+    assert content[-1]["image_url"]["url"].startswith(
+        "data:image/png;base64,"
+    )
+    assert "start_unit" not in str(messages[0]["content"])
 
 
 @pytest.mark.parametrize(

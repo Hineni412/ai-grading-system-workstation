@@ -55,6 +55,7 @@ from .schemas import (
     CreateMaterialLinkRequest,
     CreateExerciseCandidateRequest,
     CreatePreparationRequest,
+    CreateReferencePptCollectionRequest,
     CreateSlidePlanRequest,
     DiscardPptxStagingRequest,
     DeriveClassVariantRequest,
@@ -130,6 +131,8 @@ from .schemas import (
     ReferenceSelectionDraftResponse,
     ReferenceSelectionPreflightResponse,
     ReferenceSelectionSnapshotResponse,
+    ReferencePptCollectionListResponse,
+    ReferencePptCollectionResponse,
     SaveReferenceSelectionDraftRequest,
     FreezeReferenceSelectionSnapshotRequest,
     StartExerciseSuggestionRunRequest,
@@ -760,6 +763,50 @@ def create_router() -> APIRouter:
         except Exception as exc:
             raise _api_error(exc) from exc
         return SemesterMaterialResponse.from_domain(item)
+
+    @router.get(
+        "/semesters/{semester_id}/reference-ppt-collections",
+        response_model=ReferencePptCollectionListResponse,
+    )
+    def list_reference_ppt_collections(
+        semester_id: str,
+        service: TeachingPrepService = Depends(get_teaching_prep_service),
+    ) -> ReferencePptCollectionListResponse:
+        try:
+            items = service.list_reference_ppt_collections(semester_id)
+        except Exception as exc:
+            raise _api_error(exc) from exc
+        return ReferencePptCollectionListResponse(
+            items=[
+                ReferencePptCollectionResponse.from_domain(item)
+                for item in items
+            ]
+        )
+
+    @router.post(
+        "/semesters/{semester_id}/reference-ppt-collections",
+        response_model=ReferencePptCollectionResponse,
+        status_code=status.HTTP_201_CREATED,
+    )
+    def create_reference_ppt_collection(
+        semester_id: str,
+        payload: CreateReferencePptCollectionRequest,
+        response: Response,
+        service: TeachingPrepService = Depends(get_teaching_prep_service),
+    ) -> ReferencePptCollectionResponse:
+        try:
+            item, created = service.create_reference_ppt_collection(
+                semester_id,
+                request_token=payload.request_token,
+                display_name=payload.display_name,
+                ignored_file_count=payload.ignored_file_count,
+                members=[member.model_dump() for member in payload.members],
+            )
+        except Exception as exc:
+            raise _api_error(exc) from exc
+        if not created:
+            response.status_code = status.HTTP_200_OK
+        return ReferencePptCollectionResponse.from_domain(item)
 
     @router.post(
         "/semesters/{semester_id}/mapping-preflight",
@@ -2201,6 +2248,24 @@ def create_router() -> APIRouter:
                 decision=payload.model_dump(
                     exclude={"expected_revision"}, exclude_none=True
                 ),
+            )
+        except Exception as exc:
+            raise _api_error(exc) from exc
+        return SemesterMappingProposalResponse.from_domain(item)
+
+    @router.post(
+        "/semester-mapping-proposals/{proposal_id}/accept-local-high-confidence",
+        response_model=SemesterMappingProposalResponse,
+    )
+    def accept_local_reference_ppt_mappings(
+        proposal_id: str,
+        payload: ApplySemesterMappingProposalRequest,
+        service: TeachingPrepService = Depends(get_teaching_prep_service),
+    ) -> SemesterMappingProposalResponse:
+        try:
+            item = service.accept_local_reference_ppt_mappings(
+                proposal_id,
+                expected_revision=payload.expected_revision,
             )
         except Exception as exc:
             raise _api_error(exc) from exc

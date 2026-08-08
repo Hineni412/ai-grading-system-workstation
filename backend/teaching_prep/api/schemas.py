@@ -24,6 +24,7 @@ from backend.teaching_prep.domain.models import (
     ResourcePackVersion,
     ReferenceSelectionDraft,
     ReferenceSelectionSnapshot,
+    ReferencePptCollection,
     SemesterLessonProgress,
     SemesterMappingProposal,
     SemesterMaterialRecord,
@@ -376,6 +377,65 @@ class SemesterMaterialListResponse(BaseModel):
     items: list[SemesterMaterialResponse]
 
 
+class ReferencePptCollectionMemberRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    material_record_id: str = Field(min_length=32, max_length=32)
+    relative_path: str = Field(min_length=1, max_length=600)
+
+
+class CreateReferencePptCollectionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    request_token: str = Field(min_length=8, max_length=96)
+    display_name: str = Field(min_length=1, max_length=160)
+    ignored_file_count: int = Field(default=0, ge=0, le=10_000)
+    members: list[ReferencePptCollectionMemberRequest] = Field(
+        min_length=1,
+        max_length=500,
+    )
+
+
+class ReferencePptCollectionMemberResponse(BaseModel):
+    id: str
+    collection_id: str
+    material_record_id: str
+    relative_path: str
+    kind: str
+    confidence: str
+    chapter_number: int | None
+    section_number: int | None
+    subsection_number: int | None
+    lesson_number: int | None
+    normalized_title: str
+    evidence: list[str]
+    issues: list[str]
+    created_at: str
+
+
+class ReferencePptCollectionResponse(BaseModel):
+    id: str
+    semester_id: str
+    display_name: str
+    mapping_proposal_id: str
+    ignored_file_count: int
+    revision: int
+    created_at: str
+    updated_at: str
+    members: list[ReferencePptCollectionMemberResponse]
+
+    @classmethod
+    def from_domain(
+        cls,
+        item: ReferencePptCollection,
+    ) -> "ReferencePptCollectionResponse":
+        return cls.model_validate(asdict(item))
+
+
+class ReferencePptCollectionListResponse(BaseModel):
+    items: list[ReferencePptCollectionResponse]
+
+
 class SemesterMappingRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -421,6 +481,8 @@ class SemesterMappingPreflightResponse(BaseModel):
     evidence_strategy: str
     evidence_confidence: str
     scanned_unit_count: int
+    directory_page_image_count: int
+    directory_page_images_sent: bool
     toc_entry_count: int
     anchor_count: int
     estimated_input_characters: int

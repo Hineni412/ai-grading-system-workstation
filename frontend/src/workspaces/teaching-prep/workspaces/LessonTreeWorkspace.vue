@@ -49,12 +49,33 @@ async function setProgress(
   await workbench.refreshCurrentWorkspace()
 }
 
-async function openAt(lesson: LessonNode, cell: 'materials' | 'plan' | 'exercises' | 'slides') {
+async function openAt(lesson: LessonNode, cell: 'materials' | 'slides' | 'package') {
   await workbench.openLesson(lesson.id)
+  if (cell === 'package') {
+    const status = statusMap.value.get(lesson.id)
+    if (status?.latest.slide_plan_id || status?.latest.pptx_version_id) {
+      await workbench.openStage('package', { panel: 'package' })
+    } else if (status?.ai_tasks.some(task => task.task_kind === 'teaching_prep.slide_change_proposal')) {
+      await workbench.openStage('slides', { panel: 'slides' })
+    } else await workbench.openStage('materials', { panel: 'sources' })
+    return
+  }
   await workbench.openPanel(cell === 'materials' ? 'sources' : cell)
 }
 
-const cellLabels = { materials: '核资料', plan: '课堂方案', exercises: '候选练习', slides: '课件（可选）' } as const
+function cellState(lessonId: string, step: 'materials' | 'slides' | 'package') {
+  const status = statusMap.value.get(lessonId)
+  if (step === 'package') return status?.latest.pptx_version_id ? 'ready' : 'not_started'
+  return status?.cells[step].status ?? 'not_started'
+}
+
+function cellSummary(lessonId: string, step: 'materials' | 'slides' | 'package') {
+  const status = statusMap.value.get(lessonId)
+  if (step === 'package') return status?.latest.pptx_version_id ? '已有可用副本' : '尚未生成副本'
+  return status?.cells[step].summary ?? '打开查看'
+}
+
+const cellLabels = { materials: '资料对应', slides: 'AI 改编', package: 'PPT 副本' } as const
 const stateLabels = { not_started: '未开始', in_progress: '进行中', needs_teacher: '待你处理', ready: '已就绪', stale: '来源已变化', failed: '未完成', not_applicable: '本节不需要' } as const
 </script>
 
@@ -62,9 +83,9 @@ const stateLabels = { not_started: '未开始', in_progress: '进行中', needs_
   <section class="tp-workspace tp-overview-workspace">
     <header class="tp-overview-hero">
       <div>
-        <p class="tp-eyebrow">近期课时 · 一张表看清</p>
-        <h1 data-workbench-title tabindex="-1">先把下一节课准备到“能上”。</h1>
-        <p>教师授课状态与系统准备度分开呈现；点状态格，直接回到那一步。</p>
+        <p class="tp-eyebrow">备课首页 · 只看下一步</p>
+        <h1 data-workbench-title tabindex="-1">下一节课，从核对资料开始。</h1>
+        <p>选中课时，确认主课件与教材教辅对应，再让 AI 提出逐页删改建议。</p>
       </div>
       <div class="tp-overview-hero__next">
         <span>建议先处理</span>
@@ -92,8 +113,8 @@ const stateLabels = { not_started: '未开始', in_progress: '进行中', needs_
           <button role="cell" type="button" class="tp-readiness-matrix__lesson" @click="workbench.openLesson(lesson.id)">
             <span>{{ String(index + 1).padStart(2, '0') }}</span><strong>{{ lesson.title }}</strong><small>{{ activeTaskLessons.has(lesson.id) ? 'AI 任务处理中 · ' : '' }}{{ lesson.duration_minutes ?? 45 }} 分钟</small>
           </button>
-          <button v-for="step in (['materials','plan','exercises','slides'] as const)" :key="step" role="cell" type="button" class="tp-readiness-cell" :class="`is-${statusMap.get(lesson.id)?.cells[step].status ?? 'not_started'}`" :aria-label="`${cellLabels[step]}：${statusMap.get(lesson.id)?.cells[step].summary ?? '未开始'}`" @click="openAt(lesson, step)">
-            <span aria-hidden="true" /><strong>{{ stateLabels[statusMap.get(lesson.id)?.cells[step].status ?? 'not_started'] }}</strong><small>{{ statusMap.get(lesson.id)?.cells[step].summary ?? '打开查看' }}</small>
+          <button v-for="step in (['materials','slides','package'] as const)" :key="step" role="cell" type="button" class="tp-readiness-cell" :class="`is-${cellState(lesson.id, step)}`" :aria-label="`${cellLabels[step]}：${cellSummary(lesson.id, step)}`" @click="openAt(lesson, step)">
+            <span aria-hidden="true" /><strong>{{ stateLabels[cellState(lesson.id, step)] }}</strong><small>{{ cellSummary(lesson.id, step) }}</small>
           </button>
           <select
             role="cell"

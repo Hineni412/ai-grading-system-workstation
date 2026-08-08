@@ -4,6 +4,7 @@ import pytest
 
 from backend.teaching_prep.domain.errors import TeachingPrepValidationError
 from backend.teaching_prep.application.semester_mapping import (
+    materialize_semantic_mapping_payload,
     validate_semester_mapping_payload,
 )
 from backend.teaching_prep.application.semester_mapping_evidence import (
@@ -131,6 +132,188 @@ def test_directory_search_expands_when_toc_starts_after_initial_window() -> None
     assert evidence["toc_entries"][0]["source_unit"] == 17
 
 
+def test_directory_evidence_rebuilds_spread_rows_from_ocr_coordinates() -> None:
+    snapshot = _snapshot()
+    snapshot["materials"][0]["display_name"] = "全品八上作业册"
+    units = list(snapshot["materials"][0]["units"])
+    units[1]["text_excerpt"] = "前言"
+    units[2]["text_excerpt"] = "目录\n第1课时\n听2\n作1"
+    units[2]["object_summary"] = {
+        "ocr_layout": {
+            "version": 1,
+            "items": [
+                _layout_item("目录", 0.04, 0.03, 0.12, 0.08),
+                _layout_item("第1课时 探索勾股定理", 0.06, 0.20, 0.34, 0.23),
+                _layout_item("听2", 0.39, 0.20, 0.43, 0.23),
+                _layout_item("作1", 0.45, 0.20, 0.49, 0.23),
+                _layout_item("第2课时 勾股定理应用", 0.06, 0.26, 0.34, 0.29),
+                _layout_item("听6", 0.39, 0.26, 0.43, 0.29),
+                _layout_item("作3", 0.45, 0.26, 0.49, 0.29),
+                _layout_item("第1课时 确定位置", 0.56, 0.20, 0.79, 0.23),
+                _layout_item("听46", 0.88, 0.20, 0.92, 0.23),
+                _layout_item("作37", 0.94, 0.20, 0.98, 0.23),
+            ],
+        },
+    }
+    units[3]["text_excerpt"] = "第2课时\n听104\n作89\n第一章正文"
+    units[3]["object_summary"] = {
+        "ocr_layout": {
+            "version": 1,
+                "items": [
+                    _layout_item("第2课时 三元一次方程组", 0.06, 0.12, 0.34, 0.15),
+                    _layout_item("听104", 0.39, 0.12, 0.43, 0.15),
+                    _layout_item("作89", 0.45, 0.12, 0.49, 0.15),
+                    _layout_item("问题解决策略", 0.06, 0.18, 0.34, 0.21),
+                    _layout_item("听107", 0.39, 0.18, 0.43, 0.21),
+                    _layout_item("作93", 0.45, 0.18, 0.49, 0.21),
+                    _layout_item("本章中考演练", 0.06, 0.24, 0.34, 0.27),
+                    _layout_item("作94", 0.45, 0.24, 0.49, 0.27),
+                    _layout_item("1 第1课时 探索勾股定理", 0.56, 0.20, 0.92, 0.24),
+                    _layout_item("作1", 0.94, 0.20, 0.98, 0.24),
+                ],
+        },
+    }
+
+    evidence = build_directory_evidence(snapshot)
+
+    assert evidence["strategy"] != "sparse_outline"
+    assert evidence["directory_page_unit_indices"] == [3, 4]
+    assert [item["title"] for item in evidence["toc_entries"]] == [
+        "第1课时 探索勾股定理",
+        "第2课时 勾股定理应用",
+        "第1课时 确定位置",
+        "第2课时 三元一次方程组",
+        "问题解决策略",
+        "本章中考演练",
+    ]
+    assert [item["printed_page"] for item in evidence["toc_entries"]] == [
+        1,
+        3,
+        37,
+        89,
+        93,
+        94,
+    ]
+    assert evidence["toc_entries"][0]["page_refs"] == {"听": 2, "作": 1}
+
+
+def test_directory_evidence_supports_plain_workbook_and_textbook_layouts() -> None:
+    snapshot = _snapshot()
+    units = list(snapshot["materials"][0]["units"])
+    units[1]["text_excerpt"] = "目录"
+    units[1]["object_summary"] = {
+        "width": 1000,
+        "height": 1600,
+        "ocr_layout": {
+            "version": 1,
+            "items": [
+                _layout_item("目录", 0.08, 0.04, 0.20, 0.08),
+                _layout_item("第1课时 探索勾股定理", 0.08, 0.18, 0.66, 0.21),
+                _layout_item("1", 0.91, 0.18, 0.95, 0.21),
+                _layout_item("第2课时 勾股定理的验证", 0.08, 0.24, 0.70, 0.27),
+                _layout_item("2", 0.91, 0.24, 0.95, 0.27),
+                _layout_item("小专题 方程思想", 0.08, 0.30, 0.54, 0.33),
+                _layout_item("8", 0.91, 0.30, 0.95, 0.33),
+            ],
+        },
+    }
+    units[2]["text_excerpt"] = "目录续页"
+    units[2]["object_summary"] = {
+        "width": 1000,
+        "height": 1600,
+        "ocr_layout": {
+            "version": 1,
+            "items": [
+                _layout_item("1 函数 / 75", 0.35, 0.12, 0.66, 0.15),
+                _layout_item("2 认识一次函数 / 79", 0.35, 0.18, 0.72, 0.21),
+                _layout_item("回顾与思考 / 105", 0.35, 0.24, 0.70, 0.27),
+            ],
+        },
+    }
+    snapshot["materials"][0]["units"] = units
+
+    evidence = build_directory_evidence(snapshot)
+
+    assert [item["title"] for item in evidence["toc_entries"]] == [
+        "第1课时 探索勾股定理",
+        "第2课时 勾股定理的验证",
+        "小专题 方程思想",
+        "1 函数",
+        "2 认识一次函数",
+        "回顾与思考",
+    ]
+    assert [item["printed_page"] for item in evidence["toc_entries"]] == [
+        1,
+        2,
+        8,
+        75,
+        79,
+        105,
+    ]
+
+
+def test_directory_evidence_keeps_unpaged_headings_and_parallel_aux_rows() -> None:
+    snapshot = _snapshot()
+    snapshot["materials"][0]["display_name"] = "全品八上作业册"
+    units = list(snapshot["materials"][0]["units"])
+    units[1]["text_excerpt"] = "目录"
+    units[1]["object_summary"] = {
+        "width": 1600,
+        "height": 1000,
+        "ocr_layout": {
+            "version": 1,
+            "items": [
+                _layout_item("目录", 0.04, 0.03, 0.12, 0.07),
+                _layout_item("1 探索勾股定理", 0.06, 0.16, 0.26, 0.19),
+                _layout_item("第1课时 探索勾股定理", 0.06, 0.20, 0.31, 0.23),
+                _layout_item("听2", 0.39, 0.20, 0.43, 0.23),
+                _layout_item("作1", 0.45, 0.20, 0.49, 0.23),
+                _layout_item(
+                    "周末自评（一）[范围：第一章]/评1",
+                    0.06,
+                    0.78,
+                    0.25,
+                    0.81,
+                ),
+                _layout_item(
+                    "周末自评（七）[范围：第四章]/评13",
+                    0.27,
+                    0.78,
+                    0.47,
+                    0.81,
+                ),
+                _layout_item("参考答案/活15", 0.06, 0.86, 0.20, 0.89),
+                _layout_item("平均数与方差", 0.56, 0.16, 0.70, 0.19),
+                _layout_item("第1课时 众数和算术平均数", 0.56, 0.20, 0.80, 0.23),
+                _layout_item("听111", 0.89, 0.20, 0.93, 0.23),
+                _layout_item("作97", 0.94, 0.20, 0.98, 0.23),
+            ],
+        },
+    }
+    snapshot["materials"][0]["units"] = units
+
+    evidence = build_directory_evidence(snapshot)
+
+    assert [item["title"] for item in evidence["toc_entries"]] == [
+        "1 探索勾股定理",
+        "第1课时 探索勾股定理",
+        "周末自评（一）[范围：第一章]",
+        "周末自评（七）[范围：第四章]",
+        "参考答案",
+        "平均数与方差",
+        "第1课时 众数和算术平均数",
+    ]
+    assert [item["page_refs"] for item in evidence["toc_entries"]] == [
+        {},
+        {"听": 2, "作": 1},
+        {"评": 1},
+        {"评": 13},
+        {"活": 15},
+        {},
+        {"听": 111, "作": 97},
+    ]
+
+
 def test_mapping_validation_rejects_invented_evidence_reference() -> None:
     snapshot = _snapshot()
     snapshot["directory_evidence"] = build_directory_evidence(snapshot)
@@ -204,3 +387,147 @@ def test_existing_tree_mapping_allows_unmapped_pages_with_uncertainty() -> None:
     assert result["uncertainties"] == [
         "当前资料没有足够证据对应到已有课时。"
     ]
+
+
+def test_semantic_mapping_materializes_page_ranges_from_local_evidence() -> None:
+    snapshot = _snapshot()
+    evidence = build_directory_evidence(snapshot)
+    snapshot["directory_evidence"] = evidence
+    annotations = [
+        {
+            "evidence_id": item["evidence_id"],
+            "title": (
+                "第1课时 探索勾股定理"
+                if index == 1
+                else str(item["title"])
+            ),
+            "chapter_title": "第一章 勾股定理",
+            "section_title": "第一节 探索勾股定理",
+            "kind": (
+                "chapter" if index == 0 else "lesson" if index == 1 else "special"
+            ),
+        }
+        for index, item in enumerate(evidence["toc_entries"])
+    ]
+
+    materialized = materialize_semantic_mapping_payload(
+        {
+            "annotations": annotations,
+            "matches": [],
+            "uncertainties": [],
+        },
+        snapshot=snapshot,
+    )
+    result = validate_semester_mapping_payload(
+        materialized,
+        snapshot=snapshot,
+    )
+
+    assert len(result["tree"]) == 1
+    assert len(result["tree"][0]["sections"][0]["lessons"]) == 1
+    assert result["mappings"]
+    assert result["mappings"][0]["start_unit"] == 9
+    assert result["mappings"][0]["start_unit"] == next(
+        item["start_unit"]
+        for item in evidence["resolved_ranges"]
+        if item["toc_evidence_id"] == "toc-002"
+    )
+    assert result["mappings"][0]["evidence_refs"][:2] == [
+        "toc-002",
+        "range-002",
+    ]
+
+
+def test_semantic_mapping_rejects_model_page_fields() -> None:
+    snapshot = _snapshot()
+    evidence = build_directory_evidence(snapshot)
+    snapshot["directory_evidence"] = evidence
+    annotations = [
+        {
+            "evidence_id": item["evidence_id"],
+            "title": str(item["title"]),
+            "chapter_title": "第一章",
+            "section_title": "第一节",
+            "kind": "lesson",
+        }
+        for item in evidence["toc_entries"]
+    ]
+    annotations[0]["printed_page"] = 999
+
+    with pytest.raises(
+        TeachingPrepValidationError,
+        match="forbidden fields",
+    ):
+        materialize_semantic_mapping_payload(
+            {
+                "annotations": annotations,
+                "matches": [],
+                "uncertainties": [],
+            },
+            snapshot=snapshot,
+        )
+
+
+def test_semantic_mapping_rejects_incomplete_directory_coverage() -> None:
+    snapshot = _snapshot()
+    evidence = build_directory_evidence(snapshot)
+    snapshot["directory_evidence"] = evidence
+
+    with pytest.raises(
+        TeachingPrepValidationError,
+        match="did not cover every local directory row",
+    ):
+        materialize_semantic_mapping_payload(
+            {
+                "annotations": [],
+                "matches": [],
+                "uncertainties": [],
+            },
+            snapshot=snapshot,
+        )
+
+
+def test_semantic_mapping_does_not_count_a_section_as_a_lesson() -> None:
+    snapshot = _snapshot()
+    evidence = build_directory_evidence(snapshot)
+    snapshot["directory_evidence"] = evidence
+    annotations = [
+        {
+            "evidence_id": item["evidence_id"],
+            "title": str(item["title"]),
+            "chapter_title": "第一章",
+            "section_title": "第一节",
+            "kind": "lesson" if index == 1 else "section",
+        }
+        for index, item in enumerate(evidence["toc_entries"])
+    ]
+
+    with pytest.raises(
+        TeachingPrepValidationError,
+        match="not an explicit numbered lesson",
+    ):
+        materialize_semantic_mapping_payload(
+            {
+                "annotations": annotations,
+                "matches": [],
+                "uncertainties": [],
+            },
+            snapshot=snapshot,
+        )
+
+
+def _layout_item(
+    text: str,
+    x0: float,
+    y0: float,
+    x1: float,
+    y1: float,
+) -> dict[str, object]:
+    return {
+        "text": text,
+        "confidence": 0.99,
+        "x0": x0,
+        "y0": y0,
+        "x1": x1,
+        "y1": y1,
+    }
