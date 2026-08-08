@@ -11,6 +11,7 @@ class CreateSessionRequest(BaseModel):
     answer_key_path: str
     source_paper_path: str = ""
     source_paper_sha256: str = ""
+    curriculum_volume_id: str | None = Field(default=None, max_length=80)
 
     @field_validator("name", "rubric_path", "answer_key_path")
     @classmethod
@@ -30,18 +31,32 @@ class CreateSessionDraftRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     name: str
+    curriculum_volume_id: str | None = Field(default=None, max_length=80)
 
 
 class RenameSessionRequest(BaseModel):
-    name: str
+    model_config = ConfigDict(extra="forbid")
+
+    name: str | None = None
+    curriculum_volume_id: str | None = Field(default=None, max_length=80)
 
     @field_validator("name")
     @classmethod
-    def _required_text(cls, value: str) -> str:
+    def _required_text(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
         clean = str(value or "").strip()
         if not clean:
             raise ValueError("must be nonblank")
         return clean
+
+    @field_validator("curriculum_volume_id")
+    @classmethod
+    def _curriculum_volume_id(cls, value: str | None) -> str | None:
+        clean = str(value or "").strip()
+        if clean and re.fullmatch(r"[A-Za-z0-9_-]{1,80}", clean) is None:
+            raise ValueError("curriculum_volume_id is invalid")
+        return clean or None
 
 
 class DeleteSessionRequest(BaseModel):
@@ -137,6 +152,7 @@ class SessionSummary(BaseModel):
     id: int
     name: str
     status: str
+    curriculum_volume_id: str | None = None
     is_deleted: bool = False
     deleted_at: str | None = None
     created_at: str | None = None

@@ -1,16 +1,27 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, ref } from 'vue'
 
 import type { QuestionBankPaper } from '../api/question-bank'
 import PaperLibrary from '../components/question-bank/PaperLibrary.vue'
-import QuestionBankFilters from '../components/question-bank/QuestionBankFilters.vue'
-import QuestionImportJobs from '../components/question-bank/QuestionImportJobs.vue'
-import QuestionInspector from '../components/question-bank/QuestionInspector.vue'
-import QuestionLedger from '../components/question-bank/QuestionLedger.vue'
-import TaxonomyCandidateReview from '../components/question-bank/TaxonomyCandidateReview.vue'
 import { useJobStore } from '../stores/jobs'
 import { useQuestionBankStore } from '../stores/question-bank'
 import { useTaxonomyReviewStore } from '../stores/taxonomy-review'
+
+const QuestionBankFilters = defineAsyncComponent(
+  () => import('../components/question-bank/QuestionBankFilters.vue'),
+)
+const QuestionImportJobs = defineAsyncComponent(
+  () => import('../components/question-bank/QuestionImportJobs.vue'),
+)
+const QuestionInspector = defineAsyncComponent(
+  () => import('../components/question-bank/QuestionInspector.vue'),
+)
+const QuestionLedger = defineAsyncComponent(
+  () => import('../components/question-bank/QuestionLedger.vue'),
+)
+const TaxonomyCandidateReview = defineAsyncComponent(
+  () => import('../components/question-bank/TaxonomyCandidateReview.vue'),
+)
 
 const bank = useQuestionBankStore()
 const jobStore = useJobStore()
@@ -131,7 +142,7 @@ function openTaxonomyReview(): void {
       <QuestionLedger paper-mode />
     </template>
 
-    <QuestionInspector />
+    <QuestionInspector v-if="activePaper" />
 
     <Teleport to="body">
       <div v-if="showImport" class="qb-modal-layer" role="presentation" @click.self="showImport = false">
@@ -147,6 +158,7 @@ function openTaxonomyReview(): void {
     </Teleport>
 
     <TaxonomyCandidateReview
+      v-if="showTaxonomyReview"
       :open="showTaxonomyReview"
       @close="showTaxonomyReview = false"
     />

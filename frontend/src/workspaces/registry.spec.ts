@@ -26,6 +26,7 @@ function manifest(
     description: '模块说明',
     breadcrumb: moduleId === 'teaching-prep' ? '备课工作台' : '班主任工作台',
     topbarContext: 'workspace',
+    curriculumScope: moduleId === 'teaching-prep',
     ...changes,
   } as WorkspaceManifest
 }

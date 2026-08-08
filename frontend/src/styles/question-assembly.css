@@ -625,8 +625,8 @@
   grid-template-columns: minmax(0, 1fr);
 }
 
-.assembly-filter-row.is-difficulty .difficulty-range {
-  grid-column: 1 / -1;
+.assembly-difficulty-filter {
+  justify-self: stretch;
 }
 
 .assembly-filter-panel > .assembly-filter-row:last-child {
@@ -776,7 +776,7 @@
   color: var(--color-text-secondary, #5c6672);
 }
 
-.assembly-filter-row input,
+.assembly-filter-row input:not([type="range"]),
 .assembly-filter-row.is-search select,
 .assembly-settings input,
 .assembly-settings select,
@@ -793,7 +793,7 @@
   padding: 0 9px;
 }
 
-.assembly-filter-row input:focus,
+.assembly-filter-row input:not([type="range"]):focus,
 .assembly-filter-row.is-search select:focus,
 .assembly-settings input:focus,
 .assembly-settings select:focus,
@@ -855,6 +855,8 @@
   min-width: 0;
   overflow: hidden;
   position: relative;
+  content-visibility: auto;
+  contain-intrinsic-size: 420px;
 }
 
 .assembly-result-card::before {

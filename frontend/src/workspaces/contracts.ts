@@ -31,6 +31,7 @@ export interface WorkspaceManifest {
   description: string
   breadcrumb: string
   topbarContext: WorkspaceTopbarContext
+  curriculumScope: boolean
   subNavigation?: readonly WorkspaceSubNavigationItem[]
 }
 

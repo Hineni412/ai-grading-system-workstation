@@ -37,6 +37,7 @@ def test_create_session_draft_route_returns_summary_without_paths(tmp_path) -> N
     body = response.json()
     assert body["name"] == "七年级数学期末"
     assert body["status"] == "created"
+    assert body["curriculum_volume_id"] is None
     assert "rubric_path" not in body
     assert "answer_key_path" not in body
     assert "source_paper_path" not in body
@@ -93,8 +94,35 @@ def test_renaming_session_returns_the_safe_summary_shape(tmp_path) -> None:
         "id",
         "name",
         "status",
+        "curriculum_volume_id",
         "is_deleted",
         "deleted_at",
         "created_at",
         "updated_at",
     }
+
+
+def test_session_draft_curriculum_volume_round_trips_and_can_be_cleared(
+    tmp_path,
+) -> None:
+    from question_bank.taxonomy.curriculum_catalog import load_curriculum_catalog
+
+    volume_id = str(load_curriculum_catalog()["volumes"][0]["id"])
+    client, db, _upload_config_dir = _client_with_db(tmp_path)
+
+    created = client.post(
+        "/api/sessions/drafts",
+        json={"name": "按学期归类的考试", "curriculum_volume_id": volume_id},
+    )
+    assert created.status_code == 201
+    assert created.json()["curriculum_volume_id"] == volume_id
+    session_id = int(created.json()["id"])
+    assert db.get_grading_session(session_id)["curriculum_volume_id"] == volume_id
+
+    cleared = client.patch(
+        f"/api/sessions/{session_id}",
+        json={"curriculum_volume_id": None},
+    )
+    assert cleared.status_code == 200
+    assert cleared.json()["curriculum_volume_id"] is None
+    assert db.get_grading_session(session_id)["curriculum_volume_id"] is None

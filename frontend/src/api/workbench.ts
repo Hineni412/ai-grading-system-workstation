@@ -90,7 +90,8 @@ function isStrictSessionSummary(value: unknown): value is SessionSummary {
   return (
     isRecord(value) &&
     hasExactKeys(value, [
-      'id', 'name', 'status', 'is_deleted', 'deleted_at', 'created_at', 'updated_at',
+      'id', 'name', 'status', 'curriculum_volume_id', 'is_deleted', 'deleted_at',
+      'created_at', 'updated_at',
     ]) &&
     isSessionSummary(value)
   )

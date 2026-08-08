@@ -7,6 +7,7 @@ import AppTopbar from '../components/shell/AppTopbar.vue'
 import { useWorkspaceAITaskStore } from '../workspaces/shared/ai-tasks/store'
 import { useReviewDraftStore } from '../stores/review-drafts'
 import { useConfigWorkspaceStore } from '../stores/config-workspace'
+import { useCurriculumScopeStore } from '../stores/curriculum-scope'
 import { useSessionStore } from '../stores/session'
 import { useJobStore } from '../stores/jobs'
 
@@ -14,6 +15,7 @@ const route = useRoute()
 const sessionStore = useSessionStore()
 const draftStore = useReviewDraftStore()
 const configStore = useConfigWorkspaceStore()
+const curriculumScope = useCurriculumScopeStore()
 const workspaceAITasks = useWorkspaceAITaskStore()
 const jobs = useJobStore()
 const hydratingWorkspace = ref(false)
@@ -60,6 +62,18 @@ onMounted(() => {
     )
     if (configStore.sessionId === null && sessionStore.selectedSessionId !== null) {
       configStore.selectSession(sessionStore.selectedSessionId)
+    }
+    await curriculumScope.initialize()
+    const currentSession = sessionStore.currentSession
+    if (
+      curriculumScope.selectedVolumeId
+      && currentSession
+      && currentSession.curriculum_volume_id !== curriculumScope.selectedVolumeId
+      && !configStore.hasPendingSubmission
+      && !configStore.hasDirtyEditor
+      && configStore.selectSession(null)
+    ) {
+      sessionStore.clearSelection()
     }
   }).finally(() => {
     hydratingWorkspace.value = false

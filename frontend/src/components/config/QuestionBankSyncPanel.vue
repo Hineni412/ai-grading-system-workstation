@@ -11,6 +11,8 @@ import {
   type SessionQuestionBankSyncRequest,
 } from '../../api/session-question-bank-sync'
 import { useJobStore } from '../../stores/jobs'
+import { useSessionStore } from '../../stores/session'
+import { useCurriculumScopeStore } from '../../stores/curriculum-scope'
 import {
   questionBankApi,
   type CurriculumCatalog,
@@ -69,6 +71,8 @@ const emit = defineEmits<{
 }>()
 
 const jobStore = useJobStore()
+const sessionStore = useSessionStore()
+const curriculumScope = useCurriculumScopeStore()
 const activeJobId = ref<number | null>(null)
 const submitting = ref(false)
 const requestError = ref('')
@@ -124,10 +128,14 @@ const selectedVolume = computed<CurriculumVolume | null>(() =>
 onMounted(async () => {
   try {
     curriculum.value = await props.curriculumLoader()
-    selectedVolumeId.value = inferCurriculumVolumeId(
-      props.sessionName,
-      curriculum.value.volumes,
-    )
+    const savedVolumeId = sessionStore.sessions.find(
+      item => item.id === props.sessionId,
+    )?.curriculum_volume_id
+    const preferredVolumeId = savedVolumeId || curriculumScope.selectedVolumeId
+    selectedVolumeId.value = preferredVolumeId
+      && curriculum.value.volumes.some(item => item.id === preferredVolumeId)
+      ? preferredVolumeId
+      : inferCurriculumVolumeId(props.sessionName, curriculum.value.volumes)
     metadataPanelOpen.value = selectedVolumeId.value === ''
   } catch {
     requestError.value = '本地教材目录暂时无法读取，当前不会启动入库或调用标签模型。'

@@ -317,10 +317,15 @@
 
 .difficulty-range {
   border: 0;
-  grid-column: 1 / -2;
+  box-sizing: border-box;
   margin: 0;
   min-width: 0;
   padding: 3px 8px 0;
+  width: 100%;
+}
+
+.qb-difficulty-filter {
+  grid-column: 1 / -2;
 }
 
 .difficulty-range legend {
@@ -2261,7 +2266,7 @@
     justify-content: flex-start;
   }
 
-  .difficulty-range {
+  .qb-difficulty-filter {
     grid-column: 1 / -1;
   }
 

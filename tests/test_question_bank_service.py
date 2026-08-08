@@ -13,6 +13,7 @@ from question_bank.services.question_read_service import (
     QuestionReadFilters,
 )
 from question_bank.services.question_write_service import QuestionBankWriteService
+from question_bank.taxonomy.curriculum_catalog import load_curriculum_catalog
 from tests.current_knowledge_support import install_current_knowledge
 
 
@@ -204,3 +205,42 @@ def test_read_service_owns_filtering_and_difficulty_sort(tmp_path: Path) -> None
     )
 
     assert [item["question_number"] for item in page.items] == ["2", "3", "1"]
+
+
+def test_read_service_filters_questions_by_exact_curriculum_volume(tmp_path: Path) -> None:
+    db_path, reader, _writer = _services(tmp_path)
+    initialize_database(db_path)
+    volumes = load_curriculum_catalog()["volumes"][:2]
+    with sqlite3.connect(db_path) as conn:
+        for index, volume in enumerate(volumes, start=1):
+            conn.execute(
+                """
+                INSERT INTO papers (
+                    id, title, grade, semester, textbook_version, import_status
+                ) VALUES (?, ?, ?, ?, ?, 'success')
+                """,
+                (
+                    index,
+                    volume["label"],
+                    volume["grade"],
+                    volume["semester"],
+                    volume["textbook_version"],
+                ),
+            )
+            conn.execute(
+                """
+                INSERT INTO questions (
+                    id, paper_id, question_number, question_text
+                ) VALUES (?, ?, ?, ?)
+                """,
+                (index, index, str(index), f"{volume['label']}试题"),
+            )
+
+    page = reader.list_questions(
+        QuestionReadFilters(
+            curriculum_volume_ids=(str(volumes[1]["id"]),),
+            page_size=10,
+        )
+    )
+
+    assert [item["question_number"] for item in page.items] == ["2"]

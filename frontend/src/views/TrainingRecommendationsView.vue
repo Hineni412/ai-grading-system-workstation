@@ -16,6 +16,7 @@ import TrainingKnowledgeStructure from '../components/knowledge-training/Trainin
 import PersonalizedRecommendationDraft from '../components/training/PersonalizedRecommendationDraft.vue'
 import { loadEvidenceScope, saveEvidenceScope } from '../features/evidence-scope/session'
 import { useSessionStore } from '../stores/session'
+import { useCurriculumScopeStore } from '../stores/curriculum-scope'
 import { useTrainingStore } from '../stores/training'
 
 type ReferenceState = 'loading' | 'ready' | 'error'
@@ -23,6 +24,7 @@ type TrainingMode = 'chapter' | 'student' | 'paper'
 
 const route = useRoute()
 const sessionStore = useSessionStore()
+const curriculumScope = useCurriculumScopeStore()
 const training = useTrainingStore()
 
 const students = ref<StudentSummary[]>([])
@@ -317,7 +319,7 @@ onBeforeUnmount(() => studentsController?.abort())
   <section class="training-workspace" aria-labelledby="training-title">
     <header class="training-heading training-heading--compact">
       <div>
-        <p class="training-eyebrow">知识与训练 · 七年级下册假数据</p>
+        <p class="training-eyebrow">知识与训练 · {{ curriculumScope.selectedVolume?.label ?? '全部学期' }}</p>
         <h1 id="training-title">{{ pageCopy.title }}</h1>
         <p>{{ pageCopy.description }}</p>
       </div>
@@ -337,6 +339,7 @@ onBeforeUnmount(() => studentsController?.abort())
         :students="students"
         :sessions="availableSessions"
         :current-session-id="sessionStore.selectedSessionId"
+        :curriculum-volume-id="curriculumScope.selectedVolumeId"
         :applying="training.analysisState === 'loading'"
         @apply="applyEvidenceScope"
       />

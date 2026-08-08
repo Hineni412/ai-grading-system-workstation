@@ -2,6 +2,7 @@ export interface SessionSummary {
   id: number
   name: string
   status: string
+  curriculum_volume_id?: string | null
   is_deleted: boolean
   deleted_at: string | null
   created_at: string | null
@@ -14,8 +15,19 @@ export interface SessionListResponse {
 }
 
 export type SessionLoader = () => Promise<SessionSummary[]>
-export type SessionDraftCreator = (name: string) => Promise<SessionSummary>
+export type SessionDraftCreator = (
+  name: string,
+  curriculumVolumeId?: string | null,
+) => Promise<SessionSummary>
 export type SessionRenamer = (id: number, name: string) => Promise<SessionSummary>
+export interface SessionMetadataUpdate {
+  name?: string
+  curriculum_volume_id?: string | null
+}
+export type SessionMetadataUpdater = (
+  id: number,
+  update: SessionMetadataUpdate,
+) => Promise<SessionSummary>
 export type SessionDeleter = (
   id: number,
   expectedRevision: string,
@@ -66,7 +78,8 @@ export function isSessionSummary(value: unknown): value is SessionSummary {
   if (!isRecord(value)) return false
 
   if (!hasExactKeys(value, [
-    'id', 'name', 'status', 'is_deleted', 'deleted_at', 'created_at', 'updated_at',
+    'id', 'name', 'status', 'curriculum_volume_id', 'is_deleted', 'deleted_at',
+    'created_at', 'updated_at',
   ])) return false
 
   return (
@@ -74,6 +87,7 @@ export function isSessionSummary(value: unknown): value is SessionSummary {
     Number(value.id) > 0 &&
     typeof value.name === 'string' &&
     typeof value.status === 'string' &&
+    isNullableString(value.curriculum_volume_id) &&
     typeof value.is_deleted === 'boolean' &&
     isNullableString(value.deleted_at) &&
     isNullableString(value.created_at) &&
@@ -82,7 +96,8 @@ export function isSessionSummary(value: unknown): value is SessionSummary {
 }
 
 const sessionSummaryKeys = [
-  'id', 'name', 'status', 'is_deleted', 'deleted_at', 'created_at', 'updated_at',
+  'id', 'name', 'status', 'curriculum_volume_id', 'is_deleted', 'deleted_at',
+  'created_at', 'updated_at',
 ] as const
 
 const legacySessionDetailKeys = [
@@ -109,6 +124,7 @@ function projectRenameResponse(value: unknown): SessionSummary {
     id: value.id,
     name: value.name,
     status: value.status,
+    curriculum_volume_id: value.curriculum_volume_id,
     is_deleted: value.is_deleted,
     deleted_at: value.deleted_at,
     created_at: value.created_at,
@@ -251,10 +267,16 @@ function requireSessionName(name: string): string {
   return normalized
 }
 
-export async function createSessionDraft(name: string): Promise<SessionSummary> {
+export async function createSessionDraft(
+  name: string,
+  curriculumVolumeId?: string | null,
+): Promise<SessionSummary> {
   return apiClient.request('/api/sessions/drafts', {
     method: 'POST',
-    body: { name: requireSessionName(name) },
+    body: {
+      name: requireSessionName(name),
+      ...(curriculumVolumeId ? { curriculum_volume_id: curriculumVolumeId } : {}),
+    },
     decode: (value) => {
       if (!isSessionSummary(value)) throw new Error('invalid session draft response')
       return value
@@ -263,10 +285,23 @@ export async function createSessionDraft(name: string): Promise<SessionSummary> 
 }
 
 export async function renameSession(id: number, name: string): Promise<SessionSummary> {
+  return updateSessionMetadata(id, { name: requireSessionName(name) })
+}
+
+export async function updateSessionMetadata(
+  id: number,
+  update: SessionMetadataUpdate,
+): Promise<SessionSummary> {
   const sessionId = requireSessionId(id)
+  const body: SessionMetadataUpdate = {}
+  if (update.name !== undefined) body.name = requireSessionName(update.name)
+  if (update.curriculum_volume_id !== undefined) {
+    body.curriculum_volume_id = update.curriculum_volume_id?.trim() || null
+  }
+  if (!Object.keys(body).length) throw new Error('没有需要保存的考试信息')
   return apiClient.request(`/api/sessions/${sessionId}`, {
     method: 'PATCH',
-    body: { name: requireSessionName(name) },
+    body,
     decode: projectRenameResponse,
   })
 }

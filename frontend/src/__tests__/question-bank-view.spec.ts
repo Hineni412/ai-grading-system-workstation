@@ -212,14 +212,16 @@ describe('question bank workspace', () => {
     })
     const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false)
     const { host, pinia } = await mountView()
+    await vi.waitFor(() => {
+      expect(host.querySelector<HTMLButtonElement>('.question-sort button.is-active')?.textContent)
+        .toContain('难度')
+      expect(host.querySelector('.difficulty-range.qb-difficulty-filter')).toBeTruthy()
+    })
     const baselineCalls = fetchSpy.mock.calls.length
     const initialQuestionRequest = fetchSpy.mock.calls
       .map(([request]) => String(request))
       .find((url) => url.startsWith('/api/question-bank/questions?'))
     expect(initialQuestionRequest).toContain('sort=difficulty_desc')
-    expect(host.querySelector<HTMLButtonElement>('.question-sort button.is-active')?.textContent)
-      .toContain('难度')
-
     const lowerDifficulty = host.querySelector<HTMLInputElement>('input[aria-label="最低难度"]')!
     lowerDifficulty.value = '4'
     lowerDifficulty.dispatchEvent(new Event('input', { bubbles: true }))
@@ -255,19 +257,25 @@ describe('question bank workspace', () => {
       .find((button) => button.textContent?.includes('上传与 AI 标注'))!
     openImport.click()
     await nextTick()
-    const aiButton = document.body.querySelector<HTMLButtonElement>('.qb-button.is-ai')!
-    await vi.waitFor(() => expect(aiButton.disabled).toBe(false))
-    aiButton.click()
+    let aiButton: HTMLButtonElement | null = null
+    await vi.waitFor(() => {
+      aiButton = document.body.querySelector<HTMLButtonElement>('.qb-button.is-ai')
+      expect(aiButton).not.toBeNull()
+      expect(aiButton?.disabled).toBe(false)
+    })
+    const readyAiButton = aiButton!
+    const callsBeforeAi = fetchSpy.mock.calls.length
+    readyAiButton.click()
     await nextTick()
     expect(confirmSpy).toHaveBeenCalledWith(expect.stringContaining('已选 1 道题'))
-    expect(fetchSpy).toHaveBeenCalledTimes(callsAfterDifficulty + 1)
+    expect(fetchSpy).toHaveBeenCalledTimes(callsBeforeAi)
 
     confirmSpy.mockReturnValue(true)
-    aiButton.click()
-    aiButton.click()
-    await vi.waitFor(() => expect(fetchSpy).toHaveBeenCalledTimes(callsAfterDifficulty + 2))
-    expect(String(fetchSpy.mock.calls[callsAfterDifficulty + 1]?.[0])).toBe('/api/question-bank/tagging-jobs')
-    expect(JSON.parse(String(fetchSpy.mock.calls[callsAfterDifficulty + 1]?.[1]?.body))).toEqual({
+    readyAiButton.click()
+    readyAiButton.click()
+    await vi.waitFor(() => expect(fetchSpy).toHaveBeenCalledTimes(callsBeforeAi + 1))
+    expect(String(fetchSpy.mock.calls[callsBeforeAi]?.[0])).toBe('/api/question-bank/tagging-jobs')
+    expect(JSON.parse(String(fetchSpy.mock.calls[callsBeforeAi]?.[1]?.body))).toEqual({
       question_ids: [17],
       curriculum_volume_id: 'bnu24-math-g7-lower',
     })

@@ -20,6 +20,7 @@ const session = {
   id: 7,
   name: '七年级数学',
   status: 'created',
+  curriculum_volume_id: null,
   is_deleted: false,
   deleted_at: null,
   created_at: null,

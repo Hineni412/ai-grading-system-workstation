@@ -44,6 +44,7 @@ export interface WorkspaceModuleRouteDefinition {
   breadcrumb: string
   icon: WorkspaceModuleIcon
   topbarContext: WorkspaceTopbarContext
+  curriculumScope: boolean
 }
 
 export interface RegisteredWorkspaceModule {
@@ -143,6 +144,7 @@ function createWorkspaceRegistryFromCandidates(
         breadcrumb: manifest.breadcrumb,
         icon: manifest.icon,
         topbarContext: manifest.topbarContext,
+        curriculumScope: manifest.curriculumScope,
       },
     }))
 
@@ -187,6 +189,11 @@ function validateManifest(source: string, manifest: WorkspaceManifest): void {
   if (!TOPBAR_CONTEXTS.has(manifest.topbarContext)) {
     throw new WorkspaceManifestError(
       `Workspace ${label} topbar context is invalid`,
+    )
+  }
+  if (typeof manifest.curriculumScope !== 'boolean') {
+    throw new WorkspaceManifestError(
+      `Workspace ${source} curriculumScope must be boolean`,
     )
   }
   if (

@@ -110,6 +110,7 @@ def build_question_filter_query(
     years: list[str] | None = None,
     exam_types: list[str] | None = None,
     grades: list[str] | None = None,
+    curriculum_volume_ids: list[str] | None = None,
     tag_filters: dict[str, list[str]] | None = None,
     is_deleted: bool = False,
     tag_status: str | None = None,
@@ -149,6 +150,35 @@ def build_question_filter_query(
             placeholders = ", ".join("?" for _ in cleaned)
             where.append(f"{column} IN ({placeholders})")
             params.extend(cleaned)
+    requested_volume_ids = list(
+        dict.fromkeys(
+            item
+            for value in curriculum_volume_ids or []
+            if (item := _filter_text(value))
+        )
+    )
+    if requested_volume_ids:
+        volumes = [
+            volume
+            for volume_id in requested_volume_ids
+            if (volume := curriculum_volume(volume_id=volume_id)) is not None
+        ]
+        if len(volumes) != len(requested_volume_ids):
+            where.append("1 = 0")
+        else:
+            clauses = []
+            for volume in volumes:
+                clauses.append(
+                    "(p.grade = ? AND p.semester = ? AND p.textbook_version = ?)"
+                )
+                params.extend(
+                    [
+                        str(volume["grade"]),
+                        str(volume["semester"]),
+                        str(volume["textbook_version"]),
+                    ]
+                )
+            where.append(f"({' OR '.join(clauses)})")
     cleaned_paper_ids = [int(value) for value in paper_ids or [] if int(value) > 0]
     if cleaned_paper_ids:
         placeholders = ", ".join("?" for _ in cleaned_paper_ids)
@@ -428,6 +458,7 @@ class QuestionReadFilters:
     years: tuple[str, ...] = ()
     exam_types: tuple[str, ...] = ()
     grades: tuple[str, ...] = ()
+    curriculum_volume_ids: tuple[str, ...] = ()
     exam_scopes: tuple[str, ...] = ()
     curriculum_sections: tuple[str, ...] = ()
     tag_status: str = "all"
@@ -2023,6 +2054,7 @@ def _question_filter_parts(
         years=list(filters.years),
         exam_types=list(filters.exam_types),
         grades=list(filters.grades),
+        curriculum_volume_ids=list(filters.curriculum_volume_ids),
         tag_filters={
             tag_type: list(values)
             for tag_type, values in (

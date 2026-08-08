@@ -9,6 +9,7 @@ import type {
 import { questionBankApi } from '../../api/question-bank'
 import { useQuestionBankStore } from '../../stores/question-bank'
 import { useJobStore } from '../../stores/jobs'
+import { useCurriculumScopeStore } from '../../stores/curriculum-scope'
 import { TERMINAL_JOB_STATUSES, type JobResponse } from '../../api/jobs'
 
 const props = withDefaults(defineProps<{
@@ -33,6 +34,7 @@ const emit = defineEmits<{
 
 const store = useQuestionBankStore()
 const jobStore = useJobStore()
+const curriculumScope = useCurriculumScopeStore()
 const keyword = ref('')
 const year = ref('')
 const examType = ref('')
@@ -109,12 +111,21 @@ interface PaperFolder {
   key: string
   label: string
   manual: boolean
+  kindLabel: string
   papers: QuestionBankPaper[]
 }
 
 const paperFolders = computed<PaperFolder[]>(() => {
+  const selectedVolumeId = curriculumScope.selectedVolumeId
   const groups = new Map<string, PaperFolder>()
+  const otherPapers: QuestionBankPaper[] = []
+  const unclassifiedPapers: QuestionBankPaper[] = []
   for (const paper of filteredPapers.value) {
+    if (selectedVolumeId && paper.curriculum_volume_id !== selectedVolumeId) {
+      if (paper.curriculum_volume_id) otherPapers.push(paper)
+      else unclassifiedPapers.push(paper)
+      continue
+    }
     const manualName = paper.folder_name?.trim() ?? ''
     const automaticName = [paper.year, paper.semester].filter(Boolean).join(' · ')
       || paper.semester
@@ -126,13 +137,44 @@ const paperFolders = computed<PaperFolder[]>(() => {
       key,
       label,
       manual: Boolean(manualName),
+      kindLabel: manualName ? '自定义文件夹' : '按学期自动归类',
       papers: [],
     }
     group.papers.push(paper)
     groups.set(key, group)
   }
-  return [...groups.values()]
+  const result = [...groups.values()]
+  if (selectedVolumeId && otherPapers.length) {
+    result.push({
+      key: 'scope:other-semesters',
+      label: '其他学期',
+      manual: false,
+      kindLabel: '默认折叠',
+      papers: otherPapers,
+    })
+  }
+  if (selectedVolumeId && unclassifiedPapers.length) {
+    result.push({
+      key: 'scope:unclassified',
+      label: '未归类',
+      manual: false,
+      kindLabel: '默认折叠',
+      papers: unclassifiedPapers,
+    })
+  }
+  return result
 })
+
+watch(() => curriculumScope.selectedVolumeId, (value) => {
+  const next = new Set(collapsedFolderKeys.value)
+  next.delete('scope:other-semesters')
+  next.delete('scope:unclassified')
+  if (value) {
+    next.add('scope:other-semesters')
+    next.add('scope:unclassified')
+  }
+  collapsedFolderKeys.value = next
+}, { immediate: true })
 
 function toggleFolder(key: string): void {
   const next = new Set(collapsedFolderKeys.value)
@@ -691,15 +733,15 @@ async function confirmPermanentDelete(): Promise<void> {
         <button
           type="button"
           class="paper-folder__header"
-          :aria-expanded="!collapsedFolderKeys.has(folder.key)"
+          :aria-expanded="!collapsedFolderKeys.has(folder.key) || Boolean(keyword.trim())"
           @click="toggleFolder(folder.key)"
         >
-          <span class="paper-folder__chevron" aria-hidden="true">{{ collapsedFolderKeys.has(folder.key) ? '›' : '⌄' }}</span>
+          <span class="paper-folder__chevron" aria-hidden="true">{{ collapsedFolderKeys.has(folder.key) && !keyword.trim() ? '›' : '⌄' }}</span>
           <strong>{{ folder.label }}</strong>
-          <span class="paper-folder__kind">{{ folder.manual ? '自定义文件夹' : '按学期自动归类' }}</span>
+          <span class="paper-folder__kind">{{ folder.kindLabel }}</span>
           <span class="paper-folder__count">{{ folder.papers.length }} 份</span>
         </button>
-        <div v-if="!collapsedFolderKeys.has(folder.key)" class="paper-library__grid">
+        <div v-if="!collapsedFolderKeys.has(folder.key) || keyword.trim()" class="paper-library__grid">
           <article v-for="paper in folder.papers" :key="paper.id" class="paper-card">
         <div class="paper-card__cover" :class="`is-${paper.source_type}`" aria-hidden="true">
           <span>{{ sourceLabel(paper.source_type) }}</span>

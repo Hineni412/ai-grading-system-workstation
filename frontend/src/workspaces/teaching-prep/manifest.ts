@@ -15,6 +15,7 @@ const manifest: WorkspaceManifest = {
   description: '按课时整理资料、证据和课件改编版本',
   breadcrumb: '备课工作台',
   topbarContext: 'workspace',
+  curriculumScope: true,
   subNavigation: [
     {
       destinationKey: 'teaching_prep.overview',
