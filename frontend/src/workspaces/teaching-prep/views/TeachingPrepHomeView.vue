@@ -6,7 +6,7 @@ import { teachingPrepWorkbenchKey } from '../workbench/context'
 import { useTeachingPrepWorkbench } from '../workbench/state'
 import LessonTreeWorkspace from '../workspaces/LessonTreeWorkspace.vue'
 import MaterialLibraryWorkspace from '../workspaces/MaterialLibraryWorkspace.vue'
-import LessonPreparationWorkspace from '../workspaces/LessonPreparationWorkspace.vue'
+import LessonMaterialConfirmationWorkspace from '../workspaces/LessonMaterialConfirmationWorkspace.vue'
 import PresentationVersionsWorkspace from '../workspaces/PresentationVersionsWorkspace.vue'
 import '../styles/teaching-prep.css'
 
@@ -16,16 +16,23 @@ provide(teachingPrepWorkbenchKey, workbench)
 const workspaceComponent = computed(() => ({
   'lesson-tree': LessonTreeWorkspace,
   materials: MaterialLibraryWorkspace,
-  'lesson-prep': LessonPreparationWorkspace,
+  'lesson-prep': LessonMaterialConfirmationWorkspace,
   versions: PresentationVersionsWorkspace,
 }[workbench.workspace.value]))
 
 const lessonStageLabels = {
-  materials: '核资料',
-  plan: '定方案',
-  slides: '审课件',
-  package: '上课包',
+  materials: '确认资料',
+  slides: '审核改编',
+  package: '生成副本',
 } as const
+
+const visibleNextAction = computed(() => {
+  const status = workbench.selectedStatus.value
+  if (!status || status.cells.materials.status !== 'ready') return '确认主课件和参考资料'
+  if (status.cells.slides.status !== 'ready') return '查看 AI 改编并逐页确认'
+  if (!status.latest.pptx_version_id) return '生成新的 PPTX 副本'
+  return 'PPTX 副本已就绪'
+})
 
 function handleTopbarNavigation(event: Event): void {
   const workspace = (event as CustomEvent<{ workspace?: unknown }>).detail?.workspace
@@ -65,7 +72,7 @@ onBeforeUnmount(() => {
         <aside class="tp-lesson-frame__rail" aria-label="单课时阶段">
           <p class="tp-eyebrow">本节路径</p>
           <button
-            v-for="item in workbench.stages.value.filter(item => item.id !== 'select')"
+            v-for="item in workbench.stages.value.filter(item => !['select', 'plan'].includes(item.id))"
             :key="item.id"
             type="button"
             :class="{ 'is-active': item.id === workbench.stage.value }"
@@ -86,8 +93,8 @@ onBeforeUnmount(() => {
           <h2>{{ workbench.catalog.selectedLesson?.title ?? '当前课时' }}</h2>
           <dl>
             <div><dt>授课状态</dt><dd>{{ workbench.selectedStatus.value?.manual_progress ?? '未开始' }}</dd></div>
-            <div><dt>系统阶段</dt><dd>{{ workbench.stage.value }}</dd></div>
-            <div><dt>下一动作</dt><dd>{{ workbench.selectedStatus.value?.next_action ?? '核对资料' }}</dd></div>
+            <div><dt>当前步骤</dt><dd>{{ lessonStageLabels[workbench.stage.value as keyof typeof lessonStageLabels] ?? '确认资料' }}</dd></div>
+            <div><dt>下一动作</dt><dd>{{ visibleNextAction }}</dd></div>
           </dl>
           <p v-if="workbench.dirtyReason.value" class="tp-inline-guidance" role="status">
             尚未保存：{{ workbench.dirtyReason.value }}

@@ -18,6 +18,10 @@ from backend.teaching_prep.domain.errors import TeachingPrepValidationError
 _FORMULA_HINT = re.compile(
     r"[=±×÷√∑∫∞≈≠≤≥]|\\(?:frac|sqrt|sum|int)\b"
 )
+_DIRECTORY_MARKER = re.compile(r"(?:听|作|活)\s*\d{1,4}")
+_INLINE_DIRECTORY_PAGE = re.compile(
+    r"(?:[/／]|[.·…⋯_]{2,}|\s)\s*\d{1,4}\s*$"
+)
 _SLIDE_FILE = re.compile(r"^ppt/slides/slide([1-9][0-9]*)\.xml$")
 _DRAWABLE_TAGS = {
     "sp",
@@ -49,6 +53,7 @@ class ParsedMaterialText:
     extracted_text: str
     formula_review_required: bool
     printed_page_number: int | None
+    layout_items: tuple[dict[str, object], ...] = ()
 
 
 class MaterialParser:
@@ -131,15 +136,90 @@ class MaterialParser:
         return self._ocr_engine_factory()
 
     @staticmethod
+    def ocr_pdf_page(
+        path: Path,
+        *,
+        unit_index: int,
+        ocr_engine: object,
+        render_scale: float = 4.0,
+    ) -> ParsedMaterialText:
+        import fitz
+
+        if unit_index <= 0:
+            raise TeachingPrepValidationError("PDF page index is invalid")
+        try:
+            with fitz.open(path) as document:
+                if unit_index > document.page_count:
+                    raise TeachingPrepValidationError(
+                        "PDF page index is out of range"
+                    )
+                page = document[unit_index - 1]
+                pixmap = page.get_pixmap(
+                    matrix=fitz.Matrix(render_scale, render_scale),
+                    alpha=False,
+                )
+                preview_png = pixmap.tobytes("png")
+        except TeachingPrepValidationError:
+            raise
+        except Exception as exc:
+            raise TeachingPrepValidationError(
+                "PDF directory page could not be rendered"
+            ) from exc
+        parsed = MaterialParser.ocr_preview(preview_png, ocr_engine)
+        if (
+            parsed.layout_items
+            and pixmap.width > pixmap.height * 1.1
+            and _DIRECTORY_MARKER.search(parsed.extracted_text)
+        ):
+            track_refs = _ocr_spread_track_columns(
+                preview_png,
+                ocr_engine,
+            )
+            if track_refs:
+                parsed = ParsedMaterialText(
+                    extracted_text=parsed.extracted_text,
+                    formula_review_required=parsed.formula_review_required,
+                    printed_page_number=parsed.printed_page_number,
+                    layout_items=_merge_spread_track_refs(
+                        parsed.layout_items,
+                        track_refs,
+                    ),
+                )
+        if (
+            parsed.layout_items
+            and pixmap.height > pixmap.width
+            and not _DIRECTORY_MARKER.search(parsed.extracted_text)
+        ):
+            right_page_numbers = _ocr_right_page_number_column(
+                preview_png,
+                ocr_engine,
+            )
+            if right_page_numbers:
+                parsed = ParsedMaterialText(
+                    extracted_text=parsed.extracted_text,
+                    formula_review_required=parsed.formula_review_required,
+                    printed_page_number=parsed.printed_page_number,
+                    layout_items=_merge_right_page_numbers(
+                        parsed.layout_items,
+                        right_page_numbers,
+                    ),
+                )
+        return parsed
+
+    @staticmethod
     def ocr_preview(
         preview_png: bytes,
         ocr_engine: object,
     ) -> ParsedMaterialText:
-        text, printed_page_number = _ocr_page(preview_png, ocr_engine)
+        text, printed_page_number, layout_items = _ocr_page(
+            preview_png,
+            ocr_engine,
+        )
         return ParsedMaterialText(
             extracted_text=text,
             formula_review_required=bool(text and _FORMULA_HINT.search(text)),
             printed_page_number=printed_page_number,
+            layout_items=layout_items,
         )
 
     @staticmethod
@@ -230,12 +310,17 @@ class MaterialParser:
                         except Exception:
                             ocr_unavailable = True
                     if ocr_engine is not None:
-                        text, ocr_page_number = _ocr_page(
+                        text, ocr_page_number, layout_items = _ocr_page(
                             preview_png,
                             ocr_engine,
                         )
                         if text:
                             object_summary["text_source"] = "local_ocr"
+                        if layout_items:
+                            object_summary["ocr_layout"] = {
+                                "version": 1,
+                                "items": list(layout_items),
+                            }
                         if printed_page_number is None:
                             printed_page_number = ocr_page_number
                 if printed_page_number is not None:
@@ -460,7 +545,7 @@ def _default_ocr_engine() -> object:
 def _ocr_page(
     preview_png: bytes,
     ocr_engine: object,
-) -> tuple[str, int | None]:
+) -> tuple[str, int | None, tuple[dict[str, object], ...]]:
     try:
         import numpy as np
 
@@ -470,11 +555,12 @@ def _ocr_page(
             image = np.asarray(rgb)[:, :, ::-1]
         raw = ocr_engine(image)  # type: ignore[operator]
     except Exception:
-        return "", None
+        return "", None, ()
     result: Any = raw[0] if isinstance(raw, tuple) else raw
     if not isinstance(result, list):
-        return "", None
+        return "", None, ()
     text_lines: list[str] = []
+    layout_items: list[dict[str, object]] = []
     page_number: int | None = None
     for item in result:
         if not isinstance(item, (list, tuple)) or len(item) < 3:
@@ -486,6 +572,15 @@ def _ocr_page(
             confidence = 0.0
         if text and confidence >= 0.35:
             text_lines.append(text)
+            layout_item = _normalised_ocr_layout_item(
+                item[0],
+                text,
+                confidence,
+                width=width,
+                height=height,
+            )
+            if layout_item is not None:
+                layout_items.append(layout_item)
         if page_number is None and confidence >= 0.55:
             page_number = _ocr_footer_page_number(
                 item[0],
@@ -493,7 +588,242 @@ def _ocr_page(
                 width=width,
                 height=height,
             )
-    return "\n".join(text_lines), page_number
+    keep_layout = _looks_like_directory_layout(text_lines, layout_items)
+    return (
+        "\n".join(text_lines),
+        page_number,
+        tuple(layout_items) if keep_layout else (),
+    )
+
+
+def _normalised_ocr_layout_item(
+    raw_box: object,
+    text: str,
+    confidence: float,
+    *,
+    width: int,
+    height: int,
+) -> dict[str, object] | None:
+    if (
+        width <= 0
+        or height <= 0
+        or not isinstance(raw_box, (list, tuple))
+        or len(raw_box) < 4
+    ):
+        return None
+    try:
+        xs = [float(point[0]) for point in raw_box]
+        ys = [float(point[1]) for point in raw_box]
+    except (TypeError, ValueError, IndexError):
+        return None
+
+    def normalise(value: float, extent: int) -> float:
+        return round(max(0.0, min(1.0, value / extent)), 6)
+
+    return {
+        "text": text[:240],
+        "confidence": round(max(0.0, min(1.0, confidence)), 6),
+        "x0": normalise(min(xs), width),
+        "y0": normalise(min(ys), height),
+        "x1": normalise(max(xs), width),
+        "y1": normalise(max(ys), height),
+    }
+
+
+def _ocr_right_page_number_column(
+    preview_png: bytes,
+    ocr_engine: object,
+) -> tuple[dict[str, object], ...]:
+    import numpy as np
+
+    try:
+        with Image.open(io.BytesIO(preview_png)) as source:
+            rgb = source.convert("RGB")
+            width, height = rgb.size
+            left = int(width * 0.90)
+            crop = rgb.crop((left, 0, width, height))
+            scale = 2
+            crop = crop.resize((crop.width * scale, crop.height * scale))
+            image = np.asarray(crop)[:, :, ::-1]
+        raw = ocr_engine(image)  # type: ignore[operator]
+    except Exception:
+        return ()
+    result: Any = raw[0] if isinstance(raw, tuple) else raw
+    if not isinstance(result, list):
+        return ()
+    items: list[dict[str, object]] = []
+    for item in result:
+        if not isinstance(item, (list, tuple)) or len(item) < 3:
+            continue
+        text = str(item[1] or "").strip()
+        try:
+            confidence = float(item[2])
+            xs = [float(point[0]) for point in item[0]]
+            ys = [float(point[1]) for point in item[0]]
+        except (TypeError, ValueError, IndexError):
+            continue
+        if confidence < 0.55 or not re.fullmatch(r"\d{1,4}", text):
+            continue
+        items.append(
+            {
+                "text": text,
+                "confidence": round(max(0.0, min(1.0, confidence)), 6),
+                "x0": round((left + min(xs) / scale) / width, 6),
+                "y0": round((min(ys) / scale) / height, 6),
+                "x1": round((left + max(xs) / scale) / width, 6),
+                "y1": round((max(ys) / scale) / height, 6),
+            }
+        )
+    return tuple(items)
+
+
+def _ocr_spread_track_columns(
+    preview_png: bytes,
+    ocr_engine: object,
+) -> tuple[dict[str, object], ...]:
+    import numpy as np
+
+    items: list[dict[str, object]] = []
+    try:
+        with Image.open(io.BytesIO(preview_png)) as source:
+            rgb = source.convert("RGB")
+            width, height = rgb.size
+            for left_ratio, right_ratio in ((0.35, 0.50), (0.85, 1.0)):
+                left = int(width * left_ratio)
+                right = int(width * right_ratio)
+                crop = rgb.crop((left, 0, right, height))
+                scale = 2
+                crop = crop.resize((crop.width * scale, crop.height * scale))
+                image = np.asarray(crop)[:, :, ::-1]
+                raw = ocr_engine(image)  # type: ignore[operator]
+                result: Any = raw[0] if isinstance(raw, tuple) else raw
+                if not isinstance(result, list):
+                    continue
+                for item in result:
+                    if not isinstance(item, (list, tuple)) or len(item) < 3:
+                        continue
+                    text = re.sub(r"\s+", "", str(item[1] or ""))
+                    match = _PAGE_TRACK_TEXT.fullmatch(text)
+                    if match is None:
+                        continue
+                    try:
+                        confidence = float(item[2])
+                        xs = [float(point[0]) for point in item[0]]
+                        ys = [float(point[1]) for point in item[0]]
+                    except (TypeError, ValueError, IndexError):
+                        continue
+                    if confidence < 0.55:
+                        continue
+                    items.append(
+                        {
+                            "text": (
+                                f"{match.group('track')}"
+                                f"{int(match.group('page'))}"
+                            ),
+                            "confidence": round(
+                                max(0.0, min(1.0, confidence)),
+                                6,
+                            ),
+                            "x0": round((left + min(xs) / scale) / width, 6),
+                            "y0": round((min(ys) / scale) / height, 6),
+                            "x1": round((left + max(xs) / scale) / width, 6),
+                            "y1": round((max(ys) / scale) / height, 6),
+                        }
+                    )
+    except Exception:
+        return ()
+    return tuple(items)
+
+
+_PAGE_TRACK_TEXT = re.compile(
+    r"(?P<track>听|作|活|评)(?P<page>\d{1,4})"
+)
+
+
+def _merge_spread_track_refs(
+    layout_items: tuple[dict[str, object], ...],
+    track_refs: tuple[dict[str, object], ...],
+) -> tuple[dict[str, object], ...]:
+    merged = list(layout_items)
+    for track_ref in track_refs:
+        text = str(track_ref.get("text") or "")
+        center_y = (
+            float(track_ref.get("y0") or 0)
+            + float(track_ref.get("y1") or 0)
+        ) / 2
+        duplicate = any(
+            re.sub(r"\s+", "", str(item.get("text") or "")) == text
+            and abs(
+                (
+                    float(item.get("y0") or 0)
+                    + float(item.get("y1") or 0)
+                )
+                / 2
+                - center_y
+            )
+            <= 0.012
+            for item in merged
+        )
+        if not duplicate:
+            merged.append(track_ref)
+    return tuple(merged)
+
+
+def _merge_right_page_numbers(
+    layout_items: tuple[dict[str, object], ...],
+    page_numbers: tuple[dict[str, object], ...],
+) -> tuple[dict[str, object], ...]:
+    merged = list(layout_items)
+    for page_number in page_numbers:
+        center_y = (
+            float(page_number.get("y0") or 0)
+            + float(page_number.get("y1") or 0)
+        ) / 2
+        matching = [
+            index
+            for index, item in enumerate(merged)
+            if float(item.get("x0") or 0) >= 0.72
+            and re.fullmatch(
+                r"\d{1,4}",
+                str(item.get("text") or "").strip(),
+            )
+            and abs(
+                (
+                    float(item.get("y0") or 0)
+                    + float(item.get("y1") or 0)
+                )
+                / 2
+                - center_y
+            )
+            <= 0.012
+        ]
+        if matching:
+            merged[matching[0]] = page_number
+        else:
+            merged.append(page_number)
+    return tuple(merged)
+
+
+def _looks_like_directory_layout(
+    text_lines: list[str],
+    layout_items: list[dict[str, object]],
+) -> bool:
+    joined = "\n".join(text_lines)
+    if "目录" in joined or "CONTENTS" in joined.upper():
+        return True
+    if len(_DIRECTORY_MARKER.findall(joined)) >= 3:
+        return True
+    inline_pages = sum(
+        bool(_INLINE_DIRECTORY_PAGE.search(line))
+        and bool(re.search(r"[^\W\d_]", line))
+        for line in text_lines
+    )
+    right_page_numbers = sum(
+        bool(re.fullmatch(r"\d{1,4}", str(item.get("text") or "").strip()))
+        and float(item.get("x0") or 0) >= 0.72
+        for item in layout_items
+    )
+    return max(inline_pages, right_page_numbers) >= 3
 
 
 def _ocr_footer_page_number(
