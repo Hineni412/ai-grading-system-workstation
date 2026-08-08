@@ -16,6 +16,9 @@ from backend.jobs.store import JobStore
 from question_bank.services.question_write_service import QuestionBankWriteService
 
 
+VOLUME_ID = "bnu24-math-g7-lower"
+
+
 def _client(tmp_path: Path):
     service = QuestionBankWriteService(
         tmp_path / "data" / "databases" / "question_bank.db",
@@ -107,12 +110,15 @@ def test_tagging_route_submits_safe_batch_and_projects_partial_result(
 
     response = client.post(
         "/api/question-bank/tagging-jobs",
-        json={"question_ids": [11, 12, 11]},
+        json={"question_ids": [11, 12, 11], "curriculum_volume_id": VOLUME_ID},
     )
 
     assert response.status_code == 202
     body = response.json()
-    assert body["payload"] == {"question_ids": [11, 12]}
+    assert body["payload"] == {
+        "question_ids": [11, 12],
+        "curriculum_volume_id": VOLUME_ID,
+    }
     manager.wait(body["id"], timeout=5)
     queried = client.get(f"/api/jobs/{body['id']}").json()
     assert queried["result"]["outcome"] == "partial"
@@ -120,18 +126,36 @@ def test_tagging_route_submits_safe_batch_and_projects_partial_result(
     assert "question_text" not in queried["result"]
 
 
+def test_tagging_route_refuses_to_guess_a_missing_curriculum_volume(
+    tmp_path: Path,
+) -> None:
+    client, _manager, _service, _request = _client(tmp_path)
+
+    response = client.post(
+        "/api/question-bank/tagging-jobs",
+        json={"question_ids": [11]},
+    )
+
+    assert response.status_code == 422
+
+
 def test_tagging_route_marks_explicit_retag_scope(tmp_path: Path) -> None:
     client, _manager, _service, _request = _client(tmp_path)
 
     response = client.post(
         "/api/question-bank/tagging-jobs",
-        json={"question_ids": [11, 12, 11], "force_retag": True},
+        json={
+            "question_ids": [11, 12, 11],
+            "force_retag": True,
+            "curriculum_volume_id": VOLUME_ID,
+        },
     )
 
     assert response.status_code == 202
     assert response.json()["payload"] == {
         "question_ids": [11, 12],
         "force_retag_question_ids": [11, 12],
+        "curriculum_volume_id": VOLUME_ID,
     }
 
 
@@ -142,6 +166,7 @@ def test_tagging_route_reuses_client_request_token_without_duplicate_work(
     payload = {
         "question_ids": [11, 12],
         "force_retag": True,
+        "curriculum_volume_id": VOLUME_ID,
         "client_request_token": "a" * 32,
     }
 
@@ -163,11 +188,19 @@ def test_tagging_route_rejects_reusing_token_for_other_questions(
     token = "b" * 32
     first = client.post(
         "/api/question-bank/tagging-jobs",
-        json={"question_ids": [11], "client_request_token": token},
+        json={
+            "question_ids": [11],
+            "curriculum_volume_id": VOLUME_ID,
+            "client_request_token": token,
+        },
     )
     conflict = client.post(
         "/api/question-bank/tagging-jobs",
-        json={"question_ids": [12], "client_request_token": token},
+        json={
+            "question_ids": [12],
+            "curriculum_volume_id": VOLUME_ID,
+            "client_request_token": token,
+        },
     )
 
     assert first.status_code == 202
@@ -194,11 +227,19 @@ def test_tagging_route_validates_question_ids_against_source_import_job(
 
     accepted = client.post(
         "/api/question-bank/tagging-jobs",
-        json={"question_ids": [11], "source_job_id": source.id},
+        json={
+            "question_ids": [11],
+            "source_job_id": source.id,
+            "curriculum_volume_id": VOLUME_ID,
+        },
     )
     rejected = client.post(
         "/api/question-bank/tagging-jobs",
-        json={"question_ids": [12], "source_job_id": source.id},
+        json={
+            "question_ids": [12],
+            "source_job_id": source.id,
+            "curriculum_volume_id": VOLUME_ID,
+        },
     )
 
     assert accepted.status_code == 202
@@ -211,7 +252,7 @@ def test_tagging_retry_accepts_only_source_failed_ids(tmp_path: Path) -> None:
     client, manager, _service, _request = _client(tmp_path)
     initial = client.post(
         "/api/question-bank/tagging-jobs",
-        json={"question_ids": [11, 12]},
+        json={"question_ids": [11, 12], "curriculum_volume_id": VOLUME_ID},
     ).json()
     manager.wait(initial["id"], timeout=5)
 
@@ -230,6 +271,7 @@ def test_tagging_retry_accepts_only_source_failed_ids(tmp_path: Path) -> None:
     assert accepted.json()["payload"] == {
         "question_ids": [12],
         "retry_of_job_id": initial["id"],
+        "curriculum_volume_id": VOLUME_ID,
     }
 
 
@@ -237,7 +279,10 @@ def test_tagging_retry_marks_evidence_only_ids_without_losing_tag_success(
     tmp_path: Path,
 ) -> None:
     client, manager, _service, _request = _client(tmp_path)
-    source = manager.store.create_job("tagging_sync", {"question_ids": [11]})
+    source = manager.store.create_job(
+        "tagging_sync",
+        {"question_ids": [11], "curriculum_volume_id": VOLUME_ID},
+    )
     assert manager.store.mark_running(source.id)
     manager.store.finish(
         source.id,
@@ -261,6 +306,7 @@ def test_tagging_retry_marks_evidence_only_ids_without_losing_tag_success(
         "question_ids": [11],
         "retry_evidence_question_ids": [11],
         "retry_of_job_id": source.id,
+        "curriculum_volume_id": VOLUME_ID,
     }
 
 
@@ -268,7 +314,10 @@ def test_tagging_retry_marks_relation_only_ids_for_local_replay(
     tmp_path: Path,
 ) -> None:
     client, manager, _service, _request = _client(tmp_path)
-    source = manager.store.create_job("tagging_sync", {"question_ids": [11]})
+    source = manager.store.create_job(
+        "tagging_sync",
+        {"question_ids": [11], "curriculum_volume_id": VOLUME_ID},
+    )
     assert manager.store.mark_running(source.id)
     manager.store.finish(
         source.id,
@@ -292,6 +341,7 @@ def test_tagging_retry_marks_relation_only_ids_for_local_replay(
         "question_ids": [11],
         "retry_relation_question_ids": [11],
         "retry_of_job_id": source.id,
+        "curriculum_volume_id": VOLUME_ID,
     }
 
 
@@ -391,7 +441,10 @@ def test_duplicate_tagging_retry_requests_keep_same_safe_logical_payload(
     tmp_path: Path,
 ) -> None:
     client, manager, _service, _request = _client(tmp_path)
-    source = manager.store.create_job("tagging_sync", {"question_ids": [11, 12]})
+    source = manager.store.create_job(
+        "tagging_sync",
+        {"question_ids": [11, 12], "curriculum_volume_id": VOLUME_ID},
+    )
     assert manager.store.mark_running(source.id)
     manager.store.finish(
         source.id,
@@ -417,6 +470,7 @@ def test_duplicate_tagging_retry_requests_keep_same_safe_logical_payload(
     assert first.json()["payload"] == second.json()["payload"] == {
         "question_ids": [12],
         "retry_of_job_id": source.id,
+        "curriculum_volume_id": VOLUME_ID,
     }
 
 
@@ -424,10 +478,16 @@ def test_tagging_retry_uses_original_ids_after_failed_or_cancelled_job(
     tmp_path: Path,
 ) -> None:
     client, manager, _service, _request = _client(tmp_path)
-    failed = manager.store.create_job("tagging_sync", {"question_ids": [11, 12]})
+    failed = manager.store.create_job(
+        "tagging_sync",
+        {"question_ids": [11, 12], "curriculum_volume_id": VOLUME_ID},
+    )
     assert manager.store.mark_running(failed.id)
     manager.store.finish(failed.id, "failed", error="private")
-    cancelled = manager.store.create_job("tagging_sync", {"question_ids": [12]})
+    cancelled = manager.store.create_job(
+        "tagging_sync",
+        {"question_ids": [12], "curriculum_volume_id": VOLUME_ID},
+    )
     assert manager.store.request_cancel(cancelled.id)
 
     failed_retry = client.post(

@@ -72,6 +72,7 @@ from backend.api.schemas.question_bank import (
 )
 from question_bank.taxonomy.curriculum_catalog import (
     CurriculumCatalogError,
+    curriculum_volume,
     load_curriculum_catalog,
 )
 from question_bank.taxonomy.governance import (
@@ -1057,6 +1058,13 @@ def submit_tagging_sync_job(
     manager: JobManager = Depends(get_job_manager),
 ) -> JobResponse:
     question_ids = _unique_positive_ids(body.question_ids)
+    volume = curriculum_volume(volume_id=body.curriculum_volume_id)
+    if volume is None:
+        raise ApiError(
+            422,
+            "curriculum_volume_invalid",
+            "请选择有效的教材册别后再继续分析",
+        )
     if body.source_job_id is not None:
         source = _require_question_bank_job(
             manager,
@@ -1073,7 +1081,10 @@ def submit_tagging_sync_job(
                 "question_tagging_request_invalid",
                 "Question IDs are not available from the import job",
             )
-    payload: dict[str, object] = {"question_ids": question_ids}
+    payload: dict[str, object] = {
+        "question_ids": question_ids,
+        "curriculum_volume_id": str(volume["id"]),
+    }
     if body.force_retag:
         payload["force_retag_question_ids"] = question_ids
     if body.source_job_id is not None:
@@ -1146,6 +1157,17 @@ def retry_tagging_sync_job(
         "question_ids": selected,
         "retry_of_job_id": source.id,
     }
+    volume = curriculum_volume(
+        volume_id=source.payload.get("curriculum_volume_id")
+    )
+    if volume is None:
+        raise ApiError(
+            409,
+            "curriculum_volume_required",
+            "原任务没有保存教材册别，请从试卷库点击继续完成",
+            {"job_id": int(job_id)},
+        )
+    payload["curriculum_volume_id"] = str(volume["id"])
     raw_evidence_failed = source.result.get("evidence_failed_question_ids")
     evidence_failed = (
         set(_unique_positive_ids(raw_evidence_failed))
@@ -1836,6 +1858,7 @@ def list_question_facets(
     exam_scopes: Annotated[list[str] | None, Query()] = None,
     curriculum_sections: Annotated[list[str] | None, Query()] = None,
     tag_status: Literal["all", "tagged", "untagged"] = "all",
+    analysis_status: Literal["all", "complete", "incomplete"] = "all",
     service: QuestionBankReadService = Depends(get_question_bank_read_service),
 ) -> QuestionFacetsResponse:
     _validate_difficulty_range(difficulty_min, difficulty_max)
@@ -1864,6 +1887,7 @@ def list_question_facets(
                 exam_scopes=tuple(exam_scopes or ()),
                 curriculum_sections=tuple(curriculum_sections or ()),
                 tag_status=tag_status,
+                analysis_status=analysis_status,
             )
         )
     except QuestionBankSnapshotError as exc:
@@ -1901,6 +1925,7 @@ def list_questions(
     exam_scopes: Annotated[list[str] | None, Query()] = None,
     curriculum_sections: Annotated[list[str] | None, Query()] = None,
     tag_status: Literal["all", "tagged", "untagged"] = "all",
+    analysis_status: Literal["all", "complete", "incomplete"] = "all",
     sort: Literal[
         "difficulty_desc",
         "difficulty_asc",
@@ -1948,6 +1973,7 @@ def list_questions(
                 exam_scopes=tuple(exam_scopes or ()),
                 curriculum_sections=tuple(curriculum_sections or ()),
                 tag_status=tag_status,
+                analysis_status=analysis_status,
                 sort=sort,
             )
         )

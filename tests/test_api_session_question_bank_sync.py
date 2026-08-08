@@ -138,6 +138,7 @@ def test_session_question_bank_sync_is_version_bound_and_public(
         "session_id": session_id,
         "mode": "sync",
         "config_revision": revision,
+        "curriculum_volume_id": "bnu24-math-g7-upper",
     }
     assert "source_paper" not in first.text
     manager.wait(first.json()["id"], timeout=5)
@@ -237,6 +238,7 @@ def test_failed_sync_without_result_can_retry_only_the_sync_chain(
         "mode": "sync_retry",
         "config_revision": revision,
         "retry_of_job_id": source_job.id,
+        "curriculum_volume_id": "bnu24-math-g7-upper",
     }
 
 

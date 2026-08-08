@@ -161,12 +161,16 @@ describe('question bank API contracts', () => {
       semester: '下学期',
       folder_name: null,
       textbook_version: null,
+      curriculum_volume_id: null,
       import_status: 'imported',
       created_at: '2026-07-18T08:00:00Z',
       updated_at: '2026-07-18T09:00:00Z',
       question_count: 20,
       tagged_question_count: 12,
       tagged_any_question_count: 15,
+      evidence_question_count: 14,
+      criteria_question_count: 13,
+      complete_analysis_count: 10,
       source_type: 'docx',
     }
 
@@ -475,16 +479,17 @@ describe('question bank API contracts', () => {
         headers: { 'content-type': 'application/json' },
       }))
 
-    await questionBankApi.submitTagging([17, 17, 18])
+    await questionBankApi.submitTagging([17, 17, 18], 'bnu24-math-g7-lower')
     await questionBankApi.retryTagging(41, [18, 18])
     await questionBankApi.retryImport(31)
     await questionBankApi.submitTagging(
-      [17, 18], undefined, undefined, true, 'a'.repeat(32),
+      [17, 18], 'bnu24-math-g7-lower', undefined, undefined, true, 'a'.repeat(32),
     )
 
     expect(String(fetchSpy.mock.calls[0]?.[0])).toBe('/api/question-bank/tagging-jobs')
     expect(JSON.parse(String(fetchSpy.mock.calls[0]?.[1]?.body))).toEqual({
       question_ids: [17, 18],
+      curriculum_volume_id: 'bnu24-math-g7-lower',
     })
     expect(String(fetchSpy.mock.calls[1]?.[0])).toBe(
       '/api/question-bank/tagging-jobs/41/retry',
@@ -497,6 +502,7 @@ describe('question bank API contracts', () => {
     )
     expect(JSON.parse(String(fetchSpy.mock.calls[3]?.[1]?.body))).toEqual({
       question_ids: [17, 18],
+      curriculum_volume_id: 'bnu24-math-g7-lower',
       force_retag: true,
       client_request_token: 'a'.repeat(32),
     })

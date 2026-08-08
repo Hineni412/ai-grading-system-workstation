@@ -28,16 +28,13 @@ const activeProgress = computed(() => {
 })
 
 onMounted(() => {
-  // Give the visible paper list the first request slot. Restoring historical
-  // jobs and the review catalog can fan out into many local reads, but neither
-  // is needed to paint the library's first useful screen.
+  // The pending-review count is part of the visible library state, so begin
+  // that read immediately and show an explicit loading label until it arrives.
+  void taxonomyReview.load()
   void bank.loadPapers().finally(() => {
     secondaryLoadHandle = setTimeout(() => {
       secondaryLoadHandle = null
-      void Promise.all([
-        jobStore.initialize(),
-        taxonomyReview.load(),
-      ])
+      void jobStore.initialize()
     }, 750)
   })
 })
@@ -76,6 +73,7 @@ function openTaxonomyReview(): void {
     <PaperLibrary
       v-if="!activePaper"
       :pending-taxonomy-count="taxonomyReview.pendingCount"
+      :pending-taxonomy-state="taxonomyReview.loadState"
       @open="openPaper"
       @import="showImport = true"
       @review-taxonomy="openTaxonomyReview"
@@ -141,6 +139,7 @@ function openTaxonomyReview(): void {
           <button type="button" class="qb-drawer-close" aria-label="关闭上传窗口" @click="showImport = false">×</button>
           <QuestionImportJobs
             :pending-taxonomy-count="taxonomyReview.pendingCount"
+            :pending-taxonomy-state="taxonomyReview.loadState"
             @review-taxonomy="openTaxonomyReview"
           />
         </div>

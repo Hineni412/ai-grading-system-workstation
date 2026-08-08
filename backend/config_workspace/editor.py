@@ -82,7 +82,31 @@ class ReplaceScoringUnitsCommand:
     parts: tuple[ManualPartInput, ...]
 
 
-ConfigEditorCommand = SplitScoringUnitCommand | ReplaceScoringUnitsCommand
+@dataclass(frozen=True, slots=True)
+class ManualStepInput:
+    step_id: str
+    score: float
+    core_goal: str
+
+
+@dataclass(frozen=True, slots=True)
+class ManualQuestionPartInput:
+    part_id: str
+    steps: tuple[ManualStepInput, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class ReplaceQuestionStructureCommand:
+    kind: Literal["replace_question_structure"]
+    question_id: str
+    parts: tuple[ManualQuestionPartInput, ...]
+
+
+ConfigEditorCommand = (
+    SplitScoringUnitCommand
+    | ReplaceScoringUnitsCommand
+    | ReplaceQuestionStructureCommand
+)
 ConfigEditorIssue = dict[str, str | None]
 
 
@@ -221,6 +245,11 @@ def apply_config_editor_changes(
             _apply_split(candidate, command)
         elif isinstance(command, ReplaceScoringUnitsCommand) and command.kind == "replace_parts":
             _apply_replace_parts(candidate, command)
+        elif (
+            isinstance(command, ReplaceQuestionStructureCommand)
+            and command.kind == "replace_question_structure"
+        ):
+            _apply_replace_question_structure(candidate, command)
         else:
             raise ConfigEditorValidationError((_issue("unknown_command", "commands", "Unsupported editor command."),))
 
@@ -671,6 +700,135 @@ def _apply_replace_parts(payload: dict[str, Any], command: ReplaceScoringUnitsCo
     question["max_score"] = current_total or sum(scores)
     answer["parts"] = new_answers
     _append_warning(payload, f"教师手动编辑了 {command.question_id} 的评分单元结构，AI 二次完善时必须保留这些 part_id。")
+
+
+def _apply_replace_question_structure(
+    payload: dict[str, Any],
+    command: ReplaceQuestionStructureCommand,
+) -> None:
+    if not command.parts:
+        raise ConfigEditorValidationError(
+            (_issue("empty_parts", "commands.parts", "A solution question must keep at least one sub-question."),)
+        )
+    question = _question_by_id(payload, "rubric", command.question_id)
+    if question is None:
+        raise ConfigEditorValidationError(
+            (_issue("unknown_question_id", "commands.question_id", "The question does not exist."),)
+        )
+    if str(question.get("question_type") or "") not in _SOLUTION_TYPES:
+        raise ConfigEditorValidationError(
+            (_issue("question_type_not_solution", "commands.question_id", "Only solution questions support nested scoring steps."),)
+        )
+    parent_id = canonical_parent_id(command.question_id)
+    if parent_id is None:
+        raise ConfigEditorValidationError(
+            (_issue("invalid_question_id", "commands.question_id", "Question IDs must use the Qn format."),)
+        )
+
+    raw_part_ids = [str(item.part_id).strip() for item in command.parts]
+    part_ids = [
+        _canonical_editor_part_id(raw_id, parent_id, part_count=len(command.parts))
+        for raw_id in raw_part_ids
+    ]
+    if any(part_id is None for part_id in part_ids) or len(set(part_ids)) != len(part_ids):
+        raise ConfigEditorValidationError(
+            (_issue("invalid_part_id", "commands.parts.part_id", "Sub-question identities must be unique."),)
+        )
+    for part in command.parts:
+        if not part.steps:
+            raise ConfigEditorValidationError(
+                (_issue("empty_steps", "commands.parts.steps", "Each sub-question must keep at least one scoring step."),)
+            )
+        step_ids = [str(step.step_id).strip() for step in part.steps]
+        if any(not step_id for step_id in step_ids) or len(set(step_ids)) != len(step_ids):
+            raise ConfigEditorValidationError(
+                (_issue("invalid_step_id", "commands.parts.steps.step_id", "Scoring-step identities must be unique within a sub-question."),)
+            )
+        if any(not str(step.core_goal).strip() for step in part.steps):
+            raise ConfigEditorValidationError(
+                (_issue("missing_core_goal", "commands.parts.steps.core_goal", "Each scoring step needs a scoring target."),)
+            )
+
+    scores = [
+        _valid_score(step.score, None)
+        for part in command.parts
+        for step in part.steps
+    ]
+    current_total = _number(question.get("max_score"), 0.0)
+    if current_total > 0 and not math.isclose(sum(scores), current_total, abs_tol=1e-6):
+        raise ConfigEditorValidationError(
+            (_issue("score_total_mismatch", "commands.parts.steps.score", "All scoring steps must add up to the question score."),)
+        )
+
+    answer = _ensure_answer_question(payload, command.question_id)
+    old_parts = _dict_list(question.get("parts"))
+    old_part_map = _parts_by_canonical_id(old_parts, parent_id)
+    old_answer_parts = _dict_list(answer.get("parts"))
+    old_answer_map = _parts_by_canonical_id(old_answer_parts, parent_id)
+    new_parts: list[dict[str, Any]] = []
+    new_answers: list[dict[str, Any]] = []
+    score_index = 0
+    for part_index, (part_input, maybe_part_id) in enumerate(zip(command.parts, part_ids)):
+        part_id = str(maybe_part_id)
+        old_part = old_part_map.get(part_id) or (
+            old_parts[part_index] if part_index < len(old_parts) else {}
+        )
+        old_steps = _dict_list(old_part.get("steps"))
+        old_steps_by_id = {str(step.get("step_id") or ""): step for step in old_steps}
+        new_steps: list[dict[str, Any]] = []
+        for step_index, step_input in enumerate(part_input.steps):
+            step_id = str(step_input.step_id).strip()
+            old_step = old_steps_by_id.get(step_id) or (
+                old_steps[step_index] if step_index < len(old_steps) else {}
+            )
+            new_step = copy.deepcopy(old_step)
+            new_step.update(
+                {
+                    "step_id": step_id,
+                    "step_score": scores[score_index],
+                    "core_goal": str(step_input.core_goal).strip(),
+                    "required_elements": copy.deepcopy(old_step.get("required_elements"))
+                    if isinstance(old_step.get("required_elements"), list)
+                    else ["完成该步骤的关键过程或结论"],
+                    "deduction_rules": copy.deepcopy(old_step.get("deduction_rules"))
+                    if isinstance(old_step.get("deduction_rules"), list)
+                    else [],
+                    "allow_alternative_methods": bool(old_step.get("allow_alternative_methods", True)),
+                }
+            )
+            score_index += 1
+            new_steps.append(new_step)
+        part_score = sum(step["step_score"] for step in new_steps)
+        new_part = copy.deepcopy(old_part)
+        new_part.update(
+            {
+                "part_id": part_id,
+                "part_score": part_score,
+                "response_mode": "process_required",
+                "steps": new_steps,
+                "presentation_rules": copy.deepcopy(old_part.get("presentation_rules"))
+                if isinstance(old_part.get("presentation_rules"), list)
+                else [],
+            }
+        )
+        old_answer = old_answer_map.get(part_id) or (
+            old_answer_parts[part_index] if part_index < len(old_answer_parts) else {}
+        )
+        new_answer = copy.deepcopy(old_answer)
+        new_answer.update(
+            {
+                "part_id": part_id,
+                "answer": str(old_answer.get("answer") or ""),
+                "analysis": str(old_answer.get("analysis") or "教师手动调整了解答题结构。"),
+                "step_milestones": [step["core_goal"] for step in new_steps],
+            }
+        )
+        new_parts.append(new_part)
+        new_answers.append(new_answer)
+    question["parts"] = new_parts
+    question["max_score"] = current_total or sum(scores)
+    answer["parts"] = new_answers
+    _append_warning(payload, f"教师手动调整了 {command.question_id} 的小问和步骤点结构。")
 
 
 def _aggregate_scores(payload: dict[str, Any]) -> None:
@@ -1305,6 +1463,9 @@ __all__ = [
     "ConfigEditorRow",
     "ConfigEditorValidationError",
     "ManualPartInput",
+    "ManualQuestionPartInput",
+    "ManualStepInput",
+    "ReplaceQuestionStructureCommand",
     "ReplaceScoringUnitsCommand",
     "SplitScoringUnitCommand",
     "apply_config_editor_changes",

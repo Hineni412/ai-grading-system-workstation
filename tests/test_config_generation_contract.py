@@ -174,6 +174,138 @@ def test_new_generation_promotes_step_answer_aliases_for_objective_questions() -
     ] == [("70", "70"), ("150°", "150°")]
 
 
+def test_objective_questions_remove_every_process_deduction_rule() -> None:
+    rubric, answer = _question(
+        "Q3",
+        question_type="fill_blank",
+        part_id="Q3",
+        step_id="S1",
+    )
+    rubric["deduction_policy"] = [
+        "Only the final answer is required.",
+        "If the process is missing, deduct all points.",
+        {"policy_id": "core_process_missing", "deduction": 1},
+    ]
+    rubric["parts"][0]["deduction_policy"] = [
+        "Missing derivation loses all points."
+    ]
+    rubric["parts"][0]["proof_obligations"] = ["show proof"]
+    rubric["parts"][0]["visual_requirements"] = ["draw a diagram"]
+    payload = {
+        "rubric": {
+            "exam_title": "generated",
+            "total_score": 1,
+            "questions": [rubric],
+        },
+        "answer_key": {"questions": [answer]},
+        "meta": {},
+    }
+
+    normalize_new_generated_config_payload(payload)
+
+    question = payload["rubric"]["questions"][0]
+    part = question["parts"][0]
+    assert question["deduction_policy"] == [
+        "仅按标准答案或等价答案判分，不要求书写过程。"
+    ]
+    assert part["deduction_policy"] == [
+        "仅按标准答案或等价答案判分，不要求书写过程。"
+    ]
+    assert part["proof_obligations"] == []
+    assert part["visual_requirements"] == []
+
+
+def test_multi_blank_question_creates_one_answer_only_step_per_blank() -> None:
+    rubric, answer = _question(
+        "Q5",
+        question_type="fill_blank",
+        part_id="Q5",
+        step_id="model-process",
+    )
+    rubric["max_score"] = 2
+    rubric["parts"][0]["part_score"] = 2
+    rubric["parts"][0]["steps"][0]["core_goal"] = "先计算再推导"
+    answer["canonical_answer"] = "3；5"
+    answer["accepted_forms"] = ["3；5"]
+    answer["parts"][0].update(
+        {
+            "answer": "3；5",
+            "answer_values": ["3", "5"],
+        }
+    )
+    payload = {
+        "rubric": {
+            "exam_title": "generated",
+            "total_score": 2,
+            "questions": [rubric],
+        },
+        "answer_key": {"questions": [answer]},
+        "meta": {},
+    }
+
+    normalize_new_generated_config_payload(payload)
+
+    steps = payload["rubric"]["questions"][0]["parts"][0]["steps"]
+    assert [step["step_id"] for step in steps] == ["S1", "S2"]
+    assert [step["step_score"] for step in steps] == [1, 1]
+    assert [step["required_elements"] for step in steps] == [["3"], ["5"]]
+    assert all("过程" not in step["core_goal"] for step in steps)
+    assert all(step["deduction_rules"] == [] for step in steps)
+
+
+def test_mixed_fill_question_only_applies_answer_only_rule_to_fill_part() -> None:
+    rubric, answer = _question(
+        "Q11",
+        question_type="fill_blank",
+        part_id="Q11(1)",
+        step_id="fill-answer",
+    )
+    rubric["max_score"] = 2
+    rubric["parts"][0]["part_score"] = 1
+    rubric["parts"].append(
+        {
+            "part_id": "Q11(2)",
+            "part_score": 1,
+            "response_mode": "process_required",
+            "proof_obligations": ["说明数量关系成立的理由"],
+            "deduction_policy": ["缺少有效理由时本小问未达成"],
+            "steps": [
+                {
+                    "step_id": "reason-step",
+                    "step_score": 1,
+                    "core_goal": "说明数量关系成立的理由",
+                    "required_elements": ["给出有效推理"],
+                }
+            ],
+        }
+    )
+    answer["parts"].append(
+        {
+            "part_id": "Q11(2)",
+            "answer": "由已知条件可推出数量关系",
+        }
+    )
+    payload = {
+        "rubric": {
+            "exam_title": "generated",
+            "total_score": 2,
+            "questions": [rubric],
+        },
+        "answer_key": {"questions": [answer]},
+        "meta": {},
+    }
+
+    normalize_new_generated_config_payload(payload)
+
+    first, second = payload["rubric"]["questions"][0]["parts"]
+    assert first["deduction_policy"] == [
+        "仅按标准答案或等价答案判分，不要求书写过程。"
+    ]
+    assert second["response_mode"] == "process_required"
+    assert second["proof_obligations"] == ["说明数量关系成立的理由"]
+    assert second["steps"][0]["core_goal"] == "说明数量关系成立的理由"
+
+
 def test_teacher_confirmed_answer_overrides_a_conflicting_model_answer() -> None:
     rubric, _answer = _question(
         "Q5",

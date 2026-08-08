@@ -164,9 +164,12 @@ export interface ConfigEditorEdit {
 }
 
 export interface ManualPartInput { part_id: string; score: number; core_goal: string }
+export interface ManualScoringStepInput { step_id: string; score: number; core_goal: string }
+export interface ManualQuestionPartInput { part_id: string; steps: ManualScoringStepInput[] }
 export type ConfigEditorCommand =
   | { kind: 'split'; question_id: string; count: number; style: 'subquestion' | 'blank' }
   | { kind: 'replace_parts'; question_id: string; parts: ManualPartInput[] }
+  | { kind: 'replace_question_structure'; question_id: string; parts: ManualQuestionPartInput[] }
 
 export interface ConfigEditorSaveRequest {
   revision: string

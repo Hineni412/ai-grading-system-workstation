@@ -260,6 +260,23 @@ def run_session_question_bank_sync_job(
         source_questions = current.payload.get("rubric", {}).get("questions", [])
         if not isinstance(source_questions, list):
             source_questions = []
+        answer_questions = current.payload.get("answer_key", {}).get(
+            "questions", []
+        )
+        if not isinstance(answer_questions, list):
+            answer_questions = []
+        confirmed_rubrics = {
+            str(item.get("question_id") or "").strip(): item
+            for item in source_questions
+            if isinstance(item, dict)
+            and str(item.get("question_id") or "").strip()
+        }
+        confirmed_answers = {
+            str(item.get("question_id") or "").strip(): item
+            for item in answer_questions
+            if isinstance(item, dict)
+            and str(item.get("question_id") or "").strip()
+        }
         link_result = link_service.confirm_imported_questions_for_session(
             grading_session_id=session_id,
             source_questions=[
@@ -287,6 +304,8 @@ def run_session_question_bank_sync_job(
                 link_service=link_service,
                 ai_service_factory=ai_service_factory,
                 taxonomy_governance=taxonomy_governance,
+                confirmed_rubrics=confirmed_rubrics,
+                confirmed_answers=confirmed_answers,
                 cancel_check=context.raise_if_cancelled,
             )
 
@@ -826,6 +845,8 @@ def _adopt_deferred_analysis(
     link_service: SourceQuestionLinkService,
     ai_service_factory: Callable[[], Any],
     taxonomy_governance: Any,
+    confirmed_rubrics: dict[str, dict[str, Any]] | None = None,
+    confirmed_answers: dict[str, dict[str, Any]] | None = None,
     cancel_check: Callable[[], None] | None = None,
 ) -> dict[str, object]:
     links = {
@@ -841,6 +862,8 @@ def _adopt_deferred_analysis(
         links=links,
         ai_service_factory=ai_service_factory,
         taxonomy_governance=taxonomy_governance,
+        confirmed_rubrics=confirmed_rubrics,
+        confirmed_answers=confirmed_answers,
         cancel_check=cancel_check,
     )
 
@@ -854,6 +877,8 @@ def _adopt_deferred_analysis_with_links(
     links: dict[str, dict[str, Any]],
     ai_service_factory: Callable[[], Any],
     taxonomy_governance: Any,
+    confirmed_rubrics: dict[str, dict[str, Any]] | None = None,
+    confirmed_answers: dict[str, dict[str, Any]] | None = None,
     cancel_check: Callable[[], None] | None = None,
 ) -> dict[str, object]:
     if cancel_check is not None:
@@ -948,6 +973,12 @@ def _adopt_deferred_analysis_with_links(
                     source_question_ref=item.source_question_ref,
                     bank_question_id=bank_question_id,
                     confirmed_by=f"question-bank-sync:{session_id}",
+                ),
+                confirmed_rubric=(confirmed_rubrics or {}).get(
+                    item.source_question_ref
+                ),
+                confirmed_answer=(confirmed_answers or {}).get(
+                    item.source_question_ref
                 ),
             )
         )

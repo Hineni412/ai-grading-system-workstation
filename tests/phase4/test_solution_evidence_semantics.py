@@ -352,6 +352,119 @@ def test_solution_evidence_projects_role_preserving_union_and_complete_config() 
     _assert_no_score_fields(criteria.to_dict())
 
 
+def test_single_blank_training_point_uses_only_the_answer_even_if_model_split_steps() -> None:
+    question = _question(
+        1,
+        question_type="填空题",
+        text="计算 1+2=____。",
+    )
+    payload = _evidence_payload(1)
+    part = payload["parts"][0]
+    part.update(
+        {
+            "response_mode": "exact_objective",
+            "canonical_answer": "3",
+            "accepted_forms": ["3"],
+            "full_answer": "",
+            "proof_obligations": [],
+            "deduction_policy": ["Only the final answer matters."],
+            "evidence_points": [
+                {
+                    **part["evidence_points"][0],
+                    "evidence_point_id": "calculation",
+                    "target": "Show the calculation process",
+                },
+                {
+                    **part["evidence_points"][0],
+                    "evidence_point_id": "answer",
+                    "target": "Write the final answer",
+                },
+            ],
+        }
+    )
+    evidence = QuestionSolutionEvidence.from_model_dict(
+        payload,
+        question_id=1,
+        source_content_hash=(
+            __import__(
+                "question_bank.training_criteria.analysis",
+                fromlist=["solution_evidence_source_content_hash"],
+            ).solution_evidence_source_content_hash(question)
+        ),
+        resolver=Resolver(),
+    )
+
+    criteria = training_criteria_from_solution_evidence(
+        evidence,
+        question=question,
+    )
+
+    assert [point.point_id for point in criteria.points] == ["objective-answer"]
+    assert criteria.points[0].target == "给出正确或等价答案"
+    assert criteria.points[0].observable_evidence == "3"
+    assert criteria.auxiliary_rules == ()
+    assert criteria.rationale == "客观题仅依据答案生成训练判定点。"
+
+
+def test_multiple_blank_training_points_keep_only_each_answer_unit() -> None:
+    question = _question(
+        1,
+        question_type="填空题",
+        text="分别填写：____，____。",
+    )
+    payload = _evidence_payload(1)
+    part = payload["parts"][0]
+    point = part["evidence_points"][0]
+    part.update(
+        {
+            "response_mode": "short_answer_points",
+            "canonical_answer": "",
+            "accepted_forms": [],
+            "full_answer": "3；5",
+            "proof_obligations": [],
+            "deduction_policy": ["仅按两个答案判定"],
+            "evidence_points": [
+                {
+                    **point,
+                    "evidence_point_id": "calculation-1",
+                    "target": "先计算第一个空",
+                    "observable_evidence": "3",
+                },
+                {
+                    **point,
+                    "evidence_point_id": "calculation-2",
+                    "target": "再推导第二个空",
+                    "observable_evidence": "5",
+                },
+            ],
+        }
+    )
+    evidence = QuestionSolutionEvidence.from_model_dict(
+        payload,
+        question_id=1,
+        source_content_hash=(
+            __import__(
+                "question_bank.training_criteria.analysis",
+                fromlist=["solution_evidence_source_content_hash"],
+            ).solution_evidence_source_content_hash(question)
+        ),
+        resolver=Resolver(),
+    )
+
+    criteria = training_criteria_from_solution_evidence(
+        evidence,
+        question=question,
+    )
+
+    assert [point.point_id for point in criteria.points] == [
+        "answer-unit-1",
+        "answer-unit-2",
+    ]
+    assert [point.observable_evidence for point in criteria.points] == ["3", "5"]
+    assert all("计算" not in point.target and "推导" not in point.target for point in criteria.points)
+    assert criteria.rationale == "填空题仅依据各独立答案生成训练判定点。"
+
+
 def test_solution_evidence_skeletons_compose_into_current_config_contract() -> None:
     skeletons: list[dict[str, Any]] = []
     evidence_versions: list[str] = []
