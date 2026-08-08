@@ -345,6 +345,8 @@ describe('taxonomy review', () => {
     )
     const resultText = results?.textContent ?? ''
     expect(results?.textContent).toContain('先核对疑难项，再一次保存')
+    expect(results?.querySelectorAll('.taxonomy-ai-results__candidate-head')).toHaveLength(1)
+    expect(results?.querySelectorAll('.taxonomy-ai-results__controls')).toHaveLength(1)
     expect(resultText.indexOf('需要人工判断的词')).toBeLessThan(
       resultText.indexOf('可严格归并的词'),
     )
@@ -362,6 +364,34 @@ describe('taxonomy review', () => {
       decision: 'defer',
       target_term_ids: [],
     }])
+
+    app.unmount()
+  })
+
+  it('shows an old AI run only through a read-only history view', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const store = useTaxonomyReviewStore()
+    store.loadState = 'empty'
+    store.historicalSuggestionRun = decodeTaxonomySuggestionRun(suggestionRun)
+
+    const host = document.createElement('div')
+    document.body.append(host)
+    const app = createApp(TaxonomyCandidateReview, { open: true })
+    app.use(pinia)
+    app.mount(host)
+    await nextTick()
+
+    const historyButton = [...document.body.querySelectorAll<HTMLButtonElement>('button')]
+      .find((button) => button.textContent?.includes('查看历史批次'))
+    expect(historyButton).toBeDefined()
+    expect(document.body.querySelector('.taxonomy-ai-history')).toBeNull()
+    historyButton?.click()
+    await nextTick()
+
+    expect(document.body.textContent).toContain('历史记录，不影响当前候选')
+    expect(document.body.querySelector('.taxonomy-ai-history')).not.toBeNull()
+    expect(document.body.textContent).not.toContain('保存本批决定')
 
     app.unmount()
   })
@@ -558,6 +588,45 @@ describe('taxonomy review', () => {
     expect(
       localStorage.getItem(TAXONOMY_SUGGESTION_COMMAND_STORAGE_KEY),
     ).toBeNull()
+  })
+
+  it('keeps a restored AI run in history when it no longer belongs to the current candidates', async () => {
+    const runId = 'c'.repeat(32)
+    localStorage.setItem(TAXONOMY_SUGGESTION_RUN_STORAGE_KEY, runId)
+    const oldRun = decodeTaxonomySuggestionRun({
+      ...suggestionRun,
+      run_id: runId,
+    })
+    const currentProposal: TaxonomyProposal = {
+      ...proposal,
+      id: 'proposal-current',
+      proposed_name: '当前这一批的新词',
+    }
+    const previewSuggestionBatch = vi.fn()
+    const store = useTaxonomyReviewStore()
+
+    await store.load({
+      getCatalog: vi.fn().mockResolvedValue({
+        revision: 7,
+        dimensions: {
+          curriculum: [], knowledge: [], ability: [], method: [], thought: [],
+          model: [], special_type: [],
+        },
+      }),
+      listProposals: vi.fn().mockResolvedValue({
+        revision: 7,
+        items: [currentProposal],
+        counts: { pending: 1, actionable: 1, historical_unavailable: 0 },
+      }),
+      getSuggestionRun: vi.fn().mockResolvedValue(oldRun),
+      previewSuggestionBatch,
+    } as never)
+
+    expect(store.suggestionRun).toBeNull()
+    expect(store.historicalSuggestionRun?.run_id).toBe(runId)
+    expect(store.batchPreview).toBeNull()
+    expect(previewSuggestionBatch).not.toHaveBeenCalled()
+    expect(store.suggestionMessage).toContain('历史')
   })
 
   it('reuses the same paid-request token after an ambiguous start response', async () => {

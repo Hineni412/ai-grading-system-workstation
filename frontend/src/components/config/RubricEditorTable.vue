@@ -37,6 +37,8 @@ const emit = defineEmits<{
 const root = ref<HTMLElement | null>(null)
 const scoreErrors = ref<Record<string, string>>({})
 const editingRowId = ref<string | null>(null)
+const choiceScore = ref<number | null>(null)
+const fillQuestionScore = ref<number | null>(null)
 const blockingIssues = computed(() => props.issues.filter((issue) => issue.severity === 'error'))
 const warningIssues = computed(() => props.issues.filter((issue) => issue.severity !== 'error'))
 const totalBlocked = computed(() => props.totalScore !== 100)
@@ -55,6 +57,12 @@ const objectiveQuestionTypes = new Set([
   'true_false',
   'direct_answer',
 ])
+const choiceQuestionIds = computed(() => [...new Set(
+  props.rows.filter((row) => row.question_type === 'choice').map((row) => row.question_id),
+)])
+const fillQuestionIds = computed(() => [...new Set(
+  props.rows.filter((row) => row.question_type === 'fill_blank').map((row) => row.question_id),
+)])
 const firstRowIds = computed(() => {
   const seen = new Set<string>()
   const first = new Set<string>()
@@ -69,6 +77,26 @@ const firstRowIds = computed(() => {
 
 function identity(row: ConfigEditorRow): string {
   return `${row.question_id} ${row.part_id} ${row.step_id}`
+}
+
+function distributedScores(total: number, count: number): number[] {
+  const unit = Math.floor((total / count) * 100) / 100
+  const scores = Array.from({ length: count }, () => unit)
+  scores[count - 1] = Number((total - unit * (count - 1)).toFixed(2))
+  return scores
+}
+
+function applyBulkScore(questionType: 'choice' | 'fill_blank', rawScore: number | null): void {
+  const score = Number(rawScore)
+  if (!Number.isFinite(score) || score <= 0 || score > 100 || props.disabled) return
+  const ids = questionType === 'choice' ? choiceQuestionIds.value : fillQuestionIds.value
+  for (const questionId of ids) {
+    const rows = props.rows.filter((row) => (
+      row.question_id === questionId && row.question_type === questionType
+    ))
+    const scores = distributedScores(score, rows.length)
+    rows.forEach((row, index) => emit('edit', { row_id: row.row_id, score: scores[index] }))
+  }
 }
 
 function isObjective(row: ConfigEditorRow): boolean {
@@ -219,6 +247,22 @@ async function focusIssue(issue: ConfigEditorIssue): Promise<void> {
       <div>
         <h2 id="rubric-ledger-title" tabindex="-1">编辑评分依据</h2>
         <p>题号、评分单元和匹配规则由服务器维护，此处只编辑允许修改的内容。</p>
+      </div>
+      <div class="rubric-ledger__bulk-scores" aria-label="统一修改客观题分值">
+        <label>
+          <span>选择题每题</span>
+          <input v-model.number="choiceScore" aria-label="选择题每题分值" type="number" min="0.5" max="100" step="0.5" :disabled="disabled || choiceQuestionIds.length === 0">
+          <button type="button" :disabled="disabled || choiceQuestionIds.length === 0 || !choiceScore" @click="applyBulkScore('choice', choiceScore)">
+            应用到 {{ choiceQuestionIds.length }} 题
+          </button>
+        </label>
+        <label>
+          <span>填空题每题总分</span>
+          <input v-model.number="fillQuestionScore" aria-label="填空题每题总分" type="number" min="0.5" max="100" step="0.5" :disabled="disabled || fillQuestionIds.length === 0">
+          <button type="button" :disabled="disabled || fillQuestionIds.length === 0 || !fillQuestionScore" @click="applyBulkScore('fill_blank', fillQuestionScore)">
+            应用到 {{ fillQuestionIds.length }} 题
+          </button>
+        </label>
       </div>
       <strong
         class="rubric-ledger__total"

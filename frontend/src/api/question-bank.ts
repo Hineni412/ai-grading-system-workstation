@@ -83,12 +83,16 @@ export interface QuestionBankPaper {
   semester: string | null
   folder_name: string | null
   textbook_version: string | null
+  curriculum_volume_id: string | null
   import_status: string | null
   created_at: string
   updated_at: string
   question_count: number
   tagged_question_count: number
   tagged_any_question_count: number
+  evidence_question_count: number
+  criteria_question_count: number
+  complete_analysis_count: number
   source_type: 'docx' | 'pdf' | 'other'
 }
 
@@ -438,6 +442,7 @@ export interface QuestionSolutionEvidenceResponse {
 }
 
 export type QuestionBankTagStatus = 'all' | 'tagged' | 'untagged'
+export type QuestionBankAnalysisStatus = 'all' | 'complete' | 'incomplete'
 export type QuestionBankSort =
   | 'paper_order'
   | 'difficulty_desc'
@@ -470,6 +475,7 @@ export interface QuestionBankFilters {
   examScopes?: string[]
   curriculumSections?: string[]
   tagStatus?: QuestionBankTagStatus
+  analysisStatus?: QuestionBankAnalysisStatus
   sort?: QuestionBankSort
 }
 
@@ -762,12 +768,16 @@ function isQuestionBankPaper(value: unknown): value is QuestionBankPaper {
       'semester',
       'folder_name',
       'textbook_version',
+      'curriculum_volume_id',
       'import_status',
       'created_at',
       'updated_at',
       'question_count',
       'tagged_question_count',
       'tagged_any_question_count',
+      'evidence_question_count',
+      'criteria_question_count',
+      'complete_analysis_count',
       'source_type',
     ]) &&
     isPositiveInteger(value.id) &&
@@ -781,6 +791,7 @@ function isQuestionBankPaper(value: unknown): value is QuestionBankPaper {
     isNullableString(value.semester) &&
     isNullableString(value.folder_name) &&
     isNullableString(value.textbook_version) &&
+    isNullableString(value.curriculum_volume_id) &&
     isNullableString(value.import_status) &&
     typeof value.created_at === 'string' &&
     typeof value.updated_at === 'string' &&
@@ -790,6 +801,12 @@ function isQuestionBankPaper(value: unknown): value is QuestionBankPaper {
     isNonnegativeInteger(value.tagged_any_question_count) &&
     Number(value.tagged_any_question_count) <= Number(value.question_count) &&
     Number(value.tagged_question_count) <= Number(value.tagged_any_question_count) &&
+    isNonnegativeInteger(value.evidence_question_count) &&
+    Number(value.evidence_question_count) <= Number(value.question_count) &&
+    isNonnegativeInteger(value.criteria_question_count) &&
+    Number(value.criteria_question_count) <= Number(value.question_count) &&
+    isNonnegativeInteger(value.complete_analysis_count) &&
+    Number(value.complete_analysis_count) <= Number(value.question_count) &&
     (value.source_type === 'docx' || value.source_type === 'pdf' || value.source_type === 'other')
   )
 }
@@ -1537,6 +1554,7 @@ function questionListPath(filters: QuestionBankFilters): string {
   appendTexts(parameters, 'teaching_stages', filters.teachingStages)
   appendTexts(parameters, 'sub_skills', filters.subSkills)
   parameters.set('tag_status', filters.tagStatus ?? 'all')
+  parameters.set('analysis_status', filters.analysisStatus ?? 'all')
   parameters.set('sort', filters.sort ?? 'newest')
   return `/api/question-bank/questions?${parameters.toString()}`
 }
@@ -1940,6 +1958,7 @@ export const questionBankApi = {
 
   submitTagging(
     questionIds: readonly number[],
+    curriculumVolumeId: string,
     sourceJobId?: number,
     signal?: AbortSignal,
     forceRetag = false,
@@ -1947,12 +1966,15 @@ export const questionBankApi = {
   ): Promise<JobResponse> {
     const body: {
       question_ids: number[]
+      curriculum_volume_id: string
       source_job_id?: number
       force_retag?: boolean
       client_request_token?: string
     } = {
       question_ids: normalizedQuestionIds(questionIds),
+      curriculum_volume_id: String(curriculumVolumeId ?? '').trim(),
     }
+    if (!body.curriculum_volume_id) throw new Error('Invalid curriculum volume')
     if (sourceJobId !== undefined) {
       if (!isPositiveInteger(sourceJobId)) throw new Error('Invalid source job id')
       body.source_job_id = sourceJobId

@@ -928,9 +928,21 @@ export const useConfigWorkspaceStore = defineStore('config-workspace', () => {
     return {
       revision: editor.value.revision,
       edits: editorEdits.value.map((edit) => ({ ...edit })),
-      commands: editorCommands.value.map((command) => command.kind === 'replace_parts'
-        ? { ...command, parts: command.parts.map((part) => ({ ...part })) }
-        : { ...command }),
+      commands: editorCommands.value.map((command) => {
+        if (command.kind === 'replace_parts') {
+          return { ...command, parts: command.parts.map((part) => ({ ...part })) }
+        }
+        if (command.kind === 'replace_question_structure') {
+          return {
+            ...command,
+            parts: command.parts.map((part) => ({
+              ...part,
+              steps: part.steps.map((step) => ({ ...step })),
+            })),
+          }
+        }
+        return { ...command }
+      }),
     }
   }
 

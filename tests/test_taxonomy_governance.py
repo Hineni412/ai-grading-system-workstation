@@ -307,6 +307,81 @@ def test_curriculum_candidates_are_scoped_to_teacher_selected_volume(
     )
 
 
+def test_curriculum_leaf_label_resolves_to_scoped_stable_term(
+    tmp_path: Path,
+) -> None:
+    governance = TaxonomyGovernance(
+        catalog_path=CATALOG_PATH.with_name("tag_vocabulary_v3.json"),
+        state_path=tmp_path / "taxonomy-state-v3.json",
+        knowledge_graph_db_path=tmp_path / "not-created-question-bank.db",
+    )
+    contract = governance.prompt_contract(
+        {
+            "question_text": "线段垂直平分线上的点到两端距离相等",
+            "curriculum_volume_id": "bnu24-math-g7-lower",
+        }
+    )
+    candidate = next(
+        item
+        for item in contract["candidates"]["knowledge"]
+        if item["id"] == "kp_bnu24_math_g7_lower_5_2_3"
+    )
+
+    constrained = governance.constrain(
+        {
+            "knowledge_points": [candidate["name"]],
+            "canonical_knowledge_id": candidate["id"],
+        },
+        context={
+            "allowed_term_ids": contract["allowed_term_ids"],
+            "knowledge_catalog_revision": contract[
+                "knowledge_catalog_revision"
+            ],
+        },
+    )
+
+    assert [
+        item["id"] for item in constrained["accepted_terms"]["knowledge"]
+    ] == [candidate["id"]]
+    assert constrained["proposals"] == []
+
+
+def test_requested_canonical_id_orders_the_accepted_primary_knowledge() -> None:
+    original = TagAnalysis.from_dict(
+        {
+            "knowledge_points": ["知识点甲", "知识点乙"],
+            "canonical_knowledge_id": "kp-b",
+            "difficulty": 3,
+            "confidence": 0.98,
+        }
+    )
+    constrained = {
+        "accepted_fields": {
+            "knowledge_points": ["完整路径甲", "完整路径乙"],
+        },
+        "accepted_terms": {
+            "knowledge": [
+                {"id": "kp-a", "name": "完整路径甲"},
+                {"id": "kp-b", "name": "完整路径乙"},
+            ]
+        },
+        "proposals": [],
+        "status": "complete",
+        "taxonomy_revision": 4,
+    }
+
+    normalized, proposals, status, _notes = _analysis_from_constraint(
+        original,
+        constrained,
+        fallback_revision=4,
+    )
+
+    assert normalized.knowledge_points == ["完整路径乙", "完整路径甲"]
+    assert normalized.canonical_knowledge_id == "kp-b"
+    assert proposals == []
+    assert status == "complete"
+
+
 def test_historical_saved_tags_do_not_bias_the_new_candidate_contract(
     governance: TaxonomyGovernance,
 ) -> None:

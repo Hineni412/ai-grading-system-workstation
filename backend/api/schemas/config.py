@@ -415,7 +415,34 @@ class ReplaceScoringUnitsRequest(BaseModel):
     parts: list[ManualPartRequest] = Field(min_length=1, max_length=100)
 
 
-ConfigEditorCommandRequest = SplitScoringUnitRequest | ReplaceScoringUnitsRequest
+class ManualStepRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    step_id: str = Field(min_length=1, max_length=100)
+    score: float = Field(gt=0, le=100)
+    core_goal: str = Field(min_length=1, max_length=20_000)
+
+
+class ManualQuestionPartRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    part_id: str = Field(min_length=1, max_length=100)
+    steps: list[ManualStepRequest] = Field(min_length=1, max_length=100)
+
+
+class ReplaceQuestionStructureRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["replace_question_structure"]
+    question_id: str = Field(min_length=1, max_length=100)
+    parts: list[ManualQuestionPartRequest] = Field(min_length=1, max_length=100)
+
+
+ConfigEditorCommandRequest = (
+    SplitScoringUnitRequest
+    | ReplaceScoringUnitsRequest
+    | ReplaceQuestionStructureRequest
+)
 
 
 class ConfigEditorSaveRequest(BaseModel):

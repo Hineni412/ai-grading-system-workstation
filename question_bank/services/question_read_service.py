@@ -29,7 +29,11 @@ from question_bank.current_knowledge import (
     CurrentKnowledgeResolver,
     CurrentKnowledgeUnavailable,
 )
-from question_bank.models.question import ALLOWED_TAG_TYPES, has_complete_analysis_tags
+from question_bank.models.question import (
+    ALLOWED_TAG_TYPES,
+    CORE_ANALYSIS_TAG_TYPES,
+    has_complete_analysis_tags,
+)
 from question_bank.models.tag_schema import TagAnalysis
 from question_bank.services.asset_path_service import (
     AmbiguousQuestionBankAssetPathError,
@@ -43,6 +47,7 @@ from question_bank.services.rich_content_service import clean_question_blocks
 from question_bank.services.similarity_service import text_similarity
 from question_bank.taxonomy.curriculum_catalog import (
     curriculum_chapter_exam_scope_values,
+    curriculum_volume,
 )
 from question_bank.taxonomy.governance import get_taxonomy_governance
 
@@ -426,6 +431,7 @@ class QuestionReadFilters:
     exam_scopes: tuple[str, ...] = ()
     curriculum_sections: tuple[str, ...] = ()
     tag_status: str = "all"
+    analysis_status: str = "all"
     sort: str = "newest"
 
 
@@ -976,7 +982,49 @@ class QuestionBankReadService:
                          AND ts.core_tag_count = 3
                          AND CAST(q.difficulty AS REAL) BETWEEN 1 AND 10
                         THEN 1
-                    END) AS tagged_question_count
+                    END) AS tagged_question_count,
+                    COUNT(CASE
+                        WHEN {visible_question_sql}
+                         AND EXISTS (
+                            SELECT 1
+                            FROM question_solution_evidence_versions evidence
+                            WHERE evidence.question_id = q.id
+                              AND evidence.status IN ('proposed', 'approved')
+                         )
+                        THEN 1
+                    END) AS evidence_question_count,
+                    COUNT(CASE
+                        WHEN {visible_question_sql}
+                         AND EXISTS (
+                            SELECT 1
+                            FROM training_criterion_heads head
+                            JOIN training_criterion_versions version
+                              ON version.version_id = head.current_version_id
+                            WHERE head.question_id = q.id
+                              AND version.status IN ('proposed', 'approved')
+                         )
+                        THEN 1
+                    END) AS criteria_question_count,
+                    COUNT(CASE
+                        WHEN {visible_question_sql}
+                         AND ts.core_tag_count = 3
+                         AND CAST(q.difficulty AS REAL) BETWEEN 1 AND 10
+                         AND EXISTS (
+                            SELECT 1
+                            FROM question_solution_evidence_versions evidence
+                            WHERE evidence.question_id = q.id
+                              AND evidence.status IN ('proposed', 'approved')
+                         )
+                         AND EXISTS (
+                            SELECT 1
+                            FROM training_criterion_heads head
+                            JOIN training_criterion_versions version
+                              ON version.version_id = head.current_version_id
+                            WHERE head.question_id = q.id
+                              AND version.status IN ('proposed', 'approved')
+                         )
+                        THEN 1
+                    END) AS complete_analysis_count
                 FROM papers p
                 LEFT JOIN questions q ON q.paper_id = p.id
                 LEFT JOIN tag_summary ts ON ts.question_id = q.id
@@ -990,6 +1038,14 @@ class QuestionBankReadService:
         for row in rows:
             item = dict(row)
             item["source_type"] = _safe_source_type(item.pop("_source_file", None))
+            volume = curriculum_volume(
+                grade=item.get("grade"),
+                semester=item.get("semester"),
+                textbook_version=item.get("textbook_version"),
+            )
+            item["curriculum_volume_id"] = (
+                None if volume is None else str(volume["id"])
+            )
             items.append(item)
         return items
 
@@ -1009,6 +1065,77 @@ class QuestionBankReadService:
         if generation is not None and generation == _source_generation_token(self.db_path):
             _read_result_cache_put(key, result)
         return result
+
+    def session_analysis_status(
+        self,
+        grading_session_id: int,
+    ) -> dict[str, Any]:
+        """Return the current saved projections for a grading session's linked questions."""
+
+        placeholders = ", ".join("?" for _ in CORE_ANALYSIS_TAG_TYPES)
+        with _read_connection(self.db_path) as conn:
+            rows = conn.execute(
+                f"""
+                SELECT DISTINCT
+                    q.id,
+                    q.question_number,
+                    CAST(q.difficulty AS REAL) BETWEEN 1 AND 10 AS difficulty_ready,
+                    (
+                        SELECT COUNT(DISTINCT qt.tag_type)
+                        FROM question_tags qt
+                        WHERE qt.question_id = q.id
+                          AND qt.tag_type IN ({placeholders})
+                          AND COALESCE(qt.tag_value, '') <> ''
+                    ) = {len(CORE_ANALYSIS_TAG_TYPES)} AS tags_ready,
+                    EXISTS (
+                        SELECT 1
+                        FROM question_solution_evidence_versions evidence
+                        WHERE evidence.question_id = q.id
+                          AND evidence.status IN ('proposed', 'approved')
+                    ) AS evidence_ready,
+                    EXISTS (
+                        SELECT 1
+                        FROM training_criterion_heads head
+                        JOIN training_criterion_versions version
+                          ON version.version_id = head.current_version_id
+                        WHERE head.question_id = q.id
+                          AND version.status IN ('proposed', 'approved')
+                    ) AS criteria_ready
+                FROM grading_question_links link
+                JOIN questions q ON q.id = link.bank_question_id
+                WHERE link.grading_session_id = ?
+                  AND link.status = 'confirmed'
+                  AND COALESCE(q.is_deleted, 0) = 0
+                ORDER BY q.id
+                """,
+                [*CORE_ANALYSIS_TAG_TYPES, str(int(grading_session_id))],
+            ).fetchall()
+        items = [dict(row) for row in rows]
+        incomplete = [
+            item
+            for item in items
+            if not (
+                bool(item["difficulty_ready"])
+                and bool(item["tags_ready"])
+                and bool(item["evidence_ready"])
+                and bool(item["criteria_ready"])
+            )
+        ]
+        return {
+            "question_count": len(items),
+            "tagged_count": sum(
+                bool(item["difficulty_ready"]) and bool(item["tags_ready"])
+                for item in items
+            ),
+            "evidence_count": sum(bool(item["evidence_ready"]) for item in items),
+            "criteria_count": sum(bool(item["criteria_ready"]) for item in items),
+            "complete_count": len(items) - len(incomplete),
+            "incomplete_question_ids": [int(item["id"]) for item in incomplete],
+            "incomplete_source_refs": [
+                str(item["question_number"] or f"Q{item['id']}")
+                for item in incomplete
+            ],
+        }
 
     def _list_questions(self, filters: QuestionReadFilters) -> QuestionReadPage:
         joins, where, params = _question_filter_parts(
@@ -1939,6 +2066,40 @@ def _question_filter_parts(
     )
     if requested_knowledge and not expanded_knowledge:
         where.append("1 = 0")
+    if filters.analysis_status in {"complete", "incomplete"}:
+        core_placeholders = ", ".join("?" for _ in CORE_ANALYSIS_TAG_TYPES)
+        complete_sql = f"""
+            (
+                CAST(q.difficulty AS REAL) BETWEEN 1 AND 10
+                AND (
+                    SELECT COUNT(DISTINCT qt.tag_type)
+                    FROM question_tags qt
+                    WHERE qt.question_id = q.id
+                      AND qt.tag_type IN ({core_placeholders})
+                      AND COALESCE(qt.tag_value, '') <> ''
+                ) = {len(CORE_ANALYSIS_TAG_TYPES)}
+                AND EXISTS (
+                    SELECT 1
+                    FROM question_solution_evidence_versions evidence
+                    WHERE evidence.question_id = q.id
+                      AND evidence.status IN ('proposed', 'approved')
+                )
+                AND EXISTS (
+                    SELECT 1
+                    FROM training_criterion_heads head
+                    JOIN training_criterion_versions version
+                      ON version.version_id = head.current_version_id
+                    WHERE head.question_id = q.id
+                      AND version.status IN ('proposed', 'approved')
+                )
+            )
+        """
+        where.append(
+            complete_sql
+            if filters.analysis_status == "complete"
+            else f"NOT {complete_sql}"
+        )
+        params.extend(CORE_ANALYSIS_TAG_TYPES)
     return joins, where, params
 
 

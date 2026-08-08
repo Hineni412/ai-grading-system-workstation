@@ -112,6 +112,7 @@ export const useTaxonomyReviewStore = defineStore('taxonomy-review', () => {
   const message = ref('')
   const proposalErrors = ref<Record<string, TaxonomyProposalError>>({})
   const suggestionRun = ref<TaxonomySuggestionRun | null>(null)
+  const historicalSuggestionRun = ref<TaxonomySuggestionRun | null>(null)
   const suggestionState = ref<TaxonomySuggestionState>('idle')
   const suggestionMessage = ref('')
   const suggestionJobId = ref<number | null>(null)
@@ -127,6 +128,25 @@ export const useTaxonomyReviewStore = defineStore('taxonomy-review', () => {
   const hasCatalog = computed(
     () => TAXONOMY_DIMENSIONS.some((key) => dimensions.value[key].length > 0),
   )
+
+  function runBelongsToCurrentCandidates(run: TaxonomySuggestionRun): boolean {
+    if (run.stale || run.taxonomy_revision !== revision.value || run.items.length === 0) return false
+    const currentIds = new Set(
+      proposals.value
+        .filter((proposal) => proposal.actionable && proposal.status === 'pending')
+        .map((proposal) => proposal.id),
+    )
+    return run.items.every((item) => currentIds.has(item.proposal_id))
+  }
+
+  function moveSuggestionRunToHistory(run: TaxonomySuggestionRun): void {
+    historicalSuggestionRun.value = run
+    suggestionRun.value = null
+    batchPreview.value = null
+    suggestionState.value = 'idle'
+    batchState.value = 'idle'
+    suggestionMessage.value = '上次 AI 批次已移到历史记录，不影响当前候选。'
+  }
 
   function termsFor(dimension: TaxonomyDimension): TaxonomyTerm[] {
     return dimensions.value[dimension]
@@ -159,6 +179,9 @@ export const useTaxonomyReviewStore = defineStore('taxonomy-review', () => {
       pendingCount.value = proposalList.counts.actionable
       revision.value = proposalList.revision
       loadState.value = proposalList.counts.actionable === 0 ? 'empty' : 'ready'
+      if (suggestionRun.value && !runBelongsToCurrentCandidates(suggestionRun.value)) {
+        moveSuggestionRunToHistory(suggestionRun.value)
+      }
       if (!suggestionRun.value) await restoreSuggestions(api)
       return true
     } catch {
@@ -211,13 +234,14 @@ export const useTaxonomyReviewStore = defineStore('taxonomy-review', () => {
         suggestionRun.value
         && suggestionRun.value.taxonomy_revision !== result.revision
       ) {
-        suggestionRun.value = {
+        const historicalRun = {
           ...suggestionRun.value,
           status: 'stale',
           stale: true,
           retryable: false,
-        }
-        suggestionMessage.value = '词表已经更新，剩余 AI 建议需要重新判断。'
+        } satisfies TaxonomySuggestionRun
+        moveSuggestionRunToHistory(historicalRun)
+        suggestionMessage.value = '词表已经更新，旧 AI 批次已移到历史记录。'
       }
       loadState.value = pendingCount.value === 0 ? 'empty' : 'ready'
       writeState.value = 'idle'
@@ -262,10 +286,19 @@ export const useTaxonomyReviewStore = defineStore('taxonomy-review', () => {
     api: TaxonomyReviewApi = questionBankTaxonomyApi,
   ): Promise<boolean> {
     const runId = readRememberedRunId()
-    if (!runId || suggestionRun.value) return false
+    if (
+      !runId
+      || suggestionRun.value
+      || historicalSuggestionRun.value?.run_id === runId
+    ) return false
     try {
-      suggestionRun.value = await api.getSuggestionRun(runId)
+      const restoredRun = await api.getSuggestionRun(runId)
       forgetPendingCommand()
+      if (!runBelongsToCurrentCandidates(restoredRun)) {
+        moveSuggestionRunToHistory(restoredRun)
+        return true
+      }
+      suggestionRun.value = restoredRun
       suggestionState.value = ['queued', 'running', 'cancelling'].includes(
         suggestionRun.value.status,
       ) ? 'running' : 'idle'
@@ -340,6 +373,10 @@ export const useTaxonomyReviewStore = defineStore('taxonomy-review', () => {
     if (!suggestionRun.value) return false
     try {
       const run = await api.getSuggestionRun(suggestionRun.value.run_id)
+      if (!runBelongsToCurrentCandidates(run)) {
+        moveSuggestionRunToHistory(run)
+        return true
+      }
       suggestionRun.value = run
       rememberRunId(run.run_id)
       suggestionState.value = ['queued', 'running', 'cancelling'].includes(run.status)
@@ -499,6 +536,7 @@ export const useTaxonomyReviewStore = defineStore('taxonomy-review', () => {
     message,
     proposalErrors,
     suggestionRun,
+    historicalSuggestionRun,
     suggestionState,
     suggestionMessage,
     suggestionJobId,

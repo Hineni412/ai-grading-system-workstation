@@ -544,6 +544,10 @@ def _combined_prompt(
     projection: AnalysisProjection,
 ) -> list[dict[str, Any]]:
     instructions = (
+        "只分析列出的初中数学题。除公式、变量、选项字母、机器标识和原答案片段外，"
+        "所有教师可见自由文本必须使用简体中文；返回英文说明即为失败。"
+        "候选知识表是所选册别及以前册别的完整教材目录树，必须先在整棵树中按稳定 ID 选择，"
+        "不得因题干措辞不同而新造近义知识词。"
         "Analyze only the listed junior-middle-school math questions. "
         "Return exactly one result for every listed question_id, copy that "
         "integer unchanged into both the result and solution_evidence, and "
@@ -665,7 +669,7 @@ def _combined_prompt(
             "type": "input_text",
             "text": json.dumps(
                 {
-                    "task": "combined-v3 question analysis",
+                    "task": "初中数学题联合分析（标签、解题证据与训练判定点）",
                     "rules": instructions,
                     "evidence_examples": _combined_evidence_examples(),
                     "questions": questions,
@@ -698,8 +702,9 @@ def _combined_prompt(
                 {
                     "type": "input_text",
                     "text": (
-                        "Return strict JSON only. Never return scores, "
-                        "ranks, grades, or point values."
+                        "只返回严格 JSON。不得返回分数、排名、等级或判定点分值。"
+                        "除公式、变量、选项字母、机器标识和原答案片段外，"
+                        "所有教师可见自由文本必须使用简体中文。"
                     ),
                 }
             ],

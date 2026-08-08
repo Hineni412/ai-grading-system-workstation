@@ -730,7 +730,7 @@ def _extract_direct_answer_values(item: dict[str, Any]) -> list[Any]:
         values.extend(direct)
     elif direct is not None:
         values.append(direct)
-    for key in ("answers", "values"):
+    for key in ("answers", "values", "answer_values"):
         raw = item.get(key)
         if isinstance(raw, list):
             for value in raw:
@@ -1142,19 +1142,39 @@ def _enforce_objective_question_rules(question: dict[str, Any], answer_item: dic
     parts = question.get("parts")
     if not isinstance(parts, list):
         return
+    mixed_fill = qtype == "fill_blank" and len(parts) > 1 and any(
+        isinstance(part, dict)
+        and (
+            str(part.get("response_mode") or "").strip()
+            in {"process_required", "visual_construction"}
+            or bool(_string_list(part.get("proof_obligations")))
+            or bool(_string_list(part.get("visual_requirements")))
+        )
+        for part in parts
+    )
     for index, part in enumerate(parts):
         if not isinstance(part, dict):
             continue
-        explicit_mode = str(part.get("response_mode") or "").strip()
+        if mixed_fill and (
+            str(part.get("response_mode") or "").strip()
+            in {"process_required", "visual_construction"}
+            or bool(_string_list(part.get("proof_obligations")))
+            or bool(_string_list(part.get("visual_requirements")))
+        ):
+            continue
         answer_part = answer_parts[index] if index < len(answer_parts) and isinstance(answer_parts[index], dict) else {}
         independent_answer_values = _string_list(answer_part.get("answer_values"))
         is_independent_fill = (
             qtype == "fill_blank"
-            and explicit_mode == "short_answer_points"
             and len(independent_answer_values) > 1
         )
         part["response_mode"] = "short_answer_points" if is_independent_fill else "exact_objective"
         part["presentation_rules"] = []
+        part["deduction_policy"] = [
+            "仅按标准答案或等价答案判分，不要求书写过程。"
+        ]
+        part["proof_obligations"] = []
+        part["visual_requirements"] = []
         part["require_final_answer"] = False
         part["answer_only_max_score"] = int(round(_safe_float(part.get("part_score"), 0.0)))
 
@@ -1176,30 +1196,43 @@ def _enforce_objective_question_rules(question: dict[str, Any], answer_item: dic
             first_step["core_goal"] = _default_core_goal(qtype, answer_item)
             first_step["required_elements"] = required_answers
             first_step["allow_alternative_methods"] = qtype != "choice"
+            first_step["deduction_rules"] = []
             part["steps"] = [first_step]
             continue
-        for step in steps:
-            if not isinstance(step, dict):
-                continue
-            goal = str(step.get("core_goal") or "").strip()
-            if not goal or goal == "完成必要的推理或计算步骤":
-                step["core_goal"] = _default_core_goal(qtype, answer_item)
-            if not _string_list(step.get("required_elements")):
-                step["required_elements"] = required_answers
-            step["allow_alternative_methods"] = qtype != "choice"
+        step_scores = _allocate_scores(
+            _safe_float(part.get("part_score"), 0.0),
+            len(independent_answer_values),
+        )
+        template_steps = [step for step in steps if isinstance(step, dict)]
+        if not template_steps:
+            continue
+        part["steps"] = []
+        for answer_index, (answer_value, step_score) in enumerate(
+            zip(independent_answer_values, step_scores),
+            start=1,
+        ):
+            template = (
+                template_steps[answer_index - 1]
+                if answer_index <= len(template_steps)
+                else template_steps[0]
+            )
+            step = dict(template)
+            step["step_id"] = f"S{answer_index}"
+            step["step_score"] = step_score
+            step["core_goal"] = f"填写第 {answer_index} 个正确或等价答案"
+            step["required_elements"] = [answer_value]
+            step["allow_alternative_methods"] = True
+            step["deduction_rules"] = []
+            part["steps"].append(step)
+        continue
 
+    if mixed_fill:
+        return
     question["require_final_answer"] = False
     question["answer_only_max_score"] = int(round(_safe_float(question.get("max_score"), 0.0)))
-    policies = question.get("deduction_policy")
-    if isinstance(policies, list):
-        question["deduction_policy"] = [
-            policy
-            for policy in policies
-            if not (
-                isinstance(policy, dict)
-                and str(policy.get("policy_id") or "") in {"answer_only_process_missing", "core_process_missing"}
-            )
-        ]
+    question["deduction_policy"] = [
+        "仅按标准答案或等价答案判分，不要求书写过程。"
+    ]
     question["answer_presentation_policy"] = {
         "require_final_answer": False,
         "answer_only_max_score": question["answer_only_max_score"],

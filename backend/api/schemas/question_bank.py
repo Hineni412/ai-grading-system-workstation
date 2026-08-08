@@ -24,12 +24,16 @@ class QuestionPaperListItem(_QuestionBankModel):
     semester: str | None = None
     folder_name: str | None = None
     textbook_version: str | None = None
+    curriculum_volume_id: str | None = None
     import_status: str | None = None
     created_at: str
     updated_at: str
     question_count: int
     tagged_question_count: int
     tagged_any_question_count: int
+    evidence_question_count: int
+    criteria_question_count: int
+    complete_analysis_count: int
 
 
 class QuestionPaperListResponse(_QuestionBankModel):
@@ -405,6 +409,7 @@ class QuestionImportRequestResponse(_QuestionBankModel):
 
 class QuestionTaggingJobRequest(_QuestionBankModel):
     question_ids: list[int] = Field(min_length=1, max_length=500)
+    curriculum_volume_id: str = Field(min_length=1, max_length=80)
     source_job_id: int | None = Field(default=None, gt=0)
     force_retag: bool = False
     client_request_token: str | None = Field(

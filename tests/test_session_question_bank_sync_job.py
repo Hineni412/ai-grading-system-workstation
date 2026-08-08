@@ -1489,6 +1489,7 @@ def test_sync_adopts_deferred_tags_and_evidence_without_tagging_model(
     assert result["outcome"] == "complete", result
     assert result["tagged_count"] == 1
     assert result["evidence_count"] == 1
+    assert result["criteria_count"] == 1
     assert result["taxonomy_review_count"] == 0
     assert result["taxonomy_review_question_ids"] == []
     assert result["retryable"] is False
@@ -1506,6 +1507,20 @@ def test_sync_adopts_deferred_tags_and_evidence_without_tagging_model(
     assert evidence["evidence"]["parts"][0]["evidence_points"][0][
         "fine_term_links"
     ][0]["role"] == "direct"
+    with connect(question_bank_db) as connection:
+        criterion = connection.execute(
+            """
+            SELECT source_kind, criteria_json
+            FROM training_criterion_versions
+            WHERE question_id = ?
+            """,
+            (imported_ids[0],),
+        ).fetchone()
+    assert criterion is not None
+    assert criterion["source_kind"] == "confirmed_rubric_adapter"
+    criterion_payload = json.loads(str(criterion["criteria_json"]))
+    assert criterion_payload["points"][0]["target"] == "给出正确或等价答案"
+    assert criterion_payload["points"][0]["observable_evidence"] == "B"
     assert not artifact_path.exists()
 
 

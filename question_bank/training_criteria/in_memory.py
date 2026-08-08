@@ -31,6 +31,7 @@ from question_bank.training_criteria.analysis import (
     QuestionAnalysisGateway,
     QuestionAnalysisInput,
     TaxonomyProjectionReviewRequired,
+    criteria_from_confirmed_rubric,
     grading_config_skeleton_from_solution_evidence,
     plan_analysis_batches,
     solution_evidence_source_content_hash,
@@ -1764,24 +1765,47 @@ class DeferredCombinedProjectionWriter:
         *,
         question: QuestionAnalysisInput,
         model_name: str,
+        confirmed_rubric: Mapping[str, Any] | None = None,
+        confirmed_answer: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         if self.criterion_module is None:
             return {"status": "not_requested"}
         try:
-            draft = training_criteria_from_solution_evidence(
-                evidence,
-                question=question,
+            draft = (
+                criteria_from_confirmed_rubric(
+                    question=question,
+                    rubric_question=confirmed_rubric,
+                    answer_key=confirmed_answer,
+                )
+                if confirmed_rubric is not None
+                else training_criteria_from_solution_evidence(
+                    evidence,
+                    question=question,
+                )
+            )
+            source_kind = (
+                "confirmed_rubric_adapter"
+                if confirmed_rubric is not None
+                else "combined_model"
             )
             workspace = self.criterion_module.propose(
                 question=question,
                 draft=draft,
-                source_kind="combined_model",
+                source_kind=source_kind,
                 source_reference=training_criterion_source_reference(
                     question.question_id,
                     draft,
                 ),
-                actor_ref=f"model:{str(model_name or 'combined-analysis')}",
-                reason="联合题目解析自动发布训练判定点",
+                actor_ref=(
+                    "system:confirmed-rubric-adapter"
+                    if confirmed_rubric is not None
+                    else f"model:{str(model_name or 'combined-analysis')}"
+                ),
+                reason=(
+                    "由已确认评分依据本地生成训练判定点"
+                    if confirmed_rubric is not None
+                    else "联合题目解析自动发布训练判定点"
+                ),
             )
             current = (
                 workspace.get("current_version")
@@ -1908,6 +1932,8 @@ class DeferredCombinedProjectionWriter:
         *,
         question: QuestionAnalysisInput,
         link: ConfirmedQuestionAdoptionLink,
+        confirmed_rubric: Mapping[str, Any] | None = None,
+        confirmed_answer: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Adopt after an explicit source-ref link, without weakening validation.
 
@@ -1973,6 +1999,8 @@ class DeferredCombinedProjectionWriter:
                 binding.evidence,
                 question=question,
                 model_name=item.model_name,
+                confirmed_rubric=confirmed_rubric,
+                confirmed_answer=confirmed_answer,
             )
         return {
             "source_question_ref": item.source_question_ref,

@@ -7,9 +7,13 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from llm_client import LLMResponseFormatError
+from question_bank.knowledge_graph_release.loader import DEFAULT_TAXONOMY_PATH
 from question_bank.services.ai_tagging_service import AITaggingService
 from question_bank.services.taxonomy_review_suggestions import (
     TaxonomySuggestionService,
+)
+from question_bank.taxonomy.curriculum_catalog import (
+    eligible_curriculum_knowledge_nodes,
 )
 from question_bank.taxonomy.governance import TaxonomyGovernance
 
@@ -27,6 +31,13 @@ def _governance(tmp_path: Path) -> TaxonomyGovernance:
     return TaxonomyGovernance(
         catalog_path=CATALOG_PATH,
         state_path=tmp_path / "taxonomy-state.json",
+    )
+
+
+def _release_governance(tmp_path: Path) -> TaxonomyGovernance:
+    return TaxonomyGovernance(
+        catalog_path=DEFAULT_TAXONOMY_PATH,
+        state_path=tmp_path / "taxonomy-release-state.json",
     )
 
 
@@ -77,9 +88,144 @@ def _question_loader(question_ids):
             "question_type": "解答题",
             "question_text": "用于核对归并建议的当前题目。",
             "answer_text": "当前题目的答案摘要。",
+            "grade": "七年级",
+            "semester": "下学期",
+            "textbook_version": "北师大版（2024）",
         }
         for question_id in question_ids
     ]
+
+
+def test_lower_seventh_grade_sends_the_complete_upper_and_lower_knowledge_tree(
+    tmp_path: Path,
+) -> None:
+    governance = _release_governance(tmp_path)
+    proposal = _persist(
+        governance,
+        dimension="knowledge",
+        name="待匹配的七下知识",
+        token="20" * 16,
+        question_id=201,
+    )
+    service = TaxonomySuggestionService(
+        state_path=tmp_path / "suggestions.json",
+        governance=governance,
+        question_loader=_question_loader,
+    )
+    run = service.create_run(
+        proposal_ids=[proposal["id"]],
+        expected_revision=governance.list_proposals(status="pending")["revision"],
+        request_token="21" * 16,
+    )
+    gateway = RecordingGateway()
+
+    completed = service.process_run(run["run_id"], gateway, batch_size=1)
+
+    assert completed["status"] == "completed"
+    payload = gateway.calls[0][0]
+    expected = eligible_curriculum_knowledge_nodes("bnu24-math-g7-lower")
+    assert [item["id"] for item in payload["candidates"]] == [
+        item["id"] for item in expected
+    ]
+    assert {item["volume_id"] for item in payload["candidates"]} == {
+        "bnu24-math-g7-upper",
+        "bnu24-math-g7-lower",
+    }
+    assert payload["curriculum_volume_ids"] == ["bnu24-math-g7-lower"]
+
+
+def test_exact_composite_knowledge_is_split_locally_without_model_call(
+    tmp_path: Path,
+) -> None:
+    governance = _release_governance(tmp_path)
+    proposal = _persist(
+        governance,
+        dimension="knowledge",
+        name="临时复合知识词",
+        token="22" * 16,
+        question_id=202,
+    )
+    scoped = eligible_curriculum_knowledge_nodes("bnu24-math-g7-lower")
+    leaves = [item for item in scoped if int(item["level"]) == 3]
+    first, second = leaves[0], leaves[1]
+    _rewrite_as_legacy_composite(
+        governance,
+        proposal_id=proposal["id"],
+        name=f'{first["name"]}、{second["name"]}',
+    )
+    service = TaxonomySuggestionService(
+        state_path=tmp_path / "suggestions.json",
+        governance=governance,
+        question_loader=_question_loader,
+    )
+    run = service.create_run(
+        proposal_ids=[proposal["id"]],
+        expected_revision=governance.list_proposals(status="pending")["revision"],
+        request_token="23" * 16,
+    )
+    gateway = RecordingGateway()
+
+    completed = service.process_run(run["run_id"], gateway, batch_size=1)
+
+    assert gateway.calls == []
+    assert completed["items"][0]["suggestion"]["target_term_ids"] == [
+        first["id"],
+        second["id"],
+    ]
+    assert "本地拆分" in completed["items"][0]["suggestion"]["reason"]
+
+
+def test_local_composite_split_does_not_escape_the_paper_volume_scope(
+    tmp_path: Path,
+) -> None:
+    governance = _release_governance(tmp_path)
+    proposal = _persist(
+        governance,
+        dimension="knowledge",
+        name="临时跨册复合知识词",
+        token="24" * 16,
+        question_id=203,
+    )
+    allowed_ids = {
+        str(item["id"])
+        for item in eligible_curriculum_knowledge_nodes(
+            "bnu24-math-g7-lower"
+        )
+    }
+    out_of_scope = [
+        item
+        for item in eligible_curriculum_knowledge_nodes(
+            "bnu24-math-g8-upper"
+        )
+        if int(item["level"]) == 3
+        and str(item["id"]) not in allowed_ids
+    ]
+    first, second = out_of_scope[0], out_of_scope[1]
+    _rewrite_as_legacy_composite(
+        governance,
+        proposal_id=proposal["id"],
+        name=f'{first["name"]}、{second["name"]}',
+    )
+    service = TaxonomySuggestionService(
+        state_path=tmp_path / "suggestions.json",
+        governance=governance,
+        question_loader=_question_loader,
+    )
+    run = service.create_run(
+        proposal_ids=[proposal["id"]],
+        expected_revision=governance.list_proposals(status="pending")["revision"],
+        request_token="25" * 16,
+    )
+    gateway = RecordingGateway()
+
+    completed = service.process_run(run["run_id"], gateway, batch_size=1)
+
+    assert len(gateway.calls) == 1
+    assert completed["items"][0]["suggestion"]["source"] == "ai"
+    assert {
+        item["volume_id"]
+        for item in gateway.calls[0][0]["candidates"]
+    } == {"bnu24-math-g7-upper", "bnu24-math-g7-lower"}
 
 
 def _rewrite_as_legacy_composite(
@@ -128,10 +274,46 @@ class RecordingGateway:
         ]
 
 
+def test_ai_reason_is_stored_as_one_short_chinese_sentence(tmp_path: Path) -> None:
+    governance = _governance(tmp_path)
+    proposal = _persist(
+        governance,
+        dimension="knowledge",
+        name="待精简的新知识点",
+        token="0" * 32,
+        question_id=40,
+    )
+    service = TaxonomySuggestionService(
+        state_path=tmp_path / "suggestions.json",
+        governance=governance,
+        question_loader=_question_loader,
+    )
+    run = service.create_run(
+        proposal_ids=[proposal["id"]],
+        expected_revision=governance.list_proposals(status="pending")["revision"],
+        request_token="f" * 32,
+    )
+    gateway = RecordingGateway(responses={
+        proposal["id"]: {
+            "relation_kind": "uncertain",
+            "target_term_ids": [],
+            "reason": "The candidate is semantically close, but the available evidence is not sufficient for a safe merge.",
+            "confidence": 0.55,
+        }
+    })
+
+    completed = service.process_run(run["run_id"], gateway)
+
+    reason = completed["items"][0]["suggestion"]["reason"]
+    assert re.search(r"[\u3400-\u9fff]", reason)
+    assert len(reason) <= 48
+    assert reason.endswith("。")
+
+
 def test_legacy_composite_curriculum_gets_a_local_multi_target_suggestion(
     tmp_path: Path,
 ) -> None:
-    governance = _governance(tmp_path)
+    governance = _release_governance(tmp_path)
     proposal = _persist(
         governance,
         dimension="curriculum",
@@ -563,6 +745,17 @@ def test_thirty_nine_invalid_model_responses_finish_in_five_requests_without_rep
     failed = service.process_run(run["run_id"], gateway, batch_size=8)
 
     assert len(llm_client.calls) == 5
+    first_prompt = llm_client.calls[0][0]
+    first_payload = json.loads(first_prompt.split("\n\n")[-1])
+    assert len(first_payload["shared_candidate_catalogs"]) == 1
+    assert len(first_payload["shared_candidate_catalogs"][0]["terms"]) == len(
+        eligible_curriculum_knowledge_nodes("bnu24-math-g7-lower")
+    )
+    assert all(
+        "candidates" not in proposal
+        and proposal["candidate_catalog_key"] == "catalog-1"
+        for proposal in first_payload["proposals"]
+    )
     assert failed["status"] == "failed"
     assert failed["progress"] == {
         "total": 39,

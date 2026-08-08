@@ -1,11 +1,13 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
 import { createClientRequestToken } from '../../api/config-workspace'
 import { findLatestJob, type JobResponse } from '../../api/jobs'
 import {
   retrySessionQuestionBankSync,
+  getSessionQuestionBankAnalysisStatus,
   submitSessionQuestionBankSync,
+  type SessionQuestionBankAnalysisStatus,
   type SessionQuestionBankSyncRequest,
 } from '../../api/session-question-bank-sync'
 import { useJobStore } from '../../stores/jobs'
@@ -30,17 +32,36 @@ const props = withDefaults(defineProps<{
     jobId: number,
     request: SessionQuestionBankSyncRequest,
   ) => Promise<JobResponse>
+  continuationSubmitter?: (
+    questionIds: readonly number[],
+    curriculumVolumeId: string,
+    clientRequestToken: string,
+  ) => Promise<JobResponse>
   curriculumLoader?: () => Promise<CurriculumCatalog>
   latestJobLoader?: (sessionId: number) => Promise<JobResponse | null>
+  statusLoader?: (sessionId: number) => Promise<SessionQuestionBankAnalysisStatus>
 }>(), {
   autoStart: false,
   submitter: submitSessionQuestionBankSync,
   retryer: retrySessionQuestionBankSync,
+  continuationSubmitter: (
+    questionIds: readonly number[],
+    curriculumVolumeId: string,
+    clientRequestToken: string,
+  ) => questionBankApi.submitTagging(
+    questionIds,
+    curriculumVolumeId,
+    undefined,
+    undefined,
+    false,
+    clientRequestToken,
+  ),
   curriculumLoader: () => questionBankApi.getCurriculum(),
   latestJobLoader: (sessionId: number) => findLatestJob(
     sessionId,
     'question_bank_sync',
   ),
+  statusLoader: getSessionQuestionBankAnalysisStatus,
 })
 
 const emit = defineEmits<{
@@ -58,6 +79,7 @@ const metadataPanelOpen = ref(false)
 const curriculumLoading = ref(true)
 const restoringJob = ref(true)
 const deferredByTeacher = ref(false)
+const liveStatus = ref<SessionQuestionBankAnalysisStatus | null>(null)
 let autoAttempted = false
 
 const latestTrackedJob = computed(() => Object.values(jobStore.jobs)
@@ -72,12 +94,30 @@ const progress = computed(() => Math.min(1, Math.max(0, job.value?.progress ?? 0
 const outcome = computed(() => String(job.value?.result.outcome ?? ''))
 const terminal = computed(() => job.value !== null
   && ['succeeded', 'failed', 'cancelled'].includes(job.value.status))
-const canRetry = computed(() => terminal.value
-  && (
+const canRetry = computed(() => terminal.value && (
+  (liveStatus.value?.incomplete_question_ids.length ?? 0) > 0
+  || (liveStatus.value === null && (
     job.value?.status === 'failed'
     || job.value?.result.retryable === true
     || safeCount(job.value?.result.failed_count) > 0
   ))
+))
+const statusCounts = computed(() => ({
+  total: (liveStatus.value?.question_count
+    ?? safeCount(job.value?.result.question_count))
+    || safeCount(job.value?.result.imported_count),
+  tagged: liveStatus.value?.tagged_count
+    ?? safeCount(job.value?.result.complete_tagged_count),
+  evidence: liveStatus.value?.evidence_count
+    ?? safeCount(job.value?.result.evidence_count),
+  criteria: liveStatus.value?.criteria_count
+    ?? safeCount(job.value?.result.criteria_count),
+  complete: liveStatus.value?.complete_count
+    ?? Math.min(
+      safeCount(job.value?.result.complete_tagged_count),
+      safeCount(job.value?.result.criteria_count),
+    ),
+}))
 const selectedVolume = computed<CurriculumVolume | null>(() =>
   curriculum.value?.volumes.find((item) => item.id === selectedVolumeId.value) ?? null)
 
@@ -96,7 +136,20 @@ onMounted(async () => {
   }
   await restoreLatestJob()
   await attemptAutoStart(props.autoStart)
+  void refreshLiveStatus()
+  window.addEventListener('focus', refreshLiveStatus)
 })
+
+onBeforeUnmount(() => window.removeEventListener('focus', refreshLiveStatus))
+
+async function refreshLiveStatus(): Promise<void> {
+  try {
+    const next = await props.statusLoader(props.sessionId)
+    if (next.question_count > 0) liveStatus.value = next
+  } catch {
+    // Keep the saved job snapshot visible when the lightweight refresh fails.
+  }
+}
 
 async function restoreLatestJob(): Promise<void> {
   if (latestTrackedJob.value !== null) {
@@ -139,12 +192,21 @@ function reviewRefs(value: unknown): string {
 function statusCopy(current: JobResponse): string {
   if (current.status === 'queued') return '等待入库'
   if (current.status === 'running') {
+    if (current.job_type === 'tagging_sync') return '正在补齐未完成题目的标签与训练判定点'
     if (current.stage === 'question_bank_tagging') return '正在调用 AI 打标签'
     if (current.stage === 'question_bank_import') return '正在拆分并写入题库'
     return '正在准备题库'
   }
   if (current.status === 'failed') return '题库流程异常结束'
   if (current.status === 'cancelled') return '题库流程已取消'
+  if (
+    liveStatus.value !== null
+    && liveStatus.value.question_count > 0
+    && liveStatus.value.complete_count === liveStatus.value.question_count
+  ) return '试卷已入库，标签与训练判定点已保存'
+  if (liveStatus.value !== null && liveStatus.value.incomplete_question_ids.length > 0) {
+    return '已部分入库，仍有标签或训练判定点需要处理'
+  }
   if (outcome.value === 'complete') {
     return safeCount(current.result.taxonomy_review_count)
       ? '试卷已入库，部分标签仍待归并'
@@ -208,11 +270,16 @@ async function retry(): Promise<void> {
   submitting.value = true
   requestError.value = ''
   try {
-    const next = await props.retryer(props.sessionId, current.id, {
-      config_revision: props.configRevision,
-      client_request_token: createClientRequestToken(),
-      curriculum_volume_id: selectedVolume.value?.id,
-    })
+    const incompleteIds = liveStatus.value?.incomplete_question_ids ?? []
+    const volumeId = selectedVolume.value?.id
+      || String(current.payload.curriculum_volume_id ?? '').trim()
+    const next = incompleteIds.length > 0
+      ? await submitCurrentIncomplete(incompleteIds, volumeId)
+      : await props.retryer(props.sessionId, current.id, {
+          config_revision: props.configRevision,
+          client_request_token: createClientRequestToken(),
+          curriculum_volume_id: selectedVolume.value?.id,
+        })
     jobStore.track(next)
     activeJobId.value = next.id
   } catch {
@@ -220,6 +287,20 @@ async function retry(): Promise<void> {
   } finally {
     submitting.value = false
   }
+}
+
+async function submitCurrentIncomplete(
+  questionIds: readonly number[],
+  volumeId: string,
+): Promise<JobResponse> {
+  if (!volumeId) {
+    throw new Error('curriculum volume is required')
+  }
+  return props.continuationSubmitter(
+    questionIds,
+    volumeId,
+    createClientRequestToken(),
+  )
 }
 
 function deferIntake(): void {
@@ -239,6 +320,16 @@ watch(
   () => props.autoStart,
   (enabled) => attemptAutoStart(enabled),
   { immediate: true },
+)
+
+watch(
+  () => Object.values(jobStore.jobs)
+    .filter((item) => ['tagging_sync', 'question_bank_sync'].includes(item.job_type)
+      && ['succeeded', 'failed', 'cancelled'].includes(item.status))
+    .map((item) => `${item.id}:${item.status}:${item.updated_at}`)
+    .sort()
+    .join('|'),
+  () => { void refreshLiveStatus() },
 )
 </script>
 
@@ -304,17 +395,15 @@ watch(
       <progress :value="progress" max="1" aria-label="试卷入库与标签治理进度" />
       <p v-if="terminal">
         题目入库成功 {{ safeCount(job.result.imported_count) }} 题 ·
-        本次标签保存成功 {{ safeCount(job.result.tagged_count) }} 题 ·
-        完整标签 {{ safeCount(job.result.complete_tagged_count) }}/{{ safeCount(job.result.question_count) || safeCount(job.result.imported_count) }}
-        · 训练判定点 {{ safeCount(job.result.criteria_count) }}/{{ safeCount(job.result.question_count) || safeCount(job.result.imported_count) }} 题
-        <template v-if="safeCount(job.result.taxonomy_review_count)">
-          · {{ safeCount(job.result.taxonomy_review_count) }} 题标签待补充或归并
+        当前标签 {{ statusCounts.tagged }}/{{ statusCounts.total }} ·
+        解题证据 {{ statusCounts.evidence }}/{{ statusCounts.total }} ·
+        训练判定点 {{ statusCounts.criteria }}/{{ statusCounts.total }} ·
+        联合分析完整 {{ statusCounts.complete }}/{{ statusCounts.total }}
+        <template v-if="safeCount(liveStatus?.pending_taxonomy_count)">
+          · 当前待审核新词 {{ safeCount(liveStatus?.pending_taxonomy_count) }} 个
         </template>
-        <template v-if="safeCount(job.result.review_count)">
-          （含 {{ safeCount(job.result.review_count) }} 个新标签）
-        </template>
-        <template v-if="reviewRefs(job.result.taxonomy_review_source_refs)">
-          · 待处理：{{ reviewRefs(job.result.taxonomy_review_source_refs) }}
+        <template v-if="reviewRefs(liveStatus?.incomplete_source_refs ?? job.result.taxonomy_review_source_refs)">
+          · 待处理：{{ reviewRefs(liveStatus?.incomplete_source_refs ?? job.result.taxonomy_review_source_refs) }}
         </template>
       </p>
       <p
@@ -334,9 +423,11 @@ watch(
       <button v-if="canRetry" type="button" :disabled="submitting" @click="retry">
         {{ submitting
           ? '正在提交…'
-          : safeCount(job.result.taxonomy_review_count) && !safeCount(job.result.failed_count)
+          : (liveStatus?.incomplete_question_ids.length ?? 0) > 0
+            ? '继续完成未完成题目'
+            : safeCount(job.result.taxonomy_review_count) && !safeCount(job.result.failed_count)
             ? '标签处理后重新本地校验'
-            : '只重试未完成的题库流程' }}
+            : '继续完成未完成题目' }}
       </button>
     </div>
 

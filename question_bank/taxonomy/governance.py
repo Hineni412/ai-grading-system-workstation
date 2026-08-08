@@ -33,7 +33,6 @@ from question_bank.knowledge_graph_release.loader import (
 )
 from question_bank.knowledge_graph_release.repository import load_active_release
 from question_bank.taxonomy.curriculum_catalog import (
-    curriculum_knowledge_ancestors,
     curriculum_volume_contract,
     eligible_curriculum_knowledge_nodes,
 )
@@ -60,7 +59,6 @@ _PROCESS_LOCK = threading.RLock()
 _LOCK_TIMEOUT_SECONDS = 10.0
 _MAX_OPERATION_RECEIPTS = 5000
 _MAX_TERM_NAME_LENGTH = 160
-_KNOWLEDGE_RETRIEVAL_LIMIT = 64
 
 _RAW_FIELD_DIMENSIONS: dict[str, str] = {
     "curriculum": "curriculum",
@@ -1597,7 +1595,6 @@ class TaxonomyGovernance:
         has_query = any(query for query, _weight, _pairs in weighted_queries)
         limits = {
             "curriculum": 8,
-            "knowledge": _KNOWLEDGE_RETRIEVAL_LIMIT,
             "ability": 10,
             "method": 32,
             "thought": 20,
@@ -1721,7 +1718,6 @@ class TaxonomyGovernance:
                             item
                             for item in eligible
                             if item[1]["id"] in allowed_knowledge_ids
-                            or item[1].get("origin") == "teacher"
                         ]
             elif dimension in {
                 "ability",
@@ -1736,36 +1732,12 @@ class TaxonomyGovernance:
             else:
                 eligible = [item for item in ranked if item[0] > 0]
             if dimension == "knowledge" and scoped_knowledge_by_id:
-                positive = [item for item in eligible if item[0] > 0]
-                base = positive[: limits[dimension]]
-                if not base:
-                    base = [
-                        item
-                        for item in eligible
-                        if int(
-                            scoped_knowledge_by_id.get(
-                                item[1]["id"], {}
-                            ).get("level", 0)
-                        )
-                        == 1
-                    ][: limits[dimension]]
                 term_by_id = {term["id"]: term for _score, term in eligible}
-                selected = []
-                selected_ids: set[str] = set()
-
-                def append_term(term_id: str) -> None:
-                    term = term_by_id.get(term_id)
-                    if term is None or term_id in selected_ids:
-                        return
-                    selected_ids.add(term_id)
-                    selected.append(term)
-
-                for _score, term in base:
-                    append_term(term["id"])
-                    for ancestor_id in curriculum_knowledge_ancestors(
-                        term["id"]
-                    ):
-                        append_term(ancestor_id)
+                selected = [
+                    term_by_id[node_id]
+                    for node_id in scoped_knowledge_by_id
+                    if node_id in term_by_id
+                ]
             else:
                 selected = [
                     term
@@ -1919,6 +1891,28 @@ class TaxonomyGovernance:
             }
             for dimension in ALLOWED_DIMENSIONS
         }
+        scoped_leaf_candidates: dict[
+            tuple[str, str], list[dict[str, Any]]
+        ] = {}
+        if restricted:
+            for term in terms:
+                dimension = str(term.get("dimension") or "")
+                if (
+                    term.get("status") != _ACTIVE_TERM_STATUS
+                    or dimension != "knowledge"
+                    or dimension not in allowed_ids
+                    or str(term.get("id") or "") not in allowed_ids[dimension]
+                ):
+                    continue
+                leaf_name = str(term.get("name") or "").rsplit("｜", 1)[-1].strip()
+                key = (dimension, _normalized_name(leaf_name))
+                if key[1]:
+                    scoped_leaf_candidates.setdefault(key, []).append(term)
+        scoped_leaf_index = {
+            key: owners[0]
+            for key, owners in scoped_leaf_candidates.items()
+            if len({str(owner.get("id") or "") for owner in owners}) == 1
+        }
 
         def nearest_term(dimension: str, name: str) -> dict[str, Any] | None:
             wanted = _bigrams(name)
@@ -2028,6 +2022,13 @@ class TaxonomyGovernance:
             term = alias_index.get(key)
             if term is None:
                 term = legacy_index.get(key)
+            if term is None:
+                # Curriculum knowledge candidates are intentionally shown to
+                # the model as concise leaf labels while the controlled
+                # vocabulary stores their full tree path.  Within the closed
+                # per-question scope, a unique leaf is an exact stable-ID
+                # match, not a new taxonomy proposal.
+                term = scoped_leaf_index.get(key)
             if term is None and dimension == "method":
                 thought_key = ("thought", key[1])
                 term = alias_index.get(thought_key)
