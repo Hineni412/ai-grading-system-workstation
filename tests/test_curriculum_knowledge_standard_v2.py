@@ -155,7 +155,7 @@ def test_full_curriculum_path_survives_tag_analysis_normalization() -> None:
     )[0].tag_value == leaf["name"]
 
 
-def test_new_prompt_candidates_are_scoped_retrieved_and_include_parents(
+def test_new_prompt_candidates_include_the_entire_selected_and_previous_volume_tree(
     tmp_path: Path,
 ) -> None:
     governance = _governance(tmp_path)
@@ -168,11 +168,27 @@ def test_new_prompt_candidates_are_scoped_retrieved_and_include_parents(
         }
     )
 
-    ids = set(contract["allowed_term_ids"]["knowledge"])
+    expected_ids = [
+        str(item["id"])
+        for item in eligible_curriculum_knowledge_nodes(
+            "bnu24-math-g7-lower"
+        )
+    ]
+    ids = contract["allowed_term_ids"]["knowledge"]
+    assert ids == expected_ids
+    assert len(ids) == 428
     assert "kp_bnu24_math_g7_lower_4_3_7" in ids
     assert "kp_bnu24_math_g7_lower_4_3" in ids
     assert "kp_bnu24_math_g7_lower_4" in ids
-    assert len(ids) <= 192
+    unrelated = governance.prompt_contract(
+        {
+            "curriculum_volume_id": "bnu24-math-g7-lower",
+            "question_text": "计算有理数加法",
+            "answer_text": "2",
+            "question_type": "填空题",
+        }
+    )
+    assert unrelated["allowed_term_ids"]["knowledge"] == expected_ids
     assert all(
         item.get("volume_id")
         in {"bnu24-math-g7-upper", "bnu24-math-g7-lower"}

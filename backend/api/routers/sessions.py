@@ -13,7 +13,10 @@ from backend.api.dependencies import (
     get_grading_db,
     get_job_manager,
     get_question_bank_db_path,
+    get_question_bank_read_service,
     get_session_repository,
+    get_taxonomy_governance,
+    get_taxonomy_suggestion_service,
     get_upload_config_dir,
 )
 from backend.api.routers.jobs import _job_response
@@ -26,6 +29,7 @@ from backend.api.schemas.sessions import (
     DeleteSessionRequest,
     PermanentDeleteSessionRequest,
     QuestionBankSyncRequest,
+    SessionQuestionBankAnalysisStatus,
     RenameSessionRequest,
     SessionDeletionImpactResponse,
     SessionDetail,
@@ -56,6 +60,7 @@ from question_bank.taxonomy.curriculum_catalog import (
     curriculum_volume,
     infer_curriculum_volume_from_text,
 )
+from question_bank.services.question_read_service import QuestionBankReadService
 from session_cleanup import (
     SessionDerivedTrainingDataExists,
     SessionPermanentDeletionRecoveryFailed,
@@ -376,6 +381,31 @@ def get_session_progress(
 ) -> SessionProgress:
     _require_session(sessions, session_id)
     return SessionProgress(**db.get_session_progress(int(session_id)))
+
+
+@router.get(
+    "/sessions/{session_id}/question-bank-status",
+    response_model=SessionQuestionBankAnalysisStatus,
+)
+def session_question_bank_status(
+    session_id: int,
+    sessions: SessionRepositoryGateway = Depends(get_session_repository),
+    service: QuestionBankReadService = Depends(get_question_bank_read_service),
+    taxonomy_governance: Any = Depends(get_taxonomy_governance),
+    taxonomy_suggestions: Any = Depends(get_taxonomy_suggestion_service),
+) -> SessionQuestionBankAnalysisStatus:
+    _require_session(sessions, session_id)
+    proposal_page = taxonomy_governance.list_proposals(status="pending")
+    proposal_page = taxonomy_suggestions.contextualize_proposal_page(
+        proposal_page
+    )
+    pending_taxonomy_count = int(
+        proposal_page.get("counts", {}).get("pending", 0)
+    )
+    return SessionQuestionBankAnalysisStatus(
+        **service.session_analysis_status(session_id),
+        pending_taxonomy_count=pending_taxonomy_count,
+    )
 
 
 @router.get("/sessions/{session_id}/template", response_model=SessionTemplateResponse)

@@ -120,6 +120,19 @@ class QuestionBankSyncRequest(BaseModel):
         return clean or None
 
 
+class SessionQuestionBankAnalysisStatus(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    question_count: int = Field(ge=0)
+    tagged_count: int = Field(ge=0)
+    evidence_count: int = Field(ge=0)
+    criteria_count: int = Field(ge=0)
+    complete_count: int = Field(ge=0)
+    pending_taxonomy_count: int = Field(ge=0)
+    incomplete_question_ids: list[int]
+    incomplete_source_refs: list[str]
+
+
 class SessionSummary(BaseModel):
     id: int
     name: str

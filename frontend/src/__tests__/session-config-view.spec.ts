@@ -303,6 +303,41 @@ describe('SessionConfigView source replacement guard', () => {
     app.unmount()
   })
 
+  it('selects the first solution question when the adjustment panel first opens', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const sessions = useSessionStore(pinia)
+    sessions.$patch({
+      sessions: [{ id: 7, name: '七年级数学', status: 'created', is_deleted: false,
+        deleted_at: null, created_at: null, updated_at: null }],
+      selectedSessionId: 7, loadState: 'ready',
+    })
+    const workspace = useConfigWorkspaceStore(pinia)
+    workspace.selectSession(7)
+    workspace.setEditor({
+      session_id: 7, configured: true, revision: 'd'.repeat(64), total_score: 10,
+      issues: [], source: null,
+      rows: [{
+        row_id: 'row-q10-p1-s1', question_id: 'Q10', part_id: 'P1', step_id: 'S1',
+        part_label: '第 1 问', question_type: 'calculation', core_goal: '写出结果', score: 10,
+        standard_answer: '10', accepted_answers: ['10'], match_rule: 'exact',
+        answer_only_max_score: null, require_final_answer: true, required_elements: [],
+        deduction_rules: [], part_deduction_rules: [], final_answer_rule: '',
+      }],
+    })
+    const host = document.createElement('div')
+    document.body.append(host)
+    const app = createApp(SessionConfigView)
+    app.use(pinia)
+    app.mount(host)
+    await settle()
+
+    const picker = host.querySelector<HTMLSelectElement>('select[aria-label="评分单元题号"]')
+    expect(picker?.value).toBe('Q10')
+    expect(host.textContent).toContain('Q10 解答题结构')
+    app.unmount()
+  })
+
   it('keeps refine reconciliation visible for a legacy editor without a P2 source', async () => {
     const pinia = createPinia()
     setActivePinia(pinia)
@@ -315,6 +350,15 @@ describe('SessionConfigView source replacement guard', () => {
     })
     const workspace = useConfigWorkspaceStore(pinia)
     workspace.selectSession(7)
+    workspace.setSource({
+      session_id: 7, source_id: 'e'.repeat(32), source_revision: 'f'.repeat(64),
+      safe_filename: '旧考试.pdf', suffix: '.pdf', size_bytes: 12,
+      sha256_prefix: 'c'.repeat(12), parse_state: 'ready',
+      questions: [{ question_id: 'Q1', question_type: 'calculation',
+        question_preview: '计算题', answer_preview: '1', answer_present: true,
+        needs_review: false, local_answer_trusted: true,
+        has_question_asset: false, has_answer_asset: false }],
+    })
     workspace.setEditor({
       session_id: 7, configured: true, revision: 'd'.repeat(64), rows: [], total_score: 0,
       issues: [], source: null,
@@ -336,7 +380,7 @@ describe('SessionConfigView source replacement guard', () => {
     app.unmount()
   })
 
-  it('unlocks an ambiguous refine request when its exact lookup confirms 404', async () => {
+  it('unlocks an ambiguous single-question retry when its exact lookup confirms 404', async () => {
     const pinia = createPinia()
     setActivePinia(pinia)
     const sessions = useSessionStore(pinia)
@@ -348,6 +392,15 @@ describe('SessionConfigView source replacement guard', () => {
     })
     const workspace = useConfigWorkspaceStore(pinia)
     workspace.selectSession(7)
+    workspace.setSource({
+      session_id: 7, source_id: 'e'.repeat(32), source_revision: 'f'.repeat(64),
+      safe_filename: '单题重试.pdf', suffix: '.pdf', size_bytes: 12,
+      sha256_prefix: 'c'.repeat(12), parse_state: 'ready',
+      questions: [{ question_id: 'Q1', question_type: 'calculation',
+        question_preview: '计算题', answer_preview: '1', answer_present: true,
+        needs_review: false, local_answer_trusted: true,
+        has_question_asset: false, has_answer_asset: false }],
+    })
     workspace.setEditor({
       session_id: 7, configured: true, revision: 'd'.repeat(64), total_score: 100,
       issues: [], source: null,
@@ -365,7 +418,7 @@ describe('SessionConfigView source replacement guard', () => {
     const host = document.createElement('div')
     document.body.append(host)
     const app = createApp(SessionConfigView, {
-      editorRefiner: vi.fn(async () => { throw timeout }),
+      generationSubmitter: vi.fn(async () => { throw timeout }),
       generationLoader: vi.fn(async () => { throw notFound }),
       requestAbandoner: vi.fn(async () => undefined),
     })
@@ -375,11 +428,12 @@ describe('SessionConfigView source replacement guard', () => {
 
     expect(host.querySelectorAll('.rubric-unit-card')).toHaveLength(1)
     expect(host.querySelector('.rubric-ledger table')).toBeNull()
-    host.querySelector<HTMLButtonElement>('button[name="AI 完善评分单元"]')!.click()
+    host.querySelector<HTMLButtonElement>('button[name="单题AI重试"]')!.click()
     await settle()
 
     expect(workspace.pendingJobRequestToken).toBeNull()
-    expect(host.textContent).toContain('服务器确认未收到这次 AI 完善请求')
+    expect(host.textContent).toContain('服务器确认未收到这次请求')
+    expect(localStorage.getItem('config-score-review-required:7')).toBeNull()
     app.unmount()
   })
 

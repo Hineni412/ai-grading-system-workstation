@@ -1,147 +1,222 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 
-import type { ConfigEditorCommand, ManualPartInput } from '../../api/config-workspace'
+import type {
+  ConfigEditorCommand,
+  ConfigEditorRow,
+  ManualQuestionPartInput,
+} from '../../api/config-workspace'
 
 const props = withDefaults(defineProps<{
   questionId: string
-  parts?: ManualPartInput[]
+  rows?: ConfigEditorRow[]
   disabled?: boolean
+  scoreReviewRequired?: boolean
 }>(), {
-  parts: () => [],
+  rows: () => [],
   disabled: false,
+  scoreReviewRequired: false,
 })
 
 const emit = defineEmits<{
   command: [command: ConfigEditorCommand]
-  refine: [command: ConfigEditorCommand]
+  retry: [questionId: string]
 }>()
 
-const splitCount = ref(2)
-const splitStyle = ref<'subquestion' | 'blank'>('subquestion')
-const localParts = ref<ManualPartInput[]>([])
+const localParts = ref<ManualQuestionPartInput[]>([])
 const validationError = ref('')
+const expectedTotal = computed(() => props.rows.reduce((total, row) => total + row.score, 0))
+const draftTotal = computed(() => localParts.value.reduce(
+  (total, part) => total + part.steps.reduce((subtotal, step) => subtotal + Number(step.score || 0), 0),
+  0,
+))
+const stepCount = computed(() => localParts.value.reduce((total, part) => total + part.steps.length, 0))
 const manualValidationError = computed(() => {
-  const ids = localParts.value.map((part) => part.part_id.trim())
-  if (localParts.value.length === 0 || ids.some((id) => !id)) return '评分单元 ID 不能为空。'
-  if (new Set(ids).size !== ids.length) return '同一题的评分单元 ID 不能重复。'
-  if (localParts.value.some((part) => !Number.isFinite(part.score)
-    || part.score <= 0 || part.score > 100)) {
-    return '每个评分单元的分值必须大于 0 且不超过 100。'
+  if (localParts.value.length === 0) return '至少保留一个小问。'
+  if (localParts.value.some((part) => part.steps.length === 0)) return '每个小问至少保留一个步骤点。'
+  const steps = localParts.value.flatMap((part) => part.steps)
+  if (steps.some((step) => !Number.isFinite(step.score) || step.score <= 0 || step.score > 100)) {
+    return '每个步骤点都需要填写大于 0 且不超过 100 的分值。'
   }
-  if (localParts.value.some((part) => !part.core_goal.trim())) return '每个评分单元都必须填写评分目标。'
+  if (steps.some((step) => !step.core_goal.trim())) return '每个步骤点都需要填写评分目标。'
+  if (Math.abs(draftTotal.value - expectedTotal.value) > 0.000001) {
+    return `本题当前总分是 ${expectedTotal.value} 分，步骤点合计需保持一致。`
+  }
   return ''
 })
 
 function resetParts(): void {
-  localParts.value = props.parts.length > 0
-    ? props.parts.map((part) => ({ ...part }))
-    : [{ part_id: 'P1', score: 0, core_goal: '' }, { part_id: 'P2', score: 0, core_goal: '' }]
-  validationError.value = ''
-}
-
-function updatePart(index: number, field: keyof ManualPartInput, event: Event): void {
-  const part = localParts.value[index]
-  if (!part) return
-  const raw = (event.currentTarget as HTMLInputElement).value
-  localParts.value[index] = { ...part, [field]: field === 'score' ? Number(raw) : raw }
+  const grouped = new Map<string, ManualQuestionPartInput>()
+  for (const row of props.rows) {
+    let part = grouped.get(row.part_id)
+    if (!part) {
+      part = { part_id: row.part_id, steps: [] }
+      grouped.set(row.part_id, part)
+    }
+    part.steps.push({
+      step_id: row.step_id === '未拆评分点' || row.step_id === '整题'
+        ? `S${part.steps.length + 1}`
+        : row.step_id,
+      score: props.scoreReviewRequired ? 0 : row.score,
+      core_goal: row.core_goal === '未拆评分点' || row.core_goal === '整题'
+        ? ''
+        : row.core_goal,
+    })
+  }
+  localParts.value = grouped.size > 0
+    ? [...grouped.values()]
+    : [{ part_id: 'P1', steps: [{ step_id: 'S1', score: 0, core_goal: '' }] }]
   validationError.value = ''
 }
 
 function addPart(): void {
-  localParts.value.push({ part_id: `P${localParts.value.length + 1}`, score: 0, core_goal: '' })
-  validationError.value = ''
+  localParts.value.push({
+    part_id: `P${localParts.value.length + 1}`,
+    steps: [{ step_id: 'S1', score: 0, core_goal: '' }],
+  })
 }
 
 function removePart(index: number): void {
   if (localParts.value.length <= 1) return
   localParts.value.splice(index, 1)
-  validationError.value = ''
 }
 
-function splitCommand(): ConfigEditorCommand | null {
-  if (!Number.isSafeInteger(splitCount.value) || splitCount.value < 2 || splitCount.value > 20) {
-    validationError.value = '拆分数量必须为 2 至 20 的整数。'
-    return null
-  }
-  validationError.value = ''
-  return { kind: 'split', question_id: props.questionId, count: splitCount.value, style: splitStyle.value }
+function addStep(partIndex: number): void {
+  const part = localParts.value[partIndex]
+  if (!part) return
+  part.steps.push({ step_id: `S${part.steps.length + 1}`, score: 0, core_goal: '' })
 }
 
-function replaceCommand(): ConfigEditorCommand | null {
-  const parts = localParts.value.map((part) => ({
-    part_id: part.part_id.trim(), score: part.score, core_goal: part.core_goal.trim(),
-  }))
+function removeStep(partIndex: number, stepIndex: number): void {
+  const part = localParts.value[partIndex]
+  if (!part || part.steps.length <= 1) return
+  part.steps.splice(stepIndex, 1)
+}
+
+function partTotal(part: ManualQuestionPartInput): number {
+  return part.steps.reduce((total, step) => total + Number(step.score || 0), 0)
+}
+
+function applyStructure(): void {
   if (manualValidationError.value) {
     validationError.value = manualValidationError.value
-    return null
+    return
   }
   validationError.value = ''
-  return { kind: 'replace_parts', question_id: props.questionId, parts }
+  emit('command', {
+    kind: 'replace_question_structure',
+    question_id: props.questionId,
+    parts: localParts.value.map((part, partIndex) => ({
+      part_id: `P${partIndex + 1}`,
+      steps: part.steps.map((step, stepIndex) => ({
+        step_id: `S${stepIndex + 1}`,
+        score: Number(step.score),
+        core_goal: step.core_goal.trim(),
+      })),
+    })),
+  })
 }
 
-function applySplit(): void {
-  const command = splitCommand()
-  if (command) emit('command', command)
-}
-
-function applyReplace(refine: boolean): void {
-  const command = replaceCommand()
-  if (!command) return
-  if (refine) emit('refine', command)
-  else emit('command', command)
-}
-
-watch(() => [props.questionId, props.parts] as const, resetParts, { immediate: true, deep: true })
+watch(
+  () => [props.questionId, props.rows, props.scoreReviewRequired] as const,
+  resetParts,
+  { immediate: true, deep: true },
+)
 </script>
 
 <template>
   <section class="scoring-unit-editor" :aria-labelledby="`scoring-unit-${questionId}`">
-    <header>
+    <header class="scoring-unit-editor__header">
       <div>
-        <h3 :id="`scoring-unit-${questionId}`">{{ questionId }} 评分单元</h3>
-        <p>手工结构的 ID 会保持不变；AI 只能在这个结构内完善内容。</p>
+        <h3 :id="`scoring-unit-${questionId}`">{{ questionId }} 解答题结构</h3>
+        <span class="scoring-unit-editor__summary">{{ localParts.length }} 小问 · {{ stepCount }} 个步骤点</span>
+      </div>
+      <div class="scoring-unit-editor__total" :class="{ 'is-invalid': Boolean(manualValidationError) }">
+        <span>本题合计</span>
+        <strong>{{ draftTotal }} / {{ expectedTotal }} 分</strong>
       </div>
     </header>
 
-    <fieldset :disabled="disabled" class="scoring-unit-editor__split">
-      <legend>快速拆分</legend>
-      <label>
-        <span>数量</span>
-        <input v-model.number="splitCount" type="number" min="2" max="20" :aria-label="`${questionId} 拆分数量`">
-      </label>
-      <label><input v-model="splitStyle" type="radio" value="subquestion" aria-label="按小问拆分"> 按小问</label>
-      <label><input v-model="splitStyle" type="radio" value="blank" aria-label="按空格拆分"> 按空格</label>
-      <button type="button" name="应用拆分" @click="applySplit">应用拆分</button>
-    </fieldset>
+    <p v-if="scoreReviewRequired" class="scoring-unit-editor__review" role="alert">
+      AI 已只重试本题。请逐项确认步骤并重新赋分，保存本题结构后才能完成确认。
+    </p>
 
-    <div class="scoring-unit-editor__manual">
-      <div class="scoring-unit-editor__manual-heading">
-        <strong>手工评分单元</strong>
-        <button type="button" :disabled="disabled" @click="addPart">添加评分单元</button>
-      </div>
-      <div v-for="(part, index) in localParts" :key="index" class="scoring-unit-editor__part">
-        <label>
-          <span>ID</span>
-          <input :value="part.part_id" :aria-label="`${questionId} 第 ${index + 1} 个评分单元 ID`" :disabled="disabled" @input="updatePart(index, 'part_id', $event)">
-        </label>
-        <label>
-          <span>分值</span>
-          <input type="number" min="0.01" max="100" step="0.5" :value="part.score" :aria-label="`${questionId} ${part.part_id || index + 1} 分值`" :disabled="disabled" @input="updatePart(index, 'score', $event)">
-        </label>
-        <label>
-          <span>评分目标</span>
-          <input :value="part.core_goal" :aria-label="`${questionId} ${part.part_id || index + 1} 评分目标`" :disabled="disabled" @input="updatePart(index, 'core_goal', $event)">
-        </label>
-        <button type="button" :aria-label="`删除 ${questionId} ${part.part_id || index + 1}`" :disabled="disabled || localParts.length <= 1" @click="removePart(index)">删除</button>
-      </div>
-      <p v-if="validationError || manualValidationError" role="alert">
-        {{ validationError || manualValidationError }}
-      </p>
-      <div class="scoring-unit-editor__actions">
-        <button type="button" name="替换评分单元" :disabled="disabled || Boolean(manualValidationError)" @click="applyReplace(false)">替换评分单元</button>
-        <button type="button" name="AI 完善评分单元" :disabled="disabled || Boolean(manualValidationError)" @click="applyReplace(true)">AI 完善评分单元</button>
-      </div>
+    <div class="scoring-unit-editor__parts">
+      <article v-for="(part, partIndex) in localParts" :key="partIndex" class="scoring-unit-editor__part">
+        <header>
+          <div class="scoring-unit-editor__part-title">
+            <strong>第 {{ partIndex + 1 }} 小问</strong>
+            <span>{{ part.steps.length }} 个步骤点 · {{ partTotal(part) }} 分</span>
+          </div>
+          <button
+            type="button"
+            :disabled="disabled || localParts.length <= 1"
+            :aria-label="`删除第 ${partIndex + 1} 小问`"
+            @click="removePart(partIndex)"
+          >删除小问</button>
+        </header>
+        <div class="scoring-unit-editor__step-grid">
+          <div v-for="(step, stepIndex) in part.steps" :key="stepIndex" class="scoring-unit-editor__step-card">
+            <header>
+              <strong>步骤 {{ stepIndex + 1 }}</strong>
+              <label class="scoring-unit-editor__score">
+                <span class="sr-only">分值</span>
+                <input
+                  v-model.number="step.score"
+                  type="number"
+                  min="0.5"
+                  max="100"
+                  step="0.5"
+                  :disabled="disabled"
+                  :aria-label="`${questionId} 第 ${partIndex + 1} 小问步骤 ${stepIndex + 1} 分值`"
+                >
+                <span>分</span>
+              </label>
+              <button
+                type="button"
+                class="scoring-unit-editor__remove-step"
+                :disabled="disabled || part.steps.length <= 1"
+                :aria-label="`删除第 ${partIndex + 1} 小问步骤 ${stepIndex + 1}`"
+                @click="removeStep(partIndex, stepIndex)"
+              >×</button>
+            </header>
+            <label>
+              <span class="sr-only">评分目标</span>
+              <textarea
+                v-model="step.core_goal"
+                rows="3"
+                :disabled="disabled"
+                :aria-label="`${questionId} 第 ${partIndex + 1} 小问步骤 ${stepIndex + 1} 评分目标`"
+                placeholder="输入这个步骤的得分条件"
+              />
+            </label>
+          </div>
+          <button type="button" class="scoring-unit-editor__add-step" :disabled="disabled" @click="addStep(partIndex)">
+            ＋ 添加步骤点
+          </button>
+        </div>
+      </article>
     </div>
+
+    <button type="button" class="scoring-unit-editor__add-part" :disabled="disabled" @click="addPart">
+      ＋ 添加小问
+    </button>
+    <p v-if="validationError || manualValidationError" role="alert">
+      {{ validationError || manualValidationError }}
+    </p>
+    <footer class="scoring-unit-editor__actions">
+      <button
+        type="button"
+        name="单题AI重试"
+        :disabled="disabled"
+        @click="emit('retry', questionId)"
+      >AI 只重试这道题</button>
+      <button
+        type="button"
+        name="保存本题结构"
+        :disabled="disabled || Boolean(manualValidationError)"
+        @click="applyStructure"
+      >保存本题结构</button>
+    </footer>
   </section>
 </template>

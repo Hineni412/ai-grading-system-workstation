@@ -13,8 +13,16 @@ import { TERMINAL_JOB_STATUSES, type JobResponse } from '../../api/jobs'
 
 const props = withDefaults(defineProps<{
   pendingTaxonomyCount?: number
+  pendingTaxonomyState?: 'idle' | 'loading' | 'ready' | 'empty' | 'error'
 }>(), {
   pendingTaxonomyCount: 0,
+  pendingTaxonomyState: 'ready',
+})
+
+const pendingTaxonomyLabel = computed(() => {
+  if (props.pendingTaxonomyState === 'idle' || props.pendingTaxonomyState === 'loading') return '读取中'
+  if (props.pendingTaxonomyState === 'error') return '读取失败'
+  return String(props.pendingTaxonomyCount)
 })
 
 const emit = defineEmits<{
@@ -31,15 +39,8 @@ const examType = ref('')
 const sourceType = ref('')
 const progressStatus = ref('')
 const editingPaperId = ref<number | null>(null)
-const pendingTrashPaper = ref<QuestionBankPaper | null>(null)
-const trashDrawerOpen = ref(false)
-const trashKeyword = ref('')
-const trashYear = ref('')
-const trashExamType = ref('')
-const trashSourceType = ref('')
-const selectedTrashIds = ref<number[]>([])
+const pendingDeletePaper = ref<QuestionBankPaper | null>(null)
 const permanentDeleteImpact = ref<QuestionBankPaperPermanentDeleteImpact | null>(null)
-const permanentDeleteConfirmation = ref('')
 const permanentDeleteState = ref<'idle' | 'loading' | 'working' | 'error'>('idle')
 const permanentDeleteMessage = ref('')
 const permanentDeleteRequestToken = ref('')
@@ -48,6 +49,7 @@ const retagBusyPaperId = ref<number | null>(null)
 const retagAllBusy = ref(false)
 const taggingMode = ref<'fill' | 'retag' | null>(null)
 const retagMessage = ref('')
+const deleteNotice = ref('')
 const refreshedTerminalJobs = new Set<string>()
 const collapsedFolderKeys = ref(new Set<string>())
 const paperDraft = ref({
@@ -65,33 +67,9 @@ const paperDraft = ref({
 
 const years = computed(() => uniqueValues(store.papers.map((paper) => paper.year)))
 const examTypes = computed(() => uniqueValues(store.papers.map((paper) => paper.exam_type)))
-const trashYears = computed(() => uniqueValues(store.trashedPapers.map((paper) => paper.year)))
-const trashExamTypes = computed(() => uniqueValues(
-  store.trashedPapers.map((paper) => paper.exam_type),
-))
-const filteredTrashPapers = computed(() => {
-  const search = trashKeyword.value.trim().toLocaleLowerCase()
-  return store.trashedPapers.filter((paper) => {
-    if (trashYear.value && paper.year !== trashYear.value) return false
-    if (trashExamType.value && paper.exam_type !== trashExamType.value) return false
-    if (trashSourceType.value && paper.source_type !== trashSourceType.value) return false
-    if (!search) return true
-    return [
-      paper.title, paper.year, paper.exam_type, paper.grade,
-      paper.province, paper.city, paper.district,
-    ].some((value) => value?.toLocaleLowerCase().includes(search))
-  })
-})
-const selectedTrashPapers = computed(() => store.trashedPapers.filter(
-  ({ id }) => selectedTrashIds.value.includes(id),
-))
-const allFilteredTrashSelected = computed(() => (
-  filteredTrashPapers.value.length > 0
-  && filteredTrashPapers.value.every(({ id }) => selectedTrashIds.value.includes(id))
-))
 const canConfirmPermanentDelete = computed(() => (
   permanentDeleteImpact.value !== null
-  && permanentDeleteConfirmation.value === permanentDeleteImpact.value.permanent_delete_phrase
+  && pendingDeletePaper.value !== null
   && permanentDeleteState.value !== 'working'
 ))
 
@@ -104,11 +82,11 @@ const filteredPapers = computed(() => {
       if (sourceType.value && paper.source_type !== sourceType.value) return false
       if (
         progressStatus.value === 'complete' &&
-        paper.tagged_question_count < paper.question_count
+        paper.complete_analysis_count < paper.question_count
       ) return false
       if (
         progressStatus.value === 'pending' &&
-        paper.tagged_question_count >= paper.question_count
+        paper.complete_analysis_count >= paper.question_count
       ) return false
       if (!search) return true
       return [
@@ -168,7 +146,7 @@ const totalQuestions = computed(() => store.papers.reduce(
   0,
 ))
 const completeQuestions = computed(() => store.papers.reduce(
-  (total, paper) => total + paper.tagged_question_count,
+  (total, paper) => total + paper.complete_analysis_count,
   0,
 ))
 const analysisJobs = computed(() => {
@@ -251,7 +229,7 @@ function uniqueValues(values: Array<string | null>): string[] {
 
 function progressFor(paper: QuestionBankPaper): number {
   if (paper.question_count === 0) return 0
-  return Math.round((paper.tagged_question_count / paper.question_count) * 100)
+  return Math.round((paper.complete_analysis_count / paper.question_count) * 100)
 }
 
 function sourceLabel(source: QuestionBankPaper['source_type']): string {
@@ -280,7 +258,7 @@ function resetFilters(): void {
 
 async function loadQuestionIds(
   paperIds?: number[],
-  tagStatus: 'all' | 'untagged' = 'all',
+  analysisStatus: 'all' | 'incomplete' = 'all',
 ): Promise<number[]> {
   const ids: number[] = []
   let page = 1
@@ -289,7 +267,7 @@ async function loadQuestionIds(
       page,
       pageSize: 100,
       paperIds,
-      tagStatus,
+      analysisStatus,
       sort: 'paper_order',
     })
     ids.push(...result.items.map((item) => item.id))
@@ -315,7 +293,7 @@ function requestTokenFor(storageKey: string): string {
 
 async function submitTaggingBatches(
   questionIds: number[],
-  options: { forceRetag: boolean; scope: string },
+  options: { forceRetag: boolean; scope: string; volumeId: string },
 ): Promise<number> {
   let jobs = 0
   for (let index = 0; index < questionIds.length; index += 500) {
@@ -324,7 +302,7 @@ async function submitTaggingBatches(
     const storageKey = `question-bank:tagging:${options.scope}:${index}:${batch.join('-')}`
     const requestToken = requestTokenFor(storageKey)
     const job = await questionBankApi.submitTagging(
-      batch, undefined, undefined, options.forceRetag, requestToken,
+      batch, options.volumeId, undefined, undefined, options.forceRetag, requestToken,
     )
     jobStore.track(job)
     window.localStorage.removeItem(storageKey)
@@ -339,6 +317,10 @@ async function retagPaper(paper: QuestionBankPaper): Promise<void> {
   retagBusyPaperId.value = paper.id
   taggingMode.value = 'retag'
   try {
+    if (!paper.curriculum_volume_id) {
+      retagMessage.value = '请先在“编辑资料”中补全年级、学期和教材版本。'
+      return
+    }
     const ids = await loadQuestionIds([paper.id])
     if (ids.length === 0) {
       retagMessage.value = '这份试卷没有可重新标注的题目。'
@@ -350,6 +332,7 @@ async function retagPaper(paper: QuestionBankPaper): Promise<void> {
     const count = await submitTaggingBatches(ids, {
       forceRetag: true,
       scope: `paper-${paper.id}-retag`,
+      volumeId: paper.curriculum_volume_id,
     })
     retagMessage.value = `已提交 ${ids.length} 道题，共 ${count} 个重新标注任务。`
   } catch {
@@ -366,19 +349,24 @@ async function fillPaperTags(paper: QuestionBankPaper): Promise<void> {
   retagBusyPaperId.value = paper.id
   taggingMode.value = 'fill'
   try {
-    const ids = await loadQuestionIds([paper.id], 'untagged')
+    if (!paper.curriculum_volume_id) {
+      retagMessage.value = '请先在“编辑资料”中补全年级、学期和教材版本。'
+      return
+    }
+    const ids = await loadQuestionIds([paper.id], 'incomplete')
     if (ids.length === 0) {
       retagMessage.value = '这份试卷没有可补齐的题目。'
       return
     }
     if (!window.confirm(
-      `已检查这份试卷：仅有 ${ids.length} 道题缺少核心标签。将只提交这些题，完整题和人工修改不会重做；可能产生模型费用。确认继续吗？`,
+      `已检查这份试卷：有 ${ids.length} 道题的标签、解题证据或训练判定点尚未完整。将只继续这些题，已经完整的题和人工修改不会重做；可能产生模型费用。确认继续吗？`,
     )) return
     const count = await submitTaggingBatches(ids, {
       forceRetag: false,
       scope: `paper-${paper.id}-fill`,
+      volumeId: paper.curriculum_volume_id,
     })
-    retagMessage.value = `已只提交 ${ids.length} 道缺少核心标签的题，共 ${count} 个任务；离开页面后可从顶部任务中心继续查看。`
+    retagMessage.value = `已提交 ${ids.length} 道未完成题目，共 ${count} 个任务；已完成内容不会重做。`
   } catch {
     retagMessage.value = '补齐标签任务没有完整提交；已提交的任务会保留，请先查看任务记录。'
   } finally {
@@ -393,19 +381,29 @@ async function retagAllPapers(): Promise<void> {
   retagAllBusy.value = true
   taggingMode.value = 'retag'
   try {
-    const ids = await loadQuestionIds()
-    if (ids.length === 0) {
+    const scopes: Array<{ paper: QuestionBankPaper; ids: number[] }> = []
+    for (const paper of store.papers) {
+      if (!paper.curriculum_volume_id) continue
+      const ids = await loadQuestionIds([paper.id])
+      if (ids.length) scopes.push({ paper, ids })
+    }
+    const total = scopes.reduce((sum, scope) => sum + scope.ids.length, 0)
+    if (total === 0) {
       retagMessage.value = '题库中没有可重新标注的题目。'
       return
     }
     if (!window.confirm(
-      `将重新分析题库中的 ${ids.length} 道题，可能产生模型费用；人工修改的标签会保留。确认继续吗？`,
+      `将重新分析题库中的 ${total} 道题，可能产生模型费用；人工修改的标签会保留。确认继续吗？`,
     )) return
-    const count = await submitTaggingBatches(ids, {
-      forceRetag: true,
-      scope: 'all-retag',
-    })
-    retagMessage.value = `已提交全库 ${ids.length} 道题，共 ${count} 个重新标注任务。`
+    let count = 0
+    for (const { paper, ids } of scopes) {
+      count += await submitTaggingBatches(ids, {
+        forceRetag: true,
+        scope: `paper-${paper.id}-retag`,
+        volumeId: paper.curriculum_volume_id!,
+      })
+    }
+    retagMessage.value = `已提交全库 ${total} 道题，共 ${count} 个重新标注任务。`
   } catch {
     retagMessage.value = '全库重新标注没有完整提交；已提交的任务会保留，请先查看任务记录。'
   } finally {
@@ -420,19 +418,29 @@ async function fillAllTags(): Promise<void> {
   retagAllBusy.value = true
   taggingMode.value = 'fill'
   try {
-    const ids = await loadQuestionIds(undefined, 'untagged')
-    if (ids.length === 0) {
+    const scopes: Array<{ paper: QuestionBankPaper; ids: number[] }> = []
+    for (const paper of store.papers) {
+      if (!paper.curriculum_volume_id) continue
+      const ids = await loadQuestionIds([paper.id], 'incomplete')
+      if (ids.length) scopes.push({ paper, ids })
+    }
+    const total = scopes.reduce((sum, scope) => sum + scope.ids.length, 0)
+    if (total === 0) {
       retagMessage.value = '题库中没有可补齐的题目。'
       return
     }
     if (!window.confirm(
-      `已检查全库：仅有 ${ids.length} 道题缺少核心标签。将只提交这些题，完整题和人工修改不会重做；可能产生模型费用。确认继续吗？`,
+      `已检查全库：有 ${total} 道题尚未完成。将只提交这些题，完整题和人工修改不会重做；可能产生模型费用。确认继续吗？`,
     )) return
-    const count = await submitTaggingBatches(ids, {
-      forceRetag: false,
-      scope: 'all-fill',
-    })
-    retagMessage.value = `已只提交全库 ${ids.length} 道缺少核心标签的题，共 ${count} 个任务；离开页面后可从顶部任务中心继续查看。`
+    let count = 0
+    for (const { paper, ids } of scopes) {
+      count += await submitTaggingBatches(ids, {
+        forceRetag: false,
+        scope: `paper-${paper.id}-fill`,
+        volumeId: paper.curriculum_volume_id!,
+      })
+    }
+    retagMessage.value = `已提交全库 ${total} 道未完成题目，共 ${count} 个任务。`
   } catch {
     retagMessage.value = '全库补齐标签没有完整提交；已提交的任务会保留，请先查看任务记录。'
   } finally {
@@ -495,92 +503,30 @@ async function savePaperMetadata(): Promise<void> {
   }
 }
 
-function requestPaperTrash(paper: QuestionBankPaper): void {
-  pendingTrashPaper.value = paper
-  store.resetPaperTrashStatus()
-}
-
-function cancelPaperTrash(): void {
-  if (store.paperTrashState === 'saving') return
-  pendingTrashPaper.value = null
-  store.resetPaperTrashStatus()
-}
-
-async function confirmPaperTrash(): Promise<void> {
-  const paper = pendingTrashPaper.value
-  if (!paper || store.paperTrashState === 'saving') return
-  if (await store.movePaperToTrash(paper.id)) {
-    pendingTrashPaper.value = null
-  }
-}
-
-async function openTrashDrawer(): Promise<void> {
-  trashDrawerOpen.value = true
-  store.resetPaperTrashStatus()
-  await store.loadTrashedPapers()
-  selectedTrashIds.value = []
-}
-
-function closeTrashDrawer(): void {
-  if (store.paperTrashState === 'saving') return
-  trashDrawerOpen.value = false
-  store.resetPaperTrashStatus()
-}
-
-async function restorePaper(paper: QuestionBankPaper): Promise<void> {
-  if (store.paperTrashState === 'saving') return
-  await store.restorePaperFromTrash(paper.id)
-}
-
-function toggleTrashSelection(paperId: number, checked: boolean): void {
-  selectedTrashIds.value = checked
-    ? [...new Set([...selectedTrashIds.value, paperId])]
-    : selectedTrashIds.value.filter((id) => id !== paperId)
-}
-
-function toggleAllFilteredTrash(checked: boolean): void {
-  const visible = new Set(filteredTrashPapers.value.map(({ id }) => id))
-  selectedTrashIds.value = checked
-    ? [...new Set([...selectedTrashIds.value, ...visible])]
-    : selectedTrashIds.value.filter((id) => !visible.has(id))
-}
-
-async function restoreSelectedPapers(): Promise<void> {
-  const targets = [...selectedTrashPapers.value]
-  let restored = 0
-  for (const paper of targets) {
-    if (await store.restorePaperFromTrash(paper.id)) restored += 1
-  }
-  selectedTrashIds.value = selectedTrashIds.value.filter(
-    (id) => store.trashedPapers.some((paper) => paper.id === id),
-  )
-  if (restored > 1) store.paperTrashMessage = `已恢复 ${restored} 份试卷。`
-}
-
-async function reviewPermanentDelete(): Promise<void> {
-  if (!selectedTrashPapers.value.length) return
+async function requestPermanentDelete(paper: QuestionBankPaper): Promise<void> {
+  pendingDeletePaper.value = paper
   permanentDeleteState.value = 'loading'
   permanentDeleteMessage.value = ''
-  permanentDeleteConfirmation.value = ''
+  deleteNotice.value = ''
   permanentDeleteRequestToken.value = ''
   try {
     permanentDeleteImpact.value = await questionBankApi.previewPaperPermanentDelete(
-      selectedTrashPapers.value.map((paper) => ({
+      [{
         id: paper.id,
         expected_updated_at: paper.updated_at,
-      })),
+      }],
     )
     permanentDeleteState.value = 'idle'
   } catch {
     permanentDeleteState.value = 'error'
-    permanentDeleteMessage.value = '删除清单读取失败，没有删除任何内容。请刷新回收站后重试。'
+    deleteNotice.value = '删除影响读取失败，没有删除任何内容。请刷新试卷库后重试。'
   }
 }
 
 function cancelPermanentDelete(): void {
   if (permanentDeleteState.value === 'working') return
+  pendingDeletePaper.value = null
   permanentDeleteImpact.value = null
-  permanentDeleteConfirmation.value = ''
   permanentDeleteMessage.value = ''
   permanentDeleteRequestToken.value = ''
   permanentDeleteState.value = 'idle'
@@ -594,8 +540,8 @@ function requestToken(): string {
 
 async function confirmPermanentDelete(): Promise<void> {
   const impact = permanentDeleteImpact.value
-  const targets = [...selectedTrashPapers.value]
-  if (!impact || !targets.length || !canConfirmPermanentDelete.value) return
+  const paper = pendingDeletePaper.value
+  if (!impact || !paper || !canConfirmPermanentDelete.value) return
   permanentDeleteState.value = 'working'
   permanentDeleteMessage.value = ''
   if (!permanentDeleteRequestToken.value) {
@@ -603,20 +549,19 @@ async function confirmPermanentDelete(): Promise<void> {
   }
   try {
     const result = await questionBankApi.permanentlyDeletePapers(
-      targets.map((paper) => ({
+      [{
         id: paper.id,
         expected_updated_at: paper.updated_at,
-      })),
-      permanentDeleteConfirmation.value,
+      }],
+      impact.permanent_delete_phrase,
       permanentDeleteRequestToken.value,
     )
-    await store.loadTrashedPapers()
-    selectedTrashIds.value = []
+    await store.loadPapers()
+    pendingDeletePaper.value = null
     permanentDeleteImpact.value = null
-    permanentDeleteConfirmation.value = ''
     permanentDeleteRequestToken.value = ''
     permanentDeleteState.value = 'idle'
-    store.paperTrashMessage = `已彻底删除 ${result.deleted_paper_ids.length} 份试卷、${result.deleted_question_count} 道题、${result.deleted_tag_count} 个标签；已移除 ${result.removed_training_link_count} 条训练关联和 ${result.removed_knowledge_graph_link_count} 条知识图谱计数来源。`
+    deleteNotice.value = `已删除 ${result.deleted_paper_ids.length} 份试卷、${result.deleted_question_count} 道题和 ${result.deleted_tag_count} 个标签。`
   } catch {
     permanentDeleteState.value = 'error'
     permanentDeleteMessage.value = '未收到服务器确认，删除结果尚不确定。请保留此窗口并点击重试；系统会使用同一请求编号核对，不会重复删除。'
@@ -635,29 +580,20 @@ async function confirmPermanentDelete(): Promise<void> {
       <div class="paper-library__stats" aria-label="试卷库概况">
         <span><strong>{{ store.papers.length }}</strong> 份试卷</span>
         <span><strong>{{ totalQuestions }}</strong> 道题</span>
-        <span><strong>{{ completeQuestions }}</strong> 道标签完整</span>
+        <span><strong>{{ completeQuestions }}</strong> 道联合分析完整</span>
         <button
           type="button"
           class="paper-button is-quiet"
           :disabled="retagAllBusy || retagBusyPaperId !== null"
           @click="fillAllTags"
-        >{{ retagAllBusy && taggingMode === 'fill' ? '正在检查缺失题…' : '只补缺失标签' }}</button>
+        >{{ retagAllBusy && taggingMode === 'fill' ? '正在检查未完成题…' : '继续完成未完成题目' }}</button>
         <button
           type="button"
           class="paper-button is-review"
           @click="emit('reviewTaxonomy')"
         >
           待审核新词
-          <strong>{{ props.pendingTaxonomyCount }}</strong>
-        </button>
-        <button
-          type="button"
-          class="paper-button is-quiet"
-          aria-label="打开回收站"
-          title="回收站"
-          @click="openTrashDrawer"
-        >
-          试卷回收站
+          <strong>{{ pendingTaxonomyLabel }}</strong>
         </button>
         <button
           type="button"
@@ -672,6 +608,7 @@ async function confirmPermanentDelete(): Promise<void> {
     </header>
 
     <p v-if="retagMessage" class="paper-library__notice" role="status">{{ retagMessage }}</p>
+    <p v-if="deleteNotice" class="paper-library__notice" role="status">{{ deleteNotice }}</p>
 
     <section v-if="analysisJobs.length" class="paper-library__task-strip" aria-live="polite">
       <div class="paper-library__task-strip-heading">
@@ -791,13 +728,13 @@ async function confirmPermanentDelete(): Promise<void> {
             }}
           </p>
           <div class="paper-card__progress-heading">
-            <span>核心标签完整度</span>
-            <strong>{{ paper.tagged_question_count }} / {{ paper.question_count }} 道</strong>
+            <span>联合分析完整度</span>
+            <strong>{{ paper.complete_analysis_count }} / {{ paper.question_count }} 道</strong>
           </div>
           <div
             class="paper-card__progress"
             role="progressbar"
-            aria-label="核心标签完整度"
+            aria-label="联合分析完整度"
             :aria-valuenow="progressFor(paper)"
             aria-valuemin="0"
             aria-valuemax="100"
@@ -806,9 +743,9 @@ async function confirmPermanentDelete(): Promise<void> {
           </div>
           <p class="paper-card__progress-note">
             {{ progressFor(paper) }}% 完整
-            <template v-if="paper.tagged_any_question_count > paper.tagged_question_count">
-              · 另有 {{ paper.tagged_any_question_count - paper.tagged_question_count }} 道已开始标注
-            </template>
+            · 标签 {{ paper.tagged_question_count }}/{{ paper.question_count }}
+            · 解题证据 {{ paper.evidence_question_count }}/{{ paper.question_count }}
+            · 训练判定点 {{ paper.criteria_question_count }}/{{ paper.question_count }}
           </p>
           <footer>
             <span>更新于 {{ formatDate(paper.updated_at) }}</span>
@@ -821,17 +758,17 @@ async function confirmPermanentDelete(): Promise<void> {
               >{{
                 retagBusyPaperId === paper.id && taggingMode === 'fill'
                   ? '准备中…'
-                  : '只补缺失标签'
+                  : '继续完成未完成题目'
               }}</button>
               <button
                 type="button"
                 class="paper-button is-danger-quiet"
-                :disabled="store.paperTrashBusyId === paper.id"
-                :aria-label="`将${paper.title || `试卷 ${paper.id}`}移入回收站`"
-                title="移入回收站"
-                @click="requestPaperTrash(paper)"
+                :disabled="permanentDeleteState === 'loading' || permanentDeleteState === 'working'"
+                :aria-label="`永久删除${paper.title || `试卷 ${paper.id}`}`"
+                title="永久删除"
+                @click="requestPermanentDelete(paper)"
               >
-                移入回收站
+                删除
               </button>
               <button
                 type="button"
@@ -1028,197 +965,6 @@ async function confirmPermanentDelete(): Promise<void> {
       </div>
 
       <div
-        v-if="pendingTrashPaper"
-        class="paper-trash-confirm-layer"
-        @click.self="cancelPaperTrash"
-      >
-        <section
-          class="paper-trash-confirm"
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby="paper-trash-confirm-title"
-        >
-          <p class="paper-trash-confirm__eyebrow">移入回收站</p>
-          <h2 id="paper-trash-confirm-title">确认移入回收站？</h2>
-          <strong>{{ pendingTrashPaper.title || `未命名试卷 #${pendingTrashPaper.id}` }}</strong>
-          <p>
-            这会隐藏这份试卷和当前仍在题库中的题目。此前单独删除的题不会被恢复；
-            源文件、图片和标签都不会删除。
-          </p>
-          <p
-            v-if="store.paperTrashMessage"
-            class="paper-trash-confirm__message"
-            :class="{ 'is-error': store.paperTrashState === 'error' || store.paperTrashState === 'conflict' }"
-            :role="store.paperTrashState === 'error' || store.paperTrashState === 'conflict' ? 'alert' : 'status'"
-          >
-            {{ store.paperTrashMessage }}
-          </p>
-          <footer>
-            <button
-              type="button"
-              class="paper-button is-quiet"
-              :disabled="store.paperTrashState === 'saving'"
-              @click="cancelPaperTrash"
-            >
-              取消
-            </button>
-            <button
-              type="button"
-              class="paper-button is-danger"
-              :disabled="store.paperTrashState === 'saving'"
-              @click="confirmPaperTrash"
-            >
-              {{ store.paperTrashState === 'saving' ? '正在移入…' : '确认移入' }}
-            </button>
-          </footer>
-        </section>
-      </div>
-
-      <div
-        v-if="trashDrawerOpen"
-        class="paper-editor-layer"
-        @click.self="closeTrashDrawer"
-      >
-        <aside
-          class="paper-trash-drawer"
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby="paper-trash-drawer-title"
-        >
-          <header class="paper-editor__header">
-            <div>
-              <p>RECYCLE BIN</p>
-              <h2 id="paper-trash-drawer-title">已删除试卷</h2>
-              <span>这里可以恢复整份试卷，以及当时随试卷一起移入回收站的题目。</span>
-            </div>
-            <button
-              type="button"
-              class="paper-editor__close"
-              aria-label="关闭回收站"
-              :disabled="store.paperTrashState === 'saving'"
-              @click="closeTrashDrawer"
-            >
-              ×
-            </button>
-          </header>
-
-          <div class="paper-trash-drawer__body">
-            <div class="paper-trash-filters">
-              <label class="paper-trash-search">
-                <span class="sr-only">搜索回收站试卷</span>
-                <input v-model="trashKeyword" type="search" placeholder="搜索名称或地区">
-              </label>
-              <label>
-                <span>年份</span>
-                <select v-model="trashYear">
-                  <option value="">全部</option>
-                  <option v-for="item in trashYears" :key="item" :value="item">{{ item }}</option>
-                </select>
-              </label>
-              <label>
-                <span>类型</span>
-                <select v-model="trashExamType">
-                  <option value="">全部</option>
-                  <option v-for="item in trashExamTypes" :key="item" :value="item">{{ item }}</option>
-                </select>
-              </label>
-              <label>
-                <span>文件</span>
-                <select v-model="trashSourceType">
-                  <option value="">全部</option>
-                  <option value="docx">Word</option>
-                  <option value="pdf">PDF</option>
-                  <option value="other">其他</option>
-                </select>
-              </label>
-            </div>
-            <p v-if="store.trashPapersState === 'loading'" class="paper-library__state" role="status">
-              正在读取回收站…
-            </p>
-            <div
-              v-else-if="store.trashPapersState === 'error'"
-              class="paper-library__state is-error"
-              role="alert"
-            >
-              <span>回收站暂时无法读取。</span>
-              <button type="button" class="paper-button is-quiet" @click="store.loadTrashedPapers()">
-                重新读取
-              </button>
-            </div>
-            <div v-else-if="store.trashedPapers.length === 0" class="paper-library__state">
-              <strong>回收站里没有试卷</strong>
-              <p>移入回收站的试卷会显示在这里。</p>
-            </div>
-            <div v-else-if="filteredTrashPapers.length === 0" class="paper-library__state">
-              <strong>当前筛选下没有试卷</strong>
-              <p>更换筛选条件后再查看。</p>
-            </div>
-            <div v-else class="paper-trash-list">
-              <div class="paper-trash-selection-bar">
-                <label>
-                  <input
-                    type="checkbox"
-                    :checked="allFilteredTrashSelected"
-                    @change="toggleAllFilteredTrash(($event.currentTarget as HTMLInputElement).checked)"
-                  >
-                  全选当前结果
-                </label>
-                <span>已选 {{ selectedTrashPapers.length }} 份</span>
-                <button
-                  type="button"
-                  class="paper-button is-quiet"
-                  :disabled="selectedTrashPapers.length === 0 || store.paperTrashBusyId !== null"
-                  @click="restoreSelectedPapers"
-                >恢复所选</button>
-                <button
-                  type="button"
-                  class="paper-button is-danger-quiet"
-                  :disabled="selectedTrashPapers.length === 0 || permanentDeleteState === 'loading'"
-                  @click="reviewPermanentDelete"
-                >彻底删除所选</button>
-              </div>
-              <article v-for="paper in filteredTrashPapers" :key="paper.id">
-                <label class="paper-trash-item-check">
-                  <input
-                    type="checkbox"
-                    :checked="selectedTrashIds.includes(paper.id)"
-                    :aria-label="`选择 ${paper.title || `试卷 #${paper.id}`}`"
-                    @change="toggleTrashSelection(
-                      paper.id,
-                      ($event.currentTarget as HTMLInputElement).checked,
-                    )"
-                  >
-                </label>
-                <div>
-                  <span class="paper-chip is-format">{{ sourceLabel(paper.source_type) }}</span>
-                  <h3>{{ paper.title || `未命名试卷 #${paper.id}` }}</h3>
-                  <p>
-                    {{ paper.question_count }} 道可恢复题目 · 更新于 {{ formatDate(paper.updated_at) }}
-                  </p>
-                </div>
-                <button
-                  type="button"
-                  class="paper-button is-primary"
-                  :disabled="store.paperTrashBusyId === paper.id"
-                  @click="restorePaper(paper)"
-                >
-                  {{ store.paperTrashBusyId === paper.id ? '正在恢复…' : '恢复到试卷库' }}
-                </button>
-              </article>
-            </div>
-            <p
-              v-if="store.paperTrashMessage"
-              class="paper-trash-drawer__message"
-              :class="{ 'is-error': store.paperTrashState === 'error' || store.paperTrashState === 'conflict' }"
-              :role="store.paperTrashState === 'error' || store.paperTrashState === 'conflict' ? 'alert' : 'status'"
-            >
-              {{ store.paperTrashMessage }}
-            </p>
-          </div>
-        </aside>
-      </div>
-
-      <div
         v-if="permanentDeleteImpact"
         class="paper-trash-confirm-layer"
         @click.self="cancelPermanentDelete"
@@ -1231,6 +977,7 @@ async function confirmPermanentDelete(): Promise<void> {
         >
           <p class="paper-trash-confirm__eyebrow">不可恢复</p>
           <h2 id="paper-permanent-delete-title">确认彻底删除？</h2>
+          <strong>{{ pendingDeletePaper?.title || `未命名试卷 #${pendingDeletePaper?.id}` }}</strong>
           <p class="paper-permanent-impact">
             <span><b>{{ permanentDeleteImpact.paper_count }}</b> 份试卷</span>
             <span><b>{{ permanentDeleteImpact.question_count }}</b> 道题</span>
@@ -1246,14 +993,6 @@ async function confirmPermanentDelete(): Promise<void> {
               另有 {{ permanentDeleteImpact.shared_file_count }} 个共享文件仍被其他试卷使用，将保留。
             </template>
           </p>
-          <label class="paper-permanent-confirmation">
-            <span>输入“{{ permanentDeleteImpact.permanent_delete_phrase }}”确认</span>
-            <input
-              v-model="permanentDeleteConfirmation"
-              autocomplete="off"
-              :disabled="permanentDeleteState === 'working'"
-            >
-          </label>
           <p v-if="permanentDeleteMessage" class="paper-trash-confirm__message is-error" role="alert">
             {{ permanentDeleteMessage }}
           </p>

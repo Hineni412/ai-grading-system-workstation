@@ -77,6 +77,9 @@ from backend.config_workspace.editor import (
     ConfigEditorEdit,
     ConfigEditorValidationError,
     ManualPartInput,
+    ManualQuestionPartInput,
+    ManualStepInput,
+    ReplaceQuestionStructureCommand,
     ReplaceScoringUnitsCommand,
     SplitScoringUnitCommand,
     apply_config_editor_changes,
@@ -544,12 +547,29 @@ def _editor_commands(values: list[Any]) -> tuple[Any, ...]:
     for value in values:
         if value.kind == "split":
             commands.append(SplitScoringUnitCommand(**value.model_dump()))
-        else:
+        elif value.kind == "replace_parts":
             commands.append(
                 ReplaceScoringUnitsCommand(
                     kind="replace_parts",
                     question_id=value.question_id,
                     parts=tuple(ManualPartInput(**part.model_dump()) for part in value.parts),
+                )
+            )
+        else:
+            commands.append(
+                ReplaceQuestionStructureCommand(
+                    kind="replace_question_structure",
+                    question_id=value.question_id,
+                    parts=tuple(
+                        ManualQuestionPartInput(
+                            part_id=part.part_id,
+                            steps=tuple(
+                                ManualStepInput(**step.model_dump())
+                                for step in part.steps
+                            ),
+                        )
+                        for part in value.parts
+                    ),
                 )
             )
     return tuple(commands)

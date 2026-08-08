@@ -740,6 +740,87 @@ def test_confirmed_rubric_adapter_removes_scores_and_keeps_obligations() -> None
     assert "max_score" not in serialized
 
 
+def test_confirmed_multi_blank_rubric_uses_separate_answer_only_units() -> None:
+    draft = criteria_from_confirmed_rubric(
+        question=_question(
+            1,
+            question_type="填空题",
+            text="分别填写：____，____。",
+        ),
+        rubric_question={
+            "parts": [
+                {
+                    "steps": [
+                        {"step_id": "process-1", "core_goal": "先计算"},
+                        {"step_id": "process-2", "core_goal": "再推导"},
+                    ]
+                }
+            ]
+        },
+        answer_key={
+            "parts": [
+                {"answer_values": ["3", "5"]},
+            ]
+        },
+    )
+
+    assert [point.point_id for point in draft.points] == [
+        "answer-unit-1",
+        "answer-unit-2",
+    ]
+    assert [point.observable_evidence for point in draft.points] == ["3", "5"]
+    assert all("过程" not in point.target for point in draft.points)
+    assert draft.auxiliary_rules == ()
+
+
+def test_mixed_fill_and_reasoning_question_keeps_each_part_semantics() -> None:
+    question = _question(
+        1,
+        question_type="填空题",
+        text="（1）填写 ____；（2）说明理由。",
+    )
+    assert question.objective_response_shape == "unknown"
+
+    draft = criteria_from_confirmed_rubric(
+        question=question,
+        rubric_question={
+            "parts": [
+                {
+                    "steps": [
+                        {
+                            "step_id": "answer-part",
+                            "core_goal": "填写第一个答案",
+                            "required_elements": ["3"],
+                        }
+                    ]
+                },
+                {
+                    "steps": [
+                        {
+                            "step_id": "reason-part",
+                            "core_goal": "说明结论成立的理由",
+                            "required_elements": ["给出有效推理"],
+                        }
+                    ]
+                },
+            ]
+        },
+        answer_key={
+            "parts": [
+                {"answer": "3"},
+                {"answer": "由已知条件可推出结论"},
+            ]
+        },
+    )
+
+    assert [point.point_id for point in draft.points] == [
+        "answer-part",
+        "reason-part",
+    ]
+    assert draft.points[1].target == "说明结论成立的理由"
+    assert draft.points[1].observable_evidence == "给出有效推理"
+
+
 def test_combined_schema_is_strict_and_tag_only_v1_adapter_stays_separate() -> None:
     schema = combined_response_format("both")
     item = schema["schema"]["properties"]["results"]["items"]

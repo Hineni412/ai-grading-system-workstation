@@ -100,17 +100,13 @@ def test_paper_trash_api_lists_and_restores_the_server_confirmed_state(
     assert reader.get_question(2) is None
 
 
-def test_paper_permanent_delete_api_requires_impact_and_exact_phrase(
+def test_active_paper_can_be_permanently_deleted_after_impact_confirmation(
     tmp_path: Path,
 ) -> None:
     client, _reader, paper_id, version = _client_with_paper(tmp_path)
-    trashed = client.post(
-        f"/api/question-bank/papers/{paper_id}/trash",
-        json={"expected_updated_at": version},
-    ).json()
     selections = [{
         "id": paper_id,
-        "expected_updated_at": trashed["updated_at"],
+        "expected_updated_at": version,
     }]
 
     impact = client.post(
@@ -147,7 +143,4 @@ def test_paper_permanent_delete_api_requires_impact_and_exact_phrase(
     assert deleted.json()["deleted_paper_ids"] == [paper_id]
     assert repeated.status_code == 200
     assert repeated.json() == deleted.json()
-    assert client.get(
-        "/api/question-bank/papers",
-        params={"deleted": "true"},
-    ).json()["items"] == []
+    assert client.get("/api/question-bank/papers").json()["items"] == []

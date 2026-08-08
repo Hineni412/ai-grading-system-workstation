@@ -1581,10 +1581,10 @@
   box-shadow: -20px 0 48px rgb(28 39 51 / 16%);
   box-sizing: border-box;
   height: 100%;
-  max-width: 100%;
+  max-width: 760px;
   overflow-y: auto;
   padding: 0 18px 24px;
-  width: min(760px, 68vw);
+  width: min(760px, 50vw);
 }
 
 .taxonomy-review__header {
@@ -2345,8 +2345,7 @@
 }
 
 .taxonomy-ai-results > header,
-.taxonomy-ai-results > footer,
-.taxonomy-ai-results__manual article {
+.taxonomy-ai-results > footer {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
@@ -2372,6 +2371,48 @@
   background: #fbfcfc;
 }
 
+.taxonomy-ai-results__manual article {
+  display: grid;
+  gap: 8px;
+}
+
+.taxonomy-ai-results__candidate-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.taxonomy-ai-results__candidate-head > div {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 5px 8px;
+  min-width: 0;
+}
+
+.taxonomy-ai-results__candidate-head span,
+.taxonomy-ai-results__reason {
+  color: var(--color-text-secondary, #5c6672);
+  font-size: 12px;
+}
+
+.taxonomy-ai-results__reason {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.taxonomy-ai-results__controls {
+  display: grid;
+  grid-template-columns: minmax(150px, .8fr) minmax(0, 1.2fr);
+  gap: 10px;
+}
+
+.taxonomy-ai-results__evidence {
+  flex: 0 0 auto;
+}
+
 .taxonomy-ai-results label {
   display: grid;
   gap: 4px;
@@ -2381,18 +2422,63 @@
 
 .taxonomy-ai-results select {
   min-height: 34px;
-  max-width: 220px;
+  width: 100%;
+  max-width: none;
 }
 
 .taxonomy-ai-results details button {
   margin: 6px 6px 0 0;
 }
 
+.taxonomy-ai-history {
+  display: grid;
+  gap: 8px;
+  padding: 14px;
+  border: 1px solid var(--color-border, #e2e4e7);
+  border-radius: 12px;
+  background: #fff;
+}
+
+.taxonomy-ai-history > header {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.taxonomy-ai-history h3,
+.taxonomy-ai-history p {
+  margin: 0;
+}
+
+.taxonomy-ai-history > header p,
+.taxonomy-ai-history > header span,
+.taxonomy-ai-history article p,
+.taxonomy-ai-history article span {
+  color: var(--color-text-secondary, #5c6672);
+  font-size: 12px;
+}
+
+.taxonomy-ai-history article {
+  display: grid;
+  gap: 3px;
+  padding: 10px;
+  border: 1px solid var(--color-border, #e2e4e7);
+  border-radius: 8px;
+  background: #fbfcfc;
+}
+
 @media (max-width: 720px) {
   .taxonomy-ai-results > header,
-  .taxonomy-ai-results > footer,
-  .taxonomy-ai-results__manual article {
+  .taxonomy-ai-results > footer {
     flex-direction: column;
+  }
+
+  .taxonomy-ai-results__manual article {
+    grid-template-columns: 1fr;
+  }
+
+  .taxonomy-ai-results__controls {
+    grid-template-columns: 1fr;
   }
 
   .taxonomy-ai-results label,

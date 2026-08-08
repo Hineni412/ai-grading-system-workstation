@@ -48,7 +48,7 @@ async function settle(): Promise<void> {
 async function mountView(options: {
   saver: (sessionId: number, request: ConfigEditorSaveRequest) => Promise<ConfigEditorSaveResponse>
   loader?: (sessionId: number) => Promise<ConfigEditorResponse>
-  refiner?: (sessionId: number, request: { revision: string; commands: unknown[] }) => Promise<JobResponse>
+  generator?: (sessionId: number, request: unknown) => Promise<JobResponse>
   initialEditor?: ConfigEditorResponse
 }) {
   const pinia = createPinia()
@@ -70,7 +70,7 @@ async function mountView(options: {
   const host = document.createElement('div')
   document.body.append(host)
   const app = createApp(SessionConfigView, { editorSaver: options.saver, editorLoader: options.loader,
-    editorRefiner: options.refiner })
+    generationSubmitter: options.generator })
   app.use(pinia)
   app.mount(host)
   await nextTick()
@@ -224,11 +224,11 @@ describe('ConfigSaveResult', () => {
     expect(mounted.workspace.editor?.rows[0]?.standard_answer).toBe('旧答案')
   })
 
-  it('disables rubric edits after a delayed refine request becomes a running Job', async () => {
+  it('disables rubric edits after a delayed single-question retry becomes a running Job', async () => {
     const pending = deferred<JobResponse>()
-    const refiner = vi.fn(() => pending.promise)
-    const mounted = await mountView({ saver: vi.fn(), refiner })
-    mounted.host.querySelector<HTMLButtonElement>('button[name="AI 完善评分单元"]')!.click()
+    const generator = vi.fn(() => pending.promise)
+    const mounted = await mountView({ saver: vi.fn(), generator })
+    mounted.host.querySelector<HTMLButtonElement>('button[name="单题AI重试"]')!.click()
     await nextTick()
     pending.resolve({ id: 55, job_type: 'config_generation', payload: { session_id: 7, mode: 'refine' },
       result: {}, status: 'running', progress: 0.2, stage: 'refining', detail: '', error: null,
@@ -236,7 +236,7 @@ describe('ConfigSaveResult', () => {
       updated_at: '2026-07-15T00:00:01Z', finished_at: null })
     await settle()
 
-    expect(refiner).toHaveBeenCalledOnce()
+    expect(generator).toHaveBeenCalledOnce()
     expect(mounted.host.querySelector<HTMLTextAreaElement>('[aria-label="Q12 P1 S1 标准答案"]')?.disabled).toBe(true)
   })
 

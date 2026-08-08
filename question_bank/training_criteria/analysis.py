@@ -1562,6 +1562,112 @@ def plan_analysis_batches(
     return tuple(batches)
 
 
+def _append_answer_unit(
+    units: list[tuple[str, tuple[str, ...]]],
+    canonical: object,
+    equivalents: object,
+) -> None:
+    value = str(canonical or "").strip()
+    if not value:
+        return
+    accepted = tuple(
+        item for item in _text_tuple(equivalents) if item != value
+    )
+    units.append((value, accepted))
+
+
+def _objective_answer_units_from_mapping(
+    answer: Mapping[str, Any],
+    *,
+    fallback: str,
+) -> tuple[tuple[str, tuple[str, ...]], ...]:
+    units: list[tuple[str, tuple[str, ...]]] = []
+    raw_parts = answer.get("parts")
+    if isinstance(raw_parts, list):
+        for raw_part in raw_parts:
+            if not isinstance(raw_part, Mapping):
+                continue
+            values = _text_tuple(raw_part.get("answer_values"))
+            if values:
+                for value in values:
+                    _append_answer_unit(units, value, ())
+                continue
+            _append_answer_unit(
+                units,
+                _first_text(
+                    raw_part,
+                    "canonical_answer",
+                    "answer",
+                    "correct_answer",
+                ),
+                raw_part.get("accepted_forms")
+                or raw_part.get("equivalent_answers"),
+            )
+    if not units:
+        values = _text_tuple(answer.get("answer_values"))
+        if values:
+            for value in values:
+                _append_answer_unit(units, value, ())
+    if not units:
+        _append_answer_unit(
+            units,
+            _first_text(
+                answer,
+                "canonical_answer",
+                "answer",
+                "correct_answer",
+            ),
+            answer.get("accepted_forms")
+            or answer.get("equivalent_answers"),
+        )
+    if not units:
+        _append_answer_unit(units, fallback, ())
+    return tuple(units)
+
+
+def _answer_only_training_draft(
+    *,
+    question: QuestionAnalysisInput,
+    answer_units: Sequence[tuple[str, tuple[str, ...]]],
+    rationale: str,
+    confidence: float,
+    source_kind: Literal["combined_model", "confirmed_rubric_adapter"],
+) -> TrainingCriteriaDraft:
+    multiple = len(answer_units) > 1
+    points = tuple(
+        TrainingCriterionPoint(
+            point_id=(
+                f"answer-unit-{index}"
+                if multiple
+                else "objective-answer"
+            ),
+            target=(
+                f"给出第 {index} 个正确或等价答案"
+                if multiple
+                else "给出正确或等价答案"
+            ),
+            observable_evidence=canonical,
+            equivalent_rules=equivalents,
+            counterexamples=(),
+        )
+        for index, (canonical, equivalents) in enumerate(
+            answer_units,
+            start=1,
+        )
+    )
+    return TrainingCriteriaDraft(
+        schema_version="training-criteria-draft-v1",
+        question_id=question.question_id,
+        source_content_hash=question.criterion_source_content_hash,
+        question_type=question.question_type_group,
+        points=points,
+        auxiliary_rules=(),
+        rationale=rationale,
+        confidence=confidence,
+        source_kind=source_kind,
+    )
+
+
 def criteria_from_confirmed_rubric(
     *,
     question: QuestionAnalysisInput,
@@ -1569,35 +1675,24 @@ def criteria_from_confirmed_rubric(
     answer_key: Mapping[str, Any] | None = None,
 ) -> TrainingCriteriaDraft:
     answer = dict(answer_key or {})
-    if question.objective_response_shape in {"single_choice", "single_blank"}:
-        canonical = _first_text(
+    if question.objective_response_shape in {
+        "single_choice",
+        "single_blank",
+        "multiple_blank",
+    }:
+        answer_units = _objective_answer_units_from_mapping(
             answer,
-            "canonical_answer",
-            "answer",
-            "correct_answer",
-        ) or str(question.tagging_context.answer_text or "").strip()
-        if not canonical:
+            fallback=str(question.tagging_context.answer_text or "").strip(),
+        )
+        if question.objective_response_shape == "single_choice":
+            answer_units = answer_units[:1]
+        if not answer_units:
             raise ProjectionValidationError(
                 "confirmed rubric cannot be converted without an answer"
             )
-        return TrainingCriteriaDraft(
-            schema_version="training-criteria-draft-v1",
-            question_id=question.question_id,
-            source_content_hash=question.criterion_source_content_hash,
-            question_type=question.question_type_group,
-            points=(
-                TrainingCriterionPoint(
-                    point_id="objective-answer",
-                    target="给出正确或等价答案",
-                    observable_evidence=canonical,
-                    equivalent_rules=_text_tuple(
-                        answer.get("accepted_forms")
-                        or answer.get("equivalent_answers")
-                    ),
-                    counterexamples=(),
-                ),
-            ),
-            auxiliary_rules=(),
+        return _answer_only_training_draft(
+            question=question,
+            answer_units=answer_units,
             rationale="由教师已确认的正式评分依据本地去分值转换。",
             confidence=1.0,
             source_kind="confirmed_rubric_adapter",
@@ -1713,6 +1808,65 @@ def training_criteria_from_solution_evidence(
         question
     ):
         raise ProjectionValidationError("solution evidence source is stale")
+    if question.objective_response_shape in {"single_choice", "single_blank"}:
+        canonical = next(
+            (
+                part.canonical_answer
+                for part in evidence.parts
+                if str(part.canonical_answer or "").strip()
+            ),
+            str(question.tagging_context.answer_text or "").strip(),
+        )
+        if not canonical:
+            raise ProjectionValidationError(
+                "objective evidence cannot be converted without an answer"
+            )
+        accepted_forms = tuple(
+            dict.fromkeys(
+                form
+                for part in evidence.parts
+                for form in part.accepted_forms
+                if form != canonical
+            )
+        )
+        return _answer_only_training_draft(
+            question=question,
+            answer_units=((canonical, accepted_forms),),
+            rationale="客观题仅依据答案生成训练判定点。",
+            confidence=evidence.confidence,
+            source_kind="combined_model",
+        )
+    if question.objective_response_shape == "multiple_blank":
+        answer_units: list[tuple[str, tuple[str, ...]]] = []
+        for part in evidence.parts:
+            if part.response_mode == "exact_objective":
+                _append_answer_unit(
+                    answer_units,
+                    part.canonical_answer,
+                    part.accepted_forms,
+                )
+                continue
+            anchors = [
+                point.answer_anchor
+                for point in part.evidence_points
+                if str(point.answer_anchor or "").strip()
+            ]
+            if anchors:
+                for anchor in anchors:
+                    _append_answer_unit(answer_units, anchor, ())
+            else:
+                _append_answer_unit(answer_units, part.full_answer, ())
+        if not answer_units:
+            raise ProjectionValidationError(
+                "fill-blank evidence cannot be converted without answers"
+            )
+        return _answer_only_training_draft(
+            question=question,
+            answer_units=tuple(answer_units),
+            rationale="填空题仅依据各独立答案生成训练判定点。",
+            confidence=evidence.confidence,
+            source_kind="combined_model",
+        )
     points = tuple(
         TrainingCriterionPoint(
             point_id=point.evidence_point_id,

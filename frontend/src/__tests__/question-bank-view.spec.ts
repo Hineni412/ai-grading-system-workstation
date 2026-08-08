@@ -35,9 +35,9 @@ const item = {
   city: '深圳市',
   district: null,
   exam_type: '期末',
-  grade: '九年级',
+  grade: '七年级',
   semester: '下学期',
-  textbook_version: null,
+  textbook_version: '北师大版（2024）',
   tags: [],
   asset_urls: [],
   rich_content: {
@@ -56,16 +56,20 @@ const paper: QuestionBankPaper = {
   city: '深圳市',
   district: null,
   exam_type: '期末',
-  grade: '九年级',
+  grade: '七年级',
   semester: '下学期',
   folder_name: null,
-  textbook_version: null,
+  textbook_version: '北师大版（2024）',
+  curriculum_volume_id: 'bnu24-math-g7-lower',
   import_status: 'imported',
   created_at: '2026-07-18T08:00:00Z',
   updated_at: '2026-07-18T09:00:00Z',
   question_count: 1,
   tagged_question_count: 0,
   tagged_any_question_count: 0,
+  evidence_question_count: 0,
+  criteria_question_count: 0,
+  complete_analysis_count: 0,
   source_type: 'docx',
 }
 
@@ -103,6 +107,25 @@ afterEach(() => {
 })
 
 describe('question bank workspace', () => {
+  it('shows that the pending taxonomy count is loading instead of flashing a false zero', async () => {
+    const host = document.createElement('div')
+    document.body.append(host)
+    const pinia = createPinia()
+    const app = createApp(PaperLibrary, {
+      pendingTaxonomyCount: 0,
+      pendingTaxonomyState: 'loading',
+    })
+    app.use(pinia)
+    app.mount(host)
+    mounted.push(app)
+    await nextTick()
+
+    const reviewButton = [...host.querySelectorAll<HTMLButtonElement>('button')]
+      .find((button) => button.textContent?.includes('待审核新词'))
+    expect(reviewButton?.textContent).toContain('读取中')
+    expect(reviewButton?.textContent).not.toContain('0')
+  })
+
   it('groups papers by semester, honors manual folders, and lets teachers collapse a group', async () => {
     const host = document.createElement('div')
     document.body.append(host)
@@ -246,6 +269,7 @@ describe('question bank workspace', () => {
     expect(String(fetchSpy.mock.calls[callsAfterDifficulty + 1]?.[0])).toBe('/api/question-bank/tagging-jobs')
     expect(JSON.parse(String(fetchSpy.mock.calls[callsAfterDifficulty + 1]?.[1]?.body))).toEqual({
       question_ids: [17],
+      curriculum_volume_id: 'bnu24-math-g7-lower',
     })
   })
 
@@ -426,7 +450,7 @@ describe('question bank workspace', () => {
     expect(document.body.textContent).toContain('取消请求未能同步，任务可能仍在继续。')
   })
 
-  it('tells the teacher to restore an identical paper from the trash', async () => {
+  it('explains how to clear an identical paper left by the legacy delete flow', async () => {
     const host = document.createElement('div')
     document.body.append(host)
     const pinia = createPinia()
@@ -459,8 +483,9 @@ describe('question bank workspace', () => {
     })
     await nextTick()
 
-    expect(host.textContent).toContain('相同试卷已在回收站')
-    expect(host.textContent).toContain('恢复原试卷')
+    expect(host.textContent).toContain('旧版删除流程留下的同卷记录')
+    expect(host.textContent).toContain('恢复旧记录')
+    expect(host.textContent).toContain('永久删除')
     expect(host.textContent).not.toContain('重试允许的失败项')
   })
 
@@ -579,6 +604,7 @@ describe('question bank workspace', () => {
     )
     expect(JSON.parse(String(submitCall?.[1]?.body))).toEqual({
       question_ids: [17],
+      curriculum_volume_id: 'bnu24-math-g7-lower',
       force_retag: true,
       client_request_token: expect.stringMatching(/^[0-9a-f]{32}$/),
     })
@@ -626,26 +652,27 @@ describe('question bank workspace', () => {
     })
 
     const fill = [...host.querySelectorAll<HTMLButtonElement>('button')]
-      .find((button) => button.textContent?.trim() === '只补缺失标签')!
+      .find((button) => button.textContent?.trim() === '继续完成未完成题目')!
     fill.click()
 
     await vi.waitFor(() => expect(fetchSpy.mock.calls.some(
       ([request, options]) => String(request) === '/api/question-bank/tagging-jobs'
         && options?.method === 'POST',
     )).toBe(true))
-    expect(questionListUrl).toContain('tag_status=untagged')
+    expect(questionListUrl).toContain('analysis_status=incomplete')
     const submitCall = fetchSpy.mock.calls.find(
       ([request, options]) => String(request) === '/api/question-bank/tagging-jobs'
         && options?.method === 'POST',
     )
     expect(JSON.parse(String(submitCall?.[1]?.body))).toEqual({
       question_ids: [17],
+      curriculum_volume_id: 'bnu24-math-g7-lower',
       client_request_token: expect.stringMatching(/^[0-9a-f]{32}$/),
     })
-    expect(host.textContent).toContain('1 道缺少核心标签的题')
+    expect(host.textContent).toContain('1 道未完成题目')
   })
 
-  it('requires explicit confirmation before trashing a paper and restores it from the drawer', async () => {
+  it('requires one explicit confirmation before permanently deleting an active paper', async () => {
     const host = document.createElement('div')
     document.body.append(host)
     const pinia = createPinia()
@@ -656,75 +683,60 @@ describe('question bank workspace', () => {
     store.papersState = 'ready'
     app.mount(host)
     mounted.push(app)
-    const trashedPaper = {
-      ...paper,
-      import_status: 'deleted',
-      updated_at: '2026-07-29 11:00:00.000001',
-    }
+    let deleted = false
     const fetchSpy = vi.spyOn(globalThis, 'fetch')
-      .mockImplementation(async (input) => {
+      .mockImplementation(async (input, init) => {
         const url = String(input)
-        if (url.endsWith('/trash')) {
+        if (url.endsWith('/permanent-deletion-impact')) {
           return response({
-            id: 4,
-            deleted: true,
-            import_status: 'deleted',
-            updated_at: trashedPaper.updated_at,
-            affected_question_count: 1,
+            paper_count: 1,
+            question_count: 2,
+            tag_count: 3,
+            training_link_count: 1,
+            knowledge_graph_link_count: 1,
+            owned_file_count: 1,
+            shared_file_count: 0,
+            permanent_delete_phrase: '彻底删除 1 份试卷',
           })
         }
-        if (url === '/api/question-bank/papers?deleted=true') {
-          return response({ items: [trashedPaper], total: 1 })
-        }
-        if (url.endsWith('/restore')) {
+        if (url.endsWith('/permanent-delete')) {
+          deleted = true
           return response({
-            id: 4,
-            deleted: false,
-            import_status: 'completed',
-            updated_at: '2026-07-29 11:01:00.000001',
-            affected_question_count: 1,
+            deleted_paper_ids: [paper.id],
+            deleted_question_count: 2,
+            deleted_tag_count: 3,
+            removed_training_link_count: 1,
+            removed_knowledge_graph_link_count: 1,
+            deleted_file_count: 1,
+            skipped_shared_file_count: 0,
+            storage_cleanup_pending: false,
           })
         }
-        throw new Error(`unexpected request: ${url}`)
+        if (url === '/api/question-bank/papers') {
+          return response({ items: deleted ? [] : [paper], total: deleted ? 0 : 1 })
+        }
+        throw new Error(`unexpected request: ${url} ${String(init?.method)}`)
       })
 
-    const trash = [...host.querySelectorAll<HTMLButtonElement>('button')]
-      .find((button) => button.textContent?.includes('移入回收站'))!
-    trash.click()
-    await nextTick()
-    expect(document.body.textContent).toContain('确认移入回收站')
-    expect(document.body.textContent).toContain('此前单独删除的题不会被恢复')
-    expect(fetchSpy).not.toHaveBeenCalled()
+    const remove = [...host.querySelectorAll<HTMLButtonElement>('button')]
+      .find((button) => button.textContent?.trim() === '删除')!
+    remove.click()
+    await vi.waitFor(() => expect(document.body.textContent).toContain('确认彻底删除？'))
+    expect(document.body.textContent).toContain('已完成考试的答卷与成绩不受影响')
+    expect(fetchSpy.mock.calls.some(([request]) => String(request).endsWith('/permanent-delete'))).toBe(false)
 
     const cancel = [...document.body.querySelectorAll<HTMLButtonElement>('button')]
       .find((button) => button.textContent?.includes('取消'))!
     cancel.click()
     await nextTick()
     expect(host.textContent).toContain('匿名期末试卷')
-    expect(fetchSpy).not.toHaveBeenCalled()
-
-    trash.click()
-    await nextTick()
+    remove.click()
+    await vi.waitFor(() => expect(document.body.textContent).toContain('确认彻底删除？'))
     const confirm = [...document.body.querySelectorAll<HTMLButtonElement>('button')]
-      .find((button) => button.textContent?.includes('确认移入'))!
+      .find((button) => button.textContent?.includes('确认彻底删除'))!
     confirm.click()
     await vi.waitFor(() => expect(store.papers).toHaveLength(0))
-    expect(String(fetchSpy.mock.calls[0]?.[0])).toBe(
-      '/api/question-bank/papers/4/trash',
-    )
-
-    const openTrash = [...host.querySelectorAll<HTMLButtonElement>('button')]
-      .find((button) => button.textContent?.includes('回收站'))!
-    openTrash.click()
-    await vi.waitFor(() => expect(document.body.textContent).toContain('已删除试卷'))
-    await vi.waitFor(() => expect(store.trashedPapers).toHaveLength(1))
-    const restore = [...document.body.querySelectorAll<HTMLButtonElement>('button')]
-      .find((button) => button.textContent?.includes('恢复到试卷库'))!
-    restore.click()
-    await vi.waitFor(() => expect(store.papers).toHaveLength(1))
-    expect(fetchSpy.mock.calls.some(([request]) => (
-      String(request) === '/api/question-bank/papers/4/restore'
-    ))).toBe(true)
+    expect(host.textContent).not.toContain('试卷回收站')
   })
 
   it('reuses the permanent-delete request token when the first response is lost', async () => {
@@ -734,23 +746,18 @@ describe('question bank workspace', () => {
     const app = createApp(PaperLibrary)
     app.use(pinia)
     const store = useQuestionBankStore(pinia)
-    store.papers = []
+    store.papers = [paper]
     store.papersState = 'ready'
     app.mount(host)
     mounted.push(app)
-    const trashedPaper = {
-      ...paper,
-      import_status: 'deleted',
-      updated_at: '2026-07-29 12:00:00.000001',
-    }
     let deleteAttempts = 0
     let deletionConfirmed = false
     const deleteBodies: Array<Record<string, unknown>> = []
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
       const url = String(input)
-      if (url === '/api/question-bank/papers?deleted=true') {
+      if (url === '/api/question-bank/papers') {
         return response({
-          items: deletionConfirmed ? [] : [trashedPaper],
+          items: deletionConfirmed ? [] : [paper],
           total: deletionConfirmed ? 0 : 1,
         })
       }
@@ -774,7 +781,7 @@ describe('question bank workspace', () => {
         }
         deletionConfirmed = true
         return response({
-          deleted_paper_ids: [trashedPaper.id],
+          deleted_paper_ids: [paper.id],
           deleted_question_count: 2,
           deleted_tag_count: 3,
           removed_training_link_count: 0,
@@ -787,26 +794,10 @@ describe('question bank workspace', () => {
       throw new Error(`unexpected request: ${url}`)
     })
 
-    const openTrash = [...host.querySelectorAll<HTMLButtonElement>('button')]
-      .find((button) => button.textContent?.includes('回收站'))!
-    openTrash.click()
-    await vi.waitFor(() => expect(store.trashedPapers).toHaveLength(1))
-    const select = document.body.querySelector<HTMLInputElement>(
-      `input[aria-label="选择 ${trashedPaper.title}"]`,
-    )!
-    select.checked = true
-    select.dispatchEvent(new Event('change', { bubbles: true }))
-    await nextTick()
-    const reviewDelete = [...document.body.querySelectorAll<HTMLButtonElement>('button')]
-      .find((button) => button.textContent?.includes('彻底删除所选'))!
+    const reviewDelete = [...host.querySelectorAll<HTMLButtonElement>('button')]
+      .find((button) => button.textContent?.trim() === '删除')!
     reviewDelete.click()
     await vi.waitFor(() => expect(document.body.textContent).toContain('确认彻底删除？'))
-    const confirmation = document.body.querySelector<HTMLInputElement>(
-      '.paper-permanent-confirmation input',
-    )!
-    confirmation.value = '彻底删除 1 份试卷'
-    confirmation.dispatchEvent(new Event('input', { bubbles: true }))
-    await nextTick()
     const confirm = [...document.body.querySelectorAll<HTMLButtonElement>('button')]
       .find((button) => button.textContent?.includes('确认彻底删除'))!
     confirm.click()
@@ -816,6 +807,7 @@ describe('question bank workspace', () => {
     await vi.waitFor(() => expect(document.body.textContent).not.toContain('确认彻底删除？'))
 
     expect(deleteBodies[0]?.request_token).toBe(deleteBodies[1]?.request_token)
+    expect(deleteBodies[0]?.confirmation_phrase).toBe('彻底删除 1 份试卷')
   })
 })
 
