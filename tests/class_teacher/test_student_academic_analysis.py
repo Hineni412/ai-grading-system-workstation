@@ -16,17 +16,14 @@ from backend.workspaces.contracts import WorkspaceContext
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-PASSWORD = "合成学业分析密码-足够长-001"
-
-
 def _service(tmp_path: Path) -> tuple[VaultService, str, str]:
     service = VaultService(WorkspaceContext(
         module_id="class-teacher",
         root=tmp_path / "workspaces" / "class-teacher",
         paths=SimpleNamespace(project_root=PROJECT_ROOT, migration_project_root=PROJECT_ROOT),
     ))
-    initialized = service.initialize(password=PASSWORD, operation_id="academic-init-0001")
-    token = str(initialized["session_token"])
+    service.ensure_plaintext_ready()
+    token = ""
     subject = service.support.create_subject(
         token=token,
         operation_id="academic-subject-0001",

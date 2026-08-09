@@ -12,7 +12,7 @@ from .intake_schemas import (
     ManualRouteRequest,
     TurnAppendRequest,
 )
-from .router import _api_error, _call, _no_store, _require_trusted_mutation, _service, _token
+from .router import _api_error, _call, _no_store, _require_trusted_mutation, _service
 
 
 def create_intake_router() -> APIRouter:
@@ -70,13 +70,12 @@ def create_intake_router() -> APIRouter:
         request: Request,
         response: Response,
         body: ConversationStartRequest | None = None,
-        session_token: str | None = Header(None, alias="x-class-teacher-session"),
     ):
         _require_trusted_mutation(request)
         _no_store(response)
         return _call(
             lambda: _service(request).intake.start_conversation(
-                token=_token(session_token),
+                token="",
                 subject_id=None if body is None else body.subject_id,
             )
         )
@@ -211,12 +210,11 @@ def create_intake_router() -> APIRouter:
         request: Request,
         body: HandoffAdoptRequest,
         response: Response,
-        session_token: str | None = Header(None, alias="x-class-teacher-session"),
     ):
         _require_trusted_mutation(request)
         _no_store(response)
         return _call(lambda: _service(request).intake.adopt_handoff(
-            token=_token(session_token), handoff_id=handoff_id, **body.model_dump()
+            token="", handoff_id=handoff_id, **body.model_dump()
         ))
 
     return router

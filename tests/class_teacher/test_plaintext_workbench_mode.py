@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-import asyncio
+import hashlib
 import logging
 import shutil
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -11,11 +12,13 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 import pytest
 
+from backend.api.app import ApiError
 from backend.class_teacher.api import create_router
+from backend.class_teacher.encrypted_database import EncryptedDatabase
+from backend.class_teacher.errors import VaultError
 from backend.class_teacher.feature import _create_service, create_workspace_feature
 from backend.class_teacher.model_approval import FakeApprovedModelGateway
 from backend.class_teacher.vault_service import VaultService
-from backend.class_teacher.errors import VaultError
 from backend.schema_migrations import ensure_schema_current
 from backend.workspaces.contracts import WorkspaceContext
 
@@ -35,23 +38,91 @@ def _context(tmp_path: Path) -> WorkspaceContext:
     return WorkspaceContext(module_id="class-teacher", root=root, paths=paths)
 
 
+def _tree_snapshot(root: Path) -> dict[str, tuple[str, str | None]]:
+    if not root.exists():
+        return {}
+    snapshot: dict[str, tuple[str, str | None]] = {}
+    for path in sorted(root.rglob("*")):
+        relative = path.relative_to(root).as_posix()
+        if path.is_file():
+            digest = hashlib.sha256(path.read_bytes()).hexdigest()
+            snapshot[relative] = ("file", digest)
+        else:
+            snapshot[relative] = ("directory", None)
+    return snapshot
+
+
+def _insert_marker(
+    connection: sqlite3.Connection,
+    *,
+    object_id: str,
+    payload_nonce: bytes,
+) -> None:
+    connection.execute(
+        """
+        INSERT INTO encrypted_objects (
+            object_id, object_type, format_version, cek_nonce, wrapped_cek,
+            payload_nonce, payload_ciphertext, revision, created_at, updated_at
+        ) VALUES (?, 'synthetic', 1, X'', X'', ?, X'7b7d', 1,
+                  '2026-01-01T00:00:00+00:00',
+                  '2026-01-01T00:00:00+00:00')
+        """,
+        (object_id, payload_nonce),
+    )
+
+
+def _seed_classification_case(
+    context: WorkspaceContext,
+    *,
+    legacy: bool,
+    with_wal: bool,
+) -> sqlite3.Connection | None:
+    service = VaultService(context)
+    service.ensure_plaintext_ready()
+    database_path = service.database.database_path
+    if not with_wal:
+        with closing(sqlite3.connect(database_path)) as connection:
+            connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            connection.execute("PRAGMA journal_mode = DELETE")
+            _insert_marker(
+                connection,
+                object_id="classification-marker",
+                payload_nonce=(
+                    b"synthetic-legacy-nonce"
+                    if legacy
+                    else b"plaintext-json-v1"
+                ),
+            )
+            connection.commit()
+        Path(f"{database_path}-wal").unlink(missing_ok=True)
+        Path(f"{database_path}-shm").unlink(missing_ok=True)
+        return None
+
+    keeper = sqlite3.connect(database_path)
+    keeper.execute("PRAGMA journal_mode = WAL")
+    keeper.execute("PRAGMA wal_autocheckpoint = 0")
+    _insert_marker(
+        keeper,
+        object_id="classification-marker",
+        payload_nonce=(
+            b"synthetic-legacy-nonce" if legacy else b"plaintext-json-v1"
+        ),
+    )
+    keeper.commit()
+    assert Path(f"{database_path}-wal").is_file()
+    assert Path(f"{database_path}-shm").is_file()
+    return keeper
+
+
 def test_production_workbench_is_open_and_persists_student_content_as_plaintext(
     tmp_path: Path,
 ) -> None:
     service = _create_service(_context(tmp_path))
 
-    status = service.status()
-    assert status["initialized"] is True
-    assert status["locked"] is False
-    assert status["idle_timeout_seconds"] == 0
-    assert status["protection_mode"] == "plaintext_debug_v1"
-
     app = FastAPI()
     app.state.workspace_services = {"class-teacher": service}
     app.include_router(create_router(), prefix="/api/class-teacher")
-    response = TestClient(app).get("/api/class-teacher/vault/status")
-    assert response.status_code == 200
-    assert response.json()["protection_mode"] == "plaintext_debug_v1"
+    assert TestClient(app).get("/api/class-teacher/vault/status").status_code == 404
 
     created = service.support.create_subject(
         token="",
@@ -62,92 +133,18 @@ def test_production_workbench_is_open_and_persists_student_content_as_plaintext(
     )
 
     assert created["display_name"] == "合成学生甲"
-    assert service.student_directory.search(token="")["items"][0]["display_name"] == "合成学生甲"
+    assert service.student_directory.search(token="")["items"][0][
+        "display_name"
+    ] == "合成学生甲"
     assert service.affairs.list(token="")["items"] == []
     assert service.home_intake_finalizer is not None
     assert service.support_ai_reviews is not None
     with sqlite3.connect(service.database.database_path) as connection:
         payload = connection.execute(
-            "SELECT payload_ciphertext FROM encrypted_objects WHERE object_type = 'student_subject'"
+            "SELECT payload_ciphertext FROM encrypted_objects "
+            "WHERE object_type = 'student_subject'"
         ).fetchone()[0]
     assert "合成学生甲" in bytes(payload).decode("utf-8")
-
-
-def test_plaintext_mode_allows_unrelated_operations_to_overlap(
-    tmp_path: Path,
-) -> None:
-    service = VaultService(
-        _context(tmp_path),
-        model_gateway=FakeApprovedModelGateway(),
-        protection_enabled=False,
-    )
-
-    async def exercise() -> None:
-        first_entered = asyncio.Event()
-        release_first = asyncio.Event()
-        second_entered = asyncio.Event()
-
-        async def first_operation() -> None:
-            async with service.operation_scope():
-                first_entered.set()
-                await release_first.wait()
-
-        async def second_operation() -> None:
-            await first_entered.wait()
-            async with service.operation_scope():
-                second_entered.set()
-
-        first = asyncio.create_task(first_operation())
-        second = asyncio.create_task(second_operation())
-        await first_entered.wait()
-        try:
-            await asyncio.wait_for(second_entered.wait(), timeout=0.2)
-        finally:
-            release_first.set()
-            await asyncio.gather(first, second)
-
-    asyncio.run(exercise())
-
-
-def test_protected_mode_keeps_operations_serialized(
-    tmp_path: Path,
-) -> None:
-    service = VaultService(
-        _context(tmp_path),
-        model_gateway=FakeApprovedModelGateway(),
-        protection_enabled=True,
-    )
-
-    async def exercise() -> None:
-        first_entered = asyncio.Event()
-        release_first = asyncio.Event()
-        second_started = asyncio.Event()
-        second_entered = asyncio.Event()
-
-        async def first_operation() -> None:
-            async with service.operation_scope():
-                first_entered.set()
-                await release_first.wait()
-
-        async def second_operation() -> None:
-            await first_entered.wait()
-            second_started.set()
-            async with service.operation_scope():
-                second_entered.set()
-
-        first = asyncio.create_task(first_operation())
-        second = asyncio.create_task(second_operation())
-        await first_entered.wait()
-        await second_started.wait()
-        await asyncio.sleep(0)
-        try:
-            assert not second_entered.is_set()
-        finally:
-            release_first.set()
-            await asyncio.gather(first, second)
-        assert second_entered.is_set()
-
-    asyncio.run(exercise())
 
 
 def test_feature_service_creation_blocks_pending_ordinary_database_migration(
@@ -189,11 +186,7 @@ def test_plaintext_mode_still_requires_anonymous_preview_confirmation_before_mod
     tmp_path: Path,
 ) -> None:
     gateway = FakeApprovedModelGateway(result="合成草案")
-    service = VaultService(
-        _context(tmp_path),
-        model_gateway=gateway,
-        protection_enabled=False,
-    )
+    service = VaultService(_context(tmp_path), model_gateway=gateway)
 
     preview = service.model_approval.prepare(
         token="",
@@ -217,30 +210,60 @@ def test_plaintext_mode_still_requires_anonymous_preview_confirmation_before_mod
     assert gateway.calls[0]["payload"] == preview["exact_payload"]
 
 
-def test_plaintext_mode_stops_before_reading_or_writing_a_legacy_encrypted_vault(
+@pytest.mark.parametrize("with_wal", [False, True])
+def test_legacy_database_is_never_opened_or_changed_by_normal_runtime(
+    tmp_path: Path,
+    with_wal: bool,
+) -> None:
+    context = _context(tmp_path)
+    keeper = _seed_classification_case(context, legacy=True, with_wal=with_wal)
+    before = _tree_snapshot(context.root)
+    try:
+        assert EncryptedDatabase(context).requires_plaintext_migration() is True
+        feature = create_workspace_feature()
+        assert feature.migration_provider(context) is None
+
+        service = feature.service_factory(context)
+        app = FastAPI()
+        app.state.workspace_services = {"class-teacher": service}
+        app.include_router(create_router(), prefix="/api/class-teacher")
+        client = TestClient(app)
+        headers = {"x-class-teacher-client": "class-teacher-browser-v1"}
+        with pytest.raises(ApiError) as conversation_blocked:
+            client.post(
+                "/api/class-teacher/intake/conversations",
+                headers=headers,
+            )
+        with pytest.raises(ApiError) as calendar_blocked:
+            client.get("/api/class-teacher/work?as_of=2026-08-03")
+        assert conversation_blocked.value.code == "vault_plaintext_migration_required"
+        assert calendar_blocked.value.code == "vault_plaintext_migration_required"
+        assert not service.ordinary_database.exists
+        with pytest.raises(VaultError) as blocked:
+            service.support.create_subject(
+                token="",
+                operation_id="legacy-write-must-stop-001",
+                source_student_id="SYNTHETIC-001",
+                display_name="合成学生甲",
+                class_label="合成班",
+            )
+        assert blocked.value.code == "vault_plaintext_migration_required"
+        assert _tree_snapshot(context.root) == before
+    finally:
+        if keeper is not None:
+            keeper.close()
+
+
+def test_plaintext_wal_is_classified_without_touching_live_companion_files(
     tmp_path: Path,
 ) -> None:
     context = _context(tmp_path)
-    legacy = VaultService(context, model_gateway=FakeApprovedModelGateway())
-    legacy.initialize(
-        password="synthetic-password-123",
-        operation_id="legacy-vault-initialize-001",
-    )
-    before = legacy.database.database_path.read_bytes()
-
-    plaintext = VaultService(
-        context,
-        model_gateway=FakeApprovedModelGateway(),
-        protection_enabled=False,
-    )
-
-    assert plaintext.status()["protection_mode"] == "legacy_migration_required"
-    with pytest.raises(VaultError, match="授权迁移"):
-        plaintext.support.create_subject(
-            token="",
-            operation_id="legacy-write-must-stop-001",
-            source_student_id="SYNTHETIC-001",
-            display_name="合成学生甲",
-            class_label="合成班",
-        )
-    assert plaintext.database.database_path.read_bytes() == before
+    keeper = _seed_classification_case(context, legacy=False, with_wal=True)
+    before = _tree_snapshot(context.root)
+    try:
+        database = EncryptedDatabase(context)
+        assert database.requires_plaintext_migration() is False
+        assert _tree_snapshot(context.root) == before
+    finally:
+        assert keeper is not None
+        keeper.close()

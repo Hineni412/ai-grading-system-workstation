@@ -51,7 +51,7 @@ async function mountHandoff(value: HandoffDraft): Promise<HTMLElement> {
   })
   const host = document.createElement('div')
   document.body.append(host)
-  const app = createApp(HandoffWorkspace, { handoffId: value.handoff_id, token: '' })
+  const app = createApp(HandoffWorkspace, { handoffId: value.handoff_id })
   app.mount(host)
   mounted.push(app)
   await settle()
@@ -75,7 +75,7 @@ describe('B-UI-R7 handoff workspaces', () => {
     vi.spyOn(intakeApi, 'handoff').mockRejectedValue(new Error('synthetic unavailable'))
     const host = document.createElement('div')
     document.body.append(host)
-    const app = createApp(HandoffWorkspace, { handoffId: 'handoff-error-01', token: '' })
+    const app = createApp(HandoffWorkspace, { handoffId: 'handoff-error-01' })
     app.mount(host)
     mounted.push(app)
     await settle()
@@ -121,7 +121,7 @@ describe('B-UI-R7 handoff workspaces', () => {
       source: '合成教师观察',
       summary: expect.stringContaining('直接事实：合成学生课堂状态'),
     }), [{ kind: 'student', id: 'subject-b', revision: '3' }])
-    expect(adopt).toHaveBeenCalledWith('', expect.objectContaining({ draft_revision: 2 }), '3')
+    expect(adopt).toHaveBeenCalledWith(expect.objectContaining({ draft_revision: 2 }), '3')
   })
 
   it('requires explicit source attribution before a supplied professional fact becomes formal', async () => {
@@ -246,7 +246,7 @@ describe('B-UI-R7 handoff workspaces', () => {
         depends_on_draft_action_ids: ['prepare-materials', 'invite-reviewer'],
       }),
     ])
-    expect(adopt).toHaveBeenCalledWith('', expect.objectContaining({ draft_revision: 2 }), 'new')
+    expect(adopt).toHaveBeenCalledWith(expect.objectContaining({ draft_revision: 2 }), 'new')
   })
 
   it('requires the teacher to choose the manual SOP template instead of assuming a student conflict', async () => {
@@ -285,7 +285,7 @@ describe('B-UI-R7 handoff workspaces', () => {
     expect(update).toHaveBeenCalledWith(expect.any(Object), expect.objectContaining({
       template_key: 'baseline.student_injury',
     }), expect.any(Array))
-    expect(adopt).toHaveBeenCalledWith('', expect.objectContaining({ draft_revision: 2 }), 'new')
+    expect(adopt).toHaveBeenCalledWith(expect.objectContaining({ draft_revision: 2 }), 'new')
   })
 
   it('keeps safety, recognition, punishment and closure decisions with the teacher', async () => {

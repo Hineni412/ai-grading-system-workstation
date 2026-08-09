@@ -1,13 +1,12 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Header, Request, Response
+from fastapi import APIRouter, Request, Response
 
 from .router import (
     _call,
     _no_store,
     _require_trusted_mutation,
     _service,
-    _token,
 )
 from .sop_schemas import (
     AffairCloseRequest,
@@ -37,16 +36,12 @@ def create_sop_router() -> APIRouter:
         request: Request,
         body: SopTemplatePublishRequest,
         response: Response,
-        session_token: str | None = Header(
-            default=None,
-            alias="x-class-teacher-session",
-        ),
     ):
         _require_trusted_mutation(request)
         _no_store(response)
         return _call(
             lambda: _service(request).sop.publish_template(
-                token=_token(session_token),
+                token="",
                 operation_id=body.operation_id,
                 template_key=body.template_key,
                 version=body.version,
@@ -63,15 +58,11 @@ def create_sop_router() -> APIRouter:
     def list_templates(
         request: Request,
         response: Response,
-        session_token: str | None = Header(
-            default=None,
-            alias="x-class-teacher-session",
-        ),
     ):
         _no_store(response)
         return _call(
             lambda: _service(request).sop.list_templates(
-                token=_token(session_token),
+                token="",
             )
         )
 
@@ -79,16 +70,12 @@ def create_sop_router() -> APIRouter:
     def ensure_baselines(
         request: Request,
         response: Response,
-        session_token: str | None = Header(
-            default=None,
-            alias="x-class-teacher-session",
-        ),
     ):
         _require_trusted_mutation(request)
         _no_store(response)
         return _call(
             lambda: _service(request).sop_baselines.ensure_baselines(
-                token=_token(session_token),
+                token="",
             )
         )
 
@@ -97,16 +84,12 @@ def create_sop_router() -> APIRouter:
         request: Request,
         body: AffairCreateRequest,
         response: Response,
-        session_token: str | None = Header(
-            default=None,
-            alias="x-class-teacher-session",
-        ),
     ):
         _require_trusted_mutation(request)
         _no_store(response)
         return _call(
             lambda: _service(request).affairs.create(
-                token=_token(session_token),
+                token="",
                 operation_id=body.operation_id,
                 template_version_id=body.template_version_id,
                 title=body.title,
@@ -120,10 +103,6 @@ def create_sop_router() -> APIRouter:
     def list_affairs(
         request: Request,
         response: Response,
-        session_token: str | None = Header(
-            default=None,
-            alias="x-class-teacher-session",
-        ),
         state: str | None = None,
         template: str | None = None,
         cursor: str | None = None,
@@ -131,7 +110,7 @@ def create_sop_router() -> APIRouter:
         _no_store(response)
         return _call(
             lambda: _service(request).affairs.list(
-                token=_token(session_token),
+                token="",
                 state=state,
                 template=template,
                 cursor=cursor,
@@ -143,15 +122,11 @@ def create_sop_router() -> APIRouter:
         affair_id: str,
         request: Request,
         response: Response,
-        session_token: str | None = Header(
-            default=None,
-            alias="x-class-teacher-session",
-        ),
     ):
         _no_store(response)
         return _call(
             lambda: _service(request).affairs.read(
-                token=_token(session_token),
+                token="",
                 affair_id=affair_id,
             )
         )
@@ -166,16 +141,12 @@ def create_sop_router() -> APIRouter:
         request: Request,
         body: AffairDraftRequest,
         response: Response,
-        session_token: str | None = Header(
-            default=None,
-            alias="x-class-teacher-session",
-        ),
     ):
         _require_trusted_mutation(request)
         _no_store(response)
         return _call(
             lambda: _service(request).affairs.save_draft(
-                token=_token(session_token),
+                token="",
                 affair_id=affair_id,
                 step_instance_id=step_instance_id,
                 **body.model_dump(),
@@ -191,16 +162,12 @@ def create_sop_router() -> APIRouter:
         request: Request,
         body: AffairCommandRequest,
         response: Response,
-        session_token: str | None = Header(
-            default=None,
-            alias="x-class-teacher-session",
-        ),
     ):
         _require_trusted_mutation(request)
         _no_store(response)
         return _call(
             lambda: _service(request).affairs.advance(
-                token=_token(session_token),
+                token="",
                 affair_id=affair_id,
                 **body.model_dump(),
             )
@@ -216,16 +183,12 @@ def create_sop_router() -> APIRouter:
         request: Request,
         body: StepCompleteRequest,
         response: Response,
-        session_token: str | None = Header(
-            default=None,
-            alias="x-class-teacher-session",
-        ),
     ):
         _require_trusted_mutation(request)
         _no_store(response)
         return _call(
             lambda: _service(request).sop.complete_step(
-                token=_token(session_token),
+                token="",
                 affair_id=affair_id,
                 step_instance_id=step_instance_id,
                 operation_id=body.operation_id,
@@ -244,16 +207,12 @@ def create_sop_router() -> APIRouter:
         request: Request,
         body: DecisionRecordRequest,
         response: Response,
-        session_token: str | None = Header(
-            default=None,
-            alias="x-class-teacher-session",
-        ),
     ):
         _require_trusted_mutation(request)
         _no_store(response)
         return _call(
             lambda: _service(request).sop.record_decision(
-                token=_token(session_token),
+                token="",
                 affair_id=affair_id,
                 operation_id=body.operation_id,
                 decision_kind=body.decision_kind,
@@ -273,16 +232,12 @@ def create_sop_router() -> APIRouter:
         request: Request,
         body: AffairCloseRequest,
         response: Response,
-        session_token: str | None = Header(
-            default=None,
-            alias="x-class-teacher-session",
-        ),
     ):
         _require_trusted_mutation(request)
         _no_store(response)
         return _call(
             lambda: _service(request).sop.close_affair(
-                token=_token(session_token),
+                token="",
                 affair_id=affair_id,
                 operation_id=body.operation_id,
                 revision=body.revision,
@@ -299,16 +254,12 @@ def create_sop_router() -> APIRouter:
         request: Request,
         body: AffairReopenRequest,
         response: Response,
-        session_token: str | None = Header(
-            default=None,
-            alias="x-class-teacher-session",
-        ),
     ):
         _require_trusted_mutation(request)
         _no_store(response)
         return _call(
             lambda: _service(request).sop.reopen_affair(
-                token=_token(session_token),
+                token="",
                 affair_id=affair_id,
                 operation_id=body.operation_id,
                 revision=body.revision,

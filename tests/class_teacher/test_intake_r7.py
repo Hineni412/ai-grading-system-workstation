@@ -145,7 +145,7 @@ def _service(tmp_path: Path) -> tuple[VaultService, FakeWorkspaceAITaskPort]:
             db_path=grading,
         ),
     )
-    return VaultService(context, protection_enabled=False, workspace_ai_task_port=port), port
+    return VaultService(context, workspace_ai_task_port=port), port
 
 
 def _client(service: VaultService) -> TestClient:
@@ -653,7 +653,7 @@ def test_record_adoption_preserves_supplied_professional_attribution_until_teach
         assert row is not None
         payload, _revision = service.repository.get(
             connection,
-            vmk=service.session_key(""),
+            vmk=service.ensure_plaintext_ready(),
             object_id=str(row["payload_object_id"]),
         )
     assert payload["record_kind"] == "professional_conclusion"
@@ -1693,7 +1693,7 @@ def test_plan_validation_retry_uses_the_revised_deadline_in_plan_and_calendar(
         assert row is not None
         payload, _revision = service.repository.get(
             connection,
-            vmk=service.session_key(""),
+            vmk=service.ensure_plaintext_ready(),
             object_id=str(row["payload_object_id"]),
         )
     assert str(payload["final_deadline"]).startswith("2026-08-25")

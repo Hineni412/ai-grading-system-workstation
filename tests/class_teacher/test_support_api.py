@@ -12,9 +12,6 @@ from backend.workspaces.contracts import WorkspaceContext
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-PASSWORD = "合成支持接口密码-足够长-001"
-
-
 def _client(tmp_path: Path) -> tuple[TestClient, dict[str, str]]:
     service = VaultService(
         WorkspaceContext(
@@ -26,29 +23,22 @@ def _client(tmp_path: Path) -> tuple[TestClient, dict[str, str]]:
             ),
         )
     )
-    initialized = service.initialize(
-        password=PASSWORD,
-        operation_id="initialize-support-api",
-    )
+    service.ensure_plaintext_ready()
     app = FastAPI()
     app.state.workspace_services = {"class-teacher": service}
     app.include_router(create_router(), prefix="/api/class-teacher")
     return TestClient(app), {
-        "x-class-teacher-session": str(initialized["session_token"]),
         "x-class-teacher-client": "class-teacher-browser-v1",
     }
 
 
-def test_dedicated_encrypted_backup_routes_are_not_registered() -> None:
+def test_retired_vault_routes_are_not_registered() -> None:
     paths = {
         getattr(route, "path", "")
         for route in create_router().routes
     }
 
-    assert "/vault/backups" not in paths
-    assert "/vault/backups/verify" not in paths
-    assert "/vault/restore/preview" not in paths
-    assert "/vault/restore/confirm" not in paths
+    assert not any(path.startswith("/vault") for path in paths)
 
 
 def test_support_quick_evidence_and_attention_routes_are_wired(

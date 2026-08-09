@@ -26,9 +26,10 @@ def _blob(value: bytes) -> tuple[_DataBlob, object]:
 
 
 class WindowsCurrentUserProtection:
-    """CryptProtectData adapter using CurrentUser scope.
+    """Read a retired PIN package using Windows CurrentUser scope.
 
-    CRYPTPROTECT_LOCAL_MACHINE is intentionally never supplied.
+    The runtime no longer creates protection packages.  This read-only adapter
+    remains solely for the explicit offline legacy-database converter.
     """
 
     @staticmethod
@@ -42,16 +43,6 @@ class WindowsCurrentUserProtection:
         crypt32 = ctypes.windll.crypt32
         kernel32 = ctypes.windll.kernel32
         blob_pointer = ctypes.POINTER(_DataBlob)
-        crypt32.CryptProtectData.argtypes = [
-            blob_pointer,
-            wintypes.LPCWSTR,
-            blob_pointer,
-            ctypes.c_void_p,
-            ctypes.c_void_p,
-            wintypes.DWORD,
-            blob_pointer,
-        ]
-        crypt32.CryptProtectData.restype = wintypes.BOOL
         crypt32.CryptUnprotectData.argtypes = [
             blob_pointer,
             ctypes.POINTER(wintypes.LPWSTR),
@@ -65,31 +56,6 @@ class WindowsCurrentUserProtection:
         kernel32.LocalFree.argtypes = [ctypes.c_void_p]
         kernel32.LocalFree.restype = ctypes.c_void_p
         return crypt32, kernel32
-
-    def protect_current_user(self, plaintext: bytes, entropy: bytes) -> bytes:
-        crypt32, kernel32 = self._libraries()
-        source, source_buffer = _blob(plaintext)
-        extra, extra_buffer = _blob(entropy)
-        output = _DataBlob()
-        _ = (source_buffer, extra_buffer)
-        if not crypt32.CryptProtectData(
-            ctypes.byref(source),
-            "class-teacher-sensitive-v2",
-            ctypes.byref(extra),
-            None,
-            None,
-            _CRYPTPROTECT_UI_FORBIDDEN,
-            ctypes.byref(output),
-        ):
-            raise VaultError(
-                "vault_windows_protection_failed",
-                "Windows 用户保护失败，未创建敏感保险箱",
-                status_code=503,
-            )
-        try:
-            return ctypes.string_at(output.pbData, output.cbData)
-        finally:
-            kernel32.LocalFree(ctypes.cast(output.pbData, ctypes.c_void_p))
 
     def unprotect_current_user(self, protected: bytes, entropy: bytes) -> bytes:
         crypt32, kernel32 = self._libraries()

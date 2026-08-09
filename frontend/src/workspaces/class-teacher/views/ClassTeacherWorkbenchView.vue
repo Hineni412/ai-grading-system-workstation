@@ -27,7 +27,7 @@ async function selectSurface(surface: ClassTeacherSurface): Promise<void> {
 
 async function openRestricted(projectionId: string, projectionType: string | null): Promise<void> {
   try {
-    const target = await projectionR1Api.resolve('', projectionId) as unknown as {
+    const target = await projectionR1Api.resolve(projectionId) as unknown as {
       surface?: ClassTeacherSurface
       panel?: 'directory' | 'support' | 'academic'
     }
@@ -76,7 +76,6 @@ function openDomain(domain: string): void {
     <HandoffWorkspace
       v-if="focusedHandoff"
       :handoff-id="focusedHandoff"
-      token=""
       @back="returnToConversation"
       @completed="handoffCompleted"
     />
@@ -96,12 +95,10 @@ function openDomain(domain: string): void {
         :module="ordinaryWork"
         @open-restricted="openRestricted"
       />
-      <AffairsSurface v-else-if="routeState.surface === 'affairs'" token="" />
+      <AffairsSurface v-else-if="routeState.surface === 'affairs'" />
       <StudentSurface
         v-else
-        token=""
         :panel="routeState.panel"
-        :status="null"
         :subject-id="routeState.subjectId"
         @navigate="(panel, subjectId) => navigate({ surface: 'students', panel, subjectId })"
       />

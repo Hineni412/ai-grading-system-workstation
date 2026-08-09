@@ -8,10 +8,7 @@ from backend.workspaces.contracts import WorkspaceContext
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-PASSWORD = "合成SOP基线密码-足够长-001"
-
-
-def _unlocked(tmp_path: Path) -> tuple[VaultService, str]:
+def _service(tmp_path: Path) -> tuple[VaultService, str]:
     paths = SimpleNamespace(
         project_root=PROJECT_ROOT,
         migration_project_root=PROJECT_ROOT,
@@ -23,11 +20,8 @@ def _unlocked(tmp_path: Path) -> tuple[VaultService, str]:
             paths=paths,
         )
     )
-    initialized = service.initialize(
-        password=PASSWORD,
-        operation_id="initialize-sop-baselines",
-    )
-    return service, str(initialized["session_token"])
+    service.ensure_plaintext_ready()
+    return service, ""
 
 
 def _template(
@@ -89,7 +83,7 @@ def _complete(
 def test_six_baselines_are_idempotent_personal_checklists_without_model(
     tmp_path: Path,
 ) -> None:
-    service, token = _unlocked(tmp_path)
+    service, token = _service(tmp_path)
     first = service.sop_baselines.ensure_baselines(token=token)
     second = service.sop_baselines.ensure_baselines(token=token)
 
@@ -111,7 +105,7 @@ def test_six_baselines_are_idempotent_personal_checklists_without_model(
 def test_injury_affair_shows_rescue_and_reports_before_any_form(
     tmp_path: Path,
 ) -> None:
-    service, token = _unlocked(tmp_path)
+    service, token = _service(tmp_path)
     baselines = service.sop_baselines.ensure_baselines(token=token)
     injury = _template(baselines, "baseline.student_injury")
     affair = _create(service, token, injury, "create-injury-affair")
@@ -127,7 +121,7 @@ def test_injury_affair_shows_rescue_and_reports_before_any_form(
 def test_teacher_decision_routes_conflict_but_ai_suggestion_cannot(
     tmp_path: Path,
 ) -> None:
-    service, token = _unlocked(tmp_path)
+    service, token = _service(tmp_path)
     baselines = service.sop_baselines.ensure_baselines(token=token)
     conflict = _template(baselines, "baseline.student_conflict")
     affair = _create(service, token, conflict, "create-conflict-affair")
@@ -169,7 +163,7 @@ def test_teacher_decision_routes_conflict_but_ai_suggestion_cannot(
 def test_family_draft_excludes_other_student_identity_and_is_unsent(
     tmp_path: Path,
 ) -> None:
-    service, token = _unlocked(tmp_path)
+    service, token = _service(tmp_path)
     baselines = service.sop_baselines.ensure_baselines(token=token)
     family = _template(baselines, "baseline.family_communication")
     affair = _create(service, token, family, "create-family-affair")
@@ -187,7 +181,7 @@ def test_family_draft_excludes_other_student_identity_and_is_unsent(
 def test_activity_template_activates_parallel_assignment_materials_and_safety(
     tmp_path: Path,
 ) -> None:
-    service, token = _unlocked(tmp_path)
+    service, token = _service(tmp_path)
     baselines = service.sop_baselines.ensure_baselines(token=token)
     activity = _template(baselines, "baseline.school_activity")
     affair = _create(service, token, activity, "create-activity-affair")

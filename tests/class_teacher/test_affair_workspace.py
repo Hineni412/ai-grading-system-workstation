@@ -19,16 +19,14 @@ from backend.workspaces.contracts import WorkspaceContext
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
-def test_parallel_steps_share_one_projection_and_draft_is_encrypted(tmp_path: Path) -> None:
+def test_parallel_steps_share_one_projection_and_draft_is_plaintext(tmp_path: Path) -> None:
     service = VaultService(WorkspaceContext(
         module_id="class-teacher",
         root=tmp_path / "workspaces" / "class-teacher",
         paths=SimpleNamespace(project_root=PROJECT_ROOT, migration_project_root=PROJECT_ROOT),
     ))
-    initialized = service.initialize(
-        password="合成事务工作区密码-足够长-001", operation_id="affair-workspace-init"
-    )
-    token = str(initialized["session_token"])
+    service.ensure_plaintext_ready()
+    token = ""
     template = service.sop.publish_template(
         token=token,
         operation_id="affair-workspace-template",
@@ -67,7 +65,7 @@ def test_parallel_steps_share_one_projection_and_draft_is_encrypted(tmp_path: Pa
         affair_id=str(affair["affair_id"]),
         step_instance_id=str(affair["current_steps"][0]["step_instance_id"]),
         draft_kind="fact",
-        text="仅保存在加密库中的合成草稿",
+        text="仅保存在班主任工作台中的合成草稿",
         expected_revision=None,
         operation_id="affair-workspace-draft",
     )
@@ -77,7 +75,7 @@ def test_parallel_steps_share_one_projection_and_draft_is_encrypted(tmp_path: Pa
             "SELECT COUNT(*) FROM sensitive_work_groups WHERE source_kind = 'sensitive_affair' AND source_id = ?",
             (affair["affair_id"],),
         ).fetchone()[0] == 1
-    assert "仅保存在加密库中的合成草稿".encode("utf-8") not in service.database.database_path.read_bytes()
+    assert "仅保存在班主任工作台中的合成草稿".encode("utf-8") in service.database.database_path.read_bytes()
 
 
 def _decision_affair(tmp_path: Path) -> tuple[VaultService, str, dict[str, object]]:
@@ -86,10 +84,8 @@ def _decision_affair(tmp_path: Path) -> tuple[VaultService, str, dict[str, objec
         root=tmp_path / "workspaces" / "class-teacher",
         paths=SimpleNamespace(project_root=PROJECT_ROOT, migration_project_root=PROJECT_ROOT),
     ))
-    token = str(service.initialize(
-        password="合成决定工作区密码-足够长-001",
-        operation_id="affair-decision-init",
-    )["session_token"])
+    service.ensure_plaintext_ready()
+    token = ""
     template = service.sop.publish_template(
         token=token,
         operation_id="affair-decision-template",

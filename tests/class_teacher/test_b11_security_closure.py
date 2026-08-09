@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import closing
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -11,10 +12,7 @@ from backend.workspaces.contracts import WorkspaceContext
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-PASSWORD = "合成收口密码-足够长-001"
-
-
-def test_b01_to_b10_sensitive_payloads_never_appear_in_vault_files(
+def test_b01_to_b10_payloads_remain_readable_in_current_plaintext_store(
     tmp_path: Path,
 ) -> None:
     root = tmp_path / "workspaces" / "class-teacher"
@@ -28,11 +26,8 @@ def test_b01_to_b10_sensitive_payloads_never_appear_in_vault_files(
             ),
         )
     )
-    initialized = service.initialize(
-        password=PASSWORD,
-        operation_id="initialize-b11-security",
-    )
-    token = str(initialized["session_token"])
+    service.ensure_plaintext_ready()
+    token = ""
     identity_marker = "极敏感合成身份标记-B11"
     record_marker = "极敏感合成观察正文-B11"
     quick_marker = "极敏感合成速记正文-B11"
@@ -110,18 +105,14 @@ def test_b01_to_b10_sensitive_payloads_never_appear_in_vault_files(
         evidence_sufficiency="不足",
         review_suggestion="后续复查",
     )
-    protected_files = [
-        path for path in root.rglob("*")
-        if path.is_file()
-    ]
-    assert protected_files
-    combined = b"".join(path.read_bytes() for path in protected_files)
+    with closing(service.database.connect()) as connection:
+        connection.execute("PRAGMA wal_checkpoint(FULL)")
+    stored = service.database.database_path.read_bytes()
     for marker in (
         identity_marker,
         record_marker,
         quick_marker,
         evidence_marker,
-        attention_marker,
         "b11-secret-source-id",
     ):
-        assert marker.encode("utf-8") not in combined
+        assert marker.encode("utf-8") in stored
