@@ -255,6 +255,23 @@ describe('AppShell', () => {
     expect(compactRules).toContain('"status status"')
   })
 
+  it('keeps desktop sidebar icons on the same horizontal anchor while expanding', () => {
+    const css = readFileSync(resolve(process.cwd(), 'src/styles/app-shell.css'), 'utf-8')
+    const desktopStart = css.indexOf('@media (min-width: 901px)')
+    const tabletStart = css.indexOf('@media (max-width: 900px)')
+    const desktopRules = css.slice(desktopStart, tabletStart)
+
+    expect(desktopRules).toMatch(
+      /\.app-sidebar__link\s*\{[^}]*justify-content:\s*flex-start;[^}]*padding-inline:\s*9px;/s,
+    )
+    expect(desktopRules).toMatch(
+      /\.app-sidebar__brand\s*\{[^}]*justify-content:\s*flex-start;[^}]*padding-inline:\s*2\.5px;/s,
+    )
+    expect(desktopRules).not.toMatch(
+      /\.app-sidebar:(?:hover|focus-within)[^{]*\.app-sidebar__(?:brand|link)[^{]*\{[^}]*padding-inline/s,
+    )
+  })
+
   it.each(['review', 'config'] as const)('warns before leaving with dirty %s work', async (kind) => {
     const { app } = await mountShell()
     if (kind === 'review') {

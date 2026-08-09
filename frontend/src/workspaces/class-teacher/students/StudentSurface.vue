@@ -1,13 +1,14 @@
 <script setup lang="ts">
-import { onMounted, ref, watch } from 'vue'
+import { defineAsyncComponent, onMounted, ref, watch } from 'vue'
 
 import type { VaultStatus } from '../api/vault'
 import type { DirectorySubject } from '../api/r1'
 import { studentR1Api } from '../api/r1'
-import AcademicAnalysisPanel from './AcademicAnalysisPanel.vue'
 import StudentDirectoryPanel from './StudentDirectoryPanel.vue'
 import StudentOverviewPanel from './StudentOverviewPanel.vue'
 import SupportReviewPanel from './SupportReviewPanel.vue'
+
+const AcademicAnalysisPanel = defineAsyncComponent(() => import('./AcademicAnalysisPanel.vue'))
 
 type Panel = 'directory' | 'support' | 'academic'
 const props = defineProps<{

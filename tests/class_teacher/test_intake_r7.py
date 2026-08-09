@@ -16,7 +16,10 @@ from fastapi.testclient import TestClient
 from backend.api.app import ApiError
 from backend.class_teacher.api.router import create_router
 from backend.class_teacher.errors import VaultError
-from backend.class_teacher.intake.ai_task_adapter import _parse_model_payload
+from backend.class_teacher.intake.ai_task_adapter import (
+    _normalize_triage_payload_compatibility,
+    _parse_model_payload,
+)
 from backend.class_teacher.intake.preferences import HomeroomPreference
 from backend.class_teacher.intake.ports import FakeWorkspaceAITaskPort
 from backend.class_teacher.intake.triage_contract import parse_triage
@@ -39,6 +42,48 @@ def test_class_teacher_uses_diagnostics_local_json_repair_for_terminal_closers()
     malformed = serialized[:-3] + serialized[-2:]
 
     assert _parse_model_payload(malformed) == expected
+
+
+@pytest.mark.parametrize("extra_field", ["name", "description", "additionalProp1", "missing_fields"])
+def test_class_teacher_ignores_observed_schema_description_fields(
+    extra_field: str,
+) -> None:
+    payload = {
+        "contract_version": "class_teacher_triage.v1",
+        "assistant_message": "已整理，请核对。",
+        "clarification_questions": [],
+        "work_items": [{
+            "work_item_id": "item_001",
+            "domain": "class_operations",
+            "primary_mode": "plan_calendar",
+            "secondary_modes": [],
+            "intent": "plan",
+            "reason_summary": "需要安排返校日程",
+            "subject_refs": [],
+            "time_facts": [],
+            "safety_level": "normal",
+            "missing_fields": [],
+            "draft": {"summary": "合成返校安排"},
+        }],
+        extra_field: [] if extra_field == "missing_fields" else "schema description",
+    }
+
+    result = parse_triage(_normalize_triage_payload_compatibility(payload))
+
+    assert result.work_items[0].primary_mode == "plan_calendar"
+
+
+def test_class_teacher_still_rejects_unknown_semantic_top_level_fields() -> None:
+    payload = {
+        "contract_version": "class_teacher_triage.v1",
+        "assistant_message": "已整理，请核对。",
+        "clarification_questions": [],
+        "work_items": [],
+        "diagnosis": "模型自行作出的结论",
+    }
+
+    with pytest.raises(VaultError, match="未知的分诊字段"):
+        parse_triage(_normalize_triage_payload_compatibility(payload))
 
 
 def _service(tmp_path: Path) -> tuple[VaultService, FakeWorkspaceAITaskPort]:

@@ -23,6 +23,28 @@ export const serverConfig = {
 
 export default defineConfig({
   plugins: [vue()],
+  build: {
+    rolldownOptions: {
+      output: {
+        codeSplitting: {
+          groups: [
+            {
+              name: 'echarts',
+              test: /node_modules[\\/]echarts[\\/]/,
+              priority: 2,
+              includeDependenciesRecursively: false,
+            },
+            {
+              name: 'zrender',
+              test: /node_modules[\\/]zrender[\\/]/,
+              priority: 2,
+              includeDependenciesRecursively: false,
+            },
+          ],
+        },
+      },
+    },
+  },
   resolve: {
     alias: {
       '@': fileURLToPath(new URL('./src', import.meta.url)),

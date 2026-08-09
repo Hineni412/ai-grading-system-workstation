@@ -1,15 +1,16 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, defineAsyncComponent } from 'vue'
 
 import { projectionR1Api } from '../api/r1'
-import AffairsSurface from '../affairs/AffairsSurface.vue'
-import ConversationDesk from '../intake/ConversationDesk.vue'
-import HandoffWorkspace from '../intake/HandoffWorkspace.vue'
-import CalendarSurface from '../ordinary/CalendarSurface.vue'
 import { createOrdinaryWorkModule } from '../ordinary/createOrdinaryWorkModule'
 import ClassTeacherSurfaceTabs from '../shell/ClassTeacherSurfaceTabs.vue'
 import { useClassTeacherRouteState, type ClassTeacherSurface } from '../shell/useClassTeacherRouteState'
-import StudentSurface from '../students/StudentSurface.vue'
+
+const AffairsSurface = defineAsyncComponent(() => import('../affairs/AffairsSurface.vue'))
+const ConversationDesk = defineAsyncComponent(() => import('../intake/ConversationDesk.vue'))
+const HandoffWorkspace = defineAsyncComponent(() => import('../intake/HandoffWorkspace.vue'))
+const CalendarSurface = defineAsyncComponent(() => import('../ordinary/CalendarSurface.vue'))
+const StudentSurface = defineAsyncComponent(() => import('../students/StudentSurface.vue'))
 
 const { state: routeState, navigate } = useClassTeacherRouteState()
 const ordinaryWork = createOrdinaryWorkModule()

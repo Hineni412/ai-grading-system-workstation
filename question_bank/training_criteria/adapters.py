@@ -11,6 +11,7 @@ from typing import Any, Mapping, Sequence
 from backend.llm import LLMRequestKind, usage_fields
 from question_bank.database.schema import connect
 from question_bank.models.tag_schema import TagAnalysis, TaggingContext
+from question_bank.models.question import CORE_ANALYSIS_TAG_TYPES
 from question_bank.services.ai_tagging_service import (
     AITaggingResult,
     AITaggingService,
@@ -137,6 +138,41 @@ class ExistingTagProjectionWriter:
             taxonomy_governance=self.tagging_service.taxonomy_governance,
         ):
             raise RuntimeError("tag projection could not be saved")
+        placeholders = ", ".join("?" for _ in CORE_ANALYSIS_TAG_TYPES)
+        with connect(self.write_service.db_path) as connection:
+            stored_question = connection.execute(
+                "SELECT difficulty FROM questions WHERE id = ? AND is_deleted = 0",
+                (int(question.question_id),),
+            ).fetchone()
+            stored_types = {
+                str(row["tag_type"])
+                for row in connection.execute(
+                    f"""
+                    SELECT DISTINCT tag_type
+                    FROM question_tags
+                    WHERE question_id = ?
+                      AND tag_type IN ({placeholders})
+                      AND TRIM(tag_value) <> ''
+                    """,
+                    (int(question.question_id), *CORE_ANALYSIS_TAG_TYPES),
+                ).fetchall()
+            }
+        try:
+            stored_difficulty = float(
+                stored_question["difficulty"] if stored_question else 0
+            )
+        except (TypeError, ValueError):
+            stored_difficulty = 0
+        if (
+            stored_question is None
+            or not set(CORE_ANALYSIS_TAG_TYPES).issubset(stored_types)
+            or not 1 <= stored_difficulty <= 10
+        ):
+            if persisted_proposals:
+                raise TaxonomyProjectionReviewRequired(
+                    "tag projection requires taxonomy review"
+                )
+            raise ValueError("persisted core tags remain incomplete")
         return {
             "schema_version": "tag-only-v1",
             "analysis": checked.analysis.to_dict(),

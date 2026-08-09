@@ -127,18 +127,38 @@ const printedPageNumber = computed(() => {
 })
 const activeMaterials = computed(() => workbench.catalog.materials.filter(item => !item.source_archived_at))
 const showOtherTermMaterials = ref(false)
+const showReferencePptMaterials = ref(false)
+const includeReferencePptInDirectory = ref(false)
+const batchArchiveRunning = ref(false)
 const currentTermMaterials = computed(() => activeMaterials.value.filter(item => Boolean(
   semesterRecordFor(item),
 )))
 const otherTermMaterials = computed(() => activeMaterials.value.filter(item => !semesterRecordFor(item)))
+const referencePptMaterials = computed(() => {
+  const scoped = !curriculumScope.selectedVolumeId
+    ? activeMaterials.value
+    : showOtherTermMaterials.value
+      ? [...currentTermMaterials.value, ...otherTermMaterials.value]
+      : currentTermMaterials.value
+  return scoped.filter(item => (
+    semesterRecordFor(item)?.material_role === 'reference_ppt'
+  ))
+})
 const visibleMaterials = computed(() => {
-  if (!curriculumScope.selectedVolumeId) return activeMaterials.value
-  return showOtherTermMaterials.value
+  const scoped = !curriculumScope.selectedVolumeId
+    ? activeMaterials.value
+    : showOtherTermMaterials.value
     ? [...currentTermMaterials.value, ...otherTermMaterials.value]
     : currentTermMaterials.value
+  return scoped.filter(item => (
+    showReferencePptMaterials.value
+    || semesterRecordFor(item)?.material_role !== 'reference_ppt'
+    || item.id === workbench.catalog.selectedMaterialId
+  ))
 })
 watch(() => curriculumScope.selectedVolumeId, () => {
   showOtherTermMaterials.value = false
+  showReferencePptMaterials.value = false
 })
 const archivedMaterials = computed(() => workbench.catalog.materials.filter(item => Boolean(item.source_archived_at)))
 const activeMaterial = computed(
@@ -216,6 +236,10 @@ const eligibleSemesterMaterials = computed(
     && item.parse_status === 'parsed'
     && !item.has_unparsed_update
     && (item.current_unit_count ?? 0) > 0
+    && (
+      includeReferencePptInDirectory.value
+      || item.material_role !== 'reference_ppt'
+    )
   )),
 )
 const activeSemesterRecord = computed(() => (
@@ -942,6 +966,37 @@ async function archiveMaterial(item: MaterialVersion): Promise<void> {
   }
 }
 
+async function archiveCurrentTermMaterials(): Promise<void> {
+  if (batchArchiveRunning.value) return
+  const candidates = [...currentTermMaterials.value]
+  if (candidates.length === 0) return
+  if (!window.confirm(
+    `把本学期的 ${candidates.length} 份旧资料全部移入回收区吗？原文件和历史课时引用都会保留，可逐份恢复。`,
+  )) return
+  batchArchiveRunning.value = true
+  let archived = 0
+  let failed = 0
+  try {
+    for (const item of candidates) {
+      const record = semesterRecordFor(item)
+      try {
+        if (record?.is_active) {
+          await workbench.catalog.updateSemesterMaterial(record, { isActive: false })
+        }
+        await workbench.catalog.updateMaterialSource(item, { archived: true })
+        archived += 1
+      } catch {
+        failed += 1
+      }
+    }
+  } finally {
+    batchArchiveRunning.value = false
+  }
+  mappingMessage.value = failed > 0
+    ? `已将 ${archived} 份资料移入回收区，${failed} 份未完成；保留页面后可再次执行。`
+    : `已将 ${archived} 份资料移入回收区，可随时恢复；现在可以重新导入。`
+}
+
 async function restoreMaterial(item: MaterialVersion): Promise<void> {
   await workbench.catalog.updateMaterialSource(item, { archived: false })
   mappingMessage.value = '资料已从回收区恢复。'
@@ -1518,22 +1573,32 @@ async function saveManualMapping(): Promise<void> {
         <h2>教材教辅逐份整理，课件文件夹批量整理</h2>
         <p>教材教辅先检查发送页再由模型建议；课件合集只在本机按命名建议。两者都须确认后才修改正式课时树。</p>
       </div>
-      <label class="tp-field">
-        本次资料
-        <select
-          :value="selectedDirectoryMaterialId"
-          @change="selectDirectoryMaterial"
-        >
-          <option value="">请选择已解析资料</option>
-          <option
-            v-for="record in eligibleSemesterMaterials"
-            :key="record.id"
-            :value="record.current_material_version_id"
+      <div class="tp-directory-material-field">
+        <label class="tp-field">
+          本次资料
+          <select
+            :value="selectedDirectoryMaterialId"
+            @change="selectDirectoryMaterial"
           >
-            {{ roleLabel(record.material_role) }} · {{ record.display_name }} · {{ record.current_unit_count }} 页/张
-          </option>
-        </select>
-      </label>
+            <option value="">请选择已解析资料</option>
+            <option
+              v-for="record in eligibleSemesterMaterials"
+              :key="record.id"
+              :value="record.current_material_version_id"
+            >
+              {{ roleLabel(record.material_role) }} · {{ record.display_name }} · {{ record.current_unit_count }} 页/张
+            </option>
+          </select>
+        </label>
+        <label class="tp-field--check">
+          <input
+            v-model="includeReferencePptInDirectory"
+            data-testid="include-reference-ppt-directory"
+            type="checkbox"
+          >
+          本次解析包含参考 PPT（默认不包含参考 PPT）
+        </label>
+      </div>
       <div class="tp-inline-actions">
         <button
           type="button"
@@ -1693,6 +1758,29 @@ async function saveManualMapping(): Promise<void> {
           </details>
         </section>
         <h2>资料版本</h2>
+        <div v-if="workbench.catalog.selectedSemester" class="tp-inline-actions">
+          <button
+            v-if="currentTermMaterials.length"
+            class="is-danger"
+            type="button"
+            :disabled="batchArchiveRunning"
+            @click="archiveCurrentTermMaterials"
+          >
+            {{ batchArchiveRunning
+              ? '正在移入回收区…'
+              : `本学期旧资料移入回收区（${currentTermMaterials.length}）` }}
+          </button>
+          <button
+            v-if="referencePptMaterials.length"
+            type="button"
+            :aria-expanded="showReferencePptMaterials"
+            @click="showReferencePptMaterials = !showReferencePptMaterials"
+          >
+            {{ showReferencePptMaterials
+              ? '收起参考 PPT'
+              : `展开参考 PPT（${referencePptMaterials.length}）` }}
+          </button>
+        </div>
         <p v-if="activeMaterials.length === 0" class="tp-muted">
           尚未导入教材、教辅或课件。
         </p>
