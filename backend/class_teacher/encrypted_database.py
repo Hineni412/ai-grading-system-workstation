@@ -6,7 +6,7 @@ import sqlite3
 import zipfile
 from contextlib import closing
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from backend.schema_migrations import ensure_schema_current
 from backend.workspaces.contracts import WorkspaceContext
@@ -144,42 +144,15 @@ class EncryptedDatabase:
                     raise ValueError("schema")
         except Exception as exc:
             raise VaultError(
-                "vault_backup_invalid",
-                "专用备份没有通过结构与完整性校验",
-                status_code=409,
-            ) from exc
-
-    def replace_from_snapshot(
-        self,
-        payload: bytes,
-        *,
-        finalize: Callable[[], None] | None = None,
-    ) -> None:
-        self.validate_snapshot(payload)
-        self.recover_interrupted_operations()
-        rollback = self.root / ".restore-rollback.db"
-        try:
-            self._publish_snapshot_file(
-                self.snapshot_bytes(),
-                rollback,
-            )
-            self.replace_from_snapshot_atomically(payload)
-            self.initialize_schema()
-            if finalize is not None:
-                finalize()
-            rollback.unlink(missing_ok=True)
-        except Exception as exc:
-            self.recover_interrupted_operations()
-            raise VaultError(
-                "vault_restore_failed",
-                "恢复未完成，原保险箱已经保留",
+                "vault_snapshot_invalid",
+                "数据快照没有通过结构与完整性校验",
                 status_code=409,
             ) from exc
 
     def replace_from_snapshot_atomically(self, payload: bytes) -> None:
         """Replace the live database in one filesystem operation."""
         self.validate_snapshot(payload)
-        candidate = self.root / ".restore-candidate.db"
+        candidate = self.root / ".database-replacement-candidate.db"
         candidate.unlink(missing_ok=True)
         self._write_snapshot_file(payload, candidate)
         try:
@@ -206,7 +179,6 @@ class EncryptedDatabase:
         *,
         operation_id: str,
         database_snapshot: bytes,
-        backup_paths: list[Path],
     ) -> Path:
         self.validate_snapshot(database_snapshot)
         transaction = (
@@ -219,7 +191,6 @@ class EncryptedDatabase:
         manifest = {
             "version": 1,
             "operation_id": operation_id,
-            "backup_names": [path.name for path in backup_paths],
         }
         try:
             with zipfile.ZipFile(
@@ -235,8 +206,6 @@ class EncryptedDatabase:
                     "student_affairs.snapshot",
                     database_snapshot,
                 )
-                for index, path in enumerate(backup_paths):
-                    archive.write(path, f"backups/{index}.ctbackup")
             with temporary.open("r+b") as handle:
                 handle.flush()
                 os.fsync(handle.fileno())
@@ -252,7 +221,6 @@ class EncryptedDatabase:
             return
         rollback = self.root / ".restore-rollback.db"
         rollback_temporary = self.root / ".restore-rollback.db.tmp"
-        candidate = self.root / ".restore-candidate.db"
         rollback_temporary.unlink(missing_ok=True)
         if rollback.is_file():
             try:
@@ -263,10 +231,13 @@ class EncryptedDatabase:
             except Exception as exc:
                 raise VaultError(
                     "vault_interrupted_restore_recovery_failed",
-                    "上次保险箱替换未完成，旧保险箱无法自动恢复",
+                    "上次数据替换未完成，原数据无法自动恢复",
                     status_code=409,
                 ) from exc
-        candidate.unlink(missing_ok=True)
+        (self.root / ".restore-candidate.db").unlink(missing_ok=True)
+        (self.root / ".database-replacement-candidate.db").unlink(
+            missing_ok=True
+        )
         temporary_transactions = list(
             self.root.glob(".subject-delete-*.rollback.cttxn.tmp")
         )
@@ -292,35 +263,24 @@ class EncryptedDatabase:
         transaction: Path,
     ) -> None:
         try:
-            manifest, database_snapshot, backups = (
+            _manifest, database_snapshot = (
                 self._read_subject_delete_transaction(transaction)
             )
             self.replace_from_snapshot_atomically(database_snapshot)
-            self.backup_dir.mkdir(parents=True, exist_ok=True)
-            for name, payload in backups.items():
-                destination = self.backup_dir / name
-                temporary = destination.with_suffix(
-                    destination.suffix + ".restore-tmp"
-                )
-                temporary.write_bytes(payload)
-                os.replace(temporary, destination)
-            operation_id = str(manifest["operation_id"])
-            for pending in self.backup_dir.glob(
-                f"*.ctbackup.{operation_id}.pending-delete"
-            ):
-                pending.unlink(missing_ok=True)
             transaction.unlink()
+        except VaultError:
+            raise
         except Exception as exc:
             raise VaultError(
                 "support_delete_transaction_recovery_failed",
-                "上次学生删除未完成，原保险箱和专用备份无法自动恢复",
+                "上次学生删除未完成，原学生数据无法自动恢复",
                 status_code=409,
             ) from exc
 
     def _read_subject_delete_transaction(
         self,
         transaction: Path,
-    ) -> tuple[dict[str, Any], bytes, dict[str, bytes]]:
+    ) -> tuple[dict[str, Any], bytes]:
         with zipfile.ZipFile(transaction, mode="r") as archive:
             if archive.testzip() is not None:
                 raise ValueError("transaction_crc")
@@ -328,26 +288,19 @@ class EncryptedDatabase:
             if (
                 manifest.get("version") != 1
                 or not isinstance(manifest.get("operation_id"), str)
-                or not isinstance(manifest.get("backup_names"), list)
             ):
                 raise ValueError("transaction_manifest")
-            names = [str(value) for value in manifest["backup_names"]]
-            if any(
-                not name
-                or Path(name).name != name
-                or not name.endswith(".ctbackup")
-                for name in names
-            ):
-                raise ValueError("transaction_backup_name")
+            if manifest.get("backup_names"):
+                raise VaultError(
+                    "support_legacy_backup_transaction_requires_manual_recovery",
+                    "检测到旧专用备份删除留下的回退文件，请人工处理后再启动",
+                    status_code=409,
+                )
             database_snapshot = archive.read(
                 "student_affairs.snapshot"
             )
             self.validate_snapshot(database_snapshot)
-            backups = {
-                name: archive.read(f"backups/{index}.ctbackup")
-                for index, name in enumerate(names)
-            }
-        return manifest, database_snapshot, backups
+        return manifest, database_snapshot
 
     @staticmethod
     def _write_snapshot_file(payload: bytes, destination: Path) -> None:
@@ -358,25 +311,6 @@ class EncryptedDatabase:
                 source.backup(target)
                 if target.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
                     raise ValueError("integrity")
-
-    def _publish_snapshot_file(
-        self,
-        payload: bytes,
-        destination: Path,
-    ) -> None:
-        temporary = destination.with_suffix(
-            destination.suffix + ".tmp"
-        )
-        temporary.unlink(missing_ok=True)
-        try:
-            self._write_snapshot_file(payload, temporary)
-            self.validate_snapshot(temporary.read_bytes())
-            with temporary.open("r+b") as handle:
-                handle.flush()
-                os.fsync(handle.fileno())
-            os.replace(temporary, destination)
-        finally:
-            temporary.unlink(missing_ok=True)
 
 
 __all__ = ["EncryptedDatabase"]

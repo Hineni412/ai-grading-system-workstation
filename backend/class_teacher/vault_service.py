@@ -4,7 +4,6 @@ import asyncio
 import hashlib
 import hmac
 import json
-import os
 import re
 import secrets
 import sqlite3
@@ -24,15 +23,12 @@ from .crypto import (
     SCRYPT_N,
     SCRYPT_P,
     SCRYPT_R,
-    b64,
-    canonical_json,
     derive_key,
     generate_recovery_key,
     open_sealed,
     random_key,
     random_salt,
     seal,
-    unb64,
     wipe,
 )
 from .encrypted_database import EncryptedDatabase
@@ -41,49 +37,13 @@ from .secure_repository import EncryptedObjectRepository
 
 
 _SESSION_SECONDS = 5 * 60
-_PREVIEW_SECONDS = 5 * 60
 _PASSWORD_MINIMUM = 12
-_BACKUP_NAME = re.compile(r"^[0-9a-f]{32}\.ctbackup$")
 _OPERATION_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{7,127}$")
 _AUDIT_CODE = re.compile(r"^[a-z][a-z0-9_.-]{1,63}$")
-_BACKUP_MAGIC = "class-teacher-vault-backup"
-_BACKUP_FORMAT = 1
 
 
 def _now() -> datetime:
     return datetime.now(UTC)
-
-
-def _snapshot_content_digest(payload: bytes) -> str:
-    """Hash durable vault meaning, excluding append-only access audit noise."""
-    digest = hashlib.sha256()
-    with closing(sqlite3.connect(":memory:")) as connection:
-        connection.deserialize(payload)
-        tables = connection.execute(
-            """
-            SELECT name, sql FROM sqlite_master
-            WHERE type = 'table' AND name NOT LIKE 'sqlite_%'
-              AND name != 'access_audit'
-            ORDER BY name
-            """
-        ).fetchall()
-        for table_name, schema in tables:
-            name = str(table_name)
-            digest.update(canonical_json({"table": name, "schema": str(schema or "")}))
-            quoted = '"' + name.replace('"', '""') + '"'
-            encoded_rows: list[bytes] = []
-            for row in connection.execute(f"SELECT * FROM {quoted}").fetchall():
-                values: list[object] = []
-                for value in row:
-                    if isinstance(value, bytes):
-                        values.append({"bytes": b64(value)})
-                    else:
-                        values.append(value)
-                encoded_rows.append(canonical_json({"row": values}))
-            for encoded in sorted(encoded_rows):
-                digest.update(len(encoded).to_bytes(8, "big"))
-                digest.update(encoded)
-    return digest.hexdigest()
 
 
 def _iso(value: datetime | None = None) -> str:
@@ -98,12 +58,6 @@ def _brk_aad(kind: str) -> bytes:
     return f"class-teacher|vault|brk|{kind}|v{FORMAT_VERSION}".encode()
 
 
-def _backup_aad(backup_id: str, kind: str) -> bytes:
-    return (
-        f"class-teacher|backup|{backup_id}|{kind}|v{_BACKUP_FORMAT}"
-    ).encode()
-
-
 def _initialization_receipt_aad(operation_id: str) -> bytes:
     return f"class-teacher|initialization-receipt|{operation_id}".encode()
 
@@ -114,18 +68,6 @@ class _Session:
     vmk: bytearray
     instance_id: str
     last_activity: float
-
-
-@dataclass(slots=True)
-class _RestorePreview:
-    token: str
-    payload: bytearray
-    backup_id: str
-    source_instance_id: str
-    created_at: str
-    expires_at: float
-    current_digest: str
-    confirmation_phrase: str
 
 
 class VaultService:
@@ -289,7 +231,6 @@ class VaultService:
         )
         self._lock = threading.RLock()
         self._sessions: dict[str, _Session] = {}
-        self._previews: dict[str, _RestorePreview] = {}
         self._initialization_replays: dict[str, dict[str, object]] = {}
         self._initialize_session_bound_services()
         from .intake import ClassTeacherIntake
@@ -353,7 +294,7 @@ class VaultService:
 
     @asynccontextmanager
     async def operation_scope(self):
-        """Serialize protected API operations across lock and restore boundaries."""
+        """Serialize operations that depend on the protected vault session."""
         if not self.protection_enabled:
             yield
             return
@@ -820,7 +761,6 @@ class VaultService:
                                 self._audit(connection, "vault.lock", "success")
                     finally:
                         wipe(session.vmk)
-            self._discard_previews()
 
     def touch(self, *, token: str) -> dict[str, object]:
         with self._lock:
@@ -911,7 +851,6 @@ class VaultService:
                         (_iso(), operation_id),
                     )
             self._invalidate_sessions()
-            self._discard_previews()
             result = {"completed": True, "locked": True}
             with closing(self.ordinary_database.connect()) as connection:
                 with connection:
@@ -1098,341 +1037,6 @@ class VaultService:
                 ),
             )
 
-    def create_backup(
-        self,
-        *,
-        token: str,
-        backup_password: str,
-        operation_id: str,
-    ) -> dict[str, object]:
-        self._validate_password(backup_password)
-        self._validate_operation_id(operation_id)
-        with self._lock:
-            session = self._require_session(token)
-            replay = self._idempotent_result(operation_id, "vault.backup")
-            if replay is not None:
-                return replay
-            metadata = self._metadata()
-            brk = open_sealed(
-                bytes(session.vmk),
-                bytes(metadata["brk_vmk_nonce"]),
-                bytes(metadata["wrapped_brk_vmk"]),
-                _brk_aad("vmk"),
-            )
-            backup_id = uuid4().hex
-            created_at = _iso()
-            backup_key = random_key()
-            backup_salt = random_salt()
-            backup_kek = derive_key(backup_password, backup_salt)
-            password_wrapper = seal(
-                backup_kek,
-                backup_key,
-                _backup_aad(backup_id, "password"),
-            )
-            brk_wrapper = seal(brk, backup_key, _backup_aad(backup_id, "brk"))
-            header = {
-                "magic": _BACKUP_MAGIC,
-                "format_version": _BACKUP_FORMAT,
-                "backup_id": backup_id,
-                "source_instance_id": str(metadata["instance_id"]),
-                "created_at": created_at,
-                "scope": "complete-vault-replacement",
-            }
-            protected = seal(
-                backup_key,
-                self.database.snapshot_bytes(),
-                canonical_json(header),
-            )
-            package = {
-                **header,
-                "kdf": {"n": SCRYPT_N, "r": SCRYPT_R, "p": SCRYPT_P},
-                "backup_salt": b64(backup_salt),
-                "backup_key_password_nonce": b64(password_wrapper.nonce),
-                "wrapped_backup_key_password": b64(password_wrapper.ciphertext),
-                "backup_key_brk_nonce": b64(brk_wrapper.nonce),
-                "wrapped_backup_key_brk": b64(brk_wrapper.ciphertext),
-                "recovery_salt": b64(bytes(metadata["recovery_salt"])),
-                "brk_recovery_nonce": b64(bytes(metadata["brk_recovery_nonce"])),
-                "wrapped_brk_recovery": b64(
-                    bytes(metadata["wrapped_brk_recovery"])
-                ),
-                "payload_nonce": b64(protected.nonce),
-                "payload_ciphertext": b64(protected.ciphertext),
-            }
-            file_name = f"{backup_id}.ctbackup"
-            payload = canonical_json(package)
-            self._atomic_backup_write(file_name, payload)
-            result = {
-                "backup_id": backup_id,
-                "file_name": file_name,
-                "created_at": created_at,
-                "size_bytes": len(payload),
-                "source_instance_id": str(metadata["instance_id"]),
-            }
-            try:
-                with closing(self.database.connect()) as connection:
-                    with connection:
-                        connection.execute(
-                        """
-                        INSERT INTO encrypted_backup_records (
-                            backup_id, file_name, source_instance_id,
-                            format_version, size_bytes, status, created_at
-                        ) VALUES (?, ?, ?, ?, ?, 'created', ?)
-                        """,
-                        (
-                            backup_id,
-                            file_name,
-                            str(metadata["instance_id"]),
-                            _BACKUP_FORMAT,
-                            len(payload),
-                            created_at,
-                        ),
-                        )
-                        self._remember_idempotent(
-                            connection,
-                            operation_id,
-                            "vault.backup",
-                            result,
-                        )
-                        self._audit(
-                            connection,
-                            "vault.backup.create",
-                            "success",
-                        )
-            except Exception:
-                (self.database.backup_dir / file_name).unlink(missing_ok=True)
-                raise
-            return result
-
-    def list_backups(self, *, token: str) -> dict[str, object]:
-        with self._lock:
-            self._require_session(token)
-            with closing(self.database.connect()) as connection:
-                rows = connection.execute(
-                    """
-                    SELECT backup_id, file_name, created_at, size_bytes, status
-                    FROM encrypted_backup_records
-                    ORDER BY created_at DESC
-                    """
-                ).fetchall()
-            return {
-                "items": [
-                    {
-                        "backup_id": str(row["backup_id"]),
-                        "file_name": str(row["file_name"]),
-                        "created_at": str(row["created_at"]),
-                        "size_bytes": int(row["size_bytes"]),
-                        "status": str(row["status"]),
-                    }
-                    for row in rows
-                    if self._backup_path(str(row["file_name"])).is_file()
-                ]
-            }
-
-    def verify_backup(
-        self,
-        *,
-        file_name: str,
-        secret: str,
-        secret_kind: str,
-    ) -> dict[str, object]:
-        with self._lock:
-            package, payload = self._open_backup(file_name, secret, secret_kind)
-            EncryptedDatabase.validate_snapshot(payload)
-            if self.database.exists:
-                with closing(self.database.connect()) as connection:
-                    with connection:
-                        connection.execute(
-                            """
-                            UPDATE encrypted_backup_records
-                            SET status = 'verified', verified_at = ?
-                            WHERE backup_id = ?
-                            """,
-                            (_iso(), str(package["backup_id"])),
-                        )
-                        self._audit(
-                            connection,
-                            "vault.backup.verify",
-                            "success",
-                            object_id=str(package["backup_id"]),
-                        )
-            return self._backup_summary(package)
-
-    def preview_restore(
-        self,
-        *,
-        token: str,
-        file_name: str,
-        secret: str,
-        secret_kind: str,
-    ) -> dict[str, object]:
-        with self._lock:
-            session = self._require_session(token)
-            package, payload = self._open_backup(file_name, secret, secret_kind)
-            EncryptedDatabase.validate_snapshot(payload)
-            current_snapshot = self.database.snapshot_bytes()
-            current_digest = _snapshot_content_digest(current_snapshot)
-            backup_counts = self._snapshot_scope_counts(payload)
-            current_counts = self._snapshot_scope_counts(current_snapshot)
-            backup_schema_version = self._snapshot_schema_version(payload)
-            current_schema_version = self._snapshot_schema_version(current_snapshot)
-            if backup_schema_version > current_schema_version:
-                raise VaultError(
-                    "vault_restore_schema_too_new",
-                    "这份备份来自更新版本，请先升级应用后再恢复",
-                    status_code=409,
-                )
-            preview_token = secrets.token_urlsafe(32)
-            confirmation_phrase = "确认完整替换班主任工作台"
-            preview = _RestorePreview(
-                token=preview_token,
-                payload=bytearray(payload),
-                backup_id=str(package["backup_id"]),
-                source_instance_id=str(package["source_instance_id"]),
-                created_at=str(package["created_at"]),
-                expires_at=time.monotonic() + _PREVIEW_SECONDS,
-                current_digest=current_digest,
-                confirmation_phrase=confirmation_phrase,
-            )
-            self._previews[preview_token] = preview
-            with closing(self.database.connect()) as connection:
-                with connection:
-                    self._audit(
-                        connection,
-                        "vault.restore.preview",
-                        "success",
-                        object_id=preview.backup_id,
-                    )
-            return {
-                **self._backup_summary(package),
-                "preview_token": preview_token,
-                "expires_in_seconds": _PREVIEW_SECONDS,
-                "requires_complete_replacement": (
-                    preview.source_instance_id != session.instance_id
-                ),
-                "source_relation": (
-                    "same_instance"
-                    if preview.source_instance_id == session.instance_id
-                    else "other_instance"
-                ),
-                "backup_schema_version": backup_schema_version,
-                "current_schema_version": current_schema_version,
-                "migration_required": backup_schema_version < current_schema_version,
-                "backup_scope_counts": backup_counts,
-                "current_scope_counts": current_counts,
-                "mode": "complete_replace",
-                "will_replace_current": True,
-                "will_lock_after_confirm": True,
-                "confirmation_phrase": confirmation_phrase,
-            }
-
-    def confirm_restore(
-        self,
-        *,
-        token: str,
-        preview_token: str,
-        operation_id: str,
-        confirmation_phrase: str | None = None,
-    ) -> dict[str, object]:
-        self._validate_operation_id(operation_id)
-        with self._lock:
-            self._require_session(token)
-            replay = self._idempotent_result(operation_id, "vault.restore")
-            if replay is not None:
-                return replay
-            preview = self._previews.pop(preview_token, None)
-            if preview is None or preview.expires_at <= time.monotonic():
-                if preview is not None:
-                    wipe(preview.payload)
-                raise VaultError(
-                    "vault_restore_preview_expired",
-                    "恢复预览已失效，请重新验证备份",
-                    status_code=409,
-                )
-            if confirmation_phrase != preview.confirmation_phrase:
-                self._previews[preview_token] = preview
-                raise VaultError(
-                    "vault_restore_confirmation_required",
-                    f"请输入“{preview.confirmation_phrase}”后再恢复",
-                    status_code=422,
-                )
-            current_digest = _snapshot_content_digest(self.database.snapshot_bytes())
-            if current_digest != preview.current_digest:
-                wipe(preview.payload)
-                raise VaultError(
-                    "vault_restore_preview_stale",
-                    "保险箱在预览后已经变化，请重新核对恢复影响",
-                    status_code=409,
-                )
-            payload = bytes(preview.payload)
-            wipe(preview.payload)
-            result = {
-                "restored": True,
-                "backup_id": preview.backup_id,
-                "locked": True,
-            }
-
-            def finalize() -> None:
-                with closing(self.database.connect()) as connection:
-                    with connection:
-                        self._remember_idempotent(
-                            connection,
-                            operation_id,
-                            "vault.restore",
-                            result,
-                        )
-                        self._audit(
-                            connection,
-                            "vault.restore.confirm",
-                            "success",
-                            object_id=preview.backup_id,
-                        )
-
-            self.database.replace_from_snapshot(payload, finalize=finalize)
-            self._invalidate_sessions()
-            self._discard_previews()
-            return result
-
-    @staticmethod
-    def _snapshot_schema_version(payload: bytes) -> int:
-        import sqlite3
-
-        with closing(sqlite3.connect(":memory:")) as connection:
-            connection.deserialize(payload)
-            row = connection.execute(
-                "SELECT COUNT(*) FROM schema_migrations WHERE success = 1"
-            ).fetchone()
-            return int(row[0] if row is not None else 0)
-
-    @staticmethod
-    def _snapshot_scope_counts(payload: bytes) -> dict[str, int]:
-        import sqlite3
-
-        table_names = {
-            "subjects": "student_subject_links",
-            "support_records": "support_records",
-            "student_cards": "student_card_entries",
-            "academic_evidence": "evidence_versions",
-            "attention_cards": "attention_cards",
-            "affairs": "affairs",
-        }
-        counts: dict[str, int] = {}
-        with closing(sqlite3.connect(":memory:")) as connection:
-            connection.deserialize(payload)
-            present = {
-                str(row[0])
-                for row in connection.execute(
-                    "SELECT name FROM sqlite_master WHERE type = 'table'"
-                )
-            }
-            for key, table in table_names.items():
-                counts[key] = (
-                    int(connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
-                    if table in present
-                    else 0
-                )
-        return counts
-
     def _metadata(self) -> Any:
         if not self.database.exists:
             raise VaultError(
@@ -1450,8 +1054,8 @@ class VaultService:
             return row
         except VaultIntegrityError as exc:
             raise VaultError(
-                "vault_backup_invalid",
-                "专用备份、密码或恢复密钥未通过校验",
+                "vault_data_invalid",
+                "受保护数据未通过校验",
                 status_code=409,
             ) from exc
         except VaultError:
@@ -1489,20 +1093,11 @@ class VaultService:
             if session.last_activity <= threshold:
                 wipe(session.vmk)
                 del self._sessions[token]
-        for token, preview in list(self._previews.items()):
-            if preview.expires_at <= time.monotonic():
-                wipe(preview.payload)
-                del self._previews[token]
 
     def _invalidate_sessions(self) -> None:
         for session in self._sessions.values():
             wipe(session.vmk)
         self._sessions.clear()
-
-    def _discard_previews(self) -> None:
-        for preview in self._previews.values():
-            wipe(preview.payload)
-        self._previews.clear()
 
     def _rewrap_password(
         self,
@@ -1556,7 +1151,6 @@ class VaultService:
                     )
                 self._audit(connection, audit_action, "success")
         self._invalidate_sessions()
-        self._discard_previews()
 
     def _read_pending_recovery_key(self, kek: bytes) -> str | None:
         with closing(self.database.connect()) as connection:
@@ -1609,141 +1203,6 @@ class VaultService:
             return max(0, int(remaining + 0.999))
         except ValueError:
             return 0
-
-    def _atomic_backup_write(self, file_name: str, payload: bytes) -> None:
-        self.database.backup_dir.mkdir(parents=True, exist_ok=True)
-        final = self._backup_path(file_name)
-        temporary = final.with_suffix(".ctbackup.tmp")
-        temporary.unlink(missing_ok=True)
-        try:
-            with temporary.open("xb") as handle:
-                handle.write(payload)
-                handle.flush()
-                os.fsync(handle.fileno())
-            os.replace(temporary, final)
-        except Exception as exc:
-            temporary.unlink(missing_ok=True)
-            raise VaultError(
-                "vault_backup_failed",
-                "专用备份未能安全发布，现有数据没有改变",
-                status_code=409,
-            ) from exc
-
-    def _backup_path(self, file_name: str) -> Path:
-        if not _BACKUP_NAME.fullmatch(str(file_name or "")):
-            raise VaultError(
-                "vault_backup_not_found",
-                "没有找到指定的专用备份",
-                status_code=404,
-            )
-        candidate = self.database.backup_dir / file_name
-        try:
-            candidate.resolve(strict=False).relative_to(
-                self.database.backup_dir.resolve(strict=False)
-            )
-        except ValueError as exc:
-            raise VaultError(
-                "vault_backup_not_found",
-                "没有找到指定的专用备份",
-                status_code=404,
-            ) from exc
-        return candidate
-
-    def _open_backup(
-        self,
-        file_name: str,
-        secret: str,
-        secret_kind: str,
-    ) -> tuple[dict[str, Any], bytes]:
-        path = self._backup_path(file_name)
-        try:
-            raw = path.read_bytes()
-            package = json.loads(raw.decode("utf-8"))
-            if not isinstance(package, dict):
-                raise TypeError("package")
-            header = {
-                "magic": package["magic"],
-                "format_version": package["format_version"],
-                "backup_id": package["backup_id"],
-                "source_instance_id": package["source_instance_id"],
-                "created_at": package["created_at"],
-                "scope": package["scope"],
-            }
-            if (
-                header["magic"] != _BACKUP_MAGIC
-                or int(header["format_version"]) != _BACKUP_FORMAT
-                or not re.fullmatch(r"[0-9a-f]{32}", str(header["backup_id"]))
-            ):
-                raise ValueError("format")
-            backup_id = str(header["backup_id"])
-            if secret_kind == "password":
-                params = package["kdf"]
-                kek = derive_key(
-                    secret,
-                    unb64(package["backup_salt"]),
-                    n=int(params["n"]),
-                    r=int(params["r"]),
-                    p=int(params["p"]),
-                )
-                backup_key = open_sealed(
-                    kek,
-                    unb64(package["backup_key_password_nonce"]),
-                    unb64(package["wrapped_backup_key_password"]),
-                    _backup_aad(backup_id, "password"),
-                )
-            elif secret_kind == "recovery_key":
-                recovery_kek = derive_key(
-                    secret,
-                    unb64(package["recovery_salt"]),
-                    n=SCRYPT_N,
-                    r=SCRYPT_R,
-                    p=SCRYPT_P,
-                )
-                brk = open_sealed(
-                    recovery_kek,
-                    unb64(package["brk_recovery_nonce"]),
-                    unb64(package["wrapped_brk_recovery"]),
-                    _brk_aad("recovery"),
-                )
-                backup_key = open_sealed(
-                    brk,
-                    unb64(package["backup_key_brk_nonce"]),
-                    unb64(package["wrapped_backup_key_brk"]),
-                    _backup_aad(backup_id, "brk"),
-                )
-            else:
-                raise ValueError("secret_kind")
-            payload = open_sealed(
-                backup_key,
-                unb64(package["payload_nonce"]),
-                unb64(package["payload_ciphertext"]),
-                canonical_json(header),
-            )
-            return package, payload
-        except FileNotFoundError as exc:
-            raise VaultError(
-                "vault_backup_not_found",
-                "没有找到指定的专用备份",
-                status_code=404,
-            ) from exc
-        except VaultError:
-            raise
-        except Exception as exc:
-            raise VaultError(
-                "vault_backup_invalid",
-                "专用备份、密码或恢复密钥未通过校验",
-                status_code=409,
-            ) from exc
-
-    @staticmethod
-    def _backup_summary(package: dict[str, Any]) -> dict[str, object]:
-        return {
-            "backup_id": str(package["backup_id"]),
-            "source_instance_id": str(package["source_instance_id"]),
-            "created_at": str(package["created_at"]),
-            "format_version": int(package["format_version"]),
-            "scope": str(package["scope"]),
-        }
 
     def _idempotent_result(
         self,

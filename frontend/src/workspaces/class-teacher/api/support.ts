@@ -76,12 +76,9 @@ export interface SupportPlan {
 
 export interface SubjectDeletionPreview {
   subject_id: string
-  affected_backup_count: number
-  affected_backups: Array<{ file_name: string; size_bytes: number }>
   shared_object_count: number
   shared_objects: Array<{ object_id: string; object_type: string }>
   delete_confirmation_phrase: string
-  backup_confirmation_phrase: string | null
   impact_counts?: Record<string, number>
   projection_count?: number
   preview_version?: string
@@ -216,7 +213,6 @@ export const supportApi = {
     token: string,
     subjectId: string,
     preview: SubjectDeletionPreview,
-    backupConfirmationPhrase: string | null,
     operationIdValue: string,
   ) {
     return apiClient.request(`/api/class-teacher/support/subjects/${subjectId}`, {
@@ -225,7 +221,6 @@ export const supportApi = {
       body: {
         operation_id: operationIdValue,
         confirmation_phrase: preview.delete_confirmation_phrase,
-        backup_confirmation_phrase: backupConfirmationPhrase,
         preview_version: preview.preview_version ?? null,
       },
       decode: record,

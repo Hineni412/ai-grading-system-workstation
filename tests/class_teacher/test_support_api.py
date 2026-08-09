@@ -39,6 +39,18 @@ def _client(tmp_path: Path) -> tuple[TestClient, dict[str, str]]:
     }
 
 
+def test_dedicated_encrypted_backup_routes_are_not_registered() -> None:
+    paths = {
+        getattr(route, "path", "")
+        for route in create_router().routes
+    }
+
+    assert "/vault/backups" not in paths
+    assert "/vault/backups/verify" not in paths
+    assert "/vault/restore/preview" not in paths
+    assert "/vault/restore/confirm" not in paths
+
+
 def test_support_quick_evidence_and_attention_routes_are_wired(
     tmp_path: Path,
 ) -> None:

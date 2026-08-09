@@ -7,11 +7,6 @@ from fastapi import APIRouter, Depends, Header, Request, Response
 from ..errors import VaultError
 from ..vault_service import VaultService
 from .schemas import (
-    BackupCreateRequest,
-    BackupCreateResponse,
-    BackupListResponse,
-    BackupSecretRequest,
-    BackupSummaryResponse,
     ChangePasswordRequest,
     InitializeRequest,
     InitializeResponse,
@@ -22,9 +17,6 @@ from .schemas import (
     PinUpgradeRequest,
     PinUnlockRequest,
     RecoverRequest,
-    RestoreConfirmRequest,
-    RestoreConfirmResponse,
-    RestorePreviewResponse,
     SessionResponse,
     TouchResponse,
     UnlockRequest,
@@ -331,100 +323,6 @@ def create_router() -> APIRouter:
             )
         )
         return OperationResponse(completed=True, locked=True)
-
-    @protected_router.post("/vault/backups", response_model=BackupCreateResponse)
-    def create_backup(
-        request: Request,
-        body: BackupCreateRequest,
-        response: Response,
-        session_token: str | None = Header(
-            default=None,
-            alias="x-class-teacher-session",
-        ),
-    ):
-        _require_trusted_mutation(request)
-        _no_store(response)
-        return _call(
-            lambda: _service(request).create_backup(
-                token=_token(session_token),
-                backup_password=body.backup_password.get_secret_value(),
-                operation_id=body.operation_id,
-            )
-        )
-
-    @protected_router.get("/vault/backups", response_model=BackupListResponse)
-    def list_backups(
-        request: Request,
-        response: Response,
-        session_token: str | None = Header(
-            default=None,
-            alias="x-class-teacher-session",
-        ),
-    ):
-        _no_store(response)
-        return _call(
-            lambda: _service(request).list_backups(
-                token=_token(session_token),
-            )
-        )
-
-    @protected_router.post("/vault/backups/verify", response_model=BackupSummaryResponse)
-    def verify_backup(
-        request: Request,
-        body: BackupSecretRequest,
-        response: Response,
-    ):
-        _require_trusted_mutation(request)
-        _no_store(response)
-        return _call(
-            lambda: _service(request).verify_backup(
-                file_name=body.file_name,
-                secret=body.secret.get_secret_value(),
-                secret_kind=body.secret_kind,
-            )
-        )
-
-    @protected_router.post("/vault/restore/preview", response_model=RestorePreviewResponse)
-    def preview_restore(
-        request: Request,
-        body: BackupSecretRequest,
-        response: Response,
-        session_token: str | None = Header(
-            default=None,
-            alias="x-class-teacher-session",
-        ),
-    ):
-        _require_trusted_mutation(request)
-        _no_store(response)
-        return _call(
-            lambda: _service(request).preview_restore(
-                token=_token(session_token),
-                file_name=body.file_name,
-                secret=body.secret.get_secret_value(),
-                secret_kind=body.secret_kind,
-            )
-        )
-
-    @protected_router.post("/vault/restore/confirm", response_model=RestoreConfirmResponse)
-    def confirm_restore(
-        request: Request,
-        body: RestoreConfirmRequest,
-        response: Response,
-        session_token: str | None = Header(
-            default=None,
-            alias="x-class-teacher-session",
-        ),
-    ):
-        _require_trusted_mutation(request)
-        _no_store(response)
-        return _call(
-            lambda: _service(request).confirm_restore(
-                token=_token(session_token),
-                preview_token=body.preview_token,
-                operation_id=body.operation_id,
-                confirmation_phrase=body.confirmation_phrase,
-            )
-        )
 
     from .action_router import create_action_router
     from .planning_router import create_planning_router

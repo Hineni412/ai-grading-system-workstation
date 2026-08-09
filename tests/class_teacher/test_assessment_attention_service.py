@@ -444,45 +444,27 @@ def test_full_subject_delete_removes_quick_evidence_attention_and_linked_action(
         plan_id=str(plan["plan_id"]),
         review_at="2026-08-20T17:00:00+08:00",
     )
-    service.create_backup(
-        token=token,
-        backup_password="合成删除备份密码-足够长-001",
-        operation_id="create-pre-delete-backup",
-    )
     preview = service.support.preview_subject_deletion(
         token=token,
         subject_id=subject_id,
     )
-    assert preview["affected_backup_count"] == 1
-    with pytest.raises(VaultError) as confirmation:
-        service.support.delete_subject(
-            token=token,
-            subject_id=subject_id,
-            operation_id="delete-without-backup-confirmation",
-            confirmation_phrase="确认完整删除学生支持数据",
-        )
-    assert (
-        confirmation.value.code
-        == "support_backup_delete_confirmation_required"
-    )
+    assert preview["delete_confirmation_phrase"] == "确认完整删除学生支持数据"
 
     deletion = service.support.delete_subject(
         token=token,
         subject_id=subject_id,
         operation_id="delete-complete-subject-data",
         confirmation_phrase="确认完整删除学生支持数据",
-        backup_confirmation_phrase="确认销毁受影响的班主任专用备份",
+        preview_version=str(preview["preview_version"]),
     )
     assert deletion["linked_actions_deleted"] == 1
-    assert deletion["affected_backups_destroyed"] == 1
     assert service.support.delete_subject(
         token=token,
         subject_id=subject_id,
         operation_id="delete-complete-subject-data",
         confirmation_phrase="确认完整删除学生支持数据",
-        backup_confirmation_phrase="确认销毁受影响的班主任专用备份",
+        preview_version=str(preview["preview_version"]),
     ) == deletion
-    assert list(service.database.backup_dir.glob("*.ctbackup")) == []
     with closing(service.database.connect()) as connection:
         for table in (
             "quick_inbox_items",

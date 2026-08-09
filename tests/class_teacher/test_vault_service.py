@@ -15,7 +15,6 @@ from backend.workspaces.contracts import WorkspaceContext
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 PASSWORD = "合成保险箱密码-足够长-001"
 NEW_PASSWORD = "合成保险箱新密码-足够长-002"
-BACKUP_PASSWORD = "合成备份独立密码-足够长-003"
 
 
 def _service(tmp_path: Path) -> VaultService:
@@ -144,104 +143,6 @@ def test_sensitive_repository_never_writes_plaintext_payload(tmp_path: Path) -> 
     assert revision == loaded_revision == 1
     assert payload == {"body": synthetic}
     assert synthetic.encode("utf-8") not in service.database.database_path.read_bytes()
-
-
-def test_backup_is_authenticated_and_recovery_key_can_open_old_backup(
-    tmp_path: Path,
-) -> None:
-    service = _service(tmp_path)
-    initialized = service.initialize(
-        password=PASSWORD,
-        operation_id="initialize-004",
-    )
-    token = str(initialized["session_token"])
-    recovery_key = str(initialized["recovery_key"])
-    backup = service.create_backup(
-        token=token,
-        backup_password=BACKUP_PASSWORD,
-        operation_id="backup-create-001",
-    )
-
-    by_password = service.verify_backup(
-        file_name=str(backup["file_name"]),
-        secret=BACKUP_PASSWORD,
-        secret_kind="password",
-    )
-    by_recovery = service.verify_backup(
-        file_name=str(backup["file_name"]),
-        secret=recovery_key,
-        secret_kind="recovery_key",
-    )
-
-    assert by_password["backup_id"] == by_recovery["backup_id"]
-    assert service.create_backup(
-        token=token,
-        backup_password=BACKUP_PASSWORD,
-        operation_id="backup-create-001",
-    ) == backup
-
-
-def test_restore_is_previewed_then_replaces_and_locks(tmp_path: Path) -> None:
-    service = _service(tmp_path)
-    initialized = service.initialize(
-        password=PASSWORD,
-        operation_id="initialize-005",
-    )
-    token = str(initialized["session_token"])
-    with closing(service.database.connect()) as connection:
-        with connection:
-            service.repository.put(
-                connection,
-                vmk=_vmk(service, token),
-                object_id="syn-object-restore",
-                object_type="synthetic_note",
-                payload={"body": "备份时版本"},
-            )
-    backup = service.create_backup(
-        token=token,
-        backup_password=BACKUP_PASSWORD,
-        operation_id="backup-create-restore",
-    )
-    with closing(service.database.connect()) as connection:
-        with connection:
-            service.repository.put(
-                connection,
-                vmk=_vmk(service, token),
-                object_id="syn-object-restore",
-                object_type="synthetic_note",
-                payload={"body": "恢复前已修改版本"},
-                expected_revision=1,
-            )
-
-    preview = service.preview_restore(
-        token=token,
-        file_name=str(backup["file_name"]),
-        secret=BACKUP_PASSWORD,
-        secret_kind="password",
-    )
-    result = service.confirm_restore(
-        token=token,
-        preview_token=str(preview["preview_token"]),
-        operation_id="restore-confirm-001",
-        confirmation_phrase=str(preview["confirmation_phrase"]),
-    )
-
-    assert result["locked"] is True
-    unlocked = service.unlock(password=PASSWORD)
-    with closing(service.database.connect()) as connection:
-        payload, revision = service.repository.get(
-            connection,
-            vmk=_vmk(service, str(unlocked["session_token"])),
-            object_id="syn-object-restore",
-        )
-    assert payload == {"body": "备份时版本"}
-    assert revision == 1
-    assert not (
-        service.database.root / ".restore-rollback.db"
-    ).exists()
-    assert not (
-        service.database.root / ".restore-rollback.db.tmp"
-    ).exists()
 
 
 @pytest.mark.parametrize("temporary_is_complete", [False, True])

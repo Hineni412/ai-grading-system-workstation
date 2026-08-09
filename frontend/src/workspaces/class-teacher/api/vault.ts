@@ -27,36 +27,6 @@ export interface VaultInitialization extends VaultSession {
   recovery_key_shown_once: boolean
 }
 
-export interface VaultBackup {
-  backup_id: string
-  file_name: string
-  created_at: string
-  size_bytes: number
-  status?: string
-  source_instance_id?: string
-}
-
-export interface VaultRestorePreview {
-  backup_id: string
-  source_instance_id: string
-  created_at: string
-  format_version: number
-  scope: string
-  preview_token: string
-  expires_in_seconds: number
-  requires_complete_replacement: boolean
-  source_relation: 'same_instance' | 'other_instance'
-  backup_schema_version: number
-  current_schema_version: number
-  migration_required: boolean
-  backup_scope_counts: Record<string, number>
-  current_scope_counts: Record<string, number>
-  mode: 'complete_replace'
-  will_replace_current: boolean
-  will_lock_after_confirm: boolean
-  confirmation_phrase: string
-}
-
 function object(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('contract')
   return value as Record<string, unknown>
@@ -79,11 +49,6 @@ function boolean(value: unknown): boolean {
 
 function nullableText(value: unknown): string | null {
   return value === null || value === undefined ? null : text(value)
-}
-
-function numberRecord(value: unknown): Record<string, number> {
-  const source = object(value)
-  return Object.fromEntries(Object.entries(source).map(([key, item]) => [key, number(item)]))
 }
 
 function status(payload: unknown): VaultStatus {
@@ -140,56 +105,6 @@ function initialization(payload: unknown): VaultInitialization {
     ...session(payload),
     recovery_key: text(value.recovery_key),
     recovery_key_shown_once: boolean(value.recovery_key_shown_once),
-  }
-}
-
-function backup(payload: unknown): VaultBackup {
-  const value = object(payload)
-  return {
-    backup_id: text(value.backup_id),
-    file_name: text(value.file_name),
-    created_at: text(value.created_at),
-    size_bytes: number(value.size_bytes),
-    source_instance_id: text(value.source_instance_id),
-  }
-}
-
-function backupList(payload: unknown): VaultBackup[] {
-  const value = object(payload)
-  if (!Array.isArray(value.items)) throw new Error('contract')
-  return value.items.map((item) => {
-    const entry = object(item)
-    return {
-      backup_id: text(entry.backup_id),
-      file_name: text(entry.file_name),
-      created_at: text(entry.created_at),
-      size_bytes: number(entry.size_bytes),
-      status: text(entry.status),
-    }
-  })
-}
-
-function restorePreview(payload: unknown): VaultRestorePreview {
-  const value = object(payload)
-  return {
-    backup_id: text(value.backup_id),
-    source_instance_id: text(value.source_instance_id),
-    created_at: text(value.created_at),
-    format_version: number(value.format_version),
-    scope: text(value.scope),
-    preview_token: text(value.preview_token),
-    expires_in_seconds: number(value.expires_in_seconds),
-    requires_complete_replacement: boolean(value.requires_complete_replacement),
-    source_relation: text(value.source_relation) as VaultRestorePreview['source_relation'],
-    backup_schema_version: number(value.backup_schema_version),
-    current_schema_version: number(value.current_schema_version),
-    migration_required: boolean(value.migration_required),
-    backup_scope_counts: numberRecord(value.backup_scope_counts),
-    current_scope_counts: numberRecord(value.current_scope_counts),
-    mode: text(value.mode) as 'complete_replace',
-    will_replace_current: boolean(value.will_replace_current),
-    will_lock_after_confirm: boolean(value.will_lock_after_confirm),
-    confirmation_phrase: text(value.confirmation_phrase),
   }
 }
 
@@ -325,51 +240,6 @@ export const vaultApi = {
         operation_id: operationId(),
       },
       decode: object,
-    })
-  },
-  listBackups(token: string) {
-    return apiClient.request('/api/class-teacher/vault/backups', {
-      headers: { 'x-class-teacher-session': token },
-      decode: backupList,
-    })
-  },
-  createBackup(token: string, backupPassword: string) {
-    return apiClient.request('/api/class-teacher/vault/backups', {
-      method: 'POST',
-      headers: headers(token),
-      body: {
-        backup_password: backupPassword,
-        operation_id: operationId(),
-      },
-      decode: backup,
-      timeoutMs: 60_000,
-    })
-  },
-  previewRestore(
-    token: string,
-    fileName: string,
-    secret: string,
-    secretKind: 'password' | 'recovery_key',
-  ) {
-    return apiClient.request('/api/class-teacher/vault/restore/preview', {
-      method: 'POST',
-      headers: headers(token),
-      body: { file_name: fileName, secret, secret_kind: secretKind },
-      decode: restorePreview,
-      timeoutMs: 60_000,
-    })
-  },
-  confirmRestore(token: string, previewToken: string, confirmationPhrase: string) {
-    return apiClient.request('/api/class-teacher/vault/restore/confirm', {
-      method: 'POST',
-      headers: headers(token),
-      body: {
-        preview_token: previewToken,
-        operation_id: operationId(),
-        confirmation_phrase: confirmationPhrase,
-      },
-      decode: object,
-      timeoutMs: 60_000,
     })
   },
 }
