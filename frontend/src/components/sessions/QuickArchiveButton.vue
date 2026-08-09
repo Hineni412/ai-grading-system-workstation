@@ -3,8 +3,8 @@ import { ref } from 'vue'
 
 import { ApiError } from '../../api/errors'
 import {
-  archiveSession,
   fetchSessionDeletionImpact,
+  permanentlyDeleteSession,
 } from '../../api/sessions'
 import { isAmbiguousWriteError } from '../../api/errors'
 import { useSessionStore } from '../../stores/session'
@@ -30,30 +30,34 @@ function errorMessage(error: unknown): string {
     return '这场考试仍有生成、同步或批改任务未结束，请先完成或取消任务。'
   }
   if (error instanceof ApiError && error.code === 'session_delete_revision_conflict') {
-    return '考试内容刚刚发生变化，请重新点击归档后再确认。'
+    return '考试内容刚刚发生变化，请重新点击删除后再确认。'
   }
-  return '考试尚未归档，请稍后重试。'
+  return '考试尚未删除，请稍后重试。'
 }
 
-async function archive(): Promise<void> {
+async function remove(): Promise<void> {
   if (working.value) return
   working.value = true
   try {
     const impact = await fetchSessionDeletionImpact(props.sessionId)
-    if (!impact.can_archive) {
+    if (!impact.can_permanently_delete) {
       window.alert('这场考试仍有生成、同步或批改任务未结束，请先完成或取消任务。')
       return
     }
     const confirmed = window.confirm(
-      `归档“${props.sessionName}”？\n\n归档只会把考试从日常列表中隐藏；考试配置、答卷、成绩和知识图谱数据都会保留，之后可以在考试管理中恢复。`,
+      `确认彻底删除“${props.sessionName}”吗？\n\n这会永久删除本场考试的配置、答卷、成绩和知识图谱贡献，且无法恢复。学生名单和已经入库的题库试题会保留。`,
     )
     if (!confirmed) return
     try {
-      await archiveSession(props.sessionId, impact.revision, impact.session.name)
+      await permanentlyDeleteSession(
+        props.sessionId,
+        impact.revision,
+        impact.permanent_delete_phrase,
+      )
     } catch (error) {
       if (!isAmbiguousWriteError(error)) throw error
-      const reconciled = await fetchSessionDeletionImpact(props.sessionId)
-      if (!reconciled.session.is_deleted) throw error
+      await sessionStore.initialize()
+      if (sessionStore.sessions.some(item => item.id === props.sessionId)) throw error
     }
     if (sessionStore.selectedSessionId === props.sessionId) sessionStore.clearSelection()
     await sessionStore.initialize()
@@ -70,10 +74,10 @@ async function archive(): Promise<void> {
   <AppIconButton
     class="quick-archive-button"
     :class="{ 'quick-archive-button--compact': props.compact }"
-    :label="`归档考试：${props.sessionName}`"
-    icon="archive"
+    :label="`彻底删除考试：${props.sessionName}`"
+    icon="trash"
     variant="secondary"
     :disabled="working"
-    @click.stop="archive"
+    @click.stop="remove"
   />
 </template>

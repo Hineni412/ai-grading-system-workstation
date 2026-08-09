@@ -274,6 +274,12 @@ export interface MaterialVersion {
   created_at: string
 }
 
+export interface DeleteMaterialSourceResult {
+  deleted_source_id: string
+  deleted_file_count: number
+  counts: Record<string, number>
+}
+
 export interface MaterialUnit {
   id: string
   material_version_id: string
@@ -2162,6 +2168,26 @@ export const teachingPrepCatalogApi = {
         decode: (payload) => {
           assertNoPathLikeKeys(payload)
           return material(payload)
+        },
+      },
+    )
+  },
+
+  deleteMaterialSource(current: MaterialVersion): Promise<DeleteMaterialSourceResult> {
+    return apiClient.request(
+      `/api/teaching-prep/material-sources/${encodeURIComponent(current.source_id)}`,
+      {
+        method: 'DELETE',
+        body: { expected_revision: current.source_revision ?? 1 },
+        decode: (payload) => {
+          assertNoPathLikeKeys(payload)
+          if (
+            !isRecord(payload)
+            || typeof payload.deleted_source_id !== 'string'
+            || typeof payload.deleted_file_count !== 'number'
+            || !isRecord(payload.counts)
+          ) throw new Error('Invalid material deletion response')
+          return payload as unknown as DeleteMaterialSourceResult
         },
       },
     )

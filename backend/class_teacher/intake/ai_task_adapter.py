@@ -628,6 +628,18 @@ def _normalize_triage_payload_compatibility(
             "missing_fields",
         ):
             normalized.pop(field, None)
+        # JSON-object providers can echo unused schema branches under their
+        # business-looking property names.  Empty branches contain no routing,
+        # safety, student, or draft decision, so discard them generically while
+        # retaining every non-empty unknown field for strict validation below.
+        for field in tuple(set(normalized) - {
+            "contract_version",
+            "assistant_message",
+            "clarification_questions",
+            "work_items",
+        }):
+            if normalized.get(field) in (None, "", [], {}):
+                normalized.pop(field, None)
     raw_work_items = normalized.get("work_items")
     if isinstance(raw_work_items, list):
         for raw_item in raw_work_items:

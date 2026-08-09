@@ -183,15 +183,23 @@ def test_hard_delete_session_removes_database_rows_and_owned_files(tmp_path: Pat
         assert not path.exists()
 
 
-def test_hard_delete_rejects_active_session(tmp_path: Path) -> None:
+def test_hard_delete_accepts_active_session_after_impact_confirmation(tmp_path: Path) -> None:
     data_root = tmp_path / "user_data"
     db = DBManager(data_root / "databases" / "grading_system.db")
     db.db_path.parent.mkdir(parents=True)
     db.initialize()
     session_id = db.create_grading_session("active", str(data_root / "r.json"), str(data_root / "a.json"))
 
-    with pytest.raises(ValueError, match="archived"):
-        hard_delete_session_from_recycle_bin(db, session_id, data_root=data_root)
+    impact = db.session_repository.session_deletion_impact(session_id)
+    result = hard_delete_session_from_recycle_bin(
+        db,
+        session_id,
+        data_root=data_root,
+        expected_revision=impact["revision"],
+    )
+
+    assert result["db_counts"]["grading_sessions"] == 1
+    assert db.get_grading_session(session_id) is None
 
 
 def _seed_question_bank_link(question_bank_db: Path, session_id: int) -> None:

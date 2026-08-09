@@ -11,7 +11,6 @@ import {
   type QuestionBankPaperListResponse,
   type QuestionBankPaperMetadataInput,
   type QuestionBankPaperMetadataResult,
-  type QuestionBankPaperStateResult,
   type QuestionBankTag,
   type QuestionBankWriteResult,
 } from '../api/question-bank'
@@ -69,23 +68,6 @@ export interface QuestionBankPaperWriteApi {
   ): Promise<QuestionBankPaperMetadataResult>
 }
 
-export interface QuestionBankPaperStateApi {
-  listPapers(
-    deleted: boolean,
-    signal?: AbortSignal,
-  ): Promise<QuestionBankPaperListResponse>
-  trashPaper(
-    paperId: number,
-    expectedUpdatedAt: string,
-    signal?: AbortSignal,
-  ): Promise<QuestionBankPaperStateResult>
-  restorePaper(
-    paperId: number,
-    expectedUpdatedAt: string,
-    signal?: AbortSignal,
-  ): Promise<QuestionBankPaperStateResult>
-}
-
 const MAX_BATCH_SELECTION = 500
 
 function copyFilters(filters: QuestionBankFilters): QuestionBankFilters {
@@ -122,13 +104,8 @@ export const useQuestionBankStore = defineStore('question-bank', () => {
   const filterDraft = ref<QuestionBankFilters>({})
   const papers = ref<QuestionBankPaper[]>([])
   const papersState = ref<'idle' | 'loading' | 'ready' | 'error'>('idle')
-  const trashedPapers = ref<QuestionBankPaper[]>([])
-  const trashPapersState = ref<'idle' | 'loading' | 'ready' | 'error'>('idle')
   const paperWriteState = ref<'idle' | 'saving' | 'conflict' | 'error'>('idle')
   const paperWriteMessage = ref('')
-  const paperTrashState = ref<'idle' | 'saving' | 'conflict' | 'error'>('idle')
-  const paperTrashMessage = ref('')
-  const paperTrashBusyId = ref<number | null>(null)
   const questions = ref<QuestionBankListItem[]>([])
   const total = ref(0)
   const page = ref(1)
@@ -182,22 +159,6 @@ export const useQuestionBankStore = defineStore('question-bank', () => {
     }
   }
 
-  async function loadTrashedPapers(
-    loader: (
-      signal?: AbortSignal,
-    ) => Promise<QuestionBankPaperListResponse> = (
-      signal,
-    ) => questionBankApi.listPapers(true, signal),
-  ): Promise<void> {
-    trashPapersState.value = 'loading'
-    try {
-      trashedPapers.value = (await loader()).items
-      trashPapersState.value = 'ready'
-    } catch {
-      trashPapersState.value = 'error'
-    }
-  }
-
   function resetPaperWriteStatus(): void {
     if (paperWriteState.value === 'saving') return
     paperWriteState.value = 'idle'
@@ -247,126 +208,6 @@ export const useQuestionBankStore = defineStore('question-bank', () => {
         paperWriteState.value = 'error'
         paperWriteMessage.value = '试卷资料没有保存，你当前填写的内容仍然保留。'
       }
-      return false
-    }
-  }
-
-  async function movePaperToTrash(
-    paperId: number,
-    api: QuestionBankPaperStateApi = questionBankApi,
-  ): Promise<boolean> {
-    return changePaperDeletedState(paperId, true, api)
-  }
-
-  function resetPaperTrashStatus(): void {
-    if (paperTrashState.value === 'saving') return
-    paperTrashState.value = 'idle'
-    paperTrashMessage.value = ''
-  }
-
-  async function restorePaperFromTrash(
-    paperId: number,
-    api: QuestionBankPaperStateApi = questionBankApi,
-  ): Promise<boolean> {
-    return changePaperDeletedState(paperId, false, api)
-  }
-
-  async function changePaperDeletedState(
-    paperId: number,
-    deleted: boolean,
-    api: QuestionBankPaperStateApi,
-  ): Promise<boolean> {
-    if (paperTrashBusyId.value !== null) return false
-    const source = (deleted ? papers.value : trashedPapers.value)
-      .find(({ id }) => id === paperId)
-    if (!source) {
-      paperTrashState.value = 'error'
-      paperTrashMessage.value = '这份试卷已不在当前列表，请重新读取后核对。'
-      return false
-    }
-    paperTrashBusyId.value = paperId
-    paperTrashState.value = 'saving'
-    paperTrashMessage.value = ''
-    try {
-      const result = deleted
-        ? await api.trashPaper(paperId, source.updated_at)
-        : await api.restorePaper(paperId, source.updated_at)
-      if (result.id !== paperId || result.deleted !== deleted) {
-        throw new Error('Paper state scope mismatch')
-      }
-      moveLocalPaper(source, result)
-      paperTrashState.value = 'idle'
-      paperTrashMessage.value = deleted
-        ? '试卷已经移入回收站，可在回收站中恢复。'
-        : '试卷已经恢复到试卷库。'
-      return true
-    } catch (error) {
-      const confirmed = await reconcilePaperState(paperId, deleted, api)
-      if (confirmed) {
-        paperTrashState.value = 'idle'
-        paperTrashMessage.value = deleted
-          ? '试卷已经移入回收站；页面已重新核对服务器状态。'
-          : '试卷已经恢复；页面已重新核对服务器状态。'
-        return true
-      }
-      paperTrashState.value = (
-        error instanceof ApiError && error.code === 'paper_state_conflict'
-      )
-        ? 'conflict'
-        : 'error'
-      paperTrashMessage.value = paperTrashState.value === 'conflict'
-        ? '这份试卷刚刚在别处变化，列表已刷新，请核对后再操作。'
-        : '操作结果暂时无法确认，列表已重新读取，请核对后再试。'
-      return false
-    } finally {
-      paperTrashBusyId.value = null
-    }
-  }
-
-  function moveLocalPaper(
-    paper: QuestionBankPaper,
-    result: QuestionBankPaperStateResult,
-  ): void {
-    const next = {
-      ...paper,
-      import_status: result.import_status,
-      updated_at: result.updated_at,
-    }
-    if (result.deleted) {
-      papers.value = papers.value.filter(({ id }) => id !== paper.id)
-      trashedPapers.value = [
-        next,
-        ...trashedPapers.value.filter(({ id }) => id !== paper.id),
-      ]
-    } else {
-      trashedPapers.value = trashedPapers.value.filter(({ id }) => id !== paper.id)
-      papers.value = [
-        next,
-        ...papers.value.filter(({ id }) => id !== paper.id),
-      ]
-    }
-  }
-
-  async function reconcilePaperState(
-    paperId: number,
-    deleted: boolean,
-    api: QuestionBankPaperStateApi,
-  ): Promise<boolean> {
-    try {
-      const [active, trash] = await Promise.all([
-        api.listPapers(false),
-        api.listPapers(true),
-      ])
-      papers.value = active.items
-      trashedPapers.value = trash.items
-      papersState.value = 'ready'
-      trashPapersState.value = 'ready'
-      const activeHasPaper = active.items.some(({ id }) => id === paperId)
-      const trashHasPaper = trash.items.some(({ id }) => id === paperId)
-      return deleted
-        ? !activeHasPaper && trashHasPaper
-        : activeHasPaper && !trashHasPaper
-    } catch {
       return false
     }
   }
@@ -603,13 +444,8 @@ export const useQuestionBankStore = defineStore('question-bank', () => {
     filterDraft,
     papers,
     papersState,
-    trashedPapers,
-    trashPapersState,
     paperWriteState,
     paperWriteMessage,
-    paperTrashState,
-    paperTrashMessage,
-    paperTrashBusyId,
     questions,
     total,
     page,
@@ -632,12 +468,8 @@ export const useQuestionBankStore = defineStore('question-bank', () => {
     writeMessage,
     lastDeleted,
     loadPapers,
-    loadTrashedPapers,
     resetPaperWriteStatus,
     updatePaperMetadata,
-    movePaperToTrash,
-    resetPaperTrashStatus,
-    restorePaperFromTrash,
     loadQuestions,
     toggleQuestionSelection,
     selectCurrentPage,

@@ -3,6 +3,7 @@ import { computed, ref, watch } from 'vue'
 
 import { useCurriculumScopeStore } from '../../stores/curriculum-scope'
 import { SessionDraftOutcomeUnknownError, useSessionStore } from '../../stores/session'
+import { ApiError } from '../../api/errors'
 
 const sessionStore = useSessionStore()
 const curriculumScope = useCurriculumScopeStore()
@@ -23,6 +24,13 @@ watch(
 
 const curriculumOptions = computed(() => curriculumScope.volumes)
 
+function writeErrorMessage(error: unknown, fallback: string): string {
+  if (error instanceof ApiError && error.code === 'session_name_conflict') {
+    return '已存在同名考试，请换一个名称。'
+  }
+  return fallback
+}
+
 async function createDraft(): Promise<void> {
   busy.value = true
   message.value = ''
@@ -37,7 +45,7 @@ async function createDraft(): Promise<void> {
   } catch (error) {
     message.value = error instanceof SessionDraftOutcomeUnknownError
       ? '创建结果未知，暂时无法核对考试列表。为避免重复创建，请恢复连接后刷新页面确认。'
-      : '服务器未创建考试草稿，请检查名称后重试。'
+      : writeErrorMessage(error, '服务器未创建考试草稿，请检查名称后重试。')
   } finally {
     busy.value = false
   }
@@ -53,8 +61,8 @@ async function renameDraft(): Promise<void> {
     )
     name.value = renamed.name
     message.value = `考试信息已保存为“${renamed.name}”。`
-  } catch {
-    message.value = '考试名称未更新，请重试。'
+  } catch (error) {
+    message.value = writeErrorMessage(error, '考试名称未更新，请重试。')
   } finally {
     busy.value = false
   }

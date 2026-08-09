@@ -607,6 +607,169 @@ class TeachingCatalogRepository:
             raise TeachingPrepNotFoundError("material version was not found")
         return _material_version(row)
 
+    def material_source_owned_paths(self, source_id: str) -> tuple[Path, ...]:
+        with self._database.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT location.local_path AS path
+                FROM material_locations AS location
+                JOIN material_versions AS version ON version.id = location.version_id
+                WHERE version.source_id = ?
+                UNION ALL
+                SELECT unit.preview_relpath AS path
+                FROM material_units AS unit
+                JOIN material_versions AS version ON version.id = unit.material_version_id
+                WHERE version.source_id = ?
+                """,
+                (source_id, source_id),
+            ).fetchall()
+        return tuple(Path(str(row["path"])) for row in rows if str(row["path"] or "").strip())
+
+    def delete_material_source(
+        self,
+        source_id: str,
+        *,
+        expected_revision: int,
+    ) -> dict[str, int]:
+        """Permanently delete one source and its directly derived catalog data."""
+
+        counts: dict[str, int] = {}
+        with self._database.connect(immediate=True) as connection:
+            source = connection.execute(
+                "SELECT revision FROM material_sources WHERE id = ?",
+                (source_id,),
+            ).fetchone()
+            if source is None:
+                raise TeachingPrepNotFoundError("material source was not found")
+            if int(source["revision"]) != int(expected_revision):
+                raise TeachingPrepConflictError("material source revision changed")
+            version_ids = [
+                str(row["id"])
+                for row in connection.execute(
+                    "SELECT id FROM material_versions WHERE source_id = ?",
+                    (source_id,),
+                ).fetchall()
+            ]
+            placeholders = ",".join("?" for _ in version_ids)
+            if version_ids:
+                published_use = connection.execute(
+                    f"SELECT 1 FROM pptx_execution_runs WHERE source_material_version_id IN ({placeholders}) LIMIT 1",
+                    tuple(version_ids),
+                ).fetchone()
+                if published_use is not None:
+                    raise TeachingPrepConflictError(
+                        "material has generated courseware history and cannot be deleted"
+                    )
+
+            record_ids = [
+                str(row["id"])
+                for row in connection.execute(
+                    "SELECT id FROM semester_material_records WHERE material_source_id = ?",
+                    (source_id,),
+                ).fetchall()
+            ]
+            if record_ids:
+                record_placeholders = ",".join("?" for _ in record_ids)
+                proposal_ids = [
+                    str(row["id"])
+                    for row in connection.execute(
+                        f"""
+                        SELECT DISTINCT proposal.id
+                        FROM semester_mapping_proposals AS proposal,
+                             json_each(
+                                 proposal.payload_json,
+                                 '$.source_material_record_ids'
+                             ) AS source_record
+                        WHERE CAST(source_record.value AS TEXT)
+                              IN ({record_placeholders})
+                        """,
+                        tuple(record_ids),
+                    ).fetchall()
+                ]
+                collection_rows = connection.execute(
+                    f"""
+                    SELECT DISTINCT collection.id,
+                                    collection.mapping_proposal_id
+                    FROM reference_ppt_collections AS collection
+                    JOIN reference_ppt_collection_members AS member
+                      ON member.collection_id = collection.id
+                    WHERE member.material_record_id IN ({record_placeholders})
+                    """,
+                    tuple(record_ids),
+                ).fetchall()
+                collection_ids = [str(row["id"]) for row in collection_rows]
+                proposal_ids = list(dict.fromkeys([
+                    *proposal_ids,
+                    *(str(row["mapping_proposal_id"]) for row in collection_rows),
+                ]))
+                if collection_ids:
+                    collection_placeholders = ",".join("?" for _ in collection_ids)
+                    counts["reference_ppt_collections"] = max(0, connection.execute(
+                        f"DELETE FROM reference_ppt_collections WHERE id IN ({collection_placeholders})",
+                        tuple(collection_ids),
+                    ).rowcount)
+                if proposal_ids:
+                    proposal_placeholders = ",".join("?" for _ in proposal_ids)
+                    counts["semester_mapping_proposals"] = max(0, connection.execute(
+                        f"DELETE FROM semester_mapping_proposals WHERE id IN ({proposal_placeholders})",
+                        tuple(proposal_ids),
+                    ).rowcount)
+                counts["semester_material_records"] = max(0, connection.execute(
+                    f"DELETE FROM semester_material_records WHERE id IN ({record_placeholders})",
+                    tuple(record_ids),
+                ).rowcount)
+
+            if version_ids:
+                unit_rows = connection.execute(
+                    f"SELECT id FROM material_units WHERE material_version_id IN ({placeholders})",
+                    tuple(version_ids),
+                ).fetchall()
+                unit_ids = [str(row["id"]) for row in unit_rows]
+                candidate_ids: list[str] = []
+                if unit_ids:
+                    unit_placeholders = ",".join("?" for _ in unit_ids)
+                    candidate_ids = [
+                        str(row["exercise_candidate_id"])
+                        for row in connection.execute(
+                            f"SELECT DISTINCT exercise_candidate_id FROM exercise_regions WHERE material_unit_id IN ({unit_placeholders})",
+                            tuple(unit_ids),
+                        ).fetchall()
+                    ]
+                    counts["exercise_regions"] = max(0, connection.execute(
+                        f"DELETE FROM exercise_regions WHERE material_unit_id IN ({unit_placeholders})",
+                        tuple(unit_ids),
+                    ).rowcount)
+                counts["lesson_material_links"] = max(0, connection.execute(
+                    f"DELETE FROM lesson_material_links WHERE material_version_id IN ({placeholders})",
+                    tuple(version_ids),
+                ).rowcount)
+                if candidate_ids:
+                    candidate_placeholders = ",".join("?" for _ in candidate_ids)
+                    counts["exercise_candidates"] = max(0, connection.execute(
+                        f"""
+                        DELETE FROM exercise_candidates
+                        WHERE id IN ({candidate_placeholders})
+                          AND NOT EXISTS (
+                              SELECT 1 FROM exercise_regions
+                              WHERE exercise_candidate_id = exercise_candidates.id
+                          )
+                        """,
+                        tuple(candidate_ids),
+                    ).rowcount)
+                counts["material_units"] = max(0, connection.execute(
+                    f"DELETE FROM material_units WHERE material_version_id IN ({placeholders})",
+                    tuple(version_ids),
+                ).rowcount)
+                counts["material_versions"] = max(0, connection.execute(
+                    f"DELETE FROM material_versions WHERE id IN ({placeholders})",
+                    tuple(version_ids),
+                ).rowcount)
+            counts["material_sources"] = max(0, connection.execute(
+                "DELETE FROM material_sources WHERE id = ?",
+                (source_id,),
+            ).rowcount)
+        return counts
+
     def get_material_version(self, version_id: str) -> MaterialVersion:
         with self._database.connect() as connection:
             row = self._material_query(

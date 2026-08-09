@@ -7,6 +7,7 @@ import type {
   SessionPermanentDeletionResponse,
   SessionSummary,
 } from '../../../api/sessions'
+import { ApiError } from '../../../api/errors'
 import { useSessionStore } from '../../../stores/session'
 
 const api = vi.hoisted(() => ({
@@ -97,26 +98,74 @@ beforeEach(() => {
 })
 
 describe('SessionDeletionPanel', () => {
-  it('shows partial completion and offers a cleanup-only retry', async () => {
+  it('reconciles an ambiguous delete response instead of asking for a blind retry', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
     const store = useSessionStore()
-    store.$patch({ sessions: [], selectedSessionId: null, loadState: 'ready' })
+    store.$patch({
+      sessions: [{ ...archived, status: 'created', is_deleted: false, deleted_at: null }],
+      selectedSessionId: archived.id,
+      loadState: 'ready',
+    })
+    vi.spyOn(store, 'initialize').mockImplementation(async () => {
+      store.$patch({ sessions: [], selectedSessionId: null, loadState: 'ready' })
+    })
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    api.permanentlyDeleteSession.mockReset().mockRejectedValue(new ApiError({
+      kind: 'timeout',
+      status: null,
+      code: 'request_timeout',
+      message: 'timeout',
+      details: {},
+      requestId: 'req-delete-timeout',
+      retryable: true,
+    }))
     const host = document.createElement('div')
     document.body.append(host)
     const app = createApp(SessionDeletionPanel)
-    app.use(createPinia())
+    app.use(pinia)
     app.mount(host)
     await settle()
 
-    button(host, '查看永久删除清单').click()
+    button(host, '查看删除影响').click()
     await settle()
-    const confirmation = host.querySelector<HTMLInputElement>(
-      '.session-lifecycle__permanent input',
-    )
-    expect(confirmation).not.toBeNull()
-    confirmation!.value = impact.permanent_delete_phrase
-    confirmation!.dispatchEvent(new Event('input', { bubbles: true }))
-    await nextTick()
-    button(host, '永久删除这场考试').click()
+    button(host, '彻底删除这场考试').click()
+    await settle()
+
+    expect(host.textContent).toContain('已重新核对')
+    expect(host.textContent).toContain('已彻底删除')
+    expect(host.textContent).not.toContain('结果暂时无法确认')
+    expect(api.permanentlyDeleteSession).toHaveBeenCalledOnce()
+    app.unmount()
+  })
+
+  it('shows partial completion and offers a cleanup-only retry', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const store = useSessionStore()
+    store.$patch({
+      sessions: [{ ...archived, status: 'created', is_deleted: false, deleted_at: null }],
+      selectedSessionId: archived.id,
+      loadState: 'ready',
+    })
+    vi.spyOn(store, 'initialize').mockResolvedValue()
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    api.fetchPendingSessionCleanups
+      .mockReset()
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{
+        session_id: 7, deleted_files: 3, deleted_dirs: 1, skipped_shared: 0,
+      }])
+    const host = document.createElement('div')
+    document.body.append(host)
+    const app = createApp(SessionDeletionPanel)
+    app.use(pinia)
+    app.mount(host)
+    await settle()
+
+    button(host, '查看删除影响').click()
+    await settle()
+    button(host, '彻底删除这场考试').click()
     await settle()
 
     expect(host.textContent).toContain('主要数据已永久删除')

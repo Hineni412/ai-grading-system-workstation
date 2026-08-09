@@ -1962,6 +1962,75 @@ class TeachingPrepService:
             archived=archived,
         )
 
+    def delete_material_source(
+        self,
+        source_id: str,
+        *,
+        expected_revision: int,
+    ) -> dict[str, object]:
+        # Parsing and deletion change the same controlled files.  Keep a
+        # delete from starting while a parser owns any material, and keep a
+        # parser from starting until the delete has completed.
+        with self._material_parse_lock:
+            if self._active_material_parses:
+                raise TeachingPrepConflictError(
+                    "material parsing is already in progress"
+                )
+            return self._delete_material_source(
+                source_id,
+                expected_revision=expected_revision,
+            )
+
+    def _delete_material_source(
+        self,
+        source_id: str,
+        *,
+        expected_revision: int,
+    ) -> dict[str, object]:
+        clean_id = _clean_entity_id(source_id)
+        revision = _clean_revision(expected_revision)
+        owned_paths = self.catalog.material_source_owned_paths(clean_id)
+        controlled_roots = (
+            self.paths["materials"].resolve(strict=False),
+            self.paths["previews"].resolve(strict=False),
+        )
+        safe_paths: list[Path] = []
+        for path in owned_paths:
+            candidate = path if path.is_absolute() else self.root / path
+            candidate = candidate.resolve(strict=False)
+            if any(candidate.is_relative_to(root) for root in controlled_roots):
+                safe_paths.append(candidate)
+        # Keep the temporary names deliberately short.  The application is
+        # commonly installed below a long Chinese workspace path and Windows
+        # can otherwise reject an otherwise valid move at its path limit.
+        staging = self.paths["staging"] / f"d-{uuid4().hex[:8]}"
+        staged: list[tuple[Path, Path]] = []
+        try:
+            for index, source in enumerate(dict.fromkeys(safe_paths)):
+                if not source.is_file():
+                    continue
+                staging.mkdir(parents=True, exist_ok=True)
+                target = staging / f"f{index:04d}"
+                os.replace(source, target)
+                staged.append((source, target))
+            counts = self.catalog.delete_material_source(
+                clean_id,
+                expected_revision=revision,
+            )
+        except Exception:
+            for source, target in reversed(staged):
+                if target.exists():
+                    source.parent.mkdir(parents=True, exist_ok=True)
+                    os.replace(target, source)
+            shutil.rmtree(staging, ignore_errors=True)
+            raise
+        shutil.rmtree(staging, ignore_errors=True)
+        return {
+            "deleted_source_id": clean_id,
+            "deleted_file_count": len(staged),
+            "counts": counts,
+        }
+
     def get_material_version(self, version_id: str) -> MaterialVersion:
         return self.catalog.get_material_version(_clean_entity_id(version_id))
 

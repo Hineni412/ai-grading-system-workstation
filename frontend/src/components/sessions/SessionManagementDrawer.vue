@@ -19,8 +19,8 @@ function close(): void {
 
 <template>
   <AppIconButton
-    label="打开考试回收站"
-    icon="archive"
+    label="打开考试管理"
+    icon="trash"
     variant="secondary"
     @click="show"
   />
@@ -40,13 +40,13 @@ function close(): void {
         <header class="session-management-drawer__header">
           <div>
             <p>考试管理</p>
-            <h2 id="session-management-title">考试回收站</h2>
-            <span>归档当前考试，或恢复、彻底删除已归档考试。</span>
+            <h2 id="session-management-title">考试管理</h2>
+            <span>核对当前考试的影响后，可直接彻底删除。</span>
           </div>
           <button
             ref="closeButton"
             type="button"
-            aria-label="关闭考试回收站"
+            aria-label="关闭考试管理"
             @click="close"
           >×</button>
         </header>

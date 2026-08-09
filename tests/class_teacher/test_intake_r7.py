@@ -86,6 +86,44 @@ def test_class_teacher_still_rejects_unknown_semantic_top_level_fields() -> None
         parse_triage(_normalize_triage_payload_compatibility(payload))
 
 
+@pytest.mark.parametrize(
+    ("mode", "domain", "intent"),
+    [
+        ("record", "student_support", "follow_up"),
+        ("plan_calendar", "class_operations", "plan"),
+        ("sop", "school_coordination", "review"),
+    ],
+)
+def test_class_teacher_accepts_three_workflows_with_empty_provider_schema_artifacts(
+    mode: str,
+    domain: str,
+    intent: str,
+) -> None:
+    payload = {
+        "contract_version": "class_teacher_triage.v1",
+        "assistant_message": "已整理，请核对。",
+        "clarification_questions": [],
+        "work_items": [{
+            "work_item_id": "item_001",
+            "domain": domain,
+            "primary_mode": mode,
+            "secondary_modes": [],
+            "intent": intent,
+            "reason_summary": "需要记录并跟进家长反馈",
+            "subject_refs": [],
+            "time_facts": [],
+            "safety_level": "teacher_review_required",
+            "missing_fields": ["student_ref"],
+            "draft": {"summary": "合成家校沟通记录"},
+        }],
+        "school_coordination": [],
+    }
+
+    result = parse_triage(_normalize_triage_payload_compatibility(payload))
+
+    assert result.work_items[0].primary_mode == mode
+
+
 def _service(tmp_path: Path) -> tuple[VaultService, FakeWorkspaceAITaskPort]:
     grading = tmp_path / "grading.db"
     with closing(sqlite3.connect(grading)) as connection:

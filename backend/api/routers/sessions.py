@@ -52,7 +52,7 @@ from backend.repositories.sessions import (
     SessionDeletionActiveWork,
     SessionDeletionConfirmationMismatch,
     SessionDeletionRevisionConflict,
-    SessionPermanentDeletionRequiresArchive,
+    SessionNameConflict,
     SessionRepositoryGateway,
 )
 from backend.repositories.access import GradingRepositoryAccess
@@ -472,6 +472,8 @@ def create_session(
             source_paper_sha256=request.source_paper_sha256,
             curriculum_volume_id=volume_id,
         )
+    except SessionNameConflict as exc:
+        raise ApiError(409, "session_name_conflict", "An exam with this name already exists") from exc
     except ValueError as exc:
         raise ApiError(400, "invalid_session", str(exc)) from exc
     return _session_detail(_require_session(sessions, session_id))
@@ -491,6 +493,8 @@ def create_session_draft_route(
             name=request.name,
             curriculum_volume_id=volume_id,
         )
+    except SessionNameConflict as exc:
+        raise ApiError(409, "session_name_conflict", "An exam with this name already exists") from exc
     except ValueError as exc:
         raise ApiError(400, "invalid_session_draft", str(exc)) from exc
     return _session_summary(_require_session(sessions, session_id))
@@ -511,12 +515,15 @@ def rename_session(
         if curriculum_provided
         else None
     )
-    sessions.update_grading_session(
-        int(session_id),
-        name=request.name,
-        curriculum_volume_id=volume_id,
-        curriculum_volume_provided=curriculum_provided,
-    )
+    try:
+        sessions.update_grading_session(
+            int(session_id),
+            name=request.name,
+            curriculum_volume_id=volume_id,
+            curriculum_volume_provided=curriculum_provided,
+        )
+    except SessionNameConflict as exc:
+        raise ApiError(409, "session_name_conflict", "An exam with this name already exists") from exc
     return _session_summary(_require_active_session(sessions, session_id))
 
 
@@ -707,8 +714,7 @@ def get_session_deletion_impact(
             and active_grading_runs == 0
         )
         can_permanently_delete = (
-            session.is_deleted
-            and active_jobs == 0
+            active_jobs == 0
             and active_grading_runs == 0
             and not blocking_training_tasks
         )
@@ -730,7 +736,7 @@ def get_session_deletion_impact(
                 for key, value in question_bank_impact.items()
             },
             blocking_training_tasks=blocking_training_tasks,
-            can_delete=can_archive,
+            can_delete=can_permanently_delete,
         )
 
 
@@ -820,13 +826,6 @@ def permanently_delete_session(
             422,
             "session_permanent_delete_confirmation_mismatch",
             "The permanent deletion phrase does not match",
-            {"session_id": int(session_id)},
-        ) from exc
-    except SessionPermanentDeletionRequiresArchive as exc:
-        raise ApiError(
-            409,
-            "session_permanent_delete_requires_archive",
-            "Archive the exam before permanently deleting it",
             {"session_id": int(session_id)},
         ) from exc
     except SessionDeletionRevisionConflict as exc:
