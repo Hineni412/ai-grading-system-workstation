@@ -14,10 +14,8 @@ from typing import Any, Callable, Mapping
 from backend.llm import (
     JsonlCallTraceSink,
     JsonlUsageSink,
-    LLMErrorCategory,
     LLMGateway,
     LLMRequestKind,
-    classify_llm_error,
     is_truncation_finish_reason,
     looks_like_truncated_json_object,
     response_diagnostics,
@@ -140,7 +138,9 @@ class LLMClient:
             model=model or self.settings.ocr_model,
             messages=messages,
             expect_json=False,
+            allow_parameter_fallback=False,
             request_kind=LLMRequestKind.RECOGNITION,
+            single_request=True,
         )
         return _extract_text_from_completion(completion)
 
@@ -189,9 +189,6 @@ class LLMClient:
         effective_request_kind = request_kind or (
             LLMRequestKind.CONFIG_GENERATION if use_config_client else LLMRequestKind.GRADING
         )
-        request_id = str(uuid.uuid4())
-        next_attempt = count(1).__next__
-        
         content: list[dict[str, Any]] = []
         if prompt:
             content.append({"type": "text", "text": prompt})
@@ -236,29 +233,11 @@ class LLMClient:
             expect_json=True,
             usage_callback=usage_callback,
             extra_kwargs=extra_kwargs,
+            allow_parameter_fallback=False,
             request_kind=effective_request_kind,
-            request_id=request_id,
-            _next_attempt=next_attempt,
-            allow_gateway_retry=allow_gateway_retry,
+            single_request=True,
         )
-        text = _extract_text_from_completion(completion)
-        
-        retry_messages = []
-        if system_prompt:
-            retry_messages.append({"role": "system", "content": system_prompt})
-        retry_messages.append({"role": "user", "content": _with_compact_json_instruction(content)})
-        
-        return self._parse_or_repair_json(
-            text,
-            model=model or default_model,
-            retry_messages=retry_messages,
-            client=active_client,
-            usage_callback=usage_callback,
-            extra_kwargs=extra_kwargs,
-            request_kind=effective_request_kind,
-            request_id=request_id,
-            _next_attempt=next_attempt,
-        )
+        return _parse_single_request_json(completion)
 
     def json_from_text(
         self,
@@ -269,8 +248,6 @@ class LLMClient:
         *,
         request_kind: LLMRequestKind = LLMRequestKind.CONFIG_GENERATION,
     ) -> dict[str, Any]:
-        request_id = str(uuid.uuid4())
-        next_attempt = count(1).__next__
         effective_request_kind = LLMRequestKind(request_kind)
         completion = self._create_chat_completion(
             self.config_client,
@@ -279,23 +256,11 @@ class LLMClient:
             expect_json=True,
             extra_kwargs=extra_kwargs,
             response_format=response_format,
+            allow_parameter_fallback=False,
             request_kind=effective_request_kind,
-            request_id=request_id,
-            _next_attempt=next_attempt,
+            single_request=True,
         )
-        text = _extract_text_from_completion(completion)
-        retry_messages = [{"role": "user", "content": _with_compact_json_instruction(prompt)}]
-        return self._parse_or_repair_json(
-            text,
-            model=model or self.settings.config_model,
-            retry_messages=retry_messages,
-            client=self.config_client,
-            extra_kwargs=extra_kwargs,
-            response_format=response_format,
-            request_kind=effective_request_kind,
-            request_id=request_id,
-            _next_attempt=next_attempt,
-        )
+        return _parse_single_request_json(completion)
 
     def json_from_text_once(
         self,
@@ -397,73 +362,24 @@ class LLMClient:
         request_id: str | None = None,
         _next_attempt: Callable[[], int] | None = None,
     ) -> dict[str, Any]:
-        active_client = client or self.client
-        logical_request_id = str(
-            uuid.uuid4() if request_id is None else request_id
-        )
-        next_attempt = _next_attempt or count(1).__next__
+        """Parse a response locally; retained for compatibility with old callers.
+
+        A user action must never trigger an unannounced second model request.  The
+        former implementation asked the model to regenerate or repair malformed
+        JSON.  Deterministic local repair is now the only permitted recovery.
+        """
         try:
-            return _parse_json_text(text)
-        except ValueError as first_error:
+            return parse_json_object_locally(text).payload
+        except ValueError as exc:
             if _looks_truncated_json(text):
-                if not retry_messages:
-                    raise first_error
-                completion = self._create_chat_completion(
-                    active_client,
-                    model=model,
-                    messages=retry_messages
-                    + [
-                        {
-                            "role": "user",
-                            "content": (
-                                "上一轮 JSON 输出被截断，导致无法解析。请重新生成完整结果。"
-                                "必须只输出一个完整、严格、压缩的 JSON 对象；不要 markdown；"
-                                "不要解释；不要省略任何题目；不要在字符串中换行。"
-                            ),
-                        }
-                    ],
-                    expect_json=True,
-                    usage_callback=usage_callback,
-                    extra_kwargs=extra_kwargs,
-                    response_format=response_format,
-                    request_kind=request_kind,
-                    request_id=logical_request_id,
-                    _next_attempt=next_attempt,
-                )
-                retried_text = _extract_text_from_completion(completion)
-                try:
-                    return _parse_json_text(retried_text)
-                except ValueError as retried_error:
-                    if _looks_truncated_json(retried_text):
-                        raise ValueError(
-                            "模型连续两次输出被截断，无法得到完整 JSON。"
-                            "建议换用更大输出上限的模型，或减少单次生成内容。"
-                            f"\n首次错误：{first_error}\n重试错误：{retried_error}"
-                        ) from retried_error
-                    raise ValueError(f"{first_error}\n截断后重试仍失败：{retried_error}") from retried_error
-            repair_prompt = (
-                "下面是一段模型输出，目标是把它转换为严格 JSON 对象。\n"
-                "要求：只输出 JSON；不要 markdown；不要解释；不要新增题目或改写内容；"
-                "只修复代码块、前后多余文字、尾逗号、转义等格式问题。\n\n"
-                f"原始输出：\n{text}"
-            )
-            completion = self._create_chat_completion(
-                active_client,
-                model=model,
-                messages=[{"role": "user", "content": repair_prompt}],
-                expect_json=True,
-                usage_callback=usage_callback,
-                extra_kwargs=extra_kwargs,
-                response_format=response_format,
-                request_kind=request_kind,
-                request_id=logical_request_id,
-                _next_attempt=next_attempt,
-            )
-            repaired_text = _extract_text_from_completion(completion)
-            try:
-                return _parse_json_text(repaired_text)
-            except ValueError as repaired_error:
-                raise ValueError(f"{first_error}\nJSON 修复重试仍失败：{repaired_error}") from repaired_error
+                response_chars, response_sha256 = _safe_output_summary(text)
+                raise LLMOutputTruncatedError(
+                    finish_reason="",
+                    response_chars=response_chars,
+                    response_sha256=response_sha256,
+                    provider_reported=False,
+                ) from exc
+            raise LLMResponseFormatError(str(exc)) from exc
 
     def _create_chat_completion(
         self,
@@ -475,7 +391,7 @@ class LLMClient:
         extra_kwargs: dict[str, Any] | None = None,
         response_format: Mapping[str, Any] | None = None,
         *,
-        allow_parameter_fallback: bool = True,
+        allow_parameter_fallback: bool = False,
         request_kind: LLMRequestKind = LLMRequestKind.GRADING,
         request_id: str | None = None,
         single_request: bool = False,
@@ -547,50 +463,14 @@ class LLMClient:
                 except: pass
             return res
 
-        try:
-            return invoke(
-                "",
-                allow_retry=allow_gateway_retry and not single_request,
-                planned_parameter_fallback=(
-                    allow_parameter_fallback
-                    and (
-                        "max_tokens" in kwargs
-                        or "response_format" in kwargs
-                    )
-                ),
-            )
-        except Exception as exc:
-            if not allow_parameter_fallback:
-                raise
-            if not _is_parameter_fallback_error(exc):
-                raise
-            if "max_tokens" in kwargs:
-                kwargs.pop("max_tokens", None)
-                kwargs["max_completion_tokens"] = 32000
-                try:
-                    return invoke(
-                        "max_completion_tokens",
-                        allow_retry=False,
-                        planned_parameter_fallback=(
-                            "response_format" in kwargs
-                        ),
-                    )
-                except Exception as retry_exc:
-                    if not _is_parameter_fallback_error(retry_exc):
-                        raise
-                    kwargs.pop("max_completion_tokens", None)
-            if "response_format" in kwargs:
-                kwargs.pop("response_format", None)
-                return invoke(
-                    "response_format",
-                    allow_retry=False,
-                    planned_parameter_fallback=False,
-                )
-            raise exc
-
-
-def _is_parameter_fallback_error(exc: Exception) -> bool:
-    return classify_llm_error(exc) is LLMErrorCategory.PARAMETER_INCOMPATIBLE
+        # Compatibility flags remain in the private signature while older
+        # callers migrate, but they can no longer authorize another physical
+        # request. Retries are owned by explicit user-level workflows only.
+        return invoke(
+            "",
+            allow_retry=False,
+            planned_parameter_fallback=False,
+        )
 
 
 def _create_openai_client(api_key: str, base_url: str) -> OpenAI:

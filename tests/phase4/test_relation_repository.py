@@ -166,6 +166,13 @@ def test_historical_database_keeps_tags_and_maps_only_exact_governed_values(
         )
         connection.commit()
 
+    ensure_schema_current(
+        "question_bank",
+        database,
+        migrations_dir=QUESTION_BANK_MIGRATIONS,
+        backup_dir=tmp_path / "maintenance-backups",
+        allow_existing_migrations=True,
+    )
     initialize_database(database)
 
     with sqlite3.connect(database) as connection:
@@ -250,6 +257,13 @@ def test_release_scoped_relation_migration_preserves_history(
         )
         connection.commit()
 
+    ensure_schema_current(
+        "question_bank",
+        database,
+        migrations_dir=QUESTION_BANK_MIGRATIONS,
+        backup_dir=tmp_path / "maintenance-backups",
+        allow_existing_migrations=True,
+    )
     initialize_database(database)
 
     with sqlite3.connect(database) as connection:

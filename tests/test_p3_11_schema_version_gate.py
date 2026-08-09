@@ -219,7 +219,10 @@ def test_schema_gate_rejects_incomplete_untracked_legacy_schema(
 
     with pytest.raises(
         SchemaVersionError,
-        match="schema differs|migration 005_add_status_constraints failed",
+        match=(
+            "schema differs|migration 005_add_status_constraints failed|"
+            "migration history is missing"
+        ),
     ):
         ensure_schema_current("grading", database, migrations_dir=migrations)
 
@@ -431,6 +434,50 @@ def test_application_schema_gate_checks_both_databases(tmp_path: Path) -> None:
 
     assert results["grading"].current_version == "012_exclusive_session_names"
     assert results["question_bank"].current_version == CURRENT_QUESTION_BANK_MIGRATION
+
+
+def test_application_startup_reports_pending_existing_database_without_applying_it(
+    tmp_path: Path,
+) -> None:
+    legacy_root = tmp_path / "legacy-project"
+    grading_migrations = legacy_root / "migrations" / "grading"
+    grading_migrations.mkdir(parents=True)
+    current_grading = PROJECT_ROOT / "migrations" / "grading"
+    for migration in sorted(current_grading.glob("*.sql")):
+        if migration.name.startswith("012_"):
+            continue
+        shutil.copy2(migration, grading_migrations / migration.name)
+    data_root = tmp_path / "data"
+    grading_db = data_root / "databases" / "grading.db"
+    question_bank_db = data_root / "databases" / "question_bank.db"
+    ensure_schema_current(
+        "grading",
+        grading_db,
+        migrations_dir=grading_migrations,
+    )
+    ensure_schema_current(
+        "question_bank",
+        question_bank_db,
+        migrations_dir=PROJECT_ROOT / "migrations" / "question_bank",
+    )
+    shutil.rmtree(data_root / "backups")
+    before = grading_db.read_bytes()
+    paths = SimpleNamespace(
+        project_root=PROJECT_ROOT,
+        migration_project_root=PROJECT_ROOT,
+        db_path=grading_db,
+        qb_db_path=question_bank_db,
+        backups_dir=data_root / "backups",
+    )
+
+    with pytest.raises(
+        SchemaVersionError,
+        match="pending.*protected maintenance",
+    ):
+        ensure_application_schema(paths)
+
+    assert grading_db.read_bytes() == before
+    assert not paths.backups_dir.exists()
 
 
 def test_application_schema_gate_uses_formal_backup_directory(

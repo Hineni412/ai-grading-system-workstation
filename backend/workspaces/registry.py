@@ -9,7 +9,10 @@ from typing import Any, Iterable
 from fastapi import APIRouter, FastAPI
 
 from backend.jobs.manager import JobHandler, JobManager
-from backend.schema_migrations import ensure_schema_current
+from backend.schema_migrations import (
+    SchemaMigrationRequired,
+    ensure_schema_current,
+)
 
 from .contracts import (
     WorkspaceContext,
@@ -113,6 +116,11 @@ class WorkspaceRegistry:
                 if plan is None:
                     continue
                 self._run_migration_plan(feature, context, plan)
+            except SchemaMigrationRequired as exc:
+                raise WorkspaceRegistrationError(
+                    f"workspace {feature.module_id} migration is pending; "
+                    "use protected maintenance"
+                ) from exc
             except WorkspaceRegistrationError:
                 raise
             except Exception as exc:
@@ -274,6 +282,7 @@ class WorkspaceRegistry:
             database_path,
             migrations_dir=migrations_dir,
             backup_dir=backup_dir,
+            allow_existing_migrations=False,
         )
         if result.target != plan.target:
             raise WorkspaceRegistrationError(

@@ -7,7 +7,9 @@ import tempfile
 import zipfile
 from contextlib import closing
 from pathlib import Path
+from typing import Iterable, Mapping
 
+from backend.schema_migrations import SchemaVersionError, inspect_schema_version
 from .archive import OpsArchiveInspection, OpsArchiveInvalid
 
 
@@ -45,7 +47,12 @@ class OpsDatabaseInvalid(ValueError):
     pass
 
 
-def validate_database_file(path: Path, target: str) -> None:
+def validate_database_file(
+    path: Path,
+    target: str,
+    *,
+    migrations_dir: Path | None = None,
+) -> None:
     required = REQUIRED_TABLES.get(str(target))
     if required is None:
         raise OpsDatabaseInvalid("unknown database target")
@@ -61,6 +68,8 @@ def validate_database_file(path: Path, target: str) -> None:
                 raise OpsDatabaseInvalid("database quick check failed")
             if str(integrity[0] if integrity else "").casefold() != "ok":
                 raise OpsDatabaseInvalid("database integrity check failed")
+            if connection.execute("PRAGMA foreign_key_check").fetchall():
+                raise OpsDatabaseInvalid("database foreign key check failed")
             tables = {
                 str(row[0])
                 for row in connection.execute(
@@ -71,6 +80,16 @@ def validate_database_file(path: Path, target: str) -> None:
         raise OpsDatabaseInvalid("database candidate is invalid") from exc
     if not required <= tables:
         raise OpsDatabaseInvalid("database candidate schema is incompatible")
+    try:
+        inspect_schema_version(
+            str(target),
+            candidate,
+            migrations_dir=migrations_dir,
+        )
+    except SchemaVersionError as exc:
+        raise OpsDatabaseInvalid(
+            "database migration history or schema is incompatible"
+        ) from exc
 
 
 def validate_archive_databases(
@@ -78,6 +97,8 @@ def validate_archive_databases(
     inspection: OpsArchiveInspection,
     *,
     require_all: bool = False,
+    required_members: Iterable[str] | None = None,
+    migration_dirs: Mapping[str, Path] | None = None,
 ) -> None:
     found: set[str] = set()
     selected: list[tuple[str, str]] = []
@@ -92,7 +113,18 @@ def validate_archive_databases(
             raise OpsArchiveInvalid("unexpected_database_candidate")
         found.add(normalized)
         selected.append((member.archive_name, target))
-    if require_all and not REQUIRED_SAFETY_DATABASE_MEMBERS <= found:
+    required = {
+        str(name).replace("\\", "/")
+        for name in (required_members or ())
+    }
+    if require_all:
+        required.update(REQUIRED_SAFETY_DATABASE_MEMBERS)
+    all_members = {
+        "/".join(member.parts)
+        for member in inspection.members
+        if not member.is_dir
+    }
+    if not required <= all_members:
         raise OpsArchiveInvalid("safety_backup_databases_missing")
     if not selected:
         return
@@ -106,14 +138,27 @@ def validate_archive_databases(
                         shutil.copyfileobj(source, output, length=1024 * 1024)
                         output.flush()
                         os.fsync(output.fileno())
-                    validate_database_file(candidate, target)
+                    validate_database_file(
+                        candidate,
+                        target,
+                        migrations_dir=(
+                            Path(migration_dirs[target])
+                            if migration_dirs is not None
+                            and target in migration_dirs
+                            else None
+                        ),
+                    )
     except OpsDatabaseInvalid as exc:
         raise OpsArchiveInvalid("invalid_database_candidate") from exc
     except (OSError, zipfile.BadZipFile, RuntimeError) as exc:
         raise OpsArchiveInvalid("invalid_database_candidate") from exc
 
 
-def validate_staged_databases(staging_root: Path) -> None:
+def validate_staged_databases(
+    staging_root: Path,
+    *,
+    migration_dirs: Mapping[str, Path] | None = None,
+) -> None:
     root = Path(staging_root)
     for candidate in root.rglob("*"):
         if not candidate.is_file():
@@ -125,7 +170,15 @@ def validate_staged_databases(staging_root: Path) -> None:
         if target is None:
             raise OpsArchiveInvalid("unexpected_database_candidate")
         try:
-            validate_database_file(candidate, target)
+            validate_database_file(
+                candidate,
+                target,
+                migrations_dir=(
+                    Path(migration_dirs[target])
+                    if migration_dirs is not None and target in migration_dirs
+                    else None
+                ),
+            )
         except OpsDatabaseInvalid as exc:
             raise OpsArchiveInvalid("invalid_database_candidate") from exc
 
@@ -152,16 +205,35 @@ def _looks_like_database_candidate(normalized: str) -> bool:
 def validate_live_databases(
     paths: object,
     *,
+    database_members: Iterable[str] | None = None,
+    migration_dirs: Mapping[str, Path] | None = None,
     require_no_companions: bool = False,
 ) -> None:
-    targets = (
-        (Path(paths.db_path), "grading"),
-        (Path(paths.qb_db_path), "question_bank"),
+    selected = set(REQUIRED_SAFETY_DATABASE_MEMBERS)
+    if database_members is not None:
+        selected.update(str(name).replace("\\", "/") for name in database_members)
+    unknown = selected - set(DATABASE_MEMBERS)
+    if unknown:
+        raise OpsDatabaseInvalid("unknown database target")
+    targets = tuple(
+        (
+            _live_database_path(paths, member),
+            DATABASE_MEMBERS[member],
+        )
+        for member in sorted(selected)
     )
     if require_no_companions:
         _reject_database_companions(targets)
     for path, target in targets:
-        validate_database_file(path, target)
+        validate_database_file(
+            path,
+            target,
+            migrations_dir=(
+                Path(migration_dirs[target])
+                if migration_dirs is not None and target in migration_dirs
+                else _default_migration_dir(paths, target)
+            ),
+        )
     if require_no_companions:
         _reject_database_companions(targets)
 
@@ -173,9 +245,37 @@ def _reject_database_companions(targets: tuple[tuple[Path, str], ...]) -> None:
                 raise OpsDatabaseInvalid("database companion file is present")
 
 
+def migration_directories(paths: object) -> dict[str, Path]:
+    return {
+        target: _default_migration_dir(paths, target)
+        for target in set(DATABASE_MEMBERS.values())
+    }
+
+
+def _default_migration_dir(paths: object, target: str) -> Path:
+    project_root = Path(
+        getattr(
+            paths,
+            "migration_project_root",
+            getattr(paths, "project_root", Path(__file__).resolve().parents[2]),
+        )
+    )
+    return project_root / "migrations" / str(target)
+
+
+def _live_database_path(paths: object, member: str) -> Path:
+    if member == "user_data/databases/grading_system.db":
+        return Path(getattr(paths, "db_path"))
+    if member == "user_data/databases/question_bank.db":
+        return Path(getattr(paths, "qb_db_path"))
+    parts = Path(member).parts
+    return Path(getattr(paths, "data_root")).joinpath(*parts[1:])
+
+
 __all__ = [
     "DATABASE_MEMBERS",
     "OpsDatabaseInvalid",
+    "migration_directories",
     "validate_archive_databases",
     "validate_database_file",
     "validate_live_databases",

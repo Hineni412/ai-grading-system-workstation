@@ -43,7 +43,11 @@ def initialize_database(
     preserve_governed_conflicts: bool = False,
 ) -> None:
     """Bring the question bank to the current migration version."""
-    ensure_schema_current("question_bank", db_path)
+    ensure_schema_current(
+        "question_bank",
+        db_path,
+        allow_existing_migrations=False,
+    )
     with connect(db_path) as conn:
         bootstrap_governed_knowledge_identities(
             conn,

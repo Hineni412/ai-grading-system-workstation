@@ -17,7 +17,10 @@ from backend.class_teacher.model_approval import (
 from backend.class_teacher.ordinary_database import OrdinaryWorkDatabase
 from backend.class_teacher.work_graph import WorkGraph
 from backend.workspaces.contracts import WorkspaceContext
-from backend.workspaces.model_policy import WorkspaceModelRequest
+from backend.workspaces.model_policy import (
+    WorkspaceModelGateway,
+    WorkspaceModelRequest,
+)
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -37,7 +40,7 @@ class _RecordingWorkspaceGateway:
     def __init__(self, **construction: object) -> None:
         self.construction = construction
         self.calls: list[dict[str, object]] = []
-        self.physical_request_count = 3
+        self.physical_request_count = 1
 
     def chat_completions(self, **call: object) -> dict[str, object]:
         self.calls.append(call)
@@ -73,6 +76,42 @@ class _JsonKeywordEnforcingWorkspaceGateway(_RecordingWorkspaceGateway):
                 "messages must contain the word 'json' to use json_object"
             )
         return super().chat_completions(**call)
+
+
+class _SyntheticRetryableProviderError(RuntimeError):
+    def __init__(self) -> None:
+        super().__init__("synthetic provider unavailable")
+        self.status_code = 503
+        self.response = SimpleNamespace(status_code=503, headers={})
+
+
+class _AlwaysFailingChatCompletions:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+        self.error = _SyntheticRetryableProviderError()
+
+    def create(self, **kwargs: object) -> object:
+        self.calls.append(kwargs)
+        raise self.error
+
+
+class _SyntheticRetryingGateway:
+    """Exercise the public retry flag against a synthetic provider boundary."""
+
+    def chat_completions(self, **call: object) -> object:
+        attempts = 3 if call["allow_retry"] else 1
+        next_attempt = call["_next_attempt"]
+        assert callable(next_attempt)
+        client = call["client"]
+        last_error: BaseException | None = None
+        for _attempt in range(attempts):
+            next_attempt()
+            try:
+                return client.chat.completions.create(**call["kwargs"])
+            except _SyntheticRetryableProviderError as exc:
+                last_error = exc
+        assert last_error is not None
+        raise last_error
 
 
 def _context(tmp_path: Path) -> WorkspaceContext:
@@ -295,12 +334,12 @@ def test_active_profile_gateway_sends_only_confirmed_canonical_payload(
     result = gateway.invoke(payload=payload, operation_id="model-op-001")
 
     assert json.loads(result) == {"kind": "follow_up", "questions": ["哪一天？"]}
-    assert gateway.physical_request_count("model-op-001") == 3
+    assert gateway.physical_request_count("model-op-001") == 1
     assert clients == [("synthetic-key", "https://model.invalid/v1")]
     assert len(constructed) == 1
     assert constructed[0].construction["metadata_only"] is False
     assert constructed[0].construction["claim_operations"] is False
-    assert constructed[0].construction["allow_retry"] is True
+    assert constructed[0].construction["allow_retry"] is False
     call = constructed[0].calls[0]
     request = call["request"]
     assert isinstance(request, WorkspaceModelRequest)
@@ -320,6 +359,51 @@ def test_active_profile_gateway_sends_only_confirmed_canonical_payload(
         ],
         "response_format": {"type": "json_object"},
     }
+
+
+def test_configured_model_retryable_provider_error_is_one_physical_request(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clear_model_environment(monkeypatch)
+    provider = _AlwaysFailingChatCompletions()
+
+    def gateway_factory(**kwargs: object) -> WorkspaceModelGateway:
+        return WorkspaceModelGateway(
+            **kwargs,
+            gateway=_SyntheticRetryingGateway(),
+        )
+
+    gateway = ActiveProfileApprovedModelGateway(
+        context=_context(tmp_path),
+        profile_store=_ProfileStore(
+            [
+                {
+                    "name": "synthetic",
+                    "config_api_key": "synthetic-key",
+                    "config_base_url": "https://model.invalid/v1",
+                    "config_model": "synthetic-model",
+                    "llm_workspace_max_retries": 2,
+                }
+            ]
+        ),
+        gateway_factory=gateway_factory,
+        client_factory=lambda _key, _url: SimpleNamespace(
+            chat=SimpleNamespace(completions=provider)
+        ),
+    )
+
+    with pytest.raises(_SyntheticRetryableProviderError) as raised:
+        gateway.invoke(
+            payload={"task_text": "合成内容"},
+            operation_id="configured-model-provider-error-001",
+        )
+
+    assert raised.value is provider.error
+    assert len(provider.calls) == 1
+    assert gateway.physical_request_count(
+        "configured-model-provider-error-001"
+    ) == 1
 
 
 def test_json_object_request_explicitly_instructs_the_model_to_return_json(

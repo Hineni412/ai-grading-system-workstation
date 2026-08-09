@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import sqlite3
 import tempfile
+from collections.abc import Iterable
 from contextlib import closing
 from datetime import datetime
 from pathlib import Path
@@ -21,6 +22,8 @@ from update_tools.backup_core import preview_backup
 from .models import OpsOperation
 from .archive import OpsArchivePolicy, extract_validated_zip, inspect_zip
 from .database_validation import (
+    DATABASE_MEMBERS,
+    migration_directories,
     validate_archive_databases,
     validate_staged_databases,
 )
@@ -84,7 +87,7 @@ def run_ops_backup_job(*, context: JobContext, paths: Any) -> dict[str, object]:
             scopes = list(parameters.get("scopes") or [])
             entries = _backup_entries(paths, staging_root, scopes=scopes)
             write_export_zip(entries, archive_path)
-            _validate_zip(archive_path)
+            _validate_zip(archive_path, paths=paths)
             context.report(0.9, "ops_backup", "ready_to_publish")
             context.raise_if_cancelled()
             os.replace(archive_path, destination)
@@ -138,7 +141,7 @@ def run_ops_transfer_export_job(
                 scope=scope,
             )
             write_export_zip(entries, archive_path)
-            _validate_zip(archive_path)
+            _validate_zip(archive_path, paths=paths)
             context.report(0.9, "ops_transfer_export", "ready_to_publish")
             context.raise_if_cancelled()
             os.replace(archive_path, destination)
@@ -158,6 +161,7 @@ def create_safety_backup(
     paths: Any,
     reason: str,
     operation_id: str,
+    archive_names: Iterable[str],
 ) -> Path:
     output_root = Path(paths.backups_dir)
     output_root.mkdir(parents=True, exist_ok=True)
@@ -176,15 +180,17 @@ def create_safety_backup(
         ) as staging_value:
             staging_root = Path(staging_value)
             archive_path = staging_root / "safety.zip"
-            write_export_zip(
-                _backup_entries(
-                    paths,
-                    staging_root,
-                    scopes=["grading", "class_teacher"],
-                ),
-                archive_path,
+            entries = _safety_backup_entries(
+                paths,
+                staging_root,
+                archive_names=archive_names,
             )
-            _validate_zip(archive_path, require_all_databases=True)
+            write_export_zip(entries, archive_path)
+            _validate_zip(
+                archive_path,
+                paths=paths,
+                required_members={str(entry.arc_name) for entry in entries},
+            )
             os.replace(archive_path, destination)
     except Exception as exc:
         destination.unlink(missing_ok=True)
@@ -251,13 +257,6 @@ def _run_offline_prepare(
             from .journal import OpsOperationBusy
 
             raise OpsOperationBusy("another ops operation is pending")
-        context.report(0.1, f"ops_{operation.value}_prepare", "creating_safety_backup")
-        preparation_backup = create_safety_backup(
-            paths=paths,
-            reason=backup_reason,
-            operation_id=operation_id,
-        )
-        context.raise_if_cancelled()
         operation_root = Path(paths.ops_state_dir) / "operations" / operation_id
         staging_root = operation_root / "staging"
         try:
@@ -269,7 +268,10 @@ def _run_offline_prepare(
                     policy=OpsWriteService(paths, plan_store=OpsPlanStore()).archive_policy,
                     allowed_roots={"user_data", "config", "logs"},
                 )
-                validate_staged_databases(staging_root)
+                validate_staged_databases(
+                    staging_root,
+                    migration_dirs=migration_directories(paths),
+                )
             elif operation is OpsOperation.TRANSFER_IMPORT:
                 source = (
                     Path(paths.ops_state_dir)
@@ -282,12 +284,32 @@ def _run_offline_prepare(
                     policy=OpsWriteService(paths, plan_store=OpsPlanStore()).archive_policy,
                     allowed_roots={"user_data", "config"},
                 )
-                validate_staged_databases(staging_root)
+                validate_staged_databases(
+                    staging_root,
+                    migration_dirs=migration_directories(paths),
+                )
             else:
                 staging_root.mkdir(parents=True, exist_ok=True)
                 OpsWriteService(paths, plan_store=OpsPlanStore()).migration_previews(
                     str(parameters["target"])
                 )
+            context.raise_if_cancelled()
+            context.report(
+                0.1,
+                f"ops_{operation.value}_prepare",
+                "creating_safety_backup",
+            )
+            replacement_names = _prepared_replacement_names(
+                operation=operation,
+                parameters=parameters,
+                staging_root=staging_root,
+            )
+            preparation_backup = create_safety_backup(
+                paths=paths,
+                reason=backup_reason,
+                operation_id=operation_id,
+                archive_names=replacement_names,
+            )
             context.raise_if_cancelled()
             created_at = datetime.now().astimezone().isoformat(timespec="seconds")
             manifest = OpsOperationManifest(
@@ -395,6 +417,72 @@ def _backup_entries(
     return entries
 
 
+def _safety_backup_entries(
+    paths: Any,
+    staging_root: Path,
+    *,
+    archive_names: Iterable[str],
+) -> list[ExportEntry]:
+    entries: list[ExportEntry] = []
+    seen: set[str] = set()
+    for index, raw_name in enumerate(sorted(str(item) for item in archive_names)):
+        name = Path(raw_name.replace("\\", "/")).as_posix()
+        pure = Path(name)
+        if (
+            not pure.parts
+            or pure.is_absolute()
+            or ".." in pure.parts
+            or pure.parts[0] not in {"user_data", "config", "logs"}
+            or name in seen
+        ):
+            raise ValueError("safety backup member is invalid")
+        seen.add(name)
+        source = _backup_source_path(paths, name)
+        if not source.exists() and not source.is_symlink():
+            continue
+        if not source.is_file() or source.is_symlink():
+            raise ValueError("safety backup source is not a regular file")
+        if name in DATABASE_MEMBERS:
+            snapshot = staging_root / "database-snapshots" / f"{index}.db"
+            snapshot.parent.mkdir(parents=True, exist_ok=True)
+            _sqlite_snapshot(source, snapshot)
+            entries.append(
+                ExportEntry(snapshot, name, snapshot.stat().st_size, staging_root)
+            )
+            continue
+        entries.append(
+            ExportEntry(
+                source,
+                name,
+                source.stat().st_size,
+                _backup_source_root(paths, name),
+            )
+        )
+    return entries
+
+
+def _prepared_replacement_names(
+    *,
+    operation: OpsOperation,
+    parameters: dict[str, object],
+    staging_root: Path,
+) -> tuple[str, ...]:
+    if operation is OpsOperation.MIGRATION:
+        requested = str(parameters["target"])
+        targets = (
+            ("grading", "question_bank")
+            if requested == "all"
+            else (requested,)
+        )
+        by_target = {target: member for member, target in DATABASE_MEMBERS.items()}
+        return tuple(by_target[target] for target in targets)
+    return tuple(
+        path.relative_to(staging_root).as_posix()
+        for path in sorted(staging_root.rglob("*"))
+        if path.is_file()
+    )
+
+
 def _transfer_export_entries(
     paths: Any,
     staging_root: Path,
@@ -461,7 +549,12 @@ def _sqlite_snapshot(source: Path, destination: Path) -> None:
             source_connection.backup(destination_connection)
 
 
-def _validate_zip(path: Path, *, require_all_databases: bool = False) -> None:
+def _validate_zip(
+    path: Path,
+    *,
+    paths: Any,
+    required_members: Iterable[str] = (),
+) -> None:
     inspection = inspect_zip(
         path,
         policy=OpsArchivePolicy(),
@@ -470,7 +563,8 @@ def _validate_zip(path: Path, *, require_all_databases: bool = False) -> None:
     validate_archive_databases(
         path,
         inspection,
-        require_all=require_all_databases,
+        required_members=required_members,
+        migration_dirs=migration_directories(paths),
     )
 
 

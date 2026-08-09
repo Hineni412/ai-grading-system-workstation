@@ -275,6 +275,14 @@ describe('AppShell', () => {
     )
   })
 
+  it('keeps desktop sidebar group headings on one line while collapsed', () => {
+    const css = readFileSync(resolve(process.cwd(), 'src/styles/app-shell.css'), 'utf-8')
+
+    expect(css).toMatch(
+      /\.app-sidebar__group\s*>\s*p\s*\{[^}]*white-space:\s*nowrap;/s,
+    )
+  })
+
   it.each(['review', 'config'] as const)('warns before leaving with dirty %s work', async (kind) => {
     const { app } = await mountShell()
     if (kind === 'review') {

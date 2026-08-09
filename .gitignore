@@ -13,8 +13,10 @@ __pycache__/
 
 # Logs and generated runtime data
 logs/
-# user_data remains tracked, except machine-local API credentials
-user_data/config/api_profiles.json
+# Runtime business data and machine-local credentials must never be added by a
+# future commit. Existing historical tracked entries require a separate,
+# explicitly authorized index migration before they can be retired safely.
+user_data/
 
 # Packaged runtime and build outputs
 runtime/

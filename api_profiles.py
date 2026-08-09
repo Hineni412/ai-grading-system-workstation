@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import shutil
 import tempfile
 import threading
 import time
@@ -131,14 +130,29 @@ def _atomic_write_profiles(file_path: Path, profiles: list[dict[str, Any]]) -> N
             os.fsync(file_handle.fileno())
 
         _read_profiles_file(temporary_path)
-        if file_path.exists():
-            try:
-                _read_profiles_file(file_path)
-            except (OSError, ValueError, json.JSONDecodeError, ApiProfileStorageError):
-                pass
-            else:
-                shutil.copy2(file_path, _backup_path(file_path))
-        os.replace(temporary_path, file_path)
+
+        # Publish the same validated state to the recovery slot first. Keeping
+        # a previous-state backup would retain a key after the teacher cleared
+        # it. If the following primary replace fails, the existing primary is
+        # still authoritative and the operation reports failure.
+        backup_path = _backup_path(file_path)
+        backup_descriptor, backup_temporary_name = tempfile.mkstemp(
+            prefix=f"{backup_path.name}.",
+            suffix=".tmp",
+            dir=file_path.parent,
+        )
+        backup_temporary_path = Path(backup_temporary_name)
+        try:
+            with os.fdopen(backup_descriptor, "w", encoding="utf-8") as backup_handle:
+                json.dump(serialized_profiles, backup_handle, ensure_ascii=False, indent=2)
+                backup_handle.flush()
+                os.fsync(backup_handle.fileno())
+            _read_profiles_file(backup_temporary_path)
+            os.replace(backup_temporary_path, backup_path)
+            os.replace(temporary_path, file_path)
+        finally:
+            if backup_temporary_path.exists():
+                backup_temporary_path.unlink()
     finally:
         if temporary_path.exists():
             temporary_path.unlink()
