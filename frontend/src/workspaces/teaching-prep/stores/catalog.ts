@@ -7,7 +7,12 @@ import {
   TERMINAL_JOB_STATUSES,
   type JobResponse,
 } from '../../../api/jobs'
-import { useJobStore } from '../../../stores/jobs'
+import {
+  DEFAULT_JOB_POLL_INTERVAL_MS,
+  DEFAULT_JOB_MAX_BACKOFF_MS,
+  jobPollDelay,
+  useJobStore,
+} from '../../../stores/jobs'
 import {
   teachingPrepCatalogApi,
   type AssessmentChoice,
@@ -55,6 +60,7 @@ import {
 } from '../api/catalog'
 
 export type CatalogLoadState = 'idle' | 'loading' | 'ready' | 'error'
+export type CatalogLoadScope = 'overview' | 'materials'
 
 const SEMESTER_MAPPING_JOB_TYPE = 'teaching_prep.semester_mapping'
 
@@ -82,8 +88,14 @@ function safeMessage(error: unknown): string {
   return '备课资料暂时无法读取，请保留当前内容后重试。'
 }
 
-function waitForNextJobPoll(): Promise<void> {
-  return new Promise(resolve => globalThis.setTimeout(resolve, 350))
+function waitForNextJobPoll(delay: number): Promise<void> {
+  return new Promise(resolve => globalThis.setTimeout(resolve, delay))
+}
+
+function isRetryableJobPollError(error: unknown): boolean {
+  return error instanceof ApiError
+    && error.retryable
+    && (error.kind === 'network' || error.kind === 'server')
 }
 
 function mappingJobMaterialRecordId(job: JobResponse): string | null {
@@ -157,6 +169,10 @@ export const useTeachingPrepCatalogStore = defineStore(
     let lessonFlowGeneration = 0
     let materialFlowGeneration = 0
     let semesterMappingFlowGeneration = 0
+    let materialContextGeneration = 0
+    let globalMaterialDataLoaded = false
+    let loadedMaterialContextKey: string | null = null
+    let materialContextLoad: { key: string; promise: Promise<void> } | null = null
     const materialParsePolls = new Map<number, Promise<JobResponse>>()
     const refreshedSemesterMappingJobs = new Set<number>()
 
@@ -384,10 +400,125 @@ export const useTeachingPrepCatalogStore = defineStore(
       { immediate: true },
     )
 
-    async function load(): Promise<void> {
+    function currentMaterialContextKey(): string {
+      return `${selectedCurriculumId.value ?? 'no-curriculum'}:${selectedSemester.value?.id ?? 'no-semester'}`
+    }
+
+    function invalidateLoadedMaterialContext(): void {
+      materialContextGeneration += 1
+      loadedMaterialContextKey = null
+      materialContextLoad = null
+    }
+
+    function applyMaterialParseJobs(jobs: JobResponse[]): void {
+      materialParseJobs.value = Object.fromEntries(
+        jobs.map(job => [String(job.payload.material_version_id), job]),
+      )
+    }
+
+    function resumeMaterialParseJobs(
+      materialItems: MaterialVersion[],
+      jobs: JobResponse[],
+    ): void {
+      for (const job of jobs) {
+        const materialId = String(job.payload.material_version_id ?? '')
+        if (
+          materialId
+          && materialItems.some(item => item.id === materialId)
+          && !TERMINAL_JOB_STATUSES.has(job.status)
+        ) {
+          void monitorMaterialParseJob(materialId, job).catch(() => {
+            // The persisted Job remains visible and can be recovered on reload.
+          })
+        }
+      }
+    }
+
+    async function ensureMaterialData(): Promise<void> {
+      const key = currentMaterialContextKey()
+      if (loadedMaterialContextKey === key) return
+      if (materialContextLoad?.key === key) return materialContextLoad.promise
+
+      const generation = ++materialContextGeneration
+      const semester = selectedSemester.value
+      loadState.value = 'loading'
+      errorMessage.value = ''
+
+      const promise = (async () => {
+        const [globalResults, semesterResults] = await Promise.all([
+          globalMaterialDataLoaded
+            ? Promise.resolve(null)
+            : Promise.allSettled([
+                teachingPrepCatalogApi.listMaterials(undefined, true),
+                teachingPrepCatalogApi.listMaterialParseJobs(),
+              ] as const),
+          semester
+            ? Promise.allSettled([
+                teachingPrepCatalogApi.listSemesterMaterials(semester.id),
+                teachingPrepCatalogApi.listSemesterMappingProposals(semester.id),
+                teachingPrepCatalogApi.listSemesterMappingProposalJobs(semester.id),
+              ] as const)
+            : Promise.resolve(null),
+        ])
+        if (
+          generation !== materialContextGeneration
+          || key !== currentMaterialContextKey()
+        ) return
+
+        const issues: string[] = []
+        const materialsResult = globalResults?.[0]
+        const jobsResult = globalResults?.[1]
+        const nextMaterials = materialsResult?.status === 'fulfilled'
+          ? materialsResult.value
+          : materials.value
+        const nextJobs = jobsResult?.status === 'fulfilled' ? jobsResult.value : []
+        if (materialsResult?.status === 'fulfilled') materials.value = nextMaterials
+        else if (globalResults) issues.push('资料列表')
+        if (jobsResult?.status === 'fulfilled') applyMaterialParseJobs(nextJobs)
+        else if (globalResults) issues.push('资料处理进度')
+        if (globalResults) {
+          globalMaterialDataLoaded = globalResults.every(
+            result => result.status === 'fulfilled',
+          )
+        }
+
+        let semesterComplete = true
+        if (semesterResults) {
+          const [semesterMaterialsResult, proposalsResult, mappingJobsResult] = semesterResults
+          semesterComplete = semesterResults.every(result => result.status === 'fulfilled')
+          if (semesterMaterialsResult.status === 'fulfilled') {
+            semesterMaterials.value = semesterMaterialsResult.value
+          } else issues.push('学期资料')
+          if (proposalsResult.status === 'fulfilled') {
+            semesterMappingProposals.value = proposalsResult.value
+          } else issues.push('目录建议')
+          if (mappingJobsResult.status === 'fulfilled') {
+            setSemesterMappingJobs(mappingJobsResult.value, true)
+          } else issues.push('目录任务')
+        }
+
+        const complete = globalMaterialDataLoaded && semesterComplete
+        loadedMaterialContextKey = complete ? key : null
+        loadState.value = materialsResult?.status === 'rejected' && materials.value.length === 0
+          ? 'error'
+          : 'ready'
+        errorMessage.value = issues.length
+          ? `以下信息暂时未更新：${issues.join('、')}。已经读取的资料仍可查看和管理，可稍后重新检查。`
+          : ''
+        resumeMaterialParseJobs(nextMaterials, nextJobs)
+      })().finally(() => {
+        if (materialContextLoad?.promise === promise) materialContextLoad = null
+      })
+      materialContextLoad = { key, promise }
+      return promise
+    }
+
+    async function load(scope: CatalogLoadScope = 'materials'): Promise<void> {
       loadController?.abort()
       lessonFlowGeneration += 1
       materialFlowGeneration += 1
+      invalidateLoadedMaterialContext()
+      globalMaterialDataLoaded = false
       invalidateSemesterMappingPreflight()
       materialUnits.value = []
       const controller = new AbortController()
@@ -395,17 +526,24 @@ export const useTeachingPrepCatalogStore = defineStore(
       loadState.value = 'loading'
       errorMessage.value = ''
       try {
-        const initial = await Promise.allSettled([
-          teachingPrepCatalogApi.status(controller.signal),
-          teachingPrepCatalogApi.getTeachingPreferences(controller.signal),
-          teachingPrepCatalogApi.listCurricula(controller.signal),
-          teachingPrepCatalogApi.listSemesters(controller.signal),
-          teachingPrepCatalogApi.listMaterials(controller.signal, true),
-          teachingPrepCatalogApi.listMaterialParseJobs(controller.signal),
-        ] as const)
+        const includeMaterials = scope === 'materials'
+        const [initial, initialMaterialResults] = await Promise.all([
+          Promise.allSettled([
+            teachingPrepCatalogApi.status(controller.signal),
+            teachingPrepCatalogApi.getTeachingPreferences(controller.signal),
+            teachingPrepCatalogApi.listCurricula(controller.signal),
+            teachingPrepCatalogApi.listSemesters(controller.signal),
+          ] as const),
+          includeMaterials
+            ? Promise.allSettled([
+                teachingPrepCatalogApi.listMaterials(controller.signal, true),
+                teachingPrepCatalogApi.listMaterialParseJobs(controller.signal),
+              ] as const)
+            : Promise.resolve(null),
+        ])
         if (controller.signal.aborted) return
         const issues: string[] = []
-        const [statusResult, preferencesResult, curriculaResult, semestersResult, materialsResult, jobsResult] = initial
+        const [statusResult, preferencesResult, curriculaResult, semestersResult] = initial
         if (statusResult?.status === 'fulfilled') moduleStatus.value = statusResult.value
         else issues.push('模块状态')
         if (preferencesResult?.status === 'fulfilled') teachingPreferences.value = preferencesResult.value
@@ -414,19 +552,19 @@ export const useTeachingPrepCatalogStore = defineStore(
         else issues.push('教材目录')
         if (semestersResult?.status === 'fulfilled') semesters.value = semestersResult.value
         else issues.push('学期目录')
+        const materialsResult = initialMaterialResults?.[0]
+        const jobsResult = initialMaterialResults?.[1]
+        globalMaterialDataLoaded = Boolean(
+          initialMaterialResults?.every(result => result.status === 'fulfilled'),
+        )
         if (materialsResult?.status === 'fulfilled') materials.value = materialsResult.value
-        else issues.push('资料列表')
+        else if (includeMaterials) issues.push('资料列表')
         const nextCurricula = curricula.value
         const nextSemesters = semesters.value
         const nextMaterials = materials.value
         const nextMaterialParseJobs = jobsResult?.status === 'fulfilled' ? jobsResult.value : []
         if (jobsResult?.status === 'rejected') issues.push('资料处理进度')
-        materialParseJobs.value = Object.fromEntries(
-          nextMaterialParseJobs.map(job => [
-            String(job.payload.material_version_id),
-            job,
-          ]),
-        )
+        if (jobsResult?.status === 'fulfilled') applyMaterialParseJobs(nextMaterialParseJobs)
         const currentStillExists = nextCurricula.some(
           ({ id }) => id === selectedCurriculumId.value,
         )
@@ -452,38 +590,61 @@ export const useTeachingPrepCatalogStore = defineStore(
           )
           selectedSemesterId.value = semester?.id ?? null
           if (semester) {
-            const semesterResults = await Promise.allSettled([
-              teachingPrepCatalogApi.listSemesterLessonProgress(
-                semester.id,
-                controller.signal,
-              ),
-              teachingPrepCatalogApi.listSemesterMaterials(
-                semester.id,
-                controller.signal,
-              ),
-              teachingPrepCatalogApi.listSemesterMappingProposals(
-                semester.id,
-                controller.signal,
-              ),
-              teachingPrepCatalogApi.listSemesterMappingProposalJobs(
-                semester.id,
-                controller.signal,
-              ),
-            ] as const)
-            const [progressResult, semesterMaterialsResult, proposalsResult, mappingJobsResult] = semesterResults
+            const [progressResults, semesterMaterialResults] = await Promise.all([
+              Promise.allSettled([
+                teachingPrepCatalogApi.listSemesterLessonProgress(
+                  semester.id,
+                  controller.signal,
+                ),
+              ] as const),
+              includeMaterials
+                ? Promise.allSettled([
+                    teachingPrepCatalogApi.listSemesterMaterials(
+                      semester.id,
+                      controller.signal,
+                    ),
+                    teachingPrepCatalogApi.listSemesterMappingProposals(
+                      semester.id,
+                      controller.signal,
+                    ),
+                    teachingPrepCatalogApi.listSemesterMappingProposalJobs(
+                      semester.id,
+                      controller.signal,
+                    ),
+                  ] as const)
+                : Promise.resolve(null),
+            ])
+            const [progressResult] = progressResults
             if (progressResult?.status === 'fulfilled') semesterLessonProgress.value = progressResult.value
             else issues.push('课时进度')
-            if (semesterMaterialsResult?.status === 'fulfilled') semesterMaterials.value = semesterMaterialsResult.value
-            else issues.push('学期资料')
-            if (proposalsResult?.status === 'fulfilled') semesterMappingProposals.value = proposalsResult.value
-            else issues.push('目录建议')
-            if (mappingJobsResult?.status === 'fulfilled') setSemesterMappingJobs(mappingJobsResult.value, true)
-            else issues.push('目录任务')
+            if (semesterMaterialResults) {
+              const [semesterMaterialsResult, proposalsResult, mappingJobsResult] = semesterMaterialResults
+              if (semesterMaterialsResult.status === 'fulfilled') {
+                semesterMaterials.value = semesterMaterialsResult.value
+              } else issues.push('学期资料')
+              if (proposalsResult.status === 'fulfilled') {
+                semesterMappingProposals.value = proposalsResult.value
+              } else issues.push('目录建议')
+              if (mappingJobsResult.status === 'fulfilled') {
+                setSemesterMappingJobs(mappingJobsResult.value, true)
+              } else issues.push('目录任务')
+              if (
+                initialMaterialResults?.every(result => result.status === 'fulfilled')
+                && semesterMaterialResults.every(result => result.status === 'fulfilled')
+              ) loadedMaterialContextKey = currentMaterialContextKey()
+            } else {
+              semesterMaterials.value = []
+              semesterMappingProposals.value = []
+              semesterMappingJobIds.value = []
+            }
           } else {
             semesterLessonProgress.value = []
             semesterMaterials.value = []
             semesterMappingProposals.value = []
             semesterMappingJobIds.value = []
+            if (
+              initialMaterialResults?.every(result => result.status === 'fulfilled')
+            ) loadedMaterialContextKey = currentMaterialContextKey()
           }
         } else {
           selectedSemesterId.value = null
@@ -492,6 +653,9 @@ export const useTeachingPrepCatalogStore = defineStore(
           semesterMaterials.value = []
           semesterMappingProposals.value = []
           semesterMappingJobIds.value = []
+          if (
+            initialMaterialResults?.every(result => result.status === 'fulfilled')
+          ) loadedMaterialContextKey = currentMaterialContextKey()
         }
         if (!controller.signal.aborted) {
           loadState.value = materialsResult?.status === 'rejected' && materials.value.length === 0
@@ -500,18 +664,7 @@ export const useTeachingPrepCatalogStore = defineStore(
           errorMessage.value = issues.length
             ? `以下信息暂时未更新：${[...new Set(issues)].join('、')}。已经读取的资料仍可查看和管理，可稍后重新检查。`
             : ''
-          for (const job of nextMaterialParseJobs) {
-            const materialId = String(job.payload.material_version_id ?? '')
-            if (
-              materialId
-              && nextMaterials.some(item => item.id === materialId)
-              && !TERMINAL_JOB_STATUSES.has(job.status)
-            ) {
-              void monitorMaterialParseJob(materialId, job).catch(() => {
-                // The persisted Job remains visible and can be recovered on reload.
-              })
-            }
-          }
+          if (includeMaterials) resumeMaterialParseJobs(nextMaterials, nextMaterialParseJobs)
         }
       } catch (error) {
         if (controller.signal.aborted) return
@@ -525,6 +678,7 @@ export const useTeachingPrepCatalogStore = defineStore(
     async function selectCurriculum(
       curriculumId: string,
       semesterId?: string,
+      scope: CatalogLoadScope = 'materials',
     ): Promise<void> {
       const semester = semesters.value.find(item => (
         item.curriculum_id === curriculumId
@@ -533,9 +687,13 @@ export const useTeachingPrepCatalogStore = defineStore(
       if (
         curriculumId === selectedCurriculumId.value
         && semester?.id === selectedSemester.value?.id
-      ) return
+      ) {
+        if (scope === 'materials') await ensureMaterialData()
+        return
+      }
       const generation = ++lessonFlowGeneration
       materialFlowGeneration += 1
+      invalidateLoadedMaterialContext()
       invalidateSemesterMappingPreflight()
       selectedCurriculumId.value = curriculumId
       selectedSemesterId.value = semester?.id ?? null
@@ -563,22 +721,19 @@ export const useTeachingPrepCatalogStore = defineStore(
         ) return
         lessonNodes.value = nextLessons
         if (semester) {
-          const [nextProgress, nextSemesterMaterials, nextProposals, nextMappingJobs] = await Promise.all([
+          const [nextProgress] = await Promise.all([
             teachingPrepCatalogApi.listSemesterLessonProgress(semester.id),
-            teachingPrepCatalogApi.listSemesterMaterials(semester.id),
-            teachingPrepCatalogApi.listSemesterMappingProposals(semester.id),
-            teachingPrepCatalogApi.listSemesterMappingProposalJobs(semester.id),
+            scope === 'materials' ? ensureMaterialData() : Promise.resolve(),
           ])
           if (
             generation !== lessonFlowGeneration
             || selectedCurriculumId.value !== curriculumId
           ) return
           semesterLessonProgress.value = nextProgress
-          semesterMaterials.value = nextSemesterMaterials
-          semesterMappingProposals.value = nextProposals
-          setSemesterMappingJobs(nextMappingJobs, true)
+        } else if (scope === 'materials') {
+          await ensureMaterialData()
         }
-        loadState.value = 'ready'
+        if (scope === 'overview') loadState.value = 'ready'
       } catch (error) {
         if (
           generation !== lessonFlowGeneration
@@ -589,15 +744,19 @@ export const useTeachingPrepCatalogStore = defineStore(
       }
     }
 
-    async function selectSemester(semesterId: string): Promise<void> {
+    async function selectSemester(
+      semesterId: string,
+      scope: CatalogLoadScope = 'materials',
+    ): Promise<void> {
       const semester = semesters.value.find(item => item.id === semesterId)
       if (!semester) return
-      await selectCurriculum(semester.curriculum_id, semester.id)
+      await selectCurriculum(semester.curriculum_id, semester.id, scope)
     }
 
     function clearSemesterSelection(): void {
       lessonFlowGeneration += 1
       materialFlowGeneration += 1
+      invalidateLoadedMaterialContext()
       invalidateSemesterMappingPreflight()
       selectedCurriculumId.value = null
       selectedSemesterId.value = null
@@ -613,6 +772,7 @@ export const useTeachingPrepCatalogStore = defineStore(
 
     async function selectLesson(node: LessonNode): Promise<void> {
       if (node.node_type !== 'lesson') return
+      await ensureMaterialData()
       const generation = ++lessonFlowGeneration
       selectedLessonId.value = node.id
       materialLinks.value = []
@@ -724,13 +884,25 @@ export const useTeachingPrepCatalogStore = defineStore(
       const polling = (async () => {
         let job = initialJob
         let lastPreviewRefresh = job.progress
+        let retryCount = 0
         materialParseJobs.value = {
           ...materialParseJobs.value,
           [materialId]: job,
         }
         while (!TERMINAL_JOB_STATUSES.has(job.status)) {
-          await waitForNextJobPoll()
-          job = await jobApi.getJob(job.id)
+          await waitForNextJobPoll(jobPollDelay(
+            retryCount,
+            DEFAULT_JOB_POLL_INTERVAL_MS,
+            DEFAULT_JOB_MAX_BACKOFF_MS,
+          ))
+          try {
+            job = await jobApi.getJob(job.id)
+            retryCount = 0
+          } catch (error) {
+            if (!isRetryableJobPollError(error)) throw error
+            retryCount += 1
+            continue
+          }
           materialParseJobs.value = {
             ...materialParseJobs.value,
             [materialId]: job,
@@ -2206,6 +2378,7 @@ export const useTeachingPrepCatalogStore = defineStore(
       saveState,
       errorMessage,
       load,
+      ensureMaterialData,
       selectCurriculum,
       selectSemester,
       clearSemesterSelection,

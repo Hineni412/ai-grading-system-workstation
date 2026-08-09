@@ -1,6 +1,7 @@
 import { createPinia, setActivePinia } from 'pinia'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { ApiError } from '../../../api/errors'
 import { jobApi, type JobResponse } from '../../../api/jobs'
 import { useJobStore } from '../../../stores/jobs'
 import {
@@ -833,6 +834,79 @@ describe('semester workflow idempotency', () => {
 })
 
 describe('teaching preparation selection consistency', () => {
+  it('keeps successful same-semester material data when a retry is only partly available', async () => {
+    const curriculumItem = curriculum()
+    const semesterItem = semester(curriculumItem.id)
+    const materialItem = material('a'.repeat(32))
+    const record = semesterMaterial(semesterItem.id, materialItem)
+    const proposal = mappingProposal(semesterItem.id)
+    vi.spyOn(teachingPrepCatalogApi, 'listMaterials').mockResolvedValue([materialItem])
+    vi.spyOn(teachingPrepCatalogApi, 'listMaterialParseJobs').mockResolvedValue([])
+    vi.spyOn(teachingPrepCatalogApi, 'listSemesterMaterials')
+      .mockResolvedValueOnce([record])
+      .mockRejectedValueOnce(new Error('semester materials temporarily unavailable'))
+    vi.spyOn(teachingPrepCatalogApi, 'listSemesterMappingProposals')
+      .mockResolvedValueOnce([proposal])
+      .mockRejectedValueOnce(new Error('mapping proposals temporarily unavailable'))
+    vi.spyOn(teachingPrepCatalogApi, 'listSemesterMappingProposalJobs')
+      .mockRejectedValueOnce(new Error('mapping jobs temporarily unavailable'))
+      .mockResolvedValueOnce([])
+    const store = useTeachingPrepCatalogStore()
+    store.curricula = [curriculumItem]
+    store.semesters = [semesterItem]
+    store.selectedCurriculumId = curriculumItem.id
+    store.selectedSemesterId = semesterItem.id
+
+    await store.ensureMaterialData()
+    expect(store.semesterMaterials).toEqual([record])
+    expect(store.semesterMappingProposals).toEqual([proposal])
+
+    await store.ensureMaterialData()
+
+    expect(store.semesterMaterials).toEqual([record])
+    expect(store.semesterMappingProposals).toEqual([proposal])
+    expect(store.errorMessage).toContain('学期资料、目录建议')
+  })
+
+  it('reuses global material data when switching to another semester', async () => {
+    const curriculumItem = curriculum()
+    const firstSemester = semester(curriculumItem.id, 's'.repeat(32))
+    const secondSemester = semester(curriculumItem.id, 't'.repeat(32))
+    const materialItem = material('a'.repeat(32))
+    const firstRecord = semesterMaterial(firstSemester.id, materialItem, 'm'.repeat(32))
+    const secondRecord = semesterMaterial(secondSemester.id, materialItem, 'n'.repeat(32))
+    const listMaterials = vi.spyOn(teachingPrepCatalogApi, 'listMaterials')
+      .mockResolvedValue([materialItem])
+    const listParseJobs = vi.spyOn(teachingPrepCatalogApi, 'listMaterialParseJobs')
+      .mockResolvedValue([])
+    vi.spyOn(teachingPrepCatalogApi, 'listLessons').mockResolvedValue([])
+    vi.spyOn(teachingPrepCatalogApi, 'listSemesterLessonProgress').mockResolvedValue([])
+    const listSemesterMaterials = vi.spyOn(
+      teachingPrepCatalogApi,
+      'listSemesterMaterials',
+    ).mockImplementation(async semesterId => (
+      semesterId === firstSemester.id ? [firstRecord] : [secondRecord]
+    ))
+    vi.spyOn(teachingPrepCatalogApi, 'listSemesterMappingProposals')
+      .mockImplementation(async semesterId => [mappingProposal(semesterId)])
+    vi.spyOn(teachingPrepCatalogApi, 'listSemesterMappingProposalJobs')
+      .mockResolvedValue([])
+    const store = useTeachingPrepCatalogStore()
+    store.curricula = [curriculumItem]
+    store.semesters = [firstSemester, secondSemester]
+    store.selectedCurriculumId = curriculumItem.id
+    store.selectedSemesterId = firstSemester.id
+
+    await store.ensureMaterialData()
+    await store.selectSemester(secondSemester.id)
+
+    expect(listMaterials).toHaveBeenCalledTimes(1)
+    expect(listParseJobs).toHaveBeenCalledTimes(1)
+    expect(listSemesterMaterials).toHaveBeenCalledTimes(2)
+    expect(store.selectedSemester?.id).toBe(secondSemester.id)
+    expect(store.semesterMaterials).toEqual([secondRecord])
+  })
+
   it('opens saved partial pages without implicitly restarting parsing', async () => {
     const incomplete: MaterialVersion = {
       ...material('c'.repeat(32)),
@@ -910,11 +984,135 @@ describe('teaching preparation selection consistency', () => {
       await store.load()
       expect(store.materialParseJobs[materialItem.id]).toEqual(runningJob)
 
-      await vi.advanceTimersByTimeAsync(350)
+      await vi.advanceTimersByTimeAsync(2_000)
       await Promise.resolve()
 
       expect(store.materialParseJobs[materialItem.id]).toEqual(succeededJob)
       expect(jobApi.getJob).toHaveBeenCalledWith(runningJob.id)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('starts material parse polling at two seconds and backs off after consecutive network failures', async () => {
+    vi.useFakeTimers()
+    const materialItem = material('a'.repeat(32))
+    const runningJob: JobResponse = {
+      id: 101,
+      job_type: 'teaching_prep.material_parse',
+      payload: { material_version_id: materialItem.id },
+      result: {},
+      status: 'running',
+      progress: 0.2,
+      stage: 'ocr',
+      detail: '正在识别',
+      error: null,
+      cancel_requested: false,
+      created_at: '2026-08-03T00:00:00Z',
+      started_at: '2026-08-03T00:00:00Z',
+      updated_at: '2026-08-03T00:00:00Z',
+      finished_at: null,
+    }
+    const succeededJob: JobResponse = {
+      ...runningJob,
+      status: 'succeeded',
+      progress: 1,
+      stage: 'completed',
+      detail: '解析完成',
+      updated_at: '2026-08-03T00:00:08Z',
+      finished_at: '2026-08-03T00:00:08Z',
+    }
+    const offline = new ApiError({
+      kind: 'network', status: null, code: 'network_error', message: 'offline',
+      details: {}, requestId: 'material-poll-offline', retryable: true,
+    })
+    vi.spyOn(teachingPrepCatalogApi, 'startMaterialParse').mockResolvedValue(runningJob)
+    vi.spyOn(teachingPrepCatalogApi, 'listMaterials').mockResolvedValue([materialItem])
+    vi.spyOn(jobApi, 'getJob')
+      .mockRejectedValueOnce(offline)
+      .mockRejectedValueOnce(offline)
+      .mockResolvedValueOnce(succeededJob)
+    const store = useTeachingPrepCatalogStore()
+    store.materials = [materialItem]
+
+    try {
+      const parsing = store.parseMaterialInBackground(materialItem)
+
+      await vi.advanceTimersByTimeAsync(1_999)
+      expect(jobApi.getJob).not.toHaveBeenCalled()
+      await vi.advanceTimersByTimeAsync(1)
+      expect(jobApi.getJob).toHaveBeenCalledTimes(1)
+
+      await vi.advanceTimersByTimeAsync(2_000)
+      expect(jobApi.getJob).toHaveBeenCalledTimes(2)
+      await vi.advanceTimersByTimeAsync(3_999)
+      expect(jobApi.getJob).toHaveBeenCalledTimes(2)
+      await vi.advanceTimersByTimeAsync(1)
+      await parsing
+
+      expect(jobApi.getJob).toHaveBeenCalledTimes(3)
+      expect(store.materialParseJobs[materialItem.id]).toEqual(succeededJob)
+      expect(teachingPrepCatalogApi.listMaterials).toHaveBeenCalledTimes(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('stops material parse polling after cancellation reaches a terminal state', async () => {
+    vi.useFakeTimers()
+    const materialItem = material('a'.repeat(32))
+    const runningJob: JobResponse = {
+      id: 102,
+      job_type: 'teaching_prep.material_parse',
+      payload: { material_version_id: materialItem.id },
+      result: {},
+      status: 'running',
+      progress: 0.2,
+      stage: 'ocr',
+      detail: '正在识别',
+      error: null,
+      cancel_requested: false,
+      created_at: '2026-08-03T00:00:00Z',
+      started_at: '2026-08-03T00:00:00Z',
+      updated_at: '2026-08-03T00:00:00Z',
+      finished_at: null,
+    }
+    const cancelledJob: JobResponse = {
+      ...runningJob,
+      status: 'cancelled',
+      stage: 'cancelled',
+      detail: '资料解析已取消',
+      cancel_requested: true,
+      updated_at: '2026-08-03T00:00:01Z',
+      finished_at: '2026-08-03T00:00:01Z',
+    }
+    vi.spyOn(teachingPrepCatalogApi, 'startMaterialParse').mockResolvedValue(runningJob)
+    vi.spyOn(teachingPrepCatalogApi, 'listMaterials').mockResolvedValue([materialItem])
+    vi.spyOn(jobApi, 'cancelJob').mockResolvedValue(cancelledJob)
+    vi.spyOn(jobApi, 'getJob').mockResolvedValue(cancelledJob)
+    const store = useTeachingPrepCatalogStore()
+    store.materials = [materialItem]
+
+    try {
+      const parsing = store.parseMaterialInBackground(materialItem)
+      await Promise.resolve()
+      await store.cancelMaterialParse(materialItem.id)
+
+      expect(jobApi.cancelJob).toHaveBeenCalledWith(runningJob.id)
+      expect(store.materialParseJobs[materialItem.id]).toEqual(cancelledJob)
+
+      const cancelled = expect(parsing).rejects.toThrow(
+        '资料解析已取消，可保留进度后重试。',
+      )
+      await vi.advanceTimersByTimeAsync(2_000)
+      await cancelled
+
+      expect(jobApi.getJob).toHaveBeenCalledTimes(1)
+      expect(store.materialParseJobs[materialItem.id]).toEqual(cancelledJob)
+      expect(teachingPrepCatalogApi.listMaterials).toHaveBeenCalledTimes(1)
+
+      await vi.advanceTimersByTimeAsync(60_000)
+      expect(jobApi.getJob).toHaveBeenCalledTimes(1)
     } finally {
       vi.useRealTimers()
     }
@@ -953,12 +1151,12 @@ describe('teaching preparation selection consistency', () => {
 
     try {
       const parsing = store.parseMaterialInBackground(materialA)
-      await vi.advanceTimersByTimeAsync(350)
+      await vi.advanceTimersByTimeAsync(2_000)
       await vi.waitFor(() => expect(teachingPrepCatalogApi.listMaterialUnits).toHaveBeenCalled())
       store.selectedMaterialId = materialB.id
       releaseUnits([unitA])
       await Promise.resolve()
-      await vi.advanceTimersByTimeAsync(350)
+      await vi.advanceTimersByTimeAsync(2_000)
       await parsing
 
       expect(store.selectedMaterialId).toBe(materialB.id)

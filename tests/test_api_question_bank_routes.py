@@ -833,7 +833,7 @@ def test_exhausted_wal_instability_maps_to_sanitized_busy_response(
     assert "Busy row" not in response.text
 
 
-def test_read_service_sqlite_connects_only_to_cleaned_system_temp_candidate(
+def test_read_service_reuses_only_a_validated_system_temp_candidate(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -846,9 +846,11 @@ def test_read_service_sqlite_connects_only_to_cleaned_system_temp_candidate(
         connect_targets.append(str(database))
         return original_connect(database, *args, **kwargs)
 
+    question_read_module._clear_question_read_snapshot_cache_for_tests()
     monkeypatch.setattr(question_read_module.sqlite3, "connect", connect_spy)
+    service = QuestionBankReadService(db_path)
 
-    assert QuestionBankReadService(db_path).list_papers() == []
+    assert service.list_papers() == []
 
     assert len(connect_targets) == 1
     assert not connect_targets[0].startswith(db_path.resolve().as_uri())
@@ -856,6 +858,15 @@ def test_read_service_sqlite_connects_only_to_cleaned_system_temp_candidate(
     assert "nolock" not in connect_targets[0].casefold()
     candidate = _path_from_file_uri(connect_targets[0])
     candidate.resolve().relative_to(Path(tempfile.gettempdir()).resolve())
+    assert candidate.exists()
+    assert candidate.parent.exists()
+
+    assert service.tag_value_counts("method", ["not-present"]) == {
+        "not-present": 0
+    }
+    assert connect_targets == [connect_targets[0], connect_targets[0]]
+
+    question_read_module._clear_question_read_snapshot_cache_for_tests()
     assert not candidate.exists()
     assert not candidate.parent.exists()
 

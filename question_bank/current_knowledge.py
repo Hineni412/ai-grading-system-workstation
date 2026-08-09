@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from collections import defaultdict
+import threading
+from collections import OrderedDict, defaultdict
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -24,6 +25,10 @@ from question_bank.knowledge_graph_release.repository import (
 from question_bank.knowledge_graph_release.validation import validate_release
 from question_bank.relations.bootstrap import normalize_knowledge_alias
 from question_bank.solution_evidence.contracts import CoreResolution
+
+
+_RESOLVER_CACHE_LIMIT = 4
+_RESOLVER_CACHE_LOCK = threading.Lock()
 
 
 class CurrentKnowledgeUnavailable(RuntimeError):
@@ -218,21 +223,18 @@ class CurrentKnowledgeResolver:
             connection = sqlite3.connect(uri, uri=True)
             connection.row_factory = sqlite3.Row
             try:
-                rows = connection.execute(
-                    """
-                    SELECT payload_json
-                    FROM knowledge_graph_releases
-                    WHERE status = 'active'
-                    ORDER BY release_id
-                    """
-                ).fetchall()
+                connection.execute("PRAGMA query_only = ON")
+                connection.execute("BEGIN")
+                return cls.from_connection(
+                    connection,
+                    taxonomy_catalog=taxonomy_catalog,
+                )
             finally:
                 connection.close()
         except (OSError, sqlite3.Error) as exc:
             raise CurrentKnowledgeUnavailable(
                 "current_knowledge_storage_unavailable"
             ) from exc
-        return cls._from_active_rows(rows, taxonomy_catalog=taxonomy_catalog)
 
     @classmethod
     def from_connection(
@@ -242,19 +244,98 @@ class CurrentKnowledgeResolver:
         taxonomy_catalog: Mapping[str, Any] | None = None,
     ) -> CurrentKnowledgeResolver:
         try:
-            rows = connection.execute(
-                """
-                SELECT payload_json
-                FROM knowledge_graph_releases
-                WHERE status = 'active'
-                ORDER BY release_id
-                """
-            ).fetchall()
+            if taxonomy_catalog is not None:
+                rows = connection.execute(
+                    """
+                    SELECT payload_json
+                    FROM knowledge_graph_releases
+                    WHERE status = 'active'
+                    ORDER BY release_id
+                    """
+                ).fetchall()
+            else:
+                rows = connection.execute(
+                    """
+                    SELECT
+                        release_id,
+                        content_hash,
+                        taxonomy_revision
+                    FROM knowledge_graph_releases
+                    WHERE status = 'active'
+                    ORDER BY release_id
+                    """
+                ).fetchall()
         except sqlite3.Error as exc:
             raise CurrentKnowledgeUnavailable(
                 "current_knowledge_storage_unavailable"
             ) from exc
+        if taxonomy_catalog is None:
+            return cls._from_cached_active_rows(connection, rows)
         return cls._from_active_rows(rows, taxonomy_catalog=taxonomy_catalog)
+
+    @classmethod
+    def _from_cached_active_rows(
+        cls,
+        connection: sqlite3.Connection,
+        rows: Sequence[object],
+    ) -> CurrentKnowledgeResolver:
+        if len(rows) != 1:
+            raise CurrentKnowledgeUnavailable("current_knowledge_release_missing")
+        row = rows[0]
+        try:
+            if isinstance(row, sqlite3.Row):
+                release_id = str(row["release_id"]).strip()
+                content_hash = str(row["content_hash"]).strip().casefold()
+                taxonomy_revision = int(row["taxonomy_revision"])
+            else:
+                release_id = str(row[0]).strip()  # type: ignore[index]
+                content_hash = str(row[1]).strip().casefold()  # type: ignore[index]
+                taxonomy_revision = int(row[2])  # type: ignore[index]
+        except (KeyError, TypeError, ValueError) as exc:
+            raise CurrentKnowledgeUnavailable(
+                "current_knowledge_release_corrupt"
+            ) from exc
+
+        cache_key = (release_id, content_hash, taxonomy_revision)
+        with _RESOLVER_CACHE_LOCK:
+            cached = _RESOLVER_CACHE.get(cache_key)
+            if cached is not None:
+                _RESOLVER_CACHE.move_to_end(cache_key)
+                return cached
+            try:
+                payload_row = connection.execute(
+                    """
+                    SELECT payload_json
+                    FROM knowledge_graph_releases
+                    WHERE release_id = ?
+                      AND content_hash = ?
+                      AND taxonomy_revision = ?
+                    """,
+                    cache_key,
+                ).fetchone()
+            except sqlite3.Error as exc:
+                raise CurrentKnowledgeUnavailable(
+                    "current_knowledge_storage_unavailable"
+                ) from exc
+            if payload_row is None:
+                raise CurrentKnowledgeUnavailable(
+                    "current_knowledge_release_missing"
+                )
+            raw_value = (
+                payload_row["payload_json"]
+                if isinstance(payload_row, sqlite3.Row)
+                else payload_row[0]
+            )
+            resolver = cls._resolver_from_payload(
+                raw_value,
+                expected_identity=cache_key,
+                taxonomy_catalog=None,
+            )
+            _RESOLVER_CACHE[cache_key] = resolver
+            _RESOLVER_CACHE.move_to_end(cache_key)
+            while len(_RESOLVER_CACHE) > _RESOLVER_CACHE_LIMIT:
+                _RESOLVER_CACHE.popitem(last=False)
+            return resolver
 
     @classmethod
     def _from_active_rows(
@@ -265,15 +346,37 @@ class CurrentKnowledgeResolver:
     ) -> CurrentKnowledgeResolver:
         if len(rows) != 1:
             raise CurrentKnowledgeUnavailable("current_knowledge_release_missing")
+        row = rows[0]
+        raw_value = (
+            row["payload_json"]
+            if isinstance(row, sqlite3.Row)
+            else row[0]  # type: ignore[index]
+        )
+        return cls._resolver_from_payload(
+            raw_value,
+            expected_identity=None,
+            taxonomy_catalog=taxonomy_catalog,
+        )
+
+    @classmethod
+    def _resolver_from_payload(
+        cls,
+        raw_value: object,
+        *,
+        expected_identity: tuple[str, str, int] | None,
+        taxonomy_catalog: Mapping[str, Any] | None,
+    ) -> CurrentKnowledgeResolver:
         try:
-            row = rows[0]
-            raw_value = (
-                row["payload_json"]
-                if isinstance(row, sqlite3.Row)
-                else row[0]  # type: ignore[index]
-            )
             raw = json.loads(str(raw_value))
             release = KnowledgeGraphRelease.from_mapping(raw)
+            if expected_identity is not None and expected_identity != (
+                release.release_id,
+                release.content_hash,
+                release.taxonomy_revision,
+            ):
+                raise CurrentKnowledgeUnavailable(
+                    "current_knowledge_release_corrupt"
+                )
             catalog = dict(
                 taxonomy_catalog or load_taxonomy_catalog_for_release(release)
             )
@@ -380,6 +483,17 @@ class CurrentKnowledgeResolver:
                 seen.add(identity)
                 result.append(item)
         return tuple(result)
+
+
+_RESOLVER_CACHE: OrderedDict[
+    tuple[str, str, int],
+    CurrentKnowledgeResolver,
+] = OrderedDict()
+
+
+def _clear_resolver_cache_for_tests() -> None:
+    with _RESOLVER_CACHE_LOCK:
+        _RESOLVER_CACHE.clear()
 
 
 def ensure_checked_in_current_standard(db_path: Path) -> str:

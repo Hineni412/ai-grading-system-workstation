@@ -50,6 +50,14 @@ function cleanQuestionIds(values: readonly number[]): number[] {
   return result
 }
 
+function sameQuestionOrder(
+  left: readonly number[],
+  right: readonly number[],
+): boolean {
+  return left.length === right.length
+    && left.every((questionId, index) => questionId === right[index])
+}
+
 function draftPayload(draft: AssemblyDraft): AssemblyDraft {
   return {
     ...draft,
@@ -154,14 +162,21 @@ export const useAssemblyStore = defineStore('assembly', () => {
     }
   }
 
-  async function save(nextDraft = draft.value): Promise<boolean> {
+  async function persistDraft(
+    nextDraft: AssemblyDraft,
+    skipQuestionReloadWhenOrderUnchanged: boolean,
+  ): Promise<boolean> {
     saveState.value = 'saving'
     message.value = ''
+    const previousOrderIds = [...draft.value.order_ids]
     try {
       draft.value = await dependencies.api.saveDraft(draft.value.revision, draftPayload(nextDraft))
       saveState.value = 'idle'
       loadState.value = draft.value.order_ids.length ? 'ready' : 'empty'
-      await loadQuestions()
+      if (
+        !skipQuestionReloadWhenOrderUnchanged
+        || !sameQuestionOrder(previousOrderIds, draft.value.order_ids)
+      ) await loadQuestions()
       return true
     } catch (error) {
       saveState.value = error instanceof ApiError && error.code === 'assembly_draft_conflict'
@@ -170,6 +185,10 @@ export const useAssemblyStore = defineStore('assembly', () => {
       message.value = safeMessage(error)
       return false
     }
+  }
+
+  async function save(nextDraft = draft.value): Promise<boolean> {
+    return persistDraft(nextDraft, false)
   }
 
   async function addQuestions(questionIds: readonly number[]): Promise<boolean> {
@@ -252,7 +271,7 @@ export const useAssemblyStore = defineStore('assembly', () => {
     layout_mode?: AssemblyLayoutMode
     preview_mode?: AssemblyPreviewMode
   }): Promise<boolean> {
-    return save({ ...draft.value, ...patch })
+    return persistDraft({ ...draft.value, ...patch }, true)
   }
 
   async function replaceSections(sections: AssemblySection[]): Promise<boolean> {

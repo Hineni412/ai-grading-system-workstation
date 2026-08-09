@@ -187,6 +187,50 @@ describe('TeachingPrepHomeView workbench shell', () => {
     app.unmount()
   })
 
+  it('does not load material collections or mapping history on the ordinary overview', async () => {
+    mockCatalogWithLessons()
+
+    const { app, host } = await mountAt()
+
+    expect(host.textContent).toContain('近期课时')
+    expect(teachingPrepCatalogApi.listMaterials).not.toHaveBeenCalled()
+    expect(teachingPrepCatalogApi.listMaterialParseJobs).not.toHaveBeenCalled()
+    expect(teachingPrepCatalogApi.listSemesterMaterials).not.toHaveBeenCalled()
+    expect(teachingPrepCatalogApi.listSemesterMappingProposals).not.toHaveBeenCalled()
+    expect(teachingPrepCatalogApi.listSemesterMappingProposalJobs).not.toHaveBeenCalled()
+    app.unmount()
+  })
+
+  it('loads deferred material collections once for a direct library link', async () => {
+    const { semesterId } = mockCatalogWithLessons()
+
+    const { app, host } = await mountAt(`?view=library&semester=${semesterId}`)
+
+    expect(host.textContent).toContain('建立可复用的学期资料目录')
+    expect(teachingPrepCatalogApi.listMaterials).toHaveBeenCalledTimes(1)
+    expect(teachingPrepCatalogApi.listMaterialParseJobs).toHaveBeenCalledTimes(1)
+    expect(teachingPrepCatalogApi.listSemesterMaterials).toHaveBeenCalledTimes(1)
+    expect(teachingPrepCatalogApi.listSemesterMappingProposals).toHaveBeenCalledTimes(1)
+    expect(teachingPrepCatalogApi.listSemesterMappingProposalJobs).toHaveBeenCalledTimes(1)
+    app.unmount()
+  })
+
+  it('loads deferred material collections before opening a lesson deep link', async () => {
+    const { semesterId, lessonIds } = mockCatalogWithLessons()
+
+    const { app, host } = await mountAt(
+      `?view=lesson&semester=${semesterId}&lesson=${lessonIds[0]}&stage=materials&panel=sources`,
+    )
+
+    expect(host.querySelector('[aria-label="当前课时工作面"]')).toBeTruthy()
+    expect(teachingPrepCatalogApi.listMaterials).toHaveBeenCalledTimes(1)
+    expect(teachingPrepCatalogApi.listMaterialParseJobs).toHaveBeenCalledTimes(1)
+    expect(teachingPrepCatalogApi.listSemesterMaterials).toHaveBeenCalledTimes(1)
+    expect(teachingPrepCatalogApi.listSemesterMappingProposals).toHaveBeenCalledTimes(1)
+    expect(teachingPrepCatalogApi.listSemesterMappingProposalJobs).toHaveBeenCalledTimes(1)
+    app.unmount()
+  })
+
   it('loads semester lesson statuses once when initial entry switches to the global textbook', async () => {
     const { targetSemesterId } = mockCatalogWithGlobalTextbookSwitch()
 
@@ -200,6 +244,8 @@ describe('TeachingPrepHomeView workbench shell', () => {
     expect(useTeachingPrepCatalogStore(pinia).selectedSemester?.id).toBe(targetSemesterId)
     expect(teachingPrepWorkbenchApi.lessonStatuses).toHaveBeenCalledTimes(1)
     expect(teachingPrepWorkbenchApi.lessonStatuses).toHaveBeenCalledWith(targetSemesterId)
+    expect(teachingPrepCatalogApi.listMaterials).not.toHaveBeenCalled()
+    expect(teachingPrepCatalogApi.listSemesterMaterials).not.toHaveBeenCalled()
     app.unmount()
   })
 
