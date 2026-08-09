@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import hashlib
+import json
+import zipfile
 from contextlib import closing
 from pathlib import Path
 from types import SimpleNamespace
@@ -292,7 +294,7 @@ def test_support_plan_result_and_full_subject_deletion_leave_no_b07_objects(
         ).fetchone()[0] == 0
 
 
-def test_subject_delete_failure_keeps_live_vault_and_backups_unchanged(
+def test_subject_delete_failure_keeps_live_vault_unchanged(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -300,23 +302,6 @@ def test_subject_delete_failure_keeps_live_vault_and_backups_unchanged(
     subject = _subject(service, token)
     subject_id = str(subject["subject_id"])
     _record(service, token, subject_id, "create-rollback-record")
-    backup = service.create_backup(
-        token=token,
-        backup_password="合成回滚备份密码-足够长-001",
-        operation_id="create-rollback-backup",
-    )
-    backup_path = service.database.backup_dir / str(backup["file_name"])
-    interrupted = backup_path.with_suffix(
-        ".ctbackup.interrupted-delete.pending-delete"
-    )
-    backup_path.replace(interrupted)
-    preview = service.support.preview_subject_deletion(
-        token=token,
-        subject_id=subject_id,
-    )
-    assert preview["affected_backup_count"] == 1
-    assert backup_path.is_file()
-    assert not interrupted.exists()
     original_replace = service.database.replace_from_snapshot_atomically
     calls = 0
 
@@ -338,78 +323,12 @@ def test_subject_delete_failure_keeps_live_vault_and_backups_unchanged(
             subject_id=subject_id,
             operation_id="delete-rollback-subject",
             confirmation_phrase="确认完整删除学生支持数据",
-            backup_confirmation_phrase="确认销毁受影响的班主任专用备份",
         )
 
     assert service.support.get_subject(
         token=token,
         subject_id=subject_id,
     )["display_name"] == subject["display_name"]
-    assert (
-        service.database.backup_dir / str(backup["file_name"])
-    ).is_file()
-    assert not list(
-        service.database.backup_dir.glob("*.pending-delete")
-    )
-
-
-def test_subject_delete_restores_all_backups_when_second_delete_fails(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    service, token = _unlocked(tmp_path)
-    subject = _subject(service, token)
-    subject_id = str(subject["subject_id"])
-    _record(service, token, subject_id, "create-multi-backup-record")
-    backups = [
-        service.create_backup(
-            token=token,
-            backup_password=f"合成多备份密码-足够长-00{index}",
-            operation_id=f"create-multi-backup-{index}",
-        )
-        for index in (1, 2)
-    ]
-    backup_paths = sorted(
-        service.database.backup_dir / str(item["file_name"])
-        for item in backups
-    )
-    original_payloads = {
-        path.name: path.read_bytes() for path in backup_paths
-    }
-    original_unlink = Path.unlink
-    failed_once = False
-
-    def fail_second_backup(
-        path: Path,
-        *args: object,
-        **kwargs: object,
-    ) -> None:
-        nonlocal failed_once
-        if path == backup_paths[1] and not failed_once:
-            failed_once = True
-            raise OSError("synthetic second backup deletion failure")
-        original_unlink(path, *args, **kwargs)
-
-    monkeypatch.setattr(Path, "unlink", fail_second_backup)
-    with pytest.raises(
-        OSError,
-        match="synthetic second backup deletion failure",
-    ):
-        service.support.delete_subject(
-            token=token,
-            subject_id=subject_id,
-            operation_id="delete-subject-with-two-backups",
-            confirmation_phrase="确认完整删除学生支持数据",
-            backup_confirmation_phrase="确认销毁受影响的班主任专用备份",
-        )
-
-    assert service.support.get_subject(
-        token=token,
-        subject_id=subject_id,
-    )["display_name"] == subject["display_name"]
-    assert {
-        path.name: path.read_bytes() for path in backup_paths
-    } == original_payloads
     assert not list(
         service.database.root.glob(
             ".subject-delete-*.rollback.cttxn"
@@ -425,22 +344,6 @@ def test_subject_delete_recovers_after_exit_before_final_commit(
     subject = _subject(service, token)
     subject_id = str(subject["subject_id"])
     _record(service, token, subject_id, "create-exit-recovery-record")
-    backups = [
-        service.create_backup(
-            token=token,
-            backup_password=f"合成退出恢复密码-足够长-00{index}",
-            operation_id=f"create-exit-recovery-backup-{index}",
-        )
-        for index in (1, 2)
-    ]
-    backup_paths = [
-        service.database.backup_dir / str(item["file_name"])
-        for item in backups
-    ]
-    original_payloads = {
-        path.name: path.read_bytes() for path in backup_paths
-    }
-
     def interrupt_before_commit(_transaction: Path) -> None:
         raise SystemExit("synthetic process exit before delete commit")
 
@@ -458,10 +361,8 @@ def test_subject_delete_recovers_after_exit_before_final_commit(
             subject_id=subject_id,
             operation_id="delete-subject-before-final-commit",
             confirmation_phrase="确认完整删除学生支持数据",
-            backup_confirmation_phrase="确认销毁受影响的班主任专用备份",
         )
 
-    assert all(not path.exists() for path in backup_paths)
     assert len(
         list(
             service.database.root.glob(
@@ -476,14 +377,44 @@ def test_subject_delete_recovers_after_exit_before_final_commit(
         token=str(unlocked["session_token"]),
         subject_id=subject_id,
     )["display_name"] == subject["display_name"]
-    assert {
-        path.name: path.read_bytes() for path in backup_paths
-    } == original_payloads
     assert not list(
         restarted.database.root.glob(
             ".subject-delete-*.rollback.cttxn"
         )
     )
+
+
+def test_legacy_backup_delete_transaction_is_left_for_manual_recovery(
+    tmp_path: Path,
+) -> None:
+    service, _token = _unlocked(tmp_path)
+    transaction = (
+        service.database.root
+        / ".subject-delete-legacy-backup.rollback.cttxn"
+    )
+    with zipfile.ZipFile(transaction, mode="w") as archive:
+        archive.writestr(
+            "manifest.json",
+            json.dumps({
+                "version": 1,
+                "operation_id": "legacy-backup-delete",
+                "backup_names": ["legacy.ctbackup"],
+            }),
+        )
+        archive.writestr(
+            "student_affairs.snapshot",
+            service.database.snapshot_bytes(),
+        )
+        archive.writestr("backups/0.ctbackup", b"legacy-backup-payload")
+
+    with pytest.raises(VaultError) as blocked:
+        service.database.recover_interrupted_operations()
+
+    assert (
+        blocked.value.code
+        == "support_legacy_backup_transaction_requires_manual_recovery"
+    )
+    assert transaction.is_file()
 
 
 def test_subject_delete_neutralizes_shared_reference_and_preserves_other_result(

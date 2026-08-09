@@ -964,41 +964,6 @@ class ReportGenerator:
         sheet.page_margins.top = 0.4
         sheet.page_margins.bottom = 0.4
 
-    def _build_score_summary(self, df_results: pd.DataFrame) -> pd.DataFrame:
-        summary = df_results[["student_name", "total_score", "student_score", "needs_human_review", "created_at"]].copy()
-        summary["得分率(%)"] = (summary["student_score"] / summary["total_score"] * 100).round(2)
-        summary.rename(
-            columns={
-                "student_name": "学生姓名",
-                "total_score": "试卷总分",
-                "student_score": "学生得分",
-                "needs_human_review": "需人工复核",
-                "created_at": "批改时间",
-            },
-            inplace=True,
-        )
-        return summary
-
-    def _build_session_score_summary(self, df_results: pd.DataFrame) -> pd.DataFrame:
-        summary = df_results[
-            ["student_code", "student_name", "class_name", "total_score", "student_score", "needs_human_review", "graded_at"]
-        ].copy()
-        summary["score_rate"] = (summary["student_score"] / summary["total_score"] * 100).round(2)
-        summary.rename(
-            columns={
-                "student_code": "学号",
-                "student_name": "学生姓名",
-                "class_name": "班级",
-                "total_score": "试卷总分",
-                "student_score": "学生得分",
-                "needs_human_review": "需人工复核",
-                "graded_at": "批改时间",
-                "score_rate": "得分率(%)",
-            },
-            inplace=True,
-        )
-        return summary
-
     def _build_compact_session_report(
         self,
         df_results: pd.DataFrame,
@@ -1077,9 +1042,6 @@ class ReportGenerator:
         df_out.sort_values(by=["班级", "总分"], ascending=[True, False], inplace=True)
         return df_out
 
-    def _load_session_score_map(self, session_id: int) -> dict[str, float]:
-        return self._load_session_question_maps(session_id)[0]
-
     def _load_session_rubric(self, session_id: int) -> dict:
         rubric_path = self.repositories.reports.get_session_rubric_path(
             int(session_id)
@@ -1138,11 +1100,6 @@ class ReportGenerator:
                         type_map[pid] = qtype
         return score_map, type_map
 
-    def _load_session_knowledge_label_map(self, session_id: int) -> dict[str, str]:
-        return self._knowledge_label_map_from_rubric(
-            self._load_session_rubric(session_id)
-        )
-
     def _knowledge_label_map_from_rubric(
         self,
         rubric: dict,
@@ -1190,99 +1147,6 @@ class ReportGenerator:
     def _resolve_stored_file_path(self, path_value: object) -> Path:
         data_root = self.db_path.parent.parent if self.db_path.parent.name == "databases" else None
         return resolve_stored_file_path(path_value, data_root=data_root)
-
-    def _build_question_score_detail_sheet(
-        self,
-        df_details: pd.DataFrame,
-        score_map: dict[str, float],
-        type_map: dict[str, str],
-    ) -> pd.DataFrame:
-        columns = [
-            "题号",
-            "题型",
-            "满分",
-            "全班得分率",
-            "平均得分",
-            "失分人数",
-            "失分同学",
-            "75%以上得分率学生",
-            "25~75%得分率学生",
-            "25%以下得分率学生",
-        ]
-        columns.append("主要错因")
-        if df_details.empty:
-            return pd.DataFrame(columns=columns)
-
-        detail_records = _normalize_question_detail_records(df_details.to_dict(orient="records"), score_map)
-        if not detail_records:
-            return pd.DataFrame(columns=columns)
-        work_df = pd.DataFrame(detail_records)
-
-        rows: list[dict[str, object]] = []
-        qids = _natural_question_order(work_df["question_id"].dropna().astype(str).unique().tolist())
-        for qid in qids:
-            qdf = work_df[work_df["question_id"].astype(str) == qid].copy()
-            if qdf.empty:
-                continue
-            full_score = float(score_map.get(qid) or 0)
-            if full_score <= 0:
-                full_score = max(float(qdf["score_awarded"].max() or 0), 0.0)
-
-            student_items = []
-            lost_students = []
-            high_rate = []
-            mid_rate = []
-            low_rate = []
-            for item in qdf.to_dict(orient="records"):
-                awarded = float(item.get("score_awarded") or 0)
-                label = _student_label(item)
-                rate = awarded / full_score * 100 if full_score > 0 else 100.0
-                student_items.append((label, awarded, rate))
-                if full_score > 0 and awarded < full_score - 1e-6:
-                    lost_students.append(label)
-            error_text = _summarize_error_categories(qdf.to_dict(orient="records"), full_score)
-
-            qtype = str(type_map.get(qid) or "")
-            if _is_solution_type(qtype):
-                for label, _awarded, rate in student_items:
-                    if rate >= 75:
-                        high_rate.append(label)
-                    elif rate >= 25:
-                        mid_rate.append(label)
-                    else:
-                        low_rate.append(label)
-
-            score_sum = float(qdf["score_awarded"].sum())
-            count = len(qdf)
-            full_sum = full_score * count
-            class_rate = score_sum / full_sum * 100 if full_sum > 0 else 100.0
-            rows.append(
-                {
-                    "题号": qid,
-                    "题型": qtype,
-                    "满分": _format_score(full_score),
-                    "全班得分率": round(class_rate, 2),
-                    "平均得分": round(score_sum / max(count, 1), 2),
-                    "失分人数": len(lost_students),
-                    "失分同学": "、".join(lost_students),
-                    "75%以上得分率学生": "、".join(high_rate),
-                    "25~75%得分率学生": "、".join(mid_rate),
-                    "25%以下得分率学生": "、".join(low_rate),
-                }
-            )
-
-        for row, qid in zip(rows, qids):
-            qdf = work_df[work_df["question_id"].astype(str) == qid].copy()
-            full_score = float(score_map.get(qid) or 0)
-            if full_score <= 0 and not qdf.empty:
-                full_score = max(float(qdf["score_awarded"].max() or 0), 0.0)
-            row["主要错因"] = _summarize_error_categories(qdf.to_dict(orient="records"), full_score)
-
-        return pd.DataFrame(rows, columns=columns).sort_values(
-            by=["全班得分率", "题号"],
-            ascending=[True, True],
-            kind="stable",
-        )
 
     def _build_session_knowledge_summary_by_class(
         self,
@@ -1337,64 +1201,6 @@ class ReportGenerator:
                 }
             )
         return pd.DataFrame(rows, columns=columns).sort_values(by=["班级", "得分率", "知识点"], kind="stable")
-
-    def _build_knowledge_summary(self, df_details: pd.DataFrame) -> pd.DataFrame:
-        if df_details.empty:
-            return pd.DataFrame(columns=["knowledge_id", "平均得分", "最低得分", "最高得分", "答题条目数"])
-
-        agg = (
-            df_details.groupby("knowledge_id")["score_awarded"]
-            .agg(["mean", "min", "max", "count"])
-            .reset_index()
-        )
-        agg.columns = ["knowledge_id", "平均得分", "最低得分", "最高得分", "答题条目数"]
-        agg["平均得分"] = agg["平均得分"].round(2)
-        return agg.sort_values(by=["平均得分", "knowledge_id"], ascending=[True, True])
-
-    def _build_session_weak_points(self, df_details: pd.DataFrame) -> pd.DataFrame:
-        if df_details.empty:
-            return pd.DataFrame(
-                columns=[
-                    "student_code",
-                    "student_name",
-                    "knowledge_id",
-                    "avg_score",
-                    "deduction_count",
-                    "item_count",
-                    "sample_reasons",
-                ]
-            )
-
-        grouped = (
-            df_details.groupby(["student_code", "student_name", "knowledge_id"])
-            .agg(
-                avg_score=("score_awarded", "mean"),
-                deduction_count=("deduction_reason", lambda s: int((s.fillna("").str.strip() != "").sum())),
-                item_count=("question_id", "count"),
-                sample_reasons=(
-                    "deduction_reason",
-                    lambda s: "；".join(sorted({x.strip() for x in s.dropna().astype(str) if x.strip()}))
-                ),
-            )
-            .reset_index()
-        )
-
-        grouped["avg_score"] = grouped["avg_score"].round(2)
-        grouped = grouped.sort_values(by=["avg_score", "deduction_count", "knowledge_id"], ascending=[True, False, True])
-        grouped.rename(
-            columns={
-                "student_code": "学号",
-                "student_name": "学生姓名",
-                "knowledge_id": "知识点ID",
-                "avg_score": "平均得分",
-                "deduction_count": "失分条目数",
-                "item_count": "答题条目数",
-                "sample_reasons": "典型扣分原因",
-            },
-            inplace=True,
-        )
-        return grouped
-
 
 def _normalized_excel_options(
     raw_options: dict[str, object] | None,
@@ -1593,24 +1399,6 @@ def _public_grading_reason(value: object, fallback: str = "") -> str:
     if re.search(r"[\u3400-\u9fff]", text):
         return text
     return fallback or "自动处理未完成，请教师复核"
-
-
-def _student_label(item: dict) -> str:
-    name = str(item.get("student_name") or "").strip()
-    code = str(item.get("student_code") or "").strip()
-    if code and name:
-        return f"{name}({code})"
-    return name or code or "未知学生"
-
-
-def _is_solution_type(qtype: str) -> bool:
-    return str(qtype or "").strip().lower() in {
-        "proof",
-        "calculation",
-        "comprehensive",
-        "solution",
-        "general_solution",
-    }
 
 
 def _student_label(item: dict) -> str:

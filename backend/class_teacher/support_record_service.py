@@ -1235,7 +1235,6 @@ class SupportRecordService:
         subject_id: str,
     ) -> dict[str, object]:
         vmk = self._key_provider(token)
-        self._recover_pending_backup_deletions()
         with closing(self.database.connect()) as connection:
             subject = self._subject_row(connection, subject_id)
             identity, _ = self.repository.get(
@@ -1282,16 +1281,8 @@ class SupportRecordService:
                     (subject_id, subject_id),
                 ).fetchall()
             )
-        backups = [
-            {
-                "file_name": path.name,
-                "size_bytes": path.stat().st_size,
-            }
-            for path in self.database.backup_dir.glob("*.ctbackup")
-        ]
         version_payload = {
             "subject_id": subject_id,
-            "affected_backups": sorted(item["file_name"] for item in backups),
             "shared_objects": [item["object_id"] for item in shared],
             "counts": counts,
             "projection_ids": projection_ids,
@@ -1301,18 +1292,11 @@ class SupportRecordService:
         ).hexdigest()
         return {
             "subject_id": subject_id,
-            "affected_backups": backups,
-            "affected_backup_count": len(backups),
             "shared_objects": shared,
             "shared_object_count": len(shared),
             "impact_counts": counts,
             "projection_count": len(projection_ids),
             "preview_version": preview_version,
-            "requires_backup_confirmation": bool(backups),
-            "backup_confirmation_phrase": (
-                "确认销毁受影响的班主任专用备份"
-                if backups else None
-            ),
             "delete_confirmation_phrase": "确认完整删除学生支持数据",
         }
 
@@ -1323,7 +1307,6 @@ class SupportRecordService:
         subject_id: str,
         operation_id: str,
         confirmation_phrase: str,
-        backup_confirmation_phrase: str | None = None,
         preview_version: str | None = None,
     ) -> dict[str, object]:
         self._key_provider(token)
@@ -1333,7 +1316,6 @@ class SupportRecordService:
                 "操作编号无效，请刷新页面后重试",
                 status_code=422,
             )
-        self._recover_pending_backup_deletions()
         replay = self._idempotent(
             operation_id,
             "support.subject.delete",
@@ -1349,16 +1331,6 @@ class SupportRecordService:
                 "support_delete_preview_changed",
                 "删除影响已经变化，请重新查看并确认",
                 status_code=409,
-                details=preview,
-            )
-        if preview["requires_backup_confirmation"] and (
-            backup_confirmation_phrase
-            != "确认销毁受影响的班主任专用备份"
-        ):
-            raise VaultError(
-                "support_backup_delete_confirmation_required",
-                "请先确认销毁预览中列出的全部受影响专用备份",
-                status_code=422,
                 details=preview,
             )
         live_database = self.database
@@ -1378,9 +1350,6 @@ class SupportRecordService:
                     subject_id=subject_id,
                     operation_id=operation_id,
                     confirmation_phrase=confirmation_phrase,
-                    affected_backup_count=int(
-                        preview["affected_backup_count"]
-                    ),
                 )
                 candidate_snapshot = candidate_database.snapshot_bytes()
             finally:
@@ -1388,24 +1357,6 @@ class SupportRecordService:
         transaction: Path | None = None
         tombstoned: list[dict[str, object]] = []
         try:
-            current_backup_names = {
-                path.name
-                for path in live_database.backup_dir.glob("*.ctbackup")
-            }
-            preview_backup_names = {
-                str(backup["file_name"])
-                for backup in preview["affected_backups"]
-            }
-            if current_backup_names != preview_backup_names:
-                raise VaultError(
-                    "support_delete_preview_changed",
-                    "专用备份清单已经变化，请重新查看删除影响",
-                    status_code=409,
-                )
-            backup_paths = [
-                live_database.backup_dir / name
-                for name in sorted(current_backup_names)
-            ]
             if self.projections is not None:
                 with closing(live_database.connect()) as connection:
                     rows = connection.execute(
@@ -1425,13 +1376,10 @@ class SupportRecordService:
             transaction = live_database.create_subject_delete_transaction(
                 operation_id=operation_id,
                 database_snapshot=snapshot,
-                backup_paths=backup_paths,
             )
             live_database.replace_from_snapshot_atomically(
                 candidate_snapshot
             )
-            for backup_path in backup_paths:
-                backup_path.unlink()
             live_database.commit_subject_delete_transaction(transaction)
             return result
         except Exception:
@@ -1452,50 +1400,6 @@ class SupportRecordService:
                         pass
             raise
 
-    def _recover_pending_backup_deletions(self) -> None:
-        pending_paths = list(
-            self.database.backup_dir.glob(
-                "*.ctbackup.*.pending-delete"
-            )
-        )
-        if not pending_paths:
-            return
-        try:
-            with closing(self.database.connect()) as connection:
-                for pending in pending_paths:
-                    suffix = pending.name.split(".ctbackup.", 1)
-                    if len(suffix) != 2:
-                        continue
-                    operation_id = suffix[1].removesuffix(
-                        ".pending-delete"
-                    )
-                    completed = connection.execute(
-                        """
-                        SELECT 1 FROM idempotency_ledger
-                        WHERE operation_id = ?
-                          AND operation_type = 'support.subject.delete'
-                        """,
-                        (operation_id,),
-                    ).fetchone() is not None
-                    if completed:
-                        pending.unlink()
-                        continue
-                    source = pending.with_name(
-                        suffix[0] + ".ctbackup"
-                    )
-                    if source.exists():
-                        source = pending.with_name(
-                            suffix[0]
-                            + f".recovered-{uuid4().hex}.ctbackup"
-                        )
-                    pending.replace(source)
-        except Exception as exc:
-            raise VaultError(
-                "support_backup_recovery_failed",
-                "上次删除留下的专用备份暂存文件无法安全恢复",
-                status_code=409,
-            ) from exc
-
     def _delete_subject_once(
         self,
         *,
@@ -1503,7 +1407,6 @@ class SupportRecordService:
         subject_id: str,
         operation_id: str,
         confirmation_phrase: str,
-        affected_backup_count: int = 0,
     ) -> dict[str, object]:
         vmk = self._key_provider(token)
         replay = self._idempotent(operation_id, "support.subject.delete")
@@ -1872,7 +1775,6 @@ class SupportRecordService:
                     "DELETE FROM encrypted_objects WHERE object_id = ?",
                     [(value,) for value in orphan_object_ids],
                 )
-                connection.execute("DELETE FROM encrypted_backup_records")
                 result = {
                     "subject_id": subject_id,
                     "deleted": True,
@@ -1880,9 +1782,7 @@ class SupportRecordService:
                     "linked_actions_deleted": len(linked_action_ids),
                     "encrypted_objects_deleted": len(object_ids),
                     "orphan_import_objects_deleted": len(orphan_object_ids),
-                    "affected_backups_destroyed": affected_backup_count,
                     "wal_rebuilt": True,
-                    "create_clean_backup_recommended": True,
                 }
                 self._remember(
                     connection,

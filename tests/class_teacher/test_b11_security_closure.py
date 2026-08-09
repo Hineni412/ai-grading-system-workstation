@@ -12,10 +12,9 @@ from backend.workspaces.contracts import WorkspaceContext
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 PASSWORD = "合成收口密码-足够长-001"
-BACKUP_PASSWORD = "合成收口备份密码-足够长-001"
 
 
-def test_b01_to_b10_sensitive_payloads_never_appear_in_vault_wal_or_backup(
+def test_b01_to_b10_sensitive_payloads_never_appear_in_vault_files(
     tmp_path: Path,
 ) -> None:
     root = tmp_path / "workspaces" / "class-teacher"
@@ -111,12 +110,6 @@ def test_b01_to_b10_sensitive_payloads_never_appear_in_vault_wal_or_backup(
         evidence_sufficiency="不足",
         review_suggestion="后续复查",
     )
-    service.create_backup(
-        token=token,
-        backup_password=BACKUP_PASSWORD,
-        operation_id="b11-create-backup",
-    )
-
     protected_files = [
         path for path in root.rglob("*")
         if path.is_file()

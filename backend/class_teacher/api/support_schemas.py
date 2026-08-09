@@ -23,7 +23,6 @@ class SubjectUpdateRequest(OperationRequest):
 
 class SubjectDeleteRequest(OperationRequest):
     confirmation_phrase: str
-    backup_confirmation_phrase: str | None = None
     preview_version: str | None = Field(default=None, min_length=64, max_length=64)
 
 

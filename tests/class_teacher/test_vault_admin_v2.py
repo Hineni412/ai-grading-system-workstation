@@ -14,7 +14,6 @@ from backend.workspaces.contracts import WorkspaceContext
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 PIN = "246810"
 NEW_PIN = "135790"
-BACKUP_PASSWORD = "合成专用备份密码-足够长-001"
 
 
 def _service(tmp_path: Path, provider: FakeCurrentUserProtection) -> VaultService:
@@ -82,42 +81,3 @@ def test_pin_change_locks_session_and_keeps_vault_recoverable(
             operation_id="vault-pin-change-002",
         )
     assert unchanged.value.code == "vault_pin_unchanged"
-
-
-def test_restore_preview_is_complete_replace_and_becomes_stale_after_write(
-    tmp_path: Path,
-) -> None:
-    service, _provider, token = _initialized(tmp_path)
-    backup = service.create_backup(
-        token=token,
-        backup_password=BACKUP_PASSWORD,
-        operation_id="vault-backup-create-001",
-    )
-    preview = service.preview_restore(
-        token=token,
-        file_name=str(backup["file_name"]),
-        secret=BACKUP_PASSWORD,
-        secret_kind="password",
-    )
-
-    assert preview["mode"] == "complete_replace"
-    assert preview["will_replace_current"] is True
-    assert preview["will_lock_after_confirm"] is True
-    assert preview["backup_scope_counts"] == preview["current_scope_counts"]
-    assert preview["confirmation_phrase"] == "确认完整替换班主任工作台"
-
-    service.support.create_subject(
-        token=token,
-        operation_id="restore-stale-subject-001",
-        source_student_id="synthetic-restore-stale-001",
-        display_name="合成恢复学生",
-        class_label="合成一班",
-    )
-    with pytest.raises(VaultError) as stale:
-        service.confirm_restore(
-            token=token,
-            preview_token=str(preview["preview_token"]),
-            operation_id="vault-restore-confirm-001",
-            confirmation_phrase=str(preview["confirmation_phrase"]),
-        )
-    assert stale.value.code == "vault_restore_preview_stale"

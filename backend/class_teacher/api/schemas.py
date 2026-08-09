@@ -86,73 +86,6 @@ class ChangePasswordRequest(BaseModel):
     operation_id: str = Field(min_length=8, max_length=128)
 
 
-class BackupCreateRequest(BaseModel):
-    backup_password: SecretStr
-    operation_id: str = Field(min_length=8, max_length=128)
-
-
-class BackupCreateResponse(BaseModel):
-    backup_id: str
-    file_name: str
-    created_at: str
-    size_bytes: int
-    source_instance_id: str
-
-
-class BackupListItem(BaseModel):
-    backup_id: str
-    file_name: str
-    created_at: str
-    size_bytes: int
-    status: str
-
-
-class BackupListResponse(BaseModel):
-    items: list[BackupListItem]
-
-
-class BackupSecretRequest(BaseModel):
-    file_name: str
-    secret: SecretStr
-    secret_kind: Literal["password", "recovery_key"]
-
-
-class BackupSummaryResponse(BaseModel):
-    backup_id: str
-    source_instance_id: str
-    created_at: str
-    format_version: int
-    scope: str
-
-
-class RestorePreviewResponse(BackupSummaryResponse):
-    preview_token: str
-    expires_in_seconds: int
-    requires_complete_replacement: bool
-    source_relation: Literal["same_instance", "other_instance"]
-    backup_schema_version: int
-    current_schema_version: int
-    migration_required: bool
-    backup_scope_counts: dict[str, int]
-    current_scope_counts: dict[str, int]
-    mode: Literal["complete_replace"]
-    will_replace_current: bool
-    will_lock_after_confirm: bool
-    confirmation_phrase: str
-
-
-class RestoreConfirmRequest(BaseModel):
-    preview_token: str = Field(min_length=16, max_length=256)
-    operation_id: str = Field(min_length=8, max_length=128)
-    confirmation_phrase: str
-
-
-class RestoreConfirmResponse(BaseModel):
-    restored: bool
-    backup_id: str
-    locked: bool
-
-
 class OperationResponse(BaseModel):
     completed: bool = True
     locked: bool | None = None
@@ -166,12 +99,6 @@ class TouchResponse(BaseModel):
 
 
 __all__ = [
-    "BackupCreateRequest",
-    "BackupCreateResponse",
-    "BackupListItem",
-    "BackupListResponse",
-    "BackupSecretRequest",
-    "BackupSummaryResponse",
     "ChangePasswordRequest",
     "InitializeRequest",
     "InitializeResponse",
@@ -182,9 +109,6 @@ __all__ = [
     "PinUpgradeRequest",
     "PinUnlockRequest",
     "RecoverRequest",
-    "RestoreConfirmRequest",
-    "RestoreConfirmResponse",
-    "RestorePreviewResponse",
     "SessionResponse",
     "TouchResponse",
     "UnlockRequest",
