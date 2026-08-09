@@ -151,22 +151,22 @@
   font-size: var(--font-size-dense);
 }
 
-.is-ok,
-.ops-state.is-success {
+.settings-ops .is-ok,
+.settings-ops .ops-state.is-success {
   color: var(--color-success);
 }
 
-.is-warning,
-.ops-state.is-warning {
+.settings-ops .is-warning,
+.settings-ops .ops-state.is-warning {
   color: var(--color-warning);
 }
 
-.is-error,
-.ops-state.is-danger {
+.settings-ops .is-error,
+.settings-ops .ops-state.is-danger {
   color: var(--color-danger);
 }
 
-.ops-state.is-info {
+.settings-ops .ops-state.is-info {
   color: var(--color-info);
 }
 

@@ -1,14 +1,27 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import {
+  computed,
+  defineAsyncComponent,
+  ref,
+  watch,
+  type ComponentPublicInstance,
+} from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
-import ModelProfilesView from './ModelProfilesView.vue'
-import SettingsOpsView from './SettingsOpsView.vue'
+const ModelProfilesView = defineAsyncComponent(
+  () => import('./ModelProfilesView.vue'),
+)
+const SettingsOpsView = defineAsyncComponent(
+  () => import('./SettingsOpsView.vue'),
+)
 
 type SettingsSection = 'ai' | 'backup' | 'maintenance'
+type ModelProfilesViewInstance = ComponentPublicInstance & {
+  hasUnsavedChanges: boolean
+}
 const route = useRoute()
 const router = useRouter()
-const modelView = ref<InstanceType<typeof ModelProfilesView> | null>(null)
+const modelView = ref<ModelProfilesViewInstance | null>(null)
 const section = computed<SettingsSection>(() => {
   const value = route.query.section
   if (value === 'backup' || value === 'maintenance') return value

@@ -16,6 +16,9 @@ import ReviewBatchWorkspace from '../components/review/ReviewBatchWorkspace.vue'
 import ReviewDeepWorkspace from '../components/review/ReviewDeepWorkspace.vue'
 import ReviewFeedbackToast from '../components/review/ReviewFeedbackToast.vue'
 import ReviewShortcutGuide from '../components/review/ReviewShortcutGuide.vue'
+import '../styles/review-queue.css'
+import '../styles/review-evidence.css'
+import '../styles/review-scoring.css'
 import { useReviewDraftStore } from '../stores/review-drafts'
 import {
   useReviewQueueStore,

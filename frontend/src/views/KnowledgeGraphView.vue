@@ -16,6 +16,7 @@ import {
 import { useKnowledgeGraphStore } from '../stores/knowledge-graph'
 import { useSessionStore } from '../stores/session'
 import { useCurriculumScopeStore } from '../stores/curriculum-scope'
+import '../styles/knowledge-graph.css'
 
 const route = useRoute()
 const router = useRouter()

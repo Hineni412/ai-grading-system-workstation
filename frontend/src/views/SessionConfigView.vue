@@ -29,6 +29,7 @@ import { fetchRegionReadiness, type RegionReadiness } from '../api/template-regi
 import { useConfigWorkspaceStore } from '../stores/config-workspace'
 import { useJobStore } from '../stores/jobs'
 import { useSessionStore } from '../stores/session'
+import '../styles/session-config.css'
 
 const props = withDefaults(defineProps<{
   editorSaver?: (sessionId: number, request: ConfigEditorSaveRequest) => Promise<ConfigEditorSaveResponse>

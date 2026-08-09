@@ -6,6 +6,7 @@ import StudentInspector from '../components/students/StudentInspector.vue'
 import StudentRosterTable from '../components/students/StudentRosterTable.vue'
 import { useStudentRosterStore } from '../stores/students'
 import { intakeApi, type HomeroomPreference } from '../workspaces/class-teacher/api/intake'
+import '../styles/students.css'
 
 const roster = useStudentRosterStore()
 const homeroom = ref<HomeroomPreference | null>(null)

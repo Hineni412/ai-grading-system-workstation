@@ -168,6 +168,7 @@ async function mountAt(
   }
   await new Promise(resolve => setTimeout(resolve, 0))
   await nextTick()
+  await vi.waitFor(() => expect(host.textContent).not.toBe(''))
   return { app, host, router, pinia }
 }
 

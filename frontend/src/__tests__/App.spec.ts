@@ -43,8 +43,27 @@ beforeEach(() => {
 })
 
 describe('App', () => {
-  it('imports the P2-06 evidence stylesheet after the queue styles without color literals', () => {
+  it('keeps the lesson tree ready and defers the three non-current teaching-prep workspaces', () => {
+    const source = readFileSync(
+      resolve(process.cwd(), 'src/workspaces/teaching-prep/views/TeachingPrepHomeView.vue'),
+      'utf-8',
+    )
+
+    expect(source).toContain("import LessonTreeWorkspace from '../workspaces/LessonTreeWorkspace.vue'")
+    expect(source).not.toContain("import MaterialLibraryWorkspace from '../workspaces/MaterialLibraryWorkspace.vue'")
+    expect(source).not.toContain("import LessonMaterialConfirmationWorkspace from '../workspaces/LessonMaterialConfirmationWorkspace.vue'")
+    expect(source).not.toContain("import PresentationVersionsWorkspace from '../workspaces/PresentationVersionsWorkspace.vue'")
+    expect(source).toContain("() => import('../workspaces/MaterialLibraryWorkspace.vue')")
+    expect(source).toContain("() => import('../workspaces/LessonMaterialConfirmationWorkspace.vue')")
+    expect(source).toContain("() => import('../workspaces/PresentationVersionsWorkspace.vue')")
+  })
+
+  it('keeps route-only review styles out of startup and preserves their page order', () => {
     const mainSource = readFileSync(resolve(process.cwd(), 'src/main.ts'), 'utf-8')
+    const reviewPageSource = readFileSync(
+      resolve(process.cwd(), 'src/views/ReviewQueueView.vue'),
+      'utf-8',
+    )
     const reviewStyles = readFileSync(
       resolve(process.cwd(), 'src/styles/review-queue.css'),
       'utf-8',
@@ -58,14 +77,32 @@ describe('App', () => {
     const evidenceImport = "import './styles/review-evidence.css'"
     const scoringImport = "import './styles/review-scoring.css'"
 
-    expect(mainSource).toContain(reviewImport)
-    expect(mainSource).toContain(evidenceImport)
-    expect(mainSource).toContain(scoringImport)
-    expect(mainSource.indexOf(reviewImport)).toBeGreaterThan(mainSource.indexOf(shellImport))
-    expect(mainSource.indexOf(evidenceImport)).toBeGreaterThan(mainSource.indexOf(reviewImport))
-    expect(mainSource.indexOf(scoringImport)).toBeGreaterThan(mainSource.indexOf(evidenceImport))
+    expect(mainSource).toContain(shellImport)
+    expect(mainSource).not.toContain(reviewImport)
+    expect(mainSource).not.toContain(evidenceImport)
+    expect(mainSource).not.toContain(scoringImport)
+    expect(reviewPageSource).toContain("import '../styles/review-queue.css'")
+    expect(reviewPageSource).toContain("import '../styles/review-evidence.css'")
+    expect(reviewPageSource).toContain("import '../styles/review-scoring.css'")
+    expect(reviewPageSource.indexOf("import '../styles/review-evidence.css'"))
+      .toBeGreaterThan(reviewPageSource.indexOf("import '../styles/review-queue.css'"))
+    expect(reviewPageSource.indexOf("import '../styles/review-scoring.css'"))
+      .toBeGreaterThan(reviewPageSource.indexOf("import '../styles/review-evidence.css'"))
     expect(reviewStyles).not.toMatch(/#[\da-f]{3,8}\b|(?:rgb|hsl)a?\s*\(/i)
     expect(evidenceStyles).not.toMatch(/#[\da-f]{3,8}\b|(?:rgb|hsl)a?\s*\(/i)
+  })
+
+  it('loads shared question filters before assembly overrides on a direct assembly visit', () => {
+    const source = readFileSync(
+      resolve(process.cwd(), 'src/views/QuestionAssemblyView.vue'),
+      'utf-8',
+    )
+    const sharedFilters = "import '../styles/question-bank.css'"
+    const assemblyStyles = "import '../styles/question-assembly.css'"
+
+    expect(source).toContain(sharedFilters)
+    expect(source).toContain(assemblyStyles)
+    expect(source.indexOf(assemblyStyles)).toBeGreaterThan(source.indexOf(sharedFilters))
   })
 
   it('does not mount a permanent scoring or session inspector', async () => {

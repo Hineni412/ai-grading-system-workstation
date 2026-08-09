@@ -26,6 +26,7 @@ from question_bank.personalized_papers import (
     PaperRevisionConflict,
     PersonalizedPaperModule,
 )
+from question_bank.personalized_papers import module as personalized_paper_module
 from question_bank.personalized_papers.rendering import (
     decode_page_identity,
     page_identity,
@@ -246,6 +247,65 @@ def test_create_review_docx_is_idempotent_versioned_and_immutable(
     assert hashlib.sha256(review_path.read_bytes()).hexdigest() == review_hash
 
 
+def test_each_public_paper_operation_prepares_the_database_once(
+    paper_workspace,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module, draft, db_path, _data_root = paper_workspace
+    initialize_calls = _record_database_initialization(monkeypatch)
+
+    instance = module.create_review_instance(
+        str(draft["draft_id"]),
+        _create_command("d", draft),
+    )
+    assert initialize_calls == [db_path]
+
+    initialize_calls.clear()
+    assert module.get(instance["paper_instance_id"]) == instance
+    assert initialize_calls == [db_path]
+
+    initialize_calls.clear()
+    review_path, _media_type = module.artifact_path(
+        instance["paper_instance_id"],
+        "review-docx",
+    )
+    assert initialize_calls == [db_path]
+
+    initialize_calls.clear()
+    review_payload = review_path.read_bytes()
+    frozen = module.freeze(
+        instance["paper_instance_id"],
+        _freeze_command("e", instance, review_payload),
+        BytesIO(review_payload),
+    )
+    assert frozen["status"] == "frozen"
+    assert initialize_calls == [db_path]
+
+
+def test_invalid_paper_identifiers_and_batch_token_do_not_prepare_database(
+    paper_workspace,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module, draft, _db_path, _data_root = paper_workspace
+    initialize_calls = _record_database_initialization(monkeypatch)
+
+    with pytest.raises(ValueError, match="draft_id is invalid"):
+        module.create_review_instance("invalid", _create_command("d", draft))
+    with pytest.raises(ValueError, match="paper_instance_id is invalid"):
+        module.get("invalid")
+    with pytest.raises(ValueError, match="paper_instance_id is invalid"):
+        module.artifact_path("invalid", "review-docx")
+    with pytest.raises(ValueError, match="operation_token is invalid"):
+        module.create_review_batch(
+            str(draft["draft_id"]),
+            operation_token="invalid",
+            expected_draft_revision=int(draft["revision"]),
+            actor_ref="teacher-1",
+        )
+
+    assert initialize_calls == []
+
+
 def test_review_batch_keeps_individual_instances_and_publishes_manifest(
     paper_workspace,
 ) -> None:
@@ -311,6 +371,67 @@ def test_review_batch_keeps_individual_instances_and_publishes_manifest(
     with ZipFile(frozen_bundle) as archive:
         assert "frozen-manifest.json" in archive.namelist()
         assert len([name for name in archive.namelist() if name.endswith(".pdf")]) == 1
+
+
+def test_multi_student_batch_prepares_database_once_and_keeps_all_results(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "question_bank.db"
+    data_root = tmp_path / "data"
+    initialize_database(db_path)
+    install_current_knowledge(db_path)
+    _seed_recommendation_sources(db_path, data_root)
+    recommendation = PersonalizedRecommendationModule(
+        db_path=db_path,
+        data_root=data_root,
+        clock=lambda: NOW,
+    )
+    draft = recommendation.create(
+        request_token="f" * 32,
+        diagnosis=_diagnosis(
+            student_ids=("SYN-S01", "SYN-S02", "SYN-S03"),
+        ),
+        config=PersonalizedRecommendationConfig(
+            question_count=8,
+            expected_minutes=120,
+        ),
+        actor_ref="teacher-1",
+    )
+    module = PersonalizedPaperModule(
+        db_path=db_path,
+        data_root=data_root,
+        pdf_converter=SyntheticPdfConverter(),
+        clock=lambda: NOW,
+    )
+    initialize_calls = _record_database_initialization(monkeypatch)
+
+    result = module.create_review_batch(
+        str(draft["draft_id"]),
+        operation_token="1" * 32,
+        expected_draft_revision=int(draft["revision"]),
+        actor_ref="teacher-1",
+    )
+
+    assert result["status"] == "complete"
+    assert result["requested_count"] == result["succeeded_count"] == 3
+    assert result["failed_count"] == 0
+    assert [item["student_id"] for item in result["items"]] == [
+        "SYN-S01",
+        "SYN-S02",
+        "SYN-S03",
+    ]
+    assert initialize_calls == [db_path]
+
+    initialize_calls.clear()
+    bundle, _media_type = module.batch_artifact_path(
+        result["batch_run_id"],
+        "bundle",
+    )
+    with ZipFile(bundle) as archive:
+        assert len([name for name in archive.namelist() if name.endswith(".docx")]) == 3
+    assert initialize_calls == [db_path]
+
 
 def test_concurrent_batches_reuse_one_student_draft_instance(paper_workspace) -> None:
     module, draft, _db_path, _data_root = paper_workspace
@@ -387,6 +508,45 @@ def test_failed_batch_item_can_be_retried_without_replacing_success(paper_worksp
 
     assert retried["status"] == "complete"
     assert retried["items"][0]["paper_instance_id"] == paper_id
+
+
+def test_retrying_a_batch_reuses_its_database_preparation(
+    paper_workspace,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module, draft, db_path, _data_root = paper_workspace
+    batch = module.create_review_batch(
+        str(draft["draft_id"]),
+        operation_token="0" * 32,
+        expected_draft_revision=int(draft["revision"]),
+        actor_ref="teacher-1",
+    )
+    paper_id = batch["items"][0]["paper_instance_id"]
+    with connect(db_path) as connection:
+        connection.execute(
+            """
+            UPDATE personalized_paper_batch_items
+            SET status = 'failed', paper_instance_id = NULL,
+                error_code = 'synthetic_interruption'
+            WHERE batch_run_id = ?
+            """,
+            (batch["batch_run_id"],),
+        )
+        connection.execute(
+            """
+            UPDATE personalized_paper_batches
+            SET status = 'partial', succeeded_count = 0, failed_count = 1
+            WHERE batch_run_id = ?
+            """,
+            (batch["batch_run_id"],),
+        )
+    initialize_calls = _record_database_initialization(monkeypatch)
+
+    retried = module.retry_batch(batch["batch_run_id"])
+
+    assert retried["status"] == "complete"
+    assert retried["items"][0]["paper_instance_id"] == paper_id
+    assert initialize_calls == [db_path]
 
 
 def test_freeze_stamps_every_page_and_rejects_identity_tampering(
@@ -618,3 +778,21 @@ def _freeze_command(
         filename="reviewed.docx",
         actor_ref="teacher-1",
     )
+
+
+def _record_database_initialization(
+    monkeypatch: pytest.MonkeyPatch,
+) -> list[Path]:
+    calls: list[Path] = []
+    original = personalized_paper_module.initialize_database
+
+    def tracking_initialize(path: Path) -> None:
+        calls.append(Path(path))
+        original(path)
+
+    monkeypatch.setattr(
+        personalized_paper_module,
+        "initialize_database",
+        tracking_initialize,
+    )
+    return calls

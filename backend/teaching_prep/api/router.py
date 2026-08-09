@@ -195,48 +195,19 @@ def _active_material_parse_job(
     manager: JobManager,
     material_version_id: str,
 ) -> JobRecord | None:
-    offset = 0
-    while True:
-        jobs, total = manager.list(
-            job_types=(_MATERIAL_PARSE_JOB_TYPE,),
-            statuses=("queued", "running", "paused"),
-            limit=100,
-            offset=offset,
-        )
-        active = next(
-            (
-                job
-                for job in jobs
-                if job.payload.get("material_version_id")
-                == material_version_id
-            ),
-            None,
-        )
-        if active is not None:
-            return active
-        offset += len(jobs)
-        if not jobs or offset >= total:
-            return None
+    return manager.store.find_latest_job_by_payload(
+        job_type=_MATERIAL_PARSE_JOB_TYPE,
+        payload_equals={"material_version_id": material_version_id},
+        statuses=("queued", "running", "paused"),
+    )
 
 
 def _latest_material_parse_jobs(manager: JobManager) -> tuple[JobRecord, ...]:
-    latest: dict[str, JobRecord] = {}
-    offset = 0
-    while True:
-        jobs, total = manager.list(
-            job_types=(_MATERIAL_PARSE_JOB_TYPE,),
-            limit=100,
-            offset=offset,
-        )
-        for job in jobs:
-            material_id = str(
-                job.payload.get("material_version_id") or ""
-            ).strip()
-            if len(material_id) == 32 and material_id not in latest:
-                latest[material_id] = job
-        offset += len(jobs)
-        if not jobs or offset >= total:
-            return tuple(latest.values())
+    return manager.store.list_latest_jobs_by_payload_key(
+        job_type=_MATERIAL_PARSE_JOB_TYPE,
+        payload_key="material_version_id",
+        identity_length=32,
+    )
 
 
 def _semester_mapping_job_response(
@@ -347,54 +318,27 @@ def _matching_semester_mapping_job(
     material_record_id: str,
     source_state_sha256: str,
 ) -> JobRecord | None:
-    offset = 0
-    while True:
-        jobs, total = manager.list(
-            job_types=(_SEMESTER_MAPPING_JOB_TYPE,),
-            statuses=("queued", "running", "paused", "succeeded"),
-            limit=100,
-            offset=offset,
-        )
-        matching = next(
-            (
-                job
-                for job in jobs
-                if job.payload.get("semester_id") == semester_id
-                and job.payload.get("material_record_id") == material_record_id
-                and job.payload.get("source_state_sha256") == source_state_sha256
-            ),
-            None,
-        )
-        if matching is not None:
-            return matching
-        offset += len(jobs)
-        if not jobs or offset >= total:
-            return None
+    return manager.store.find_latest_job_by_payload(
+        job_type=_SEMESTER_MAPPING_JOB_TYPE,
+        payload_equals={
+            "semester_id": semester_id,
+            "material_record_id": material_record_id,
+            "source_state_sha256": source_state_sha256,
+        },
+        statuses=("queued", "running", "paused", "succeeded"),
+    )
 
 
 def _latest_semester_mapping_jobs(
     manager: JobManager,
     semester_id: str,
 ) -> tuple[JobRecord, ...]:
-    latest: dict[str, JobRecord] = {}
-    offset = 0
-    while True:
-        jobs, total = manager.list(
-            job_types=(_SEMESTER_MAPPING_JOB_TYPE,),
-            limit=100,
-            offset=offset,
-        )
-        for job in jobs:
-            if job.payload.get("semester_id") != semester_id:
-                continue
-            material_id = str(
-                job.payload.get("material_record_id") or ""
-            ).strip()
-            if len(material_id) == 32 and material_id not in latest:
-                latest[material_id] = job
-        offset += len(jobs)
-        if not jobs or offset >= total:
-            return tuple(latest.values())
+    return manager.store.list_latest_jobs_by_payload_key(
+        job_type=_SEMESTER_MAPPING_JOB_TYPE,
+        payload_key="material_record_id",
+        identity_length=32,
+        payload_equals={"semester_id": semester_id},
+    )
 
 
 def get_teaching_prep_service(request: Request) -> TeachingPrepService:
@@ -2209,7 +2153,7 @@ def create_router() -> APIRouter:
                 None,
             )
             ai_tasks = (
-                workspace_ai_tasks.list_module_tasks("teaching_prep")
+                workspace_ai_tasks.list_actionable_module_tasks("teaching_prep")
                 if workspace_ai_tasks is not None
                 else ()
             )

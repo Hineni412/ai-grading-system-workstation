@@ -1046,6 +1046,13 @@ def test_material_parse_job_endpoint_reuses_the_active_job(
         return {"material_version_id": version.id, "unit_count": 1}
 
     manager.register("teaching_prep.material_parse", blocking_parse)
+    monkeypatch.setattr(
+        manager,
+        "list",
+        lambda **_kwargs: pytest.fail(
+            "资料任务读取不应再分页搬运完整历史"
+        ),
+    )
     api = FastAPI()
     api.state.workspace_services = {"teaching-prep": service}
     api.state.job_manager = manager

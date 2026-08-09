@@ -16,6 +16,7 @@ import TrainingKnowledgeStructure from '../components/knowledge-training/Trainin
 import PersonalizedRecommendationDraft from '../components/training/PersonalizedRecommendationDraft.vue'
 import { loadEvidenceScope, saveEvidenceScope } from '../features/evidence-scope/session'
 import { useSessionStore } from '../stores/session'
+import '../styles/training-recommendations.css'
 import { useCurriculumScopeStore } from '../stores/curriculum-scope'
 import { useTrainingStore } from '../stores/training'
 

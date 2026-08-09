@@ -910,6 +910,13 @@ def test_semester_mapping_job_is_durable_deduplicated_and_public_safe(
 
     client = TestClient(api)
     try:
+        monkeypatch.setattr(
+            manager,
+            "list",
+            lambda **_kwargs: pytest.fail(
+                "目录任务读取不应再分页搬运完整历史"
+            ),
+        )
         legacy = client.post(
             f"/api/teaching-prep/semesters/{semester.id}/mapping-proposals",
             json={

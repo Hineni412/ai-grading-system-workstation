@@ -5,7 +5,7 @@ import json
 import re
 import secrets
 import sqlite3
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -20,6 +20,7 @@ _SOURCE_ID = re.compile(r"^[0-9a-f]{32}$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _REQUEST_TOKEN = re.compile(r"^[0-9a-f]{32}$")
 _SCAN_BATCH_ID = re.compile(r"^[0-9a-f]{32}$")
+_JSON_FIELD = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _QUESTION_BANK_SYNC_STATES = {
     "not_started",
     "running",
@@ -171,8 +172,22 @@ class JobStore:
                     SELECT *
                     FROM jobs
                     WHERE job_type = 'taxonomy_suggestion'
+                      AND (
+                        (
+                          json_valid(payload_json) = 1
+                          AND json_extract(
+                            payload_json, '$.client_request_token'
+                          ) = ?
+                        )
+                        OR (
+                          status IN ('queued', 'running', 'paused')
+                          AND json_valid(payload_json) = 1
+                          AND json_extract(payload_json, '$.run_id') = ?
+                        )
+                      )
                     ORDER BY id DESC
-                    """
+                    """,
+                    (token, run_id),
                 ).fetchall()
                 for row in rows:
                     try:
@@ -280,8 +295,18 @@ class JobStore:
                     SELECT *
                     FROM jobs
                     WHERE job_type = 'tagging_sync'
+                      AND (
+                        status IN ('queued', 'running', 'paused')
+                        OR (
+                          json_valid(payload_json) = 1
+                          AND json_extract(
+                            payload_json, '$.client_request_token'
+                          ) = ?
+                        )
+                      )
                     ORDER BY id DESC
-                    """
+                    """,
+                    (token,),
                 ).fetchall()
                 for row in rows:
                     try:
@@ -648,7 +673,10 @@ class JobStore:
     ) -> sqlite3.Row | None:
         rows = conn.execute(
             "SELECT * FROM jobs WHERE job_type = 'question_bank_sync' "
-            "ORDER BY id DESC"
+            "AND json_valid(payload_json) = 1 "
+            "AND json_extract(payload_json, '$.client_request_token') = ? "
+            "ORDER BY id DESC",
+            (token,),
         ).fetchall()
         for row in rows:
             try:
@@ -673,7 +701,11 @@ class JobStore:
     ) -> sqlite3.Row | None:
         rows = conn.execute(
             "SELECT * FROM jobs WHERE job_type = 'question_bank_sync' "
-            "AND status != 'cancelled' ORDER BY id DESC"
+            "AND status != 'cancelled' "
+            "AND json_valid(payload_json) = 1 "
+            "AND json_extract(payload_json, '$.client_request_fingerprint') = ? "
+            "ORDER BY id DESC",
+            (fingerprint,),
         ).fetchall()
         for row in rows:
             try:
@@ -1002,7 +1034,11 @@ class JobStore:
         token: str,
     ) -> sqlite3.Row | None:
         rows = conn.execute(
-            "SELECT * FROM jobs WHERE job_type = 'config_generation' ORDER BY id DESC"
+            "SELECT * FROM jobs WHERE job_type = 'config_generation' "
+            "AND json_valid(payload_json) = 1 "
+            "AND json_extract(payload_json, '$.client_request_token') = ? "
+            "ORDER BY id DESC",
+            (token,),
         ).fetchall()
         for row in rows:
             try:
@@ -1137,7 +1173,14 @@ class JobStore:
                     conn.commit()
                     return record, False
                 rows = conn.execute(
-                    "SELECT status, payload_json FROM jobs WHERE job_type = 'config_generation'"
+                    "SELECT status, payload_json FROM jobs "
+                    "WHERE job_type = 'config_generation' "
+                    "AND status NOT IN ('failed', 'cancelled') "
+                    "AND json_valid(payload_json) = 1 "
+                    "AND json_type(payload_json, '$.source_job_id') "
+                    "IN ('integer', 'real', 'text') "
+                    "AND CAST(json_extract(payload_json, '$.source_job_id') AS INTEGER) = ?",
+                    (source_job_id,),
                 ).fetchall()
                 for row in rows:
                     try:
@@ -1255,6 +1298,78 @@ class JobStore:
                 [*values, int(limit), int(offset)],
             ).fetchall()
         return [_job_record(row) for row in rows], total
+
+    def find_latest_job_by_payload(
+        self,
+        *,
+        job_type: str,
+        payload_equals: Mapping[str, str | int],
+        statuses: tuple[str, ...] = (),
+    ) -> JobRecord | None:
+        """Return the newest valid-JSON job matching exact scalar payload fields."""
+
+        clean_type = _nonblank_text(job_type, "job_type")
+        clean_statuses = _clean_job_statuses(statuses)
+        conditions = ["job_type = ?", "json_valid(payload_json) = 1"]
+        values: list[object] = [clean_type]
+        for key, expected in payload_equals.items():
+            path = _json_field_path(key)
+            conditions.append("json_extract(payload_json, ?) = ?")
+            values.extend((path, expected))
+        if clean_statuses:
+            placeholders = ",".join("?" for _ in clean_statuses)
+            conditions.append(f"status IN ({placeholders})")
+            values.extend(clean_statuses)
+        with self._connect() as conn:
+            row = conn.execute(
+                f"SELECT * FROM jobs WHERE {' AND '.join(conditions)} "
+                "ORDER BY id DESC LIMIT 1",
+                values,
+            ).fetchone()
+        return _job_record(row) if row is not None else None
+
+    def list_latest_jobs_by_payload_key(
+        self,
+        *,
+        job_type: str,
+        payload_key: str,
+        identity_length: int,
+        payload_equals: Mapping[str, str | int] | None = None,
+    ) -> tuple[JobRecord, ...]:
+        """Return only the newest valid-JSON job for each normalized identity."""
+
+        clean_type = _nonblank_text(job_type, "job_type")
+        identity_path = _json_field_path(payload_key)
+        if int(identity_length) <= 0:
+            raise ValueError("identity_length must be positive")
+        conditions = [
+            "job_type = ?",
+            "json_valid(payload_json) = 1",
+            "json_type(payload_json, ?) = 'text'",
+            "length(trim(json_extract(payload_json, ?))) = ?",
+        ]
+        values: list[object] = [
+            clean_type,
+            identity_path,
+            identity_path,
+            int(identity_length),
+        ]
+        for key, expected in (payload_equals or {}).items():
+            path = _json_field_path(key)
+            conditions.append("json_extract(payload_json, ?) = ?")
+            values.extend((path, expected))
+        with self._connect() as conn:
+            rows = conn.execute(
+                "WITH candidates AS ("
+                "SELECT id, trim(json_extract(payload_json, ?)) AS identity "
+                f"FROM jobs WHERE {' AND '.join(conditions)}"
+                "), latest AS ("
+                "SELECT MAX(id) AS id FROM candidates GROUP BY identity"
+                ") SELECT jobs.* FROM jobs JOIN latest ON latest.id = jobs.id "
+                "ORDER BY jobs.id DESC",
+                [identity_path, *values],
+            ).fetchall()
+        return tuple(_job_record(row) for row in rows)
 
     def find_latest_config_generation_job(
         self,
@@ -2280,3 +2395,21 @@ def _nonblank_text(value: object, field: str) -> str:
     if not clean:
         raise ValueError(f"{field} must be nonblank")
     return clean
+
+
+def _clean_job_statuses(statuses: tuple[str, ...]) -> tuple[str, ...]:
+    clean = tuple(
+        dict.fromkeys(
+            str(item).strip() for item in statuses if str(item).strip()
+        )
+    )
+    if any(item not in JOB_STATUSES for item in clean):
+        raise ValueError("unsupported job status filter")
+    return clean
+
+
+def _json_field_path(value: object) -> str:
+    clean = str(value or "").strip()
+    if _JSON_FIELD.fullmatch(clean) is None:
+        raise ValueError("payload key is invalid")
+    return f"$.{clean}"

@@ -5,6 +5,7 @@ import { opsApi, type OpsOperation, type OpsPreflightRequest } from '../api/ops'
 import { TERMINAL_JOB_STATUSES } from '../api/jobs'
 import { useJobStore } from '../stores/jobs'
 import { useOpsStore } from '../stores/ops'
+import '../styles/settings-ops.css'
 
 const props = withDefaults(defineProps<{ embedded?: boolean; section?: 'backup' | 'maintenance' }>(), {
   embedded: false,
