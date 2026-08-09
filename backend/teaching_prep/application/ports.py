@@ -64,3 +64,15 @@ class WpsAdapter(Protocol):
         plan: dict[str, Any],
     ) -> dict[str, Any]:
         """Execute an approved structured plan against an isolated copy."""
+
+    def render_previews(
+        self,
+        *,
+        operation_id: str,
+        source_copy: str,
+        preview_directory: str,
+        slide_indexes: list[int],
+        source_sha256: str,
+        timeout_milliseconds: int,
+    ) -> dict[str, Any]:
+        """Render requested slides from a read-only isolated PPTX copy."""

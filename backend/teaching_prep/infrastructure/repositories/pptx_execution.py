@@ -64,6 +64,11 @@ class PptxExecutionRepository:
                 raise TeachingPrepConflictError(
                     "slide plan already has an execution operation"
                 )
+            _ensure_source_snapshot(
+                connection,
+                source_material_version_id=source_material_version_id,
+                source_sha256=source_sha256,
+            )
             run_id = uuid4().hex
             connection.execute(
                 """
@@ -596,6 +601,67 @@ class PptxExecutionRepository:
                     (str(run["published_version_id"]),),
                 )
 
+    def abandon_interrupted(self, run_id: str) -> PptxExecutionRun:
+        """Atomically record the teacher's decision to abandon recovery."""
+
+        with self._database.connect(immediate=True) as connection:
+            run = connection.execute(
+                """
+                SELECT operation_id, published_version_id
+                FROM pptx_execution_runs
+                WHERE id = ?
+                """,
+                (run_id,),
+            ).fetchone()
+            if run is None:
+                raise TeachingPrepNotFoundError(
+                    "PPTX execution record was not found"
+                )
+            run_cursor = connection.execute(
+                """
+                UPDATE pptx_execution_runs
+                SET status = 'failed',
+                    phase = 'done',
+                    error_code = 'teacher_abandoned_recovery',
+                    updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+                    finished_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                WHERE id = ? AND status = 'interrupted'
+                """,
+                (run_id,),
+            )
+            if run_cursor.rowcount != 1:
+                raise TeachingPrepConflictError(
+                    "interrupted execution recovery state changed"
+                )
+            operation_cursor = connection.execute(
+                """
+                UPDATE teaching_prep_operations
+                SET status = 'failed',
+                    error_code = 'teacher_abandoned_recovery',
+                    updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+                    finished_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                WHERE operation_id = ? AND status = 'interrupted'
+                """,
+                (str(run["operation_id"]),),
+            )
+            if operation_cursor.rowcount != 1:
+                raise TeachingPrepConflictError(
+                    "interrupted execution recovery state changed"
+                )
+            if run["published_version_id"] is not None:
+                connection.execute(
+                    """
+                    UPDATE pptx_versions
+                    SET status = 'failed'
+                    WHERE id = ? AND status = 'publishing'
+                    """,
+                    (str(run["published_version_id"]),),
+                )
+            updated = self._run_query(connection, "run.id = ?", (run_id,))
+        if updated is None:
+            raise RuntimeError("abandoned execution could not be loaded")
+        return _run(updated)
+
     def revoke_published(
         self,
         *,
@@ -999,6 +1065,86 @@ def _json(value: dict[str, object]) -> str:
         sort_keys=True,
         separators=(",", ":"),
     )
+
+
+def _ensure_source_snapshot(
+    connection: sqlite3.Connection,
+    *,
+    source_material_version_id: str,
+    source_sha256: str,
+) -> None:
+    source = connection.execute(
+        """
+        SELECT
+            version.id AS material_version_id,
+            version.source_id,
+            material.display_name,
+            version.file_name,
+            material.material_type,
+            version.content_sha256,
+            version.size_bytes
+        FROM material_versions AS version
+        JOIN material_sources AS material
+          ON material.id = version.source_id
+        WHERE version.id = ?
+        """,
+        (source_material_version_id,),
+    ).fetchone()
+    if source is None:
+        raise TeachingPrepConflictError(
+            "source material version is unavailable for execution"
+        )
+    if str(source["content_sha256"]) != source_sha256:
+        raise TeachingPrepConflictError(
+            "source material fingerprint changed before execution"
+        )
+    connection.execute(
+        """
+        INSERT INTO pptx_execution_source_snapshots (
+            material_version_id,
+            source_id,
+            display_name,
+            file_name,
+            material_type,
+            content_sha256,
+            size_bytes,
+            schema_version
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, 1)
+        ON CONFLICT(material_version_id) DO NOTHING
+        """,
+        (
+            str(source["material_version_id"]),
+            str(source["source_id"]),
+            str(source["display_name"]),
+            str(source["file_name"]),
+            str(source["material_type"]),
+            str(source["content_sha256"]),
+            int(source["size_bytes"]),
+        ),
+    )
+    snapshot = connection.execute(
+        """
+        SELECT material_version_id, source_id, file_name, material_type,
+               content_sha256, size_bytes, schema_version
+        FROM pptx_execution_source_snapshots
+        WHERE material_version_id = ?
+        """,
+        (source_material_version_id,),
+    ).fetchone()
+    expected = (
+        str(source["material_version_id"]),
+        str(source["source_id"]),
+        str(source["file_name"]),
+        str(source["material_type"]),
+        str(source["content_sha256"]),
+        int(source["size_bytes"]),
+        1,
+    )
+    if snapshot is None or tuple(snapshot) != expected:
+        raise TeachingPrepConflictError(
+            "source material snapshot conflicts with execution input"
+        )
 
 
 __all__ = ["PptxExecutionRepository"]

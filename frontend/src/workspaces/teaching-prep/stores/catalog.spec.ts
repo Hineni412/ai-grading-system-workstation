@@ -236,6 +236,16 @@ function mappingPreflight(semesterId: string): SemesterMappingPreflight {
     existing_lesson_count: 1,
     creates_initial_tree: false,
     automatic_retry: false,
+    evidence_strategy: 'toc_calibrated',
+    evidence_confidence: 'high',
+    scanned_unit_count: 3,
+    directory_page_image_count: 0,
+    directory_page_images_sent: false,
+    toc_entry_count: 1,
+    anchor_count: 1,
+    estimated_input_characters: 120,
+    full_page_text_sent: false,
+    evidence_issues: [],
   }
 }
 

@@ -605,7 +605,7 @@ class WorkbenchIterationRepository:
                 """
                 SELECT id, unit_index, unit_kind, title, preview_sha256,
                        source_version_sha256, text_status,
-                       formula_review_required
+                       formula_review_required, object_summary_json
                 FROM material_units
                 WHERE material_version_id = ?
                   AND unit_index BETWEEN ? AND ?
@@ -629,6 +629,9 @@ class WorkbenchIterationRepository:
                     "text_status": str(unit["text_status"]),
                     "formula_review_required": bool(
                         unit["formula_review_required"]
+                    ),
+                    "object_summary": _object(
+                        str(unit["object_summary_json"] or "{}")
                     ),
                 }
                 for unit in units

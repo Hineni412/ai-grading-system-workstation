@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import hashlib
 import json
+import os
 from pathlib import Path
 from urllib.parse import quote
 
@@ -13,8 +15,13 @@ from backend.api.app import ApiError
 from backend.teaching_prep.api import create_router
 from backend.teaching_prep.application import TeachingPrepService
 from backend.teaching_prep.domain.errors import TeachingPrepConflictError
+from backend.teaching_prep.infrastructure.fakes import FakeWpsAdapter
 
 from .test_a01_foundation import _migrated_service
+
+
+class _SimulatedMaterialDeleteProcessExit(BaseException):
+    pass
 
 
 def _api_client(service: TeachingPrepService) -> TestClient:
@@ -308,13 +315,42 @@ def test_teacher_can_permanently_delete_an_unused_controlled_material_copy(
             ),
         )
 
+    preview = client.get(
+        f"/api/teaching-prep/material-sources/{payload['source_id']}"
+        f"/deletion-preview?expected_revision={payload['source_revision']}"
+    )
+
+    assert preview.status_code == 200, preview.text
+    impact = preview.json()
+    assert impact["source_id"] == payload["source_id"]
+    assert impact["display_name"] == "待删除资料"
+    assert impact["can_delete"] is True
+    assert impact["owned_file_count"] == 1
+    assert impact["impact_counts"]["material_sources"] == 1
+    assert impact["impact_counts"]["material_versions"] == 1
+    assert impact["impact_counts"]["semester_material_records"] == 1
+    assert impact["impact_counts"]["semester_mapping_proposals"] == 1
+    assert impact["generation_history_count"] == 0
+    assert impact["preserved_history_note"] is None
+    assert len(impact["preview_version"]) == 64
+    assert str(tmp_path) not in json.dumps(impact, ensure_ascii=False)
+
+    operation_id = "material-delete-operation-0001"
     deleted = client.request(
         "DELETE",
         f"/api/teaching-prep/material-sources/{payload['source_id']}",
-        json={"expected_revision": payload["source_revision"]},
+        json={
+            "expected_revision": payload["source_revision"],
+            "operation_id": operation_id,
+            "preview_version": impact["preview_version"],
+            "confirmation_phrase": impact["confirmation_phrase"],
+        },
     )
 
     assert deleted.status_code == 200, deleted.text
+    assert deleted.json()["operation_id"] == operation_id
+    assert deleted.json()["status"] == "succeeded"
+    assert deleted.json()["preview_version"] == impact["preview_version"]
     assert deleted.json()["deleted_source_id"] == payload["source_id"]
     assert service.list_material_versions(include_archived=True) == ()
     assert service.list_semester_materials(semester.id) == ()
@@ -323,6 +359,722 @@ def test_teacher_can_permanently_delete_an_unused_controlled_material_copy(
             "SELECT COUNT(*) FROM semester_mapping_proposals"
         ).fetchone()[0] == 0
     assert not controlled_copy.exists()
+
+    receipt = client.get(
+        f"/api/teaching-prep/material-deletions/{operation_id}"
+    )
+    replay = client.request(
+        "DELETE",
+        f"/api/teaching-prep/material-sources/{payload['source_id']}",
+        json={
+            "expected_revision": payload["source_revision"],
+            "operation_id": operation_id,
+            "preview_version": impact["preview_version"],
+            "confirmation_phrase": impact["confirmation_phrase"],
+        },
+    )
+
+    assert receipt.status_code == 200, receipt.text
+    assert receipt.json() == deleted.json()
+    assert replay.status_code == 200, replay.text
+    assert replay.json() == deleted.json()
+
+
+@pytest.mark.parametrize("terminal_status", ["published", "failed", "cancelled"])
+def test_material_deletion_preserves_terminal_generation_history(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    terminal_status: str,
+) -> None:
+    from .test_a08_pptx_execution import _approved_plan
+
+    _paths_value, service = _migrated_service(tmp_path, monkeypatch)
+    client = _api_client(service)
+    plan = _approved_plan(service, tmp_path)
+    source_record = plan.payload["source_presentations"][0]
+    version = service.get_material_version(
+        str(source_record["material_version_id"])
+    )
+    if terminal_status == "published":
+        service.wps_adapter = FakeWpsAdapter()
+        run, published, created = service.execute_slide_plan(
+            plan.id,
+            operation_id="material-history-published-run",
+            confirmed=True,
+        )
+        assert created is True
+        assert published is not None
+    else:
+        run, created = service.pptx_executions.begin(
+            operation_id=f"material-history-{terminal_status}-run",
+            request_hash="c" * 64,
+            slide_plan_id=plan.id,
+            source_material_version_id=version.id,
+            source_sha256=version.content_sha256,
+            expected_slide_count=1,
+        )
+        assert created is True
+        if terminal_status == "failed":
+            service.pptx_executions.fail(run.id, "synthetic_terminal_failure")
+        else:
+            service.pptx_executions.cancel(run.id)
+        run = service.pptx_executions.get(run.id)
+    assert run.status == terminal_status
+
+    preview = client.get(
+        f"/api/teaching-prep/material-sources/{version.source_id}"
+        f"/deletion-preview?expected_revision={version.source_revision}"
+    )
+
+    assert preview.status_code == 200, preview.text
+    impact = preview.json()
+    assert impact["can_delete"] is True
+    assert impact["blocker_code"] is None
+    assert impact["generation_history_count"] == 1
+    assert impact["preserved_snapshot_count"] == 1
+    assert impact["blocking_generation_count"] == 0
+    note = str(impact["preserved_history_note"])
+    assert "资料名" in note
+    assert "安全文件名" in note
+    assert "版本标识" in note
+    assert "内容指纹" in note
+    assert "不保留原文件" in note
+    assert "绝对路径" in note
+    assert "无法恢复" in note
+    assert str(tmp_path) not in json.dumps(impact, ensure_ascii=False)
+
+    deleted = client.request(
+        "DELETE",
+        f"/api/teaching-prep/material-sources/{version.source_id}",
+        json={
+            "expected_revision": version.source_revision,
+            "operation_id": f"material-history-delete-{terminal_status}",
+            "preview_version": impact["preview_version"],
+            "confirmation_phrase": impact["confirmation_phrase"],
+        },
+    )
+
+    assert deleted.status_code == 200, deleted.text
+    assert deleted.json()["status"] == "succeeded"
+    assert service.pptx_executions.get(run.id).status == terminal_status
+    assert all(
+        item.source_id != version.source_id
+        for item in service.list_material_versions(include_archived=True)
+    )
+    assert not service._execution_staging(run.id).exists()
+    with service.database.connect() as connection:
+        snapshot = connection.execute(
+            """
+            SELECT material_version_id, source_id, display_name, file_name,
+                   material_type, content_sha256
+            FROM pptx_execution_source_snapshots
+            WHERE material_version_id = ?
+            """,
+            (version.id,),
+        ).fetchone()
+    assert snapshot is not None
+    assert tuple(snapshot) == (
+        version.id,
+        version.source_id,
+        version.display_name,
+        version.file_name,
+        version.material_type,
+        version.content_sha256,
+    )
+    if terminal_status == "cancelled":
+        original_path = tmp_path / "a05-reference.pptx"
+        reimported, reimport_created = service.register_material_file(
+            request_token="material-history-reimport-same-bytes",
+            path=original_path,
+            display_name="重新导入的同字节课件",
+        )
+        assert reimport_created is True
+        assert reimported.id != version.id
+        assert reimported.source_id != version.source_id
+        assert reimported.content_sha256 == version.content_sha256
+
+
+@pytest.mark.parametrize("crash_point", ["before_commit", "after_commit"])
+def test_terminal_generation_staging_follows_durable_material_deletion_recovery(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    crash_point: str,
+) -> None:
+    from .test_a08_pptx_execution import _approved_plan
+
+    _paths_value, service = _migrated_service(tmp_path, monkeypatch)
+    plan = _approved_plan(service, tmp_path)
+    source_record = plan.payload["source_presentations"][0]
+    version = service.get_material_version(
+        str(source_record["material_version_id"])
+    )
+    run, created = service.pptx_executions.begin(
+        operation_id=f"material-staging-{crash_point}-run",
+        request_hash="e" * 64,
+        slide_plan_id=plan.id,
+        source_material_version_id=version.id,
+        source_sha256=version.content_sha256,
+        expected_slide_count=1,
+    )
+    assert created is True
+    service.pptx_executions.fail(run.id, "synthetic_terminal_failure")
+    execution_staging = service._execution_staging(run.id)
+    preview_dir = execution_staging / "wps-previews"
+    preview_dir.mkdir(parents=True)
+    source_copy = execution_staging / "source-copy.pptx"
+    source_copy.write_bytes(b"synthetic retained source copy")
+    (preview_dir / "slide-00001.png").write_bytes(b"synthetic preview")
+    impact = service.preview_material_deletion(
+        version.source_id,
+        expected_revision=version.source_revision,
+    )
+    operation_id = f"material-staging-{crash_point}-delete"
+    real_replace = os.replace
+    real_delete = service.catalog.delete_material_source
+
+    def stop_after_first_move(source_path, target_path) -> None:
+        real_replace(source_path, target_path)
+        if Path(target_path).parent.name.startswith("md-"):
+            raise _SimulatedMaterialDeleteProcessExit
+
+    def stop_after_database_commit(*args, **kwargs):
+        result = real_delete(*args, **kwargs)
+        raise _SimulatedMaterialDeleteProcessExit from None
+
+    with monkeypatch.context() as crash:
+        if crash_point == "before_commit":
+            crash.setattr(os, "replace", stop_after_first_move)
+        else:
+            crash.setattr(
+                service.catalog,
+                "delete_material_source",
+                stop_after_database_commit,
+            )
+        with pytest.raises(_SimulatedMaterialDeleteProcessExit):
+            service.delete_material_source(
+                version.source_id,
+                expected_revision=version.source_revision,
+                operation_id=operation_id,
+                preview_version=str(impact["preview_version"]),
+                confirmation_phrase=str(impact["confirmation_phrase"]),
+            )
+
+    restarted = TeachingPrepService(service.root)
+    receipt = restarted.get_material_deletion(operation_id)
+    if crash_point == "before_commit":
+        assert receipt["status"] == "interrupted"
+        assert source_copy.read_bytes() == b"synthetic retained source copy"
+        assert restarted.get_material_version(version.id).id == version.id
+        receipt = restarted.delete_material_source(
+            version.source_id,
+            expected_revision=version.source_revision,
+            operation_id=operation_id,
+            preview_version=str(impact["preview_version"]),
+            confirmation_phrase=str(impact["confirmation_phrase"]),
+        )
+
+    assert receipt["status"] == "succeeded"
+    assert all(
+        item.source_id != version.source_id
+        for item in restarted.list_material_versions(include_archived=True)
+    )
+    retained_run = restarted.get_pptx_execution(run.id)
+    assert retained_run.status == "failed"
+    assert retained_run.staging_retained is False
+    assert not execution_staging.exists()
+
+
+def test_terminal_generation_deletion_scrubs_only_deleted_source_payload_evidence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from .test_a08_pptx_execution import _approved_plan
+
+    _paths_value, service = _migrated_service(tmp_path, monkeypatch)
+    plan = _approved_plan(service, tmp_path)
+    source_record = plan.payload["source_presentations"][0]
+    version = service.get_material_version(
+        str(source_record["material_version_id"])
+    )
+    service.wps_adapter = FakeWpsAdapter()
+    run, published, created = service.execute_slide_plan(
+        plan.id,
+        operation_id="material-payload-scrub-published-run",
+        confirmed=True,
+    )
+    assert created is True
+    assert run.status == "published"
+    assert published is not None
+    baseline = service.preview_material_deletion(
+        version.source_id,
+        expected_revision=version.source_revision,
+    )
+    with service.database.connect(immediate=True) as connection:
+        pack_row = connection.execute(
+            "SELECT payload_json FROM resource_pack_versions WHERE id = ?",
+            (plan.resource_pack_id,),
+        ).fetchone()
+        plan_row = connection.execute(
+            "SELECT payload_json FROM slide_plan_versions WHERE id = ?",
+            (plan.id,),
+        ).fetchone()
+        assert pack_row is not None
+        assert plan_row is not None
+        pack_payload = json.loads(str(pack_row["payload_json"]))
+        plan_payload = json.loads(str(plan_row["payload_json"]))
+        deleted_material = next(
+            item
+            for item in pack_payload["materials"]
+            if item["material_version_id"] == version.id
+        )
+        retained_material = next(
+            item
+            for item in pack_payload["materials"]
+            if item["material_version_id"] != version.id
+        )
+        retained_material_before = json.loads(
+            json.dumps(retained_material, ensure_ascii=False)
+        )
+        deleted_unit = deleted_material["units"][0]
+        deleted_unit_id = str(deleted_unit["unit_id"])
+        deleted_unit.update(
+            {
+                "text": "DELETED_RESOURCE_PACK_TEXT",
+                "extracted_text": "DELETED_RESOURCE_PACK_EXTRACTED_TEXT",
+                "object_summary": {"secret": "DELETED_OBJECT_SUMMARY"},
+                "preview_url": f"/deleted-preview/{deleted_unit_id}",
+            }
+        )
+        deleted_slide = next(
+            item
+            for item in plan_payload["slides"]
+            if item["material_version_id"] == version.id
+        )
+        deleted_slide.update(
+            {
+                "text_summary": "DELETED_SLIDE_TEXT_SUMMARY",
+                "extracted_text": "DELETED_SLIDE_EXTRACTED_TEXT",
+                "object_summary": {"secret": "DELETED_SLIDE_OBJECT"},
+                "preview_url": f"/deleted-slide-preview/{deleted_unit_id}",
+            }
+        )
+        connection.execute(
+            "UPDATE resource_pack_versions SET payload_json = ? WHERE id = ?",
+            (
+                json.dumps(
+                    pack_payload,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ),
+                plan.resource_pack_id,
+            ),
+        )
+        connection.execute(
+            "UPDATE slide_plan_versions SET payload_json = ? WHERE id = ?",
+            (
+                json.dumps(
+                    plan_payload,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ),
+                plan.id,
+            ),
+        )
+
+    impact = service.preview_material_deletion(
+        version.source_id,
+        expected_revision=version.source_revision,
+    )
+
+    assert impact["preview_version"] != baseline["preview_version"]
+    deleted = service.delete_material_source(
+        version.source_id,
+        expected_revision=version.source_revision,
+        operation_id="material-payload-scrub-delete",
+        preview_version=str(impact["preview_version"]),
+        confirmation_phrase=str(impact["confirmation_phrase"]),
+    )
+    assert deleted["status"] == "succeeded"
+    assert service.get_material_deletion(
+        "material-payload-scrub-delete"
+    )["preview_version"] == impact["preview_version"]
+    assert service.pptx_executions.get(run.id).status == "published"
+    output, _filename = service.pptx_download(published.id)
+    assert output.is_file()
+
+    with service.database.connect() as connection:
+        payload_rows = connection.execute(
+            """
+            SELECT 'resource_pack_versions' AS table_name, id, payload_json
+            FROM resource_pack_versions
+            UNION ALL
+            SELECT 'slide_plan_versions' AS table_name, id, payload_json
+            FROM slide_plan_versions
+            ORDER BY table_name, id
+            """
+        ).fetchall()
+    serialized_payloads = "\n".join(
+        str(row["payload_json"]) for row in payload_rows
+    )
+    for forbidden in (
+        "DELETED_RESOURCE_PACK_TEXT",
+        "DELETED_RESOURCE_PACK_EXTRACTED_TEXT",
+        "DELETED_OBJECT_SUMMARY",
+        "DELETED_SLIDE_TEXT_SUMMARY",
+        "DELETED_SLIDE_EXTRACTED_TEXT",
+        "DELETED_SLIDE_OBJECT",
+        deleted_unit_id,
+    ):
+        assert forbidden not in serialized_payloads
+    scrubbed_pack = json.loads(
+        next(
+            str(row["payload_json"])
+            for row in payload_rows
+            if row["table_name"] == "resource_pack_versions"
+            and row["id"] == plan.resource_pack_id
+        )
+    )
+    scrubbed_plan = json.loads(
+        next(
+            str(row["payload_json"])
+            for row in payload_rows
+            if row["table_name"] == "slide_plan_versions"
+            and row["id"] == plan.id
+        )
+    )
+    retained_material_after = next(
+        item
+        for item in scrubbed_pack["materials"]
+        if item["material_version_id"] != version.id
+    )
+    assert retained_material_after == retained_material_before
+    scrubbed_unit = next(
+        item
+        for item in scrubbed_pack["materials"]
+        if item["material_version_id"] == version.id
+    )["units"][0]
+    assert scrubbed_unit["unit_id"] is None
+    assert scrubbed_unit["text"] == ""
+    assert scrubbed_unit["extracted_text"] == ""
+    assert scrubbed_unit["object_summary"] == {}
+    assert scrubbed_unit["preview_url"] is None
+    scrubbed_slide = next(
+        item
+        for item in scrubbed_plan["slides"]
+        if item["material_version_id"] == version.id
+    )
+    assert scrubbed_slide["material_unit_id"] is None
+    assert scrubbed_slide["text_summary"] == ""
+    assert scrubbed_slide["extracted_text"] == ""
+    assert scrubbed_slide["object_summary"] == {}
+    assert scrubbed_slide["preview_url"] is None
+
+
+@pytest.mark.parametrize(
+    "blocking_status",
+    ["running", "verifying", "publishing", "interrupted"],
+)
+def test_material_deletion_blocks_active_or_recoverable_generation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    blocking_status: str,
+) -> None:
+    from .test_a08_pptx_execution import _approved_plan
+
+    _paths_value, service = _migrated_service(tmp_path, monkeypatch)
+    client = _api_client(service)
+    plan = _approved_plan(service, tmp_path)
+    source_record = plan.payload["source_presentations"][0]
+    version = service.get_material_version(
+        str(source_record["material_version_id"])
+    )
+    run, created = service.pptx_executions.begin(
+        operation_id=f"material-blocking-{blocking_status}-run",
+        request_hash="b" * 64,
+        slide_plan_id=plan.id,
+        source_material_version_id=version.id,
+        source_sha256=version.content_sha256,
+        expected_slide_count=1,
+    )
+    assert created is True
+    if blocking_status != "running":
+        with service.database.connect(immediate=True) as connection:
+            connection.execute(
+                "UPDATE pptx_execution_runs SET status = ? WHERE id = ?",
+                (blocking_status, run.id),
+            )
+
+    preview = client.get(
+        f"/api/teaching-prep/material-sources/{version.source_id}"
+        f"/deletion-preview?expected_revision={version.source_revision}"
+    )
+
+    assert preview.status_code == 200, preview.text
+    impact = preview.json()
+    assert impact["generation_history_count"] == 1
+    assert impact["preserved_snapshot_count"] == 1
+    assert impact["blocking_generation_count"] == 1
+    assert impact["can_delete"] is False
+    assert impact["blocker_code"] == "active_courseware_generation"
+
+    blocked = client.request(
+        "DELETE",
+        f"/api/teaching-prep/material-sources/{version.source_id}",
+        json={
+            "expected_revision": version.source_revision,
+            "operation_id": f"material-blocking-{blocking_status}-delete",
+            "preview_version": impact["preview_version"],
+            "confirmation_phrase": impact["confirmation_phrase"],
+        },
+    )
+
+    assert blocked.status_code == 409, blocked.text
+    assert service.get_material_version(version.id).id == version.id
+    if blocking_status == "interrupted":
+        service.pptx_executions.fail(run.id, "teacher_abandoned_recovery")
+        refreshed = service.preview_material_deletion(
+            version.source_id,
+            expected_revision=version.source_revision,
+        )
+        assert refreshed["preview_version"] != impact["preview_version"]
+        assert refreshed["blocking_generation_count"] == 0
+        assert refreshed["can_delete"] is True
+
+
+def test_material_deletion_running_receipt_keeps_the_fixed_count_contract(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _paths_value, service = _migrated_service(tmp_path, monkeypatch)
+    source = tmp_path / "pending-delete.pdf"
+    source.write_bytes(b"%PDF-1.7 synthetic pending delete")
+    version, _created = service.register_material_file(
+        request_token="material-delete-pending-0001",
+        path=source,
+        display_name="等待确认结果的资料",
+    )
+    impact = service.preview_material_deletion(
+        version.source_id,
+        expected_revision=version.source_revision,
+    )
+    operation_id = "material-delete-pending-operation-0001"
+    assert service.catalog.begin_material_deletion(
+        operation_id=operation_id,
+        source_id=version.source_id,
+        source_display_name=version.display_name,
+        expected_revision=version.source_revision,
+        preview_version=str(impact["preview_version"]),
+        request_hash="d" * 64,
+        impact=impact,
+    ) is None
+
+    receipt = service.get_material_deletion(operation_id)
+
+    assert receipt["status"] == "running"
+    assert receipt["counts"] == {
+        "material_sources": 0,
+        "material_versions": 0,
+        "material_units": 0,
+        "lesson_material_links": 0,
+        "semester_material_records": 0,
+        "semester_mapping_proposals": 0,
+        "reference_ppt_collections": 0,
+        "exercise_regions": 0,
+        "exercise_candidates": 0,
+    }
+
+
+@pytest.mark.parametrize("interrupt_after_moves", [0, 1, 2])
+def test_material_deletion_restart_restores_every_staged_file_and_converges(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    interrupt_after_moves: int,
+) -> None:
+    from PIL import Image
+
+    _paths_value, service = _migrated_service(tmp_path, monkeypatch)
+    source = service.paths["temp"] / "synthetic-delete-recovery.png"
+    Image.new("RGB", (24, 24), "white").save(source)
+    version, _created = service.import_material_copy(
+        request_token="material-delete-recovery-0001",
+        staged_path=source,
+        original_filename=source.name,
+        display_name="中断恢复合成资料",
+    )
+    unit = service.parse_material_version(version.id)[0]
+    controlled_files = (
+        service.catalog.get_material_location(version.id),
+        service.material_preview_path(unit.id),
+    )
+    impact = service.preview_material_deletion(
+        version.source_id,
+        expected_revision=version.source_revision,
+    )
+    operation_id = "material-delete-recovery-operation-0001"
+    staging = service.paths["staging"] / (
+        "md-" + hashlib.sha256(operation_id.encode("utf-8")).hexdigest()[:16]
+    )
+    real_replace = os.replace
+    moved = 0
+
+    def process_exits_around_staging_move(
+        source_path: str | os.PathLike[str],
+        target_path: str | os.PathLike[str],
+    ) -> None:
+        nonlocal moved
+        if Path(target_path).parent == staging:
+            if interrupt_after_moves == 0:
+                raise _SimulatedMaterialDeleteProcessExit
+            real_replace(source_path, target_path)
+            moved += 1
+            if moved == interrupt_after_moves:
+                raise _SimulatedMaterialDeleteProcessExit
+            return
+        real_replace(source_path, target_path)
+
+    with monkeypatch.context() as crash:
+        crash.setattr(os, "replace", process_exits_around_staging_move)
+        with pytest.raises(_SimulatedMaterialDeleteProcessExit):
+            service.delete_material_source(
+                version.source_id,
+                expected_revision=version.source_revision,
+                operation_id=operation_id,
+                preview_version=str(impact["preview_version"]),
+                confirmation_phrase=str(impact["confirmation_phrase"]),
+            )
+
+    restarted = TeachingPrepService(service.root)
+    receipt = restarted.get_material_deletion(operation_id)
+    replay = restarted.delete_material_source(
+        version.source_id,
+        expected_revision=version.source_revision,
+        operation_id=operation_id,
+        preview_version=str(impact["preview_version"]),
+        confirmation_phrase=str(impact["confirmation_phrase"]),
+    )
+
+    assert receipt["status"] == "interrupted"
+    assert receipt["error_code"] == (
+        "application_restarted_during_material_delete"
+    )
+    assert replay["status"] == "succeeded"
+    assert replay["operation_id"] == operation_id
+    assert restarted.get_material_deletion(operation_id) == replay
+    assert restarted.list_material_versions(include_archived=True) == ()
+    assert all(not path.exists() for path in controlled_files)
+    assert not staging.exists()
+
+
+def test_incomplete_material_delete_recovery_cannot_reclaim_the_operation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _paths_value, service = _migrated_service(tmp_path, monkeypatch)
+    source = service.paths["temp"] / "synthetic-incomplete-recovery.pdf"
+    source.write_bytes(b"%PDF-1.7 synthetic incomplete recovery")
+    version, _created = service.import_material_copy(
+        request_token="material-delete-incomplete-recovery-0001",
+        staged_path=source,
+        original_filename=source.name,
+        display_name="恢复不完整合成资料",
+    )
+    impact = service.preview_material_deletion(
+        version.source_id,
+        expected_revision=version.source_revision,
+    )
+    operation_id = "material-delete-incomplete-operation-0001"
+    staging = service.paths["staging"] / (
+        "md-" + hashlib.sha256(operation_id.encode("utf-8")).hexdigest()[:16]
+    )
+    real_replace = os.replace
+
+    def process_exits_after_move(
+        source_path: str | os.PathLike[str],
+        target_path: str | os.PathLike[str],
+    ) -> None:
+        real_replace(source_path, target_path)
+        if Path(target_path).parent == staging:
+            raise _SimulatedMaterialDeleteProcessExit
+
+    with monkeypatch.context() as crash:
+        crash.setattr(os, "replace", process_exits_after_move)
+        with pytest.raises(_SimulatedMaterialDeleteProcessExit):
+            service.delete_material_source(
+                version.source_id,
+                expected_revision=version.source_revision,
+                operation_id=operation_id,
+                preview_version=str(impact["preview_version"]),
+                confirmation_phrase=str(impact["confirmation_phrase"]),
+            )
+
+    next(staging.iterdir()).unlink()
+    restarted = TeachingPrepService(service.root)
+    receipt = restarted.get_material_deletion(operation_id)
+    replay = restarted.delete_material_source(
+        version.source_id,
+        expected_revision=version.source_revision,
+        operation_id=operation_id,
+        preview_version=str(impact["preview_version"]),
+        confirmation_phrase=str(impact["confirmation_phrase"]),
+    )
+
+    assert receipt["status"] == "interrupted"
+    assert receipt["error_code"] == "material_delete_recovery_incomplete"
+    assert replay == receipt
+    assert restarted.get_material_version(version.id).id == version.id
+
+
+def test_material_deletion_restart_cleans_staging_after_database_commit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _paths_value, service = _migrated_service(tmp_path, monkeypatch)
+    source = service.paths["temp"] / "synthetic-delete-committed.pdf"
+    source.write_bytes(b"%PDF-1.7 synthetic committed delete")
+    version, _created = service.import_material_copy(
+        request_token="material-delete-committed-0001",
+        staged_path=source,
+        original_filename=source.name,
+        display_name="已提交删除合成资料",
+    )
+    impact = service.preview_material_deletion(
+        version.source_id,
+        expected_revision=version.source_revision,
+    )
+    operation_id = "material-delete-committed-operation-0001"
+    staging = service.paths["staging"] / (
+        "md-" + hashlib.sha256(operation_id.encode("utf-8")).hexdigest()[:16]
+    )
+    real_delete = service.catalog.delete_material_source
+
+    def process_exits_after_database_commit(*args, **kwargs):
+        real_delete(*args, **kwargs)
+        raise _SimulatedMaterialDeleteProcessExit
+
+    with monkeypatch.context() as crash:
+        crash.setattr(
+            service.catalog,
+            "delete_material_source",
+            process_exits_after_database_commit,
+        )
+        with pytest.raises(_SimulatedMaterialDeleteProcessExit):
+            service.delete_material_source(
+                version.source_id,
+                expected_revision=version.source_revision,
+                operation_id=operation_id,
+                preview_version=str(impact["preview_version"]),
+                confirmation_phrase=str(impact["confirmation_phrase"]),
+            )
+
+    assert any(staging.iterdir())
+    restarted = TeachingPrepService(service.root)
+    receipt = restarted.get_material_deletion(operation_id)
+
+    assert receipt["status"] == "succeeded"
+    assert restarted.list_material_versions(include_archived=True) == ()
+    assert not staging.exists()
 
 
 def test_material_delete_waits_until_active_parsing_has_finished(
@@ -338,12 +1090,19 @@ def test_material_delete_waits_until_active_parsing_has_finished(
         display_name="正在解析的资料",
     )
     controlled_copy = service.catalog.get_material_location(version.id)
+    impact = service.preview_material_deletion(
+        version.source_id,
+        expected_revision=version.source_revision,
+    )
     service._active_material_parses.add(version.id)
 
     with pytest.raises(TeachingPrepConflictError):
         service.delete_material_source(
             version.source_id,
             expected_revision=version.source_revision,
+            operation_id="material-delete-active-operation-0001",
+            preview_version=str(impact["preview_version"]),
+            confirmation_phrase=str(impact["confirmation_phrase"]),
         )
 
     assert controlled_copy.is_file()

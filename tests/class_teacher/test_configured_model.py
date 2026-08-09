@@ -16,8 +16,13 @@ from backend.class_teacher.model_approval import (
 )
 from backend.class_teacher.ordinary_database import OrdinaryWorkDatabase
 from backend.class_teacher.work_graph import WorkGraph
+from backend.llm.diagnostics import JsonlDiagnosticJournal
+from backend.llm.gateway import LLMGateway
+from backend.llm.trace import NullCallTraceSink
+from backend.llm.usage import NullUsageSink
+from backend.workspaces.ai_tasks.model_gateway import WorkspaceAITaskModelGateway
 from backend.workspaces.contracts import WorkspaceContext
-from backend.workspaces.model_policy import WorkspaceModelRequest
+from backend.workspaces.model_policy import WorkspaceModelGateway, WorkspaceModelRequest
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -37,7 +42,7 @@ class _RecordingWorkspaceGateway:
     def __init__(self, **construction: object) -> None:
         self.construction = construction
         self.calls: list[dict[str, object]] = []
-        self.physical_request_count = 3
+        self.physical_request_count = 1
 
     def chat_completions(self, **call: object) -> dict[str, object]:
         self.calls.append(call)
@@ -75,6 +80,15 @@ class _JsonKeywordEnforcingWorkspaceGateway(_RecordingWorkspaceGateway):
         return super().chat_completions(**call)
 
 
+class _AlwaysTimeoutCompletions:
+    def __init__(self) -> None:
+        self.call_count = 0
+
+    def create(self, **_kwargs: object) -> object:
+        self.call_count += 1
+        raise TimeoutError("synthetic class-teacher timeout")
+
+
 def _context(tmp_path: Path) -> WorkspaceContext:
     root = tmp_path / "workspaces" / "class-teacher"
     paths = SimpleNamespace(
@@ -97,6 +111,134 @@ def _clear_model_environment(monkeypatch: pytest.MonkeyPatch) -> None:
         "LLM_GRADING_MODEL",
     ):
         monkeypatch.delenv(name, raising=False)
+
+
+def _zero_retry_fixture(
+    tmp_path: Path,
+) -> tuple[
+    ActiveProfileApprovedModelGateway,
+    _AlwaysTimeoutCompletions,
+    list[dict[str, object]],
+]:
+    constructions: list[dict[str, object]] = []
+    completions = _AlwaysTimeoutCompletions()
+
+    def gateway_factory(**kwargs: object) -> WorkspaceModelGateway:
+        constructions.append(dict(kwargs))
+        low_level = LLMGateway(
+            profile=kwargs.get("profile"),
+            diagnostic_sink=JsonlDiagnosticJournal(
+                tmp_path / "logs" / "llm_diagnostics.jsonl"
+            ),
+            trace_sink=NullCallTraceSink(),
+            usage_sink=NullUsageSink(),
+            sleeper=lambda _seconds: None,
+        )
+        return WorkspaceModelGateway(**kwargs, gateway=low_level)
+
+    gateway = ActiveProfileApprovedModelGateway(
+        context=_context(tmp_path),
+        profile_store=_ProfileStore([
+            {
+                "name": "synthetic",
+                "config_api_key": "synthetic-key",
+                "config_base_url": "https://model.invalid/v1",
+                "config_model": "synthetic-model",
+                "llm_workspace_max_retries": 2,
+            }
+        ]),
+        gateway_factory=gateway_factory,
+        client_factory=lambda _key, _url: SimpleNamespace(
+            chat=SimpleNamespace(completions=completions)
+        ),
+    )
+    return gateway, completions, constructions
+
+
+def test_configured_planning_failure_never_retries_the_physical_request(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clear_model_environment(monkeypatch)
+    gateway, completions, constructions = _zero_retry_fixture(tmp_path)
+
+    with pytest.raises(TimeoutError, match="synthetic class-teacher timeout"):
+        gateway.invoke(
+            payload={"task_text": "合成班务计划"},
+            operation_id="class-teacher-planning-zero-retry",
+            purpose="class_operations",
+        )
+
+    assert completions.call_count == 1
+    assert gateway.physical_request_count(
+        "class-teacher-planning-zero-retry"
+    ) == 1
+    assert constructions[0]["allow_retry"] is False
+    journal_path = tmp_path / "logs" / "llm_diagnostics.jsonl"
+    events = [
+        json.loads(line)
+        for line in journal_path.read_text(encoding="utf-8").splitlines()
+    ]
+    assert events
+    assert {event["workspace_module"] for event in events} == {
+        "class_teacher"
+    }
+    assert {event["workspace_task_kind"] for event in events} == {
+        "class_operations"
+    }
+    cleared = JsonlDiagnosticJournal(journal_path).clear_workspace(
+        "class_teacher"
+    )
+    assert cleared["deleted_event_count"] == len(events)
+    assert journal_path.read_text(encoding="utf-8") == ""
+
+
+def test_configured_triage_failure_never_retries_the_physical_request(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clear_model_environment(monkeypatch)
+    gateway, completions, constructions = _zero_retry_fixture(tmp_path)
+    destination = gateway.destination_snapshot()
+    task_gateway = WorkspaceAITaskModelGateway(
+        diagnostic_sink=JsonlDiagnosticJournal(
+            tmp_path / "task-logs" / "llm_diagnostics.jsonl"
+        )
+    )
+
+    with pytest.raises(TimeoutError, match="synthetic class-teacher timeout"):
+        gateway.invoke_workspace_task(
+            task_gateway=task_gateway,
+            messages=({"role": "user", "content": "return json"},),
+            operation_id="class-teacher-triage-zero-retry",
+            purpose="class_teacher_intake",
+            expected_destination_fingerprint=str(
+                destination["destination_fingerprint"]
+            ),
+        )
+
+    assert completions.call_count == 1
+    assert gateway.physical_request_count(
+        "class-teacher-triage-zero-retry"
+    ) == 1
+    assert constructions[0]["allow_retry"] is False
+    journal_path = tmp_path / "task-logs" / "llm_diagnostics.jsonl"
+    events = [
+        json.loads(line)
+        for line in journal_path.read_text(encoding="utf-8").splitlines()
+    ]
+    assert events
+    assert {event["workspace_module"] for event in events} == {
+        "class_teacher"
+    }
+    assert {event["workspace_task_kind"] for event in events} == {
+        "class_teacher_intake"
+    }
+    cleared = JsonlDiagnosticJournal(journal_path).clear_workspace(
+        "class_teacher"
+    )
+    assert cleared["deleted_event_count"] == len(events)
+    assert journal_path.read_text(encoding="utf-8") == ""
 
 
 def test_production_feature_uses_dynamic_profile_gateway_without_side_effects(
@@ -295,12 +437,12 @@ def test_active_profile_gateway_sends_only_confirmed_canonical_payload(
     result = gateway.invoke(payload=payload, operation_id="model-op-001")
 
     assert json.loads(result) == {"kind": "follow_up", "questions": ["哪一天？"]}
-    assert gateway.physical_request_count("model-op-001") == 3
+    assert gateway.physical_request_count("model-op-001") == 1
     assert clients == [("synthetic-key", "https://model.invalid/v1")]
     assert len(constructed) == 1
     assert constructed[0].construction["metadata_only"] is False
     assert constructed[0].construction["claim_operations"] is False
-    assert constructed[0].construction["allow_retry"] is True
+    assert constructed[0].construction["allow_retry"] is False
     call = constructed[0].calls[0]
     request = call["request"]
     assert isinstance(request, WorkspaceModelRequest)

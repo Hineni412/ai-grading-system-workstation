@@ -29,8 +29,10 @@ import {
   type SlidePlanPreview,
   type MaterialLink,
   type MaterialLinkPurpose,
+  type MaterialDeletionPreview,
   type MaterialUnit,
   type MaterialVersion,
+  type DeleteMaterialSourceResult,
   type PptxExecution,
   type PptxVersion,
   type PostLessonReview,
@@ -827,6 +829,14 @@ export const useTeachingPrepCatalogStore = defineStore(
         errorMessage.value = safeMessage(error)
         throw error
       }
+    }
+
+    async function refreshCurrentMaterialUnits(materialId: string): Promise<boolean> {
+      if (selectedMaterialId.value !== materialId) return false
+      const nextUnits = await teachingPrepCatalogApi.listMaterialUnits(materialId)
+      if (selectedMaterialId.value !== materialId) return false
+      materialUnits.value = nextUnits
+      return true
     }
 
     async function importMaterialCopy(
@@ -1821,32 +1831,71 @@ export const useTeachingPrepCatalogStore = defineStore(
       }
     }
 
-    async function deleteMaterialSource(material: MaterialVersion): Promise<void> {
+    async function getMaterialDeletionPreview(
+      material: MaterialVersion,
+    ): Promise<MaterialDeletionPreview> {
+      errorMessage.value = ''
+      try {
+        return await teachingPrepCatalogApi.getMaterialDeletionPreview(material)
+      } catch (error) {
+        errorMessage.value = safeMessage(error)
+        throw error
+      }
+    }
+
+    async function refreshAfterMaterialDeletion(material: MaterialVersion): Promise<void> {
+      if (selectedMaterialId.value === material.id) {
+        selectedMaterialId.value = null
+        materialUnits.value = []
+      }
+      ;[
+        materials.value,
+        semesterMaterials.value,
+        semesters.value,
+      ] = await Promise.all([
+        teachingPrepCatalogApi.listMaterials(undefined, true),
+        selectedSemester.value
+          ? teachingPrepCatalogApi.listSemesterMaterials(selectedSemester.value.id)
+          : Promise.resolve([]),
+        teachingPrepCatalogApi.listSemesters(),
+      ])
+    }
+
+    async function deleteMaterialSource(
+      material: MaterialVersion,
+      input: {
+        operation_id: string
+        preview_version: string
+        confirmation_phrase: string
+      },
+    ): Promise<DeleteMaterialSourceResult> {
       invalidateSemesterMappingPreflight()
       saveState.value = 'saving'
       errorMessage.value = ''
       try {
-        await teachingPrepCatalogApi.deleteMaterialSource(material)
-        if (selectedMaterialId.value === material.id) {
-          selectedMaterialId.value = null
-          materialUnits.value = []
-        }
-        ;[
-          materials.value,
-          semesterMaterials.value,
-          semesters.value,
-        ] = await Promise.all([
-          teachingPrepCatalogApi.listMaterials(undefined, true),
-          selectedSemester.value
-            ? teachingPrepCatalogApi.listSemesterMaterials(selectedSemester.value.id)
-            : Promise.resolve([]),
-          teachingPrepCatalogApi.listSemesters(),
-        ])
+        const result = await teachingPrepCatalogApi.deleteMaterialSource(material, input)
+        if (result.status === 'succeeded') await refreshAfterMaterialDeletion(material)
+        return result
       } catch (error) {
         errorMessage.value = safeMessage(error)
         throw error
       } finally {
         saveState.value = 'idle'
+      }
+    }
+
+    async function getMaterialDeletionStatus(
+      operationId: string,
+      material: MaterialVersion,
+    ): Promise<DeleteMaterialSourceResult> {
+      errorMessage.value = ''
+      try {
+        const result = await teachingPrepCatalogApi.getMaterialDeletionStatus(operationId)
+        if (result.status === 'succeeded') await refreshAfterMaterialDeletion(material)
+        return result
+      } catch (error) {
+        errorMessage.value = safeMessage(error)
+        throw error
       }
     }
 
@@ -2168,7 +2217,9 @@ export const useTeachingPrepCatalogStore = defineStore(
       attachSemesterMaterial,
       updateSemesterMaterial,
       updateMaterialSource,
+      getMaterialDeletionPreview,
       deleteMaterialSource,
+      getMaterialDeletionStatus,
       prepareSemesterMapping,
       generateSemesterMapping,
       applySemesterMapping,
@@ -2177,6 +2228,7 @@ export const useTeachingPrepCatalogStore = defineStore(
       moveLesson,
       selectLesson,
       openMaterial,
+      refreshCurrentMaterialUnits,
       parseMaterialInBackground,
       cancelMaterialParse,
       importMaterialCopy,

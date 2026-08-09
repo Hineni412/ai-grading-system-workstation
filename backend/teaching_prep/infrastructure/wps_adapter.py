@@ -47,6 +47,74 @@ class SubprocessWpsAdapter:
             raise TeachingPrepValidationError(
                 "WPS helper source copy is outside its isolated directory"
             ) from exc
+        return self._invoke_helper(
+            operation_id=operation_id,
+            plan=plan,
+            working_dir=working_dir,
+        )
+
+    def render_previews(
+        self,
+        *,
+        operation_id: str,
+        source_copy: str,
+        preview_directory: str,
+        slide_indexes: list[int],
+        source_sha256: str,
+        timeout_milliseconds: int,
+    ) -> dict[str, Any]:
+        source_path = Path(source_copy).resolve(strict=True)
+        preview_dir = Path(preview_directory).resolve(strict=False)
+        working_dir = preview_dir.parent
+        try:
+            source_path.relative_to(working_dir)
+            preview_dir.relative_to(working_dir)
+        except ValueError as exc:
+            raise TeachingPrepValidationError(
+                "WPS preview paths are outside the isolated directory"
+            ) from exc
+        indexes = [int(item) for item in slide_indexes]
+        if (
+            not indexes
+            or len(indexes) > 32
+            or len(indexes) != len(set(indexes))
+            or any(index <= 0 for index in indexes)
+        ):
+            raise TeachingPrepValidationError(
+                "WPS preview slide selection is invalid"
+            )
+        plan: dict[str, Any] = {
+            "schema_version": 1,
+            "mode": "preview_only",
+            "source": {
+                "isolated_copy_path": str(source_path),
+                "sha256": str(source_sha256),
+            },
+            "output": {"preview_directory": str(preview_dir)},
+            "slide_indexes": indexes,
+            "performance_budget": {
+                "timeout_milliseconds": int(timeout_milliseconds),
+            },
+        }
+        result = self._invoke_helper(
+            operation_id=operation_id,
+            plan=plan,
+            working_dir=working_dir,
+        )
+        rendered = result.get("rendered_slide_indexes")
+        if isinstance(rendered, int):
+            rendered = [rendered]
+        if rendered != indexes or result.get("source_unchanged") is not True:
+            raise RuntimeError("WPS preview verification contract failed")
+        return result
+
+    def _invoke_helper(
+        self,
+        *,
+        operation_id: str,
+        plan: dict[str, Any],
+        working_dir: Path,
+    ) -> dict[str, Any]:
         request_path = working_dir / "helper-request.json"
         result_path = working_dir / "helper-result.json"
         request_path.write_text(

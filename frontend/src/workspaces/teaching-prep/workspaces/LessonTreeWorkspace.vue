@@ -4,6 +4,7 @@ import { computed } from 'vue'
 import type { LessonNode, SemesterLessonProgressStatus } from '../api/catalog'
 import { useTeachingPrepWorkbenchContext } from '../workbench/context'
 import { useWorkspaceAITaskStore } from '../../shared/ai-tasks/store'
+import { LESSON_PROGRESS_OPTIONS } from '../progressLabels'
 
 const workbench = useTeachingPrepWorkbenchContext()
 const aiTasks = useWorkspaceAITaskStore()
@@ -122,11 +123,13 @@ const stateLabels = { not_started: '未开始', in_progress: '进行中', needs_
             :value="statusMap.get(lesson.id)?.manual_progress ?? 'not_started'"
             @change="setProgress(lesson, $event)"
           >
-            <option value="not_started">未开始</option>
-            <option value="preparing">备课中</option>
-            <option value="ready">已备好</option>
-            <option value="taught">已授课</option>
-            <option value="skipped">本学期跳过</option>
+            <option
+              v-for="option in LESSON_PROGRESS_OPTIONS"
+              :key="option.value"
+              :value="option.value"
+            >
+              {{ option.label }}
+            </option>
           </select>
         </article>
     </div>

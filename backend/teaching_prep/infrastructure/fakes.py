@@ -123,6 +123,7 @@ class FakeWpsAdapter:
         self.failure = failure
         self.materialize = materialize
         self.calls: list[dict[str, Any]] = []
+        self.preview_calls: list[dict[str, Any]] = []
 
     def execute(
         self,
@@ -153,6 +154,49 @@ class FakeWpsAdapter:
             "rendered_all_slides": True,
             "slideshow_check_passed": True,
             "unapproved_content_preserved": True,
+            "synthetic": True,
+        }
+
+    def render_previews(
+        self,
+        *,
+        operation_id: str,
+        source_copy: str,
+        preview_directory: str,
+        slide_indexes: list[int],
+        source_sha256: str,
+        timeout_milliseconds: int,
+    ) -> dict[str, Any]:
+        call = {
+            "operation_id": operation_id,
+            "source_copy": source_copy,
+            "preview_directory": preview_directory,
+            "slide_indexes": list(slide_indexes),
+            "source_sha256": source_sha256,
+            "timeout_milliseconds": timeout_milliseconds,
+        }
+        self.preview_calls.append(deepcopy(call))
+        if self.failure is not None:
+            raise self.failure
+        destination = Path(preview_directory)
+        destination.mkdir(parents=True, exist_ok=True)
+        from PIL import Image, ImageDraw
+
+        for index in slide_indexes:
+            image = Image.new("RGB", (1600, 900), "white")
+            draw = ImageDraw.Draw(image)
+            draw.rectangle((0, 0, 1599, 899), outline=(35, 94, 107), width=4)
+            draw.text(
+                (40, 32),
+                f"Synthetic WPS source slide {index}",
+                fill="black",
+            )
+            image.save(destination / f"slide-{index:05d}.png")
+        return {
+            "status": "completed",
+            "source_lock_check": "passed",
+            "rendered_slide_indexes": list(slide_indexes),
+            "source_unchanged": True,
             "synthetic": True,
         }
 

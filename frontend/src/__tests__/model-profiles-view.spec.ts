@@ -97,12 +97,16 @@ describe('ModelProfilesView', () => {
     const diagnostic = (
       operationId: string,
       callId: string,
+      workspaceModule: '' | 'teaching_prep' | 'class_teacher',
+      workspaceTaskKind: string,
     ): AiDiagnosticSummary => ({
       call_id: callId,
       operation_id: operationId,
       request_id: operationId,
       attempt: 1,
       request_kind: 'workspace',
+      workspace_module: workspaceModule,
+      workspace_task_kind: workspaceTaskKind,
       protocol: 'chat_completions',
       model: 'synthetic-model',
       started_at_utc: '2026-08-07T12:00:00Z',
@@ -152,8 +156,18 @@ describe('ModelProfilesView', () => {
       finished_at: '2026-08-07T12:00:01Z',
     })
     const diagnostics = [
-      diagnostic('operation-teaching-prep', 'a'.repeat(24)),
-      diagnostic('operation-class-teacher', 'b'.repeat(24)),
+      diagnostic(
+        'operation-teaching-prep',
+        'a'.repeat(24),
+        'teaching_prep',
+        'lesson_draft',
+      ),
+      diagnostic(
+        'operation-class-teacher',
+        'b'.repeat(24),
+        'class_teacher',
+        'class_teacher_intake',
+      ),
     ]
     const listDiagnostics = vi.spyOn(aiDiagnosticsApi, 'list').mockResolvedValue({
       items: diagnostics,
@@ -209,6 +223,11 @@ describe('ModelProfilesView', () => {
     expect(workbenchSelect).toBeDefined()
     workbenchSelect!.value = 'class_teacher'
     workbenchSelect!.dispatchEvent(new Event('change', { bubbles: true }))
+    await vi.waitFor(() => {
+      expect(listDiagnostics).toHaveBeenLastCalledWith(
+        expect.objectContaining({ workspaceModule: 'class_teacher' }),
+      )
+    })
     await settle()
 
     const ledger = host.querySelector('.ai-diagnostics-ledger')
@@ -220,5 +239,34 @@ describe('ModelProfilesView', () => {
     )].find((label) => label.querySelector('span')?.textContent === '具体功能')
       ?.querySelector<HTMLSelectElement>('select')
     expect(categorySelect?.textContent).toContain('事项整理')
+    categorySelect!.value = 'class_teacher_intake'
+    categorySelect!.dispatchEvent(new Event('change', { bubbles: true }))
+    await vi.waitFor(() => {
+      expect(listDiagnostics).toHaveBeenLastCalledWith(expect.objectContaining({
+        workspaceModule: 'class_teacher',
+        workspaceTaskKind: 'class_teacher_intake',
+      }))
+    })
+
+    const clearClassTeacher = vi.spyOn(aiDiagnosticsApi, 'clearClassTeacher')
+      .mockResolvedValue({
+        workspace_module: 'class_teacher',
+        deleted_event_count: 4,
+        retained_event_count: 6,
+        unclassified_event_count: 2,
+      })
+    vi.stubGlobal('confirm', vi.fn(() => true))
+    const clearButton = [...host.querySelectorAll<HTMLButtonElement>('button')]
+      .find((item) => item.textContent?.includes('清除班主任正文日志'))
+    expect(clearButton).toBeDefined()
+    clearButton!.click()
+    await vi.waitFor(() => expect(clearClassTeacher).toHaveBeenCalledTimes(1))
+    await settle()
+
+    expect(host.textContent).toContain('已清除 4 条班主任正文日志')
+    expect(host.textContent).toContain('唯一正文日志')
+    expect(host.textContent).toContain('每条最多 1 MB')
+    expect(host.textContent).toContain('不会复制到终端、访问日志、任务摘要或浏览器存储')
+    expect(host.textContent).toContain('未分类旧记录不会被这次清除')
   })
 })

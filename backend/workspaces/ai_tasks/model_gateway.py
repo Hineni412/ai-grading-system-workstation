@@ -72,6 +72,23 @@ class WorkspaceAITaskModelGateway:
     def bind(self, gateway: WorkspaceModelGateway) -> "BoundWorkspaceAITaskGateway":
         return BoundWorkspaceAITaskGateway(self, gateway)
 
+    def record_validation(
+        self,
+        *,
+        operation_id: str,
+        validation_issue_codes: tuple[str, ...],
+        workspace_module: str,
+        workspace_task_kind: str,
+    ) -> None:
+        """Persist only fixed validation metadata; never domain body or identity."""
+
+        self._diagnostic_sink.record_validation(
+            operation_id=operation_id,
+            validation_issue_codes=validation_issue_codes,
+            workspace_module=workspace_module,
+            workspace_task_kind=workspace_task_kind,
+        )
+
     def _secure_and_claim(
         self,
         gateway: WorkspaceModelGateway,
@@ -96,7 +113,10 @@ class WorkspaceAITaskModelGateway:
         # Enforce on the actual low-level call path, including supplied gateways.
         # The shared task/job stores remain metadata-only; sensitive request and
         # response bodies live only in the bounded, Git-ignored local journal.
-        gateway.gateway.diagnostic_sink = self._diagnostic_sink
+        gateway.gateway.diagnostic_sink = self._diagnostic_sink.for_workspace(
+            workspace_module=gateway.module_id,
+            workspace_task_kind=request.purpose,
+        )
         gateway.gateway.trace_sink = NullCallTraceSink()
         gateway.gateway.usage_sink = NullUsageSink()
         gateway.allow_retry = False

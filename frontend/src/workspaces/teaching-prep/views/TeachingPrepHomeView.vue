@@ -4,6 +4,7 @@ import { computed, onBeforeUnmount, onMounted, provide } from 'vue'
 import TeachingPrepLessonContext from '../components/TeachingPrepLessonContext.vue'
 import { teachingPrepWorkbenchKey } from '../workbench/context'
 import { useTeachingPrepWorkbench } from '../workbench/state'
+import { lessonProgressLabel } from '../progressLabels'
 import LessonTreeWorkspace from '../workspaces/LessonTreeWorkspace.vue'
 import MaterialLibraryWorkspace from '../workspaces/MaterialLibraryWorkspace.vue'
 import LessonMaterialConfirmationWorkspace from '../workspaces/LessonMaterialConfirmationWorkspace.vue'
@@ -92,7 +93,7 @@ onBeforeUnmount(() => {
           <p class="tp-eyebrow">准备摘要</p>
           <h2>{{ workbench.catalog.selectedLesson?.title ?? '当前课时' }}</h2>
           <dl>
-            <div><dt>授课状态</dt><dd>{{ workbench.selectedStatus.value?.manual_progress ?? '未开始' }}</dd></div>
+            <div><dt>授课状态</dt><dd>{{ lessonProgressLabel(workbench.selectedStatus.value?.manual_progress) }}</dd></div>
             <div><dt>当前步骤</dt><dd>{{ lessonStageLabels[workbench.stage.value as keyof typeof lessonStageLabels] ?? '确认资料' }}</dd></div>
             <div><dt>下一动作</dt><dd>{{ visibleNextAction }}</dd></div>
           </dl>

@@ -1,5 +1,6 @@
 import { createApp, defineComponent, h, nextTick, ref } from 'vue'
 import { afterEach, describe, expect, it } from 'vitest'
+import { vi } from 'vitest'
 
 import TeachingPrepDocumentWorkspace from './TeachingPrepDocumentWorkspace.vue'
 
@@ -45,6 +46,38 @@ describe('TeachingPrepDocumentWorkspace narrow-screen panes', () => {
     expect(host.querySelector('#source-content')).not.toBeNull()
     expect(host.querySelector('#review-content')).not.toBeNull()
     expect(host.querySelector<HTMLImageElement>('.tp-document-workspace__preview')?.style.inlineSize).toBe('125%')
+    app.unmount()
+  })
+
+  it('emits one preview-loaded event per URL after the real image response succeeds', async () => {
+    const previewUrl = ref('/preview/structural-1')
+    const loaded = vi.fn()
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const app = createApp(defineComponent({
+      setup: () => () => h(TeachingPrepDocumentWorkspace, {
+        title: '合成课件',
+        previewUrl: previewUrl.value,
+        onPreviewLoaded: loaded,
+      }),
+    }))
+    app.mount(host)
+    await nextTick()
+
+    const firstImage = host.querySelector<HTMLImageElement>('.tp-document-workspace__preview')!
+    firstImage.dispatchEvent(new Event('load'))
+    firstImage.dispatchEvent(new Event('load'))
+    await nextTick()
+    expect(loaded).toHaveBeenCalledOnce()
+    expect(loaded).toHaveBeenCalledWith('/preview/structural-1')
+
+    previewUrl.value = '/preview/structural-2'
+    await nextTick()
+    host.querySelector<HTMLImageElement>('.tp-document-workspace__preview')!
+      .dispatchEvent(new Event('load'))
+    await nextTick()
+    expect(loaded).toHaveBeenCalledTimes(2)
+    expect(loaded).toHaveBeenLastCalledWith('/preview/structural-2')
     app.unmount()
   })
 })

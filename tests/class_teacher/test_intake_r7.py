@@ -486,7 +486,15 @@ def _triage(*, subject_id: str | None = None, handoff_key: str | None = None) ->
         "time_facts": [],
         "safety_level": "normal",
         "missing_fields": [],
-        "draft": {"summary": "合成草稿正文", "observed_at": "2026-08-05T08:00:00+08:00"},
+        "draft": {
+            "summary": "合成草稿正文",
+            "observed_at": "2026-08-05T08:00:00+08:00",
+            **(
+                {"record_kind": "fact", "source": "合成教师核对"}
+                if subject_id
+                else {}
+            ),
+        },
     }
     if handoff_key is not None:
         item["handoff_key"] = handoff_key
@@ -518,7 +526,12 @@ def _work_item(
     draft: dict[str, object],
     refs: list[dict[str, str]] | None = None,
     secondary: list[str] | None = None,
+    attribution_defaults: bool = True,
 ) -> dict[str, object]:
+    normalized_draft = dict(draft)
+    if mode == "record" and attribution_defaults:
+        normalized_draft.setdefault("record_kind", "fact")
+        normalized_draft.setdefault("source", "合成教师核对")
     return {
         "work_item_id": work_item_id,
         "domain": domain,
@@ -530,8 +543,122 @@ def _work_item(
         "time_facts": [],
         "safety_level": "teacher_review_required" if mode == "sop" else "normal",
         "missing_fields": [],
-        "draft": draft,
+        "draft": normalized_draft,
     }
+
+
+@pytest.mark.parametrize(
+    ("attribution", "expected_code"),
+    [
+        ({"source": "合成教师观察"}, "class_teacher_record_kind_invalid"),
+        (
+            {"record_kind": "ai_draft", "source": "合成模型草稿"},
+            "class_teacher_record_kind_invalid",
+        ),
+        (
+            {"record_kind": "fact", "source": "   "},
+            "class_teacher_record_source_required",
+        ),
+    ],
+)
+def test_record_adoption_rejects_missing_or_unconfirmed_attribution(
+    tmp_path: Path,
+    attribution: dict[str, object],
+    expected_code: str,
+) -> None:
+    service, _ = _service(tmp_path)
+    _conversation, turn = _conversation_with_turn(
+        service,
+        f"record-attribution-{expected_code}",
+    )
+    ready = service.intake.apply_triage_result(
+        turn_id=str(turn["turn_id"]),
+        task_id=str(turn["task_id"]),
+        payload={
+            "contract_version": "class_teacher_triage.v1",
+            "assistant_message": "已形成一份待教师核对的合成记录。",
+            "clarification_questions": [],
+            "work_items": [_work_item(
+                "record-attribution-item",
+                domain="school_coordination",
+                mode="record",
+                intent="create",
+                draft={"summary": "合成待审事实", **attribution},
+                attribution_defaults=False,
+            )],
+        },
+    )
+
+    with pytest.raises(VaultError) as error:
+        service.intake.adopt_handoff(
+            token="",
+            handoff_id=str(ready["handoffs"][0]["handoff_id"]),
+            draft_revision=1,
+            target_revision="new",
+            operation_id=f"adopt-{expected_code}",
+        )
+
+    assert error.value.status_code == 422
+    assert error.value.code == expected_code
+    assert service.database.exists is False
+
+
+def test_record_adoption_preserves_supplied_professional_attribution_until_teacher_confirms(
+    tmp_path: Path,
+) -> None:
+    service, _ = _service(tmp_path)
+    _conversation, turn = _conversation_with_turn(
+        service,
+        "record-professional-attribution",
+    )
+    ready = service.intake.apply_triage_result(
+        turn_id=str(turn["turn_id"]),
+        task_id=str(turn["task_id"]),
+        payload={
+            "contract_version": "class_teacher_triage.v1",
+            "assistant_message": "已形成一份待教师核对的合成记录。",
+            "clarification_questions": [],
+            "work_items": [_work_item(
+                "record-professional-item",
+                domain="school_coordination",
+                mode="record",
+                intent="create",
+                draft={
+                    "summary": "医院已经提供书面诊断，等待教师核对来源。",
+                    "record_kind": "professional_conclusion",
+                    "source": "合成医院书面材料",
+                    "teacher_confirmed": False,
+                },
+            )],
+        },
+    )
+    handoff = service.intake.open_handoff(
+        str(ready["handoffs"][0]["handoff_id"])
+    )
+    assert handoff["content"]["teacher_confirmed"] is False
+
+    receipt = service.intake.adopt_handoff(
+        token="",
+        handoff_id=str(handoff["handoff_id"]),
+        draft_revision=int(handoff["draft_revision"]),
+        target_revision="new",
+        operation_id="adopt-professional-attribution",
+    )
+    with closing(service.database.connect()) as connection:
+        row = connection.execute(
+            "SELECT payload_object_id FROM class_teacher_affair_records "
+            "WHERE record_id=?",
+            (str(receipt["formal_object_id"]),),
+        ).fetchone()
+        assert row is not None
+        payload, _revision = service.repository.get(
+            connection,
+            vmk=service.session_key(""),
+            object_id=str(row["payload_object_id"]),
+        )
+    assert payload["record_kind"] == "professional_conclusion"
+    assert payload["source"] == "合成医院书面材料"
+    assert payload["teacher_confirmed"] is True
 
 
 def test_homeroom_preference_changes_filter_without_mutating_roster_history(tmp_path: Path) -> None:
@@ -1605,6 +1732,103 @@ def test_sop_adoption_creates_unfinished_affair_without_decision_or_closure(tmp_
     assert affair.get("teacher_decision") in (None, {})
 
 
+def test_teacher_selected_sop_template_no_longer_appears_as_missing_after_save_and_adoption(
+    tmp_path: Path,
+) -> None:
+    service, _ = _service(tmp_path)
+    _conversation, turn = _conversation_with_turn(
+        service,
+        "conversation-sop-template-resolved",
+    )
+    work_item = _work_item(
+        "sop-template-resolved-001",
+        domain="conflict_safety",
+        mode="sop",
+        intent="create",
+        draft={
+            "summary": "两名合成参与人发生争执，目前已经分开",
+            "template_key": "",
+            "participant_refs": ["synthetic-participant-a", "synthetic-participant-b"],
+        },
+    )
+    work_item["missing_fields"] = ["请由教师选择学校流程模板"]
+    ready = service.intake.apply_triage_result(
+        turn_id=str(turn["turn_id"]),
+        task_id=str(turn["task_id"]),
+        payload={
+            "contract_version": "class_teacher_triage.v1",
+            "assistant_message": "请由教师选择学校流程模板。",
+            "clarification_questions": [],
+            "work_items": [work_item],
+        },
+    )
+    handoff = service.intake.open_handoff(
+        str(ready["handoffs"][0]["handoff_id"])
+    )
+
+    saved = service.intake.update_draft(
+        handoff_id=str(handoff["handoff_id"]),
+        expected_revision=int(handoff["draft_revision"]),
+        content={
+            **dict(handoff["content"]),
+            "template_key": "baseline.student_conflict",
+        },
+    )
+    assert saved["missing_fields"] == []
+
+    service.intake.adopt_handoff(
+        token="",
+        handoff_id=str(saved["handoff_id"]),
+        draft_revision=int(saved["draft_revision"]),
+        target_revision="new",
+        operation_id="adopt-sop-template-resolved",
+    )
+    restored = service.intake.get_conversation(str(ready["conversation_id"]))
+    assert restored["state"] == "teacher_confirmed"
+    assert restored["handoffs"][0]["adoption_state"] == "adopted"
+    assert restored["handoffs"][0]["missing_fields"] == []
+
+
+def test_saving_a_review_draft_does_not_clear_student_revision_warning(
+    tmp_path: Path,
+) -> None:
+    service, _ = _service(tmp_path)
+    _conversation, turn = _conversation_with_turn(
+        service,
+        "conversation-student-revision-warning-preserved",
+    )
+    work_item = _work_item(
+        "student-revision-warning-preserved-001",
+        domain="student_support",
+        mode="record",
+        intent="append",
+        draft={"summary": "合成待审学生支持记录"},
+    )
+    work_item["missing_fields"] = ["学生版本信息不一致，请重新选择"]
+    ready = service.intake.apply_triage_result(
+        turn_id=str(turn["turn_id"]),
+        task_id=str(turn["task_id"]),
+        payload={
+            "contract_version": "class_teacher_triage.v1",
+            "assistant_message": "学生版本信息不一致，请重新选择。",
+            "clarification_questions": [],
+            "work_items": [work_item],
+        },
+    )
+    handoff = service.intake.open_handoff(
+        str(ready["handoffs"][0]["handoff_id"])
+    )
+
+    saved = service.intake.update_draft(
+        handoff_id=str(handoff["handoff_id"]),
+        expected_revision=int(handoff["draft_revision"]),
+        content={**dict(handoff["content"]), "scene": "合成教师再次核对"},
+        subject_refs=[],
+    )
+
+    assert saved["missing_fields"] == ["学生版本信息不一致，请重新选择"]
+
+
 def test_changed_student_target_marks_handoff_stale_and_writes_nothing(tmp_path: Path) -> None:
     service, _ = _service(tmp_path)
     subject = service.support.create_subject(
@@ -1635,7 +1859,12 @@ def test_changed_student_target_marks_handoff_stale_and_writes_nothing(tmp_path:
     rebound = service.intake.update_draft(
         handoff_id=str(ready["handoffs"][0]["handoff_id"]),
         expected_revision=1,
-        content={"summary": "合成草稿正文已重新核对", "observed_at": "2026-08-05T08:00:00+08:00"},
+        content={
+            "summary": "合成草稿正文已重新核对",
+            "observed_at": "2026-08-05T08:00:00+08:00",
+            "record_kind": "fact",
+            "source": "合成教师核对",
+        },
         subject_refs=[{
             "kind": "student", "id": str(subject["subject_id"]), "revision": str(current["revision"]),
         }],

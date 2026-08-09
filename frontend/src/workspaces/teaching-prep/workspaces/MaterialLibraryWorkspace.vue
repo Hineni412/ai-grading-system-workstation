@@ -4,6 +4,8 @@ import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import type { JobResponse } from '../../../api/jobs'
 import type {
   MaterialLinkPurpose,
+  MaterialDeletionPreview,
+  DeleteMaterialSourceResult,
   MaterialVersion,
   ReferencePptCollection,
   SemesterMappingProposalRange,
@@ -115,6 +117,7 @@ interface PendingPptFolderBatch {
 
 const pendingPptFolders = ref<PendingPptFolderBatch[]>([])
 const referencePptCollections = ref<ReferencePptCollection[]>([])
+const refreshedPreviewUrls = new Set<string>()
 
 const activeUnit = computed(
   () => workbench.catalog.materialUnits.find(item => item.id === activeUnitId.value)
@@ -133,6 +136,17 @@ const showOtherTermMaterials = ref(false)
 const showReferencePptMaterials = ref(false)
 const includeReferencePptInDirectory = ref(false)
 const batchArchiveRunning = ref(false)
+type MaterialDeletionState = 'ready' | 'deleting' | 'checking' | 'succeeded' | 'failed' | 'unknown' | 'blocked'
+interface MaterialDeletionPlanItem {
+  material: MaterialVersion
+  preview: MaterialDeletionPreview
+  operationId: string
+  state: MaterialDeletionState
+  result: DeleteMaterialSourceResult | null
+  detail: string
+}
+const deletionPlan = ref<MaterialDeletionPlanItem[]>([])
+const deletionPlanMode = ref<'single' | 'batch'>('single')
 const currentTermMaterials = computed(() => activeMaterials.value.filter(item => Boolean(
   semesterRecordFor(item),
 )))
@@ -145,6 +159,8 @@ const referencePptMaterials = computed(() => {
       : currentTermMaterials.value
   return scoped.filter(item => (
     semesterRecordFor(item)?.material_role === 'reference_ppt'
+    || item.material_type === 'pptx'
+    || /\.pptx?$/i.test(item.safe_filename || item.display_name)
   ))
 })
 const visibleMaterials = computed(() => {
@@ -159,7 +175,10 @@ const visibleMaterials = computed(() => {
     || item.id === workbench.catalog.selectedMaterialId
   ))
 })
-watch(() => curriculumScope.selectedVolumeId, () => {
+watch(() => [
+  curriculumScope.selectedVolumeId,
+  workbench.catalog.selectedSemester?.id ?? null,
+], () => {
   showOtherTermMaterials.value = false
   showReferencePptMaterials.value = false
   includeReferencePptInDirectory.value = false
@@ -169,6 +188,16 @@ const activeMaterial = computed(
     item => item.id === workbench.catalog.selectedMaterialId,
   ) ?? null,
 )
+const activePreviewKind = computed(() => {
+  if (activeMaterial.value?.material_type !== 'pptx') return null
+  const kind = activeUnit.value?.object_summary.preview_kind
+  return kind === 'rendered' || kind === 'structural' ? kind : null
+})
+const activePreviewLabel = computed(() => {
+  if (activePreviewKind.value === 'rendered') return '真实原页'
+  if (activePreviewKind.value === 'structural') return '结构预览，不是原页'
+  return null
+})
 const activeProposal = computed(
   () => workbench.catalog.currentSemesterMappingProposal,
 )
@@ -346,6 +375,25 @@ function goToPage(value = pageInput.value): void {
 
 function stepPage(offset: number): void {
   goToPage((activeUnit.value?.unit_index ?? 1) + offset)
+}
+
+async function refreshRenderedPreview(url: string): Promise<void> {
+  const material = activeMaterial.value
+  const unit = activeUnit.value
+  if (
+    !material
+    || material.material_type !== 'pptx'
+    || unit?.preview_url !== url
+    || unit.object_summary.preview_kind === 'rendered'
+  ) return
+  const key = `${material.id}:${url}`
+  if (refreshedPreviewUrls.has(key)) return
+  refreshedPreviewUrls.add(key)
+  try {
+    await workbench.catalog.refreshCurrentMaterialUnits(material.id)
+  } catch {
+    // The already-loaded structural preview remains the honest fallback.
+  }
 }
 
 function openMappingRange(startUnit: number): void {
@@ -964,41 +1012,190 @@ async function renameMaterial(item: MaterialVersion): Promise<void> {
   mappingMessage.value = '资料名称已更新。'
 }
 
-async function deleteMaterial(item: MaterialVersion): Promise<void> {
-  if (!window.confirm(`确认彻底删除“${item.display_name}”吗？原文件、解析页和课时关联将一并删除，且无法恢复。`)) return
-  try {
-    await workbench.catalog.deleteMaterialSource(item)
-    mappingMessage.value = '资料已彻底删除。'
-  } catch {
-    mappingMessage.value = workbench.catalog.errorMessage || '资料未删除，请检查提示后重试。'
-  }
+function deletionOperationId(): string {
+  return `delete-material-${crypto.randomUUID().replaceAll('-', '')}`
 }
 
-async function deleteCurrentTermMaterials(): Promise<void> {
-  if (batchArchiveRunning.value) return
-  const candidates = [...currentTermMaterials.value]
-  if (candidates.length === 0) return
-  if (!window.confirm(
-    `确认彻底删除本学期的 ${candidates.length} 份资料吗？原文件、解析页和课时关联将一并删除，且无法恢复。`,
-  )) return
+function deletionTermLabel(term: 'first' | 'second'): string {
+  return term === 'first' ? '上学期' : '下学期'
+}
+
+function deletionImpactSummary(preview: MaterialDeletionPreview): string {
+  return `将删除 ${preview.impact_counts.material_versions} 个资料版本、${preview.impact_counts.material_units} 页解析内容、${preview.impact_counts.lesson_material_links} 条课时关联。`
+}
+
+function deletionSnapshotDisclosure(previews: MaterialDeletionPreview[]): string {
+  const count = previews.reduce(
+    (total, preview) => total + preview.preserved_snapshot_count,
+    0,
+  )
+  return count > 0
+    ? `会保留 ${count} 份生成事实快照，仅含资料名、安全文件名、类型、版本标识和内容指纹等生成事实；不保留原文件、解析正文或本机路径。`
+    : '本次不会保留生成事实快照。'
+}
+
+function deletionPermanentRemovalDisclosure(): string {
+  return '原文件、解析页、课时和学期关联将永久删除且无法恢复。'
+}
+
+async function prepareMaterialDeletionPlan(
+  candidates: MaterialVersion[],
+  mode: 'single' | 'batch',
+): Promise<void> {
+  if (batchArchiveRunning.value || candidates.length === 0) return
   batchArchiveRunning.value = true
-  let deleted = 0
-  let failed = 0
+  deletionPlanMode.value = mode
+  deletionPlan.value = []
+  mappingMessage.value = mode === 'single' ? '正在核对完整删除影响……' : `正在核对 ${candidates.length} 份资料的删除影响……`
   try {
-    for (const item of candidates) {
+    const prepared: MaterialDeletionPlanItem[] = []
+    for (const material of candidates) {
       try {
-        await workbench.catalog.deleteMaterialSource(item)
-        deleted += 1
+        const preview = await workbench.catalog.getMaterialDeletionPreview(material)
+        prepared.push({
+          material,
+          preview,
+          operationId: deletionOperationId(),
+          state: preview.can_delete ? 'ready' : 'blocked',
+          result: null,
+          detail: preview.can_delete
+            ? '等待教师最终确认'
+            : preview.blocking_generation_count > 0
+              ? `仍有 ${preview.blocking_generation_count} 个课件生成进行中或等待恢复；请先完成、取消或放弃恢复。`
+              : preview.preserved_history_note ?? '当前资料暂时不能彻底删除。',
+        })
       } catch {
-        failed += 1
+        mappingMessage.value = workbench.catalog.errorMessage || `无法核对“${material.display_name}”的删除影响。`
       }
     }
+    deletionPlan.value = prepared
+    const blocked = prepared.filter(item => item.state === 'blocked').length
+    const ready = prepared.length - blocked
+    mappingMessage.value = prepared.length === 0
+      ? '删除影响没有载入，未执行任何删除。'
+      : blocked > 0
+        ? `影响已载入：${ready} 份可删除，${blocked} 份因课件生成进行中或等待恢复而暂时阻止。`
+        : '完整影响已载入；核对后再做一次最终确认。'
   } finally {
     batchArchiveRunning.value = false
   }
-  mappingMessage.value = failed > 0
-    ? `已彻底删除 ${deleted} 份资料，${failed} 份未完成；请检查提示后重试。`
-    : `已彻底删除 ${deleted} 份资料，现在可以重新导入。`
+}
+
+async function deleteMaterial(item: MaterialVersion): Promise<void> {
+  await prepareMaterialDeletionPlan([item], 'single')
+}
+
+async function deleteCurrentTermMaterials(): Promise<void> {
+  await prepareMaterialDeletionPlan([...currentTermMaterials.value], 'batch')
+}
+
+async function deleteReferencePptMaterials(): Promise<void> {
+  await prepareMaterialDeletionPlan([...referencePptMaterials.value], 'batch')
+}
+
+function applyDeletionResult(
+  plan: MaterialDeletionPlanItem,
+  result: DeleteMaterialSourceResult,
+): void {
+  plan.result = result
+  if (result.status === 'succeeded') {
+    plan.state = 'succeeded'
+    plan.detail = `请求已确认成功，已删除 ${result.deleted_file_count} 个受控文件。`
+  } else if (result.status === 'failed') {
+    plan.state = 'failed'
+    plan.detail = result.error_code
+      ? `删除未完成（${result.error_code}），不会自动重试。`
+      : '删除未完成，不会自动重试。'
+  } else {
+    plan.state = 'unknown'
+    plan.detail = '结果尚未完成；请使用同一请求号继续核对，不要重新发起删除。'
+  }
+}
+
+async function replayMaterialDeletion(plan: MaterialDeletionPlanItem): Promise<void> {
+  plan.state = 'deleting'
+  plan.detail = '正在用同一请求号幂等续作，不会生成新的删除请求。'
+  try {
+    const replayed = await workbench.catalog.deleteMaterialSource(plan.material, {
+      operation_id: plan.operationId,
+      preview_version: plan.preview.preview_version,
+      confirmation_phrase: plan.preview.confirmation_phrase,
+    })
+    applyDeletionResult(plan, replayed)
+  } catch {
+    plan.state = 'unknown'
+    plan.detail = '网络结果仍不明；请求号已保留，可继续按同一编号核对或幂等重放。'
+  }
+}
+
+async function checkMaterialDeletion(
+  plan: MaterialDeletionPlanItem,
+  replayInterrupted = false,
+): Promise<void> {
+  plan.state = 'checking'
+  plan.detail = '正在按同一请求号核对结果……'
+  try {
+    const result = await workbench.catalog.getMaterialDeletionStatus(
+      plan.operationId,
+      plan.material,
+    )
+    if (result.status === 'interrupted' && replayInterrupted) {
+      await replayMaterialDeletion(plan)
+      return
+    }
+    applyDeletionResult(plan, result)
+  } catch {
+    await replayMaterialDeletion(plan)
+  }
+}
+
+async function executeMaterialDeletion(plan: MaterialDeletionPlanItem): Promise<void> {
+  if (plan.state !== 'ready') return
+  plan.state = 'deleting'
+  plan.detail = '删除请求已提交，正在等待明确结果……'
+  try {
+    const result = await workbench.catalog.deleteMaterialSource(plan.material, {
+      operation_id: plan.operationId,
+      preview_version: plan.preview.preview_version,
+      confirmation_phrase: plan.preview.confirmation_phrase,
+    })
+    applyDeletionResult(plan, result)
+  } catch {
+    await checkMaterialDeletion(plan)
+  }
+}
+
+async function confirmMaterialDeletionPlan(): Promise<void> {
+  const ready = deletionPlan.value.filter(item => item.state === 'ready')
+  if (ready.length === 0) {
+    mappingMessage.value = '当前没有可执行的删除项；被阻止的资料仍完整保留。'
+    return
+  }
+  const promptTitle = deletionPlanMode.value === 'single'
+    ? `确认彻底删除“${ready[0]!.material.display_name}”吗？已展示的原文件副本、解析内容和关联将永久删除。`
+    : `确认彻底删除已核对的 ${ready.length} 份资料吗？每份结果和请求号都会保留在本页。`
+  const prompt = [
+    promptTitle,
+    deletionSnapshotDisclosure(ready.map(item => item.preview)),
+    deletionPermanentRemovalDisclosure(),
+  ].join('\n\n')
+  if (!window.confirm(prompt)) return
+  batchArchiveRunning.value = true
+  try {
+    for (const plan of ready) await executeMaterialDeletion(plan)
+  } finally {
+    batchArchiveRunning.value = false
+  }
+  const succeeded = deletionPlan.value.filter(item => item.state === 'succeeded').length
+  const unresolved = deletionPlan.value.filter(item => !['succeeded', 'blocked'].includes(item.state)).length
+  mappingMessage.value = unresolved > 0
+    ? `已确认成功 ${succeeded} 份，${unresolved} 份未得到明确结果；请按各自请求号核对。`
+    : `请求已确认成功 ${succeeded} 份；被阻止的资料未发生变化。`
+}
+
+function closeMaterialDeletionPlan(): void {
+  if (deletionPlan.value.some(item => ['deleting', 'checking'].includes(item.state))) return
+  deletionPlan.value = []
 }
 
 const mappingJobBusy = computed(() => (
@@ -1255,9 +1452,16 @@ async function decideMapping(
 }
 
 async function applyProposal(): Promise<void> {
-  if (!activeProposal.value || !allMappingsDecided.value) return
+  const proposal = activeProposal.value
+  if (!proposal || proposal.payload.mappings.length === 0) {
+    mappingMessage.value = '请先取得建议并逐条完成决定，再应用到正式课时树。'
+    return
+  }
+  if (!allMappingsDecided.value) {
+    mappingMessage.value = `还有 ${pendingMappingCount.value} 条建议尚未决定；全部处理后才能应用。`
+    return
+  }
   try {
-    const proposal = activeProposal.value
     const adopted = await adoptTeachingPrepProposal(
       aiTasks.orderedTasks,
       'teaching_prep.semester_mapping',
@@ -1293,7 +1497,10 @@ async function applyProposal(): Promise<void> {
 
 async function acceptLocalHighConfidenceMappings(): Promise<void> {
   const proposal = activeProposal.value
-  if (!proposal || pendingLocalHighConfidenceCount.value === 0) return
+  if (!proposal || pendingLocalHighConfidenceCount.value === 0) {
+    mappingMessage.value = '当前没有可直接确认的高置信建议，请查看待审核建议或先生成目录建议。'
+    return
+  }
   mappingMessage.value = '正在批量确认本机高置信课件命名建议…'
   try {
     const updated = await teachingPrepCatalogApi.acceptLocalReferencePptMappings(
@@ -1310,7 +1517,14 @@ async function acceptLocalHighConfidenceMappings(): Promise<void> {
 }
 
 async function acceptAllPendingMappings(): Promise<void> {
-  if (bulkReviewRunning.value || pendingMappingCount.value === 0) return
+  if (bulkReviewRunning.value) {
+    mappingMessage.value = '正在接受建议，请等待当前保存完成。'
+    return
+  }
+  if (pendingMappingCount.value === 0) {
+    mappingMessage.value = '当前没有待接受的映射建议；如已逐条决定，可直接应用。'
+    return
+  }
   const count = pendingMappingCount.value
   if (!window.confirm(`确认接受剩余 ${count} 条课时目录建议吗？接受后仍需点击“应用全部接受项”才会写入正式课时树。`)) return
   bulkReviewRunning.value = true
@@ -1747,13 +1961,92 @@ async function saveManualMapping(): Promise<void> {
       </p>
     </section>
 
+    <section v-if="deletionPlan.length" class="tp-section-block tp-deletion-preview" aria-labelledby="material-deletion-title">
+      <div class="tp-section-heading">
+        <div>
+          <p class="tp-eyebrow">彻底删除影响预览</p>
+          <h2 id="material-deletion-title">
+            {{ deletionPlanMode === 'single' ? '先核对这一份资料' : `逐项核对 ${deletionPlan.length} 份资料` }}
+          </h2>
+          <p>此处仅展示影响。只有下方一次最终确认后才会提交删除；网络结果不明时只按原请求号查询。</p>
+        </div>
+        <button type="button" :disabled="batchArchiveRunning" @click="closeMaterialDeletionPlan">关闭预览</button>
+      </div>
+      <article
+        v-for="plan in deletionPlan"
+        :key="plan.operationId"
+        class="tp-deletion-preview__item"
+        :class="`is-${plan.state}`"
+      >
+        <header>
+          <div>
+            <strong>{{ plan.preview.display_name }}</strong>
+            <small>请求号：<span data-testid="deletion-operation-id">{{ plan.operationId }}</span></small>
+          </div>
+          <span>{{ plan.state === 'ready' ? '等待确认' : plan.state === 'blocked' ? '禁止删除' : plan.state === 'succeeded' ? '已确认成功' : plan.state === 'failed' ? '已失败' : plan.state === 'unknown' ? '结果待核对' : '正在核对' }}</span>
+        </header>
+        <p>{{ deletionImpactSummary(plan.preview) }}</p>
+        <dl class="tp-deletion-impact-grid">
+          <div><dt>资料源</dt><dd>{{ plan.preview.impact_counts.material_sources }}</dd></div>
+          <div><dt>资料版本</dt><dd>{{ plan.preview.impact_counts.material_versions }}</dd></div>
+          <div><dt>解析页/张</dt><dd>{{ plan.preview.impact_counts.material_units }}</dd></div>
+          <div><dt>课时关联</dt><dd>{{ plan.preview.impact_counts.lesson_material_links }}</dd></div>
+          <div><dt>学期资料记录</dt><dd>{{ plan.preview.impact_counts.semester_material_records }}</dd></div>
+          <div><dt>目录建议</dt><dd>{{ plan.preview.impact_counts.semester_mapping_proposals }}</dd></div>
+          <div><dt>参考 PPT 合集</dt><dd>{{ plan.preview.impact_counts.reference_ppt_collections }}</dd></div>
+          <div><dt>习题区域</dt><dd>{{ plan.preview.impact_counts.exercise_regions }}</dd></div>
+          <div><dt>习题候选</dt><dd>{{ plan.preview.impact_counts.exercise_candidates }}</dd></div>
+          <div><dt>受控文件</dt><dd>{{ plan.preview.owned_file_count }}</dd></div>
+          <div><dt>正式生成历史</dt><dd>{{ plan.preview.generation_history_count }}</dd></div>
+          <div><dt>保留事实快照</dt><dd>{{ plan.preview.preserved_snapshot_count }}</dd></div>
+          <div><dt>阻断中的生成</dt><dd>{{ plan.preview.blocking_generation_count }}</dd></div>
+        </dl>
+        <div v-if="plan.preview.affected_semesters.length" class="tp-deletion-semesters">
+          <strong>受影响学期</strong>
+          <span v-for="semesterItem in plan.preview.affected_semesters" :key="semesterItem.semester_id">
+            {{ semesterItem.title }} · {{ semesterItem.school_year }} · {{ deletionTermLabel(semesterItem.term) }}
+          </span>
+        </div>
+        <p v-if="plan.preview.preserved_history_note" class="tp-inline-guidance">{{ plan.preview.preserved_history_note }}</p>
+        <p v-if="plan.preview.blocking_generation_count > 0" class="tp-error-text">
+          仍有 {{ plan.preview.blocking_generation_count }} 个课件生成进行中或等待恢复；请先完成、取消或放弃恢复，再重新核对删除影响。
+        </p>
+        <p v-else-if="plan.preview.blocker_code" class="tp-error-text">
+          当前资料暂时不能删除（{{ plan.preview.blocker_code }}），请按上方说明处理后重新核对。
+        </p>
+        <p role="status" :class="{ 'tp-error-text': ['failed', 'unknown', 'blocked'].includes(plan.state) }">{{ plan.detail }}</p>
+        <button
+          v-if="plan.state === 'unknown' || plan.state === 'failed'"
+          type="button"
+          @click="checkMaterialDeletion(plan, true)"
+        >
+          按此请求号核对 / 幂等重放
+        </button>
+      </article>
+      <div class="tp-inline-actions">
+        <button type="button" :disabled="batchArchiveRunning" @click="closeMaterialDeletionPlan">取消，不删除</button>
+        <button
+          class="tp-button tp-button--primary is-danger"
+          data-testid="confirm-material-deletion"
+          type="button"
+          :disabled="batchArchiveRunning"
+          @click="confirmMaterialDeletionPlan"
+        >
+          {{ batchArchiveRunning ? '正在核对删除结果…' : '确认彻底删除可删除项' }}
+        </button>
+      </div>
+    </section>
+
     <TeachingPrepDocumentWorkspace
       :title="activeMaterial?.display_name ?? '原页预览'"
-      :subtitle="activeUnit ? `第 ${activeUnit.unit_index} 页/张 · ${activeUnit.formula_review_required ? '公式待核对' : '原文可核对'}` : undefined"
+      :subtitle="activeUnit
+        ? `第 ${activeUnit.unit_index} 页/张 · ${activePreviewLabel ?? (activeUnit.formula_review_required ? '公式待核对' : '原文可核对')}`
+        : undefined"
       :preview-url="activeUnit?.preview_url"
       :empty-message="workbench.catalog.saveState === 'saving'
         ? '正在复制并解析资料，大文件需要一些时间。'
         : '选择左侧资料后在这里核对原页；若解析失败，上方会显示原因。'"
+      @preview-loaded="refreshRenderedPreview"
     >
       <template #rail>
         <section v-if="activeProposal?.payload.tree.length" class="tp-proposal-tree">
@@ -1802,6 +2095,15 @@ async function saveManualMapping(): Promise<void> {
             {{ showReferencePptMaterials
               ? '收起参考 PPT'
               : `展开参考 PPT（${referencePptMaterials.length}）` }}
+          </button>
+          <button
+            v-if="referencePptMaterials.length"
+            class="is-danger"
+            type="button"
+            :disabled="batchArchiveRunning"
+            @click="deleteReferencePptMaterials"
+          >
+            删除当前范围参考 PPT（{{ referencePptMaterials.length }}）
           </button>
         </div>
         <p v-if="activeMaterials.length === 0" class="tp-muted">
@@ -2097,18 +2399,15 @@ async function saveManualMapping(): Promise<void> {
         返回选课时
       </button>
       <button
-        v-if="pendingLocalHighConfidenceCount > 0"
         class="tp-button tp-button--secondary"
         type="button"
         @click="acceptLocalHighConfidenceMappings"
       >
-        确认 {{ pendingLocalHighConfidenceCount }} 条高置信建议
+        确认高置信建议（{{ pendingLocalHighConfidenceCount }} 条）
       </button>
       <button
-        v-if="pendingMappingCount > 0"
         class="tp-button tp-button--secondary"
         type="button"
-        :disabled="bulkReviewRunning"
         @click="acceptAllPendingMappings"
       >
         {{ bulkReviewRunning ? '正在接受建议…' : `接受全部剩余建议（${pendingMappingCount}）` }}
@@ -2116,7 +2415,6 @@ async function saveManualMapping(): Promise<void> {
       <button
         class="tp-button tp-button--primary"
         type="button"
-        :disabled="!allMappingsDecided"
         aria-describedby="mapping-gate"
         @click="applyProposal"
       >

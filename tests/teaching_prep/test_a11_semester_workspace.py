@@ -705,6 +705,16 @@ def test_mapping_model_proposes_existing_lesson_ranges_once_then_teacher_applies
     assert [(item.start_unit, item.end_unit, item.purpose) for item in links] == [
         (1, 2, "exercise")
     ]
+    lesson_preflight = service.reference_selection_preflight(lesson_ids[0])
+    lesson_reference = lesson_preflight["catalog"]["material_links"][0]
+    assert lesson_reference["material_version_id"] == version.id
+    assert [
+        unit["unit_index"] for unit in lesson_reference["units"]
+    ] == [1, 2]
+    assert all(
+        unit["object_summary"]["preview_kind"] == "rendered"
+        for unit in lesson_reference["units"]
+    )
     updated_record = service.list_semester_materials(semester.id)[0]
     assert updated_record.mapping_status == "confirmed"
 

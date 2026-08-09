@@ -14,7 +14,9 @@ from backend.class_teacher.intake.ports import PreparedTask, SharedWorkspaceAITa
 from backend.class_teacher.vault_service import VaultService
 from backend.jobs.manager import JobManager
 from backend.jobs.store import JobStore
+from backend.llm.diagnostics import JsonlDiagnosticJournal
 from backend.workspaces.ai_tasks.job_adapter import register_workspace_ai_job
+from backend.workspaces.ai_tasks.model_gateway import WorkspaceAITaskModelGateway
 from backend.workspaces.ai_tasks.models import OpaqueRef, PrepareRequest
 from backend.workspaces.ai_tasks.service import WorkspaceAITaskService
 from backend.workspaces.ai_tasks.store import WorkspaceAITaskStore
@@ -58,6 +60,8 @@ def _triage() -> dict[str, object]:
             "draft": {
                 "summary": "合成正式登记内容",
                 "observed_at": "2026-08-05T08:00:00+08:00",
+                "record_kind": "fact",
+                "source": "合成教师核对",
             },
         }],
     }
@@ -113,6 +117,11 @@ def _wired(tmp_path: Path, result: dict[str, object] | Exception):
     common = WorkspaceAITaskService(
         store=WorkspaceAITaskStore(job_store.db_path),
         manager=manager,
+        model_gateway=WorkspaceAITaskModelGateway(
+            diagnostic_sink=JsonlDiagnosticJournal(
+                tmp_path / "logs" / "llm_diagnostics.jsonl"
+            )
+        ),
     )
     register_workspace_ai_job(manager, common)
     port = SharedWorkspaceAITaskPort(
@@ -162,9 +171,11 @@ def test_b_adapter_uses_shared_task_and_adoption_coordinator(tmp_path: Path) -> 
         handoff = domain.intake.update_draft(
             handoff_id=str(handoff["handoff_id"]),
             expected_revision=int(handoff["draft_revision"]),
-            content={
-                "summary": "合成正式登记内容（教师已核对）",
-                "observed_at": "2026-08-05T08:30:00+08:00",
+                content={
+                    "summary": "合成正式登记内容（教师已核对）",
+                    "observed_at": "2026-08-05T08:30:00+08:00",
+                    "record_kind": "fact",
+                    "source": "合成教师核对",
             },
         )
         rebound = common.get(task_id=task_id).handoffs[0]
@@ -263,6 +274,300 @@ def test_structured_provider_text_time_fact_becomes_review_only_metadata(
         assert handoff["content"]["time_facts"] == [
             {"text": "合成暑假期间计划复查"},
         ]
+    finally:
+        manager.shutdown()
+
+
+@pytest.mark.parametrize(
+    ("reference_case", "expected_issue_code"),
+    [
+        ("stale_revision", "student_revision_mismatch"),
+        ("unknown_id", "unknown_student_reference"),
+    ],
+)
+def test_invalid_current_student_reference_keeps_review_draft_and_requires_reselection(
+    tmp_path: Path,
+    reference_case: str,
+    expected_issue_code: str,
+) -> None:
+    domain, common, manager, configured = _wired(tmp_path, _triage())
+    try:
+        preference = domain.intake.preferences.get()
+        domain.intake.preferences.set(
+            homeroom_class="一班",
+            expected_revision=int(preference["revision"]),
+            expected_source_revision=str(preference["source_revision"]),
+            operation_id="shared-stale-reference-homeroom",
+        )
+        candidate = domain.class_roster.ai_candidates(
+            token="",
+            class_label="一班",
+        )[0]
+        configured.result = {
+            "contract_version": "class_teacher_triage.v1",
+            "assistant_message": "已整理为一项待教师核对的合成学生记录。",
+            "clarification_questions": [],
+            "work_items": [
+                {
+                    "work_item_id": "shared-stale-student-reference",
+                    "domain": "student_growth",
+                    "primary_mode": "record",
+                    "secondary_modes": [],
+                    "intent": "create",
+                    "reason_summary": "合成学生版本信息失配回归",
+                    "subject_refs": [{
+                        "kind": "student",
+                        "id": (
+                            str(candidate["id"])
+                            if reference_case == "stale_revision"
+                            else "f" * 64
+                        ),
+                        "revision": (
+                            "7" * 79
+                            if reference_case == "stale_revision"
+                            else str(candidate["revision"])
+                        ),
+                    }],
+                    "time_facts": [],
+                    "safety_level": "normal",
+                    "missing_fields": [],
+                    "draft": {
+                        "summary": "应当保留的待审合成观察",
+                        "observed_at": "2026-08-09T08:00:00+08:00",
+                    },
+                },
+                {
+                    "work_item_id": "shared-unrelated-review-draft",
+                    "domain": "activities_culture",
+                    "primary_mode": "record",
+                    "secondary_modes": [],
+                    "intent": "create",
+                    "reason_summary": "另一项合成待审事务",
+                    "subject_refs": [],
+                    "time_facts": [],
+                    "safety_level": "normal",
+                    "missing_fields": [],
+                    "draft": {"summary": "不应被学生引用失配丢弃的另一项草稿"},
+                },
+            ],
+        }
+
+        conversation = domain.intake.start_conversation()
+        queued = domain.intake.append_turn(
+            conversation_id=str(conversation["conversation_id"]),
+            expected_revision=int(conversation["revision"]),
+            message="请整理合成学生观察",
+            operation_id="shared-stale-student-reference-task",
+        )
+        task_id = str(queued["turns"][-1]["task_id"])
+        started = common.get(task_id=task_id)
+        assert started.job_id is not None
+        manager.wait(started.job_id, timeout=5)
+
+        finished = common.get(task_id=task_id)
+        restored = domain.intake.get_conversation(
+            str(conversation["conversation_id"])
+        )
+        assert len(restored["handoffs"]) == 2
+        opened = [
+            domain.intake.open_handoff(str(item["handoff_id"]))
+            for item in restored["handoffs"]
+        ]
+        handoff = next(
+            item
+            for item in opened
+            if item["destination_key"] == "class_teacher.student.record"
+        )
+        unrelated = next(
+            item
+            for item in opened
+            if item["destination_key"] == "class_teacher.affair.record"
+        )
+
+        assert finished.status == "proposal_ready"
+        assert restored["state"] == "handoff_ready"
+        assert handoff["subject_refs"] == []
+        assert "学生版本信息不一致，请重新选择" in handoff["missing_fields"]
+        assert handoff["content"]["summary"] == "应当保留的待审合成观察"
+        assert handoff["content"]["validation_issue_codes"] == [
+            expected_issue_code
+        ]
+        assert unrelated["content"]["summary"] == (
+            "不应被学生引用失配丢弃的另一项草稿"
+        )
+        assert len(configured.calls) == 1
+        diagnostic_events = [
+            json.loads(line)
+            for line in (
+                tmp_path / "logs" / "llm_diagnostics.jsonl"
+            ).read_text(encoding="utf-8").splitlines()
+        ]
+        validation_events = [
+            event
+            for event in diagnostic_events
+            if event.get("event") == "validation"
+        ]
+        assert len(validation_events) == 1
+        validation_event = validation_events[0]
+        assert validation_event == {
+                "schema_version": 1,
+                "event": "validation",
+                "timestamp_utc": validation_event["timestamp_utc"],
+                "call_id": validation_event["call_id"],
+                "operation_id": "shared-stale-student-reference-task",
+                "request_id": "shared-stale-student-reference-task",
+                "attempt": 1,
+                "request_kind": "workspace",
+                "protocol": "validation",
+                "model": "",
+                "endpoint_host": "",
+                "workspace_module": "class_teacher",
+                "workspace_task_kind": "class_teacher_intake",
+                "validation_issue_codes": [expected_issue_code],
+            }
+        validation_json = json.dumps(validation_events, ensure_ascii=False)
+        assert "应当保留的待审合成观察" not in validation_json
+        assert str(candidate["id"]) not in validation_json
+        assert str(candidate["revision"]) not in validation_json
+        assert "7" * 79 not in validation_json
+        assert "f" * 64 not in validation_json
+        assert "应当保留的待审合成观察".encode() not in common.store.db_path.read_bytes()
+    finally:
+        manager.shutdown()
+
+
+def test_focused_student_revision_change_keeps_review_draft_without_rebinding(
+    tmp_path: Path,
+) -> None:
+    domain, common, manager, configured = _wired(tmp_path, _triage())
+    try:
+        subject = domain.support.create_subject(
+            token="",
+            operation_id="focused-revision-subject-create",
+            source_student_id="SYN-FOCUSED-REVISION-001",
+            display_name="合成聚焦学生",
+            class_label="一班",
+        )
+        conversation = domain.intake.start_conversation(
+            token="",
+            subject_id=str(subject["subject_id"]),
+        )
+        current = domain.support.update_subject(
+            token="",
+            subject_id=str(subject["subject_id"]),
+            operation_id="focused-revision-subject-update",
+            revision=int(subject["revision"]),
+            display_name="合成聚焦学生新名",
+            class_label="一班",
+        )
+        assert conversation["focused_subject_revision"] == str(
+            subject["revision"]
+        )
+        assert str(current["revision"]) != str(subject["revision"])
+        configured.result = {
+            "contract_version": "class_teacher_triage.v1",
+            "assistant_message": "已形成待教师复核的学生档案草稿。",
+            "clarification_questions": [],
+            "work_items": [{
+                "work_item_id": "focused-revision-review-draft",
+                "domain": "student_growth",
+                "primary_mode": "record",
+                "secondary_modes": [],
+                "intent": "append",
+                "reason_summary": "学生版本变化后保留待审正文",
+                "subject_refs": [{
+                    "kind": "student",
+                    "id": str(current["subject_id"]),
+                    "revision": str(current["revision"]),
+                }],
+                "time_facts": [],
+                "safety_level": "teacher_review_required",
+                "missing_fields": [],
+                "draft": {
+                    "summary": "版本变化时仍须保留的待审观察",
+                    "profile_update": {
+                        "summary": "近期观察仍待教师结合最新档案核对。",
+                        "dimensions": [{
+                            "key": "learning_ability",
+                            "label": "学习与能力",
+                            "items": ["近期更愿意说明自己的解题思路"],
+                        }],
+                        "open_questions": ["是否能在不同课堂任务中持续表达"],
+                        "support_focus": [],
+                    },
+                },
+            }],
+        }
+
+        queued = domain.intake.append_turn(
+            conversation_id=str(conversation["conversation_id"]),
+            expected_revision=int(conversation["revision"]),
+            message="请把这条合成观察整理到当前学生档案。",
+            operation_id="focused-revision-shared-task",
+        )
+        task_id = str(queued["turns"][-1]["task_id"])
+        started = common.get(task_id=task_id)
+        assert started.job_id is not None
+        manager.wait(started.job_id, timeout=5)
+
+        finished = common.get(task_id=task_id)
+        restored = domain.intake.get_conversation(
+            str(conversation["conversation_id"])
+        )
+        handoff = domain.intake.open_handoff(
+            str(restored["handoffs"][0]["handoff_id"])
+        )
+
+        assert finished.status == "proposal_ready"
+        assert finished.handoffs[0].subject_refs == ()
+        assert handoff["subject_refs"] == []
+        assert handoff["missing_fields"] == [
+            "学生版本信息不一致，请重新选择"
+        ]
+        assert handoff["content"]["summary"] == (
+            "版本变化时仍须保留的待审观察"
+        )
+        assert handoff["content"]["validation_issue_codes"] == [
+            "student_revision_mismatch"
+        ]
+        assert len(configured.calls) == 1
+    finally:
+        manager.shutdown()
+
+
+def test_malformed_student_reference_still_rejects_the_model_result(
+    tmp_path: Path,
+) -> None:
+    result = _triage()
+    result["work_items"][0]["subject_refs"] = [{
+        "kind": "student",
+        "id": "f" * 64,
+        "revision": "7" * 64,
+        "unexpected_identity_field": "must-not-be-accepted",
+    }]
+    domain, common, manager, configured = _wired(tmp_path, result)
+    try:
+        conversation = domain.intake.start_conversation()
+        queued = domain.intake.append_turn(
+            conversation_id=str(conversation["conversation_id"]),
+            expected_revision=int(conversation["revision"]),
+            message="合成格式损坏引用",
+            operation_id="shared-malformed-student-reference-task",
+        )
+        task_id = str(queued["turns"][-1]["task_id"])
+        started = common.get(task_id=task_id)
+        assert started.job_id is not None
+        manager.wait(started.job_id, timeout=5)
+
+        finished = common.get(task_id=task_id)
+        restored = domain.intake.get_conversation(
+            str(conversation["conversation_id"])
+        )
+
+        assert finished.status == "invalid_result"
+        assert restored["turns"][-1]["task_state"] == "invalid_result"
+        assert restored["handoffs"] == []
+        assert len(configured.calls) == 1
     finally:
         manager.shutdown()
 
@@ -455,6 +760,8 @@ def test_successful_draft_revision_supersedes_only_the_old_common_handoff(tmp_pa
             "content": {
                 "summary": "合成调整后的正式登记内容",
                 "observed_at": "2026-08-05T09:00:00+08:00",
+                "record_kind": "fact",
+                "source": "合成教师核对",
             },
         }
         revision = domain.intake.request_draft_revision(
@@ -587,6 +894,8 @@ def test_draft_rebind_recovers_after_cross_store_projection_interruption(
                 content={
                     "summary": "合成跨库恢复内容（已保存）",
                     "observed_at": "2026-08-05T10:00:00+08:00",
+                    "record_kind": "fact",
+                    "source": "合成教师核对",
                 },
             )
 
@@ -744,6 +1053,8 @@ def test_student_target_conflict_rebinds_shared_handoff_and_adopts_once(tmp_path
                 "draft": {
                     "summary": "合成学生观察",
                     "observed_at": "2026-08-05T08:00:00+08:00",
+                    "record_kind": "fact",
+                    "source": "合成教师核对",
                 },
             }],
         }
@@ -786,6 +1097,8 @@ def test_student_target_conflict_rebinds_shared_handoff_and_adopts_once(tmp_path
             content={
                 "summary": "合成学生观察已重新核对",
                 "observed_at": "2026-08-05T08:30:00+08:00",
+                "record_kind": "fact",
+                "source": "合成教师核对",
             },
             subject_refs=[{
                 "kind": "student",

@@ -40,9 +40,10 @@ class _ResolvedModel:
 class ActiveProfileApprovedModelGateway:
     """Resolve the current machine-local model at invocation time.
 
-    Construction is network-free. Class-teacher debug mode uses the shared
-    retry and diagnostic behavior. Restricted student content still reaches
-    this seam only after the separate anonymous-preview confirmation flow.
+    Construction is network-free. Every teacher action gets at most one
+    physical model request and writes complete text diagnostics only to the
+    bounded local journal. Restricted student content reaches this seam only
+    after the separate destination-preview confirmation flow.
     """
 
     def __init__(
@@ -137,8 +138,9 @@ class ActiveProfileApprovedModelGateway:
             config_key=gateway_config_key(resolved.api_key, resolved.base_url),
             metadata_only=False,
             claim_operations=False,
-            allow_retry=True,
+            allow_retry=False,
         )
+        _tag_class_teacher_diagnostics(gateway, task_kind=purpose)
         client = self.client_factory(resolved.api_key, resolved.base_url)
         request = getattr(gateway, "chat_completions", None)
         if not callable(request):
@@ -194,7 +196,7 @@ class ActiveProfileApprovedModelGateway:
             config_key=gateway_config_key(resolved.api_key, resolved.base_url),
             metadata_only=False,
             claim_operations=False,
-            allow_retry=True,
+            allow_retry=False,
         )
         client = self.client_factory(resolved.api_key, resolved.base_url)
         try:
@@ -365,6 +367,23 @@ def _destination_snapshot(resolved: _ResolvedModel | None) -> dict[str, object]:
         canonical_json(identity)
     ).hexdigest()
     return identity
+
+
+def _tag_class_teacher_diagnostics(
+    gateway: object,
+    *,
+    task_kind: str,
+) -> None:
+    if not isinstance(gateway, WorkspaceModelGateway):
+        return
+    diagnostic_sink = gateway.gateway.diagnostic_sink
+    for_workspace = getattr(diagnostic_sink, "for_workspace", None)
+    if not callable(for_workspace):
+        return
+    gateway.gateway.diagnostic_sink = for_workspace(
+        workspace_module="class_teacher",
+        workspace_task_kind=task_kind,
+    )
 
 
 def _response_text(response: object) -> str:

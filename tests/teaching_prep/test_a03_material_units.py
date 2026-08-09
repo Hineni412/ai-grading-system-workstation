@@ -11,9 +11,12 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from backend.ops.archive import OpsArchivePolicy
 from backend.teaching_prep.api import create_router
 from backend.teaching_prep.application import TeachingPrepService
+from backend.teaching_prep.application import preparation_service
 from backend.teaching_prep.domain.errors import TeachingPrepConflictError
+from backend.teaching_prep.infrastructure.fakes import FakeWpsAdapter
 from backend.teaching_prep.infrastructure.materials import MaterialParser
 from backend.jobs import JobManager, JobStore
 
@@ -617,6 +620,291 @@ def test_pptx_slides_expose_titles_objects_and_structural_previews(
     assert units[0].object_summary["object_count"] == 1
     assert units[0].object_summary["occupied_boxes"]
     assert units[1].formula_review_required is True
+
+
+def test_pptx_archive_rejects_compression_bomb_before_reading_slide_xml(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "synthetic-compression-bomb.pptx"
+    with zipfile.ZipFile(source, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr(
+            "ppt/presentation.xml",
+            '<p:presentation xmlns:p="http://schemas.openxmlformats.org/'
+            'presentationml/2006/main"><p:sldSz cx="12192000" '
+            'cy="6858000"/></p:presentation>',
+        )
+        archive.writestr(
+            "ppt/slides/slide1.xml",
+            '<p:sld xmlns:p="http://schemas.openxmlformats.org/'
+            'presentationml/2006/main"/>',
+        )
+        archive.writestr("ppt/media/compressed.bin", b"0" * 200_000)
+    parser = MaterialParser(
+        pptx_archive_policy=OpsArchivePolicy(
+            max_members=20,
+            max_member_bytes=1_000_000,
+            max_expanded_bytes=1_000_000,
+            max_compression_ratio=5,
+        )
+    )
+
+    with pytest.raises(
+        Exception,
+        match="PPTX exceeds the safe expansion budget",
+    ):
+        parser.unit_count(source, material_type="pptx")
+
+
+def test_pptx_archive_rejects_too_many_members_before_reading_slide_xml(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "synthetic-too-many-members.pptx"
+    with zipfile.ZipFile(source, "w") as archive:
+        archive.writestr(
+            "ppt/presentation.xml",
+            '<p:presentation xmlns:p="http://schemas.openxmlformats.org/'
+            'presentationml/2006/main"/>',
+        )
+        archive.writestr(
+            "ppt/slides/slide1.xml",
+            '<p:sld xmlns:p="http://schemas.openxmlformats.org/'
+            'presentationml/2006/main"/>',
+        )
+        archive.writestr("ppt/media/one.bin", b"1")
+        archive.writestr("ppt/media/two.bin", b"2")
+    parser = MaterialParser(
+        pptx_archive_policy=OpsArchivePolicy(
+            max_members=3,
+            max_member_bytes=1_000_000,
+            max_expanded_bytes=1_000_000,
+            max_compression_ratio=100,
+        )
+    )
+
+    with pytest.raises(
+        Exception,
+        match="PPTX exceeds the safe expansion budget",
+    ):
+        parser.unit_count(source, material_type="pptx")
+
+
+def test_pptx_real_preview_is_lazy_fingerprint_cached_and_keeps_source_unchanged(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import hashlib
+
+    _paths_value, service = _migrated_service(tmp_path, monkeypatch)
+    adapter = FakeWpsAdapter()
+    service.wps_adapter = adapter
+    service.wps_adapter_is_real = True
+    version = _register(
+        service,
+        _pptx(tmp_path / "synthetic-lazy-preview.pptx"),
+        token="material-a03-pptx-lazy-preview",
+        name="合成懒加载参考课件",
+    )
+    controlled_source = service.catalog.get_material_location(version.id)
+    before_sha = hashlib.sha256(controlled_source.read_bytes()).hexdigest()
+
+    units = service.parse_material_version(version.id)
+    assert adapter.preview_calls == []
+    assert units[0].object_summary["preview_kind"] == "structural"
+
+    preview = service.material_preview_path(units[0].id)
+    rendered = service.list_material_units(version.id)[0]
+    service.material_preview_path(units[0].id)
+
+    assert len(adapter.preview_calls) == 1
+    assert adapter.preview_calls[0]["slide_indexes"] == [1]
+    assert preview.read_bytes().startswith(b"\x89PNG")
+    assert rendered.object_summary["preview_kind"] == "rendered"
+    assert rendered.object_summary["rendered_source_sha256"] == version.content_sha256
+    assert hashlib.sha256(controlled_source.read_bytes()).hexdigest() == before_sha
+
+
+def test_material_delete_waits_for_lazy_preview_publish_and_leaves_no_orphan(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _paths_value, service = _migrated_service(tmp_path, monkeypatch)
+    service.wps_adapter = FakeWpsAdapter()
+    service.wps_adapter_is_real = True
+    version = _register(
+        service,
+        _pptx(tmp_path / "synthetic-preview-delete-race.pptx"),
+        token="material-a03-preview-delete-race",
+        name="合成预览删除竞态课件",
+    )
+    unit = service.parse_material_version(version.id)[0]
+    record = service.material_units.preview_record(unit.id)
+    preview_path = (service.root / record.preview_relpath).resolve()
+    impact = service.preview_material_deletion(
+        version.source_id,
+        expected_revision=version.source_revision,
+    )
+    render_replace_ready = threading.Event()
+    release_render_replace = threading.Event()
+    real_replace = preparation_service.os.replace
+
+    def pause_render_publish(source_path, target_path) -> None:
+        source = Path(source_path).resolve()
+        target = Path(target_path).resolve()
+        if (
+            target == preview_path
+            and source.parent == preview_path.parent
+            and source.name.startswith(f".{preview_path.name}.")
+            and source.name.endswith(".tmp")
+        ):
+            render_replace_ready.set()
+            if not release_render_replace.wait(timeout=5):
+                raise TimeoutError("synthetic preview publish was not released")
+        real_replace(source_path, target_path)
+
+    monkeypatch.setattr(
+        preparation_service.os,
+        "replace",
+        pause_render_publish,
+    )
+    render_errors: list[BaseException] = []
+    delete_errors: list[BaseException] = []
+    delete_results: list[dict[str, object]] = []
+
+    def render_preview() -> None:
+        try:
+            service.material_preview_path(unit.id)
+        except BaseException as exc:  # pragma: no cover - diagnostic capture
+            render_errors.append(exc)
+
+    def delete_material() -> None:
+        try:
+            delete_results.append(
+                service.delete_material_source(
+                    version.source_id,
+                    expected_revision=version.source_revision,
+                    operation_id="material-a03-preview-delete-operation",
+                    preview_version=str(impact["preview_version"]),
+                    confirmation_phrase=str(impact["confirmation_phrase"]),
+                )
+            )
+        except BaseException as exc:  # pragma: no cover - diagnostic capture
+            delete_errors.append(exc)
+
+    render_worker = threading.Thread(target=render_preview)
+    delete_worker = threading.Thread(target=delete_material)
+    render_worker.start()
+    assert render_replace_ready.wait(timeout=5)
+    delete_worker.start()
+    delete_worker.join(timeout=0.2)
+    deletion_waited_for_render = delete_worker.is_alive()
+    release_render_replace.set()
+    render_worker.join(timeout=10)
+    delete_worker.join(timeout=10)
+
+    assert deletion_waited_for_render is True
+    assert not render_worker.is_alive()
+    assert not delete_worker.is_alive()
+    assert render_errors == []
+    assert delete_errors == []
+    assert delete_results[0]["status"] == "succeeded"
+    assert not preview_path.exists()
+    preview_root = service.paths["previews"] / version.id
+    assert not preview_root.exists() or not any(preview_root.rglob("*"))
+    with service.database.connect() as connection:
+        assert connection.execute(
+            "SELECT 1 FROM material_units WHERE id = ?",
+            (unit.id,),
+        ).fetchone() is None
+        assert connection.execute(
+            "SELECT 1 FROM material_versions WHERE id = ?",
+            (version.id,),
+        ).fetchone() is None
+
+
+def test_pptx_rendered_preview_rebuilds_when_cached_bytes_no_longer_match(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _paths_value, service = _migrated_service(tmp_path, monkeypatch)
+    adapter = FakeWpsAdapter()
+    service.wps_adapter = adapter
+    service.wps_adapter_is_real = True
+    version = _register(
+        service,
+        _pptx(tmp_path / "synthetic-corrupt-rendered-preview.pptx"),
+        token="material-a03-pptx-corrupt-rendered-preview",
+        name="合成损坏缓存参考课件",
+    )
+    unit = service.parse_material_version(version.id)[0]
+    preview = service.material_preview_path(unit.id)
+    preview.write_bytes(b"corrupt rendered preview")
+
+    rebuilt = service.material_preview_path(unit.id)
+    refreshed = service.get_material_unit(unit.id)
+
+    assert len(adapter.preview_calls) == 2
+    assert rebuilt.read_bytes().startswith(b"\x89PNG")
+    assert refreshed.object_summary["preview_kind"] == "rendered"
+    assert refreshed.object_summary["preview_render_status"] == "completed"
+
+
+def test_pptx_corrupt_rendered_preview_falls_back_to_structural_when_wps_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _paths_value, service = _migrated_service(tmp_path, monkeypatch)
+    adapter = FakeWpsAdapter()
+    service.wps_adapter = adapter
+    service.wps_adapter_is_real = True
+    version = _register(
+        service,
+        _pptx(tmp_path / "synthetic-corrupt-preview-fallback.pptx"),
+        token="material-a03-pptx-corrupt-preview-fallback",
+        name="合成损坏缓存降级课件",
+    )
+    unit = service.parse_material_version(version.id)[0]
+    preview = service.material_preview_path(unit.id)
+    preview.write_bytes(b"corrupt rendered preview")
+    adapter.failure = TimeoutError("synthetic rebuild timeout")
+
+    fallback_path = service.material_preview_path(unit.id)
+    fallback = service.get_material_unit(unit.id)
+
+    assert len(adapter.preview_calls) == 2
+    assert fallback_path.read_bytes().startswith(b"\x89PNG")
+    assert fallback.object_summary["preview_kind"] == "structural"
+    assert fallback.object_summary["preview_notice"] == "结构预览，不是原页"
+    assert fallback.object_summary["preview_render_status"] == "failed"
+    assert fallback.object_summary["preview_render_error_code"] == (
+        "wps_preview_timeout"
+    )
+
+
+def test_pptx_real_preview_timeout_keeps_labelled_structural_fallback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _paths_value, service = _migrated_service(tmp_path, monkeypatch)
+    adapter = FakeWpsAdapter(failure=TimeoutError("synthetic timeout"))
+    service.wps_adapter = adapter
+    service.wps_adapter_is_real = True
+    version = _register(
+        service,
+        _pptx(tmp_path / "synthetic-preview-timeout.pptx"),
+        token="material-a03-pptx-preview-timeout",
+        name="合成预览超时课件",
+    )
+    unit = service.parse_material_version(version.id)[0]
+
+    structural_path = service.material_preview_path(unit.id)
+    fallback = service.list_material_units(version.id)[0]
+    service.material_preview_path(unit.id)
+
+    assert structural_path.read_bytes().startswith(b"\x89PNG")
+    assert len(adapter.preview_calls) == 1
+    assert fallback.object_summary["preview_kind"] == "structural"
+    assert fallback.object_summary["preview_notice"] == "结构预览，不是原页"
+    assert fallback.object_summary["preview_render_status"] == "failed"
 
 
 def test_lesson_can_confirm_multiple_non_contiguous_version_frozen_ranges(

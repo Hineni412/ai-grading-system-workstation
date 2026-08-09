@@ -25,14 +25,23 @@ DIAGNOSTIC_LOG_FILE = Path("logs/llm_diagnostics.jsonl")
 DIAGNOSTIC_SCHEMA_VERSION = 1
 DIAGNOSTIC_MAX_FILE_BYTES = 32 * 1024 * 1024
 DIAGNOSTIC_ROTATED_FILE_COUNT = 3
+DIAGNOSTIC_MAX_EVENT_BYTES = 1024 * 1024
 _MAX_READ_EVENTS = 10_000
 _SECRET_KEYS = frozenset(
     {
         "apikey",
         "authorization",
+        "accesstoken",
         "configapikey",
+        "cookie",
+        "idtoken",
         "openaiapikey",
+        "password",
+        "passwd",
         "proxyauthorization",
+        "refreshtoken",
+        "sessiontoken",
+        "setcookie",
         "xapikey",
     }
 )
@@ -48,15 +57,30 @@ _HTTP_URL = re.compile(r"(?i)\bhttps?://[^\s<>\"']+")
 _BEARER_SECRET = re.compile(
     r"(?i)\b(authorization\s*[:=]\s*)(?:bearer\s+)?[^\s,;]+"
 )
+_COOKIE_HEADER_SECRET = re.compile(
+    r"(?im)\b((?:set-)?cookie\s*[:=]\s*)[^\r\n]*"
+)
 _JSON_SECRET_VALUE = re.compile(
-    r'(?i)("(?:api[_ -]?key|config[_ -]?api[_ -]?key|authorization|'
-    r'proxy-authorization|x-api-key)"\s*:\s*)"(?:\\.|[^"\\])*"'
+    r'(?i)("(?:api[_ -]?key|config[_ -]?api[_ -]?key|authorization|cookie|'
+    r'set-cookie|password|passwd|access[_ -]?token|refresh[_ -]?token|'
+    r'id[_ -]?token|session[_ -]?token|proxy-authorization|x-api-key)"'
+    r'\s*:\s*)"(?:\\.|[^"\\])*"'
 )
 _NAMED_SECRET = re.compile(
-    r"(?i)\b(api[_ -]?key|x-api-key|proxy-authorization)"
+    r"(?i)\b(api[_ -]?key|x-api-key|proxy-authorization|cookie|set-cookie|"
+    r"password|passwd|access[_ -]?token|refresh[_ -]?token|id[_ -]?token|"
+    r"session[_ -]?token)"
     r"(\s*[:=]\s*)[^\s,;]+"
 )
 _OPENAI_SECRET = re.compile(r"\bsk-[A-Za-z0-9_-]{12,}\b")
+_LONG_BASE64 = re.compile(
+    r"(?<![A-Za-z0-9+/_-])[A-Za-z0-9+/_-]{128,}={0,2}"
+    r"(?![A-Za-z0-9+/_=-])"
+)
+_WORKSPACE_LABEL = re.compile(r"[a-z][a-z0-9_]{0,79}")
+_VALIDATION_ISSUE_CODES = frozenset(
+    {"student_revision_mismatch", "unknown_student_reference"}
+)
 _LOCKS_GUARD = threading.Lock()
 _PATH_LOCKS: dict[str, threading.RLock] = {}
 
@@ -84,11 +108,29 @@ def _sanitize_text(value: object) -> str:
     text = str(value or "")
     text = _JSON_SECRET_VALUE.sub(r'\1"[REDACTED]"', text)
     text = _BEARER_SECRET.sub(r"\1[REDACTED]", text)
+    text = _COOKIE_HEADER_SECRET.sub(r"\1[REDACTED]", text)
     text = _NAMED_SECRET.sub(r"\1\2[REDACTED]", text)
     text = _OPENAI_SECRET.sub("[REDACTED]", text)
     text = _FILE_URL.sub("[LOCAL_PATH_REDACTED]", text)
     text = _HTTP_URL.sub("[URL_REDACTED]", text)
-    return _WINDOWS_PATH.sub("[LOCAL_PATH_REDACTED]", text)
+    text = _WINDOWS_PATH.sub("[LOCAL_PATH_REDACTED]", text)
+
+    def redact_base64(match: re.Match[str]) -> str:
+        candidate = match.group(0)
+        try:
+            payload = base64.b64decode(
+                candidate,
+                altchars=b"-_",
+                validate=True,
+            )
+        except (ValueError, TypeError):
+            return "[BASE64_REDACTED]"
+        return (
+            f"[BASE64_REDACTED bytes={len(payload)} "
+            f"sha256={hashlib.sha256(payload).hexdigest()}]"
+        )
+
+    return _LONG_BASE64.sub(redact_base64, text)
 
 
 def _json_safe(value: object, *, depth: int = 0) -> Any:
@@ -135,6 +177,16 @@ def _decode_attachment(value: str) -> tuple[str, bytes] | None:
     return mime, payload
 
 
+def _decode_long_base64(value: str) -> bytes | None:
+    candidate = str(value or "").strip()
+    if _LONG_BASE64.fullmatch(candidate) is None:
+        return None
+    try:
+        return base64.b64decode(candidate, altchars=b"-_", validate=True)
+    except (ValueError, TypeError):
+        return b""
+
+
 def sanitize_request_payload(
     value: object,
 ) -> tuple[Any, list[dict[str, object]]]:
@@ -163,18 +215,23 @@ def sanitize_request_payload(
         *,
         depth: int = 0,
         purpose: str = "input_image",
-        image_context: bool = False,
+        attachment_context: bool = False,
     ) -> Any:
         if depth > 24:
             return "[DEPTH_LIMIT]"
         if isinstance(child, str):
             decoded = _decode_attachment(child)
-            if decoded is None and not image_context:
+            long_base64 = _decode_long_base64(child)
+            if decoded is None and long_base64 is None and not attachment_context:
                 return _sanitize_text(child)
             mime, payload = (
                 decoded
                 if decoded is not None
-                else ("application/x-external-image", b"")
+                else (
+                    ("application/octet-stream", long_base64)
+                    if long_base64 is not None
+                    else ("application/x-external-attachment", b"")
+                )
             )
             return add_attachment(
                 payload,
@@ -192,10 +249,15 @@ def sanitize_request_payload(
             return child
         if isinstance(child, Mapping):
             item_type = _sanitize_text(child.get("type") or purpose)[:80]
-            container_is_image = _compact_key(item_type) in {
+            container_is_attachment = _compact_key(item_type) in {
+                "attachment",
+                "audio",
                 "b64json",
+                "file",
                 "image",
                 "imageurl",
+                "inputaudio",
+                "inputfile",
                 "inputimage",
             }
             normalized: dict[str, Any] = {}
@@ -205,23 +267,34 @@ def sanitize_request_payload(
                     normalized[key] = "[REDACTED]"
                     continue
                 compact_key = _compact_key(raw_key)
-                nested_is_image = (
-                    compact_key in {"b64json", "image", "imageurl"}
+                nested_is_attachment = (
+                    compact_key in {
+                        "attachment",
+                        "audio",
+                        "b64json",
+                        "file",
+                        "filedata",
+                        "image",
+                        "imageurl",
+                        "inputaudio",
+                        "inputfile",
+                        "inputimage",
+                    }
                     or (
-                        container_is_image
-                        and compact_key in {"data", "url"}
+                        container_is_attachment
+                        and compact_key in {"content", "data", "filedata", "url"}
                     )
                 )
                 nested_purpose = (
                     item_type
-                    if nested_is_image
+                    if nested_is_attachment and container_is_attachment
                     else key
                 )
                 normalized[key] = walk(
                     nested,
                     depth=depth + 1,
                     purpose=nested_purpose,
-                    image_context=nested_is_image,
+                    attachment_context=nested_is_attachment,
                 )
             return normalized
         if isinstance(child, (list, tuple, set, frozenset)):
@@ -230,7 +303,7 @@ def sanitize_request_payload(
                     item,
                     depth=depth + 1,
                     purpose=purpose,
-                    image_context=image_context,
+                    attachment_context=attachment_context,
                 )
                 for item in child
             ]
@@ -241,7 +314,7 @@ def sanitize_request_payload(
                     model_dump(),
                     depth=depth + 1,
                     purpose=purpose,
-                    image_context=image_context,
+                    attachment_context=attachment_context,
                 )
             except Exception:
                 return _sanitize_text(type(child).__name__)
@@ -330,6 +403,11 @@ def _safe_id(value: object) -> str:
     return safe_trace_label(value)
 
 
+def _safe_workspace_label(value: object) -> str:
+    candidate = str(value or "").strip().lower().replace("-", "_")
+    return candidate if _WORKSPACE_LABEL.fullmatch(candidate) else ""
+
+
 def _base_event(
     *,
     event: str,
@@ -340,6 +418,8 @@ def _base_event(
     protocol: object,
     model: object,
     endpoint_host: object,
+    workspace_module: object = "",
+    workspace_task_kind: object = "",
 ) -> dict[str, Any]:
     safe_request_id = _safe_id(request_id)
     safe_operation_id = _safe_id(operation_id) or safe_request_id
@@ -356,7 +436,107 @@ def _base_event(
         "protocol": _sanitize_text(protocol)[:80],
         "model": _safe_id(model),
         "endpoint_host": safe_host_label(endpoint_host),
+        "workspace_module": _safe_workspace_label(workspace_module),
+        "workspace_task_kind": _safe_workspace_label(workspace_task_kind),
     }
+
+
+def _encoded_json(value: object) -> bytes:
+    return json.dumps(
+        value,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
+
+
+def _content_truncation(value: object) -> dict[str, object]:
+    encoded = _encoded_json(value)
+    return {
+        "content_truncated": True,
+        "original_bytes": len(encoded),
+        "sha256": hashlib.sha256(encoded).hexdigest(),
+    }
+
+
+def _truncate_utf8(value: object, maximum_bytes: int) -> str:
+    encoded = str(value or "").encode("utf-8")
+    safe_maximum = max(0, int(maximum_bytes))
+    if len(encoded) <= safe_maximum:
+        return str(value or "")
+    return encoded[:safe_maximum].decode("utf-8", errors="ignore")
+
+
+def _bounded_event_line(record: Mapping[str, object]) -> str:
+    safe = _json_safe(record)
+    if not isinstance(safe, dict):
+        safe = {"event": "invalid", "record": safe}
+    encoded = _encoded_json(safe)
+    if len(encoded) + 1 <= DIAGNOSTIC_MAX_EVENT_BYTES:
+        return encoded.decode("utf-8") + "\n"
+
+    bounded = dict(safe)
+    bounded["event_truncated"] = True
+    bounded["original_event_bytes"] = len(encoded) + 1
+    bounded["event_sha256"] = hashlib.sha256(encoded).hexdigest()
+    for key in ("request", "parsed_result"):
+        if key in bounded:
+            bounded[key] = _content_truncation(bounded[key])
+    if "raw_response" in bounded:
+        bounded["raw_response"] = _truncate_utf8(
+            bounded["raw_response"],
+            DIAGNOSTIC_MAX_EVENT_BYTES // 4,
+        )
+    if "parse_error" in bounded:
+        bounded["parse_error"] = _truncate_utf8(bounded["parse_error"], 4096)
+    error = bounded.get("error")
+    if isinstance(error, dict) and "message" in error:
+        bounded["error"] = {
+            **error,
+            "message": _truncate_utf8(error.get("message"), 16_384),
+        }
+
+    encoded = _encoded_json(bounded)
+    if len(encoded) + 1 > DIAGNOSTIC_MAX_EVENT_BYTES:
+        if "attachments" in bounded:
+            bounded["attachments"] = _content_truncation(
+                bounded["attachments"]
+            )
+        bounded["raw_response"] = ""
+        bounded["parse_operations"] = []
+        encoded = _encoded_json(bounded)
+    if len(encoded) + 1 > DIAGNOSTIC_MAX_EVENT_BYTES:
+        identity_keys = {
+            "schema_version",
+            "event",
+            "timestamp_utc",
+            "call_id",
+            "operation_id",
+            "request_id",
+            "attempt",
+            "request_kind",
+            "protocol",
+            "model",
+            "endpoint_host",
+            "workspace_module",
+            "workspace_task_kind",
+            "outcome",
+            "event_truncated",
+            "original_event_bytes",
+            "event_sha256",
+        }
+        bounded = {
+            key: value
+            for key, value in bounded.items()
+            if key in identity_keys
+        }
+        bounded["content"] = {
+            "content_truncated": True,
+            "reason": "event_size_limit",
+        }
+        encoded = _encoded_json(bounded)
+    if len(encoded) + 1 > DIAGNOSTIC_MAX_EVENT_BYTES:
+        raise ValueError("diagnostic event metadata exceeds size limit")
+    return encoded.decode("utf-8") + "\n"
 
 
 class NullDiagnosticSink:
@@ -369,10 +549,59 @@ class NullDiagnosticSink:
     def record_failure(self, **_: object) -> None:
         return None
 
+    def record_validation(self, **_: object) -> None:
+        return None
+
+
+class _WorkspaceDiagnosticSink:
+    def __init__(
+        self,
+        journal: "JsonlDiagnosticJournal",
+        *,
+        workspace_module: object,
+        workspace_task_kind: object,
+    ) -> None:
+        self.journal = journal
+        self.workspace_module = _safe_workspace_label(workspace_module)
+        self.workspace_task_kind = _safe_workspace_label(workspace_task_kind)
+
+    def record_request(self, **kwargs: object) -> None:
+        self.journal.record_request(
+            **kwargs,
+            workspace_module=self.workspace_module,
+            workspace_task_kind=self.workspace_task_kind,
+        )
+
+    def record_response(self, **kwargs: object) -> None:
+        self.journal.record_response(
+            **kwargs,
+            workspace_module=self.workspace_module,
+            workspace_task_kind=self.workspace_task_kind,
+        )
+
+    def record_failure(self, **kwargs: object) -> None:
+        self.journal.record_failure(
+            **kwargs,
+            workspace_module=self.workspace_module,
+            workspace_task_kind=self.workspace_task_kind,
+        )
+
 
 class JsonlDiagnosticJournal:
     def __init__(self, path: str | Path = DIAGNOSTIC_LOG_FILE) -> None:
         self.path = Path(path)
+
+    def for_workspace(
+        self,
+        *,
+        workspace_module: object,
+        workspace_task_kind: object,
+    ) -> _WorkspaceDiagnosticSink:
+        return _WorkspaceDiagnosticSink(
+            self,
+            workspace_module=workspace_module,
+            workspace_task_kind=workspace_task_kind,
+        )
 
     def record_request(
         self,
@@ -388,6 +617,8 @@ class JsonlDiagnosticJournal:
         retry_limit: int,
         retry_index: int,
         timeout_seconds: float,
+        workspace_module: object = "",
+        workspace_task_kind: object = "",
     ) -> None:
         payload, attachments = sanitize_request_payload(dict(kwargs))
         event = _base_event(
@@ -399,6 +630,8 @@ class JsonlDiagnosticJournal:
             protocol=protocol,
             model=model,
             endpoint_host=endpoint_host,
+            workspace_module=workspace_module,
+            workspace_task_kind=workspace_task_kind,
         )
         event.update(
             {
@@ -423,6 +656,8 @@ class JsonlDiagnosticJournal:
         endpoint_host: object,
         response: object,
         elapsed_ms: int,
+        workspace_module: object = "",
+        workspace_task_kind: object = "",
     ) -> None:
         raw_text = _sanitize_text(response_text(response))
         diagnostics = response_diagnostics(response)
@@ -443,6 +678,8 @@ class JsonlDiagnosticJournal:
             protocol=protocol,
             model=model,
             endpoint_host=endpoint_host,
+            workspace_module=workspace_module,
+            workspace_task_kind=workspace_task_kind,
         )
         event.update(
             {
@@ -483,6 +720,8 @@ class JsonlDiagnosticJournal:
         error_message: object,
         will_retry: bool,
         retry_delay_ms: int,
+        workspace_module: object = "",
+        workspace_task_kind: object = "",
     ) -> None:
         event = _base_event(
             event="failure",
@@ -493,6 +732,8 @@ class JsonlDiagnosticJournal:
             protocol=protocol,
             model=model,
             endpoint_host=endpoint_host,
+            workspace_module=workspace_module,
+            workspace_task_kind=workspace_task_kind,
         )
         event.update(
             {
@@ -517,12 +758,41 @@ class JsonlDiagnosticJournal:
         )
         self._append(event)
 
+    def record_validation(
+        self,
+        *,
+        operation_id: object,
+        validation_issue_codes: object,
+        workspace_module: object,
+        workspace_task_kind: object,
+    ) -> None:
+        if not isinstance(validation_issue_codes, (list, tuple)):
+            raise ValueError("validation issue codes are invalid")
+        codes = list(dict.fromkeys(str(item) for item in validation_issue_codes))
+        if not codes or any(
+            code not in _VALIDATION_ISSUE_CODES for code in codes
+        ):
+            raise ValueError("validation issue code is not approved")
+        safe_operation_id = _safe_id(operation_id)
+        if not safe_operation_id:
+            raise ValueError("validation operation ID is invalid")
+        event = _base_event(
+            event="validation",
+            request_id=safe_operation_id,
+            operation_id=safe_operation_id,
+            attempt=1,
+            request_kind="workspace",
+            protocol="validation",
+            model="",
+            endpoint_host="",
+            workspace_module=workspace_module,
+            workspace_task_kind=workspace_task_kind,
+        )
+        event["validation_issue_codes"] = codes
+        self._append(event)
+
     def _append(self, record: Mapping[str, object]) -> None:
-        line = json.dumps(
-            _json_safe(record),
-            ensure_ascii=False,
-            separators=(",", ":"),
-        ) + "\n"
+        line = _bounded_event_line(record)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with _path_lock(self.path):
             self._rotate_if_needed(len(line.encode("utf-8")))
@@ -567,10 +837,14 @@ class JsonlDiagnosticJournal:
         limit: int = 50,
         request_kind: str = "",
         outcome: str = "",
+        workspace_module: str = "",
+        workspace_task_kind: str = "",
     ) -> dict[str, object]:
         calls, scanned_event_count, read_truncated = self._merged_calls()
         normalized_kind = str(request_kind or "").strip()
         normalized_outcome = str(outcome or "").strip()
+        normalized_module = _safe_workspace_label(workspace_module)
+        normalized_task_kind = _safe_workspace_label(workspace_task_kind)
         filtered = [
             call
             for call in calls.values()
@@ -581,6 +855,14 @@ class JsonlDiagnosticJournal:
             and (
                 not normalized_outcome
                 or call.get("outcome") == normalized_outcome
+            )
+            and (
+                not normalized_module
+                or call.get("workspace_module") == normalized_module
+            )
+            and (
+                not normalized_task_kind
+                or call.get("workspace_task_kind") == normalized_task_kind
             )
         ]
         filtered.sort(
@@ -609,6 +891,56 @@ class JsonlDiagnosticJournal:
         if call is None:
             return None
         return _json_safe(call)
+
+    def clear_workspace(self, workspace_module: str) -> dict[str, object]:
+        normalized_module = _safe_workspace_label(workspace_module)
+        if not normalized_module:
+            raise ValueError("workspace module is invalid")
+        deleted = 0
+        retained = 0
+        unclassified = 0
+        temporary_paths: list[Path] = []
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        with _path_lock(self.path):
+            try:
+                for path in self._read_paths():
+                    if not path.exists():
+                        continue
+                    temporary = path.with_name(f".{path.name}.rewrite.tmp")
+                    temporary.unlink(missing_ok=True)
+                    temporary_paths.append(temporary)
+                    with (
+                        path.open("r", encoding="utf-8") as source,
+                        temporary.open("w", encoding="utf-8", newline="") as target,
+                    ):
+                        for line in source:
+                            try:
+                                event = json.loads(line)
+                            except (json.JSONDecodeError, UnicodeDecodeError):
+                                event = None
+                            event_module = (
+                                _safe_workspace_label(event.get("workspace_module"))
+                                if isinstance(event, Mapping)
+                                else ""
+                            )
+                            if event_module == normalized_module:
+                                deleted += 1
+                                continue
+                            if not event_module:
+                                unclassified += 1
+                            retained += 1
+                            target.write(line)
+                    temporary.replace(path)
+                    temporary_paths.remove(temporary)
+            finally:
+                for temporary in temporary_paths:
+                    temporary.unlink(missing_ok=True)
+        return {
+            "workspace_module": normalized_module,
+            "deleted_event_count": deleted,
+            "retained_event_count": retained,
+            "unclassified_event_count": unclassified,
+        }
 
     def _merged_calls(
         self,
@@ -650,6 +982,8 @@ class JsonlDiagnosticJournal:
                     "protocol": str(event.get("protocol") or ""),
                     "model": str(event.get("model") or ""),
                     "endpoint_host": str(event.get("endpoint_host") or ""),
+                    "workspace_module": str(event.get("workspace_module") or ""),
+                    "workspace_task_kind": str(event.get("workspace_task_kind") or ""),
                     "started_at_utc": "",
                     "finished_at_utc": "",
                     "outcome": "pending",
@@ -668,6 +1002,7 @@ class JsonlDiagnosticJournal:
                     "parse_operations": [],
                     "parse_error": "",
                     "parsed_result": None,
+                    "validation_issue_codes": [],
                     "error": None,
                 },
             )
@@ -710,6 +1045,12 @@ class JsonlDiagnosticJournal:
                     "error",
                 ):
                     current[key] = event.get(key)
+            elif event_type == "validation":
+                codes = event.get("validation_issue_codes")
+                if isinstance(codes, list):
+                    current["validation_issue_codes"] = [
+                        str(item) for item in codes
+                    ]
         return calls, scanned, scanned > len(recent)
 
     @staticmethod
@@ -724,6 +1065,8 @@ class JsonlDiagnosticJournal:
             "request_kind": str(call.get("request_kind") or ""),
             "protocol": str(call.get("protocol") or ""),
             "model": str(call.get("model") or ""),
+            "workspace_module": str(call.get("workspace_module") or ""),
+            "workspace_task_kind": str(call.get("workspace_task_kind") or ""),
             "started_at_utc": str(call.get("started_at_utc") or ""),
             "finished_at_utc": str(call.get("finished_at_utc") or ""),
             "outcome": str(call.get("outcome") or "pending"),
