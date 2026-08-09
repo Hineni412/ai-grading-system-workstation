@@ -126,6 +126,47 @@ def test_tagging_route_submits_safe_batch_and_projects_partial_result(
     assert "question_text" not in queried["result"]
 
 
+def test_tagging_result_keeps_each_projection_status_visible(tmp_path: Path) -> None:
+    client, manager, _service, _request = _client(tmp_path)
+    job = manager.store.create_job(
+        "tagging_sync",
+        {"question_ids": [8, 9, 10, 11, 12], "curriculum_volume_id": VOLUME_ID},
+    )
+    assert manager.store.mark_running(job.id)
+    manager.store.finish(
+        job.id,
+        "succeeded",
+        result={
+            "outcome": "partial",
+            "tagged_count": 5,
+            "complete_tagged_count": 12,
+            "evidence_count": 11,
+            "evidence_succeeded_question_ids": [8, 9, 10, 11],
+            "evidence_failed_question_ids": [12],
+            "criteria_count": 10,
+            "criteria_succeeded_question_ids": [8, 9, 10],
+            "criteria_failed_question_ids": [11],
+            "criteria_needs_review_count": 1,
+            "criteria_needs_review_question_ids": [10],
+            "review_count": 1,
+            "review_question_ids": [9],
+            "failed_count": 2,
+            "failed_question_ids": [11, 12],
+            "retryable": True,
+        },
+    )
+
+    result = client.get(f"/api/jobs/{job.id}").json()["result"]
+
+    assert result["tagged_count"] == 5
+    assert result["complete_tagged_count"] == 12
+    assert result["evidence_failed_question_ids"] == [12]
+    assert result["criteria_failed_question_ids"] == [11]
+    assert result["criteria_needs_review_count"] == 1
+    assert result["criteria_needs_review_question_ids"] == [10]
+    assert result["review_question_ids"] == [9]
+
+
 def test_tagging_route_refuses_to_guess_a_missing_curriculum_volume(
     tmp_path: Path,
 ) -> None:

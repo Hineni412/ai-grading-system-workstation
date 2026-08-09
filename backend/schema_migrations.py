@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 import hashlib
+import shutil
+import sqlite3
 import tempfile
 import threading
+from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from backend.schema_contracts import schema_signature
-from update_tools.migrate_db import get_migration_status, run_migrations
+from update_tools.migrate_db import MigrationFile, run_migrations
 
 
 @dataclass(frozen=True)
@@ -16,10 +19,23 @@ class SchemaGateResult:
     target: str
     current_version: str
     applied: tuple[str, ...]
+    pending: tuple[str, ...] = ()
 
 
 class SchemaVersionError(RuntimeError):
     """The database cannot be safely opened by this application version."""
+
+
+class SchemaMigrationRequired(SchemaVersionError):
+    """An existing database needs an explicitly confirmed maintenance migration."""
+
+    def __init__(self, target: str, pending: tuple[str, ...]) -> None:
+        self.target = str(target)
+        self.pending = tuple(pending)
+        super().__init__(
+            "database migration is pending; use protected maintenance "
+            f"for target {self.target}"
+        )
 
 
 class _QuietMigrationLogger:
@@ -34,14 +50,18 @@ _SCHEMA_SIGNATURE_CACHE: dict[tuple[object, ...], dict[str, object]] = {}
 _SCHEMA_SIGNATURE_LOCK = threading.Lock()
 
 
-def _manifest_cache_key(migration_root: Path) -> tuple[object, ...]:
-    files = sorted(migration_root.glob("*.sql"))
+def _manifest_files(migration_root: Path) -> tuple[Path, ...]:
+    files = tuple(sorted(migration_root.glob("*.sql")))
     if not files:
         raise SchemaVersionError("migration manifest is empty")
+    return files
+
+
+def _manifest_cache_key(files: tuple[Path, ...]) -> tuple[object, ...]:
     return (
-        str(migration_root.resolve()),
         tuple(
             (
+                str(path.resolve()),
                 path.name,
                 hashlib.sha256(path.read_bytes()).hexdigest(),
             )
@@ -53,8 +73,12 @@ def _manifest_cache_key(migration_root: Path) -> tuple[object, ...]:
 def _expected_schema_signature(
     target: str,
     migration_root: Path,
+    *,
+    applied_count: int | None = None,
 ) -> dict[str, object]:
-    cache_key = _manifest_cache_key(migration_root)
+    files = _manifest_files(migration_root)
+    selected = files if applied_count is None else files[:applied_count]
+    cache_key = (target, _manifest_cache_key(selected))
     with _SCHEMA_SIGNATURE_LOCK:
         cached = _SCHEMA_SIGNATURE_CACHE.get(cache_key)
         if cached is not None:
@@ -64,20 +88,136 @@ def _expected_schema_signature(
         ) as raw:
             work_root = Path(raw)
             reference_db = work_root / "reference.db"
-            report = run_migrations(
-                target,
-                db_path=reference_db,
-                migrations_dir=migration_root,
-                backup_dir_override=work_root / "backups",
-                logger_override=_QuietMigrationLogger(),
-            )
-            if report.error:
-                raise SchemaVersionError(
-                    "migration manifest cannot build the current schema"
+            if selected:
+                selected_root = work_root / "migrations"
+                selected_root.mkdir()
+                for source in selected:
+                    shutil.copy2(source, selected_root / source.name)
+                report = run_migrations(
+                    target,
+                    db_path=reference_db,
+                    migrations_dir=selected_root,
+                    backup_dir_override=work_root / "backups",
+                    logger_override=_QuietMigrationLogger(),
                 )
+                if report.error:
+                    raise SchemaVersionError(
+                        "migration manifest cannot build the recorded schema"
+                    )
+            else:
+                with closing(sqlite3.connect(reference_db)):
+                    pass
             signature = schema_signature(reference_db)
         _SCHEMA_SIGNATURE_CACHE[cache_key] = signature
         return signature
+
+
+def _database_is_blank(database: Path) -> bool:
+    if not database.exists():
+        return True
+    if not database.is_file() or database.is_symlink():
+        raise SchemaVersionError("database path is invalid")
+    uri = database.resolve().as_uri() + "?mode=ro"
+    try:
+        with closing(sqlite3.connect(uri, uri=True)) as connection:
+            row = connection.execute(
+                "SELECT 1 FROM sqlite_master "
+                "WHERE name NOT LIKE 'sqlite_%' LIMIT 1"
+            ).fetchone()
+    except (sqlite3.DatabaseError, OSError) as exc:
+        raise SchemaVersionError("database cannot be inspected safely") from exc
+    return row is None
+
+
+def inspect_schema_version(
+    target: str,
+    db_path: Path,
+    *,
+    migrations_dir: Path | None = None,
+) -> SchemaGateResult:
+    """Validate one existing database without changing it.
+
+    The recorded successful migrations must be an exact checksum-matching prefix
+    of the local manifest, and the live schema must exactly match that prefix.
+    """
+
+    migration_root = (
+        Path(migrations_dir)
+        if migrations_dir is not None
+        else Path(__file__).resolve().parents[1] / "migrations" / target
+    )
+    files = _manifest_files(migration_root)
+    migrations = tuple(MigrationFile.from_path(path) for path in files)
+    database = Path(db_path)
+    if not database.is_file() or database.is_symlink():
+        raise SchemaVersionError("database candidate is missing")
+    uri = database.resolve().as_uri() + "?mode=ro"
+    try:
+        with closing(sqlite3.connect(uri, uri=True)) as connection:
+            quick = connection.execute("PRAGMA quick_check").fetchall()
+            integrity = connection.execute("PRAGMA integrity_check").fetchall()
+            if quick != [("ok",)] or integrity != [("ok",)]:
+                raise SchemaVersionError("database integrity check failed")
+            if connection.execute("PRAGMA foreign_key_check").fetchall():
+                raise SchemaVersionError("database foreign key check failed")
+            table = connection.execute(
+                "SELECT 1 FROM sqlite_master "
+                "WHERE type='table' AND name='schema_migrations'"
+            ).fetchone()
+            if table is None:
+                raise SchemaVersionError("database migration history is missing")
+            rows = connection.execute(
+                "SELECT migration_name, checksum, success "
+                "FROM schema_migrations ORDER BY id"
+            ).fetchall()
+    except SchemaVersionError:
+        raise
+    except (sqlite3.DatabaseError, OSError) as exc:
+        raise SchemaVersionError("database cannot be inspected safely") from exc
+
+    try:
+        has_failed_record = any(int(row[2]) != 1 for row in rows)
+    except (TypeError, ValueError) as exc:
+        raise SchemaVersionError(
+            "database migration history contains an invalid status"
+        ) from exc
+    if has_failed_record:
+        raise SchemaVersionError("database migration history contains a failure")
+    applied = tuple(str(row[0]) for row in rows)
+    expected_names = tuple(migration.name for migration in migrations[: len(rows)])
+    if len(rows) > len(migrations) or applied != expected_names:
+        known_names = {migration.name for migration in migrations}
+        if any(name not in known_names for name in applied):
+            raise SchemaVersionError(
+                "database schema is newer than this application"
+            )
+        raise SchemaVersionError("recorded migration history has a gap")
+    for row, migration in zip(rows, migrations):
+        checksum = str(row[1] or "").strip()
+        if not checksum or checksum != migration.checksum:
+            raise SchemaVersionError(
+                f"recorded migration checksum does not match: {migration.name}"
+            )
+    try:
+        actual_signature = schema_signature(database)
+    except (sqlite3.DatabaseError, OSError) as exc:
+        raise SchemaVersionError("database schema cannot be inspected") from exc
+    expected_signature = _expected_schema_signature(
+        target,
+        migration_root,
+        applied_count=len(applied),
+    )
+    if actual_signature != expected_signature:
+        raise SchemaVersionError(
+            "database schema differs from the recorded migration history"
+        )
+    pending = tuple(migration.name for migration in migrations[len(applied) :])
+    return SchemaGateResult(
+        target=target,
+        current_version=applied[-1] if applied else "0",
+        applied=applied,
+        pending=pending,
+    )
 
 
 def ensure_schema_current(
@@ -87,6 +227,7 @@ def ensure_schema_current(
     migrations_dir: Path | None = None,
     backup_dir: Path | None = None,
     logger_override: Any | None = None,
+    allow_existing_migrations: bool = True,
 ) -> SchemaGateResult:
     migration_root = (
         Path(migrations_dir)
@@ -103,6 +244,18 @@ def ensure_schema_current(
             else database.parent / "backups"
         )
     )
+    blank = _database_is_blank(database)
+    if not blank:
+        inspected = inspect_schema_version(
+            target,
+            database,
+            migrations_dir=migration_root,
+        )
+        if inspected.pending and not allow_existing_migrations:
+            raise SchemaMigrationRequired(target, inspected.pending)
+        if not inspected.pending:
+            return inspected
+
     report = run_migrations(
         target,
         db_path=database,
@@ -112,24 +265,14 @@ def ensure_schema_current(
     )
     if report.error:
         raise SchemaVersionError(report.error)
-    if schema_signature(database) != _expected_schema_signature(
+    inspected = inspect_schema_version(
         target,
-        migration_root,
-    ):
-        raise SchemaVersionError(
-            "database schema differs from the current migration manifest"
-        )
-    status = get_migration_status(
-        target,
-        db_path_override=database,
-        migrations_dir_override=migration_root,
+        database,
+        migrations_dir=migration_root,
     )
-    applied = tuple(str(item) for item in status.get("applied") or ())
-    return SchemaGateResult(
-        target=target,
-        current_version=applied[-1] if applied else "0",
-        applied=applied,
-    )
+    if inspected.pending:
+        raise SchemaVersionError("database migration did not reach the requested version")
+    return inspected
 
 
 def ensure_application_schema(paths: Any) -> dict[str, SchemaGateResult]:
@@ -148,6 +291,7 @@ def ensure_application_schema(paths: Any) -> dict[str, SchemaGateResult]:
             Path(paths.db_path),
             migrations_dir=migration_project_root / "migrations" / "grading",
             backup_dir=backup_dir,
+            allow_existing_migrations=False,
         ),
         "question_bank": ensure_schema_current(
             "question_bank",
@@ -156,13 +300,16 @@ def ensure_application_schema(paths: Any) -> dict[str, SchemaGateResult]:
                 migration_project_root / "migrations" / "question_bank"
             ),
             backup_dir=backup_dir,
+            allow_existing_migrations=False,
         ),
     }
 
 
 __all__ = [
     "SchemaGateResult",
+    "SchemaMigrationRequired",
     "SchemaVersionError",
     "ensure_application_schema",
     "ensure_schema_current",
+    "inspect_schema_version",
 ]

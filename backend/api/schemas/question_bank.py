@@ -92,6 +92,7 @@ class QuestionPaperPermanentDeleteImpactResponse(_QuestionBankModel):
     paper_count: int = Field(ge=1)
     question_count: int = Field(ge=0)
     tag_count: int = Field(ge=0)
+    analysis_record_count: int = Field(ge=0)
     training_link_count: int = Field(ge=0)
     knowledge_graph_link_count: int = Field(ge=0)
     owned_file_count: int = Field(ge=0)
@@ -108,6 +109,7 @@ class QuestionPaperPermanentDeleteResponse(_QuestionBankModel):
     deleted_paper_ids: list[int]
     deleted_question_count: int = Field(ge=0)
     deleted_tag_count: int = Field(ge=0)
+    deleted_analysis_record_count: int = Field(ge=0)
     removed_training_link_count: int = Field(ge=0)
     removed_knowledge_graph_link_count: int = Field(ge=0)
     deleted_file_count: int = Field(ge=0)

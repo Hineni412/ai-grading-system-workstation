@@ -87,7 +87,7 @@ def test_activated_class_teacher_shell_has_no_filesystem_side_effects(
     assert not (paths.data_root / "workspaces").exists()
 
 
-def test_existing_class_teacher_vault_is_migrated_before_service_creation(
+def test_existing_class_teacher_vault_requires_maintenance_before_service_creation(
     tmp_path: Path,
 ) -> None:
     paths = _paths(tmp_path)
@@ -112,8 +112,11 @@ def test_existing_class_teacher_vault_is_migrated_before_service_creation(
         [create_workspace_feature()],
         paths=paths,
     )
-    registry.run_migrations()
-    services = registry.create_services()
+    with pytest.raises(
+        WorkspaceRegistrationError,
+        match="pending.*protected maintenance",
+    ):
+        registry.run_migrations()
 
     with sqlite3.connect(root / "student_affairs.db") as connection:
         assert connection.execute(
@@ -122,17 +125,7 @@ def test_existing_class_teacher_vault_is_migrated_before_service_creation(
             WHERE type = 'table'
               AND name = 'initialization_recovery_receipts'
             """
-        ).fetchone() == ("initialization_recovery_receipts",)
-        confirmation_columns = {
-            str(row[1])
-            for row in connection.execute(
-                "PRAGMA table_info(confirmation_claims)"
-            )
-        }
-    assert {"state", "target_kind", "target_id", "updated_at"} <= (
-        confirmation_columns
-    )
-    assert set(services) == {"class-teacher"}
+        ).fetchone() is None
 
 
 def test_existing_main_class_teacher_vault_accepts_new_tail_migration(
@@ -350,6 +343,52 @@ def test_module_migrations_are_idempotent_and_gate_before_path_creation(
             "SELECT name FROM sqlite_master WHERE name='lessons'"
         ).fetchone() == ("lessons",)
     assert preflight_calls == [False, True]
+
+
+def test_existing_workspace_pending_migration_requires_protected_maintenance(
+    tmp_path: Path,
+) -> None:
+    paths = _paths(tmp_path)
+    migrations = paths.project_root / "migrations" / "teaching_prep"
+    migrations.mkdir(parents=True)
+    (migrations / "000_baseline.sql").write_text(
+        "CREATE TABLE lessons (id INTEGER PRIMARY KEY);",
+        encoding="utf-8",
+    )
+
+    def migration_provider(context):
+        return WorkspaceMigrationPlan(
+            target="teaching_prep",
+            database_path=context.root / "teaching_prep.db",
+            migrations_dir=migrations,
+            backup_dir=context.root / "backups",
+            preflight=lambda: None,
+        )
+
+    registry = WorkspaceRegistry(
+        [_feature(migration_provider=migration_provider)],
+        paths=paths,
+    )
+    registry.run_migrations()
+    database = paths.workspace_dir("teaching-prep") / "teaching_prep.db"
+    before = database.read_bytes()
+    (migrations / "001_pending.sql").write_text(
+        "CREATE TABLE must_wait_for_maintenance (id INTEGER PRIMARY KEY);",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        WorkspaceRegistrationError,
+        match="pending.*protected maintenance",
+    ):
+        registry.run_migrations()
+
+    assert database.read_bytes() == before
+    with sqlite3.connect(database) as connection:
+        assert connection.execute(
+            "SELECT name FROM sqlite_master "
+            "WHERE type='table' AND name='must_wait_for_maintenance'"
+        ).fetchone() is None
 
 
 def test_failed_module_migration_rolls_back_and_blocks_startup(

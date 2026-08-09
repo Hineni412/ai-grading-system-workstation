@@ -24,16 +24,30 @@ from backend.ops.write_service import OpsWriteService
 from backend.schema_migrations import ensure_schema_current
 
 
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+
 def _create_database(
     path: Path,
     value: str,
     *,
     migration_current: bool = False,
+    migrations_dir: Path | None = None,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     if migration_current:
         target = "grading" if path.name == "grading_system.db" else "question_bank"
-        ensure_schema_current(target, path)
+        ensure_schema_current(
+            target,
+            path,
+            migrations_dir=PROJECT_ROOT / "migrations" / target,
+        )
+        return
+    if migrations_dir is not None:
+        target = "grading" if path.name == "grading_system.db" else "question_bank"
+        ensure_schema_current(target, path, migrations_dir=migrations_dir)
+        with sqlite3.connect(path) as connection:
+            connection.execute("INSERT INTO sample(value) VALUES (?)", (value,))
         return
     with sqlite3.connect(path) as connection:
         connection.execute("CREATE TABLE sample (value TEXT)")
@@ -73,24 +87,43 @@ def _paths(
         logs_dir=project_root / "logs",
         ops_state_dir=tmp_path / "local" / "ops",
     )
+    grading_migrations = project_root / "migrations" / "grading"
+    question_bank_migrations = project_root / "migrations" / "question_bank"
+    grading_migrations.mkdir(parents=True)
+    question_bank_migrations.mkdir(parents=True)
+    (grading_migrations / "000_baseline.sql").write_text(
+        "CREATE TABLE sample (value TEXT);\n"
+        "CREATE TABLE students (id INTEGER PRIMARY KEY);\n"
+        "CREATE TABLE grading_sessions (id INTEGER PRIMARY KEY);\n"
+        "CREATE TABLE exam_papers (id INTEGER PRIMARY KEY);\n",
+        encoding="utf-8",
+    )
+    (question_bank_migrations / "000_baseline.sql").write_text(
+        "CREATE TABLE sample (value TEXT);\n"
+        "CREATE TABLE papers (id INTEGER PRIMARY KEY);\n"
+        "CREATE TABLE questions (id INTEGER PRIMARY KEY);\n"
+        "CREATE TABLE question_tags (id INTEGER PRIMARY KEY);\n",
+        encoding="utf-8",
+    )
+    paths.migration_project_root = (
+        PROJECT_ROOT if migration_current else project_root
+    )
     _create_database(
         paths.db_path,
         "grading",
         migration_current=migration_current,
+        migrations_dir=grading_migrations,
     )
     _create_database(
         paths.qb_db_path,
         "question-bank",
         migration_current=migration_current,
+        migrations_dir=question_bank_migrations,
     )
     paths.config_dir.mkdir(parents=True)
     (paths.config_dir / "safe.json").write_text('{"ok": true}', encoding="utf-8")
     (paths.config_dir / "api_profiles.json").write_text('{"api_key": "secret"}', encoding="utf-8")
     (project_root / "config").mkdir(parents=True)
-    grading_migrations = project_root / "migrations" / "grading"
-    question_bank_migrations = project_root / "migrations" / "question_bank"
-    grading_migrations.mkdir(parents=True)
-    question_bank_migrations.mkdir(parents=True)
     (grading_migrations / "001_preview.sql").write_text(
         "CREATE TABLE grading_preview (id INTEGER PRIMARY KEY);",
         encoding="utf-8",
@@ -187,6 +220,89 @@ def test_ops_backup_publishes_only_the_selected_teaching_prep_scope(
         name.startswith("user_data/workspaces/class-teacher/")
         for name in names
     )
+
+
+def test_ops_backup_keeps_workspace_databases_but_excludes_migration_copies(
+    tmp_path: Path,
+) -> None:
+    paths = _paths(tmp_path)
+    teaching_root = paths.data_root / "workspaces" / "teaching-prep"
+    class_teacher_root = paths.data_root / "workspaces" / "class-teacher"
+    teaching_database = teaching_root / "teaching_prep.db"
+    work_database = class_teacher_root / "class_teacher_work.db"
+    affairs_database = class_teacher_root / "student_affairs.db"
+    databases = {
+        teaching_database: (
+            "teaching_prep",
+            "CREATE TABLE teaching_prep_operations (id INTEGER PRIMARY KEY);\n"
+            "CREATE TABLE lesson_preparations (id INTEGER PRIMARY KEY);\n",
+        ),
+        work_database: (
+            "class_teacher_work",
+            "CREATE TABLE work_nodes (id INTEGER PRIMARY KEY);\n"
+            "CREATE TABLE work_edges (id INTEGER PRIMARY KEY);\n"
+            "CREATE TABLE work_operations (id INTEGER PRIMARY KEY);\n",
+        ),
+        affairs_database: (
+            "student_affairs",
+            "CREATE TABLE vault_metadata (id INTEGER PRIMARY KEY);\n"
+            "CREATE TABLE encrypted_objects (id INTEGER PRIMARY KEY);\n"
+            "CREATE TABLE access_audit (id INTEGER PRIMARY KEY);\n",
+        ),
+    }
+    for database, (target, baseline) in databases.items():
+        migrations = paths.project_root / "migrations" / target
+        migrations.mkdir(parents=True)
+        (migrations / "000_baseline.sql").write_text(
+            baseline,
+            encoding="utf-8",
+        )
+        ensure_schema_current(
+            target,
+            database,
+            migrations_dir=migrations,
+            backup_dir=tmp_path / "fixture-backups" / target,
+        )
+
+    nested_copies = {
+        (
+            teaching_root
+            / "backups"
+            / "teaching_prep_before_migration_017_20260809_120000.db"
+        ): teaching_database,
+        (
+            class_teacher_root
+            / "work-backups"
+            / "class_teacher_work_before_migration_007_20260809_120000.db"
+        ): work_database,
+    }
+    for copy_path, target in nested_copies.items():
+        copy_path.parent.mkdir(parents=True, exist_ok=True)
+        copy_path.write_bytes(target.read_bytes())
+
+    context = _Context(
+        _payload(
+            _service(paths),
+            "backup",
+            reason="manual",
+            scopes=["teaching_prep", "class_teacher"],
+        )
+    )
+
+    result = run_ops_backup_job(context=context, paths=paths)
+
+    published = paths.backups_dir / str(result["filename"])
+    with zipfile.ZipFile(published, "r") as archive:
+        names = set(archive.namelist())
+    assert {
+        "user_data/workspaces/teaching-prep/teaching_prep.db",
+        "user_data/workspaces/class-teacher/class_teacher_work.db",
+        "user_data/workspaces/class-teacher/student_affairs.db",
+    } <= names
+    assert not {
+        path.relative_to(paths.project_root).as_posix()
+        for path in nested_copies
+    } & names
 
 
 def test_ops_backup_cancel_before_publish_leaves_no_zip(tmp_path: Path) -> None:
@@ -409,16 +525,12 @@ def test_ops_backup_allows_job_store_updates_and_includes_class_teacher_workspac
     paths = _paths(tmp_path, migration_current=True)
     protected = paths.data_root / "workspaces" / "class-teacher" / "student_affairs.db"
     protected.parent.mkdir(parents=True)
-    with sqlite3.connect(protected) as connection:
-        connection.execute("CREATE TABLE synthetic_student (name TEXT NOT NULL)")
-        connection.execute("INSERT INTO synthetic_student VALUES ('合成学生')")
-        for table in (
-            "schema_migrations",
-            "vault_metadata",
-            "encrypted_objects",
-            "access_audit",
-        ):
-            connection.execute(f"CREATE TABLE {table} (id INTEGER PRIMARY KEY)")
+    ensure_schema_current(
+        "student_affairs",
+        protected,
+        migrations_dir=PROJECT_ROOT / "migrations" / "student_affairs",
+        backup_dir=tmp_path / "fixture-student-affairs-backups",
+    )
     manager = JobManager(
         JobStore(paths.db_path),
         max_workers=1,
@@ -560,6 +672,10 @@ def test_create_safety_backup_returns_controlled_filename(tmp_path: Path) -> Non
         paths=paths,
         reason="before_restore",
         operation_id="11111111-1111-4111-8111-111111111111",
+        archive_names=(
+            "user_data/databases/grading_system.db",
+            "user_data/databases/question_bank.db",
+        ),
     )
 
     assert backup.parent == paths.backups_dir
@@ -584,5 +700,9 @@ def test_create_safety_backup_rejects_invalid_database_snapshot(
             paths=paths,
             reason="before_restore",
             operation_id="11111111-1111-4111-8111-111111111111",
+            archive_names=(
+                "user_data/databases/grading_system.db",
+                "user_data/databases/question_bank.db",
+            ),
         )
     assert not list(paths.backups_dir.glob("*.zip"))

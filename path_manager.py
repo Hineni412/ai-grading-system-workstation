@@ -21,6 +21,14 @@ from typing import Any, Iterable
 _PROJECT_ROOT = Path(__file__).resolve().parent
 _WORKSPACE_ID = re.compile(r"^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$")
 
+
+class UncontrolledStoredFilePathError(ValueError):
+    """A persisted path points outside every explicitly controlled root."""
+
+
+class AmbiguousStoredFilePathError(ValueError):
+    """A filename-only legacy lookup matched more than one controlled file."""
+
 # ---------------------------------------------------------------------------
 # YAML loader – tiny built-in parser to avoid adding PyYAML dependency
 # ---------------------------------------------------------------------------
@@ -358,65 +366,138 @@ def resolve_stored_file_path(
     """Resolve a persisted file path after the app/data directory moved.
 
     Older records may store absolute paths from another machine or a previous
-    project directory. Prefer the stored path when it still exists, then try to
-    remap anything under ``user_data`` to the current data root, and finally
-    search the common data locations by filename.
+    project directory. Existing paths are accepted only beneath the current
+    data/config roots or an explicitly supplied search root. Legacy paths are
+    remapped inside those roots; a filename fallback is used only when unique.
     """
     text = str(path_value or "").strip()
     path = Path(text)
-    if text and path.exists():
+    if not text:
         return path
+    pm = get_path_manager() if project_root is None or data_root is None else None
+    root = Path(
+        project_root if project_root is not None else pm.project_root
+    ).resolve(strict=False)
+    data = Path(
+        data_root if data_root is not None else pm.data_root
+    ).resolve(strict=False)
+    explicit_roots = [
+        Path(candidate).expanduser().resolve(strict=False)
+        for candidate in (search_roots or ())
+    ]
+    project_subroots = [
+        resolved
+        for resolved in (
+            (root / "config" / "uploaded").resolve(strict=False),
+            (root / "templates").resolve(strict=False),
+            (root / "config").resolve(strict=False),
+        )
+        if resolved == root or resolved.is_relative_to(root)
+    ]
+    controlled_roots = _unique_paths(
+        [
+            data,
+            *project_subroots,
+            *explicit_roots,
+        ]
+    )
 
-    pm = get_path_manager()
-    root = project_root or pm.project_root
-    data = data_root or pm.data_root
+    if ".." in path.parts:
+        raise UncontrolledStoredFilePathError(
+            "stored file path cannot traverse outside its controlled root"
+        )
+    if path.exists():
+        return _require_controlled_file(path, controlled_roots)
+
     candidates: list[Path] = []
 
-    if text:
-        if not path.is_absolute():
-            candidates.extend([root / path, data / path])
+    if not path.is_absolute():
+        candidates.extend([root / path, data / path])
 
-        parts = path.parts
-        lowered = [part.lower() for part in parts]
-        for marker in ("user_data", "data"):
-            if marker in lowered:
-                idx = lowered.index(marker)
-                if idx + 1 < len(parts):
-                    candidates.append(data.joinpath(*parts[idx + 1:]))
+    parts = path.parts
+    lowered = [part.lower() for part in parts]
+    for marker in ("user_data", "data"):
+        if marker in lowered:
+            idx = lowered.index(marker)
+            if idx + 1 < len(parts):
+                candidates.append(data.joinpath(*parts[idx + 1:]))
 
-        filename = path.name
-        if filename:
-            roots = list(search_roots or [])
-            roots.extend(
-                [
-                    data / "config" / "uploaded",
-                    data / "templates",
-                    data / "config",
-                    data,
-                    root / "config" / "uploaded",
-                    root / "templates",
-                    root / "config",
-                ]
-            )
-            for search_root in roots:
-                if not search_root.exists():
-                    continue
-                direct = search_root / filename
-                candidates.append(direct)
-                try:
-                    candidates.extend(search_root.rglob(filename))
-                except OSError:
-                    continue
+    exact = _unique_controlled_existing_files(candidates, controlled_roots)
+    if len(exact) == 1:
+        return exact[0]
+    if len(exact) > 1:
+        raise AmbiguousStoredFilePathError(text)
 
-    seen: set[Path] = set()
+    filename = path.name
+    fallback: list[Path] = []
+    if filename:
+        fallback_roots = _unique_paths(
+            [
+                *explicit_roots,
+                data / "config" / "uploaded",
+                data / "templates",
+                data / "config",
+                data,
+                *project_subroots,
+            ]
+        )
+        for search_root in fallback_roots:
+            if not search_root.exists():
+                continue
+            fallback.append(search_root / filename)
+            try:
+                fallback.extend(search_root.rglob(filename))
+            except OSError:
+                continue
+    matches = _unique_controlled_existing_files(fallback, controlled_roots)
+    if len(matches) == 1:
+        return matches[0]
+    if len(matches) > 1:
+        raise AmbiguousStoredFilePathError(text)
+
     for candidate in candidates:
+        resolved = candidate.resolve(strict=False)
+        if _is_below_any_root(resolved, controlled_roots):
+            return resolved
+    raise UncontrolledStoredFilePathError(
+        "stored file path is outside every controlled root"
+    )
+
+
+def _unique_paths(values: Iterable[Path]) -> list[Path]:
+    unique: list[Path] = []
+    for value in values:
+        resolved = Path(value).resolve(strict=False)
+        if resolved not in unique:
+            unique.append(resolved)
+    return unique
+
+
+def _is_below_any_root(path: Path, roots: Iterable[Path]) -> bool:
+    return any(path == root or path.is_relative_to(root) for root in roots)
+
+
+def _require_controlled_file(path: Path, roots: Iterable[Path]) -> Path:
+    resolved = path.resolve(strict=True)
+    if not resolved.is_file() or not _is_below_any_root(resolved, roots):
+        raise UncontrolledStoredFilePathError(
+            "stored file path is outside every controlled root"
+        )
+    return resolved
+
+
+def _unique_controlled_existing_files(
+    values: Iterable[Path],
+    roots: Iterable[Path],
+) -> list[Path]:
+    unique: set[Path] = set()
+    for value in values:
         try:
-            resolved = candidate.resolve()
+            if not value.is_file():
+                continue
+            resolved = value.resolve(strict=True)
         except OSError:
-            resolved = candidate
-        if resolved in seen:
             continue
-        seen.add(resolved)
-        if candidate.exists() and candidate.is_file():
-            return candidate
-    return path
+        if _is_below_any_root(resolved, roots):
+            unique.add(resolved)
+    return sorted(unique, key=lambda item: str(item).casefold())

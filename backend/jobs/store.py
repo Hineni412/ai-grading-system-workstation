@@ -116,7 +116,11 @@ class JobStore:
 
     def initialize(self) -> None:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        ensure_schema_current("grading", self.db_path)
+        ensure_schema_current(
+            "grading",
+            self.db_path,
+            allow_existing_migrations=False,
+        )
 
     def create_job(self, job_type: str, payload: dict[str, Any] | None) -> JobRecord:
         clean_type = str(job_type or "").strip()

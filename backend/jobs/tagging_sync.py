@@ -30,6 +30,7 @@ from question_bank.training_criteria import (
     QuestionAnalysisInputLoader,
     QuestionAnalysisWorkItem,
     TrainingCriterionModule,
+    solution_evidence_source_content_hash,
 )
 from question_bank.taxonomy.snapshot import QuestionTaxonomySnapshot
 
@@ -138,7 +139,12 @@ def _run_tagging_sync_job_locked(
             question_ids=retry_relation_question_ids,
         )
     try:
-        analysis_gaps = _load_analysis_gaps(db_path, question_ids)
+        analysis_gaps = _load_analysis_gaps(
+            db_path,
+            question_ids,
+            data_root=data_root,
+            curriculum_volume_id=curriculum_volume_id,
+        )
         analysis_retry_ids = [
             question_id
             for question_id in question_ids
@@ -147,14 +153,66 @@ def _run_tagging_sync_job_locked(
                 and analysis_gaps.get(question_id, {}).get("criteria_ready")
             )
         ]
+        requested_force_ids = (
+            set(retry_evidence_question_ids)
+            | set(analysis_retry_ids)
+            | set(force_retag_question_ids)
+        )
+        verify_tag_sources = (
+            data_root is not None and taxonomy_governance is not None
+        )
         contexts, complete_ids, unavailable_ids = _load_tagging_candidates(
             db_path,
             question_ids,
             curriculum_volume_id=curriculum_volume_id,
-            force_question_ids=set(retry_evidence_question_ids)
-            | set(analysis_retry_ids)
-            | set(force_retag_question_ids),
+            force_question_ids=requested_force_ids,
+            include_complete_contexts=verify_tag_sources,
         )
+        stale_tag_ids: set[int] = set()
+        if verify_tag_sources and complete_ids:
+            verification_contexts = {
+                question_id: contexts[question_id]
+                for question_id in complete_ids
+                if question_id in contexts
+            }
+            verification_contracts, _ = _plan_taxonomy(
+                None,
+                taxonomy_governance,
+                contexts=verification_contexts,
+            )
+            loader = QuestionAnalysisInputLoader(
+                db_path=db_path,
+                data_root=Path(data_root),
+            )
+            current_inputs = loader.load(
+                complete_ids,
+                taxonomy_contracts=verification_contracts,
+                curriculum_volume_id=curriculum_volume_id,
+            )
+            source_current = _load_tag_source_currentness(
+                db_path,
+                current_inputs=current_inputs,
+            )
+            stale_tag_ids = {
+                question_id
+                for question_id, current in source_current.items()
+                if not current
+            }
+            if stale_tag_ids:
+                complete_ids = [
+                    question_id
+                    for question_id in complete_ids
+                    if question_id not in stale_tag_ids
+                ]
+            complete_set_after_source_check = set(complete_ids)
+            contexts = {
+                question_id: tagging_context
+                for question_id, tagging_context in contexts.items()
+                if (
+                    question_id not in complete_set_after_source_check
+                    or question_id in requested_force_ids
+                )
+            }
     except Exception:
         raise RuntimeError("tagging sync setup failed") from None
     failures = [
@@ -166,7 +224,7 @@ def _run_tagging_sync_job_locked(
     complete_set = set(complete_ids)
     evidence_retry_set = set(retry_evidence_question_ids)
     evidence_retry_set.update(analysis_retry_ids)
-    force_retag_set = set(force_retag_question_ids)
+    force_retag_set = set(force_retag_question_ids) | stale_tag_ids
     evidence_only_ids = [
         item
         for item in pending_ids
@@ -225,6 +283,7 @@ def _run_tagging_sync_job_locked(
             retry_relation_question_ids=retry_relation_question_ids,
             taxonomy_governance=governance,
             analysis_gaps=analysis_gaps,
+            curriculum_volume_id=curriculum_volume_id,
         )
     if evidence_only_ids:
         # Evidence-only retry is available only through the combined-v3 path.
@@ -444,6 +503,7 @@ def _run_unified_tagging_analysis(
     retry_relation_question_ids: list[int],
     taxonomy_governance: Any | None,
     analysis_gaps: Mapping[int, Mapping[str, bool]],
+    curriculum_volume_id: str,
 ) -> dict[str, object]:
     """Run the production tagging entry through combined-v3 once per batch."""
 
@@ -460,6 +520,7 @@ def _run_unified_tagging_analysis(
                 taxonomy_contracts={
                     question_id: taxonomy_contracts.get(question_id, {})
                 },
+                curriculum_volume_id=curriculum_volume_id,
             )[0]
         except (KeyError, OSError, TypeError, ValueError):
             input_failures.append(_failure(question_id, "validation"))
@@ -692,10 +753,94 @@ def _run_unified_tagging_analysis(
                 for entry in failures
             ):
                 failures.append(_failure(question_id, "training_criteria"))
-    successful_ids = [item for item in requested_ids if item in set(tag_success)]
+    # The workflow ledger is an execution record, not the question-bank truth.
+    # A process restart, an old child-operation row, or a projection writer
+    # failure can leave it saying "succeeded" while the teacher-visible row is
+    # absent.  Re-read all three projections before publishing terminal counts.
+    _, persisted_tag_ids, _ = _load_tagging_candidates(
+        db_path,
+        requested_ids,
+        curriculum_volume_id="",
+    )
+    persisted_gaps = _load_analysis_gaps(
+        db_path,
+        requested_ids,
+        data_root=data_root,
+        curriculum_volume_id=curriculum_volume_id,
+        current_inputs=loaded_by_id,
+    )
+    persisted_source_current = _load_tag_source_currentness(
+        db_path,
+        current_inputs=tuple(loaded_by_id.values()),
+    )
+    persisted_tag_set = {
+        question_id
+        for question_id in persisted_tag_ids
+        if persisted_source_current.get(question_id, True)
+    }
+    persisted_evidence_set = {
+        question_id
+        for question_id, gap in persisted_gaps.items()
+        if gap.get("evidence_ready")
+    }
+    persisted_criterion_set = {
+        question_id
+        for question_id, gap in persisted_gaps.items()
+        if gap.get("criteria_ready")
+    }
+    claimed_new_tag_ids = {
+        question_id
+        for question_id in tag_request_set
+        if str(items.get(question_id, {}).get("tag_status")) == "succeeded"
+    }
+    for question_id in requested_ids:
+        if question_id not in persisted_tag_set and not any(
+            int(entry["question_id"]) == question_id
+            for entry in failures
+        ):
+            failures.append(_failure(question_id, "save"))
+        if question_id not in persisted_evidence_set and not any(
+            int(entry["question_id"]) == question_id
+            and str(entry.get("category") or "") == "evidence"
+            for entry in failures
+        ):
+            failures.append(_failure(question_id, "evidence"))
+        if question_id not in persisted_criterion_set and not any(
+            int(entry["question_id"]) == question_id
+            and str(entry.get("category") or "") == "training_criteria"
+            for entry in failures
+        ):
+            failures.append(_failure(question_id, "training_criteria"))
+
+    successful_ids = [
+        item for item in requested_ids if item in persisted_tag_set
+    ]
+    newly_tagged = [
+        item
+        for item in requested_ids
+        if item in claimed_new_tag_ids and item in persisted_tag_set
+    ]
+    evidence_success = [
+        item for item in requested_ids if item in persisted_evidence_set
+    ]
+    evidence_failed = [
+        item for item in requested_ids if item not in persisted_evidence_set
+    ]
+    criterion_review_set = set(criterion_review) & persisted_criterion_set
+    criterion_review = [
+        item for item in requested_ids if item in criterion_review_set
+    ]
+    criterion_success = [
+        item
+        for item in requested_ids
+        if item in persisted_criterion_set and item not in criterion_review_set
+    ]
+    criterion_failed = [
+        item for item in requested_ids if item not in persisted_criterion_set
+    ]
     failed_set = {
         int(item["question_id"]) for item in failures
-    } | set(evidence_failed)
+    } | set(evidence_failed) | set(criterion_failed)
     failed_ids = [item for item in requested_ids if item in failed_set]
     audits = dict(workflow.get("projection_audit") or {})
     if retry_relation_question_ids:
@@ -909,6 +1054,7 @@ def _load_tagging_candidates(
     *,
     curriculum_volume_id: str = "",
     force_question_ids: set[int] | None = None,
+    include_complete_contexts: bool = False,
 ) -> tuple[dict[int, TaggingContext], list[int], list[int]]:
     placeholders = ",".join("?" for _ in question_ids)
     with connect(db_path) as conn:
@@ -950,7 +1096,7 @@ def _load_tagging_candidates(
             continue
         if required.issubset(tag_types.get(question_id, set())):
             complete.append(question_id)
-            if question_id not in forced:
+            if question_id not in forced and not include_complete_contexts:
                 continue
         contexts[question_id] = TaggingContext(
             question_text=str(row["question_text"] or ""),
@@ -968,9 +1114,65 @@ def _load_tagging_candidates(
     return contexts, complete, unavailable
 
 
+def _load_tag_source_currentness(
+    db_path: Path,
+    *,
+    current_inputs: Sequence[Any],
+) -> dict[int, bool]:
+    """Compare current inputs with the latest persisted successful tag run.
+
+    Rows without combined-analysis history are legacy-compatible: their tag
+    presence remains authoritative. Once a question has a versioned tag run,
+    however, an older source hash must not make the current question complete.
+    """
+
+    current_by_id = {
+        int(item.question_id): str(item.source_content_hash)
+        for item in current_inputs
+    }
+    if not current_by_id:
+        return {}
+    question_ids = tuple(current_by_id)
+    placeholders = ",".join("?" for _ in question_ids)
+    with connect(db_path) as conn:
+        table = conn.execute(
+            """
+            SELECT 1 FROM sqlite_master
+            WHERE type = 'table' AND name = 'question_analysis_items'
+            """
+        ).fetchone()
+        if table is None:
+            return {}
+        rows = conn.execute(
+            f"""
+            SELECT question_id, source_content_hash
+            FROM question_analysis_items
+            WHERE question_id IN ({placeholders})
+              AND tag_status = 'succeeded'
+            ORDER BY rowid DESC
+            """,
+            question_ids,
+        ).fetchall()
+    latest_hashes: dict[int, str] = {}
+    for row in rows:
+        latest_hashes.setdefault(
+            int(row["question_id"]),
+            str(row["source_content_hash"]),
+        )
+    return {
+        question_id: latest_hashes[question_id] == current_hash
+        for question_id, current_hash in current_by_id.items()
+        if question_id in latest_hashes
+    }
+
+
 def _load_analysis_gaps(
     db_path: Path,
     question_ids: Sequence[int],
+    *,
+    data_root: Path | None = None,
+    curriculum_volume_id: str = "",
+    current_inputs: Mapping[int, Any] | None = None,
 ) -> dict[int, dict[str, bool]]:
     """Read which saved analysis projections can be reused.
 
@@ -984,23 +1186,9 @@ def _load_analysis_gaps(
         return {}
     placeholders = ",".join("?" for _ in ids)
     with connect(db_path) as conn:
-        rows = conn.execute(
+        question_rows = conn.execute(
             f"""
             SELECT q.id
-                   , EXISTS (
-                       SELECT 1
-                       FROM question_solution_evidence_versions evidence
-                       WHERE evidence.question_id = q.id
-                         AND evidence.status IN ('proposed', 'approved')
-                   ) AS evidence_ready
-                   , EXISTS (
-                       SELECT 1
-                       FROM training_criterion_heads head
-                       JOIN training_criterion_versions version
-                         ON version.version_id = head.current_version_id
-                       WHERE head.question_id = q.id
-                         AND version.status IN ('proposed', 'approved')
-                   ) AS criteria_ready
             FROM questions q
             WHERE q.id IN ({placeholders})
               AND COALESCE(q.is_deleted, 0) = 0
@@ -1008,13 +1196,103 @@ def _load_analysis_gaps(
             """,
             ids,
         ).fetchall()
-    return {
-        int(row["id"]): {
-            "evidence_ready": bool(row["evidence_ready"]),
-            "criteria_ready": bool(row["criteria_ready"]),
-        }
-        for row in rows
+        active_ids = [int(row["id"]) for row in question_rows]
+        if not active_ids:
+            return {}
+        active_placeholders = ",".join("?" for _ in active_ids)
+        evidence_rows = conn.execute(
+            f"""
+            SELECT question_id, source_content_hash
+            FROM question_solution_evidence_versions
+            WHERE question_id IN ({active_placeholders})
+              AND status IN ('proposed', 'approved')
+            """,
+            active_ids,
+        ).fetchall()
+        criterion_rows = conn.execute(
+            f"""
+            SELECT head.question_id,
+                   head.current_source_hash,
+                   version.source_content_hash AS version_source_hash,
+                   version.status
+            FROM training_criterion_heads head
+            JOIN training_criterion_versions version
+              ON version.version_id = head.current_version_id
+            WHERE head.question_id IN ({active_placeholders})
+            """,
+            active_ids,
+        ).fetchall()
+
+    evidence_hashes: dict[int, set[str]] = {}
+    for row in evidence_rows:
+        evidence_hashes.setdefault(int(row["question_id"]), set()).add(
+            str(row["source_content_hash"])
+        )
+    criterion_by_id = {
+        int(row["question_id"]): row for row in criterion_rows
     }
+
+    exact_inputs: dict[int, Any] | None = None
+    if data_root is not None or current_inputs is not None:
+        exact_inputs = {
+            int(question_id): value
+            for question_id, value in (current_inputs or {}).items()
+            if int(question_id) in set(active_ids)
+        }
+        missing_ids = [
+            question_id
+            for question_id in active_ids
+            if question_id not in exact_inputs
+        ]
+        if missing_ids and data_root is not None:
+            loader = QuestionAnalysisInputLoader(
+                db_path=db_path,
+                data_root=Path(data_root),
+            )
+            try:
+                loaded = loader.load(
+                    missing_ids,
+                    curriculum_volume_id=curriculum_volume_id,
+                )
+            except (KeyError, OSError, TypeError, ValueError):
+                loaded = ()
+            exact_inputs.update(
+                {item.question_id: item for item in loaded}
+            )
+
+    result: dict[int, dict[str, bool]] = {}
+    for question_id in active_ids:
+        if exact_inputs is None:
+            evidence_ready = bool(evidence_hashes.get(question_id))
+            criterion = criterion_by_id.get(question_id)
+            criteria_ready = bool(
+                criterion is not None
+                and str(criterion["status"]) in {"proposed", "approved"}
+            )
+        else:
+            current = exact_inputs.get(question_id)
+            if current is None:
+                evidence_ready = False
+                criteria_ready = False
+            else:
+                evidence_hash = solution_evidence_source_content_hash(current)
+                criterion_hash = current.criterion_source_content_hash
+                evidence_ready = evidence_hash in evidence_hashes.get(
+                    question_id,
+                    set(),
+                )
+                criterion = criterion_by_id.get(question_id)
+                criteria_ready = bool(
+                    criterion is not None
+                    and str(criterion["status"]) in {"proposed", "approved"}
+                    and str(criterion["current_source_hash"]) == criterion_hash
+                    and str(criterion["version_source_hash"]) == criterion_hash
+                )
+        result[question_id] = {
+            "evidence_ready": evidence_ready,
+            "criteria_ready": criteria_ready,
+        }
+    return result
 
 
 def _plan_taxonomy(

@@ -11,6 +11,7 @@ import { useQuestionBankStore } from '../../stores/question-bank'
 import { useJobStore } from '../../stores/jobs'
 import { useCurriculumScopeStore } from '../../stores/curriculum-scope'
 import { TERMINAL_JOB_STATUSES, type JobResponse } from '../../api/jobs'
+import { ApiError, isAmbiguousWriteError } from '../../api/errors'
 
 const props = withDefaults(defineProps<{
   pendingTaxonomyCount?: number
@@ -403,20 +404,23 @@ async function fillPaperTags(paper: QuestionBankPaper): Promise<void> {
       retagMessage.value = '请先在“编辑资料”中补全年级、学期和教材版本。'
       return
     }
-    const ids = await loadQuestionIds([paper.id], 'incomplete')
+    // The list endpoint only has a coarse saved-row view. Submit the whole
+    // paper so the job can compare evidence/criteria with the current source
+    // hash and still skip every projection that is genuinely complete.
+    const ids = await loadQuestionIds([paper.id])
     if (ids.length === 0) {
       retagMessage.value = '这份试卷没有可补齐的题目。'
       return
     }
     if (!window.confirm(
-      `已检查这份试卷：有 ${ids.length} 道题的标签、解题证据或训练判定点尚未完整。将只继续这些题，已经完整的题和人工修改不会重做；可能产生模型费用。确认继续吗？`,
+      `将核对“${paper.title || `试卷 #${paper.id}`}”的 ${ids.length} 道题，只补齐缺失、失败或已过期的标签、解题证据和训练判定点；真正完整的题和人工修改不会重做。需要补齐时可能产生模型费用。确认继续吗？`,
     )) return
     const count = await submitTaggingBatches(ids, {
       forceRetag: false,
       scope: `paper-${paper.id}-fill`,
       volumeId: paper.curriculum_volume_id,
     })
-    retagMessage.value = `已提交 ${ids.length} 道未完成题目，共 ${count} 个任务；已完成内容不会重做。`
+    retagMessage.value = `已提交 ${ids.length} 道题等待后端核对，共 ${count} 个任务；只会补齐缺失、失败或已过期的内容。`
   } catch {
     retagMessage.value = '补齐标签任务没有完整提交；已提交的任务会保留，请先查看任务记录。'
   } finally {
@@ -471,7 +475,7 @@ async function fillAllTags(): Promise<void> {
     const scopes: Array<{ paper: QuestionBankPaper; ids: number[] }> = []
     for (const paper of store.papers) {
       if (!paper.curriculum_volume_id) continue
-      const ids = await loadQuestionIds([paper.id], 'incomplete')
+      const ids = await loadQuestionIds([paper.id])
       if (ids.length) scopes.push({ paper, ids })
     }
     const total = scopes.reduce((sum, scope) => sum + scope.ids.length, 0)
@@ -480,7 +484,7 @@ async function fillAllTags(): Promise<void> {
       return
     }
     if (!window.confirm(
-      `已检查全库：有 ${total} 道题尚未完成。将只提交这些题，完整题和人工修改不会重做；可能产生模型费用。确认继续吗？`,
+      `将核对题库中的 ${total} 道题，只补齐缺失、失败或已过期的标签、解题证据和训练判定点；真正完整的题和人工修改不会重做。需要补齐时可能产生模型费用。确认继续吗？`,
     )) return
     let count = 0
     for (const { paper, ids } of scopes) {
@@ -490,7 +494,7 @@ async function fillAllTags(): Promise<void> {
         volumeId: paper.curriculum_volume_id!,
       })
     }
-    retagMessage.value = `已提交全库 ${total} 道未完成题目，共 ${count} 个任务。`
+    retagMessage.value = `已提交全库 ${total} 道题等待后端核对，共 ${count} 个任务；完整内容不会重做。`
   } catch {
     retagMessage.value = '全库补齐标签没有完整提交；已提交的任务会保留，请先查看任务记录。'
   } finally {
@@ -567,9 +571,11 @@ async function requestPermanentDelete(paper: QuestionBankPaper): Promise<void> {
       }],
     )
     permanentDeleteState.value = 'idle'
-  } catch {
+  } catch (error) {
     permanentDeleteState.value = 'error'
-    deleteNotice.value = '删除影响读取失败，没有删除任何内容。请刷新试卷库后重试。'
+    deleteNotice.value = error instanceof ApiError
+      ? `${error.message}（请求编号：${error.requestId}）`
+      : '删除影响读取失败，没有删除任何内容。请刷新试卷库后重试。'
   }
 }
 
@@ -611,8 +617,8 @@ async function confirmPermanentDelete(): Promise<void> {
     permanentDeleteImpact.value = null
     permanentDeleteRequestToken.value = ''
     permanentDeleteState.value = 'idle'
-    deleteNotice.value = `已删除 ${result.deleted_paper_ids.length} 份试卷、${result.deleted_question_count} 道题和 ${result.deleted_tag_count} 个标签。`
-  } catch {
+    deleteNotice.value = `已删除 ${result.deleted_paper_ids.length} 份试卷、${result.deleted_question_count} 道题、${result.deleted_tag_count} 个标签和 ${result.deleted_analysis_record_count} 条分析记录。`
+  } catch (error) {
     await store.loadPapers()
     const refreshConfirmedDeletion = (
       store.papersState === 'ready'
@@ -627,6 +633,12 @@ async function confirmPermanentDelete(): Promise<void> {
       return
     }
     permanentDeleteState.value = 'error'
+    if (!isAmbiguousWriteError(error)) {
+      permanentDeleteMessage.value = error instanceof ApiError
+        ? `${error.message}（请求编号：${error.requestId}）`
+        : '删除未完成，服务器没有接受本次请求；本次没有删除任何内容。请刷新后重试。'
+      return
+    }
     permanentDeleteMessage.value = store.papersState === 'ready'
       ? '删除结果尚不确定：未收到服务器确认，刷新核对后试卷仍在。请点击重试，系统会使用同一请求编号，不会重复删除。'
       : '删除结果尚不确定：未收到服务器确认，刷新核对也暂时失败。请保留此窗口并点击重试；系统会使用同一请求编号，不会重复删除。'
@@ -1047,6 +1059,7 @@ async function confirmPermanentDelete(): Promise<void> {
             <span><b>{{ permanentDeleteImpact.paper_count }}</b> 份试卷</span>
             <span><b>{{ permanentDeleteImpact.question_count }}</b> 道题</span>
             <span><b>{{ permanentDeleteImpact.tag_count }}</b> 个标签</span>
+            <span><b>{{ permanentDeleteImpact.analysis_record_count }}</b> 条分析记录</span>
             <span><b>{{ permanentDeleteImpact.owned_file_count }}</b> 个本地文件</span>
             <span><b>{{ permanentDeleteImpact.training_link_count }}</b> 条训练关联</span>
             <span><b>{{ permanentDeleteImpact.knowledge_graph_link_count }}</b> 条知识图谱计数来源</span>

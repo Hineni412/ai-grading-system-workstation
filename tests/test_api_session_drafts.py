@@ -110,6 +110,7 @@ def test_session_names_are_exclusive_for_create_and_rename(tmp_path) -> None:
     duplicate = client.post("/api/sessions/drafts", json={"name": "0526TEST"})
     assert duplicate.status_code == 409
     assert duplicate.json()["error"]["code"] == "session_name_conflict"
+    assert duplicate.json()["error"]["message"] == "已存在同名考试，请换一个名称。"
 
     other_id = db.create_grading_session("另一场考试", "r.json", "a.json")
     renamed = client.patch(
@@ -118,6 +119,7 @@ def test_session_names_are_exclusive_for_create_and_rename(tmp_path) -> None:
     )
     assert renamed.status_code == 409
     assert renamed.json()["error"]["code"] == "session_name_conflict"
+    assert renamed.json()["error"]["message"] == "已存在同名考试，请换一个名称。"
 
 
 def test_session_draft_curriculum_volume_round_trips_and_can_be_cleared(

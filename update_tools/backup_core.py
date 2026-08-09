@@ -9,7 +9,6 @@ import logging
 import json
 import os
 import re
-import shutil
 import sqlite3
 import sys
 import tempfile
@@ -81,6 +80,12 @@ _SKIP_EXTENSIONS = {
 # 默认不备份 API key 文件
 _SENSITIVE_FILES = {"api_profiles.json"}
 
+_WORKSPACE_DERIVED_DATABASE_DIRS = {
+    "backups",
+    "cache",
+    "work-backups",
+}
+
 
 def _backup_root() -> Path:
     """获取备份 zip 存放目录（项目根/backups/）。"""
@@ -105,6 +110,18 @@ def _should_skip(rel_path: Path) -> bool:
     for part in parts:
         if part in _SKIP_PATTERNS:
             return True
+    folded = tuple(part.casefold() for part in parts)
+    if (
+        len(folded) >= 5
+        and folded[:2] == ("user_data", "workspaces")
+        and folded[2] in {"class-teacher", "teaching-prep"}
+        and any(
+            part in _WORKSPACE_DERIVED_DATABASE_DIRS
+            for part in folded[3:-1]
+        )
+        and folded[-1].endswith((".db", ".sqlite", ".sqlite3"))
+    ):
+        return True
     if rel_path.suffix.lower() in _SKIP_EXTENSIONS:
         return True
     return False
@@ -226,10 +243,7 @@ def _safe_restore_destination(
 
     if parts[0] == "user_data":
         if len(parts) > 1 and parts[1].casefold() == "workspaces":
-            if len(parts) < 4 or parts[2].casefold() not in {
-                "class-teacher", "teaching-prep",
-            }:
-                return None
+            return None
         dest = data_root.joinpath(*parts[1:])
         return dest if _is_relative_to(dest, data_root) else None
     if parts[0] == "config":
@@ -457,16 +471,12 @@ def list_backups(*, backup_dir: Path | None = None) -> list[dict[str, Any]]:
 def restore_backup(
     zip_path: str | Path,
     *,
-    skip_pre_backup: bool = False,
     dry_run: bool = False,
 ) -> dict[str, Any]:
-    """从 zip 备份恢复 user_data 和 config。
-
-    恢复前会先备份当前数据 (reason=before_restore)，除非 skip_pre_backup=True。
+    """只读预览旧备份；正式恢复必须使用现代离线 Ops 流程。
 
     Args:
         zip_path: 备份 zip 文件路径
-        skip_pre_backup: 跳过恢复前的自动备份
         dry_run: 只列出会恢复的文件，不实际操作
 
     Returns:
@@ -476,7 +486,6 @@ def restore_backup(
           - "skipped_files": list[str]
           - "error": str | None
     """
-    logger = _get_logger()
     result: dict[str, Any] = {
         "pre_backup_zip": None,
         "restored_files": [],
@@ -485,6 +494,13 @@ def restore_backup(
     }
 
     zip_path = Path(zip_path)
+    # Keep the legacy write API inert even before PathManager/log setup, since
+    # those helpers can create directories.  Only dry-run may inspect state.
+    if not dry_run:
+        result["error"] = "legacy_restore_write_disabled"
+        return result
+
+    logger = _get_logger()
     if not zip_path.exists():
         result["error"] = f"备份文件不存在: {zip_path}"
         logger.error(result["error"])
@@ -501,17 +517,6 @@ def restore_backup(
         result["error"] = f"PathManager 加载失败: {exc}"
         logger.error(result["error"])
         return result
-
-    # 恢复前先备份当前数据
-    if not skip_pre_backup and not dry_run:
-        logger.info("恢复前自动备份当前数据...")
-        pre_result = create_backup("before_restore", include_api_keys=False)
-        if pre_result.get("error"):
-            result["error"] = f"恢复前备份失败，已取消恢复: {pre_result['error']}"
-            logger.error(result["error"])
-            return result
-        result["pre_backup_zip"] = pre_result.get("zip_path")
-        logger.info("恢复前备份完成: %s", result["pre_backup_zip"])
 
     # 解析 zip 中的文件
     project_root = pm.project_root
@@ -532,32 +537,14 @@ def restore_backup(
                     result["skipped_files"].append(f"{member} (unsafe_or_unknown_path)")
                     continue
 
-                if dry_run:
-                    result["restored_files"].append(f"{member} -> {dest}")
-                    continue
-
-                # 实际解压
-                try:
-                    dest.parent.mkdir(parents=True, exist_ok=True)
-                    with zf.open(member) as src, open(dest, "wb") as dst:
-                        shutil.copyfileobj(src, dst)
-                    result["restored_files"].append(f"{member} -> {dest}")
-                except Exception as exc:
-                    logger.warning("恢复文件失败 %s: %s", member, exc)
-                    result["skipped_files"].append(f"{member} (恢复失败: {exc})")
+                result["restored_files"].append(f"{member} -> {dest}")
 
     except Exception as exc:
         result["error"] = f"读取 zip 文件失败: {exc}"
         logger.error(result["error"])
         return result
 
-    if dry_run:
-        logger.info("[DRY-RUN] 将恢复 %d 个文件", len(result["restored_files"]))
-    else:
-        logger.info(
-            "恢复完成: 从 %s 恢复了 %d 个文件，跳过 %d 个",
-            zip_path.name, len(result["restored_files"]), len(result["skipped_files"]),
-        )
+    logger.info("[DRY-RUN] 将恢复 %d 个文件", len(result["restored_files"]))
 
     return result
 

@@ -376,7 +376,7 @@ def _tag_class_teacher_diagnostics(
 ) -> None:
     if not isinstance(gateway, WorkspaceModelGateway):
         return
-    diagnostic_sink = gateway.gateway.diagnostic_sink
+    diagnostic_sink = getattr(gateway.gateway, "diagnostic_sink", None)
     for_workspace = getattr(diagnostic_sink, "for_workspace", None)
     if not callable(for_workspace):
         return

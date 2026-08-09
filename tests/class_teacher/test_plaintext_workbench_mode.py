@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+import shutil
 import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
@@ -9,10 +11,11 @@ from fastapi.testclient import TestClient
 import pytest
 
 from backend.class_teacher.api import create_router
-from backend.class_teacher.feature import _create_service
+from backend.class_teacher.feature import _create_service, create_workspace_feature
 from backend.class_teacher.model_approval import FakeApprovedModelGateway
 from backend.class_teacher.vault_service import VaultService
 from backend.class_teacher.errors import VaultError
+from backend.schema_migrations import ensure_schema_current
 from backend.workspaces.contracts import WorkspaceContext
 
 
@@ -67,6 +70,41 @@ def test_production_workbench_is_open_and_persists_student_content_as_plaintext(
             "SELECT payload_ciphertext FROM encrypted_objects WHERE object_type = 'student_subject'"
         ).fetchone()[0]
     assert "合成学生甲" in bytes(payload).decode("utf-8")
+
+
+def test_feature_service_creation_blocks_pending_ordinary_database_migration(
+    tmp_path: Path,
+) -> None:
+    context = _context(tmp_path)
+    migration_root = PROJECT_ROOT / "migrations" / "class_teacher_work"
+    released_migrations = tmp_path / "released-class-teacher-work-migrations"
+    released_migrations.mkdir()
+    migrations = sorted(migration_root.glob("*.sql"))
+    for migration in migrations[:-1]:
+        shutil.copy2(migration, released_migrations / migration.name)
+    database = context.root / "class_teacher_work.db"
+    ensure_schema_current(
+        "class_teacher_work",
+        database,
+        migrations_dir=released_migrations,
+        backup_dir=tmp_path / "released-backups",
+        logger_override=logging.getLogger("test.class-teacher.ordinary-migration"),
+    )
+    before = database.read_bytes()
+    service_factory = create_workspace_feature().service_factory
+    assert callable(service_factory)
+
+    with pytest.raises(VaultError) as blocked:
+        service_factory(context)
+
+    assert blocked.value.code == "class_teacher_work_initialization_failed"
+    assert database.read_bytes() == before
+    with sqlite3.connect(database) as connection:
+        columns = {
+            str(row[1])
+            for row in connection.execute("PRAGMA table_info(intake_conversations)")
+        }
+    assert "focused_subject_id" not in columns
 
 
 def test_plaintext_mode_still_requires_anonymous_preview_confirmation_before_model_send(
