@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import atexit
 import json
 import math
 import os
@@ -396,9 +397,20 @@ _SNAPSHOT_REQUIRED_TABLES = frozenset(
         "question_previews",
     }
 )
-_ACTIVE_READ_SCOPE: ContextVar[
-    tuple[Path, sqlite3.Connection, CurrentKnowledgeResolver | None] | None
-] = ContextVar("question_bank_active_read_scope", default=None)
+_CURRENT_KNOWLEDGE_NOT_LOADED = object()
+
+
+@dataclass(slots=True)
+class _ActiveQuestionReadScope:
+    source: Path
+    connection: sqlite3.Connection
+    current_knowledge: object = _CURRENT_KNOWLEDGE_NOT_LOADED
+
+
+_ACTIVE_READ_SCOPE: ContextVar[_ActiveQuestionReadScope | None] = ContextVar(
+    "question_bank_active_read_scope",
+    default=None,
+)
 
 
 class QuestionMediaNotFound(LookupError):
@@ -479,18 +491,16 @@ class QuestionReadPage:
 def _read_connection(db_path: Path) -> Iterator[sqlite3.Connection]:
     requested = Path(db_path).resolve(strict=False)
     active = _ACTIVE_READ_SCOPE.get()
-    if active is not None and active[0] == requested:
-        yield active[1]
+    if active is not None and active.source == requested:
+        yield active.connection
         return
-    with captured_sqlite_read_connection(
-        db_path,
-        required_tables=_SNAPSHOT_REQUIRED_TABLES,
-    ) as conn:
-        try:
-            current_knowledge = CurrentKnowledgeResolver.from_connection(conn)
-        except CurrentKnowledgeUnavailable:
-            current_knowledge = None
-        token = _ACTIVE_READ_SCOPE.set((requested, conn, current_knowledge))
+    with _cached_question_read_connection(db_path) as conn:
+        token = _ACTIVE_READ_SCOPE.set(
+            _ActiveQuestionReadScope(
+                source=requested,
+                connection=conn,
+            )
+        )
         try:
             yield conn
         finally:
@@ -796,6 +806,7 @@ def _open_snapshot_connection(
     *,
     required_tables: frozenset[str] = _SNAPSHOT_REQUIRED_TABLES,
     check_same_thread: bool = True,
+    validate_snapshot: bool = True,
 ) -> sqlite3.Connection:
     conn: sqlite3.Connection | None = None
     try:
@@ -813,21 +824,22 @@ def _open_snapshot_connection(
         conn.execute("PRAGMA foreign_keys = ON")
         conn.execute("PRAGMA busy_timeout = 5000")
         conn.execute("BEGIN")
-        quick_check = conn.execute("PRAGMA quick_check").fetchall()
-        if len(quick_check) != 1 or str(quick_check[0][0]).casefold() != "ok":
-            raise sqlite3.DatabaseError("Snapshot quick_check failed")
-        placeholders = ", ".join("?" for _ in required_tables)
-        rows = conn.execute(
-            f"""
-            SELECT name
-            FROM sqlite_master
-            WHERE type = 'table' AND name IN ({placeholders})
-            """,
-            tuple(sorted(required_tables)),
-        ).fetchall()
-        available_tables = {str(row[0]) for row in rows}
-        if not required_tables.issubset(available_tables):
-            raise sqlite3.DatabaseError("Snapshot schema is unavailable")
+        if validate_snapshot:
+            quick_check = conn.execute("PRAGMA quick_check").fetchall()
+            if len(quick_check) != 1 or str(quick_check[0][0]).casefold() != "ok":
+                raise sqlite3.DatabaseError("Snapshot quick_check failed")
+            placeholders = ", ".join("?" for _ in required_tables)
+            rows = conn.execute(
+                f"""
+                SELECT name
+                FROM sqlite_master
+                WHERE type = 'table' AND name IN ({placeholders})
+                """,
+                tuple(sorted(required_tables)),
+            ).fetchall()
+            available_tables = {str(row[0]) for row in rows}
+            if not required_tables.issubset(available_tables):
+                raise sqlite3.DatabaseError("Snapshot schema is unavailable")
         return conn
     except (OSError, sqlite3.DatabaseError) as exc:
         if conn is not None:
@@ -904,6 +916,212 @@ def _read_result_cache_put(key: tuple[object, ...], value: object) -> None:
             _READ_RESULT_CACHE.popitem(last=False)
 
 
+_QUESTION_READ_SNAPSHOT_CACHE_LIMIT = 4
+
+
+@dataclass(slots=True)
+class _CachedQuestionReadSnapshot:
+    source: Path
+    generation: tuple[object, ...] | None
+    owner: Any
+    candidate: Path
+    readers: int = 0
+    retired: bool = False
+    cleaned: bool = False
+
+
+class _QuestionReadSnapshotCache:
+    """Keep one validated immutable candidate per unchanged question-bank source."""
+
+    def __init__(self, *, limit: int) -> None:
+        self._limit = max(1, int(limit))
+        self._condition = threading.Condition()
+        self._entries: OrderedDict[Path, _CachedQuestionReadSnapshot] = OrderedDict()
+        self._capturing: set[Path] = set()
+
+    def acquire(
+        self,
+        db_path: Path,
+    ) -> tuple[_CachedQuestionReadSnapshot, sqlite3.Connection | None]:
+        source = Path(db_path).resolve(strict=False)
+        stale_to_cleanup: list[_CachedQuestionReadSnapshot] = []
+        while True:
+            observed_generation = _source_generation_token(source)
+            with self._condition:
+                cached = self._entries.get(source)
+                if (
+                    observed_generation is not None
+                    and cached is not None
+                    and not cached.retired
+                    and cached.generation == observed_generation
+                ):
+                    cached.readers += 1
+                    self._entries.move_to_end(source)
+                    return cached, None
+                if source in self._capturing:
+                    self._condition.wait()
+                    continue
+                if cached is not None:
+                    self._entries.pop(source, None)
+                    if self._retire_locked(cached):
+                        stale_to_cleanup.append(cached)
+                self._capturing.add(source)
+                break
+
+        try:
+            for stale in stale_to_cleanup:
+                self._cleanup(stale)
+            entry, initial_connection = self._capture(
+                source,
+                observed_generation,
+            )
+        except BaseException:
+            with self._condition:
+                self._capturing.discard(source)
+                self._condition.notify_all()
+            raise
+
+        evicted_to_cleanup: list[_CachedQuestionReadSnapshot] = []
+        with self._condition:
+            if entry.generation is not None:
+                self._entries[source] = entry
+                self._entries.move_to_end(source)
+                while len(self._entries) > self._limit:
+                    _, evicted = self._entries.popitem(last=False)
+                    if self._retire_locked(evicted):
+                        evicted_to_cleanup.append(evicted)
+            else:
+                entry.retired = True
+            entry.readers = 1
+            self._capturing.discard(source)
+            self._condition.notify_all()
+
+        for evicted in evicted_to_cleanup:
+            self._cleanup(evicted)
+        return entry, initial_connection
+
+    def release(self, entry: _CachedQuestionReadSnapshot) -> None:
+        cleanup = False
+        with self._condition:
+            if entry.readers <= 0:
+                raise RuntimeError("Question-bank snapshot lease was released twice")
+            entry.readers -= 1
+            if entry.retired and entry.readers == 0 and not entry.cleaned:
+                entry.cleaned = True
+                cleanup = True
+        if cleanup:
+            self._cleanup(entry)
+
+    def discard(self, entry: _CachedQuestionReadSnapshot) -> None:
+        cleanup = False
+        with self._condition:
+            if self._entries.get(entry.source) is entry:
+                self._entries.pop(entry.source, None)
+            if self._retire_locked(entry):
+                cleanup = True
+        if cleanup:
+            self._cleanup(entry)
+
+    def clear(self) -> None:
+        to_cleanup: list[_CachedQuestionReadSnapshot] = []
+        with self._condition:
+            entries = list(self._entries.values())
+            self._entries.clear()
+            for entry in entries:
+                if self._retire_locked(entry):
+                    to_cleanup.append(entry)
+        for entry in to_cleanup:
+            self._cleanup(entry)
+
+    def _capture(
+        self,
+        source: Path,
+        observed_generation: tuple[object, ...] | None,
+    ) -> tuple[_CachedQuestionReadSnapshot, sqlite3.Connection]:
+        owner = _captured_snapshot_candidate(source)
+        try:
+            candidate = owner.__enter__()
+        except BaseException:
+            raise
+        try:
+            initial_connection = _open_snapshot_connection(
+                candidate,
+                required_tables=_SNAPSHOT_REQUIRED_TABLES,
+            )
+        except BaseException as exc:
+            owner.__exit__(type(exc), exc, exc.__traceback__)
+            raise
+
+        current_generation = _source_generation_token(source)
+        return (
+            _CachedQuestionReadSnapshot(
+                source=source,
+                generation=(
+                    current_generation
+                    if observed_generation is not None
+                    and current_generation == observed_generation
+                    else None
+                ),
+                owner=owner,
+                candidate=candidate,
+            ),
+            initial_connection,
+        )
+
+    @staticmethod
+    def _retire_locked(entry: _CachedQuestionReadSnapshot) -> bool:
+        entry.retired = True
+        if entry.readers == 0 and not entry.cleaned:
+            entry.cleaned = True
+            return True
+        return False
+
+    @staticmethod
+    def _cleanup(entry: _CachedQuestionReadSnapshot) -> None:
+        entry.owner.__exit__(None, None, None)
+
+
+_QUESTION_READ_SNAPSHOT_CACHE = _QuestionReadSnapshotCache(
+    limit=_QUESTION_READ_SNAPSHOT_CACHE_LIMIT,
+)
+atexit.register(_QUESTION_READ_SNAPSHOT_CACHE.clear)
+
+
+def _clear_question_read_snapshot_cache_for_tests() -> None:
+    _QUESTION_READ_SNAPSHOT_CACHE.clear()
+
+
+@contextmanager
+def _cached_question_read_connection(
+    db_path: Path,
+) -> Iterator[sqlite3.Connection]:
+    entry, conn = _QUESTION_READ_SNAPSHOT_CACHE.acquire(db_path)
+    try:
+        if conn is None:
+            try:
+                conn = _open_snapshot_connection(
+                    entry.candidate,
+                    required_tables=_SNAPSHOT_REQUIRED_TABLES,
+                    validate_snapshot=False,
+                )
+            except QuestionBankSnapshotError:
+                _QUESTION_READ_SNAPSHOT_CACHE.discard(entry)
+                raise
+        try:
+            yield conn
+        except sqlite3.DatabaseError as exc:
+            _QUESTION_READ_SNAPSHOT_CACHE.discard(entry)
+            raise QuestionBankSnapshotUnavailable(
+                "Question bank snapshot is unavailable"
+            ) from exc
+    finally:
+        try:
+            if conn is not None:
+                conn.close()
+        finally:
+            _QUESTION_READ_SNAPSHOT_CACHE.release(entry)
+
+
 class QuestionBankReadService:
     def __init__(self, db_path: Path, *, data_root: Path | None = None) -> None:
         self.db_path = Path(db_path)
@@ -919,10 +1137,19 @@ class QuestionBankReadService:
         active = _ACTIVE_READ_SCOPE.get()
         if (
             active is None
-            or active[0] != self.db_path.resolve(strict=False)
+            or active.source != self.db_path.resolve(strict=False)
         ):
             return None
-        return active[2]
+        if active.current_knowledge is _CURRENT_KNOWLEDGE_NOT_LOADED:
+            try:
+                active.current_knowledge = CurrentKnowledgeResolver.from_connection(
+                    active.connection
+                )
+            except CurrentKnowledgeUnavailable:
+                active.current_knowledge = None
+        if isinstance(active.current_knowledge, CurrentKnowledgeResolver):
+            return active.current_knowledge
+        return None
 
     def list_papers(self, *, deleted: bool = False) -> list[dict[str, Any]]:
         generation = (

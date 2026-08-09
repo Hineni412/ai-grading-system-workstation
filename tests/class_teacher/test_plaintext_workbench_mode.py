@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import shutil
 import sqlite3
@@ -70,6 +71,83 @@ def test_production_workbench_is_open_and_persists_student_content_as_plaintext(
             "SELECT payload_ciphertext FROM encrypted_objects WHERE object_type = 'student_subject'"
         ).fetchone()[0]
     assert "合成学生甲" in bytes(payload).decode("utf-8")
+
+
+def test_plaintext_mode_allows_unrelated_operations_to_overlap(
+    tmp_path: Path,
+) -> None:
+    service = VaultService(
+        _context(tmp_path),
+        model_gateway=FakeApprovedModelGateway(),
+        protection_enabled=False,
+    )
+
+    async def exercise() -> None:
+        first_entered = asyncio.Event()
+        release_first = asyncio.Event()
+        second_entered = asyncio.Event()
+
+        async def first_operation() -> None:
+            async with service.operation_scope():
+                first_entered.set()
+                await release_first.wait()
+
+        async def second_operation() -> None:
+            await first_entered.wait()
+            async with service.operation_scope():
+                second_entered.set()
+
+        first = asyncio.create_task(first_operation())
+        second = asyncio.create_task(second_operation())
+        await first_entered.wait()
+        try:
+            await asyncio.wait_for(second_entered.wait(), timeout=0.2)
+        finally:
+            release_first.set()
+            await asyncio.gather(first, second)
+
+    asyncio.run(exercise())
+
+
+def test_protected_mode_keeps_operations_serialized(
+    tmp_path: Path,
+) -> None:
+    service = VaultService(
+        _context(tmp_path),
+        model_gateway=FakeApprovedModelGateway(),
+        protection_enabled=True,
+    )
+
+    async def exercise() -> None:
+        first_entered = asyncio.Event()
+        release_first = asyncio.Event()
+        second_started = asyncio.Event()
+        second_entered = asyncio.Event()
+
+        async def first_operation() -> None:
+            async with service.operation_scope():
+                first_entered.set()
+                await release_first.wait()
+
+        async def second_operation() -> None:
+            await first_entered.wait()
+            second_started.set()
+            async with service.operation_scope():
+                second_entered.set()
+
+        first = asyncio.create_task(first_operation())
+        second = asyncio.create_task(second_operation())
+        await first_entered.wait()
+        await second_started.wait()
+        await asyncio.sleep(0)
+        try:
+            assert not second_entered.is_set()
+        finally:
+            release_first.set()
+            await asyncio.gather(first, second)
+        assert second_entered.is_set()
+
+    asyncio.run(exercise())
 
 
 def test_feature_service_creation_blocks_pending_ordinary_database_migration(

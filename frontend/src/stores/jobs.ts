@@ -37,13 +37,28 @@ export interface JobStoreDependencies {
   maxBackoffMs: number
 }
 
+export const DEFAULT_JOB_POLL_INTERVAL_MS = 2_000
+export const DEFAULT_JOB_MAX_BACKOFF_MS = 30_000
+
+export function jobPollDelay(
+  retryCount: number,
+  pollIntervalMs = DEFAULT_JOB_POLL_INTERVAL_MS,
+  maxBackoffMs = DEFAULT_JOB_MAX_BACKOFF_MS,
+): number {
+  if (retryCount <= 1) return pollIntervalMs
+  return Math.min(
+    pollIntervalMs * 2 ** (retryCount - 1),
+    maxBackoffMs,
+  )
+}
+
 const defaultDependencies: JobStoreDependencies = {
   api: jobApi,
   now: () => new Date(),
   schedule: (callback, milliseconds) => setTimeout(callback, milliseconds),
   cancelScheduled: (handle) => clearTimeout(handle),
-  pollIntervalMs: 2_000,
-  maxBackoffMs: 30_000,
+  pollIntervalMs: DEFAULT_JOB_POLL_INTERVAL_MS,
+  maxBackoffMs: DEFAULT_JOB_MAX_BACKOFF_MS,
 }
 
 function isPersistedReference(value: unknown): value is PersistedJobReference {
@@ -238,8 +253,9 @@ export const useJobStore = defineStore('jobs', () => {
           retryCounts.set(id, retryCount)
           schedulePolling(
             id,
-            Math.min(
-              dependencies.pollIntervalMs * 2 ** Math.max(0, retryCount - 1),
+            jobPollDelay(
+              retryCount,
+              dependencies.pollIntervalMs,
               dependencies.maxBackoffMs,
             ),
           )

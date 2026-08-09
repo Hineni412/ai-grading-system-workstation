@@ -3,6 +3,8 @@ from __future__ import annotations
 import copy
 import json
 import sqlite3
+from concurrent.futures import ThreadPoolExecutor
+from threading import Event, Lock
 
 import pytest
 
@@ -18,7 +20,11 @@ from question_bank.knowledge_graph_release.loader import (
     load_taxonomy_catalog,
     load_taxonomy_catalog_for_release,
 )
-from question_bank.knowledge_graph_release import activate_release, stage_release
+from question_bank.knowledge_graph_release import (
+    activate_release,
+    rollback_release,
+    stage_release,
+)
 from question_bank.knowledge_graph_release.contracts import (
     KnowledgeGraphRelease,
     compute_content_hash,
@@ -89,6 +95,8 @@ def test_active_database_loader_is_read_only_and_fails_closed(tmp_path) -> None:
         """
         CREATE TABLE knowledge_graph_releases (
             release_id TEXT PRIMARY KEY,
+            content_hash TEXT NOT NULL,
+            taxonomy_revision INTEGER NOT NULL,
             payload_json TEXT NOT NULL,
             status TEXT NOT NULL
         )
@@ -96,8 +104,15 @@ def test_active_database_loader_is_read_only_and_fails_closed(tmp_path) -> None:
     )
     release = load_release()
     connection.execute(
-        "INSERT INTO knowledge_graph_releases VALUES (?, ?, 'active')",
-        (release.release_id, json.dumps(release.to_dict(), ensure_ascii=False)),
+        """
+        INSERT INTO knowledge_graph_releases VALUES (?, ?, ?, ?, 'active')
+        """,
+        (
+            release.release_id,
+            release.content_hash,
+            release.taxonomy_revision,
+            json.dumps(release.to_dict(), ensure_ascii=False),
+        ),
     )
     connection.commit()
     connection.close()
@@ -105,6 +120,227 @@ def test_active_database_loader_is_read_only_and_fails_closed(tmp_path) -> None:
     resolver = CurrentKnowledgeResolver.from_active_database(database)
     assert resolver.release_id == release.release_id
     assert len(resolver.nodes) == 1124
+
+
+def test_active_resolver_cache_reads_payload_and_catalog_once(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    from question_bank import current_knowledge as current_module
+
+    database = tmp_path / "question_bank.db"
+    initialize_database(database)
+    ensure_checked_in_current_standard(database)
+    current_module._clear_resolver_cache_for_tests()
+    catalog_loads = 0
+    original_catalog_loader = current_module.load_taxonomy_catalog_for_release
+
+    def counted_catalog_loader(release):
+        nonlocal catalog_loads
+        catalog_loads += 1
+        return original_catalog_loader(release)
+
+    monkeypatch.setattr(
+        current_module,
+        "load_taxonomy_catalog_for_release",
+        counted_catalog_loader,
+    )
+    statements: list[str] = []
+    connection = sqlite3.connect(database)
+    connection.row_factory = sqlite3.Row
+    connection.set_trace_callback(statements.append)
+    connection.execute("BEGIN")
+    try:
+        first = CurrentKnowledgeResolver.from_connection(connection)
+        repeated = CurrentKnowledgeResolver.from_connection(connection)
+    finally:
+        connection.close()
+        current_module._clear_resolver_cache_for_tests()
+
+    payload_reads = [
+        statement
+        for statement in statements
+        if "SELECT payload_json" in statement
+    ]
+    assert repeated is first
+    assert catalog_loads == 1
+    assert len(payload_reads) == 1
+
+
+def test_custom_taxonomy_catalog_bypasses_shared_resolver_cache(tmp_path) -> None:
+    from question_bank import current_knowledge as current_module
+
+    database = tmp_path / "question_bank.db"
+    initialize_database(database)
+    ensure_checked_in_current_standard(database)
+    release = load_release()
+    catalog = load_taxonomy_catalog_for_release(release)
+    current_module._clear_resolver_cache_for_tests()
+    connection = sqlite3.connect(database)
+    try:
+        shared = CurrentKnowledgeResolver.from_connection(connection)
+        first_custom = CurrentKnowledgeResolver.from_connection(
+            connection,
+            taxonomy_catalog=copy.deepcopy(catalog),
+        )
+        second_custom = CurrentKnowledgeResolver.from_connection(
+            connection,
+            taxonomy_catalog=copy.deepcopy(catalog),
+        )
+    finally:
+        connection.close()
+        current_module._clear_resolver_cache_for_tests()
+
+    assert first_custom is not shared
+    assert second_custom is not shared
+    assert second_custom is not first_custom
+
+
+def test_active_resolver_accepts_default_tuple_rows(tmp_path) -> None:
+    from question_bank import current_knowledge as current_module
+
+    database = tmp_path / "question_bank.db"
+    initialize_database(database)
+    release_id = ensure_checked_in_current_standard(database)
+    current_module._clear_resolver_cache_for_tests()
+    connection = sqlite3.connect(database)
+    try:
+        resolver = CurrentKnowledgeResolver.from_connection(connection)
+    finally:
+        connection.close()
+        current_module._clear_resolver_cache_for_tests()
+
+    assert resolver.release_id == release_id
+
+
+def test_active_resolver_failure_is_not_cached(tmp_path, monkeypatch) -> None:
+    from question_bank import current_knowledge as current_module
+
+    database = tmp_path / "question_bank.db"
+    initialize_database(database)
+    ensure_checked_in_current_standard(database)
+    current_module._clear_resolver_cache_for_tests()
+    attempts = 0
+    original_catalog_loader = current_module.load_taxonomy_catalog_for_release
+
+    def flaky_catalog_loader(release):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise OSError("synthetic catalog read failure")
+        return original_catalog_loader(release)
+
+    monkeypatch.setattr(
+        current_module,
+        "load_taxonomy_catalog_for_release",
+        flaky_catalog_loader,
+    )
+    try:
+        with pytest.raises(CurrentKnowledgeUnavailable):
+            CurrentKnowledgeResolver.from_active_database(database)
+        recovered = CurrentKnowledgeResolver.from_active_database(database)
+        repeated = CurrentKnowledgeResolver.from_active_database(database)
+    finally:
+        current_module._clear_resolver_cache_for_tests()
+
+    assert recovered.release_id == load_release().release_id
+    assert repeated is recovered
+    assert attempts == 2
+
+
+def test_concurrent_cold_resolver_load_constructs_once(tmp_path, monkeypatch) -> None:
+    from question_bank import current_knowledge as current_module
+
+    database = tmp_path / "question_bank.db"
+    initialize_database(database)
+    ensure_checked_in_current_standard(database)
+    current_module._clear_resolver_cache_for_tests()
+    catalog_started = Event()
+    allow_catalog = Event()
+    second_started = Event()
+    count_lock = Lock()
+    catalog_loads = 0
+    original_catalog_loader = current_module.load_taxonomy_catalog_for_release
+
+    def blocked_catalog_loader(release):
+        nonlocal catalog_loads
+        with count_lock:
+            catalog_loads += 1
+        catalog_started.set()
+        assert allow_catalog.wait(timeout=5)
+        return original_catalog_loader(release)
+
+    def load_second():
+        second_started.set()
+        return CurrentKnowledgeResolver.from_active_database(database)
+
+    monkeypatch.setattr(
+        current_module,
+        "load_taxonomy_catalog_for_release",
+        blocked_catalog_loader,
+    )
+    try:
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            first_future = executor.submit(
+                CurrentKnowledgeResolver.from_active_database,
+                database,
+            )
+            assert catalog_started.wait(timeout=5)
+            second_future = executor.submit(load_second)
+            assert second_started.wait(timeout=5)
+            allow_catalog.set()
+            first = first_future.result(timeout=10)
+            second = second_future.result(timeout=10)
+    finally:
+        allow_catalog.set()
+        current_module._clear_resolver_cache_for_tests()
+
+    assert second is first
+    assert catalog_loads == 1
+
+
+def test_active_release_switch_and_rollback_change_cache_identity(tmp_path) -> None:
+    from question_bank import current_knowledge as current_module
+
+    database = tmp_path / "question_bank.db"
+    initialize_database(database)
+    first_id = ensure_checked_in_current_standard(database)
+    current_module._clear_resolver_cache_for_tests()
+    first = CurrentKnowledgeResolver.from_active_database(database)
+    payload = copy.deepcopy(load_release().payload)
+    payload["release_id"] = "kgr_cache_switch_test"
+    payload["predecessor_release_id"] = first_id
+    payload["content_hash"] = compute_content_hash(payload)
+    selected = KnowledgeGraphRelease.from_mapping(payload)
+    stage_release(
+        database,
+        selected,
+        actor_ref="test-suite",
+        source_reference="synthetic-cache-release",
+    )
+    activate_release(
+        database,
+        selected.release_id,
+        expected_active_release_id=first_id,
+        actor_ref="test-suite",
+        reason="verify resolver cache switch",
+    )
+    try:
+        switched = CurrentKnowledgeResolver.from_active_database(database)
+        rollback_release(
+            database,
+            first_id,
+            expected_active_release_id=selected.release_id,
+            actor_ref="test-suite",
+            reason="verify resolver cache rollback",
+        )
+        restored = CurrentKnowledgeResolver.from_active_database(database)
+    finally:
+        current_module._clear_resolver_cache_for_tests()
+
+    assert switched.release_id == selected.release_id
+    assert switched is not first
+    assert restored is first
 
 
 def test_internal_startup_installs_only_when_no_active_release(tmp_path) -> None:

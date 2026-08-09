@@ -354,6 +354,9 @@ class VaultService:
     @asynccontextmanager
     async def operation_scope(self):
         """Serialize protected API operations across lock and restore boundaries."""
+        if not self.protection_enabled:
+            yield
+            return
         async with self._operation_lock:
             yield
 

@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { ApiError } from '../api/errors'
 import type { JobApi, JobResponse } from '../api/jobs'
 import {
+  jobPollDelay,
   JOB_STORAGE_KEY,
   useJobStore,
 } from '../stores/jobs'
@@ -63,6 +64,11 @@ beforeEach(() => {
 })
 
 describe('Job Store persistence and recovery', () => {
+  it('shares a two-second polling cadence capped at thirty seconds', () => {
+    expect([0, 1, 2, 3, 4, 5, 6].map(retryCount => jobPollDelay(retryCount)))
+      .toEqual([2_000, 2_000, 4_000, 8_000, 16_000, 30_000, 30_000])
+  })
+
   it('persists only the current browser Job reference', () => {
     const dependencies = makeDependencies()
     const store = useJobStore()

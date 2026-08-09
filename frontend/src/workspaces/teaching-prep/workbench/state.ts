@@ -118,13 +118,23 @@ export function useTeachingPrepWorkbench() {
     })
   })
 
+  function routeNeedsMaterialData(): boolean {
+    if (route.query.view === 'overview') return false
+    if (route.query.view === 'library' || route.query.view === 'lesson') return true
+    if (isWorkspace(route.query.workspace)) {
+      return route.query.workspace !== 'lesson-tree'
+    }
+    return isStage(route.query.stage) && route.query.stage !== 'select'
+  }
+
   async function load(): Promise<void> {
     loading.value = true
     workbenchError.value = ''
     try {
+      const initialCatalogScope = routeNeedsMaterialData() ? 'materials' : 'overview'
       await Promise.all([
         curriculumScope.initialize(),
-        catalog.load(),
+        catalog.load(initialCatalogScope),
       ])
       const linkedSemesterId = typeof route.query.semester === 'string'
         ? route.query.semester
@@ -134,7 +144,7 @@ export function useTeachingPrepWorkbench() {
         && catalog.semesters.some(item => item.id === linkedSemesterId)
         && catalog.selectedSemester?.id !== linkedSemesterId
       ) {
-        await catalog.selectSemester(linkedSemesterId)
+        await catalog.selectSemester(linkedSemesterId, initialCatalogScope)
       } else if (curriculumScope.loadState === 'ready') {
         await selectSemesterForGlobalScope(false, { deferCompletion: true })
       }
@@ -189,7 +199,7 @@ export function useTeachingPrepWorkbench() {
         return
       }
       if (catalog.selectedSemester?.id !== targetSemester.id) {
-        await catalog.selectSemester(targetSemester.id)
+        await catalog.selectSemester(targetSemester.id, 'materials')
         await loadSemesterStatuses()
       }
     }
@@ -285,6 +295,7 @@ export function useTeachingPrepWorkbench() {
     if (nextWorkspace === 'materials') {
       const decision = await requestNavigation({ workspace: 'materials', stage: 'materials' })
       if (!decision.allowed) return
+      await catalog.ensureMaterialData()
       view.value = 'library'
       workspace.value = 'materials'
       stage.value = 'materials'
@@ -382,7 +393,10 @@ export function useTeachingPrepWorkbench() {
       }
     }
     const requestedVolumeId = curriculumScope.selectedVolumeId
-    await catalog.selectSemester(target.id)
+    await catalog.selectSemester(
+      target.id,
+      routeNeedsMaterialData() ? 'materials' : 'overview',
+    )
     if (curriculumScope.selectedVolumeId !== requestedVolumeId) return
     contextGeneration += 1
     view.value = 'overview'
@@ -481,7 +495,10 @@ export function useTeachingPrepWorkbench() {
     if (typeof semesterId !== 'string' || !semesterId) return
     const targetSemester = catalog.semesters.find(item => item.id === semesterId)
     if (!targetSemester || catalog.selectedSemester?.id === targetSemester.id) return
-    await catalog.selectSemester(targetSemester.id)
+    await catalog.selectSemester(
+      targetSemester.id,
+      routeNeedsMaterialData() ? 'materials' : 'overview',
+    )
     await loadSemesterStatuses()
   }
 
@@ -495,6 +512,7 @@ export function useTeachingPrepWorkbench() {
       }
     }
     if (route.query.view === 'library') {
+      await catalog.ensureMaterialData()
       view.value = 'library'
       workspace.value = 'materials'
       stage.value = 'materials'
