@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { teachingPrepCatalogApi } from './catalog'
+import { teachingPrepCatalogApi, type MaterialVersion } from './catalog'
 
 function response(payload: unknown, status = 200): Response {
   return new Response(JSON.stringify(payload), {
@@ -35,7 +35,7 @@ const packagePayload = {
   download_url: `/api/teaching-prep/up-class-packages/${'a'.repeat(32)}/download`,
 }
 
-const materialPayload = {
+const materialPayload: MaterialVersion = {
   id: '8'.repeat(32),
   source_id: '9'.repeat(32),
   display_name: '合成教材',
@@ -129,6 +129,123 @@ describe('teaching preparation delivery API', () => {
         }),
       }),
     )
+  })
+
+  it('previews, confirms, and checks one material deletion with the same operation number', async () => {
+    const operationId = 'delete-material-1234567890abcdef1234567890abcdef'
+    const impactCounts = {
+      material_sources: 1,
+      material_versions: 2,
+      material_units: 36,
+      lesson_material_links: 3,
+      semester_material_records: 1,
+      semester_mapping_proposals: 1,
+      reference_ppt_collections: 0,
+      exercise_regions: 2,
+      exercise_candidates: 1,
+    }
+    const preview = {
+      source_id: materialPayload.source_id,
+      display_name: materialPayload.display_name,
+      source_revision: 1,
+      impact_counts: impactCounts,
+      affected_semesters: [{
+        semester_id: 's'.repeat(32), title: '八年级上册',
+        school_year: '2026-2027', term: 'first',
+      }],
+      generation_history_count: 0,
+      preserved_snapshot_count: 0,
+      blocking_generation_count: 0,
+      can_delete: true,
+      blocker_code: null,
+      preserved_history_note: null,
+      confirmation_phrase: '确认彻底删除资料',
+      preview_version: 'preview-v1',
+      owned_file_count: 4,
+    }
+    const operation = {
+      operation_id: operationId,
+      status: 'succeeded',
+      preview_version: preview.preview_version,
+      deleted_source_id: materialPayload.source_id,
+      deleted_file_count: 4,
+      counts: impactCounts,
+      error_code: null,
+      impact: null,
+    }
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(response(preview))
+      .mockResolvedValueOnce(response(operation))
+      .mockResolvedValueOnce(response(operation))
+
+    await expect(teachingPrepCatalogApi.getMaterialDeletionPreview(materialPayload))
+      .resolves.toEqual(preview)
+    await expect(teachingPrepCatalogApi.deleteMaterialSource(materialPayload, {
+      operation_id: operationId,
+      preview_version: preview.preview_version,
+      confirmation_phrase: preview.confirmation_phrase,
+    })).resolves.toEqual(operation)
+    await expect(teachingPrepCatalogApi.getMaterialDeletionStatus(operationId))
+      .resolves.toEqual(operation)
+
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      `/api/teaching-prep/material-sources/${materialPayload.source_id}/deletion-preview?expected_revision=1`,
+      expect.objectContaining({ method: 'GET' }),
+    )
+    expect(JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body))).toEqual({
+      expected_revision: 1,
+      operation_id: operationId,
+      preview_version: preview.preview_version,
+      confirmation_phrase: preview.confirmation_phrase,
+    })
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      3,
+      `/api/teaching-prep/material-deletions/${operationId}`,
+      expect.objectContaining({ method: 'GET' }),
+    )
+  })
+
+  it.each([
+    ['negative preserved snapshot count', { preserved_snapshot_count: -1 }],
+    ['fractional blocking generation count', { blocking_generation_count: 0.5 }],
+    ['path field', { path: 'C:\\private\\material.pdf' }],
+    ['root field', { root: 'C:\\private' }],
+    ['local file path field', { local_file_path: 'C:\\private\\material.pdf' }],
+  ])('rejects an unsafe material deletion preview with %s', async (_case, mutation) => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(response({
+      source_id: materialPayload.source_id,
+      display_name: materialPayload.display_name,
+      source_revision: 1,
+      impact_counts: {
+        material_sources: 1,
+        material_versions: 1,
+        material_units: 8,
+        lesson_material_links: 1,
+        semester_material_records: 1,
+        semester_mapping_proposals: 0,
+        reference_ppt_collections: 0,
+        exercise_regions: 0,
+        exercise_candidates: 0,
+      },
+      affected_semesters: [],
+      generation_history_count: 1,
+      preserved_snapshot_count: 1,
+      blocking_generation_count: 0,
+      can_delete: true,
+      blocker_code: null,
+      preserved_history_note: '仅保留生成事实快照。',
+      confirmation_phrase: '确认彻底删除资料',
+      preview_version: 'preview-v2',
+      owned_file_count: 9,
+      ...mutation,
+    }))
+
+    await expect(teachingPrepCatalogApi.getMaterialDeletionPreview(materialPayload))
+      .rejects.toMatchObject({
+        kind: 'contract',
+        code: 'invalid_success_contract',
+      })
   })
 
   it('starts page parsing as a background job', async () => {
@@ -312,6 +429,16 @@ describe('teaching preparation delivery API', () => {
       existing_lesson_count: 36,
       creates_initial_tree: false,
       automatic_retry: false,
+      evidence_strategy: 'toc_calibrated',
+      evidence_confidence: 'high',
+      scanned_unit_count: 128,
+      directory_page_image_count: 2,
+      directory_page_images_sent: true,
+      toc_entry_count: 14,
+      anchor_count: 9,
+      estimated_input_characters: 4321,
+      full_page_text_sent: false,
+      evidence_issues: [],
     }
     const fetchMock = vi.spyOn(globalThis, 'fetch')
       .mockResolvedValue(response(payload))
@@ -331,6 +458,45 @@ describe('teaching preparation delivery API', () => {
       }),
     )
   })
+
+  it.each(['path', 'root', 'local_file_path'])(
+    'rejects an extra %s field from the semester mapping preflight',
+    async (unsafeKey) => {
+      const semesterId = 's'.repeat(32)
+      vi.spyOn(globalThis, 'fetch').mockResolvedValue(response({
+        semester_id: semesterId,
+        source_state_sha256: '4'.repeat(64),
+        will_call_model: true,
+        model_available: true,
+        model_label: '合成模型',
+        model_destination_fingerprint: 'f'.repeat(64),
+        material_count: 1,
+        unit_count: 128,
+        existing_lesson_count: 36,
+        creates_initial_tree: false,
+        automatic_retry: false,
+        evidence_strategy: 'toc_calibrated',
+        evidence_confidence: 'high',
+        scanned_unit_count: 128,
+        directory_page_image_count: 2,
+        directory_page_images_sent: true,
+        toc_entry_count: 14,
+        anchor_count: 9,
+        estimated_input_characters: 4321,
+        full_page_text_sent: false,
+        evidence_issues: [],
+        [unsafeKey]: 'C:\\private\\material.pdf',
+      }))
+
+      await expect(teachingPrepCatalogApi.semesterMappingPreflight(
+        semesterId,
+        ['r'.repeat(32)],
+      )).rejects.toMatchObject({
+        kind: 'contract',
+        code: 'invalid_success_contract',
+      })
+    },
+  )
 
   it('starts semester mapping as a durable background job', async () => {
     const semesterId = 's'.repeat(32)
@@ -511,7 +677,7 @@ describe('teaching preparation delivery API', () => {
     }
   })
 
-  it('accepts directory evidence metadata without treating it as a local path', async () => {
+  it('uses the full safe proposal contract for listing, bulk acceptance, and application', async () => {
     const semesterId = 's'.repeat(32)
     const proposal = {
       id: 'p'.repeat(32),
@@ -520,7 +686,19 @@ describe('teaching preparation delivery API', () => {
       source_state_sha256: '4'.repeat(64),
       status: 'proposed',
       payload: {
-        tree: [],
+        tree: [{
+          key: 'chapter-1',
+          title: '第一章 勾股定理',
+          sections: [{
+            key: 'section-1',
+            title: '1.1 探索勾股定理',
+            lessons: [{
+              key: 'lesson-1',
+              title: '第1课时 探索勾股定理',
+              duration_minutes: 45,
+            }],
+          }],
+        }],
         mappings: [{
           mapping_id: 'mapping-1',
           material_record_id: 'r'.repeat(32),
@@ -535,14 +713,38 @@ describe('teaching preparation delivery API', () => {
         uncertainties: [],
         source_material_record_ids: ['r'.repeat(32)],
         directory_evidence: {
-          strategy: 'sparse_outline',
-          confidence: 'medium',
-          scanned_unit_indices: [1, 2, 3],
-          toc_entries: [],
-          anchors: [],
-          resolved_ranges: [],
-          printed_to_pdf_offset: null,
+          strategy: 'toc_calibrated',
           total_unit_count: 67,
+          directory_page_unit_indices: [2],
+          scanned_unit_indices: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
+          toc_entries: [{
+            evidence_id: 'toc-001',
+            level: 'lesson',
+            title: '探索勾股定理',
+            printed_page: 3,
+            printed_page_track: '页',
+            page_refs: { 页: 3 },
+            source_unit: 2,
+            confidence: 0.9987,
+            source: 'ocr_layout',
+          }],
+          resolved_ranges: [{
+            evidence_id: 'range-001',
+            toc_evidence_id: 'toc-001',
+            title: '探索勾股定理',
+            level: 'lesson',
+            printed_page: 3,
+            start_unit: 9,
+            end_unit: 14,
+          }],
+          anchors: [{
+            evidence_id: 'anchor-0009',
+            unit_index: 9,
+            title: '探索勾股定理',
+            text_excerpt: '第一章 勾股定理',
+          }],
+          printed_to_pdf_offset: 6,
+          confidence: 'high',
           full_page_text_sent: false,
           issues: [],
         },
@@ -552,13 +754,109 @@ describe('teaching preparation delivery API', () => {
       updated_at: '2026-08-03T00:00:00Z',
       applied_at: null,
     }
+    const acceptedProposal = {
+      ...structuredClone(proposal),
+      revision: 2,
+      payload: {
+        ...structuredClone(proposal.payload),
+        mappings: proposal.payload.mappings.map(mapping => ({
+          ...mapping,
+          decision: 'accepted',
+          decision_reason: '教师批量确认',
+        })),
+      },
+    }
+    const appliedProposal = {
+      ...structuredClone(acceptedProposal),
+      status: 'applied',
+      revision: 3,
+      applied_at: '2026-08-03T00:02:00Z',
+    }
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(response({ items: [proposal] }))
+      .mockResolvedValueOnce(response(acceptedProposal))
+      .mockResolvedValueOnce(response(appliedProposal))
+
+    const listed = await teachingPrepCatalogApi.listSemesterMappingProposals(semesterId)
+    expect(listed).toEqual([proposal])
+    const accepted = await teachingPrepCatalogApi.acceptLocalReferencePptMappings(listed[0]!)
+    expect(accepted).toEqual(acceptedProposal)
+    await expect(teachingPrepCatalogApi.applySemesterMappingProposal(accepted))
+      .resolves.toEqual(appliedProposal)
+
+    expect(fetchMock.mock.calls.map(call => [call[0], call[1]?.method])).toEqual([
+      [`/api/teaching-prep/semesters/${semesterId}/mapping-proposals`, 'GET'],
+      [
+        `/api/teaching-prep/semester-mapping-proposals/${proposal.id}/accept-local-high-confidence`,
+        'POST',
+      ],
+      [`/api/teaching-prep/semester-mapping-proposals/${proposal.id}/apply`, 'POST'],
+    ])
+  })
+
+  it.each([
+    ['path at proposal root', (proposal: Record<string, unknown>) => {
+      proposal.path = 'C:\\private\\mapping.json'
+    }],
+    ['root inside proposal payload', (proposal: Record<string, unknown>) => {
+      const payload = proposal.payload as Record<string, unknown>
+      payload.root = 'C:\\private'
+    }],
+    ['local_file_path inside directory evidence item', (proposal: Record<string, unknown>) => {
+      const payload = proposal.payload as Record<string, unknown>
+      const directoryEvidence = payload.directory_evidence as Record<string, unknown>
+      const tocEntries = directoryEvidence.toc_entries as Array<Record<string, unknown>>
+      tocEntries[0]!.local_file_path = 'C:\\private\\material.pdf'
+    }],
+  ])('rejects %s without rejecting safe directory evidence fields', async (_case, mutate) => {
+    const semesterId = 's'.repeat(32)
+    const proposal: Record<string, unknown> = {
+      id: 'p'.repeat(32),
+      semester_id: semesterId,
+      operation_id: 'stored-operation',
+      source_state_sha256: '4'.repeat(64),
+      status: 'proposed',
+      payload: {
+        tree: [],
+        mappings: [],
+        uncertainties: [],
+        source_material_record_ids: ['r'.repeat(32)],
+        directory_evidence: {
+          strategy: 'toc_unverified',
+          total_unit_count: 67,
+          directory_page_unit_indices: [2],
+          scanned_unit_indices: [1, 2, 3],
+          toc_entries: [{
+            evidence_id: 'toc-001',
+            level: 'lesson',
+            title: '探索勾股定理',
+            printed_page: 3,
+            source_unit: 2,
+          }],
+          resolved_ranges: [],
+          anchors: [],
+          printed_to_pdf_offset: null,
+          confidence: 'medium',
+          issues: [],
+          full_page_text_sent: false,
+        },
+      },
+      revision: 1,
+      created_at: '2026-08-03T00:00:00Z',
+      updated_at: '2026-08-03T00:00:00Z',
+      applied_at: null,
+    }
+    mutate(proposal)
     vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
       response({ items: [proposal] }),
     )
 
     await expect(
       teachingPrepCatalogApi.listSemesterMappingProposals(semesterId),
-    ).resolves.toHaveLength(1)
+    ).rejects.toMatchObject({
+      kind: 'contract',
+      code: 'invalid_success_contract',
+    })
   })
 
   it('accepts a safe semester material filename without weakening path checks', async () => {

@@ -30,6 +30,8 @@ class AiDiagnosticSummary(_DiagnosticModel):
     request_id: str
     attempt: int = Field(ge=0)
     request_kind: str
+    workspace_module: str = ""
+    workspace_task_kind: str = ""
     protocol: str
     model: str
     started_at_utc: str
@@ -49,6 +51,13 @@ class AiDiagnosticListResponse(_DiagnosticModel):
     truncated: bool
 
 
+class AiDiagnosticClearResponse(_DiagnosticModel):
+    workspace_module: Literal["class_teacher"]
+    deleted_event_count: int = Field(ge=0)
+    retained_event_count: int = Field(ge=0)
+    unclassified_event_count: int = Field(ge=0)
+
+
 class AiDiagnosticDetail(AiDiagnosticSummary):
     endpoint_host: str
     retry_limit: int = Field(ge=0)
@@ -63,4 +72,5 @@ class AiDiagnosticDetail(AiDiagnosticSummary):
     parse_operations: list[str]
     parse_error: str
     parsed_result: Any = None
+    validation_issue_codes: list[str] = Field(default_factory=list)
     error: AiDiagnosticError | None = None

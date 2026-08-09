@@ -96,21 +96,78 @@ describe('B-UI-R7 handoff workspaces', () => {
     expect(host.textContent).toContain('直接观察或可核事实')
     expect(host.textContent).toContain('他人转述')
     expect(host.textContent).toContain('教师当前判断')
-    expect(host.querySelectorAll('select option')).toHaveLength(7)
+    expect(host.querySelectorAll('select option')).toHaveLength(10)
     expect(adopt).not.toHaveBeenCalled()
 
     const student = [...host.querySelectorAll<HTMLSelectElement>('select')].find((item) => item.textContent?.includes('同名学生'))!
     student.value = 'subject-b'
     student.dispatchEvent(new Event('change', { bubbles: true }))
+    const kind = [...host.querySelectorAll<HTMLSelectElement>('select')]
+      .find((item) => item.textContent?.includes('可核对事实'))!
+    kind.value = 'fact'
+    kind.dispatchEvent(new Event('change', { bubbles: true }))
+    const sourceLabel = [...host.querySelectorAll<HTMLLabelElement>('label')]
+      .find((item) => item.querySelector('span')?.textContent === '来源')!
+    const source = sourceLabel.querySelector<HTMLInputElement>('input')!
+    source.value = '合成教师观察'
+    source.dispatchEvent(new Event('input', { bubbles: true }))
     await settle()
     button(host, '确认保存记录').click()
     await settle()
     await settle()
 
     expect(update).toHaveBeenCalledWith(expect.any(Object), expect.objectContaining({
+      record_kind: 'fact',
+      source: '合成教师观察',
       summary: expect.stringContaining('直接事实：合成学生课堂状态'),
     }), [{ kind: 'student', id: 'subject-b', revision: '3' }])
     expect(adopt).toHaveBeenCalledWith('', expect.objectContaining({ draft_revision: 2 }), '3')
+  })
+
+  it('requires explicit source attribution before a supplied professional fact becomes formal', async () => {
+    const initial = draft({
+      content: {
+        summary: '合成医院已经提供书面诊断，内容只作为待审事实显示',
+        observed_at: '2026-08-05T08:00:00+08:00',
+      },
+      subject_refs: [{ kind: 'student', id: 'subject-b', revision: '3' }],
+      missing_fields: [],
+    })
+    const update = vi.spyOn(intakeApi, 'updateDraft').mockImplementation(async (_current, content, refs) => ({
+      ...initial, draft_revision: 2, content, subject_refs: refs ?? initial.subject_refs,
+    }))
+    const adopt = vi.spyOn(intakeApi, 'adopt').mockResolvedValue({ formal_object_id: 'record-professional-1' })
+    const host = await mountHandoff(initial)
+
+    expect([...host.querySelectorAll<HTMLTextAreaElement>('textarea')].map((item) => item.value))
+      .toContain('合成医院已经提供书面诊断，内容只作为待审事实显示')
+    button(host, '确认保存记录').click()
+    await settle()
+
+    expect(host.textContent).toContain('请明确选择记录性质并填写信息来源')
+    expect(update).not.toHaveBeenCalled()
+    expect(adopt).not.toHaveBeenCalled()
+
+    const kind = [...host.querySelectorAll<HTMLSelectElement>('select')]
+      .find((item) => item.textContent?.includes('有依据的专业结论'))!
+    kind.value = 'professional_conclusion'
+    kind.dispatchEvent(new Event('change', { bubbles: true }))
+    const sourceLabel = [...host.querySelectorAll<HTMLLabelElement>('label')]
+      .find((item) => item.querySelector('span')?.textContent === '来源')!
+    const source = sourceLabel.querySelector<HTMLInputElement>('input')!
+    source.value = '合成医院已提供的书面材料'
+    source.dispatchEvent(new Event('input', { bubbles: true }))
+    await nextTick()
+    button(host, '确认保存记录').click()
+    await settle()
+    await settle()
+
+    expect(update).toHaveBeenCalledWith(expect.any(Object), expect.objectContaining({
+      record_kind: 'professional_conclusion',
+      source: '合成医院已提供的书面材料',
+      summary: expect.stringContaining('直接事实：合成医院已经提供书面诊断'),
+    }), [{ kind: 'student', id: 'subject-b', revision: '3' }])
+    expect(adopt).toHaveBeenCalledTimes(1)
   })
 
   it.each([

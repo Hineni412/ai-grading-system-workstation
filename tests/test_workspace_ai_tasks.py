@@ -411,13 +411,25 @@ def test_task_gateway_records_complete_local_diagnostics_and_zero_retry(
     assert listed["returned"] == 1
     call = journal.get_call(str(listed["items"][0]["call_id"]))
     assert call is not None
+    expected_module = module_id.replace("-", "_")
+    assert call["workspace_module"] == expected_module
+    assert call["workspace_task_kind"] == purpose
+    module_calls = journal.list_calls(
+        limit=10,
+        workspace_module=expected_module,
+    )
+    assert module_calls["returned"] == 1
+    assert journal.list_calls(
+        limit=10,
+        workspace_module="class_teacher" if expected_module != "class_teacher" else "teaching_prep",
+    )["returned"] == 0
     assert call["operation_id"] == request.operation_id
     assert call["outcome"] == "success"
     assert call["retry_limit"] == 0
     assert "synthetic body" in str(call["request"])
     assert call["raw_response"] == response_text
     assert call["parse_status"] == parse_status
-    assert low_level.diagnostic_sink is journal
+    assert getattr(low_level.diagnostic_sink, "journal", None) is journal
     assert isinstance(low_level.trace_sink, NullCallTraceSink)
     assert isinstance(low_level.usage_sink, NullUsageSink)
     with pytest.raises(Exception, match="already used"):

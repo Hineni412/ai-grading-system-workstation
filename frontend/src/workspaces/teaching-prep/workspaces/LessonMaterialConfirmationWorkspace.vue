@@ -3,7 +3,12 @@ import { computed, ref, watch } from 'vue'
 
 import type { ReferenceSelectionPayload } from '../api/workbench'
 import { teachingPrepWorkbenchApi } from '../api/workbench'
-import type { LessonDraft, ResourcePack } from '../api/catalog'
+import {
+  teachingPrepCatalogApi,
+  type LessonDraft,
+  type MaterialLinkPurpose,
+  type ResourcePack,
+} from '../api/catalog'
 import TeachingPrepDocumentWorkspace from '../components/TeachingPrepDocumentWorkspace.vue'
 import TeachingPrepStickyActions from '../components/TeachingPrepStickyActions.vue'
 import { useTeachingPrepWorkbenchContext } from '../workbench/context'
@@ -21,11 +26,49 @@ const previewZoom = ref(100)
 const previewFitWidth = ref(false)
 const submitting = ref(false)
 const message = ref('先确认主课件和参考资料。只有勾选的内容会进入本次 AI 改编。')
+const quickMaterialRecordId = ref('')
+const quickStartUnit = ref<number | null>(null)
+const quickEndUnit = ref<number | null>(null)
+const quickPurpose = ref<MaterialLinkPurpose | ''>('')
+const quickAdding = ref(false)
+const quickMessage = ref('')
+const quickRequestToken = ref<string | null>(null)
+const refreshedPreviewUrls = new Set<string>()
 
 const preflight = computed(() => workbench.referencePreflight.value)
 const references = computed(() => preflight.value?.catalog.material_links ?? [])
 const referencePpts = computed(() => references.value.filter(item => item.purpose === 'reference_ppt'))
 const supportMaterials = computed(() => references.value.filter(item => item.purpose !== 'reference_ppt'))
+const quickMaterialCandidates = computed(() => {
+  const semesterId = workbench.catalog.selectedSemester?.id
+  const linkedVersionIds = new Set(references.value.map(item => item.material_version_id))
+  if (!semesterId) return []
+  return workbench.catalog.semesterMaterials.flatMap((record) => {
+    if (
+      record.semester_id !== semesterId
+      || !record.is_active
+      || record.parse_status !== 'parsed'
+      || record.has_unparsed_update
+      || !record.current_material_version_id
+      || (record.current_unit_count ?? 0) < 1
+      || linkedVersionIds.has(record.current_material_version_id)
+    ) return []
+    const material = workbench.catalog.materials.find(item => (
+      item.id === record.current_material_version_id
+      && item.availability === 'available'
+      && !item.source_archived_at
+    ))
+    return material ? [{ record, material }] : []
+  })
+})
+const quickMaterialCandidate = computed(() => quickMaterialCandidates.value.find(
+  item => item.record.id === quickMaterialRecordId.value,
+) ?? null)
+const quickMaterialMaximum = computed(() => (
+  quickMaterialCandidate.value?.record.current_unit_count
+  ?? quickMaterialCandidate.value?.material.unit_count
+  ?? 0
+))
 const selectedLinkIds = computed(() => [
   ...(primaryPptLinkId.value ? [primaryPptLinkId.value] : []),
   ...supportLinkIds.value,
@@ -39,6 +82,16 @@ const activePreviewUnitIndex = computed(() => Math.max(
 ))
 const activePreviewUnit = computed(() => previewUnits.value[activePreviewUnitIndex.value] ?? null)
 const activePreviewUrl = computed(() => activePreviewUnit.value?.preview_url ?? null)
+const activePreviewKind = computed(() => {
+  if (activePreviewUnit.value?.unit_kind !== 'ppt_slide') return null
+  const kind = activePreviewUnit.value.object_summary?.preview_kind
+  return kind === 'rendered' || kind === 'structural' ? kind : null
+})
+const activePreviewLabel = computed(() => {
+  if (activePreviewKind.value === 'rendered') return '真实原页'
+  if (activePreviewKind.value === 'structural') return '结构预览，不是原页'
+  return null
+})
 const selectedDraft = computed(() => workbench.catalog.lessonDrafts.find(
   item => item.id === workbench.catalog.selectedLessonDraftId,
 ) ?? workbench.catalog.lessonDrafts.find(item => item.status === 'confirmed') ?? null)
@@ -83,6 +136,74 @@ watch(preflight, (next) => {
   }
 }, { immediate: true })
 
+watch(quickMaterialCandidates, (candidates) => {
+  if (!candidates.some(item => item.record.id === quickMaterialRecordId.value)) {
+    quickMaterialRecordId.value = ''
+    quickPurpose.value = ''
+    quickStartUnit.value = null
+    quickEndUnit.value = null
+  }
+})
+
+watch(quickMaterialRecordId, () => {
+  quickPurpose.value = ''
+  quickStartUnit.value = null
+  quickEndUnit.value = null
+  quickMessage.value = ''
+})
+
+watch(
+  [quickMaterialRecordId, quickPurpose, quickStartUnit, quickEndUnit],
+  () => { quickRequestToken.value = null },
+  { flush: 'sync' },
+)
+
+async function addQuickMaterialLink(): Promise<void> {
+  const lessonId = workbench.catalog.selectedLessonId
+  const candidate = quickMaterialCandidate.value
+  const maximum = quickMaterialMaximum.value
+  const startUnit = Math.trunc(Number(quickStartUnit.value))
+  const endUnit = Math.trunc(Number(quickEndUnit.value))
+  if (!lessonId || !candidate) {
+    quickMessage.value = '请先选择一份本学期已解析资料。'
+    return
+  }
+  if (!quickPurpose.value) {
+    quickMessage.value = '请选择这段资料在本课时中的用途。'
+    return
+  }
+  if (startUnit < 1 || endUnit < startUnit || endUnit > maximum) {
+    quickMessage.value = `请输入 1—${maximum} 内的连续页段。`
+    return
+  }
+  quickAdding.value = true
+  quickMessage.value = '正在保存这段资料与当前课时的对应关系……'
+  const requestToken = quickRequestToken.value
+    ?? `lesson-material-link-${crypto.randomUUID().replaceAll('-', '')}`
+  quickRequestToken.value = requestToken
+  try {
+    await teachingPrepCatalogApi.createMaterialLink(lessonId, {
+      request_token: requestToken,
+      material_version_id: candidate.record.current_material_version_id,
+      start_unit: startUnit,
+      end_unit: endUnit,
+      crop: null,
+      purpose: quickPurpose.value,
+      teacher_note: null,
+      confirmation_status: 'confirmed',
+    })
+    await workbench.refreshCurrentWorkspace()
+    quickRequestToken.value = null
+    quickMessage.value = `已加入第 ${startUnit}—${endUnit} 页；只有教师明确勾选后才会进入 AI 发送范围。`
+  } catch (error) {
+    quickMessage.value = error instanceof Error && error.message
+      ? `尚未加入：${error.message}`
+      : '尚未加入，请检查资料版本后重试。'
+  } finally {
+    quickAdding.value = false
+  }
+}
+
 function selectPrimaryPpt(linkId: string): void {
   primaryPptLinkId.value = linkId
   selectLinkPreview(linkId)
@@ -113,6 +234,28 @@ function jumpPreview(event: Event): void {
   const index = Math.trunc(Number((event.target as HTMLInputElement).value)) - 1
   if (!Number.isFinite(index) || index < 0 || index >= previewUnits.value.length) return
   activePreviewUnitId.value = previewUnits.value[index]?.unit_id ?? null
+}
+
+async function refreshRenderedReferencePreview(url: string): Promise<void> {
+  const lessonId = workbench.catalog.selectedLessonId
+  const unit = activePreviewUnit.value
+  if (
+    !lessonId
+    || unit?.preview_url !== url
+    || unit.unit_kind !== 'ppt_slide'
+    || unit.object_summary?.preview_kind === 'rendered'
+  ) return
+  const key = `${lessonId}:${url}`
+  if (refreshedPreviewUrls.has(key)) return
+  refreshedPreviewUrls.add(key)
+  try {
+    const next = await teachingPrepWorkbenchApi.referencePreflight(lessonId)
+    if (workbench.catalog.selectedLessonId === lessonId) {
+      workbench.referencePreflight.value = next
+    }
+  } catch {
+    // The structural preview stays visible and explicitly labelled as fallback.
+  }
 }
 
 function selectionPayload(): ReferenceSelectionPayload {
@@ -297,6 +440,59 @@ async function openCurrentTask(): Promise<void> {
       <button class="tp-button tp-button--secondary" type="button" @click="workbench.openWorkspace('materials')">打开资料库</button>
     </div>
 
+    <section class="tp-quick-material-link" aria-labelledby="quick-material-link-title">
+      <div>
+        <p class="tp-eyebrow">补充本节依据</p>
+        <h2 id="quick-material-link-title">从本学期资料添加</h2>
+        <p>只建立你明确指定的连续页段，不会自动关联整本资料，也不会在这里调用 AI。</p>
+      </div>
+      <label class="tp-field">
+        已解析资料
+        <select v-model="quickMaterialRecordId" data-testid="lesson-material-candidate">
+          <option value="">请选择资料</option>
+          <option
+            v-for="item in quickMaterialCandidates"
+            :key="item.record.id"
+            :value="item.record.id"
+          >
+            {{ item.record.display_name }} · 共 {{ item.record.current_unit_count }} 页
+          </option>
+        </select>
+      </label>
+      <label class="tp-field">
+        本课时用途
+        <select v-model="quickPurpose" data-testid="lesson-material-purpose">
+          <option value="">请选择用途</option>
+          <option value="textbook">教材依据</option>
+          <option value="reference_ppt">参考课件</option>
+          <option value="exercise">课堂练习</option>
+          <option value="answer">答案 / 解析</option>
+          <option value="supplement">补充资料</option>
+        </select>
+      </label>
+      <div class="tp-field-pair">
+        <label class="tp-field">
+          起始页
+          <input v-model.number="quickStartUnit" data-testid="lesson-material-range" type="number" min="1" :max="quickMaterialMaximum || 1">
+        </label>
+        <label class="tp-field">
+          结束页
+          <input v-model.number="quickEndUnit" data-testid="lesson-material-range" type="number" min="1" :max="quickMaterialMaximum || 1">
+        </label>
+      </div>
+      <button
+        class="tp-button tp-button--secondary"
+        data-testid="add-lesson-material"
+        type="button"
+        :disabled="quickAdding"
+        @click="addQuickMaterialLink"
+      >
+        {{ quickAdding ? '正在加入…' : '确认页段并加入本课时' }}
+      </button>
+      <p v-if="quickMessage" class="tp-inline-guidance" role="status">{{ quickMessage }}</p>
+      <p v-else-if="quickMaterialCandidates.length === 0" class="tp-muted">当前没有尚未关联且已完成解析的本学期资料。</p>
+    </section>
+
     <TeachingPrepDocumentWorkspace
       title="资料原页核对"
       subtitle="点击任一资料可查看它在本课时的已定位页段。"
@@ -305,6 +501,7 @@ async function openCurrentTask(): Promise<void> {
       :preview-zoom="previewZoom"
       :fit-width="previewFitWidth"
       @update:active-pane="workbench.setPane"
+      @preview-loaded="refreshRenderedReferencePreview"
     >
       <template #rail>
         <section class="tp-source-group">
@@ -342,6 +539,13 @@ async function openCurrentTask(): Promise<void> {
           <button type="button" aria-label="缩小预览" @click="previewFitWidth = false; previewZoom = Math.max(50, previewZoom - 10)">−</button>
           <span class="tp-document-toolbar__zoom">{{ previewZoom }}%</span>
           <button type="button" aria-label="放大预览" @click="previewFitWidth = false; previewZoom = Math.min(200, previewZoom + 10)">＋</button>
+          <span
+            v-if="activePreviewLabel"
+            class="tp-preview-kind"
+            :class="{ 'is-structural': activePreviewKind === 'structural' }"
+          >
+            {{ activePreviewLabel }}
+          </span>
         </div>
       </template>
 

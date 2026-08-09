@@ -9,6 +9,8 @@ export interface AiDiagnosticSummary {
   request_id: string
   attempt: number
   request_kind: string
+  workspace_module: string
+  workspace_task_kind: string
   protocol: string
   model: string
   started_at_utc: string
@@ -18,6 +20,13 @@ export interface AiDiagnosticSummary {
   image_count: number
   response_chars: number
   will_retry: boolean
+}
+
+export interface AiDiagnosticClearResult {
+  workspace_module: 'class_teacher'
+  deleted_event_count: number
+  retained_event_count: number
+  unclassified_event_count: number
 }
 
 export interface AiDiagnosticList {
@@ -56,6 +65,7 @@ export interface AiDiagnosticDetail extends AiDiagnosticSummary {
   parse_operations: string[]
   parse_error: string
   parsed_result: unknown
+  validation_issue_codes: string[]
   error: AiDiagnosticError | null
 }
 
@@ -65,6 +75,8 @@ const SUMMARY_KEYS = [
   'request_id',
   'attempt',
   'request_kind',
+  'workspace_module',
+  'workspace_task_kind',
   'protocol',
   'model',
   'started_at_utc',
@@ -90,6 +102,7 @@ const DETAIL_KEYS = [
   'parse_operations',
   'parse_error',
   'parsed_result',
+  'validation_issue_codes',
   'error',
 ] as const
 
@@ -127,6 +140,8 @@ function isSummary(value: unknown): value is AiDiagnosticSummary {
     && isText(value.request_id, 200)
     && isNonnegativeInteger(value.attempt)
     && isText(value.request_kind, 80)
+    && isText(value.workspace_module, 80)
+    && isText(value.workspace_task_kind, 80)
     && isText(value.protocol, 80)
     && isText(value.model, 200)
     && isText(value.started_at_utc, 64)
@@ -183,6 +198,14 @@ function assertSecretsAreRedacted(value: unknown): void {
         compact === 'authorization'
         || compact === 'proxyauthorization'
         || compact === 'xapikey'
+        || compact === 'cookie'
+        || compact === 'setcookie'
+        || compact === 'password'
+        || compact === 'passwd'
+        || compact === 'accesstoken'
+        || compact === 'refreshtoken'
+        || compact === 'idtoken'
+        || compact === 'sessiontoken'
         || compact.endsWith('apikey')
       )
       && child !== '[REDACTED]'
@@ -191,6 +214,27 @@ function assertSecretsAreRedacted(value: unknown): void {
     }
     assertSecretsAreRedacted(child)
   }
+}
+
+export function decodeAiDiagnosticClearResult(
+  value: unknown,
+): AiDiagnosticClearResult {
+  if (
+    !isRecord(value)
+    || !hasExactKeys(value, [
+      'workspace_module',
+      'deleted_event_count',
+      'retained_event_count',
+      'unclassified_event_count',
+    ])
+    || value.workspace_module !== 'class_teacher'
+    || !isNonnegativeInteger(value.deleted_event_count)
+    || !isNonnegativeInteger(value.retained_event_count)
+    || !isNonnegativeInteger(value.unclassified_event_count)
+  ) {
+    throw new Error('Invalid AI diagnostic clear result')
+  }
+  return value as unknown as AiDiagnosticClearResult
 }
 
 export function decodeAiDiagnosticList(value: unknown): AiDiagnosticList {
@@ -236,6 +280,8 @@ export function decodeAiDiagnosticDetail(
     || !Array.isArray(value.parse_operations)
     || !value.parse_operations.every((item) => isText(item, 120))
     || !isText(value.parse_error)
+    || !Array.isArray(value.validation_issue_codes)
+    || !value.validation_issue_codes.every((item) => isText(item, 80))
     || !(value.error === null || isDiagnosticError(value.error))
   ) {
     throw new Error('Invalid AI diagnostic detail')
@@ -249,6 +295,8 @@ export const aiDiagnosticsApi = {
       limit?: number
       requestKind?: string
       outcome?: '' | AiDiagnosticOutcome
+      workspaceModule?: string
+      workspaceTaskKind?: string
       signal?: AbortSignal
     } = {},
   ): Promise<AiDiagnosticList> {
@@ -258,6 +306,12 @@ export const aiDiagnosticsApi = {
       query.set('request_kind', options.requestKind)
     }
     if (options.outcome) query.set('outcome', options.outcome)
+    if (options.workspaceModule) {
+      query.set('workspace_module', options.workspaceModule)
+    }
+    if (options.workspaceTaskKind) {
+      query.set('workspace_task_kind', options.workspaceTaskKind)
+    }
     return apiClient.request(`/api/ai-diagnostics?${query.toString()}`, {
       decode: decodeAiDiagnosticList,
       signal: options.signal,
@@ -273,6 +327,14 @@ export const aiDiagnosticsApi = {
     }
     return apiClient.request(`/api/ai-diagnostics/${callId}`, {
       decode: decodeAiDiagnosticDetail,
+      signal,
+    })
+  },
+
+  clearClassTeacher(signal?: AbortSignal): Promise<AiDiagnosticClearResult> {
+    return apiClient.request('/api/ai-diagnostics/class-teacher', {
+      method: 'DELETE',
+      decode: decodeAiDiagnosticClearResult,
       signal,
     })
   },

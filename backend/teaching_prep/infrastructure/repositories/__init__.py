@@ -1,6 +1,6 @@
 from .catalog import TeachingCatalogRepository
 from .exercises import ExerciseCandidateRepository, ExerciseRegionDraft
-from .material_units import MaterialUnitRepository
+from .material_units import MaterialPreviewRecord, MaterialUnitRepository
 from .lesson_drafts import LessonDraftRepository
 from .preparations import LessonPreparationRepository
 from .preferences import TeachingPreferencesRepository
@@ -20,6 +20,7 @@ __all__ = [
     "TeachingPreferencesRepository",
     "LessonDraftRepository",
     "MaterialUnitRepository",
+    "MaterialPreviewRecord",
     "ResourcePackRepository",
     "SemesterWorkspaceRepository",
     "SemesterMappingRepository",

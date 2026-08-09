@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import re
 import zipfile
+from collections import OrderedDict
 from collections import Counter
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
@@ -12,6 +13,12 @@ from xml.etree import ElementTree
 
 from PIL import Image, ImageDraw
 
+from backend.ops.archive import (
+    OpsArchiveInvalid,
+    OpsArchivePolicy,
+    OpsArchiveTooLarge,
+    inspect_zip,
+)
 from backend.teaching_prep.domain.errors import TeachingPrepValidationError
 
 
@@ -34,6 +41,24 @@ _DRAWABLE_TAGS = {
     "audio",
     "control",
 }
+_PPTX_ARCHIVE_POLICY = OpsArchivePolicy(
+    max_upload_bytes=256 * 1024 * 1024,
+    max_members=5_000,
+    max_expanded_bytes=512 * 1024 * 1024,
+    max_member_bytes=128 * 1024 * 1024,
+    max_compression_ratio=100.0,
+)
+_PPTX_ALLOWED_ROOTS = {
+    "[Content_Types].xml",
+    "_rels",
+    "_xmlsignatures",
+    "customXml",
+    "docMetadata",
+    "docProps",
+    "metadata",
+    "ppt",
+}
+_PPTX_INSPECTION_CACHE_SIZE = 32
 
 
 @dataclass(frozen=True, slots=True)
@@ -61,10 +86,17 @@ class MaterialParser:
         self,
         *,
         ocr_engine_factory: Callable[[], object] | None = None,
+        pptx_archive_policy: OpsArchivePolicy | None = None,
     ) -> None:
         self._ocr_engine_factory = (
             ocr_engine_factory or _default_ocr_engine
         )
+        self._pptx_archive_policy = (
+            pptx_archive_policy or _PPTX_ARCHIVE_POLICY
+        )
+        self._pptx_inspection_cache: OrderedDict[
+            tuple[str, int, int], tuple[str, ...]
+        ] = OrderedDict()
 
     def parse(
         self,
@@ -92,13 +124,9 @@ class MaterialParser:
                     "PDF could not be opened"
                 ) from exc
         if material_type == "pptx":
+            slide_names = self._inspect_pptx(path)
             try:
-                with zipfile.ZipFile(path) as archive:
-                    count = sum(
-                        1
-                        for name in archive.namelist()
-                        if _SLIDE_FILE.fullmatch(name)
-                    )
+                count = len(slide_names)
             except (OSError, zipfile.BadZipFile) as exc:
                 raise TeachingPrepValidationError(
                     "PPTX could not be opened"
@@ -359,15 +387,16 @@ class MaterialParser:
             document.close()
         return tuple(units)
 
-    @staticmethod
-    def _parse_pptx(path: Path) -> tuple[ParsedMaterialUnit, ...]:
+    def _parse_pptx(self, path: Path) -> tuple[ParsedMaterialUnit, ...]:
+        inspected_slide_names = set(self._inspect_pptx(path))
         try:
             with zipfile.ZipFile(path) as archive:
                 slide_names = sorted(
                     (
                         (int(match.group(1)), name)
                         for name in archive.namelist()
-                        if (match := _SLIDE_FILE.fullmatch(name))
+                        if name in inspected_slide_names
+                        and (match := _SLIDE_FILE.fullmatch(name))
                     ),
                     key=lambda item: item[0],
                 )
@@ -392,6 +421,48 @@ class MaterialParser:
                 "PPTX could not be opened"
             ) from exc
         return tuple(units)
+
+    def _inspect_pptx(self, path: Path) -> tuple[str, ...]:
+        source = Path(path)
+        try:
+            stat = source.stat()
+            cache_key = (
+                str(source.resolve(strict=True)),
+                int(stat.st_size),
+                int(stat.st_mtime_ns),
+            )
+        except OSError as exc:
+            raise TeachingPrepValidationError(
+                "PPTX could not be opened"
+            ) from exc
+        cached = self._pptx_inspection_cache.get(cache_key)
+        if cached is not None:
+            self._pptx_inspection_cache.move_to_end(cache_key)
+            return cached
+        try:
+            inspection = inspect_zip(
+                source,
+                policy=self._pptx_archive_policy,
+                allowed_roots=_PPTX_ALLOWED_ROOTS,
+            )
+        except OpsArchiveTooLarge as exc:
+            raise TeachingPrepValidationError(
+                "PPTX exceeds the safe expansion budget"
+            ) from exc
+        except OpsArchiveInvalid as exc:
+            raise TeachingPrepValidationError(
+                "PPTX could not be opened"
+            ) from exc
+        slide_names = tuple(
+            member.archive_name
+            for member in inspection.members
+            if not member.is_dir and _SLIDE_FILE.fullmatch(member.archive_name)
+        )
+        self._pptx_inspection_cache[cache_key] = slide_names
+        self._pptx_inspection_cache.move_to_end(cache_key)
+        while len(self._pptx_inspection_cache) > _PPTX_INSPECTION_CACHE_SIZE:
+            self._pptx_inspection_cache.popitem(last=False)
+        return slide_names
 
     @staticmethod
     def _parse_image(path: Path) -> tuple[ParsedMaterialUnit, ...]:
@@ -485,6 +556,8 @@ def _pptx_slide_unit(
         formula_review_required=bool(text and _FORMULA_HINT.search(text)),
         object_summary={
             "preview_kind": "structural",
+            "preview_notice": "结构预览，不是原页",
+            "preview_render_status": "pending",
             "object_count": sum(types.values()),
             "object_types": dict(sorted(types.items())),
             "occupied_boxes": [

@@ -152,16 +152,16 @@ export interface SemesterMappingPreflight {
   existing_lesson_count: number
   creates_initial_tree: boolean
   automatic_retry: boolean
-  evidence_strategy?: 'toc_calibrated' | 'toc_unverified' | 'sparse_outline'
-  evidence_confidence?: 'high' | 'medium' | 'low'
-  scanned_unit_count?: number
-  directory_page_image_count?: number
-  directory_page_images_sent?: boolean
-  toc_entry_count?: number
-  anchor_count?: number
-  estimated_input_characters?: number
-  full_page_text_sent?: boolean
-  evidence_issues?: string[]
+  evidence_strategy: 'toc_calibrated' | 'toc_unverified' | 'sparse_outline'
+  evidence_confidence: 'high' | 'medium' | 'low'
+  scanned_unit_count: number
+  directory_page_image_count: number
+  directory_page_images_sent: boolean
+  toc_entry_count: number
+  anchor_count: number
+  estimated_input_characters: number
+  full_page_text_sent: boolean
+  evidence_issues: string[]
 }
 
 export interface SemesterMappingProposalLesson {
@@ -223,12 +223,16 @@ export interface SemesterMappingProposal {
       chapter_count: number
     }
     directory_evidence?: {
-      strategy: string
-      confidence: string
-      issues: string[]
+      strategy: 'toc_calibrated' | 'toc_unverified' | 'sparse_outline'
+      total_unit_count?: number
+      directory_page_unit_indices?: number[]
+      scanned_unit_indices?: number[]
       toc_entries: Array<Record<string, unknown>>
       resolved_ranges: Array<Record<string, unknown>>
       anchors: Array<Record<string, unknown>>
+      printed_to_pdf_offset?: number | null
+      confidence: 'high' | 'medium' | 'low'
+      issues: string[]
       full_page_text_sent: boolean
     }
   }
@@ -274,10 +278,51 @@ export interface MaterialVersion {
   created_at: string
 }
 
+export interface MaterialDeletionAffectedSemester {
+  semester_id: string
+  title: string
+  school_year: string
+  term: 'first' | 'second'
+}
+
+export interface MaterialDeletionImpactCounts {
+  material_sources: number
+  material_versions: number
+  material_units: number
+  lesson_material_links: number
+  semester_material_records: number
+  semester_mapping_proposals: number
+  reference_ppt_collections: number
+  exercise_regions: number
+  exercise_candidates: number
+}
+
+export interface MaterialDeletionPreview {
+  source_id: string
+  display_name: string
+  source_revision: number
+  impact_counts: MaterialDeletionImpactCounts
+  affected_semesters: MaterialDeletionAffectedSemester[]
+  generation_history_count: number
+  preserved_snapshot_count: number
+  blocking_generation_count: number
+  can_delete: boolean
+  blocker_code: string | null
+  preserved_history_note: string | null
+  confirmation_phrase: string
+  preview_version: string
+  owned_file_count: number
+}
+
 export interface DeleteMaterialSourceResult {
-  deleted_source_id: string
+  operation_id: string
+  status: string
+  preview_version: string
+  deleted_source_id: string | null
   deleted_file_count: number
-  counts: Record<string, number>
+  counts: MaterialDeletionImpactCounts
+  error_code: string | null
+  impact?: MaterialDeletionPreview | null
 }
 
 export interface MaterialUnit {
@@ -940,9 +985,35 @@ function semesterMaterial(value: unknown): SemesterMaterialRecord {
   return value as unknown as SemesterMaterialRecord
 }
 
+const SEMESTER_MAPPING_PREFLIGHT_KEYS = new Set([
+  'semester_id',
+  'source_state_sha256',
+  'will_call_model',
+  'model_available',
+  'model_label',
+  'model_destination_fingerprint',
+  'material_count',
+  'unit_count',
+  'existing_lesson_count',
+  'creates_initial_tree',
+  'automatic_retry',
+  'evidence_strategy',
+  'evidence_confidence',
+  'scanned_unit_count',
+  'directory_page_image_count',
+  'directory_page_images_sent',
+  'toc_entry_count',
+  'anchor_count',
+  'estimated_input_characters',
+  'full_page_text_sent',
+  'evidence_issues',
+])
+
 function semesterMappingPreflight(value: unknown): SemesterMappingPreflight {
   if (
     !isRecord(value)
+    || Object.keys(value).length !== SEMESTER_MAPPING_PREFLIGHT_KEYS.size
+    || Object.keys(value).some(key => !SEMESTER_MAPPING_PREFLIGHT_KEYS.has(key))
     || !text(value.semester_id)
     || !text(value.source_state_sha256)
     || typeof value.will_call_model !== 'boolean'
@@ -954,20 +1025,121 @@ function semesterMappingPreflight(value: unknown): SemesterMappingPreflight {
     || !integer(value.existing_lesson_count)
     || typeof value.creates_initial_tree !== 'boolean'
     || typeof value.automatic_retry !== 'boolean'
-    || (value.evidence_strategy !== undefined && !text(value.evidence_strategy))
-    || (value.evidence_confidence !== undefined && !text(value.evidence_confidence))
-    || (value.scanned_unit_count !== undefined && !integer(value.scanned_unit_count))
-    || (value.directory_page_image_count !== undefined && !integer(value.directory_page_image_count))
-    || (value.directory_page_images_sent !== undefined && typeof value.directory_page_images_sent !== 'boolean')
-    || (value.toc_entry_count !== undefined && !integer(value.toc_entry_count))
-    || (value.anchor_count !== undefined && !integer(value.anchor_count))
-    || (value.estimated_input_characters !== undefined && !integer(value.estimated_input_characters))
-    || (value.full_page_text_sent !== undefined && typeof value.full_page_text_sent !== 'boolean')
-    || (value.evidence_issues !== undefined && (
-      !Array.isArray(value.evidence_issues) || !value.evidence_issues.every(text)
-    ))
+    || !['toc_calibrated', 'toc_unverified', 'sparse_outline'].includes(String(value.evidence_strategy))
+    || !['high', 'medium', 'low'].includes(String(value.evidence_confidence))
+    || !integer(value.scanned_unit_count)
+    || !integer(value.directory_page_image_count)
+    || typeof value.directory_page_images_sent !== 'boolean'
+    || !integer(value.toc_entry_count)
+    || !integer(value.anchor_count)
+    || !integer(value.estimated_input_characters)
+    || typeof value.full_page_text_sent !== 'boolean'
+    || !Array.isArray(value.evidence_issues)
+    || !value.evidence_issues.every(text)
   ) throw new Error('Invalid semester mapping preflight response')
   return value as unknown as SemesterMappingPreflight
+}
+
+const MATERIAL_DELETION_COUNT_KEYS = new Set([
+  'material_sources',
+  'material_versions',
+  'material_units',
+  'lesson_material_links',
+  'semester_material_records',
+  'semester_mapping_proposals',
+  'reference_ppt_collections',
+  'exercise_regions',
+  'exercise_candidates',
+])
+const MATERIAL_DELETION_PREVIEW_KEYS = new Set([
+  'source_id',
+  'display_name',
+  'source_revision',
+  'impact_counts',
+  'affected_semesters',
+  'generation_history_count',
+  'preserved_snapshot_count',
+  'blocking_generation_count',
+  'can_delete',
+  'blocker_code',
+  'preserved_history_note',
+  'confirmation_phrase',
+  'preview_version',
+  'owned_file_count',
+])
+const MATERIAL_DELETION_OPERATION_KEYS = new Set([
+  'operation_id',
+  'status',
+  'preview_version',
+  'deleted_source_id',
+  'deleted_file_count',
+  'counts',
+  'error_code',
+  'impact',
+])
+
+function hasExactKeys(value: Record<string, unknown>, expected: Set<string>): boolean {
+  const keys = Object.keys(value)
+  return keys.length === expected.size && keys.every(key => expected.has(key))
+}
+
+function materialDeletionCounts(value: unknown): MaterialDeletionImpactCounts {
+  if (
+    !isRecord(value)
+    || !hasExactKeys(value, MATERIAL_DELETION_COUNT_KEYS)
+    || Object.values(value).some(item => !integer(item))
+  ) throw new Error('Invalid material deletion impact counts')
+  return value as unknown as MaterialDeletionImpactCounts
+}
+
+function materialDeletionPreview(value: unknown): MaterialDeletionPreview {
+  if (
+    !isRecord(value)
+    || !hasExactKeys(value, MATERIAL_DELETION_PREVIEW_KEYS)
+    || !text(value.source_id)
+    || !text(value.display_name)
+    || !integer(value.source_revision, 1)
+    || !Array.isArray(value.affected_semesters)
+    || value.affected_semesters.some(semester => (
+      !isRecord(semester)
+      || !hasExactKeys(semester, new Set(['semester_id', 'title', 'school_year', 'term']))
+      || !text(semester.semester_id)
+      || !text(semester.title)
+      || !text(semester.school_year)
+      || !['first', 'second'].includes(String(semester.term))
+    ))
+    || !integer(value.generation_history_count)
+    || !integer(value.preserved_snapshot_count)
+    || !integer(value.blocking_generation_count)
+    || typeof value.can_delete !== 'boolean'
+    || !nullableText(value.blocker_code)
+    || !nullableText(value.preserved_history_note)
+    || !text(value.confirmation_phrase)
+    || !text(value.preview_version)
+    || !integer(value.owned_file_count)
+  ) throw new Error('Invalid material deletion preview')
+  materialDeletionCounts(value.impact_counts)
+  return value as unknown as MaterialDeletionPreview
+}
+
+function materialDeletionResult(value: unknown): DeleteMaterialSourceResult {
+  if (!isRecord(value)) throw new Error('Invalid material deletion response')
+  const keys = Object.keys(value)
+  const requiredKeys = [...MATERIAL_DELETION_OPERATION_KEYS].filter(key => key !== 'impact')
+  if (
+    !requiredKeys.every(key => Object.hasOwn(value, key))
+    || keys.some(key => !MATERIAL_DELETION_OPERATION_KEYS.has(key))
+    || !text(value.operation_id)
+    || !text(value.status)
+    || !text(value.preview_version)
+    || !nullableText(value.deleted_source_id)
+    || !integer(value.deleted_file_count)
+    || !nullableText(value.error_code)
+    || (value.impact !== undefined && value.impact !== null && !isRecord(value.impact))
+  ) throw new Error('Invalid material deletion response')
+  materialDeletionCounts(value.counts)
+  if (value.impact !== undefined && value.impact !== null) materialDeletionPreview(value.impact)
+  return value as unknown as DeleteMaterialSourceResult
 }
 
 function semesterMappingJob(value: unknown): JobResponse {
@@ -1000,15 +1172,237 @@ function semesterMappingJob(value: unknown): JobResponse {
   return job
 }
 
-function semesterMappingProposal(value: unknown): SemesterMappingProposal {
+const SEMESTER_MAPPING_PROPOSAL_KEYS = new Set([
+  'id',
+  'semester_id',
+  'operation_id',
+  'source_state_sha256',
+  'status',
+  'payload',
+  'revision',
+  'created_at',
+  'updated_at',
+  'applied_at',
+])
+const SEMESTER_MAPPING_PROPOSAL_PAYLOAD_REQUIRED_KEYS = new Set([
+  'tree',
+  'mappings',
+  'uncertainties',
+  'source_material_record_ids',
+])
+const SEMESTER_MAPPING_PROPOSAL_PAYLOAD_KEYS = new Set([
+  ...SEMESTER_MAPPING_PROPOSAL_PAYLOAD_REQUIRED_KEYS,
+  'generation_source',
+  'summary',
+  'directory_evidence',
+])
+const SEMESTER_MAPPING_PROPOSAL_CHAPTER_KEYS = new Set([
+  'key', 'title', 'sections',
+])
+const SEMESTER_MAPPING_PROPOSAL_SECTION_KEYS = new Set([
+  'key', 'title', 'lessons',
+])
+const SEMESTER_MAPPING_PROPOSAL_LESSON_KEYS = new Set([
+  'key', 'title', 'duration_minutes',
+])
+const SEMESTER_MAPPING_PROPOSAL_RANGE_REQUIRED_KEYS = new Set([
+  'mapping_id',
+  'material_record_id',
+  'lesson_ref',
+  'start_unit',
+  'end_unit',
+  'purpose',
+  'decision',
+  'teacher_revision',
+  'decision_reason',
+])
+const SEMESTER_MAPPING_PROPOSAL_RANGE_KEYS = new Set([
+  ...SEMESTER_MAPPING_PROPOSAL_RANGE_REQUIRED_KEYS,
+  'basis',
+  'evidence_refs',
+  'confidence',
+  'evidence',
+])
+const SEMESTER_MAPPING_TEACHER_REVISION_KEYS = new Set([
+  'lesson_ref', 'start_unit', 'end_unit',
+])
+const SEMESTER_MAPPING_PROPOSAL_SUMMARY_KEYS = new Set([
+  'ppt_count',
+  'lesson_candidate_count',
+  'special_count',
+  'high_confidence_count',
+  'needs_review_count',
+  'chapter_count',
+])
+const SEMESTER_MAPPING_DIRECTORY_EVIDENCE_REQUIRED_KEYS = new Set([
+  'strategy',
+  'toc_entries',
+  'resolved_ranges',
+  'anchors',
+  'confidence',
+  'issues',
+  'full_page_text_sent',
+])
+const SEMESTER_MAPPING_DIRECTORY_EVIDENCE_KEYS = new Set([
+  ...SEMESTER_MAPPING_DIRECTORY_EVIDENCE_REQUIRED_KEYS,
+  'total_unit_count',
+  'directory_page_unit_indices',
+  'scanned_unit_indices',
+  'printed_to_pdf_offset',
+])
+const SEMESTER_MAPPING_DIRECTORY_TOC_REQUIRED_KEYS = new Set([
+  'evidence_id', 'level', 'title', 'printed_page', 'source_unit',
+])
+const SEMESTER_MAPPING_DIRECTORY_TOC_KEYS = new Set([
+  ...SEMESTER_MAPPING_DIRECTORY_TOC_REQUIRED_KEYS,
+  'printed_page_track',
+  'page_refs',
+  'confidence',
+  'source',
+])
+const SEMESTER_MAPPING_DIRECTORY_RESOLVED_RANGE_KEYS = new Set([
+  'evidence_id',
+  'toc_evidence_id',
+  'title',
+  'level',
+  'printed_page',
+  'start_unit',
+  'end_unit',
+])
+const SEMESTER_MAPPING_DIRECTORY_ANCHOR_KEYS = new Set([
+  'evidence_id', 'unit_index', 'title', 'text_excerpt',
+])
+const SEMESTER_MAPPING_DIRECTORY_PAGE_TRACKS = new Set([
+  '听', '作', '活', '评', '页',
+])
+
+function hasRequiredAllowedKeys(
+  value: Record<string, unknown>,
+  required: Set<string>,
+  allowed: Set<string>,
+): boolean {
+  return [...required].every(key => Object.hasOwn(value, key))
+    && Object.keys(value).every(key => allowed.has(key))
+}
+
+function validSemesterProposalSummary(value: unknown): boolean {
+  return isRecord(value)
+    && hasExactKeys(value, SEMESTER_MAPPING_PROPOSAL_SUMMARY_KEYS)
+    && [...SEMESTER_MAPPING_PROPOSAL_SUMMARY_KEYS].every(key => integer(value[key]))
+}
+
+function validDirectoryEvidenceTocEntry(value: unknown): boolean {
   if (
     !isRecord(value)
+    || !hasRequiredAllowedKeys(
+      value,
+      SEMESTER_MAPPING_DIRECTORY_TOC_REQUIRED_KEYS,
+      SEMESTER_MAPPING_DIRECTORY_TOC_KEYS,
+    )
+    || !text(value.evidence_id)
+    || !['chapter', 'section', 'lesson'].includes(String(value.level))
+    || !text(value.title)
+    || !(value.printed_page === null || integer(value.printed_page, 1))
+    || !integer(value.source_unit, 1)
+  ) return false
+
+  const layoutKeys = ['printed_page_track', 'page_refs', 'confidence', 'source']
+  const layoutKeyCount = layoutKeys.filter(key => Object.hasOwn(value, key)).length
+  if (layoutKeyCount === 0) return value.printed_page !== null
+  if (layoutKeyCount !== layoutKeys.length || !isRecord(value.page_refs)) return false
+  if (
+    !(value.printed_page_track === null
+      || SEMESTER_MAPPING_DIRECTORY_PAGE_TRACKS.has(String(value.printed_page_track)))
+    || Object.keys(value.page_refs).some(
+      key => !SEMESTER_MAPPING_DIRECTORY_PAGE_TRACKS.has(key),
+    )
+    || !Object.values(value.page_refs).every(page => integer(page, 1))
+    || typeof value.confidence !== 'number'
+    || !Number.isFinite(value.confidence)
+    || value.confidence < 0
+    || value.confidence > 1
+    || value.source !== 'ocr_layout'
+  ) return false
+  return value.printed_page_track === null
+    || Object.hasOwn(value.page_refs, String(value.printed_page_track))
+}
+
+function validDirectoryEvidenceResolvedRange(value: unknown): boolean {
+  return isRecord(value)
+    && hasExactKeys(value, SEMESTER_MAPPING_DIRECTORY_RESOLVED_RANGE_KEYS)
+    && text(value.evidence_id)
+    && text(value.toc_evidence_id)
+    && text(value.title)
+    && ['chapter', 'section', 'lesson'].includes(String(value.level))
+    && integer(value.printed_page, 1)
+    && integer(value.start_unit, 1)
+    && integer(value.end_unit, 1)
+    && value.end_unit >= value.start_unit
+}
+
+function validDirectoryEvidenceAnchor(value: unknown): boolean {
+  return isRecord(value)
+    && hasExactKeys(value, SEMESTER_MAPPING_DIRECTORY_ANCHOR_KEYS)
+    && text(value.evidence_id)
+    && integer(value.unit_index, 1)
+    && nullableText(value.title)
+    && typeof value.text_excerpt === 'string'
+    && Boolean(value.title || value.text_excerpt.trim())
+}
+
+function validDirectoryEvidence(value: unknown): boolean {
+  if (
+    !isRecord(value)
+    || !hasRequiredAllowedKeys(
+      value,
+      SEMESTER_MAPPING_DIRECTORY_EVIDENCE_REQUIRED_KEYS,
+      SEMESTER_MAPPING_DIRECTORY_EVIDENCE_KEYS,
+    )
+    || !['toc_calibrated', 'toc_unverified', 'sparse_outline'].includes(
+      String(value.strategy),
+    )
+    || !Array.isArray(value.toc_entries)
+    || !value.toc_entries.every(validDirectoryEvidenceTocEntry)
+    || !Array.isArray(value.resolved_ranges)
+    || !value.resolved_ranges.every(validDirectoryEvidenceResolvedRange)
+    || !Array.isArray(value.anchors)
+    || !value.anchors.every(validDirectoryEvidenceAnchor)
+    || !['high', 'medium', 'low'].includes(String(value.confidence))
+    || !Array.isArray(value.issues)
+    || !value.issues.every(text)
+    || typeof value.full_page_text_sent !== 'boolean'
+  ) return false
+  if (value.total_unit_count !== undefined && !integer(value.total_unit_count)) return false
+  if (
+    value.directory_page_unit_indices !== undefined
+    && (!Array.isArray(value.directory_page_unit_indices)
+      || !value.directory_page_unit_indices.every(item => integer(item, 1)))
+  ) return false
+  if (
+    value.scanned_unit_indices !== undefined
+    && (!Array.isArray(value.scanned_unit_indices)
+      || !value.scanned_unit_indices.every(item => integer(item, 1)))
+  ) return false
+  return value.printed_to_pdf_offset === undefined
+    || value.printed_to_pdf_offset === null
+    || Number.isSafeInteger(value.printed_to_pdf_offset)
+}
+
+export function decodeSemesterMappingProposal(value: unknown): SemesterMappingProposal {
+  if (
+    !isRecord(value)
+    || !hasExactKeys(value, SEMESTER_MAPPING_PROPOSAL_KEYS)
     || !text(value.id)
     || !text(value.semester_id)
     || !text(value.operation_id)
     || !text(value.source_state_sha256)
     || !['proposed', 'applied', 'rejected'].includes(String(value.status))
     || !isRecord(value.payload)
+    || !hasRequiredAllowedKeys(
+      value.payload,
+      SEMESTER_MAPPING_PROPOSAL_PAYLOAD_REQUIRED_KEYS,
+      SEMESTER_MAPPING_PROPOSAL_PAYLOAD_KEYS,
+    )
     || !Array.isArray(value.payload.tree)
     || !Array.isArray(value.payload.mappings)
     || !Array.isArray(value.payload.uncertainties)
@@ -1017,6 +1411,12 @@ function semesterMappingProposal(value: unknown): SemesterMappingProposal {
     || !value.payload.mappings.every(validSemesterProposalRange)
     || !value.payload.uncertainties.every(text)
     || !value.payload.source_material_record_ids.every(text)
+    || (value.payload.generation_source !== undefined
+      && value.payload.generation_source !== 'local_reference_ppt_names')
+    || (value.payload.summary !== undefined
+      && !validSemesterProposalSummary(value.payload.summary))
+    || (value.payload.directory_evidence !== undefined
+      && !validDirectoryEvidence(value.payload.directory_evidence))
     || !integer(value.revision, 1)
     || !text(value.created_at)
     || !text(value.updated_at)
@@ -1070,16 +1470,19 @@ function referencePptCollectionMember(value: unknown): boolean {
 function validSemesterProposalChapter(value: unknown): boolean {
   return (
     isRecord(value)
+    && hasExactKeys(value, SEMESTER_MAPPING_PROPOSAL_CHAPTER_KEYS)
     && text(value.key)
     && text(value.title)
     && Array.isArray(value.sections)
     && value.sections.every((section) => (
       isRecord(section)
+      && hasExactKeys(section, SEMESTER_MAPPING_PROPOSAL_SECTION_KEYS)
       && text(section.key)
       && text(section.title)
       && Array.isArray(section.lessons)
       && section.lessons.every((lesson) => (
         isRecord(lesson)
+        && hasExactKeys(lesson, SEMESTER_MAPPING_PROPOSAL_LESSON_KEYS)
         && text(lesson.key)
         && text(lesson.title)
         && integer(lesson.duration_minutes, 1)
@@ -1091,6 +1494,11 @@ function validSemesterProposalChapter(value: unknown): boolean {
 function validSemesterProposalRange(value: unknown): boolean {
   return (
     isRecord(value)
+    && hasRequiredAllowedKeys(
+      value,
+      SEMESTER_MAPPING_PROPOSAL_RANGE_REQUIRED_KEYS,
+      SEMESTER_MAPPING_PROPOSAL_RANGE_KEYS,
+    )
     && text(value.mapping_id)
     && text(value.material_record_id)
     && text(value.lesson_ref)
@@ -1111,6 +1519,7 @@ function validSemesterProposalRange(value: unknown): boolean {
       value.teacher_revision === null
       || (
         isRecord(value.teacher_revision)
+        && hasExactKeys(value.teacher_revision, SEMESTER_MAPPING_TEACHER_REVISION_KEYS)
         && text(value.teacher_revision.lesson_ref)
         && integer(value.teacher_revision.start_unit, 1)
         && integer(value.teacher_revision.end_unit, 1)
@@ -1121,6 +1530,11 @@ function validSemesterProposalRange(value: unknown): boolean {
     && (value.basis === undefined || text(value.basis))
     && (value.evidence_refs === undefined || (
       Array.isArray(value.evidence_refs) && value.evidence_refs.every(text)
+    ))
+    && (value.confidence === undefined
+      || ['high', 'medium', 'low'].includes(String(value.confidence)))
+    && (value.evidence === undefined || (
+      Array.isArray(value.evidence) && value.evidence.every(text)
     ))
   )
 }
@@ -1988,10 +2402,7 @@ export const teachingPrepCatalogApi = {
       {
         method: 'POST',
         body: { material_record_ids: materialRecordIds },
-        decode: (payload) => {
-          assertNoPathLikeKeys(payload)
-          return semesterMappingPreflight(payload)
-        },
+        decode: semesterMappingPreflight,
       },
     )
   },
@@ -2035,7 +2446,14 @@ export const teachingPrepCatalogApi = {
       `/api/teaching-prep/semesters/${encodeURIComponent(semesterId)}/mapping-proposals`,
       {
         signal,
-        decode: (payload) => itemList(payload, semesterMappingProposal),
+        decode: (payload) => {
+          if (
+            !isRecord(payload)
+            || !hasExactKeys(payload, new Set(['items']))
+            || !Array.isArray(payload.items)
+          ) throw new Error('Invalid semester mapping proposal list response')
+          return payload.items.map(decodeSemesterMappingProposal)
+        },
       },
     )
   },
@@ -2048,10 +2466,7 @@ export const teachingPrepCatalogApi = {
       {
         method: 'POST',
         body: { expected_revision: proposal.revision },
-        decode: (payload) => {
-          assertNoPathLikeKeys(payload)
-          return semesterMappingProposal(payload)
-        },
+        decode: decodeSemesterMappingProposal,
       },
     )
   },
@@ -2064,7 +2479,7 @@ export const teachingPrepCatalogApi = {
       {
         method: 'POST',
         body: { expected_revision: proposal.revision },
-        decode: semesterMappingProposal,
+        decode: decodeSemesterMappingProposal,
       },
     )
   },
@@ -2173,23 +2588,38 @@ export const teachingPrepCatalogApi = {
     )
   },
 
-  deleteMaterialSource(current: MaterialVersion): Promise<DeleteMaterialSourceResult> {
+  getMaterialDeletionPreview(current: MaterialVersion): Promise<MaterialDeletionPreview> {
+    const expectedRevision = current.source_revision ?? 1
+    return apiClient.request(
+      `/api/teaching-prep/material-sources/${encodeURIComponent(current.source_id)}/deletion-preview?expected_revision=${expectedRevision}`,
+      {
+        decode: materialDeletionPreview,
+      },
+    )
+  },
+
+  deleteMaterialSource(
+    current: MaterialVersion,
+    input: {
+      operation_id: string
+      preview_version: string
+      confirmation_phrase: string
+    },
+  ): Promise<DeleteMaterialSourceResult> {
     return apiClient.request(
       `/api/teaching-prep/material-sources/${encodeURIComponent(current.source_id)}`,
       {
         method: 'DELETE',
-        body: { expected_revision: current.source_revision ?? 1 },
-        decode: (payload) => {
-          assertNoPathLikeKeys(payload)
-          if (
-            !isRecord(payload)
-            || typeof payload.deleted_source_id !== 'string'
-            || typeof payload.deleted_file_count !== 'number'
-            || !isRecord(payload.counts)
-          ) throw new Error('Invalid material deletion response')
-          return payload as unknown as DeleteMaterialSourceResult
-        },
+        body: { expected_revision: current.source_revision ?? 1, ...input },
+        decode: materialDeletionResult,
       },
+    )
+  },
+
+  getMaterialDeletionStatus(operationId: string): Promise<DeleteMaterialSourceResult> {
+    return apiClient.request(
+      `/api/teaching-prep/material-deletions/${encodeURIComponent(operationId)}`,
+      { decode: materialDeletionResult },
     )
   },
 

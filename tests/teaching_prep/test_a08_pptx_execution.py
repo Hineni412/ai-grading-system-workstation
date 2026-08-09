@@ -129,6 +129,238 @@ def test_real_wps_adapter_is_explicitly_gated_without_starting_wps(
     assert service.status()["real_wps_enabled"] is True
 
 
+def test_begin_execution_persists_its_path_free_source_snapshot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _paths, service = _migrated_service(tmp_path, monkeypatch)
+    plan = _approved_plan(service, tmp_path)
+    source_record = plan.payload["source_presentations"][0]
+    source_version = service.get_material_version(
+        str(source_record["material_version_id"])
+    )
+    preview = service.slide_plan_preview(
+        plan.id,
+        include_proposed=False,
+    )
+    request_hash = digest(
+        {
+            "slide_plan_id": plan.id,
+            "source_material_version_id": source_version.id,
+            "source_sha256": source_version.content_sha256,
+            "expected_slide_count": preview["after_slide_count"],
+        }
+    )
+
+    run, created = service.pptx_executions.begin(
+        operation_id="a08-source-snapshot-begin",
+        request_hash=request_hash,
+        slide_plan_id=plan.id,
+        source_material_version_id=source_version.id,
+        source_sha256=source_version.content_sha256,
+        expected_slide_count=preview["after_slide_count"],
+    )
+
+    assert created is True
+    assert run.source_material_version_id == source_version.id
+    with service.database.connect() as connection:
+        snapshot = connection.execute(
+            """
+            SELECT material_version_id, source_id, display_name, file_name,
+                   material_type, content_sha256, size_bytes, schema_version
+            FROM pptx_execution_source_snapshots
+            WHERE material_version_id = ?
+            """,
+            (source_version.id,),
+        ).fetchone()
+    assert snapshot is not None
+    assert tuple(snapshot) == (
+        source_version.id,
+        source_version.source_id,
+        source_version.display_name,
+        source_version.file_name,
+        source_version.material_type,
+        source_version.content_sha256,
+        source_version.size_bytes,
+        1,
+    )
+
+
+def test_source_rename_keeps_first_snapshot_name_and_allows_later_execution(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _paths, service = _migrated_service(tmp_path, monkeypatch)
+    plan = _approved_plan(service, tmp_path)
+    source_record = plan.payload["source_presentations"][0]
+    source_version = service.get_material_version(
+        str(source_record["material_version_id"])
+    )
+    preview = service.slide_plan_preview(
+        plan.id,
+        include_proposed=False,
+    )
+    first_hash = digest(
+        {
+            "slide_plan_id": plan.id,
+            "source_material_version_id": source_version.id,
+            "source_sha256": source_version.content_sha256,
+            "expected_slide_count": preview["after_slide_count"],
+        }
+    )
+    _first, first_created = service.pptx_executions.begin(
+        operation_id="a08-source-snapshot-before-rename",
+        request_hash=first_hash,
+        slide_plan_id=plan.id,
+        source_material_version_id=source_version.id,
+        source_sha256=source_version.content_sha256,
+        expected_slide_count=preview["after_slide_count"],
+    )
+    assert first_created is True
+    with service.database.connect() as connection:
+        alternative = connection.execute(
+            """
+            SELECT id
+            FROM slide_plan_versions
+            WHERE id != ?
+            ORDER BY created_at, id
+            LIMIT 1
+            """,
+            (plan.id,),
+        ).fetchone()
+    assert alternative is not None
+    alternative_plan_id = str(alternative["id"])
+    renamed = service.update_material_source(
+        source_version.source_id,
+        expected_revision=source_version.source_revision,
+        display_name="合成重命名后的课件",
+        archived=None,
+    )
+    assert renamed.display_name == "合成重命名后的课件"
+    second_hash = digest(
+        {
+            "slide_plan_id": alternative_plan_id,
+            "source_material_version_id": source_version.id,
+            "source_sha256": source_version.content_sha256,
+            "expected_slide_count": preview["after_slide_count"],
+        }
+    )
+
+    second, second_created = service.pptx_executions.begin(
+        operation_id="a08-source-snapshot-after-rename",
+        request_hash=second_hash,
+        slide_plan_id=alternative_plan_id,
+        source_material_version_id=source_version.id,
+        source_sha256=source_version.content_sha256,
+        expected_slide_count=preview["after_slide_count"],
+    )
+
+    assert second_created is True
+    assert second.source_material_version_id == source_version.id
+    with service.database.connect() as connection:
+        snapshot_name = connection.execute(
+            """
+            SELECT display_name
+            FROM pptx_execution_source_snapshots
+            WHERE material_version_id = ?
+            """,
+            (source_version.id,),
+        ).fetchone()
+    assert snapshot_name is not None
+    assert str(snapshot_name["display_name"]) == source_version.display_name
+
+
+def test_begin_execution_fails_closed_on_source_snapshot_identity_conflict(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _paths, service = _migrated_service(tmp_path, monkeypatch)
+    plan = _approved_plan(service, tmp_path)
+    source_record = plan.payload["source_presentations"][0]
+    source_version = service.get_material_version(
+        str(source_record["material_version_id"])
+    )
+    preview = service.slide_plan_preview(
+        plan.id,
+        include_proposed=False,
+    )
+    first_hash = digest(
+        {
+            "slide_plan_id": plan.id,
+            "source_material_version_id": source_version.id,
+            "source_sha256": source_version.content_sha256,
+            "expected_slide_count": preview["after_slide_count"],
+        }
+    )
+    service.pptx_executions.begin(
+        operation_id="a08-source-snapshot-before-conflict",
+        request_hash=first_hash,
+        slide_plan_id=plan.id,
+        source_material_version_id=source_version.id,
+        source_sha256=source_version.content_sha256,
+        expected_slide_count=preview["after_slide_count"],
+    )
+    with service.database.connect(immediate=True) as connection:
+        alternative = connection.execute(
+            """
+            SELECT id
+            FROM slide_plan_versions
+            WHERE id != ?
+            ORDER BY created_at, id
+            LIMIT 1
+            """,
+            (plan.id,),
+        ).fetchone()
+        assert alternative is not None
+        alternative_plan_id = str(alternative["id"])
+        connection.execute(
+            """
+            UPDATE pptx_execution_source_snapshots
+            SET file_name = 'conflicting-history.pptx'
+            WHERE material_version_id = ?
+            """,
+            (source_version.id,),
+        )
+    conflicting_hash = digest(
+        {
+            "slide_plan_id": alternative_plan_id,
+            "source_material_version_id": source_version.id,
+            "source_sha256": source_version.content_sha256,
+            "expected_slide_count": preview["after_slide_count"],
+        }
+    )
+
+    with pytest.raises(
+        TeachingPrepConflictError,
+        match="source material snapshot conflicts",
+    ):
+        service.pptx_executions.begin(
+            operation_id="a08-source-snapshot-conflict",
+            request_hash=conflicting_hash,
+            slide_plan_id=alternative_plan_id,
+            source_material_version_id=source_version.id,
+            source_sha256=source_version.content_sha256,
+            expected_slide_count=preview["after_slide_count"],
+        )
+
+    with service.database.connect() as connection:
+        assert connection.execute(
+            """
+            SELECT 1
+            FROM teaching_prep_operations
+            WHERE operation_id = 'a08-source-snapshot-conflict'
+            """
+        ).fetchone() is None
+        assert connection.execute(
+            """
+            SELECT 1
+            FROM pptx_execution_runs
+            WHERE slide_plan_id = ?
+            """,
+            (alternative_plan_id,),
+        ).fetchone() is None
+
+
 def test_approved_plan_executes_on_copy_verifies_and_publishes_new_version(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -190,6 +422,114 @@ def test_approved_plan_executes_on_copy_verifies_and_publishes_new_version(
     assert '"citations"' not in executor_json
     assert "teacher_note" not in executor_json
     assert str(source) not in executor_json
+
+
+def test_material_delete_cannot_enter_before_publish_file_tail_finishes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _paths, service = _migrated_service(tmp_path, monkeypatch)
+    plan = _approved_plan(service, tmp_path)
+    source_record = plan.payload["source_presentations"][0]
+    source_version = service.get_material_version(
+        str(source_record["material_version_id"])
+    )
+    service.wps_adapter = FakeWpsAdapter()
+    preview_copy_ready = threading.Event()
+    release_preview_copy = threading.Event()
+    real_copytree = preparation_service.shutil.copytree
+
+    def pause_published_preview_copy(source_path, target_path, *args, **kwargs):
+        target = Path(target_path).resolve()
+        published_preview_root = (
+            service.paths["previews"] / "pptx-versions"
+        ).resolve()
+        if target.parent == published_preview_root:
+            preview_copy_ready.set()
+            if not release_preview_copy.wait(timeout=5):
+                raise TimeoutError("synthetic publish tail was not released")
+        return real_copytree(source_path, target_path, *args, **kwargs)
+
+    monkeypatch.setattr(
+        preparation_service.shutil,
+        "copytree",
+        pause_published_preview_copy,
+    )
+    execution_results: list[tuple[object, object, bool]] = []
+    execution_errors: list[BaseException] = []
+
+    def execute() -> None:
+        try:
+            execution_results.append(
+                service.execute_slide_plan(
+                    plan.id,
+                    operation_id="a08-publish-tail-delete-race",
+                    confirmed=True,
+                )
+            )
+        except BaseException as exc:  # pragma: no cover - diagnostic capture
+            execution_errors.append(exc)
+
+    worker = threading.Thread(target=execute)
+    worker.start()
+    assert preview_copy_ready.wait(timeout=5)
+    in_tail = service.pptx_executions.get_by_operation(
+        "a08-publish-tail-delete-race"
+    )
+    impact = service.preview_material_deletion(
+        source_version.source_id,
+        expected_revision=source_version.source_revision,
+    )
+    first_delete_errors: list[BaseException] = []
+    first_delete_results: list[dict[str, object]] = []
+    try:
+        first_delete_results.append(
+            service.delete_material_source(
+                source_version.source_id,
+                expected_revision=source_version.source_revision,
+                operation_id="a08-publish-tail-first-delete",
+                preview_version=str(impact["preview_version"]),
+                confirmation_phrase=str(impact["confirmation_phrase"]),
+            )
+        )
+    except BaseException as exc:  # pragma: no cover - diagnostic capture
+        first_delete_errors.append(exc)
+    finally:
+        release_preview_copy.set()
+    worker.join(timeout=10)
+
+    assert in_tail.status == "publishing"
+    assert impact["can_delete"] is False
+    assert impact["blocking_generation_count"] == 1
+    assert first_delete_results == []
+    assert len(first_delete_errors) == 1
+    assert isinstance(first_delete_errors[0], TeachingPrepConflictError)
+    assert not worker.is_alive()
+    assert execution_errors == []
+    assert len(execution_results) == 1
+    final_run, published, created = execution_results[0]
+    assert created is True
+    assert final_run.status == "published"
+    assert published is not None
+
+    refreshed = service.preview_material_deletion(
+        source_version.source_id,
+        expected_revision=source_version.source_revision,
+    )
+    deleted = service.delete_material_source(
+        source_version.source_id,
+        expected_revision=source_version.source_revision,
+        operation_id="a08-publish-tail-final-delete",
+        preview_version=str(refreshed["preview_version"]),
+        confirmation_phrase=str(refreshed["confirmation_phrase"]),
+    )
+
+    assert refreshed["can_delete"] is True
+    assert deleted["status"] == "succeeded"
+    assert service.get_pptx_execution(final_run.id).status == "published"
+    assert not service._execution_staging(final_run.id).exists()
+    output, _filename = service.pptx_download(published.id)
+    assert output.is_file()
 
 
 def test_verification_failure_never_publishes_output(
@@ -479,6 +819,91 @@ def test_concurrent_execution_is_rejected_and_cancelled_run_never_publishes(
     assert service.list_pptx_executions(plan.id)[0].status == "cancelled"
 
 
+@pytest.mark.parametrize("entrypoint", ["start", "sync"])
+def test_pptx_begin_and_material_delete_share_the_material_lock(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    entrypoint: str,
+) -> None:
+    _paths, service = _migrated_service(tmp_path, monkeypatch)
+    plan = _approved_plan(service, tmp_path)
+    source_record = plan.payload["source_presentations"][0]
+    source_version = service.get_material_version(
+        str(source_record["material_version_id"])
+    )
+    impact = service.preview_material_deletion(
+        source_version.source_id,
+        expected_revision=source_version.source_revision,
+    )
+    adapter = _BlockingWpsAdapter()
+    service.wps_adapter = adapter
+    begin_persisted = threading.Event()
+    release_begin = threading.Event()
+    real_begin = service.pptx_executions.begin
+
+    def pause_after_begin(**kwargs):
+        result = real_begin(**kwargs)
+        begin_persisted.set()
+        if not release_begin.wait(timeout=5):
+            raise TimeoutError("synthetic begin was not released")
+        return result
+
+    monkeypatch.setattr(service.pptx_executions, "begin", pause_after_begin)
+    execution_errors: list[BaseException] = []
+    deletion_errors: list[BaseException] = []
+
+    def execute() -> None:
+        try:
+            if entrypoint == "start":
+                service.start_pptx_execution(
+                    plan.id,
+                    operation_id=f"a08-locked-{entrypoint}-execution",
+                    confirmed=True,
+                )
+            else:
+                service.execute_slide_plan(
+                    plan.id,
+                    operation_id=f"a08-locked-{entrypoint}-execution",
+                    confirmed=True,
+                )
+        except BaseException as exc:  # pragma: no cover - diagnostic capture
+            execution_errors.append(exc)
+
+    def delete() -> None:
+        try:
+            service.delete_material_source(
+                source_version.source_id,
+                expected_revision=source_version.source_revision,
+                operation_id=f"a08-locked-{entrypoint}-delete",
+                preview_version=str(impact["preview_version"]),
+                confirmation_phrase=str(impact["confirmation_phrase"]),
+            )
+        except BaseException as exc:  # pragma: no cover - diagnostic capture
+            deletion_errors.append(exc)
+
+    execution_worker = threading.Thread(target=execute)
+    deletion_worker = threading.Thread(target=delete)
+    execution_worker.start()
+    assert begin_persisted.wait(timeout=5)
+    deletion_worker.start()
+    deletion_worker.join(timeout=0.2)
+    deletion_waited_for_begin = deletion_worker.is_alive()
+    release_begin.set()
+    if entrypoint == "sync":
+        assert adapter.started.wait(timeout=5)
+    deletion_worker.join(timeout=5)
+    adapter.release.set()
+    execution_worker.join(timeout=10)
+
+    assert deletion_waited_for_begin is True
+    assert not deletion_worker.is_alive()
+    assert not execution_worker.is_alive()
+    assert execution_errors == []
+    assert len(deletion_errors) == 1
+    assert isinstance(deletion_errors[0], TeachingPrepConflictError)
+    assert service.get_material_version(source_version.id).id == source_version.id
+
+
 def test_changed_source_is_rejected_before_operation_is_created(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -506,6 +931,9 @@ def test_restart_marks_running_execution_interrupted_and_retains_staging(
     _paths, service = _migrated_service(tmp_path, monkeypatch)
     plan = _approved_plan(service, tmp_path)
     source_record = plan.payload["source_presentations"][0]
+    source_version = service.get_material_version(
+        str(source_record["material_version_id"])
+    )
     preview = service.slide_plan_preview(
         plan.id,
         include_proposed=False,
@@ -531,6 +959,7 @@ def test_restart_marks_running_execution_interrupted_and_retains_staging(
     assert created is True
     staging = service.paths["staging"] / run.id
     staging.mkdir()
+    (staging / "source-copy.pptx").write_bytes(b"synthetic source copy")
 
     restarted = TeachingPrepService(service.root)
     interrupted = restarted.get_pptx_execution(run.id)
@@ -539,6 +968,114 @@ def test_restart_marks_running_execution_interrupted_and_retains_staging(
     assert interrupted.error_code == "application_restarted"
     assert interrupted.staging_retained is True
     assert interrupted.recovery_actions == ("discard_staging",)
+
+    blocked = restarted.preview_material_deletion(
+        source_version.source_id,
+        expected_revision=source_version.source_revision,
+    )
+    assert blocked["can_delete"] is False
+    assert blocked["blocking_generation_count"] == 1
+
+    abandoned = restarted.discard_pptx_staging(run.id)
+
+    assert abandoned.status == "failed"
+    assert abandoned.error_code == "teacher_abandoned_recovery"
+    assert abandoned.staging_retained is False
+    assert abandoned.recovery_actions == ()
+    assert not staging.exists()
+    allowed = restarted.preview_material_deletion(
+        source_version.source_id,
+        expected_revision=source_version.source_revision,
+    )
+    assert allowed["can_delete"] is True
+    assert allowed["blocking_generation_count"] == 0
+
+
+def test_discard_interrupted_loses_cleanly_when_recovery_wins_the_cas(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _paths, service = _migrated_service(tmp_path, monkeypatch)
+    plan = _approved_plan(service, tmp_path)
+    source_record = plan.payload["source_presentations"][0]
+    preview = service.slide_plan_preview(plan.id, include_proposed=False)
+    run, created = service.pptx_executions.begin(
+        operation_id="a08-discard-recovery-race",
+        request_hash=digest(
+            {
+                "slide_plan_id": plan.id,
+                "source_material_version_id": source_record[
+                    "material_version_id"
+                ],
+                "source_sha256": source_record["content_sha256"],
+                "expected_slide_count": preview["after_slide_count"],
+            }
+        ),
+        slide_plan_id=plan.id,
+        source_material_version_id=source_record["material_version_id"],
+        source_sha256=source_record["content_sha256"],
+        expected_slide_count=preview["after_slide_count"],
+    )
+    assert created is True
+    staging = service._execution_staging(run.id)
+    staging.mkdir()
+    retained = staging / "candidate.pptx"
+    retained.write_bytes(b"candidate must survive the losing discard")
+    restarted = TeachingPrepService(service.root)
+    real_get = restarted.pptx_executions.get
+    first_read = True
+
+    def recovery_wins_after_interrupted_read(run_id: str):
+        nonlocal first_read
+        current = real_get(run_id)
+        if first_read:
+            first_read = False
+            assert current.status == "interrupted"
+            with restarted.database.connect(immediate=True) as connection:
+                connection.execute(
+                    """
+                    UPDATE pptx_execution_runs
+                    SET status = 'publishing'
+                    WHERE id = ? AND status = 'interrupted'
+                    """,
+                    (run_id,),
+                )
+                connection.execute(
+                    """
+                    UPDATE teaching_prep_operations
+                    SET status = 'running'
+                    WHERE operation_id = ? AND status = 'interrupted'
+                    """,
+                    (current.operation_id,),
+                )
+        return current
+
+    monkeypatch.setattr(
+        restarted.pptx_executions,
+        "get",
+        recovery_wins_after_interrupted_read,
+    )
+
+    with pytest.raises(
+        TeachingPrepConflictError,
+        match="recovery state changed",
+    ):
+        restarted.discard_pptx_staging(run.id)
+
+    actual = real_get(run.id)
+    assert actual.status == "publishing"
+    with restarted.database.connect() as connection:
+        operation = connection.execute(
+            """
+            SELECT status, error_code
+            FROM teaching_prep_operations
+            WHERE operation_id = ?
+            """,
+            (actual.operation_id,),
+        ).fetchone()
+    assert operation is not None
+    assert tuple(operation) == ("running", "application_restarted")
+    assert retained.read_bytes() == b"candidate must survive the losing discard"
 
 
 def test_interrupted_atomic_publication_recovers_only_matching_candidate(

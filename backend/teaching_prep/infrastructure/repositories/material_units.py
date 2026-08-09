@@ -24,6 +24,7 @@ class MaterialPreviewRecord:
     unit_id: str
     material_version_id: str
     preview_relpath: str
+    preview_sha256: str
     source_version_sha256: str
 
 
@@ -597,6 +598,7 @@ class MaterialUnitRepository:
                     id,
                     material_version_id,
                     preview_relpath,
+                    preview_sha256,
                     source_version_sha256
                 FROM material_units
                 WHERE id = ?
@@ -609,8 +611,142 @@ class MaterialUnitRepository:
             unit_id=str(row["id"]),
             material_version_id=str(row["material_version_id"]),
             preview_relpath=str(row["preview_relpath"]),
+            preview_sha256=str(row["preview_sha256"]),
             source_version_sha256=str(row["source_version_sha256"]),
         )
+
+    def get_unit(self, unit_id: str) -> MaterialUnit:
+        with self._database.connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM material_units WHERE id = ?",
+                (unit_id,),
+            ).fetchone()
+        if row is None:
+            raise TeachingPrepNotFoundError("material unit was not found")
+        return _unit(row)
+
+    def mark_preview_rendered(
+        self,
+        unit_id: str,
+        *,
+        source_version_sha256: str,
+        preview_sha256: str,
+        width: int,
+        height: int,
+    ) -> MaterialUnit:
+        return self._update_preview_render_state(
+            unit_id,
+            source_version_sha256=source_version_sha256,
+            preview_sha256=preview_sha256,
+            preview_kind="rendered",
+            render_status="completed",
+            error_code=None,
+            width=width,
+            height=height,
+        )
+
+    def mark_preview_render_failed(
+        self,
+        unit_id: str,
+        *,
+        source_version_sha256: str,
+        error_code: str,
+    ) -> MaterialUnit:
+        return self._update_preview_render_state(
+            unit_id,
+            source_version_sha256=source_version_sha256,
+            preview_sha256=None,
+            preview_kind="structural",
+            render_status="failed",
+            error_code=error_code,
+            width=None,
+            height=None,
+        )
+
+    def _update_preview_render_state(
+        self,
+        unit_id: str,
+        *,
+        source_version_sha256: str,
+        preview_sha256: str | None,
+        preview_kind: str,
+        render_status: str,
+        error_code: str | None,
+        width: int | None,
+        height: int | None,
+    ) -> MaterialUnit:
+        with self._database.connect(immediate=True) as connection:
+            row = connection.execute(
+                "SELECT * FROM material_units WHERE id = ?",
+                (unit_id,),
+            ).fetchone()
+            if row is None:
+                raise TeachingPrepNotFoundError(
+                    "material unit was not found"
+                )
+            if str(row["source_version_sha256"]) != source_version_sha256:
+                raise TeachingPrepConflictError(
+                    "material source version changed during preview rendering"
+                )
+            if str(row["unit_kind"]) != "ppt_slide":
+                raise TeachingPrepValidationError(
+                    "only PPT slides can update rendered previews"
+                )
+            summary = json.loads(str(row["object_summary_json"] or "{}"))
+            summary.update(
+                {
+                    "preview_kind": preview_kind,
+                    "preview_notice": (
+                        None
+                        if preview_kind == "rendered"
+                        else "结构预览，不是原页"
+                    ),
+                    "preview_render_status": render_status,
+                }
+            )
+            if preview_kind == "rendered":
+                summary.update(
+                    {
+                        "rendered_source_sha256": source_version_sha256,
+                        "width": int(width or 0),
+                        "height": int(height or 0),
+                    }
+                )
+                summary.pop("preview_render_error_code", None)
+            else:
+                summary.pop("rendered_source_sha256", None)
+                summary["preview_render_error_code"] = str(error_code or "failed")
+            fields: list[object] = [
+                json.dumps(
+                    summary,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+            ]
+            preview_update = ""
+            if preview_sha256 is not None:
+                preview_update = ", preview_sha256 = ?"
+                fields.append(preview_sha256)
+            fields.append(unit_id)
+            connection.execute(
+                f"""
+                UPDATE material_units
+                SET object_summary_json = ?
+                    {preview_update},
+                    revision = revision + 1,
+                    updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                WHERE id = ?
+                """,
+                tuple(fields),
+            )
+            updated = connection.execute(
+                "SELECT * FROM material_units WHERE id = ?",
+                (unit_id,),
+            ).fetchone()
+        if updated is None:
+            raise RuntimeError("rendered material preview could not be loaded")
+        return _unit(updated)
 
     def create_link(
         self,

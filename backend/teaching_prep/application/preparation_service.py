@@ -13,6 +13,7 @@ from dataclasses import asdict, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from collections.abc import Callable, Mapping, Sequence
+from tempfile import TemporaryDirectory
 from uuid import uuid4
 
 from PIL import Image
@@ -115,6 +116,7 @@ from backend.teaching_prep.infrastructure.repositories import (
     ExerciseRegionDraft,
     LessonDraftRepository,
     LessonPreparationRepository,
+    MaterialPreviewRecord,
     MaterialUnitRepository,
     ResourcePackRepository,
     SemesterMappingRepository,
@@ -284,6 +286,7 @@ class TeachingPrepService:
         self.material_parser = material_parser or MaterialParser()
         self._material_parse_lock = threading.Lock()
         self._active_material_parses: set[str] = set()
+        self._pptx_preview_lock = threading.RLock()
         self.question_evidence_reader = question_evidence_reader
         self.assessment_evidence_reader = assessment_evidence_reader
         self.lesson_model_adapter = lesson_model_adapter
@@ -1967,7 +1970,30 @@ class TeachingPrepService:
         source_id: str,
         *,
         expected_revision: int,
+        operation_id: str,
+        preview_version: str,
+        confirmation_phrase: str,
     ) -> dict[str, object]:
+        clean_id = _clean_entity_id(source_id)
+        revision = _clean_revision(expected_revision)
+        clean_operation_id = _clean_token(operation_id)
+        clean_preview_version = str(preview_version or "").strip().lower()
+        if re.fullmatch(r"[0-9a-f]{64}", clean_preview_version) is None:
+            raise TeachingPrepValidationError(
+                "material deletion preview version is invalid"
+            )
+        if confirmation_phrase != "确认彻底删除资料":
+            raise TeachingPrepValidationError(
+                "material deletion confirmation is required"
+            )
+        request_hash = _stable_hash(
+            {
+                "source_id": clean_id,
+                "expected_revision": revision,
+                "preview_version": clean_preview_version,
+                "confirmation_phrase": confirmation_phrase,
+            }
+        )
         # Parsing and deletion change the same controlled files.  Keep a
         # delete from starting while a parser owns any material, and keep a
         # parser from starting until the delete has completed.
@@ -1976,20 +2002,250 @@ class TeachingPrepService:
                 raise TeachingPrepConflictError(
                     "material parsing is already in progress"
                 )
-            return self._delete_material_source(
-                source_id,
-                expected_revision=expected_revision,
+            replay = self.catalog.find_material_deletion(
+                clean_operation_id,
+                request_hash=request_hash,
             )
+            if replay is not None:
+                if (
+                    replay.get("status") == "interrupted"
+                    and self.catalog.claim_recovered_material_deletion(
+                        clean_operation_id,
+                        request_hash=request_hash,
+                        source_id=clean_id,
+                        expected_revision=revision,
+                        preview_version=clean_preview_version,
+                    )
+                ):
+                    return self._delete_material_source(
+                        clean_id,
+                        expected_revision=revision,
+                        operation_id=clean_operation_id,
+                        preview_version=clean_preview_version,
+                        request_hash=request_hash,
+                        operation_already_started=True,
+                    )
+                return (
+                    self.catalog.find_material_deletion(
+                        clean_operation_id,
+                        request_hash=request_hash,
+                    )
+                    or replay
+                )
+            return self._delete_material_source(
+                clean_id,
+                expected_revision=revision,
+                operation_id=clean_operation_id,
+                preview_version=clean_preview_version,
+                request_hash=request_hash,
+            )
+
+    def preview_material_deletion(
+        self,
+        source_id: str,
+        *,
+        expected_revision: int,
+    ) -> dict[str, object]:
+        impact = self.catalog.material_deletion_impact(
+            _clean_entity_id(source_id),
+            expected_revision=_clean_revision(expected_revision),
+        )
+        safe_paths, _execution_staging_dirs = (
+            self._material_deletion_file_targets(impact)
+        )
+        impact["owned_file_count"] = sum(
+            1 for path in safe_paths if path.is_file()
+        )
+        return impact
+
+    def get_material_deletion(self, operation_id: str) -> dict[str, object]:
+        return self.catalog.get_material_deletion(_clean_token(operation_id))
 
     def _delete_material_source(
         self,
         source_id: str,
         *,
         expected_revision: int,
+        operation_id: str,
+        preview_version: str,
+        request_hash: str,
+        operation_already_started: bool = False,
     ) -> dict[str, object]:
-        clean_id = _clean_entity_id(source_id)
-        revision = _clean_revision(expected_revision)
-        owned_paths = self.catalog.material_source_owned_paths(clean_id)
+        impact = self.catalog.material_deletion_impact(
+            source_id,
+            expected_revision=expected_revision,
+        )
+        if impact["preview_version"] != preview_version:
+            raise TeachingPrepConflictError(
+                "material deletion impact changed; preview it again"
+            )
+        if impact["can_delete"] is not True:
+            raise TeachingPrepConflictError(
+                "material has active courseware generation and cannot be deleted"
+            )
+        safe_paths, execution_staging_dirs = (
+            self._material_deletion_file_targets(impact)
+        )
+        public_impact = dict(impact)
+        existing_paths = tuple(path for path in safe_paths if path.is_file())
+        public_impact["owned_file_count"] = len(existing_paths)
+        if not operation_already_started:
+            replay = self.catalog.begin_material_deletion(
+                operation_id=operation_id,
+                source_id=source_id,
+                source_display_name=str(public_impact["display_name"]),
+                expected_revision=expected_revision,
+                preview_version=preview_version,
+                request_hash=request_hash,
+                impact=public_impact,
+            )
+            if replay is not None:
+                return replay
+        # Keep the temporary names deliberately short.  The application is
+        # commonly installed below a long Chinese workspace path and Windows
+        # can otherwise reject an otherwise valid move at its path limit.
+        staging = self.paths["staging"] / (
+            "md-" + hashlib.sha256(operation_id.encode("utf-8")).hexdigest()[:16]
+        )
+        manifest = [
+            {
+                "source_relpath": source.relative_to(self.root).as_posix(),
+                "staged_name": f"f{index:04d}",
+            }
+            for index, source in enumerate(existing_paths)
+        ]
+        self.catalog.save_material_deletion_staging_manifest(
+            operation_id,
+            manifest=manifest,
+        )
+        staged: list[tuple[Path, Path]] = []
+        try:
+            for source, entry in zip(existing_paths, manifest, strict=True):
+                staging.mkdir(parents=True, exist_ok=True)
+                target = staging / entry["staged_name"]
+                os.replace(source, target)
+                staged.append((source, target))
+            result = self.catalog.delete_material_source(
+                source_id,
+                expected_revision=expected_revision,
+                expected_preview_version=preview_version,
+                operation_id=operation_id,
+                deleted_file_count=len(staged),
+            )
+        except Exception:
+            for source, target in reversed(staged):
+                if target.exists():
+                    source.parent.mkdir(parents=True, exist_ok=True)
+                    os.replace(target, source)
+            shutil.rmtree(staging, ignore_errors=True)
+            self.catalog.fail_material_deletion(
+                operation_id,
+                error_code="material_delete_failed",
+            )
+            raise
+        shutil.rmtree(staging, ignore_errors=True)
+        for execution_staging in execution_staging_dirs:
+            self._remove_empty_directory_tree(execution_staging)
+        if not staging.exists():
+            self.catalog.clear_material_deletion_staging_manifest(operation_id)
+        return result
+
+    def _material_deletion_file_targets(
+        self,
+        impact: dict[str, object],
+    ) -> tuple[list[Path], list[Path]]:
+        owned_paths = tuple(
+            Path(str(item)) for item in impact.pop("_owned_paths", [])
+        )
+        safe_paths = self._controlled_material_paths(owned_paths)
+        raw_staging_names = impact.pop(
+            "_terminal_generation_staging_names", []
+        )
+        if not isinstance(raw_staging_names, list):
+            raise TeachingPrepConflictError(
+                "material generation history is invalid"
+            )
+        execution_staging_dirs: list[Path] = []
+        staging_root = self.paths["staging"].resolve(strict=False)
+        for raw_staging_name in raw_staging_names:
+            staging_name = str(raw_staging_name)
+            if re.fullmatch(r"[0-9a-f]{32}", staging_name) is None:
+                raise TeachingPrepConflictError(
+                    "material generation staging identity is invalid"
+                )
+            staging = (staging_root / staging_name).resolve(strict=False)
+            try:
+                staging.relative_to(staging_root)
+            except ValueError as exc:
+                raise TeachingPrepConflictError(
+                    "material generation staging path is invalid"
+                ) from exc
+            execution_staging_dirs.append(staging)
+            if not staging.is_dir():
+                continue
+            for candidate in staging.rglob("*"):
+                if not candidate.is_file():
+                    continue
+                resolved = candidate.resolve(strict=False)
+                try:
+                    resolved.relative_to(staging)
+                except ValueError as exc:
+                    raise TeachingPrepConflictError(
+                        "PPTX execution staging contains an unsafe path"
+                    ) from exc
+                safe_paths.append(resolved)
+        return list(dict.fromkeys(safe_paths)), list(
+            dict.fromkeys(execution_staging_dirs)
+        )
+
+    def _pptx_execution_staging_for_deletion_source(
+        self,
+        source: Path,
+    ) -> Path | None:
+        resolved = source.resolve(strict=False)
+        staging_root = self.paths["staging"].resolve(strict=False)
+        try:
+            relative = resolved.relative_to(staging_root)
+        except ValueError:
+            return None
+        if (
+            len(relative.parts) < 2
+            or re.fullmatch(r"[0-9a-f]{32}", relative.parts[0]) is None
+        ):
+            return None
+        staging_name = relative.parts[0]
+        with self.database.connect() as connection:
+            exists = connection.execute(
+                """
+                SELECT 1
+                FROM pptx_execution_runs
+                WHERE staging_name = ?
+                """,
+                (staging_name,),
+            ).fetchone()
+        if exists is None:
+            return None
+        return staging_root / staging_name
+
+    @staticmethod
+    def _remove_empty_directory_tree(root: Path) -> None:
+        if not root.is_dir():
+            return
+        directories = sorted(
+            (path for path in root.rglob("*") if path.is_dir()),
+            key=lambda path: len(path.parts),
+            reverse=True,
+        )
+        for directory in (*directories, root):
+            try:
+                directory.rmdir()
+            except OSError:
+                continue
+
+    def _controlled_material_paths(
+        self,
+        owned_paths: Sequence[Path],
+    ) -> list[Path]:
         controlled_roots = (
             self.paths["materials"].resolve(strict=False),
             self.paths["previews"].resolve(strict=False),
@@ -2000,36 +2256,7 @@ class TeachingPrepService:
             candidate = candidate.resolve(strict=False)
             if any(candidate.is_relative_to(root) for root in controlled_roots):
                 safe_paths.append(candidate)
-        # Keep the temporary names deliberately short.  The application is
-        # commonly installed below a long Chinese workspace path and Windows
-        # can otherwise reject an otherwise valid move at its path limit.
-        staging = self.paths["staging"] / f"d-{uuid4().hex[:8]}"
-        staged: list[tuple[Path, Path]] = []
-        try:
-            for index, source in enumerate(dict.fromkeys(safe_paths)):
-                if not source.is_file():
-                    continue
-                staging.mkdir(parents=True, exist_ok=True)
-                target = staging / f"f{index:04d}"
-                os.replace(source, target)
-                staged.append((source, target))
-            counts = self.catalog.delete_material_source(
-                clean_id,
-                expected_revision=revision,
-            )
-        except Exception:
-            for source, target in reversed(staged):
-                if target.exists():
-                    source.parent.mkdir(parents=True, exist_ok=True)
-                    os.replace(target, source)
-            shutil.rmtree(staging, ignore_errors=True)
-            raise
-        shutil.rmtree(staging, ignore_errors=True)
-        return {
-            "deleted_source_id": clean_id,
-            "deleted_file_count": len(staged),
-            "counts": counts,
-        }
+        return list(dict.fromkeys(safe_paths))
 
     def get_material_version(self, version_id: str) -> MaterialVersion:
         return self.catalog.get_material_version(_clean_entity_id(version_id))
@@ -2303,7 +2530,245 @@ class TeachingPrepService:
             raise TeachingPrepNotFoundError(
                 "material preview is unavailable"
             )
+        unit = self.material_units.get_unit(clean_id)
+        if (
+            unit.unit_kind == "ppt_slide"
+            and unit.object_summary.get("preview_kind") == "rendered"
+            and _sha256_file(target) != record.preview_sha256
+        ):
+            with self._material_parse_lock, self._pptx_preview_lock:
+                record = self.material_units.preview_record(clean_id)
+                target = (self.root / record.preview_relpath).resolve(
+                    strict=False
+                )
+                unit = self.material_units.get_unit(clean_id)
+                if (
+                    unit.object_summary.get("preview_kind") == "rendered"
+                    and (
+                        not target.is_file()
+                        or _sha256_file(target) != record.preview_sha256
+                    )
+                ):
+                    self._restore_structural_pptx_preview(
+                        record=record,
+                        unit=unit,
+                    )
+                    record = self.material_units.preview_record(clean_id)
+                    target = (self.root / record.preview_relpath).resolve(
+                        strict=False
+                    )
+                    unit = self.material_units.get_unit(clean_id)
+        if (
+            unit.unit_kind == "ppt_slide"
+            and unit.object_summary.get("preview_kind") == "structural"
+            and unit.object_summary.get("preview_render_status")
+            not in {"completed", "failed"}
+        ):
+            self._render_pptx_preview(clean_id)
+            record = self.material_units.preview_record(clean_id)
+            target = (self.root / record.preview_relpath).resolve(strict=False)
         return target
+
+    def get_material_unit(self, unit_id: str) -> MaterialUnit:
+        return self.material_units.get_unit(_clean_entity_id(unit_id))
+
+    def _restore_structural_pptx_preview(
+        self,
+        *,
+        record: MaterialPreviewRecord,
+        unit: MaterialUnit,
+    ) -> None:
+        material_version_id = record.material_version_id
+        source_version_sha256 = record.source_version_sha256
+        preview_relpath = record.preview_relpath
+        version = self.catalog.get_material_version(material_version_id)
+        if version.material_type != "pptx":
+            raise TeachingPrepValidationError(
+                "only PPT slides can rebuild structural previews"
+            )
+        source = self.catalog.get_material_location(material_version_id)
+        if (
+            not source.is_file()
+            or _sha256_file(source) != source_version_sha256
+        ):
+            raise TeachingPrepConflictError(
+                "material file changed; register a new version"
+            )
+        parsed = tuple(
+            self.material_parser.iter_preview_units(
+                source,
+                material_type="pptx",
+                unit_indexes=(unit.unit_index,),
+            )
+        )
+        if len(parsed) != 1 or parsed[0].unit_index != unit.unit_index:
+            raise TeachingPrepNotFoundError(
+                "material structural preview is unavailable"
+            )
+        structural = parsed[0]
+        target = (self.root / preview_relpath).resolve(strict=False)
+        preview_root = self.paths["previews"].resolve(strict=False)
+        if not target.is_relative_to(preview_root):
+            raise TeachingPrepValidationError(
+                "material preview path is invalid"
+            )
+        target.parent.mkdir(parents=True, exist_ok=True)
+        temporary = target.with_name(f".{target.name}.{uuid4().hex}.tmp")
+        previous = target.read_bytes() if target.is_file() else None
+        try:
+            temporary.write_bytes(structural.preview_png)
+            os.replace(temporary, target)
+            try:
+                self.material_units.save_partial_unit(
+                    material_version_id,
+                    source_version_sha256=source_version_sha256,
+                    unit=structural,
+                    preview_relpath=preview_relpath,
+                    preview_sha256=hashlib.sha256(
+                        structural.preview_png
+                    ).hexdigest(),
+                )
+            except Exception:
+                if previous is None:
+                    target.unlink(missing_ok=True)
+                else:
+                    target.write_bytes(previous)
+                raise
+        finally:
+            temporary.unlink(missing_ok=True)
+
+    def _render_pptx_preview(self, unit_id: str) -> None:
+        with self._material_parse_lock:
+            self._render_pptx_preview_under_material_lock(unit_id)
+
+    def _render_pptx_preview_under_material_lock(self, unit_id: str) -> None:
+        with self._pptx_preview_lock:
+            unit = self.material_units.get_unit(unit_id)
+            summary = unit.object_summary
+            if summary.get("preview_kind") == "rendered" or summary.get(
+                "preview_render_status"
+            ) == "failed":
+                return
+            record = self.material_units.preview_record(unit_id)
+            version = self.catalog.get_material_version(
+                record.material_version_id
+            )
+            if version.material_type != "pptx":
+                return
+            if self.wps_adapter is None or not self.wps_adapter_is_real:
+                self.material_units.mark_preview_render_failed(
+                    unit_id,
+                    source_version_sha256=record.source_version_sha256,
+                    error_code="wps_preview_unavailable",
+                )
+                return
+            source = self.catalog.get_material_location(
+                record.material_version_id
+            )
+            if (
+                not source.is_file()
+                or _sha256_file(source) != record.source_version_sha256
+            ):
+                self.material_units.mark_preview_render_failed(
+                    unit_id,
+                    source_version_sha256=record.source_version_sha256,
+                    error_code="pptx_source_changed",
+                )
+                return
+            error_code = "wps_preview_failed"
+            try:
+                with TemporaryDirectory(
+                    prefix="pptx-preview-",
+                    dir=self.paths["temp"],
+                ) as temporary_value:
+                    working = Path(temporary_value)
+                    source_copy = working / "source-copy.pptx"
+                    rendered_dir = working / "rendered"
+                    shutil.copy2(source, source_copy)
+                    if _sha256_file(source_copy) != record.source_version_sha256:
+                        raise TeachingPrepConflictError(
+                            "isolated PPTX preview copy changed"
+                        )
+                    self.wps_adapter.render_previews(
+                        operation_id=(
+                            f"pptx-preview-{record.source_version_sha256[:16]}-"
+                            f"{unit.unit_index:05d}"
+                        ),
+                        source_copy=str(source_copy),
+                        preview_directory=str(rendered_dir),
+                        slide_indexes=[unit.unit_index],
+                        source_sha256=record.source_version_sha256,
+                        timeout_milliseconds=30_000,
+                    )
+                    candidate = rendered_dir / (
+                        f"slide-{unit.unit_index:05d}.png"
+                    )
+                    if (
+                        not candidate.is_file()
+                        or candidate.stat().st_size <= 0
+                        or candidate.stat().st_size > 32 * 1024 * 1024
+                    ):
+                        raise TeachingPrepValidationError(
+                            "WPS preview output is invalid"
+                        )
+                    try:
+                        with Image.open(candidate) as image:
+                            if image.format != "PNG":
+                                raise TeachingPrepValidationError(
+                                    "WPS preview output is invalid"
+                                )
+                            image.verify()
+                        with Image.open(candidate) as image:
+                            width, height = image.size
+                    except (OSError, ValueError) as exc:
+                        raise TeachingPrepValidationError(
+                            "WPS preview output is invalid"
+                        ) from exc
+                    if (
+                        width <= 0
+                        or height <= 0
+                        or width > 8_192
+                        or height > 8_192
+                        or _sha256_file(source) != record.source_version_sha256
+                    ):
+                        raise TeachingPrepValidationError(
+                            "WPS preview output is invalid"
+                        )
+                    target = self.root / record.preview_relpath
+                    previous = target.read_bytes()
+                    temporary = target.with_name(
+                        f".{target.name}.{uuid4().hex}.tmp"
+                    )
+                    try:
+                        shutil.copyfile(candidate, temporary)
+                        rendered_sha = _sha256_file(temporary)
+                        os.replace(temporary, target)
+                        try:
+                            self.material_units.mark_preview_rendered(
+                                unit_id,
+                                source_version_sha256=(
+                                    record.source_version_sha256
+                                ),
+                                preview_sha256=rendered_sha,
+                                width=width,
+                                height=height,
+                            )
+                        except Exception:
+                            target.write_bytes(previous)
+                            raise
+                    finally:
+                        temporary.unlink(missing_ok=True)
+            except TimeoutError:
+                error_code = "wps_preview_timeout"
+            except Exception:
+                error_code = "wps_preview_failed"
+            else:
+                return
+            self.material_units.mark_preview_render_failed(
+                unit_id,
+                source_version_sha256=record.source_version_sha256,
+                error_code=error_code,
+            )
 
     def create_material_link(
         self,
@@ -3290,6 +3755,30 @@ class TeachingPrepService:
             )
         clean_plan_id = _clean_entity_id(plan_id)
         clean_operation_id = _clean_token(operation_id)
+        with self._material_parse_lock:
+            _plan, _source_path, _source_sha256, _expected_count, run, created = (
+                self._begin_pptx_execution(
+                    clean_plan_id,
+                    clean_operation_id,
+                    relocation_on_missing=False,
+                )
+            )
+        return self._execution_with_storage(run), created
+
+    def _begin_pptx_execution(
+        self,
+        clean_plan_id: str,
+        clean_operation_id: str,
+        *,
+        relocation_on_missing: bool,
+    ) -> tuple[
+        SlidePlanVersion,
+        Path,
+        str,
+        int,
+        PptxExecutionRun,
+        bool,
+    ]:
         plan = self._effective_slide_plan(self.slide_plans.get(clean_plan_id))
         if plan.status != "approved":
             raise TeachingPrepValidationError(
@@ -3318,21 +3807,35 @@ class TeachingPrepService:
                 "source PPTX version no longer matches the approved plan"
             )
         source_path = self.catalog.get_material_location(source_version_id)
-        if not source_path.is_file() or _sha256_file(source_path) != source_sha256:
+        if not source_path.is_file():
+            if relocation_on_missing:
+                raise TeachingPrepValidationError(
+                    "source PPTX requires relocation"
+                )
             raise TeachingPrepConflictError(
                 "source PPTX is missing or changed after plan approval"
             )
-        preview = self.slide_plan_preview(clean_plan_id, include_proposed=False)
+        if _sha256_file(source_path) != source_sha256:
+            raise TeachingPrepConflictError(
+                "source PPTX changed after plan approval"
+                if relocation_on_missing
+                else "source PPTX is missing or changed after plan approval"
+            )
+        preview = self.slide_plan_preview(
+            clean_plan_id,
+            include_proposed=False,
+        )
         if not preview["valid_for_execution"]:
             raise TeachingPrepValidationError(
                 "slide plan is not valid for execution"
             )
+        expected_slide_count = int(preview["after_slide_count"])
         request_hash = execution_digest(
             {
                 "slide_plan_id": clean_plan_id,
                 "source_material_version_id": source_version_id,
                 "source_sha256": source_sha256,
-                "expected_slide_count": int(preview["after_slide_count"]),
+                "expected_slide_count": expected_slide_count,
             }
         )
         run, created = self.pptx_executions.begin(
@@ -3341,9 +3844,16 @@ class TeachingPrepService:
             slide_plan_id=clean_plan_id,
             source_material_version_id=source_version_id,
             source_sha256=source_sha256,
-            expected_slide_count=int(preview["after_slide_count"]),
+            expected_slide_count=expected_slide_count,
         )
-        return self._execution_with_storage(run), created
+        return (
+            plan,
+            source_path,
+            source_sha256,
+            expected_slide_count,
+            run,
+            created,
+        )
 
     def process_pptx_execution(self, run_id: str) -> None:
         run = self.pptx_executions.get(_clean_entity_id(run_id))
@@ -3374,69 +3884,19 @@ class TeachingPrepService:
             )
         clean_plan_id = _clean_entity_id(plan_id)
         clean_operation_id = _clean_token(operation_id)
-        plan = self._effective_slide_plan(
-            self.slide_plans.get(clean_plan_id)
-        )
-        if plan.status != "approved":
-            raise TeachingPrepValidationError(
-                "only a current approved slide plan can execute"
+        with self._material_parse_lock:
+            (
+                plan,
+                source_path,
+                source_sha256,
+                expected_slide_count,
+                run,
+                created,
+            ) = self._begin_pptx_execution(
+                clean_plan_id,
+                clean_operation_id,
+                relocation_on_missing=True,
             )
-        source_presentations = plan.payload.get("source_presentations")
-        if (
-            not isinstance(source_presentations, list)
-            or len(source_presentations) != 1
-            or not isinstance(source_presentations[0], Mapping)
-        ):
-            raise TeachingPrepValidationError(
-                "automatic execution requires exactly one source PPTX"
-            )
-        source_record = dict(source_presentations[0])
-        source_version_id = _clean_entity_id(
-            str(source_record.get("material_version_id") or "")
-        )
-        source_sha256 = str(source_record.get("content_sha256") or "")
-        source_version = self.catalog.get_material_version(source_version_id)
-        if (
-            source_version.material_type != "pptx"
-            or source_version.content_sha256 != source_sha256
-        ):
-            raise TeachingPrepConflictError(
-                "source PPTX version no longer matches the approved plan"
-            )
-        source_path = self.catalog.get_material_location(source_version_id)
-        if not source_path.is_file():
-            raise TeachingPrepValidationError(
-                "source PPTX requires relocation"
-            )
-        if _sha256_file(source_path) != source_sha256:
-            raise TeachingPrepConflictError(
-                "source PPTX changed after plan approval"
-            )
-        preview = self.slide_plan_preview(
-            clean_plan_id,
-            include_proposed=False,
-        )
-        if not preview["valid_for_execution"]:
-            raise TeachingPrepValidationError(
-                "slide plan is not valid for execution"
-            )
-        expected_slide_count = int(preview["after_slide_count"])
-        request_hash = execution_digest(
-            {
-                "slide_plan_id": clean_plan_id,
-                "source_material_version_id": source_version_id,
-                "source_sha256": source_sha256,
-                "expected_slide_count": expected_slide_count,
-            }
-        )
-        run, created = self.pptx_executions.begin(
-            operation_id=clean_operation_id,
-            request_hash=request_hash,
-            slide_plan_id=clean_plan_id,
-            source_material_version_id=source_version_id,
-            source_sha256=source_sha256,
-            expected_slide_count=expected_slide_count,
-        )
         if not created and not (continue_existing and run.status == "running"):
             version = (
                 self.pptx_executions.get_version(run.published_version_id)
@@ -3545,6 +4005,12 @@ class TeachingPrepService:
             os.rename(candidate, output)
             publication_moved = True
             self._require_generation_budget(run.id)
+            published_preview_dir = (
+                self.paths["previews"] / "pptx-versions" / version.id
+            )
+            published_preview_dir.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copytree(preview_dir, published_preview_dir)
+            self._require_generation_budget(run.id)
             version = self.pptx_executions.finish_publish(
                 run_id=run.id,
                 version_id=version.id,
@@ -3552,13 +4018,6 @@ class TeachingPrepService:
                 deadline_at=publication_deadline_at,
             )
             published = True
-            self._require_generation_budget(run.id)
-            published_preview_dir = (
-                self.paths["previews"] / "pptx-versions" / version.id
-            )
-            published_preview_dir.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copytree(preview_dir, published_preview_dir)
-            self._require_generation_budget(run.id)
             return (
                 self._execution_with_storage(
                     self.pptx_executions.get(run.id)
@@ -3817,6 +4276,7 @@ class TeachingPrepService:
             )
         published = False
         try:
+            _require_generation_deadline(publication_deadline_at)
             version = self.pptx_executions.finish_publish(
                 run_id=run.id,
                 version_id=run.published_version_id,
@@ -3824,7 +4284,6 @@ class TeachingPrepService:
                 deadline_at=publication_deadline_at,
             )
             published = True
-            _require_generation_deadline(publication_deadline_at)
         except TimeoutError:
             if published:
                 self.pptx_executions.revoke_published(
@@ -3866,6 +4325,8 @@ class TeachingPrepService:
             raise TeachingPrepConflictError(
                 "active execution staging cannot be discarded"
             )
+        if run.status == "interrupted":
+            run = self.pptx_executions.abandon_interrupted(run.id)
         staging = self._execution_staging(run.id)
         if staging.exists():
             shutil.rmtree(staging)
@@ -4443,6 +4904,7 @@ class TeachingPrepService:
         )
 
     def mark_interrupted_operations(self) -> int:
+        material_deletions = self._recover_material_deletion_files()
         detailed = self.pptx_executions.mark_interrupted()
         delivery = self.teaching_delivery.mark_interrupted_packages()
         workbench = self.workbench.mark_interrupted()
@@ -4467,7 +4929,117 @@ class TeachingPrepService:
                 WHERE status IN ('pending', 'running')
                 """
             )
-            return max(detailed, delivery, workbench, int(cursor.rowcount))
+            return max(
+                material_deletions,
+                detailed,
+                delivery,
+                workbench,
+                int(cursor.rowcount),
+            )
+
+    def _recover_material_deletion_files(self) -> int:
+        recovered = 0
+        for recovery in self.catalog.material_deletions_needing_file_recovery():
+            operation_id = str(recovery["operation_id"])
+            status = str(recovery["status"])
+            staging = self.paths["staging"] / (
+                "md-"
+                + hashlib.sha256(operation_id.encode("utf-8")).hexdigest()[:16]
+            )
+            if status == "succeeded":
+                execution_staging_dirs: set[Path] = set()
+                manifest = recovery.get("manifest")
+                if isinstance(manifest, list):
+                    for entry in manifest:
+                        if not isinstance(entry, dict):
+                            continue
+                        source_relpath = str(
+                            entry.get("source_relpath") or ""
+                        )
+                        if not source_relpath:
+                            continue
+                        execution_staging = (
+                            self._pptx_execution_staging_for_deletion_source(
+                                self.root / source_relpath
+                            )
+                        )
+                        if execution_staging is not None:
+                            execution_staging_dirs.add(execution_staging)
+                shutil.rmtree(staging, ignore_errors=True)
+                for execution_staging in execution_staging_dirs:
+                    self._remove_empty_directory_tree(execution_staging)
+                if not staging.exists():
+                    self.catalog.clear_material_deletion_staging_manifest(
+                        operation_id
+                    )
+                    recovered += 1
+                continue
+            manifest = recovery.get("manifest")
+            recovery_safe = isinstance(manifest, list)
+            expected_sources: list[Path] = []
+            if recovery_safe:
+                for entry in manifest:
+                    if not isinstance(entry, dict):
+                        recovery_safe = False
+                        break
+                    source_relpath = str(entry.get("source_relpath") or "")
+                    staged_name = str(entry.get("staged_name") or "")
+                    if (
+                        re.fullmatch(r"f[0-9]{4}", staged_name) is None
+                        or not source_relpath
+                    ):
+                        recovery_safe = False
+                        break
+                    source = (self.root / source_relpath).resolve(strict=False)
+                    if (
+                        self._controlled_material_paths((source,)) != [source]
+                        and self._pptx_execution_staging_for_deletion_source(
+                            source
+                        )
+                        is None
+                    ):
+                        recovery_safe = False
+                        break
+                    staged_path = staging / staged_name
+                    expected_sources.append(source)
+                    if not staged_path.is_file():
+                        continue
+                    if source.exists():
+                        if (
+                            not source.is_file()
+                            or _sha256_file(source) != _sha256_file(staged_path)
+                        ):
+                            recovery_safe = False
+                            break
+                        staged_path.unlink()
+                        continue
+                    source.parent.mkdir(parents=True, exist_ok=True)
+                    os.replace(staged_path, source)
+            if recovery_safe:
+                recovery_safe = all(path.is_file() for path in expected_sources)
+            if recovery_safe:
+                shutil.rmtree(staging, ignore_errors=True)
+                recovery_safe = not staging.exists()
+            error_code = (
+                "application_restarted_during_material_delete"
+                if recovery_safe
+                else "material_delete_recovery_incomplete"
+            )
+            self.catalog.interrupt_material_deletion(
+                operation_id,
+                error_code=error_code,
+            )
+            if recovery_safe:
+                self.catalog.clear_material_deletion_staging_manifest(
+                    operation_id
+                )
+                recovered += 1
+            else:
+                LOGGER.error(
+                    "Material deletion recovery was incomplete for %s",
+                    operation_id,
+                )
+        return recovered
 
 
 def _clean_token(value: str) -> str:

@@ -323,6 +323,7 @@ onMounted(async () => {
         <section v-if="conversation?.handoffs.length" class="handoffs" aria-label="交接草稿">
           <button v-for="handoff in conversation.handoffs" :key="handoff.handoff_id" type="button" :data-mode="handoff.handling_mode" :data-work-item="handoff.work_item_id" @click="emit('openHandoff', handoff)">
             <span>{{ domainLabels[handoff.domain] }}</span><strong>{{ modeLabels[handoff.handling_mode] }}草稿</strong><small>{{ handoff.adoption_state === 'adopted' ? '教师已确认保存' : handoff.adoption_state === 'discarded' ? '已丢弃' : '打开核对，不会自动保存' }}</small>
+            <ul v-if="handoff.missing_fields.length" class="handoff-warnings"><li v-for="item in handoff.missing_fields" :key="item">{{ item }}</li></ul>
           </button>
         </section>
 
@@ -374,4 +375,5 @@ onMounted(async () => {
   text-align: left;
 }
 .domain-band > button:hover { background: var(--color-teacher-subtle); }
+.handoff-warnings{margin:3px 0 0;padding-left:18px;color:var(--red);font-size:12px;line-height:1.45}
 </style>

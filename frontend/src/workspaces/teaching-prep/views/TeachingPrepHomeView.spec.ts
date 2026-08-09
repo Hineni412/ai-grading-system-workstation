@@ -199,6 +199,9 @@ describe('TeachingPrepHomeView workbench shell', () => {
     expect(router.currentRoute.value.query).toMatchObject({ view: 'lesson', semester: semesterId, lesson: lessonIds[0], stage: 'materials', panel: 'sources', focus_ref: focus })
     expect(host.querySelector('.tp-lesson-frame__mobile-tabs')).toBeNull()
     expect(host.querySelectorAll('.tp-document-workspace__mobile-tabs button')).toHaveLength(3)
+    const manualProgress = [...host.querySelectorAll('.tp-lesson-frame__inspector dd')][0]
+    expect(manualProgress?.textContent).toBe('已授课')
+    expect(host.textContent).not.toContain('taught')
     app.unmount()
   })
 

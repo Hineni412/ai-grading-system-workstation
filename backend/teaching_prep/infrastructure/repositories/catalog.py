@@ -25,6 +25,20 @@ _NODE_PARENT_TYPES = {
     "section": "chapter",
     "lesson": "section",
 }
+_MATERIAL_DELETION_COUNT_KEYS = (
+    "material_sources",
+    "material_versions",
+    "material_units",
+    "lesson_material_links",
+    "semester_material_records",
+    "semester_mapping_proposals",
+    "reference_ppt_collections",
+    "exercise_regions",
+    "exercise_candidates",
+)
+_BLOCKING_PPTX_EXECUTION_STATUSES = frozenset(
+    {"running", "verifying", "publishing", "interrupted"}
+)
 
 
 class TeachingCatalogRepository:
@@ -625,16 +639,382 @@ class TeachingCatalogRepository:
             ).fetchall()
         return tuple(Path(str(row["path"])) for row in rows if str(row["path"] or "").strip())
 
+    def material_deletion_impact(
+        self,
+        source_id: str,
+        *,
+        expected_revision: int,
+    ) -> dict[str, object]:
+        with self._database.connect() as connection:
+            return self._material_deletion_impact(
+                connection,
+                source_id,
+                expected_revision=expected_revision,
+            )
+
+    def begin_material_deletion(
+        self,
+        *,
+        operation_id: str,
+        source_id: str,
+        source_display_name: str,
+        expected_revision: int,
+        preview_version: str,
+        request_hash: str,
+        impact: dict[str, object],
+    ) -> dict[str, object] | None:
+        with self._database.connect(immediate=True) as connection:
+            existing = connection.execute(
+                """
+                SELECT operation.operation_type, operation.request_hash,
+                       operation.status, operation.error_code,
+                       receipt.preview_version, receipt.impact_json,
+                       receipt.result_json
+                FROM teaching_prep_operations AS operation
+                LEFT JOIN material_delete_receipts AS receipt
+                  ON receipt.operation_id = operation.operation_id
+                WHERE operation.operation_id = ?
+                """,
+                (operation_id,),
+            ).fetchone()
+            if existing is not None:
+                if (
+                    str(existing["operation_type"]) != "material_delete"
+                    or str(existing["request_hash"]) != request_hash
+                    or existing["impact_json"] is None
+                ):
+                    raise TeachingPrepConflictError(
+                        "deletion operation ID was reused for different input"
+                    )
+                return _material_delete_receipt(existing, operation_id)
+            connection.execute(
+                """
+                INSERT INTO teaching_prep_operations (
+                    operation_id, operation_type, idempotency_key,
+                    request_hash, target_kind, target_id, status
+                ) VALUES (?, 'material_delete', ?, ?, 'material_source', ?, 'running')
+                """,
+                (operation_id, operation_id, request_hash, source_id),
+            )
+            connection.execute(
+                """
+                INSERT INTO material_delete_receipts (
+                    operation_id, source_id, source_display_name,
+                    expected_revision, preview_version, request_hash,
+                    impact_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    operation_id,
+                    source_id,
+                    source_display_name,
+                    int(expected_revision),
+                    preview_version,
+                    request_hash,
+                    _json(impact),
+                ),
+            )
+        return None
+
+    def find_material_deletion(
+        self,
+        operation_id: str,
+        *,
+        request_hash: str,
+    ) -> dict[str, object] | None:
+        with self._database.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT operation.operation_type, operation.request_hash,
+                       operation.status, operation.error_code,
+                       receipt.preview_version, receipt.impact_json,
+                       receipt.result_json
+                FROM teaching_prep_operations AS operation
+                LEFT JOIN material_delete_receipts AS receipt
+                  ON receipt.operation_id = operation.operation_id
+                WHERE operation.operation_id = ?
+                """,
+                (operation_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        if (
+            str(row["operation_type"]) != "material_delete"
+            or str(row["request_hash"]) != request_hash
+            or row["impact_json"] is None
+        ):
+            raise TeachingPrepConflictError(
+                "deletion operation ID was reused for different input"
+            )
+        return _material_delete_receipt(row, operation_id)
+
+    def claim_recovered_material_deletion(
+        self,
+        operation_id: str,
+        *,
+        request_hash: str,
+        source_id: str,
+        expected_revision: int,
+        preview_version: str,
+    ) -> bool:
+        """Resume only a fully restored interrupted delete with unchanged input."""
+
+        with self._database.connect(immediate=True) as connection:
+            row = connection.execute(
+                """
+                SELECT operation.operation_type, operation.request_hash,
+                       operation.status, operation.error_code,
+                       receipt.source_id, receipt.expected_revision,
+                       receipt.preview_version, receipt.result_json,
+                       receipt.staging_manifest_json
+                FROM teaching_prep_operations AS operation
+                JOIN material_delete_receipts AS receipt
+                  ON receipt.operation_id = operation.operation_id
+                WHERE operation.operation_id = ?
+                """,
+                (operation_id,),
+            ).fetchone()
+            if row is None:
+                raise TeachingPrepNotFoundError(
+                    "material deletion operation was not found"
+                )
+            if (
+                str(row["operation_type"]) != "material_delete"
+                or str(row["request_hash"]) != request_hash
+                or str(row["source_id"]) != source_id
+                or int(row["expected_revision"]) != int(expected_revision)
+                or str(row["preview_version"]) != preview_version
+            ):
+                raise TeachingPrepConflictError(
+                    "deletion operation ID was reused for different input"
+                )
+            if (
+                str(row["status"]) != "interrupted"
+                or str(row["error_code"] or "")
+                != "application_restarted_during_material_delete"
+                or row["result_json"] is not None
+                or str(row["staging_manifest_json"] or "[]") != "[]"
+            ):
+                return False
+            source = connection.execute(
+                "SELECT revision FROM material_sources WHERE id = ?",
+                (source_id,),
+            ).fetchone()
+            if (
+                source is None
+                or int(source["revision"]) != int(expected_revision)
+            ):
+                return False
+            try:
+                current_impact = self._material_deletion_impact(
+                    connection,
+                    source_id,
+                    expected_revision=expected_revision,
+                )
+            except (TeachingPrepConflictError, TeachingPrepNotFoundError):
+                return False
+            if (
+                current_impact["preview_version"] != preview_version
+                or current_impact["can_delete"] is not True
+            ):
+                return False
+            updated = connection.execute(
+                """
+                UPDATE teaching_prep_operations
+                SET status = 'running', error_code = NULL,
+                    updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+                    finished_at = NULL
+                WHERE operation_id = ?
+                  AND operation_type = 'material_delete'
+                  AND status = 'interrupted'
+                  AND error_code = (
+                    'application_restarted_during_material_delete'
+                  )
+                """,
+                (operation_id,),
+            ).rowcount
+        return updated == 1
+
+    def save_material_deletion_staging_manifest(
+        self,
+        operation_id: str,
+        *,
+        manifest: Sequence[Mapping[str, str]],
+    ) -> None:
+        payload = [dict(item) for item in manifest]
+        encoded = _json(payload)
+        with self._database.connect(immediate=True) as connection:
+            row = connection.execute(
+                """
+                SELECT operation.status, receipt.staging_manifest_json
+                FROM teaching_prep_operations AS operation
+                JOIN material_delete_receipts AS receipt
+                  ON receipt.operation_id = operation.operation_id
+                WHERE operation.operation_id = ?
+                  AND operation.operation_type = 'material_delete'
+                """,
+                (operation_id,),
+            ).fetchone()
+            if row is None:
+                raise TeachingPrepNotFoundError(
+                    "material deletion operation was not found"
+                )
+            if str(row["status"]) != "running":
+                raise TeachingPrepConflictError(
+                    "material deletion operation is no longer running"
+                )
+            existing = str(row["staging_manifest_json"] or "[]")
+            if existing not in {"[]", encoded}:
+                raise TeachingPrepConflictError(
+                    "material deletion staging manifest changed"
+                )
+            connection.execute(
+                """
+                UPDATE material_delete_receipts
+                SET staging_manifest_json = ?,
+                    updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                WHERE operation_id = ?
+                """,
+                (encoded, operation_id),
+            )
+
+    def material_deletions_needing_file_recovery(
+        self,
+    ) -> tuple[dict[str, object], ...]:
+        with self._database.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT receipt.operation_id, operation.status,
+                       receipt.staging_manifest_json
+                FROM material_delete_receipts AS receipt
+                JOIN teaching_prep_operations AS operation
+                  ON operation.operation_id = receipt.operation_id
+                WHERE operation.operation_type = 'material_delete'
+                  AND (
+                    operation.status = 'running'
+                    OR receipt.staging_manifest_json <> '[]'
+                  )
+                ORDER BY receipt.created_at, receipt.operation_id
+                """
+            ).fetchall()
+        recoveries: list[dict[str, object]] = []
+        for row in rows:
+            try:
+                manifest = json.loads(
+                    str(row["staging_manifest_json"] or "[]")
+                )
+            except (TypeError, ValueError):
+                manifest = None
+            recoveries.append(
+                {
+                    "operation_id": str(row["operation_id"]),
+                    "status": str(row["status"]),
+                    "manifest": manifest,
+                }
+            )
+        return tuple(recoveries)
+
+    def clear_material_deletion_staging_manifest(
+        self,
+        operation_id: str,
+    ) -> None:
+        with self._database.connect(immediate=True) as connection:
+            connection.execute(
+                """
+                UPDATE material_delete_receipts
+                SET staging_manifest_json = '[]',
+                    updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                WHERE operation_id = ?
+                """,
+                (operation_id,),
+            )
+
+    def interrupt_material_deletion(
+        self,
+        operation_id: str,
+        *,
+        error_code: str,
+    ) -> None:
+        with self._database.connect(immediate=True) as connection:
+            connection.execute(
+                """
+                UPDATE teaching_prep_operations
+                SET status = 'interrupted', error_code = ?,
+                    updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+                    finished_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                WHERE operation_id = ?
+                  AND operation_type = 'material_delete'
+                  AND status IN ('running', 'interrupted')
+                """,
+                (error_code, operation_id),
+            )
+
+    def get_material_deletion(self, operation_id: str) -> dict[str, object]:
+        with self._database.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT operation.status, operation.error_code,
+                       receipt.preview_version, receipt.impact_json,
+                       receipt.result_json
+                FROM material_delete_receipts AS receipt
+                JOIN teaching_prep_operations AS operation
+                  ON operation.operation_id = receipt.operation_id
+                WHERE receipt.operation_id = ?
+                """,
+                (operation_id,),
+            ).fetchone()
+        if row is None:
+            raise TeachingPrepNotFoundError(
+                "material deletion operation was not found"
+            )
+        return _material_delete_receipt(row, operation_id)
+
+    def fail_material_deletion(
+        self,
+        operation_id: str,
+        *,
+        error_code: str,
+    ) -> None:
+        with self._database.connect(immediate=True) as connection:
+            connection.execute(
+                """
+                UPDATE teaching_prep_operations
+                SET status = 'failed', error_code = ?,
+                    updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+                    finished_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                WHERE operation_id = ? AND status = 'running'
+                """,
+                (error_code, operation_id),
+            )
+
     def delete_material_source(
         self,
         source_id: str,
         *,
         expected_revision: int,
-    ) -> dict[str, int]:
+        expected_preview_version: str,
+        operation_id: str,
+        deleted_file_count: int,
+    ) -> dict[str, object]:
         """Permanently delete one source and its directly derived catalog data."""
 
-        counts: dict[str, int] = {}
+        counts: dict[str, int] = {
+            key: 0 for key in _MATERIAL_DELETION_COUNT_KEYS
+        }
         with self._database.connect(immediate=True) as connection:
+            current_impact = self._material_deletion_impact(
+                connection,
+                source_id,
+                expected_revision=expected_revision,
+            )
+            if current_impact["preview_version"] != expected_preview_version:
+                raise TeachingPrepConflictError(
+                    "material deletion impact changed; preview it again"
+                )
+            if current_impact["can_delete"] is not True:
+                raise TeachingPrepConflictError(
+                    "material has active courseware generation and cannot be deleted"
+                )
             source = connection.execute(
                 "SELECT revision FROM material_sources WHERE id = ?",
                 (source_id,),
@@ -652,13 +1032,21 @@ class TeachingCatalogRepository:
             ]
             placeholders = ",".join("?" for _ in version_ids)
             if version_ids:
-                published_use = connection.execute(
-                    f"SELECT 1 FROM pptx_execution_runs WHERE source_material_version_id IN ({placeholders}) LIMIT 1",
+                active_generation = connection.execute(
+                    f"""
+                    SELECT 1
+                    FROM pptx_execution_runs
+                    WHERE source_material_version_id IN ({placeholders})
+                      AND status IN (
+                          'running', 'verifying', 'publishing', 'interrupted'
+                      )
+                    LIMIT 1
+                    """,
                     tuple(version_ids),
                 ).fetchone()
-                if published_use is not None:
+                if active_generation is not None:
                     raise TeachingPrepConflictError(
-                        "material has generated courseware history and cannot be deleted"
+                        "material has active courseware generation and cannot be deleted"
                     )
 
             record_ids = [
@@ -725,6 +1113,12 @@ class TeachingCatalogRepository:
                     tuple(version_ids),
                 ).fetchall()
                 unit_ids = [str(row["id"]) for row in unit_rows]
+                _historical_payload_redactions(
+                    connection,
+                    material_version_ids=version_ids,
+                    material_unit_ids=unit_ids,
+                    apply=True,
+                )
                 candidate_ids: list[str] = []
                 if unit_ids:
                     unit_placeholders = ",".join("?" for _ in unit_ids)
@@ -768,7 +1162,272 @@ class TeachingCatalogRepository:
                 "DELETE FROM material_sources WHERE id = ?",
                 (source_id,),
             ).rowcount)
-        return counts
+            result: dict[str, object] = {
+                "operation_id": operation_id,
+                "status": "succeeded",
+                "preview_version": expected_preview_version,
+                "deleted_source_id": source_id,
+                "deleted_file_count": int(deleted_file_count),
+                "counts": counts,
+                "error_code": None,
+            }
+            updated = connection.execute(
+                """
+                UPDATE teaching_prep_operations
+                SET status = 'succeeded', error_code = NULL,
+                    updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+                    finished_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                WHERE operation_id = ? AND status = 'running'
+                """,
+                (operation_id,),
+            ).rowcount
+            if updated != 1:
+                raise TeachingPrepConflictError(
+                    "material deletion operation is no longer running"
+                )
+            connection.execute(
+                """
+                UPDATE material_delete_receipts
+                SET result_json = ?,
+                    updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                WHERE operation_id = ?
+                """,
+                (_json(result), operation_id),
+            )
+        return result
+
+    def _material_deletion_impact(
+        self,
+        connection: sqlite3.Connection,
+        source_id: str,
+        *,
+        expected_revision: int,
+    ) -> dict[str, object]:
+        source = connection.execute(
+            "SELECT id, display_name, revision FROM material_sources WHERE id = ?",
+            (source_id,),
+        ).fetchone()
+        if source is None:
+            raise TeachingPrepNotFoundError("material source was not found")
+        if int(source["revision"]) != int(expected_revision):
+            raise TeachingPrepConflictError("material source revision changed")
+        version_ids = [
+            str(row["id"])
+            for row in connection.execute(
+                "SELECT id FROM material_versions WHERE source_id = ? ORDER BY id",
+                (source_id,),
+            ).fetchall()
+        ]
+        unit_ids: list[str] = []
+        link_ids: list[str] = []
+        region_ids: list[str] = []
+        candidate_ids: list[str] = []
+        generation_runs: list[dict[str, str]] = []
+        if version_ids:
+            placeholders = ",".join("?" for _ in version_ids)
+            unit_ids = [
+                str(row["id"])
+                for row in connection.execute(
+                    f"SELECT id FROM material_units WHERE material_version_id IN ({placeholders}) ORDER BY id",
+                    tuple(version_ids),
+                ).fetchall()
+            ]
+            link_ids = [
+                str(row["id"])
+                for row in connection.execute(
+                    f"SELECT id FROM lesson_material_links WHERE material_version_id IN ({placeholders}) ORDER BY id",
+                    tuple(version_ids),
+                ).fetchall()
+            ]
+            generation_runs = [
+                {
+                    "id": str(row["id"]),
+                    "status": str(row["status"]),
+                    "source_snapshot_id": str(
+                        row["source_material_version_id"]
+                    ),
+                    "staging_name": str(row["staging_name"]),
+                }
+                for row in connection.execute(
+                    f"""
+                    SELECT id, status, source_material_version_id, staging_name
+                    FROM pptx_execution_runs
+                    WHERE source_material_version_id IN ({placeholders})
+                    ORDER BY id
+                    """,
+                    tuple(version_ids),
+                ).fetchall()
+            ]
+        if unit_ids:
+            unit_placeholders = ",".join("?" for _ in unit_ids)
+            region_rows = connection.execute(
+                f"SELECT id, exercise_candidate_id FROM exercise_regions WHERE material_unit_id IN ({unit_placeholders}) ORDER BY id",
+                tuple(unit_ids),
+            ).fetchall()
+            region_ids = [str(row["id"]) for row in region_rows]
+            referenced_candidates = sorted(
+                {str(row["exercise_candidate_id"]) for row in region_rows}
+            )
+            for candidate_id in referenced_candidates:
+                outside = connection.execute(
+                    f"""
+                    SELECT 1 FROM exercise_regions
+                    WHERE exercise_candidate_id = ?
+                      AND material_unit_id NOT IN ({unit_placeholders})
+                    LIMIT 1
+                    """,
+                    (candidate_id, *unit_ids),
+                ).fetchone()
+                if outside is None:
+                    candidate_ids.append(candidate_id)
+        record_rows = connection.execute(
+            """
+            SELECT record.id, semester.id AS semester_id,
+                   curriculum.title, semester.school_year, semester.term
+            FROM semester_material_records AS record
+            JOIN teaching_semesters AS semester ON semester.id = record.semester_id
+            JOIN curriculum_editions AS curriculum
+              ON curriculum.id = semester.curriculum_id
+            WHERE record.material_source_id = ?
+            ORDER BY record.id
+            """,
+            (source_id,),
+        ).fetchall()
+        record_ids = [str(row["id"]) for row in record_rows]
+        affected_semesters = [
+            {
+                "semester_id": str(row["semester_id"]),
+                "title": str(row["title"]),
+                "school_year": str(row["school_year"]),
+                "term": str(row["term"]),
+            }
+            for row in record_rows
+        ]
+        proposal_ids: list[str] = []
+        collection_ids: list[str] = []
+        if record_ids:
+            record_placeholders = ",".join("?" for _ in record_ids)
+            proposal_ids = [
+                str(row["id"])
+                for row in connection.execute(
+                    f"""
+                    SELECT DISTINCT proposal.id
+                    FROM semester_mapping_proposals AS proposal,
+                         json_each(proposal.payload_json, '$.source_material_record_ids') AS source_record
+                    WHERE CAST(source_record.value AS TEXT) IN ({record_placeholders})
+                    ORDER BY proposal.id
+                    """,
+                    tuple(record_ids),
+                ).fetchall()
+            ]
+            collection_rows = connection.execute(
+                f"""
+                SELECT DISTINCT collection.id, collection.mapping_proposal_id
+                FROM reference_ppt_collections AS collection
+                JOIN reference_ppt_collection_members AS member
+                  ON member.collection_id = collection.id
+                WHERE member.material_record_id IN ({record_placeholders})
+                ORDER BY collection.id
+                """,
+                tuple(record_ids),
+            ).fetchall()
+            collection_ids = [str(row["id"]) for row in collection_rows]
+            proposal_ids = sorted(
+                set(proposal_ids)
+                | {str(row["mapping_proposal_id"]) for row in collection_rows}
+            )
+        owned_paths = [
+            str(row["path"])
+            for row in connection.execute(
+                """
+                SELECT location.local_path AS path
+                FROM material_locations AS location
+                JOIN material_versions AS version ON version.id = location.version_id
+                WHERE version.source_id = ?
+                UNION ALL
+                SELECT unit.preview_relpath AS path
+                FROM material_units AS unit
+                JOIN material_versions AS version ON version.id = unit.material_version_id
+                WHERE version.source_id = ?
+                ORDER BY path
+                """,
+                (source_id, source_id),
+            ).fetchall()
+            if str(row["path"] or "").strip()
+        ]
+        counts = {
+            "material_sources": 1,
+            "material_versions": len(version_ids),
+            "material_units": len(unit_ids),
+            "lesson_material_links": len(link_ids),
+            "semester_material_records": len(record_ids),
+            "semester_mapping_proposals": len(proposal_ids),
+            "reference_ppt_collections": len(collection_ids),
+            "exercise_regions": len(region_ids),
+            "exercise_candidates": len(candidate_ids),
+        }
+        historical_payload_redactions = _historical_payload_redactions(
+            connection,
+            material_version_ids=version_ids,
+            material_unit_ids=unit_ids,
+            apply=False,
+        )
+        fingerprint_payload = {
+            "source_id": source_id,
+            "source_revision": int(expected_revision),
+            "version_ids": version_ids,
+            "unit_ids": unit_ids,
+            "link_ids": link_ids,
+            "record_ids": record_ids,
+            "proposal_ids": proposal_ids,
+            "collection_ids": collection_ids,
+            "region_ids": region_ids,
+            "candidate_ids": candidate_ids,
+            "generation_runs": generation_runs,
+            "historical_payload_redactions": historical_payload_redactions,
+            "owned_paths": owned_paths,
+        }
+        blocking_generation_count = sum(
+            1
+            for run in generation_runs
+            if run["status"] in _BLOCKING_PPTX_EXECUTION_STATUSES
+        )
+        preserved_snapshot_count = len(
+            {run["source_snapshot_id"] for run in generation_runs}
+        )
+        return {
+            "source_id": source_id,
+            "display_name": str(source["display_name"]),
+            "source_revision": int(expected_revision),
+            "impact_counts": counts,
+            "affected_semesters": affected_semesters,
+            "generation_history_count": len(generation_runs),
+            "preserved_snapshot_count": preserved_snapshot_count,
+            "blocking_generation_count": blocking_generation_count,
+            "can_delete": blocking_generation_count == 0,
+            "blocker_code": (
+                None
+                if blocking_generation_count == 0
+                else "active_courseware_generation"
+            ),
+            "preserved_history_note": (
+                None
+                if not generation_runs
+                else (
+                    "删除后仅保留生成历史所需的资料名、安全文件名、资料类型、"
+                    "版本标识和内容指纹；不保留原文件、解析正文或绝对路径，"
+                    "原资料及其课时、学期资料关联无法恢复。"
+                )
+            ),
+            "confirmation_phrase": "确认彻底删除资料",
+            "preview_version": _request_hash(fingerprint_payload),
+            "_owned_paths": owned_paths,
+            "_terminal_generation_staging_names": [
+                run["staging_name"]
+                for run in generation_runs
+                if run["status"] not in _BLOCKING_PPTX_EXECUTION_STATUSES
+            ],
+        }
 
     def get_material_version(self, version_id: str) -> MaterialVersion:
         with self._database.connect() as connection:
@@ -957,6 +1616,166 @@ class TeachingCatalogRepository:
             """,
             parameters,
         ).fetchone()
+
+
+def _json(payload: object) -> str:
+    return json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+
+_HISTORICAL_SOURCE_REPLACEMENTS: dict[str, object] = {
+    "text": "",
+    "text_summary": "",
+    "extracted_text": "",
+    "object_summary": {},
+    "preview_url": None,
+    "asset_ref": None,
+    "material_unit_id": None,
+    "unit_id": None,
+}
+
+
+def _historical_payload_redactions(
+    connection: sqlite3.Connection,
+    *,
+    material_version_ids: Sequence[str],
+    material_unit_ids: Sequence[str],
+    apply: bool,
+) -> list[dict[str, object]]:
+    version_ids = frozenset(str(item) for item in material_version_ids)
+    unit_ids = frozenset(str(item) for item in material_unit_ids)
+    if not version_ids:
+        return []
+    result: list[dict[str, object]] = []
+    for table in ("resource_pack_versions", "slide_plan_versions"):
+        rows = connection.execute(
+            f"SELECT id, payload_json FROM {table} ORDER BY id"
+        ).fetchall()
+        for row in rows:
+            original_json = str(row["payload_json"])
+            try:
+                payload = json.loads(original_json)
+            except json.JSONDecodeError as exc:
+                raise TeachingPrepConflictError(
+                    "stored teaching history payload is invalid"
+                ) from exc
+            scrubbed, field_count = _scrub_historical_source_payload(
+                payload,
+                material_version_ids=version_ids,
+                material_unit_ids=unit_ids,
+                inherited_target=False,
+            )
+            if field_count == 0:
+                continue
+            scrubbed_json = _json(scrubbed)
+            result.append(
+                {
+                    "table": table,
+                    "id": str(row["id"]),
+                    "before_sha256": hashlib.sha256(
+                        original_json.encode("utf-8")
+                    ).hexdigest(),
+                    "after_sha256": hashlib.sha256(
+                        scrubbed_json.encode("utf-8")
+                    ).hexdigest(),
+                    "field_count": field_count,
+                }
+            )
+            if apply:
+                connection.execute(
+                    f"UPDATE {table} SET payload_json = ? WHERE id = ?",
+                    (scrubbed_json, str(row["id"])),
+                )
+    return result
+
+
+def _scrub_historical_source_payload(
+    value: object,
+    *,
+    material_version_ids: frozenset[str],
+    material_unit_ids: frozenset[str],
+    inherited_target: bool,
+) -> tuple[object, int]:
+    if isinstance(value, list):
+        scrubbed_items: list[object] = []
+        field_count = 0
+        for item in value:
+            scrubbed, changed = _scrub_historical_source_payload(
+                item,
+                material_version_ids=material_version_ids,
+                material_unit_ids=material_unit_ids,
+                inherited_target=inherited_target,
+            )
+            scrubbed_items.append(scrubbed)
+            field_count += changed
+        return scrubbed_items, field_count
+    if not isinstance(value, dict):
+        return value, 0
+    target_mapping = value.get("target")
+    operation_targets_deleted_unit = (
+        isinstance(target_mapping, dict)
+        and str(target_mapping.get("material_unit_id") or "")
+        in material_unit_ids
+    )
+    targets_deleted_source = inherited_target or (
+        str(value.get("material_version_id") or "")
+        in material_version_ids
+        or str(value.get("material_unit_id") or "") in material_unit_ids
+        or str(value.get("unit_id") or "") in material_unit_ids
+        or operation_targets_deleted_unit
+    )
+    scrubbed_mapping: dict[str, object] = {}
+    field_count = 0
+    for key, item in value.items():
+        if targets_deleted_source and key in _HISTORICAL_SOURCE_REPLACEMENTS:
+            replacement = _HISTORICAL_SOURCE_REPLACEMENTS[key]
+            replacement = (
+                dict(replacement)
+                if isinstance(replacement, dict)
+                else replacement
+            )
+            scrubbed_mapping[key] = replacement
+            if item != replacement:
+                field_count += 1
+            continue
+        scrubbed, changed = _scrub_historical_source_payload(
+            item,
+            material_version_ids=material_version_ids,
+            material_unit_ids=material_unit_ids,
+            inherited_target=targets_deleted_source,
+        )
+        scrubbed_mapping[key] = scrubbed
+        field_count += changed
+    return scrubbed_mapping, field_count
+
+
+def _material_delete_receipt(
+    row: sqlite3.Row,
+    operation_id: str,
+) -> dict[str, object]:
+    if row["result_json"] is not None:
+        result = json.loads(str(row["result_json"]))
+        if isinstance(result, dict):
+            return result
+    impact = json.loads(str(row["impact_json"] or "{}"))
+    return {
+        "operation_id": operation_id,
+        "status": str(row["status"]),
+        "preview_version": str(row["preview_version"]),
+        "deleted_source_id": None,
+        "deleted_file_count": 0,
+        "counts": {key: 0 for key in _MATERIAL_DELETION_COUNT_KEYS},
+        "error_code": (
+            str(row["error_code"])
+            if row["error_code"] is not None
+            else None
+        ),
+        "impact": impact if isinstance(impact, dict) else {},
+    }
 
 
 def _request_hash(payload: dict[str, object]) -> str:

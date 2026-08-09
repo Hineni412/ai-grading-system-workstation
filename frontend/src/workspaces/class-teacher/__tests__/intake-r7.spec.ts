@@ -326,6 +326,32 @@ describe('B-UI-R7 conversation desk', () => {
     expect(host.textContent).toContain('不会自动重发')
   })
 
+  it('shows a stale student-reference warning on the preserved review draft', async () => {
+    const host = await mountDesk({
+      ...conversation('handoff_ready'),
+      handoffs: [{
+        handoff_id: 'handoff-stale-ref',
+        draft_id: 'draft-stale-ref',
+        work_item_id: 'work-stale-ref',
+        turn_id: 'turn-stale-ref',
+        domain: 'student_support',
+        handling_mode: 'record',
+        intent: 'append',
+        destination_key: 'class_teacher.student.record',
+        draft_revision: 1,
+        adoption_state: 'pending',
+        missing_fields: ['学生版本信息不一致，请重新选择'],
+        subject_ref_count: 0,
+        auto_open_allowed: false,
+      }],
+    })
+
+    const draftCard = host.querySelector<HTMLElement>('[data-work-item="work-stale-ref"]')
+    expect(draftCard).not.toBeNull()
+    expect(draftCard?.textContent).toContain('学生版本信息不一致，请重新选择')
+    expect(draftCard?.textContent).toContain('打开核对，不会自动保存')
+  })
+
   it('waits for a running turn before accepting another message', async () => {
     const host = await mountDesk({
       ...conversation('ai_running'), revision: 2,

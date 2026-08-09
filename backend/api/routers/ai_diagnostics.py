@@ -6,6 +6,7 @@ from fastapi import APIRouter, Query, Response
 
 from backend.api.app import ApiError, ErrorResponse
 from backend.api.schemas.ai_diagnostics import (
+    AiDiagnosticClearResponse,
     AiDiagnosticDetail,
     AiDiagnosticListResponse,
 )
@@ -38,6 +39,14 @@ def list_ai_diagnostics(
         str,
         Query(pattern=r"^(?:|pending|success|failure)$"),
     ] = "",
+    workspace_module: Annotated[
+        str,
+        Query(pattern=r"^(?:|[a-z][a-z0-9_]{0,79})$"),
+    ] = "",
+    workspace_task_kind: Annotated[
+        str,
+        Query(pattern=r"^(?:|[a-z][a-z0-9_]{0,79})$"),
+    ] = "",
 ) -> AiDiagnosticListResponse:
     response.headers["Cache-Control"] = _NO_STORE
     try:
@@ -45,6 +54,8 @@ def list_ai_diagnostics(
             limit=limit,
             request_kind=request_kind,
             outcome=outcome,
+            workspace_module=workspace_module,
+            workspace_task_kind=workspace_task_kind,
         )
     except (OSError, UnicodeError, ValueError) as exc:
         raise ApiError(
@@ -53,6 +64,31 @@ def list_ai_diagnostics(
             "AI 调用记录暂时无法读取。",
         ) from exc
     return AiDiagnosticListResponse(**payload)
+
+
+@router.delete(
+    "/class-teacher",
+    response_model=AiDiagnosticClearResponse,
+    responses={
+        503: {
+            "model": ErrorResponse,
+            "description": "Diagnostic journal is unavailable",
+        }
+    },
+)
+def clear_class_teacher_diagnostics(
+    response: Response,
+) -> AiDiagnosticClearResponse:
+    response.headers["Cache-Control"] = _NO_STORE
+    try:
+        payload = _JOURNAL.clear_workspace("class_teacher")
+    except (OSError, UnicodeError, ValueError) as exc:
+        raise ApiError(
+            503,
+            "ai_diagnostics_clear_unavailable",
+            "班主任正文日志暂时无法清除。",
+        ) from exc
+    return AiDiagnosticClearResponse(**payload)
 
 
 @router.get(

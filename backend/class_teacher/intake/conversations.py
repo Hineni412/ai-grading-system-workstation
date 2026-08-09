@@ -14,6 +14,7 @@ from .triage_contract import TriageResult, parse_triage
 
 
 _OPAQUE_ID = re.compile(r"[A-Za-z0-9_-]{8,128}")
+_SOP_TEMPLATE_MISSING_FIELD = "请由教师选择学校流程模板"
 
 
 def _iso() -> str:
@@ -22,6 +23,18 @@ def _iso() -> str:
 
 def _json(value: object) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+
+
+def _unresolved_missing_fields(
+    *,
+    handling_mode: str,
+    content: dict[str, object],
+    missing_fields: object,
+) -> list[str]:
+    values = [str(item) for item in missing_fields] if isinstance(missing_fields, list) else []
+    if handling_mode == "sop" and str(content.get("template_key") or "").strip():
+        return [item for item in values if item != _SOP_TEMPLATE_MISSING_FIELD]
+    return values
 
 
 class ConversationStore:
@@ -663,12 +676,24 @@ class ConversationStore:
                 refs = self._subject_refs(
                     subject_refs if subject_refs is not None else json.loads(str(row["subject_refs_json"]))
                 )
+                missing_fields = _unresolved_missing_fields(
+                    handling_mode=str(row["handling_mode"]),
+                    content=content,
+                    missing_fields=json.loads(str(row["missing_fields_json"])),
+                )
                 connection.execute(
                     """
                     UPDATE intake_drafts SET revision=revision+1, content_json=?,
-                        subject_refs_json=?, state='open', updated_at=? WHERE draft_id=?
+                        subject_refs_json=?, missing_fields_json=?, state='open',
+                        updated_at=? WHERE draft_id=?
                     """,
-                    (encoded_content, _json(refs), _iso(), str(row["draft_id"])),
+                    (
+                        encoded_content,
+                        _json(refs),
+                        _json(missing_fields),
+                        _iso(),
+                        str(row["draft_id"]),
+                    ),
                 )
                 if stale_rebind:
                     connection.execute(
@@ -1126,7 +1151,7 @@ class ConversationStore:
             """
             SELECT h.*, d.work_item_id, d.turn_id, d.domain, d.handling_mode,
                    d.intent, d.destination_key, d.revision AS draft_revision,
-                   d.missing_fields_json, d.subject_refs_json,
+                   d.content_json, d.missing_fields_json, d.subject_refs_json,
                    d.state AS draft_state
             FROM intake_handoffs h JOIN intake_drafts d ON d.draft_id=h.draft_id
             WHERE d.conversation_id=? ORDER BY d.created_at, d.work_item_id
@@ -1135,11 +1160,17 @@ class ConversationStore:
         ).fetchall()
         results: list[dict[str, object]] = []
         for row in rows:
-            missing_fields = json.loads(str(row["missing_fields_json"]))
+            row_values = dict(row)
+            content = json.loads(str(row_values.pop("content_json")))
+            missing_fields = _unresolved_missing_fields(
+                handling_mode=str(row["handling_mode"]),
+                content=content,
+                missing_fields=json.loads(str(row["missing_fields_json"])),
+            )
             subject_refs = json.loads(str(row["subject_refs_json"]))
             destination = str(row["destination_key"])
             results.append({
-                **dict(row),
+                **row_values,
                 "missing_fields": missing_fields,
                 "subject_ref_count": len(subject_refs),
                 "auto_open_allowed": not missing_fields
@@ -1164,6 +1195,7 @@ class ConversationStore:
 
     @staticmethod
     def _draft_view(row: Any) -> dict[str, object]:
+        content = json.loads(str(row["content_json"]))
         return {
             "contract_version": "teacher_workspace_handoff.v1",
             "handoff_id": str(row["handoff_id"]),
@@ -1178,9 +1210,13 @@ class ConversationStore:
             "destination_key": str(row["destination_key"]),
             "adoption_id": str(row["adoption_id"]),
             "adoption_state": str(row["adoption_state"]),
-            "content": json.loads(str(row["content_json"])),
+            "content": content,
             "subject_refs": json.loads(str(row["subject_refs_json"])),
-            "missing_fields": json.loads(str(row["missing_fields_json"])),
+            "missing_fields": _unresolved_missing_fields(
+                handling_mode=str(row["handling_mode"]),
+                content=content,
+                missing_fields=json.loads(str(row["missing_fields_json"])),
+            ),
             "return_context": {"destination_key": "class_teacher.home", "focus_ref": str(row["work_item_id"])},
         }
 

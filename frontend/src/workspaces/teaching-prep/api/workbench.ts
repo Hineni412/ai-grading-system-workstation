@@ -1,5 +1,6 @@
 import { apiClient } from '../../../api/client'
 import { assertNoPathLikeKeys, isRecord } from '../../../api/validation'
+import { decodeSemesterMappingProposal } from './catalog'
 import type {
   LessonDraftPayload,
   PptxExecution,
@@ -61,6 +62,7 @@ export interface ReferenceMaterialUnit {
   preview_url: string
   text_status: string
   formula_review_required: boolean
+  object_summary?: Record<string, unknown>
 }
 
 export interface ReferenceMaterialLink {
@@ -256,7 +258,7 @@ export const teachingPrepWorkbenchApi = {
   ): Promise<SemesterMappingProposal> {
     return apiClient.request(
       `/api/teaching-prep/semester-mapping-proposals/${encodeURIComponent(proposalId)}/mappings/${encodeURIComponent(mappingId)}`,
-      { method: 'PATCH', body: input, decode: semesterMappingProposal },
+      { method: 'PATCH', body: input, decode: decodeSemesterMappingProposal },
     )
   },
 
@@ -404,10 +406,6 @@ function recordPayload(payload: unknown): Record<string, unknown> {
 
 function lessonPreparationStatus(payload: unknown): LessonPreparationStatus {
   return recordPayload(payload) as unknown as LessonPreparationStatus
-}
-
-function semesterMappingProposal(payload: unknown): SemesterMappingProposal {
-  return recordPayload(payload) as unknown as SemesterMappingProposal
 }
 
 function referencePreflight(payload: unknown): ReferenceSelectionPreflight {

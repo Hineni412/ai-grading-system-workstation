@@ -16,6 +16,18 @@ from ..support_record_service import SupportRecordService
 from .conversations import ConversationStore
 
 
+_CONFIRMED_RECORD_KINDS = frozenset(
+    {
+        "fact",
+        "student_statement",
+        "reported_statement",
+        "teacher_observation",
+        "provisional_judgment",
+        "professional_conclusion",
+    }
+)
+
+
 def _iso() -> str:
     return datetime.now(UTC).isoformat()
 
@@ -71,9 +83,11 @@ class HandoffAdoption:
         if str(handoff["adoption_state"]) in {"discarded", "stale"}:
             raise VaultError("class_teacher_handoff_not_adoptable", "这份交接已失效或已丢弃", status_code=409)
 
+        mode = str(handoff["handling_mode"])
+        if mode == "record":
+            self._validated_record_attribution(handoff)
         self._mark_adoption_started(handoff_id, target_revision)
 
-        mode = str(handoff["handling_mode"])
         if mode == "record":
             receipt = self._adopt_record(token, handoff, target_revision, operation_id)
         elif mode == "plan_calendar":
@@ -158,6 +172,9 @@ class HandoffAdoption:
         operation_id: str,
     ) -> dict[str, object]:
         content = dict(handoff["content"])
+        record_kind, record_source = self._validated_record_attribution(
+            handoff
+        )
         destination = str(handoff["destination_key"])
         if destination == "class_teacher.student.record":
             refs = list(handoff.get("subject_refs") or [])
@@ -232,10 +249,10 @@ class HandoffAdoption:
                 token=token,
                 operation_id=operation_id,
                 subject_id=subject_id,
-                record_kind=str(content.get("record_kind") or "fact"),
+                record_kind=record_kind,
                 content=str(content.get("summary") or content.get("content") or ""),
                 scene=str(content.get("scene") or "班主任工作台登记"),
-                source=str(content.get("source") or "教师核对的会话草稿"),
+                source=record_source,
                 basis=str(content.get("basis") or "").strip() or None,
                 counterexample=str(content.get("counterexample") or "").strip() or None,
                 category=str(content.get("category") or "日常记录"),
@@ -262,7 +279,17 @@ class HandoffAdoption:
                     vmk=vmk,
                     object_id=object_id,
                     object_type="class_teacher_affair_record",
-                    payload={**content, "teacher_confirmed": True, "created_at": timestamp},
+                    payload={
+                        **{
+                            key: value
+                            for key, value in content.items()
+                            if key != "teacher_confirmed"
+                        },
+                        "record_kind": record_kind,
+                        "source": record_source,
+                        "teacher_confirmed": True,
+                        "created_at": timestamp,
+                    },
                 )
                 connection.execute(
                     "INSERT INTO class_teacher_affair_records VALUES (?, ?, ?, ?)",
@@ -270,6 +297,33 @@ class HandoffAdoption:
                 )
                 self._write_receipt(connection, handoff, target_revision, "affair_record", record_id)
         return self._receipt(str(handoff["adoption_id"])) or {}
+
+    @staticmethod
+    def _validated_record_attribution(
+        handoff: dict[str, object],
+    ) -> tuple[str, str]:
+        content = handoff.get("content")
+        if not isinstance(content, dict):
+            raise VaultError(
+                "class_teacher_record_kind_invalid",
+                "请明确选择记录性质",
+                status_code=422,
+            )
+        record_kind = str(content.get("record_kind") or "").strip()
+        if record_kind not in _CONFIRMED_RECORD_KINDS:
+            raise VaultError(
+                "class_teacher_record_kind_invalid",
+                "请明确选择记录性质",
+                status_code=422,
+            )
+        source = str(content.get("source") or "").strip()
+        if not source:
+            raise VaultError(
+                "class_teacher_record_source_required",
+                "请填写信息来源",
+                status_code=422,
+            )
+        return record_kind, source
 
     def _adopt_plan(
         self,

@@ -626,12 +626,64 @@ class DeleteMaterialSourceRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     expected_revision: int = Field(gt=0)
+    operation_id: str = Field(min_length=8, max_length=96)
+    preview_version: str = Field(min_length=64, max_length=64)
+    confirmation_phrase: str = Field(min_length=1, max_length=80)
+
+
+class MaterialDeletionImpactCounts(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    material_sources: int = Field(ge=0)
+    material_versions: int = Field(ge=0)
+    material_units: int = Field(ge=0)
+    lesson_material_links: int = Field(ge=0)
+    semester_material_records: int = Field(ge=0)
+    semester_mapping_proposals: int = Field(ge=0)
+    reference_ppt_collections: int = Field(ge=0)
+    exercise_regions: int = Field(ge=0)
+    exercise_candidates: int = Field(ge=0)
+
+
+class MaterialDeletionAffectedSemester(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    semester_id: str
+    title: str
+    school_year: str
+    term: Literal["first", "second"]
+
+
+class MaterialDeletionImpactResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    source_id: str
+    display_name: str
+    source_revision: int = Field(gt=0)
+    impact_counts: MaterialDeletionImpactCounts
+    affected_semesters: list[MaterialDeletionAffectedSemester]
+    generation_history_count: int = Field(ge=0)
+    preserved_snapshot_count: int = Field(ge=0)
+    blocking_generation_count: int = Field(ge=0)
+    can_delete: bool
+    blocker_code: str | None
+    preserved_history_note: str | None
+    confirmation_phrase: str
+    preview_version: str = Field(min_length=64, max_length=64)
+    owned_file_count: int = Field(ge=0)
 
 
 class DeleteMaterialSourceResponse(BaseModel):
-    deleted_source_id: str
+    model_config = ConfigDict(extra="forbid")
+
+    operation_id: str
+    status: Literal["running", "succeeded", "failed", "interrupted"]
+    preview_version: str = Field(min_length=64, max_length=64)
+    deleted_source_id: str | None
     deleted_file_count: int = Field(ge=0)
-    counts: dict[str, int]
+    counts: MaterialDeletionImpactCounts
+    error_code: str | None = None
+    impact: MaterialDeletionImpactResponse | None = None
 
 
 class MaterialUnitResponse(BaseModel):

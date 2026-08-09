@@ -160,6 +160,95 @@ try {
         throw 'Unsupported WPS helper request schema'
     }
     $sourceCopy = (Resolve-Path -LiteralPath $plan.source.isolated_copy_path).Path
+    $modeProperty = $plan.PSObject.Properties['mode']
+    $mode = if ($null -eq $modeProperty) {
+        'execute_plan'
+    } else {
+        [string]$modeProperty.Value
+    }
+    if ($mode -eq 'preview_only') {
+        $workingDirectory = [IO.Path]::GetDirectoryName($sourceCopy)
+        $previewDirectory = [IO.Path]::GetFullPath(
+            [string]$plan.output.preview_directory
+        )
+        if (
+            -not $previewDirectory.StartsWith(
+                $workingDirectory + [IO.Path]::DirectorySeparatorChar,
+                [StringComparison]::OrdinalIgnoreCase
+            )
+        ) {
+            throw 'Preview directory is outside the isolated helper directory'
+        }
+        $slideIndexes = @(
+            $plan.slide_indexes |
+                ForEach-Object { [int]$_ }
+        )
+        if (
+            $slideIndexes.Count -lt 1 `
+            -or $slideIndexes.Count -gt 32 `
+            -or @($slideIndexes | Where-Object { $_ -le 0 }).Count -gt 0 `
+            -or @($slideIndexes | Sort-Object -Unique).Count -ne $slideIndexes.Count
+        ) {
+            throw 'Preview slide selection is invalid'
+        }
+        $beforeHash = (Get-FileHash -LiteralPath $sourceCopy -Algorithm SHA256).Hash
+        $expectedHash = [string]$plan.source.sha256
+        if ($beforeHash -ine $expectedHash) {
+            throw 'Preview source fingerprint does not match'
+        }
+        New-Item -ItemType Directory -Path $previewDirectory -Force | Out-Null
+        Get-ChildItem -LiteralPath $previewDirectory -File |
+            Remove-Item -Force
+        $application = New-Object -ComObject 'KWPP.Application'
+        Set-WpsApplicationHiddenIfSupported -Application $application | Out-Null
+        $presentation = $application.Presentations.Open(
+            $sourceCopy,
+            $true,
+            $false,
+            $false
+        )
+        foreach ($index in $slideIndexes) {
+            if ($index -gt [int]$presentation.Slides.Count) {
+                throw 'Preview slide selection is out of range'
+            }
+            $target = Join-Path $previewDirectory (
+                'slide-{0:D5}.png' -f $index
+            )
+            $presentation.Slides.Item($index).Export(
+                $target,
+                'PNG',
+                1600,
+                900
+            )
+        }
+        Wait-WpsSlidePreviews `
+            -PreviewDirectory $previewDirectory `
+            -ExpectedCount $slideIndexes.Count | Out-Null
+        $presentation.Close()
+        $presentation = $null
+        try {
+            $application.Quit()
+        }
+        catch [System.Runtime.InteropServices.COMException] {
+        }
+        $application = $null
+        $afterHash = (Get-FileHash -LiteralPath $sourceCopy -Algorithm SHA256).Hash
+        if ($afterHash -ine $beforeHash) {
+            throw 'Preview source changed during read-only rendering'
+        }
+        $previewResult = @{
+            status = 'completed'
+            source_lock_check = 'passed'
+            rendered_slide_indexes = @($slideIndexes)
+            source_unchanged = $true
+        }
+        $previewResult | ConvertTo-Json -Depth 10 -Compress |
+            Set-Content -LiteralPath $ResultPath -Encoding UTF8
+        exit 0
+    }
+    if ($mode -ne 'execute_plan') {
+        throw 'Unsupported WPS helper mode'
+    }
     $candidate = [IO.Path]::GetFullPath([string]$plan.output.candidate_path)
     $previewDirectory = [IO.Path]::GetFullPath(
         [string]$plan.output.preview_directory

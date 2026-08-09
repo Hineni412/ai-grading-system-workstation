@@ -48,7 +48,7 @@ const summary = computed({ get: () => String(content.value.summary ?? content.va
 const scene = computed({ get: () => String(content.value.scene ?? ''), set: (value) => { content.value.scene = value } })
 const source = computed({ get: () => String(content.value.source ?? ''), set: (value) => { content.value.source = value } })
 const observedAt = computed({ get: () => String(content.value.observed_at ?? '').slice(0, 16), set: (value) => { content.value.observed_at = value } })
-const recordKind = computed({ get: () => String(content.value.record_kind ?? 'fact'), set: (value) => { content.value.record_kind = value } })
+const recordKind = computed({ get: () => String(content.value.record_kind ?? ''), set: (value) => { content.value.record_kind = value } })
 const reviewAt = computed({ get: () => String(content.value.review_at ?? '').slice(0, 16), set: (value) => { content.value.review_at = value } })
 const expiresAt = computed({ get: () => String(content.value.expires_at ?? '').slice(0, 16), set: (value) => { content.value.expires_at = value } })
 const expiringRecord = computed(() => ['teacher_observation', 'provisional_judgment'].includes(recordKind.value))
@@ -216,6 +216,10 @@ async function adopt(): Promise<void> {
     error.value = '请先选择与实际情况相符的学校流程模板。'
     return
   }
+  if (draft.value?.handling_mode === 'record' && (!recordKind.value || !source.value.trim())) {
+    error.value = '请明确选择记录性质并填写信息来源。'
+    return
+  }
   const current = await save()
   if (!current) return
   if (isStudentRecord.value && (!selectedSubjectId.value || !selectedSubjectRevision.value)) {
@@ -281,7 +285,7 @@ onMounted(() => { void load() })
     <p v-if="draft.adoption_state === 'stale'" class="error" role="alert">目标资料已在交接后变化。草稿仍保留；请重新选择学生并核对最新资料后再保存。</p><p v-if="message" class="status" role="status">{{ message }}</p><p v-if="error" class="error" role="alert">{{ error }}</p>
 
     <div v-if="draft.handling_mode === 'record'" class="record-layout">
-      <aside><h2>对象与来源</h2><label v-if="isStudentRecord"><span>学生</span><select v-model="selectedSubjectId" @change="chooseSubject"><option value="">请选择学生</option><option v-for="student in students" :key="student.opaque_ref" :value="student.opaque_ref">{{ student.display_name }} · {{ student.class_label || '未分班' }}</option></select></label><p v-else>这是一项一般事务登记，不会写入学生档案。</p><label><span>记录性质</span><select v-model="recordKind"><option value="fact">事实记录</option><option value="reported_statement">转述记录</option><option value="teacher_observation">教师观察</option><option value="provisional_judgment">暂定判断</option></select></label><label><span>发生时间</span><input v-model="observedAt" type="datetime-local"></label><label><span>场景</span><input v-model="scene" maxlength="200"></label><label><span>来源</span><input v-model="source" maxlength="200"></label><template v-if="expiringRecord"><label><span>复查时间</span><input v-model="reviewAt" type="datetime-local"></label><label><span>失效时间</span><input v-model="expiresAt" type="datetime-local"></label></template></aside>
+      <aside><h2>对象与来源</h2><label v-if="isStudentRecord"><span>学生</span><select v-model="selectedSubjectId" @change="chooseSubject"><option value="">请选择学生</option><option v-for="student in students" :key="student.opaque_ref" :value="student.opaque_ref">{{ student.display_name }} · {{ student.class_label || '未分班' }}</option></select></label><p v-else>这是一项一般事务登记，不会写入学生档案。</p><label><span>记录性质</span><select v-model="recordKind"><option value="">请由教师选择</option><option value="fact">可核对事实</option><option value="student_statement">学生陈述</option><option value="reported_statement">转述信息</option><option value="teacher_observation">教师观察</option><option value="provisional_judgment">阶段性判断</option><option value="professional_conclusion">有依据的专业结论</option></select></label><label><span>发生时间</span><input v-model="observedAt" type="datetime-local"></label><label><span>场景</span><input v-model="scene" maxlength="200"></label><label><span>来源</span><input v-model="source" maxlength="200" placeholder="例如：教师观察、家长转述、医院书面材料"></label><template v-if="expiringRecord"><label><span>复查时间</span><input v-model="reviewAt" type="datetime-local"></label><label><span>失效时间</span><input v-model="expiresAt" type="datetime-local"></label></template></aside>
       <main><h2>事实、转述与判断</h2><label><span>直接观察或可核事实</span><textarea v-model="factText" rows="5" maxlength="6000"></textarea></label><label><span>他人转述（如有）</span><textarea v-model="reportedText" rows="4" maxlength="4000"></textarea></label><label><span>教师当前判断（可留空）</span><textarea v-model="judgmentText" rows="3" maxlength="3000"></textarea></label><p>三类内容会分段保存；系统不会把线索升级为诊断、欺凌认定或惩戒结论。</p></main>
       <aside class="review"><h2>保存前核对</h2><ul><li v-for="item in draft.missing_fields" :key="item">{{ item }}</li><li>正式保存由你点击确认</li><li>需要复查时另建计划</li></ul></aside>
     </div>

@@ -14,16 +14,26 @@ const props = defineProps<{
 }>()
 const emit = defineEmits<{
   'update:activePane': [value: DocumentPane]
+  'preview-loaded': [url: string]
 }>()
 
 const previewState = ref<'idle' | 'loading' | 'ready' | 'error'>(
   props.previewUrl ? 'loading' : 'idle',
 )
+const lastEmittedPreviewUrl = ref<string | null>(null)
 
 watch(
   () => props.previewUrl,
   value => { previewState.value = value ? 'loading' : 'idle' },
 )
+
+function handlePreviewLoad(): void {
+  previewState.value = 'ready'
+  const url = props.previewUrl
+  if (!url || lastEmittedPreviewUrl.value === url) return
+  lastEmittedPreviewUrl.value = url
+  emit('preview-loaded', url)
+}
 
 const previewStyle = computed(() => {
   if (props.fitWidth) return { inlineSize: '100%', maxInlineSize: '100%' }
@@ -63,7 +73,7 @@ const previewStyle = computed(() => {
         :src="previewUrl"
         :alt="`${title}原页预览`"
         :style="previewStyle"
-        @load="previewState = 'ready'"
+        @load="handlePreviewLoad"
         @error="previewState = 'error'"
       >
       <div v-if="previewState === 'loading'" class="tp-document-workspace__empty" role="status">

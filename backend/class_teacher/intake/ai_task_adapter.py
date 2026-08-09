@@ -29,6 +29,11 @@ domain 只能是 student_growth、student_support、conflict_safety、class_oper
 _PROFILE_INSTRUCTION = """当前会话从一个已选学生的档案页发起。只处理这名学生，不得改选其他学生。每次在已提供的当前档案上持续补充、修正和完善，而不是新建历史版本。若信息足以整理，返回且只返回一个 student_growth 或 student_support 的 record 工作项，并原样复制已选学生引用。draft.profile_update 必须是合并后的完整当前档案，包含非空 summary、dimensions、open_questions、support_focus；dimensions 可使用稳定核心 key，也可为学生新增简短英文 key 的个性维度。不得删除与本轮无关的已有维度。发现明显矛盾或关键缺失时，在 clarification_questions 中最多追问 3 个真正有帮助的问题；仍可把已经确定的内容形成完整更新草稿。"""
 _AUDIO_TRIAGE_INSTRUCTION = """你是班主任事务整理助手。当前最后一条用户消息包含教师录音。只返回 json 对象，contract_version 必须是 class_teacher_audio_triage.v1。先在 transcript 字段逐字转写教师说话，保留姓名、日期、数字和否定词，不推断录音中没有的内容；再返回与 class_teacher_triage.v1 相同的 assistant_message、clarification_questions、work_items。把事务分到 student_growth、student_support、conflict_safety、class_operations、activities_culture、school_coordination 六域，并选择 record、plan_calendar、sop 之一。你只能形成草稿，不得自动诊断、分析情绪、认定欺凌、决定惩戒、对外发送或结案。即时危险必须提醒教师先保护学生并联系有权角色。同名学生或无法唯一匹配时 subject_refs 留空并加入待核对项。"""
 _REVISION_INSTRUCTION = """你只调整现有班主任草稿。只返回 JSON 对象：contract_version 必须是 class_teacher_draft_revision.v1，content 必须是完整的新草稿对象。不得正式保存、外发、诊断、作欺凌认定、决定惩戒或结案。"""
+_STUDENT_REFERENCE_RESELECTION_MESSAGE = "学生版本信息不一致，请重新选择"
+_STUDENT_REFERENCE_PATTERN = re.compile(r"[A-Za-z0-9_-]{8,128}")
+_STUDENT_REFERENCE_ISSUE_CODES = frozenset(
+    {"student_revision_mismatch", "unknown_student_reference"}
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,11 +83,16 @@ class ClassTeacherAITaskAdapter:
         )
         if self.configured_model is None:
             raise RuntimeError("class_teacher_model_unavailable")
+        diagnostic_task_kind = (
+            "class_teacher_draft_revision"
+            if task_kind.endswith("draft_revision")
+            else "class_teacher_intake"
+        )
         raw = self.configured_model.invoke_workspace_task(
             task_gateway=model_gateway,
             messages=request.messages,
             operation_id=task.operation_id,
-            purpose="class_teacher_draft_revision" if task_kind.endswith("draft_revision") else "class_teacher_intake",
+            purpose=diagnostic_task_kind,
             expected_destination_fingerprint=task.model_destination_fingerprint,
         )
         try:
@@ -93,7 +103,7 @@ class ClassTeacherAITaskAdapter:
             self._mark_invalid(task, task_kind)
             raise InvalidAdapterResultError("class-teacher model result is invalid") from exc
         try:
-            self.persist_model_result(
+            persisted = self.persist_model_result(
                 task_id=task.task_id,
                 source_ref=source_ref,
                 context_refs=context_refs,
@@ -103,6 +113,18 @@ class ClassTeacherAITaskAdapter:
             if exc.code.endswith("invalid_result"):
                 raise InvalidAdapterResultError("class-teacher model result is invalid") from exc
             raise
+        validation_issue_codes = tuple(
+            str(item)
+            for item in persisted.get("validation_issue_codes", [])
+            if isinstance(item, str)
+        )
+        if validation_issue_codes:
+            model_gateway.record_validation(
+                operation_id=task.operation_id,
+                validation_issue_codes=validation_issue_codes,
+                workspace_module=self.module,
+                workspace_task_kind=diagnostic_task_kind,
+            )
         recovered = self.recover(task)
         if recovered is None:
             raise RuntimeError("class_teacher_proposal_not_persisted")
@@ -333,6 +355,15 @@ class ClassTeacherAITaskAdapter:
         candidates = {
             (item["id"], item["revision"]): item for item in candidate_items
         }
+        candidates_by_id = {item["id"]: item for item in candidate_items}
+        focused_reference_issue_code: str | None = None
+        if focused is not None:
+            current_focused = candidates_by_id.get(str(focused["id"]))
+            if (
+                current_focused is not None
+                and str(current_focused["revision"]) != str(focused["revision"])
+            ):
+                focused_reference_issue_code = "student_revision_mismatch"
         name_counts: dict[str, int] = {}
         for item in candidate_items:
             name = item["display_name"]
@@ -367,34 +398,72 @@ class ClassTeacherAITaskAdapter:
                         *(item for item in alternatives if item != requested_mode),
                     ]))[:2]
                     raw_item.pop("handoff_key", None)
-            refs = (
-                raw_item.get("subject_refs", [])
-                if isinstance(raw_item.get("subject_refs"), list)
-                else []
-            )
+            refs = raw_item.get("subject_refs", [])
+            if not isinstance(refs, list):
+                raise VaultError(
+                    "class_teacher_triage_invalid_result",
+                    "AI 返回的学生引用无效",
+                    status_code=422,
+                )
             selected: list[dict[str, object]] = []
             requires_teacher_choice = len(refs) > 1
+            validation_issue_codes: list[str] = (
+                [focused_reference_issue_code]
+                if focused_reference_issue_code is not None
+                else []
+            )
             for ref in refs:
-                key = (
-                    (
-                        str(ref.get("id") or ""),
-                        str(ref.get("revision") or ""),
-                    )
-                    if isinstance(ref, Mapping)
-                    else ("", "")
-                )
-                candidate = candidates.get(key)
-                if candidate is None:
+                if (
+                    not isinstance(ref, Mapping)
+                    or set(ref) != {"kind", "id", "revision"}
+                    or ref.get("kind") != "student"
+                    or not isinstance(ref.get("id"), str)
+                    or _STUDENT_REFERENCE_PATTERN.fullmatch(str(ref.get("id"))) is None
+                    or not isinstance(ref.get("revision"), str)
+                    or not str(ref.get("revision")).strip()
+                    or len(str(ref.get("revision")).strip()) > 128
+                ):
                     raise VaultError(
                         "class_teacher_triage_invalid_result",
-                        "AI 返回了不在当前候选中的学生引用",
+                        "AI 返回的学生引用无效",
                         status_code=422,
                     )
+                key = (str(ref["id"]), str(ref["revision"]).strip())
+                candidate = candidates.get(key)
+                if candidate is None:
+                    issue_code = (
+                        "student_revision_mismatch"
+                        if key[0] in candidates_by_id
+                        else "unknown_student_reference"
+                    )
+                    if issue_code not in validation_issue_codes:
+                        validation_issue_codes.append(issue_code)
+                    requires_teacher_choice = True
+                    continue
                 if name_counts.get(candidate["display_name"], 0) > 1:
                     requires_teacher_choice = True
                 else:
                     selected.append(dict(ref))
-            if requires_teacher_choice:
+            if validation_issue_codes:
+                raw_item["subject_refs"] = []
+                missing = (
+                    raw_item.get("missing_fields")
+                    if isinstance(raw_item.get("missing_fields"), list)
+                    else []
+                )
+                raw_item["missing_fields"] = list(dict.fromkeys([
+                    *missing,
+                    _STUDENT_REFERENCE_RESELECTION_MESSAGE,
+                ]))
+                draft = raw_item.get("draft")
+                if not isinstance(draft, dict):
+                    raise VaultError(
+                        "class_teacher_triage_invalid_result",
+                        "AI 返回的草稿无效",
+                        status_code=422,
+                    )
+                draft["validation_issue_codes"] = validation_issue_codes
+            elif requires_teacher_choice:
                 raw_item["subject_refs"] = []
                 missing = (
                     raw_item.get("missing_fields")
@@ -414,11 +483,12 @@ class ClassTeacherAITaskAdapter:
                         "AI 没有按学生档案方式整理本轮信息",
                         status_code=422,
                     )
-                raw_item["subject_refs"] = [{
-                    "kind": "student",
-                    "id": str(focused["id"]),
-                    "revision": str(focused["revision"]),
-                }]
+                if not validation_issue_codes:
+                    raw_item["subject_refs"] = [{
+                        "kind": "student",
+                        "id": str(focused["id"]),
+                        "revision": str(focused["revision"]),
+                    }]
                 draft = raw_item.get("draft")
                 update = draft.get("profile_update") if isinstance(draft, dict) else None
                 if not isinstance(update, dict):
@@ -549,6 +619,9 @@ class ClassTeacherAITaskAdapter:
                 for item in list(conversation["handoffs"])
                 if isinstance(item, Mapping) and str(item.get("turn_id")) == turn_id
             ],
+            "validation_issue_codes": _validation_issue_codes(
+                normalized_result
+            ),
         }
 
     def _domain_task_kind(self, task: StoredTask) -> str:
@@ -604,6 +677,26 @@ class ClassTeacherAITaskAdapter:
             return_focus_ref=str(item["work_item_id"]),
             expires_on_source_change=expires_on_source_change,
         )
+
+
+def _validation_issue_codes(result: Mapping[str, Any]) -> list[str]:
+    codes: list[str] = []
+    work_items = result.get("work_items")
+    for item in work_items if isinstance(work_items, list) else []:
+        if not isinstance(item, Mapping):
+            continue
+        draft = item.get("draft")
+        if not isinstance(draft, Mapping):
+            continue
+        raw_codes = draft.get("validation_issue_codes")
+        for code in raw_codes if isinstance(raw_codes, list) else []:
+            normalized = str(code)
+            if (
+                normalized in _STUDENT_REFERENCE_ISSUE_CODES
+                and normalized not in codes
+            ):
+                codes.append(normalized)
+    return codes
 
 
 def _normalize_triage_payload_compatibility(

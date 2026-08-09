@@ -88,6 +88,7 @@ from .schemas import (
     MaterialVersionResponse,
     MaterialLinkListResponse,
     MaterialLinkResponse,
+    MaterialDeletionImpactResponse,
     MaterialParseJobListResponse,
     MaterialParseJobResponse,
     MaterialUnitListResponse,
@@ -1077,7 +1078,42 @@ def create_router() -> APIRouter:
             result = service.delete_material_source(
                 source_id,
                 expected_revision=payload.expected_revision,
+                operation_id=payload.operation_id,
+                preview_version=payload.preview_version,
+                confirmation_phrase=payload.confirmation_phrase,
             )
+        except Exception as exc:
+            raise _api_error(exc) from exc
+        return DeleteMaterialSourceResponse.model_validate(result)
+
+    @router.get(
+        "/material-sources/{source_id}/deletion-preview",
+        response_model=MaterialDeletionImpactResponse,
+    )
+    def preview_material_source_deletion(
+        source_id: str,
+        expected_revision: int = Query(gt=0),
+        service: TeachingPrepService = Depends(get_teaching_prep_service),
+    ) -> MaterialDeletionImpactResponse:
+        try:
+            result = service.preview_material_deletion(
+                source_id,
+                expected_revision=expected_revision,
+            )
+        except Exception as exc:
+            raise _api_error(exc) from exc
+        return MaterialDeletionImpactResponse.model_validate(result)
+
+    @router.get(
+        "/material-deletions/{operation_id}",
+        response_model=DeleteMaterialSourceResponse,
+    )
+    def get_material_source_deletion(
+        operation_id: str,
+        service: TeachingPrepService = Depends(get_teaching_prep_service),
+    ) -> DeleteMaterialSourceResponse:
+        try:
+            result = service.get_material_deletion(operation_id)
         except Exception as exc:
             raise _api_error(exc) from exc
         return DeleteMaterialSourceResponse.model_validate(result)
