@@ -2382,51 +2382,82 @@ def test_retryable_or_unknown_not_supported_errors_never_enter_parameter_fallbac
     assert len(completions.calls) == 1
 
 
-def test_text_from_images_parameter_fallback_shares_generated_request_id(
+def test_public_json_call_does_not_send_a_hidden_model_repair_request(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    client, completions, _sink, _gateway_configs = _gateway_client_factory(
+        monkeypatch,
+        [
+            _gateway_json_completion("not json"),
+            _gateway_json_completion('{"ok": true}'),
+        ],
+    )
+
+    with pytest.raises(llm_client.LLMResponseFormatError):
+        client.json_from_text("prompt")
+
+    assert len(completions.calls) == 1
+
+
+def test_public_json_call_does_not_send_a_hidden_parameter_fallback_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    error = RuntimeError("unsupported parameter max_tokens")
+    client, completions, _sink, _gateway_configs = _gateway_client_factory(
+        monkeypatch,
+        [error, _gateway_json_completion('{"ok": true}')],
+    )
+
+    with pytest.raises(RuntimeError) as raised:
+        client.json_from_text("prompt")
+
+    assert raised.value is error
+    assert len(completions.calls) == 1
+
+
+def test_text_from_images_does_not_send_a_hidden_parameter_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    error = RuntimeError("unsupported parameter max_tokens")
     client, completions, sink, _gateway_configs = _gateway_client_factory(
         monkeypatch,
         [
-            RuntimeError("unsupported parameter max_tokens"),
+            error,
             _gateway_json_completion("recognized text"),
         ],
     )
 
-    assert client.text_from_images("prompt", [b"image"]) == "recognized text"
-    assert len(completions.calls) == 2
-    assert [event.compatibility_fallback for event in sink.events] == [
-        "",
-        "max_completion_tokens",
-    ]
-    request_ids = {event.request_id for event in sink.events}
-    assert len(request_ids) == 1
-    assert request_ids != {""}
+    with pytest.raises(RuntimeError) as raised:
+        client.text_from_images("prompt", [b"image"])
+
+    assert raised.value is error
+    assert len(completions.calls) == 1
+    assert [event.compatibility_fallback for event in sink.events] == [""]
 
 
-def test_parameter_fallback_is_bounded_and_not_counted_as_network_retry(
+def test_public_call_does_not_cycle_through_parameter_variants(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    error = RuntimeError("unsupported parameter max_tokens")
     client, completions, sink, _gateway_configs = _gateway_client_factory(
         monkeypatch,
         [
-            RuntimeError("unsupported parameter max_tokens"),
+            error,
             RuntimeError("unsupported parameter max_completion_tokens"),
             _gateway_json_completion('{"ok": true}'),
         ],
     )
 
-    assert client.json_from_text("prompt") == {"ok": True}
-    assert len(completions.calls) == 3
-    assert [event.compatibility_fallback for event in sink.events] == [
-        "",
-        "max_completion_tokens",
-        "response_format",
-    ]
-    assert [event.attempt for event in sink.events] == [1, 2, 3]
+    with pytest.raises(RuntimeError) as raised:
+        client.json_from_text("prompt")
+
+    assert raised.value is error
+    assert len(completions.calls) == 1
+    assert [event.compatibility_fallback for event in sink.events] == [""]
+    assert [event.attempt for event in sink.events] == [1]
 
 
-def test_parameter_fallback_trace_marks_each_planned_followup(
+def test_parameter_error_trace_marks_that_no_followup_is_planned(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     trace_sink = _GatewayTestSink()
@@ -2440,43 +2471,42 @@ def test_parameter_fallback_trace_marks_each_planned_followup(
         trace_sink=trace_sink,
     )
 
-    assert client.json_from_text("prompt") == {"ok": True}
+    with pytest.raises(RuntimeError, match="unsupported parameter max_tokens"):
+        client.json_from_text("prompt")
 
-    assert len(completions.calls) == 3
+    assert len(completions.calls) == 1
     failed = [
         event
         for event in trace_sink.events
         if event.event_type == "request_failed"
     ]
-    assert [event.attempt for event in failed] == [1, 2]
-    assert [event.will_retry for event in failed] == [True, True]
-    assert [event.retry_delay_ms for event in failed] == [0, 0]
+    assert [event.attempt for event in failed] == [1]
+    assert [event.will_retry for event in failed] == [False]
+    assert [event.retry_delay_ms for event in failed] == [0]
 
 
-def test_parameter_fallback_disables_nested_network_retry(
+def test_parameter_error_does_not_consume_a_later_network_outcome(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    parameter_error = RuntimeError("unsupported parameter max_tokens")
     timeout = TimeoutError("fallback timed out")
     client, completions, sink, _gateway_configs = _gateway_client_factory(
         monkeypatch,
         [
-            RuntimeError("unsupported parameter max_tokens"),
+            parameter_error,
             timeout,
         ],
     )
 
-    with pytest.raises(TimeoutError) as raised:
+    with pytest.raises(RuntimeError) as raised:
         client.json_from_text("prompt")
 
-    assert raised.value is timeout
-    assert len(completions.calls) == 2
-    assert [event.compatibility_fallback for event in sink.events] == [
-        "",
-        "max_completion_tokens",
-    ]
+    assert raised.value is parameter_error
+    assert len(completions.calls) == 1
+    assert [event.compatibility_fallback for event in sink.events] == [""]
 
 
-def test_json_repair_truncation_shares_one_logical_request_id(
+def test_truncated_json_does_not_trigger_a_second_model_request(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     client, completions, sink, _gateway_configs = _gateway_client_factory(
@@ -2487,13 +2517,14 @@ def test_json_repair_truncation_shares_one_logical_request_id(
         ],
     )
 
-    assert client.json_from_text("prompt") == {"ok": True}
-    assert len(completions.calls) == 2
-    assert len({event.request_id for event in sink.events}) == 1
-    assert [event.attempt for event in sink.events] == [1, 2]
+    with pytest.raises(llm_client.LLMOutputTruncatedError):
+        client.json_from_text("prompt")
+
+    assert len(completions.calls) == 1
+    assert [event.attempt for event in sink.events] == [1]
 
 
-def test_json_repair_format_fix_shares_one_logical_request_id(
+def test_invalid_json_does_not_trigger_a_second_model_request(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     client, completions, sink, _gateway_configs = _gateway_client_factory(
@@ -2504,10 +2535,11 @@ def test_json_repair_format_fix_shares_one_logical_request_id(
         ],
     )
 
-    assert client.json_from_text("prompt") == {"ok": True}
-    assert len(completions.calls) == 2
-    assert len({event.request_id for event in sink.events}) == 1
-    assert [event.attempt for event in sink.events] == [1, 2]
+    with pytest.raises(llm_client.LLMResponseFormatError):
+        client.json_from_text("prompt")
+
+    assert len(completions.calls) == 1
+    assert [event.attempt for event in sink.events] == [1]
 
 
 def test_separate_top_level_compatibility_calls_restart_attempt_at_one(

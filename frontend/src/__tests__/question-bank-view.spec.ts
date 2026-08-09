@@ -229,6 +229,71 @@ describe('question bank workspace', () => {
     expect(host.textContent).not.toContain('标签、解题证据和训练判定点均已完成')
   })
 
+  it('refreshes all three saved counts when a tagging job reaches terminal state', async () => {
+    const host = document.createElement('div')
+    document.body.append(host)
+    const pinia = createPinia()
+    const app = createApp(PaperLibrary)
+    app.use(pinia)
+    const store = useQuestionBankStore(pinia)
+    store.papers = [{
+      ...paper,
+      question_count: 12,
+      tagged_question_count: 7,
+      tagged_any_question_count: 7,
+      evidence_question_count: 7,
+      criteria_question_count: 7,
+      complete_analysis_count: 7,
+    }]
+    store.papersState = 'ready'
+    const refreshed = {
+      ...store.papers[0]!,
+      tagged_question_count: 12,
+      tagged_any_question_count: 12,
+      evidence_question_count: 12,
+      criteria_question_count: 12,
+      complete_analysis_count: 12,
+    }
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      if (String(input) === '/api/question-bank/papers') {
+        return response({ items: [refreshed], total: 1 })
+      }
+      throw new Error(`unexpected request: ${String(input)}`)
+    })
+    app.mount(host)
+    mounted.push(app)
+    expect(host.textContent).toContain('标签 7/12')
+
+    useJobStore(pinia).track({
+      id: 107,
+      job_type: 'tagging_sync',
+      payload: { question_ids: [8, 9, 10, 11, 12] },
+      result: {
+        outcome: 'complete',
+        complete_tagged_count: 12,
+        evidence_count: 12,
+        criteria_count: 12,
+        failed_count: 0,
+      },
+      status: 'succeeded',
+      progress: 1,
+      stage: 'tagging_sync',
+      detail: '',
+      error: null,
+      cancel_requested: false,
+      created_at: '2026-08-09T10:00:00Z',
+      started_at: '2026-08-09T10:00:01Z',
+      updated_at: '2026-08-09T10:00:02Z',
+      finished_at: '2026-08-09T10:00:02Z',
+    })
+
+    await vi.waitFor(() => expect(host.textContent).toContain('标签 12/12'))
+    expect(host.textContent).toContain('解题证据 12/12')
+    expect(host.textContent).toContain('训练判定点 12/12')
+    expect(fetchSpy).toHaveBeenCalledTimes(1)
+    expect(String(fetchSpy.mock.calls[0]?.[0])).toBe('/api/question-bank/papers')
+  })
+
   it('applies difficulty on release but waits for explicit text filters and AI cost confirmation', async () => {
     const queuedJob = {
       id: 41,
@@ -680,7 +745,7 @@ describe('question bank workspace', () => {
     expect(host.textContent).toContain('已提交 1 道题')
   })
 
-  it('can fill only incomplete tags without overwriting completed analysis', async () => {
+  it('submits the whole paper so the server can check current-version gaps', async () => {
     const host = document.createElement('div')
     document.body.append(host)
     const pinia = createPinia()
@@ -697,7 +762,13 @@ describe('question bank workspace', () => {
       const url = String(input)
       if (url.startsWith('/api/question-bank/questions?')) {
         questionListUrl = url
-        return response({ items: [item], total: 1, page: 1, page_size: 100, total_pages: 1 })
+        return response({
+          items: [item, { ...item, id: 18 }],
+          total: 2,
+          page: 1,
+          page_size: 100,
+          total_pages: 1,
+        })
       }
       if (url === '/api/question-bank/tagging-jobs' && init?.method === 'POST') {
         return response({
@@ -728,17 +799,17 @@ describe('question bank workspace', () => {
       ([request, options]) => String(request) === '/api/question-bank/tagging-jobs'
         && options?.method === 'POST',
     )).toBe(true))
-    expect(questionListUrl).toContain('analysis_status=incomplete')
+    expect(questionListUrl).toContain('analysis_status=all')
     const submitCall = fetchSpy.mock.calls.find(
       ([request, options]) => String(request) === '/api/question-bank/tagging-jobs'
         && options?.method === 'POST',
     )
     expect(JSON.parse(String(submitCall?.[1]?.body))).toEqual({
-      question_ids: [17],
+      question_ids: [17, 18],
       curriculum_volume_id: 'bnu24-math-g7-lower',
       client_request_token: expect.stringMatching(/^[0-9a-f]{32}$/),
     })
-    expect(host.textContent).toContain('1 道未完成题目')
+    expect(host.textContent).toContain('2 道题等待后端核对')
   })
 
   it('requires one explicit confirmation before permanently deleting an active paper', async () => {
@@ -761,6 +832,7 @@ describe('question bank workspace', () => {
             paper_count: 1,
             question_count: 2,
             tag_count: 3,
+            analysis_record_count: 6,
             training_link_count: 1,
             knowledge_graph_link_count: 1,
             owned_file_count: 1,
@@ -774,6 +846,7 @@ describe('question bank workspace', () => {
             deleted_paper_ids: [paper.id],
             deleted_question_count: 2,
             deleted_tag_count: 3,
+            deleted_analysis_record_count: 6,
             removed_training_link_count: 1,
             removed_knowledge_graph_link_count: 1,
             deleted_file_count: 1,
@@ -791,6 +864,7 @@ describe('question bank workspace', () => {
       .find((button) => button.textContent?.trim() === '删除')!
     remove.click()
     await vi.waitFor(() => expect(document.body.textContent).toContain('确认彻底删除？'))
+    expect(document.body.textContent).toContain('6 条分析记录')
     expect(document.body.textContent).toContain('已完成考试的答卷与成绩不受影响')
     expect(fetchSpy.mock.calls.some(([request]) => String(request).endsWith('/permanent-delete'))).toBe(false)
 
@@ -835,6 +909,7 @@ describe('question bank workspace', () => {
           paper_count: 1,
           question_count: 2,
           tag_count: 3,
+          analysis_record_count: 0,
           training_link_count: 0,
           knowledge_graph_link_count: 0,
           owned_file_count: 1,
@@ -846,13 +921,14 @@ describe('question bank workspace', () => {
         deleteAttempts += 1
         deleteBodies.push(JSON.parse(String(init?.body)))
         if (deleteAttempts === 1) {
-          return response({ error: { message: 'response lost' } }, 503)
+          throw new TypeError('response lost')
         }
         deletionConfirmed = true
         return response({
           deleted_paper_ids: [paper.id],
           deleted_question_count: 2,
           deleted_tag_count: 3,
+          deleted_analysis_record_count: 0,
           removed_training_link_count: 0,
           removed_knowledge_graph_link_count: 0,
           deleted_file_count: 1,
@@ -876,7 +952,112 @@ describe('question bank workspace', () => {
     await vi.waitFor(() => expect(document.body.textContent).not.toContain('确认彻底删除？'))
 
     expect(deleteBodies[0]?.request_token).toBe(deleteBodies[1]?.request_token)
+    expect(deleteBodies[0]?.request_token).toEqual(
+      expect.stringMatching(/^[0-9a-f]{32}$/),
+    )
     expect(deleteBodies[0]?.confirmation_phrase).toBe('彻底删除 1 份试卷')
+  })
+
+  it('shows the server reason when deletion is authoritatively rejected', async () => {
+    const host = document.createElement('div')
+    document.body.append(host)
+    const pinia = createPinia()
+    const app = createApp(PaperLibrary)
+    app.use(pinia)
+    const store = useQuestionBankStore(pinia)
+    store.papers = [paper]
+    store.papersState = 'ready'
+    app.mount(host)
+    mounted.push(app)
+    const serverMessage = '题库中存在当前版本无法安全处理的关联数据。请先更新应用，再重新删除；本次没有删除任何内容。'
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input)
+      if (url === '/api/question-bank/papers') {
+        return response({ items: [paper], total: 1 })
+      }
+      if (url.endsWith('/permanent-deletion-impact')) {
+        return response({
+          paper_count: 1,
+          question_count: 2,
+          tag_count: 3,
+          analysis_record_count: 6,
+          training_link_count: 0,
+          knowledge_graph_link_count: 0,
+          owned_file_count: 1,
+          shared_file_count: 0,
+          permanent_delete_phrase: '彻底删除 1 份试卷',
+        })
+      }
+      if (url.endsWith('/permanent-delete')) {
+        const requestId = new Headers(init?.headers).get('x-request-id') ?? ''
+        return new Response(JSON.stringify({
+          error: {
+            code: 'paper_permanent_delete_dependency_conflict',
+            message: serverMessage,
+            details: {},
+            request_id: requestId,
+          },
+        }), {
+          status: 409,
+          headers: {
+            'content-type': 'application/json',
+            'x-request-id': requestId,
+          },
+        })
+      }
+      throw new Error(`unexpected request: ${url}`)
+    })
+
+    const remove = [...host.querySelectorAll<HTMLButtonElement>('button')]
+      .find(button => button.textContent?.trim() === '删除')!
+    remove.click()
+    await vi.waitFor(() => expect(document.body.textContent).toContain('确认彻底删除？'))
+    const confirm = [...document.body.querySelectorAll<HTMLButtonElement>('button')]
+      .find(button => button.textContent?.includes('确认彻底删除'))!
+    confirm.click()
+
+    await vi.waitFor(() => expect(document.body.textContent).toContain(serverMessage))
+    expect(document.body.textContent).not.toContain('未收到服务器确认')
+    expect(store.papers).toHaveLength(1)
+  })
+
+  it('shows the server reason when deletion impact cannot be prepared', async () => {
+    const host = document.createElement('div')
+    document.body.append(host)
+    const pinia = createPinia()
+    const app = createApp(PaperLibrary)
+    app.use(pinia)
+    const store = useQuestionBankStore(pinia)
+    store.papers = [paper]
+    store.papersState = 'ready'
+    app.mount(host)
+    mounted.push(app)
+    const serverMessage = '试卷文件未通过安全删除检查。请关闭可能占用文件的 Word 或 PDF 后重试；本次没有删除任何内容。'
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (_input, init) => {
+      const requestId = new Headers(init?.headers).get('x-request-id') ?? ''
+      return new Response(JSON.stringify({
+        error: {
+          code: 'paper_permanent_delete_storage_incomplete',
+          message: serverMessage,
+          details: {},
+          request_id: requestId,
+        },
+      }), {
+        status: 409,
+        headers: {
+          'content-type': 'application/json',
+          'x-request-id': requestId,
+        },
+      })
+    })
+
+    const remove = [...host.querySelectorAll<HTMLButtonElement>('button')]
+      .find(button => button.textContent?.trim() === '删除')!
+    remove.click()
+
+    await vi.waitFor(() => expect(host.textContent).toContain(serverMessage))
+    expect(host.textContent).not.toContain('删除影响读取失败')
+    expect(store.papers).toHaveLength(1)
   })
 
   it('confirms a completed deletion by refreshing when the response is lost', async () => {
@@ -899,6 +1080,7 @@ describe('question bank workspace', () => {
       if (url.endsWith('/permanent-deletion-impact')) {
         return response({
           paper_count: 1, question_count: 2, tag_count: 3,
+          analysis_record_count: 0,
           training_link_count: 0, knowledge_graph_link_count: 0,
           owned_file_count: 1, shared_file_count: 0,
           permanent_delete_phrase: '彻底删除 1 份试卷',
@@ -906,7 +1088,7 @@ describe('question bank workspace', () => {
       }
       if (url.endsWith('/permanent-delete')) {
         deleted = true
-        return response({ error: { message: 'response lost' } }, 503)
+        throw new TypeError('response lost')
       }
       throw new Error(`unexpected request: ${url}`)
     })
@@ -932,7 +1114,8 @@ describe('question bank workspace', () => {
         requestSignal = init?.signal ?? undefined
         const timer = setTimeout(() => resolve(new Response(JSON.stringify({
           deleted_paper_ids: [paper.id], deleted_question_count: 2,
-          deleted_tag_count: 3, removed_training_link_count: 0,
+          deleted_tag_count: 3, deleted_analysis_record_count: 0,
+          removed_training_link_count: 0,
           removed_knowledge_graph_link_count: 0, deleted_file_count: 26,
           skipped_shared_file_count: 0, storage_cleanup_pending: false,
         }), { status: 200, headers: { 'content-type': 'application/json' } })), 20_000)

@@ -6,6 +6,7 @@ import pytest
 
 from question_bank.services.asset_path_service import (
     AmbiguousQuestionBankAssetPathError,
+    UncontrolledQuestionBankAssetPathError,
     resolve_question_bank_asset_path,
 )
 
@@ -37,6 +38,25 @@ def test_resolves_data_relative_question_bank_path(tmp_path: Path) -> None:
         )
         == archived
     )
+
+
+def test_rejects_existing_absolute_asset_outside_data_root(tmp_path: Path) -> None:
+    data_root = tmp_path / "user_data"
+    data_root.mkdir()
+    outside = tmp_path / "outside" / "secret.png"
+    outside.parent.mkdir()
+    outside.write_bytes(b"secret")
+
+    with pytest.raises(UncontrolledQuestionBankAssetPathError):
+        resolve_question_bank_asset_path(outside, data_root=data_root)
+
+
+def test_rejects_relative_parent_escape_from_data_root(tmp_path: Path) -> None:
+    data_root = tmp_path / "user_data"
+    data_root.mkdir()
+
+    with pytest.raises(UncontrolledQuestionBankAssetPathError):
+        resolve_question_bank_asset_path("../outside.png", data_root=data_root)
 
 
 def test_data_relative_path_prefers_data_root_over_current_working_directory(
@@ -107,7 +127,7 @@ def test_ambiguous_filename_fallback_raises_instead_of_guessing(
         resolve_question_bank_asset_path(inaccessible, data_root=data_root)
 
 
-def test_missing_asset_returns_original_path(tmp_path: Path) -> None:
+def test_missing_relative_asset_stays_below_data_root(tmp_path: Path) -> None:
     missing = Path("question_bank/raw_papers/missing.docx")
 
-    assert resolve_question_bank_asset_path(missing, data_root=tmp_path) == missing
+    assert resolve_question_bank_asset_path(missing, data_root=tmp_path) == tmp_path / missing

@@ -6,11 +6,40 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from path_manager import resolve_stored_file_path
+from path_manager import UncontrolledStoredFilePathError, resolve_stored_file_path
 from report import ReportGenerator
 
 
 class PortablePathResolutionTests(unittest.TestCase):
+    def test_rejects_existing_absolute_file_outside_controlled_roots(self) -> None:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temp_dir:
+            root = Path(temp_dir)
+            data_root = root / "user_data"
+            data_root.mkdir()
+            outside = root.parent / f"{root.name}-outside-secret.json"
+            outside.write_text('{"secret": true}', encoding="utf-8")
+            self.addCleanup(outside.unlink, missing_ok=True)
+
+            with self.assertRaises(UncontrolledStoredFilePathError):
+                resolve_stored_file_path(
+                    outside,
+                    data_root=data_root,
+                    project_root=root,
+                )
+
+    def test_rejects_relative_parent_escape_from_controlled_roots(self) -> None:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temp_dir:
+            root = Path(temp_dir)
+            data_root = root / "user_data"
+            data_root.mkdir()
+
+            with self.assertRaises(UncontrolledStoredFilePathError):
+                resolve_stored_file_path(
+                    "../../outside.json",
+                    data_root=data_root,
+                    project_root=root,
+                )
+
     def test_resolves_old_user_data_absolute_path_to_current_data_root(self) -> None:
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temp_dir:
             root = Path(temp_dir)

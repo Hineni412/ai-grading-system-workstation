@@ -242,60 +242,22 @@ describe('question bank API contracts', () => {
     })
   })
 
-  it('uses explicit version-protected paper trash and restore endpoints', async () => {
+  it('lists active papers without exposing retired paper trash mutations', async () => {
     const { questionBankApi } = await import('../api/question-bank')
-    const trashed = {
-      id: 4,
-      deleted: true,
-      import_status: 'deleted',
-      updated_at: '2026-07-29 10:01:00.000001',
-      affected_question_count: 12,
-    }
-    const restored = {
-      ...trashed,
-      deleted: false,
-      import_status: 'completed',
-      updated_at: '2026-07-29 10:02:00.000001',
-    }
-    const fetchSpy = vi.spyOn(globalThis, 'fetch')
-      .mockResolvedValueOnce(new Response(JSON.stringify({
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      new Response(JSON.stringify({
         items: [],
         total: 0,
-      }), { status: 200, headers: { 'content-type': 'application/json' } }))
-      .mockResolvedValueOnce(new Response(JSON.stringify(trashed), {
-        status: 200,
-        headers: { 'content-type': 'application/json' },
-      }))
-      .mockResolvedValueOnce(new Response(JSON.stringify(restored), {
-        status: 200,
-        headers: { 'content-type': 'application/json' },
-      }))
+      }), { status: 200, headers: { 'content-type': 'application/json' } }),
+    )
 
-    await questionBankApi.listPapers(true)
-    await expect(questionBankApi.trashPaper(
-      4,
-      '2026-07-29 10:00:00.000001',
-    )).resolves.toEqual(trashed)
-    await expect(questionBankApi.restorePaper(
-      4,
-      trashed.updated_at,
-    )).resolves.toEqual(restored)
+    await questionBankApi.listPapers()
 
     expect(String(fetchSpy.mock.calls[0]?.[0])).toBe(
-      '/api/question-bank/papers?deleted=true',
+      '/api/question-bank/papers',
     )
-    expect(String(fetchSpy.mock.calls[1]?.[0])).toBe(
-      '/api/question-bank/papers/4/trash',
-    )
-    expect(JSON.parse(String(fetchSpy.mock.calls[1]?.[1]?.body))).toEqual({
-      expected_updated_at: '2026-07-29 10:00:00.000001',
-    })
-    expect(String(fetchSpy.mock.calls[2]?.[0])).toBe(
-      '/api/question-bank/papers/4/restore',
-    )
-    expect(JSON.parse(String(fetchSpy.mock.calls[2]?.[1]?.body))).toEqual({
-      expected_updated_at: trashed.updated_at,
-    })
+    expect('trashPaper' in questionBankApi).toBe(false)
+    expect('restorePaper' in questionBankApi).toBe(false)
   })
 
   it('sends one revision-protected full tag replacement', async () => {

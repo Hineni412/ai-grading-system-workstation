@@ -75,6 +75,7 @@ from session_cleanup import (
 
 
 router = APIRouter(prefix="/api", tags=["sessions"])
+_SESSION_NAME_CONFLICT_MESSAGE = "已存在同名考试，请换一个名称。"
 
 
 def _bool(value: Any) -> bool:
@@ -473,7 +474,11 @@ def create_session(
             curriculum_volume_id=volume_id,
         )
     except SessionNameConflict as exc:
-        raise ApiError(409, "session_name_conflict", "An exam with this name already exists") from exc
+        raise ApiError(
+            409,
+            "session_name_conflict",
+            _SESSION_NAME_CONFLICT_MESSAGE,
+        ) from exc
     except ValueError as exc:
         raise ApiError(400, "invalid_session", str(exc)) from exc
     return _session_detail(_require_session(sessions, session_id))
@@ -494,7 +499,11 @@ def create_session_draft_route(
             curriculum_volume_id=volume_id,
         )
     except SessionNameConflict as exc:
-        raise ApiError(409, "session_name_conflict", "An exam with this name already exists") from exc
+        raise ApiError(
+            409,
+            "session_name_conflict",
+            _SESSION_NAME_CONFLICT_MESSAGE,
+        ) from exc
     except ValueError as exc:
         raise ApiError(400, "invalid_session_draft", str(exc)) from exc
     return _session_summary(_require_session(sessions, session_id))
@@ -523,7 +532,11 @@ def rename_session(
             curriculum_volume_provided=curriculum_provided,
         )
     except SessionNameConflict as exc:
-        raise ApiError(409, "session_name_conflict", "An exam with this name already exists") from exc
+        raise ApiError(
+            409,
+            "session_name_conflict",
+            _SESSION_NAME_CONFLICT_MESSAGE,
+        ) from exc
     return _session_summary(_require_active_session(sessions, session_id))
 
 

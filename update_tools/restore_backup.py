@@ -3,14 +3,11 @@
 用法:
     python update_tools/restore_backup.py <备份文件名或路径>
     python update_tools/restore_backup.py <备份文件名> --dry-run
-    python update_tools/restore_backup.py <备份文件名> --skip-pre-backup
     python update_tools/restore_backup.py --list
 
 安全机制:
-    - 恢复前会自动备份当前数据
-    - 需要用户输入 "YES" 二次确认
-    - 不会覆盖 app/ 代码文件
-    - 所有操作写入 logs/backup.log
+    - 只保留备份列表和只读预览
+    - 正式写入必须使用系统维护中的受保护离线恢复
 """
 
 from __future__ import annotations
@@ -88,16 +85,6 @@ def main() -> int:
         action="store_true",
         help="只列出会恢复的文件，不实际操作",
     )
-    parser.add_argument(
-        "--skip-pre-backup",
-        action="store_true",
-        help="跳过恢复前的自动备份（不推荐）",
-    )
-    parser.add_argument(
-        "--yes",
-        action="store_true",
-        help="跳过二次确认（脚本调用时使用）",
-    )
     args = parser.parse_args()
 
     print("=" * 60)
@@ -132,24 +119,15 @@ def main() -> int:
     if args.dry_run:
         print("\n  [DRY-RUN] 模式：不会修改任何文件\n")
 
-    # 二次确认
-    if not args.dry_run and not args.yes:
-        print("\n  [WARNING] 恢复操作将用备份文件覆盖当前 user_data/ 和 config/ 中的同名文件！")
-        if not args.skip_pre_backup:
-            print("  系统会先自动备份当前数据再恢复。")
-        print()
-        try:
-            confirm = input("  确认恢复？请输入 YES: ").strip()
-        except (EOFError, KeyboardInterrupt):
-            print("\n  已取消。")
-            return 1
-        if confirm != "YES":
-            print("  输入不是 YES，已取消恢复。")
-            return 1
+    if not args.dry_run:
+        print(
+            "\n  [BLOCKED] 旧恢复写入入口已停用。"
+            "请在系统维护页面使用受保护离线恢复。"
+        )
+        return 2
 
     result = restore_backup(
         zip_path,
-        skip_pre_backup=args.skip_pre_backup,
         dry_run=args.dry_run,
     )
 

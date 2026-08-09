@@ -12,11 +12,14 @@ from .vault_service import VaultService
 
 
 def _create_service(context: WorkspaceContext) -> VaultService:
-    return VaultService(
+    service = VaultService(
         context,
         model_gateway=create_active_profile_model_gateway(context),
         protection_enabled=False,
     )
+    if service.ordinary_database.exists:
+        service.ordinary_database.initialize_schema()
+    return service
 
 
 def _migration_plan(

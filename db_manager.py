@@ -197,7 +197,11 @@ class DBManager:
         return backup_path
 
     def initialize(self) -> None:
-        ensure_schema_current("grading", self.db_path)
+        ensure_schema_current(
+            "grading",
+            self.db_path,
+            allow_existing_migrations=False,
+        )
         with self._connect() as conn:
             conn.execute(
                 """

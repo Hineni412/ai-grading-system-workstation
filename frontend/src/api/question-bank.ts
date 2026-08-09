@@ -120,14 +120,6 @@ export interface QuestionBankPaperMetadataResult
   updated_at: string
 }
 
-export interface QuestionBankPaperStateResult {
-  id: number
-  deleted: boolean
-  import_status: string
-  updated_at: string
-  affected_question_count: number
-}
-
 export interface QuestionBankPaperPermanentDeleteSelection {
   id: number
   expected_updated_at: string
@@ -137,6 +129,7 @@ export interface QuestionBankPaperPermanentDeleteImpact {
   paper_count: number
   question_count: number
   tag_count: number
+  analysis_record_count: number
   training_link_count: number
   knowledge_graph_link_count: number
   owned_file_count: number
@@ -148,6 +141,7 @@ export interface QuestionBankPaperPermanentDeleteResult {
   deleted_paper_ids: number[]
   deleted_question_count: number
   deleted_tag_count: number
+  deleted_analysis_record_count: number
   removed_training_link_count: number
   removed_knowledge_graph_link_count: number
   deleted_file_count: number
@@ -874,27 +868,6 @@ function normalizePaperMetadata(
   }
 }
 
-function paperStateRequest(
-  paperId: number,
-  expectedUpdatedAt: string,
-  action: 'trash' | 'restore',
-  signal?: AbortSignal,
-): Promise<QuestionBankPaperStateResult> {
-  const expected = String(expectedUpdatedAt ?? '').trim()
-  if (!isPositiveInteger(paperId) || !expected) {
-    throw new Error('Invalid paper state write')
-  }
-  return apiClient.request(
-    `/api/question-bank/papers/${paperId}/${action}`,
-    {
-      method: 'POST',
-      body: { expected_updated_at: expected },
-      decode: decodeQuestionBankPaperStateResult,
-      signal,
-    },
-  )
-}
-
 function isFacet(value: unknown): value is QuestionBankFacet {
   return (
     isRecord(value) &&
@@ -1211,36 +1184,11 @@ export function decodeQuestionBankPaperMetadataResult(
   return value
 }
 
-export function decodeQuestionBankPaperStateResult(
-  value: unknown,
-): QuestionBankPaperStateResult {
-  if (
-    !isRecord(value)
-    || !hasExactKeys(value, [
-      'id',
-      'deleted',
-      'import_status',
-      'updated_at',
-      'affected_question_count',
-    ])
-    || !isPositiveInteger(value.id)
-    || typeof value.deleted !== 'boolean'
-    || typeof value.import_status !== 'string'
-    || value.import_status.trim().length === 0
-    || typeof value.updated_at !== 'string'
-    || value.updated_at.trim().length === 0
-    || !isNonnegativeInteger(value.affected_question_count)
-  ) {
-    throw new Error('Invalid paper state result')
-  }
-  return value as unknown as QuestionBankPaperStateResult
-}
-
 export function decodeQuestionBankPaperPermanentDeleteImpact(
   value: unknown,
 ): QuestionBankPaperPermanentDeleteImpact {
   const countKeys = [
-    'question_count', 'tag_count', 'training_link_count',
+    'question_count', 'tag_count', 'analysis_record_count', 'training_link_count',
     'knowledge_graph_link_count', 'owned_file_count', 'shared_file_count',
   ]
   if (
@@ -1262,7 +1210,7 @@ export function decodeQuestionBankPaperPermanentDeleteResult(
   value: unknown,
 ): QuestionBankPaperPermanentDeleteResult {
   const countKeys = [
-    'deleted_question_count', 'deleted_tag_count',
+    'deleted_question_count', 'deleted_tag_count', 'deleted_analysis_record_count',
     'removed_training_link_count', 'removed_knowledge_graph_link_count',
     'deleted_file_count', 'skipped_shared_file_count',
   ]
@@ -1664,25 +1612,11 @@ export const questionBankApi = {
     })
   },
 
-  listPapers(
-    deletedOrSignal: boolean | AbortSignal = false,
-    signal?: AbortSignal,
-  ): Promise<QuestionBankPaperListResponse> {
-    const deleted = typeof deletedOrSignal === 'boolean'
-      ? deletedOrSignal
-      : false
-    const requestSignal = typeof deletedOrSignal === 'boolean'
-      ? signal
-      : deletedOrSignal
-    return apiClient.request(
-      deleted
-        ? '/api/question-bank/papers?deleted=true'
-        : '/api/question-bank/papers',
-      {
+  listPapers(signal?: AbortSignal): Promise<QuestionBankPaperListResponse> {
+    return apiClient.request('/api/question-bank/papers', {
       decode: decodeQuestionPaperListResponse,
-      signal: requestSignal,
-      },
-    )
+      signal,
+    })
   },
 
   updatePaperMetadata(
@@ -1704,32 +1638,6 @@ export const questionBankApi = {
       decode: decodeQuestionBankPaperMetadataResult,
       signal,
     })
-  },
-
-  trashPaper(
-    paperId: number,
-    expectedUpdatedAt: string,
-    signal?: AbortSignal,
-  ): Promise<QuestionBankPaperStateResult> {
-    return paperStateRequest(
-      paperId,
-      expectedUpdatedAt,
-      'trash',
-      signal,
-    )
-  },
-
-  restorePaper(
-    paperId: number,
-    expectedUpdatedAt: string,
-    signal?: AbortSignal,
-  ): Promise<QuestionBankPaperStateResult> {
-    return paperStateRequest(
-      paperId,
-      expectedUpdatedAt,
-      'restore',
-      signal,
-    )
   },
 
   previewPaperPermanentDelete(

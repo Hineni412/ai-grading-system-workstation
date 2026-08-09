@@ -41,6 +41,14 @@ _TAG_ANALYSIS_MAP = {
 }
 _ANSWERED_AI_CONFIDENCE = 0.8
 _ANSWERLESS_AI_CONFIDENCE = 0.55
+_PAPER_DELETE_ASSET_SUBDIRS = (
+    "question_bank/raw_papers",
+    "question_bank/extracted_images",
+    "question_bank/previews",
+    "question_bank/rich_content",
+    "question_bank/document_pages",
+    "question_bank/cache/latex",
+)
 
 
 @dataclass(frozen=True)
@@ -108,6 +116,7 @@ class PaperPermanentDeleteImpact:
     paper_count: int
     question_count: int
     tag_count: int
+    analysis_record_count: int
     training_link_count: int
     knowledge_graph_link_count: int
     owned_file_count: int
@@ -120,6 +129,7 @@ class PaperPermanentDeleteResult:
     deleted_paper_ids: tuple[int, ...]
     deleted_question_count: int
     deleted_tag_count: int
+    deleted_analysis_record_count: int
     removed_training_link_count: int
     removed_knowledge_graph_link_count: int
     deleted_file_count: int
@@ -162,15 +172,15 @@ class PaperPermanentDeleteConflict(RuntimeError):
     pass
 
 
-class PaperPermanentDeleteRequiresTrash(RuntimeError):
-    pass
-
-
 class PaperPermanentDeleteConfirmationMismatch(ValueError):
     pass
 
 
 class PaperPermanentDeleteStorageIncomplete(RuntimeError):
+    pass
+
+
+class PaperPermanentDeleteDependencyConflict(RuntimeError):
     pass
 
 
@@ -638,14 +648,18 @@ class QuestionBankWriteService:
             paper_rows, question_ids = _validate_permanent_paper_selection(
                 conn, normalized
             )
-            counts = _paper_permanent_delete_counts(conn, question_ids)
             owned, shared = _paper_delete_file_candidates(
                 conn, self.data_root, paper_rows, question_ids
+            )
+            counts = _preview_paper_database_delete(
+                conn,
+                tuple(selection.id for selection in normalized),
             )
         return PaperPermanentDeleteImpact(
             paper_count=len(paper_rows),
             question_count=len(question_ids),
             tag_count=counts["tags"],
+            analysis_record_count=counts["analysis"],
             training_link_count=counts["training"],
             knowledge_graph_link_count=counts["graph"],
             owned_file_count=len(owned),
@@ -701,7 +715,6 @@ class QuestionBankWriteService:
                 paper_rows, question_ids = _validate_permanent_paper_selection(
                     conn, normalized
                 )
-                counts = _paper_permanent_delete_counts(conn, question_ids)
                 owned, shared = _paper_delete_file_candidates(
                     conn, self.data_root, paper_rows, question_ids
                 )
@@ -709,23 +722,16 @@ class QuestionBankWriteService:
                     staging_root,
                     owned,
                     [selection.id for selection in normalized],
+                    data_root=self.data_root,
                 )
                 try:
-                    _delete_paper_relations(conn, question_ids)
                     paper_ids = tuple(selection.id for selection in normalized)
-                    placeholders = ",".join("?" for _ in paper_ids)
-                    conn.execute(
-                        f"DELETE FROM questions WHERE paper_id IN ({placeholders})",
-                        paper_ids,
-                    )
-                    conn.execute(
-                        f"DELETE FROM papers WHERE id IN ({placeholders})",
-                        paper_ids,
-                    )
+                    counts = _execute_paper_database_delete(conn, paper_ids)
                     result = PaperPermanentDeleteResult(
                         deleted_paper_ids=paper_ids,
                         deleted_question_count=len(question_ids),
                         deleted_tag_count=counts["tags"],
+                        deleted_analysis_record_count=counts["analysis"],
                         removed_training_link_count=counts["training"],
                         removed_knowledge_graph_link_count=counts["graph"],
                         deleted_file_count=len(owned),
@@ -739,6 +745,12 @@ class QuestionBankWriteService:
                         result=result,
                     )
                     conn.commit()
+                except sqlite3.IntegrityError as exc:
+                    _restore_staged_paper_files(staged)
+                    shutil.rmtree(staging_root, ignore_errors=True)
+                    raise PaperPermanentDeleteDependencyConflict(
+                        "Paper deletion is blocked by dependent question-bank data"
+                    ) from exc
                 except Exception:
                     _restore_staged_paper_files(staged)
                     shutil.rmtree(staging_root, ignore_errors=True)
@@ -1508,6 +1520,7 @@ def _paper_delete_result_payload(
         "deleted_paper_ids": list(result.deleted_paper_ids),
         "deleted_question_count": result.deleted_question_count,
         "deleted_tag_count": result.deleted_tag_count,
+        "deleted_analysis_record_count": result.deleted_analysis_record_count,
         "removed_training_link_count": result.removed_training_link_count,
         "removed_knowledge_graph_link_count": (
             result.removed_knowledge_graph_link_count
@@ -1532,6 +1545,9 @@ def _paper_delete_result_from_payload(
             ),
             deleted_question_count=int(payload["deleted_question_count"]),
             deleted_tag_count=int(payload["deleted_tag_count"]),
+            deleted_analysis_record_count=int(
+                payload.get("deleted_analysis_record_count", 0)
+            ),
             removed_training_link_count=int(
                 payload["removed_training_link_count"]
             ),
@@ -1680,71 +1696,250 @@ def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
     ).fetchone() is not None
 
 
-def _count_question_rows(
-    conn: sqlite3.Connection,
-    table: str,
-    column: str,
-    question_ids: list[int],
-) -> int:
-    if not question_ids or not _table_exists(conn, table):
-        return 0
-    placeholders = ",".join("?" for _ in question_ids)
-    return int(conn.execute(
-        f"SELECT COUNT(*) FROM {table} WHERE {column} IN ({placeholders})",
-        tuple(question_ids),
-    ).fetchone()[0])
+@dataclass
+class _PaperDatabaseDeleteCounts:
+    questions: int = 0
+    tags: int = 0
+    analysis: int = 0
+    training: int = 0
+    graph: int = 0
+
+    def record(self, table: str, affected: int) -> None:
+        count = max(0, int(affected))
+        if table == "questions":
+            self.questions += count
+        elif table == "question_tags":
+            self.tags += count
+        elif (
+            table == "question_analysis_items"
+            or table == "question_solution_evidence_versions"
+            or table.startswith("training_criterion_")
+        ):
+            self.analysis += count
+        elif table in {"training_set_items", "training_task_items"}:
+            self.training += count
+        elif table == "grading_question_links":
+            self.graph += count
+
+    def as_dict(self) -> dict[str, int]:
+        return {
+            "questions": self.questions,
+            "tags": self.tags,
+            "analysis": self.analysis,
+            "training": self.training,
+            "graph": self.graph,
+        }
 
 
-def _paper_permanent_delete_counts(
-    conn: sqlite3.Connection,
-    question_ids: list[int],
-) -> dict[str, int]:
-    return {
-        "tags": _count_question_rows(
-            conn, "question_tags", "question_id", question_ids
-        ),
-        "training": (
-            _count_question_rows(
-                conn, "training_set_items", "question_id", question_ids
-            )
-            + _count_question_rows(
-                conn, "training_task_items", "bank_question_id", question_ids
-            )
-        ),
-        "graph": _count_question_rows(
-            conn, "grading_question_links", "bank_question_id", question_ids
-        ),
-    }
+@dataclass(frozen=True)
+class _IncomingForeignKey:
+    child_table: str
+    child_column: str
+    parent_table: str
+    parent_column: str
+    on_delete: str
+    nullable: bool
 
 
-def _delete_paper_relations(
-    conn: sqlite3.Connection,
-    question_ids: list[int],
-) -> None:
-    if not question_ids:
-        return
-    placeholders = ",".join("?" for _ in question_ids)
-    values = tuple(question_ids)
-    for table, column in (
-        ("question_tags", "question_id"),
-        ("question_skill_links", "question_id"),
-        ("question_fingerprints", "question_id"),
-        ("question_frequency_cache", "question_id"),
-        ("question_previews", "question_id"),
-        ("training_set_items", "question_id"),
-        ("grading_question_links", "bank_question_id"),
-    ):
-        if _table_exists(conn, table):
-            conn.execute(
-                f"DELETE FROM {table} WHERE {column} IN ({placeholders})",
-                values,
-            )
-    if _table_exists(conn, "training_task_items"):
-        conn.execute(
-            f"UPDATE training_task_items SET bank_question_id = NULL "
-            f"WHERE bank_question_id IN ({placeholders})",
-            values,
+def _quote_sqlite_identifier(value: str) -> str:
+    text = str(value or "")
+    if not text or "\x00" in text:
+        raise PaperPermanentDeleteDependencyConflict(
+            "Question-bank dependency metadata is invalid"
         )
+    return '"' + text.replace('"', '""') + '"'
+
+
+def _incoming_foreign_keys(
+    conn: sqlite3.Connection,
+    parent_table: str,
+) -> tuple[_IncomingForeignKey, ...]:
+    dependencies: list[_IncomingForeignKey] = []
+    tables = [
+        str(row[0])
+        for row in conn.execute(
+            "SELECT name FROM sqlite_master "
+            "WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
+        ).fetchall()
+    ]
+    for child_table in tables:
+        table_info = {
+            str(row[1]): (bool(row[3]), bool(row[5]))
+            for row in conn.execute(
+                f"PRAGMA table_info({_quote_sqlite_identifier(child_table)})"
+            ).fetchall()
+        }
+        foreign_keys = conn.execute(
+            f"PRAGMA foreign_key_list({_quote_sqlite_identifier(child_table)})"
+        ).fetchall()
+        grouped: dict[int, list[sqlite3.Row]] = {}
+        for foreign_key in foreign_keys:
+            grouped.setdefault(int(foreign_key[0]), []).append(foreign_key)
+        for parts in grouped.values():
+            if str(parts[0][2]) != parent_table:
+                continue
+            if len(parts) != 1 or int(parts[0][1]) != 0:
+                raise PaperPermanentDeleteDependencyConflict(
+                    "Composite question-bank dependencies cannot be deleted safely"
+                )
+            foreign_key = parts[0]
+            child_column = str(foreign_key[3])
+            parent_column = str(foreign_key[4] or "id")
+            column_state = table_info.get(child_column)
+            if column_state is None:
+                raise PaperPermanentDeleteDependencyConflict(
+                    "Question-bank dependency metadata is incomplete"
+                )
+            not_null, primary_key = column_state
+            dependencies.append(_IncomingForeignKey(
+                child_table=child_table,
+                child_column=child_column,
+                parent_table=parent_table,
+                parent_column=parent_column,
+                on_delete=str(foreign_key[6] or "NO ACTION").upper(),
+                nullable=not not_null and not primary_key,
+            ))
+    return tuple(dependencies)
+
+
+def _dependency_action(dependency: _IncomingForeignKey) -> str:
+    if dependency.on_delete == "CASCADE":
+        return "delete"
+    if dependency.on_delete == "SET NULL":
+        return "set_null"
+    if dependency.on_delete not in {"NO ACTION", "RESTRICT"}:
+        raise PaperPermanentDeleteDependencyConflict(
+            "Question-bank dependency uses an unsupported delete rule"
+        )
+    if (
+        dependency.parent_table == "papers"
+        and dependency.child_table == "questions"
+        and dependency.child_column == "paper_id"
+    ):
+        return "delete"
+    return "set_null" if dependency.nullable else "delete"
+
+
+def _selected_column_values(
+    conn: sqlite3.Connection,
+    *,
+    table: str,
+    selected_column: str,
+    selected_values: tuple[object, ...],
+    projected_column: str,
+) -> tuple[object, ...]:
+    if not selected_values:
+        return ()
+    placeholders = ",".join("?" for _ in selected_values)
+    table_sql = _quote_sqlite_identifier(table)
+    selected_sql = _quote_sqlite_identifier(selected_column)
+    projected_sql = _quote_sqlite_identifier(projected_column)
+    return tuple(
+        row[0]
+        for row in conn.execute(
+            f"SELECT DISTINCT {projected_sql} FROM {table_sql} "
+            f"WHERE {selected_sql} IN ({placeholders}) "
+            f"AND {projected_sql} IS NOT NULL",
+            selected_values,
+        ).fetchall()
+    )
+
+
+def _delete_selected_rows(
+    conn: sqlite3.Connection,
+    *,
+    table: str,
+    selected_column: str,
+    selected_values: tuple[object, ...],
+    counts: _PaperDatabaseDeleteCounts,
+    active: set[tuple[str, str, tuple[object, ...]]],
+) -> None:
+    if not selected_values:
+        return
+    selection = (table, selected_column, selected_values)
+    if selection in active:
+        raise PaperPermanentDeleteDependencyConflict(
+            "Question-bank dependencies contain an unsafe delete cycle"
+        )
+    active.add(selection)
+    try:
+        for dependency in _incoming_foreign_keys(conn, table):
+            parent_values = _selected_column_values(
+                conn,
+                table=table,
+                selected_column=selected_column,
+                selected_values=selected_values,
+                projected_column=dependency.parent_column,
+            )
+            if not parent_values:
+                continue
+            child_table_sql = _quote_sqlite_identifier(
+                dependency.child_table
+            )
+            child_column_sql = _quote_sqlite_identifier(
+                dependency.child_column
+            )
+            placeholders = ",".join("?" for _ in parent_values)
+            action = _dependency_action(dependency)
+            if action == "set_null":
+                cursor = conn.execute(
+                    f"UPDATE {child_table_sql} SET {child_column_sql} = NULL "
+                    f"WHERE {child_column_sql} IN ({placeholders})",
+                    parent_values,
+                )
+                counts.record(dependency.child_table, cursor.rowcount)
+                continue
+            _delete_selected_rows(
+                conn,
+                table=dependency.child_table,
+                selected_column=dependency.child_column,
+                selected_values=parent_values,
+                counts=counts,
+                active=active,
+            )
+        table_sql = _quote_sqlite_identifier(table)
+        selected_sql = _quote_sqlite_identifier(selected_column)
+        placeholders = ",".join("?" for _ in selected_values)
+        cursor = conn.execute(
+            f"DELETE FROM {table_sql} "
+            f"WHERE {selected_sql} IN ({placeholders})",
+            selected_values,
+        )
+        counts.record(table, cursor.rowcount)
+    finally:
+        active.remove(selection)
+
+
+def _execute_paper_database_delete(
+    conn: sqlite3.Connection,
+    paper_ids: tuple[int, ...],
+) -> dict[str, int]:
+    counts = _PaperDatabaseDeleteCounts()
+    _delete_selected_rows(
+        conn,
+        table="papers",
+        selected_column="id",
+        selected_values=tuple(paper_ids),
+        counts=counts,
+        active=set(),
+    )
+    return counts.as_dict()
+
+
+def _preview_paper_database_delete(
+    conn: sqlite3.Connection,
+    paper_ids: tuple[int, ...],
+) -> dict[str, int]:
+    conn.execute("SAVEPOINT paper_permanent_delete_preview")
+    try:
+        return _execute_paper_database_delete(conn, paper_ids)
+    except sqlite3.IntegrityError as exc:
+        raise PaperPermanentDeleteDependencyConflict(
+            "Paper deletion is blocked by dependent question-bank data"
+        ) from exc
+    finally:
+        conn.execute("ROLLBACK TO paper_permanent_delete_preview")
+        conn.execute("RELEASE paper_permanent_delete_preview")
 
 
 def _controlled_paper_asset(data_root: Path, value: object) -> Path | None:
@@ -1765,9 +1960,25 @@ def _controlled_paper_asset(data_root: Path, value: object) -> Path | None:
             resolved.relative_to(root)
         except ValueError:
             continue
-        if resolved.is_file():
+        if (
+            _is_paper_delete_asset_path(data_root, resolved)
+            and resolved.is_file()
+        ):
             return resolved
     return None
+
+
+def _is_paper_delete_asset_path(data_root: Path, path: Path) -> bool:
+    resolved = path.resolve(strict=False)
+    for subdir in _PAPER_DELETE_ASSET_SUBDIRS:
+        controlled_root = (data_root / subdir).resolve(strict=False)
+        try:
+            relative = resolved.relative_to(controlled_root)
+        except ValueError:
+            continue
+        if relative.parts:
+            return True
+    return False
 
 
 def _paper_delete_file_candidates(
@@ -1796,6 +2007,15 @@ def _paper_delete_file_candidates(
                 tuple(question_ids),
             ).fetchall():
                 raw_selected.extend((row["source_file"], row["image_path"]))
+        if _table_exists(conn, "question_content_revisions"):
+            raw_selected.extend(
+                row[0]
+                for row in conn.execute(
+                    f"SELECT rich_content_path FROM question_content_revisions "
+                    f"WHERE question_id IN ({placeholders})",
+                    tuple(question_ids),
+                ).fetchall()
+            )
     selected = {
         path
         for value in raw_selected
@@ -1836,6 +2056,21 @@ def _paper_delete_file_candidates(
                 tuple(question_ids),
             ).fetchall():
                 raw_survivors.extend((row["source_file"], row["image_path"]))
+    # Published document items survive paper deletion: their nullable paper/question
+    # links are cleared by the same schema-driven plan. Keep every file that those
+    # surviving publication records still reference.
+    if _table_exists(conn, "question_document_items"):
+        for row in conn.execute(
+            "SELECT rich_content_path, asset_paths_json "
+            "FROM question_document_items"
+        ).fetchall():
+            raw_survivors.append(row["rich_content_path"])
+            try:
+                raw_survivors.extend(
+                    json.loads(str(row["asset_paths_json"] or "[]"))
+                )
+            except (json.JSONDecodeError, TypeError):
+                pass
     survivors = {
         path
         for value in raw_survivors
@@ -1851,6 +2086,8 @@ def _stage_paper_delete_files(
     staging_root: Path,
     paths: list[Path],
     paper_ids: list[int],
+    *,
+    data_root: Path,
 ) -> list[tuple[Path, Path]]:
     if staging_root.exists():
         raise PaperPermanentDeleteConflict(
@@ -1864,9 +2101,19 @@ def _stage_paper_delete_files(
     try:
         (staging_root / "manifest.json").write_text(
             json.dumps({
+                "manifest_version": 1,
                 "paper_ids": paper_ids,
                 "entries": [
-                    {"source": str(source), "staged": str(target)}
+                    {
+                        "source_relative": _relative_manifest_path(
+                            data_root,
+                            source,
+                        ),
+                        "staged_relative": _relative_manifest_path(
+                            staging_root,
+                            target,
+                        ),
+                    }
                     for source, target in staged
                 ],
             }, ensure_ascii=False, indent=2),
@@ -1901,23 +2148,38 @@ def _recover_pending_paper_deletes(db_path: Path, data_root: Path) -> None:
     if not root.is_dir():
         return
     for operation in root.iterdir():
-        if not operation.is_dir():
+        if (
+            not operation.is_dir()
+            or operation.is_symlink()
+            or re.fullmatch(r"[0-9a-f]{32}", operation.name) is None
+        ):
             continue
         lock = _shared_request_lock(operation)
         if not lock.acquire(blocking=False):
             continue
         try:
             manifest_path = operation / "manifest.json"
-            if not manifest_path.is_file():
+            if not manifest_path.is_file() or manifest_path.is_symlink():
                 continue
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-            paper_ids = [int(value) for value in manifest["paper_ids"]]
-            if not paper_ids:
+            if not isinstance(manifest, dict):
+                raise ValueError("Paper deletion recovery manifest is invalid")
+            raw_paper_ids = manifest.get("paper_ids")
+            if not isinstance(raw_paper_ids, list):
+                raise ValueError("Paper deletion recovery paper ids are invalid")
+            paper_ids = [int(value) for value in raw_paper_ids]
+            if (
+                not paper_ids
+                or any(value <= 0 for value in paper_ids)
+                or len(paper_ids) != len(set(paper_ids))
+            ):
                 raise ValueError("Paper deletion recovery has no paper ids")
-            entries = [
-                (Path(item["source"]), Path(item["staged"]))
-                for item in manifest["entries"]
-            ]
+            entries = _paper_delete_manifest_entries(
+                manifest,
+                data_root=data_root,
+                staging_root=root,
+                operation=operation,
+            )
             placeholders = ",".join("?" for _ in paper_ids)
             with connect(db_path) as conn:
                 remaining = int(conn.execute(
@@ -1925,6 +2187,13 @@ def _recover_pending_paper_deletes(db_path: Path, data_root: Path) -> None:
                     tuple(paper_ids),
                 ).fetchone()[0])
             if remaining == len(paper_ids):
+                if any(
+                    source.exists() and staged.exists()
+                    for source, staged in entries
+                ):
+                    raise PaperPermanentDeleteStorageIncomplete(
+                        "Interrupted paper deletion would overwrite an existing file"
+                    )
                 _restore_staged_paper_files(entries)
             elif remaining != 0:
                 raise PaperPermanentDeleteStorageIncomplete(
@@ -1939,6 +2208,117 @@ def _recover_pending_paper_deletes(db_path: Path, data_root: Path) -> None:
             ) from exc
         finally:
             lock.release()
+
+
+def _relative_manifest_path(root: Path, path: Path) -> str:
+    controlled_root = root.resolve(strict=False)
+    resolved = path.resolve(strict=False)
+    try:
+        relative = resolved.relative_to(controlled_root)
+    except ValueError as exc:
+        raise PaperPermanentDeleteStorageIncomplete(
+            "Paper deletion file is outside its controlled root"
+        ) from exc
+    if not relative.parts:
+        raise PaperPermanentDeleteStorageIncomplete(
+            "Paper deletion file path is invalid"
+        )
+    return relative.as_posix()
+
+
+def _resolve_manifest_path(
+    root: Path,
+    value: object,
+    *,
+    require_relative: bool,
+) -> Path:
+    text = str(value or "").strip()
+    if not text:
+        raise ValueError("Paper deletion recovery path is empty")
+    stored = Path(text)
+    if require_relative and stored.is_absolute():
+        raise ValueError("Paper deletion recovery path must be relative")
+    candidate = stored if stored.is_absolute() else root / stored
+    if candidate.is_symlink():
+        raise ValueError("Paper deletion recovery path cannot be a symlink")
+    controlled_root = root.resolve(strict=False)
+    resolved = candidate.resolve(strict=False)
+    try:
+        relative = resolved.relative_to(controlled_root)
+    except ValueError as exc:
+        raise ValueError(
+            "Paper deletion recovery path leaves its controlled root"
+        ) from exc
+    if not relative.parts:
+        raise ValueError("Paper deletion recovery path targets its root")
+    return resolved
+
+
+def _paper_delete_manifest_entries(
+    manifest: dict[str, object],
+    *,
+    data_root: Path,
+    staging_root: Path,
+    operation: Path,
+) -> list[tuple[Path, Path]]:
+    raw_entries = manifest.get("entries")
+    if not isinstance(raw_entries, list) or len(raw_entries) > 100_000:
+        raise ValueError("Paper deletion recovery entries are invalid")
+    version = manifest.get("manifest_version")
+    if version == 1:
+        source_key = "source_relative"
+        staged_key = "staged_relative"
+        require_relative = True
+    elif version is None:
+        # Legacy manifests used absolute paths. They remain readable only after
+        # both sides are proven to be inside their original controlled roots.
+        source_key = "source"
+        staged_key = "staged"
+        require_relative = False
+    else:
+        raise ValueError("Paper deletion recovery manifest version is unsupported")
+    entries: list[tuple[Path, Path]] = []
+    seen_sources: set[Path] = set()
+    seen_staged: set[Path] = set()
+    operation_root = operation.resolve(strict=False)
+    for index, item in enumerate(raw_entries):
+        if not isinstance(item, dict):
+            raise ValueError("Paper deletion recovery entry is invalid")
+        source = _resolve_manifest_path(
+            data_root,
+            item.get(source_key),
+            require_relative=require_relative,
+        )
+        staged = _resolve_manifest_path(
+            operation,
+            item.get(staged_key),
+            require_relative=require_relative,
+        )
+        if not _is_paper_delete_asset_path(data_root, source):
+            raise ValueError(
+                "Paper deletion recovery source is not a question-bank asset"
+            )
+        staged_relative = staged.relative_to(operation_root)
+        if (
+            len(staged_relative.parts) != 2
+            or staged_relative.parts[0] != f"{index:05d}"
+            or staged_relative.parts[1] != source.name
+        ):
+            raise ValueError(
+                "Paper deletion recovery staged path is invalid"
+            )
+        try:
+            source.relative_to(staging_root.resolve(strict=False))
+        except ValueError:
+            pass
+        else:
+            raise ValueError("Paper deletion recovery source is inside staging")
+        if source in seen_sources or staged in seen_staged:
+            raise ValueError("Paper deletion recovery entries contain duplicates")
+        seen_sources.add(source)
+        seen_staged.add(staged)
+        entries.append((source, staged))
+    return entries
 
 
 def _validate_question_create(question: QuestionCreate) -> None:
