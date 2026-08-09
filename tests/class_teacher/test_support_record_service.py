@@ -15,11 +15,8 @@ from backend.workspaces.contracts import WorkspaceContext
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-PASSWORD = "合成支持档案密码-足够长-001"
-
-
 def _service(tmp_path: Path) -> VaultService:
-    return VaultService(
+    service = VaultService(
         WorkspaceContext(
             module_id="class-teacher",
             root=tmp_path / "workspaces" / "class-teacher",
@@ -29,15 +26,12 @@ def _service(tmp_path: Path) -> VaultService:
             ),
         )
     )
+    service.ensure_plaintext_ready()
+    return service
 
 
-def _unlocked(tmp_path: Path) -> tuple[VaultService, str]:
-    service = _service(tmp_path)
-    initialized = service.initialize(
-        password=PASSWORD,
-        operation_id="initialize-support-records",
-    )
-    return service, str(initialized["session_token"])
+def _ready(tmp_path: Path) -> tuple[VaultService, str]:
+    return _service(tmp_path), ""
 
 
 def _subject(service: VaultService, token: str) -> dict[str, object]:
@@ -78,7 +72,7 @@ def _record(
 def test_revisions_are_immutable_and_summary_traces_current_source(
     tmp_path: Path,
 ) -> None:
-    service, token = _unlocked(tmp_path)
+    service, token = _ready(tmp_path)
     subject = _subject(service, token)
     subject_id = str(subject["subject_id"])
     fact = _record(
@@ -139,7 +133,7 @@ def test_revisions_are_immutable_and_summary_traces_current_source(
 def test_expired_and_unconfirmed_ai_records_never_enter_current_summary(
     tmp_path: Path,
 ) -> None:
-    service, token = _unlocked(tmp_path)
+    service, token = _ready(tmp_path)
     subject_id = str(_subject(service, token)["subject_id"])
     observation = _record(
         service,
@@ -189,7 +183,7 @@ def test_expired_and_unconfirmed_ai_records_never_enter_current_summary(
 def test_interrupted_ai_confirmation_resumes_without_duplicate_record(
     tmp_path: Path,
 ) -> None:
-    service, token = _unlocked(tmp_path)
+    service, token = _ready(tmp_path)
     subject_id = str(_subject(service, token)["subject_id"])
     draft = _record(
         service,
@@ -245,7 +239,7 @@ def test_interrupted_ai_confirmation_resumes_without_duplicate_record(
 def test_support_plan_result_and_full_subject_deletion_leave_no_b07_objects(
     tmp_path: Path,
 ) -> None:
-    service, token = _unlocked(tmp_path)
+    service, token = _ready(tmp_path)
     subject_id = str(_subject(service, token)["subject_id"])
     _record(service, token, subject_id, "create-delete-observation")
     plan = service.support.create_support_plan(
@@ -294,11 +288,11 @@ def test_support_plan_result_and_full_subject_deletion_leave_no_b07_objects(
         ).fetchone()[0] == 0
 
 
-def test_subject_delete_failure_keeps_live_vault_unchanged(
+def test_subject_delete_failure_keeps_live_data_unchanged(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    service, token = _unlocked(tmp_path)
+    service, token = _ready(tmp_path)
     subject = _subject(service, token)
     subject_id = str(subject["subject_id"])
     _record(service, token, subject_id, "create-rollback-record")
@@ -340,7 +334,7 @@ def test_subject_delete_recovers_after_exit_before_final_commit(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    service, token = _unlocked(tmp_path)
+    service, token = _ready(tmp_path)
     subject = _subject(service, token)
     subject_id = str(subject["subject_id"])
     _record(service, token, subject_id, "create-exit-recovery-record")
@@ -372,9 +366,8 @@ def test_subject_delete_recovers_after_exit_before_final_commit(
     ) == 1
 
     restarted = _service(tmp_path)
-    unlocked = restarted.unlock(password=PASSWORD)
     assert restarted.support.get_subject(
-        token=str(unlocked["session_token"]),
+        token="",
         subject_id=subject_id,
     )["display_name"] == subject["display_name"]
     assert not list(
@@ -387,7 +380,7 @@ def test_subject_delete_recovers_after_exit_before_final_commit(
 def test_legacy_backup_delete_transaction_is_left_for_manual_recovery(
     tmp_path: Path,
 ) -> None:
-    service, _token = _unlocked(tmp_path)
+    service, _token = _ready(tmp_path)
     transaction = (
         service.database.root
         / ".subject-delete-legacy-backup.rollback.cttxn"
@@ -420,10 +413,10 @@ def test_legacy_backup_delete_transaction_is_left_for_manual_recovery(
 def test_subject_delete_neutralizes_shared_reference_and_preserves_other_result(
     tmp_path: Path,
 ) -> None:
-    service, token = _unlocked(tmp_path)
+    service, token = _ready(tmp_path)
     subject = _subject(service, token)
     subject_id = str(subject["subject_id"])
-    vmk = bytes(service._require_session(token).vmk)
+    vmk = service.ensure_plaintext_ready()
     shared_object_id = "collection-board-synthetic-shared"
     with closing(service.database.connect()) as connection:
         with connection:
@@ -476,7 +469,7 @@ def test_subject_delete_neutralizes_shared_reference_and_preserves_other_result(
 
 
 def test_two_page_revision_conflict_is_rejected(tmp_path: Path) -> None:
-    service, token = _unlocked(tmp_path)
+    service, token = _ready(tmp_path)
     subject_id = str(_subject(service, token)["subject_id"])
     record = _record(
         service,

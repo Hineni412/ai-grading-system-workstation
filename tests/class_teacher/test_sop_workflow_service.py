@@ -17,10 +17,7 @@ from backend.workspaces.contracts import WorkspaceContext
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-PASSWORD = "合成SOP流程密码-足够长-001"
-
-
-def _unlocked(tmp_path: Path) -> tuple[VaultService, str]:
+def _service(tmp_path: Path) -> tuple[VaultService, str]:
     paths = SimpleNamespace(
         project_root=PROJECT_ROOT,
         migration_project_root=PROJECT_ROOT,
@@ -32,11 +29,8 @@ def _unlocked(tmp_path: Path) -> tuple[VaultService, str]:
             paths=paths,
         )
     )
-    initialized = service.initialize(
-        password=PASSWORD,
-        operation_id="initialize-sop",
-    )
-    return service, str(initialized["session_token"])
+    service.ensure_plaintext_ready()
+    return service, ""
 
 
 def _steps(include_followup: bool = False) -> list[dict[str, object]]:
@@ -155,7 +149,7 @@ def _complete(
 
 
 def test_parallel_dependencies_safety_waiver_and_close(tmp_path: Path) -> None:
-    service, token = _unlocked(tmp_path)
+    service, token = _service(tmp_path)
     template = _template(service, token)
     affair = _affair(service, token, str(template["template_version_id"]))
 
@@ -199,7 +193,7 @@ def test_parallel_dependencies_safety_waiver_and_close(tmp_path: Path) -> None:
 
 
 def test_template_versions_are_frozen_for_running_affairs(tmp_path: Path) -> None:
-    service, token = _unlocked(tmp_path)
+    service, token = _service(tmp_path)
     version_one = _template(service, token, version=1)
     affair = _affair(service, token, str(version_one["template_version_id"]))
     version_two = _template(
@@ -234,10 +228,10 @@ def test_template_versions_are_frozen_for_running_affairs(tmp_path: Path) -> Non
     assert duplicate.value.code == "sop_template_version_exists"
 
 
-def test_create_is_atomic_idempotent_and_body_is_encrypted(
+def test_create_is_atomic_idempotent_and_body_is_plaintext(
     tmp_path: Path,
 ) -> None:
-    service, token = _unlocked(tmp_path)
+    service, token = _service(tmp_path)
     template = _template(service, token)
     affair = _affair(service, token, str(template["template_version_id"]))
     replay = service.sop.create_affair(
@@ -254,15 +248,15 @@ def test_create_is_atomic_idempotent_and_body_is_encrypted(
         assert connection.execute("SELECT COUNT(*) FROM affairs").fetchone()[0] == 1
         assert connection.execute("SELECT COUNT(*) FROM work_plans").fetchone()[0] == 1
     raw = service.database.database_path.read_bytes()
-    assert "合成事务".encode("utf-8") not in raw
-    assert "synthetic-student-a".encode("utf-8") not in raw
+    assert "合成事务".encode("utf-8") in raw
+    assert "synthetic-student-a".encode("utf-8") in raw
 
 
 def test_failed_create_rolls_back_affair_plan_and_participants(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    service, token = _unlocked(tmp_path)
+    service, token = _service(tmp_path)
     template = _template(service, token)
     original_put = service.repository.put
 
@@ -289,7 +283,7 @@ def test_failed_create_rolls_back_affair_plan_and_participants(
 def test_close_reopen_new_occurrence_and_ai_suggestion_stays_advisory(
     tmp_path: Path,
 ) -> None:
-    service, token = _unlocked(tmp_path)
+    service, token = _service(tmp_path)
     template = _template(service, token)
     affair = _affair(service, token, str(template["template_version_id"]))
     affair = service.sop.record_decision(

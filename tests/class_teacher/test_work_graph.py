@@ -684,5 +684,5 @@ def test_legacy_work_model_preview_api_is_retired_while_calendar_read_remains(
     assert empty.status_code == 200
     assert empty.json()["nodes"] == []
     assert previewed.status_code == 404
-    assert service.status()["initialized"] is False
+    assert not service.database.exists
     assert not service.ordinary_database.exists

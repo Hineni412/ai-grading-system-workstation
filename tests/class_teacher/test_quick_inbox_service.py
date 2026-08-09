@@ -9,10 +9,7 @@ from backend.workspaces.contracts import WorkspaceContext
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-PASSWORD = "合成文字速记密码-足够长-001"
-
-
-def _unlocked(tmp_path: Path) -> tuple[VaultService, str]:
+def _service(tmp_path: Path) -> tuple[VaultService, str]:
     service = VaultService(
         WorkspaceContext(
             module_id="class-teacher",
@@ -23,17 +20,14 @@ def _unlocked(tmp_path: Path) -> tuple[VaultService, str]:
             ),
         )
     )
-    initialized = service.initialize(
-        password=PASSWORD,
-        operation_id="initialize-quick-inbox",
-    )
-    return service, str(initialized["session_token"])
+    service.ensure_plaintext_ready()
+    return service, ""
 
 
 def test_text_inbox_is_available_while_voice_and_external_transcription_are_off(
     tmp_path: Path,
 ) -> None:
-    service, token = _unlocked(tmp_path)
+    service, token = _service(tmp_path)
     item = service.quick_inbox.create_text(
         token=token,
         operation_id="create-quick-text",
@@ -50,7 +44,7 @@ def test_text_inbox_is_available_while_voice_and_external_transcription_are_off(
 def test_teacher_edit_then_confirm_creates_exactly_one_formal_record(
     tmp_path: Path,
 ) -> None:
-    service, token = _unlocked(tmp_path)
+    service, token = _service(tmp_path)
     subject = service.support.create_subject(
         token=token,
         operation_id="create-quick-subject",
@@ -110,7 +104,7 @@ def test_teacher_edit_then_confirm_creates_exactly_one_formal_record(
 def test_cancel_clears_sensitive_text_without_claiming_audio_cleanup(
     tmp_path: Path,
 ) -> None:
-    service, token = _unlocked(tmp_path)
+    service, token = _service(tmp_path)
     item = service.quick_inbox.create_text(
         token=token,
         operation_id="create-quick-cancel",
@@ -134,7 +128,7 @@ def test_cancel_clears_sensitive_text_without_claiming_audio_cleanup(
 def test_confirming_one_fragment_keeps_other_fragments_for_teacher_review(
     tmp_path: Path,
 ) -> None:
-    service, token = _unlocked(tmp_path)
+    service, token = _service(tmp_path)
     subject = service.support.create_subject(
         token=token,
         operation_id="create-multi-fragment-subject",
@@ -173,7 +167,7 @@ def test_confirming_one_fragment_keeps_other_fragments_for_teacher_review(
 def test_interrupted_quick_confirmation_resumes_without_duplicate_target(
     tmp_path: Path,
 ) -> None:
-    service, token = _unlocked(tmp_path)
+    service, token = _service(tmp_path)
     subject = service.support.create_subject(
         token=token,
         operation_id="create-recovery-subject",

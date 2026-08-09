@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import os
 import json
+import shutil
 import sqlite3
+import tempfile
 import zipfile
 from contextlib import closing
 from pathlib import Path
@@ -12,6 +14,7 @@ from backend.schema_migrations import ensure_schema_current
 from backend.workspaces.contracts import WorkspaceContext
 
 from .errors import VaultError
+from .secure_repository import EncryptedObjectRepository
 
 
 class _SilentMigrationLogger:
@@ -33,13 +36,15 @@ class EncryptedDatabase:
             getattr(context.paths, "migration_project_root", context.paths.project_root)
         )
         self.migrations_dir = project_root / "migrations" / "student_affairs"
-        self.recover_interrupted_operations()
+        self._plaintext_confirmed = False
 
     @property
     def exists(self) -> bool:
         return self.database_path.is_file()
 
     def initialize_schema(self) -> None:
+        if self.exists:
+            self._confirm_plaintext()
         self.root.mkdir(parents=True, exist_ok=True)
         self.backup_dir.mkdir(parents=True, exist_ok=True)
         try:
@@ -57,6 +62,65 @@ class EncryptedDatabase:
                 "保险箱初始化失败，没有创建可用数据",
                 status_code=500,
             ) from exc
+        self._plaintext_confirmed = False
+        self._confirm_plaintext()
+
+    def requires_plaintext_migration(self) -> bool:
+        """Classify a private copy so source DB/WAL/SHM are never opened."""
+
+        if not self.exists:
+            return False
+        try:
+            sources = tuple(
+                Path(f"{self.database_path}{suffix}")
+                for suffix in ("", "-wal", "-shm", "-journal")
+            )
+            before = {
+                source: self._classification_source_state(source)
+                for source in sources
+            }
+            with tempfile.TemporaryDirectory(
+                prefix="class-teacher-classify-"
+            ) as temporary:
+                candidate = Path(temporary) / self.database_path.name
+                for source in sources:
+                    state = before[source]
+                    if state is None:
+                        continue
+                    suffix = str(source)[len(str(self.database_path)) :]
+                    shutil.copy2(source, Path(f"{candidate}{suffix}"))
+                after = {
+                    source: self._classification_source_state(source)
+                    for source in sources
+                }
+                if after != before:
+                    return True
+                with closing(sqlite3.connect(candidate)) as connection:
+                    return EncryptedObjectRepository.requires_plaintext_migration(
+                        connection
+                    )
+        except (OSError, sqlite3.DatabaseError):
+            return True
+
+    @staticmethod
+    def _classification_source_state(path: Path) -> tuple[int, int] | None:
+        if not path.exists():
+            return None
+        if path.is_symlink() or not path.is_file():
+            raise OSError("database classification source is not a regular file")
+        stat = path.stat()
+        return int(stat.st_size), int(stat.st_mtime_ns)
+
+    def prepare_existing_plaintext_runtime(self) -> bool:
+        """Recover interrupted work only after the live DB is known plaintext."""
+
+        if not self.exists or self.requires_plaintext_migration():
+            return False
+        self._plaintext_confirmed = True
+        self.recover_interrupted_operations()
+        self._plaintext_confirmed = False
+        self._confirm_plaintext()
+        return True
 
     def connect(self) -> sqlite3.Connection:
         if not self.exists:
@@ -65,12 +129,27 @@ class EncryptedDatabase:
                 "班主任工作台尚未初始化",
                 status_code=409,
             )
+        self._confirm_plaintext()
+        return self._connect_confirmed()
+
+    def _connect_confirmed(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.database_path, timeout=15)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys = ON")
         connection.execute("PRAGMA secure_delete = ON")
         connection.execute("PRAGMA journal_mode = WAL")
         return connection
+
+    def _confirm_plaintext(self) -> None:
+        if self._plaintext_confirmed:
+            return
+        if self.requires_plaintext_migration():
+            raise VaultError(
+                "vault_plaintext_migration_required",
+                "检测到旧加密班主任数据库，已停止读取和写入；请先执行授权迁移",
+                status_code=409,
+            )
+        self._plaintext_confirmed = True
 
     def snapshot_bytes(self) -> bytes:
         try:
@@ -106,13 +185,14 @@ class EncryptedDatabase:
         root: Path,
     ) -> EncryptedDatabase:
         """Build a private rewrite candidate without touching the live vault."""
-        self.validate_snapshot(payload)
+        self.validate_plaintext_snapshot(payload)
         root.mkdir(parents=True, exist_ok=True)
         candidate = object.__new__(EncryptedDatabase)
         candidate.root = root
         candidate.database_path = root / "student_affairs.db"
         candidate.backup_dir = root / "backups"
         candidate.migrations_dir = self.migrations_dir
+        candidate._plaintext_confirmed = True
         candidate.backup_dir.mkdir(parents=True, exist_ok=True)
         with closing(sqlite3.connect(":memory:")) as source:
             source.deserialize(payload)
@@ -149,9 +229,24 @@ class EncryptedDatabase:
                 status_code=409,
             ) from exc
 
+    @classmethod
+    def validate_plaintext_snapshot(cls, payload: bytes) -> None:
+        cls.validate_snapshot(payload)
+        try:
+            with closing(sqlite3.connect(":memory:")) as connection:
+                connection.deserialize(payload)
+                if EncryptedObjectRepository.requires_plaintext_migration(connection):
+                    raise ValueError("legacy_encryption")
+        except Exception as exc:
+            raise VaultError(
+                "vault_plaintext_migration_required",
+                "检测到旧加密班主任数据库，已停止读取和写入；请先执行授权迁移",
+                status_code=409,
+            ) from exc
+
     def replace_from_snapshot_atomically(self, payload: bytes) -> None:
         """Replace the live database in one filesystem operation."""
-        self.validate_snapshot(payload)
+        self.validate_plaintext_snapshot(payload)
         candidate = self.root / ".database-replacement-candidate.db"
         candidate.unlink(missing_ok=True)
         self._write_snapshot_file(payload, candidate)
@@ -165,6 +260,7 @@ class EncryptedDatabase:
                     self.database_path.name + suffix
                 ).unlink(missing_ok=True)
             os.replace(candidate, self.database_path)
+            self._plaintext_confirmed = False
             with closing(self.connect()) as restored:
                 if (
                     restored.execute("PRAGMA integrity_check").fetchone()[0]
@@ -180,7 +276,7 @@ class EncryptedDatabase:
         operation_id: str,
         database_snapshot: bytes,
     ) -> Path:
-        self.validate_snapshot(database_snapshot)
+        self.validate_plaintext_snapshot(database_snapshot)
         transaction = (
             self.root
             / f".subject-delete-{operation_id}.rollback.cttxn"
@@ -217,6 +313,7 @@ class EncryptedDatabase:
             raise
 
     def recover_interrupted_operations(self) -> None:
+        self._confirm_plaintext()
         if not self.root.exists():
             return
         rollback = self.root / ".restore-rollback.db"
@@ -225,7 +322,7 @@ class EncryptedDatabase:
         if rollback.is_file():
             try:
                 rollback_payload = rollback.read_bytes()
-                self.validate_snapshot(rollback_payload)
+                self.validate_plaintext_snapshot(rollback_payload)
                 self.replace_from_snapshot_atomically(rollback_payload)
                 rollback.unlink()
             except Exception as exc:
@@ -299,7 +396,7 @@ class EncryptedDatabase:
             database_snapshot = archive.read(
                 "student_affairs.snapshot"
             )
-            self.validate_snapshot(database_snapshot)
+            self.validate_plaintext_snapshot(database_snapshot)
         return manifest, database_snapshot
 
     @staticmethod

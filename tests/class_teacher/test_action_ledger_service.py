@@ -12,10 +12,7 @@ from backend.workspaces.contracts import WorkspaceContext
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-PASSWORD = "合成行动账本密码-足够长-001"
-
-
-def _unlocked(tmp_path: Path) -> tuple[VaultService, str]:
+def _service(tmp_path: Path) -> tuple[VaultService, str]:
     paths = SimpleNamespace(
         project_root=PROJECT_ROOT,
         migration_project_root=PROJECT_ROOT,
@@ -27,17 +24,14 @@ def _unlocked(tmp_path: Path) -> tuple[VaultService, str]:
             paths=paths,
         )
     )
-    initialized = service.initialize(
-        password=PASSWORD,
-        operation_id="initialize-actions",
-    )
-    return service, str(initialized["session_token"])
+    service.ensure_plaintext_ready()
+    return service, ""
 
 
-def test_create_plan_and_action_are_encrypted_and_idempotent(
+def test_create_plan_and_action_are_plaintext_and_idempotent(
     tmp_path: Path,
 ) -> None:
-    service, token = _unlocked(tmp_path)
+    service, token = _service(tmp_path)
     plan = service.actions.create_plan(
         token=token,
         operation_id="plan-create-001",
@@ -65,14 +59,14 @@ def test_create_plan_and_action_are_encrypted_and_idempotent(
     assert replay["plan_id"] == plan["plan_id"]
     assert action["status"] == "pending"
     raw = service.database.database_path.read_bytes()
-    assert "合成家长会准备".encode("utf-8") not in raw
-    assert "合成行动：准备议程".encode("utf-8") not in raw
+    assert "合成家长会准备".encode("utf-8") in raw
+    assert "合成行动：准备议程".encode("utf-8") in raw
 
 
 def test_waiting_requires_review_and_revision_conflicts_are_rejected(
     tmp_path: Path,
 ) -> None:
-    service, token = _unlocked(tmp_path)
+    service, token = _service(tmp_path)
     plan = service.actions.create_plan(
         token=token,
         operation_id="plan-create-002",
@@ -137,7 +131,7 @@ def test_waiting_requires_review_and_revision_conflicts_are_rejected(
 def test_deadline_shift_moves_only_unfinished_actions_and_dashboard_is_consistent(
     tmp_path: Path,
 ) -> None:
-    service, token = _unlocked(tmp_path)
+    service, token = _service(tmp_path)
     base_deadline = datetime.fromisoformat("2026-08-10T09:00:00+08:00")
     plan = service.actions.create_plan(
         token=token,

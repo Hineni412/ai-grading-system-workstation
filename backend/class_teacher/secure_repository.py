@@ -5,7 +5,7 @@ import sqlite3
 from datetime import UTC, datetime
 from typing import Any
 
-from .crypto import FORMAT_VERSION, open_sealed, random_key, seal
+from .crypto import FORMAT_VERSION
 from .errors import VaultError
 
 
@@ -13,19 +13,10 @@ def _now() -> str:
     return datetime.now(UTC).isoformat()
 
 
-def _aad(object_type: str, object_id: str, field: str) -> bytes:
-    return (
-        f"class-teacher|{object_type}|{object_id}|{field}|v{FORMAT_VERSION}"
-    ).encode("utf-8")
-
-
 class EncryptedObjectRepository:
-    """Compatibility repository for legacy encrypted and debug plaintext rows."""
+    """Plaintext compatibility store for the class-teacher runtime."""
 
     _PLAINTEXT_MARKER = b"plaintext-json-v1"
-
-    def __init__(self, *, plaintext: bool = False) -> None:
-        self.plaintext = bool(plaintext)
 
     @classmethod
     def requires_plaintext_migration(cls, connection: sqlite3.Connection) -> bool:
@@ -93,23 +84,10 @@ class EncryptedObjectRepository:
             sort_keys=True,
             separators=(",", ":"),
         ).encode("utf-8")
-        if self.plaintext:
-            cek_nonce = b""
-            wrapped_cek_bytes = b""
-            payload_nonce = self._PLAINTEXT_MARKER
-            payload_bytes = serialized
-        else:
-            cek = random_key()
-            wrapped_cek = seal(vmk, cek, _aad(object_type, object_id, "cek"))
-            protected = seal(
-                cek,
-                serialized,
-                _aad(object_type, object_id, "payload"),
-            )
-            cek_nonce = wrapped_cek.nonce
-            wrapped_cek_bytes = wrapped_cek.ciphertext
-            payload_nonce = protected.nonce
-            payload_bytes = protected.ciphertext
+        cek_nonce = b""
+        wrapped_cek_bytes = b""
+        payload_nonce = self._PLAINTEXT_MARKER
+        payload_bytes = serialized
         connection.execute(
             """
             INSERT INTO encrypted_objects (
@@ -158,22 +136,13 @@ class EncryptedObjectRepository:
                 "受保护记录不存在",
                 status_code=404,
             )
-        object_type = str(row["object_type"])
-        if bytes(row["payload_nonce"]) == self._PLAINTEXT_MARKER:
-            payload = bytes(row["payload_ciphertext"])
-        else:
-            cek = open_sealed(
-                vmk,
-                bytes(row["cek_nonce"]),
-                bytes(row["wrapped_cek"]),
-                _aad(object_type, object_id, "cek"),
+        if bytes(row["payload_nonce"]) != self._PLAINTEXT_MARKER:
+            raise VaultError(
+                "vault_plaintext_migration_required",
+                "检测到旧加密班主任数据库，已停止读取和写入；请先执行授权迁移",
+                status_code=409,
             )
-            payload = open_sealed(
-                cek,
-                bytes(row["payload_nonce"]),
-                bytes(row["payload_ciphertext"]),
-                _aad(object_type, object_id, "payload"),
-            )
+        payload = bytes(row["payload_ciphertext"])
         try:
             decoded = json.loads(payload.decode("utf-8"))
             if not isinstance(decoded, dict):

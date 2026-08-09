@@ -12,15 +12,11 @@ from fastapi.testclient import TestClient
 from backend.class_teacher.api.router import create_router
 from backend.class_teacher.errors import VaultError
 from backend.class_teacher.model_approval import FakeApprovedModelGateway
-from backend.class_teacher.protection import FakeCurrentUserProtection
 from backend.class_teacher.vault_service import VaultService
 from backend.workspaces.contracts import WorkspaceContext
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-PASSWORD = "合成学生卡保险箱密码-足够长-001"
-
-
 def _service(tmp_path: Path, result: dict[str, object]) -> VaultService:
     context = WorkspaceContext(
         module_id="class-teacher",
@@ -32,23 +28,19 @@ def _service(tmp_path: Path, result: dict[str, object]) -> VaultService:
     )
     return VaultService(
         context,
-        protection_provider=FakeCurrentUserProtection(b"C" * 32),
         model_gateway=FakeApprovedModelGateway(
             result=json.dumps(result, ensure_ascii=False),
         ),
     )
 
 
-def _unlocked(
+def _ready(
     tmp_path: Path,
     result: dict[str, object],
 ) -> tuple[VaultService, str, str]:
     service = _service(tmp_path, result)
-    initialized = service.initialize(
-        password=PASSWORD,
-        operation_id="student-card-vault-init",
-    )
-    token = str(initialized["session_token"])
+    service.ensure_plaintext_ready()
+    token = ""
     subject = service.support.create_subject(
         token=token,
         operation_id="student-card-subject-create",
@@ -101,7 +93,7 @@ def _model_result(
 
 
 def test_existing_subjects_render_as_one_empty_card_each(tmp_path: Path) -> None:
-    service, token, subject_id = _unlocked(tmp_path, _proposal())
+    service, token, subject_id = _ready(tmp_path, _proposal())
 
     result = service.student_cards.list_cards(token=token)
 
@@ -126,8 +118,8 @@ def test_existing_subjects_render_as_one_empty_card_each(tmp_path: Path) -> None
 def test_current_profile_is_merged_in_place_without_creating_versions(
     tmp_path: Path,
 ) -> None:
-    service, token, subject_id = _unlocked(tmp_path, _proposal())
-    vmk = service.session_key(token)
+    service, token, subject_id = _ready(tmp_path, _proposal())
+    vmk = service.ensure_plaintext_ready()
     first_profile = {
         "summary": "当前愿意表达困难，也需要拆分长任务。",
         "dimensions": [{
@@ -217,7 +209,7 @@ def test_current_profile_is_merged_in_place_without_creating_versions(
 def test_teacher_confirmation_persists_card_and_only_anonymous_projections(
     tmp_path: Path,
 ) -> None:
-    service, token, subject_id = _unlocked(tmp_path, _proposal())
+    service, token, subject_id = _ready(tmp_path, _proposal())
     model = _model_result(service, token, subject_id)
     structure = _proposal()["proposal"]
 
@@ -252,12 +244,12 @@ def test_teacher_confirmation_persists_card_and_only_anonymous_projections(
     assert "合成学生甲".encode() not in ordinary_bytes
     assert "最近作业安排有困难".encode() not in ordinary_bytes
     assert "需要先核实作业安排".encode() not in ordinary_bytes
-    assert "合成学生甲".encode() not in service.database.database_path.read_bytes()
+    assert "合成学生甲".encode() in service.database.database_path.read_bytes()
 
 
 def test_model_follow_up_cannot_be_written_as_final_structure(tmp_path: Path) -> None:
     follow_up = {"kind": "follow_up", "questions": ["困难主要发生在哪一天？"]}
-    service, token, subject_id = _unlocked(tmp_path, follow_up)
+    service, token, subject_id = _ready(tmp_path, follow_up)
     model = _model_result(service, token, subject_id)
 
     assert model["response_kind"] == "follow_up"
@@ -283,7 +275,7 @@ def test_sensitive_outbox_recovers_after_ordinary_projection_failure(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    service, token, subject_id = _unlocked(tmp_path, _proposal())
+    service, token, subject_id = _ready(tmp_path, _proposal())
     model = _model_result(service, token, subject_id)
     structure = _proposal()["proposal"]
     original = service.work.apply_projection_envelope
@@ -315,10 +307,10 @@ def test_sensitive_outbox_recovers_after_ordinary_projection_failure(
     assert all(int(row["attempts"]) == 2 for row in rows)
 
 
-def test_full_student_delete_removes_model_preview_and_result_ciphertexts(
+def test_full_student_delete_removes_model_preview_and_result_payloads(
     tmp_path: Path,
 ) -> None:
-    service, token, subject_id = _unlocked(tmp_path, _proposal())
+    service, token, subject_id = _ready(tmp_path, _proposal())
     _model_result(service, token, subject_id)
     with closing(service.database.connect()) as connection:
         artifact = connection.execute(
@@ -362,7 +354,7 @@ def test_legacy_anonymous_preview_and_student_card_routes_are_retired(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    service, token, subject_id = _unlocked(tmp_path, _proposal())
+    service, token, subject_id = _ready(tmp_path, _proposal())
 
     def reject_bulk_read(*_args: object, **_kwargs: object) -> object:
         raise AssertionError("selected student read must not scan or drain the class")

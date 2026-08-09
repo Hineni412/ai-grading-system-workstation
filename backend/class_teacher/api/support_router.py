@@ -3,7 +3,7 @@ from __future__ import annotations
 import base64
 import binascii
 
-from fastapi import APIRouter, Header, Query, Request, Response
+from fastapi import APIRouter, Query, Request, Response
 
 from ..errors import VaultError
 from .router import (
@@ -11,7 +11,6 @@ from .router import (
     _no_store,
     _require_trusted_mutation,
     _service,
-    _token,
 )
 from .support_schemas import (
     AffairProjectionRequest,
@@ -49,12 +48,11 @@ def create_support_router() -> APIRouter:
         class_label: str | None = None,
         cursor: str | None = None,
         page_size: int = 50,
-        session_token: str | None = Header(None, alias="x-class-teacher-session"),
     ):
         _no_store(response)
         return _call(
             lambda: _service(request).class_roster.browse(
-                token=session(session_token),
+                token="",
                 q=q,
                 class_label=class_label,
                 cursor=cursor,
@@ -73,12 +71,11 @@ def create_support_router() -> APIRouter:
         sort: str = "last_confirmed_desc",
         cursor: str | None = None,
         page_size: int = 20,
-        session_token: str | None = Header(None, alias="x-class-teacher-session"),
     ):
         _no_store(response)
         return _call(
             lambda: _service(request).student_directory.search(
-                token=session(session_token),
+                token="",
                 q=q,
                 class_label=class_label,
                 state=state,
@@ -94,12 +91,11 @@ def create_support_router() -> APIRouter:
         subject_id: str,
         request: Request,
         response: Response,
-        session_token: str | None = Header(None, alias="x-class-teacher-session"),
     ):
         _no_store(response)
         return _call(
             lambda: _service(request).student_directory.open(
-                token=session(session_token),
+                token="",
                 subject_id=subject_id,
             )
         )
@@ -109,12 +105,11 @@ def create_support_router() -> APIRouter:
         subject_id: str,
         request: Request,
         response: Response,
-        session_token: str | None = Header(None, alias="x-class-teacher-session"),
     ):
         _no_store(response)
         return _call(
             lambda: _service(request).student_cards.get_card(
-                token=session(session_token),
+                token="",
                 subject_id=subject_id,
             )
         )
@@ -128,11 +123,10 @@ def create_support_router() -> APIRouter:
         comparison_series: str | None = None,
         subject_name: str | None = None,
         comparable_only: bool = False,
-        session_token: str | None = Header(None, alias="x-class-teacher-session"),
     ):
         _no_store(response)
         return _call(lambda: _service(request).academic.read(
-            token=session(session_token),
+            token="",
             subject_id=subject_id,
             time_range=time_range,
             comparison_series=comparison_series,
@@ -145,38 +139,32 @@ def create_support_router() -> APIRouter:
         evidence_version_id: str,
         request: Request,
         response: Response,
-        session_token: str | None = Header(None, alias="x-class-teacher-session"),
     ):
         _no_store(response)
         return _call(lambda: _service(request).academic.snapshot(
-            token=session(session_token), evidence_version_id=evidence_version_id
+            token="", evidence_version_id=evidence_version_id
         ))
-
-    def session(value: str | None) -> str:
-        return _token(value)
 
     @router.post("/support/subjects")
     def create_subject(
         request: Request,
         body: SubjectCreateRequest,
         response: Response,
-        session_token: str | None = Header(None, alias="x-class-teacher-session"),
     ):
         _require_trusted_mutation(request)
         _no_store(response)
         return _call(lambda: _service(request).support.create_subject(
-            token=session(session_token), **body.model_dump()
+            token="", **body.model_dump()
         ))
 
     @router.get("/support/subjects")
     def list_subjects(
         request: Request,
         response: Response,
-        session_token: str | None = Header(None, alias="x-class-teacher-session"),
     ):
         _no_store(response)
         return _call(lambda: _service(request).support.list_subjects(
-            token=session(session_token)
+            token=""
         ))
 
     @router.put("/support/subjects/{subject_id}")
@@ -185,12 +173,11 @@ def create_support_router() -> APIRouter:
         request: Request,
         body: SubjectUpdateRequest,
         response: Response,
-        session_token: str | None = Header(None, alias="x-class-teacher-session"),
     ):
         _require_trusted_mutation(request)
         _no_store(response)
         return _call(lambda: _service(request).support.update_subject(
-            token=session(session_token),
+            token="",
             subject_id=subject_id,
             **body.model_dump(),
         ))
@@ -201,12 +188,11 @@ def create_support_router() -> APIRouter:
         request: Request,
         body: SubjectDeleteRequest,
         response: Response,
-        session_token: str | None = Header(None, alias="x-class-teacher-session"),
     ):
         _require_trusted_mutation(request)
         _no_store(response)
         return _call(lambda: _service(request).support.delete_subject(
-            token=session(session_token),
+            token="",
             subject_id=subject_id,
             **body.model_dump(),
         ))
@@ -216,12 +202,11 @@ def create_support_router() -> APIRouter:
         subject_id: str,
         request: Request,
         response: Response,
-        session_token: str | None = Header(None, alias="x-class-teacher-session"),
     ):
         _no_store(response)
         return _call(
             lambda: _service(request).support.preview_subject_deletion(
-                token=session(session_token),
+                token="",
                 subject_id=subject_id,
             )
         )
@@ -232,12 +217,11 @@ def create_support_router() -> APIRouter:
         request: Request,
         body: RecordCreateRequest,
         response: Response,
-        session_token: str | None = Header(None, alias="x-class-teacher-session"),
     ):
         _require_trusted_mutation(request)
         _no_store(response)
         return _call(lambda: _service(request).support.create_record(
-            token=session(session_token),
+            token="",
             subject_id=subject_id,
             **body.model_dump(),
         ))
@@ -248,11 +232,10 @@ def create_support_router() -> APIRouter:
         request: Request,
         response: Response,
         include_inactive: bool = Query(True),
-        session_token: str | None = Header(None, alias="x-class-teacher-session"),
     ):
         _no_store(response)
         return _call(lambda: _service(request).support.list_records(
-            token=session(session_token),
+            token="",
             subject_id=subject_id,
             include_inactive=include_inactive,
         ))
@@ -263,12 +246,11 @@ def create_support_router() -> APIRouter:
         request: Request,
         body: RecordReviseRequest,
         response: Response,
-        session_token: str | None = Header(None, alias="x-class-teacher-session"),
     ):
         _require_trusted_mutation(request)
         _no_store(response)
         return _call(lambda: _service(request).support.revise_record(
-            token=session(session_token),
+            token="",
             record_id=record_id,
             **body.model_dump(),
         ))
@@ -279,12 +261,11 @@ def create_support_router() -> APIRouter:
         request: Request,
         body: RecordStateRequest,
         response: Response,
-        session_token: str | None = Header(None, alias="x-class-teacher-session"),
     ):
         _require_trusted_mutation(request)
         _no_store(response)
         return _call(lambda: _service(request).support.set_record_state(
-            token=session(session_token),
+            token="",
             record_id=record_id,
             **body.model_dump(),
         ))
@@ -295,12 +276,11 @@ def create_support_router() -> APIRouter:
         request: Request,
         body: AiDraftConfirmRequest,
         response: Response,
-        session_token: str | None = Header(None, alias="x-class-teacher-session"),
     ):
         _require_trusted_mutation(request)
         _no_store(response)
         return _call(lambda: _service(request).support.confirm_ai_draft(
-            token=session(session_token),
+            token="",
             draft_record_id=record_id,
             **body.model_dump(),
         ))
@@ -311,11 +291,10 @@ def create_support_router() -> APIRouter:
         request: Request,
         response: Response,
         as_of: str | None = Query(None),
-        session_token: str | None = Header(None, alias="x-class-teacher-session"),
     ):
         _no_store(response)
         return _call(lambda: _service(request).support.get_summary(
-            token=session(session_token),
+            token="",
             subject_id=subject_id,
             as_of=as_of,
         ))
@@ -325,13 +304,12 @@ def create_support_router() -> APIRouter:
         request: Request,
         body: EvidenceLinkRequest,
         response: Response,
-        session_token: str | None = Header(None, alias="x-class-teacher-session"),
     ):
         _require_trusted_mutation(request)
         _no_store(response)
         return _call(
             lambda: _service(request).support.link_observation_evidence(
-                token=session(session_token), **body.model_dump()
+                token="", **body.model_dump()
             )
         )
 
@@ -341,12 +319,11 @@ def create_support_router() -> APIRouter:
         request: Request,
         body: SupportPlanCreateRequest,
         response: Response,
-        session_token: str | None = Header(None, alias="x-class-teacher-session"),
     ):
         _require_trusted_mutation(request)
         _no_store(response)
         return _call(lambda: _service(request).support.create_support_plan(
-            token=session(session_token),
+            token="",
             subject_id=subject_id,
             **body.model_dump(),
         ))
@@ -356,12 +333,11 @@ def create_support_router() -> APIRouter:
         subject_id: str,
         request: Request,
         response: Response,
-        session_token: str | None = Header(None, alias="x-class-teacher-session"),
     ):
         _no_store(response)
         return _call(
             lambda: _service(request).support.list_support_plans(
-                token=session(session_token),
+                token="",
                 subject_id=subject_id,
             )
         )
@@ -372,12 +348,11 @@ def create_support_router() -> APIRouter:
         request: Request,
         body: SupportPlanCompleteRequest,
         response: Response,
-        session_token: str | None = Header(None, alias="x-class-teacher-session"),
     ):
         _require_trusted_mutation(request)
         _no_store(response)
         return _call(lambda: _service(request).support.complete_support_plan(
-            token=session(session_token),
+            token="",
             support_plan_id=support_plan_id,
             **body.model_dump(),
         ))
@@ -388,12 +363,11 @@ def create_support_router() -> APIRouter:
         request: Request,
         body: AffairProjectionRequest,
         response: Response,
-        session_token: str | None = Header(None, alias="x-class-teacher-session"),
     ):
         _require_trusted_mutation(request)
         _no_store(response)
         return _call(lambda: _service(request).support.project_closed_affair(
-            token=session(session_token),
+            token="",
             subject_id=subject_id,
             **body.model_dump(),
         ))
@@ -408,23 +382,21 @@ def create_support_router() -> APIRouter:
         request: Request,
         body: QuickTextRequest,
         response: Response,
-        session_token: str | None = Header(None, alias="x-class-teacher-session"),
     ):
         _require_trusted_mutation(request)
         _no_store(response)
         return _call(lambda: _service(request).quick_inbox.create_text(
-            token=session(session_token), **body.model_dump()
+            token="", **body.model_dump()
         ))
 
     @router.get("/quick-inbox")
     def list_quick_text(
         request: Request,
         response: Response,
-        session_token: str | None = Header(None, alias="x-class-teacher-session"),
     ):
         _no_store(response)
         return _call(lambda: _service(request).quick_inbox.list_drafts(
-            token=session(session_token)
+            token=""
         ))
 
     @router.put("/quick-inbox/{inbox_item_id}")
@@ -433,7 +405,6 @@ def create_support_router() -> APIRouter:
         request: Request,
         body: QuickUpdateRequest,
         response: Response,
-        session_token: str | None = Header(None, alias="x-class-teacher-session"),
     ):
         _require_trusted_mutation(request)
         _no_store(response)
@@ -442,7 +413,7 @@ def create_support_router() -> APIRouter:
             item.model_dump() for item in body.fragments
         ]
         return _call(lambda: _service(request).quick_inbox.update_fragments(
-            token=session(session_token),
+            token="",
             inbox_item_id=inbox_item_id,
             **payload,
         ))
@@ -453,12 +424,11 @@ def create_support_router() -> APIRouter:
         request: Request,
         body: QuickConfirmRequest,
         response: Response,
-        session_token: str | None = Header(None, alias="x-class-teacher-session"),
     ):
         _require_trusted_mutation(request)
         _no_store(response)
         return _call(lambda: _service(request).quick_inbox.confirm(
-            token=session(session_token),
+            token="",
             inbox_item_id=inbox_item_id,
             **body.model_dump(),
         ))
@@ -469,12 +439,11 @@ def create_support_router() -> APIRouter:
         request: Request,
         body: OperationRequest,
         response: Response,
-        session_token: str | None = Header(None, alias="x-class-teacher-session"),
     ):
         _require_trusted_mutation(request)
         _no_store(response)
         return _call(lambda: _service(request).quick_inbox.cancel(
-            token=session(session_token),
+            token="",
             inbox_item_id=inbox_item_id,
             operation_id=body.operation_id,
         ))
@@ -484,7 +453,6 @@ def create_support_router() -> APIRouter:
         request: Request,
         body: EvidenceBatchRequest,
         response: Response,
-        session_token: str | None = Header(None, alias="x-class-teacher-session"),
     ):
         _require_trusted_mutation(request)
         _no_store(response)
@@ -495,7 +463,7 @@ def create_support_router() -> APIRouter:
                 status_code=422,
             )))
         return _call(lambda: _service(request).evidence.confirm_batch(
-            token=session(session_token), **body.model_dump()
+            token="", **body.model_dump()
         ))
 
     @router.post("/evidence/spreadsheet-preview")
@@ -503,12 +471,11 @@ def create_support_router() -> APIRouter:
         request: Request,
         body: SpreadsheetPreviewRequest,
         response: Response,
-        session_token: str | None = Header(None, alias="x-class-teacher-session"),
     ):
         _require_trusted_mutation(request)
         _no_store(response)
         _call(
-            lambda: _service(request).session_key(session(session_token))
+            lambda: _service(request).ensure_plaintext_ready()
         )
         try:
             content = base64.b64decode(
@@ -534,12 +501,11 @@ def create_support_router() -> APIRouter:
         subject_id: str,
         request: Request,
         response: Response,
-        session_token: str | None = Header(None, alias="x-class-teacher-session"),
     ):
         _no_store(response)
         return _call(
             lambda: _service(request).evidence.list_subject_evidence(
-                token=session(session_token), subject_id=subject_id
+                token="", subject_id=subject_id
             )
         )
 
@@ -549,11 +515,10 @@ def create_support_router() -> APIRouter:
         response: Response,
         older: str = Query(...),
         newer: str = Query(...),
-        session_token: str | None = Header(None, alias="x-class-teacher-session"),
     ):
         _no_store(response)
         return _call(lambda: _service(request).evidence.compare(
-            token=session(session_token),
+            token="",
             older_evidence_version_id=older,
             newer_evidence_version_id=newer,
         ))
@@ -564,11 +529,10 @@ def create_support_router() -> APIRouter:
         request: Request,
         response: Response,
         subject_name: str = Query(...),
-        session_token: str | None = Header(None, alias="x-class-teacher-session"),
     ):
         _no_store(response)
         return _call(lambda: _service(request).evidence.trend(
-            token=session(session_token),
+            token="",
             subject_id=subject_id,
             subject_name=subject_name,
         ))
@@ -579,12 +543,11 @@ def create_support_router() -> APIRouter:
         request: Request,
         body: EvidenceSupersedeRequest,
         response: Response,
-        session_token: str | None = Header(None, alias="x-class-teacher-session"),
     ):
         _require_trusted_mutation(request)
         _no_store(response)
         return _call(lambda: _service(request).evidence.supersede_evidence(
-            token=session(session_token),
+            token="",
             evidence_version_id=evidence_version_id,
             **body.model_dump(),
         ))
@@ -594,12 +557,11 @@ def create_support_router() -> APIRouter:
         request: Request,
         body: AttentionCreateRequest,
         response: Response,
-        session_token: str | None = Header(None, alias="x-class-teacher-session"),
     ):
         _require_trusted_mutation(request)
         _no_store(response)
         return _call(lambda: _service(request).attention.create_from_evidence(
-            token=session(session_token), **body.model_dump()
+            token="", **body.model_dump()
         ))
 
     @router.get("/attention-cards/subjects/{subject_id}")
@@ -607,11 +569,10 @@ def create_support_router() -> APIRouter:
         subject_id: str,
         request: Request,
         response: Response,
-        session_token: str | None = Header(None, alias="x-class-teacher-session"),
     ):
         _no_store(response)
         return _call(lambda: _service(request).attention.list_for_subject(
-            token=session(session_token), subject_id=subject_id
+            token="", subject_id=subject_id
         ))
 
     @router.post("/attention-cards/{attention_card_id}/resolve")
@@ -620,12 +581,11 @@ def create_support_router() -> APIRouter:
         request: Request,
         body: AttentionResolveRequest,
         response: Response,
-        session_token: str | None = Header(None, alias="x-class-teacher-session"),
     ):
         _require_trusted_mutation(request)
         _no_store(response)
         return _call(lambda: _service(request).attention.resolve(
-            token=session(session_token),
+            token="",
             attention_card_id=attention_card_id,
             **body.model_dump(),
         ))
@@ -636,12 +596,11 @@ def create_support_router() -> APIRouter:
         request: Request,
         body: AttentionDecisionRequest,
         response: Response,
-        session_token: str | None = Header(None, alias="x-class-teacher-session"),
     ):
         _require_trusted_mutation(request)
         _no_store(response)
         return _call(lambda: _service(request).academic.decide(
-            token=session(session_token), attention_card_id=attention_card_id,
+            token="", attention_card_id=attention_card_id,
             **body.model_dump()
         ))
 

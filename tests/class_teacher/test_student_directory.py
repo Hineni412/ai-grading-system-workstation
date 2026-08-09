@@ -9,9 +9,6 @@ from backend.workspaces.contracts import WorkspaceContext
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-PASSWORD = "合成学生目录密码-足够长-001"
-
-
 def _service(tmp_path: Path) -> tuple[VaultService, str]:
     service = VaultService(
         WorkspaceContext(
@@ -23,8 +20,8 @@ def _service(tmp_path: Path) -> tuple[VaultService, str]:
             ),
         )
     )
-    initialized = service.initialize(password=PASSWORD, operation_id="directory-vault-init-001")
-    return service, str(initialized["session_token"])
+    service.ensure_plaintext_ready()
+    return service, ""
 
 
 def test_directory_reads_identity_and_counts_without_decrypting_record_body(tmp_path: Path) -> None:

@@ -18,7 +18,6 @@ from backend.workspaces.contracts import WorkspaceContext
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-PASSWORD = "合成并发接口密码-足够长-001"
 
 
 def _app(tmp_path: Path) -> FastAPI:
@@ -32,10 +31,7 @@ def _app(tmp_path: Path) -> FastAPI:
             ),
         )
     )
-    service.initialize(
-        password=PASSWORD,
-        operation_id="initialize-concurrent-api",
-    )
+    service.ensure_plaintext_ready()
     app = FastAPI()
     app.state.workspace_services = {"class-teacher": service}
     app.include_router(create_router(), prefix="/api/class-teacher")
@@ -51,25 +47,18 @@ def _free_local_port() -> int:
 def _json_request(
     url: str,
     *,
-    method: str = "GET",
-    headers: dict[str, str] | None = None,
-    body: dict[str, str] | None = None,
     timeout: float = 5,
 ) -> tuple[int, dict[str, object]]:
     request = urllib.request.Request(
         url,
-        data=None if body is None else json.dumps(body).encode("utf-8"),
-        headers={
-            "content-type": "application/json",
-            **(headers or {}),
-        },
-        method=method,
+        headers={"content-type": "application/json"},
+        method="GET",
     )
     with urllib.request.urlopen(request, timeout=timeout) as response:
         return response.status, json.loads(response.read().decode("utf-8"))
 
 
-def test_three_protected_reads_complete_without_worker_starvation(
+def test_three_plaintext_reads_complete_without_session_or_worker_starvation(
     tmp_path: Path,
 ) -> None:
     app = _app(tmp_path)
@@ -94,18 +83,6 @@ def test_three_protected_reads_complete_without_worker_starvation(
     assert server.started
 
     try:
-        status, unlocked = _json_request(
-            f"{base_url}/vault/unlock",
-            method="POST",
-            headers={
-                "x-class-teacher-client": "class-teacher-browser-v1",
-            },
-            body={"password": PASSWORD},
-        )
-        assert status == 200
-        headers = {
-            "x-class-teacher-session": str(unlocked["session_token"]),
-        }
         paths = (
             "/planning/drafts",
             "/meeting-inboxes",
@@ -116,7 +93,6 @@ def test_three_protected_reads_complete_without_worker_starvation(
             try:
                 status_code, _payload = _json_request(
                     f"{base_url}{path}",
-                    headers=headers,
                     timeout=2,
                 )
                 return path, status_code

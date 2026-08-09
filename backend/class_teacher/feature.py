@@ -15,8 +15,8 @@ def _create_service(context: WorkspaceContext) -> VaultService:
     service = VaultService(
         context,
         model_gateway=create_active_profile_model_gateway(context),
-        protection_enabled=False,
     )
+    service.prepare_existing_plaintext_runtime()
     if service.ordinary_database.exists:
         service.ordinary_database.initialize_schema()
     return service
@@ -27,7 +27,10 @@ def _migration_plan(
 ) -> WorkspaceMigrationPlan | None:
     database = EncryptedDatabase(context)
     database_path = database.database_path
-    if not database_path.is_file():
+    if (
+        not database_path.is_file()
+        or database.requires_plaintext_migration()
+    ):
         return None
     return WorkspaceMigrationPlan(
         target="student_affairs",

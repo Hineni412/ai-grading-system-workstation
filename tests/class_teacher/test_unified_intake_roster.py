@@ -7,7 +7,6 @@ from types import SimpleNamespace
 
 import pytest
 
-from backend.class_teacher.protection import FakeCurrentUserProtection
 from backend.class_teacher.errors import VaultError
 from backend.class_teacher.intake_draft import compose_sensitive_draft, merge_revision
 from backend.class_teacher.vault_service import VaultService
@@ -105,7 +104,6 @@ def _service(tmp_path: Path) -> tuple[VaultService, str]:
                 db_path=grading,
             ),
         ),
-        protection_provider=FakeCurrentUserProtection(b"R" * 32),
         model_gateway=FakeWorkPlanningGateway(
             result={
                 "kind": "follow_up",
@@ -113,11 +111,8 @@ def _service(tmp_path: Path) -> tuple[VaultService, str]:
             }
         ),
     )
-    initialized = service.initialize(
-        password="合成班主任名单密码-足够长-001",
-        operation_id="unified-roster-init",
-    )
-    return service, str(initialized["session_token"])
+    service.ensure_plaintext_ready()
+    return service, ""
 
 
 def test_existing_roster_filter_replaces_current_class_without_deleting_history(

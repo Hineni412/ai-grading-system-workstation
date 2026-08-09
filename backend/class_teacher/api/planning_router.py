@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Header, Request, Response
+from fastapi import APIRouter, Request, Response
 
 from .planning_schemas import (
     PlanningConfirmResponse,
@@ -15,7 +15,6 @@ from .router import (
     _no_store,
     _require_trusted_mutation,
     _service,
-    _token,
 )
 
 
@@ -27,16 +26,12 @@ def create_planning_router() -> APIRouter:
         request: Request,
         body: PlanningDraftCreateRequest,
         response: Response,
-        session_token: str | None = Header(
-            default=None,
-            alias="x-class-teacher-session",
-        ),
     ):
         _require_trusted_mutation(request)
         _no_store(response)
         return _call(
             lambda: _service(request).planning.create_draft(
-                token=_token(session_token),
+                token="",
                 operation_id=body.operation_id,
                 raw_input=body.raw_input,
                 reference_at=body.reference_at,
@@ -48,15 +43,11 @@ def create_planning_router() -> APIRouter:
     def list_drafts(
         request: Request,
         response: Response,
-        session_token: str | None = Header(
-            default=None,
-            alias="x-class-teacher-session",
-        ),
     ):
         _no_store(response)
         return _call(
             lambda: _service(request).planning.list_drafts(
-                token=_token(session_token),
+                token="",
             )
         )
 
@@ -68,15 +59,11 @@ def create_planning_router() -> APIRouter:
         draft_id: str,
         request: Request,
         response: Response,
-        session_token: str | None = Header(
-            default=None,
-            alias="x-class-teacher-session",
-        ),
     ):
         _no_store(response)
         return _call(
             lambda: _service(request).planning.get_draft(
-                token=_token(session_token),
+                token="",
                 draft_id=draft_id,
             )
         )
@@ -90,16 +77,12 @@ def create_planning_router() -> APIRouter:
         request: Request,
         body: PlanningDraftCancelRequest,
         response: Response,
-        session_token: str | None = Header(
-            default=None,
-            alias="x-class-teacher-session",
-        ),
     ):
         _require_trusted_mutation(request)
         _no_store(response)
         return _call(
             lambda: _service(request).planning.cancel_draft(
-                token=_token(session_token),
+                token="",
                 draft_id=draft_id,
                 operation_id=body.operation_id,
                 revision=body.revision,
@@ -115,16 +98,12 @@ def create_planning_router() -> APIRouter:
         request: Request,
         body: PlanningDraftConfirmRequest,
         response: Response,
-        session_token: str | None = Header(
-            default=None,
-            alias="x-class-teacher-session",
-        ),
     ):
         _require_trusted_mutation(request)
         _no_store(response)
         return _call(
             lambda: _service(request).planning.confirm_draft(
-                token=_token(session_token),
+                token="",
                 draft_id=draft_id,
                 operation_id=body.operation_id,
                 revision=body.revision,
