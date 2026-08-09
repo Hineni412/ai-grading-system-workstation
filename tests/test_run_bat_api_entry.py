@@ -9,7 +9,20 @@ def test_root_exposes_only_daily_start_and_shutdown_batch_files() -> None:
     assert launchers == {"运行.bat", "关闭系统.bat"}
     content = Path("运行.bat").read_text(encoding="utf-8")
     assert "integration_preview" not in content
-    assert "npm" not in content.lower()
+
+
+def test_run_bat_builds_source_and_accepts_prebuilt_portable_frontend() -> None:
+    content = Path("运行.bat").read_text(encoding="utf-8")
+
+    portable_fallback = content.index(
+        'if not exist "%FRONTEND_DIR%\\package.json" goto frontend_ready'
+    )
+    npm_lookup = content.index("where npm.cmd")
+    frontend_ready = content.index(":frontend_ready")
+    frontend_check = content.index(
+        '"%PROJECT_RUNNER%" backend.api.launcher --check-frontend'
+    )
+    assert portable_fallback < npm_lookup < frontend_ready < frontend_check
 
 
 def test_run_bat_starts_fastapi_frontend_by_default() -> None:

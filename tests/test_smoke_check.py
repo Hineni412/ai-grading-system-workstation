@@ -258,13 +258,13 @@ def test_cli_forwards_explicit_parallel_pilot_options(monkeypatch) -> None:
 def test_documentation_check_maps_issues_to_failed_step(tmp_path: Path) -> None:
     from tools.smoke_check import run_documentation_check
 
-    _write(tmp_path / "README_工作机使用说明.md", "运行 run.bat\n")
+    _write(tmp_path / "README_旧说明.md", "旧说明\n")
 
     result = run_documentation_check(tmp_path)
 
     assert not result.ok
     assert result.return_code == 1
-    assert any("DOC101" in message for message in result.messages)
+    assert any("DOC303" in message for message in result.messages)
 
 
 def test_temp_tree_cleanup_retries_transient_windows_lock(monkeypatch, tmp_path: Path) -> None:

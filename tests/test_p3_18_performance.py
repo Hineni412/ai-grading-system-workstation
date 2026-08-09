@@ -44,14 +44,36 @@ def test_p3_18_crop_experiment_uses_generated_data_and_exact_output(
 
 def test_p3_18_report_contract_has_four_decisions_and_no_absolute_paths(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from tools.benchmark_p3_18 import build_p3_18_report
+    import tools.benchmark_p3_18 as benchmark
     from tools.performance.evidence_optimization_report import (
+        CandidateEvidence,
         render_json,
         render_markdown,
     )
 
-    report = build_p3_18_report(
+    original_hot_sql_evidence = benchmark._hot_sql_evidence
+
+    def build_rejected_hot_sql_evidence(
+        question_bank_db_path: Path,
+        *,
+        samples: int,
+    ) -> CandidateEvidence:
+        with monkeypatch.context() as sql_gate:
+            sql_gate.setattr(benchmark, "qualifies", lambda *_args: False)
+            return original_hot_sql_evidence(
+                question_bank_db_path,
+                samples=samples,
+            )
+
+    monkeypatch.setattr(
+        benchmark,
+        "_hot_sql_evidence",
+        build_rejected_hot_sql_evidence,
+    )
+
+    report = benchmark.build_p3_18_report(
         tmp_path,
         code_sha="a" * 40,
         warmups=1,
@@ -103,6 +125,48 @@ def test_p3_18_report_contract_has_four_decisions_and_no_absolute_paths(
     assert "p95" in markdown
     assert str(tmp_path.resolve()) not in render_json(report)
     assert str(tmp_path.resolve()) not in markdown
+
+
+def test_p3_18_hot_sql_benchmark_executes_each_measured_query(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import question_bank.services.question_read_service as read_module
+    import tools.benchmark_p3_18 as benchmark
+    from tools.performance.dataset import (
+        ScaleDefinition,
+        build_benchmark_dataset,
+    )
+
+    micro = ScaleDefinition("p3_18_sql_micro", 1, 2, 2, 4, 8, 2, 2)
+    dataset = build_benchmark_dataset(tmp_path / "dataset", micro, seed=318)
+    original = read_module.QuestionBankReadService._list_questions
+    executed_queries = 0
+    samples = 2
+
+    def counted_list_questions(
+        service: read_module.QuestionBankReadService,
+        filters: read_module.QuestionReadFilters,
+    ) -> read_module.QuestionReadPage:
+        nonlocal executed_queries
+        executed_queries += 1
+        return original(service, filters)
+
+    monkeypatch.setattr(
+        read_module.QuestionBankReadService,
+        "_list_questions",
+        counted_list_questions,
+    )
+    monkeypatch.setattr(benchmark, "qualifies", lambda *_args: False)
+
+    evidence = benchmark._hot_sql_evidence(
+        dataset.paths.qb_db_path,
+        samples=samples,
+    )
+
+    assert executed_queries == (2 * samples) + 1
+    assert evidence.dataset["query_plan_before"]
+    assert evidence.dataset["query_plan_after"]
 
 
 def test_p3_18_cli_uses_system_temp_and_cleans_controlled_failure(

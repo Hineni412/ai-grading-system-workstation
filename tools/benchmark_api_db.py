@@ -24,8 +24,8 @@ from tools.performance.report import (
 from tools.performance.runner import BenchmarkRunError, run_scale
 
 
-DEFAULT_JSON = Path("docs/performance/p1-26-api-db-baseline.json")
-DEFAULT_MARKDOWN = Path("docs/performance/p1-26-api-db-baseline.md")
+DEFAULT_JSON = Path("output/performance/p1-26-api-db-baseline.json")
+DEFAULT_MARKDOWN = Path("output/performance/p1-26-api-db-baseline.md")
 
 
 def _positive(value: str) -> int:

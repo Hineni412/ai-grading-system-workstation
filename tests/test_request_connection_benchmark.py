@@ -227,12 +227,14 @@ def test_cli_defaults_match_p1_26_and_exact_task_5_scope() -> None:
     assert args.data_scale_factor == 0.1
     assert args.samples == 2
     assert args.repetitions == 2
-    assert args.baseline.as_posix().endswith("docs/performance/p1-26-api-db-baseline.json")
+    assert args.baseline.as_posix().endswith(
+        "tools/performance/baselines/p1-26-api-db-baseline.json"
+    )
     assert args.output_json.as_posix().endswith(
-        "docs/performance/p1-27-request-connection-comparison.json"
+        "output/performance/p1-27-request-connection-comparison.json"
     )
     assert args.output_markdown.as_posix().endswith(
-        "docs/performance/p1-27-request-connection-comparison.md"
+        "output/performance/p1-27-request-connection-comparison.md"
     )
 
     for option in ("--warmups", "--samples", "--repetitions"):
@@ -438,7 +440,8 @@ def test_cli_supports_direct_script_execution() -> None:
 def test_committed_baseline_loader_selects_only_active_comparable_scenarios() -> None:
     repository_root = Path(__file__).resolve().parents[1]
     baseline = load_baseline_report(
-        repository_root / "docs/performance/p1-26-api-db-baseline.json",
+        repository_root
+        / "tools/performance/baselines/p1-26-api-db-baseline.json",
         scales=("small", "medium", "large_5pct"),
         scenarios=SCENARIO_NAMES,
     )

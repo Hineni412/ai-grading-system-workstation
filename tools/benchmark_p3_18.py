@@ -48,8 +48,8 @@ from tools.performance.evidence_optimization_report import (
 )
 
 
-DEFAULT_JSON = Path("docs/performance/p3-18-evidence-performance.json")
-DEFAULT_MARKDOWN = Path("docs/performance/p3-18-evidence-performance.md")
+DEFAULT_JSON = Path("output/performance/p3-18-evidence-performance.json")
+DEFAULT_MARKDOWN = Path("output/performance/p3-18-evidence-performance.md")
 
 
 class _GeneratedMediaRepository:
@@ -602,7 +602,13 @@ def _hot_sql_evidence(
 
     service = QuestionBankReadService(question_bank_db_path)
     filters = QuestionReadFilters()
-    call = lambda: service.list_questions(filters)
+
+    def call() -> Any:
+        # Keep the public read path, but force a cache miss so every timing sample
+        # measures the SQL candidate instead of the process-wide result cache.
+        with read_module._read_connection(question_bank_db_path):
+            return service.list_questions(filters)
+
     before_values, before_digest = _measure_object(call, samples)
     query_sql = _capture_question_list_sql(read_module, call)
     query_plan_before = _query_plan(question_bank_db_path, query_sql)

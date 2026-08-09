@@ -17,9 +17,9 @@ RELEASE_PATH = (
 )
 OUTPUT_PATH = (
     ROOT
-    / "docs"
-    / "architecture"
-    / "2026-08-03-junior-math-knowledge-graph-mapping-ledger.md"
+    / "output"
+    / "knowledge-graph"
+    / "knowledge-graph-mapping-ledger.md"
 )
 
 
@@ -165,6 +165,7 @@ def main() -> int:
         if not OUTPUT_PATH.exists() or OUTPUT_PATH.read_text(encoding="utf-8") != rendered:
             raise SystemExit("knowledge graph mapping ledger is not up to date")
         return 0
+    OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
     OUTPUT_PATH.write_text(rendered, encoding="utf-8")
     print(OUTPUT_PATH.relative_to(ROOT))
     return 0
