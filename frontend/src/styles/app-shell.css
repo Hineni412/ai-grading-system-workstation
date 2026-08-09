@@ -507,8 +507,16 @@
       box-shadow var(--duration-base);
   }
 
-  .app-sidebar__brand,
-  .app-sidebar__link,
+  .app-sidebar__brand {
+    justify-content: flex-start;
+    padding-inline: 2.5px;
+  }
+
+  .app-sidebar__link {
+    justify-content: flex-start;
+    padding-inline: 9px;
+  }
+
   .app-sidebar__settings-toggle {
     justify-content: center;
     padding-inline: 0;
@@ -533,11 +541,7 @@
     box-shadow: var(--shadow-overlay);
   }
 
-  .app-sidebar:hover .app-sidebar__brand,
-  .app-sidebar:hover .app-sidebar__link,
   .app-sidebar:hover .app-sidebar__settings-toggle,
-  .app-sidebar:focus-within .app-sidebar__brand,
-  .app-sidebar:focus-within .app-sidebar__link,
   .app-sidebar:focus-within .app-sidebar__settings-toggle {
     justify-content: flex-start;
     padding-inline: 10px;

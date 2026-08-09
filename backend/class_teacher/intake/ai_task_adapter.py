@@ -616,6 +616,18 @@ def _normalize_triage_payload_compatibility(
     automatically; the teacher must choose the student before adoption.
     """
     normalized = deepcopy(dict(payload))
+    if normalized.get("contract_version") == "class_teacher_triage.v1":
+        # Some JSON-object providers echo schema-description placeholders at
+        # the top level. Diagnostics confirmed these fields carry no routing,
+        # safety, student, or draft semantics; all contract fields below stay
+        # strictly validated.
+        for field in (
+            "name",
+            "description",
+            "additionalProp1",
+            "missing_fields",
+        ):
+            normalized.pop(field, None)
     raw_work_items = normalized.get("work_items")
     if isinstance(raw_work_items, list):
         for raw_item in raw_work_items:

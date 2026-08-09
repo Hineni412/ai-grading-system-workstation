@@ -956,6 +956,36 @@ def test_existing_tag_writer_reuses_quality_gate_and_question_save_seam(
     }
 
 
+def test_existing_tag_writer_does_not_report_success_without_complete_persisted_tags(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "question-bank.db"
+    _seed_questions(database)
+    install_current_knowledge(database)
+
+    class NonPersistingWriteService:
+        db_path = database
+
+        @staticmethod
+        def save_tag_analysis(*_args, **_kwargs) -> bool:
+            return True
+
+    writer = ExistingTagProjectionWriter(
+        write_service=NonPersistingWriteService(),  # type: ignore[arg-type]
+        tagging_service=ExistingWriterTaggingStub(),  # type: ignore[arg-type]
+    )
+    payload = _tag_payload()
+    payload["textbook_chapters"] = ["七年级上册 一元一次方程"]
+
+    with pytest.raises(ValueError, match="core tags remain incomplete"):
+        writer.write(
+            _question(1),
+            payload,
+            model_name="synthetic-model",
+            operation_id="persisted-postcondition",
+        )
+
+
 def test_existing_tag_writer_persists_proposals_with_the_question_contract(
     tmp_path: Path,
 ) -> None:

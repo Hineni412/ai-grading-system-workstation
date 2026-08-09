@@ -53,7 +53,7 @@ describe('B UI R1 surfaces', () => {
 
     const host = await mount(ClassTeacherWorkbenchView, {})
 
-    expect(host.textContent).toContain('先把事情说清楚，再决定怎么处理')
+    await vi.waitFor(() => expect(host.textContent).toContain('先把事情说清楚，再决定怎么处理'))
     expect(host.textContent).not.toContain('PIN')
     expect(host.textContent).not.toContain('解锁')
     expect(vaultStatus).not.toHaveBeenCalled()
@@ -69,7 +69,7 @@ describe('B UI R1 surfaces', () => {
     })
     const host = await mount(ClassTeacherWorkbenchView, {})
 
-    expect(host.querySelector('form.composer')).toBeTruthy()
+    await vi.waitFor(() => expect(host.querySelector('form.composer')).toBeTruthy())
     clickByText(host, '成长记录')
     await nextTick()
     const query = new URLSearchParams(window.location.search)

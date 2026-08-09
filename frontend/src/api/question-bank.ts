@@ -1755,6 +1755,7 @@ export const questionBankApi = {
   ): Promise<QuestionBankPaperPermanentDeleteResult> {
     return apiClient.request('/api/question-bank/papers/permanent-delete', {
       method: 'POST',
+      timeoutMs: 120_000,
       body: {
         selections,
         confirmation_phrase: confirmationPhrase,

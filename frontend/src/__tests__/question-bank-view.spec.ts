@@ -3,13 +3,14 @@ import { createPinia } from 'pinia'
 import { createMemoryHistory } from 'vue-router'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import type { QuestionBankPaper } from '../api/question-bank'
+import { questionBankApi, type QuestionBankPaper } from '../api/question-bank'
 import QuestionBankView from '../views/QuestionBankView.vue'
 import PaperLibrary from '../components/question-bank/PaperLibrary.vue'
 import QuestionInspector from '../components/question-bank/QuestionInspector.vue'
 import QuestionImportJobs from '../components/question-bank/QuestionImportJobs.vue'
 import { useJobStore } from '../stores/jobs'
 import { useQuestionBankStore } from '../stores/question-bank'
+import { useCurriculumScopeStore } from '../stores/curriculum-scope'
 import { createAppRouter } from '../router'
 
 const revision = 'a'.repeat(64)
@@ -166,6 +167,66 @@ describe('question bank workspace', () => {
     expect(semesterHeader.getAttribute('aria-expanded')).toBe('false')
     expect(host.textContent).not.toContain('同学期练习卷')
     expect(host.textContent).toContain('中考函数专题')
+  })
+
+  it('keeps papers from other teaching semesters visible by default', async () => {
+    const host = document.createElement('div')
+    document.body.append(host)
+    const pinia = createPinia()
+    const app = createApp(PaperLibrary)
+    app.use(pinia)
+    const store = useQuestionBankStore(pinia)
+    const curriculumScope = useCurriculumScopeStore(pinia)
+    curriculumScope.selectedVolumeId = 'bnu24-math-g7-upper'
+    store.papers = [paper]
+    store.papersState = 'ready'
+    app.mount(host)
+    mounted.push(app)
+    await nextTick()
+
+    const otherSemester = [...host.querySelectorAll<HTMLButtonElement>('.paper-folder__header')]
+      .find(button => button.textContent?.includes('其他学期'))
+    expect(otherSemester?.getAttribute('aria-expanded')).toBe('true')
+    expect(otherSemester?.textContent).toContain('仍可操作')
+    expect(host.textContent).toContain('匿名期末试卷')
+  })
+
+  it('does not call incomplete tags successful when new taxonomy terms need review', async () => {
+    const host = document.createElement('div')
+    document.body.append(host)
+    const pinia = createPinia()
+    const app = createApp(PaperLibrary)
+    app.use(pinia)
+    const store = useQuestionBankStore(pinia)
+    store.papers = [paper]
+    store.papersState = 'ready'
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      if (String(input) === '/api/question-bank/papers') {
+        return response({ items: [paper], total: 1 })
+      }
+      throw new Error(`unexpected request: ${String(input)}`)
+    })
+    app.mount(host)
+    mounted.push(app)
+    useJobStore(pinia).track({
+      id: 106,
+      job_type: 'tagging_sync',
+      payload: { question_ids: [5, 8, 9, 11, 12] },
+      result: {
+        outcome: 'failed', complete_tagged_count: 0, failed_count: 5,
+        review_count: 9, review_question_ids: [5, 8, 9, 11, 12],
+      },
+      status: 'succeeded', progress: 1, stage: 'tagging_sync', detail: '',
+      error: null, cancel_requested: false,
+      created_at: '2026-08-08T23:46:00Z', started_at: '2026-08-08T23:46:01Z',
+      updated_at: '2026-08-08T23:47:00Z', finished_at: '2026-08-08T23:47:00Z',
+    })
+    await nextTick()
+
+    expect(host.textContent).toContain('5 道题产生了待审核新词')
+    expect(host.textContent).toContain('新词待审核 5 道')
+    expect(host.textContent).toContain('未完成 5')
+    expect(host.textContent).not.toContain('标签、解题证据和训练判定点均已完成')
   })
 
   it('applies difficulty on release but waits for explicit text filters and AI cost confirmation', async () => {
@@ -816,6 +877,83 @@ describe('question bank workspace', () => {
 
     expect(deleteBodies[0]?.request_token).toBe(deleteBodies[1]?.request_token)
     expect(deleteBodies[0]?.confirmation_phrase).toBe('彻底删除 1 份试卷')
+  })
+
+  it('confirms a completed deletion by refreshing when the response is lost', async () => {
+    const host = document.createElement('div')
+    document.body.append(host)
+    const pinia = createPinia()
+    const app = createApp(PaperLibrary)
+    app.use(pinia)
+    const store = useQuestionBankStore(pinia)
+    store.papers = [paper]
+    store.papersState = 'ready'
+    app.mount(host)
+    mounted.push(app)
+    let deleted = false
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input)
+      if (url === '/api/question-bank/papers') {
+        return response({ items: deleted ? [] : [paper], total: deleted ? 0 : 1 })
+      }
+      if (url.endsWith('/permanent-deletion-impact')) {
+        return response({
+          paper_count: 1, question_count: 2, tag_count: 3,
+          training_link_count: 0, knowledge_graph_link_count: 0,
+          owned_file_count: 1, shared_file_count: 0,
+          permanent_delete_phrase: '彻底删除 1 份试卷',
+        })
+      }
+      if (url.endsWith('/permanent-delete')) {
+        deleted = true
+        return response({ error: { message: 'response lost' } }, 503)
+      }
+      throw new Error(`unexpected request: ${url}`)
+    })
+
+    const reviewDelete = [...host.querySelectorAll<HTMLButtonElement>('button')]
+      .find(button => button.textContent?.trim() === '删除')!
+    reviewDelete.click()
+    await vi.waitFor(() => expect(document.body.textContent).toContain('确认彻底删除？'))
+    const confirm = [...document.body.querySelectorAll<HTMLButtonElement>('button')]
+      .find(button => button.textContent?.includes('确认彻底删除'))!
+    confirm.click()
+
+    await vi.waitFor(() => expect(store.papers).toHaveLength(0))
+    expect(document.body.textContent).not.toContain('删除结果尚不确定')
+    expect(host.textContent).toContain('刷新后已确认试卷删除成功')
+  })
+
+  it('allows permanent deletion cleanup to run longer than the default request timeout', async () => {
+    vi.useFakeTimers()
+    try {
+      let requestSignal: AbortSignal | undefined
+      vi.spyOn(globalThis, 'fetch').mockImplementation((_input, init) => new Promise((resolve, reject) => {
+        requestSignal = init?.signal ?? undefined
+        const timer = setTimeout(() => resolve(new Response(JSON.stringify({
+          deleted_paper_ids: [paper.id], deleted_question_count: 2,
+          deleted_tag_count: 3, removed_training_link_count: 0,
+          removed_knowledge_graph_link_count: 0, deleted_file_count: 26,
+          skipped_shared_file_count: 0, storage_cleanup_pending: false,
+        }), { status: 200, headers: { 'content-type': 'application/json' } })), 20_000)
+        requestSignal?.addEventListener('abort', () => {
+          clearTimeout(timer)
+          reject(new DOMException('aborted', 'AbortError'))
+        }, { once: true })
+      }))
+
+      const pending = questionBankApi.permanentlyDeletePapers(
+        [{ id: paper.id, expected_updated_at: paper.updated_at }],
+        '彻底删除 1 份试卷',
+        'a'.repeat(32),
+      )
+      await vi.advanceTimersByTimeAsync(15_001)
+      expect(requestSignal?.aborted).toBe(false)
+      await vi.advanceTimersByTimeAsync(4_999)
+      await expect(pending).resolves.toMatchObject({ deleted_file_count: 26 })
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })
 

@@ -149,7 +149,7 @@ const paperFolders = computed<PaperFolder[]>(() => {
       key: 'scope:other-semesters',
       label: '其他学期',
       manual: false,
-      kindLabel: '默认折叠',
+      kindLabel: '不属于当前教学学期，仍可操作',
       papers: otherPapers,
     })
   }
@@ -158,21 +158,17 @@ const paperFolders = computed<PaperFolder[]>(() => {
       key: 'scope:unclassified',
       label: '未归类',
       manual: false,
-      kindLabel: '默认折叠',
+      kindLabel: '尚未匹配教学学期，仍可操作',
       papers: unclassifiedPapers,
     })
   }
   return result
 })
 
-watch(() => curriculumScope.selectedVolumeId, (value) => {
+watch(() => curriculumScope.selectedVolumeId, () => {
   const next = new Set(collapsedFolderKeys.value)
   next.delete('scope:other-semesters')
   next.delete('scope:unclassified')
-  if (value) {
-    next.add('scope:other-semesters')
-    next.add('scope:unclassified')
-  }
   collapsedFolderKeys.value = next
 }, { immediate: true })
 
@@ -212,6 +208,11 @@ function analysisJobState(job: JobResponse): string {
     return '试卷已入库，等待标签与判定点分析。'
   }
   const outcome = String(job.result.outcome ?? '')
+  const taxonomyReview = jobResultIdCount(job, 'review_question_ids')
+    || jobResultCount(job, 'review_count')
+  if (taxonomyReview > 0) {
+    return `${taxonomyReview} 道题产生了待审核新词；请先审核新词，再继续补齐标签。`
+  }
   const reviewCount = jobResultCount(job, 'criteria_needs_review_count')
   if (reviewCount > 0) return `${reviewCount} 道题需要审核，禁止按分析成功展示。`
   if (outcome === 'complete') return '标签、解题证据和训练判定点均已完成。'
@@ -225,6 +226,11 @@ function jobResultCount(job: JobResponse, key: string): number {
   return Number.isFinite(value) && value > 0 ? Math.floor(value) : 0
 }
 
+function jobResultIdCount(job: JobResponse, key: string): number {
+  const value = job.result[key]
+  return Array.isArray(value) ? new Set(value.map(item => String(item))).size : 0
+}
+
 function analysisJobMetrics(job: JobResponse): string {
   if (job.job_type === 'question_import') {
     const count = jobResultCount(job, 'question_count')
@@ -235,11 +241,13 @@ function analysisJobMetrics(job: JobResponse): string {
   const evidence = jobResultCount(job, 'evidence_count')
   const criteria = jobResultCount(job, 'criteria_count')
   const review = jobResultCount(job, 'criteria_needs_review_count')
+  const taxonomyReview = jobResultIdCount(job, 'review_question_ids')
   const failed = jobResultCount(job, 'failed_count')
   return [
     `标签 ${tagged}`,
     `证据 ${evidence}`,
     `判定点 ${criteria}`,
+    taxonomyReview > 0 ? `新词待审核 ${taxonomyReview} 道` : '',
     review > 0 ? `待审核 ${review}` : '',
     failed > 0 ? `未完成 ${failed}` : '',
   ].filter(Boolean).join(' · ')
@@ -605,8 +613,23 @@ async function confirmPermanentDelete(): Promise<void> {
     permanentDeleteState.value = 'idle'
     deleteNotice.value = `已删除 ${result.deleted_paper_ids.length} 份试卷、${result.deleted_question_count} 道题和 ${result.deleted_tag_count} 个标签。`
   } catch {
+    await store.loadPapers()
+    const refreshConfirmedDeletion = (
+      store.papersState === 'ready'
+      && !store.papers.some(item => item.id === paper.id)
+    )
+    if (refreshConfirmedDeletion) {
+      pendingDeletePaper.value = null
+      permanentDeleteImpact.value = null
+      permanentDeleteRequestToken.value = ''
+      permanentDeleteState.value = 'idle'
+      deleteNotice.value = '服务器响应中断，但刷新后已确认试卷删除成功。'
+      return
+    }
     permanentDeleteState.value = 'error'
-    permanentDeleteMessage.value = '未收到服务器确认，删除结果尚不确定。请保留此窗口并点击重试；系统会使用同一请求编号核对，不会重复删除。'
+    permanentDeleteMessage.value = store.papersState === 'ready'
+      ? '删除结果尚不确定：未收到服务器确认，刷新核对后试卷仍在。请点击重试，系统会使用同一请求编号，不会重复删除。'
+      : '删除结果尚不确定：未收到服务器确认，刷新核对也暂时失败。请保留此窗口并点击重试；系统会使用同一请求编号，不会重复删除。'
   }
 }
 </script>

@@ -1765,6 +1765,22 @@ button:disabled { cursor: not-allowed; opacity: 0.46; }
 .tp-mapping-review input,
 .tp-mapping-review select { inline-size: 100%; padding: 0.55rem; border: 1px solid var(--tp-line); border-radius: 0.4rem; background: white; }
 .tp-field--inline { grid-template-columns: minmax(90px, 1fr) minmax(60px, 100px) auto; align-items: center; }
+.tp-directory-material-field { display: grid; gap: 0.45rem; }
+.tp-field--check {
+  display: flex;
+  gap: 0.45rem;
+  align-items: center;
+  color: var(--tp-muted);
+  font-size: 0.78rem;
+}
+.tp-field--check input[type='checkbox'] {
+  inline-size: 1rem;
+  block-size: 1rem;
+  flex: none;
+  margin: 0;
+  padding: 0;
+  accent-color: var(--tp-teal);
+}
 .tp-field-pair { display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; }
 .tp-inline-actions { flex-wrap: wrap; }
 

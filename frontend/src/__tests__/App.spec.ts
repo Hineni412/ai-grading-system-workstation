@@ -213,7 +213,7 @@ describe('App', () => {
     await vi.waitFor(() => expect(router.currentRoute.value.fullPath).toBe('/workbench'))
     await settleUi()
 
-    expect(host.querySelector('#main-workspace h1')?.textContent).toContain('工作台')
+    expect(host.querySelector('#main-workspace h1')?.textContent).toContain('今天先完成这三件事')
     expect(host.textContent).not.toContain('private route factory detail')
     app.unmount()
   })
@@ -287,7 +287,7 @@ describe('App', () => {
     await vi.waitFor(() => expect(router.currentRoute.value.fullPath).toBe('/workbench'))
     await settleUi()
 
-    expect(host.querySelector('#main-workspace h1')?.textContent).toContain('工作台')
+    expect(host.querySelector('#main-workspace h1')?.textContent).toContain('今天先完成这三件事')
     app.unmount()
   })
 
@@ -309,7 +309,7 @@ describe('App', () => {
     returnButton.click()
     await vi.waitFor(() => expect(router.currentRoute.value.fullPath).toBe('/workbench'))
 
-    expect(host.querySelector('#main-workspace h1')?.textContent).toContain('工作台')
+    expect(host.querySelector('#main-workspace h1')?.textContent).toContain('今天先完成这三件事')
     app.unmount()
   })
 

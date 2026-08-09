@@ -11,7 +11,7 @@
   "scripts": {
     "dev": "vite --host 127.0.0.1",
     "build": "npm run typecheck && npm run build-only",
-    "build-only": "vite build",
+    "build-only": "vite build && node scripts/check-js-bundle-budget.mjs",
     "preview": "vite preview --host 127.0.0.1",
     "lint": "eslint .",
     "typecheck": "vue-tsc --build",

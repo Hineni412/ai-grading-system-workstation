@@ -165,6 +165,64 @@ describe('MaterialLibraryWorkspace current-material safety', () => {
     app.unmount()
   })
 
+  it('excludes reference PPT from directory analysis unless the teacher includes it', async () => {
+    const curriculumItem = curriculum()
+    const textbook = material('a'.repeat(32), '数学教材')
+    const referencePpt = material('b'.repeat(32), '一学期参考课件')
+    referencePpt.material_type = 'pptx'
+    const textbookRecord = record('r'.repeat(32), textbook)
+    const pptRecord = record('p'.repeat(32), referencePpt)
+    pptRecord.material_role = 'reference_ppt'
+    const { app, host, catalog } = mountWorkspace()
+    catalog.curricula = [curriculumItem]
+    catalog.semesters = [semester(curriculumItem.id)]
+    catalog.selectedCurriculumId = curriculumItem.id
+    catalog.materials = [textbook, referencePpt]
+    catalog.semesterMaterials = [textbookRecord, pptRecord]
+    await flush()
+
+    const directorySelect = host.querySelector<HTMLSelectElement>('.tp-directory-actions select')!
+    expect(directorySelect.textContent).toContain('数学教材')
+    expect(directorySelect.textContent).not.toContain('一学期参考课件')
+    expect(host.textContent).toContain('默认不包含参考 PPT')
+
+    const includePpt = host.querySelector<HTMLInputElement>('[data-testid="include-reference-ppt-directory"]')!
+    includePpt.checked = true
+    includePpt.dispatchEvent(new Event('change'))
+    await flush()
+    expect(directorySelect.textContent).toContain('一学期参考课件')
+    app.unmount()
+  })
+
+  it('moves all current-semester materials to the recoverable recycle area', async () => {
+    const curriculumItem = curriculum()
+    const first = material('a'.repeat(32), '旧教材')
+    const second = material('b'.repeat(32), '旧参考课件')
+    const firstRecord = record('r'.repeat(32), first)
+    const secondRecord = record('p'.repeat(32), second)
+    secondRecord.material_role = 'reference_ppt'
+    const { app, host, catalog } = mountWorkspace()
+    catalog.curricula = [curriculumItem]
+    catalog.semesters = [semester(curriculumItem.id)]
+    catalog.selectedCurriculumId = curriculumItem.id
+    catalog.materials = [first, second]
+    catalog.semesterMaterials = [firstRecord, secondRecord]
+    const updateRecord = vi.spyOn(catalog, 'updateSemesterMaterial').mockResolvedValue(undefined)
+    const updateSource = vi.spyOn(catalog, 'updateMaterialSource').mockResolvedValue(undefined)
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    await flush()
+
+    const restart = [...host.querySelectorAll<HTMLButtonElement>('button')]
+      .find(button => button.textContent?.includes('本学期旧资料移入回收区'))!
+    restart.click()
+    await vi.waitFor(() => expect(updateSource).toHaveBeenCalledTimes(2))
+    expect(updateRecord).toHaveBeenCalledTimes(2)
+    expect(updateSource).toHaveBeenNthCalledWith(1, first, { archived: true })
+    expect(updateSource).toHaveBeenNthCalledWith(2, second, { archived: true })
+    expect(host.textContent).toContain('已将 2 份资料移入回收区')
+    app.unmount()
+  })
+
   it('bulk-confirms only high-confidence local PPT mappings', async () => {
     const curriculumItem = curriculum()
     const semesterItem = semester(curriculumItem.id)
