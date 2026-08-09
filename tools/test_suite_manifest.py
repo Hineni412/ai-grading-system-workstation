@@ -35,12 +35,11 @@ PROCESS_ISOLATED_TEST_PATHS = (
 )
 
 
-# These tests protect frozen phase evidence, packaging, retirement assertions,
-# and benchmark publication. They remain available for a release, but they do
-# not need to delay every P3.5 merge candidate.
+# These tests protect packaging, retirement assertions, and benchmark
+# publication. They remain available for a release, but do not need to delay
+# every routine development check.
 RELEASE_AUDIT_TEST_PATHS = (
     Path("tests/test_frontend_portable_packaging.py"),
-    Path("tests/test_handoff_status.py"),
     Path("tests/test_p1_29_acceptance.py"),
     Path("tests/test_p2_20_acceptance.py"),
     Path("tests/test_p2_22_streamlit_retirement.py"),

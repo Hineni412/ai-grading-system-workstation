@@ -30,7 +30,9 @@ def test_quick_manifest_reuses_product_tests_and_marks_serial_overlap() -> None:
     assert categories_for_path("tests/api_e2e/test_five_flow.py") == frozenset(
         {"acceptance_quick", "acceptance_serial"}
     )
-    assert categories_for_path("tests/test_handoff_status.py") == frozenset(
+    assert categories_for_path(
+        "tests/test_frontend_portable_packaging.py"
+    ) == frozenset(
         {"release_audit"}
     )
 

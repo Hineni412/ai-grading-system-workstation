@@ -13,47 +13,99 @@ SUPERPOWERS_SKILL_RE = re.compile(
     re.IGNORECASE,
 )
 
-AUTHORITY_REFERENCE_PATHS = (
+AUTHORITY_DOCUMENT_PATHS = (
+    "README.md",
     "AGENTS.md",
     "ARCHITECTURE.md",
     "CLAUDE.md",
-    "README_工作机使用说明.md",
-    "README_私人便携版_v1.5.0.md",
-    "frontend/README.md",
+    "CONTEXT.md",
+    "docs/README.md",
+    "docs/product/GRADING.md",
+    "docs/product/KNOWLEDGE_AND_TRAINING.md",
+    "docs/product/TEACHING_PREP.md",
+    "docs/product/CLASS_TEACHER.md",
+    "docs/security/SECURITY.md",
+    "docs/maintenance/storage-policy.md",
+    "docs/testing/README.md",
     "docs/ui/STYLE.md",
-    "docs/superpowers/packages/README.md",
-    "docs/superpowers/packages/EXECUTION_INDEX.md",
-    "docs/superpowers/packages/NIGHTLY_AUTOMATION.md",
-    "docs/superpowers/packages/PARALLEL_WORKTREE_EXECUTION.md",
-    "docs/user-testing/README.md",
-    "docs/user-testing/USER_TEST_TEMPLATE.md",
+    "frontend/README.md",
 )
 
-VERSIONED_REFERENCE_PREFIXES = (
+RETAINED_NON_AUTHORITY_DOCUMENT_PATHS = (
+    "docs/architecture/2026-08-09-exam-frequency-training-recommendation-research.md",
+    "docs/product/class-teacher/B_LOCAL_SPEECH_INPUT_RESEARCH.md",
+)
+
+SCANNED_DOCUMENT_ROOTS = (
+    "docs",
+    "frontend",
+    "tools",
+    "artifacts",
+)
+
+EXCLUDED_DOCUMENT_DIRECTORY_NAMES = {
+    ".git",
+    ".worktrees",
+    ".test-runs",
+    "dist",
+    "node_modules",
+    "output",
+    "runtime",
+    "user_data",
+}
+
+FORBIDDEN_DOCUMENT_DIRECTORIES = {
+    "acceptance",
+    "adr",
+    "architecture",
+    "performance",
+    "phase4",
+    "superpowers",
+    "user-testing",
+}
+
+CHECKED_REFERENCE_PREFIXES = (
+    "artifacts/",
+    "backend/",
+    "components/",
     "docs/",
     "frontend/",
+    "migrations/",
+    "runtime/",
+    "tests/",
     "tools/",
 )
 
-GENERATED_REFERENCE_PREFIXES = (
-    "frontend/dist",
+GENERATED_OR_PRIVATE_REFERENCE_PREFIXES = (
+    ".test-runs/",
+    "frontend/dist/",
+    "logs/",
+    "output/",
+    "runtime/",
+    "user_data/",
 )
 
 VERSIONED_ROOT_REFERENCES = {
     "AGENTS.md",
     "ARCHITECTURE.md",
     "CLAUDE.md",
+    "CONTEXT.md",
+    "README.md",
     "VERSION",
+    "关闭系统.bat",
     "运行.bat",
 }
 
-RETIRED_DOCUMENT_PATHS = (
-    "docs/superpowers/packages/NIGHTLY_ELIGIBILITY_MATRIX.md",
-    "docs/superpowers/packages/phase-1-execution-packages.md",
-    "docs/superpowers/packages/phase-2-execution-packages.md",
-    "docs/superpowers/packages/phase-3-execution-packages.md",
-    "docs/user-testing/PHASE2_FRONTEND_RECALIBRATION_TEST_TEMPLATE.md",
-    "docs/ui/references/README.md",
+HISTORICAL_CONTENT_MARKERS = (
+    (re.compile(r"\bPhase(?:\s*\d+(?:\.\d+)?)?\b", re.IGNORECASE), "Phase marker"),
+    (re.compile(r"\bP3\.5\b", re.IGNORECASE), "P3.5 marker"),
+    (re.compile(r"\bPR\s*#?\d+\b", re.IGNORECASE), "numbered PR marker"),
+    (
+        re.compile(r"\bSHA(?:-\d+)?\s*[:=]?\s*[0-9a-f]{7,40}\b", re.IGNORECASE),
+        "commit SHA marker",
+    ),
+    (re.compile(r"执行记录"), "execution-record marker"),
+    (re.compile(r"实施计划"), "implementation-plan marker"),
 )
 
 
@@ -73,19 +125,28 @@ def _line_number(text: str, offset: int) -> int:
     return text.count("\n", 0, offset) + 1
 
 
-def _markdown_files(root: Path) -> list[Path]:
-    candidates = [
-        *root.glob("*.md"),
-        *(root / "docs").rglob("*.md"),
-        root / "frontend" / "README.md",
-    ]
-    return sorted(
-        {
-            path
-            for path in candidates
-            if path.is_file() and ".worktrees" not in path.parts
-        }
+def _is_excluded(root: Path, path: Path) -> bool:
+    relative_parts = path.resolve().relative_to(root.resolve()).parts[:-1]
+    return any(
+        part.lower() in EXCLUDED_DOCUMENT_DIRECTORY_NAMES
+        for part in relative_parts
     )
+
+
+def _markdown_files(root: Path) -> list[Path]:
+    candidates: set[Path] = {
+        path for path in root.glob("*.md") if path.is_file()
+    }
+    for relative_root in SCANNED_DOCUMENT_ROOTS:
+        directory = root / relative_root
+        if not directory.is_dir():
+            continue
+        candidates.update(
+            path
+            for path in directory.rglob("*.md")
+            if path.is_file() and not _is_excluded(root, path)
+        )
+    return sorted(candidates)
 
 
 def _append_text_issue(
@@ -113,6 +174,21 @@ def _append_text_issue(
         )
 
 
+def _markdown_target(raw: str) -> str:
+    value = raw.strip()
+    if value.startswith("<") and ">" in value:
+        return value[1 : value.index(">")]
+    return value.split(maxsplit=1)[0] if value else ""
+
+
+def _normalized_backtick_reference(raw: str) -> str:
+    normalized = raw.strip().replace("\\", "/").split("#", 1)[0]
+    normalized = re.sub(r":\d+(?::\d+)?$", "", normalized)
+    while normalized.startswith("./"):
+        normalized = normalized[2:]
+    return normalized
+
+
 def check_markdown_links(project_root: Path) -> list[DocumentationIssue]:
     root = Path(project_root).resolve()
     issues: list[DocumentationIssue] = []
@@ -120,8 +196,8 @@ def check_markdown_links(project_root: Path) -> list[DocumentationIssue]:
     for path in _markdown_files(root):
         text = path.read_text(encoding="utf-8")
         for match in MARKDOWN_LINK_RE.finditer(text):
-            raw = match.group(1).strip().strip("<>")
-            target = raw.split("#", 1)[0]
+            raw = match.group(1).strip()
+            target = _markdown_target(raw).split("#", 1)[0]
             if not target or "://" in target or target.startswith("#"):
                 continue
             if not (path.parent / target).resolve().exists():
@@ -134,15 +210,14 @@ def check_markdown_links(project_root: Path) -> list[DocumentationIssue]:
                     )
                 )
 
-    for relative_path in AUTHORITY_REFERENCE_PATHS:
+    for relative_path in AUTHORITY_DOCUMENT_PATHS:
         path = root / relative_path
         if not path.exists():
             continue
         text = path.read_text(encoding="utf-8")
         for match in BACKTICK_REF_RE.finditer(text):
             raw = match.group(1).strip()
-            normalized = raw.replace("\\", "/").split("#", 1)[0]
-            normalized = re.sub(r":\d+$", "", normalized)
+            normalized = _normalized_backtick_reference(raw)
             if (
                 not normalized
                 or any(token in normalized for token in ("*", "<", ">", "{", "}"))
@@ -150,12 +225,15 @@ def check_markdown_links(project_root: Path) -> list[DocumentationIssue]:
                 or "://" in normalized
             ):
                 continue
-            if not (
-                normalized.startswith(VERSIONED_REFERENCE_PREFIXES)
-                or normalized in VERSIONED_ROOT_REFERENCES
+            if any(
+                normalized == prefix.rstrip("/") or normalized.startswith(prefix)
+                for prefix in GENERATED_OR_PRIVATE_REFERENCE_PREFIXES
             ):
                 continue
-            if normalized.startswith(GENERATED_REFERENCE_PREFIXES):
+            if not (
+                normalized.startswith(CHECKED_REFERENCE_PREFIXES)
+                or normalized in VERSIONED_ROOT_REFERENCES
+            ):
                 continue
             candidates = (root / normalized, path.parent / normalized)
             if not any(candidate.resolve().exists() for candidate in candidates):
@@ -178,10 +256,10 @@ def check_current_document_facts(
     issues: list[DocumentationIssue] = []
     checks = (
         (
-            "README_工作机使用说明.md",
-            "run.bat",
+            "frontend/README.md",
+            "日常使用者不需要安装 Node.js",
             "DOC101",
-            "Use the current 运行.bat launcher name.",
+            "Source checkouts require Node.js/npm; complete portable packages use frontend/dist.",
         ),
         (
             "frontend/README.md",
@@ -194,18 +272,6 @@ def check_current_document_facts(
             "占位工作区",
             "DOC103",
             "Do not describe implemented workspaces as placeholders.",
-        ),
-        (
-            "ARCHITECTURE.md",
-            "增量边界",
-            "DOC104",
-            "Architecture must describe current facts, not package increments.",
-        ),
-        (
-            "ARCHITECTURE.md",
-            "生产 UI 仍未切换",
-            "DOC105",
-            "Architecture still contains a retired production-UI statement.",
         ),
     )
     for relative_path, needle, code, message in checks:
@@ -231,90 +297,73 @@ def check_skill_authority(project_root: Path) -> list[DocumentationIssue]:
                     "DOC201",
                     _relative(root, path),
                     _line_number(text, match.start()),
-                    "Superpowers skill invocation is retired; use Matt Pocock skills.",
+                    "A forbidden skill invocation appears in project documentation.",
                 )
             )
     return sorted(issues)
 
 
-def check_p35_governance(project_root: Path) -> list[DocumentationIssue]:
+def check_authority_documents(project_root: Path) -> list[DocumentationIssue]:
     root = Path(project_root).resolve()
+    return [
+        DocumentationIssue(
+            "DOC301",
+            relative_path,
+            1,
+            "Required current authority document is missing.",
+        )
+        for relative_path in AUTHORITY_DOCUMENT_PATHS
+        if not (root / relative_path).is_file()
+    ]
+
+
+def check_historical_documents(project_root: Path) -> list[DocumentationIssue]:
+    root = Path(project_root).resolve()
+    authority_paths = set(AUTHORITY_DOCUMENT_PATHS)
+    retained_non_authority_paths = set(RETAINED_NON_AUTHORITY_DOCUMENT_PATHS)
     issues: list[DocumentationIssue] = []
 
-    required_fragments = {
-        "AGENTS.md": (
-            "P3.5",
-            "已完成并进入主线",
-            "EXECUTION_INDEX.md",
-        ),
-        "docs/superpowers/packages/EXECUTION_INDEX.md": (
-            "P3.5",
-            "`completed`",
-            "Phase 4",
-            "completed_local_integration",
-        ),
-        "docs/user-testing/README.md": (
-            "P3.5",
-            "用户",
-            "实际",
-        ),
-    }
-    for relative_path, fragments in required_fragments.items():
+    for path in _markdown_files(root):
+        relative_path = _relative(root, path)
+        if (
+            relative_path in authority_paths
+            or relative_path in retained_non_authority_paths
+        ):
+            continue
+        parts = Path(relative_path).parts
+        lower_parts = tuple(part.lower() for part in parts)
+        if (
+            len(lower_parts) >= 2
+            and lower_parts[0] == "docs"
+            and lower_parts[1] in FORBIDDEN_DOCUMENT_DIRECTORIES
+        ):
+            code = "DOC302"
+            message = "A forbidden historical documentation directory was restored."
+        elif len(parts) == 1 and re.fullmatch(r"README_.+\.md", parts[0], re.IGNORECASE):
+            code = "DOC303"
+            message = "An obsolete root README variant was restored."
+        else:
+            code = "DOC305"
+            message = "Markdown file is outside the current authority document set."
+        issues.append(DocumentationIssue(code, relative_path, 1, message))
+
+    for relative_path in AUTHORITY_DOCUMENT_PATHS:
         path = root / relative_path
-        if not path.exists():
-            issues.append(
-                DocumentationIssue(
-                    "DOC301",
-                    relative_path,
-                    1,
-                    "Required P3.5 authority document is missing.",
-                )
-            )
+        if not path.is_file():
             continue
         text = path.read_text(encoding="utf-8")
-        for fragment in fragments:
-            if fragment not in text:
-                issues.append(
-                    DocumentationIssue(
-                        "DOC302",
-                        relative_path,
-                        1,
-                        f"Required P3.5 contract fragment is missing: {fragment}",
-                    )
-                )
-
-    for relative_path in RETIRED_DOCUMENT_PATHS:
-        if (root / relative_path).exists():
+        for pattern, label in HISTORICAL_CONTENT_MARKERS:
+            match = pattern.search(text)
+            if match is None:
+                continue
             issues.append(
                 DocumentationIssue(
-                    "DOC303",
+                    "DOC304",
                     relative_path,
-                    1,
-                    "Retired workflow document was restored.",
+                    _line_number(text, match.start()),
+                    f"Current authority document contains a historical {label}.",
                 )
             )
-
-    for relative_dir, allowed_names in (
-        (
-            "docs/superpowers/plans",
-            {"2026-07-03-frontend-backend-modernization-master-plan.md"},
-        ),
-        ("docs/superpowers/specs", set()),
-        ("docs/user-testing/checkpoints", set()),
-    ):
-        directory = root / relative_dir
-        if not directory.exists():
-            continue
-        for path in directory.glob("*.md"):
-            if path.name not in allowed_names:
-                issues.append(
-                    DocumentationIssue(
-                        "DOC304",
-                        _relative(root, path),
-                        1,
-                        "Historical delivery document was restored.",
-                    )
-                )
 
     return sorted(issues)
 
@@ -326,14 +375,15 @@ def run_checks(project_root: Path) -> list[DocumentationIssue]:
             *check_markdown_links(root),
             *check_current_document_facts(root),
             *check_skill_authority(root),
-            *check_p35_governance(root),
+            *check_authority_documents(root),
+            *check_historical_documents(root),
         ]
     )
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Check current documentation links and P3.5 governance"
+        description="Check the current documentation authority set and references"
     )
     parser.add_argument(
         "--root",

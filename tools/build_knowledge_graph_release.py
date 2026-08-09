@@ -686,6 +686,8 @@ def _relations(active_core_names: Mapping[str, str]) -> list[dict[str, Any]]:
 
 
 def _sources() -> list[dict[str, str]]:
+    # Project paths below are immutable provenance labels in the content-hashed
+    # compatibility release. They are not runtime file dependencies.
     return [
         {
             "source_id": "moe_math_curriculum_2022",

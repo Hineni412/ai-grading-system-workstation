@@ -106,7 +106,7 @@ def test_p3_01_command_rejects_missing_controlled_evidence_without_publication(
     completed = _run(
         output_dir,
         "--p1-26-report",
-        "docs/performance/missing-p1-26.json",
+        "tools/performance/baselines/missing-p1-26.json",
     )
 
     assert completed.returncode != 0

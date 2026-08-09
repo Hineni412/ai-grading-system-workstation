@@ -101,6 +101,43 @@ def test_packaged_launchers_and_required_helpers_are_copied_from_source(
         assert (package / relative).read_bytes() == content
 
 
+def test_packaged_launcher_accepts_prebuilt_frontend_without_source(
+    tmp_path: Path,
+) -> None:
+    packager = _load_packager()
+    source = tmp_path / "source"
+    package = tmp_path / "package"
+    package.mkdir()
+    (source / "frontend" / "dist" / "assets").mkdir(parents=True)
+    (source / "frontend" / "dist" / "index.html").write_text(
+        "<main></main>", encoding="utf-8"
+    )
+    (source / "frontend" / "dist" / "assets" / "app.js").write_text(
+        "console.log('ready')", encoding="utf-8"
+    )
+    launcher_files = {
+        Path("运行.bat"): (ROOT / "运行.bat").read_bytes(),
+        Path("关闭系统.bat"): b"@echo off\r\nexit /b 0\r\n",
+        Path("tools/run_project_module.py"): b"raise SystemExit(0)\n",
+        Path("tools/stop_service.ps1"): b"exit 0\r\n",
+    }
+    for relative, content in launcher_files.items():
+        path = source / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+
+    packager.copy_sources(source, package, "v1.5.0")
+    packager.write_launchers(source, package)
+
+    assert not (package / "frontend" / "package.json").exists()
+    launcher = (package / "运行.bat").read_text(encoding="utf-8")
+    assert (
+        'if not exist "%FRONTEND_DIR%\\package.json" goto frontend_ready'
+        in launcher
+    )
+    assert ":frontend_ready" in launcher
+
+
 def test_portable_manifest_excludes_retired_streamlit_ui() -> None:
     packager = _load_packager()
 
@@ -108,18 +145,10 @@ def test_portable_manifest_excludes_retired_streamlit_ui() -> None:
     assert "pages_shared" not in packager.PRODUCTION_DIRS
 
 
-def test_private_readme_does_not_offer_retired_streamlit_fallback(
-    tmp_path: Path,
-) -> None:
+def test_packager_uses_current_root_readme_only() -> None:
     packager = _load_packager()
 
-    packager.write_private_readme(tmp_path, "v1.5.0")
-    readmes = list(tmp_path.glob("README_*.md"))
-    assert len(readmes) == 1
-    content = readmes[0].read_text(encoding="utf-8")
-
-    assert "USE_STREAMLIT" not in content
-    assert "START_API" not in content
-    assert "Streamlit" not in content
-    assert "运行核心测试.bat" not in content
-    assert "关闭系统.bat" in content
+    assert "README.md" in packager.ROOT_INCLUDE_EXACT
+    assert "README_工作机使用说明.md" not in packager.ROOT_INCLUDE_EXACT
+    assert packager._should_copy_root_file(Path("README.md"))
+    assert not packager._should_copy_root_file(Path("README_旧说明.md"))

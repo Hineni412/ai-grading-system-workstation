@@ -53,7 +53,7 @@ EXCLUDED_DOC_DIRS = {
 }
 
 ROOT_INCLUDE_EXACT = {
-    "README_工作机使用说明.md",
+    "README.md",
     "docx2pdf.ps1",
     "manifest.json",
     "pytest.ini",
@@ -179,6 +179,8 @@ def _is_root_helper_script(name: str) -> bool:
 def _should_copy_root_file(path: Path) -> bool:
     name = path.name
     if name in ROOT_EXCLUDE_EXACT:
+        return False
+    if name.startswith("README_") and path.suffix.lower() == ".md":
         return False
     if _is_root_helper_script(name):
         return False
@@ -422,36 +424,6 @@ def write_launchers(src_dir: Path, pkg_dir: Path) -> None:
         _copy_file(source, pkg_dir / package_relative)
 
 
-def write_private_readme(pkg_dir: Path, version: str) -> None:
-    readme = f"""# AI阅卷系统 工作机版 {version}
-
-这是私人便携开发版，包含运行所需的 Python 环境、源码和当前 `user_data` 数据。
-
-## 启动
-
-双击 `运行.bat`，默认打开 Vue 新界面与同源 FastAPI。
-
-新电脑不需要预装 Python，也不需要重新安装 `requirements.txt`。启动脚本会直接使用：
-
-```text
-runtime\\python\\python.exe
-```
-
-## 数据
-
-本包保留当前 `user_data/`，包括数据库、模板、历史考试和输出文件，但不包含 API 密钥。
-
-API 配置独立保存在当前 Windows 用户的本机配置目录中。首次在新电脑运行时，需要在页面中重新填写并保存。
-
-## 后续继续用 Codex 修改
-
-源码保留在发布目录中，可以直接用 Codex 打开这个文件夹继续修改。
-
-临时排查脚本、补丁脚本和测试脚本不会进入发布包。日常使用只需双击 `运行.bat`；需要结束服务时双击 `关闭系统.bat`。
-"""
-    (pkg_dir / f"README_私人便携版_{version}.md").write_text(readme, encoding="utf-8")
-
-
 def _dir_stats(path: Path) -> dict[str, int | float]:
     files = [p for p in path.rglob("*") if p.is_file()]
     size = sum(p.stat().st_size for p in files)
@@ -481,7 +453,7 @@ def write_manifest(pkg_dir: Path, version: str, *, runtime_included: bool) -> No
         "data": {
             "included": True,
             "api_profiles_included": False,
-            "api_profiles_location": "%LOCALAPPDATA%/AIGradingSystem/config/api_profiles.json",
+            "api_profiles_location": "user_data/config/api_profiles.json",
             "path": "user_data",
         },
         "cleanup": {
@@ -535,7 +507,6 @@ def build_package(args: argparse.Namespace) -> None:
         copy_runtime(runtime, pkg_dir)
 
     write_launchers(src_dir, pkg_dir)
-    write_private_readme(pkg_dir, version)
     clean_generated_artifacts(pkg_dir)
     write_manifest(pkg_dir, version, runtime_included=runtime_included)
 

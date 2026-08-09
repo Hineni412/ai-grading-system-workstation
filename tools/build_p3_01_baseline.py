@@ -55,12 +55,12 @@ SCHEMA_DIRECTORIES = {
     "grading": "migrations/grading",
     "question_bank": "migrations/question_bank",
 }
-DEFAULT_P1_26_REPORT = "docs/performance/p1-26-api-db-baseline.json"
-DEFAULT_P1_27_REPORT = "docs/performance/p1-27-request-connection-comparison.json"
+DEFAULT_P1_26_REPORT = "tools/performance/baselines/p1-26-api-db-baseline.json"
+DEFAULT_P1_27_REPORT = "tools/performance/baselines/p1-27-request-connection-comparison.json"
 PROCESS_EVIDENCE = {
-    # The original checkpoint documents were retired during the P3.5
-    # documentation cleanup.  Their immutable P3-01 path/hash evidence remains
-    # embedded here and in the content-addressed published baseline.
+    # These path/hash pairs are immutable labels from the published structural
+    # baseline. The referenced documents are not runtime inputs and need not
+    # exist in the current documentation set.
     "P1-29": {
         "path": "docs/user-testing/checkpoints/P1-29-v1.5.0-phase1-formal.md",
         "sha256": "60ae435f4c439a8d83952e287a8705bcaca72e4683ba4f962ff1a50ae787cf72",

@@ -254,10 +254,10 @@ def test_cli_defaults_and_positive_argument_validation() -> None:
     assert args.samples == 20
     assert args.repetitions == 2
     assert args.output_json.as_posix().endswith(
-        "docs/performance/p1-26-api-db-baseline.json"
+        "output/performance/p1-26-api-db-baseline.json"
     )
     assert args.output_markdown.as_posix().endswith(
-        "docs/performance/p1-26-api-db-baseline.md"
+        "output/performance/p1-26-api-db-baseline.md"
     )
 
     for option in ("--warmups", "--samples", "--repetitions"):

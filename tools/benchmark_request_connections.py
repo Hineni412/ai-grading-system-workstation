@@ -35,9 +35,9 @@ from tools.performance.runner import (
 )
 
 
-DEFAULT_BASELINE = Path("docs/performance/p1-26-api-db-baseline.json")
-DEFAULT_JSON = Path("docs/performance/p1-27-request-connection-comparison.json")
-DEFAULT_MARKDOWN = Path("docs/performance/p1-27-request-connection-comparison.md")
+DEFAULT_BASELINE = Path("tools/performance/baselines/p1-26-api-db-baseline.json")
+DEFAULT_JSON = Path("output/performance/p1-27-request-connection-comparison.json")
+DEFAULT_MARKDOWN = Path("output/performance/p1-27-request-connection-comparison.md")
 
 
 def _positive(value: str) -> int:
