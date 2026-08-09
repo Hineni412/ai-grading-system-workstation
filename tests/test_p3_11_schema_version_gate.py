@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import shutil
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -43,7 +44,7 @@ def test_schema_gate_bootstraps_empty_grading_database(tmp_path: Path) -> None:
         migrations_dir=PROJECT_ROOT / "migrations" / "grading",
     )
 
-    assert result.current_version == "011_add_session_curriculum_volume"
+    assert result.current_version == "012_exclusive_session_names"
     assert result.applied == (
         "000_baseline_schema",
         "001_init_migration_tracking",
@@ -57,6 +58,7 @@ def test_schema_gate_bootstraps_empty_grading_database(tmp_path: Path) -> None:
         "009_add_teacher_score_locks",
         "010_workspace_ai_tasks",
         "011_add_session_curriculum_volume",
+        "012_exclusive_session_names",
     )
     with sqlite3.connect(database) as connection:
         tables = {
@@ -72,6 +74,47 @@ def test_schema_gate_bootstraps_empty_grading_database(tmp_path: Path) -> None:
         "workspace_ai_tasks",
         "workspace_ai_handoffs",
     } <= tables
+
+
+def test_exclusive_name_migration_preserves_historical_duplicates_but_blocks_new_ones(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "grading.db"
+    current_migrations = PROJECT_ROOT / "migrations" / "grading"
+    legacy_migrations = tmp_path / "legacy-migrations"
+    legacy_migrations.mkdir()
+    for source in sorted(current_migrations.glob("*.sql")):
+        if source.name.startswith("012_"):
+            continue
+        shutil.copy2(source, legacy_migrations / source.name)
+    ensure_schema_current("grading", database, migrations_dir=legacy_migrations)
+    with sqlite3.connect(database) as connection:
+        connection.executemany(
+            """
+            INSERT INTO grading_sessions (session_name, rubric_path, answer_key_path)
+            VALUES (?, '', '')
+            """,
+            [("0526test",), (" 0526TEST ",)],
+        )
+
+    result = ensure_schema_current(
+        "grading",
+        database,
+        migrations_dir=current_migrations,
+    )
+
+    assert result.current_version == "012_exclusive_session_names"
+    with sqlite3.connect(database) as connection:
+        assert connection.execute(
+            "SELECT COUNT(*) FROM grading_sessions"
+        ).fetchone() == (2,)
+        with pytest.raises(sqlite3.IntegrityError, match="session_name_conflict"):
+            connection.execute(
+                """
+                INSERT INTO grading_sessions (session_name, rubric_path, answer_key_path)
+                VALUES ('0526Test', '', '')
+                """
+            )
 
 
 def test_schema_gate_rejects_unknown_future_migration(tmp_path: Path) -> None:
@@ -227,7 +270,7 @@ def test_schema_gate_serializes_concurrent_bootstrap(tmp_path: Path) -> None:
         )
 
     assert {result.current_version for result in results} == {
-        "011_add_session_curriculum_volume"
+        "012_exclusive_session_names"
     }
     with sqlite3.connect(database) as connection:
         rows = connection.execute(
@@ -252,8 +295,9 @@ def test_schema_gate_serializes_concurrent_bootstrap(tmp_path: Path) -> None:
         ("009_add_teacher_score_locks", 1),
         ("010_workspace_ai_tasks", 1),
         ("011_add_session_curriculum_volume", 1),
+        ("012_exclusive_session_names", 1),
     ]
-    assert len(list((tmp_path / "backups").glob("*.db"))) == 12
+    assert len(list((tmp_path / "backups").glob("*.db"))) == 13
 
 
 def test_migration_backup_includes_committed_wal_content(tmp_path: Path) -> None:
@@ -320,6 +364,7 @@ def test_db_manager_initialize_uses_current_grading_migrations(
         "009_add_teacher_score_locks",
         "010_workspace_ai_tasks",
         "011_add_session_curriculum_volume",
+        "012_exclusive_session_names",
     ]
 
 
@@ -342,7 +387,7 @@ def test_grading_store_initializers_use_current_migrations(
             LIMIT 1
             """
         ).fetchone()
-    assert current == ("011_add_session_curriculum_volume",)
+    assert current == ("012_exclusive_session_names",)
 
 
 def test_question_bank_initializer_uses_current_migrations(
@@ -384,7 +429,7 @@ def test_application_schema_gate_checks_both_databases(tmp_path: Path) -> None:
 
     results = ensure_application_schema(paths)
 
-    assert results["grading"].current_version == "011_add_session_curriculum_volume"
+    assert results["grading"].current_version == "012_exclusive_session_names"
     assert results["question_bank"].current_version == CURRENT_QUESTION_BANK_MIGRATION
 
 

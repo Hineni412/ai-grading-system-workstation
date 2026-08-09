@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import sqlite3
 from typing import Any
 
 from backend.repositories.base import RepositorySession, RepositorySessionProvider
@@ -27,8 +28,15 @@ class SessionDeletionActiveWork(RuntimeError):
         self.active_grading_runs = int(active_grading_runs)
 
 
-class SessionPermanentDeletionRequiresArchive(RuntimeError):
-    """Permanent deletion is allowed only after the session is archived."""
+class SessionNameConflict(ValueError):
+    """Another exam already owns the normalized display name."""
+
+
+def _clean_session_name(value: object) -> str:
+    clean = str(value or "").strip()
+    if not clean:
+        raise ValueError("session name must be nonblank")
+    return clean
 
 
 def session_deletion_revision(row: dict[str, Any]) -> str:
@@ -86,39 +94,70 @@ class SessionRepository:
         source_paper_sha256: str = "",
         curriculum_volume_id: str | None = None,
     ) -> int:
+        clean_name = _clean_session_name(session_name)
+        conflict = self.session.connection.execute(
+            "SELECT 1 FROM grading_sessions WHERE lower(trim(session_name)) = lower(?) LIMIT 1",
+            (clean_name,),
+        ).fetchone()
+        if conflict is not None:
+            raise SessionNameConflict("An exam with this name already exists")
         source_path, source_sha256 = _validated_source_binding(
             source_paper_path,
             source_paper_sha256,
         )
-        cursor = self.session.connection.execute(
-            """
-            INSERT INTO grading_sessions (
-                session_name, rubric_path, answer_key_path, status, is_deleted,
-                source_paper_path, source_paper_sha256, curriculum_volume_id,
-                updated_at
+        try:
+            cursor = self.session.connection.execute(
+                """
+                INSERT INTO grading_sessions (
+                    session_name, rubric_path, answer_key_path, status, is_deleted,
+                    source_paper_path, source_paper_sha256, curriculum_volume_id,
+                    updated_at
+                )
+                VALUES (?, ?, ?, 'created', 0, ?, ?, ?, datetime('now','localtime'))
+                """,
+                (
+                    clean_name,
+                    rubric_path,
+                    answer_key_path,
+                    source_path or None,
+                    source_sha256 or None,
+                    str(curriculum_volume_id or "").strip() or None,
+                ),
             )
-            VALUES (?, ?, ?, 'created', 0, ?, ?, ?, datetime('now','localtime'))
-            """,
-            (
-                session_name,
-                rubric_path,
-                answer_key_path,
-                source_path or None,
-                source_sha256 or None,
-                str(curriculum_volume_id or "").strip() or None,
-            ),
-        )
+        except sqlite3.IntegrityError as exc:
+            if "session_name_conflict" in str(exc):
+                raise SessionNameConflict("An exam with this name already exists") from exc
+            raise
         return int(cursor.lastrowid)
 
     def rename_grading_session(self, session_id: int, new_name: str) -> None:
-        self.session.connection.execute(
+        self._update_session_name(session_id, new_name)
+
+    def _update_session_name(self, session_id: int, new_name: str) -> None:
+        clean_name = _clean_session_name(new_name)
+        conflict = self.session.connection.execute(
             """
-            UPDATE grading_sessions
-            SET session_name = ?, updated_at = datetime('now','localtime')
-            WHERE id = ?
+            SELECT 1 FROM grading_sessions
+            WHERE id <> ? AND lower(trim(session_name)) = lower(?)
+            LIMIT 1
             """,
-            (new_name, session_id),
-        )
+            (int(session_id), clean_name),
+        ).fetchone()
+        if conflict is not None:
+            raise SessionNameConflict("An exam with this name already exists")
+        try:
+            self.session.connection.execute(
+                """
+                UPDATE grading_sessions
+                SET session_name = ?, updated_at = datetime('now','localtime')
+                WHERE id = ?
+                """,
+                (clean_name, session_id),
+            )
+        except sqlite3.IntegrityError as exc:
+            if "session_name_conflict" in str(exc):
+                raise SessionNameConflict("An exam with this name already exists") from exc
+            raise
 
     def update_grading_session(
         self,
@@ -131,8 +170,19 @@ class SessionRepository:
         assignments: list[str] = []
         parameters: list[Any] = []
         if name is not None:
+            clean_name = _clean_session_name(name)
+            conflict = self.session.connection.execute(
+                """
+                SELECT 1 FROM grading_sessions
+                WHERE id <> ? AND lower(trim(session_name)) = lower(?)
+                LIMIT 1
+                """,
+                (int(session_id), clean_name),
+            ).fetchone()
+            if conflict is not None:
+                raise SessionNameConflict("An exam with this name already exists")
             assignments.append("session_name = ?")
-            parameters.append(str(name))
+            parameters.append(clean_name)
         if curriculum_volume_provided:
             assignments.append("curriculum_volume_id = ?")
             parameters.append(str(curriculum_volume_id or "").strip() or None)
@@ -140,10 +190,15 @@ class SessionRepository:
             raise ValueError("at least one session field must be updated")
         assignments.append("updated_at = datetime('now','localtime')")
         parameters.append(int(session_id))
-        self.session.connection.execute(
-            f"UPDATE grading_sessions SET {', '.join(assignments)} WHERE id = ?",
-            tuple(parameters),
-        )
+        try:
+            self.session.connection.execute(
+                f"UPDATE grading_sessions SET {', '.join(assignments)} WHERE id = ?",
+                tuple(parameters),
+            )
+        except sqlite3.IntegrityError as exc:
+            if "session_name_conflict" in str(exc):
+                raise SessionNameConflict("An exam with this name already exists") from exc
+            raise
 
     def soft_delete_grading_session(self, session_id: int) -> None:
         self.session.connection.execute(
@@ -495,10 +550,6 @@ class SessionRepositoryGateway:
                 if str(confirmation_phrase) != expected_phrase:
                     raise SessionDeletionConfirmationMismatch(
                         "Permanent deletion phrase does not match"
-                    )
-                if not bool(int(current.get("is_deleted") or 0)):
-                    raise SessionPermanentDeletionRequiresArchive(
-                        "Session must be archived before permanent deletion"
                     )
                 if session_deletion_revision(current) != str(expected_revision):
                     raise SessionDeletionRevisionConflict(

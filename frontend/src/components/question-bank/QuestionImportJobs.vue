@@ -159,21 +159,6 @@ async function retry(job: JobResponse): Promise<void> {
   }
 }
 
-async function restoreRequiredPaper(job: JobResponse): Promise<void> {
-  const paperId = Number(job.result.restore_paper_id)
-  if (!Number.isSafeInteger(paperId) || paperId <= 0 || busy.value) return
-  busy.value = true
-  feedback.value = ''
-  try {
-    const restored = await bank.restorePaperFromTrash(paperId)
-    feedback.value = restored
-      ? '旧记录已恢复到试卷库。若要重新上传，请先在试卷卡片中将它永久删除。'
-      : '旧记录没有恢复，也没有删除任何数据。请刷新任务后再试。'
-  } finally {
-    busy.value = false
-  }
-}
-
 function downloadFailures(job: JobResponse): void {
   const csv = `\uFEFF${questionJobFailuresCsv(job.result)}`
   const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }))
@@ -261,7 +246,7 @@ function downloadFailures(job: JobResponse): void {
             v-if="job.job_type === 'question_import' && job.result.restore_required === true"
             class="qb-feedback is-warning"
           >
-            这是旧版删除流程留下的同卷记录。先恢复到试卷库，再从试卷卡片永久删除，之后即可重新上传。
+            这是旧版删除流程留下的任务记录。无需恢复旧试卷；重新上传时会按当前流程全新入库。
           </p>
           <p v-if="job.error" class="qb-feedback is-error">{{ job.error }}</p>
           <p v-if="jobStore.syncErrors[job.id]" class="qb-feedback is-error" role="alert">
@@ -280,15 +265,6 @@ function downloadFailures(job: JobResponse): void {
               请求取消
             </button>
             <button type="button" class="qb-link" @click="jobStore.refresh(job.id)">刷新</button>
-            <button
-              v-if="job.job_type === 'question_import' && job.result.restore_required === true"
-              type="button"
-              class="qb-link"
-              :disabled="busy"
-              @click="restoreRequiredPaper(job)"
-            >
-              恢复旧记录
-            </button>
             <button
               v-if="questionJobFailures(job.result).length"
               type="button"

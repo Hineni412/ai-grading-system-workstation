@@ -194,7 +194,27 @@ describe('MaterialLibraryWorkspace current-material safety', () => {
     app.unmount()
   })
 
-  it('moves all current-semester materials to the recoverable recycle area', async () => {
+  it('excludes legacy PPT files even when their saved role is not reference_ppt', async () => {
+    const curriculumItem = curriculum()
+    const legacyPpt = material('b'.repeat(32), '旧课件.pptx')
+    legacyPpt.material_type = 'pptx'
+    legacyPpt.safe_filename = '旧课件.pptx'
+    const legacyRecord = record('p'.repeat(32), legacyPpt)
+    legacyRecord.material_role = 'supplement'
+    const { app, host, catalog } = mountWorkspace()
+    catalog.curricula = [curriculumItem]
+    catalog.semesters = [semester(curriculumItem.id)]
+    catalog.selectedCurriculumId = curriculumItem.id
+    catalog.materials = [legacyPpt]
+    catalog.semesterMaterials = [legacyRecord]
+    await flush()
+
+    const directorySelect = host.querySelector<HTMLSelectElement>('.tp-directory-actions select')!
+    expect(directorySelect.textContent).not.toContain('旧课件.pptx')
+    app.unmount()
+  })
+
+  it('permanently deletes current-semester materials after one confirmation', async () => {
     const curriculumItem = curriculum()
     const first = material('a'.repeat(32), '旧教材')
     const second = material('b'.repeat(32), '旧参考课件')
@@ -207,19 +227,17 @@ describe('MaterialLibraryWorkspace current-material safety', () => {
     catalog.selectedCurriculumId = curriculumItem.id
     catalog.materials = [first, second]
     catalog.semesterMaterials = [firstRecord, secondRecord]
-    const updateRecord = vi.spyOn(catalog, 'updateSemesterMaterial').mockResolvedValue(undefined)
-    const updateSource = vi.spyOn(catalog, 'updateMaterialSource').mockResolvedValue(undefined)
+    const deleteSource = vi.spyOn(catalog, 'deleteMaterialSource').mockResolvedValue(undefined)
     vi.spyOn(window, 'confirm').mockReturnValue(true)
     await flush()
 
     const restart = [...host.querySelectorAll<HTMLButtonElement>('button')]
-      .find(button => button.textContent?.includes('本学期旧资料移入回收区'))!
+      .find(button => button.textContent?.includes('删除本学期全部资料'))!
     restart.click()
-    await vi.waitFor(() => expect(updateSource).toHaveBeenCalledTimes(2))
-    expect(updateRecord).toHaveBeenCalledTimes(2)
-    expect(updateSource).toHaveBeenNthCalledWith(1, first, { archived: true })
-    expect(updateSource).toHaveBeenNthCalledWith(2, second, { archived: true })
-    expect(host.textContent).toContain('已将 2 份资料移入回收区')
+    await vi.waitFor(() => expect(deleteSource).toHaveBeenCalledTimes(2))
+    expect(deleteSource).toHaveBeenNthCalledWith(1, first)
+    expect(deleteSource).toHaveBeenNthCalledWith(2, second)
+    expect(host.textContent).toContain('已彻底删除 2 份资料')
     app.unmount()
   })
 
@@ -236,6 +254,13 @@ describe('MaterialLibraryWorkspace current-material safety', () => {
     const updated = structuredClone(item)
     updated.revision = 2
     updated.payload.mappings[0]!.decision = 'accepted'
+    vi.spyOn(teachingPrepCatalogApi, 'semesterMappingPreflight').mockResolvedValue({
+      semester_id: semesterId, source_state_sha256: 'f'.repeat(64),
+      will_call_model: true, model_available: true, model_label: '合成模型',
+      model_destination_fingerprint: 'f'.repeat(64), material_count: 1,
+      unit_count: 1, existing_lesson_count: 1, creates_initial_tree: false,
+      automatic_retry: false,
+    })
     const accept = vi.spyOn(
       teachingPrepCatalogApi,
       'acceptLocalReferencePptMappings',
@@ -247,6 +272,7 @@ describe('MaterialLibraryWorkspace current-material safety', () => {
     catalog.materials = [materialItem]
     catalog.semesterMaterials = [materialRecord]
     catalog.selectedMaterialId = materialItem.id
+    await catalog.prepareSemesterMapping([materialRecord.id])
     catalog.semesterMappingProposals = [item]
     await flush()
 
@@ -257,6 +283,49 @@ describe('MaterialLibraryWorkspace current-material safety', () => {
     await vi.waitFor(() => expect(accept).toHaveBeenCalledWith(item))
     expect(catalog.semesterMappingProposals[0]?.payload.mappings[0]?.decision)
       .toBe('accepted')
+    app.unmount()
+  })
+
+  it('offers one visible confirmation action for all pending directory suggestions', async () => {
+    const curriculumItem = curriculum()
+    const materialItem = material('a'.repeat(32), '目录教材')
+    const materialRecord = record('r'.repeat(32), materialItem)
+    const item = proposal('2'.repeat(32), materialRecord.id)
+    const updated = structuredClone(item)
+    updated.revision = 2
+    updated.payload.mappings[0]!.decision = 'accepted'
+    vi.spyOn(teachingPrepCatalogApi, 'semesterMappingPreflight').mockResolvedValue({
+      semester_id: semesterId, source_state_sha256: 'f'.repeat(64),
+      will_call_model: true, model_available: true, model_label: '合成模型',
+      model_destination_fingerprint: 'f'.repeat(64), material_count: 1,
+      unit_count: 1, existing_lesson_count: 1, creates_initial_tree: false,
+      automatic_retry: false,
+    })
+    const review = vi.spyOn(teachingPrepWorkbenchApi, 'reviewMapping')
+      .mockResolvedValue(updated)
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    const { app, host, catalog } = mountWorkspace()
+    catalog.curricula = [curriculumItem]
+    catalog.semesters = [semester(curriculumItem.id)]
+    catalog.selectedCurriculumId = curriculumItem.id
+    catalog.materials = [materialItem]
+    catalog.semesterMaterials = [materialRecord]
+    catalog.selectedMaterialId = materialItem.id
+    await catalog.prepareSemesterMapping([materialRecord.id])
+    catalog.semesterMappingProposals = [item]
+    await flush()
+
+    const acceptAll = [...host.querySelectorAll<HTMLButtonElement>('button')]
+      .find(button => button.textContent?.includes('接受全部剩余建议'))!
+    const apply = [...host.querySelectorAll<HTMLButtonElement>('button')]
+      .find(button => button.textContent?.includes('应用全部接受项'))!
+    expect(acceptAll).toBeDefined()
+    expect(apply.disabled).toBe(true)
+    acceptAll.click()
+
+    await vi.waitFor(() => expect(review).toHaveBeenCalledOnce())
+    await vi.waitFor(() => expect(apply.disabled).toBe(false))
+    expect(host.textContent).toContain('现在可以应用到正式课时树')
     app.unmount()
   })
 

@@ -27,6 +27,9 @@ withDefaults(defineProps<{
       <path d="M4 7.5h16v12H4z" />
       <path d="M3 4.5h18v3H3zM9.5 11.5h5" />
     </g>
+    <g v-else-if="name === 'trash'">
+      <path d="M4.5 7h15M9 7V4.5h6V7M7 7l.8 13h8.4L17 7M10 10.5v6M14 10.5v6" />
+    </g>
     <g v-else-if="name === 'workbench'">
       <rect x="3" y="3" width="7" height="7" rx="1.5" />
       <rect x="14" y="3" width="7" height="7" rx="1.5" />

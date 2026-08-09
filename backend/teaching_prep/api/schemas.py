@@ -622,6 +622,18 @@ class UpdateMaterialSourceRequest(BaseModel):
     archived: bool | None = None
 
 
+class DeleteMaterialSourceRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    expected_revision: int = Field(gt=0)
+
+
+class DeleteMaterialSourceResponse(BaseModel):
+    deleted_source_id: str
+    deleted_file_count: int = Field(ge=0)
+    counts: dict[str, int]
+
+
 class MaterialUnitResponse(BaseModel):
     id: str
     material_version_id: str

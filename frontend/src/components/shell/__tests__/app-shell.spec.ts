@@ -262,10 +262,13 @@ describe('AppShell', () => {
     const desktopRules = css.slice(desktopStart, tabletStart)
 
     expect(desktopRules).toMatch(
-      /\.app-sidebar__link\s*\{[^}]*justify-content:\s*flex-start;[^}]*padding-inline:\s*9px;/s,
+      /\.app-sidebar__link\s*\{[^}]*justify-content:\s*flex-start;[^}]*padding-inline:\s*var\(--sidebar-icon-inset\);/s,
     )
     expect(desktopRules).toMatch(
-      /\.app-sidebar__brand\s*\{[^}]*justify-content:\s*flex-start;[^}]*padding-inline:\s*2\.5px;/s,
+      /\.app-sidebar__brand\s*\{[^}]*justify-content:\s*flex-start;[^}]*padding-inline:\s*calc\(var\(--sidebar-icon-inset\) - 6\.5px\);/s,
+    )
+    expect(desktopRules).toMatch(
+      /\.app-sidebar__settings-toggle\s*\{[^}]*justify-content:\s*flex-start;[^}]*padding-inline:\s*var\(--sidebar-icon-inset\);/s,
     )
     expect(desktopRules).not.toMatch(
       /\.app-sidebar:(?:hover|focus-within)[^{]*\.app-sidebar__(?:brand|link)[^{]*\{[^}]*padding-inline/s,

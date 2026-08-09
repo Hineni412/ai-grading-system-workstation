@@ -354,7 +354,15 @@ export function useTeachingPrepWorkbench() {
     const target = semesterForGlobalScope()
     if (!curriculumScope.selectedVolumeId) return
     if (!target) {
-      workbenchError.value = `备课工作台还没有“${curriculumScope.selectedVolume?.label ?? '所选学期'}”的学期资料，已保留当前内容。`
+      catalog.clearSemesterSelection()
+      contextGeneration += 1
+      view.value = 'overview'
+      workspace.value = 'materials'
+      stage.value = 'materials'
+      panel.value = 'sources'
+      focusRef.value = null
+      workbenchError.value = `备课工作台还没有“${curriculumScope.selectedVolume?.label ?? '所选学期'}”的学期资料。已清空旧学期上下文，请先建立本学期。`
+      await syncRoute()
       return
     }
     if (catalog.selectedSemester?.id === target.id) return

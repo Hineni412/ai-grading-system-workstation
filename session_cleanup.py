@@ -738,9 +738,6 @@ def hard_delete_session_from_archive(
     session = db.get_grading_session(int(session_id))
     if session is None:
         raise ValueError(f"Session {session_id} does not exist.")
-    if int(session.get("is_deleted") or 0) != 1:
-        raise ValueError("Only archived sessions can be permanently deleted.")
-
     files = _collect_session_file_paths(db, int(session_id), data_root)
     directories = _collect_session_dirs(int(session_id), data_root)
     shared_refs = _collect_other_session_references(db, int(session_id), data_root)
@@ -815,6 +812,7 @@ def hard_delete_session_from_recycle_bin(
     session_id: int,
     *,
     data_root: Path,
+    expected_revision: str | None = None,
 ) -> dict[str, Any]:
     """Compatibility alias for the former recycle-bin wording."""
 
@@ -822,4 +820,5 @@ def hard_delete_session_from_recycle_bin(
         db,
         session_id,
         data_root=data_root,
+        expected_revision=expected_revision,
     )

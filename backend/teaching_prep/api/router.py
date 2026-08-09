@@ -57,6 +57,8 @@ from .schemas import (
     CreatePreparationRequest,
     CreateReferencePptCollectionRequest,
     CreateSlidePlanRequest,
+    DeleteMaterialSourceRequest,
+    DeleteMaterialSourceResponse,
     DiscardPptxStagingRequest,
     DeriveClassVariantRequest,
     ExecuteSlidePlanRequest,
@@ -1061,6 +1063,24 @@ def create_router() -> APIRouter:
         except Exception as exc:
             raise _api_error(exc) from exc
         return MaterialVersionResponse.from_domain(item)
+
+    @router.delete(
+        "/material-sources/{source_id}",
+        response_model=DeleteMaterialSourceResponse,
+    )
+    def delete_material_source(
+        source_id: str,
+        payload: DeleteMaterialSourceRequest,
+        service: TeachingPrepService = Depends(get_teaching_prep_service),
+    ) -> DeleteMaterialSourceResponse:
+        try:
+            result = service.delete_material_source(
+                source_id,
+                expected_revision=payload.expected_revision,
+            )
+        except Exception as exc:
+            raise _api_error(exc) from exc
+        return DeleteMaterialSourceResponse.model_validate(result)
 
     @router.post(
         "/materials/import-copy",

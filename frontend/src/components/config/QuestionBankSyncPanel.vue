@@ -425,7 +425,7 @@ watch(
         v-if="terminal && job.result.restore_required === true"
         class="question-bank-sync__warning"
       >
-        检测到旧版流程曾被回收站中的同卷阻塞。现在可直接重试，系统会全新入库，
+        检测到旧版流程曾被已删除的同卷阻塞。现在可直接重试，系统会全新入库，
         不恢复旧题或旧标签；已经完成的分析不会重复调用 AI。
       </p>
       <button v-if="canRetry" type="button" :disabled="submitting" @click="retry">

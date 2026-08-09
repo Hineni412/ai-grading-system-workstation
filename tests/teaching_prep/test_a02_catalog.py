@@ -249,6 +249,107 @@ def test_teacher_can_import_and_relocate_a_controlled_material_copy(
     assert service.catalog.get_material_location(payload["id"]).is_file()
 
 
+def test_teacher_can_permanently_delete_an_unused_controlled_material_copy(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _paths_value, service = _migrated_service(tmp_path, monkeypatch)
+    client = _api_client(service)
+    imported = client.post(
+        "/api/teaching-prep/materials/import-copy",
+        headers={
+            "content-type": "application/pdf",
+            "x-upload-filename": quote("待删除资料.pdf"),
+            "x-display-name": quote("待删除资料"),
+            "x-request-token": "material-delete-0001",
+        },
+        content=b"%PDF-1.7 controlled synthetic material",
+    )
+    payload = imported.json()
+    controlled_copy = service.catalog.get_material_location(payload["id"])
+    _curriculum, semester, _created = service.create_semester_workspace(
+        request_token="material-delete-semester-0001",
+        title="合成七年级下册",
+        grade_level=7,
+        volume="second",
+        school_year="2026-2027",
+        term="second",
+        planned_new_lesson_count=60,
+    )
+    record, _created = service.attach_semester_material(
+        semester.id,
+        request_token="material-delete-record-0001",
+        material_version_id=payload["id"],
+        material_role="textbook",
+    )
+    with service.database.connect(immediate=True) as connection:
+        connection.execute(
+            """
+            INSERT INTO teaching_prep_operations (
+                operation_id, operation_type, idempotency_key,
+                request_hash, status
+            ) VALUES (?, 'semester_mapping', ?, ?, 'succeeded')
+            """,
+            ("delete-proposal-op-0001", "delete-proposal-key-0001", "a" * 64),
+        )
+        connection.execute(
+            """
+            INSERT INTO semester_mapping_proposals (
+                id, semester_id, operation_id, source_state_sha256,
+                status, payload_json
+            ) VALUES (?, ?, ?, ?, 'proposed', ?)
+            """,
+            (
+                "1" * 32,
+                semester.id,
+                "delete-proposal-op-0001",
+                "b" * 64,
+                json.dumps({"source_material_record_ids": [record.id]}),
+            ),
+        )
+
+    deleted = client.request(
+        "DELETE",
+        f"/api/teaching-prep/material-sources/{payload['source_id']}",
+        json={"expected_revision": payload["source_revision"]},
+    )
+
+    assert deleted.status_code == 200, deleted.text
+    assert deleted.json()["deleted_source_id"] == payload["source_id"]
+    assert service.list_material_versions(include_archived=True) == ()
+    assert service.list_semester_materials(semester.id) == ()
+    with service.database.connect() as connection:
+        assert connection.execute(
+            "SELECT COUNT(*) FROM semester_mapping_proposals"
+        ).fetchone()[0] == 0
+    assert not controlled_copy.exists()
+
+
+def test_material_delete_waits_until_active_parsing_has_finished(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _paths_value, service = _migrated_service(tmp_path, monkeypatch)
+    original = tmp_path / "synthetic-active-parse.pdf"
+    original.write_bytes(b"%PDF-1.7 controlled synthetic material")
+    version, _created = service.register_material_file(
+        request_token="material-delete-active-0001",
+        path=original,
+        display_name="正在解析的资料",
+    )
+    controlled_copy = service.catalog.get_material_location(version.id)
+    service._active_material_parses.add(version.id)
+
+    with pytest.raises(TeachingPrepConflictError):
+        service.delete_material_source(
+            version.source_id,
+            expected_revision=version.source_revision,
+        )
+
+    assert controlled_copy.is_file()
+    assert service.catalog.get_material_version(version.id).id == version.id
+
+
 def test_material_import_rejects_path_metadata_and_oversized_body(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

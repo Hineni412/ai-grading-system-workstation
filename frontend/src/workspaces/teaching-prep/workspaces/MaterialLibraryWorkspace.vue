@@ -49,6 +49,7 @@ const manualMapping = reactive<{
   note: '',
 })
 const mappingMessage = ref('先导入并解析资料，再逐份建立课时目录。')
+const bulkReviewRunning = ref(false)
 const reviewLessonRef = ref('')
 const semesterSetup = reactive({
   title: '初中数学',
@@ -125,7 +126,9 @@ const printedPageNumber = computed(() => {
   const value = activeUnit.value?.object_summary.printed_page_number
   return typeof value === 'number' && Number.isInteger(value) ? value : null
 })
-const activeMaterials = computed(() => workbench.catalog.materials.filter(item => !item.source_archived_at))
+// Legacy archived rows are surfaced as ordinary materials so teachers can
+// delete them; the recycle-bin concept is no longer part of this workspace.
+const activeMaterials = computed(() => workbench.catalog.materials)
 const showOtherTermMaterials = ref(false)
 const showReferencePptMaterials = ref(false)
 const includeReferencePptInDirectory = ref(false)
@@ -159,8 +162,8 @@ const visibleMaterials = computed(() => {
 watch(() => curriculumScope.selectedVolumeId, () => {
   showOtherTermMaterials.value = false
   showReferencePptMaterials.value = false
+  includeReferencePptInDirectory.value = false
 })
-const archivedMaterials = computed(() => workbench.catalog.materials.filter(item => Boolean(item.source_archived_at)))
 const activeMaterial = computed(
   () => workbench.catalog.materials.find(
     item => item.id === workbench.catalog.selectedMaterialId,
@@ -223,6 +226,9 @@ const allMappingsDecided = computed(() => {
   return mappings.length > 0
     && mappings.every(item => item.decision !== 'pending')
 })
+const pendingMappingCount = computed(() => (
+  activeProposal.value?.payload.mappings.filter(item => item.decision === 'pending').length ?? 0
+))
 const pendingLocalHighConfidenceCount = computed(() => (
   activeProposal.value?.payload.generation_source === 'local_reference_ppt_names'
     ? activeProposal.value.payload.mappings.filter(item => (
@@ -236,10 +242,7 @@ const eligibleSemesterMaterials = computed(
     && item.parse_status === 'parsed'
     && !item.has_unparsed_update
     && (item.current_unit_count ?? 0) > 0
-    && (
-      includeReferencePptInDirectory.value
-      || item.material_role !== 'reference_ppt'
-    )
+    && (includeReferencePptInDirectory.value || !isPptSemesterRecord(item))
   )),
 )
 const activeSemesterRecord = computed(() => (
@@ -443,6 +446,15 @@ function semesterRecordFor(material: MaterialVersion): SemesterMaterialRecord | 
   return workbench.catalog.semesterMaterials.find(item => (
     item.current_material_version_id === material.id
   )) ?? null
+}
+
+function isPptSemesterRecord(record: SemesterMaterialRecord): boolean {
+  const material = workbench.catalog.materials.find(item => (
+    item.id === record.current_material_version_id
+  ))
+  return record.material_role === 'reference_ppt'
+    || material?.material_type === 'pptx'
+    || /\.pptx?$/i.test(record.safe_filename || record.display_name)
 }
 
 watch(
@@ -952,39 +964,31 @@ async function renameMaterial(item: MaterialVersion): Promise<void> {
   mappingMessage.value = '资料名称已更新。'
 }
 
-async function archiveMaterial(item: MaterialVersion): Promise<void> {
-  const record = semesterRecordFor(item)
-  if (!window.confirm(`把“${item.display_name}”移入回收区吗？原文件和历史课时引用都会保留，可随时恢复。`)) return
+async function deleteMaterial(item: MaterialVersion): Promise<void> {
+  if (!window.confirm(`确认彻底删除“${item.display_name}”吗？原文件、解析页和课时关联将一并删除，且无法恢复。`)) return
   try {
-    if (record?.is_active) await workbench.catalog.updateSemesterMaterial(record, { isActive: false })
-    await workbench.catalog.updateMaterialSource(item, { archived: true })
-    mappingMessage.value = '资料已移入回收区，可随时恢复；原文件和历史引用没有删除。'
+    await workbench.catalog.deleteMaterialSource(item)
+    mappingMessage.value = '资料已彻底删除。'
   } catch {
-    mappingMessage.value = record?.is_active
-      ? '资料尚未移入回收区；如果它已移出本学期，可在“管理资料”中直接重试。'
-      : '资料尚未移入回收区，请保留当前页面后重试。'
+    mappingMessage.value = workbench.catalog.errorMessage || '资料未删除，请检查提示后重试。'
   }
 }
 
-async function archiveCurrentTermMaterials(): Promise<void> {
+async function deleteCurrentTermMaterials(): Promise<void> {
   if (batchArchiveRunning.value) return
   const candidates = [...currentTermMaterials.value]
   if (candidates.length === 0) return
   if (!window.confirm(
-    `把本学期的 ${candidates.length} 份旧资料全部移入回收区吗？原文件和历史课时引用都会保留，可逐份恢复。`,
+    `确认彻底删除本学期的 ${candidates.length} 份资料吗？原文件、解析页和课时关联将一并删除，且无法恢复。`,
   )) return
   batchArchiveRunning.value = true
-  let archived = 0
+  let deleted = 0
   let failed = 0
   try {
     for (const item of candidates) {
-      const record = semesterRecordFor(item)
       try {
-        if (record?.is_active) {
-          await workbench.catalog.updateSemesterMaterial(record, { isActive: false })
-        }
-        await workbench.catalog.updateMaterialSource(item, { archived: true })
-        archived += 1
+        await workbench.catalog.deleteMaterialSource(item)
+        deleted += 1
       } catch {
         failed += 1
       }
@@ -993,13 +997,8 @@ async function archiveCurrentTermMaterials(): Promise<void> {
     batchArchiveRunning.value = false
   }
   mappingMessage.value = failed > 0
-    ? `已将 ${archived} 份资料移入回收区，${failed} 份未完成；保留页面后可再次执行。`
-    : `已将 ${archived} 份资料移入回收区，可随时恢复；现在可以重新导入。`
-}
-
-async function restoreMaterial(item: MaterialVersion): Promise<void> {
-  await workbench.catalog.updateMaterialSource(item, { archived: false })
-  mappingMessage.value = '资料已从回收区恢复。'
+    ? `已彻底删除 ${deleted} 份资料，${failed} 份未完成；请检查提示后重试。`
+    : `已彻底删除 ${deleted} 份资料，现在可以重新导入。`
 }
 
 const mappingJobBusy = computed(() => (
@@ -1310,6 +1309,31 @@ async function acceptLocalHighConfidenceMappings(): Promise<void> {
   }
 }
 
+async function acceptAllPendingMappings(): Promise<void> {
+  if (bulkReviewRunning.value || pendingMappingCount.value === 0) return
+  const count = pendingMappingCount.value
+  if (!window.confirm(`确认接受剩余 ${count} 条课时目录建议吗？接受后仍需点击“应用全部接受项”才会写入正式课时树。`)) return
+  bulkReviewRunning.value = true
+  mappingMessage.value = `正在接受剩余 ${count} 条建议…`
+  try {
+    while (true) {
+      const pending = activeProposal.value?.payload.mappings.find(
+        item => item.decision === 'pending',
+      )
+      if (!pending) break
+      const pendingId = pending.mapping_id
+      await decideMapping(pending, 'accepted')
+      const saved = activeProposal.value?.payload.mappings.find(
+        item => item.mapping_id === pendingId,
+      )
+      if (saved?.decision === 'pending') return
+    }
+    mappingMessage.value = `已接受 ${count} 条建议；现在可以应用到正式课时树。`
+  } finally {
+    bulkReviewRunning.value = false
+  }
+}
+
 async function saveManualMapping(): Promise<void> {
   const material = activeMaterial.value
   const record = activeSemesterRecord.value
@@ -1438,8 +1462,7 @@ async function saveManualMapping(): Promise<void> {
       <details
         v-for="collection in referencePptCollections"
         :key="collection.id"
-        class="tp-archive-list"
-        open
+        class="tp-reference-ppt-collection"
       >
         <summary>
           {{ collection.display_name }}（{{ collection.members.length }} 份 PPT）
@@ -1764,11 +1787,11 @@ async function saveManualMapping(): Promise<void> {
             class="is-danger"
             type="button"
             :disabled="batchArchiveRunning"
-            @click="archiveCurrentTermMaterials"
+            @click="deleteCurrentTermMaterials"
           >
             {{ batchArchiveRunning
-              ? '正在移入回收区…'
-              : `本学期旧资料移入回收区（${currentTermMaterials.length}）` }}
+              ? '正在彻底删除…'
+              : `删除本学期全部资料（${currentTermMaterials.length}）` }}
           </button>
           <button
             v-if="referencePptMaterials.length"
@@ -1860,7 +1883,7 @@ async function saveManualMapping(): Promise<void> {
               <button v-if="semesterRecordFor(item)" type="button" @click="updateExistingRole(item)">保存角色</button>
               <button v-if="semesterRecordFor(item)?.is_active" type="button" @click="removeFromSemester(item)">移出本学期</button>
               <button v-else-if="semesterRecordFor(item)" type="button" @click="restoreToSemester(item)">恢复到本学期</button>
-              <button class="is-danger" type="button" @click="archiveMaterial(item)">移入回收区</button>
+              <button class="is-danger" type="button" @click="deleteMaterial(item)">彻底删除</button>
             </div>
           </details>
         </article>
@@ -1875,14 +1898,6 @@ async function saveManualMapping(): Promise<void> {
             ? '收起其他学期或未归类资料'
             : `展开其他学期或未归类资料（${otherTermMaterials.length}）` }}
         </button>
-        <details v-if="archivedMaterials.length" class="tp-archive-list">
-          <summary>回收区（{{ archivedMaterials.length }}）</summary>
-          <article v-for="item in archivedMaterials" :key="item.id" class="tp-material-card is-archived">
-            <strong>{{ item.display_name }}</strong>
-            <small>保留原文件与历史引用</small>
-            <button type="button" @click="restoreMaterial(item)">恢复资料</button>
-          </article>
-        </details>
       </template>
       <template #toolbar>
         <div class="tp-page-picker" aria-label="原页导航">
@@ -2088,6 +2103,15 @@ async function saveManualMapping(): Promise<void> {
         @click="acceptLocalHighConfidenceMappings"
       >
         确认 {{ pendingLocalHighConfidenceCount }} 条高置信建议
+      </button>
+      <button
+        v-if="pendingMappingCount > 0"
+        class="tp-button tp-button--secondary"
+        type="button"
+        :disabled="bulkReviewRunning"
+        @click="acceptAllPendingMappings"
+      >
+        {{ bulkReviewRunning ? '正在接受建议…' : `接受全部剩余建议（${pendingMappingCount}）` }}
       </button>
       <button
         class="tp-button tp-button--primary"

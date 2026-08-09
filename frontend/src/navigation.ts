@@ -35,6 +35,7 @@ export type WorkspaceNavigationIcon =
 export type AppIconName =
   | WorkspaceNavigationIcon
   | 'archive'
+  | 'trash'
   | 'menu'
   | 'close'
   | 'chevron-down'

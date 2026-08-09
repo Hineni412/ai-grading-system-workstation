@@ -225,7 +225,7 @@ describe('QuestionBankSyncPanel', () => {
     app.mount(host)
     await nextTick()
 
-    expect(host.textContent).toContain('旧版流程曾被回收站中的同卷阻塞')
+    expect(host.textContent).toContain('旧版流程曾被已删除的同卷阻塞')
     expect(host.textContent).toContain('全新入库')
     expect(host.textContent).toContain('继续完成未完成题目')
     host.querySelector<HTMLButtonElement>('button')!.click()

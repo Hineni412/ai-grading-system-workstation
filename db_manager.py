@@ -824,10 +824,6 @@ class DBManager:
                 current = sessions.get_grading_session(int(session_id))
                 if current is None:
                     raise ValueError(f"Session {session_id} does not exist.")
-                if int(current.get("is_deleted") or 0) != 1:
-                    raise ValueError(
-                        "Only archived sessions can be permanently deleted."
-                    )
                 if (
                     expected_revision is not None
                     and session_deletion_revision(current) != str(expected_revision)
@@ -912,7 +908,7 @@ class DBManager:
                         repository_session.connection.execute(
                             """
                             DELETE FROM grading_sessions
-                            WHERE id = ? AND is_deleted = 1
+                            WHERE id = ?
                             """,
                             (session_id,),
                         ).rowcount

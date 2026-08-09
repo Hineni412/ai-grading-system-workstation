@@ -54,6 +54,7 @@
 }
 
 .app-sidebar {
+  --sidebar-icon-inset: 9px;
   grid-area: sidebar;
   display: flex;
   width: var(--shell-navigation-width);
@@ -509,17 +510,17 @@
 
   .app-sidebar__brand {
     justify-content: flex-start;
-    padding-inline: 2.5px;
+    padding-inline: calc(var(--sidebar-icon-inset) - 6.5px);
   }
 
   .app-sidebar__link {
     justify-content: flex-start;
-    padding-inline: 9px;
+    padding-inline: var(--sidebar-icon-inset);
   }
 
   .app-sidebar__settings-toggle {
-    justify-content: center;
-    padding-inline: 0;
+    justify-content: flex-start;
+    padding-inline: var(--sidebar-icon-inset);
   }
 
   .app-sidebar__brand-copy,
@@ -539,12 +540,6 @@
   .app-sidebar:focus-within {
     width: var(--shell-navigation-width);
     box-shadow: var(--shadow-overlay);
-  }
-
-  .app-sidebar:hover .app-sidebar__settings-toggle,
-  .app-sidebar:focus-within .app-sidebar__settings-toggle {
-    justify-content: flex-start;
-    padding-inline: 10px;
   }
 
   .app-sidebar:hover .app-sidebar__brand-copy,

@@ -102,6 +102,24 @@ def test_renaming_session_returns_the_safe_summary_shape(tmp_path) -> None:
     }
 
 
+def test_session_names_are_exclusive_for_create_and_rename(tmp_path) -> None:
+    client, db, _upload_config_dir = _client_with_db(tmp_path)
+    first = client.post("/api/sessions/drafts", json={"name": " 0526test "})
+    assert first.status_code == 201
+
+    duplicate = client.post("/api/sessions/drafts", json={"name": "0526TEST"})
+    assert duplicate.status_code == 409
+    assert duplicate.json()["error"]["code"] == "session_name_conflict"
+
+    other_id = db.create_grading_session("另一场考试", "r.json", "a.json")
+    renamed = client.patch(
+        f"/api/sessions/{other_id}",
+        json={"name": "0526test"},
+    )
+    assert renamed.status_code == 409
+    assert renamed.json()["error"]["code"] == "session_name_conflict"
+
+
 def test_session_draft_curriculum_volume_round_trips_and_can_be_cleared(
     tmp_path,
 ) -> None:

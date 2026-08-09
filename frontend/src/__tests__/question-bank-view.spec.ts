@@ -519,7 +519,7 @@ describe('question bank workspace', () => {
     expect(document.body.textContent).toContain('取消请求未能同步，任务可能仍在继续。')
   })
 
-  it('explains how to clear an identical paper left by the legacy delete flow', async () => {
+  it('explains that legacy duplicate records no longer require a restore flow', async () => {
     const host = document.createElement('div')
     document.body.append(host)
     const pinia = createPinia()
@@ -552,9 +552,9 @@ describe('question bank workspace', () => {
     })
     await nextTick()
 
-    expect(host.textContent).toContain('旧版删除流程留下的同卷记录')
-    expect(host.textContent).toContain('恢复旧记录')
-    expect(host.textContent).toContain('永久删除')
+    expect(host.textContent).toContain('旧版删除流程留下的任务记录')
+    expect(host.textContent).toContain('无需恢复旧试卷')
+    expect(host.textContent).not.toContain('恢复旧记录')
     expect(host.textContent).not.toContain('重试允许的失败项')
   })
 

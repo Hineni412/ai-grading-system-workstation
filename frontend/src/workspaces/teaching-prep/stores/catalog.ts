@@ -593,6 +593,22 @@ export const useTeachingPrepCatalogStore = defineStore(
       await selectCurriculum(semester.curriculum_id, semester.id)
     }
 
+    function clearSemesterSelection(): void {
+      lessonFlowGeneration += 1
+      materialFlowGeneration += 1
+      invalidateSemesterMappingPreflight()
+      selectedCurriculumId.value = null
+      selectedSemesterId.value = null
+      selectedLessonId.value = null
+      selectedMaterialId.value = null
+      lessonNodes.value = []
+      materialUnits.value = []
+      semesterLessonProgress.value = []
+      semesterMaterials.value = []
+      semesterMappingProposals.value = []
+      semesterMappingJobIds.value = []
+    }
+
     async function selectLesson(node: LessonNode): Promise<void> {
       if (node.node_type !== 'lesson') return
       const generation = ++lessonFlowGeneration
@@ -1805,6 +1821,35 @@ export const useTeachingPrepCatalogStore = defineStore(
       }
     }
 
+    async function deleteMaterialSource(material: MaterialVersion): Promise<void> {
+      invalidateSemesterMappingPreflight()
+      saveState.value = 'saving'
+      errorMessage.value = ''
+      try {
+        await teachingPrepCatalogApi.deleteMaterialSource(material)
+        if (selectedMaterialId.value === material.id) {
+          selectedMaterialId.value = null
+          materialUnits.value = []
+        }
+        ;[
+          materials.value,
+          semesterMaterials.value,
+          semesters.value,
+        ] = await Promise.all([
+          teachingPrepCatalogApi.listMaterials(undefined, true),
+          selectedSemester.value
+            ? teachingPrepCatalogApi.listSemesterMaterials(selectedSemester.value.id)
+            : Promise.resolve([]),
+          teachingPrepCatalogApi.listSemesters(),
+        ])
+      } catch (error) {
+        errorMessage.value = safeMessage(error)
+        throw error
+      } finally {
+        saveState.value = 'idle'
+      }
+    }
+
     function requireCurrentSemesterMaterial(
       materialRecordIds: string[],
     ): { semester: TeachingSemester; record: SemesterMaterialRecord } {
@@ -2114,6 +2159,7 @@ export const useTeachingPrepCatalogStore = defineStore(
       load,
       selectCurriculum,
       selectSemester,
+      clearSemesterSelection,
       createCurriculum,
       createSemesterWorkspace,
       createSemester,
@@ -2122,6 +2168,7 @@ export const useTeachingPrepCatalogStore = defineStore(
       attachSemesterMaterial,
       updateSemesterMaterial,
       updateMaterialSource,
+      deleteMaterialSource,
       prepareSemesterMapping,
       generateSemesterMapping,
       applySemesterMapping,
