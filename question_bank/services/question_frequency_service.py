@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
+from collections.abc import Iterable
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Mapping
@@ -353,15 +354,19 @@ class QuestionFrequencyService:
         db_path: Path,
         *,
         external_connection: sqlite3.Connection | None = None,
+        current_knowledge: CurrentKnowledgeResolver | None = None,
     ) -> None:
         self.db_path = Path(db_path)
         self.external_connection = external_connection
-        try:
-            self.current_knowledge = (
-                CurrentKnowledgeResolver.from_active_database(self.db_path)
-            )
-        except CurrentKnowledgeUnavailable:
-            self.current_knowledge = None
+        if current_knowledge is not None:
+            self.current_knowledge = current_knowledge
+        else:
+            try:
+                self.current_knowledge = (
+                    CurrentKnowledgeResolver.from_active_database(self.db_path)
+                )
+            except CurrentKnowledgeUnavailable:
+                self.current_knowledge = None
 
     def initialize_database(self) -> None:
         initialize_database(self.db_path)
@@ -524,59 +529,86 @@ class QuestionFrequencyService:
                 self._update_frequency_cache_internal(conn, qids)
 
     def invalidate_frequency_cache_for_question(self, question_id: int) -> None:
-        if self.current_knowledge is None:
+        self.invalidate_frequency_cache_for_questions((question_id,))
+
+    def invalidate_frequency_cache_for_questions(
+        self,
+        question_ids: Iterable[int],
+    ) -> None:
+        """Refresh the union of dependants after one tag-write batch."""
+
+        deduped = list(dict.fromkeys(int(value) for value in question_ids))
+        if not deduped or self.current_knowledge is None:
             return
-        self.initialize_database()
-        with connect(self.db_path) as conn:
-            target = _load_question(conn, question_id)
-            if target is None:
-                return
-            target = _project_current_knowledge(
-                target, self.current_knowledge
+        if self.external_connection is None:
+            self.initialize_database()
+        with connect(
+            self.db_path,
+            external_connection=self.external_connection,
+        ) as conn:
+            targets = _batch_load_questions(
+                conn,
+                deduped,
+                resolver=self.current_knowledge,
             )
-            exam_type = normalize_exam_type(target.get("exam_type"))
-            if not exam_type:
-                # 阶段练习、小测和无法确认类型的试卷不是正式考频样本。
-                # 只重算本题，不能用空类型匹配并连带清空所有正式缓存。
-                # 本题仍需要一条零分/低分缓存，否则按考频排序时会从结果中掉队。
-                self._update_frequency_cache_internal(conn, [question_id])
-                return
-            # A formal-exam question is a candidate for every active question
-            # in the same grade/semester scope, regardless of the target
-            # question's own source type. Refresh all those dependants so the
-            # three frequency sort columns cannot retain cross-type stale data.
-            clauses = [
-                "q.is_deleted = 0",
-                "COALESCE(p.import_status, '') <> 'deleted'",
-                "p.grade = ?",
-            ]
-            params: list[Any] = [target.get("grade")]
-            if exam_type != "中考":
-                clauses.append(
-                    "COALESCE(p.semester, '') = COALESCE(?, '')"
+            affected_question_ids: set[int] = set()
+            formal_target_ids: set[int] = set()
+            formal_scopes: set[tuple[object, object, bool]] = set()
+            for question_id in deduped:
+                target = targets.get(question_id)
+                if target is None:
+                    continue
+                affected_question_ids.add(question_id)
+                exam_type = normalize_exam_type(target.get("exam_type"))
+                if not exam_type:
+                    continue
+                formal_target_ids.add(question_id)
+                is_zhongkao = exam_type == "中考"
+                formal_scopes.add(
+                    (
+                        target.get("grade"),
+                        None if is_zhongkao else target.get("semester"),
+                        is_zhongkao,
+                    )
                 )
-                params.append(target.get("semester"))
-            affected_question_ids = {
-                int(row["id"])
-                for row in conn.execute(
+
+            formal_dependants: set[int] = set()
+            for grade, semester, is_zhongkao in formal_scopes:
+                clauses = [
+                    "q.is_deleted = 0",
+                    "COALESCE(p.import_status, '') <> 'deleted'",
+                    "p.grade = ?",
+                ]
+                params: list[Any] = [grade]
+                if not is_zhongkao:
+                    clauses.append(
+                        "COALESCE(p.semester, '') = COALESCE(?, '')"
+                    )
+                    params.append(semester)
+                formal_dependants.update(
+                    int(row["id"])
+                    for row in conn.execute(
+                        f"""
+                        SELECT q.id
+                        FROM questions q
+                        JOIN papers p ON p.id = q.paper_id
+                        WHERE {' AND '.join(clauses)}
+                        """,
+                        params,
+                    ).fetchall()
+                )
+
+            affected_question_ids.update(formal_dependants)
+            cache_delete_ids = formal_dependants | formal_target_ids
+            if cache_delete_ids:
+                placeholders = ", ".join("?" for _ in cache_delete_ids)
+                conn.execute(
                     f"""
-                    SELECT q.id
-                    FROM questions q
-                    JOIN papers p ON p.id = q.paper_id
-                    WHERE {' AND '.join(clauses)}
+                    DELETE FROM question_frequency_cache
+                    WHERE question_id IN ({placeholders})
                     """,
-                    params,
-                ).fetchall()
-            }
-            affected_question_ids.add(int(question_id))
-            placeholders = ", ".join("?" for _ in affected_question_ids)
-            conn.execute(
-                f"""
-                DELETE FROM question_frequency_cache
-                WHERE question_id IN ({placeholders})
-                """,
-                tuple(sorted(affected_question_ids)),
-            )
+                    tuple(sorted(cache_delete_ids)),
+                )
             self._update_frequency_cache_internal(
                 conn,
                 sorted(affected_question_ids),

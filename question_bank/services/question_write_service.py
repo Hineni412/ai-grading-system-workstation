@@ -249,6 +249,96 @@ class QuestionImportResource:
     source_path: Path
 
 
+class _TagAnalysisWriteBatch:
+    """One prepared tag-write run with one deferred frequency refresh."""
+
+    def __init__(self, service: "QuestionBankWriteService") -> None:
+        self._service = service
+        self._resolver: CurrentKnowledgeResolver | None = None
+        self._prepare_error: Exception | None = None
+        self._successful_question_ids: set[int] = set()
+        self._success_lock = threading.Lock()
+        self._entered = False
+
+    def __enter__(self) -> "_TagAnalysisWriteBatch":
+        with self._service._tag_analysis_batch_lock:
+            if self._service._active_tag_analysis_batch is not None:
+                raise RuntimeError("tag analysis write batch is already active")
+            try:
+                initialize_database(self._service.db_path)
+                self._resolver = CurrentKnowledgeResolver.from_active_database(
+                    self._service.db_path
+                )
+            except Exception as error:  # Keep the existing per-question failure seam.
+                self._prepare_error = error
+            self._service._active_tag_analysis_batch = self
+            self._entered = True
+        return self
+
+    def __exit__(
+        self,
+        _exc_type: object,
+        exc: BaseException | None,
+        _traceback: object,
+    ) -> bool:
+        with self._service._tag_analysis_batch_lock:
+            if self._service._active_tag_analysis_batch is self:
+                self._service._active_tag_analysis_batch = None
+            self._entered = False
+        with self._success_lock:
+            successful_ids = tuple(sorted(self._successful_question_ids))
+        resolver = self._resolver
+        if successful_ids and resolver is not None:
+            try:
+                self._service._refresh_tag_analysis_frequencies(
+                    successful_ids,
+                    resolver=resolver,
+                )
+            except Exception as refresh_error:
+                if exc is None:
+                    raise
+                add_note = getattr(exc, "add_note", None)
+                if callable(add_note):
+                    add_note(
+                        "tag frequency refresh also failed: "
+                        f"{type(refresh_error).__name__}"
+                    )
+        return False
+
+    def save_tag_analysis(
+        self,
+        question_id: int,
+        analysis: TagAnalysis,
+        *,
+        overwrite_manual: bool,
+        edited_fields: set[str] | None,
+        model_name: str | None,
+        confidence: float | None,
+        taxonomy_governance: object | None,
+    ) -> bool:
+        resolver = self._resolver
+        if not self._entered:
+            raise RuntimeError("tag analysis write batch is not active")
+        if self._prepare_error is not None:
+            raise self._prepare_error
+        if resolver is None:
+            raise RuntimeError("tag analysis write batch was not prepared")
+        saved = self._service._save_tag_analysis_with_resolver(
+            question_id,
+            analysis,
+            overwrite_manual=overwrite_manual,
+            edited_fields=edited_fields,
+            model_name=model_name,
+            confidence=confidence,
+            taxonomy_governance=taxonomy_governance,
+            resolver=resolver,
+        )
+        if saved:
+            with self._success_lock:
+                self._successful_question_ids.add(int(question_id))
+        return saved
+
+
 class QuestionBankWriteService:
     def __init__(
         self,
@@ -260,6 +350,11 @@ class QuestionBankWriteService:
         self.db_path = Path(db_path)
         self.data_root = Path(data_root)
         self.max_upload_bytes = int(max_upload_bytes)
+        self._tag_analysis_batch_lock = threading.Lock()
+        self._active_tag_analysis_batch: _TagAnalysisWriteBatch | None = None
+
+    def tag_analysis_batch(self) -> _TagAnalysisWriteBatch:
+        return _TagAnalysisWriteBatch(self)
 
     def add_question(self, question: QuestionCreate) -> int:
         """Insert an imported question through the canonical write boundary."""
@@ -307,8 +402,54 @@ class QuestionBankWriteService:
     ) -> bool:
         """Persist one governed analysis without rewriting unrelated tags."""
 
+        with self._tag_analysis_batch_lock:
+            active_batch = self._active_tag_analysis_batch
+        if active_batch is not None:
+            return active_batch.save_tag_analysis(
+                question_id,
+                analysis,
+                overwrite_manual=overwrite_manual,
+                edited_fields=edited_fields,
+                model_name=model_name,
+                confidence=confidence,
+                taxonomy_governance=taxonomy_governance,
+            )
         initialize_database(self.db_path)
         resolver = CurrentKnowledgeResolver.from_active_database(self.db_path)
+        saved = self._save_tag_analysis_with_resolver(
+            question_id,
+            analysis,
+            overwrite_manual=overwrite_manual,
+            edited_fields=edited_fields,
+            model_name=model_name,
+            confidence=confidence,
+            taxonomy_governance=taxonomy_governance,
+            resolver=resolver,
+        )
+        if not saved:
+            return False
+        from question_bank.services.question_frequency_service import (
+            QuestionFrequencyService,
+        )
+
+        QuestionFrequencyService(
+            self.db_path,
+            current_knowledge=resolver,
+        ).invalidate_frequency_cache_for_question(int(question_id))
+        return True
+
+    def _save_tag_analysis_with_resolver(
+        self,
+        question_id: int,
+        analysis: TagAnalysis,
+        *,
+        overwrite_manual: bool,
+        edited_fields: set[str] | None,
+        model_name: str | None,
+        confidence: float | None,
+        taxonomy_governance: object | None,
+        resolver: CurrentKnowledgeResolver,
+    ) -> bool:
         with connect(self.db_path) as conn:
             question = conn.execute(
                 "SELECT id, answer_text FROM questions WHERE id = ? AND is_deleted = 0",
@@ -374,14 +515,24 @@ class QuestionBankWriteService:
                     int(question_id),
                 ),
             )
+        return True
+
+    def _refresh_tag_analysis_frequencies(
+        self,
+        question_ids: tuple[int, ...],
+        *,
+        resolver: CurrentKnowledgeResolver,
+    ) -> None:
         from question_bank.services.question_frequency_service import (
             QuestionFrequencyService,
         )
 
-        QuestionFrequencyService(self.db_path).invalidate_frequency_cache_for_question(
-            int(question_id)
-        )
-        return True
+        with connect(self.db_path) as connection:
+            QuestionFrequencyService(
+                self.db_path,
+                external_connection=connection,
+                current_knowledge=resolver,
+            ).invalidate_frequency_cache_for_questions(question_ids)
 
     def save_question_preview(
         self,

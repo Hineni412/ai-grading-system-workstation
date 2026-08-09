@@ -10,9 +10,11 @@ from pathlib import Path
 import pytest
 
 import backend.jobs.tagging_sync as tagging_sync_module
+import question_bank.services.question_write_service as question_write_module
 from backend.jobs.manager import JobCancellationRequested, JobContext, JobManager
 from backend.jobs.store import JobStore
 from backend.jobs.tagging_sync import run_tagging_sync_job
+from question_bank.current_knowledge import CurrentKnowledgeResolver
 from question_bank.database.schema import connect
 from question_bank.models.question import QuestionCreate
 from question_bank.models.tag_schema import TagAnalysis
@@ -21,6 +23,7 @@ from question_bank.services.question_read_service import (
     QuestionBankReadService,
     QuestionReadFilters,
 )
+from question_bank.services.question_frequency_service import QuestionFrequencyService
 from question_bank.services.question_write_service import QuestionBankWriteService
 from tests.question_bank_support import QuestionBankTestStore
 from question_bank.solution_evidence import SolutionEvidenceRepository
@@ -209,11 +212,57 @@ def _seed_successful_tag_source(
         )
 
 
-def test_tagging_sync_saves_only_complete_results(tmp_path: Path) -> None:
+def test_tagging_sync_saves_only_complete_results(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     db_path = tmp_path / "qb.db"
     ids = _seed(db_path, 2)
     fake_ai = FakeAI({ids[0]: _complete(), ids[1]: _partial()})
     context, _store = _context(tmp_path, {"question_ids": ids})
+    initialize_calls: list[Path] = []
+    resolver_calls: list[Path] = []
+    refresh_calls: list[tuple[int, ...]] = []
+    original_initialize = question_write_module.initialize_database
+    original_resolver = CurrentKnowledgeResolver.from_active_database
+    original_refresh = (
+        QuestionFrequencyService.invalidate_frequency_cache_for_questions
+    )
+
+    def tracking_initialize(path: Path) -> None:
+        initialize_calls.append(Path(path))
+        original_initialize(path)
+
+    def tracking_resolver(
+        _cls: type[CurrentKnowledgeResolver],
+        path: Path,
+    ) -> CurrentKnowledgeResolver:
+        resolver_calls.append(Path(path))
+        return original_resolver(path)
+
+    def tracking_refresh(
+        self: QuestionFrequencyService,
+        question_ids,
+    ) -> None:
+        captured = tuple(int(item) for item in question_ids)
+        refresh_calls.append(captured)
+        original_refresh(self, captured)
+
+    monkeypatch.setattr(
+        question_write_module,
+        "initialize_database",
+        tracking_initialize,
+    )
+    monkeypatch.setattr(
+        CurrentKnowledgeResolver,
+        "from_active_database",
+        classmethod(tracking_resolver),
+    )
+    monkeypatch.setattr(
+        QuestionFrequencyService,
+        "invalidate_frequency_cache_for_questions",
+        tracking_refresh,
+    )
 
     result = run_tagging_sync_job(
         context=context,
@@ -229,6 +278,9 @@ def test_tagging_sync_saves_only_complete_results(tmp_path: Path) -> None:
     assert QuestionBankTestStore(db_path).get_question(ids[0])["tags"]
     assert QuestionBankTestStore(db_path).get_question(ids[1])["tags"] == []
     assert "fake-tag-model" not in json.dumps(result)
+    assert initialize_calls == [db_path]
+    assert resolver_calls == [db_path]
+    assert refresh_calls == [(ids[0],)]
 
 
 def test_tagging_sync_proposal_persistence_keeps_the_planned_contract() -> None:
@@ -317,6 +369,35 @@ def test_production_tagging_uses_one_combined_call_and_persists_point_evidence(
     install_current_knowledge(db_path)
     context, _store = _context(tmp_path, {"question_ids": [question_id]})
     gateway_calls: list[tuple[str, tuple[int, ...]]] = []
+    initialize_calls: list[Path] = []
+    refresh_calls: list[tuple[int, ...]] = []
+    original_initialize = question_write_module.initialize_database
+    original_refresh = (
+        QuestionFrequencyService.invalidate_frequency_cache_for_questions
+    )
+
+    def tracking_initialize(path: Path) -> None:
+        initialize_calls.append(Path(path))
+        original_initialize(path)
+
+    def tracking_refresh(
+        self: QuestionFrequencyService,
+        question_ids,
+    ) -> None:
+        captured = tuple(int(item) for item in question_ids)
+        refresh_calls.append(captured)
+        original_refresh(self, captured)
+
+    monkeypatch.setattr(
+        question_write_module,
+        "initialize_database",
+        tracking_initialize,
+    )
+    monkeypatch.setattr(
+        QuestionFrequencyService,
+        "invalidate_frequency_cache_for_questions",
+        tracking_refresh,
+    )
 
     class FakeCombinedGateway:
         def __init__(self, **_kwargs) -> None:
@@ -428,6 +509,8 @@ def test_production_tagging_uses_one_combined_call_and_persists_point_evidence(
     )
 
     assert gateway_calls == [("both", (question_id,))]
+    assert initialize_calls == [db_path]
+    assert refresh_calls == [(question_id,)]
     assert result["outcome"] == "complete"
     assert result["analysis_contract"] == "combined-v3"
     assert result["evidence_succeeded_question_ids"] == [question_id]
@@ -1213,6 +1296,57 @@ def test_tagging_sync_cancellation_during_batch_discards_batch_and_stops_next(
     assert QuestionBankTestStore(db_path).get_question(ids[1])["tags"] == []
 
 
+def test_tagging_sync_cancellation_refreshes_already_saved_questions(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "qb.db"
+    ids = _seed(db_path, 2)
+    context, store = _context(tmp_path, {"question_ids": ids})
+    refresh_calls: list[tuple[int, ...]] = []
+    original_observation = tagging_sync_module._record_successful_observation
+    original_refresh = (
+        QuestionFrequencyService.invalidate_frequency_cache_for_questions
+    )
+
+    def cancel_after_observation(*args, **kwargs) -> None:
+        original_observation(*args, **kwargs)
+        assert store.request_cancel(context.job_id)
+
+    def tracking_refresh(
+        self: QuestionFrequencyService,
+        question_ids,
+    ) -> None:
+        captured = tuple(int(item) for item in question_ids)
+        refresh_calls.append(captured)
+        original_refresh(self, captured)
+
+    monkeypatch.setattr(
+        tagging_sync_module,
+        "_record_successful_observation",
+        cancel_after_observation,
+    )
+    monkeypatch.setattr(
+        QuestionFrequencyService,
+        "invalidate_frequency_cache_for_questions",
+        tracking_refresh,
+    )
+
+    with pytest.raises(JobCancellationRequested):
+        run_tagging_sync_job(
+            context=context,
+            question_bank_db_path=db_path,
+            ai_service_factory=lambda: FakeAI(
+                {ids[0]: _complete(), ids[1]: _complete()}
+            ),
+            batch_size=1,
+        )
+
+    assert refresh_calls == [(ids[0],)]
+    assert QuestionBankTestStore(db_path).get_question(ids[0])["tags"]
+    assert QuestionBankTestStore(db_path).get_question(ids[1])["tags"] == []
+
+
 def test_tagging_sync_honours_cancellation_before_first_batch(tmp_path: Path) -> None:
     db_path = tmp_path / "qb.db"
     ids = _seed(db_path, 1)
@@ -1406,6 +1540,33 @@ def test_tagging_sync_classifies_save_failure_without_raising(
             "message": "Complete AI tags could not be saved.",
         }
     ]
+
+
+def test_tagging_sync_frequency_refresh_failure_is_not_reported_as_success(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "qb.db"
+    ids = _seed(db_path, 1)
+    context, _store = _context(tmp_path, {"question_ids": ids})
+
+    def fail_refresh(*_args, **_kwargs) -> None:
+        raise RuntimeError("synthetic frequency refresh failed")
+
+    monkeypatch.setattr(
+        QuestionFrequencyService,
+        "invalidate_frequency_cache_for_questions",
+        fail_refresh,
+    )
+
+    with pytest.raises(RuntimeError, match="synthetic frequency refresh failed"):
+        run_tagging_sync_job(
+            context=context,
+            question_bank_db_path=db_path,
+            ai_service_factory=lambda: FakeAI({ids[0]: _complete()}),
+        )
+
+    assert QuestionBankTestStore(db_path).get_question(ids[0])["tags"]
 
 
 def test_tagging_sync_masks_factory_error_before_job_store_persistence(

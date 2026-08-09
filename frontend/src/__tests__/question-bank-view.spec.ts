@@ -812,6 +812,169 @@ describe('question bank workspace', () => {
     expect(host.textContent).toContain('2 道题等待后端核对')
   })
 
+  it('loads 24 papers from the same curriculum in one question-list request', async () => {
+    const host = document.createElement('div')
+    document.body.append(host)
+    const pinia = createPinia()
+    const app = createApp(PaperLibrary)
+    app.use(pinia)
+    const store = useQuestionBankStore(pinia)
+    const papers = Array.from({ length: 24 }, (_value, index) => ({
+      ...paper,
+      id: index + 1,
+      title: `同教材试卷 ${index + 1}`,
+    }))
+    store.papers = papers
+    store.papersState = 'ready'
+    app.mount(host)
+    mounted.push(app)
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    const questionListUrls: string[] = []
+    const taggingBodies: Array<Record<string, unknown>> = []
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input)
+      if (url.startsWith('/api/question-bank/questions?')) {
+        questionListUrls.push(url)
+        const paperIds = new URL(url, 'http://local.test').searchParams
+          .getAll('paper_ids')
+          .map(Number)
+        return response({
+          items: paperIds.map((paperId) => ({
+            ...item,
+            id: 1_000 + paperId,
+            paper_id: paperId,
+            question_number: String(paperId),
+          })),
+          total: paperIds.length,
+          page: 1,
+          page_size: 100,
+          total_pages: 1,
+        })
+      }
+      if (url === '/api/question-bank/tagging-jobs' && init?.method === 'POST') {
+        taggingBodies.push(JSON.parse(String(init.body)))
+        return response({
+          id: 100,
+          job_type: 'tagging_sync',
+          payload: {},
+          result: {},
+          status: 'queued',
+          progress: 0,
+          stage: '',
+          detail: '',
+          error: null,
+          cancel_requested: false,
+          created_at: '2026-08-01T10:00:00Z',
+          started_at: null,
+          updated_at: '2026-08-01T10:00:00Z',
+          finished_at: null,
+        }, 202)
+      }
+      throw new Error(`unexpected request: ${url}`)
+    })
+
+    const retag = [...host.querySelectorAll<HTMLButtonElement>('button')]
+      .find((button) => button.textContent?.trim() === '全库重新打标签')!
+    retag.click()
+
+    await vi.waitFor(() => expect(taggingBodies).toHaveLength(1))
+    expect(questionListUrls).toHaveLength(1)
+    expect(new URL(questionListUrls[0]!, 'http://local.test').searchParams.getAll('paper_ids'))
+      .toEqual(papers.map(({ id }) => String(id)))
+    expect(taggingBodies[0]).toEqual({
+      question_ids: papers.map(({ id }) => 1_000 + id),
+      curriculum_volume_id: 'bnu24-math-g7-lower',
+      force_retag: true,
+      client_request_token: expect.stringMatching(/^[0-9a-f]{32}$/),
+    })
+  })
+
+  it('keeps grouped all-library fill requests inside their curriculum', async () => {
+    const host = document.createElement('div')
+    document.body.append(host)
+    const pinia = createPinia()
+    const app = createApp(PaperLibrary)
+    app.use(pinia)
+    const store = useQuestionBankStore(pinia)
+    const papers = [
+      { ...paper, id: 1, title: '教材一试卷 1' },
+      { ...paper, id: 2, title: '教材一试卷 2' },
+      { ...paper, id: 21, title: '教材二试卷 1', curriculum_volume_id: 'bnu24-math-g8-upper' },
+      { ...paper, id: 22, title: '教材二试卷 2', curriculum_volume_id: 'bnu24-math-g8-upper' },
+    ]
+    store.papers = papers
+    store.papersState = 'ready'
+    app.mount(host)
+    mounted.push(app)
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    const questionPaperGroups: number[][] = []
+    const taggingBodies: Array<Record<string, unknown>> = []
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input)
+      if (url.startsWith('/api/question-bank/questions?')) {
+        const paperIds = new URL(url, 'http://local.test').searchParams
+          .getAll('paper_ids')
+          .map(Number)
+        questionPaperGroups.push(paperIds)
+        return response({
+          items: paperIds.map((paperId) => ({
+            ...item,
+            id: 2_000 + paperId,
+            paper_id: paperId,
+            question_number: String(paperId),
+          })),
+          total: paperIds.length,
+          page: 1,
+          page_size: 100,
+          total_pages: 1,
+        })
+      }
+      if (url === '/api/question-bank/tagging-jobs' && init?.method === 'POST') {
+        taggingBodies.push(JSON.parse(String(init.body)))
+        return response({
+          id: 200 + taggingBodies.length,
+          job_type: 'tagging_sync',
+          payload: {},
+          result: {},
+          status: 'queued',
+          progress: 0,
+          stage: '',
+          detail: '',
+          error: null,
+          cancel_requested: false,
+          created_at: '2026-08-01T10:00:00Z',
+          started_at: null,
+          updated_at: '2026-08-01T10:00:00Z',
+          finished_at: null,
+        }, 202)
+      }
+      throw new Error(`unexpected request: ${url}`)
+    })
+
+    const fill = [...host.querySelectorAll<HTMLButtonElement>('button')]
+      .find((button) => button.textContent?.trim() === '继续完成未完成题目')!
+    fill.click()
+
+    await vi.waitFor(() => expect(taggingBodies).toHaveLength(2))
+    expect(questionPaperGroups).toEqual([[1, 2], [21, 22]])
+    expect(taggingBodies.map((body) => ({
+      question_ids: body.question_ids,
+      curriculum_volume_id: body.curriculum_volume_id,
+      force_retag: body.force_retag,
+    }))).toEqual([
+      {
+        question_ids: [2_001, 2_002],
+        curriculum_volume_id: 'bnu24-math-g7-lower',
+        force_retag: undefined,
+      },
+      {
+        question_ids: [2_021, 2_022],
+        curriculum_volume_id: 'bnu24-math-g8-upper',
+        force_retag: undefined,
+      },
+    ])
+  })
+
   it('requires one explicit confirmation before permanently deleting an active paper', async () => {
     const host = document.createElement('div')
     document.body.append(host)

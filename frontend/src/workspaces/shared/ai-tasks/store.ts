@@ -39,6 +39,8 @@ const defaults: WorkspaceAITaskStoreDependencies = {
   maxBackoffMs: 30_000,
 }
 
+const WORKSPACE_AI_TASK_MODULES = ['teaching_prep', 'class_teacher'] as const
+
 function isReference(value: unknown): value is PersistedTaskReference {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return false
   const item = value as Record<string, unknown>
@@ -70,6 +72,8 @@ export const useWorkspaceAITaskStore = defineStore('workspace-ai-tasks', () => {
   const controllers = new Map<string, AbortController>()
   const inFlight = new Map<string, Promise<void>>()
   let dependencies = defaults
+  let initialized = false
+  let initializationPromise: Promise<void> | null = null
 
   const orderedTasks = computed(() => Object.values(tasks.value).sort(
     (left, right) => Date.parse(right.updated_at) - Date.parse(left.updated_at),
@@ -98,11 +102,17 @@ export const useWorkspaceAITaskStore = defineStore('workspace-ai-tasks', () => {
     try {
       const parsed: unknown = JSON.parse(raw)
       if (!Array.isArray(parsed)) throw new Error('invalid task index')
-      const valid = parsed.filter(isReference)
+      const valid: PersistedTaskReference[] = parsed
+        .filter(isReference)
+        .map(reference => ({
+          taskId: reference.taskId,
+          operationId: reference.operationId,
+          trackedAt: reference.trackedAt,
+        }))
       references.clear()
       valid.forEach(reference => references.set(reference.taskId, reference))
       persist()
-      return valid
+      return [...references.values()]
     } catch {
       references.clear()
       localStorage.removeItem(WORKSPACE_AI_TASK_STORAGE_KEY)
@@ -146,7 +156,7 @@ export const useWorkspaceAITaskStore = defineStore('workspace-ai-tasks', () => {
       })
       persist()
     }
-    if (TERMINAL_WORKSPACE_AI_TASK_STATUSES.has(task.status)) stop(task.task_id)
+    if (TERMINAL_WORKSPACE_AI_TASK_STATUSES.has(tasks.value[task.task_id]!.status)) stop(task.task_id)
     else schedule(task.task_id)
   }
 
@@ -221,6 +231,28 @@ export const useWorkspaceAITaskStore = defineStore('workspace-ai-tasks', () => {
     delete syncErrors.value[taskId]
   }
 
+  async function restoreStoredReferences(stored: PersistedTaskReference[]): Promise<void> {
+    if (stored.length === 0) return
+    const storedIds = new Set(stored.map(reference => reference.taskId))
+    const restoredIds = new Set<string>()
+    const listed = await Promise.allSettled(
+      WORKSPACE_AI_TASK_MODULES.map(module => dependencies.api.list(module)),
+    )
+    for (const result of listed) {
+      if (result.status !== 'fulfilled') continue
+      for (const task of result.value) {
+        if (!storedIds.has(task.task_id)) continue
+        track(task)
+        restoredIds.add(task.task_id)
+      }
+    }
+    await Promise.all(
+      stored
+        .filter(reference => !restoredIds.has(reference.taskId))
+        .map(reference => refresh(reference.taskId)),
+    )
+  }
+
   async function migrateLegacyMixedIndex(): Promise<void> {
     const raw = localStorage.getItem(JOB_STORAGE_KEY)
     if (!raw) return
@@ -235,7 +267,12 @@ export const useWorkspaceAITaskStore = defineStore('workspace-ai-tasks', () => {
     const migrated = new Set<number>()
     await Promise.all(entries.map(async (entry) => {
       if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) return
-      const id = Number((entry as Record<string, unknown>).id)
+      const legacyReference = entry as Record<string, unknown>
+      if (
+        typeof legacyReference.jobType !== 'string'
+        || !legacyReference.jobType.startsWith('workspace_ai.')
+      ) return
+      const id = Number(legacyReference.id)
       if (!Number.isSafeInteger(id) || id <= 0) return
       try {
         const job = await dependencies.legacyJobApi.getJob(id)
@@ -258,11 +295,22 @@ export const useWorkspaceAITaskStore = defineStore('workspace-ai-tasks', () => {
     else localStorage.setItem(JOB_STORAGE_KEY, JSON.stringify(preserved))
   }
 
-  async function initialize(next?: WorkspaceAITaskStoreDependencies): Promise<void> {
+  function initialize(next?: WorkspaceAITaskStoreDependencies): Promise<void> {
+    if (initialized) return Promise.resolve()
+    if (initializationPromise) return initializationPromise
     configure(next)
-    const stored = readReferences()
-    await Promise.all(stored.map(reference => refresh(reference.taskId)))
-    await migrateLegacyMixedIndex()
+    const attempt = (async () => {
+      const stored = readReferences()
+      await restoreStoredReferences(stored)
+      await migrateLegacyMixedIndex()
+    })()
+    const guarded = attempt
+      .then(() => { initialized = true })
+      .finally(() => {
+        if (initializationPromise === guarded) initializationPromise = null
+      })
+    initializationPromise = guarded
+    return guarded
   }
 
   function stopAll(): void {

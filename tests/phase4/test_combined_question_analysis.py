@@ -9,9 +9,12 @@ from typing import Any, Mapping
 
 import pytest
 
+import question_bank.services.question_write_service as question_write_module
 from backend.llm.diagnostics import sanitize_request_payload
+from question_bank.current_knowledge import CurrentKnowledgeResolver
 from question_bank.database.schema import connect, initialize_database
 from question_bank.models.tag_schema import TagAnalysis, TaggingContext
+from question_bank.services.question_frequency_service import QuestionFrequencyService
 from question_bank.training_criteria import (
     AnalysisConflictError,
     CombinedAnalysisRepository,
@@ -954,6 +957,87 @@ def test_existing_tag_writer_reuses_quality_gate_and_question_save_seam(
         (row["tag_type"], row["tag_value"], row["model_name"])
         for row in rows
     }
+
+
+def test_existing_tag_writer_reuses_one_prepared_batch_and_defers_refresh(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "question-bank.db"
+    _seed_questions(database, count=2)
+    install_current_knowledge(database)
+    initialize_calls: list[Path] = []
+    resolver_calls: list[Path] = []
+    refresh_calls: list[tuple[int, ...]] = []
+    original_initialize = question_write_module.initialize_database
+    original_resolver = CurrentKnowledgeResolver.from_active_database
+    original_refresh = (
+        QuestionFrequencyService.invalidate_frequency_cache_for_questions
+    )
+
+    def tracking_initialize(path: Path) -> None:
+        initialize_calls.append(Path(path))
+        original_initialize(path)
+
+    def tracking_resolver(
+        _cls: type[CurrentKnowledgeResolver],
+        path: Path,
+    ) -> CurrentKnowledgeResolver:
+        resolver_calls.append(Path(path))
+        return original_resolver(path)
+
+    def tracking_refresh(
+        self: QuestionFrequencyService,
+        question_ids,
+    ) -> None:
+        captured = tuple(int(item) for item in question_ids)
+        refresh_calls.append(captured)
+        original_refresh(self, captured)
+
+    monkeypatch.setattr(
+        question_write_module,
+        "initialize_database",
+        tracking_initialize,
+    )
+    monkeypatch.setattr(
+        CurrentKnowledgeResolver,
+        "from_active_database",
+        classmethod(tracking_resolver),
+    )
+    monkeypatch.setattr(
+        QuestionFrequencyService,
+        "invalidate_frequency_cache_for_questions",
+        tracking_refresh,
+    )
+    write_service = QuestionBankWriteService(
+        database,
+        data_root=database.parent,
+    )
+    writer = ExistingTagProjectionWriter(
+        write_service=write_service,
+        tagging_service=ExistingWriterTaggingStub(),  # type: ignore[arg-type]
+    )
+    payload = _tag_payload()
+    payload["textbook_chapters"] = ["七年级上册 一元一次方程"]
+
+    with write_service.tag_analysis_batch():
+        writer.write(
+            _question(1),
+            payload,
+            model_name="synthetic-model",
+            operation_id="p4-09-batched-existing-writer",
+        )
+        writer.write(
+            _question(2),
+            payload,
+            model_name="synthetic-model",
+            operation_id="p4-09-batched-existing-writer",
+        )
+        assert refresh_calls == []
+
+    assert initialize_calls == [database]
+    assert resolver_calls == [database]
+    assert refresh_calls == [(1, 2)]
 
 
 def test_existing_tag_writer_does_not_report_success_without_complete_persisted_tags(

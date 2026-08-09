@@ -3,6 +3,8 @@ import { createApp, nextTick } from 'vue'
 import { createMemoryHistory, createRouter } from 'vue-router'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { questionBankApi, type CurriculumCatalog, type CurriculumVolume } from '../../../api/question-bank'
+import { CURRICULUM_SCOPE_STORAGE_KEY, useCurriculumScopeStore } from '../../../stores/curriculum-scope'
 import { teachingPrepCatalogApi } from '../api/catalog'
 import { teachingPrepWorkbenchApi, type LessonPreparationStatus } from '../api/workbench'
 import { useTeachingPrepCatalogStore } from '../stores/catalog'
@@ -25,7 +27,41 @@ const preferences = {
   avoid_ppt_duplicates: true,
 }
 
+const globalVolume: CurriculumVolume = {
+  id: 'g7-first',
+  order: 1,
+  label: '七年级上册',
+  grade: '七年级',
+  semester: '上册',
+  textbook_version: '数学',
+  source: {},
+  statistics: { raw_nodes: 0, excluded_nodes: 0, retained_nodes: 0 },
+  chapters: [],
+}
+
+const globalCurriculumCatalog: CurriculumCatalog = {
+  schema_version: 2,
+  catalog_id: 'test-catalog',
+  knowledge_standard_id: 'test-standard',
+  publisher: '测试出版社',
+  subject: '数学',
+  edition: '测试版',
+  statistics: {
+    raw_nodes: 0,
+    excluded_nodes: 0,
+    retained_nodes: 0,
+    chapters: 0,
+    sections: 0,
+    knowledge_points: 0,
+  },
+  volumes: [globalVolume],
+}
+
 function mockEmptyCatalog(): void {
+  vi.spyOn(questionBankApi, 'getCurriculum').mockResolvedValue({
+    ...globalCurriculumCatalog,
+    volumes: [],
+  })
   vi.spyOn(teachingPrepCatalogApi, 'status').mockResolvedValue({
     module: 'teaching-prep',
     enabled: true,
@@ -83,7 +119,35 @@ function mockCatalogWithLessons(count = 1): { semesterId: string; lessonIds: str
   return { semesterId, lessonIds }
 }
 
-async function mountAt(query = '') {
+function mockCatalogWithGlobalTextbookSwitch(): { targetSemesterId: string } {
+  mockCatalogWithLessons()
+  const targetCurriculumId = 'c'.repeat(32)
+  const targetSemesterId = 's'.repeat(32)
+  const initialCurriculumId = 'd'.repeat(32)
+  const initialSemesterId = 't'.repeat(32)
+  vi.mocked(teachingPrepCatalogApi.listCurricula).mockResolvedValue([
+    { id: initialCurriculumId, title: '八年级数学', grade_level: 8, volume: 'first', publisher: null, edition_label: null, revision: 1, is_active: true, created_at: '', updated_at: '' },
+    { id: targetCurriculumId, title: '七年级数学', grade_level: 7, volume: 'first', publisher: null, edition_label: null, revision: 1, is_active: true, created_at: '', updated_at: '' },
+  ])
+  vi.mocked(teachingPrepCatalogApi.listSemesters).mockResolvedValue([
+    { id: initialSemesterId, curriculum_id: initialCurriculumId, curriculum_title: '八年级数学', school_year: '2026', term: 'first', planned_new_lesson_count: 1, status: 'active', active_lesson_count: 1, not_started_lesson_count: 1, preparing_lesson_count: 0, ready_lesson_count: 0, taught_lesson_count: 0, skipped_lesson_count: 0, material_count: 0, parsed_material_count: 0, mapped_material_count: 0, revision: 1, created_at: '', updated_at: '' },
+    { id: targetSemesterId, curriculum_id: targetCurriculumId, curriculum_title: '七年级数学', school_year: '2026', term: 'first', planned_new_lesson_count: 1, status: 'active', active_lesson_count: 1, not_started_lesson_count: 1, preparing_lesson_count: 0, ready_lesson_count: 0, taught_lesson_count: 0, skipped_lesson_count: 0, material_count: 0, parsed_material_count: 0, mapped_material_count: 0, revision: 1, created_at: '', updated_at: '' },
+  ])
+  return { targetSemesterId }
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise
+  })
+  return { promise, resolve }
+}
+
+async function mountAt(
+  query = '',
+  configurePinia?: (pinia: ReturnType<typeof createPinia>) => void,
+) {
   const router = createRouter({
     history: createMemoryHistory(),
     routes: [{ path: '/teaching-prep', component: TeachingPrepHomeView }],
@@ -94,6 +158,7 @@ async function mountAt(query = '') {
   document.body.appendChild(host)
   const app = createApp(TeachingPrepHomeView)
   const pinia = createPinia()
+  configurePinia?.(pinia)
   app.use(pinia)
   app.use(router)
   app.mount(host)
@@ -109,9 +174,77 @@ async function mountAt(query = '') {
 afterEach(() => {
   vi.restoreAllMocks()
   document.body.innerHTML = ''
+  localStorage.clear()
 })
 
 describe('TeachingPrepHomeView workbench shell', () => {
+  it('loads semester lesson statuses once during the initial workbench entry', async () => {
+    mockCatalogWithLessons()
+
+    const { app } = await mountAt()
+
+    expect(teachingPrepWorkbenchApi.lessonStatuses).toHaveBeenCalledTimes(1)
+    app.unmount()
+  })
+
+  it('loads semester lesson statuses once when initial entry switches to the global textbook', async () => {
+    const { targetSemesterId } = mockCatalogWithGlobalTextbookSwitch()
+
+    const { app, pinia } = await mountAt('', (nextPinia) => {
+      const scope = useCurriculumScopeStore(nextPinia)
+      scope.volumes = [globalVolume]
+      scope.selectedVolumeId = globalVolume.id
+      scope.loadState = 'ready'
+    })
+
+    expect(useTeachingPrepCatalogStore(pinia).selectedSemester?.id).toBe(targetSemesterId)
+    expect(teachingPrepWorkbenchApi.lessonStatuses).toHaveBeenCalledTimes(1)
+    expect(teachingPrepWorkbenchApi.lessonStatuses).toHaveBeenCalledWith(targetSemesterId)
+    app.unmount()
+  })
+
+  it('waits for a delayed global textbook before the first semester status load', async () => {
+    const { targetSemesterId } = mockCatalogWithGlobalTextbookSwitch()
+    const curriculumCatalog = deferred<CurriculumCatalog>()
+    vi.spyOn(questionBankApi, 'getCurriculum').mockReturnValue(curriculumCatalog.promise)
+    localStorage.setItem(CURRICULUM_SCOPE_STORAGE_KEY, globalVolume.id)
+
+    const { app, pinia } = await mountAt()
+    await vi.waitFor(() => {
+      expect(useTeachingPrepCatalogStore(pinia).loadState).toBe('ready')
+    })
+
+    expect(teachingPrepWorkbenchApi.lessonStatuses).not.toHaveBeenCalled()
+    curriculumCatalog.resolve(globalCurriculumCatalog)
+    await vi.waitFor(() => {
+      expect(useTeachingPrepCatalogStore(pinia).selectedSemester?.id).toBe(targetSemesterId)
+      expect(teachingPrepWorkbenchApi.lessonStatuses).toHaveBeenCalledTimes(1)
+    })
+    expect(teachingPrepWorkbenchApi.lessonStatuses).toHaveBeenCalledWith(targetSemesterId)
+    app.unmount()
+  })
+
+  it('loads semester lesson statuses again when the current workspace is refreshed', async () => {
+    const { lessonIds } = mockCatalogWithLessons()
+    vi.mocked(teachingPrepWorkbenchApi.lessonStatuses)
+      .mockRejectedValueOnce(new Error('offline'))
+      .mockResolvedValue(lessonIds.map((id, index) => statusFor(id, index + 1)))
+
+    const { app, host } = await mountAt()
+
+    expect(teachingPrepWorkbenchApi.lessonStatuses).toHaveBeenCalledTimes(1)
+    const retry = [...host.querySelectorAll('button')].find(
+      button => button.textContent?.includes('重新载入当前工作面'),
+    )
+    expect(retry).toBeDefined()
+
+    retry?.click()
+    await vi.waitFor(() => {
+      expect(teachingPrepWorkbenchApi.lessonStatuses).toHaveBeenCalledTimes(2)
+    })
+    app.unmount()
+  })
+
   it('opens the overview first and removes the redundant local header', async () => {
     mockEmptyCatalog()
     const { app, host, router } = await mountAt()
