@@ -122,8 +122,10 @@ export function useTeachingPrepWorkbench() {
     loading.value = true
     workbenchError.value = ''
     try {
-      void curriculumScope.initialize()
-      await catalog.load()
+      await Promise.all([
+        curriculumScope.initialize(),
+        catalog.load(),
+      ])
       const linkedSemesterId = typeof route.query.semester === 'string'
         ? route.query.semester
         : null
@@ -134,9 +136,8 @@ export function useTeachingPrepWorkbench() {
       ) {
         await catalog.selectSemester(linkedSemesterId)
       } else if (curriculumScope.loadState === 'ready') {
-        await selectSemesterForGlobalScope(false)
+        await selectSemesterForGlobalScope(false, { deferCompletion: true })
       }
-      await loadSemesterStatuses()
       const restoreLibrary = route.query.view === 'library'
       if (restoreLibrary) {
         view.value = 'library'
@@ -350,7 +351,10 @@ export function useTeachingPrepWorkbench() {
       ))[0] ?? null
   }
 
-  async function selectSemesterForGlobalScope(confirmDirty: boolean): Promise<void> {
+  async function selectSemesterForGlobalScope(
+    confirmDirty: boolean,
+    { deferCompletion = false }: { deferCompletion?: boolean } = {},
+  ): Promise<void> {
     const target = semesterForGlobalScope()
     if (!curriculumScope.selectedVolumeId) return
     if (!target) {
@@ -362,7 +366,7 @@ export function useTeachingPrepWorkbench() {
       panel.value = 'sources'
       focusRef.value = null
       workbenchError.value = `备课工作台还没有“${curriculumScope.selectedVolume?.label ?? '所选学期'}”的学期资料。已清空旧学期上下文，请先建立本学期。`
-      await syncRoute()
+      if (!deferCompletion) await syncRoute()
       return
     }
     if (catalog.selectedSemester?.id === target.id) return
@@ -386,7 +390,7 @@ export function useTeachingPrepWorkbench() {
     stage.value = 'select'
     panel.value = 'sources'
     focusRef.value = null
-    await loadSemesterStatuses()
+    if (deferCompletion) return
     await refreshCurrentWorkspace()
     await syncRoute()
   }
@@ -540,7 +544,11 @@ export function useTeachingPrepWorkbench() {
   watch(
     () => [curriculumScope.loadState, curriculumScope.selectedVolumeId] as const,
     ([scopeState]) => {
-      if (scopeState === 'ready' && catalog.loadState === 'ready') {
+      if (
+        scopeState === 'ready'
+        && catalog.loadState === 'ready'
+        && !loading.value
+      ) {
         void selectSemesterForGlobalScope(true)
       }
     },

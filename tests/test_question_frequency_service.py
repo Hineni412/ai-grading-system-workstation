@@ -153,6 +153,99 @@ def test_practice_invalidation_does_not_clear_formal_exam_cache(tmp_path: Path) 
     )
 
 
+def test_batch_invalidation_matches_single_refreshes_for_mixed_scopes(
+    tmp_path: Path,
+) -> None:
+    sentinel = 0.987654
+
+    def prepare(database: Path) -> tuple[QuestionFrequencyService, list[int]]:
+        initialize_database(database)
+        install_current_knowledge(database)
+        final_paper = _insert_paper(
+            database,
+            title="七年级下期末",
+            exam_type="期末",
+        )
+        midterm_paper = _insert_paper(
+            database,
+            title="七年级下期中",
+            exam_type="期中",
+        )
+        practice_paper = _insert_paper(
+            database,
+            title="七年级下练习",
+            exam_type="同步练习",
+        )
+        other_semester_paper = _insert_paper(
+            database,
+            title="七年级上期末",
+            exam_type="期末",
+            semester="上学期",
+        )
+        other_grade_paper = _insert_paper(
+            database,
+            title="八年级下期末",
+            exam_type="期末",
+            grade="八年级",
+        )
+        question_ids = [
+            _insert_question(database, final_paper, number="1"),
+            _insert_question(database, midterm_paper, number="1"),
+            _insert_question(database, practice_paper, number="1"),
+            _insert_question(database, other_semester_paper, number="1"),
+            _insert_question(database, other_grade_paper, number="1"),
+        ]
+        with connect(database) as connection:
+            connection.executemany(
+                """
+                INSERT INTO question_frequency_cache (
+                    question_id, score_midterm, score_final, score_zhongkao
+                ) VALUES (?, ?, ?, ?)
+                """,
+                [
+                    (question_id, sentinel, sentinel, sentinel)
+                    for question_id in question_ids
+                ],
+            )
+        return QuestionFrequencyService(database), question_ids
+
+    def cache_rows(database: Path) -> list[tuple[int, float, float, float]]:
+        with connect(database) as connection:
+            rows = connection.execute(
+                """
+                SELECT question_id, score_midterm, score_final, score_zhongkao
+                FROM question_frequency_cache
+                ORDER BY question_id
+                """
+            ).fetchall()
+        return [
+            (
+                int(row["question_id"]),
+                float(row["score_midterm"]),
+                float(row["score_final"]),
+                float(row["score_zhongkao"]),
+            )
+            for row in rows
+        ]
+
+    sequential_db = tmp_path / "sequential.db"
+    batched_db = tmp_path / "batched.db"
+    sequential_service, sequential_ids = prepare(sequential_db)
+    batched_service, batched_ids = prepare(batched_db)
+
+    sequential_service.invalidate_frequency_cache_for_question(sequential_ids[0])
+    sequential_service.invalidate_frequency_cache_for_question(sequential_ids[2])
+    batched_service.invalidate_frequency_cache_for_questions(
+        (batched_ids[0], batched_ids[2])
+    )
+
+    sequential_rows = cache_rows(sequential_db)
+    batched_rows = cache_rows(batched_db)
+    assert batched_rows == sequential_rows
+    assert all(sentinel not in row[1:] for row in batched_rows[:3])
+    assert all(row[1:] == (sentinel, sentinel, sentinel) for row in batched_rows[3:])
+
+
 def test_frequency_excludes_practice_and_other_semesters(tmp_path: Path) -> None:
     db_path = tmp_path / "question_bank.db"
     initialize_database(db_path)

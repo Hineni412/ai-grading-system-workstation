@@ -15,6 +15,7 @@ export interface PersistedJobReference {
   id: number
   jobType: string
   trackedAt: string
+  terminal?: true
 }
 
 export interface JobSyncError {
@@ -54,7 +55,8 @@ function isPersistedReference(value: unknown): value is PersistedJobReference {
     typeof candidate.jobType === 'string' &&
     candidate.jobType.length > 0 &&
     typeof candidate.trackedAt === 'string' &&
-    candidate.trackedAt.length > 0
+    candidate.trackedAt.length > 0 &&
+    (candidate.terminal === undefined || candidate.terminal === true)
   )
 }
 
@@ -114,6 +116,8 @@ export const useJobStore = defineStore('jobs', () => {
   const generations = new Map<number, number>()
   const retryCounts = new Map<number, number>()
   let dependencies = defaultDependencies
+  let initialized = false
+  let initializationPromise: Promise<void> | null = null
 
   function configure(next?: JobStoreDependencies) {
     if (next) dependencies = next
@@ -136,15 +140,18 @@ export const useJobStore = defineStore('jobs', () => {
     try {
       const parsed: unknown = JSON.parse(raw)
       if (!Array.isArray(parsed)) throw new Error('invalid index')
-      const valid = parsed.filter(isPersistedReference).map((reference) => ({
-        id: reference.id,
-        jobType: reference.jobType,
-        trackedAt: reference.trackedAt,
-      }))
+      const valid: PersistedJobReference[] = parsed
+        .filter(isPersistedReference)
+        .map((reference) => ({
+          id: reference.id,
+          jobType: reference.jobType,
+          trackedAt: reference.trackedAt,
+          ...(reference.terminal === true ? { terminal: true as const } : {}),
+        }))
       references.clear()
       for (const reference of valid) references.set(reference.id, reference)
       persistReferences()
-      return valid
+      return [...references.values()]
     } catch {
       references.clear()
       localStorage.removeItem(JOB_STORAGE_KEY)
@@ -184,6 +191,18 @@ export const useJobStore = defineStore('jobs', () => {
     persistReferences()
   }
 
+  function persistTerminalState(id: number, terminal: boolean): void {
+    const reference = references.get(id)
+    if (!reference || (reference.terminal === true) === terminal) return
+    references.set(id, {
+      id: reference.id,
+      jobType: reference.jobType,
+      trackedAt: reference.trackedAt,
+      ...(terminal ? { terminal: true as const } : {}),
+    })
+    persistReferences()
+  }
+
   async function refresh(id: number): Promise<void> {
     const existing = inFlight.get(id)
     if (existing) return existing
@@ -199,7 +218,10 @@ export const useJobStore = defineStore('jobs', () => {
         if (shouldReplaceJob(jobs.value[id], job)) jobs.value[id] = job
         delete syncErrors.value[id]
         retryCounts.delete(id)
-        if (TERMINAL_JOB_STATUSES.has(job.status)) stopPolling(id)
+        const snapshot = jobs.value[id]!
+        const terminal = TERMINAL_JOB_STATUSES.has(snapshot.status)
+        persistTerminalState(id, terminal)
+        if (terminal) stopPolling(id)
         else schedulePolling(id)
       } catch (error) {
         if (currentGeneration(id) !== generation || !references.has(id)) return
@@ -231,10 +253,28 @@ export const useJobStore = defineStore('jobs', () => {
     return request
   }
 
-  async function initialize(next?: JobStoreDependencies): Promise<void> {
+  function initialize(next?: JobStoreDependencies): Promise<void> {
+    if (initialized) return Promise.resolve()
+    if (initializationPromise) return initializationPromise
     configure(next)
-    const stored = readReferences()
-    await Promise.all(stored.map((reference) => refresh(reference.id)))
+    const attempt = (async () => {
+      const stored = readReferences()
+      const activeOrUnknown = stored.filter(reference => reference.terminal !== true)
+      const terminal = stored.filter(reference => reference.terminal === true)
+      await Promise.all(activeOrUnknown.map(reference => refresh(reference.id)))
+      await Promise.all(terminal.map(reference => refresh(reference.id)))
+    })()
+    initializationPromise = attempt
+    void attempt.then(
+      () => {
+        initialized = true
+        if (initializationPromise === attempt) initializationPromise = null
+      },
+      () => {
+        if (initializationPromise === attempt) initializationPromise = null
+      },
+    )
+    return attempt
   }
 
   function track(job: JobResponse, next?: JobStoreDependencies): void {
@@ -247,12 +287,17 @@ export const useJobStore = defineStore('jobs', () => {
         id: job.id,
         jobType: job.job_type,
         trackedAt: dependencies.now().toISOString(),
+        ...(TERMINAL_JOB_STATUSES.has(job.status) ? { terminal: true as const } : {}),
       })
       persistReferences()
       latestTrackedJobId.value = job.id
       jobNoticeRevision.value += 1
+    } else {
+      const snapshot = jobs.value[job.id]!
+      persistTerminalState(job.id, TERMINAL_JOB_STATUSES.has(snapshot.status))
     }
-    if (TERMINAL_JOB_STATUSES.has(job.status)) stopPolling(job.id)
+    const snapshot = jobs.value[job.id]!
+    if (TERMINAL_JOB_STATUSES.has(snapshot.status)) stopPolling(job.id)
     else schedulePolling(job.id)
   }
 
@@ -271,7 +316,9 @@ export const useJobStore = defineStore('jobs', () => {
         if (currentGeneration(id) !== generation || !references.has(id)) return
         if (shouldReplaceJob(jobs.value[id], next)) jobs.value[id] = next
         delete syncErrors.value[id]
-        if (TERMINAL_JOB_STATUSES.has(jobs.value[id]!.status)) stopPolling(id)
+        const terminal = TERMINAL_JOB_STATUSES.has(jobs.value[id]!.status)
+        persistTerminalState(id, terminal)
+        if (terminal) stopPolling(id)
         else schedulePolling(id)
       } catch (error) {
         if (currentGeneration(id) !== generation || !references.has(id)) return

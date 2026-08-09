@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Any
 
@@ -304,114 +305,120 @@ def _run_tagging_sync_job_locked(
         question_ids=normal_pending_ids,
     )
 
-    context.report(0.05, "tagging_sync", "loading")
-    for batch_index, start in enumerate(range(0, len(pending_ids), size)):
-        context.raise_if_cancelled()
-        batch_ids = pending_ids[start : start + size]
-        context.report(
-            0.1 + (0.75 * batch_index / total_batches),
-            "tagging_sync",
-            f"batch {batch_index + 1}/{total_batches}",
-        )
-        try:
-            assert ai_service is not None
-            results = ai_service.analyze_questions(
-                {question_id: contexts[question_id] for question_id in batch_ids},
-                taxonomy_contracts={
-                    question_id: taxonomy_contracts[question_id]
-                    for question_id in batch_ids
-                    if question_id in taxonomy_contracts
-                },
-                progress_callback=None,
-                request_callback=None,
-                allow_batch_fallback=False,
-                quality_retry_limit=1,
-                enable_review=False,
+    batch_context = (
+        write_service.tag_analysis_batch() if pending_ids else nullcontext()
+    )
+    with batch_context:
+        context.report(0.05, "tagging_sync", "loading")
+        for batch_index, start in enumerate(range(0, len(pending_ids), size)):
+            context.raise_if_cancelled()
+            batch_ids = pending_ids[start : start + size]
+            context.report(
+                0.1 + (0.75 * batch_index / total_batches),
+                "tagging_sync",
+                f"batch {batch_index + 1}/{total_batches}",
             )
-        except Exception as exc:  # noqa: BLE001
-            context.raise_if_cancelled()
-            category = classify_tagging_error(exc)
-            failures.extend(_failure(question_id, category) for question_id in batch_ids)
-            continue
-        context.raise_if_cancelled()
-        for question_id in batch_ids:
-            context.raise_if_cancelled()
-            result = results.get(question_id)
-            if result is None:
-                failures.append(_failure(question_id, "validation"))
+            try:
+                assert ai_service is not None
+                results = ai_service.analyze_questions(
+                    {question_id: contexts[question_id] for question_id in batch_ids},
+                    taxonomy_contracts={
+                        question_id: taxonomy_contracts[question_id]
+                        for question_id in batch_ids
+                        if question_id in taxonomy_contracts
+                    },
+                    progress_callback=None,
+                    request_callback=None,
+                    allow_batch_fallback=False,
+                    quality_retry_limit=1,
+                    enable_review=False,
+                )
+            except Exception as exc:  # noqa: BLE001
+                context.raise_if_cancelled()
+                category = classify_tagging_error(exc)
+                failures.extend(
+                    _failure(question_id, category) for question_id in batch_ids
+                )
                 continue
-            retrieval_misses = getattr(result, "retrieval_misses", [])
-            if isinstance(retrieval_misses, list) and retrieval_misses:
-                retrieval_miss_count += len(retrieval_misses)
-                if question_id not in retrieval_miss_question_ids:
-                    retrieval_miss_question_ids.append(question_id)
-            if not is_auto_saveable_result(result):
-                failures.append(_result_failure(question_id, result))
-                continue
-            persisted_proposals: list[dict[str, Any]] = []
-            if result.proposals or result.quality_status == "needs_review":
-                if governance is None:
+            context.raise_if_cancelled()
+            for question_id in batch_ids:
+                context.raise_if_cancelled()
+                result = results.get(question_id)
+                if result is None:
+                    failures.append(_failure(question_id, "validation"))
+                    continue
+                retrieval_misses = getattr(result, "retrieval_misses", [])
+                if isinstance(retrieval_misses, list) and retrieval_misses:
+                    retrieval_miss_count += len(retrieval_misses)
+                    if question_id not in retrieval_miss_question_ids:
+                        retrieval_miss_question_ids.append(question_id)
+                if not is_auto_saveable_result(result):
+                    failures.append(_result_failure(question_id, result))
+                    continue
+                persisted_proposals: list[dict[str, Any]] = []
+                if result.proposals or result.quality_status == "needs_review":
+                    if governance is None:
+                        failures.append(_failure(question_id, "save"))
+                        continue
+                    try:
+                        assert result.analysis is not None
+                        persisted_proposals = _persist_proposals(
+                            governance,
+                            result,
+                            question_id=question_id,
+                            job_id=context.job_id,
+                            expected_revision=int(result.taxonomy_revision or 0),
+                            knowledge_graph_release_id=knowledge_graph_release_id,
+                            taxonomy_contract=taxonomy_contracts.get(
+                                question_id, {}
+                            ),
+                        )
+                    except Exception:  # noqa: BLE001
+                        failures.append(_failure(question_id, "save"))
+                        continue
+                    for item in persisted_proposals:
+                        proposal_key = _proposal_key(item)
+                        if proposal_key in proposal_keys:
+                            continue
+                        proposal_keys.add(proposal_key)
+                        proposal_id = _proposal_id(item)
+                        if proposal_id:
+                            proposal_ids.append(proposal_id)
+                    if question_id not in review_question_ids:
+                        review_question_ids.append(question_id)
+                try:
+                    assert result.analysis is not None
+                    saved = write_service.save_tag_analysis(
+                        question_id,
+                        result.analysis,
+                        model_name=result.model_name,
+                        confidence=result.analysis.confidence,
+                        taxonomy_governance=governance,
+                    )
+                except Exception:  # noqa: BLE001
+                    saved = False
+                if not saved:
                     failures.append(_failure(question_id, "save"))
                     continue
                 try:
-                    assert result.analysis is not None
-                    persisted_proposals = _persist_proposals(
+                    _record_successful_observation(
                         governance,
-                        result,
                         question_id=question_id,
-                        job_id=context.job_id,
-                        expected_revision=int(result.taxonomy_revision or 0),
-                        knowledge_graph_release_id=knowledge_graph_release_id,
-                        taxonomy_contract=taxonomy_contracts.get(
-                            question_id, {}
-                        ),
+                        generation_id=generation_id,
+                        proposal_ids=[
+                            proposal_id
+                            for item in persisted_proposals
+                            if (proposal_id := _proposal_id(item))
+                        ],
+                        taxonomy_revision=int(result.taxonomy_revision or 0),
+                        graph_release_id=knowledge_graph_release_id,
+                        allocated=observation_sequences,
                     )
                 except Exception:  # noqa: BLE001
                     failures.append(_failure(question_id, "save"))
                     continue
-                for item in persisted_proposals:
-                    proposal_key = _proposal_key(item)
-                    if proposal_key in proposal_keys:
-                        continue
-                    proposal_keys.add(proposal_key)
-                    proposal_id = _proposal_id(item)
-                    if proposal_id:
-                        proposal_ids.append(proposal_id)
-                if question_id not in review_question_ids:
-                    review_question_ids.append(question_id)
-            try:
-                assert result.analysis is not None
-                saved = write_service.save_tag_analysis(
-                    question_id,
-                    result.analysis,
-                    model_name=result.model_name,
-                    confidence=result.analysis.confidence,
-                    taxonomy_governance=governance,
-                )
-            except Exception:  # noqa: BLE001
-                saved = False
-            if not saved:
-                failures.append(_failure(question_id, "save"))
-                continue
-            try:
-                _record_successful_observation(
-                    governance,
-                    question_id=question_id,
-                    generation_id=generation_id,
-                    proposal_ids=[
-                        proposal_id
-                        for item in persisted_proposals
-                        if (proposal_id := _proposal_id(item))
-                    ],
-                    taxonomy_revision=int(result.taxonomy_revision or 0),
-                    graph_release_id=knowledge_graph_release_id,
-                    allocated=observation_sequences,
-                )
-            except Exception:  # noqa: BLE001
-                failures.append(_failure(question_id, "save"))
-                continue
-            tagged_count += 1
-            successful_ids.append(question_id)
+                tagged_count += 1
+                successful_ids.append(question_id)
 
     failed_ids = [int(item["question_id"]) for item in failures]
     successful_ids = [item for item in question_ids if item in set(successful_ids)]
@@ -563,8 +570,9 @@ def _run_unified_tagging_analysis(
         context,
     )
     mapping_repository = CurrentFineTermResolver.from_active_database(db_path)
+    tag_write_service = QuestionBankWriteService(db_path, data_root=data_root)
     tag_writer = ExistingTagProjectionWriter(
-        write_service=QuestionBankWriteService(db_path, data_root=data_root),
+        write_service=tag_write_service,
         tagging_service=ai_service,
     )
     evidence_writer = SolutionEvidenceProjectionWriter(
@@ -645,12 +653,18 @@ def _run_unified_tagging_analysis(
         generation_id=operation_id,
         question_ids=tag_request_ids,
     )
-    workflow = module.analyze_work_items(
-        operation_id=operation_id,
-        work_items=work_items,
-        progress_callback=analysis_progress,
+    batch_context = (
+        tag_write_service.tag_analysis_batch()
+        if tag_request_ids
+        else nullcontext()
     )
-    context.raise_if_cancelled()
+    with batch_context:
+        workflow = module.analyze_work_items(
+            operation_id=operation_id,
+            work_items=work_items,
+            progress_callback=analysis_progress,
+        )
+        context.raise_if_cancelled()
     items = {
         int(item["question_id"]): item
         for item in workflow.get("items", [])

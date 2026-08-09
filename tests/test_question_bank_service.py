@@ -5,9 +5,11 @@ from pathlib import Path
 
 import pytest
 
+from question_bank.current_knowledge import CurrentKnowledgeResolver
 from question_bank.database.schema import initialize_database
 from question_bank.models.question import QuestionCreate, TagCreate
 from question_bank.models.tag_schema import TagAnalysis
+from question_bank.services.question_frequency_service import QuestionFrequencyService
 from question_bank.services.question_read_service import (
     QuestionBankReadService,
     QuestionReadFilters,
@@ -123,7 +125,10 @@ def test_canonical_write_and_read_services_round_trip_question(tmp_path: Path) -
     assert source == "manual"
 
 
-def test_analysis_write_preserves_manual_tags_and_records_model(tmp_path: Path) -> None:
+def test_analysis_write_preserves_manual_tags_and_records_model(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     db_path, reader, writer = _services(tmp_path)
     question_id = writer.add_question(
         QuestionCreate(
@@ -157,6 +162,35 @@ def test_analysis_write_preserves_manual_tags_and_records_model(tmp_path: Path) 
             "supporting_skills": [],
         }
     )
+    resolver_calls: list[Path] = []
+    refresh_calls: list[int] = []
+    original_resolver = CurrentKnowledgeResolver.from_active_database
+    original_refresh = QuestionFrequencyService.invalidate_frequency_cache_for_question
+
+    def tracking_resolver(
+        _cls: type[CurrentKnowledgeResolver],
+        path: Path,
+    ) -> CurrentKnowledgeResolver:
+        resolver_calls.append(Path(path))
+        return original_resolver(path)
+
+    def tracking_refresh(
+        self: QuestionFrequencyService,
+        refreshed_question_id: int,
+    ) -> None:
+        refresh_calls.append(int(refreshed_question_id))
+        original_refresh(self, refreshed_question_id)
+
+    monkeypatch.setattr(
+        CurrentKnowledgeResolver,
+        "from_active_database",
+        classmethod(tracking_resolver),
+    )
+    monkeypatch.setattr(
+        QuestionFrequencyService,
+        "invalidate_frequency_cache_for_question",
+        tracking_refresh,
+    )
 
     assert writer.save_tag_analysis(
         question_id,
@@ -187,6 +221,8 @@ def test_analysis_write_preserves_manual_tags_and_records_model(tmp_path: Path) 
     assert ai_tags
     assert {tag["model_name"] for tag in ai_tags} == {"synthetic-model"}
     assert {round(float(tag["confidence"]), 2) for tag in ai_tags} == {0.77}
+    assert resolver_calls == [db_path]
+    assert refresh_calls == [question_id]
 
 
 def test_read_service_owns_filtering_and_difficulty_sort(tmp_path: Path) -> None:

@@ -328,6 +328,30 @@ async function loadQuestionIds(
   return [...new Set(ids)]
 }
 
+interface CurriculumQuestionScope {
+  volumeId: string
+  ids: number[]
+}
+
+async function loadCurriculumQuestionScopes(
+  papers: QuestionBankPaper[],
+): Promise<CurriculumQuestionScope[]> {
+  const paperIdsByVolume = new Map<string, number[]>()
+  for (const paper of papers) {
+    if (!paper.curriculum_volume_id) continue
+    const paperIds = paperIdsByVolume.get(paper.curriculum_volume_id) ?? []
+    paperIds.push(paper.id)
+    paperIdsByVolume.set(paper.curriculum_volume_id, paperIds)
+  }
+  const scopes = await Promise.all(
+    [...paperIdsByVolume.entries()].map(async ([volumeId, paperIds]) => ({
+      volumeId,
+      ids: await loadQuestionIds(paperIds),
+    })),
+  )
+  return scopes.filter(scope => scope.ids.length > 0)
+}
+
 function newRequestToken(): string {
   const bytes = new Uint8Array(16)
   globalThis.crypto.getRandomValues(bytes)
@@ -435,12 +459,7 @@ async function retagAllPapers(): Promise<void> {
   retagAllBusy.value = true
   taggingMode.value = 'retag'
   try {
-    const scopes: Array<{ paper: QuestionBankPaper; ids: number[] }> = []
-    for (const paper of store.papers) {
-      if (!paper.curriculum_volume_id) continue
-      const ids = await loadQuestionIds([paper.id])
-      if (ids.length) scopes.push({ paper, ids })
-    }
+    const scopes = await loadCurriculumQuestionScopes(store.papers)
     const total = scopes.reduce((sum, scope) => sum + scope.ids.length, 0)
     if (total === 0) {
       retagMessage.value = '题库中没有可重新标注的题目。'
@@ -450,11 +469,11 @@ async function retagAllPapers(): Promise<void> {
       `将重新分析题库中的 ${total} 道题，可能产生模型费用；人工修改的标签会保留。确认继续吗？`,
     )) return
     let count = 0
-    for (const { paper, ids } of scopes) {
+    for (const { volumeId, ids } of scopes) {
       count += await submitTaggingBatches(ids, {
         forceRetag: true,
-        scope: `paper-${paper.id}-retag`,
-        volumeId: paper.curriculum_volume_id!,
+        scope: `curriculum-${volumeId}-retag`,
+        volumeId,
       })
     }
     retagMessage.value = `已提交全库 ${total} 道题，共 ${count} 个重新标注任务。`
@@ -472,12 +491,7 @@ async function fillAllTags(): Promise<void> {
   retagAllBusy.value = true
   taggingMode.value = 'fill'
   try {
-    const scopes: Array<{ paper: QuestionBankPaper; ids: number[] }> = []
-    for (const paper of store.papers) {
-      if (!paper.curriculum_volume_id) continue
-      const ids = await loadQuestionIds([paper.id])
-      if (ids.length) scopes.push({ paper, ids })
-    }
+    const scopes = await loadCurriculumQuestionScopes(store.papers)
     const total = scopes.reduce((sum, scope) => sum + scope.ids.length, 0)
     if (total === 0) {
       retagMessage.value = '题库中没有可补齐的题目。'
@@ -487,11 +501,11 @@ async function fillAllTags(): Promise<void> {
       `将核对题库中的 ${total} 道题，只补齐缺失、失败或已过期的标签、解题证据和训练判定点；真正完整的题和人工修改不会重做。需要补齐时可能产生模型费用。确认继续吗？`,
     )) return
     let count = 0
-    for (const { paper, ids } of scopes) {
+    for (const { volumeId, ids } of scopes) {
       count += await submitTaggingBatches(ids, {
         forceRetag: false,
-        scope: `paper-${paper.id}-fill`,
-        volumeId: paper.curriculum_volume_id!,
+        scope: `curriculum-${volumeId}-fill`,
+        volumeId,
       })
     }
     retagMessage.value = `已提交全库 ${total} 道题等待后端核对，共 ${count} 个任务；完整内容不会重做。`

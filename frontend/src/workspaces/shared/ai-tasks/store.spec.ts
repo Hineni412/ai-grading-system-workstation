@@ -68,14 +68,15 @@ function job(id: number, jobType: string, taskId?: string): JobResponse {
 }
 
 function dependencies(
-  get = vi.fn(async () => task()),
+  get: WorkspaceAITaskStoreDependencies['api']['get'] = vi.fn(async () => task()),
+  list: WorkspaceAITaskStoreDependencies['api']['list'] = vi.fn(async () => []),
   getJob = vi.fn(async (id: number) => (
     id === 41 ? job(41, 'workspace_ai.run', 'task-001') : job(id, 'grading_run')
   )),
 ): WorkspaceAITaskStoreDependencies {
   return {
     api: {
-      list: vi.fn(async () => []),
+      list,
       prepare: vi.fn(async () => task({ status: 'prepared' })),
       dispatch: vi.fn(async () => task()),
       get,
@@ -102,6 +103,7 @@ describe('workspace AI task store', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
     localStorage.clear()
+    vi.restoreAllMocks()
   })
 
   it('migrates only server-proven workspace AI jobs from the mixed legacy index', async () => {
@@ -111,9 +113,11 @@ describe('workspace AI task store', () => {
       { id: 43, jobType: 'teaching_prep.parse_material', trackedAt: 'now' },
     ]))
     const store = useWorkspaceAITaskStore()
-    await store.initialize(dependencies())
+    const api = dependencies()
+    await store.initialize(api)
 
     expect(store.tasks['task-001']?.safe_title).toBe('备课 · 形成课堂方案')
+    expect(api.legacyJobApi.getJob).toHaveBeenCalledExactlyOnceWith(41)
     expect(JSON.parse(localStorage.getItem(JOB_STORAGE_KEY)!)).toEqual([
       { id: 42, jobType: 'grading_run', trackedAt: 'now' },
       { id: 43, jobType: 'teaching_prep.parse_material', trackedAt: 'now' },
@@ -164,6 +168,157 @@ describe('workspace AI task store', () => {
     expect(stored).toContain('task-001')
     expect(stored).not.toContain('handoff-001')
     expect(stored).not.toContain('summary')
+    expect(stored).not.toContain('terminal')
+  })
+
+  it('coalesces concurrent initialization and ignores later repeats', async () => {
+    localStorage.setItem(WORKSPACE_AI_TASK_STORAGE_KEY, JSON.stringify([{
+      taskId: 'task-001', operationId: 'operation-001', trackedAt: 'now',
+    }]))
+    const api = dependencies()
+    const store = useWorkspaceAITaskStore()
+
+    await Promise.all([
+      store.initialize(api),
+      store.initialize(api),
+    ])
+    await store.initialize(api)
+
+    expect(api.api.get).toHaveBeenCalledTimes(1)
+    expect(api.api.list).toHaveBeenCalledTimes(2)
+    expect(api.schedule).toHaveBeenCalledTimes(1)
+  })
+
+  it('allows initialization to retry after the initialization process fails', async () => {
+    localStorage.setItem(WORKSPACE_AI_TASK_STORAGE_KEY, JSON.stringify([{
+      taskId: 'task-001', operationId: 'operation-001', trackedAt: 'now',
+    }]))
+    vi.spyOn(Storage.prototype, 'getItem')
+      .mockImplementationOnce(() => { throw new Error('storage temporarily unavailable') })
+    const api = dependencies()
+    const store = useWorkspaceAITaskStore()
+
+    await expect(store.initialize(api)).rejects.toThrow('storage temporarily unavailable')
+    await expect(store.initialize(api)).resolves.toBeUndefined()
+
+    expect(api.api.get).toHaveBeenCalledTimes(1)
+  })
+
+  it('restores every actionable historical task from two module lists without detail requests', async () => {
+    const statuses = [
+      'needs_input',
+      'proposal_ready',
+      'failed_before_dispatch',
+      'result_unknown',
+    ] as const
+    const teachingTasks = Array.from({ length: 13 }, (_value, index) => task({
+      task_id: `teaching-${String(index + 1).padStart(2, '0')}`,
+      operation_id: `teaching-operation-${index + 1}`,
+      module: 'teaching_prep',
+      status: statuses[index % statuses.length],
+      revision: index + 1,
+    }))
+    const classTasks = Array.from({ length: 13 }, (_value, index) => task({
+      task_id: `class-${String(index + 1).padStart(2, '0')}`,
+      operation_id: `class-operation-${index + 1}`,
+      module: 'class_teacher',
+      status: statuses[index % statuses.length],
+      revision: index + 1,
+    }))
+    const allTasks = [...teachingTasks, ...classTasks]
+    localStorage.setItem(WORKSPACE_AI_TASK_STORAGE_KEY, JSON.stringify(
+      allTasks.map(item => ({
+        taskId: item.task_id,
+        operationId: item.operation_id,
+        trackedAt: '2026-08-05T00:00:00Z',
+        terminal: true,
+      })),
+    ))
+    const get = vi.fn(async () => { throw new Error('detail request should not run') })
+    const list = vi.fn(async (module: WorkspaceAITask['module']) => (
+      module === 'teaching_prep' ? teachingTasks : classTasks
+    ))
+    const api = dependencies(get, list)
+    const store = useWorkspaceAITaskStore()
+
+    await store.initialize(api)
+
+    expect(list).toHaveBeenNthCalledWith(1, 'teaching_prep')
+    expect(list).toHaveBeenNthCalledWith(2, 'class_teacher')
+    expect(get).not.toHaveBeenCalled()
+    expect(store.orderedTasks.map(item => item.task_id).sort())
+      .toEqual(allTasks.map(item => item.task_id).sort())
+    const stored = localStorage.getItem(WORKSPACE_AI_TASK_STORAGE_KEY)!
+    expect(JSON.parse(stored)).toHaveLength(26)
+    expect(stored).not.toContain('terminal')
+  })
+
+  it('falls back only for list omissions and a failed module list', async () => {
+    const references = [
+      { taskId: 'teaching-found', operationId: 'operation-found', trackedAt: 'now' },
+      { taskId: 'teaching-missing', operationId: 'operation-missing', trackedAt: 'now' },
+      { taskId: 'class-fallback', operationId: 'operation-class', trackedAt: 'now' },
+    ]
+    localStorage.setItem(WORKSPACE_AI_TASK_STORAGE_KEY, JSON.stringify(references))
+    const found = task({
+      task_id: 'teaching-found',
+      operation_id: 'operation-found',
+      status: 'proposal_ready',
+    })
+    const list = vi.fn(async (module: WorkspaceAITask['module']) => {
+      if (module === 'class_teacher') throw new Error('class list unavailable')
+      return [found]
+    })
+    const get = vi.fn(async (taskId: string) => task({
+      task_id: taskId,
+      operation_id: taskId === 'teaching-missing' ? 'operation-missing' : 'operation-class',
+      module: taskId === 'class-fallback' ? 'class_teacher' : 'teaching_prep',
+      status: 'needs_input',
+    }))
+    const api = dependencies(get, list)
+    const store = useWorkspaceAITaskStore()
+
+    await store.initialize(api)
+
+    expect(list).toHaveBeenCalledTimes(2)
+    expect(get.mock.calls.map(([taskId]) => taskId).sort())
+      .toEqual(['class-fallback', 'teaching-missing'])
+    expect(store.orderedTasks.map(item => item.task_id).sort())
+      .toEqual(references.map(reference => reference.taskId).sort())
+    expect(JSON.parse(localStorage.getItem(WORKSPACE_AI_TASK_STORAGE_KEY)!)).toEqual(
+      [...references].sort((left, right) => left.taskId.localeCompare(right.taskId)),
+    )
+  })
+
+  it('keeps references when both lists fail and a detail fallback is temporarily unavailable', async () => {
+    const references = [
+      { taskId: 'task-restored', operationId: 'operation-restored', trackedAt: 'now' },
+      { taskId: 'task-offline', operationId: 'operation-offline', trackedAt: 'now' },
+    ]
+    localStorage.setItem(WORKSPACE_AI_TASK_STORAGE_KEY, JSON.stringify(references))
+    const list = vi.fn(async () => { throw new Error('list unavailable') })
+    const get = vi.fn(async (taskId: string) => {
+      if (taskId === 'task-offline') throw new Error('detail unavailable')
+      return task({
+        task_id: taskId,
+        operation_id: 'operation-restored',
+        status: 'proposal_ready',
+      })
+    })
+    const api = dependencies(get, list)
+    const store = useWorkspaceAITaskStore()
+
+    await store.initialize(api)
+
+    expect(list).toHaveBeenCalledTimes(2)
+    expect(get).toHaveBeenCalledTimes(2)
+    expect(store.tasks['task-restored']?.status).toBe('proposal_ready')
+    expect(store.tasks['task-offline']).toBeUndefined()
+    expect(store.syncErrors['task-offline']).toContain('暂时无法更新')
+    expect(JSON.parse(localStorage.getItem(WORKSPACE_AI_TASK_STORAGE_KEY)!)).toEqual(
+      [...references].sort((left, right) => left.taskId.localeCompare(right.taskId)),
+    )
+    expect(api.schedule).toHaveBeenCalledTimes(1)
   })
 
   it('announces an explicit dispatch but not a restored historical task', async () => {

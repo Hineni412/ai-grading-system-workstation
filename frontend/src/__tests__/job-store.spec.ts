@@ -37,7 +37,11 @@ function makeDependencies(apiOverrides: Partial<JobApi> = {}) {
   return {
     api,
     now: () => new Date('2026-07-12T10:00:00.000Z'),
-    schedule: vi.fn(() => 17 as unknown as ReturnType<typeof setTimeout>),
+    schedule: vi.fn((callback: () => void, delay: number) => {
+      void callback
+      void delay
+      return 17 as unknown as ReturnType<typeof setTimeout>
+    }),
     cancelScheduled: vi.fn(),
     pollIntervalMs: 1_000,
     maxBackoffMs: 8_000,
@@ -72,6 +76,182 @@ describe('Job Store persistence and recovery', () => {
     expect(raw).not.toContain('payload')
     expect(raw).not.toContain('result')
     expect(raw).not.toContain('api_key')
+  })
+
+  it('persists a terminal marker when a newly tracked Job has finished', () => {
+    const dependencies = makeDependencies()
+    const store = useJobStore()
+
+    store.track(makeJob({
+      status: 'succeeded',
+      progress: 1,
+      finished_at: '2026-07-12T10:00:02Z',
+    }), dependencies)
+
+    expect(JSON.parse(localStorage.getItem(JOB_STORAGE_KEY)!)).toEqual([
+      {
+        id: 41,
+        jobType: 'report_export',
+        trackedAt: '2026-07-12T10:00:00.000Z',
+        terminal: true,
+      },
+    ])
+    expect(dependencies.schedule).not.toHaveBeenCalled()
+  })
+
+  it('coalesces concurrent initialization and ignores later repeats', async () => {
+    localStorage.setItem(
+      JOB_STORAGE_KEY,
+      JSON.stringify([{ id: 41, jobType: 'report_export', trackedAt: '2026-07-12T09:00:00Z' }]),
+    )
+    const dependencies = makeDependencies()
+    const store = useJobStore()
+
+    await Promise.all([
+      store.initialize(dependencies),
+      store.initialize(dependencies),
+    ])
+    await store.initialize(dependencies)
+
+    expect(dependencies.api.getJob).toHaveBeenCalledTimes(1)
+    expect(dependencies.schedule).toHaveBeenCalledTimes(1)
+  })
+
+  it('allows initialization to retry after the initialization process fails', async () => {
+    localStorage.setItem(
+      JOB_STORAGE_KEY,
+      JSON.stringify([{ id: 41, jobType: 'report_export', trackedAt: '2026-07-12T09:00:00Z' }]),
+    )
+    vi.spyOn(Storage.prototype, 'getItem')
+      .mockImplementationOnce(() => { throw new Error('storage temporarily unavailable') })
+    const dependencies = makeDependencies()
+    const store = useJobStore()
+
+    await expect(store.initialize(dependencies)).rejects.toThrow('storage temporarily unavailable')
+    await expect(store.initialize(dependencies)).resolves.toBeUndefined()
+
+    expect(dependencies.api.getJob).toHaveBeenCalledTimes(1)
+  })
+
+  it('restores active Jobs before every completed Job only once per lifecycle', async () => {
+    const completed = Array.from({ length: 24 }, (_value, index) => ({
+      id: index + 1,
+      jobType: 'report_export',
+      trackedAt: new Date(Date.UTC(2026, 6, index + 1)).toISOString(),
+      terminal: true,
+    }))
+    localStorage.setItem(JOB_STORAGE_KEY, JSON.stringify([
+      ...completed,
+      { id: 101, jobType: 'report_export', trackedAt: '2026-07-25T00:00:00Z' },
+      { id: 102, jobType: 'report_export', trackedAt: '2026-07-26T00:00:00Z' },
+    ]))
+    const getJob = vi.fn(async (id: number) => makeJob({
+      id,
+      status: id >= 100 ? 'running' : 'succeeded',
+      progress: id >= 100 ? 0.5 : 1,
+      finished_at: id >= 100 ? null : '2026-07-26T10:00:00Z',
+    }))
+    const dependencies = makeDependencies({ getJob })
+    const store = useJobStore()
+
+    await store.initialize(dependencies)
+    await store.initialize(dependencies)
+
+    const restoredIds = getJob.mock.calls.map(([id]) => id)
+    expect(restoredIds.slice(0, 2)).toEqual([101, 102])
+    expect(restoredIds).toHaveLength(26)
+    expect(restoredIds.slice(2).sort((left, right) => left - right))
+      .toEqual(Array.from({ length: 24 }, (_value, index) => index + 1))
+    expect(dependencies.schedule).toHaveBeenCalledTimes(2)
+    expect(JSON.parse(localStorage.getItem(JOB_STORAGE_KEY)!)).toHaveLength(26)
+    expect(JSON.parse(localStorage.getItem(JOB_STORAGE_KEY)!).map(
+      (reference: { id: number }) => reference.id,
+    )).toEqual([
+      ...Array.from({ length: 24 }, (_value, index) => index + 1),
+      101,
+      102,
+    ])
+  })
+
+  it('retries a completed history item when its first startup refresh is temporarily offline', async () => {
+    localStorage.setItem(JOB_STORAGE_KEY, JSON.stringify([{
+      id: 41,
+      jobType: 'report_export',
+      trackedAt: '2026-07-12T09:00:00Z',
+      terminal: true,
+    }]))
+    const callbacks: Array<() => void> = []
+    const getJob = vi.fn()
+      .mockRejectedValueOnce(new ApiError({
+        kind: 'network',
+        status: null,
+        code: 'network_error',
+        message: 'offline',
+        details: {},
+        requestId: 'req-offline',
+        retryable: true,
+      }))
+      .mockResolvedValueOnce(makeJob({
+        status: 'succeeded',
+        progress: 1,
+        finished_at: '2026-07-12T10:00:02Z',
+      }))
+    const dependencies = makeDependencies({ getJob })
+    dependencies.schedule.mockImplementation((callback, delay) => {
+      void delay
+      callbacks.push(callback)
+      return callbacks.length as unknown as ReturnType<typeof setTimeout>
+    })
+    const store = useJobStore()
+
+    await store.initialize(dependencies)
+
+    expect(store.jobs[41]).toBeUndefined()
+    expect(callbacks).toHaveLength(1)
+    callbacks.shift()?.()
+    await vi.waitFor(() => {
+      expect(store.jobs[41]?.status).toBe('succeeded')
+    })
+    expect(getJob).toHaveBeenCalledTimes(2)
+    expect(dependencies.schedule).toHaveBeenCalledTimes(1)
+    expect(store.syncErrors[41]).toBeUndefined()
+  })
+
+  it('clears every completed Job reference so none returns', async () => {
+    localStorage.setItem(JOB_STORAGE_KEY, JSON.stringify([
+      { id: 1, jobType: 'report_export', trackedAt: '2026-07-01T00:00:00Z', terminal: true },
+      { id: 2, jobType: 'report_export', trackedAt: '2026-07-02T00:00:00Z', terminal: true },
+      { id: 101, jobType: 'report_export', trackedAt: '2026-07-03T00:00:00Z' },
+    ]))
+    const firstDependencies = makeDependencies({
+      getJob: vi.fn(async (id: number) => makeJob({
+        id,
+        status: id === 101 ? 'running' : 'succeeded',
+      })),
+    })
+    const firstStore = useJobStore()
+    await firstStore.initialize(firstDependencies)
+
+    firstStore.clearCompleted()
+
+    expect(JSON.parse(localStorage.getItem(JOB_STORAGE_KEY)!)).toEqual([
+      { id: 101, jobType: 'report_export', trackedAt: '2026-07-03T00:00:00Z' },
+    ])
+    firstStore.stopAllPolling()
+    setActivePinia(createPinia())
+    const secondDependencies = makeDependencies({
+      getJob: vi.fn(async (id: number) => makeJob({ id, status: 'running' })),
+    })
+    const secondStore = useJobStore()
+
+    await secondStore.initialize(secondDependencies)
+
+    expect(secondDependencies.api.getJob).toHaveBeenCalledExactlyOnceWith(
+      101,
+      expect.any(AbortSignal),
+    )
+    expect(secondStore.jobs[1]).toBeUndefined()
+    expect(secondStore.jobs[2]).toBeUndefined()
   })
 
   it('restores only valid persisted ids and polls only active jobs', async () => {
@@ -109,6 +289,14 @@ describe('Job Store persistence and recovery', () => {
 
     expect(store.jobs[41]?.status).toBe('succeeded')
     expect(dependencies.schedule).not.toHaveBeenCalled()
+    expect(JSON.parse(localStorage.getItem(JOB_STORAGE_KEY)!)).toEqual([
+      {
+        id: 41,
+        jobType: 'report_export',
+        trackedAt: '2026-07-12T09:00:00Z',
+        terminal: true,
+      },
+    ])
   })
 
   it('clears an entirely malformed local index', async () => {
@@ -143,7 +331,12 @@ describe('Job Store persistence and recovery', () => {
     await store.initialize(dependencies)
 
     expect(JSON.parse(localStorage.getItem(JOB_STORAGE_KEY)!)).toEqual([
-      { id: 41, jobType: 'report_export', trackedAt: '2026-07-12T09:00:00Z' },
+      {
+        id: 41,
+        jobType: 'report_export',
+        trackedAt: '2026-07-12T09:00:00Z',
+        terminal: true,
+      },
     ])
   })
 
