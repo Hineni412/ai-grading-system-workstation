@@ -126,8 +126,8 @@ from question_bank.services.question_write_service import (
     PaperStateNotFound,
     PaperStateWriteResult,
     PaperPermanentDeleteConflict,
+    PaperPermanentDeleteDependencyConflict,
     PaperPermanentDeleteConfirmationMismatch,
-    PaperPermanentDeleteRequiresTrash,
     PaperPermanentDeleteSelection,
     PaperPermanentDeleteStorageIncomplete,
     QuestionBankWriteService,
@@ -1666,18 +1666,28 @@ def preview_paper_permanent_deletion(
             for item in body.selections
         )
     except PaperStateNotFound as exc:
-        raise ApiError(404, "paper_not_found", "Paper not found") from exc
-    except PaperPermanentDeleteRequiresTrash as exc:
         raise ApiError(
-            409,
-            "paper_permanent_delete_requires_trash",
-            "Paper must be in trash",
+            404,
+            "paper_not_found",
+            "找不到这份试卷。请刷新题库后重试。",
         ) from exc
     except PaperPermanentDeleteConflict as exc:
         raise ApiError(
             409,
             "paper_permanent_delete_conflict",
-            "Paper changed; refresh and retry",
+            "试卷内容已发生变化。请刷新题库，重新查看影响后再删除。",
+        ) from exc
+    except PaperPermanentDeleteDependencyConflict as exc:
+        raise ApiError(
+            409,
+            "paper_permanent_delete_dependency_conflict",
+            "题库中存在当前版本无法安全处理的关联数据。请先更新应用，再重新删除；本次没有删除任何内容。",
+        ) from exc
+    except PaperPermanentDeleteStorageIncomplete as exc:
+        raise ApiError(
+            409,
+            "paper_permanent_delete_storage_incomplete",
+            "试卷文件未通过安全删除检查。请关闭可能占用文件的 Word 或 PDF 后重试；本次没有删除任何内容。",
         ) from exc
     return QuestionPaperPermanentDeleteImpactResponse(**impact.__dict__)
 
@@ -1703,35 +1713,40 @@ def permanently_delete_papers(
             request_token=body.request_token,
         )
     except PaperStateNotFound as exc:
-        raise ApiError(404, "paper_not_found", "Paper not found") from exc
-    except PaperPermanentDeleteRequiresTrash as exc:
         raise ApiError(
-            409,
-            "paper_permanent_delete_requires_trash",
-            "Paper must be in trash",
+            404,
+            "paper_not_found",
+            "找不到这份试卷。请刷新题库后重试。",
         ) from exc
     except PaperPermanentDeleteConflict as exc:
         raise ApiError(
             409,
             "paper_permanent_delete_conflict",
-            "Paper changed; refresh and retry",
+            "试卷内容已发生变化。请刷新题库，重新查看影响后再删除。",
+        ) from exc
+    except PaperPermanentDeleteDependencyConflict as exc:
+        raise ApiError(
+            409,
+            "paper_permanent_delete_dependency_conflict",
+            "题库中存在当前版本无法安全处理的关联数据。请先更新应用，再重新删除；本次没有删除任何内容。",
         ) from exc
     except PaperPermanentDeleteConfirmationMismatch as exc:
         raise ApiError(
             422,
             "paper_permanent_delete_confirmation_mismatch",
-            "Permanent deletion confirmation does not match",
+            "确认文字不匹配。请按提示完整输入后再删除。",
         ) from exc
     except PaperPermanentDeleteStorageIncomplete as exc:
         raise ApiError(
             409,
             "paper_permanent_delete_storage_incomplete",
-            "Paper files could not be prepared for deletion",
+            "试卷文件未通过安全删除检查。请关闭可能占用文件的 Word 或 PDF 后重试；本次没有删除任何内容。",
         ) from exc
     return QuestionPaperPermanentDeleteResponse(
         deleted_paper_ids=list(result.deleted_paper_ids),
         deleted_question_count=result.deleted_question_count,
         deleted_tag_count=result.deleted_tag_count,
+        deleted_analysis_record_count=result.deleted_analysis_record_count,
         removed_training_link_count=result.removed_training_link_count,
         removed_knowledge_graph_link_count=result.removed_knowledge_graph_link_count,
         deleted_file_count=result.deleted_file_count,
@@ -1798,6 +1813,7 @@ def update_paper_metadata(
     "/papers/{paper_id}/trash",
     response_model=QuestionPaperStateWriteResponse,
     responses=PAPER_STATE_WRITE_ERROR_RESPONSES,
+    include_in_schema=False,
 )
 def trash_paper(
     paper_id: int,
@@ -1816,6 +1832,7 @@ def trash_paper(
     "/papers/{paper_id}/restore",
     response_model=QuestionPaperStateWriteResponse,
     responses=PAPER_STATE_WRITE_ERROR_RESPONSES,
+    include_in_schema=False,
 )
 def restore_paper(
     paper_id: int,

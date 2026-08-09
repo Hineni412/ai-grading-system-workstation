@@ -23,7 +23,10 @@ from update_tools.backup_core import VALID_REASONS, preview_backup
 from update_tools.migrate_db import preview_migrations
 
 from .archive import OpsArchivePolicy, inspect_zip, stage_zip_upload
-from .database_validation import validate_archive_databases
+from .database_validation import (
+    migration_directories,
+    validate_archive_databases,
+)
 from .models import OpsInternalPlan, OpsOperation
 from .journal import OpsOperationBusy, OpsOperationJournal, OpsOperationNotFound
 from .lock import OpsLockBusy, OpsOperationLock
@@ -257,7 +260,11 @@ class OpsWriteService:
             policy=self.archive_policy,
             allowed_roots={"user_data", "config", "logs"},
         )
-        validate_archive_databases(archive, inspection)
+        validate_archive_databases(
+            archive,
+            inspection,
+            migration_dirs=self._database_migration_dirs(),
+        )
         database_count = sum(
             member.parts[:2] == ("user_data", "databases") and not member.is_dir
             for member in inspection.members
@@ -298,7 +305,11 @@ class OpsWriteService:
             policy=self.archive_policy,
             allowed_roots={"user_data", "config"},
         )
-        validate_archive_databases(archive, inspection)
+        validate_archive_databases(
+            archive,
+            inspection,
+            migration_dirs=self._database_migration_dirs(),
+        )
         summary = {
             "file_count": inspection.file_count,
             "total_expanded_bytes": inspection.total_expanded_bytes,
@@ -422,6 +433,13 @@ class OpsWriteService:
                 db_path=candidate,
                 migrations_dir=Path(self.migration_dirs[target]),
             )
+
+    def _database_migration_dirs(self) -> dict[str, Path]:
+        directories = migration_directories(self.paths)
+        directories.update(
+            {name: Path(path) for name, path in self.migration_dirs.items()}
+        )
+        return directories
 
     def _controlled_backup(self, filename: str) -> Path:
         if not filename or Path(filename).name != filename or not filename.startswith("backup_") or not filename.lower().endswith(".zip"):

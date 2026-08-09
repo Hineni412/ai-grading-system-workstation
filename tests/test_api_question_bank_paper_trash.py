@@ -11,7 +11,10 @@ from backend.api.dependencies import (
 )
 from question_bank.database.schema import connect, initialize_database
 from question_bank.services.question_read_service import QuestionBankReadService
-from question_bank.services.question_write_service import QuestionBankWriteService
+from question_bank.services.question_write_service import (
+    PaperPermanentDeleteDependencyConflict,
+    QuestionBankWriteService,
+)
 
 
 def _client_with_paper(
@@ -56,7 +59,7 @@ def _client_with_paper(
     return TestClient(app), reader, paper_id, "2026-07-29 13:00:00.000000"
 
 
-def test_paper_trash_api_lists_and_restores_the_server_confirmed_state(
+def test_legacy_paper_trash_api_hides_then_restores_without_permanent_deletion(
     tmp_path: Path,
 ) -> None:
     client, reader, paper_id, version = _client_with_paper(tmp_path)
@@ -137,10 +140,44 @@ def test_active_paper_can_be_permanently_deleted_after_impact_confirmation(
 
     assert impact.status_code == 200
     assert impact.json()["question_count"] == 2
+    assert impact.json()["analysis_record_count"] == 0
     assert impact.json()["permanent_delete_phrase"] == "彻底删除 1 份试卷"
     assert rejected.status_code == 422
     assert deleted.status_code == 200
     assert deleted.json()["deleted_paper_ids"] == [paper_id]
+    assert deleted.json()["deleted_analysis_record_count"] == 0
     assert repeated.status_code == 200
     assert repeated.json() == deleted.json()
     assert client.get("/api/question-bank/papers").json()["items"] == []
+
+
+def test_dependency_conflict_returns_an_actionable_api_error() -> None:
+    class BlockedDeleteService:
+        def preview_paper_permanent_delete(self, _selections):
+            raise PaperPermanentDeleteDependencyConflict(
+                "Paper deletion is blocked by dependent question-bank data"
+            )
+
+    app = create_app()
+    app.dependency_overrides[get_question_bank_write_service] = (
+        lambda: BlockedDeleteService()
+    )
+    client = TestClient(app, raise_server_exceptions=False)
+
+    response = client.post(
+        "/api/question-bank/papers/permanent-deletion-impact",
+        json={
+            "selections": [{
+                "id": 1,
+                "expected_updated_at": "2026-08-09 10:00:00.000000",
+            }]
+        },
+    )
+
+    assert response.status_code == 409
+    assert response.json()["error"] == {
+        "code": "paper_permanent_delete_dependency_conflict",
+        "message": "题库中存在当前版本无法安全处理的关联数据。请先更新应用，再重新删除；本次没有删除任何内容。",
+        "details": {},
+        "request_id": response.headers["x-request-id"],
+    }

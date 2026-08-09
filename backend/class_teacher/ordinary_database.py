@@ -48,6 +48,7 @@ class OrdinaryWorkDatabase:
                 migrations_dir=self.migrations_dir,
                 backup_dir=self.backup_dir,
                 logger_override=_SilentMigrationLogger(),
+                allow_existing_migrations=False,
             )
         except Exception as exc:
             raise VaultError(

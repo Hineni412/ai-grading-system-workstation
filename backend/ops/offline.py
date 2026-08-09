@@ -19,6 +19,7 @@ from .archive import OpsArchivePolicy, extract_validated_zip, inspect_zip
 from .jobs import create_safety_backup
 from .database_validation import (
     DATABASE_MEMBERS,
+    migration_directories,
     validate_archive_databases,
     validate_live_databases,
     validate_staged_databases,
@@ -70,6 +71,8 @@ def _apply_pending_locked(*, paths: Any, journal: OpsOperationJournal) -> int:
             _rollback(paths=paths, state=state)
             validate_live_databases(
                 paths,
+                database_members=_state_existing_database_members(state),
+                migration_dirs=migration_directories(paths),
                 require_no_companions=_state_touches_databases(state),
             )
         except Exception:
@@ -84,13 +87,31 @@ def _apply_pending_locked(*, paths: Any, journal: OpsOperationJournal) -> int:
     if manifest is None:
         return 0
     apply_started = False
-    touches_databases = False
+    database_members: tuple[str, ...] = ()
     try:
         _revalidate_and_stage(paths=paths, manifest=manifest)
-        touches_databases = _manifest_touches_databases(manifest)
-        _validate_safety_backup(Path(manifest.preparation_backup))
+        replacement_names = _manifest_replacement_names(manifest)
+        database_members = tuple(
+            name for name in replacement_names if name in DATABASE_MEMBERS
+        )
+        _validate_safety_backup(
+            Path(manifest.preparation_backup),
+            paths=paths,
+        )
         apply_backup = create_safety_backup(
-            paths=paths, reason="before_apply", operation_id=operation_id
+            paths=paths,
+            reason="before_apply",
+            operation_id=operation_id,
+            archive_names=replacement_names,
+        )
+        rollback_members = _existing_replacement_names(
+            paths,
+            replacement_names,
+        )
+        _validate_safety_backup(
+            apply_backup,
+            paths=paths,
+            required_members=rollback_members,
         )
         journal.start_apply(operation_id, apply_backup)
         apply_started = True
@@ -100,15 +121,20 @@ def _apply_pending_locked(*, paths: Any, journal: OpsOperationJournal) -> int:
             _apply_overlay(paths=paths, manifest=manifest, journal=journal)
         validate_live_databases(
             paths,
-            require_no_companions=touches_databases,
+            database_members=database_members,
+            migration_dirs=migration_directories(paths),
+            require_no_companions=bool(database_members),
         )
     except Exception:
         if apply_started:
             try:
-                _rollback(paths=paths, state=journal.load_apply_state(operation_id))
+                state = journal.load_apply_state(operation_id)
+                _rollback(paths=paths, state=state)
                 validate_live_databases(
                     paths,
-                    require_no_companions=touches_databases,
+                    database_members=_state_existing_database_members(state),
+                    migration_dirs=migration_directories(paths),
+                    require_no_companions=bool(database_members),
                 )
             except Exception:
                 journal.mark_failed(operation_id, result_code="rollback_failed")
@@ -149,16 +175,29 @@ def _revalidate_and_stage(*, paths: Any, manifest: OpsOperationManifest) -> None
     extract_validated_zip(
         source, staging, policy=OpsArchivePolicy(), allowed_roots=allowed_roots
     )
-    validate_staged_databases(staging)
+    validate_staged_databases(
+        staging,
+        migration_dirs=migration_directories(paths),
+    )
 
 
-def _validate_safety_backup(path: Path) -> None:
+def _validate_safety_backup(
+    path: Path,
+    *,
+    paths: Any,
+    required_members: tuple[str, ...] = (),
+) -> None:
     inspection = inspect_zip(
         path,
         policy=OpsArchivePolicy(),
         allowed_roots={"user_data", "config", "logs"},
     )
-    validate_archive_databases(path, inspection, require_all=True)
+    validate_archive_databases(
+        path,
+        inspection,
+        required_members=required_members,
+        migration_dirs=migration_directories(paths),
+    )
 
 
 def _apply_overlay(*, paths: Any, manifest: OpsOperationManifest, journal: OpsOperationJournal) -> None:
@@ -262,13 +301,34 @@ def _remove_database_companions(target: Path) -> None:
             companion.unlink()
 
 
-def _manifest_touches_databases(manifest: OpsOperationManifest) -> bool:
+def _manifest_replacement_names(
+    manifest: OpsOperationManifest,
+) -> tuple[str, ...]:
     if manifest.operation == "migration":
-        return True
+        requested = str(manifest.parameters["target"])
+        targets = (
+            ("grading", "question_bank")
+            if requested == "all"
+            else (requested,)
+        )
+        by_target = {target: member for member, target in DATABASE_MEMBERS.items()}
+        return tuple(by_target[target] for target in targets)
     staging = Path(manifest.staging_root)
-    return any(
-        (staging / Path(name)).is_file()
-        for name in DATABASE_MEMBERS
+    return tuple(
+        path.relative_to(staging).as_posix()
+        for path in sorted(staging.rglob("*"))
+        if path.is_file()
+    )
+
+
+def _existing_replacement_names(
+    paths: Any,
+    archive_names: tuple[str, ...],
+) -> tuple[str, ...]:
+    return tuple(
+        name
+        for name in archive_names
+        if _target_for_archive_name(paths, name).is_file()
     )
 
 
@@ -281,6 +341,19 @@ def _state_touches_databases(state: dict[str, Any]) -> bool:
         isinstance(item, dict)
         and str(item.get("archive_name") or "") in canonical
         for item in replacements
+    )
+
+
+def _state_existing_database_members(state: dict[str, Any]) -> tuple[str, ...]:
+    replacements = state.get("replacements")
+    if not isinstance(replacements, list):
+        return ()
+    return tuple(
+        str(item["archive_name"])
+        for item in replacements
+        if isinstance(item, dict)
+        and bool(item.get("existed"))
+        and str(item.get("archive_name") or "") in DATABASE_MEMBERS
     )
 
 

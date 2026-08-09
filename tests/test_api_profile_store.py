@@ -249,6 +249,30 @@ def test_clear_active_keys_is_explicit_and_preserves_other_settings(tmp_path: Pa
     assert cleared["config_api_key"] == ""
     assert cleared["grading_model"] == "model-v1"
 
+    backup = target.with_name(f"{target.name}.bak")
+    assert "grading-key" not in backup.read_text(encoding="utf-8")
+    assert "config-key" not in backup.read_text(encoding="utf-8")
+
+
+def test_delete_profile_does_not_leave_its_key_in_backup(tmp_path: Path) -> None:
+    target = tmp_path / "api_profiles.json"
+    target.write_text(
+        json.dumps(
+            [
+                {"name": "保留", "api_key": "keep-key"},
+                {"name": "删除", "api_key": "deleted-key"},
+            ]
+        ),
+        encoding="utf-8",
+    )
+    store = _store(target)
+
+    assert store.delete("删除") is True
+
+    backup = target.with_name(f"{target.name}.bak")
+    assert "deleted-key" not in backup.read_text(encoding="utf-8")
+    assert [item["name"] for item in json.loads(backup.read_text(encoding="utf-8"))] == ["保留"]
+
 
 def test_failed_atomic_replace_keeps_the_previous_profile(tmp_path: Path, monkeypatch) -> None:
     target = tmp_path / "api_profiles.json"

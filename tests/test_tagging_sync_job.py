@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -12,14 +13,23 @@ import backend.jobs.tagging_sync as tagging_sync_module
 from backend.jobs.manager import JobCancellationRequested, JobContext, JobManager
 from backend.jobs.store import JobStore
 from backend.jobs.tagging_sync import run_tagging_sync_job
+from question_bank.database.schema import connect
 from question_bank.models.question import QuestionCreate
 from question_bank.models.tag_schema import TagAnalysis
 from question_bank.services.ai_tagging_service import AITaggingResult, AITaggingService
+from question_bank.services.question_read_service import (
+    QuestionBankReadService,
+    QuestionReadFilters,
+)
 from question_bank.services.question_write_service import QuestionBankWriteService
 from tests.question_bank_support import QuestionBankTestStore
 from question_bank.solution_evidence import SolutionEvidenceRepository
 from question_bank.taxonomy.governance import TaxonomyGovernance
-from question_bank.training_criteria import GatewayBatchResponse
+from question_bank.training_criteria import (
+    GatewayBatchResponse,
+    QuestionAnalysisInputLoader,
+    solution_evidence_source_content_hash,
+)
 from tests.current_knowledge_support import install_current_knowledge
 
 
@@ -109,6 +119,94 @@ def _context(tmp_path: Path, payload: dict[str, object]) -> tuple[JobContext, Jo
     job = store.create_job("tagging_sync", payload)
     assert store.mark_running(job.id)
     return JobContext(job.id, job.job_type, job.payload, store), store
+
+
+def _seed_current_projection_rows(db_path: Path, question) -> None:
+    evidence_hash = solution_evidence_source_content_hash(question)
+    criterion_hash = question.criterion_source_content_hash
+    evidence_version_id = hashlib.sha256(
+        f"evidence:{question.question_id}:{evidence_hash}".encode()
+    ).hexdigest()
+    criterion_version_id = hashlib.sha256(
+        f"criterion:{question.question_id}:{criterion_hash}".encode()
+    ).hexdigest()
+    with connect(db_path) as connection:
+        connection.execute(
+            """
+            INSERT INTO question_solution_evidence_versions (
+                evidence_version_id, question_id, source_content_hash,
+                schema_version, content_hash, evidence_json, status,
+                source_kind, source_reference, created_by
+            ) VALUES (?, ?, ?, 'question-solution-evidence-v1', ?, '{}',
+                      'proposed', 'combined_model', ?, 'model:fake')
+            """,
+            (
+                evidence_version_id,
+                question.question_id,
+                evidence_hash,
+                hashlib.sha256(b"{}").hexdigest(),
+                f"test:{evidence_version_id}",
+            ),
+        )
+        connection.execute(
+            """
+            INSERT INTO training_criterion_versions (
+                version_id, question_id, version_number, parent_version_id,
+                source_content_hash, schema_version, status, source_kind,
+                source_reference, criteria_json, criteria_hash,
+                quality_status, quality_codes_json, created_by
+            ) VALUES (?, ?, 1, NULL, ?, 'training-criteria-draft-v1',
+                      'proposed', 'combined_model', ?, '{}', ?,
+                      'passed', '[]', 'model:fake')
+            """,
+            (
+                criterion_version_id,
+                question.question_id,
+                criterion_hash,
+                f"test:{criterion_version_id}",
+                hashlib.sha256(b"{}").hexdigest(),
+            ),
+        )
+        connection.execute(
+            """
+            INSERT INTO training_criterion_heads (
+                question_id, current_version_id, approved_version_id,
+                current_source_hash, revision
+            ) VALUES (?, ?, NULL, ?, 1)
+            """,
+            (question.question_id, criterion_version_id, criterion_hash),
+        )
+
+
+def _seed_successful_tag_source(
+    db_path: Path,
+    *,
+    question_id: int,
+    source_content_hash: str,
+    operation_id: str,
+) -> None:
+    with connect(db_path) as connection:
+        connection.execute(
+            """
+            INSERT INTO question_analysis_operations (
+                operation_id, input_fingerprint, contract_version,
+                requested_projection, status
+            ) VALUES (?, ?, 'combined-v2', 'tag', 'succeeded')
+            """,
+            (
+                operation_id,
+                hashlib.sha256(operation_id.encode("utf-8")).hexdigest(),
+            ),
+        )
+        connection.execute(
+            """
+            INSERT INTO question_analysis_items (
+                operation_id, question_id, source_content_hash,
+                tag_status, criteria_status
+            ) VALUES (?, ?, ?, 'succeeded', 'not_requested')
+            """,
+            (operation_id, question_id, source_content_hash),
+        )
 
 
 def test_tagging_sync_saves_only_complete_results(tmp_path: Path) -> None:
@@ -352,6 +450,300 @@ def test_production_tagging_uses_one_combined_call_and_persists_point_evidence(
     ] == ["kp_alg_polynomial"]
 
 
+def test_fill_twelve_questions_only_analyzes_five_missing_and_refreshes_counts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "qb.db"
+    data_root = tmp_path / "data"
+    question_ids = _seed(db_path, 12)
+    with connect(db_path) as connection:
+        paper_id = int(
+            connection.execute(
+                """
+                INSERT INTO papers (
+                    title, source_file, content_fingerprint, import_status,
+                    grade, semester, textbook_version
+                ) VALUES (
+                    '合成十二题试卷', 'synthetic.docx', 'synthetic-paper',
+                    'success', '七年级', '下学期', '北师大版（2024）'
+                )
+                """
+            ).lastrowid
+        )
+        connection.execute(
+            """
+            UPDATE questions
+            SET paper_id = ?,
+                question_text = '用 AAS 证明三角形全等',
+                answer_text = '写出 AAS 全等证明过程'
+            """,
+            (paper_id,),
+        )
+
+    loaded = QuestionAnalysisInputLoader(
+        db_path=db_path,
+        data_root=data_root,
+    ).load(
+        question_ids,
+        curriculum_volume_id="bnu24-math-g7-lower",
+    )
+    bank = QuestionBankTestStore(db_path)
+    for question in loaded[:7]:
+        assert bank.save_tag_analysis(
+            question.question_id,
+            _analysis(),
+            model_name="existing",
+        )
+        _seed_current_projection_rows(db_path, question)
+
+    analyzed_ids: list[int] = []
+
+    class PersistingCombinedModule:
+        def __init__(self, **_kwargs) -> None:
+            pass
+
+        def analyze_work_items(self, *, work_items, **_kwargs):
+            analyzed_ids.extend(item.question.question_id for item in work_items)
+            for item in work_items:
+                if item.analyze_tag:
+                    assert bank.save_tag_analysis(
+                        item.question.question_id,
+                        _analysis(),
+                        model_name="synthetic-model",
+                    )
+                _seed_current_projection_rows(db_path, item.question)
+            return {
+                "items": [
+                    {
+                        "question_id": item.question.question_id,
+                        "tag_status": (
+                            "succeeded" if item.analyze_tag else "not_requested"
+                        ),
+                        "tag_error_category": "",
+                        "criteria_status": "succeeded",
+                        "criteria_error_category": "",
+                    }
+                    for item in work_items
+                ],
+                "criterion_audit": {
+                    "items": [
+                        {
+                            "question_id": item.question.question_id,
+                            "status": "succeeded",
+                        }
+                        for item in work_items
+                    ]
+                },
+                "projection_audit": {
+                    "retrieval_misses": [],
+                    "proposals": [],
+                    "secondary_matches": [],
+                    "relation_hints": [],
+                    "retrieval_miss_question_ids": [],
+                    "proposal_question_ids": [],
+                },
+                "question_projection_audits": {},
+            }
+
+    monkeypatch.setattr(
+        tagging_sync_module,
+        "CombinedQuestionAnalysisModule",
+        PersistingCombinedModule,
+    )
+    governance = TaxonomyGovernance(
+        catalog_path=LEGACY_CATALOG_PATH,
+        state_path=tmp_path / "taxonomy-state.json",
+    )
+    ai_service = AITaggingService(
+        env={
+            "QUESTION_BANK_TAGGING_API_KEY": "synthetic-key",
+            "QUESTION_BANK_TAGGING_MODEL": "synthetic-combined",
+        },
+        protocol_adapter=object(),
+        taxonomy_governance=governance,
+    )
+    second_context, _store = _context(
+        tmp_path,
+        {
+            "question_ids": question_ids,
+            "curriculum_volume_id": "bnu24-math-g7-lower",
+        },
+    )
+    second = run_tagging_sync_job(
+        context=second_context,
+        question_bank_db_path=db_path,
+        data_root=data_root,
+        ai_service_factory=lambda: ai_service,
+        taxonomy_governance=governance,
+    )
+
+    assert analyzed_ids == question_ids[7:]
+    assert second["outcome"] == "complete"
+    assert second["skipped_complete_count"] == 7
+    assert second["tagged_count"] == 5
+    assert second["complete_tagged_count"] == 12
+    assert second["evidence_count"] == 12
+    assert second["criteria_count"] == 12
+    assert second["failed_question_ids"] == []
+
+    reopened = QuestionBankReadService(db_path, data_root=data_root)
+    paper = reopened.list_papers()[0]
+    assert paper["tagged_question_count"] == 12
+    assert paper["evidence_question_count"] == 12
+    assert paper["criteria_question_count"] == 12
+    assert paper["complete_analysis_count"] == 12
+    assert reopened.list_questions(
+        QuestionReadFilters(
+            paper_ids=(paper_id,),
+            analysis_status="incomplete",
+        )
+    ).total == 0
+
+
+def test_fill_retags_when_saved_tags_belong_to_an_old_question_source(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "qb.db"
+    data_root = tmp_path / "data"
+    question_id = _seed(db_path, 1)[0]
+    bank = QuestionBankTestStore(db_path)
+    governance = TaxonomyGovernance(
+        catalog_path=LEGACY_CATALOG_PATH,
+        state_path=tmp_path / "taxonomy-state.json",
+    )
+    loader = QuestionAnalysisInputLoader(
+        db_path=db_path,
+        data_root=data_root,
+    )
+    base = loader.load(
+        (question_id,),
+        curriculum_volume_id="bnu24-math-g7-lower",
+    )[0]
+    old_contract = governance.prompt_contract(base.tagging_context.to_dict())
+    old_input = loader.load(
+        (question_id,),
+        taxonomy_contracts={question_id: old_contract},
+        curriculum_volume_id="bnu24-math-g7-lower",
+    )[0]
+    assert bank.save_tag_analysis(
+        question_id,
+        _analysis(),
+        model_name="old-model",
+    )
+    _seed_successful_tag_source(
+        db_path,
+        question_id=question_id,
+        source_content_hash=old_input.source_content_hash,
+        operation_id="old-tag-source",
+    )
+
+    with connect(db_path) as connection:
+        connection.execute(
+            """
+            UPDATE questions
+            SET question_text = '修改后的全等证明题',
+                updated_at = datetime('now', 'localtime', '+1 second')
+            WHERE id = ?
+            """,
+            (question_id,),
+        )
+    changed = loader.load(
+        (question_id,),
+        taxonomy_contracts={
+            question_id: governance.prompt_contract(
+                loader.load((question_id,))[0].tagging_context.to_dict()
+            )
+        },
+        curriculum_volume_id="bnu24-math-g7-lower",
+    )[0]
+    assert changed.source_content_hash != old_input.source_content_hash
+    _seed_current_projection_rows(db_path, changed)
+
+    analyzed: list[tuple[int, bool]] = []
+
+    class PersistingCurrentTagModule:
+        def __init__(self, **_kwargs) -> None:
+            pass
+
+        def analyze_work_items(self, *, work_items, **_kwargs):
+            for item in work_items:
+                analyzed.append(
+                    (item.question.question_id, bool(item.analyze_tag))
+                )
+                if item.analyze_tag:
+                    assert bank.save_tag_analysis(
+                        item.question.question_id,
+                        _analysis(),
+                        model_name="current-model",
+                    )
+                    _seed_successful_tag_source(
+                        db_path,
+                        question_id=item.question.question_id,
+                        source_content_hash=item.question.source_content_hash,
+                        operation_id="current-tag-source",
+                    )
+            return {
+                "items": [
+                    {
+                        "question_id": item.question.question_id,
+                        "tag_status": (
+                            "succeeded" if item.analyze_tag else "not_requested"
+                        ),
+                        "tag_error_category": "",
+                        "criteria_status": "not_requested",
+                        "criteria_error_category": "",
+                    }
+                    for item in work_items
+                ],
+                "criterion_audit": {"items": []},
+                "projection_audit": {
+                    "retrieval_misses": [],
+                    "proposals": [],
+                    "secondary_matches": [],
+                    "relation_hints": [],
+                    "retrieval_miss_question_ids": [],
+                    "proposal_question_ids": [],
+                },
+                "question_projection_audits": {},
+            }
+
+    monkeypatch.setattr(
+        tagging_sync_module,
+        "CombinedQuestionAnalysisModule",
+        PersistingCurrentTagModule,
+    )
+    ai_service = AITaggingService(
+        env={
+            "QUESTION_BANK_TAGGING_API_KEY": "synthetic-key",
+            "QUESTION_BANK_TAGGING_MODEL": "synthetic-combined",
+        },
+        protocol_adapter=object(),
+        taxonomy_governance=governance,
+    )
+    context, _store = _context(
+        tmp_path,
+        {
+            "question_ids": [question_id],
+            "curriculum_volume_id": "bnu24-math-g7-lower",
+        },
+    )
+
+    result = run_tagging_sync_job(
+        context=context,
+        question_bank_db_path=db_path,
+        data_root=data_root,
+        ai_service_factory=lambda: ai_service,
+        taxonomy_governance=governance,
+    )
+
+    assert analyzed == [(question_id, True)]
+    assert result["tagged_count"] == 1
+    assert result["complete_tagged_count"] == 1
+    assert result["failed_question_ids"] == []
+
+
 def test_tagging_sync_reports_local_retrieval_misses_without_retry(
     tmp_path: Path,
 ) -> None:
@@ -402,6 +794,11 @@ def test_unified_tagging_exposes_evidence_failure_in_retry_ids(
             pass
 
         def analyze_work_items(self, **_kwargs):
+            assert QuestionBankTestStore(db_path).save_tag_analysis(
+                ids[0],
+                _analysis(),
+                model_name="synthetic-model",
+            )
             return {
                 "items": [
                     {
@@ -457,6 +854,204 @@ def test_unified_tagging_exposes_evidence_failure_in_retry_ids(
     assert result["retryable"] is True
 
 
+def test_unified_tagging_rejects_claimed_success_when_no_projection_was_saved(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A terminal job may only report what a fresh database read can see."""
+
+    db_path = tmp_path / "qb.db"
+    data_root = tmp_path / "data"
+    question_id = _seed(db_path, 1)[0]
+    context, _store = _context(tmp_path, {"question_ids": [question_id]})
+
+    class ClaimsSuccessWithoutWriting:
+        def __init__(self, **_kwargs) -> None:
+            pass
+
+        def analyze_work_items(self, **_kwargs):
+            return {
+                "items": [
+                    {
+                        "question_id": question_id,
+                        "tag_status": "succeeded",
+                        "tag_error_category": "",
+                        "criteria_status": "succeeded",
+                        "criteria_error_category": "",
+                    }
+                ],
+                "criterion_audit": {
+                    "items": [
+                        {"question_id": question_id, "status": "succeeded"}
+                    ]
+                },
+                "projection_audit": {
+                    "retrieval_misses": [],
+                    "proposals": [],
+                    "secondary_matches": [],
+                    "relation_hints": [],
+                    "retrieval_miss_question_ids": [],
+                    "proposal_question_ids": [],
+                },
+                "question_projection_audits": {},
+            }
+
+    monkeypatch.setattr(
+        tagging_sync_module,
+        "CombinedQuestionAnalysisModule",
+        ClaimsSuccessWithoutWriting,
+    )
+    governance = TaxonomyGovernance(
+        catalog_path=LEGACY_CATALOG_PATH,
+        state_path=tmp_path / "taxonomy-state.json",
+    )
+    service = AITaggingService(
+        env={
+            "QUESTION_BANK_TAGGING_API_KEY": "synthetic-key",
+            "QUESTION_BANK_TAGGING_MODEL": "synthetic-model",
+        },
+        protocol_adapter=object(),
+        taxonomy_governance=governance,
+    )
+
+    result = run_tagging_sync_job(
+        context=context,
+        question_bank_db_path=db_path,
+        data_root=data_root,
+        ai_service_factory=lambda: service,
+        taxonomy_governance=governance,
+    )
+
+    assert result["outcome"] == "failed"
+    assert result["successful_question_ids"] == []
+    assert result["failed_question_ids"] == [question_id]
+    assert result["complete_tagged_count"] == 0
+    assert result["evidence_succeeded_question_ids"] == []
+    assert result["evidence_failed_question_ids"] == [question_id]
+    assert result["criteria_succeeded_question_ids"] == []
+    assert result["criteria_failed_question_ids"] == [question_id]
+    assert QuestionBankTestStore(db_path).get_question(question_id)["tags"] == []
+    assert SolutionEvidenceRepository(db_path).latest(question_id) is None
+
+
+def test_fill_reanalyzes_evidence_and_criteria_from_an_old_question_source(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Old-version rows must not make the current question look complete."""
+
+    db_path = tmp_path / "qb.db"
+    data_root = tmp_path / "data"
+    question_id = _seed(db_path, 1)[0]
+    bank = QuestionBankTestStore(db_path)
+    assert bank.save_tag_analysis(question_id, _analysis(), model_name="existing")
+    current = QuestionAnalysisInputLoader(
+        db_path=db_path,
+        data_root=data_root,
+    ).load((question_id,))[0]
+    assert current.criterion_source_content_hash != "a" * 64
+
+    with connect(db_path) as connection:
+        connection.execute(
+            """
+            INSERT INTO question_solution_evidence_versions (
+                evidence_version_id, question_id, source_content_hash,
+                schema_version, content_hash, evidence_json, status,
+                source_kind, source_reference, created_by
+            ) VALUES (?, ?, ?, 'question-solution-evidence-v1', ?, '{}',
+                      'proposed', 'combined_model', 'old-source', 'model:fake')
+            """,
+            ("b" * 64, question_id, "a" * 64, "c" * 64),
+        )
+        connection.execute(
+            """
+            INSERT INTO training_criterion_versions (
+                version_id, question_id, version_number, parent_version_id,
+                source_content_hash, schema_version, status, source_kind,
+                source_reference, criteria_json, criteria_hash,
+                quality_status, quality_codes_json, created_by
+            ) VALUES (?, ?, 1, NULL, ?, 'training-criteria-draft-v1',
+                      'proposed', 'combined_model', 'old-source', '{}', ?,
+                      'passed', '[]', 'model:fake')
+            """,
+            ("d" * 64, question_id, "a" * 64, "e" * 64),
+        )
+        connection.execute(
+            """
+            INSERT INTO training_criterion_heads (
+                question_id, current_version_id, approved_version_id,
+                current_source_hash, revision
+            ) VALUES (?, ?, NULL, ?, 1)
+            """,
+            (question_id, "d" * 64, "a" * 64),
+        )
+
+    requested: list[tuple[str | None, int]] = []
+
+    class CapturingCombinedModule:
+        def __init__(self, **_kwargs) -> None:
+            pass
+
+        def analyze_work_items(self, *, work_items, **_kwargs):
+            requested.extend(
+                (item.projection, item.question.question_id)
+                for item in work_items
+            )
+            return {
+                "items": [
+                    {
+                        "question_id": question_id,
+                        "tag_status": "not_requested",
+                        "tag_error_category": "",
+                        "criteria_status": "failed",
+                        "criteria_error_category": "evidence_validation",
+                    }
+                ],
+                "criterion_audit": {"items": []},
+                "projection_audit": {
+                    "retrieval_misses": [],
+                    "proposals": [],
+                    "secondary_matches": [],
+                    "relation_hints": [],
+                    "retrieval_miss_question_ids": [],
+                    "proposal_question_ids": [],
+                },
+                "question_projection_audits": {},
+            }
+
+    monkeypatch.setattr(
+        tagging_sync_module,
+        "CombinedQuestionAnalysisModule",
+        CapturingCombinedModule,
+    )
+    governance = TaxonomyGovernance(
+        catalog_path=LEGACY_CATALOG_PATH,
+        state_path=tmp_path / "taxonomy-state.json",
+    )
+    ai_service = AITaggingService(
+        env={
+            "QUESTION_BANK_TAGGING_API_KEY": "synthetic-key",
+            "QUESTION_BANK_TAGGING_MODEL": "synthetic-model",
+        },
+        protocol_adapter=object(),
+        taxonomy_governance=governance,
+    )
+    context, _store = _context(tmp_path, {"question_ids": [question_id]})
+
+    result = run_tagging_sync_job(
+        context=context,
+        question_bank_db_path=db_path,
+        data_root=data_root,
+        ai_service_factory=lambda: ai_service,
+        taxonomy_governance=governance,
+    )
+
+    assert requested == [("training_criteria", question_id)]
+    assert result["outcome"] == "partial"
+    assert result["evidence_failed_question_ids"] == [question_id]
+    assert result["criteria_failed_question_ids"] == [question_id]
+
+
 def test_unified_evidence_retry_preserves_existing_successful_tags(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -493,6 +1088,8 @@ def test_unified_evidence_retry_preserves_existing_successful_tags(
                 for item in work_items
                 if item.projection is not None
             )
+            for item in work_items:
+                _seed_current_projection_rows(db_path, item.question)
             return {
                 "items": [
                     {

@@ -40,9 +40,9 @@ class _ResolvedModel:
 class ActiveProfileApprovedModelGateway:
     """Resolve the current machine-local model at invocation time.
 
-    Construction is network-free. Class-teacher debug mode uses the shared
-    retry and diagnostic behavior. Restricted student content still reaches
-    this seam only after the separate anonymous-preview confirmation flow.
+    Construction is network-free. Class-teacher calls use shared diagnostics
+    without automatic retry. Restricted student content still reaches this
+    seam only after the separate anonymous-preview confirmation flow.
     """
 
     def __init__(
@@ -137,7 +137,7 @@ class ActiveProfileApprovedModelGateway:
             config_key=gateway_config_key(resolved.api_key, resolved.base_url),
             metadata_only=False,
             claim_operations=False,
-            allow_retry=True,
+            allow_retry=False,
         )
         client = self.client_factory(resolved.api_key, resolved.base_url)
         request = getattr(gateway, "chat_completions", None)
@@ -194,7 +194,7 @@ class ActiveProfileApprovedModelGateway:
             config_key=gateway_config_key(resolved.api_key, resolved.base_url),
             metadata_only=False,
             claim_operations=False,
-            allow_retry=True,
+            allow_retry=False,
         )
         client = self.client_factory(resolved.api_key, resolved.base_url)
         try:

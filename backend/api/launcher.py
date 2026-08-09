@@ -9,7 +9,11 @@ from collections.abc import Callable, Iterable
 from typing import Any
 
 from backend.api.frontend import FrontendDistributionError, validate_frontend_dist
-from backend.schema_migrations import SchemaVersionError, ensure_application_schema
+from backend.schema_migrations import (
+    SchemaMigrationRequired,
+    SchemaVersionError,
+    ensure_application_schema,
+)
 from path_manager import get_path_manager
 
 
@@ -76,6 +80,14 @@ def main(argv: Iterable[str] | None = None) -> int:
         return 0
     try:
         ensure_application_schema(paths)
+    except SchemaMigrationRequired as exc:
+        print(
+            "检测到已有数据库需要升级；普通启动没有修改数据。"
+            "请由维护人员通过受保护维护入口确认数据库迁移后再重试。"
+            f"维护目标：{exc.target}",
+            file=sys.stderr,
+        )
+        return 3
     except SchemaVersionError:
         print(
             "数据库版本与当前程序不兼容，系统为保护数据已停止启动。"

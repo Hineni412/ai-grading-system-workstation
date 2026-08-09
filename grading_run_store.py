@@ -57,7 +57,11 @@ class GradingRunStore:
         return conn
 
     def initialize(self) -> None:
-        ensure_schema_current("grading", self.db_path)
+        ensure_schema_current(
+            "grading",
+            self.db_path,
+            allow_existing_migrations=False,
+        )
 
     # ---------- 运行生命周期 ----------
     def begin(self, session_id: int, config_fingerprint: str, grading_mode: str) -> GradingRun:

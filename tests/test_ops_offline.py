@@ -10,37 +10,49 @@ import pytest
 from backend.ops.jobs import create_safety_backup
 from backend.ops.journal import OpsOperationJournal, OpsOperationManifest
 from backend.ops.offline import apply_pending_operation
+from backend.schema_migrations import ensure_schema_current
 
 
 OPERATION_ID = "11111111-1111-4111-8111-111111111111"
 
 
-def _create_database(path: Path, value: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
+def _create_database(
+    path: Path,
+    value: str,
+    *,
+    target: str,
+    migrations_dir: Path,
+) -> None:
+    ensure_schema_current(target, path, migrations_dir=migrations_dir)
     with sqlite3.connect(path) as connection:
-        connection.execute("CREATE TABLE sample (value TEXT)")
         connection.execute("INSERT INTO sample(value) VALUES (?)", (value,))
-        required = (
-            ("students", "grading_sessions", "exam_papers")
-            if path.name == "grading_system.db"
-            else ("papers", "questions", "question_tags")
-        )
-        for table in required:
-            connection.execute(f"CREATE TABLE {table} (id INTEGER PRIMARY KEY)")
 
 
-def _create_class_teacher_database(path: Path, value: str, *, kind: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    required = (
-        ("schema_migrations", "vault_metadata", "encrypted_objects", "access_audit")
-        if kind == "student_affairs"
-        else ("schema_migrations", "work_nodes", "work_edges", "work_operations")
+def _create_class_teacher_database(
+    path: Path,
+    value: str,
+    *,
+    kind: str,
+    migrations_dir: Path,
+) -> None:
+    ensure_schema_current(kind, path, migrations_dir=migrations_dir)
+    with sqlite3.connect(path) as connection:
+        connection.execute("INSERT INTO sample(value) VALUES (?)", (value,))
+
+
+def _create_teaching_prep_database(
+    path: Path,
+    value: str,
+    *,
+    migrations_dir: Path,
+) -> None:
+    ensure_schema_current(
+        "teaching_prep",
+        path,
+        migrations_dir=migrations_dir,
     )
     with sqlite3.connect(path) as connection:
-        connection.execute("CREATE TABLE sample (value TEXT)")
         connection.execute("INSERT INTO sample(value) VALUES (?)", (value,))
-        for table in required:
-            connection.execute(f"CREATE TABLE {table} (id INTEGER PRIMARY KEY)")
 
 
 def _paths(tmp_path: Path) -> SimpleNamespace:
@@ -63,15 +75,60 @@ def _paths(tmp_path: Path) -> SimpleNamespace:
         backups_dir=data_root / "backups",
         logs_dir=project_root / "logs",
         ops_state_dir=tmp_path / "local" / "ops",
+        migration_project_root=project_root,
     )
-    _create_database(paths.db_path, "grading")
-    _create_database(paths.qb_db_path, "question-bank")
+    baseline_sql = {
+        "grading": (
+            "CREATE TABLE sample (value TEXT);\n"
+            "CREATE TABLE students (id INTEGER PRIMARY KEY);\n"
+            "CREATE TABLE grading_sessions (id INTEGER PRIMARY KEY);\n"
+            "CREATE TABLE exam_papers (id INTEGER PRIMARY KEY);\n"
+        ),
+        "question_bank": (
+            "CREATE TABLE sample (value TEXT);\n"
+            "CREATE TABLE papers (id INTEGER PRIMARY KEY);\n"
+            "CREATE TABLE questions (id INTEGER PRIMARY KEY);\n"
+            "CREATE TABLE question_tags (id INTEGER PRIMARY KEY);\n"
+        ),
+        "student_affairs": (
+            "CREATE TABLE sample (value TEXT);\n"
+            "CREATE TABLE vault_metadata (id INTEGER PRIMARY KEY);\n"
+            "CREATE TABLE encrypted_objects (id INTEGER PRIMARY KEY);\n"
+            "CREATE TABLE access_audit (id INTEGER PRIMARY KEY);\n"
+        ),
+        "class_teacher_work": (
+            "CREATE TABLE sample (value TEXT);\n"
+            "CREATE TABLE work_nodes (id INTEGER PRIMARY KEY);\n"
+            "CREATE TABLE work_edges (id INTEGER PRIMARY KEY);\n"
+            "CREATE TABLE work_operations (id INTEGER PRIMARY KEY);\n"
+        ),
+        "teaching_prep": (
+            "CREATE TABLE sample (value TEXT);\n"
+            "CREATE TABLE teaching_prep_operations (id INTEGER PRIMARY KEY);\n"
+            "CREATE TABLE lesson_preparations (id INTEGER PRIMARY KEY);\n"
+        ),
+    }
+    for target, sql in baseline_sql.items():
+        directory = project_root / "migrations" / target
+        directory.mkdir(parents=True)
+        (directory / "000_baseline.sql").write_text(sql, encoding="utf-8")
+    _create_database(
+        paths.db_path,
+        "grading",
+        target="grading",
+        migrations_dir=project_root / "migrations" / "grading",
+    )
+    _create_database(
+        paths.qb_db_path,
+        "question-bank",
+        target="question_bank",
+        migrations_dir=project_root / "migrations" / "question_bank",
+    )
     paths.config_dir.mkdir(parents=True)
     paths.logs_dir.mkdir(parents=True)
     (paths.config_dir / "keep.txt").write_text("keep", encoding="utf-8")
     for target in ("grading", "question_bank"):
         directory = project_root / "migrations" / target
-        directory.mkdir(parents=True)
         (directory / "001_add_table.sql").write_text(
             f"CREATE TABLE {target}_added (id INTEGER PRIMARY KEY);",
             encoding="utf-8",
@@ -96,6 +153,7 @@ def _prepare_restore(paths: SimpleNamespace, members: dict[str, bytes]) -> OpsOp
         paths=paths,
         reason="before_restore",
         operation_id=OPERATION_ID,
+        archive_names=tuple(members),
     )
     import hashlib
 
@@ -241,8 +299,19 @@ def test_restore_validates_and_replaces_class_teacher_database_as_sqlite(
     paths = _paths(tmp_path)
     target = paths.data_root / "workspaces" / "class-teacher" / "student_affairs.db"
     source = tmp_path / "restored-student-affairs.db"
-    _create_class_teacher_database(target, "before", kind="student_affairs")
-    _create_class_teacher_database(source, "restored", kind="student_affairs")
+    migrations = paths.project_root / "migrations" / "student_affairs"
+    _create_class_teacher_database(
+        target,
+        "before",
+        kind="student_affairs",
+        migrations_dir=migrations,
+    )
+    _create_class_teacher_database(
+        source,
+        "restored",
+        kind="student_affairs",
+        migrations_dir=migrations,
+    )
     journal = _prepare_restore(
         paths,
         {"user_data/workspaces/class-teacher/student_affairs.db": source.read_bytes()},
@@ -323,6 +392,151 @@ def test_apply_failure_rolls_back_overwrite_and_new_file(
     assert journal.load_public(OPERATION_ID)["status"] == "rolled_back"
 
 
+def test_apply_refuses_to_start_when_latest_backup_misses_an_existing_member(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths = _paths(tmp_path)
+    journal = _prepare_restore(
+        paths,
+        {"user_data/config/keep.txt": b"restored"},
+    )
+    from backend.ops import offline
+
+    real_backup = offline.create_safety_backup
+
+    def omit_existing_member(**kwargs):
+        if kwargs["reason"] == "before_apply":
+            kwargs["archive_names"] = ()
+        return real_backup(**kwargs)
+
+    monkeypatch.setattr(
+        offline,
+        "create_safety_backup",
+        omit_existing_member,
+    )
+
+    assert apply_pending_operation(paths=paths) == 0
+    assert (paths.config_dir / "keep.txt").read_text(encoding="utf-8") == "keep"
+    public = journal.load_public(OPERATION_ID)
+    assert public["status"] == "rolled_back"
+    assert public["result_code"] == "apply_failed_rolled_back"
+
+
+def test_restore_failure_after_teaching_prep_replacement_restores_original_database(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths = _paths(tmp_path)
+    target = (
+        paths.data_root
+        / "workspaces"
+        / "teaching-prep"
+        / "teaching_prep.db"
+    )
+    restored = tmp_path / "restored-teaching-prep.db"
+    migrations = paths.project_root / "migrations" / "teaching_prep"
+    _create_teaching_prep_database(
+        target,
+        "before",
+        migrations_dir=migrations,
+    )
+    _create_teaching_prep_database(
+        restored,
+        "restored",
+        migrations_dir=migrations,
+    )
+    journal = _prepare_restore(
+        paths,
+        {
+            "user_data/workspaces/teaching-prep/teaching_prep.db": (
+                restored.read_bytes()
+            ),
+            "user_data/workspaces/teaching-prep/zz-after-database.txt": b"later",
+        },
+    )
+    from backend.ops import offline
+
+    monkeypatch.setattr(
+        offline,
+        "_replace_staged_file",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            OSError("later member failed")
+        ),
+    )
+
+    assert apply_pending_operation(paths=paths) == 0
+    with sqlite3.connect(target) as connection:
+        assert connection.execute("SELECT value FROM sample").fetchone() == (
+            "before",
+        )
+    public = journal.load_public(OPERATION_ID)
+    assert public["status"] == "rolled_back"
+    assert public["result_code"] == "apply_failed_rolled_back"
+
+
+def test_post_apply_validation_includes_replaced_teaching_prep_database(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths = _paths(tmp_path)
+    migrations = paths.project_root / "migrations" / "teaching_prep"
+    target = (
+        paths.data_root
+        / "workspaces"
+        / "teaching-prep"
+        / "teaching_prep.db"
+    )
+    restored = tmp_path / "restored-teaching-prep.db"
+    _create_teaching_prep_database(
+        target,
+        "before",
+        migrations_dir=migrations,
+    )
+    _create_teaching_prep_database(
+        restored,
+        "restored",
+        migrations_dir=migrations,
+    )
+    journal = _prepare_restore(
+        paths,
+        {
+            "user_data/workspaces/teaching-prep/teaching_prep.db": (
+                restored.read_bytes()
+            )
+        },
+    )
+    from backend.ops import offline
+
+    real_replace = offline._replace_database_file
+
+    def replace_then_corrupt_schema(source: Path, destination: Path) -> None:
+        real_replace(source, destination)
+        if destination == target:
+            with sqlite3.connect(destination) as connection:
+                connection.execute(
+                    "ALTER TABLE sample ADD COLUMN unexpected TEXT"
+                )
+
+    monkeypatch.setattr(
+        offline,
+        "_replace_database_file",
+        replace_then_corrupt_schema,
+    )
+
+    assert apply_pending_operation(paths=paths) == 0
+    with sqlite3.connect(target) as connection:
+        columns = {
+            str(row[1])
+            for row in connection.execute("PRAGMA table_info(sample)")
+        }
+        assert columns == {"value"}
+        assert connection.execute("SELECT value FROM sample").fetchone() == (
+            "before",
+        )
+    assert journal.load_public(OPERATION_ID)["status"] == "rolled_back"
+
+
 def test_rollback_failure_stops_startup(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -350,7 +564,12 @@ def test_crash_recovery_rolls_back_before_attempting_apply(tmp_path: Path) -> No
     paths = _paths(tmp_path)
     journal = _prepare_restore(paths, {"user_data/config/keep.txt": b"changed"})
     journal.claim_pending()
-    backup = create_safety_backup(paths=paths, reason="before_apply", operation_id=OPERATION_ID)
+    backup = create_safety_backup(
+        paths=paths,
+        reason="before_apply",
+        operation_id=OPERATION_ID,
+        archive_names=("user_data/config/keep.txt",),
+    )
     journal.start_apply(OPERATION_ID, backup)
     journal.record_replacement(
         OPERATION_ID,
@@ -372,7 +591,15 @@ def test_all_migration_failure_rolls_back_both_databases(
     operation_root = paths.ops_state_dir / "operations" / OPERATION_ID
     staging = operation_root / "staging"
     staging.mkdir(parents=True)
-    backup = create_safety_backup(paths=paths, reason="before_update", operation_id=OPERATION_ID)
+    backup = create_safety_backup(
+        paths=paths,
+        reason="before_update",
+        operation_id=OPERATION_ID,
+        archive_names=(
+            "user_data/databases/grading_system.db",
+            "user_data/databases/question_bank.db",
+        ),
+    )
     from backend.ops.write_service import OpsWriteService
     from backend.ops.plan_store import OpsPlanStore
 
