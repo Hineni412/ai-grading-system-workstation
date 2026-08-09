@@ -1,15 +1,28 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, provide } from 'vue'
+import {
+  computed,
+  defineAsyncComponent,
+  onBeforeUnmount,
+  onMounted,
+  provide,
+} from 'vue'
 
 import TeachingPrepLessonContext from '../components/TeachingPrepLessonContext.vue'
 import { teachingPrepWorkbenchKey } from '../workbench/context'
 import { useTeachingPrepWorkbench } from '../workbench/state'
 import { lessonProgressLabel } from '../progressLabels'
 import LessonTreeWorkspace from '../workspaces/LessonTreeWorkspace.vue'
-import MaterialLibraryWorkspace from '../workspaces/MaterialLibraryWorkspace.vue'
-import LessonMaterialConfirmationWorkspace from '../workspaces/LessonMaterialConfirmationWorkspace.vue'
-import PresentationVersionsWorkspace from '../workspaces/PresentationVersionsWorkspace.vue'
 import '../styles/teaching-prep.css'
+
+const MaterialLibraryWorkspace = defineAsyncComponent(
+  () => import('../workspaces/MaterialLibraryWorkspace.vue'),
+)
+const LessonMaterialConfirmationWorkspace = defineAsyncComponent(
+  () => import('../workspaces/LessonMaterialConfirmationWorkspace.vue'),
+)
+const PresentationVersionsWorkspace = defineAsyncComponent(
+  () => import('../workspaces/PresentationVersionsWorkspace.vue'),
+)
 
 const workbench = useTeachingPrepWorkbench()
 provide(teachingPrepWorkbenchKey, workbench)

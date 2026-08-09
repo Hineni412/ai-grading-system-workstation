@@ -115,6 +115,135 @@ def test_job_store_session_filter_only_accepts_json_positive_integer(tmp_path) -
     assert [job.id for job in jobs] == [accepted_id]
 
 
+def test_job_store_finds_latest_exact_payload_match_without_returning_history(
+    tmp_path: Path,
+) -> None:
+    from backend.jobs.store import JobStore
+
+    db_path = tmp_path / "jobs.db"
+    store = JobStore(db_path)
+    first = store.create_job(
+        "teaching_prep.semester_mapping",
+        {
+            "semester_id": "semester-1",
+            "material_record_id": "a" * 32,
+            "source_state_sha256": "1" * 64,
+        },
+    )
+    store.create_job(
+        "teaching_prep.semester_mapping",
+        {
+            "semester_id": "semester-2",
+            "material_record_id": "a" * 32,
+            "source_state_sha256": "1" * 64,
+        },
+    )
+    latest = store.create_job(
+        "teaching_prep.semester_mapping",
+        {
+            "semester_id": "semester-1",
+            "material_record_id": "a" * 32,
+            "source_state_sha256": "1" * 64,
+        },
+    )
+    store.finish(latest.id, "succeeded")
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(
+            "INSERT INTO jobs (job_type, payload_json, status) VALUES (?, ?, ?)",
+            ("teaching_prep.semester_mapping", "{broken", "succeeded"),
+        )
+
+    active = store.find_latest_job_by_payload(
+        job_type="teaching_prep.semester_mapping",
+        payload_equals={
+            "semester_id": "semester-1",
+            "material_record_id": "a" * 32,
+            "source_state_sha256": "1" * 64,
+        },
+        statuses=("queued", "running", "paused", "succeeded"),
+    )
+
+    assert active is not None
+    assert active.id == latest.id
+    assert active.id != first.id
+
+
+def test_tagging_sync_keeps_token_conflict_and_active_signature_rules(
+    tmp_path: Path,
+) -> None:
+    from backend.jobs.store import JobStore, TaggingSyncJobRequestConflictError
+
+    store = JobStore(tmp_path / "jobs.db")
+    first, created = store.create_idempotent_tagging_sync_job(
+        {
+            "question_ids": [2, 1, 1],
+            "client_request_token": "5" * 32,
+        }
+    )
+    same_work, repeated = store.create_idempotent_tagging_sync_job(
+        {
+            "question_ids": [1, 2],
+            "client_request_token": "6" * 32,
+        }
+    )
+
+    assert created is True
+    assert repeated is False
+    assert same_work.id == first.id
+
+    with pytest.raises(TaggingSyncJobRequestConflictError):
+        store.create_idempotent_tagging_sync_job(
+            {
+                "question_ids": [3],
+                "client_request_token": "5" * 32,
+            }
+        )
+
+
+def test_job_store_lists_only_latest_job_for_each_payload_identity(
+    tmp_path: Path,
+) -> None:
+    from backend.jobs.store import JobStore
+
+    db_path = tmp_path / "jobs.db"
+    store = JobStore(db_path)
+    old_a = store.create_job(
+        "teaching_prep.material_parse",
+        {"material_version_id": "a" * 32},
+    )
+    latest_b = store.create_job(
+        "teaching_prep.material_parse",
+        {"material_version_id": "b" * 32},
+    )
+    latest_a = store.create_job(
+        "teaching_prep.material_parse",
+        {"material_version_id": "a" * 32},
+    )
+    store.create_job("unrelated", {"material_version_id": "c" * 32})
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(
+            "INSERT INTO jobs (job_type, payload_json, status) VALUES (?, ?, ?)",
+            ("teaching_prep.material_parse", "{broken", "succeeded"),
+        )
+        connection.execute(
+            "INSERT INTO jobs (job_type, payload_json, status) VALUES (?, ?, ?)",
+            (
+                "teaching_prep.material_parse",
+                json.dumps({"material_version_id": " short "}),
+                "succeeded",
+            ),
+        )
+
+    jobs = store.list_latest_jobs_by_payload_key(
+        job_type="teaching_prep.material_parse",
+        payload_key="material_version_id",
+        identity_length=32,
+    )
+
+    assert [job.id for job in jobs] == [latest_a.id, latest_b.id]
+    assert old_a.id not in {job.id for job in jobs}
+
+
 def test_job_store_updates_progress_and_finishes(tmp_path) -> None:
     from backend.jobs.store import JobStore
 

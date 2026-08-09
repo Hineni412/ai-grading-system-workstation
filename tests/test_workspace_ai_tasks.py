@@ -180,6 +180,57 @@ def test_prepare_conflict_and_concurrent_dispatch_only_create_one_job(
         manager.shutdown()
 
 
+def test_actionable_module_tasks_exclude_finished_history_and_closed_proposals(
+    tmp_path: Path,
+) -> None:
+    service, manager, _adapter = _service(tmp_path)
+    try:
+        prepared = service.prepare("operation-actionable-prepared", _request())
+        pending = service.prepare("operation-actionable-pending", _request())
+        dispatched = service.dispatch(
+            pending.operation_id,
+            prepared_task_id=pending.task_id,
+        )
+        assert dispatched.job_id is not None
+        manager.wait(dispatched.job_id, timeout=5)
+
+        closed = service.prepare("operation-actionable-closed", _request())
+        dispatched_closed = service.dispatch(
+            closed.operation_id,
+            prepared_task_id=closed.task_id,
+        )
+        assert dispatched_closed.job_id is not None
+        manager.wait(dispatched_closed.job_id, timeout=5)
+        failed = service.prepare("operation-actionable-failed", _request())
+        with sqlite3.connect(service.store.db_path) as connection:
+            connection.execute(
+                "UPDATE workspace_ai_handoffs SET adoption_state = 'adopted' "
+                "WHERE task_id = ?",
+                (closed.task_id,),
+            )
+            connection.execute(
+                "UPDATE workspace_ai_tasks SET status = 'failed', phase = 'finished' "
+                "WHERE task_id = ?",
+                (failed.task_id,),
+            )
+
+        actionable = service.list_actionable_module_tasks("teaching_prep")
+        complete = service.list_module_tasks("teaching_prep")
+
+        assert {task.task_id for task in actionable} == {
+            prepared.task_id,
+            pending.task_id,
+        }
+        assert {task.task_id for task in complete} == {
+            prepared.task_id,
+            pending.task_id,
+            closed.task_id,
+            failed.task_id,
+        }
+    finally:
+        manager.shutdown()
+
+
 def test_cancel_and_restart_recovery_follow_send_evidence(tmp_path: Path) -> None:
     service, manager, _adapter = _service(tmp_path)
     try:

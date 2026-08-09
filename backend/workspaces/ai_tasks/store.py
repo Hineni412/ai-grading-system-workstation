@@ -139,6 +139,35 @@ class WorkspaceAITaskStore:
             ).fetchall()
         return tuple(_task(row) for row in rows)
 
+    def list_actionable_tasks(self, module: str) -> tuple[StoredTask, ...]:
+        """List only tasks that can still affect a workspace's current status."""
+
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT task.*
+                FROM workspace_ai_tasks AS task
+                WHERE task.module = ?
+                  AND (
+                    task.status IN ('prepared', 'queued', 'running', 'needs_input')
+                    OR (
+                      task.status = 'proposal_ready'
+                      AND EXISTS (
+                        SELECT 1
+                        FROM workspace_ai_handoffs AS handoff
+                        WHERE handoff.task_id = task.task_id
+                          AND handoff.adoption_state IN (
+                            'pending', 'opened', 'adoption_started'
+                          )
+                      )
+                    )
+                  )
+                ORDER BY task.updated_at DESC, task.task_id DESC
+                """,
+                (module,),
+            ).fetchall()
+        return tuple(_task(row) for row in rows)
+
     def create_dispatch_job(self, task_id: str) -> tuple[StoredTask, bool]:
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")

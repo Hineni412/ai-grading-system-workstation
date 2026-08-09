@@ -192,6 +192,16 @@ class PersonalizedPaperModule:
     ) -> dict[str, Any]:
         clean_draft_id = _identifier(draft_id, "draft_id")
         initialize_database(self.db_path)
+        return self._create_review_instance_ready(clean_draft_id, command)
+
+    def _create_review_instance_ready(
+        self,
+        draft_id: str,
+        command: CreatePaperCommand,
+    ) -> dict[str, Any]:
+        """Create one review instance after the caller prepared the database."""
+
+        clean_draft_id = _identifier(draft_id, "draft_id")
         fingerprint = _hash_payload(
             {
                 "draft_id": clean_draft_id,
@@ -457,6 +467,10 @@ class PersonalizedPaperModule:
     def get(self, paper_instance_id: str) -> dict[str, Any]:
         clean_id = _identifier(paper_instance_id, "paper_instance_id")
         initialize_database(self.db_path)
+        return self._get_ready(clean_id)
+
+    def _get_ready(self, paper_instance_id: str) -> dict[str, Any]:
+        clean_id = _identifier(paper_instance_id, "paper_instance_id")
         return self._public_instance(self._instance_row(clean_id))
 
     def list_for_draft(self, draft_id: str) -> tuple[dict[str, Any], ...]:
@@ -488,6 +502,29 @@ class PersonalizedPaperModule:
         clean_draft_id = _identifier(draft_id, "draft_id")
         clean_token = _token(operation_token)
         initialize_database(self.db_path)
+        return self._create_review_batch_ready(
+            clean_draft_id,
+            operation_token=clean_token,
+            expected_draft_revision=expected_draft_revision,
+            student_ids=student_ids,
+            actor_ref=actor_ref,
+            context_window_tokens=context_window_tokens,
+        )
+
+    def _create_review_batch_ready(
+        self,
+        draft_id: str,
+        *,
+        operation_token: str,
+        expected_draft_revision: int,
+        student_ids: Sequence[str] = (),
+        actor_ref: str,
+        context_window_tokens: int = 32_768,
+    ) -> dict[str, Any]:
+        """Create a batch after the caller prepared the database."""
+
+        clean_draft_id = _identifier(draft_id, "draft_id")
+        clean_token = _token(operation_token)
         requested = tuple(dict.fromkeys(
             str(value or "").strip() for value in student_ids if str(value or "").strip()
         ))
@@ -568,7 +605,7 @@ class PersonalizedPaperModule:
                 break
             student_id = str(saved["student_id"])
             if str(saved["status"]) == "succeeded":
-                created.append(self.get(str(saved["paper_instance_id"])))
+                created.append(self._get_ready(str(saved["paper_instance_id"])))
                 continue
             if str(saved["status"]) == "failed":
                 failed.append({
@@ -597,7 +634,7 @@ class PersonalizedPaperModule:
                     )
                     if instance is not None:
                         try:
-                            self.artifact_path(
+                            self._artifact_path_ready(
                                 str(instance["paper_instance_id"]),
                                 "review-docx",
                             )
@@ -620,7 +657,7 @@ class PersonalizedPaperModule:
                                 record_event=False,
                             )
                     else:
-                        instance = self.create_review_instance(
+                        instance = self._create_review_instance_ready(
                             clean_draft_id,
                             CreatePaperCommand(
                                 operation_token=per_student_token,
@@ -802,7 +839,7 @@ class PersonalizedPaperModule:
                 draft_revision = int(batch["draft_revision"])
         if not targets:
             return self._public_batch(clean_id)
-        return self.create_review_batch(
+        return self._create_review_batch_ready(
             draft_id,
             operation_token=operation_token,
             expected_draft_revision=draft_revision,
@@ -824,7 +861,10 @@ class PersonalizedPaperModule:
         missing: list[str] = []
         for row in rows:
             try:
-                self.artifact_path(str(row["paper_instance_id"]), "review-docx")
+                self._artifact_path_ready(
+                    str(row["paper_instance_id"]),
+                    "review-docx",
+                )
             except PaperArtifactNotFound:
                 missing.append(str(row["student_id"]))
         if not missing:
@@ -890,7 +930,7 @@ class PersonalizedPaperModule:
                 (batch_run_id,),
             ).fetchall()
         created = [
-            self.get(str(row["paper_instance_id"]))
+            self._get_ready(str(row["paper_instance_id"]))
             for row in rows if str(row["status"]) == "succeeded"
         ]
         failed = [
@@ -1114,7 +1154,7 @@ class PersonalizedPaperModule:
             ).fetchall()
         instances: list[dict[str, Any]] = []
         for row in rows:
-            instance = self.get(str(row["paper_instance_id"]))
+            instance = self._get_ready(str(row["paper_instance_id"]))
             if instance["status"] == "frozen" and instance["downloads"]["frozen_pdf"]:
                 instances.append(instance)
         if not instances:
@@ -1136,7 +1176,10 @@ class PersonalizedPaperModule:
             frozen_manifest: list[dict[str, Any]] = []
             with zipfile.ZipFile(staged, "w", compression=zipfile.ZIP_DEFLATED) as archive:
                 for item in instances:
-                    source, _ = self.artifact_path(str(item["paper_instance_id"]), "frozen-pdf")
+                    source, _ = self._artifact_path_ready(
+                        str(item["paper_instance_id"]),
+                        "frozen-pdf",
+                    )
                     stem = _safe_filename(
                         str(item.get("student_name") or item.get("student_code") or item["student_id"])
                     )
@@ -1244,7 +1287,10 @@ class PersonalizedPaperModule:
                 for item in instances:
                     paper_id = str(item.get("paper_instance_id") or "")
                     try:
-                        source, _ = self.artifact_path(paper_id, "review-docx")
+                        source, _ = self._artifact_path_ready(
+                            paper_id,
+                            "review-docx",
+                        )
                     except PaperArtifactNotFound:
                         continue
                     stem = _safe_filename(
@@ -1279,6 +1325,14 @@ class PersonalizedPaperModule:
     ) -> tuple[Path, str]:
         clean_id = _identifier(paper_instance_id, "paper_instance_id")
         initialize_database(self.db_path)
+        return self._artifact_path_ready(clean_id, kind)
+
+    def _artifact_path_ready(
+        self,
+        paper_instance_id: str,
+        kind: ArtifactKind,
+    ) -> tuple[Path, str]:
+        clean_id = _identifier(paper_instance_id, "paper_instance_id")
         row = self._instance_row(clean_id)
         columns = {
             "review-docx": ("review_docx_path", DOCX_MEDIA_TYPE),
@@ -1998,7 +2052,6 @@ class PersonalizedPaperModule:
         operation_token: str,
         fingerprint: str,
     ) -> dict[str, Any] | None:
-        initialize_database(self.db_path)
         with connect(self.db_path) as connection:
             row = connection.execute(
                 """

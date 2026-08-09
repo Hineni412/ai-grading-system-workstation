@@ -194,6 +194,9 @@ describe('ModelProfilesView', () => {
     app.use(router)
     app.mount(host)
     mounted.push(app)
+    await vi.waitFor(() => {
+      expect(host.querySelector('.ai-diagnostics-disclosure')).not.toBeNull()
+    })
     await settle()
 
     const disclosure = host.querySelector<HTMLDetailsElement>('.ai-diagnostics-disclosure')

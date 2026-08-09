@@ -7,6 +7,7 @@ import TemplateUploadPanel from '../components/template-regions/TemplateUploadPa
 import ConfigStageRail from '../components/config/ConfigStageRail.vue'
 import { useTemplateRegionStore } from '../stores/template-regions'
 import type { PageRole } from '../api/template-regions'
+import '../styles/template-regions.css'
 
 const route = useRoute()
 const router = useRouter()

@@ -143,6 +143,15 @@ class WorkspaceAITaskService:
             for task in self.store.list_tasks(clean_module)
         )
 
+    def list_actionable_module_tasks(self, module: str) -> tuple[TaskSnapshot, ...]:
+        clean_module = str(module or "").strip()
+        if not clean_module:
+            raise ValueError("workspace AI task module is required")
+        return tuple(
+            project_task(self.store, task)
+            for task in self.store.list_actionable_tasks(clean_module)
+        )
+
     def cancel(self, operation_id: str) -> TaskSnapshot:
         task = self.store.find_by_operation(operation_id)
         if task is None:

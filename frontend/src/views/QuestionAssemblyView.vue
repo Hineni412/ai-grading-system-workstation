@@ -5,6 +5,8 @@ import AssemblyEditorWorkspace from '../components/question-bank/AssemblyEditorW
 import AssemblyQuestionBrowser from '../components/question-bank/AssemblyQuestionBrowser.vue'
 import { useAssemblyStore } from '../stores/assembly'
 import { useJobStore } from '../stores/jobs'
+import '../styles/question-bank.css'
+import '../styles/question-assembly.css'
 
 const assembly = useAssemblyStore()
 const jobs = useJobStore()

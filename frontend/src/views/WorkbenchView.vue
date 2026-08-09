@@ -11,6 +11,7 @@ import { useAnalysisStore } from '../stores/analysis'
 import { useCurriculumScopeStore } from '../stores/curriculum-scope'
 import { useSessionStore } from '../stores/session'
 import { useWorkbenchStore } from '../stores/workbench'
+import '../styles/workbench.css'
 
 const router = useRouter()
 const sessionStore = useSessionStore()

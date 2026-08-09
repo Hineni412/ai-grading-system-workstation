@@ -6,6 +6,7 @@ import PaperLibrary from '../components/question-bank/PaperLibrary.vue'
 import { useJobStore } from '../stores/jobs'
 import { useQuestionBankStore } from '../stores/question-bank'
 import { useTaxonomyReviewStore } from '../stores/taxonomy-review'
+import '../styles/question-bank.css'
 
 const QuestionBankFilters = defineAsyncComponent(
   () => import('../components/question-bank/QuestionBankFilters.vue'),

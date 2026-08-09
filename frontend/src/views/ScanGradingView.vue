@@ -15,6 +15,7 @@ import type {
 } from '../api/scan-grading'
 import StudentMatchSelect from '../components/scan-grading/StudentMatchSelect.vue'
 import { useScanGradingStore } from '../stores/scan-grading'
+import '../styles/scan-grading.css'
 
 const route = useRoute()
 const router = useRouter()
