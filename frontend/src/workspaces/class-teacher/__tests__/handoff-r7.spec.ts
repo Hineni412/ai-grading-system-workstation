@@ -191,6 +191,53 @@ describe('B-UI-R7 handoff workspaces', () => {
     expect(adopt).not.toHaveBeenCalled()
   })
 
+  it('shows the current profiles and actionable steps in a conflict SOP draft', async () => {
+    const host = await mountHandoff(draft({
+      handling_mode: 'sop',
+      destination_key: 'class_teacher.affair.sop',
+      domain: 'conflict_safety',
+      subject_refs: [
+        { kind: 'student', id: 'subject-a', revision: '3' },
+        { kind: 'student', id: 'subject-b', revision: '3' },
+      ],
+      missing_fields: [],
+      content: {
+        summary: '两名学生发生矛盾，待教师继续核对。',
+        template_key: 'baseline.student_conflict',
+        student_profiles: [
+          {
+            display_name: '合成学生甲', class_label: '一班',
+            profile: {
+              summary: '表达分歧时需要先获得安静陈述的时间。',
+              dimensions: [], open_questions: [], support_focus: [],
+            },
+          },
+          {
+            display_name: '合成学生乙', class_label: '一班',
+            profile: {
+              summary: '面对误解时愿意在教师引导下重新说明经过。',
+              dimensions: [], open_questions: [], support_focus: [],
+            },
+          },
+        ],
+        to_verify: ['双方目前是否已经分开', '是否有人受伤'],
+        steps: [
+          { key: 'confirm_safety', title: '确认双方已分开并检查伤情', details: '先处理即时安全。', safety_required: true },
+          { key: 'separate_interviews', title: '分别听取两名学生陈述', details: '区分直接事实与转述。', safety_required: false },
+          { key: 'follow_up', title: '安排后续观察与复查', details: '根据核实结果调整支持。', safety_required: false },
+        ],
+      },
+    }))
+
+    expect(host.textContent).toContain('合成学生甲')
+    expect(host.textContent).toContain('表达分歧时需要先获得安静陈述的时间')
+    expect(host.textContent).toContain('合成学生乙')
+    expect(host.textContent).toContain('面对误解时愿意在教师引导下重新说明经过')
+    expect(host.textContent).toContain('确认双方已分开并检查伤情')
+    expect(host.textContent).toContain('分别听取两名学生陈述')
+    expect(host.textContent).toContain('双方目前是否已经分开')
+  })
+
   it('preserves plan details and non-linear dependencies when the teacher confirms without editing', async () => {
     const initial = draft({
       handling_mode: 'plan_calendar',
