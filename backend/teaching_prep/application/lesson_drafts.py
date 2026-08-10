@@ -43,6 +43,7 @@ _REQUIRED_TOP_LEVEL_KEYS = {
 _OPTIONAL_TOP_LEVEL_KEYS = {"slide_adaptations"}
 _SLIDE_ROLES = {
     "introduction",
+    "exploration",
     "explanation",
     "example",
     "practice",
@@ -196,6 +197,8 @@ def build_local_template(
                     "citations": [f"post_review:{review_id}"],
                 }
             )
+    slide_adaptations = _local_slide_adaptations(payload)
+    insertion_slide_ref = _preferred_insertion_slide(slide_adaptations)
     exercise_recommendations: list[dict[str, object]] = []
     included = 0
     preferences = resolve_teaching_preferences(
@@ -241,6 +244,9 @@ def build_local_template(
             {
                 "source_ref": source_ref,
                 "action": action,
+                "target_slide_ref": (
+                    insertion_slide_ref if action == "include" else None
+                ),
                 "title": title,
                 "reason": (
                     "作为本课关键检查题。"
@@ -291,7 +297,7 @@ def build_local_template(
         "anticipated_difficulties": anticipated,
         "lesson_flow": lesson_flow,
         "exercise_recommendations": exercise_recommendations,
-        "slide_adaptations": _local_slide_adaptations(payload),
+        "slide_adaptations": slide_adaptations,
         "uncertainties": uncertainties,
     }
 
@@ -336,6 +342,7 @@ def validate_draft_payload(
             value["exercise_recommendations"],
             allowed_refs,
             allowed_exercises,
+            set(_material_references(pack.payload, "reference_ppt")),
         ),
         "slide_adaptations": _slide_adaptations(
             value.get("slide_adaptations", []),
@@ -373,6 +380,49 @@ def validate_draft_payload(
         )
     _validate_explicit_locators(result, pack)
     return result
+
+
+def normalize_model_draft_payload(
+    value: object,
+    pack: ResourcePackVersion,
+) -> object:
+    """Apply only lossless or conservative repairs before strict validation."""
+    if not isinstance(value, Mapping):
+        return value
+    normalized = dict(value)
+    raw_focus_points = value.get("focus_points")
+    if isinstance(raw_focus_points, list):
+        normalized["focus_points"] = [
+            (
+                {**item, "kind": "key"}
+                if isinstance(item, Mapping) and not str(item.get("kind") or "").strip()
+                else item
+            )
+            for item in raw_focus_points
+        ]
+    allowed_exercises = {
+        source_id
+        for source_id in reference_catalog(pack)
+        if source_id.startswith(("exercise:", "question:"))
+    }
+    if allowed_exercises:
+        return normalized
+    raw_recommendations = value.get("exercise_recommendations")
+    if not isinstance(raw_recommendations, list) or not raw_recommendations:
+        return normalized
+    normalized["exercise_recommendations"] = []
+    uncertainties = (
+        list(value.get("uncertainties"))
+        if isinstance(value.get("uncertainties"), list)
+        else []
+    )
+    notice = (
+        "教辅页尚未切分为可精确引用的候选题，本次未纳入模型提出的补题建议。"
+    )
+    if notice not in uncertainties:
+        uncertainties.append(notice)
+    normalized["uncertainties"] = uncertainties
+    return normalized
 
 
 def _local_slide_adaptations(
@@ -430,6 +480,7 @@ def _local_slide_adaptations(
                     "slide_ref": slide_ref,
                     "role": role,
                     "action": "delete" if delete else "keep",
+                    "delete_object_refs": [],
                     "textbook_refs": textbook_refs,
                     "reason": (
                         "教师已把该参考课件范围标为候选删除。"
@@ -456,6 +507,7 @@ def _slide_adaptations(
     items = _object_list(value, maximum=2_000)
     ppt_refs = set(_material_references(pack.payload, "reference_ppt"))
     textbook_refs = set(_material_references(pack.payload, "textbook"))
+    object_refs_by_slide = _safe_object_refs_by_slide(pack.payload)
     result: list[dict[str, object]] = []
     seen: set[str] = set()
     for item in items:
@@ -474,6 +526,22 @@ def _slide_adaptations(
         if action not in {"keep", "delete"}:
             raise TeachingPrepValidationError(
                 "slide adaptation action is invalid"
+            )
+        delete_object_refs = _strings(
+            item.get("delete_object_refs", []),
+            maximum=100,
+            item_maximum=500,
+        )
+        if action != "keep" and delete_object_refs:
+            raise TeachingPrepValidationError(
+                "objects cannot be deleted from a deleted slide"
+            )
+        if any(
+            ref not in object_refs_by_slide.get(slide_ref, set())
+            for ref in delete_object_refs
+        ):
+            raise TeachingPrepValidationError(
+                "slide adaptation refers to an unsafe or unknown object"
             )
         mapped_textbooks = _strings(
             item.get("textbook_refs"),
@@ -496,6 +564,7 @@ def _slide_adaptations(
                 "slide_ref": slide_ref,
                 "role": role,
                 "action": action,
+                "delete_object_refs": delete_object_refs,
                 "textbook_refs": mapped_textbooks,
                 "reason": _text(item.get("reason"), maximum=1_000),
                 "citations": citations,
@@ -786,6 +855,7 @@ def _recommendations(
     value: object,
     allowed_refs: set[str],
     allowed_exercises: set[str],
+    allowed_slides: set[str],
 ) -> list[dict[str, object]]:
     items = _object_list(value, maximum=30)
     result = []
@@ -803,10 +873,23 @@ def _recommendations(
             )
         if action == "include":
             included += 1
+        raw_target = item.get("target_slide_ref")
+        target_slide_ref = (
+            str(raw_target).strip() if raw_target is not None else None
+        )
+        if target_slide_ref == "":
+            target_slide_ref = None
+        if target_slide_ref is not None and target_slide_ref not in allowed_slides:
+            raise TeachingPrepValidationError(
+                "exercise recommendation targets an unknown slide"
+            )
         result.append(
             {
                 "source_ref": source_ref,
                 "action": action,
+                "target_slide_ref": (
+                    target_slide_ref if action == "include" else None
+                ),
                 "title": _text(item.get("title"), maximum=300),
                 "reason": _text(item.get("reason"), maximum=1_000),
                 "estimated_minutes": _bounded_int(
@@ -824,6 +907,37 @@ def _recommendations(
         raise TeachingPrepValidationError(
             "at most three questions may be included in class"
         )
+    return result
+
+
+def _preferred_insertion_slide(
+    adaptations: list[dict[str, object]],
+) -> str | None:
+    kept = [
+        item
+        for item in adaptations
+        if item.get("action") == "keep"
+    ]
+    for role in ("practice", "example", "explanation"):
+        matching = [item for item in kept if item.get("role") == role]
+        if matching:
+            return str(matching[-1].get("slide_ref") or "") or None
+    return str(kept[-1].get("slide_ref") or "") if kept else None
+
+
+def _safe_object_refs_by_slide(
+    payload: Mapping[str, object],
+) -> dict[str, set[str]]:
+    result: dict[str, set[str]] = {}
+    for slide_ref, unit in _material_units(payload, "reference_ppt"):
+        summary = _mapping(unit.get("object_summary"))
+        refs = set()
+        for raw_object in _list(summary.get("objects")):
+            item = _mapping(raw_object)
+            object_ref = str(item.get("object_ref") or "")
+            if object_ref and item.get("safe_to_delete") is True:
+                refs.add(f"{slide_ref}:object:{object_ref}")
+        result[slide_ref] = refs
     return result
 
 

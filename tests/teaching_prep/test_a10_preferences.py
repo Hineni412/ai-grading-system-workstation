@@ -19,6 +19,7 @@ from backend.teaching_prep.application.lesson_drafts import (
     _is_homework_workbook,
     _local_slide_adaptations,
     draft_preflight,
+    normalize_model_draft_payload,
 )
 from backend.teaching_prep.application.preferences import (
     DEFAULT_TEACHING_PREFERENCES,
@@ -41,6 +42,10 @@ from backend.teaching_prep.domain.errors import (
     TeachingPrepValidationError,
 )
 from backend.teaching_prep.infrastructure.fakes import FakeLessonModelAdapter
+from backend.teaching_prep.infrastructure.llm.lesson_model import (
+    WorkspaceLessonModelAdapter,
+    _model_output_contract,
+)
 
 from .test_a01_foundation import _migrated_service
 from .test_a05_resource_packs import (
@@ -68,6 +73,242 @@ def _preferences(**changes: object) -> dict[str, object]:
     value = deepcopy(DEFAULT_TEACHING_PREFERENCES)
     value.update(changes)
     return value
+
+
+def test_lesson_model_repairs_wrapped_json_and_requests_enough_output() -> None:
+    class Gateway:
+        def __init__(self) -> None:
+            self.kwargs: dict[str, object] = {}
+
+        def chat_completions(self, **kwargs: object) -> dict[str, object]:
+            self.kwargs = kwargs
+            return {
+                "choices": [
+                    {
+                        "finish_reason": "stop",
+                        "message": {
+                            "content": "```json\n{\"uncertainties\": []}\n```"
+                        },
+                    }
+                ]
+            }
+
+    gateway = Gateway()
+    adapter = WorkspaceLessonModelAdapter(
+        gateway=gateway,  # type: ignore[arg-type]
+        client=object(),
+        model="test-model",
+    )
+
+    result = adapter.generate(
+        operation_id="lesson-model-json-repair",
+        resource_pack={
+            "lesson": {"lesson_node_id": "lesson-1"},
+            "materials": [
+                {
+                    "link_id": "ppt-link",
+                    "purpose": "reference_ppt",
+                    "units": [{"unit_index": 1}, {"unit_index": 2}],
+                },
+                {
+                    "link_id": "book-link",
+                    "purpose": "textbook",
+                    "units": [{"unit_index": 10}],
+                },
+            ],
+            "exercises": [],
+        },
+    )
+
+    assert result == {"uncertainties": []}
+    assert gateway.kwargs["kwargs"]["max_tokens"] == 16_000  # type: ignore[index]
+    user_content = gateway.kwargs["kwargs"]["messages"][1]["content"]  # type: ignore[index]
+    contract = json.loads(user_content)["output_contract"]
+    assert contract["slide_adaptations"]["required_count"] == 2
+    assert contract["slide_adaptations"]["allowed_slide_refs"] == [
+        "material:ppt-link:unit:1",
+        "material:ppt-link:unit:2",
+    ]
+    assert contract["slide_adaptations"]["allowed_textbook_refs"] == [
+        "material:book-link:unit:10"
+    ]
+    assert contract["allowed_exercise_recommendation_refs"] == []
+    assert contract["schemas"]["lesson_flow"]["required_phases"] == [
+        "introduction",
+        "exploration",
+        "example",
+        "practice",
+        "summary",
+    ]
+    assert contract["schemas"]["knowledge_objectives"]["item"] == {
+        "text": "string",
+        "citations": "non-empty array of allowed citation IDs",
+    }
+
+
+def test_lesson_model_rejects_truncated_output() -> None:
+    class Gateway:
+        def chat_completions(self, **_kwargs: object) -> dict[str, object]:
+            return {
+                "choices": [
+                    {
+                        "finish_reason": "length",
+                        "message": {"content": "{\"uncertainties\":"},
+                    }
+                ]
+            }
+
+    adapter = WorkspaceLessonModelAdapter(
+        gateway=Gateway(),  # type: ignore[arg-type]
+        client=object(),
+        model="test-model",
+    )
+
+    with pytest.raises(TeachingPrepValidationError, match="truncated"):
+        adapter.generate(
+            operation_id="lesson-model-truncated",
+            resource_pack={},
+        )
+
+
+def test_lesson_model_contract_supports_object_edits_and_existing_slide_inserts() -> None:
+    contract = _model_output_contract(
+        {
+            "materials": [
+                {
+                    "link_id": "ppt-link",
+                    "purpose": "reference_ppt",
+                    "units": [
+                        {
+                            "unit_index": 1,
+                            "title": "练习 1",
+                            "object_summary": {
+                                "objects": [
+                                    {
+                                        "object_ref": "shape:7",
+                                        "safe_to_delete": True,
+                                    }
+                                ]
+                            },
+                        },
+                        {
+                            "unit_index": 2,
+                            "title": "产品介绍",
+                            "text": "扫码获取更多资源",
+                            "object_summary": {
+                                "objects": [
+                                    {
+                                        "object_ref": "shape:9",
+                                        "safe_to_delete": True,
+                                    }
+                                ]
+                            },
+                        },
+                        {
+                            "unit_index": 3,
+                            "title": "3",
+                            "text": "3. 已知直角三角形两边，求第三边",
+                            "object_summary": {
+                                "objects": [
+                                    {
+                                        "object_ref": "shape:11",
+                                        "safe_to_delete": True,
+                                    }
+                                ]
+                            },
+                        },
+                    ],
+                }
+            ],
+            "exercises": [
+                {
+                    "candidate_id": "exercise-one",
+                    "selection_status": "selected",
+                }
+            ],
+        }
+    )
+
+    slide_schema = contract["schemas"]["slide_adaptations"]["item"]
+    exercise_schema = contract["schemas"]["exercise_recommendations"]["item"]
+    slide_ref = "material:ppt-link:unit:1"
+
+    assert slide_schema["delete_object_refs"] == (
+        "array of allowed object refs for this slide"
+    )
+    assert contract["slide_adaptations"]["allowed_object_refs_by_slide"] == {
+        slide_ref: [f"{slide_ref}:object:shape:7"],
+        "material:ppt-link:unit:2": [],
+        "material:ppt-link:unit:3": [
+            "material:ppt-link:unit:3:object:shape:11"
+        ],
+    }
+    assert exercise_schema["target_slide_ref"] == (
+        "one allowed slide ref when action is include"
+    )
+
+
+def test_model_draft_drops_unaddressable_page_level_exercise_suggestions(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _paths, service, lesson_id, reference_link = _ready_service_and_sources(
+        tmp_path,
+        monkeypatch,
+    )
+    pack, _created = _freeze_with_preferences(
+        service,
+        lesson_id=lesson_id,
+        reference_link_id=reference_link.id,
+        token="a10-page-level-suggestion-pack",
+        preferences=_preferences(),
+    )
+    pack_payload = deepcopy(pack.payload)
+    pack_payload["exercises"] = []
+    pack_payload["evidence"]["question"]["items"] = []
+    pack = replace(pack, payload=pack_payload)
+    raw = build_local_template(pack)
+    raw["exercise_recommendations"] = [
+        {
+            "source_ref": "material:workbook-link:unit:6",
+            "action": "include",
+            "title": "整页中的基础题",
+            "reason": "模型未提供可精确引用的候选题 ID",
+            "estimated_minutes": 5,
+            "citations": ["material:workbook-link:unit:6"],
+        }
+    ]
+
+    normalized = normalize_model_draft_payload(raw, pack)
+
+    assert normalized["exercise_recommendations"] == []
+    assert any(
+        "尚未切分为可精确引用的候选题" in item
+        for item in normalized["uncertainties"]
+    )
+
+
+def test_model_draft_defaults_missing_focus_kind_to_key(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _paths, service, lesson_id, reference_link = _ready_service_and_sources(
+        tmp_path,
+        monkeypatch,
+    )
+    pack, _created = _freeze_with_preferences(
+        service,
+        lesson_id=lesson_id,
+        reference_link_id=reference_link.id,
+        token="a10-missing-focus-kind-pack",
+        preferences=_preferences(),
+    )
+    raw = build_local_template(pack)
+    raw["focus_points"][0].pop("kind")
+
+    normalized = normalize_model_draft_payload(raw, pack)
+
+    assert normalized["focus_points"][0]["kind"] == "key"
 
 
 def _freeze_with_preferences(
@@ -310,41 +551,34 @@ def test_slide_plan_turns_reviewed_tendencies_into_safe_operations(
         if item["kind"] == "delete_slide"
     )
 
-    assert marker["details"] == {
-        "text": f"教材 P{textbook['units'][0]['unit_index']}",
-        "font_size": 28,
-        "semantic_role": "textbook_page_label",
-    }
-    assert marker["decision"] == "proposed"
-    assert marker["target"]["position"]
+    printed_page = textbook["units"][0]["object_summary"][
+        "printed_page_number"
+    ]
+    assert marker["details"]["text"] == f"教材 P{printed_page}"
     assert deletion["decision"] == "proposed"
     assert plan.payload["preparation_preferences"] == (
         pack.payload["preparation_preferences"]
     )
-    invalid_marker = deepcopy(marker)
-    invalid_marker["decision"] = "approved"
-    invalid_marker["details"]["font_size"] = 24
-    with pytest.raises(TeachingPrepValidationError):
-        validate_operation(invalid_marker)
 
-    executable = deepcopy(plan.payload)
-    for operation in executable["operations"]:
-        operation["decision"] = (
-            "approved"
-            if operation["operation_id"] == marker["operation_id"]
-            else "rejected"
-        )
-    request = build_executor_request(
-        executable,
-        source_sha256="a" * 64,
-        source_copy=tmp_path / "source-copy.pptx",
-        candidate=tmp_path / "candidate.pptx",
-        preview_dir=tmp_path / "previews",
-        resolve_asset=lambda _ref, _operation_id: tmp_path / "asset.png",
+    missing_page_payload = deepcopy(pack.payload)
+    missing_page_textbook = next(
+        item
+        for item in missing_page_payload["materials"]
+        if item["purpose"] == "textbook"
     )
-    assert request["operations"][0]["details"]["font_size"] == 28
-    assert request["operations"][0]["details"]["semantic_role"] == (
-        "textbook_page_label"
+    missing_page_textbook["units"][0]["object_summary"].pop(
+        "printed_page_number", None
+    )
+    missing_page_textbook["units"][0]["object_summary"].pop(
+        "printed_page_number_source", None
+    )
+    missing_page_plan, _source_state = build_slide_plan_payload(
+        replace(pack, payload=missing_page_payload),
+        revised,
+    )
+    assert not any(
+        item["kind"] == "add_text_box"
+        for item in missing_page_plan["operations"]
     )
 
     offset_payload = deepcopy(pack.payload)
@@ -369,6 +603,320 @@ def test_slide_plan_turns_reviewed_tendencies_into_safe_operations(
         if item["kind"] == "add_text_box"
     )
     assert offset_marker["details"]["text"] == "教材 P9"
+    assert offset_marker["decision"] == "proposed"
+    assert offset_marker["target"]["position"]
+
+    invalid_marker = deepcopy(offset_marker)
+    invalid_marker["decision"] = "approved"
+    invalid_marker["details"]["font_size"] = 24
+    with pytest.raises(TeachingPrepValidationError):
+        validate_operation(invalid_marker)
+
+    executable = deepcopy(offset_plan)
+    for operation in executable["operations"]:
+        operation["decision"] = (
+            "approved"
+            if operation["operation_id"] == offset_marker["operation_id"]
+            else "rejected"
+        )
+    request = build_executor_request(
+        executable,
+        source_sha256="a" * 64,
+        source_copy=tmp_path / "source-copy.pptx",
+        candidate=tmp_path / "candidate.pptx",
+        preview_dir=tmp_path / "previews",
+        resolve_asset=lambda _ref, _operation_id: tmp_path / "asset.png",
+    )
+    assert request["operations"][0]["details"]["font_size"] == 28
+    assert request["operations"][0]["details"]["semantic_role"] == (
+        "textbook_page_label"
+    )
+
+
+def test_slide_plan_model_proposal_uses_frozen_support_materials(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _paths, service, lesson_id, reference_link = _ready_service_and_sources(
+        tmp_path,
+        monkeypatch,
+    )
+    pack, _created = _freeze_with_preferences(
+        service,
+        lesson_id=lesson_id,
+        reference_link_id=reference_link.id,
+        token="a10-model-slide-pack",
+        preferences=_preferences(),
+    )
+    local, _created = service.generate_lesson_draft(
+        pack.id,
+        operation_id="a10-model-slide-local",
+        mode="local_template",
+        confirmed=True,
+    )
+    confirmed, _created = service.revise_lesson_draft(
+        local.id,
+        request_token="a10-model-slide-confirmed",
+        payload=local.payload,
+        confirmed=True,
+    )
+    proposed = build_local_template(pack)
+    textbook = next(
+        item
+        for item in pack.payload["materials"]
+        if item["purpose"] == "textbook"
+    )
+    textbook_ref = (
+        f"material:{textbook['link_id']}:"
+        f"unit:{textbook['units'][0]['unit_index']}"
+    )
+    first = proposed["slide_adaptations"][0]
+    first["textbook_refs"] = [textbook_ref]
+    first["citations"] = [first["slide_ref"], textbook_ref]
+    first["reason"] = "依据冻结教材页标注讲授出处。"
+    adapter = FakeLessonModelAdapter(proposed)
+    service.lesson_model_adapter = adapter
+
+    plan, created = service.create_slide_plan(
+        confirmed.id,
+        request_token="a10-model-slide-plan",
+        model_proposal=True,
+    )
+
+    assert created is True
+    assert adapter.calls[0]["operation_id"] == "a10-model-slide-plan"
+    assert any(
+        item["kind"] == "add_text_box"
+        and item["citations"] == [first["slide_ref"], textbook_ref]
+        for item in plan.payload["operations"]
+    )
+
+
+def test_slide_plan_targets_question_objects_existing_slide_and_textbook_label(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _paths, service, lesson_id, reference_link = _ready_service_and_sources(
+        tmp_path,
+        monkeypatch,
+    )
+    pack, _created = _freeze_with_preferences(
+        service,
+        lesson_id=lesson_id,
+        reference_link_id=reference_link.id,
+        token="a10-object-edit-pack",
+        preferences=_preferences(supplement_question_limit=1),
+    )
+    draft, _created = service.generate_lesson_draft(
+        pack.id,
+        operation_id="a10-object-edit-draft",
+        mode="local_template",
+        confirmed=True,
+    )
+    payload = deepcopy(pack.payload)
+    ppt = next(item for item in payload["materials"] if item["purpose"] == "reference_ppt")
+    slide = ppt["units"][0]
+    slide["object_summary"]["objects"] = [
+        {
+            "object_ref": "shape:7",
+            "wps_object_id": "Question 3",
+            "object_type": "text_box",
+            "text": "3. 多余练习",
+            "position": {"x": 0.62, "y": 0.52, "width": 0.32, "height": 0.25},
+            "has_animation": False,
+            "safe_to_delete": True,
+        }
+    ]
+    slide_ref = f"material:{ppt['link_id']}:unit:{slide['unit_index']}"
+    object_ref = f"{slide_ref}:object:shape:7"
+    textbook = next(item for item in payload["materials"] if item["purpose"] == "textbook")
+    textbook_unit = textbook["units"][0]
+    textbook_unit["object_summary"].update(
+        {
+            "printed_page_number": 9,
+            "printed_page_number_source": "teacher_confirmed",
+        }
+    )
+    textbook_ref = f"material:{textbook['link_id']}:unit:{textbook_unit['unit_index']}"
+    proposal = build_local_template(replace(pack, payload=payload))
+    first = proposal["slide_adaptations"][0]
+    first["delete_object_refs"] = [object_ref]
+    first["textbook_refs"] = [textbook_ref]
+    first["citations"] = [slide_ref, textbook_ref]
+    included = next(
+        item for item in proposal["exercise_recommendations"] if item["action"] == "include"
+    )
+    included["target_slide_ref"] = slide_ref
+
+    plan, _source_state = build_slide_plan_payload(
+        replace(pack, payload=payload),
+        draft,
+        proposal_payload=proposal,
+    )
+    deletion = next(item for item in plan["operations"] if item["kind"] == "delete_shape")
+    insertion = next(
+        item for item in plan["operations"] if item["kind"] == "insert_static_image"
+    )
+    marker = next(item for item in plan["operations"] if item["kind"] == "add_text_box")
+
+    assert deletion["target"]["object_locator"] == {
+        "match_confidence": "exact",
+        "wps_object_id": "Question 3",
+        "stable_signature": "shape:7",
+    }
+    assert deletion["risk"] == "high"
+    for exact_top_level_type in ("grpSp", "graphicFrame"):
+        exact_top_level_deletion = deepcopy(deletion)
+        exact_top_level_deletion["decision"] = "approved"
+        exact_top_level_deletion["target"]["object_type"] = (
+            exact_top_level_type
+        )
+        assert validate_operation(exact_top_level_deletion)["decision"] == (
+            "approved"
+        )
+    protected_picture_deletion = deepcopy(deletion)
+    protected_picture_deletion["decision"] = "approved"
+    protected_picture_deletion["target"]["object_type"] = "static_image"
+    with pytest.raises(TeachingPrepValidationError):
+        validate_operation(protected_picture_deletion)
+    assert insertion["target"]["target_kind"] == "existing_slide"
+    assert insertion["target"]["slide_signature"] == plan["slides"][0]["stable_signature"]
+    assert "new_slide_operation_id" not in insertion["target"]
+    assert insertion["target"]["position"] == {
+        "x": 0.04,
+        "y": 0.12,
+        "width": 0.52,
+        "height": 0.68,
+    }
+    assert marker["details"]["text"] == "教材 P9"
+
+    executable = deepcopy(plan)
+    approved_ids = {
+        deletion["operation_id"],
+        insertion["operation_id"],
+        marker["operation_id"],
+    }
+    for operation in executable["operations"]:
+        operation["decision"] = (
+            "approved"
+            if operation["operation_id"] in approved_ids
+            else "rejected"
+        )
+    request = build_executor_request(
+        executable,
+        source_sha256="b" * 64,
+        source_copy=tmp_path / "source-copy.pptx",
+        candidate=tmp_path / "candidate.pptx",
+        preview_dir=tmp_path / "previews",
+        resolve_asset=lambda _ref, _operation_id: tmp_path / "question.png",
+    )
+    request_insertion = next(
+        item for item in request["operations"] if item["kind"] == "insert_static_image"
+    )
+    assert request_insertion["target"]["target_kind"] == "existing_slide"
+    assert request_insertion["target"]["generated_page_number"] == 1
+
+
+def test_teacher_can_move_insert_and_correct_textbook_label(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _paths, service, lesson_id, reference_link = _ready_service_and_sources(
+        tmp_path,
+        monkeypatch,
+    )
+    pack, _created = _freeze_with_preferences(
+        service,
+        lesson_id=lesson_id,
+        reference_link_id=reference_link.id,
+        token="a10-review-placement-pack",
+        preferences=_preferences(supplement_question_limit=1),
+    )
+    local, _created = service.generate_lesson_draft(
+        pack.id,
+        operation_id="a10-review-placement-local",
+        mode="local_template",
+        confirmed=True,
+    )
+    confirmed, _created = service.revise_lesson_draft(
+        local.id,
+        request_token="a10-review-placement-confirm",
+        payload=local.payload,
+        confirmed=True,
+    )
+    proposal = build_local_template(pack)
+    textbook = next(
+        item for item in pack.payload["materials"] if item["purpose"] == "textbook"
+    )
+    textbook_ref = (
+        f"material:{textbook['link_id']}:unit:{textbook['units'][0]['unit_index']}"
+    )
+    first = proposal["slide_adaptations"][0]
+    first["textbook_refs"] = [textbook_ref]
+    first["citations"] = [first["slide_ref"], textbook_ref]
+    service.lesson_model_adapter = FakeLessonModelAdapter(proposal)
+    plan, _created = service.create_slide_plan(
+        confirmed.id,
+        request_token="a10-review-placement-plan",
+        model_proposal=True,
+    )
+    marker = next(item for item in plan.payload["operations"] if item["kind"] == "add_text_box")
+    insertion = next(
+        item for item in plan.payload["operations"] if item["kind"] == "insert_static_image"
+    )
+    reviews = []
+    for operation in plan.payload["operations"]:
+        review = {
+            "operation_id": operation["operation_id"],
+            "decision": (
+                "approved"
+                if operation["operation_id"] in {
+                    marker["operation_id"],
+                    insertion["operation_id"],
+                }
+                else "rejected"
+            ),
+            "reason": operation["reason"],
+            "planned_minutes": operation["planned_minutes"],
+            "teacher_note": None,
+        }
+        if operation["operation_id"] == marker["operation_id"]:
+            review["text"] = "教材 P88"
+            review["position"] = {
+                "x": 0.70,
+                "y": 0.90,
+                "width": 0.24,
+                "height": 0.06,
+            }
+        if operation["operation_id"] == insertion["operation_id"]:
+            review["target_slide_number"] = 2
+            review["position"] = {
+                "x": 0.46,
+                "y": 0.16,
+                "width": 0.48,
+                "height": 0.62,
+            }
+        reviews.append(review)
+
+    revised, _created = service.revise_slide_plan(
+        plan.id,
+        request_token="a10-review-placement-save",
+        operation_reviews=reviews,
+        approve_low_risk_deletions=False,
+        review_note="人工校正位置与教材页码",
+    )
+    revised_marker = next(
+        item for item in revised.payload["operations"] if item["operation_id"] == marker["operation_id"]
+    )
+    revised_insert = next(
+        item for item in revised.payload["operations"] if item["operation_id"] == insertion["operation_id"]
+    )
+
+    assert revised_marker["details"]["text"] == "教材 P88"
+    assert revised_marker["target"]["position"]["x"] == 0.70
+    assert revised_insert["target"]["generated_page_number"] == 2
+    assert revised_insert["target"]["slide_signature"] == revised.payload["slides"][1]["stable_signature"]
+    assert revised_insert["target"]["position"]["x"] == 0.46
 
 
 def test_legacy_resource_pack_uses_read_time_defaults_without_rewrite(
@@ -402,6 +950,7 @@ def test_legacy_resource_pack_uses_read_time_defaults_without_rewrite(
         model_available=False,
         model_label=None,
     )
+    preflight["model_destination_fingerprint"] = "f" * 64
     validated = LessonDraftPreflightResponse.model_validate(preflight)
     plan, _source_state = build_slide_plan_payload(legacy_pack, draft)
 
@@ -608,6 +1157,56 @@ def test_multi_region_supplement_keeps_every_frozen_crop(
         payload["exercises"][0]["question_regions"][0]["material_unit_id"],
         "second-material-unit",
     }
+    assert images[0]["target"]["position"] != images[1]["target"]["position"]
+
+
+def test_multiple_exercises_on_one_existing_slide_do_not_overlap(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _paths, service, lesson_id, reference_link = _ready_service_and_sources(
+        tmp_path,
+        monkeypatch,
+    )
+    pack, _created = _freeze_with_preferences(
+        service,
+        lesson_id=lesson_id,
+        reference_link_id=reference_link.id,
+        token="a10-shared-slide-exercises-pack",
+        preferences=_preferences(supplement_question_limit=2),
+    )
+    draft, _created = service.generate_lesson_draft(
+        pack.id,
+        operation_id="a10-shared-slide-exercises-draft",
+        mode="local_template",
+        confirmed=True,
+    )
+    pack_payload = deepcopy(pack.payload)
+    second_exercise = deepcopy(pack_payload["exercises"][0])
+    second_exercise["candidate_id"] = "second-exercise"
+    second_exercise["question_regions"][0]["region_id"] = "second-region"
+    second_exercise["question_regions"][0]["material_unit_id"] = (
+        "second-material-unit"
+    )
+    pack_payload["exercises"].append(second_exercise)
+    draft_payload = deepcopy(draft.payload)
+    first_recommendation = draft_payload["exercise_recommendations"][0]
+    second_recommendation = deepcopy(first_recommendation)
+    second_recommendation["source_ref"] = "exercise:second-exercise"
+    second_recommendation["citations"] = ["exercise:second-exercise"]
+    draft_payload["exercise_recommendations"].append(second_recommendation)
+
+    plan, _source_state = build_slide_plan_payload(
+        replace(pack, payload=pack_payload),
+        replace(draft, payload=draft_payload),
+    )
+    images = [
+        item
+        for item in plan["operations"]
+        if item["kind"] == "insert_static_image"
+    ]
+
+    assert len(images) == 2
     assert images[0]["target"]["position"] != images[1]["target"]["position"]
 
 

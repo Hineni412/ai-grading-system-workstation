@@ -148,6 +148,7 @@ def verify_candidate(
             "WPS applied operation list does not match the approved plan"
         )
     check_budget()
+    source_units = parser.parse(source_path, material_type="pptx")
     units = parser.parse(candidate, material_type="pptx")
     check_budget()
     actual_slide_count = len(units)
@@ -178,7 +179,10 @@ def verify_candidate(
     check_budget()
     _require_surviving_titles(payload, units)
     check_budget()
-    expected_protected = _expected_protected_counts(payload)
+    expected_protected = _expected_protected_counts(
+        payload,
+        source_units=source_units,
+    )
     actual_protected = _actual_protected_counts(units)
     if actual_protected != expected_protected:
         raise TeachingPrepValidationError(
@@ -294,11 +298,21 @@ def _require_surviving_titles(
     payload: Mapping[str, object],
     units: tuple[object, ...],
 ) -> None:
+    source_titles = {
+        str(item.get("stable_signature") or ""): str(
+            item.get("title") or ""
+        ).strip()
+        for item in payload["slides"]
+    }
     title_may_change = {
         str(dict(item["target"]).get("slide_signature"))
         for item in payload["operations"]
         if item["decision"] == "approved"
         and item["kind"] == "delete_shape"
+        and source_titles.get(
+            str(dict(item["target"]).get("slide_signature"))
+        )
+        in str(dict(item["target"]).get("content_summary") or "")
     }
     expected_after = diff_preview(
         payload,
@@ -311,6 +325,8 @@ def _require_surviving_titles(
         if item.get("original_index") is not None
         and str(item.get("stable_signature") or "") not in title_may_change
         and str(item.get("title") or "").strip()
+        and str(item.get("title") or "").strip()
+        in str(item.get("text_summary") or "")
     ]
     candidate_texts = [
         str(getattr(unit, "extracted_text", "")) for unit in units
@@ -329,6 +345,8 @@ def _require_surviving_titles(
 
 def _expected_protected_counts(
     payload: Mapping[str, object],
+    *,
+    source_units: tuple[object, ...] | None = None,
 ) -> dict[str, int]:
     deleted = {
         str(dict(item["target"]).get("slide_signature"))
@@ -336,10 +354,25 @@ def _expected_protected_counts(
         if item["decision"] == "approved" and item["kind"] == "delete_slide"
     }
     counts: Counter[str] = Counter()
+    unit_by_page = {
+        int(getattr(unit, "unit_index", 0)): unit
+        for unit in (source_units or ())
+    }
+    slides_by_signature = {
+        str(slide.get("stable_signature") or ""): slide
+        for slide in payload["slides"]
+    }
     for slide in payload["slides"]:
-        if str(slide.get("stable_signature") or "") in deleted:
+        signature = str(slide.get("stable_signature") or "")
+        if signature in deleted:
             continue
-        summary = slide.get("object_summary")
+        page = int(slide.get("original_index") or 0)
+        source_unit = unit_by_page.get(page)
+        summary = (
+            getattr(source_unit, "object_summary", None)
+            if source_unit is not None
+            else slide.get("object_summary")
+        )
         object_types = (
             dict(summary).get("object_types")
             if isinstance(summary, Mapping)
@@ -359,6 +392,36 @@ def _expected_protected_counts(
             value = object_types.get(kind)
             if isinstance(value, int) and value > 0:
                 counts[kind] += value
+    for operation in payload["operations"]:
+        if operation["decision"] != "approved" or operation["kind"] != "delete_shape":
+            continue
+        target = dict(operation["target"])
+        signature = str(target.get("slide_signature") or "")
+        slide = slides_by_signature.get(signature)
+        if slide is None:
+            continue
+        source_unit = unit_by_page.get(int(slide.get("original_index") or 0))
+        summary = getattr(source_unit, "object_summary", {}) if source_unit else {}
+        objects = dict(summary).get("objects") if isinstance(summary, Mapping) else []
+        match = next(
+            (
+                item
+                for item in objects
+                if isinstance(item, Mapping)
+                and item.get("wps_object_id") == target.get("wps_object_id")
+            ),
+            None,
+        )
+        if match is None:
+            continue
+        object_type = str(match.get("object_type") or "")
+        if object_type in counts:
+            counts[object_type] -= 1
+        descendants = match.get("protected_descendant_counts")
+        if isinstance(descendants, Mapping):
+            for kind, value in descendants.items():
+                if isinstance(value, int) and value > 0:
+                    counts[str(kind)] -= value
     inserted_images = sum(
         1
         for item in payload["operations"]
@@ -367,7 +430,7 @@ def _expected_protected_counts(
     )
     if inserted_images:
         counts["pic"] += inserted_images
-    return dict(sorted(counts.items()))
+    return dict(sorted((kind, value) for kind, value in counts.items() if value > 0))
 
 
 def _actual_protected_counts(units: tuple[object, ...]) -> dict[str, int]:

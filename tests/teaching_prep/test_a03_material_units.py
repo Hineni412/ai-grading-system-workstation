@@ -5,6 +5,7 @@ import json
 import threading
 import zipfile
 from pathlib import Path
+from xml.etree import ElementTree
 
 import fitz
 import pytest
@@ -18,6 +19,7 @@ from backend.teaching_prep.application import preparation_service
 from backend.teaching_prep.domain.errors import TeachingPrepConflictError
 from backend.teaching_prep.infrastructure.fakes import FakeWpsAdapter
 from backend.teaching_prep.infrastructure.materials import MaterialParser
+from backend.teaching_prep.infrastructure.materials.parser import _slide_objects
 from backend.jobs import JobManager, JobStore
 
 from .test_a01_foundation import _migrated_service
@@ -101,8 +103,13 @@ def _pptx(path: Path) -> Path:
       xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"
       xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
       <p:cSld>
-        <p:spTree>
+          <p:spTree>
           <p:sp>
+            <p:nvSpPr>
+              <p:cNvPr id="2" name="Question 1"/>
+              <p:cNvSpPr/>
+              <p:nvPr/>
+            </p:nvSpPr>
             <p:spPr>
               <a:xfrm>
                 <a:off x="1200000" y="900000"/>
@@ -619,7 +626,126 @@ def test_pptx_slides_expose_titles_objects_and_structural_previews(
     assert units[0].object_summary["preview_kind"] == "structural"
     assert units[0].object_summary["object_count"] == 1
     assert units[0].object_summary["occupied_boxes"]
+    assert units[0].object_summary["objects"] == [
+        {
+            "object_ref": "shape:2",
+            "wps_object_id": "Question 1",
+            "object_type": "text_box",
+            "text": "Synthetic introduction",
+            "position": {
+                "x": 0.098425,
+                "y": 0.131234,
+                "width": 0.492126,
+                "height": 0.233304,
+            },
+            "has_animation": False,
+            "protected_descendant_counts": {},
+            "safe_to_delete": True,
+        }
+    ]
     assert units[1].formula_review_required is True
+
+
+def test_reparse_enriches_legacy_pptx_units_missing_object_inventory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _paths_value, service = _migrated_service(tmp_path, monkeypatch)
+    version = _register(
+        service,
+        _pptx(tmp_path / "legacy-reference.pptx"),
+        token="material-a03-legacy-pptx",
+        name="旧解析参考课件",
+    )
+    units = service.parse_material_version(version.id)
+    legacy_summary = dict(units[0].object_summary)
+    legacy_summary.pop("objects")
+    with service.material_units._database.connect(immediate=True) as connection:
+        connection.execute(
+            "UPDATE material_units SET object_summary_json = ? WHERE id = ?",
+            (json.dumps(legacy_summary), units[0].id),
+        )
+
+    reparsed = service.parse_material_version(version.id)
+
+    assert reparsed[0].object_summary["objects"][0]["object_ref"] == "shape:2"
+
+
+def test_pptx_animation_blocks_only_the_targeted_shape() -> None:
+    root = ElementTree.fromstring(
+        """
+        <p:sld xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"
+               xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
+          <p:cSld><p:spTree>
+            <p:sp><p:nvSpPr><p:cNvPr id="2" name="Animated question"/></p:nvSpPr>
+              <p:spPr><a:xfrm><a:off x="100" y="100"/><a:ext cx="200" cy="100"/></a:xfrm></p:spPr>
+              <p:txBody><a:p><a:r><a:t>Animated</a:t></a:r></a:p></p:txBody>
+            </p:sp>
+            <p:sp><p:nvSpPr><p:cNvPr id="3" name="Static question"/></p:nvSpPr>
+              <p:spPr><a:xfrm><a:off x="400" y="100"/><a:ext cx="200" cy="100"/></a:xfrm></p:spPr>
+              <p:txBody><a:p><a:r><a:t>Static</a:t></a:r></a:p></p:txBody>
+            </p:sp>
+          </p:spTree></p:cSld>
+          <p:timing><p:tnLst><p:par><p:spTgt spid="2"/></p:par></p:tnLst></p:timing>
+        </p:sld>
+        """
+    )
+
+    objects = _slide_objects(root, 1_000, 1_000)
+
+    assert objects[0]["has_animation"] is True
+    assert objects[0]["safe_to_delete"] is True
+    assert objects[1]["has_animation"] is False
+    assert objects[1]["safe_to_delete"] is True
+
+
+def test_pptx_unknown_animation_targets_keep_the_whole_slide_protected() -> None:
+    root = ElementTree.fromstring(
+        """
+        <p:sld xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"
+               xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
+          <p:cSld><p:spTree><p:sp>
+            <p:nvSpPr><p:cNvPr id="2" name="Question"/></p:nvSpPr>
+            <p:spPr><a:xfrm><a:off x="100" y="100"/><a:ext cx="200" cy="100"/></a:xfrm></p:spPr>
+            <p:txBody><a:p><a:r><a:t>Question</a:t></a:r></a:p></p:txBody>
+          </p:sp></p:spTree></p:cSld>
+          <p:timing><p:tnLst><p:par/></p:tnLst></p:timing>
+        </p:sld>
+        """
+    )
+
+    objects = _slide_objects(root, 1_000, 1_000)
+
+    assert objects[0]["has_animation"] is True
+    assert objects[0]["safe_to_delete"] is False
+
+
+def test_pptx_object_inventory_exposes_group_as_one_top_level_wps_object() -> None:
+    root = ElementTree.fromstring(
+        """
+        <p:sld xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"
+               xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
+          <p:cSld><p:spTree>
+            <p:grpSp>
+              <p:nvGrpSpPr><p:cNvPr id="11" name="Question diagram"/></p:nvGrpSpPr>
+              <p:grpSpPr><a:xfrm><a:off x="100" y="100"/><a:ext cx="400" cy="300"/></a:xfrm></p:grpSpPr>
+              <p:sp><p:nvSpPr><p:cNvPr id="12" name="Nested label"/></p:nvSpPr>
+                <p:spPr><a:xfrm><a:off x="20" y="30"/><a:ext cx="40" cy="30"/></a:xfrm></p:spPr>
+                <p:txBody><a:p><a:r><a:t>A</a:t></a:r></a:p></p:txBody>
+              </p:sp>
+            </p:grpSp>
+          </p:spTree></p:cSld>
+        </p:sld>
+        """
+    )
+
+    objects = _slide_objects(root, 1_000, 1_000)
+
+    assert len(objects) == 1
+    assert objects[0]["object_ref"] == "shape:11"
+    assert objects[0]["wps_object_id"] == "Question diagram"
+    assert objects[0]["object_type"] == "grpSp"
+    assert objects[0]["safe_to_delete"] is True
 
 
 def test_pptx_archive_rejects_compression_bomb_before_reading_slide_xml(

@@ -22,6 +22,9 @@ from backend.ops.archive import (
 from backend.teaching_prep.domain.errors import TeachingPrepValidationError
 
 
+PPT_OBJECT_SCHEMA_VERSION = 4
+
+
 _FORMULA_HINT = re.compile(
     r"[=±×÷√∑∫∞≈≠≤≥]|\\(?:frac|sqrt|sum|int)\b"
 )
@@ -532,7 +535,31 @@ def _pptx_slide_unit(
     preview = Image.new("RGB", (960, 540), "white")
     draw = ImageDraw.Draw(preview)
     draw.rectangle((0, 0, 959, 539), outline=(198, 203, 208), width=2)
-    rectangles = _shape_rectangles(root, slide_width, slide_height)
+    objects = _slide_objects(root, slide_width, slide_height)
+    rectangles = [
+        (
+            str(item["source_kind"]),
+            (
+                round(float(item["position"]["x"]) * 960),
+                round(float(item["position"]["y"]) * 540),
+                round(
+                    (
+                        float(item["position"]["x"])
+                        + float(item["position"]["width"])
+                    )
+                    * 960
+                ),
+                round(
+                    (
+                        float(item["position"]["y"])
+                        + float(item["position"]["height"])
+                    )
+                    * 540
+                ),
+            ),
+        )
+        for item in objects
+    ]
     for position, (kind, box) in enumerate(rectangles):
         color = {
             "pic": (73, 101, 121),
@@ -555,11 +582,20 @@ def _pptx_slide_unit(
         text_status="embedded" if text else "empty",
         formula_review_required=bool(text and _FORMULA_HINT.search(text)),
         object_summary={
+            "object_schema_version": PPT_OBJECT_SCHEMA_VERSION,
             "preview_kind": "structural",
             "preview_notice": "结构预览，不是原页",
             "preview_render_status": "pending",
             "object_count": sum(types.values()),
             "object_types": dict(sorted(types.items())),
+            "objects": [
+                {
+                    key: value
+                    for key, value in item.items()
+                    if key != "source_kind"
+                }
+                for item in objects
+            ],
             "occupied_boxes": [
                 {
                     "x": round(box[0] / 960, 6),
@@ -607,6 +643,122 @@ def _shape_rectangles(
         y1 = max(y0 + 1, min(539, round((top + height) / slide_height * 540)))
         rectangles.append((kind, (x0, y0, x1, y1)))
     return rectangles
+
+
+def _slide_objects(
+    root: ElementTree.Element,
+    slide_width: int,
+    slide_height: int,
+) -> list[dict[str, object]]:
+    """Expose safe, stable PPT objects without leaking package internals."""
+    result: list[dict[str, object]] = []
+    slide_has_animation = any(
+        _local_name(element.tag) == "timing" for element in root.iter()
+    )
+    animated_object_ids = {
+        str(element.attrib.get("spid") or "").strip()
+        for element in root.iter()
+        if _local_name(element.tag) == "spTgt"
+        and str(element.attrib.get("spid") or "").strip()
+    }
+    animation_targets_unknown = slide_has_animation and not animated_object_ids
+    shape_tree = next(
+        (
+            item
+            for item in root.iter()
+            if _local_name(item.tag) == "spTree"
+        ),
+        None,
+    )
+    top_level_objects = (
+        [
+            item
+            for item in list(shape_tree)
+            if _local_name(item.tag) in _DRAWABLE_TAGS
+        ]
+        if shape_tree is not None
+        else []
+    )
+    for ordinal, element in enumerate(top_level_objects, start=1):
+        source_kind = _local_name(element.tag)
+        offset = None
+        extent = None
+        object_id = None
+        object_name = None
+        texts: list[str] = []
+        for child in element.iter():
+            local = _local_name(child.tag)
+            if local == "cNvPr" and object_id is None:
+                object_id = str(child.attrib.get("id") or "").strip() or None
+                object_name = str(child.attrib.get("name") or "").strip() or None
+            elif local == "off" and offset is None:
+                offset = child
+            elif local == "ext" and extent is None:
+                extent = child
+            elif local == "t" and str(child.text or "").strip():
+                texts.append(str(child.text or "").strip())
+        if offset is None or extent is None:
+            continue
+        try:
+            left = int(offset.attrib.get("x") or 0)
+            top = int(offset.attrib.get("y") or 0)
+            width = int(extent.attrib.get("cx") or 0)
+            height = int(extent.attrib.get("cy") or 0)
+        except (TypeError, ValueError):
+            continue
+        if width <= 0 or height <= 0:
+            continue
+        object_type = (
+            "text_box"
+            if source_kind == "sp" and texts
+            else "shape"
+            if source_kind in {"sp", "cxnSp"}
+            else "static_image"
+            if source_kind == "pic"
+            else source_kind
+        )
+        stable_id = object_id or f"ordinal-{ordinal}"
+        exact_locator = bool(object_name)
+        has_animation = animation_targets_unknown or stable_id in animated_object_ids
+        protected_descendants = Counter(
+            _local_name(child.tag)
+            for child in element.iter()
+            if child is not element
+            and _local_name(child.tag)
+            in {
+                "audio",
+                "control",
+                "graphicFrame",
+                "grpSp",
+                "oleObj",
+                "pic",
+                "video",
+            }
+        )
+        result.append(
+            {
+                "source_kind": source_kind,
+                "object_ref": f"shape:{stable_id}",
+                "wps_object_id": object_name,
+                "object_type": object_type,
+                "text": "\n".join(texts)[:2_000],
+                "position": {
+                    "x": round(left / slide_width, 6),
+                    "y": round(top / slide_height, 6),
+                    "width": round(width / slide_width, 6),
+                    "height": round(height / slide_height, 6),
+                },
+                "has_animation": has_animation,
+                "protected_descendant_counts": dict(
+                    sorted(protected_descendants.items())
+                ),
+                "safe_to_delete": (
+                    exact_locator
+                    and not animation_targets_unknown
+                ),
+            }
+        )
+    return result
 
 
 def _default_ocr_engine() -> object:

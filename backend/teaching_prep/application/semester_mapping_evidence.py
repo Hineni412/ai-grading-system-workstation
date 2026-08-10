@@ -17,7 +17,8 @@ _INLINE_PAGE_REFERENCE = re.compile(
     r"^(?P<title>.+?)(?:[/／]|[.·…⋯_]{2,}|\s)\s*(?P<page>\d{1,4})\s*$"
 )
 _MAX_TOC_ENTRIES = 160
-_MAX_ANCHORS = 28
+_MAX_ANCHORS = 120
+_EXPLICIT_LESSON_ANCHOR = re.compile(r"第\s*\d+\s*课时")
 
 
 class DirectoryEvidenceBuilder:
@@ -123,6 +124,7 @@ def _toc_entries(
     preferred_page_track: str | None = None,
 ) -> list[dict[str, object]]:
     found: list[dict[str, object]] = []
+    inline_directory_active = False
     for unit in units:
         layout_entries = _layout_toc_entries(
             unit,
@@ -131,6 +133,7 @@ def _toc_entries(
         )
         if layout_entries:
             found.extend(layout_entries)
+            inline_directory_active = True
             if len(found) >= _MAX_TOC_ENTRIES:
                 return found[:_MAX_TOC_ENTRIES]
             continue
@@ -140,12 +143,42 @@ def _toc_entries(
                 str(unit.get("text_excerpt") or "").strip(),
             ) if part
         )
-        for line in text.splitlines():
+        lines = text.splitlines()
+        inline_matches = [
+            _INLINE_PAGE_REFERENCE.match(line)
+            for line in lines
+        ]
+        has_directory_header = (
+            "目录" in text or "CONTENTS" in text.upper()
+        )
+        inline_match_count = sum(
+            item is not None for item in inline_matches
+        )
+        allow_inline_page_references = (
+            has_directory_header
+            or (inline_directory_active and inline_match_count > 0)
+        )
+        matched_inline_reference = False
+        for line, cached_inline_match in zip(
+            lines,
+            inline_matches,
+            strict=True,
+        ):
             match = _TOC_LINE.match(line)
-            if match is None:
+            if match is not None:
+                inline_match = None
+            elif allow_inline_page_references:
+                inline_match = cached_inline_match
+            else:
+                inline_match = None
+            if match is None and inline_match is None:
                 continue
-            title = _clean_title(match.group("title"))
-            page = int(match.group("page"))
+            if inline_match is not None:
+                matched_inline_reference = True
+            source_match = match or inline_match
+            assert source_match is not None
+            title = _clean_title(source_match.group("title"))
+            page = int(source_match.group("page"))
             if len(title) < 2 or page < 1:
                 continue
             found.append(
@@ -159,6 +192,9 @@ def _toc_entries(
             )
             if len(found) >= _MAX_TOC_ENTRIES:
                 return found
+        inline_directory_active = (
+            allow_inline_page_references and matched_inline_reference
+        )
     return found
 
 
@@ -625,6 +661,23 @@ def _anchors(
         end = int(item["end_unit"])
         indices.update((start, (start + end) // 2, end))
     if not resolved_ranges:
+        # OCR-only workbooks often have no reliably parsed dotted TOC rows,
+        # while their locally extracted page headings still identify lessons
+        # well. Keep those headings as bounded semantic evidence so the model
+        # can suggest a page and the teacher can widen or narrow it locally.
+        indices.update(range(1, min(len(units), 12) + 1))
+        indices.update(
+            int(unit.get("unit_index") or 0)
+            for unit in units
+            if _EXPLICIT_LESSON_ANCHOR.search(
+                "\n".join(
+                    (
+                        str(unit.get("title") or ""),
+                        str(unit.get("text_excerpt") or "")[:500],
+                    )
+                )
+            )
+        )
         step = max(1, len(units) // 8)
         indices.update(range(1, len(units) + 1, step))
     result: list[dict[str, object]] = []

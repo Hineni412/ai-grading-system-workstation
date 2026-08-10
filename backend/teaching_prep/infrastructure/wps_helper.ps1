@@ -390,11 +390,18 @@ try {
                 $target = $operation.target
                 $position = $target.position
                 if ($operation.kind -eq 'insert_static_image') {
-                    $slide = $addedSlides[
-                        [string]$target.new_slide_operation_id
-                    ]
-                    if ($null -eq $slide) {
-                        throw 'New slide target is unavailable'
+                    if ([string]$target.target_kind -eq 'existing_slide') {
+                        $slide = Get-OriginalSlide `
+                            -Presentation $presentation `
+                            -OriginalSlideIds $originalSlideIds `
+                            -OriginalIndex ([int]$target.generated_page_number)
+                    } else {
+                        $slide = $addedSlides[
+                            [string]$target.new_slide_operation_id
+                        ]
+                        if ($null -eq $slide) {
+                            throw 'New slide target is unavailable'
+                        }
                     }
                     $box = Get-NormalizedBox `
                         -Position $position `

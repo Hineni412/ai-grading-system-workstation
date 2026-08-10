@@ -21,14 +21,50 @@ const textbookLink = {
   material_type: 'pdf', content_sha256: 'b'.repeat(64), start_unit: 21, end_unit: 26,
   units: [{ unit_id: 'unit-book-21', unit_index: 21, unit_kind: 'pdf_page', title: '探索勾股定理', preview_url: '/book/21', text_status: 'embedded', formula_review_required: false }],
 }
+const exerciseLink = {
+  link_id: 'link-exercise', link_revision: 1, purpose: 'exercise',
+  material_version_id: 'version-exercise', material_name: '八年级数学同步教辅',
+  material_type: 'pdf', content_sha256: '3'.repeat(64), start_unit: 7, end_unit: 10,
+  units: [{ unit_id: 'unit-exercise-7', unit_index: 7, unit_kind: 'pdf_page', title: '勾股定理练习', preview_url: '/exercise/7', text_status: 'embedded', formula_review_required: false }],
+}
 const pack = {
   id: 'pack-1', lesson_node_id: 'lesson-1', version_number: 1,
   source_state_sha256: 'c'.repeat(64), pack_sha256: 'd'.repeat(64),
-  payload: { materials: [{ link_id: 'link-ppt' }, { link_id: 'link-book' }] }, created_at: '',
+  payload: {
+    materials: [{ link_id: 'link-ppt' }, { link_id: 'link-book' }, { link_id: 'link-exercise' }],
+    selection: { exercise_candidate_ids: ['exercise-candidate-1'] },
+  }, created_at: '',
 }
 const draft = {
   id: 'draft-1', resource_pack_id: 'pack-1', version_number: 1,
   status: 'confirmed', payload: {}, created_at: '',
+}
+const generatedDraft = {
+  ...draft,
+  id: 'draft-generated',
+  status: 'draft',
+}
+const reusableCandidate = {
+  id: 'exercise-candidate-1', is_active: true, selection_status: 'classroom_candidate',
+  question_regions: [{ material_version_id: 'version-exercise' }],
+}
+const suggestionPayload = {
+  material_version_id: 'version-exercise', question_number: '4', content_label: '教辅第 4 题',
+  difficulty: 'medium' as const, classroom_use: 'guided_practice', estimated_minutes: 4,
+  teaching_focus: '勾股定理应用', reason: '适合课堂巩固', uncertainties: [],
+  question_regions: [{ material_unit_id: 'unit-exercise-7', sequence: 1, crop: { x0: 0.1, y0: 0.12, x1: 0.9, y1: 0.7 } }],
+  answer_regions: [],
+}
+const suggestion = {
+  id: 'suggestion-1', run_id: 'exercise-run-1', lesson_node_id: 'lesson-1',
+  source_state_sha256: 'e'.repeat(64), decision: 'pending' as const,
+  original_payload: suggestionPayload, teacher_payload: null, rejection_reason: null,
+  exercise_candidate_id: null, revision: 1, created_at: '', updated_at: '',
+}
+const suggestionRun = {
+  id: 'exercise-run-1', snapshot_id: 'snapshot-1', operation_id: 'exercise-op-1',
+  status: 'succeeded' as const, error_code: null, model_call_count: 1,
+  created_at: '', updated_at: '', finished_at: '', suggestions: [suggestion],
 }
 
 function aiTask(status: WorkspaceAITaskStatus = 'running'): WorkspaceAITask {
@@ -52,6 +88,8 @@ function mountWorkspace(options: {
   existingDraft?: boolean
   semesterMaterials?: Array<Record<string, unknown>>
   materials?: Array<Record<string, unknown>>
+  referenceLinks?: Array<Record<string, unknown>>
+  exerciseCandidates?: Array<Record<string, unknown>>
   onRefresh?: (fake: Record<string, unknown>) => Promise<void>
 } = {}) {
   const catalog = {
@@ -67,6 +105,7 @@ function mountWorkspace(options: {
     lessonDrafts: options.existingDraft ? [draft] : [],
     selectedLessonDraftId: options.existingDraft ? 'draft-1' : null,
     saveState: 'idle',
+    exerciseCandidates: options.exerciseCandidates ?? [],
     selectResourcePack: vi.fn(async () => undefined),
     freezeResourcePack: vi.fn(async () => {
       catalog.resourcePacks = [pack]
@@ -74,6 +113,9 @@ function mountWorkspace(options: {
     }),
     prepareLessonDraft: vi.fn(async () => undefined),
     generateLessonDraft: vi.fn(async () => {
+      catalog.lessonDrafts = [generatedDraft]
+    }),
+    reviseLessonDraft: vi.fn(async () => {
       catalog.lessonDrafts = [draft]
     }),
     selectLessonDraft: vi.fn(async () => {
@@ -84,13 +126,14 @@ function mountWorkspace(options: {
     catalog,
     referencePreflight: ref({
       lesson_node_id: 'lesson-1', source_state_sha256: 'e'.repeat(64),
-      catalog: { lesson: {}, material_links: [primaryLink, textbookLink] },
+      catalog: { lesson: {}, material_links: options.referenceLinks ?? [primaryLink, textbookLink, exerciseLink] },
       draft: null, model_available: true, model_label: '测试模型',
       model_destination_fingerprint: 'f'.repeat(64), will_call_model: false,
     }),
     pane: ref('preview'), dirtyReason: ref<string | null>(null),
     setPane: vi.fn(), setDirty: vi.fn((reason: string | null) => { fake.dirtyReason.value = reason }),
     refreshCurrentWorkspace: vi.fn(async () => options.onRefresh?.(fake as unknown as Record<string, unknown>)),
+    openWorkspace: vi.fn(async () => undefined),
     openStage: vi.fn(async () => undefined),
   }
   const host = document.createElement('div')
@@ -117,6 +160,8 @@ describe('LessonMaterialConfirmationWorkspace', () => {
     expect(host.textContent).toContain('确认主课件和参考依据')
     expect(host.textContent).toContain('教学文字')
     expect(host.textContent).toContain('无需填写')
+    expect(host.textContent).toContain('共 2 次：教辅识题 + 课件改编 · 失败不自动重试')
+    expect(host.textContent).toContain('本机无法预估金额；由当前模型服务商按实际用量计费，点击生成即确认本次调用')
     app.unmount()
   })
 
@@ -312,27 +357,105 @@ describe('LessonMaterialConfirmationWorkspace', () => {
   })
 
   it('saves exactly the checked sources before freezing and dispatching the AI task', async () => {
-    const save = vi.spyOn(teachingPrepWorkbenchApi, 'saveReferenceDraft').mockResolvedValue({} as never)
+    const save = vi.spyOn(teachingPrepWorkbenchApi, 'saveReferenceDraft').mockResolvedValue({ revision: 1 } as never)
+    vi.spyOn(teachingPrepWorkbenchApi, 'freezeReferenceSnapshot').mockResolvedValue({ id: 'snapshot-1' } as never)
+    vi.spyOn(teachingPrepWorkbenchApi, 'startExerciseSuggestions').mockResolvedValue(suggestionRun)
+    vi.spyOn(teachingPrepWorkbenchApi, 'reviewExerciseSuggestion').mockResolvedValue({
+      ...suggestion, decision: 'modified', teacher_payload: suggestionPayload,
+      exercise_candidate_id: 'exercise-candidate-1', revision: 2,
+    })
     vi.spyOn(teachingPrepWorkbenchApi, 'resourcePackPreflight').mockResolvedValue({})
-    const { app, host, pinia, fake } = mountWorkspace()
+    const { app, host, pinia, fake } = mountWorkspace({
+      onRefresh: async (provided) => {
+        const referencePreflight = provided.referencePreflight as { value: Record<string, unknown> }
+        referencePreflight.value = { ...referencePreflight.value }
+      },
+    })
     const aiTasks = useWorkspaceAITaskStore(pinia)
     vi.spyOn(aiTasks, 'prepare').mockResolvedValue(aiTask('prepared'))
     const dispatch = vi.spyOn(aiTasks, 'dispatch').mockResolvedValue(aiTask('running'))
     await nextTick()
 
-    host.querySelector<HTMLInputElement>('input[value="link-book"]')?.click()
-    const send = [...host.querySelectorAll<HTMLButtonElement>('button')]
-      .find(item => item.textContent?.includes('确认资料并发送给 AI'))
-    send?.click()
+    const send = host.querySelector<HTMLButtonElement>('[data-testid="send-slide-adaptation"]')!
+    send.click()
+    await vi.waitFor(() => expect(host.textContent).toContain('AI 找到 1 道候选题'))
+    const cropPreview = host.querySelector<HTMLImageElement>('[data-testid="exercise-crop-preview"]')!
+    expect(cropPreview.style.position).toBe('absolute')
+    expect(cropPreview.style.objectFit).toBe('fill')
+    expect(cropPreview.style.maxWidth).toBe('none')
+    expect(dispatch).not.toHaveBeenCalled()
+    send.click()
 
     await vi.waitFor(() => expect(dispatch).toHaveBeenCalledOnce())
     const selection = save.mock.calls[0]?.[1].selection
-    expect(selection?.material_selections.map(item => item.link_id)).toEqual(['link-ppt'])
+    expect(selection?.material_selections).toEqual([
+      { link_id: 'link-ppt', start_unit: 1, end_unit: 18, ppt_intent: 'keep' },
+      { link_id: 'link-book', start_unit: 21, end_unit: 26 },
+      { link_id: 'link-exercise', start_unit: 7, end_unit: 10 },
+    ])
     expect(selection?.teacher_context).toBeNull()
+    expect(save.mock.calls.at(-1)?.[1].selection.exercise_candidate_ids).toEqual([
+      'exercise-candidate-1',
+    ])
     expect(fake.catalog.freezeResourcePack).toHaveBeenCalledWith(expect.objectContaining({
-      selected_material_link_ids: ['link-ppt'], selected_exercise_candidate_ids: [], teacher_context: null,
+      selected_material_link_ids: ['link-ppt', 'link-book', 'link-exercise'], selected_exercise_candidate_ids: ['exercise-candidate-1'], teacher_context: null,
     }))
+    expect(fake.catalog.reviseLessonDraft).toHaveBeenCalledWith(
+      generatedDraft,
+      generatedDraft.payload,
+      true,
+    )
     expect(fake.openStage).toHaveBeenCalledWith('slides', { panel: 'slides' })
+    app.unmount()
+  })
+
+  it('blocks PPT-only sending until mapped textbook and workbook ranges exist or the teacher explicitly chooses degraded mode', async () => {
+    const parsedRecord = {
+      id: 'record-textbook', semester_id: 'semester-1', material_source_id: 'source-textbook',
+      display_name: '已解析教材', material_role: 'textbook', mapping_status: 'unmapped',
+      current_material_version_id: 'version-textbook', safe_filename: 'textbook.pdf',
+      current_inspection_status: 'ready', current_unit_count: 100,
+      last_parsed_version_id: 'version-textbook', has_unparsed_update: false,
+      parse_status: 'parsed', parsed_at: '', is_active: true, revision: 1,
+      created_at: '', updated_at: '',
+    }
+    const { app, host, fake } = mountWorkspace({
+      referenceLinks: [primaryLink],
+      semesterMaterials: [
+        parsedRecord,
+        {
+          ...parsedRecord,
+          id: 'record-workbook-a',
+          material_source_id: 'source-workbook-a',
+          display_name: '名师课堂',
+          material_role: 'exercise_workbook',
+          current_material_version_id: 'version-workbook-a',
+          last_parsed_version_id: 'version-workbook-a',
+        },
+        {
+          ...parsedRecord,
+          id: 'record-workbook-b',
+          material_source_id: 'source-workbook-b',
+          display_name: '全品学练考',
+          material_role: 'exercise_workbook',
+          current_material_version_id: 'version-workbook-b',
+          last_parsed_version_id: 'version-workbook-b',
+        },
+      ],
+    })
+    await nextTick()
+
+    const send = host.querySelector<HTMLButtonElement>('[data-testid="send-slide-adaptation"]')!
+    expect(send.disabled).toBe(true)
+    expect(host.textContent).toContain('还缺少教材（已解析教材）、参考教辅（名师课堂）、参考教辅（全品学练考）的已确认页段')
+    host.querySelector<HTMLButtonElement>('[data-testid="open-material-mapping"]')!.click()
+    expect(fake.openWorkspace).toHaveBeenCalledWith('materials')
+
+    const degraded = host.querySelector<HTMLInputElement>('[data-testid="allow-ppt-only"]')!
+    degraded.click()
+    await nextTick()
+    expect(send.disabled).toBe(false)
+    expect(host.textContent).toContain('本次只依据 PPT，可能偏离教材与教辅')
     app.unmount()
   })
 
@@ -343,9 +466,8 @@ describe('LessonMaterialConfirmationWorkspace', () => {
     const prepare = vi.spyOn(aiTasks, 'prepare')
     await nextTick()
 
-    const send = [...host.querySelectorAll<HTMLButtonElement>('button')]
-      .find(item => item.textContent?.includes('确认资料并发送给 AI'))
-    send?.click()
+    const send = host.querySelector<HTMLButtonElement>('[data-testid="send-slide-adaptation"]')!
+    send.click()
 
     await vi.waitFor(() => expect(host.textContent).toContain('尚未发送：版本已变化'))
     expect(fake.catalog.freezeResourcePack).not.toHaveBeenCalled()
@@ -363,13 +485,45 @@ describe('LessonMaterialConfirmationWorkspace', () => {
     await nextTick()
 
     const send = [...host.querySelectorAll<HTMLButtonElement>('button')]
-      .find(item => item.textContent?.includes('重新确认并查看改编'))
+      .find(item => item.textContent?.includes('查看正在处理的改编'))
     send?.click()
 
     await vi.waitFor(() => expect(fake.openStage).toHaveBeenCalledWith('slides', { panel: 'slides' }))
     expect(prepare).not.toHaveBeenCalled()
     expect(dispatch).not.toHaveBeenCalled()
     expect(fake.catalog.freezeResourcePack).not.toHaveBeenCalled()
+    app.unmount()
+  })
+
+  it('lets the teacher explicitly generate a new AI version after reviewing a ready proposal', async () => {
+    vi.spyOn(teachingPrepWorkbenchApi, 'saveReferenceDraft').mockResolvedValue({} as never)
+    const { app, host, pinia } = mountWorkspace({ existingPack: true, existingDraft: true, exerciseCandidates: [reusableCandidate] })
+    const aiTasks = useWorkspaceAITaskStore(pinia)
+    aiTasks.track(aiTask('proposal_ready'))
+    vi.spyOn(aiTasks, 'prepare').mockResolvedValue(aiTask('prepared'))
+    const dispatch = vi.spyOn(aiTasks, 'dispatch').mockResolvedValue(aiTask('running'))
+    await nextTick()
+
+    const send = [...host.querySelectorAll<HTMLButtonElement>('button')]
+      .find(item => item.textContent?.includes('重新生成 AI 改编（调用 1 次）'))
+    send?.click()
+
+    await vi.waitFor(() => expect(dispatch).toHaveBeenCalledOnce())
+    expect(aiTasks.prepare).toHaveBeenCalledOnce()
+    app.unmount()
+  })
+
+  it('lets the teacher discard reusable candidates and re-run workbook recognition', async () => {
+    const { app, host } = mountWorkspace({ exerciseCandidates: [reusableCandidate] })
+    await nextTick()
+
+    const restart = host.querySelector<HTMLButtonElement>('[data-testid="restart-exercise-recognition"]')!
+    restart.click()
+    await nextTick()
+
+    expect(host.textContent).toContain('共 2 次：教辅识题 + 课件改编')
+    expect(host.textContent).toContain('先让 AI 识别教辅题（第 1/2 次）')
+    expect(host.textContent).toContain('重新识别当前勾选的教辅原页')
     app.unmount()
   })
 })

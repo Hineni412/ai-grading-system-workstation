@@ -235,6 +235,16 @@ def _materialize_synthetic_pptx(plan: dict[str, Any]) -> None:
         if item.get("kind") == "insert_static_image"
         and isinstance(item.get("target"), dict)
     }
+    existing_image_counts: dict[int, int] = {}
+    for item in operations:
+        if item.get("kind") != "insert_static_image":
+            continue
+        target = item.get("target")
+        if not isinstance(target, dict) or target.get("target_kind") != "existing_slide":
+            continue
+        page = target.get("generated_page_number")
+        if isinstance(page, int) and page > 0:
+            existing_image_counts[page] = existing_image_counts.get(page, 0) + 1
     slide_pattern = re.compile(r"^ppt/slides/slide([1-9][0-9]*)\.xml$")
     with zipfile.ZipFile(source) as archive:
         names = archive.namelist()
@@ -247,7 +257,10 @@ def _materialize_synthetic_pptx(plan: dict[str, Any]) -> None:
             key=lambda item: item[0],
         )
         slide_payloads = [
-            data
+            _with_synthetic_pictures(
+                data,
+                existing_image_counts.get(position + 1, 0),
+            )
             for position, (_index, data) in enumerate(original_slides)
             if position not in delete_indexes
         ]
@@ -309,3 +322,21 @@ def _synthetic_slide_xml(title: str, *, with_picture: bool) -> bytes:
         f"{title}</a:t></a:r></a:p></p:txBody></p:sp>"
         f"{picture}</p:spTree></p:cSld></p:sld>"
     ).encode("utf-8")
+
+
+def _with_synthetic_pictures(payload: bytes, count: int) -> bytes:
+    if count <= 0:
+        return payload
+    marker = b"</p:spTree>"
+    if marker not in payload:
+        return payload
+    pictures = "".join(
+        (
+            '<p:pic><p:nvPicPr><p:cNvPr '
+            f'id="{9000 + index}" name="Synthetic inserted image {index}"/>'
+            '</p:nvPicPr><p:spPr><a:xfrm><a:off x="1000000" y="1000000"/>'
+            '<a:ext cx="5000000" cy="3000000"/></a:xfrm></p:spPr></p:pic>'
+        )
+        for index in range(1, count + 1)
+    ).encode("utf-8")
+    return payload.replace(marker, pictures + marker, 1)

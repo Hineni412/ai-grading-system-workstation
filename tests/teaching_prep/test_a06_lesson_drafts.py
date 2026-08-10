@@ -247,6 +247,7 @@ def test_api_exposes_safe_preflight_and_logs_no_resource_or_model_body(
         )
 
     assert preflight.status_code == 200
+    assert len(preflight.json()["model_destination_fingerprint"]) == 64
     assert response.status_code == 201
     assert response.json()["capacity"]["planned_minutes"] > 0
     assert marker not in caplog.text

@@ -146,9 +146,18 @@ def test_slide_adapter_persists_metadata_for_local_recovery(tmp_path: Path) -> N
                 source_status=lambda _pack_id: {"sources_changed": False}
             )
 
-        def create_slide_plan(self, draft_id: str, *, request_token: str):
+        def create_slide_plan(
+            self,
+            draft_id: str,
+            *,
+            request_token: str,
+            model_proposal: bool,
+            task_model_gateway: object,
+        ):
             self.calls += 1
             assert (draft_id, request_token) == ("draft-r7", "operation-r7-slide")
+            assert model_proposal is True
+            assert isinstance(task_model_gateway, WorkspaceAITaskModelGateway)
             with sqlite3.connect(database_path) as connection:
                 connection.execute(
                     "INSERT OR IGNORE INTO slide_plan_versions VALUES ('plan-r7', ?, 4)",

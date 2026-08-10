@@ -45,6 +45,35 @@ class WorkbenchIterationRepository:
             ).fetchone()
             if semester is None:
                 raise TeachingPrepNotFoundError("semester was not found")
+            required_supports = connection.execute(
+                """
+                SELECT
+                    source.display_name,
+                    CASE WHEN record.is_daily_workbook = 1
+                         THEN 'homework_workbook'
+                         ELSE record.material_role END AS material_role,
+                    record.last_parsed_version_id AS material_version_id
+                FROM semester_material_records record
+                JOIN material_sources source
+                  ON source.id = record.material_source_id
+                WHERE record.semester_id = ?
+                  AND record.is_active = 1
+                  AND record.parse_status = 'parsed'
+                  AND record.material_role IN (
+                      'textbook',
+                      'exercise_workbook',
+                      'homework_workbook'
+                  )
+                  AND record.last_parsed_version_id = (
+                      SELECT version.id FROM material_versions version
+                      WHERE version.source_id = record.material_source_id
+                      ORDER BY version.created_at DESC, version.id DESC
+                      LIMIT 1
+                  )
+                ORDER BY record.created_at, record.id
+                """,
+                (semester_id,),
+            ).fetchall()
             rows = connection.execute(
                 """
                 SELECT
@@ -58,6 +87,25 @@ class WorkbenchIterationRepository:
                      WHERE link.lesson_node_id = lesson.id
                        AND link.is_active = 1
                        AND link.confirmation_status = 'confirmed') AS material_count,
+                    (SELECT COUNT(*) FROM lesson_material_links link
+                     WHERE link.lesson_node_id = lesson.id
+                       AND link.is_active = 1
+                       AND link.confirmation_status = 'confirmed'
+                       AND link.purpose = 'reference_ppt') AS reference_ppt_count,
+                    (SELECT COUNT(*) FROM lesson_material_links link
+                     WHERE link.lesson_node_id = lesson.id
+                       AND link.is_active = 1
+                       AND link.confirmation_status = 'confirmed'
+                       AND link.purpose <> 'reference_ppt') AS support_link_count,
+                    (SELECT GROUP_CONCAT(
+                                link.material_version_id || ':' || link.purpose,
+                                '|'
+                            )
+                     FROM lesson_material_links link
+                     WHERE link.lesson_node_id = lesson.id
+                       AND link.is_active = 1
+                       AND link.confirmation_status = 'confirmed'
+                       AND link.purpose <> 'reference_ppt') AS confirmed_support_links,
                     (SELECT id FROM resource_pack_versions pack
                      WHERE pack.lesson_node_id = lesson.id
                      ORDER BY pack.version_number DESC LIMIT 1) AS resource_pack_id,
@@ -128,7 +176,10 @@ class WorkbenchIterationRepository:
                   AND lesson.is_active = 1
                 ORDER BY lesson.sort_order, lesson.id
                 """,
-                (semester_id, str(semester["curriculum_id"])),
+                (
+                    semester_id,
+                    str(semester["curriculum_id"]),
+                ),
             ).fetchall()
         pack_ids = tuple(
             str(row["resource_pack_id"])
@@ -141,6 +192,7 @@ class WorkbenchIterationRepository:
             _preparation_status(
                 row,
                 tasks_by_lesson.get(str(row["id"]), []),
+                required_supports=required_supports,
                 sources_changed=(
                     row["resource_pack_id"] is not None
                     and source_changes.get(str(row["resource_pack_id"]), False)
@@ -687,15 +739,15 @@ def _preparation_status(
     row: sqlite3.Row,
     ai_tasks: Sequence[Mapping[str, object]],
     *,
+    required_supports: Sequence[sqlite3.Row] = (),
     sources_changed: bool = False,
 ) -> dict[str, object]:
     manual = str(row["manual_progress"])
     blockers: list[str] = []
     stage = "select"
     next_action = "核对资料"
-    if int(row["material_count"]) == 0:
-        blockers.append("尚未确认本节资料")
-    else:
+    material_count = int(row["material_count"])
+    if material_count:
         stage = "materials"
     if row["resource_pack_id"] is not None:
         stage = "plan"
@@ -713,9 +765,38 @@ def _preparation_status(
     exercise_count = int(row["exercise_count"])
     selected_exercise_count = int(row["selected_exercise_count"])
     missing_answer_count = int(row["missing_answer_count"])
+    missing_materials: list[str] = []
+    if int(row["reference_ppt_count"]) == 0:
+        missing_materials.append("主课件")
+    confirmed_support_links = {
+        item
+        for item in str(row["confirmed_support_links"] or "").split("|")
+        if item
+    }
+    for support in required_supports:
+        role = str(support["material_role"])
+        purpose = "textbook" if role == "textbook" else "exercise"
+        version_id = str(support["material_version_id"])
+        if f"{version_id}:{purpose}" not in confirmed_support_links:
+            prefix = "教材" if role == "textbook" else "参考教辅"
+            missing_materials.append(
+                f"{prefix}（{str(support['display_name'])}）"
+            )
+    if not required_supports and int(row["support_link_count"]) == 0:
+        missing_materials.append("参考依据")
+    materials_ready = not missing_materials
+    if not materials_ready:
+        blockers.append(
+            "尚未确认本节资料" if material_count == 0
+            else f"待补{'、'.join(missing_materials)}页段"
+        )
     materials = {
-        "status": "ready" if int(row["material_count"]) else "needs_teacher",
-        "summary": f"{int(row['material_count'])} 份已确认" if int(row["material_count"]) else "待确认来源",
+        "status": "ready" if materials_ready else "needs_teacher",
+        "summary": (
+            f"{material_count} 份已确认"
+            if materials_ready
+            else f"待补{'、'.join(missing_materials)}页段"
+        ),
         "target_panel": "sources",
     }
     plan_status = (

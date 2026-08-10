@@ -211,6 +211,29 @@ def test_freeze_is_complete_idempotent_and_old_version_is_immutable(
     assert service.resource_pack_status(lesson_id)[
         "local_sources_changed"
     ] is False
+    unit_id = candidate.question_regions[0].material_unit_id
+    with service.database.connect(immediate=True) as connection:
+        row = connection.execute(
+            "SELECT object_summary_json FROM material_units WHERE id = ?",
+            (unit_id,),
+        ).fetchone()
+        summary = json.loads(str(row["object_summary_json"] or "{}"))
+        summary["preview_render_status"] = "completed"
+        summary["preview_notice"] = "derived preview changed"
+        summary["rendered_source_sha256"] = "a" * 64
+        summary["width"] = 1280
+        summary["height"] = 720
+        connection.execute(
+            """
+            UPDATE material_units
+            SET object_summary_json = ?, preview_sha256 = ?
+            WHERE id = ?
+            """,
+            (json.dumps(summary), "f" * 64, unit_id),
+        )
+    assert service.resource_pack_status(lesson_id)[
+        "local_sources_changed"
+    ] is False
 
     changed = service.update_exercise_candidate(
         candidate.id,

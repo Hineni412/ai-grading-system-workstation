@@ -23,6 +23,26 @@ _CLASSROOM_USES = {
     "challenge",
     "summary",
 }
+_DIFFICULTY_ALIASES = {
+    "未评定": "unrated",
+    "容易": "easy",
+    "简单": "easy",
+    "中等": "medium",
+    "困难": "hard",
+    "较难": "hard",
+}
+_CLASSROOM_USE_ALIASES = {
+    "导入": "introduction",
+    "例题": "example",
+    "课堂练习": "guided_practice",
+    "引导练习": "guided_practice",
+    "独立练习": "independent_practice",
+    "课堂检测": "diagnostic",
+    "诊断": "diagnostic",
+    "挑战": "challenge",
+    "小结": "summary",
+    "总结": "summary",
+}
 
 
 def normalize_reference_selection(
@@ -194,6 +214,7 @@ def normalize_exercise_suggestion_payload(
     materials = {
         str(item["material_version_id"]): item
         for item in _mapping_list(snapshot.get("materials"), "materials")
+        if str(item.get("purpose") or "") == "exercise"
     }
     allowed_units = {
         str(unit["unit_id"]): (
@@ -252,10 +273,14 @@ def normalize_exercise_suggestion_payload(
                     raw.get("content_label"), "content_label", maximum=500
                 ),
                 "difficulty": _choice(
-                    raw.get("difficulty"), _DIFFICULTIES, "difficulty"
+                    _known_alias(raw.get("difficulty"), _DIFFICULTY_ALIASES),
+                    _DIFFICULTIES,
+                    "difficulty",
                 ),
                 "classroom_use": _choice(
-                    raw.get("classroom_use"),
+                    _known_alias(
+                        raw.get("classroom_use"), _CLASSROOM_USE_ALIASES
+                    ),
                     _CLASSROOM_USES,
                     "classroom_use",
                 ),
@@ -267,7 +292,7 @@ def normalize_exercise_suggestion_payload(
                 ),
                 "reason": _text(raw.get("reason"), "reason", maximum=1_000),
                 "uncertainties": _strings(
-                    raw.get("uncertainties"),
+                    _empty_string_as_list(raw.get("uncertainties")),
                     "uncertainties",
                     maximum=20,
                     item_maximum=500,
@@ -282,6 +307,12 @@ def normalize_exercise_suggestion_payload(
             }
         )
     return result
+
+
+def _known_alias(value: object, aliases: Mapping[str, str]) -> object:
+    if isinstance(value, str):
+        return aliases.get(value.strip(), value)
+    return value
 
 
 def normalize_mapping_decision(
@@ -345,10 +376,12 @@ def _regions(
             raise TeachingPrepValidationError(
                 "exercise region sequence must be contiguous"
             )
-        crop = _mapping(raw.get("crop"), "crop")
+        crop = _crop_mapping(raw.get("crop"))
         if set(crop) != {"x0", "y0", "x1", "y1"}:
             raise TeachingPrepValidationError("exercise crop is invalid")
         values = {name: _ratio(crop.get(name), name) for name in crop}
+        if label == "answer_regions" and not any(values.values()):
+            continue
         if values["x1"] <= values["x0"] or values["y1"] <= values["y0"]:
             raise TeachingPrepValidationError("exercise crop is empty")
         result.append(
@@ -366,6 +399,18 @@ def _regions(
 def _mapping(value: object, label: str) -> Mapping[str, object]:
     if not isinstance(value, Mapping):
         raise TeachingPrepValidationError(f"{label} must be an object")
+    return value
+
+
+def _crop_mapping(value: object) -> Mapping[str, object]:
+    if isinstance(value, list) and len(value) == 4:
+        return dict(zip(("x0", "y0", "x1", "y1"), value, strict=True))
+    return _mapping(value, "crop")
+
+
+def _empty_string_as_list(value: object) -> object:
+    if isinstance(value, str) and not value.strip():
+        return []
     return value
 
 

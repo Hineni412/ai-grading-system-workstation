@@ -11,10 +11,18 @@ import { useTeachingPrepWorkbenchContext } from '../workbench/context'
 const workbench = useTeachingPrepWorkbenchContext()
 const aiTasks = useWorkspaceAITaskStore()
 const decisions = reactive<Record<string, SlideOperationDecision>>({})
+const reasons = reactive<Record<string, string>>({})
+const teacherNotes = reactive<Record<string, string>>({})
+const plannedMinutes = reactive<Record<string, number>>({})
+const targetSlideNumbers = reactive<Record<string, number>>({})
+const positions = reactive<Record<string, { x: number; y: number; width: number; height: number }>>({})
+const textbookLabels = reactive<Record<string, string>>({})
 const reviewMessage = ref('逐项审核课件建议；只有全部决定后才能执行 WPS。')
 const activatingId = ref<string | null>(null)
 const activeOperationId = ref<string | null>(null)
 const activeSlideIndex = ref(0)
+const previewVersionId = ref<string | null>(null)
+const previewVersionSlide = ref(1)
 const handledTaskRevisions = new Set<string>()
 
 const selectedPlan = computed(() => workbench.catalog.slidePlans.find(
@@ -23,6 +31,9 @@ const selectedPlan = computed(() => workbench.catalog.slidePlans.find(
 const preview = computed(() => workbench.catalog.slidePlanPreview)
 const latestRun = computed(() => workbench.catalog.pptxExecutions[0] ?? null)
 const packageMode = computed(() => workbench.stage.value === 'package')
+const previewVersion = computed(() => workbench.pptxVersions.value.find(
+  item => item.id === previewVersionId.value,
+) ?? null)
 const currentSlideTask = computed(() => {
   const lessonId = workbench.catalog.selectedLessonId
   if (!lessonId) return null
@@ -56,13 +67,18 @@ const activeOperationOnSlide = computed(() => (
 const activeOverlayStyle = computed(() => {
   const operation = activeOperation.value
   if (!operation || operation.execution_mode === 'manual_only' || !activeSlide.value || !activeOperationOnSlide.value) return null
-  return overlayStyle(operation.target)
+  const editedPosition = positions[operation.operation_id]
+  return overlayStyle(editedPosition ? { position: editedPosition } : operation.target)
 })
 const allOperationsDecided = computed(() => selectedPlan.value?.payload.operations.every(
   item => (decisions[item.operation_id] ?? item.decision) !== 'proposed',
 ) ?? false)
+const pptxExecutionAvailable = computed(() => (
+  workbench.catalog.moduleStatus?.wps_execution_available === true
+))
 const canExecute = computed(() => (
-  selectedPlan.value?.status === 'approved'
+  pptxExecutionAvailable.value
+  && selectedPlan.value?.status === 'approved'
   && preview.value?.valid_for_execution
   && !latestRun.value
     ? true
@@ -103,6 +119,51 @@ function describeChange(item: Record<string, unknown>): string {
   return String(item.summary ?? item.reason ?? item.kind ?? '页面调整')
 }
 
+function operationLabel(kind: string): string {
+  return {
+    delete_slide: '删除整页',
+    delete_shape: '删除页内题目',
+    add_text_box: '填写教材页码',
+    insert_static_image: '插入教辅题',
+    add_slide: '新增练习页',
+    manual_note: '需要人工处理',
+  }[kind] ?? kind
+}
+
+function operationOverlayClass(kind: string): string {
+  if (kind === 'delete_shape' || kind === 'delete_slide') return 'is-delete'
+  if (kind === 'insert_static_image') return 'is-insert'
+  if (kind === 'add_text_box') return 'is-label'
+  return 'is-generic'
+}
+
+function editablePosition(item: NonNullable<typeof activeOperation.value>): boolean {
+  return item.kind === 'insert_static_image' || item.kind === 'add_text_box'
+}
+
+function isTextbookLabel(item: NonNullable<typeof activeOperation.value>): boolean {
+  return item.kind === 'add_text_box' && item.details.semantic_role === 'textbook_page_label'
+}
+
+function initializeEditableOperation(item: NonNullable<typeof activeOperation.value>): void {
+  const rawPosition = item.target.position
+  if (rawPosition && typeof rawPosition === 'object' && !Array.isArray(rawPosition)) {
+    const value = rawPosition as Record<string, unknown>
+    positions[item.operation_id] = {
+      x: Number(value.x),
+      y: Number(value.y),
+      width: Number(value.width),
+      height: Number(value.height),
+    }
+  }
+  if (item.kind === 'insert_static_image' && item.target.target_kind === 'existing_slide') {
+    targetSlideNumbers[item.operation_id] = Number(item.target.generated_page_number)
+  }
+  if (isTextbookLabel(item)) {
+    textbookLabels[item.operation_id] = String(item.details.text ?? item.target.content_summary ?? '')
+  }
+}
+
 function overlayStyle(target: Record<string, unknown>): Record<string, string> | null {
   const position = target.position
   if (!position || typeof position !== 'object' || Array.isArray(position)) return null
@@ -116,12 +177,25 @@ function overlayStyle(target: Record<string, unknown>): Record<string, string> |
 }
 
 function slideIndexFor(operation: NonNullable<typeof activeOperation.value>): number {
-  const page = Number(operation.target.generated_page_number)
+  const hasEditedTargetPage = (
+    operation.kind === 'insert_static_image'
+    && operation.target.target_kind === 'existing_slide'
+    && targetSlideNumbers[operation.operation_id] !== undefined
+  )
+  const page = Number(
+    hasEditedTargetPage
+      ? targetSlideNumbers[operation.operation_id] ?? operation.target.generated_page_number
+      : operation.target.generated_page_number,
+  )
   const signature = String(operation.target.slide_signature ?? '')
   const unitId = String(operation.target.material_unit_id ?? '')
   const sourceLinkId = String(operation.target.source_link_id ?? '')
   const slides = preview.value?.before ?? []
 
+  if (hasEditedTargetPage && Number.isFinite(page)) {
+    const index = slides.findIndex(item => Number(item.original_index) === page)
+    if (index >= 0) return index
+  }
   if (signature) return slides.findIndex(item => String(item.stable_signature ?? '') === signature)
   if (unitId) return slides.findIndex(item => String(item.material_unit_id ?? '') === unitId)
   if (sourceLinkId && Number.isFinite(page)) {
@@ -137,6 +211,12 @@ function slideIndexFor(operation: NonNullable<typeof activeOperation.value>): nu
   return pageMatches.length === 1 ? pageMatches[0]!.index : -1
 }
 
+function targetSlideChanged(operation: NonNullable<typeof activeOperation.value>): void {
+  workbench.setDirty('教辅题目标页')
+  const index = slideIndexFor(operation)
+  if (index >= 0) activeSlideIndex.value = index
+}
+
 function selectOperation(operation: NonNullable<typeof activeOperation.value>): void {
   activeOperationId.value = operation.operation_id
   const index = slideIndexFor(operation)
@@ -145,11 +225,29 @@ function selectOperation(operation: NonNullable<typeof activeOperation.value>): 
 
 watch(selectedPlan, (plan) => {
   if (!plan) return
-  for (const item of plan.payload.operations) decisions[item.operation_id] = item.decision
+  for (const item of plan.payload.operations) {
+    decisions[item.operation_id] = item.decision
+    reasons[item.operation_id] = item.reason
+    teacherNotes[item.operation_id] = item.teacher_note ?? ''
+    plannedMinutes[item.operation_id] = item.planned_minutes
+    initializeEditableOperation(item)
+  }
   const first = plan.payload.operations[0]
   activeOperationId.value = first?.operation_id ?? null
   activeSlideIndex.value = first ? Math.max(0, slideIndexFor(first)) : 0
 }, { immediate: true })
+
+watch(
+  () => workbench.pptxVersions.value.map(item => `${item.id}:${item.is_current}`).join('|'),
+  () => {
+    if (previewVersion.value) return
+    const current = workbench.pptxVersions.value.find(item => item.is_current)
+      ?? workbench.pptxVersions.value[0]
+    previewVersionId.value = current?.id ?? null
+    previewVersionSlide.value = 1
+  },
+  { immediate: true },
+)
 
 watch(
   () => currentSlideTask.value ? `${currentSlideTask.value.task_id}:${currentSlideTask.value.revision}` : '',
@@ -165,7 +263,13 @@ watch(
 
 async function selectPlan(plan: SlidePlan): Promise<void> {
   await workbench.catalog.selectSlidePlan(plan)
-  for (const item of plan.payload.operations) decisions[item.operation_id] = item.decision
+  for (const item of plan.payload.operations) {
+    decisions[item.operation_id] = item.decision
+    reasons[item.operation_id] = item.reason
+    teacherNotes[item.operation_id] = item.teacher_note ?? ''
+    plannedMinutes[item.operation_id] = item.planned_minutes
+    initializeEditableOperation(item)
+  }
   activeOperationId.value = plan.payload.operations[0]?.operation_id ?? null
   const first = plan.payload.operations[0]
   activeSlideIndex.value = first ? Math.max(0, slideIndexFor(first)) : 0
@@ -177,9 +281,18 @@ async function saveReview(): Promise<void> {
   const operationReviews = plan.payload.operations.map(item => ({
       operation_id: item.operation_id,
       decision: decisions[item.operation_id] ?? item.decision,
-      reason: item.reason,
-      planned_minutes: item.planned_minutes,
-      teacher_note: item.teacher_note,
+      reason: reasons[item.operation_id] || item.reason,
+      planned_minutes: plannedMinutes[item.operation_id] ?? item.planned_minutes,
+      teacher_note: teacherNotes[item.operation_id]?.trim() || null,
+      ...(item.kind === 'insert_static_image' && item.target.target_kind === 'existing_slide'
+        ? { target_slide_number: targetSlideNumbers[item.operation_id] }
+        : {}),
+      ...(editablePosition(item) && positions[item.operation_id]
+        ? { position: positions[item.operation_id] }
+        : {}),
+      ...(isTextbookLabel(item)
+        ? { text: textbookLabels[item.operation_id] }
+        : {}),
   }))
   try {
     const adopted = await adoptTeachingPrepProposal(
@@ -246,6 +359,15 @@ async function createPackage(version: TrustedPptxVersion): Promise<void> {
   await workbench.catalog.createUpClassPackage(version.id)
   reviewMessage.value = '上课包已从所选可信 PPTX 单独生成。'
 }
+
+function showModifiedPreview(version: TrustedPptxVersion): void {
+  previewVersionId.value = version.id
+  previewVersionSlide.value = 1
+}
+
+function modifiedPreviewUrl(version: TrustedPptxVersion, slide: number): string {
+  return `${version.preview_url}?slide=${slide}`
+}
 </script>
 
 <template>
@@ -297,7 +419,12 @@ async function createPackage(version: TrustedPptxVersion): Promise<void> {
           <div class="tp-slide-stage">
             <img v-if="activeSlide?.preview_url" :src="String(activeSlide.preview_url)" alt="当前源幻灯片预览">
             <div v-else class="tp-slide-stage__paper"><strong>{{ describeSlide(activeSlide ?? {}, 0) }}</strong><span>当前数据没有可用图片预览，仍可审核结构化定位。</span></div>
-            <span v-if="activeOperation && activeOverlayStyle" class="tp-change-overlay" :style="activeOverlayStyle"><b>{{ activeOperation.kind }}</b></span>
+            <span
+              v-if="activeOperation && activeOverlayStyle"
+              class="tp-change-overlay"
+              :class="operationOverlayClass(activeOperation.kind)"
+              :style="activeOverlayStyle"
+            ><b>{{ operationLabel(activeOperation.kind) }}</b></span>
           </div>
           <p v-if="activeOperation?.execution_mode === 'manual_only'" class="tp-inline-guidance">这项修改只能由教师人工处理，不会交给 WPS 自动执行。</p>
           <p v-else-if="activeOperationOnSlide && activeOperation && !activeOverlayStyle" class="tp-inline-guidance">这项修改没有可验证的源页区域，因此不显示定位框；请按文字说明核对。</p>
@@ -306,13 +433,43 @@ async function createPackage(version: TrustedPptxVersion): Promise<void> {
         <section class="tp-slide-checker__inspector">
           <div class="tp-section-heading"><div><p class="tp-eyebrow">AI 修改检查器</p><h2>逐项定位，再决定</h2></div></div>
           <article v-for="item in selectedPlan?.payload.operations ?? []" :key="item.operation_id" class="tp-operation-row" :class="{ 'is-active': activeOperation?.operation_id === item.operation_id }">
-            <button class="tp-operation-row__selector" type="button" @click="selectOperation(item)"><strong>{{ item.kind }}</strong><span>{{ item.reason }}</span><small>{{ item.support_note || describeChange(item.details) }}</small></button>
+            <button class="tp-operation-row__selector" type="button" @click="selectOperation(item)"><strong>{{ operationLabel(item.kind) }}</strong><span>{{ item.reason }}</span><small>{{ item.support_note || describeChange(item.details) }}</small></button>
             <fieldset>
               <legend class="tp-visually-hidden">审核 {{ item.kind }}</legend>
               <label v-if="item.execution_mode !== 'manual_only'"><input v-model="decisions[item.operation_id]" type="radio" :name="item.operation_id" value="approved" @change="workbench.setDirty('课件审核决定')">接受</label>
               <label v-else><input v-model="decisions[item.operation_id]" type="radio" :name="item.operation_id" value="rejected" @change="workbench.setDirty('课件审核决定')">标记为人工处理</label>
               <label v-if="item.execution_mode !== 'manual_only'"><input v-model="decisions[item.operation_id]" type="radio" :name="item.operation_id" value="rejected" @change="workbench.setDirty('课件审核决定')">拒绝</label>
             </fieldset>
+            <details class="tp-operation-editor">
+              <summary>编辑 AI 建议</summary>
+              <label>
+                <span>修改说明</span>
+                <textarea v-model="reasons[item.operation_id]" rows="3" maxlength="1000" @input="workbench.setDirty('课件建议文字')" />
+              </label>
+              <label>
+                <span>教师备注（可选）</span>
+                <textarea v-model="teacherNotes[item.operation_id]" rows="2" maxlength="1000" @input="workbench.setDirty('课件建议文字')" />
+              </label>
+              <label>
+                <span>预计占用课堂时间（分钟）</span>
+                <input v-model.number="plannedMinutes[item.operation_id]" type="number" min="0" max="120" @input="workbench.setDirty('课件建议时间')">
+              </label>
+              <label v-if="item.kind === 'insert_static_image' && item.target.target_kind === 'existing_slide'">
+                <span>插到主 PPT 第几页</span>
+                <input v-model.number="targetSlideNumbers[item.operation_id]" data-testid="operation-target-slide" type="number" min="1" :max="preview?.before_slide_count ?? 2000" @input="workbench.setDirty('教辅题目标页')" @change="targetSlideChanged(item)">
+              </label>
+              <label v-if="isTextbookLabel(item)">
+                <span>教材页码文字（例如：教材 P9）</span>
+                <input v-model="textbookLabels[item.operation_id]" data-testid="operation-textbook-label" type="text" maxlength="120" @input="workbench.setDirty('教材页码文字')">
+              </label>
+              <fieldset v-if="editablePosition(item) && positions[item.operation_id]" class="tp-position-editor">
+                <legend>页面位置（0—1，可人工修正）</legend>
+                <label><span>左边距 x</span><input v-model.number="positions[item.operation_id]!.x" data-axis="x" type="number" min="0" max="1" step="0.01" @input="workbench.setDirty('课件对象位置')"></label>
+                <label><span>上边距 y</span><input v-model.number="positions[item.operation_id]!.y" data-axis="y" type="number" min="0" max="1" step="0.01" @input="workbench.setDirty('课件对象位置')"></label>
+                <label><span>宽度</span><input v-model.number="positions[item.operation_id]!.width" data-axis="width" type="number" min="0.01" max="1" step="0.01" @input="workbench.setDirty('课件对象位置')"></label>
+                <label><span>高度</span><input v-model.number="positions[item.operation_id]!.height" data-axis="height" type="number" min="0.01" max="1" step="0.01" @input="workbench.setDirty('课件对象位置')"></label>
+              </fieldset>
+            </details>
           </article>
           <div v-if="preview?.source_changed" class="tp-inline-error" role="alert">来源 PPTX 已变化，本计划不可执行；请基于新来源创建计划。</div>
           <button class="tp-button tp-button--primary" type="button" :disabled="!allOperationsDecided" @click="saveReview">保存全部审核决定</button>
@@ -326,6 +483,10 @@ async function createPackage(version: TrustedPptxVersion): Promise<void> {
             <li v-for="item in phases" :key="item.id" :class="`is-${item.state}`"><span /><div><strong>{{ item.label }}</strong><small>{{ item.state }}</small></div></li>
           </ol>
           <p v-if="latestRun?.error_code" class="tp-inline-error">失败代码：{{ latestRun.error_code }}。未发布不可信文件，原课件保持不变。</p>
+          <div v-if="!pptxExecutionAvailable" class="tp-inline-error" role="alert">
+            <strong>这台电脑当前不能生成 PPTX 副本</strong>
+            <p>尚未检测到可用的 WPS 执行能力。修改建议可以继续审核和保存，但不能假装已经导出成品。</p>
+          </div>
           <div class="tp-inline-actions">
             <button class="tp-button tp-button--primary" type="button" :disabled="!canExecute" @click="executePlan">创建新 PPTX 副本</button>
             <button v-if="latestRun && ['running', 'verifying', 'publishing'].includes(latestRun.status)" type="button" @click="workbench.catalog.cancelPptxExecution(latestRun)">取消后续阶段</button>
@@ -343,12 +504,38 @@ async function createPackage(version: TrustedPptxVersion): Promise<void> {
               <header><div><strong>第 {{ version.version_number }} 版</strong><small>{{ version.created_at }}</small></div><span v-if="version.is_current" class="tp-trust-badge">当前可信</span></header>
               <p>{{ version.output_filename }} · {{ version.slide_count }} 页</p>
               <div class="tp-inline-actions">
+                <button type="button" :disabled="!version.file_verified" @click="showModifiedPreview(version)">逐页查看修改后 PPT</button>
                 <a :href="version.download_url">下载副本</a>
                 <button type="button" :disabled="version.is_current || !version.file_verified || activatingId === version.id" @click="activateVersion(version)">恢复为当前 PPTX</button>
                 <button type="button" :disabled="!version.file_verified" @click="createPackage(version)">生成上课包</button>
               </div>
             </article>
           </div>
+          <section v-if="previewVersion" class="tp-modified-ppt-preview" aria-label="修改后 PPT 逐页预览">
+            <header>
+              <div>
+                <p class="tp-eyebrow">修改后成品预览</p>
+                <h3>{{ previewVersion.output_filename }}</h3>
+              </div>
+              <strong>第 {{ previewVersionSlide }} / {{ previewVersion.slide_count }} 页</strong>
+            </header>
+            <div class="tp-slide-stage">
+              <img :src="modifiedPreviewUrl(previewVersion, previewVersionSlide)" :alt="`修改后 PPT 第 ${previewVersionSlide} 页`">
+            </div>
+            <div class="tp-modified-ppt-preview__controls">
+              <button type="button" :disabled="previewVersionSlide <= 1" @click="previewVersionSlide -= 1">上一页</button>
+              <div role="list" aria-label="修改后 PPT 页码">
+                <button
+                  v-for="slide in previewVersion.slide_count"
+                  :key="slide"
+                  type="button"
+                  :class="{ 'is-active': slide === previewVersionSlide }"
+                  @click="previewVersionSlide = slide"
+                >{{ slide }}</button>
+              </div>
+              <button type="button" :disabled="previewVersionSlide >= previewVersion.slide_count" @click="previewVersionSlide += 1">下一页</button>
+            </div>
+          </section>
         </section>
 
         <section class="tp-section-block">

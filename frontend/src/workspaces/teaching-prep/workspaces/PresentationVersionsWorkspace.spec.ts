@@ -35,6 +35,8 @@ function mountChecker(options: {
   operations?: ReturnType<typeof operation>[]
   before?: Array<Record<string, unknown>>
   refreshCurrentWorkspace?: () => Promise<void>
+  stage?: 'slides' | 'package'
+  pptxVersions?: Array<Record<string, unknown>>
 } = {}) {
   const plan = {
     id: 'plan-1', lesson_draft_id: 'draft-1', resource_pack_id: 'pack-1', version_number: 1,
@@ -45,7 +47,7 @@ function mountChecker(options: {
     ] }, created_at: '',
   }
   const fake = {
-    stage: ref('slides'),
+    stage: ref(options.stage ?? 'slides'),
     catalog: {
       slidePlans: [plan], selectedSlidePlanId: 'plan-1',
       slidePlanPreview: { valid_for_execution: true, source_changed: false, includes_proposed_operations: true, before_slide_count: 2, after_slide_count: 2,
@@ -60,7 +62,7 @@ function mountChecker(options: {
       cancelPptxExecution: async () => undefined, recoverPptxExecution: async () => undefined,
       discardPptxStaging: async () => undefined,
     },
-    pptxVersions: ref([]), setDirty: () => undefined,
+    pptxVersions: ref(options.pptxVersions ?? []), setDirty: () => undefined,
     refreshCurrentWorkspace: options.refreshCurrentWorkspace ?? (async () => undefined),
     openStage: vi.fn(),
   }
@@ -140,6 +142,118 @@ describe('PresentationVersionsWorkspace R7 checker', () => {
     const active = host.querySelector('.tp-operation-row.is-active')
     expect(active?.textContent).toContain('标记为人工处理')
     expect(active?.textContent).not.toContain('接受')
+    app.unmount()
+  })
+
+  it('lets the teacher edit AI suggestion text before saving the review', async () => {
+    const adoption = vi.spyOn(aiAdoption, 'adoptTeachingPrepProposal').mockResolvedValue(null)
+    const { app, host, fake } = mountChecker()
+    await nextTick()
+    const editor = host.querySelector<HTMLDetailsElement>('.tp-operation-editor')!
+    editor.open = true
+    const textareas = editor.querySelectorAll<HTMLTextAreaElement>('textarea')
+    textareas[0]!.value = '教师改写后的修改说明'
+    textareas[0]!.dispatchEvent(new Event('input'))
+    textareas[1]!.value = '保留例题讲解节奏'
+    textareas[1]!.dispatchEvent(new Event('input'))
+    for (const input of host.querySelectorAll<HTMLInputElement>(
+      '.tp-operation-row input[type="radio"]:first-of-type',
+    )) input.click()
+    await nextTick()
+
+    const save = [...host.querySelectorAll<HTMLButtonElement>('button')]
+      .find(item => item.textContent?.includes('保存全部审核决定'))
+    save?.click()
+
+    await vi.waitFor(() => expect(fake.catalog.reviewSlidePlan).toHaveBeenCalledOnce())
+    expect(adoption).toHaveBeenCalled()
+    expect(fake.catalog.reviewSlidePlan.mock.calls[0]?.[1][0]).toMatchObject({
+      reason: '教师改写后的修改说明',
+      teacher_note: '保留例题讲解节奏',
+    })
+    app.unmount()
+  })
+
+  it('saves teacher-corrected target slide, placement, and textbook page label', async () => {
+    vi.spyOn(aiAdoption, 'adoptTeachingPrepProposal').mockResolvedValue(null)
+    const insert = {
+      ...operation('op-insert', 2, 'automatic', { x: .2, y: .2, width: .5, height: .6 }),
+      kind: 'insert_static_image',
+      target: {
+        generated_page_number: 2, slide_signature: 'slide-2', target_kind: 'existing_slide',
+        position: { x: .2, y: .2, width: .5, height: .6 },
+      },
+      details: { asset_ref: '/exercise/crop.png' },
+    }
+    const label = {
+      ...operation('op-label', 1, 'automatic', { x: .82, y: .02, width: .14, height: .08 }),
+      kind: 'add_text_box',
+      target: {
+        generated_page_number: 1, slide_signature: 'slide-1', target_kind: 'slide',
+        content_summary: '教材 P9', position: { x: .82, y: .02, width: .14, height: .08 },
+      },
+      details: { semantic_role: 'textbook_page_label', text: '教材 P9' },
+    }
+    const { app, host, fake } = mountChecker({ operations: [insert, label] })
+    await nextTick()
+    const rows = host.querySelectorAll<HTMLElement>('.tp-operation-row')
+    const insertEditor = rows[0]!.querySelector<HTMLDetailsElement>('.tp-operation-editor')!
+    insertEditor.open = true
+    const targetPage = insertEditor.querySelector<HTMLInputElement>('[data-testid="operation-target-slide"]')!
+    targetPage.value = '1'
+    targetPage.dispatchEvent(new Event('input', { bubbles: true }))
+    targetPage.dispatchEvent(new Event('change', { bubbles: true }))
+    const insertX = insertEditor.querySelector<HTMLInputElement>('[data-axis="x"]')!
+    insertX.value = '0.08'
+    insertX.dispatchEvent(new Event('input', { bubbles: true }))
+    await nextTick()
+    expect(host.querySelectorAll('.tp-slide-checker__thumbs button')[0]?.classList.contains('is-active')).toBe(true)
+    expect(host.querySelector<HTMLElement>('.tp-change-overlay')?.style.left).toBe('8%')
+    const labelEditor = rows[1]!.querySelector<HTMLDetailsElement>('.tp-operation-editor')!
+    labelEditor.open = true
+    const labelText = labelEditor.querySelector<HTMLInputElement>('[data-testid="operation-textbook-label"]')!
+    labelText.value = '教材 P88'
+    labelText.dispatchEvent(new Event('input', { bubbles: true }))
+    for (const input of host.querySelectorAll<HTMLInputElement>(
+      '.tp-operation-row input[type="radio"]:first-of-type',
+    )) input.click()
+    await nextTick()
+
+    const save = [...host.querySelectorAll<HTMLButtonElement>('button')]
+      .find(item => item.textContent?.includes('保存全部审核决定'))
+    save?.click()
+
+    await vi.waitFor(() => expect(fake.catalog.reviewSlidePlan).toHaveBeenCalledOnce())
+    const reviews = fake.catalog.reviewSlidePlan.mock.calls[0]?.[1]
+    expect(reviews[0]).toMatchObject({
+      target_slide_number: 1,
+      position: { x: .08, y: .2, width: .5, height: .6 },
+    })
+    expect(reviews[1]).toMatchObject({ text: '教材 P88' })
+    app.unmount()
+  })
+
+  it('previews every slide of the generated PPTX instead of only the cover', async () => {
+    const { app, host } = mountChecker({
+      stage: 'package',
+      pptxVersions: [{
+        id: 'pptx-version-1', is_current: true, current_revision: 1,
+        file_verified: true, preview_url: '/pptx/version-1/preview',
+        output_filename: '第一课时_改编副本.pptx', slide_count: 3,
+        version_number: 1, created_at: '', download_url: '/pptx/version-1/download',
+      }],
+    })
+    await nextTick()
+
+    expect(host.querySelector<HTMLImageElement>('.tp-modified-ppt-preview img')?.src)
+      .toContain('/pptx/version-1/preview?slide=1')
+    const pageButtons = host.querySelectorAll<HTMLButtonElement>(
+      '.tp-modified-ppt-preview__controls [role="list"] button',
+    )
+    pageButtons[1]?.click()
+    await nextTick()
+    expect(host.querySelector<HTMLImageElement>('.tp-modified-ppt-preview img')?.src)
+      .toContain('/pptx/version-1/preview?slide=2')
     app.unmount()
   })
 
