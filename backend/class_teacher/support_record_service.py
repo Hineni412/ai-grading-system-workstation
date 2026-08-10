@@ -370,19 +370,6 @@ class SupportRecordService:
                 token=token,
                 record_id=str(replay["record_id"]),
             )
-        normalized = self._normalize_record(
-            record_kind=record_kind,
-            content=content,
-            scene=scene,
-            source=source,
-            basis=basis,
-            counterexample=counterexample,
-            category=category,
-            observed_at=observed_at,
-            review_at=review_at,
-            expires_at=expires_at,
-        )
-        record_id = uuid4().hex
         with closing(self.database.connect()) as connection:
             with connection:
                 resolved_subject_id = subject_id
@@ -396,23 +383,76 @@ class SupportRecordService:
                     )
                 else:
                     self._subject_row(connection, resolved_subject_id)
-                self._create_record_in_connection(
+                record_id = self.create_record_in_connection(
                     connection,
                     vmk=vmk,
-                    record_id=record_id,
+                    operation_id=operation_id,
                     subject_id=resolved_subject_id,
-                    normalized=normalized,
-                )
-                self._rebuild_summary(connection, vmk, resolved_subject_id)
-                self._remember(
-                    connection,
-                    operation_id,
-                    "support.record.create",
-                    {"record_id": record_id},
+                    record_kind=record_kind,
+                    content=content,
+                    scene=scene,
+                    source=source,
+                    basis=basis,
+                    counterexample=counterexample,
+                    category=category,
+                    observed_at=observed_at,
+                    review_at=review_at,
+                    expires_at=expires_at,
                 )
                 if transaction_hook is not None:
                     transaction_hook(connection, vmk, record_id)
         return self.get_record(token=token, record_id=record_id)
+
+    def create_record_in_connection(
+        self,
+        connection: Any,
+        *,
+        vmk: bytes,
+        operation_id: str,
+        subject_id: str,
+        record_kind: str,
+        content: str,
+        scene: str,
+        source: str,
+        basis: str | None,
+        counterexample: str | None,
+        category: str | None,
+        observed_at: str,
+        review_at: str | None,
+        expires_at: str | None,
+    ) -> str:
+        """Create one record inside a caller-owned domain transaction."""
+
+        self._validate_operation_id(operation_id)
+        self._subject_row(connection, subject_id)
+        normalized = self._normalize_record(
+            record_kind=record_kind,
+            content=content,
+            scene=scene,
+            source=source,
+            basis=basis,
+            counterexample=counterexample,
+            category=category,
+            observed_at=observed_at,
+            review_at=review_at,
+            expires_at=expires_at,
+        )
+        record_id = uuid4().hex
+        self._create_record_in_connection(
+            connection,
+            vmk=vmk,
+            record_id=record_id,
+            subject_id=subject_id,
+            normalized=normalized,
+        )
+        self._rebuild_summary(connection, vmk, subject_id)
+        self._remember(
+            connection,
+            operation_id,
+            "support.record.create",
+            {"record_id": record_id},
+        )
+        return record_id
 
     def get_record(self, *, token: str, record_id: str) -> dict[str, object]:
         vmk = self._key_provider(token)
@@ -2257,6 +2297,15 @@ class SupportRecordService:
                 _iso(),
             ),
         )
+
+    @staticmethod
+    def _validate_operation_id(operation_id: str) -> None:
+        if re.fullmatch(r"[A-Za-z0-9_-]{8,128}", str(operation_id or "")) is None:
+            raise VaultError(
+                "vault_operation_id_invalid",
+                "操作编号无效，请刷新页面后重试",
+                status_code=422,
+            )
 
     @staticmethod
     def _text(value: object, label: str, maximum: int) -> str:

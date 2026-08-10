@@ -323,6 +323,39 @@ class HandoffAdoption:
                 "请填写信息来源",
                 status_code=422,
             )
+        if record_kind == "professional_conclusion":
+            if not str(content.get("basis") or "").strip():
+                raise VaultError(
+                    "class_teacher_professional_basis_required",
+                    "专业结论需要填写书面材料或专业依据",
+                    status_code=422,
+                )
+            if not str(content.get("observed_at") or "").strip():
+                raise VaultError(
+                    "class_teacher_professional_date_required",
+                    "专业结论需要核对结论日期",
+                    status_code=422,
+                )
+            if (
+                str(handoff.get("destination_key") or "")
+                == "class_teacher.student.record"
+                and not isinstance(content.get("profile_update"), dict)
+            ):
+                raise VaultError(
+                    "class_teacher_professional_profile_required",
+                    "请核对专业结论将如何更新学生当前档案",
+                    status_code=422,
+                )
+            if (
+                str(handoff.get("destination_key") or "")
+                == "class_teacher.student.record"
+                and not str(content.get("current_school_support") or "").strip()
+            ):
+                raise VaultError(
+                    "class_teacher_professional_school_support_required",
+                    "请核对学生当前在校支持；如暂无请明确记录",
+                    status_code=422,
+                )
         return record_kind, source
 
     def _adopt_plan(
@@ -401,6 +434,7 @@ class HandoffAdoption:
         if selected is None:
             raise VaultError("class_teacher_sop_template_invalid", "请选择可用的学校流程模板", status_code=422)
         refs: list[str] = []
+        subject_id_by_ref: dict[str, str] = {}
         verified_current_subject_ids: list[str] = []
         for index, item in enumerate(list(handoff.get("subject_refs") or [])):
             if not isinstance(item, dict) or not item.get("id"):
@@ -433,11 +467,89 @@ class HandoffAdoption:
                 verified_current_subject_ids.append(
                     str(subject["subject_id"])
                 )
-            refs.append(str(subject["subject_id"]))
+            resolved_subject_id = str(subject["subject_id"])
+            refs.append(resolved_subject_id)
+            subject_id_by_ref[candidate_id] = resolved_subject_id
         participant_refs = [str(item) for item in list(content.get("participant_refs") or []) if str(item).strip()]
         if not refs and not participant_refs:
             raise VaultError("class_teacher_sop_participants_required", "进入 SOP 前请确认参与对象", status_code=422)
-        hook = self._receipt_hook(handoff, target_revision, "sop_affair")
+        profile_updates = self._validated_sop_profile_updates(
+            content=content,
+            subject_id_by_ref=subject_id_by_ref,
+        )
+        step_text_overrides = {
+            str(item.get("key") or ""): {
+                "title": str(item.get("title") or ""),
+                "details": str(item.get("details") or ""),
+            }
+            for item in list(content.get("steps") or [])
+            if isinstance(item, dict) and str(item.get("key") or "").strip()
+        }
+        receipt_hook = self._receipt_hook(handoff, target_revision, "sop_affair")
+
+        def hook(
+            connection: Any,
+            vmk: bytes,
+            affair_id: str,
+            _occurrence_id: str,
+        ) -> None:
+            receipt_hook(connection, vmk, affair_id)
+            task_id = self.conversations.task_id_for_handoff(
+                str(handoff["handoff_id"])
+            )
+            for index, update in enumerate(profile_updates, start=1):
+                subject_id = str(update["subject_id"])
+                record_id = self.support.create_record_in_connection(
+                    connection,
+                    vmk=vmk,
+                    operation_id=(
+                        f"sop_record_{handoff['adoption_id']}_{index}"
+                    ),
+                    subject_id=subject_id,
+                    record_kind=str(update["record_kind"]),
+                    content=str(update["record_summary"]),
+                    scene=str(update["scene"]),
+                    source=str(update["source"]),
+                    basis=(
+                        str(update["basis"])
+                        if update.get("basis") is not None
+                        else None
+                    ),
+                    counterexample=(
+                        str(update["counterexample"])
+                        if update.get("counterexample") is not None
+                        else None
+                    ),
+                    category=str(update["category"]),
+                    observed_at=str(update["observed_at"]),
+                    review_at=(
+                        str(update["review_at"])
+                        if update.get("review_at") is not None
+                        else None
+                    ),
+                    expires_at=(
+                        str(update["expires_at"])
+                        if update.get("expires_at") is not None
+                        else None
+                    ),
+                )
+                self.student_cards.upsert_current_profile_in_connection(
+                    connection,
+                    vmk=vmk,
+                    subject_id=subject_id,
+                    profile_update=dict(update["profile_update"]),
+                    expected_revision=update.get("profile_base_revision"),
+                    operation_id=(
+                        f"sop_profile_{handoff['adoption_id']}_{index}"
+                    ),
+                    model_operation_id=f"{task_id[:96]}-profile-{index}",
+                    teacher_quote=str(update["record_summary"]),
+                    model_draft=json.dumps(
+                        update["profile_update"],
+                        ensure_ascii=False,
+                    ),
+                    source_record_id=record_id,
+                )
         self.sop.create_affair(
             token=token,
             operation_id=operation_id,
@@ -447,10 +559,122 @@ class HandoffAdoption:
             participant_refs=participant_refs,
             subject_ids=refs,
             verified_current_subject_ids=verified_current_subject_ids,
+            step_text_overrides=step_text_overrides,
             idempotency_fingerprint=str(handoff["adoption_id"]),
-            transaction_hook=lambda connection, vmk, affair_id, _occurrence_id: hook(connection, vmk, affair_id),
+            transaction_hook=hook,
         )
         return self._receipt(str(handoff["adoption_id"])) or {}
+
+    def _validated_sop_profile_updates(
+        self,
+        *,
+        content: dict[str, object],
+        subject_id_by_ref: dict[str, str],
+    ) -> list[dict[str, object]]:
+        raw_updates = content.get("student_profile_updates")
+        if raw_updates is None:
+            return []
+        if not isinstance(raw_updates, list) or len(raw_updates) > 50:
+            raise VaultError(
+                "class_teacher_sop_profile_updates_invalid",
+                "学生档案更新草稿无效，请重新核对",
+                status_code=422,
+            )
+        updates: list[dict[str, object]] = []
+        seen: set[str] = set()
+        for raw in raw_updates:
+            if not isinstance(raw, dict):
+                raise VaultError(
+                    "class_teacher_sop_profile_updates_invalid",
+                    "学生档案更新草稿无效，请重新核对",
+                    status_code=422,
+                )
+            if not bool(raw.get("include", True)):
+                continue
+            subject_ref = raw.get("subject_ref")
+            if not isinstance(subject_ref, dict):
+                raise VaultError(
+                    "class_teacher_sop_profile_subject_invalid",
+                    "学生档案更新没有绑定本次参与学生",
+                    status_code=422,
+                )
+            source_ref = str(subject_ref.get("id") or "")
+            subject_id = subject_id_by_ref.get(source_ref)
+            if not subject_id or source_ref in seen:
+                raise VaultError(
+                    "class_teacher_sop_profile_subject_invalid",
+                    "学生档案更新与本次参与学生不一致",
+                    status_code=422,
+                )
+            seen.add(source_ref)
+            record_kind = str(raw.get("record_kind") or "").strip()
+            source = str(raw.get("source") or "").strip()
+            record_summary = str(raw.get("record_summary") or "").strip()
+            observed_at = str(raw.get("observed_at") or "").strip()
+            if record_kind not in _CONFIRMED_RECORD_KINDS:
+                raise VaultError(
+                    "class_teacher_record_kind_invalid",
+                    "请逐名确认学生记录性质",
+                    status_code=422,
+                )
+            if not source:
+                raise VaultError(
+                    "class_teacher_record_source_required",
+                    "请逐名填写学生记录的信息来源",
+                    status_code=422,
+                )
+            if not record_summary:
+                raise VaultError(
+                    "class_teacher_sop_profile_summary_required",
+                    "请逐名核对拟写入学生档案的事件摘要",
+                    status_code=422,
+                )
+            if not observed_at:
+                raise VaultError(
+                    "class_teacher_sop_profile_observed_at_required",
+                    "请逐名核对冲突发生日期或时间",
+                    status_code=422,
+                )
+            if record_kind == "professional_conclusion" and not str(
+                raw.get("basis") or ""
+            ).strip():
+                raise VaultError(
+                    "class_teacher_professional_basis_required",
+                    "专业结论需要逐名填写书面材料或专业依据",
+                    status_code=422,
+                )
+            profile_update = self.student_cards.validate_profile_update(
+                raw.get("profile_update")
+            )
+            base_revision = raw.get("profile_base_revision")
+            if (
+                isinstance(base_revision, bool)
+                or not isinstance(base_revision, int)
+                or base_revision < 0
+            ):
+                raise VaultError(
+                    "class_teacher_sop_profile_revision_invalid",
+                    "学生档案版本无效，请重新整理",
+                    status_code=422,
+                )
+            updates.append({
+                "subject_id": subject_id,
+                "record_kind": record_kind,
+                "source": source,
+                "basis": str(raw.get("basis") or "").strip() or None,
+                "counterexample": (
+                    str(raw.get("counterexample") or "").strip() or None
+                ),
+                "record_summary": record_summary,
+                "scene": str(raw.get("scene") or "冲突与安全事件").strip(),
+                "category": str(raw.get("category") or "同伴冲突跟进").strip(),
+                "observed_at": observed_at,
+                "review_at": str(raw.get("review_at") or "").strip() or None,
+                "expires_at": str(raw.get("expires_at") or "").strip() or None,
+                "profile_base_revision": base_revision,
+                "profile_update": profile_update,
+            })
+        return updates
 
     def _receipt_hook(self, handoff: dict[str, object], target_revision: str, object_type: str):
         def write(connection: Any, _vmk: bytes, object_id: str) -> None:

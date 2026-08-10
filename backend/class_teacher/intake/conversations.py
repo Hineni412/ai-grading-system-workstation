@@ -8,6 +8,7 @@ from typing import Any
 from uuid import uuid4
 
 from ..errors import VaultError
+from ..intake_draft import enforce_sop_human_decision_language
 from ..ordinary_database import OrdinaryWorkDatabase
 from .ports import WorkspaceAITaskPort
 from .triage_contract import TriageResult, parse_triage
@@ -35,6 +36,84 @@ def _unresolved_missing_fields(
     if handling_mode == "sop" and str(content.get("template_key") or "").strip():
         return [item for item in values if item != _SOP_TEMPLATE_MISSING_FIELD]
     return values
+
+
+def _merge_keyed_draft_items(
+    current: object,
+    proposed: object,
+    *,
+    key,
+) -> object:
+    if not isinstance(proposed, list):
+        return current
+    if not isinstance(current, list):
+        return proposed
+    proposed_by_key = {
+        key(item): item
+        for item in proposed
+        if isinstance(item, dict) and key(item)
+    }
+    merged: list[object] = []
+    seen: set[str] = set()
+    for old in current:
+        if not isinstance(old, dict):
+            merged.append(old)
+            continue
+        item_key = key(old)
+        replacement = proposed_by_key.get(item_key)
+        if isinstance(replacement, dict):
+            combined = {**old, **replacement}
+            if isinstance(old.get("profile_update"), dict) and isinstance(
+                replacement.get("profile_update"), dict
+            ):
+                combined["profile_update"] = {
+                    **old["profile_update"],
+                    **replacement["profile_update"],
+                }
+            if bool(old.get("safety_required")):
+                combined["safety_required"] = True
+            merged.append(combined)
+            seen.add(item_key)
+        else:
+            merged.append(old)
+    merged.extend(
+        item
+        for item in proposed
+        if not isinstance(item, dict) or not key(item) or key(item) not in seen
+    )
+    return merged
+
+
+def _merge_draft_revision_content(
+    *,
+    handling_mode: str,
+    current: dict[str, object],
+    proposed: dict[str, object],
+) -> dict[str, object]:
+    merged = {**current, **proposed}
+    if handling_mode == "plan_calendar":
+        merged["actions"] = _merge_keyed_draft_items(
+            current.get("actions"),
+            proposed.get("actions"),
+            key=lambda item: str(item.get("draft_action_id") or ""),
+        )
+    elif handling_mode == "sop":
+        merged["steps"] = _merge_keyed_draft_items(
+            current.get("steps"),
+            proposed.get("steps"),
+            key=lambda item: str(item.get("key") or ""),
+        )
+        merged["student_profile_updates"] = _merge_keyed_draft_items(
+            current.get("student_profile_updates"),
+            proposed.get("student_profile_updates"),
+            key=lambda item: str(
+                item.get("subject_ref", {}).get("id")
+                if isinstance(item.get("subject_ref"), dict)
+                else ""
+            ),
+        )
+        enforce_sop_human_decision_language(merged)
+    return merged
 
 
 class ConversationStore:
@@ -875,9 +954,6 @@ class ConversationStore:
         content = payload.get("content")
         if not isinstance(content, dict):
             raise VaultError("class_teacher_draft_revision_invalid_result", "AI 返回的草稿调整无效", status_code=422)
-        encoded_content = _json(content)
-        if len(encoded_content.encode("utf-8")) > 64 * 1024:
-            raise VaultError("class_teacher_draft_revision_invalid_result", "AI 返回的草稿调整过长", status_code=422)
         with closing(self.database.connect()) as connection:
             connection.execute("BEGIN IMMEDIATE")
             try:
@@ -898,6 +974,19 @@ class ConversationStore:
                     raise VaultError("class_teacher_draft_conflict", "草稿已在 AI 调整期间变化，请从最新版本重新整理", status_code=409)
                 if str(handoff["state"]) != "open" or str(handoff["adoption_state"]) in {"adopted", "discarded", "stale"}:
                     raise VaultError("class_teacher_draft_not_editable", "这份草稿当前不能由 AI 调整", status_code=409)
+                current_content = json.loads(str(handoff["content_json"]))
+                merged_content = _merge_draft_revision_content(
+                    handling_mode=str(handoff["handling_mode"]),
+                    current=current_content,
+                    proposed=content,
+                )
+                encoded_content = _json(merged_content)
+                if len(encoded_content.encode("utf-8")) > 64 * 1024:
+                    raise VaultError(
+                        "class_teacher_draft_revision_invalid_result",
+                        "AI 返回的草稿调整过长",
+                        status_code=422,
+                    )
                 timestamp = _iso()
                 connection.execute(
                     "UPDATE intake_drafts SET revision=revision+1, content_json=?, updated_at=? WHERE draft_id=?",

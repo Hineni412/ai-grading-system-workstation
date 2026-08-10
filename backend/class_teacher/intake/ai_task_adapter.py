@@ -4,7 +4,9 @@ import json
 import re
 from copy import deepcopy
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 from typing import Any, Mapping
+from zoneinfo import ZoneInfo
 
 from backend.llm.json_repair import parse_json_object_locally
 from backend.workspaces.ai_tasks.model_gateway import WorkspaceAITaskModelGateway
@@ -25,11 +27,20 @@ from .conversations import ConversationStore
 
 
 _TRIAGE_INSTRUCTION = """你是班主任事务整理助手。只返回一个 JSON 对象，不要 Markdown。顶层只能有 contract_version、assistant_message、clarification_questions、work_items。严格按下面的完整结构返回：
-{"contract_version":"class_teacher_triage.v1","assistant_message":"给教师的简短说明","clarification_questions":[],"work_items":[{"work_item_id":"item_001","domain":"student_support","primary_mode":"record","secondary_modes":[],"intent":"create","reason_summary":"为什么这样整理","subject_refs":[],"time_facts":[{"text":"暑假期间计划复查"}],"safety_level":"teacher_review_required","missing_fields":[],"draft":{"summary":"待教师核对的草稿摘要","profile_update":{"summary":"合并新信息后的学生当前总体认识","dimensions":[{"key":"learning_ability","label":"学习与能力","items":["当前有效信息"]}],"open_questions":["仍值得继续了解的问题"],"support_focus":[{"key":"focus_attention","title":"支持重点","need":"当前需要","effective_methods":[],"next_actions":["下一步可尝试的支持"]}]}}}]}
-domain 只能是 student_growth、student_support、conflict_safety、class_operations、activities_culture、school_coordination；primary_mode 和 secondary_modes 只能使用 record、plan_calendar、sop；intent 只能使用 create、append、follow_up、plan、review；safety_level 只能使用 normal、teacher_review_required、urgent_attention。time_facts 每一项都必须是对象，例如 {"text":"暑假期间计划复查"}，不能直接放字符串。subject_refs 只能原样复制当前候选中的完整 {"kind":"student","id":"...","revision":"..."} 对象；一件事务涉及多名不同学生时必须保留全部对应引用，只有同一个姓名存在多个候选时才留空并把“请选择学生”放入 missing_fields。学生冲突、安全、受伤或异常线索必须使用 conflict_safety 和 sop，第一轮同时形成可执行初稿与最多 3 个必要追问；追问必须放在顶层 clarification_questions，不能只放入 profile_update.open_questions。冲突 SOP 的 draft 至少返回 template_key、summary、steps、to_verify；不要把两名学生合并成一份 profile_update。若本轮是在回答上一轮追问并提供了上一轮待核对草稿，必须在其基础上修订，保留未被新事实否定的内容；明确是另一件新事项时不得合并旧草稿。你只能形成草稿，不得自动诊断、认定欺凌、决定惩戒、对外发送或结案。即时危险必须提醒教师先保护学生并联系有权角色。"""
+{"contract_version":"class_teacher_triage.v1","assistant_message":"给教师的简短说明","clarification_questions":[],"work_items":[{"work_item_id":"item_001","domain":"student_support","primary_mode":"record","secondary_modes":[],"intent":"create","reason_summary":"为什么这样整理","subject_refs":[],"time_facts":[{"text":"暑假期间计划复查"}],"safety_level":"teacher_review_required","missing_fields":[],"draft":{"summary":"待教师核对的草稿摘要","record_kind":"reported_statement","source":"教师当前输入，采用前核对","basis":"待核对的书面或专业依据","observed_at":"带时区的 ISO 日期时间","profile_base_revision":0,"profile_update":{"summary":"合并新信息后的学生当前总体认识","dimensions":[{"key":"learning_ability","label":"学习与能力","items":["当前有效信息"]}],"open_questions":["仍值得继续了解的问题"],"support_focus":[{"key":"focus_attention","title":"支持重点","need":"当前需要","effective_methods":[],"next_actions":["下一步可尝试的支持"]}]}}}]}
+
+domain 只能是 student_growth、student_support、conflict_safety、class_operations、activities_culture、school_coordination；primary_mode 和 secondary_modes 只能使用 record、plan_calendar、sop；intent 只能使用 create、append、follow_up、plan、review；safety_level 只能使用 normal、teacher_review_required、urgent_attention。time_facts 每一项都必须是对象，例如 {"text":"暑假期间计划复查"}，不能直接放字符串。subject_refs 只能原样复制当前候选中的完整 {"kind":"student","id":"...","revision":"..."} 对象；一件事务涉及多名不同学生时必须保留全部对应引用，只有同一个姓名存在多个候选时才留空并把“请选择学生”放入 missing_fields。
+
+计划与日历规则：一条输入同时包含多项同一目标下的班务时，优先形成一个 plan_calendar 工作项，在 draft 中完整返回 {"plan_title":"计划标题","summary":"计划说明","reference_at":"参考时间","final_deadline":"带时区的 ISO 日期时间","actions":[{"draft_action_id":"action-1","title":"可执行行动","details":"准备内容和完成标准","due_at":"带时区的 ISO 日期时间","depends_on_draft_action_ids":[]}]}。每个明确工作都要成为独立 action，准备、确认、执行或复查确有必要时继续细分。根据本机参考日期解释“今天、明天、前一天、9月1日”等表达，并在 time_facts 中保留推导依据。缺少具体日期、结算周期、人员范围、兑奖规则等会影响执行的信息时，在 clarification_questions 中追问；不得编造教师没有提供且无法从日期关系推出的时间。仍可先形成草稿，但不以总截止日期静默填补各行动空日期。
+
+学生专业结论规则：教师报告“确诊、诊断、专业评估结论”等内容时，AI 不作诊断，只整理教师转述或已有专业材料。若专业结论来源、结论日期或书面依据未明确，record_kind 使用 reported_statement，并追问专业结论来源、日期和依据；信息齐全时才建议 professional_conclusion。draft 必须包含 record_kind、source、basis、observed_at、current_school_support、professional_recommendations、avoidances 和合并后的 profile_update；追问当前在校支持、专业建议、需要避免的做法或后续复查中最必要的内容。不得把医学或心理结论写成永久性格、能力或纪律标签。
+
+学生冲突规则：冲突、安全、受伤或异常线索必须使用 conflict_safety 和 sop，第一轮同时形成可执行初稿与最多 3 个必要追问；追问必须放在顶层 clarification_questions，不能只放入 profile_update.open_questions。冲突 SOP 的 draft 至少返回 template_key、summary、steps、to_verify。对每名已唯一匹配的学生分别返回 student_profile_updates，结构为 [{"subject_ref":{"kind":"student","id":"原样复制候选 id","revision":"原样复制候选 revision"},"include":true,"display_name":"学生显示名","record_kind":"reported_statement","source":"教师当前输入，采用前核对","basis":"事实或材料依据，未知可为空","observed_at":"已知时填写带时区的 ISO 日期时间，时刻未知则留空并追问","review_at":"教师观察或阶段性判断的复查时间","expires_at":"教师观察或阶段性判断的失效时间","record_summary":"只描述这名学生与本次事件有关的待核事实","profile_base_revision":0,"profile_update":{"summary":"合并后的当前档案摘要","dimensions":[],"open_questions":[],"support_focus":[]}}]。不要把两名学生合并成一份 profile_update，不预设责任方，不认定欺凌。后续补充必须同时修订 SOP 和各学生拟更新内容；profile_base_revision 只作占位，本机会绑定真实当前版本。
+
+若本轮是在回答上一轮追问并提供了上一轮待核对草稿，必须在其基础上修订，保留未被新事实否定的内容；明确是另一件新事项时不得合并旧草稿。你只能形成草稿，不得自动诊断、认定欺凌、决定惩戒、对外发送或结案。即时危险必须提醒教师先保护学生并联系有权角色。"""
 _PROFILE_INSTRUCTION = """当前会话从一个已选学生的档案页发起。只处理这名学生，不得改选其他学生。每次在已提供的当前档案上持续补充、修正和完善，而不是新建历史版本。若信息足以整理，返回且只返回一个 student_growth 或 student_support 的 record 工作项，并原样复制已选学生引用。draft.profile_update 必须是合并后的完整当前档案，包含非空 summary、dimensions、open_questions、support_focus；dimensions 可使用稳定核心 key，也可为学生新增简短英文 key 的个性维度。不得删除与本轮无关的已有维度。发现明显矛盾或关键缺失时，在 clarification_questions 中最多追问 3 个真正有帮助的问题；仍可把已经确定的内容形成完整更新草稿。"""
 _AUDIO_TRIAGE_INSTRUCTION = """你是班主任事务整理助手。当前最后一条用户消息包含教师录音。只返回 json 对象，contract_version 必须是 class_teacher_audio_triage.v1。先在 transcript 字段逐字转写教师说话，保留姓名、日期、数字和否定词，不推断录音中没有的内容；再返回与 class_teacher_triage.v1 相同的 assistant_message、clarification_questions、work_items。把事务分到 student_growth、student_support、conflict_safety、class_operations、activities_culture、school_coordination 六域，并选择 record、plan_calendar、sop 之一。你只能形成草稿，不得自动诊断、分析情绪、认定欺凌、决定惩戒、对外发送或结案。即时危险必须提醒教师先保护学生并联系有权角色。同名学生或无法唯一匹配时 subject_refs 留空并加入待核对项。"""
-_REVISION_INSTRUCTION = """你只调整现有班主任草稿。只返回 JSON 对象：contract_version 必须是 class_teacher_draft_revision.v1，content 必须是完整的新草稿对象。不得正式保存、外发、诊断、作欺凌认定、决定惩戒或结案。"""
+_REVISION_INSTRUCTION = """你只调整现有班主任草稿。只返回 JSON 对象：contract_version 必须是 class_teacher_draft_revision.v1，content 只返回需要新增或改动的顶层字段，不要重复未改字段；系统会按键合并并保留未返回内容。计划 actions 只返回新增或改动项，每项必须带原 draft_action_id；SOP steps 只返回新增或改动项，每项必须带原 key，绝不能改写或删除安全必做步骤和教师分流步骤。需要修改学生档案建议时，只返回受影响学生的完整 student_profile_updates 项并保留其 subject_ref；未修改的学生不要重复返回。根据教师要求同时修订后续 SOP 与档案建议。不得正式保存、外发、诊断、作欺凌认定、决定惩戒或结案。"""
 _STUDENT_REFERENCE_RESELECTION_MESSAGE = "学生版本信息不一致，请重新选择"
 _STUDENT_REFERENCE_PATTERN = re.compile(r"[A-Za-z0-9_-]{8,128}")
 _STUDENT_REFERENCE_ISSUE_CODES = frozenset(
@@ -41,6 +52,30 @@ _EXPLICIT_NEW_TOPIC_PATTERN = re.compile(
 _FOLLOW_UP_DETAIL_PATTERN = re.compile(
     r"(?:补充|已确认|已经|目前|双方|无人受伤|没有受伤|起因|经过|后来)"
 )
+_PROFESSIONAL_REPORT_PATTERN = re.compile(r"(?:确诊|诊断|专业评估|专业结论)")
+_PROFESSIONAL_SOURCE_PATTERN = re.compile(
+    r"(?:医院|医师|医生|心理中心|医疗机构|专业机构|评估机构|诊断证明|评估报告)"
+)
+_PROFESSIONAL_BASIS_PATTERN = re.compile(r"(?:书面|报告|证明|病历|评估单|诊断书)")
+_EXPLICIT_DATE_PATTERN = re.compile(
+    r"(?:\d{4}\s*年\s*)?\d{1,2}\s*月\s*\d{1,2}\s*日|\d{4}[-/.]\d{1,2}[-/.]\d{1,2}|(?:今天|今日|昨天|昨日|前天)"
+)
+_SCHOOL_SUPPORT_PATTERN = re.compile(
+    r"(?:当前在校|在校|学校|课堂).{0,16}(?:支持|安排|措施|调整|协助|采用|已采用)|(?:座位调整|前排座位|任务拆分|任务分段|提醒方式|简短提醒|情绪安抚)"
+)
+_PROFESSIONAL_RECOMMENDATION_PATTERN = re.compile(
+    r"(?:专业建议|医嘱|报告建议|建议学校|避免|不宜)"
+)
+
+
+def _local_reference_message() -> str:
+    local_now = datetime.now(ZoneInfo("Asia/Shanghai"))
+    return (
+        f"本机参考日期：{local_now.date().isoformat()}；"
+        "本机时区：Asia/Shanghai（UTC+08:00）。"
+        "所有相对日期和未写年份的月日都以这个日期与时区解释，"
+        "并把推导后的实际日期写入草稿供教师核对。"
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -237,7 +272,10 @@ class ClassTeacherAITaskAdapter:
         if str(conversation["revision"]) != str(source_ref.get("revision") or ""):
             raise VaultError("class_teacher_source_revision_conflict", "会话已变化，请从最新内容重新整理", status_code=409)
         turn_ids = {str(item.get("id") or "") for item in context_refs if item.get("kind") == "turn"}
-        messages: list[dict[str, str]] = [{"role": "system", "content": _TRIAGE_INSTRUCTION}]
+        messages: list[dict[str, str]] = [
+            {"role": "system", "content": _TRIAGE_INSTRUCTION},
+            {"role": "system", "content": _local_reference_message()},
+        ]
         profile_ref = next(
             (item for item in context_refs if item.get("kind") == "student_profile"),
             None,
@@ -331,7 +369,8 @@ class ClassTeacherAITaskAdapter:
     ) -> tuple[dict[str, object], ...]:
         conversation = self.conversations.get(conversation_id)
         messages: list[dict[str, object]] = [
-            {"role": "system", "content": _AUDIO_TRIAGE_INSTRUCTION}
+            {"role": "system", "content": _AUDIO_TRIAGE_INSTRUCTION},
+            {"role": "system", "content": _local_reference_message()},
         ]
         focused = self._focused_ref(conversation)
         candidates = self._candidates(conversation, profile_ref=focused)
@@ -408,6 +447,9 @@ class ClassTeacherAITaskAdapter:
             name = item["display_name"]
             name_counts[name] = name_counts.get(name, 0) + 1
         normalized_result = deepcopy(dict(result))
+        normalized_result["clarification_questions"] = _bounded_clarification_questions(
+            normalized_result.get("clarification_questions")
+        )
         items = normalized_result.get("work_items")
         requested_mode = _explicitly_requested_mode(conversation)
         turns = [
@@ -420,6 +462,7 @@ class ClassTeacherAITaskAdapter:
             for turn in turns
         )
         conflict_items: list[dict[str, Any]] = []
+        professional_items: list[dict[str, Any]] = []
         conflict_profiles: list[dict[str, object]] | None = None
         current_turn_id = str(turns[-1].get("turn_id") or "") if turns else ""
         previous_handoff = (
@@ -561,6 +604,31 @@ class ClassTeacherAITaskAdapter:
                 raw_item["missing_fields"] = [*missing, "请选择一名同名学生"]
             else:
                 raw_item["subject_refs"] = selected
+            if (
+                raw_item.get("domain") == "conflict_safety"
+                and not validation_issue_codes
+                and not requires_teacher_choice
+            ):
+                self._normalize_conflict_profile_updates(
+                    item=raw_item,
+                    selected_refs=selected,
+                    candidates_by_id=candidates_by_id,
+                )
+            if (
+                _is_professional_report(conversation_text)
+                and raw_item.get("domain") in {"student_growth", "student_support"}
+                and raw_item.get("primary_mode") == "record"
+                and not validation_issue_codes
+                and not requires_teacher_choice
+                and selected
+            ):
+                self._normalize_professional_record(
+                    item=raw_item,
+                    selected_ref=selected[0],
+                    candidate=candidates_by_id.get(str(selected[0].get("id") or ""), {}),
+                    source_text=conversation_text,
+                )
+                professional_items.append(raw_item)
             if focused is not None:
                 if (
                     raw_item.get("primary_mode") != "record"
@@ -599,6 +667,13 @@ class ClassTeacherAITaskAdapter:
                     source_text=conversation_text,
                     existing=normalized_result.get("clarification_questions"),
                     items=conflict_items,
+                )
+            )
+        elif professional_items:
+            normalized_result["clarification_questions"] = (
+                _professional_clarification_questions(
+                    source_text=conversation_text,
+                    existing=normalized_result.get("clarification_questions"),
                 )
             )
         return normalized_result
@@ -651,6 +726,206 @@ class ClassTeacherAITaskAdapter:
             "content": "当前学生档案与支持情况："
             + json.dumps(contexts, ensure_ascii=False, separators=(",", ":")),
         },)
+
+    def _normalize_conflict_profile_updates(
+        self,
+        *,
+        item: dict[str, Any],
+        selected_refs: list[dict[str, object]],
+        candidates_by_id: dict[str, dict[str, str]],
+    ) -> None:
+        draft = item.get("draft")
+        if not isinstance(draft, dict) or not selected_refs:
+            return
+        raw_updates = draft.get("student_profile_updates")
+        supplied = raw_updates if isinstance(raw_updates, list) else []
+        updates_by_id = {
+            str(ref.get("id") or ""): update
+            for update in supplied
+            if isinstance(update, dict)
+            for ref in [update.get("subject_ref")]
+            if isinstance(ref, Mapping) and str(ref.get("id") or "")
+        }
+        normalized: list[dict[str, object]] = []
+        verification = [
+            str(question).strip()
+            for question in list(draft.get("to_verify") or [])
+            if str(question).strip()
+        ]
+        for selected in selected_refs:
+            subject_id = str(selected.get("id") or "")
+            candidate = candidates_by_id.get(subject_id, {})
+            current_profile, base_revision = self._current_profile_for_candidate(
+                subject_id=subject_id,
+                candidate=candidate,
+            )
+            supplied_update = updates_by_id.get(subject_id)
+            if supplied_update is None:
+                open_questions = list(dict.fromkeys([
+                    *[
+                        str(question).strip()
+                        for question in list(current_profile.get("open_questions") or [])
+                        if str(question).strip()
+                    ],
+                    *verification,
+                    "本次冲突经过与后续支持需要仍待教师核对。",
+                ]))
+                profile_update = {
+                    "summary": str(current_profile.get("summary") or "").strip()
+                    or "本次同伴冲突情况待教师核对。",
+                    "dimensions": deepcopy(list(current_profile.get("dimensions") or [])),
+                    "open_questions": open_questions,
+                    "support_focus": deepcopy(list(current_profile.get("support_focus") or [])),
+                }
+                supplied_update = {
+                    "include": False,
+                    "record_kind": "reported_statement",
+                    "source": "教师当前输入，采用前核对",
+                    "basis": "",
+                    "observed_at": str(draft.get("observed_at") or ""),
+                    "record_summary": str(draft.get("summary") or "").strip(),
+                    "profile_update": profile_update,
+                }
+            else:
+                supplied_update = deepcopy(supplied_update)
+                self.student_cards.validate_profile_update(
+                    supplied_update.get("profile_update")
+                )
+            normalized.append({
+                **supplied_update,
+                "subject_ref": dict(selected),
+                "display_name": str(candidate.get("display_name") or "").strip()
+                or str(supplied_update.get("display_name") or "").strip(),
+                "profile_base_revision": base_revision,
+            })
+        draft["student_profile_updates"] = normalized
+
+    def _normalize_professional_record(
+        self,
+        *,
+        item: dict[str, Any],
+        selected_ref: dict[str, object],
+        candidate: Mapping[str, object],
+        source_text: str,
+    ) -> None:
+        draft = item.get("draft")
+        if not isinstance(draft, dict):
+            raise VaultError(
+                "class_teacher_triage_invalid_result",
+                "AI 返回的学生专业信息草稿无效",
+                status_code=422,
+            )
+        current_profile, base_revision = self._current_profile_for_candidate(
+            subject_id=str(selected_ref.get("id") or ""),
+            candidate=candidate,
+        )
+        has_source = bool(_PROFESSIONAL_SOURCE_PATTERN.search(source_text))
+        has_basis = bool(_PROFESSIONAL_BASIS_PATTERN.search(source_text))
+        has_date = bool(_EXPLICIT_DATE_PATTERN.search(source_text))
+        has_school_support = bool(_SCHOOL_SUPPORT_PATTERN.search(source_text))
+
+        complete_evidence = has_source and has_basis and has_date
+        draft["record_kind"] = (
+            "professional_conclusion" if complete_evidence else "reported_statement"
+        )
+        draft["source"] = (
+            "教师补充的专业书面材料，采用前核对"
+            if has_source and has_basis
+            else "教师当前输入，采用前核对"
+        )
+        draft["basis"] = str(draft.get("basis") or "").strip() if has_basis else ""
+        draft["observed_at"] = _professional_date_from_text(source_text) if has_date else ""
+        draft["current_school_support"] = (
+            str(draft.get("current_school_support") or "").strip()
+            or _school_support_from_text(source_text)
+            if has_school_support
+            else ""
+        )
+        if not _PROFESSIONAL_RECOMMENDATION_PATTERN.search(source_text):
+            draft["professional_recommendations"] = ""
+            draft["avoidances"] = ""
+
+        questions = _professional_clarification_questions(
+            source_text=source_text,
+            existing=[],
+        )
+        raw_profile = draft.get("profile_update")
+        try:
+            profile = self.student_cards.validate_profile_update(raw_profile)
+        except VaultError:
+            profile = _professional_profile_fallback(
+                current_profile=current_profile,
+                questions=questions,
+            )
+        if not complete_evidence:
+            profile = _professional_profile_fallback(
+                current_profile=current_profile,
+                questions=questions,
+            )
+        else:
+            current_summary = str(current_profile.get("summary") or "").strip()
+            safe_summary = "教师补充了可核对的专业书面材料、当前在校支持和需避免做法；正式采用前仍由教师核对原始材料。"
+            profile["summary"] = (
+                f"{current_summary} {safe_summary}".strip()
+                if current_summary and safe_summary not in current_summary
+                else current_summary or safe_summary
+            )[:4000]
+            profile["open_questions"] = list(dict.fromkeys([
+                *[
+                    str(question).strip()
+                    for question in list(current_profile.get("open_questions") or [])
+                    if str(question).strip()
+                ],
+                *questions,
+            ]))
+        draft["profile_update"] = profile
+        draft["profile_base_revision"] = base_revision
+        missing = item.get("missing_fields") if isinstance(item.get("missing_fields"), list) else []
+        missing = [
+            value
+            for value in missing
+            if not re.search(r"(?:诊断|专业|结论|书面|依据|在校支持|干预|规避)", str(value))
+        ]
+        additions: list[str] = []
+        if not (has_source and has_basis):
+            additions.append("请核对专业结论来源和书面依据")
+        if not has_date:
+            additions.append("请核对专业结论日期")
+        if not has_school_support:
+            additions.append("请补充当前在校支持")
+        item["missing_fields"] = list(dict.fromkeys([*missing, *additions]))
+
+    def _current_profile_for_candidate(
+        self,
+        *,
+        subject_id: str,
+        candidate: Mapping[str, object],
+    ) -> tuple[dict[str, object], int]:
+        context: Mapping[str, object] | None
+        try:
+            context = self.student_cards.model_context(token="", subject_id=subject_id)
+        except VaultError:
+            display_name = str(candidate.get("display_name") or "").strip()
+            matches = (
+                self.student_cards.model_contexts_for_mentions(
+                    token="",
+                    class_label=str(candidate.get("class_label") or "").strip() or None,
+                    text=display_name,
+                    maximum=1,
+                )
+                if display_name
+                else []
+            )
+            context = matches[0] if matches else None
+        raw_profile = context.get("profile") if isinstance(context, Mapping) else None
+        if not isinstance(raw_profile, Mapping):
+            return {
+                "summary": "",
+                "dimensions": [],
+                "open_questions": [],
+                "support_focus": [],
+            }, 0
+        return deepcopy(dict(raw_profile)), int(raw_profile.get("revision") or 0)
 
     def persist_model_result(
         self,
@@ -873,10 +1148,44 @@ def _promote_conflict_to_sop(
         model_questions=_profile_open_questions(item),
     )
     item["draft"] = {**draft, **baseline}
+    _enrich_conflict_steps(item["draft"], source_text=source_text)
     if isinstance(previous_handoff, Mapping):
         item["draft"]["revision_of_draft_id"] = str(
             previous_handoff.get("draft_id") or ""
         )
+
+
+def _enrich_conflict_steps(draft: dict[str, Any], *, source_text: str) -> None:
+    steps = draft.get("steps")
+    if not isinstance(steps, list):
+        return
+    additions: dict[str, list[str]] = {}
+    if "座位" in source_text:
+        additions.setdefault("fact_check", []).append(
+            "核对信息课座位使用规则，并把双方一致事实与座位归属争议分开记录。"
+        )
+    if "分别陈述" in source_text or "分别" in source_text and "陈述" in source_text:
+        additions.setdefault("separate_statements", []).append(
+            "分别听取两名学生陈述，不安排当面对质。"
+        )
+    if "共同修复" in source_text:
+        additions.setdefault("ordinary_support", []).append(
+            "在规则核对和双方分别表达后，由教师选择适合当下状态的共同修复方式。"
+        )
+        additions.setdefault("follow_up", []).append(
+            "后续分别确认修复是否有效，并记录两名学生各自仍需要的支持。"
+        )
+    for step in steps:
+        if not isinstance(step, dict):
+            continue
+        extra = additions.get(str(step.get("key") or ""), [])
+        if not extra:
+            continue
+        details = str(step.get("details") or "").strip()
+        for sentence in extra:
+            if sentence not in details:
+                details = f"{details} {sentence}".strip()
+        step["details"] = details
 
 
 def _conflict_clarification_questions(
@@ -894,11 +1203,145 @@ def _conflict_clarification_questions(
         candidates.extend(
             str(question).strip()
             for question in existing
-            if isinstance(question, str) and str(question).strip()
+            if isinstance(question, str)
+            and str(question).strip()
+            and not re.search(r"(?:分开|即时冲突|受伤|校医)", str(question))
         )
     for item in items:
         candidates.extend(_profile_open_questions(item))
+    if len(candidates) == 2:
+        candidates.append("矛盾的起因、经过、在场人员和已经采取的处理措施分别是什么？")
     return list(dict.fromkeys(candidates))[:3]
+
+
+def _bounded_clarification_questions(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    questions = [
+        str(question).strip()
+        for question in value
+        if isinstance(question, str)
+        and str(question).strip()
+        and len(str(question).strip()) <= 400
+    ]
+    return list(dict.fromkeys(questions))[:3]
+
+
+def _is_professional_report(source_text: str) -> bool:
+    return bool(_PROFESSIONAL_REPORT_PATTERN.search(source_text))
+
+
+def _professional_clarification_questions(
+    *,
+    source_text: str,
+    existing: object,
+) -> list[str]:
+    questions: list[str] = []
+    has_source_and_basis = bool(
+        _PROFESSIONAL_SOURCE_PATTERN.search(source_text)
+        and _PROFESSIONAL_BASIS_PATTERN.search(source_text)
+    )
+    has_date = bool(_EXPLICIT_DATE_PATTERN.search(source_text))
+    has_support = bool(_SCHOOL_SUPPORT_PATTERN.search(source_text))
+    if not has_source_and_basis:
+        questions.append("专业结论由哪家机构或哪位专业人员出具，是否有可核对的书面材料？")
+    if not has_date:
+        questions.append("这份专业结论的出具日期是什么时候？")
+    if not has_support:
+        questions.append("学生当前在校已采用哪些支持方式，哪些有效，哪些做法需要避免？")
+    for question in _bounded_clarification_questions(existing):
+        if has_source_and_basis and re.search(r"(?:来源|机构|医生|材料|报告|依据)", question):
+            continue
+        if has_date and re.search(r"(?:日期|时间|什么时候|何时)", question):
+            continue
+        if has_support and re.search(r"(?:在校|支持|有效|避免|做法)", question):
+            continue
+        questions.append(question)
+    return list(dict.fromkeys(questions))[:3]
+
+
+def _professional_date_from_text(source_text: str) -> str:
+    explicit = re.search(
+        r"(?P<year>\d{4})\s*年\s*(?P<month>\d{1,2})\s*月\s*(?P<day>\d{1,2})\s*日",
+        source_text,
+    )
+    if explicit:
+        try:
+            return datetime(
+                int(explicit.group("year")),
+                int(explicit.group("month")),
+                int(explicit.group("day")),
+                tzinfo=ZoneInfo("Asia/Shanghai"),
+            ).date().isoformat()
+        except ValueError:
+            return ""
+    iso_date = re.search(r"\d{4}[-/.]\d{1,2}[-/.]\d{1,2}", source_text)
+    if iso_date:
+        parts = re.split(r"[-/.]", iso_date.group(0))
+        try:
+            return datetime(
+                int(parts[0]), int(parts[1]), int(parts[2]),
+                tzinfo=ZoneInfo("Asia/Shanghai"),
+            ).date().isoformat()
+        except ValueError:
+            return ""
+    relative = re.search(r"今天|今日|昨天|昨日|前天", source_text)
+    if relative:
+        offset = 0 if relative.group(0) in {"今天", "今日"} else -1 if relative.group(0) in {"昨天", "昨日"} else -2
+        return (datetime.now(ZoneInfo("Asia/Shanghai")).date() + timedelta(days=offset)).isoformat()
+    return ""
+
+
+def _school_support_from_text(source_text: str) -> str:
+    match = re.search(
+        r"((?:当前在校|在校|学校|课堂)(?:已)?采用[^。；]{1,240})",
+        source_text,
+    )
+    return str(match.group(1)).strip() if match else ""
+
+
+def _professional_profile_fallback(
+    *,
+    current_profile: Mapping[str, object],
+    questions: list[str],
+) -> dict[str, object]:
+    current_summary = str(current_profile.get("summary") or "").strip()
+    report_summary = "教师转述学生已有专业诊断信息，具体来源、日期和书面材料仍待核对。"
+    summary = (
+        f"{current_summary} {report_summary}".strip()
+        if current_summary and report_summary not in current_summary
+        else current_summary or report_summary
+    )
+    dimensions = deepcopy(list(current_profile.get("dimensions") or []))
+    by_key = {
+        str(item.get("key") or ""): index
+        for index, item in enumerate(dimensions)
+        if isinstance(item, Mapping)
+    }
+    context_dimension = {
+        "key": "professional_support_context",
+        "label": "专业支持信息（待核对）",
+        "items": ["教师转述已有专业诊断信息；采用前需核对来源、日期和书面材料。"],
+    }
+    index = by_key.get("professional_support_context")
+    if index is None:
+        dimensions.append(context_dimension)
+    else:
+        dimensions[index] = context_dimension
+    open_questions = list(dict.fromkeys([
+        *[
+            str(question).strip()
+            for question in list(current_profile.get("open_questions") or [])
+            if str(question).strip()
+        ],
+        *questions,
+    ]))
+    return {
+        "summary": summary[:4000],
+        "dimensions": dimensions,
+        "open_questions": open_questions,
+        "support_focus": deepcopy(list(current_profile.get("support_focus") or [])),
+    }
 
 
 def _validation_issue_codes(result: Mapping[str, Any]) -> list[str]:

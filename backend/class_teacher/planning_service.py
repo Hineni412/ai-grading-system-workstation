@@ -27,6 +27,11 @@ _PROHIBITED_TERMS = (
     "性侵",
     "惩戒",
 )
+_NON_NAME_PERSON_PREFIXES = (
+    "全体", "所有", "部分", "每位", "相关", "本班", "班级", "学校", "在校", "返校",
+    "安排", "组织", "提醒", "帮助", "引导", "要求", "参与", "值日", "值周", "新生",
+    "全班", "各位", "通知",
+)
 
 
 def _now() -> datetime:
@@ -620,7 +625,14 @@ class PlanningService:
             findings.append("手机号")
         if re.search(r"(?<!\d)\d{17}[\dXx](?!\d)", value):
             findings.append("身份证号")
-        if re.search(r"[\u4e00-\u9fff]{2,4}(同学|学生|家长)", value):
+        possible_people = re.finditer(
+            r"([\u4e00-\u9fff]{2,4})(同学|家长)",
+            value,
+        )
+        if any(
+            not any(match.group(1).endswith(prefix) for prefix in _NON_NAME_PERSON_PREFIXES)
+            for match in possible_people
+        ):
             findings.append("可能包含姓名")
         return list(dict.fromkeys(findings))
 
