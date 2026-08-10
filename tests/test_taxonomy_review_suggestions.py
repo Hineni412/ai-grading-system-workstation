@@ -648,6 +648,52 @@ def test_current_question_context_is_derived_without_rewriting_historical_refs(
     assert governance.get_proposal(proposal["id"])["question_refs"] == [111, 112]
 
 
+def test_proposal_summary_counts_only_candidates_with_current_questions(
+    tmp_path: Path,
+) -> None:
+    governance = _governance(tmp_path)
+    _persist(
+        governance,
+        dimension="knowledge",
+        name="只读摘要候选",
+        token="31" * 16,
+        question_id=111,
+    )
+    _persist(
+        governance,
+        dimension="knowledge",
+        name="只读摘要候选",
+        token="32" * 16,
+        question_id=112,
+    )
+    loaded_ids: list[int] = []
+
+    def load_current(question_ids):
+        loaded_ids.extend(question_ids)
+        return _question_loader(
+            [question_id for question_id in question_ids if question_id == 112]
+        )
+
+    service = TaxonomySuggestionService(
+        state_path=tmp_path / "suggestions.json",
+        governance=governance,
+        question_loader=load_current,
+    )
+    governance.list_proposals = lambda **_kwargs: (_ for _ in ()).throw(
+        AssertionError("summary must not build the full proposal page")
+    )
+
+    summary = service.proposal_summary()
+
+    assert loaded_ids == [111, 112]
+    assert summary["items"] == []
+    assert summary["counts"] == {
+        "pending": 1,
+        "actionable": 1,
+        "historical_unavailable": 0,
+    }
+
+
 def test_unavailable_question_context_costs_no_request_and_can_retry_after_restore(
     tmp_path: Path,
 ) -> None:

@@ -249,19 +249,7 @@ class TaxonomySuggestionService:
                 "active_question_refs", item.get("question_refs", [])
             )
         )
-        active_ids = set(all_refs)
-        if all_refs and self.question_loader is not None:
-            try:
-                loaded = self.question_loader(all_refs)
-            except Exception:
-                loaded = []
-            else:
-                active_ids = {
-                    int(raw.get("id"))
-                    for raw in loaded
-                    if isinstance(raw, Mapping)
-                    and str(raw.get("id") or "").isdigit()
-                }
+        active_ids = self._active_question_ids(all_refs)
         actionable = 0
         visible_items: list[dict[str, Any]] = []
         for item in items:
@@ -288,6 +276,48 @@ class TaxonomySuggestionService:
         result["items"] = visible_items
         result["counts"] = counts
         return result
+
+    def proposal_summary(self) -> dict[str, Any]:
+        """Count actionable proposals without constructing the review page."""
+
+        snapshot = self.governance.pending_proposal_reference_summary()
+        refs_by_proposal = snapshot["question_refs_by_proposal"]
+        all_refs = _positive_ids(
+            question_id
+            for question_refs in refs_by_proposal.values()
+            for question_id in question_refs
+        )
+        active_ids = self._active_question_ids(all_refs)
+        actionable = sum(
+            any(question_id in active_ids for question_id in question_refs)
+            for question_refs in refs_by_proposal.values()
+        )
+        return {
+            "revision": snapshot["revision"],
+            "evidence_revision": snapshot["evidence_revision"],
+            "items": [],
+            "counts": {
+                "pending": actionable,
+                "actionable": actionable,
+                "historical_unavailable": 0,
+            },
+        }
+
+    def _active_question_ids(self, question_ids: Sequence[object]) -> set[int]:
+        normalized = _positive_ids(question_ids)
+        active_ids = set(normalized)
+        if not normalized or self.question_loader is None:
+            return active_ids
+        try:
+            loaded = self.question_loader(normalized)
+        except Exception:
+            return active_ids
+        return {
+            int(raw.get("id"))
+            for raw in loaded
+            if isinstance(raw, Mapping)
+            and str(raw.get("id") or "").isdigit()
+        }
 
     def cancel_run(self, run_id: str) -> dict[str, Any]:
         with _STATE_LOCK:

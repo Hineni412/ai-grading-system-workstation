@@ -108,6 +108,48 @@ afterEach(() => {
 })
 
 describe('question bank workspace', () => {
+  it('does not download the full taxonomy catalog while opening the paper library', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input)
+      if (url === '/api/question-bank/papers') {
+        return response({ items: [], total: 0 })
+      }
+      if (url === '/api/question-bank/taxonomy/proposals?status=pending&summary=true') {
+        return response({
+          revision: 7,
+          items: [],
+          counts: { pending: 0, actionable: 0, historical_unavailable: 0 },
+        })
+      }
+      if (url === '/api/question-bank/taxonomy/catalog') {
+        return response({
+          revision: 7,
+          dimensions: {
+            curriculum: [], knowledge: [], ability: [], method: [], thought: [],
+            model: [], special_type: [],
+          },
+        })
+      }
+      throw new Error(`unexpected request: ${url}`)
+    })
+    const host = document.createElement('div')
+    document.body.append(host)
+    const app = createApp(QuestionBankView)
+    app.use(createPinia())
+    app.mount(host)
+    mounted.push(app)
+
+    await vi.waitFor(() => expect(host.textContent).toContain('还没有导入试卷'))
+    await vi.waitFor(() => expect(fetchSpy).toHaveBeenCalledWith(
+      '/api/question-bank/taxonomy/proposals?status=pending&summary=true',
+      expect.anything(),
+    ))
+
+    expect(fetchSpy.mock.calls.some(
+      ([input]) => String(input) === '/api/question-bank/taxonomy/catalog',
+    )).toBe(false)
+  })
+
   it('shows that the pending taxonomy count is loading instead of flashing a false zero', async () => {
     const host = document.createElement('div')
     document.body.append(host)

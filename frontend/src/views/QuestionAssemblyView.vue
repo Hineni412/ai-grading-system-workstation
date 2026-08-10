@@ -1,22 +1,22 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { defineAsyncComponent, ref } from 'vue'
 
-import AssemblyEditorWorkspace from '../components/question-bank/AssemblyEditorWorkspace.vue'
 import AssemblyQuestionBrowser from '../components/question-bank/AssemblyQuestionBrowser.vue'
 import { useAssemblyStore } from '../stores/assembly'
 import { useJobStore } from '../stores/jobs'
 import '../styles/question-bank.css'
 import '../styles/question-assembly.css'
 
+const AssemblyEditorWorkspace = defineAsyncComponent(
+  () => import('../components/question-bank/AssemblyEditorWorkspace.vue'),
+)
+
 const assembly = useAssemblyStore()
 const jobs = useJobStore()
 const mode = ref<'browse' | 'edit'>('browse')
 
-onMounted(() => {
-  void jobs.initialize()
-})
-
 function showEditor(): void {
+  void jobs.initialize()
   mode.value = 'edit'
   window.scrollTo({ top: 0, behavior: 'smooth' })
 }

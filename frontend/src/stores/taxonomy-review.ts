@@ -152,6 +152,40 @@ export const useTaxonomyReviewStore = defineStore('taxonomy-review', () => {
     return dimensions.value[dimension]
   }
 
+  function applyProposalList(proposalList: Awaited<ReturnType<TaxonomyReviewApi['listProposals']>>): void {
+    proposals.value = proposalList.items
+    pendingCount.value = proposalList.counts.actionable
+    revision.value = proposalList.revision
+    loadState.value = proposalList.counts.actionable === 0 ? 'empty' : 'ready'
+    if (suggestionRun.value && !runBelongsToCurrentCandidates(suggestionRun.value)) {
+      moveSuggestionRunToHistory(suggestionRun.value)
+    }
+  }
+
+  async function loadSummary(
+    api: TaxonomyReviewApi = questionBankTaxonomyApi,
+  ): Promise<boolean> {
+    loadController?.abort()
+    const controller = new AbortController()
+    loadController = controller
+    const generation = ++loadGeneration
+    loadState.value = 'loading'
+    message.value = ''
+    try {
+      const proposalList = await api.getProposalSummary(controller.signal)
+      if (generation !== loadGeneration || controller.signal.aborted) return false
+      applyProposalList(proposalList)
+      return true
+    } catch {
+      if (generation !== loadGeneration || controller.signal.aborted) return false
+      loadState.value = 'error'
+      message.value = '新词候选暂时无法读取，请稍后重新读取。'
+      return false
+    } finally {
+      if (loadController === controller) loadController = null
+    }
+  }
+
   async function load(
     api: TaxonomyReviewApi = questionBankTaxonomyApi,
   ): Promise<boolean> {
@@ -175,13 +209,7 @@ export const useTaxonomyReviewStore = defineStore('taxonomy-review', () => {
       }
       if (generation !== loadGeneration || controller.signal.aborted) return false
       dimensions.value = catalog.dimensions
-      proposals.value = proposalList.items
-      pendingCount.value = proposalList.counts.actionable
-      revision.value = proposalList.revision
-      loadState.value = proposalList.counts.actionable === 0 ? 'empty' : 'ready'
-      if (suggestionRun.value && !runBelongsToCurrentCandidates(suggestionRun.value)) {
-        moveSuggestionRunToHistory(suggestionRun.value)
-      }
+      applyProposalList(proposalList)
       if (!suggestionRun.value) await restoreSuggestions(api)
       return true
     } catch {
@@ -546,6 +574,7 @@ export const useTaxonomyReviewStore = defineStore('taxonomy-review', () => {
     batchMessage,
     hasCatalog,
     termsFor,
+    loadSummary,
     load,
     review,
     suggestionFor,

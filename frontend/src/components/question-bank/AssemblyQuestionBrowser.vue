@@ -318,7 +318,6 @@ const activeFilters = computed<ActiveFilter[]>(() => {
 })
 
 const activeFilterCount = computed(() => activeFilters.value.length)
-let secondaryLoadHandle: ReturnType<typeof setTimeout> | null = null
 let browserUnmounted = false
 
 onMounted(() => {
@@ -346,21 +345,13 @@ async function initializeQuestionBrowser(): Promise<void> {
     assembly.loadState === 'idle' ? assembly.load() : Promise.resolve(),
     initialQuestions,
   ])
-  // Start the filter data shortly after the visible request begins. The
-  // endpoints are small and independent, so there is no reason to keep the
-  // filter shell empty for an additional fixed half-second after the cards
-  // arrive. The short delay still lets the question request take the first
-  // network/parser slot on a cold page.
-  secondaryLoadHandle = setTimeout(() => {
-    secondaryLoadHandle = null
-    if (browserUnmounted) return
-    void Promise.all([loadCatalog(), loadFacets()]).then(chooseInitialVolume)
-  }, 120)
+  void Promise.all([loadCatalog(), loadFacets()]).then(() => {
+    if (!browserUnmounted) chooseInitialVolume()
+  })
 }
 
 onBeforeUnmount(() => {
   browserUnmounted = true
-  if (secondaryLoadHandle !== null) clearTimeout(secondaryLoadHandle)
   questionAbortController?.abort()
   facetsAbortController?.abort()
 })
@@ -449,10 +440,11 @@ async function loadFilteredFacets(requestFilters: QuestionBankFilters): Promise<
 
 async function loadCatalog(): Promise<void> {
   catalogState.value = 'loading'
-  try {
-    catalog.value = await questionBankApi.getCurriculum(undefined, false)
+  await curriculumScope.initialize()
+  if (curriculumScope.catalog) {
+    catalog.value = curriculumScope.catalog
     catalogState.value = 'ready'
-  } catch {
+  } else {
     catalog.value = null
     catalogState.value = 'error'
   }

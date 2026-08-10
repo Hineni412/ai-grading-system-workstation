@@ -1,4 +1,4 @@
-import { computed, ref } from 'vue'
+import { computed, ref, shallowRef } from 'vue'
 import { defineStore } from 'pinia'
 
 import {
@@ -16,6 +16,7 @@ function readPersistedVolumeId(): string | null {
 }
 
 export const useCurriculumScopeStore = defineStore('curriculum-scope', () => {
+  const catalog = shallowRef<CurriculumCatalog | null>(null)
   const volumes = ref<CurriculumVolume[]>([])
   const selectedVolumeId = ref<string | null>(null)
   const loadState = ref<CurriculumScopeLoadState>('idle')
@@ -45,8 +46,9 @@ export const useCurriculumScopeStore = defineStore('curriculum-scope', () => {
       errorMessage.value = ''
       const persisted = readPersistedVolumeId()
       try {
-        const catalog = await loader()
-        volumes.value = [...catalog.volumes].sort((left, right) => left.order - right.order)
+        const loaded = await loader()
+        catalog.value = loaded
+        volumes.value = [...loaded.volumes].sort((left, right) => left.order - right.order)
         if (persisted && volumes.value.some(volume => volume.id === persisted)) {
           selectedVolumeId.value = persisted
         } else {
@@ -55,6 +57,7 @@ export const useCurriculumScopeStore = defineStore('curriculum-scope', () => {
         }
         loadState.value = 'ready'
       } catch {
+        catalog.value = null
         loadState.value = 'error'
         errorMessage.value = '教学学期目录暂时无法读取，已暂停学期筛选。'
       }
@@ -81,6 +84,7 @@ export const useCurriculumScopeStore = defineStore('curriculum-scope', () => {
   }
 
   return {
+    catalog,
     volumes,
     selectedVolumeId,
     selectedVolume,

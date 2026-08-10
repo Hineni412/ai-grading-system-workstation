@@ -181,6 +181,10 @@ describe('question assembly view', () => {
       ([input]) => String(input).startsWith('/api/question-bank/facets?'),
     )
     expect(facetCalls).toHaveLength(1)
+    const curriculumCalls = fetchSpy.mock.calls.filter(
+      ([input]) => String(input) === '/api/question-bank/curriculum?include_knowledge_points=false',
+    )
+    expect(curriculumCalls).toHaveLength(1)
   })
 
   it('shows only the most specific knowledge point on question cards', async () => {
@@ -517,9 +521,8 @@ describe('question assembly view', () => {
     const openEditor = [...host.querySelectorAll<HTMLButtonElement>('button')]
       .find((button) => button.textContent?.includes('进入编辑与导出'))!
     openEditor.click()
-    await vi.waitFor(() => expect(host.textContent).toContain('一次函数图像题'))
+    await vi.waitFor(() => expect(host.textContent).toContain('paper.md'))
     expect(host.textContent).toContain('A')
-    expect(host.textContent).toContain('paper.md')
 
     const exportWord = [...host.querySelectorAll<HTMLButtonElement>('button')]
       .find((button) => button.textContent?.includes('导出 Word'))!

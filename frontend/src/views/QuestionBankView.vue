@@ -40,9 +40,9 @@ const activeProgress = computed(() => {
 })
 
 onMounted(() => {
-  // The pending-review count is part of the visible library state, so begin
-  // that read immediately and show an explicit loading label until it arrives.
-  void taxonomyReview.load()
+  // The library only needs the pending count. The full controlled catalog is
+  // loaded on demand when the teacher opens the review workspace.
+  void taxonomyReview.loadSummary()
   void bank.loadPapers().finally(() => {
     secondaryLoadHandle = setTimeout(() => {
       secondaryLoadHandle = null
@@ -77,6 +77,7 @@ function closePaper(): void {
 function openTaxonomyReview(): void {
   showImport.value = false
   showTaxonomyReview.value = true
+  void taxonomyReview.load()
 }
 </script>
 
