@@ -16,7 +16,6 @@ vi.mock('echarts/core', () => ({
 import { intakeApi } from '../api/intake'
 import { studentR1Api } from '../api/r1'
 import { supportApi } from '../api/support'
-import { vaultApi } from '../api/vault'
 import type { WorkNode, WorkNodeDetail } from '../api/work'
 import WorkNodeInspector from '../ordinary/WorkNodeInspector.vue'
 import AcademicAnalysisPanel from '../students/AcademicAnalysisPanel.vue'
@@ -43,7 +42,6 @@ afterEach(() => { apps.splice(0).forEach((app) => app.unmount()); document.body.
 describe('B UI R1 surfaces', () => {
   it('opens the R7 conversation desk without consulting a PIN or vault gate', async () => {
     window.history.replaceState({}, '', '/class-teacher?surface=home')
-    const vaultStatus = vi.spyOn(vaultApi, 'status')
     vi.spyOn(intakeApi, 'homeroom').mockResolvedValue({ homeroom_class:null, revision:0, classes:[], source_revision:'r'.repeat(64) })
     vi.spyOn(intakeApi, 'listConversations').mockResolvedValue([])
     vi.spyOn(intakeApi, 'startConversation').mockResolvedValue({
@@ -56,7 +54,6 @@ describe('B UI R1 surfaces', () => {
     await vi.waitFor(() => expect(host.textContent).toContain('先把事情说清楚，再决定怎么处理'))
     expect(host.textContent).not.toContain('PIN')
     expect(host.textContent).not.toContain('解锁')
-    expect(vaultStatus).not.toHaveBeenCalled()
   })
 
   it('opens the existing workspace from a home card while keeping the conversation home intact', async () => {
@@ -110,14 +107,14 @@ describe('B UI R1 surfaces', () => {
     const directory = vi.spyOn(studentR1Api, 'directory').mockResolvedValue({ items:[{ subject_id:'s1', display_name:'合成学生', source_student_id:'student:S001', class_label:'一班', support_record_count:3, support_plan_count:1, confirmed_entry_count:2, projection_state:'none', attention_pending_count:0, last_confirmed_at:'2026-08-01' }], cursor:null, total:1, page_size:20 })
     const rosterSource = vi.spyOn(studentR1Api, 'rosterSource').mockResolvedValue({ items:[{ source_key:'student:S001', student_code:'S001', display_name:'合成学生', class_label:'一班', subject_id:'s1', roster_state:'active', opaque_ref:'ref', student_revision:'r1' }], classes:['一班'], source_revision:'r1', total:1, cursor:null })
     const records = vi.spyOn(studentR1Api, 'records')
-    const host = await mount(StudentDirectoryPanel, { token:'synthetic-token' })
+    const host = await mount(StudentDirectoryPanel, {})
     expect(host.textContent).toContain('点击卡片进入学生当前档案')
     expect(host.textContent).toContain('合成学生')
     expect(host.textContent).toContain('一班')
     expect(host.textContent).toContain('当前档案已建立')
-    expect(directory).toHaveBeenCalledExactlyOnceWith('synthetic-token', expect.objectContaining({ classLabel:'一班', state:'active' }))
-    expect(directory.mock.calls[0]?.[1]).not.toHaveProperty('rosterState')
-    expect(rosterSource).toHaveBeenCalledExactlyOnceWith('synthetic-token', { classLabel:'一班', pageSize:100 })
+    expect(directory).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ classLabel:'一班', state:'active' }))
+    expect(directory.mock.calls[0]?.[0]).not.toHaveProperty('rosterState')
+    expect(rosterSource).toHaveBeenCalledExactlyOnceWith({ classLabel:'一班', pageSize:100 })
     expect(records).not.toHaveBeenCalled()
   })
 
@@ -128,7 +125,7 @@ describe('B UI R1 surfaces', () => {
       .mockRejectedValueOnce(new Error('temporary unavailable'))
       .mockResolvedValue({ items:[{ source_key:'student:S001', student_code:'S001', display_name:'合成学生', class_label:'一班', subject_id:'s1', roster_state:'active', opaque_ref:'ref', student_revision:'r1' }], classes:['一班'], source_revision:'r1', total:1, cursor:null })
 
-    const host = await mount(StudentDirectoryPanel, { token:'synthetic-token' })
+    const host = await mount(StudentDirectoryPanel, {})
 
     expect(host.textContent).toContain('学生基本信息暂时无法读取')
     clickByText(host, '重新读取学生名单')
@@ -149,9 +146,9 @@ describe('B UI R1 surfaces', () => {
       current_profile:{ entry_id:'entry-1', revision:1, summary:'能按计划完成任务。', dimensions:[], open_questions:[], support_focus:[], updated_at:'2026-08-01' },
     })
 
-    const host = await mount(StudentSurface, { token:'synthetic-token', panel:'directory', status:null, subjectId:'subject-1234' })
+    const host = await mount(StudentSurface, { panel:'directory', subjectId:'subject-1234' })
 
-    expect(header).toHaveBeenCalledExactlyOnceWith('synthetic-token', 'subject-1234')
+    expect(header).toHaveBeenCalledExactlyOnceWith('subject-1234')
     expect(host.querySelector('[role="dialog"]')).toBeTruthy()
     expect(host.textContent).toContain('合成学生')
     expect(host.textContent).toContain('能按计划完成任务。')
@@ -163,12 +160,12 @@ describe('B UI R1 surfaces', () => {
     vi.spyOn(studentR1Api, 'rosterSource').mockResolvedValue({ items:[{ source_key:'student:S002', student_code:'S002', display_name:'待整理学生', class_label:'一班', subject_id:null, roster_state:'available', opaque_ref:'ref', student_revision:'r1' }], classes:['一班'], source_revision:'r1', total:1, cursor:null })
     const createSubject = vi.spyOn(supportApi, 'createSubject').mockResolvedValue({ subject_id:'new-subject', revision:1, source_student_id:'student:S002', display_name:'待整理学生', class_label:'一班' })
     const select = vi.fn()
-    const host = await mount(StudentDirectoryPanel, { token:'synthetic-token', onSelect:select })
+    const host = await mount(StudentDirectoryPanel, { onSelect:select })
 
     clickByText(host, '待整理学生'); await nextTick()
     await new Promise((resolve)=>setTimeout(resolve,0)); await nextTick()
 
-    expect(createSubject).toHaveBeenCalledExactlyOnceWith('synthetic-token', {
+    expect(createSubject).toHaveBeenCalledExactlyOnceWith({
       source_student_id:'student:S002', display_name:'待整理学生', class_label:'一班',
     })
     expect(select).toHaveBeenCalledWith(expect.objectContaining({
@@ -198,10 +195,10 @@ describe('B UI R1 surfaces', () => {
     const close = vi.fn()
     const open = vi.fn()
     const host = await mount(StudentOverviewPanel, {
-      token:'synthetic-token', subject, onClose:close, onOpen:open,
+      subject, onClose:close, onOpen:open,
     })
 
-    expect(card).toHaveBeenCalledExactlyOnceWith('synthetic-token', 'subject-1234')
+    expect(card).toHaveBeenCalledExactlyOnceWith('subject-1234')
     expect(start).not.toHaveBeenCalled()
     expect(host.textContent).toContain('学生当前档案')
     expect(host.querySelector('[role="dialog"]')).toBeTruthy()
@@ -257,7 +254,7 @@ describe('B UI R1 surfaces', () => {
     const adopt = vi.spyOn(intakeApi, 'adopt').mockResolvedValue({ saved:true })
     vi.spyOn(intakeApi, 'conversation').mockResolvedValue({ ...ready, state:'teacher_confirmed' })
 
-    const host = await mount(StudentOverviewPanel, { token:'synthetic-token', subject })
+    const host = await mount(StudentOverviewPanel, { subject })
     const textarea = host.querySelector('textarea')!
     textarea.value = '最近开始主动分工'
     textarea.dispatchEvent(new Event('input', { bubbles:true }))
@@ -269,7 +266,7 @@ describe('B UI R1 surfaces', () => {
     clickByText(host, '应用到当前档案')
     await new Promise((resolve)=>setTimeout(resolve,0)); await nextTick(); await nextTick()
 
-    expect(adopt).toHaveBeenCalledWith('synthetic-token', expect.objectContaining({ handoff_id:'handoff-profile' }), '1')
+    expect(adopt).toHaveBeenCalledWith(expect.objectContaining({ handoff_id:'handoff-profile' }), '1')
     expect(host.textContent).toContain('当前学生档案已经更新')
     expect(host.textContent).toContain('在小组任务中开始主动分工')
   })
@@ -296,7 +293,7 @@ describe('B UI R1 surfaces', () => {
     const discard = vi.spyOn(intakeApi, 'discard').mockResolvedValue({ discarded:true })
     vi.spyOn(intakeApi, 'conversation').mockResolvedValue({ ...ready, state:'collecting', handoffs:[{ ...ready.handoffs[0]!, adoption_state:'discarded' }] })
 
-    const host = await mount(StudentOverviewPanel, { token:'synthetic-token', subject })
+    const host = await mount(StudentOverviewPanel, { subject })
     const textarea = host.querySelector('textarea')!
     textarea.value = '这是一条新情况'
     textarea.dispatchEvent(new Event('input', { bubbles:true }))
@@ -318,7 +315,7 @@ describe('B UI R1 surfaces', () => {
       series:[{ subject_name:'数学', points:[{evidence_version_id:'e1',subject_name:'数学',result_state:'normal',score:0,occurred_on:'2026-06-01',relative_position:0.2},{evidence_version_id:'e2',subject_name:'数学',result_state:'absent',score:null,occurred_on:'2026-07-01',relative_position:null}], segments:[{dimensions:{rank:{status:'not_comparable'},score:{status:'not_comparable'}}}] }],
       rank_change_pairs:[], relative_subject_signals:[], recent_changes:[], insufficient_reasons:['不可比'], attention_cards:[],
     })
-    const host = await mount(AcademicAnalysisPanel, { token:'t', subject:{subject_id:'s1',display_name:'合成学生',source_student_id:'S1',class_label:null,support_record_count:0,support_plan_count:0,confirmed_entry_count:0,projection_state:'none',attention_pending_count:0,last_confirmed_at:null} })
+    const host = await mount(AcademicAnalysisPanel, { subject:{subject_id:'s1',display_name:'合成学生',source_student_id:'S1',class_label:null,support_record_count:0,support_plan_count:0,confirmed_entry_count:0,projection_state:'none',attention_pending_count:0,last_confirmed_at:null} })
     expect(host.textContent).toContain('缺考不是 0 分')
     expect(host.textContent).toContain('考试系列')
     expect(host.textContent).toContain('只看可比证据')
@@ -346,13 +343,13 @@ describe('B UI R1 surfaces', () => {
         filter_options:options, applied_filters:{ time_range:'all', comparison_series:null, subject_name:null, comparable_only:true },
         sessions:[], series:[], rank_change_pairs:[], relative_subject_signals:[], recent_changes:[], insufficient_reasons:['筛选后没有可直接比较的证据'], attention_cards:[],
       })
-    const host = await mount(AcademicAnalysisPanel, { token:'t', subject:{subject_id:'s1',display_name:'合成学生',source_student_id:'S1',class_label:null,support_record_count:0,support_plan_count:0,confirmed_entry_count:0,projection_state:'none',attention_pending_count:0,last_confirmed_at:null} })
+    const host = await mount(AcademicAnalysisPanel, { subject:{subject_id:'s1',display_name:'合成学生',source_student_id:'S1',class_label:null,support_record_count:0,support_plan_count:0,confirmed_entry_count:0,projection_state:'none',attention_pending_count:0,last_confirmed_at:null} })
 
     const checkbox = host.querySelector<HTMLInputElement>('.filters input[type="checkbox"]')!
     checkbox.checked = true; checkbox.dispatchEvent(new Event('change',{bubbles:true}))
     await new Promise((resolve)=>setTimeout(resolve,0)); await nextTick()
 
-    expect(academic).toHaveBeenLastCalledWith('t', 's1', expect.objectContaining({ comparableOnly:true }))
+    expect(academic).toHaveBeenLastCalledWith('s1', expect.objectContaining({ comparableOnly:true }))
     expect(host.textContent).not.toContain('3 个合格场次')
     const filteredTimeline = chartOptions[chartOptions.length - 1]!.series![0]!.data
     expect(filteredTimeline).toEqual([])
@@ -363,7 +360,7 @@ describe('B UI R1 surfaces', () => {
     vi.spyOn(supportApi, 'listRecords').mockResolvedValue([])
     const create = vi.spyOn(supportApi, 'createRecord').mockResolvedValue({ record_id:'r1',subject_id:'s1',record_kind:'observation',state:'active',current_revision:1,content:'合成事实',scene:'日常观察',source:'教师本人观察',counterexample:null,observed_at:'2026-08-01',review_at:null,expires_at:null })
     const subject = {subject_id:'s1',display_name:'合成学生',source_student_id:'S1',class_label:null,support_record_count:0,support_plan_count:0,confirmed_entry_count:0,projection_state:'none',attention_pending_count:0,last_confirmed_at:null}
-    const host = await mount(SupportReviewPanel, { token:'t', subject })
+    const host = await mount(SupportReviewPanel, { subject })
     const content = host.querySelector<HTMLTextAreaElement>('.editor textarea')!
     content.value='合成事实'; content.dispatchEvent(new Event('input',{bubbles:true}))
     clickByText(host, '确认保存记录'); await new Promise((resolve)=>setTimeout(resolve,0)); await nextTick()

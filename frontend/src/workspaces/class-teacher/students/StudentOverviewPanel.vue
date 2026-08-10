@@ -11,7 +11,7 @@ import {
   type StudentSupportFocus,
 } from '../api/r1'
 
-const props = defineProps<{ token: string; subject: DirectorySubject }>()
+const props = defineProps<{ subject: DirectorySubject }>()
 const emit = defineEmits<{ close: []; open: [panel: 'support' | 'academic'] }>()
 
 const card = ref<StudentCard | null>(null)
@@ -94,7 +94,7 @@ async function load(): Promise<void> {
   state.value = 'loading'
   error.value = ''
   try {
-    card.value = await studentR1Api.studentCard(props.token, props.subject.subject_id)
+    card.value = await studentR1Api.studentCard(props.subject.subject_id)
     state.value = 'ready'
   } catch {
     state.value = 'error'
@@ -147,7 +147,7 @@ async function send(): Promise<void> {
   notice.value = 'AI 正在结合这名学生的当前档案整理；可以离开页面，系统不会自动重复发送。'
   try {
     if (!conversation.value) {
-      conversation.value = await intakeApi.startStudentConversation(props.token, props.subject.subject_id)
+      conversation.value = await intakeApi.startStudentConversation(props.subject.subject_id)
     }
     conversation.value = await intakeApi.appendTurn(conversation.value, outgoing)
     message.value = ''
@@ -170,7 +170,7 @@ async function applyProposal(): Promise<void> {
   busy.value = true
   error.value = ''
   try {
-    await intakeApi.adopt(props.token, proposal.value, target)
+    await intakeApi.adopt(proposal.value, target)
     proposal.value = null
     await load()
     notice.value = '当前学生档案已经更新。下一轮对话会从这份新档案继续整理。'

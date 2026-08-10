@@ -7,8 +7,7 @@ const record = (value: unknown): JsonRecord => {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('contract')
   return value as JsonRecord
 }
-const readHeaders = (token: string) => ({ 'x-class-teacher-session': token })
-const writeHeaders = (token: string) => ({ ...readHeaders(token), 'x-class-teacher-client': CLIENT_HEADER })
+const writeHeaders = () => ({ 'x-class-teacher-client': CLIENT_HEADER })
 
 export interface AffairSummary {
   affair_id: string
@@ -136,24 +135,23 @@ export interface RelativeSubjectSignal { subject_name: string; signal: string; e
 export interface AttentionCard { attention_card_id: string; revision: number; state: string; observed_fact: string; evidence_sufficiency: string }
 
 export const affairR1Api = {
-  list(token: string) {
+  list() {
     return apiClient.request('/api/class-teacher/sop/affairs', {
-      headers: readHeaders(token),
       decode: (value) => record(value).items as AffairSummary[],
     })
   },
-  read(token: string, affairId: string) {
-    return apiClient.request(`/api/class-teacher/sop/affairs/${affairId}`, { headers: readHeaders(token), decode: (value) => record(value) as unknown as AffairDetail })
+  read(affairId: string) {
+    return apiClient.request(`/api/class-teacher/sop/affairs/${affairId}`, { decode: (value) => record(value) as unknown as AffairDetail })
   },
-  command(token: string, affair: AffairDetail, command: string, input: Record<string, unknown>) {
+  command(affair: AffairDetail, command: string, input: Record<string, unknown>) {
     return apiClient.request(`/api/class-teacher/sop/affairs/${affair.affair_id}/commands`, {
-      method: 'POST', headers: writeHeaders(token),
+      method: 'POST', headers: writeHeaders(),
       body: { command, expected_revision: affair.revision, operation_id: operationId(), ...input }, decode: (value) => record(value) as unknown as AffairDetail,
     })
   },
-  saveDraft(token: string, affairId: string, stepId: string, kind: 'fact' | 'communication', text: string, revision: number | null) {
+  saveDraft(affairId: string, stepId: string, kind: 'fact' | 'communication', text: string, revision: number | null) {
     return apiClient.request(`/api/class-teacher/sop/affairs/${affairId}/steps/${stepId}/draft`, {
-      method: 'PUT', headers: writeHeaders(token), body: {
+      method: 'PUT', headers: writeHeaders(), body: {
         draft_kind: kind, text, expected_revision: revision, operation_id: operationId(),
       }, decode: record,
     })
@@ -161,28 +159,28 @@ export const affairR1Api = {
 }
 
 export const projectionR1Api = {
-  resolve(token: string, projectionId: string) {
+  resolve(projectionId: string) {
     return apiClient.request(`/api/class-teacher/protected-work/${projectionId}`, {
-      headers: readHeaders(token), decode: record,
+      decode: record,
     })
   },
 }
 
 export const studentR1Api = {
-  studentCard(token: string, subjectId: string) {
+  studentCard(subjectId: string) {
     return apiClient.request(`/api/class-teacher/support/subjects/${subjectId}/student-card`, {
-      headers: readHeaders(token), decode: value => record(value) as unknown as StudentCard,
+      decode: value => record(value) as unknown as StudentCard,
     })
   },
-  rosterSource(token: string, input: { q?: string; classLabel?: string; cursor?: string; pageSize?: number } = {}) {
+  rosterSource(input: { q?: string; classLabel?: string; cursor?: string; pageSize?: number } = {}) {
     const query = new URLSearchParams()
     if (input.q) query.set('q', input.q)
     if (input.classLabel) query.set('class_label', input.classLabel)
     if (input.cursor) query.set('cursor', input.cursor)
     if (input.pageSize) query.set('page_size', String(input.pageSize))
-    return apiClient.request(`/api/class-teacher/support/roster-source?${query}`, { headers: readHeaders(token), decode: (value) => record(value) as unknown as { items: ExistingRosterStudent[]; classes: string[]; source_revision: string; total: number; cursor: string | null } })
+    return apiClient.request(`/api/class-teacher/support/roster-source?${query}`, { decode: (value) => record(value) as unknown as { items: ExistingRosterStudent[]; classes: string[]; source_revision: string; total: number; cursor: string | null } })
   },
-  directory(token: string, input: { q?: string; classLabel?: string; state?: string; rosterState?: string; sort?: string; cursor?: string; pageSize?: number } = {}) {
+  directory(input: { q?: string; classLabel?: string; state?: string; rosterState?: string; sort?: string; cursor?: string; pageSize?: number } = {}) {
     const query = new URLSearchParams()
     if (input.q) query.set('q', input.q)
     if (input.classLabel) query.set('class_label', input.classLabel)
@@ -192,29 +190,29 @@ export const studentR1Api = {
     if (input.cursor) query.set('cursor', input.cursor)
     if (input.pageSize) query.set('page_size', String(input.pageSize))
     return apiClient.request(`/api/class-teacher/support/directory?${query}`, {
-      headers: readHeaders(token), decode: (value) => record(value) as { items: DirectorySubject[]; cursor: string | null; total: number; page_size: number },
+      decode: (value) => record(value) as { items: DirectorySubject[]; cursor: string | null; total: number; page_size: number },
     })
   },
-  header(token: string, subjectId: string) {
-    return apiClient.request(`/api/class-teacher/support/subjects/${subjectId}/workspace-header`, { headers: readHeaders(token), decode: record })
+  header(subjectId: string) {
+    return apiClient.request(`/api/class-teacher/support/subjects/${subjectId}/workspace-header`, { decode: record })
   },
-  records(token: string, subjectId: string) {
-    return apiClient.request(`/api/class-teacher/support/subjects/${subjectId}/records`, { headers: readHeaders(token), decode: (value) => record(value).items as JsonRecord[] })
+  records(subjectId: string) {
+    return apiClient.request(`/api/class-teacher/support/subjects/${subjectId}/records`, { decode: (value) => record(value).items as JsonRecord[] })
   },
-  academic(token: string, subjectId: string, input: { timeRange?: string; comparisonSeries?: string; subjectName?: string; comparableOnly?: boolean } = {}) {
+  academic(subjectId: string, input: { timeRange?: string; comparisonSeries?: string; subjectName?: string; comparableOnly?: boolean } = {}) {
     const query = new URLSearchParams()
     if (input.timeRange && input.timeRange !== 'all') query.set('time_range', input.timeRange)
     if (input.comparisonSeries) query.set('comparison_series', input.comparisonSeries)
     if (input.subjectName) query.set('subject_name', input.subjectName)
     if (input.comparableOnly) query.set('comparable_only', 'true')
-    return apiClient.request(`/api/class-teacher/support/subjects/${subjectId}/academic-analysis?${query}`, { headers: readHeaders(token), decode: (value) => record(value) as unknown as AcademicAnalysis })
+    return apiClient.request(`/api/class-teacher/support/subjects/${subjectId}/academic-analysis?${query}`, { decode: (value) => record(value) as unknown as AcademicAnalysis })
   },
-  evidenceSnapshot(token: string, evidenceId: string) {
-    return apiClient.request(`/api/class-teacher/evidence/${evidenceId}/snapshot`, { headers: readHeaders(token), decode: record })
+  evidenceSnapshot(evidenceId: string) {
+    return apiClient.request(`/api/class-teacher/evidence/${evidenceId}/snapshot`, { decode: record })
   },
-  decideAttention(token: string, card: AttentionCard, analysis: AcademicAnalysis, input: { decision: string; reason: string; reviewAt: string | null; planId: string | null }) {
+  decideAttention(card: AttentionCard, analysis: AcademicAnalysis, input: { decision: string; reason: string; reviewAt: string | null; planId: string | null }) {
     return apiClient.request(`/api/class-teacher/attention-cards/${card.attention_card_id}/decide`, {
-      method: 'POST', headers: writeHeaders(token), body: {
+      method: 'POST', headers: writeHeaders(), body: {
         operation_id: operationId(), revision: card.revision, decision: input.decision,
         reason: input.reason, review_at: input.reviewAt, plan_id: input.planId,
         source_version: analysis.source_version,

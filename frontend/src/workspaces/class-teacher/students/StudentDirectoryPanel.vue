@@ -5,7 +5,6 @@ import { intakeApi } from '../api/intake'
 import { studentR1Api, type DirectorySubject, type ExistingRosterStudent } from '../api/r1'
 import { supportApi } from '../api/support'
 
-const props = defineProps<{ token: string }>()
 const emit = defineEmits<{ select: [subject: DirectorySubject] }>()
 const items = ref<DirectorySubject[]>([])
 const rosterItems = ref<ExistingRosterStudent[]>([])
@@ -35,7 +34,7 @@ async function load(): Promise<void> {
       return
     }
     if (showHistory.value) {
-      const page = await studentR1Api.directory(props.token, {
+      const page = await studentR1Api.directory({
         classLabel: classLabel.value, state: 'active', rosterState: 'historical', sort: 'name_asc', pageSize: 100,
       })
       items.value = page.items
@@ -43,8 +42,8 @@ async function load(): Promise<void> {
       total.value = page.total
     } else {
       const [roster, directory] = await Promise.all([
-        studentR1Api.rosterSource(props.token, { classLabel: classLabel.value, pageSize: 100 }),
-        studentR1Api.directory(props.token, {
+        studentR1Api.rosterSource({ classLabel: classLabel.value, pageSize: 100 }),
+        studentR1Api.directory({
           classLabel: classLabel.value, state: 'active', sort: 'name_asc', pageSize: 100,
         }),
       ])
@@ -79,7 +78,7 @@ async function openRosterStudent(student: ExistingRosterStudent): Promise<void> 
   openingStudentCode.value = student.student_code
   message.value = ''
   try {
-    const created = await supportApi.createSubject(props.token, {
+    const created = await supportApi.createSubject({
       source_student_id: student.source_key,
       display_name: student.display_name,
       class_label: student.class_label || null,

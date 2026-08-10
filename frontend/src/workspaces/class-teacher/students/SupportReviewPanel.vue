@@ -4,7 +4,7 @@ import { computed, onMounted, ref } from 'vue'
 import { supportApi, type SupportRecord } from '../api/support'
 import type { DirectorySubject } from '../api/r1'
 
-const props = defineProps<{ token: string; subject: DirectorySubject }>()
+const props = defineProps<{ subject: DirectorySubject }>()
 const records = ref<SupportRecord[]>([])
 const selected = ref<SupportRecord | null>(null)
 const editingId = ref<string | null>(null)
@@ -25,7 +25,7 @@ const canSave = computed(() => Boolean(
 ))
 
 async function load(): Promise<void> {
-  records.value = await supportApi.listRecords(props.token, props.subject.subject_id)
+  records.value = await supportApi.listRecords(props.subject.subject_id)
   if (selected.value) selected.value = records.value.find((item) => item.record_id === selected.value?.record_id) ?? null
 }
 
@@ -61,8 +61,8 @@ async function saveLocal(): Promise<void> {
   busy.value = true
   try {
     const saved = editingId.value && selected.value
-      ? await supportApi.reviseRecord(props.token, selected.value, content.value, revisionReason.value)
-      : await supportApi.createRecord(props.token, props.subject.subject_id, {
+      ? await supportApi.reviseRecord(selected.value, content.value, revisionReason.value)
+      : await supportApi.createRecord(props.subject.subject_id, {
           record_kind: kind.value,
           content: content.value,
           scene: scene.value,

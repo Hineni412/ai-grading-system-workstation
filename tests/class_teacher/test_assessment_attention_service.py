@@ -17,10 +17,7 @@ from backend.workspaces.contracts import WorkspaceContext
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-PASSWORD = "合成学业证据密码-足够长-001"
-
-
-def _unlocked(tmp_path: Path) -> tuple[VaultService, str, str]:
+def _service(tmp_path: Path) -> tuple[VaultService, str, str]:
     service = VaultService(
         WorkspaceContext(
             module_id="class-teacher",
@@ -31,11 +28,8 @@ def _unlocked(tmp_path: Path) -> tuple[VaultService, str, str]:
             ),
         )
     )
-    initialized = service.initialize(
-        password=PASSWORD,
-        operation_id="initialize-assessment-evidence",
-    )
-    token = str(initialized["session_token"])
+    service.ensure_plaintext_ready()
+    token = ""
     subject = service.support.create_subject(
         token=token,
         operation_id="create-evidence-subject",
@@ -80,7 +74,7 @@ def _batch(subject_id: str) -> dict[str, object]:
 def test_adapters_are_read_only_and_duplicate_batch_creates_no_second_evidence(
     tmp_path: Path,
 ) -> None:
-    service, token, subject_id = _unlocked(tmp_path)
+    service, token, subject_id = _service(tmp_path)
     calls: list[dict[str, object]] = []
     adapter = ExistingMathAssessmentAdapter(
         lambda query: (
@@ -131,7 +125,7 @@ def test_csv_preview_stays_in_memory_and_preserves_zero_and_absence_text() -> No
 def test_result_states_are_distinct_and_three_comparable_points_allow_trend(
     tmp_path: Path,
 ) -> None:
-    service, token, subject_id = _unlocked(tmp_path)
+    service, token, subject_id = _service(tmp_path)
     service.evidence.confirm_batch(
         token=token,
         operation_id="confirm-trend-batch",
@@ -187,7 +181,7 @@ def test_result_states_are_distinct_and_three_comparable_points_allow_trend(
 def test_non_comparable_scores_never_return_raw_score_delta(
     tmp_path: Path,
 ) -> None:
-    service, token, subject_id = _unlocked(tmp_path)
+    service, token, subject_id = _service(tmp_path)
     batch = _batch(subject_id)
     batch["assessments"][1]["max_score"] = 120
     service.evidence.confirm_batch(
@@ -211,7 +205,7 @@ def test_non_comparable_scores_never_return_raw_score_delta(
 def test_attention_decision_creates_one_action_and_evidence_change_invalidates_draft(
     tmp_path: Path,
 ) -> None:
-    service, token, subject_id = _unlocked(tmp_path)
+    service, token, subject_id = _service(tmp_path)
     service.evidence.confirm_batch(
         token=token,
         operation_id="confirm-attention-batch",
@@ -295,7 +289,7 @@ def test_attention_decision_creates_one_action_and_evidence_change_invalidates_d
 def test_interrupted_attention_resolution_resumes_without_duplicate_action(
     tmp_path: Path,
 ) -> None:
-    service, token, subject_id = _unlocked(tmp_path)
+    service, token, subject_id = _service(tmp_path)
     service.evidence.confirm_batch(
         token=token,
         operation_id="confirm-recovery-attention-batch",
@@ -361,7 +355,7 @@ def test_interrupted_attention_resolution_resumes_without_duplicate_action(
 def test_observe_requires_date_and_no_action_requires_reason(
     tmp_path: Path,
 ) -> None:
-    service, token, subject_id = _unlocked(tmp_path)
+    service, token, subject_id = _service(tmp_path)
     service.evidence.confirm_batch(
         token=token,
         operation_id="confirm-decision-rules-batch",
@@ -399,7 +393,7 @@ def test_observe_requires_date_and_no_action_requires_reason(
 def test_full_subject_delete_removes_quick_evidence_attention_and_linked_action(
     tmp_path: Path,
 ) -> None:
-    service, token, subject_id = _unlocked(tmp_path)
+    service, token, subject_id = _service(tmp_path)
     quick = service.quick_inbox.create_text(
         token=token,
         operation_id="create-delete-quick",

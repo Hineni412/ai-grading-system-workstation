@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Header, Request, Response
+from fastapi import APIRouter, Request, Response
 
 from .collection_schemas import (
     CollectionBoardCreateRequest,
@@ -20,7 +20,6 @@ from .router import (
     _no_store,
     _require_trusted_mutation,
     _service,
-    _token,
 )
 
 
@@ -35,16 +34,12 @@ def create_collection_router() -> APIRouter:
         request: Request,
         body: MeetingImportRequest,
         response: Response,
-        session_token: str | None = Header(
-            default=None,
-            alias="x-class-teacher-session",
-        ),
     ):
         _require_trusted_mutation(request)
         _no_store(response)
         return _call(
             lambda: _service(request).collections.import_meeting_notes(
-                token=_token(session_token),
+                token="",
                 operation_id=body.operation_id,
                 raw_text=body.raw_text,
                 reference_at=body.reference_at,
@@ -58,15 +53,11 @@ def create_collection_router() -> APIRouter:
     def list_meeting_inboxes(
         request: Request,
         response: Response,
-        session_token: str | None = Header(
-            default=None,
-            alias="x-class-teacher-session",
-        ),
     ):
         _no_store(response)
         return _call(
             lambda: _service(request).collections.list_meeting_inboxes(
-                token=_token(session_token),
+                token="",
             )
         )
 
@@ -79,16 +70,12 @@ def create_collection_router() -> APIRouter:
         request: Request,
         body: MeetingInboxUpdateRequest,
         response: Response,
-        session_token: str | None = Header(
-            default=None,
-            alias="x-class-teacher-session",
-        ),
     ):
         _require_trusted_mutation(request)
         _no_store(response)
         return _call(
             lambda: _service(request).collections.update_meeting_inbox(
-                token=_token(session_token),
+                token="",
                 inbox_id=inbox_id,
                 operation_id=body.operation_id,
                 revision=body.revision,
@@ -106,16 +93,12 @@ def create_collection_router() -> APIRouter:
         request: Request,
         body: RevisionRequest,
         response: Response,
-        session_token: str | None = Header(
-            default=None,
-            alias="x-class-teacher-session",
-        ),
     ):
         _require_trusted_mutation(request)
         _no_store(response)
         return _call(
             lambda: _service(request).collections.cancel_meeting_inbox(
-                token=_token(session_token),
+                token="",
                 inbox_id=inbox_id,
                 operation_id=body.operation_id,
                 revision=body.revision,
@@ -131,16 +114,12 @@ def create_collection_router() -> APIRouter:
         request: Request,
         body: RevisionRequest,
         response: Response,
-        session_token: str | None = Header(
-            default=None,
-            alias="x-class-teacher-session",
-        ),
     ):
         _require_trusted_mutation(request)
         _no_store(response)
         return _call(
             lambda: _service(request).collections.confirm_meeting_inbox(
-                token=_token(session_token),
+                token="",
                 inbox_id=inbox_id,
                 operation_id=body.operation_id,
                 revision=body.revision,
@@ -155,16 +134,12 @@ def create_collection_router() -> APIRouter:
         request: Request,
         body: CollectionBoardCreateRequest,
         response: Response,
-        session_token: str | None = Header(
-            default=None,
-            alias="x-class-teacher-session",
-        ),
     ):
         _require_trusted_mutation(request)
         _no_store(response)
         return _call(
             lambda: _service(request).collections.create_board(
-                token=_token(session_token),
+                token="",
                 operation_id=body.operation_id,
                 action_id=body.action_id,
                 title=body.title,
@@ -179,15 +154,11 @@ def create_collection_router() -> APIRouter:
     def list_boards(
         request: Request,
         response: Response,
-        session_token: str | None = Header(
-            default=None,
-            alias="x-class-teacher-session",
-        ),
     ):
         _no_store(response)
         return _call(
             lambda: _service(request).collections.list_boards(
-                token=_token(session_token),
+                token="",
             )
         )
 
@@ -201,16 +172,12 @@ def create_collection_router() -> APIRouter:
         request: Request,
         body: CollectionItemUpdateRequest,
         response: Response,
-        session_token: str | None = Header(
-            default=None,
-            alias="x-class-teacher-session",
-        ),
     ):
         _require_trusted_mutation(request)
         _no_store(response)
         return _call(
             lambda: _service(request).collections.update_collection_item(
-                token=_token(session_token),
+                token="",
                 board_id=board_id,
                 item_id=item_id,
                 operation_id=body.operation_id,
@@ -228,15 +195,11 @@ def create_collection_router() -> APIRouter:
         item_id: str,
         request: Request,
         response: Response,
-        session_token: str | None = Header(
-            default=None,
-            alias="x-class-teacher-session",
-        ),
     ):
         _no_store(response)
         return _call(
             lambda: _service(request).collections.individual_reminder(
-                token=_token(session_token),
+                token="",
                 board_id=board_id,
                 item_id=item_id,
             )

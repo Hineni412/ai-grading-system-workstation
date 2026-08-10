@@ -7,7 +7,7 @@ import { studentR1Api, type ExistingRosterStudent } from '../api/r1'
 import { workspaceAITaskApi } from '../../shared/ai-tasks/api'
 import { useWorkspaceAITaskStore } from '../../shared/ai-tasks/store'
 
-const props = defineProps<{ handoffId: string; token?: string }>()
+const props = defineProps<{ handoffId: string }>()
 const emit = defineEmits<{ back: [conversationId: string, workItemId: string]; completed: [conversationId: string] }>()
 
 const draft = ref<HandoffDraft | null>(null)
@@ -175,7 +175,7 @@ async function load(): Promise<void> {
     hydratePlanActions()
     if (isStudentRecord.value) {
       const preference = await intakeApi.homeroom()
-      const result = await studentR1Api.rosterSource(props.token ?? '', { classLabel: preference.homeroom_class ?? undefined, pageSize: 100 })
+      const result = await studentR1Api.rosterSource({ classLabel: preference.homeroom_class ?? undefined, pageSize: 100 })
       students.value = result.items
     }
   } catch { error.value = '草稿暂时无法打开。可以返回原会话后重试。' }
@@ -228,7 +228,7 @@ async function adopt(): Promise<void> {
   busy.value = true; error.value = ''
   try {
     const targetRevision = isStudentRecord.value ? selectedSubjectRevision.value : 'new'
-    await intakeApi.adopt(props.token ?? '', current, targetRevision)
+    await intakeApi.adopt(current, targetRevision)
     message.value = '已按教师确认保存为正式内容。'
     emit('completed', current.conversation_id)
   } catch {

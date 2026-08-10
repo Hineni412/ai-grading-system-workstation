@@ -13,298 +13,167 @@ from backend.workspaces.contracts import WorkspaceContext
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-PASSWORD = "合成保险箱密码-足够长-001"
-NEW_PASSWORD = "合成保险箱新密码-足够长-002"
 
 
 def _service(tmp_path: Path) -> VaultService:
-    paths = SimpleNamespace(
-        project_root=PROJECT_ROOT,
-        migration_project_root=PROJECT_ROOT,
-    )
     return VaultService(
         WorkspaceContext(
             module_id="class-teacher",
             root=tmp_path / "workspaces" / "class-teacher",
-            paths=paths,
+            paths=SimpleNamespace(
+                project_root=PROJECT_ROOT,
+                migration_project_root=PROJECT_ROOT,
+            ),
         )
     )
 
 
-def _vmk(service: VaultService, token: str) -> bytes:
-    return bytes(service._require_session(token).vmk)
+def _checkpoint(path: Path) -> None:
+    with closing(sqlite3.connect(path)) as connection:
+        connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
 
 
-def test_service_has_no_filesystem_side_effect_before_explicit_initialization(
-    tmp_path: Path,
-) -> None:
+def _insert_legacy_ciphertext_marker(service: VaultService) -> None:
+    service.ensure_plaintext_ready()
+    with closing(service.database.connect()) as connection:
+        with connection:
+            connection.execute(
+                """
+                INSERT INTO encrypted_objects (
+                    object_id, object_type, format_version, cek_nonce, wrapped_cek,
+                    payload_nonce, payload_ciphertext, revision, created_at, updated_at
+                ) VALUES ('legacy-row', 'synthetic', 1, X'01', X'02', X'03', X'04',
+                          1, '2026-01-01T00:00:00+00:00',
+                          '2026-01-01T00:00:00+00:00')
+                """
+            )
+    _checkpoint(service.database.database_path)
+
+
+def test_service_construction_has_no_filesystem_side_effects(tmp_path: Path) -> None:
     service = _service(tmp_path)
 
-    assert service.status()["initialized"] is False
     assert not service.database.root.exists()
 
 
-def test_initialize_encrypts_keys_and_requires_short_lived_session(
+def test_plaintext_ready_creates_only_plaintext_compatibility_rows(
     tmp_path: Path,
 ) -> None:
     service = _service(tmp_path)
-    result = service.initialize(password=PASSWORD, operation_id="initialize-001")
-
-    assert result["recovery_key_shown_once"] is True
-    assert service.status(str(result["session_token"]))["locked"] is False
-    raw = service.database.database_path.read_bytes()
-    assert PASSWORD.encode("utf-8") not in raw
-    assert str(result["recovery_key"]).encode("utf-8") not in raw
-
-    service.lock(str(result["session_token"]))
-    assert service.status(str(result["session_token"]))["locked"] is True
-
-
-def test_unacknowledged_recovery_key_survives_restart_until_teacher_acknowledges(
-    tmp_path: Path,
-) -> None:
-    service = _service(tmp_path)
-    initialized = service.initialize(
-        password=PASSWORD,
-        operation_id="initialize-recovery-receipt",
-    )
-    recovery_key = str(initialized["recovery_key"])
-    service.lock(str(initialized["session_token"]))
-
-    restarted = _service(tmp_path)
-    unlocked = restarted.unlock(password=PASSWORD)
-    assert unlocked["recovery_key"] == recovery_key
-    restarted.acknowledge_recovery_key(
-        token=str(unlocked["session_token"])
-    )
-    restarted.lock(str(unlocked["session_token"]))
-
-    after_acknowledgement = _service(tmp_path).unlock(password=PASSWORD)
-    assert after_acknowledgement["recovery_key"] is None
-
-
-def test_password_change_rewraps_unacknowledged_recovery_receipt(
-    tmp_path: Path,
-) -> None:
-    service = _service(tmp_path)
-    initialized = service.initialize(
-        password=PASSWORD,
-        operation_id="initialize-recovery-rewrap",
-    )
-    recovery_key = str(initialized["recovery_key"])
-    service.change_password(
-        token=str(initialized["session_token"]),
-        current_password=PASSWORD,
-        new_password=NEW_PASSWORD,
-        operation_id="change-password-before-recovery-ack",
-    )
-
-    unlocked = _service(tmp_path).unlock(password=NEW_PASSWORD)
-    assert unlocked["recovery_key"] == recovery_key
-
-
-def test_wrong_password_delays_retry_without_deleting_data(tmp_path: Path) -> None:
-    service = _service(tmp_path)
-    service.initialize(password=PASSWORD, operation_id="initialize-002")
-
-    with pytest.raises(VaultError, match="密码或受保护数据"):
-        service.unlock(password="错误密码也写得很长-000")
-    with pytest.raises(VaultError) as blocked:
-        service.unlock(password=PASSWORD)
-
-    assert blocked.value.code == "vault_access_delayed"
-    assert service.database.database_path.exists()
-
-
-def test_sensitive_repository_never_writes_plaintext_payload(tmp_path: Path) -> None:
-    service = _service(tmp_path)
-    initialized = service.initialize(
-        password=PASSWORD,
-        operation_id="initialize-003",
-    )
-    token = str(initialized["session_token"])
-    synthetic = "合成学生甲-仅用于B01密文检查"
+    key = service.ensure_plaintext_ready()
 
     with closing(service.database.connect()) as connection:
         with connection:
             revision = service.repository.put(
                 connection,
-                vmk=_vmk(service, token),
-                object_id="syn-object-001",
-                object_type="synthetic_note",
-                payload={"body": synthetic},
+                vmk=key,
+                object_id="synthetic-object",
+                object_type="synthetic",
+                payload={"text": "合成明文"},
             )
-        payload, loaded_revision = service.repository.get(
-            connection,
-            vmk=_vmk(service, token),
-            object_id="syn-object-001",
-        )
+        metadata_count = connection.execute(
+            "SELECT COUNT(*) FROM vault_metadata"
+        ).fetchone()[0]
+        row = connection.execute(
+            "SELECT cek_nonce, wrapped_cek, payload_nonce, payload_ciphertext "
+            "FROM encrypted_objects WHERE object_id='synthetic-object'"
+        ).fetchone()
 
-    assert revision == loaded_revision == 1
-    assert payload == {"body": synthetic}
-    assert synthetic.encode("utf-8") not in service.database.database_path.read_bytes()
-
-
-@pytest.mark.parametrize("temporary_is_complete", [False, True])
-def test_startup_discards_unpublished_rollback_temporary_file(
-    tmp_path: Path,
-    temporary_is_complete: bool,
-) -> None:
-    service = _service(tmp_path)
-    initialized = service.initialize(
-        password=PASSWORD,
-        operation_id=(
-            "initialize-unpublished-rollback-"
-            + ("complete" if temporary_is_complete else "partial")
-        ),
-    )
-    token = str(initialized["session_token"])
-    with closing(service.database.connect()) as connection:
-        with connection:
-            service.repository.put(
-                connection,
-                vmk=_vmk(service, token),
-                object_id="syn-object-unpublished-rollback",
-                object_type="synthetic_note",
-                payload={"body": "原在线库保持可用"},
-            )
-    temporary = (
-        service.database.root / ".restore-rollback.db.tmp"
-    )
-    temporary.write_bytes(
-        service.database.snapshot_bytes()
-        if temporary_is_complete
-        else b"incomplete rollback"
-    )
-
-    restarted = _service(tmp_path)
-    unlocked = restarted.unlock(password=PASSWORD)
-    with closing(restarted.database.connect()) as connection:
-        payload, revision = restarted.repository.get(
-            connection,
-            vmk=_vmk(restarted, str(unlocked["session_token"])),
-            object_id="syn-object-unpublished-rollback",
-        )
-
-    assert payload == {"body": "原在线库保持可用"}
     assert revision == 1
-    assert not temporary.exists()
-    assert not (
-        restarted.database.root / ".restore-rollback.db"
-    ).exists()
+    assert metadata_count == 0
+    assert bytes(row[0]) == b""
+    assert bytes(row[1]) == b""
+    assert bytes(row[2]) == b"plaintext-json-v1"
+    assert "合成明文" in bytes(row[3]).decode("utf-8")
+    assert service.ensure_plaintext_ready() == key
 
 
-def test_startup_rolls_back_snapshot_left_after_atomic_replace(
+def test_runtime_exposes_no_retired_protection_operations(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+
+    retired = {
+        "status",
+        "session_key",
+        "initialize",
+        "initialize_pin",
+        "unlock",
+        "unlock_pin",
+        "recover",
+        "recover_pin",
+        "upgrade_legacy_to_pin",
+        "lock",
+        "touch",
+        "change_pin",
+        "change_password",
+        "acknowledge_recovery_key",
+    }
+    assert not any(hasattr(service, name) for name in retired)
+    assert not hasattr(service, "pin_protection")
+
+
+def test_legacy_database_is_classified_read_only_and_never_changed(
     tmp_path: Path,
 ) -> None:
-    service = _service(tmp_path)
-    initialized = service.initialize(
-        password=PASSWORD,
-        operation_id="initialize-stale-rollback",
-    )
-    token = str(initialized["session_token"])
-    with closing(service.database.connect()) as connection:
-        with connection:
-            service.repository.put(
-                connection,
-                vmk=_vmk(service, token),
-                object_id="syn-object-stale-rollback",
-                object_type="synthetic_note",
-                payload={"body": "替换前版本"},
-            )
-    old_snapshot = service.database.snapshot_bytes()
-    with closing(service.database.connect()) as connection:
-        with connection:
-            service.repository.put(
-                connection,
-                vmk=_vmk(service, token),
-                object_id="syn-object-stale-rollback",
-                object_type="synthetic_note",
-                payload={"body": "尚未提交的替换版本"},
-                expected_revision=1,
-            )
-    rollback = service.database.root / ".restore-rollback.db"
-    service.database._write_snapshot_file(old_snapshot, rollback)
+    seeded = _service(tmp_path)
+    _insert_legacy_ciphertext_marker(seeded)
+    database_path = seeded.database.database_path
+    before = database_path.read_bytes()
 
     restarted = _service(tmp_path)
-    unlocked = restarted.unlock(password=PASSWORD)
-    with closing(restarted.database.connect()) as connection:
-        payload, revision = restarted.repository.get(
-            connection,
-            vmk=_vmk(restarted, str(unlocked["session_token"])),
-            object_id="syn-object-stale-rollback",
-        )
 
-    assert payload == {"body": "替换前版本"}
-    assert revision == 1
-    assert not rollback.exists()
+    assert restarted.prepare_existing_plaintext_runtime() is False
+    with pytest.raises(VaultError) as blocked:
+        restarted.ensure_plaintext_ready()
+    assert blocked.value.code == "class_teacher_database_format_unsupported"
+    assert blocked.value.message == (
+        "班主任数据文件不是当前版本支持的格式，已停止读取和写入。"
+        "请换用当前版本的明文数据；如需保留这个文件中的内容，"
+        "请勿继续操作并联系维护人员。"
+    )
+    assert database_path.read_bytes() == before
 
 
-def test_startup_recovers_when_live_database_is_missing_mid_replace(
+def test_constructor_defers_plaintext_recovery_until_explicit_prepare(
     tmp_path: Path,
 ) -> None:
-    service = _service(tmp_path)
-    initialized = service.initialize(
-        password=PASSWORD,
-        operation_id="initialize-missing-live-recovery",
-    )
-    token = str(initialized["session_token"])
-    with closing(service.database.connect()) as connection:
-        with connection:
-            service.repository.put(
-                connection,
-                vmk=_vmk(service, token),
-                object_id="syn-object-missing-live",
-                object_type="synthetic_note",
-                payload={"body": "必须恢复的版本"},
-            )
-    old_snapshot = service.database.snapshot_bytes()
-    rollback = service.database.root / ".restore-rollback.db"
-    candidate = service.database.root / ".restore-candidate.db"
-    service.database._write_snapshot_file(old_snapshot, rollback)
-    service.database._write_snapshot_file(old_snapshot, candidate)
-    service.database.database_path.unlink()
+    seeded = _service(tmp_path)
+    seeded.ensure_plaintext_ready()
+    candidate = seeded.database.root / ".database-replacement-candidate.db"
+    candidate.write_bytes(b"synthetic-interrupted-candidate")
 
     restarted = _service(tmp_path)
-    unlocked = restarted.unlock(password=PASSWORD)
-    with closing(restarted.database.connect()) as connection:
-        payload, revision = restarted.repository.get(
-            connection,
-            vmk=_vmk(restarted, str(unlocked["session_token"])),
-            object_id="syn-object-missing-live",
-        )
 
-    assert payload == {"body": "必须恢复的版本"}
-    assert revision == 1
-    assert not rollback.exists()
+    assert candidate.read_bytes() == b"synthetic-interrupted-candidate"
+    assert restarted.prepare_existing_plaintext_runtime() is True
     assert not candidate.exists()
 
 
-def test_change_password_invalidates_old_sessions(tmp_path: Path) -> None:
+def test_explicit_plaintext_recovery_restores_valid_rollback_snapshot(
+    tmp_path: Path,
+) -> None:
     service = _service(tmp_path)
-    initialized = service.initialize(
-        password=PASSWORD,
-        operation_id="initialize-006",
+    first = service.support.create_subject(
+        token="",
+        operation_id="plaintext-recovery-first-001",
+        source_student_id="SYNTHETIC-001",
+        display_name="合成学生甲",
+        class_label="合成班",
     )
-    token = str(initialized["session_token"])
-
-    service.change_password(
-        token=token,
-        current_password=PASSWORD,
-        new_password=NEW_PASSWORD,
-        operation_id="change-password-001",
+    snapshot = service.database.snapshot_bytes()
+    service.support.create_subject(
+        token="",
+        operation_id="plaintext-recovery-second-001",
+        source_student_id="SYNTHETIC-002",
+        display_name="合成学生乙",
+        class_label="合成班",
     )
+    rollback = service.database.root / ".restore-rollback.db"
+    service.database._write_snapshot_file(snapshot, rollback)
 
-    assert service.status(token)["locked"] is True
-    with pytest.raises(VaultError):
-        service.unlock(password=PASSWORD)
-    with closing(sqlite3.connect(service.database.database_path)) as connection:
-        with connection:
-            connection.execute(
-                """
-                UPDATE vault_metadata
-                SET failed_attempts = 0, blocked_until = NULL
-                WHERE singleton_id = 1
-                """
-            )
-    assert service.unlock(password=NEW_PASSWORD)["session_token"]
+    restarted = _service(tmp_path)
+    assert rollback.is_file()
+    assert restarted.prepare_existing_plaintext_runtime() is True
+
+    items = restarted.support.list_subjects(token="")["items"]
+    assert [item["subject_id"] for item in items] == [first["subject_id"]]
+    assert not rollback.exists()

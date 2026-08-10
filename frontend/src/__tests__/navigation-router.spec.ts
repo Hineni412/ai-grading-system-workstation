@@ -96,7 +96,13 @@ describe('source-recalibrated navigation', () => {
     10_000,
   )
 
-  it.each(['/analytics'])(
+  it.each([
+    '/analytics',
+    '/class-teacher/vault',
+    '/class-teacher/unlock',
+    '/class-teacher/migration',
+    '/class-teacher/conversion',
+  ])(
     'does not present the former placeholder route %s as a business page',
     async (target) => {
       const router = createAppRouter(createMemoryHistory())

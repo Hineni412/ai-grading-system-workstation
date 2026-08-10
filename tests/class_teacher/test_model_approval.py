@@ -9,15 +9,11 @@ import pytest
 
 from backend.class_teacher.errors import VaultError
 from backend.class_teacher.model_approval import FakeApprovedModelGateway
-from backend.class_teacher.protection import FakeCurrentUserProtection
 from backend.class_teacher.vault_service import VaultService
 from backend.workspaces.contracts import WorkspaceContext
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-PASSWORD = "合成模型审批保险箱密码-足够长-001"
-
-
 def _service(
     tmp_path: Path,
     *,
@@ -33,25 +29,21 @@ def _service(
     )
     return VaultService(
         context,
-        protection_provider=FakeCurrentUserProtection(b"M" * 32),
         model_gateway=gateway,
     )
 
 
-def _unlocked(tmp_path: Path, *, gateway=None) -> tuple[VaultService, str]:
+def _ready(tmp_path: Path, *, gateway=None) -> tuple[VaultService, str]:
     service = _service(tmp_path, gateway=gateway)
-    initialized = service.initialize(
-        password=PASSWORD,
-        operation_id="model-vault-initialize",
-    )
-    return service, str(initialized["session_token"])
+    service.ensure_plaintext_ready()
+    return service, ""
 
 
 def test_preview_is_exact_anonymous_and_plaintext_stays_out_of_ordinary_db(
     tmp_path: Path,
 ) -> None:
     gateway = FakeApprovedModelGateway()
-    service, token = _unlocked(tmp_path, gateway=gateway)
+    service, token = _ready(tmp_path, gateway=gateway)
     source = "张三同学本次数学 88分，希望一起梳理下一步"
 
     preview = service.model_approval.prepare(
@@ -75,7 +67,7 @@ def test_preview_is_exact_anonymous_and_plaintext_stays_out_of_ordinary_db(
 def test_selected_student_given_name_is_removed_from_exact_preview(
     tmp_path: Path,
 ) -> None:
-    service, token = _unlocked(
+    service, token = _ready(
         tmp_path,
         gateway=FakeApprovedModelGateway(),
     )
@@ -107,7 +99,7 @@ def test_organization_phrase_is_preserved_while_following_name_is_removed(
     source_text: str,
     expected_text: str,
 ) -> None:
-    service, token = _unlocked(
+    service, token = _ready(
         tmp_path,
         gateway=FakeApprovedModelGateway(),
     )
@@ -135,7 +127,7 @@ def test_confirm_uses_fingerprint_and_never_dispatches_same_preview_twice(
     tmp_path: Path,
 ) -> None:
     gateway = FakeApprovedModelGateway(result="合成结构化草稿与一个追问")
-    service, token = _unlocked(tmp_path, gateway=gateway)
+    service, token = _ready(tmp_path, gateway=gateway)
     preview = service.model_approval.prepare(
         token=token,
         purpose="student_support_note",
@@ -175,7 +167,7 @@ def test_operation_id_cannot_be_reused_for_a_different_preview(
     tmp_path: Path,
 ) -> None:
     gateway = FakeApprovedModelGateway()
-    service, token = _unlocked(tmp_path, gateway=gateway)
+    service, token = _ready(tmp_path, gateway=gateway)
     first = service.model_approval.prepare(
         token=token,
         purpose="student_support_note",
@@ -208,7 +200,7 @@ def test_operation_id_cannot_be_reused_for_a_different_preview(
 def test_default_live_gateway_is_disabled_before_send_and_costs_zero(
     tmp_path: Path,
 ) -> None:
-    service, token = _unlocked(tmp_path)
+    service, token = _ready(tmp_path)
     preview = service.model_approval.prepare(
         token=token,
         purpose="student_support_note",
@@ -232,7 +224,7 @@ def test_unknown_result_is_recorded_once_and_never_auto_retried(
     tmp_path: Path,
 ) -> None:
     gateway = FakeApprovedModelGateway(unknown=True)
-    service, token = _unlocked(tmp_path, gateway=gateway)
+    service, token = _ready(tmp_path, gateway=gateway)
     preview = service.model_approval.prepare(
         token=token,
         purpose="student_support_note",
@@ -260,7 +252,7 @@ def test_unknown_result_is_recorded_once_and_never_auto_retried(
 
 def test_restart_after_claim_fails_closed_without_dispatch(tmp_path: Path) -> None:
     gateway = FakeApprovedModelGateway()
-    service, token = _unlocked(tmp_path, gateway=gateway)
+    service, token = _ready(tmp_path, gateway=gateway)
     preview = service.model_approval.prepare(
         token=token,
         purpose="student_support_note",
@@ -291,7 +283,7 @@ def test_restart_after_claim_fails_closed_without_dispatch(tmp_path: Path) -> No
 def test_hard_blocked_identifier_never_creates_preview_metadata(
     tmp_path: Path,
 ) -> None:
-    service, token = _unlocked(tmp_path, gateway=FakeApprovedModelGateway())
+    service, token = _ready(tmp_path, gateway=FakeApprovedModelGateway())
 
     with pytest.raises(VaultError) as blocked:
         service.model_approval.prepare(

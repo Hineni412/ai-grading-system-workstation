@@ -16,10 +16,7 @@ from backend.workspaces.contracts import WorkspaceContext
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-PASSWORD = "合成收集板密码-足够长-001"
-
-
-def _unlocked(tmp_path: Path) -> tuple[VaultService, str]:
+def _service(tmp_path: Path) -> tuple[VaultService, str]:
     paths = SimpleNamespace(
         project_root=PROJECT_ROOT,
         migration_project_root=PROJECT_ROOT,
@@ -31,11 +28,8 @@ def _unlocked(tmp_path: Path) -> tuple[VaultService, str]:
             paths=paths,
         )
     )
-    initialized = service.initialize(
-        password=PASSWORD,
-        operation_id="initialize-collections",
-    )
-    token = str(initialized["session_token"])
+    service.ensure_plaintext_ready()
+    token = ""
     service.actions.save_calendar(
         token=token,
         operation_id="collection-calendar",
@@ -62,7 +56,7 @@ def _meeting(service: VaultService, token: str) -> dict[str, object]:
 def test_meeting_notes_split_into_different_deadlines_without_formal_actions(
     tmp_path: Path,
 ) -> None:
-    service, token = _unlocked(tmp_path)
+    service, token = _service(tmp_path)
     inbox = _meeting(service, token)
 
     MeetingInboxResponse.model_validate(inbox)
@@ -79,7 +73,7 @@ def test_meeting_notes_split_into_different_deadlines_without_formal_actions(
 def test_full_draft_edit_supports_split_delete_and_date_conflict(
     tmp_path: Path,
 ) -> None:
-    service, token = _unlocked(tmp_path)
+    service, token = _service(tmp_path)
     inbox = _meeting(service, token)
     first = dict(inbox["drafts"][0])
     split = {
@@ -123,7 +117,7 @@ def test_full_draft_edit_supports_split_delete_and_date_conflict(
 def test_confirm_is_atomic_idempotent_and_can_delete_source(
     tmp_path: Path,
 ) -> None:
-    service, token = _unlocked(tmp_path)
+    service, token = _service(tmp_path)
     inbox = _meeting(service, token)
     result = service.collections.confirm_meeting_inbox(
         token=token,
@@ -153,7 +147,7 @@ def test_confirm_is_atomic_idempotent_and_can_delete_source(
 def test_collection_board_counts_and_reminders_preserve_identity_boundary(
     tmp_path: Path,
 ) -> None:
-    service, token = _unlocked(tmp_path)
+    service, token = _service(tmp_path)
     plan = service.actions.create_plan(
         token=token,
         operation_id="collection-plan",
@@ -213,5 +207,5 @@ def test_collection_board_counts_and_reminders_preserve_identity_boundary(
         )
     assert conflict.value.code == "vault_revision_conflict"
     raw = service.database.database_path.read_bytes()
-    assert b"synthetic-a" not in raw
-    assert "合成回执收集板".encode("utf-8") not in raw
+    assert b"synthetic-a" in raw
+    assert "合成回执收集板".encode("utf-8") in raw

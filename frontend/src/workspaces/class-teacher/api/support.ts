@@ -167,15 +167,8 @@ function attention(payload: unknown): AttentionCard {
   return record(payload) as unknown as AttentionCard
 }
 
-function headers(token: string): Record<string, string> {
-  return {
-    'x-class-teacher-session': token,
-    'x-class-teacher-client': CLIENT_HEADER,
-  }
-}
-
-function readHeaders(token: string): Record<string, string> {
-  return { 'x-class-teacher-session': token }
+function headers(): Record<string, string> {
+  return { 'x-class-teacher-client': CLIENT_HEADER }
 }
 
 function operationId(): string {
@@ -183,41 +176,37 @@ function operationId(): string {
 }
 
 export const supportApi = {
-  listSubjects(token: string) {
+  listSubjects() {
     return apiClient.request('/api/class-teacher/support/subjects', {
-      headers: readHeaders(token),
       decode: (payload) => list(payload, subject),
     })
   },
   createSubject(
-    token: string,
     input: { source_student_id: string; display_name: string; class_label: string | null },
   ) {
     return apiClient.request('/api/class-teacher/support/subjects', {
       method: 'POST',
-      headers: headers(token),
+      headers: headers(),
       body: { ...input, operation_id: operationId() },
       decode: subject,
     })
   },
-  previewSubjectDeletion(token: string, subjectId: string) {
+  previewSubjectDeletion(subjectId: string) {
     return apiClient.request(
       `/api/class-teacher/support/subjects/${subjectId}/deletion-preview`,
       {
-        headers: readHeaders(token),
         decode: (payload) => record(payload) as unknown as SubjectDeletionPreview,
       },
     )
   },
   deleteSubject(
-    token: string,
     subjectId: string,
     preview: SubjectDeletionPreview,
     operationIdValue: string,
   ) {
     return apiClient.request(`/api/class-teacher/support/subjects/${subjectId}`, {
       method: 'DELETE',
-      headers: headers(token),
+      headers: headers(),
       body: {
         operation_id: operationIdValue,
         confirmation_phrase: preview.delete_confirmation_phrase,
@@ -226,20 +215,17 @@ export const supportApi = {
       decode: record,
     })
   },
-  listRecords(token: string, subjectId: string) {
+  listRecords(subjectId: string) {
     return apiClient.request(`/api/class-teacher/support/subjects/${subjectId}/records`, {
-      headers: readHeaders(token),
       decode: (payload) => list(payload, supportRecord),
     })
   },
-  getSummary(token: string, subjectId: string) {
+  getSummary(subjectId: string) {
     return apiClient.request(`/api/class-teacher/support/subjects/${subjectId}/summary`, {
-      headers: readHeaders(token),
       decode: (payload) => record(payload) as unknown as SupportSummary,
     })
   },
   createRecord(
-    token: string,
     subjectId: string,
     input: {
       record_kind: string
@@ -257,20 +243,19 @@ export const supportApi = {
   ) {
     return apiClient.request(`/api/class-teacher/support/subjects/${subjectId}/records`, {
       method: 'POST',
-      headers: headers(token),
+      headers: headers(),
       body: { ...input, operation_id: operationIdValue },
       decode: supportRecord,
     })
   },
   reviseRecord(
-    token: string,
     value: SupportRecord,
     content: string,
     revisionReason: string,
   ) {
     return apiClient.request(`/api/class-teacher/support/records/${value.record_id}`, {
       method: 'PUT',
-      headers: headers(token),
+      headers: headers(),
       body: {
         operation_id: operationId(),
         expected_revision: value.current_revision,
@@ -289,20 +274,18 @@ export const supportApi = {
     })
   },
   createSupportPlan(
-    token: string,
     subjectId: string,
     input: { goal: string; support_actions: string[]; review_at: string },
   ) {
     return apiClient.request(`/api/class-teacher/support/subjects/${subjectId}/plans`, {
       method: 'POST',
-      headers: headers(token),
+      headers: headers(),
       body: { ...input, action_id: null, operation_id: operationId() },
       decode: supportPlan,
     })
   },
-  listSupportPlans(token: string, subjectId: string) {
+  listSupportPlans(subjectId: string) {
     return apiClient.request(`/api/class-teacher/support/subjects/${subjectId}/plans`, {
-      headers: readHeaders(token),
       decode: (payload) => list(
         payload,
         supportPlan,
@@ -310,14 +293,13 @@ export const supportApi = {
     })
   },
   completeSupportPlan(
-    token: string,
     planId: string,
     revision: number,
     result: string,
   ) {
     return apiClient.request(`/api/class-teacher/support/plans/${planId}/complete`, {
       method: 'POST',
-      headers: headers(token),
+      headers: headers(),
       body: {
         operation_id: operationId(),
         expected_revision: revision,
@@ -326,28 +308,26 @@ export const supportApi = {
       decode: supportPlan,
     })
   },
-  projectAffair(token: string, subjectId: string, affairId: string) {
+  projectAffair(subjectId: string, affairId: string) {
     return apiClient.request(`/api/class-teacher/support/subjects/${subjectId}/project-affair`, {
       method: 'POST',
-      headers: headers(token),
+      headers: headers(),
       body: { operation_id: operationId(), affair_id: affairId },
       decode: supportRecord,
     })
   },
-  listQuickInbox(token: string) {
+  listQuickInbox() {
     return apiClient.request('/api/class-teacher/quick-inbox', {
-      headers: readHeaders(token),
       decode: (payload) => list(payload, quick),
     })
   },
   updateQuickFragments(
-    token: string,
     item: QuickInboxItem,
     fragments: QuickFragment[],
   ) {
     return apiClient.request(`/api/class-teacher/quick-inbox/${item.inbox_item_id}`, {
       method: 'PUT',
-      headers: headers(token),
+      headers: headers(),
       body: {
         operation_id: operationId(),
         revision: item.revision,
@@ -356,16 +336,15 @@ export const supportApi = {
       decode: quick,
     })
   },
-  createQuickText(token: string, text: string, subjectId: string | null) {
+  createQuickText(text: string, subjectId: string | null) {
     return apiClient.request('/api/class-teacher/quick-inbox', {
       method: 'POST',
-      headers: headers(token),
+      headers: headers(),
       body: { operation_id: operationId(), text, subject_id: subjectId },
       decode: quick,
     })
   },
   confirmQuickRecord(
-    token: string,
     item: QuickInboxItem,
     fragment: QuickFragment,
     targetKind: 'support_record' | 'action' | 'sop',
@@ -375,7 +354,7 @@ export const supportApi = {
       `/api/class-teacher/quick-inbox/${item.inbox_item_id}/confirm`,
       {
         method: 'POST',
-        headers: headers(token),
+        headers: headers(),
         body: {
           operation_id: operationId(),
           fragment_id: fragment.fragment_id,
@@ -386,40 +365,37 @@ export const supportApi = {
       },
     )
   },
-  cancelQuick(token: string, itemId: string) {
+  cancelQuick(itemId: string) {
     return apiClient.request(`/api/class-teacher/quick-inbox/${itemId}/cancel`, {
       method: 'POST',
-      headers: headers(token),
+      headers: headers(),
       body: { operation_id: operationId() },
       decode: record,
     })
   },
-  listEvidence(token: string, subjectId: string) {
+  listEvidence(subjectId: string) {
     return apiClient.request(`/api/class-teacher/evidence/subjects/${subjectId}`, {
-      headers: readHeaders(token),
       decode: (payload) => list(payload, evidence),
     })
   },
   confirmEvidence(
-    token: string,
     batch: Record<string, unknown>,
   ) {
     return apiClient.request('/api/class-teacher/evidence/batches', {
       method: 'POST',
-      headers: headers(token),
+      headers: headers(),
       body: { operation_id: operationId(), batch },
       decode: record,
     })
   },
   previewSpreadsheet(
-    token: string,
     fileName: string,
     contentBase64: string,
     sheetName: string | null = null,
   ) {
     return apiClient.request('/api/class-teacher/evidence/spreadsheet-preview', {
       method: 'POST',
-      headers: headers(token),
+      headers: headers(),
       body: {
         file_name: fileName,
         content_base64: contentBase64,
@@ -428,27 +404,24 @@ export const supportApi = {
       decode: (payload) => record(payload) as unknown as SpreadsheetPreview,
     })
   },
-  listAttention(token: string, subjectId: string) {
+  listAttention(subjectId: string) {
     return apiClient.request(`/api/class-teacher/attention-cards/subjects/${subjectId}`, {
-      headers: readHeaders(token),
       decode: (payload) => list(payload, attention),
     })
   },
   createAttention(
-    token: string,
     input: Omit<AttentionCard,
       'attention_card_id' | 'revision' | 'subject_id' | 'state' | 'decision'
       | 'action_id' | 'evidence_source' | 'risk_score'>,
   ) {
     return apiClient.request('/api/class-teacher/attention-cards', {
       method: 'POST',
-      headers: headers(token),
+      headers: headers(),
       body: { ...input, operation_id: operationId() },
       decode: attention,
     })
   },
   resolveAttention(
-    token: string,
     card: AttentionCard,
     input: {
       decision: 'follow_up' | 'observe' | 'no_action'
@@ -461,7 +434,7 @@ export const supportApi = {
       `/api/class-teacher/attention-cards/${card.attention_card_id}/resolve`,
       {
         method: 'POST',
-        headers: headers(token),
+        headers: headers(),
         body: {
           ...input,
           operation_id: operationId(),

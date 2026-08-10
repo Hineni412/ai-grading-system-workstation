@@ -111,7 +111,7 @@ def _wired(tmp_path: Path, result: dict[str, object] | Exception):
         ),
     )
     configured = SyntheticConfiguredModel(result)
-    domain = VaultService(context, protection_enabled=False, model_gateway=configured)
+    domain = VaultService(context, model_gateway=configured)
     job_store = JobStore(tmp_path / "common.db")
     manager = JobManager(job_store, max_workers=1, cleanup_interrupted=False)
     common = WorkspaceAITaskService(
