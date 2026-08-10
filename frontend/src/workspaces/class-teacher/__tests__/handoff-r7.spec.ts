@@ -160,11 +160,37 @@ describe('B-UI-R7 handoff workspaces', () => {
     await nextTick()
     button(host, '确认保存记录').click()
     await settle()
+    expect(host.textContent).toContain('专业结论需核对结论日期、书面依据、当前在校支持和拟更新的学生档案摘要')
+    expect(update).not.toHaveBeenCalled()
+
+    const basisLabel = [...host.querySelectorAll<HTMLLabelElement>('label')]
+      .find((item) => item.querySelector('span')?.textContent === '专业依据')!
+    const basis = basisLabel.querySelector<HTMLTextAreaElement>('textarea')!
+    basis.value = '合成材料编号与出具机构'
+    basis.dispatchEvent(new Event('input', { bubbles: true }))
+    const profileLabel = [...host.querySelectorAll<HTMLLabelElement>('label')]
+      .find((item) => item.querySelector('span')?.textContent === '合并后的档案摘要')!
+    const profileSummary = profileLabel.querySelector<HTMLTextAreaElement>('textarea')!
+    profileSummary.value = '已核对专业材料；当前在校支持仍待持续观察。'
+    profileSummary.dispatchEvent(new Event('input', { bubbles: true }))
+    const supportLabel = [...host.querySelectorAll<HTMLLabelElement>('label')]
+      .find((item) => item.querySelector('span')?.textContent === '当前在校支持')!
+    const schoolSupport = supportLabel.querySelector<HTMLTextAreaElement>('textarea')!
+    schoolSupport.value = '当前由班主任提供分段提醒与情绪安抚。'
+    schoolSupport.dispatchEvent(new Event('input', { bubbles: true }))
+    await nextTick()
+    button(host, '确认保存记录').click()
+    await settle()
     await settle()
 
     expect(update).toHaveBeenCalledWith(expect.any(Object), expect.objectContaining({
       record_kind: 'professional_conclusion',
       source: '合成医院已提供的书面材料',
+      basis: '合成材料编号与出具机构',
+      current_school_support: '当前由班主任提供分段提醒与情绪安抚。',
+      profile_update: expect.objectContaining({
+        summary: '已核对专业材料；当前在校支持仍待持续观察。',
+      }),
       summary: expect.stringContaining('直接事实：合成医院已经提供书面诊断'),
     }), [{ kind: 'student', id: 'subject-b', revision: '3' }])
     expect(adopt).toHaveBeenCalledTimes(1)
@@ -238,6 +264,72 @@ describe('B-UI-R7 handoff workspaces', () => {
     expect(host.textContent).toContain('双方目前是否已经分开')
   })
 
+  it('lets the teacher review and selectively adopt each conflict profile update', async () => {
+    const initial = draft({
+      handling_mode: 'sop',
+      destination_key: 'class_teacher.affair.sop',
+      domain: 'conflict_safety',
+      subject_refs: [
+        { kind: 'student', id: 'subject-a', revision: '3' },
+        { kind: 'student', id: 'subject-b', revision: '3' },
+      ],
+      missing_fields: [],
+      content: {
+        summary: '两名合成学生发生矛盾，待教师核对。',
+        template_key: 'baseline.student_conflict',
+        participant_refs: ['subject-a', 'subject-b'],
+        student_profile_updates: [
+          {
+            subject_ref: { kind: 'student', id: 'subject-a', revision: '3' },
+            include: true,
+            display_name: '合成学生甲',
+            record_kind: 'reported_statement', source: '双方陈述', basis: '',
+            observed_at: '2026-08-10T10:00:00+08:00', record_summary: '信息课发生争执，细节待核对。',
+            profile_base_revision: 0,
+            profile_update: { summary: '本次争执需要继续核对并跟进。', dimensions: [], open_questions: ['冲突起因'], support_focus: [] },
+          },
+          {
+            subject_ref: { kind: 'student', id: 'subject-b', revision: '3' },
+            include: true,
+            display_name: '合成学生乙',
+            record_kind: 'reported_statement', source: '双方陈述', basis: '',
+            observed_at: '2026-08-10T10:00:00+08:00', record_summary: '信息课发生争执，细节待核对。',
+            profile_base_revision: 0,
+            profile_update: { summary: '本次争执需要继续核对并跟进。', dimensions: [], open_questions: ['是否受伤'], support_focus: [] },
+          },
+        ],
+      },
+    })
+    const update = vi.spyOn(intakeApi, 'updateDraft').mockImplementation(async (_current, content, refs) => ({
+      ...initial, draft_revision: 2, content, subject_refs: refs ?? initial.subject_refs,
+    }))
+    const adopt = vi.spyOn(intakeApi, 'adopt').mockResolvedValue({})
+    const host = await mountHandoff(initial)
+
+    expect(host.textContent).toContain('拟写入学生档案')
+    expect(host.textContent).toContain('同步更新 合成学生甲 的档案')
+    expect(host.textContent).toContain('确认建立 SOP 并更新 2 份档案')
+    const toggles = host.querySelectorAll<HTMLInputElement>('.include-update input[type="checkbox"]')
+    expect(toggles).toHaveLength(2)
+    toggles[1]!.click()
+    await nextTick()
+    expect(host.textContent).toContain('确认建立 SOP 并更新 1 份档案')
+
+    button(host, '确认建立 SOP 并更新 1 份档案').click()
+    await settle()
+    await settle()
+
+    expect(update.mock.calls[0]?.[1].student_profile_updates).toEqual([
+      expect.objectContaining({ include: true, display_name: '合成学生甲' }),
+      expect.objectContaining({ include: false, display_name: '合成学生乙' }),
+    ])
+    expect(update.mock.calls[0]?.[2]).toEqual([
+      { kind: 'student', id: 'subject-a', revision: '3' },
+      { kind: 'student', id: 'subject-b', revision: '3' },
+    ])
+    expect(adopt).toHaveBeenCalledWith(expect.objectContaining({ draft_revision: 2 }), 'new')
+  })
+
   it('preserves plan details and non-linear dependencies when the teacher confirms without editing', async () => {
     const initial = draft({
       handling_mode: 'plan_calendar',
@@ -294,6 +386,33 @@ describe('B-UI-R7 handoff workspaces', () => {
       }),
     ])
     expect(adopt).toHaveBeenCalledWith(expect.objectContaining({ draft_revision: 2 }), 'new')
+  })
+
+  it('keeps an AI plan in draft state until every calendar action has a date', async () => {
+    const initial = draft({
+      handling_mode: 'plan_calendar',
+      destination_key: 'class_teacher.plan.calendar',
+      domain: 'class_operations',
+      content: {
+        summary: '开学班务安排',
+        plan_title: '开学班务安排',
+        final_deadline: '2026-09-01T00:00:00+08:00',
+        actions: [{
+          draft_action_id: 'settle-points', title: '班级积分结算', details: '结算周期待确认',
+          due_at: '', depends_on_draft_action_ids: [],
+        }],
+      },
+    })
+    const update = vi.spyOn(intakeApi, 'updateDraft')
+    const adopt = vi.spyOn(intakeApi, 'adopt')
+    const host = await mountHandoff(initial)
+
+    button(host, '确认加入计划／日历').click()
+    await settle()
+
+    expect(host.textContent).toContain('逐项补全行动名称和截止时间')
+    expect(update).not.toHaveBeenCalled()
+    expect(adopt).not.toHaveBeenCalled()
   })
 
   it('requires the teacher to choose the manual SOP template instead of assuming a student conflict', async () => {
