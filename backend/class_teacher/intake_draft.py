@@ -7,6 +7,28 @@ from typing import Any
 from .sop_baseline_service import SopBaselineService
 
 
+def enforce_sop_human_decision_language(draft: dict[str, Any]) -> dict[str, Any]:
+    """Keep model revisions from turning a teacher decision into an AI verdict."""
+
+    template_key = str(draft.get("template_key") or "")
+    if not template_key:
+        return draft
+    baseline = SopBaselineService.preview(template_key)
+    protected = {
+        str(step.get("key") or ""): step
+        for step in list(baseline.get("steps") or [])
+        if isinstance(step, dict) and step.get("decision_key")
+    }
+    for step in list(draft.get("steps") or []):
+        if not isinstance(step, dict):
+            continue
+        local = protected.get(str(step.get("key") or ""))
+        if local:
+            step["title"] = str(local.get("title") or "")
+            step["details"] = str(local.get("details") or "")
+    return draft
+
+
 def classify_template(source_text: str, recommended_route: str) -> str:
     """Choose a conservative local SOP family from the first teacher sentence."""
     text = str(source_text or "")
@@ -93,8 +115,15 @@ def compose_sensitive_draft(
         key = str(raw["key"])
         suggestion = model_steps.get(key, {})
         due = anchor + timedelta(days=_schedule_offset(levels.get(key, 0)))
-        title = _limited_text(suggestion.get("title"), 160) or str(raw["title"])
-        details = _limited_text(suggestion.get("details"), 500) or str(raw.get("details") or "")
+        # The route step is an explicit human decision point.  Letting model
+        # wording replace it can silently turn a proposed route into a final
+        # bullying/non-bullying determination, so its language is local-only.
+        if key == "route" and raw.get("decision_key"):
+            title = str(raw["title"])
+            details = str(raw.get("details") or "")
+        else:
+            title = _limited_text(suggestion.get("title"), 160) or str(raw["title"])
+            details = _limited_text(suggestion.get("details"), 500) or str(raw.get("details") or "")
         step = {
             "key": key,
             "title": title,
@@ -135,7 +164,7 @@ def compose_sensitive_draft(
         if recommended_route == "affair"
         else "student_support_recommendation"
     )
-    return {
+    return enforce_sop_human_decision_language({
         "kind": kind,
         "transaction_type": (
             "学生事务" if recommended_route == "affair" else "学生支持"
@@ -162,7 +191,7 @@ def compose_sensitive_draft(
         "emergency_prompt": baseline.get("emergency_prompt"),
         "school_config_gaps": list(baseline.get("school_config_gaps") or []),
         "workflow_scope": str(baseline.get("workflow_scope") or "personal_checklist"),
-    }
+    })
 
 
 def selected_with_downstream(

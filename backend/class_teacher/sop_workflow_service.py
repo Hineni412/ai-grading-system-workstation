@@ -217,6 +217,7 @@ class SopWorkflowService:
         participant_refs: list[str],
         subject_ids: list[str] | None = None,
         verified_current_subject_ids: list[str] | None = None,
+        step_text_overrides: dict[str, dict[str, str]] | None = None,
         idempotency_fingerprint: str | None = None,
         transaction_hook: Callable[[Any, bytes, str, str], None] | None = None,
     ) -> dict[str, object]:
@@ -270,6 +271,28 @@ class SopWorkflowService:
                     vmk,
                     template_version_id,
                 )
+                if step_text_overrides:
+                    revised_steps: list[dict[str, Any]] = []
+                    for definition in list(template["steps"]):
+                        revised = dict(definition)
+                        override = step_text_overrides.get(str(definition["key"]))
+                        if override:
+                            title_override = str(override.get("title") or "").strip()
+                            details_override = str(override.get("details") or "").strip()
+                            if title_override:
+                                revised["title"] = self._text(
+                                    title_override,
+                                    "步骤名称",
+                                    240,
+                                )
+                            if details_override:
+                                revised["details"] = self._text(
+                                    details_override,
+                                    "步骤说明",
+                                    4000,
+                                )
+                        revised_steps.append(revised)
+                    template = {**template, "steps": revised_steps}
                 self.repository.put(
                     connection,
                     vmk=vmk,
