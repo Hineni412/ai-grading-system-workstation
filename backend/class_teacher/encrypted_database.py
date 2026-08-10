@@ -10,10 +10,14 @@ from contextlib import closing
 from pathlib import Path
 from typing import Any
 
-from backend.schema_migrations import ensure_schema_current
+from backend.schema_migrations import (
+    SchemaVersionError,
+    ensure_schema_current,
+    inspect_schema_version,
+)
 from backend.workspaces.contracts import WorkspaceContext
 
-from .errors import VaultError
+from .errors import VaultError, unsupported_database_format_error
 from .secure_repository import EncryptedObjectRepository
 
 
@@ -65,7 +69,7 @@ class EncryptedDatabase:
         self._plaintext_confirmed = False
         self._confirm_plaintext()
 
-    def requires_plaintext_migration(self) -> bool:
+    def has_unsupported_storage_format(self) -> bool:
         """Classify a private copy so source DB/WAL/SHM are never opened."""
 
         if not self.exists:
@@ -95,9 +99,19 @@ class EncryptedDatabase:
                 }
                 if after != before:
                     return True
+                try:
+                    inspect_schema_version(
+                        "student_affairs",
+                        candidate,
+                        migrations_dir=self.migrations_dir,
+                    )
+                except SchemaVersionError:
+                    return True
                 with closing(sqlite3.connect(candidate)) as connection:
-                    return EncryptedObjectRepository.requires_plaintext_migration(
-                        connection
+                    return (
+                        EncryptedObjectRepository.has_unsupported_storage_format(
+                            connection
+                        )
                     )
         except (OSError, sqlite3.DatabaseError):
             return True
@@ -114,7 +128,7 @@ class EncryptedDatabase:
     def prepare_existing_plaintext_runtime(self) -> bool:
         """Recover interrupted work only after the live DB is known plaintext."""
 
-        if not self.exists or self.requires_plaintext_migration():
+        if not self.exists or self.has_unsupported_storage_format():
             return False
         self._plaintext_confirmed = True
         self.recover_interrupted_operations()
@@ -143,12 +157,8 @@ class EncryptedDatabase:
     def _confirm_plaintext(self) -> None:
         if self._plaintext_confirmed:
             return
-        if self.requires_plaintext_migration():
-            raise VaultError(
-                "vault_plaintext_migration_required",
-                "检测到旧加密班主任数据库，已停止读取和写入；请先执行授权迁移",
-                status_code=409,
-            )
+        if self.has_unsupported_storage_format():
+            raise unsupported_database_format_error()
         self._plaintext_confirmed = True
 
     def snapshot_bytes(self) -> bytes:
@@ -235,14 +245,12 @@ class EncryptedDatabase:
         try:
             with closing(sqlite3.connect(":memory:")) as connection:
                 connection.deserialize(payload)
-                if EncryptedObjectRepository.requires_plaintext_migration(connection):
-                    raise ValueError("legacy_encryption")
+                if EncryptedObjectRepository.has_unsupported_storage_format(
+                    connection
+                ):
+                    raise ValueError("unsupported_storage_format")
         except Exception as exc:
-            raise VaultError(
-                "vault_plaintext_migration_required",
-                "检测到旧加密班主任数据库，已停止读取和写入；请先执行授权迁移",
-                status_code=409,
-            ) from exc
+            raise unsupported_database_format_error() from exc
 
     def replace_from_snapshot_atomically(self, payload: bytes) -> None:
         """Replace the live database in one filesystem operation."""

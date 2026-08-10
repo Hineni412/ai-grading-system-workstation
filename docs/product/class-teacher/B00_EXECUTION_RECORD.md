@@ -1,5 +1,7 @@
 # B00 执行记录
 
+> 历史执行记录：本文保留 B00 当时的冻结、调查和确认经过；其中加密、PIN、专用备份和普通备份排除不描述当前产品。当前班主任数据使用明文并进入普通备份，不支持的格式只停止班主任读写，当前版本不提供迁移或转换。见 [第二阶段冻结清单](./LEGACY_ENCRYPTION_RETIREMENT_PHASE2.md)。
+
 > 分支：`codex/class-teacher-b00-governance`
 >
 > 起点：`bb01d8db1e49aff6c7716c045e4d8918bc4371dc`

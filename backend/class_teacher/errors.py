@@ -2,7 +2,7 @@ from __future__ import annotations
 
 
 class VaultError(RuntimeError):
-    """A safe, user-facing vault failure without sensitive context."""
+    """A safe, user-facing class-teacher failure."""
 
     def __init__(
         self,
@@ -19,13 +19,14 @@ class VaultError(RuntimeError):
         self.details = dict(details or {})
 
 
-class VaultIntegrityError(VaultError):
-    def __init__(self) -> None:
-        super().__init__(
-            "vault_integrity_error",
-            "受保护数据未通过完整性校验，现有数据没有改变",
-            status_code=409,
-        )
+def unsupported_database_format_error() -> VaultError:
+    return VaultError(
+        "class_teacher_database_format_unsupported",
+        "班主任数据文件不是当前版本支持的格式，已停止读取和写入。"
+        "请换用当前版本的明文数据；如需保留这个文件中的内容，"
+        "请勿继续操作并联系维护人员。",
+        status_code=409,
+    )
 
 
-__all__ = ["VaultError", "VaultIntegrityError"]
+__all__ = ["VaultError", "unsupported_database_format_error"]

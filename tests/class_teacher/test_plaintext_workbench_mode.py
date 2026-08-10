@@ -219,7 +219,7 @@ def test_legacy_database_is_never_opened_or_changed_by_normal_runtime(
     keeper = _seed_classification_case(context, legacy=True, with_wal=with_wal)
     before = _tree_snapshot(context.root)
     try:
-        assert EncryptedDatabase(context).requires_plaintext_migration() is True
+        assert EncryptedDatabase(context).has_unsupported_storage_format() is True
         feature = create_workspace_feature()
         assert feature.migration_provider(context) is None
 
@@ -236,8 +236,12 @@ def test_legacy_database_is_never_opened_or_changed_by_normal_runtime(
             )
         with pytest.raises(ApiError) as calendar_blocked:
             client.get("/api/class-teacher/work?as_of=2026-08-03")
-        assert conversation_blocked.value.code == "vault_plaintext_migration_required"
-        assert calendar_blocked.value.code == "vault_plaintext_migration_required"
+        assert conversation_blocked.value.code == (
+            "class_teacher_database_format_unsupported"
+        )
+        assert calendar_blocked.value.code == (
+            "class_teacher_database_format_unsupported"
+        )
         assert not service.ordinary_database.exists
         with pytest.raises(VaultError) as blocked:
             service.support.create_subject(
@@ -247,7 +251,7 @@ def test_legacy_database_is_never_opened_or_changed_by_normal_runtime(
                 display_name="合成学生甲",
                 class_label="合成班",
             )
-        assert blocked.value.code == "vault_plaintext_migration_required"
+        assert blocked.value.code == "class_teacher_database_format_unsupported"
         assert _tree_snapshot(context.root) == before
     finally:
         if keeper is not None:
@@ -262,7 +266,75 @@ def test_plaintext_wal_is_classified_without_touching_live_companion_files(
     before = _tree_snapshot(context.root)
     try:
         database = EncryptedDatabase(context)
-        assert database.requires_plaintext_migration() is False
+        assert database.has_unsupported_storage_format() is False
+        assert _tree_snapshot(context.root) == before
+    finally:
+        assert keeper is not None
+        keeper.close()
+
+
+@pytest.mark.parametrize("damage", ["invalid_payload", "missing_history"])
+def test_damaged_or_unknown_database_is_rejected_without_changes(
+    tmp_path: Path,
+    damage: str,
+) -> None:
+    context = _context(tmp_path)
+    seeded = VaultService(context)
+    seeded.ensure_plaintext_ready()
+    database_path = seeded.database.database_path
+    with closing(sqlite3.connect(database_path)) as connection:
+        connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        connection.execute("PRAGMA journal_mode = DELETE")
+        if damage == "invalid_payload":
+            _insert_marker(
+                connection,
+                object_id="damaged-plaintext-payload",
+                payload_nonce=b"plaintext-json-v1",
+            )
+            connection.execute(
+                "UPDATE encrypted_objects SET payload_ciphertext = ? "
+                "WHERE object_id = ?",
+                (b"\x80", "damaged-plaintext-payload"),
+            )
+        else:
+            connection.execute("DELETE FROM schema_migrations")
+        connection.commit()
+
+    before = _tree_snapshot(context.root)
+    database = EncryptedDatabase(context)
+    assert database.has_unsupported_storage_format() is True
+    feature = create_workspace_feature()
+    assert feature.migration_provider(context) is None
+    service = feature.service_factory(context)
+    with pytest.raises(VaultError) as blocked:
+        service.ensure_plaintext_ready()
+    assert blocked.value.code == "class_teacher_database_format_unsupported"
+    assert not service.ordinary_database.exists
+    assert _tree_snapshot(context.root) == before
+
+
+def test_unsupported_database_skips_ordinary_initialization_and_ai_registration(
+    tmp_path: Path,
+) -> None:
+    context = _context(tmp_path)
+    seeded = VaultService(context)
+    seeded.ordinary_database.initialize_schema()
+    keeper = _seed_classification_case(context, legacy=True, with_wal=True)
+    before = _tree_snapshot(context.root)
+    try:
+        feature = create_workspace_feature()
+        service = feature.service_factory(context)
+
+        registered: list[str] = []
+
+        class Registrar:
+            def register_adapter(self, task_kind: str, _adapter: object) -> None:
+                registered.append(task_kind)
+
+        assert feature.register_ai_tasks is not None
+        feature.register_ai_tasks(Registrar(), service)
+
+        assert registered == []
         assert _tree_snapshot(context.root) == before
     finally:
         assert keeper is not None

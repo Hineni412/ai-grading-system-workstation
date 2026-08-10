@@ -9,7 +9,7 @@ from pathlib import Path
 from backend.workspaces.contracts import WorkspaceContext
 
 from .encrypted_database import EncryptedDatabase
-from .errors import VaultError
+from .errors import VaultError, unsupported_database_format_error
 from .secure_repository import EncryptedObjectRepository
 
 
@@ -37,7 +37,7 @@ class VaultService:
         self._runtime_lock = threading.RLock()
         self._maintenance_lock = threading.Lock()
         self._runtime_prepared = False
-        self._legacy_database_detected = False
+        self._unsupported_database_detected = False
         self._last_cleanup = float("-inf")
         self.workspace_ai_task_port = workspace_ai_task_port
         self.workspace_model_gateway = model_gateway
@@ -235,37 +235,35 @@ class VaultService:
         with self._runtime_lock:
             if self._runtime_prepared:
                 return True
-            if self._legacy_database_detected:
+            if self._unsupported_database_detected:
                 return False
             prepared = self.database.prepare_existing_plaintext_runtime()
             self._runtime_prepared = prepared
-            self._legacy_database_detected = self.database.exists and not prepared
+            self._unsupported_database_detected = (
+                self.database.exists and not prepared
+            )
             return prepared
 
     def require_runtime_compatible(self) -> None:
-        """Block every class-teacher surface while a legacy database is present."""
+        """Block every class-teacher surface for an unsupported database."""
 
         with self._runtime_lock:
-            if self._legacy_database_detected:
-                self._raise_legacy_database_required()
+            if self._unsupported_database_detected:
+                self._raise_unsupported_database_format()
             if self._runtime_prepared or not self.database.exists:
                 return
             prepared = self.database.prepare_existing_plaintext_runtime()
             if not prepared:
-                self._legacy_database_detected = True
-                self._raise_legacy_database_required()
+                self._unsupported_database_detected = True
+                self._raise_unsupported_database_format()
             self._runtime_prepared = True
 
     @staticmethod
-    def _raise_legacy_database_required() -> None:
-        raise VaultError(
-            "vault_plaintext_migration_required",
-            "检测到旧加密班主任数据库，已停止读取和写入；请先执行授权迁移",
-            status_code=409,
-        )
+    def _raise_unsupported_database_format() -> None:
+        raise unsupported_database_format_error()
 
     def ensure_plaintext_ready(self) -> bytes:
-        """Gate legacy data, recover known plaintext, and create on first write."""
+        """Gate unsupported data, recover known plaintext, and create on first write."""
 
         self.require_runtime_compatible()
         with self._runtime_lock:

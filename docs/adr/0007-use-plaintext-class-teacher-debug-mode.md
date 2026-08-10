@@ -2,12 +2,12 @@
 status: partially_superseded
 date: 2026-08-02
 supersedes: 0005 (only for the current class-teacher debug mode)
-superseded_by: 0008 (privacy-preview behavior), 0010 (daily encryption runtime and legacy conversion boundary)
+superseded_by: 0008 (privacy-preview behavior), 0010 (daily encryption runtime), 0011 (legacy reader and converter retirement)
 ---
 
 # Use plaintext class-teacher debug mode
 
-> Historical decision record. ADR-0008 supersedes the outbound-preview behavior below, and ADR-0010 supersedes the temporary retention of daily legacy-encryption operations. The plaintext storage and ordinary-backup decision remains current.
+> Historical decision record. ADR-0008 supersedes the outbound-preview behavior, ADR-0010 retired daily legacy-encryption operations, and ADR-0011 completed the second retirement stage by removing legacy decryption and conversion. The plaintext storage and ordinary-backup decision remains current; unsupported database formats are now rejected without conversion guidance.
 
 For the current debugging stage, the production class-teacher feature opens the affairs and student surfaces without a PIN, password, session timeout, automatic lock, or sensitive-component mount gate. New student-affairs objects are stored as UTF-8 JSON in the existing SQLite compatibility schema. The class-teacher workspace is included in ordinary backups. Its SQLite files are integrity-checked, restored through SQLite backup semantics, and have stale WAL/SHM/journal companions removed during an offline restore. Class-teacher model calls use the shared diagnostics and retry policy without a durable one-call claim.
 

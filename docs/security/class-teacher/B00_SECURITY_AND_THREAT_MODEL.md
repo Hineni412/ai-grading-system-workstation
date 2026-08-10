@@ -1,6 +1,6 @@
 # B00 安全、加密、威胁与恢复规格（历史基线）
 
-> 2026-08-09 状态更新：本文正文保留为 B01—B11 最初加密设计和威胁分析的历史证据，不描述当前运行模式，也不再是默认“恢复隐私保护”的待实施方案。当前班主任业务固定使用明文、进入普通备份，不设 PIN、锁定、解锁会话、改密、匿名预览或逐字发送确认；日常新加密写入已经退役。旧加密实现仅在第一阶段承担只读识别和一次性离线转换，第二阶段去留须另行授权。见 [第一阶段冻结清单](../../product/class-teacher/LEGACY_ENCRYPTION_RETIREMENT_PHASE1.md)、[ADR-0008](../../adr/0008-use-metadata-only-workspace-ai-tasks.md) 和 [ADR-0010](../../adr/0010-retire-legacy-class-teacher-encryption-runtime.md)。
+> 2026-08-10 状态更新：本文正文保留为 B01—B11 最初加密设计和威胁分析的历史证据，不描述当前运行模式，也不再是默认“恢复隐私保护”的待实施方案。当前班主任业务固定使用明文、进入普通备份，不设 PIN、锁定、解锁会话、改密、匿名预览或逐字发送确认；旧加密读取和转换已经退出。当前只保留不解密的格式判断，不支持的数据库格式会停止班主任读写，当前版本不提供迁移或转换。见 [第二阶段冻结清单](../../product/class-teacher/LEGACY_ENCRYPTION_RETIREMENT_PHASE2.md)、[ADR-0008](../../adr/0008-use-metadata-only-workspace-ai-tasks.md) 和 [ADR-0011](../../adr/0011-stop-reading-and-converting-legacy-class-teacher-databases.md)。
 
 > 状态：用户已于 2026-07-30 确认，B00 通过
 >
