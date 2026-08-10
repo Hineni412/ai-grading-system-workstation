@@ -124,7 +124,12 @@ def test_legacy_database_is_classified_read_only_and_never_changed(
     assert restarted.prepare_existing_plaintext_runtime() is False
     with pytest.raises(VaultError) as blocked:
         restarted.ensure_plaintext_ready()
-    assert blocked.value.code == "vault_plaintext_migration_required"
+    assert blocked.value.code == "class_teacher_database_format_unsupported"
+    assert blocked.value.message == (
+        "班主任数据文件不是当前版本支持的格式，已停止读取和写入。"
+        "请换用当前版本的明文数据；如需保留这个文件中的内容，"
+        "请勿继续操作并联系维护人员。"
+    )
     assert database_path.read_bytes() == before
 
 

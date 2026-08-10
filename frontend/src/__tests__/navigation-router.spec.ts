@@ -101,6 +101,7 @@ describe('source-recalibrated navigation', () => {
     '/class-teacher/vault',
     '/class-teacher/unlock',
     '/class-teacher/migration',
+    '/class-teacher/conversion',
   ])(
     'does not present the former placeholder route %s as a business page',
     async (target) => {

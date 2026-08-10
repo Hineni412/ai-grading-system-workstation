@@ -1,8 +1,11 @@
 ---
-status: accepted
+status: superseded
+superseded_by: 0007 (plaintext storage), 0008 (AI task boundary), 0010 (daily encryption retirement), 0011 (legacy reader and converter retirement)
 ---
 
 # Separate ordinary teacher work from sensitive student records
+
+> Historical decision record. Its business separation evidence is retained, but its PIN, encrypted-vault, preview, and backup behavior does not describe the current product. ADR-0011 records completion of the second retirement stage: current plaintext data remains supported and legacy formats are rejected without decryption or conversion.
 
 Ordinary calendar actions and SOP work graphs do not require an unlock and are stored outside the encrypted student-affairs vault. Sensitive student records are not mounted or fetched until the teacher opens the protected entry. The two stores use opaque references rather than cross-database foreign keys, and a local safety router must decide the destination before a write.
 

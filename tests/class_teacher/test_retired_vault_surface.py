@@ -78,3 +78,80 @@ def test_service_constructor_has_no_protection_configuration_surface() -> None:
 
     assert "protection_enabled" not in parameters
     assert "protection_provider" not in parameters
+
+
+def test_legacy_conversion_and_decryption_dependencies_stay_retired() -> None:
+    retired_paths = (
+        "backend/class_teacher/legacy_vault_conversion.py",
+        "backend/class_teacher/windows_dpapi.py",
+        "backend/class_teacher/protection.py",
+        "tools/convert_legacy_class_teacher_db.py",
+        "tests/class_teacher/legacy_vault_fixture.py",
+        "tests/class_teacher/test_legacy_vault_conversion.py",
+    )
+    assert [
+        relative
+        for relative in retired_paths
+        if (PROJECT_ROOT / relative).exists()
+    ] == []
+
+    production_sources = sorted(
+        (PROJECT_ROOT / "backend" / "class_teacher").rglob("*.py")
+    )
+    forbidden_production_markers = (
+        "legacy_vault_conversion",
+        "windows_dpapi",
+        "convert_legacy_class_teacher_db",
+        "from cryptography",
+        "import cryptography",
+    )
+    violations = [
+        f"{path.relative_to(PROJECT_ROOT).as_posix()}:{marker}"
+        for path in production_sources
+        for marker in forbidden_production_markers
+        if marker in path.read_text(encoding="utf-8")
+    ]
+    assert violations == []
+
+    current_test = Path(__file__).resolve()
+    test_sources = sorted(
+        (PROJECT_ROOT / "tests" / "class_teacher").glob("*.py")
+    )
+    direct_test_imports = [
+        path.relative_to(PROJECT_ROOT).as_posix()
+        for path in test_sources
+        if path.resolve() != current_test
+        and any(
+            marker in path.read_text(encoding="utf-8")
+            for marker in ("from cryptography", "import cryptography")
+        )
+    ]
+    assert direct_test_imports == []
+
+    requirements = (
+        PROJECT_ROOT / "requirements-class-teacher.txt"
+    ).read_text(encoding="utf-8")
+    active_requirements = [
+        line.strip().casefold()
+        for line in requirements.splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+    assert not any(
+        requirement.startswith("cryptography")
+        for requirement in active_requirements
+    )
+
+    crypto_source = (
+        PROJECT_ROOT / "backend" / "class_teacher" / "crypto.py"
+    ).read_text(encoding="utf-8")
+    assert all(
+        marker not in crypto_source
+        for marker in (
+            "AESGCM",
+            "Scrypt",
+            "derive_key",
+            "open_sealed",
+            "unb64",
+            "wipe",
+        )
+    )

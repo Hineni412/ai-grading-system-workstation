@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from .crypto import FORMAT_VERSION
-from .errors import VaultError
+from .errors import VaultError, unsupported_database_format_error
 
 
 def _now() -> str:
@@ -19,8 +19,11 @@ class EncryptedObjectRepository:
     _PLAINTEXT_MARKER = b"plaintext-json-v1"
 
     @classmethod
-    def requires_plaintext_migration(cls, connection: sqlite3.Connection) -> bool:
-        """Fail closed when a debug plaintext service sees a legacy vault."""
+    def has_unsupported_storage_format(
+        cls,
+        connection: sqlite3.Connection,
+    ) -> bool:
+        """Return whether the database cannot be read by the current runtime."""
 
         try:
             tables = {
@@ -33,12 +36,32 @@ class EncryptedObjectRepository:
                 return True
             if connection.execute("SELECT 1 FROM vault_metadata LIMIT 1").fetchone():
                 return True
-            row = connection.execute(
-                "SELECT 1 FROM encrypted_objects WHERE payload_nonce <> ? LIMIT 1",
-                (cls._PLAINTEXT_MARKER,),
-            ).fetchone()
-            return row is not None
-        except sqlite3.DatabaseError:
+            rows = connection.execute(
+                """
+                SELECT format_version, cek_nonce, wrapped_cek,
+                       payload_nonce, payload_ciphertext
+                FROM encrypted_objects
+                """
+            ).fetchall()
+            for row in rows:
+                if (
+                    int(row[0]) != FORMAT_VERSION
+                    or bytes(row[1]) != b""
+                    or bytes(row[2]) != b""
+                    or bytes(row[3]) != cls._PLAINTEXT_MARKER
+                ):
+                    return True
+                decoded = json.loads(bytes(row[4]).decode("utf-8"))
+                if not isinstance(decoded, dict):
+                    return True
+            return False
+        except (
+            json.JSONDecodeError,
+            sqlite3.DatabaseError,
+            TypeError,
+            UnicodeDecodeError,
+            ValueError,
+        ):
             return True
 
     def put(
@@ -137,11 +160,7 @@ class EncryptedObjectRepository:
                 status_code=404,
             )
         if bytes(row["payload_nonce"]) != self._PLAINTEXT_MARKER:
-            raise VaultError(
-                "vault_plaintext_migration_required",
-                "检测到旧加密班主任数据库，已停止读取和写入；请先执行授权迁移",
-                status_code=409,
-            )
+            raise unsupported_database_format_error()
         payload = bytes(row["payload_ciphertext"])
         try:
             decoded = json.loads(payload.decode("utf-8"))

@@ -1,10 +1,13 @@
 ---
-status: accepted
+status: partially_superseded
 date: 2026-08-09
 supersedes: 0005 (daily class-teacher encryption runtime), 0007 (temporary legacy runtime compatibility)
+superseded_by: 0011 (legacy reader and converter retirement)
 ---
 
 # Retire the daily legacy class-teacher encryption runtime
+
+> Historical first-stage decision record. The plaintext-only daily runtime remains current. ADR-0011 completed the separately authorized second stage: the converter, credential handling, and legacy decryption have exited; unsupported database formats are now rejected without a migration or conversion path.
 
 ## Context
 
