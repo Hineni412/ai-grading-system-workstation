@@ -642,6 +642,29 @@ class ConversationStore:
             pass
         return view
 
+    def latest_revisable_handoff(
+        self,
+        *,
+        conversation_id: str,
+        exclude_turn_id: str | None = None,
+    ) -> dict[str, object] | None:
+        if not self.database.exists:
+            return None
+        query = """
+            SELECT h.*, d.* FROM intake_handoffs h
+            JOIN intake_drafts d ON d.draft_id=h.draft_id
+            WHERE d.conversation_id=?
+              AND h.adoption_state IN ('pending','opened','stale')
+        """
+        parameters: list[object] = [conversation_id]
+        if exclude_turn_id:
+            query += " AND d.turn_id<>?"
+            parameters.append(exclude_turn_id)
+        query += " ORDER BY d.updated_at DESC, d.created_at DESC LIMIT 1"
+        with closing(self.database.connect()) as connection:
+            row = connection.execute(query, tuple(parameters)).fetchone()
+        return self._draft_view(row) if row is not None else None
+
     def update_draft(
         self,
         *,

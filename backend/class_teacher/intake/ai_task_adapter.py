@@ -20,12 +20,13 @@ from backend.workspaces.ai_tasks.models import (
 )
 
 from ..errors import VaultError
+from ..intake_draft import compose_sensitive_draft
 from .conversations import ConversationStore
 
 
 _TRIAGE_INSTRUCTION = """你是班主任事务整理助手。只返回一个 JSON 对象，不要 Markdown。顶层只能有 contract_version、assistant_message、clarification_questions、work_items。严格按下面的完整结构返回：
 {"contract_version":"class_teacher_triage.v1","assistant_message":"给教师的简短说明","clarification_questions":[],"work_items":[{"work_item_id":"item_001","domain":"student_support","primary_mode":"record","secondary_modes":[],"intent":"create","reason_summary":"为什么这样整理","subject_refs":[],"time_facts":[{"text":"暑假期间计划复查"}],"safety_level":"teacher_review_required","missing_fields":[],"draft":{"summary":"待教师核对的草稿摘要","profile_update":{"summary":"合并新信息后的学生当前总体认识","dimensions":[{"key":"learning_ability","label":"学习与能力","items":["当前有效信息"]}],"open_questions":["仍值得继续了解的问题"],"support_focus":[{"key":"focus_attention","title":"支持重点","need":"当前需要","effective_methods":[],"next_actions":["下一步可尝试的支持"]}]}}}]}
-domain 只能是 student_growth、student_support、conflict_safety、class_operations、activities_culture、school_coordination；primary_mode 和 secondary_modes 只能使用 record、plan_calendar、sop；intent 只能使用 create、append、follow_up、plan、review；safety_level 只能使用 normal、teacher_review_required、urgent_attention。time_facts 每一项都必须是对象，例如 {"text":"暑假期间计划复查"}，不能直接放字符串。subject_refs 只能原样复制当前候选中的完整 {"kind":"student","id":"...","revision":"..."} 对象；同名、不能唯一匹配或没有可靠候选时必须返回空数组，并把“请选择学生”放入 missing_fields。你只能形成草稿，不得自动诊断、认定欺凌、决定惩戒、对外发送或结案。即时危险必须提醒教师先保护学生并联系有权角色。"""
+domain 只能是 student_growth、student_support、conflict_safety、class_operations、activities_culture、school_coordination；primary_mode 和 secondary_modes 只能使用 record、plan_calendar、sop；intent 只能使用 create、append、follow_up、plan、review；safety_level 只能使用 normal、teacher_review_required、urgent_attention。time_facts 每一项都必须是对象，例如 {"text":"暑假期间计划复查"}，不能直接放字符串。subject_refs 只能原样复制当前候选中的完整 {"kind":"student","id":"...","revision":"..."} 对象；一件事务涉及多名不同学生时必须保留全部对应引用，只有同一个姓名存在多个候选时才留空并把“请选择学生”放入 missing_fields。学生冲突、安全、受伤或异常线索必须使用 conflict_safety 和 sop，第一轮同时形成可执行初稿与最多 3 个必要追问；追问必须放在顶层 clarification_questions，不能只放入 profile_update.open_questions。冲突 SOP 的 draft 至少返回 template_key、summary、steps、to_verify；不要把两名学生合并成一份 profile_update。若本轮是在回答上一轮追问并提供了上一轮待核对草稿，必须在其基础上修订，保留未被新事实否定的内容；明确是另一件新事项时不得合并旧草稿。你只能形成草稿，不得自动诊断、认定欺凌、决定惩戒、对外发送或结案。即时危险必须提醒教师先保护学生并联系有权角色。"""
 _PROFILE_INSTRUCTION = """当前会话从一个已选学生的档案页发起。只处理这名学生，不得改选其他学生。每次在已提供的当前档案上持续补充、修正和完善，而不是新建历史版本。若信息足以整理，返回且只返回一个 student_growth 或 student_support 的 record 工作项，并原样复制已选学生引用。draft.profile_update 必须是合并后的完整当前档案，包含非空 summary、dimensions、open_questions、support_focus；dimensions 可使用稳定核心 key，也可为学生新增简短英文 key 的个性维度。不得删除与本轮无关的已有维度。发现明显矛盾或关键缺失时，在 clarification_questions 中最多追问 3 个真正有帮助的问题；仍可把已经确定的内容形成完整更新草稿。"""
 _AUDIO_TRIAGE_INSTRUCTION = """你是班主任事务整理助手。当前最后一条用户消息包含教师录音。只返回 json 对象，contract_version 必须是 class_teacher_audio_triage.v1。先在 transcript 字段逐字转写教师说话，保留姓名、日期、数字和否定词，不推断录音中没有的内容；再返回与 class_teacher_triage.v1 相同的 assistant_message、clarification_questions、work_items。把事务分到 student_growth、student_support、conflict_safety、class_operations、activities_culture、school_coordination 六域，并选择 record、plan_calendar、sop 之一。你只能形成草稿，不得自动诊断、分析情绪、认定欺凌、决定惩戒、对外发送或结案。即时危险必须提醒教师先保护学生并联系有权角色。同名学生或无法唯一匹配时 subject_refs 留空并加入待核对项。"""
 _REVISION_INSTRUCTION = """你只调整现有班主任草稿。只返回 JSON 对象：contract_version 必须是 class_teacher_draft_revision.v1，content 必须是完整的新草稿对象。不得正式保存、外发、诊断、作欺凌认定、决定惩戒或结案。"""
@@ -33,6 +34,12 @@ _STUDENT_REFERENCE_RESELECTION_MESSAGE = "学生版本信息不一致，请重�
 _STUDENT_REFERENCE_PATTERN = re.compile(r"[A-Za-z0-9_-]{8,128}")
 _STUDENT_REFERENCE_ISSUE_CODES = frozenset(
     {"student_revision_mismatch", "unknown_student_reference"}
+)
+_EXPLICIT_NEW_TOPIC_PATTERN = re.compile(
+    r"(?:另外|另一个|另一件|新事项|再说一件|还有一件).{0,8}(?:新|另|学生|事情|事项|冲突)"
+)
+_FOLLOW_UP_DETAIL_PATTERN = re.compile(
+    r"(?:补充|已确认|已经|目前|双方|无人受伤|没有受伤|起因|经过|后来)"
 )
 
 
@@ -236,6 +243,22 @@ class ClassTeacherAITaskAdapter:
             None,
         )
         candidates = self._candidates(conversation, profile_ref=profile_ref)
+        current_turn_id = next(
+            (
+                str(item.get("id") or "")
+                for item in context_refs
+                if item.get("kind") == "turn"
+            ),
+            None,
+        )
+        previous_handoff = (
+            self.conversations.latest_revisable_handoff(
+                conversation_id=str(conversation["conversation_id"]),
+                exclude_turn_id=current_turn_id,
+            )
+            if _continues_previous_draft(conversation)
+            else None
+        )
         if profile_ref is not None:
             messages.append({"role": "system", "content": _PROFILE_INSTRUCTION})
             messages.extend(self._profile_messages_for_refs([profile_ref]))
@@ -269,6 +292,22 @@ class ClassTeacherAITaskAdapter:
                 "role": "user",
                 "content": "当前班学生候选（同名时不得自行选择，无唯一匹配时留空）："
                 + json.dumps(candidates, ensure_ascii=False, separators=(",", ":")),
+            })
+        if previous_handoff is not None:
+            messages.append({
+                "role": "user",
+                "content": "上一轮待核对草稿（本轮补充应在此基础上修订，不要另起无关方案）："
+                + json.dumps(
+                    {
+                        "draft_id": previous_handoff["draft_id"],
+                        "domain": previous_handoff["domain"],
+                        "handling_mode": previous_handoff["handling_mode"],
+                        "content": previous_handoff["content"],
+                        "subject_refs": previous_handoff["subject_refs"],
+                    },
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                ),
             })
         for turn in list(conversation["turns"]):
             if not isinstance(turn, Mapping):
@@ -371,6 +410,26 @@ class ClassTeacherAITaskAdapter:
         normalized_result = deepcopy(dict(result))
         items = normalized_result.get("work_items")
         requested_mode = _explicitly_requested_mode(conversation)
+        turns = [
+            turn
+            for turn in list(conversation.get("turns") or [])
+            if isinstance(turn, Mapping)
+        ]
+        conversation_text = "\n".join(
+            str(turn.get("teacher_message") or "")
+            for turn in turns
+        )
+        conflict_items: list[dict[str, Any]] = []
+        conflict_profiles: list[dict[str, object]] | None = None
+        current_turn_id = str(turns[-1].get("turn_id") or "") if turns else ""
+        previous_handoff = (
+            self.conversations.latest_revisable_handoff(
+                conversation_id=str(conversation.get("conversation_id") or ""),
+                exclude_turn_id=current_turn_id or None,
+            )
+            if _continues_previous_draft(conversation)
+            else None
+        )
         if focused is not None and isinstance(items, list) and len(items) > 1:
             raise VaultError(
                 "class_teacher_triage_invalid_result",
@@ -398,6 +457,35 @@ class ClassTeacherAITaskAdapter:
                         *(item for item in alternatives if item != requested_mode),
                     ]))[:2]
                     raw_item.pop("handoff_key", None)
+            if (
+                raw_item.get("domain") == "conflict_safety"
+                and requested_mode is None
+            ):
+                _promote_conflict_to_sop(
+                    raw_item,
+                    source_text=conversation_text,
+                    previous_handoff=(
+                        previous_handoff
+                        if previous_handoff is not None
+                        and previous_handoff.get("domain") == "conflict_safety"
+                        else None
+                    ),
+                )
+                if conflict_profiles is None:
+                    conflict_profiles = _conflict_student_profiles(
+                        self.student_cards.model_contexts_for_mentions(
+                            token="",
+                            class_label=(
+                                str(conversation.get("homeroom_class") or "").strip()
+                                or None
+                            ),
+                            text=conversation_text,
+                        )
+                    )
+                draft = raw_item.get("draft")
+                if isinstance(draft, dict) and conflict_profiles:
+                    draft["student_profiles"] = deepcopy(conflict_profiles)
+                conflict_items.append(raw_item)
             refs = raw_item.get("subject_refs", [])
             if not isinstance(refs, list):
                 raise VaultError(
@@ -406,7 +494,7 @@ class ClassTeacherAITaskAdapter:
                     status_code=422,
                 )
             selected: list[dict[str, object]] = []
-            requires_teacher_choice = len(refs) > 1
+            requires_teacher_choice = False
             validation_issue_codes: list[str] = (
                 [focused_reference_issue_code]
                 if focused_reference_issue_code is not None
@@ -505,6 +593,14 @@ class ClassTeacherAITaskAdapter:
                 draft["profile_base_revision"] = int(
                     current.get("revision") if isinstance(current, Mapping) else 0
                 )
+        if conflict_items:
+            normalized_result["clarification_questions"] = (
+                _conflict_clarification_questions(
+                    source_text=conversation_text,
+                    existing=normalized_result.get("clarification_questions"),
+                    items=conflict_items,
+                )
+            )
         return normalized_result
 
     @staticmethod
@@ -677,6 +773,132 @@ class ClassTeacherAITaskAdapter:
             return_focus_ref=str(item["work_item_id"]),
             expires_on_source_change=expires_on_source_change,
         )
+
+
+def _continues_previous_draft(conversation: Mapping[str, object]) -> bool:
+    turns = [
+        turn
+        for turn in list(conversation.get("turns") or [])
+        if isinstance(turn, Mapping)
+    ]
+    if len(turns) < 2:
+        return False
+    current_message = str(turns[-1].get("teacher_message") or "")
+    if _EXPLICIT_NEW_TOPIC_PATTERN.search(current_message):
+        return False
+    previous_questions = turns[-2].get("clarification_questions")
+    return (
+        isinstance(previous_questions, list)
+        and any(str(question).strip() for question in previous_questions)
+    ) or bool(_FOLLOW_UP_DETAIL_PATTERN.search(current_message))
+
+
+def _profile_open_questions(item: Mapping[str, object]) -> list[str]:
+    draft = item.get("draft")
+    if not isinstance(draft, Mapping):
+        return []
+    update = draft.get("profile_update")
+    if not isinstance(update, Mapping):
+        return []
+    questions = update.get("open_questions")
+    if not isinstance(questions, list):
+        return []
+    return [
+        str(question).strip()
+        for question in questions
+        if isinstance(question, str) and str(question).strip()
+    ]
+
+
+def _conflict_student_profiles(
+    contexts: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    profiles = [
+        {
+            "display_name": str(context.get("display_name") or "").strip(),
+            "class_label": str(context.get("class_label") or "").strip(),
+            "profile": deepcopy(context.get("profile")),
+        }
+        for context in contexts
+        if (
+            str(context.get("display_name") or "").strip()
+            and isinstance(context.get("profile"), Mapping)
+        )
+    ]
+    profiles.sort(key=lambda profile: str(profile["display_name"]))
+    return profiles
+
+
+def _promote_conflict_to_sop(
+    item: dict[str, Any],
+    *,
+    source_text: str,
+    previous_handoff: Mapping[str, object] | None,
+) -> None:
+    current_mode = str(item.get("primary_mode") or "")
+    if current_mode != "sop":
+        secondary = item.get("secondary_modes")
+        alternatives = (
+            [str(value) for value in secondary]
+            if isinstance(secondary, list)
+            else []
+        )
+        item["primary_mode"] = "sop"
+        item["secondary_modes"] = list(dict.fromkeys([
+            current_mode,
+            *(value for value in alternatives if value != "sop"),
+        ]))[:2]
+        item.pop("handoff_key", None)
+    if item.get("safety_level") == "normal":
+        item["safety_level"] = "teacher_review_required"
+    draft = item.get("draft")
+    if not isinstance(draft, dict):
+        raise VaultError(
+            "class_teacher_triage_invalid_result",
+            "AI 返回的冲突草稿无效",
+            status_code=422,
+        )
+    previous_content = (
+        previous_handoff.get("content")
+        if isinstance(previous_handoff, Mapping)
+        else None
+    )
+    if isinstance(previous_content, Mapping):
+        draft = {**deepcopy(dict(previous_content)), **draft}
+    baseline = compose_sensitive_draft(
+        source_text=source_text,
+        recommended_route="affair",
+        resolved_date=None,
+        model_payload=draft,
+        model_questions=_profile_open_questions(item),
+    )
+    item["draft"] = {**draft, **baseline}
+    if isinstance(previous_handoff, Mapping):
+        item["draft"]["revision_of_draft_id"] = str(
+            previous_handoff.get("draft_id") or ""
+        )
+
+
+def _conflict_clarification_questions(
+    *,
+    source_text: str,
+    existing: object,
+    items: list[dict[str, Any]],
+) -> list[str]:
+    candidates: list[str] = []
+    if not re.search(r"(?:已经|已|目前已).*分开|不再接触|没有继续接触", source_text):
+        candidates.append("双方目前是否已经分开，是否仍有即时冲突风险？")
+    if not re.search(r"无人受伤|没有人受伤|均未受伤|都没受伤", source_text):
+        candidates.append("是否有人受伤或需要立即联系校医、学校负责人？")
+    if isinstance(existing, list):
+        candidates.extend(
+            str(question).strip()
+            for question in existing
+            if isinstance(question, str) and str(question).strip()
+        )
+    for item in items:
+        candidates.extend(_profile_open_questions(item))
+    return list(dict.fromkeys(candidates))[:3]
 
 
 def _validation_issue_codes(result: Mapping[str, Any]) -> list[str]:

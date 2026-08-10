@@ -926,6 +926,143 @@ def test_conversation_waits_for_running_turn_and_stales_previous_handoffs_on_new
     assert {call["handoff_id"] for call in port.mark_calls if call["state"] == "stale"} == {old_handoff["handoff_id"]}
 
 
+def test_conflict_follow_up_revises_the_previous_sop_without_reasking_known_safety_facts(
+    tmp_path: Path,
+) -> None:
+    service, port = _service(tmp_path)
+    conversation, first_turn = _conversation_with_turn(
+        service,
+        "conflict-revision-first-turn",
+        message="两名合成学生发生了矛盾。",
+    )
+    first_task = port.prepare_calls[-1]
+    first_outcome = service.intake.ai_task_adapter.persist_model_result(
+        task_id=str(first_turn["task_id"]),
+        source_ref=first_task["source_ref"],
+        context_refs=first_task["context_refs"],
+        result={
+            "contract_version": "class_teacher_triage.v1",
+            "assistant_message": "先形成安全处理初稿，再继续核对事实。",
+            "clarification_questions": ["双方目前是否已经分开？"],
+            "work_items": [_work_item(
+                "conflict-revision-first-item",
+                domain="conflict_safety",
+                mode="sop",
+                intent="follow_up",
+                draft={
+                    "summary": "第一轮冲突处理摘要，后续修订必须保留。",
+                    "template_key": "baseline.student_conflict",
+                    "teacher_note": "已确认需要分别听取双方陈述。",
+                },
+            )],
+        },
+    )
+    first_handoff = service.intake.open_handoff(
+        str(first_outcome["handoff_ids"][0])
+    )
+    ready = service.intake.conversations.get(str(conversation["conversation_id"]))
+    continued = service.intake.append_turn(
+        conversation_id=str(conversation["conversation_id"]),
+        expected_revision=int(ready["revision"]),
+        message="双方已经分开，目前无人受伤，起因是小组分工意见不一致。",
+        operation_id="conflict-revision-second-turn",
+    )
+    second_task = port.prepare_calls[-1]
+    model_request = service.intake.ai_task_adapter.build_model_request(
+        task_kind="class_teacher.intake_triage",
+        source_ref=second_task["source_ref"],
+        context_refs=second_task["context_refs"],
+    )
+    joined = "\n".join(str(message["content"]) for message in model_request.messages)
+
+    assert "上一轮待核对草稿" in joined
+    assert "第一轮冲突处理摘要，后续修订必须保留" in joined
+
+    second_turn = continued["turns"][-1]
+    second_outcome = service.intake.ai_task_adapter.persist_model_result(
+        task_id=str(second_turn["task_id"]),
+        source_ref=second_task["source_ref"],
+        context_refs=second_task["context_refs"],
+        result={
+            "contract_version": "class_teacher_triage.v1",
+            "assistant_message": "已根据补充事实调整方案。",
+            "clarification_questions": ["双方对小组分工分别如何描述？"],
+            "work_items": [_work_item(
+                "conflict-revision-second-item",
+                domain="conflict_safety",
+                mode="sop",
+                intent="follow_up",
+                draft={
+                    "summary": "双方已分开且无人受伤，继续核对分工争议。",
+                    "template_key": "baseline.student_conflict",
+                },
+            )],
+        },
+    )
+    second_handoff = service.intake.open_handoff(
+        str(second_outcome["handoff_ids"][0])
+    )
+    saved = service.intake.conversations.get(str(conversation["conversation_id"]))
+
+    assert second_handoff["content"]["revision_of_draft_id"] == first_handoff["draft_id"]
+    assert second_handoff["content"]["teacher_note"] == "已确认需要分别听取双方陈述。"
+    assert saved["turns"][-1]["clarification_questions"] == [
+        "双方对小组分工分别如何描述？",
+    ]
+    assert sum(
+        item["adoption_state"] in {"pending", "opened"}
+        for item in saved["handoffs"]
+    ) == 1
+
+
+def test_explicit_new_topic_does_not_revise_previous_conflict_draft(
+    tmp_path: Path,
+) -> None:
+    service, port = _service(tmp_path)
+    conversation, first_turn = _conversation_with_turn(
+        service,
+        "conflict-new-topic-first-turn",
+        message="两名合成学生发生了矛盾。",
+    )
+    first_task = port.prepare_calls[-1]
+    service.intake.ai_task_adapter.persist_model_result(
+        task_id=str(first_turn["task_id"]),
+        source_ref=first_task["source_ref"],
+        context_refs=first_task["context_refs"],
+        result={
+            "contract_version": "class_teacher_triage.v1",
+            "assistant_message": "先形成第一件事的处理初稿。",
+            "clarification_questions": ["双方目前是否已经分开？"],
+            "work_items": [_work_item(
+                "conflict-new-topic-first-item",
+                domain="conflict_safety",
+                mode="sop",
+                intent="follow_up",
+                draft={
+                    "summary": "第一件冲突的独有摘要，不应带入新事项。",
+                    "template_key": "baseline.student_conflict",
+                },
+            )],
+        },
+    )
+    ready = service.intake.conversations.get(str(conversation["conversation_id"]))
+    service.intake.append_turn(
+        conversation_id=str(conversation["conversation_id"]),
+        expected_revision=int(ready["revision"]),
+        message="另外，再说一件新的学生冲突：两名合成学生在操场争执。",
+        operation_id="conflict-new-topic-second-turn",
+    )
+    second_task = port.prepare_calls[-1]
+    model_request = service.intake.ai_task_adapter.build_model_request(
+        task_kind="class_teacher.intake_triage",
+        source_ref=second_task["source_ref"],
+        context_refs=second_task["context_refs"],
+    )
+    joined = "\n".join(str(message["content"]) for message in model_request.messages)
+
+    assert "第一件冲突的独有摘要，不应带入新事项" not in joined
+
+
 def test_triage_creates_allowlisted_handoff_and_rejects_model_url(tmp_path: Path) -> None:
     service, _ = _service(tmp_path)
     conversation = service.intake.start_conversation()
@@ -1173,6 +1310,247 @@ def test_duplicate_student_names_require_teacher_choice_and_keep_student_destina
     assert handoff["destination_key"] == "class_teacher.student.record"
     assert handoff["subject_refs"] == []
     assert "请选择一名同名学生" in handoff["missing_fields"]
+
+
+def test_distinct_students_in_one_conflict_keep_both_subjects(
+    tmp_path: Path,
+) -> None:
+    service, port = _service(tmp_path)
+    with closing(sqlite3.connect(tmp_path / "grading.db")) as connection:
+        connection.execute(
+            "UPDATE students SET class_name='一班' WHERE id=2"
+        )
+        connection.commit()
+    preference = service.intake.preferences.get()
+    service.intake.preferences.set(
+        homeroom_class="一班",
+        expected_revision=0,
+        expected_source_revision=str(preference["source_revision"]),
+        operation_id="homeroom-for-distinct-conflict-students",
+    )
+    _conversation, turn = _conversation_with_turn(
+        service,
+        "conversation-distinct-conflict-students",
+        message="合成学生甲和合成学生乙发生了矛盾。",
+    )
+    task_request = port.prepare_calls[-1]
+    candidates = service.class_roster.ai_candidates(
+        token="",
+        class_label="一班",
+    )
+
+    outcome = service.intake.ai_task_adapter.persist_model_result(
+        task_id=str(turn["task_id"]),
+        source_ref=task_request["source_ref"],
+        context_refs=task_request["context_refs"],
+        result={
+            "contract_version": "class_teacher_triage.v1",
+            "assistant_message": "已整理两名学生的冲突处理草稿。",
+            "clarification_questions": ["双方目前是否已经分开？"],
+            "work_items": [_work_item(
+                "distinct-conflict-students-item",
+                domain="conflict_safety",
+                mode="sop",
+                intent="follow_up",
+                refs=[
+                    {
+                        "kind": "student",
+                        "id": str(candidate["id"]),
+                        "revision": str(candidate["revision"]),
+                    }
+                    for candidate in candidates
+                ],
+                draft={
+                    "summary": "两名不同学生发生冲突，待教师继续核对。",
+                    "template_key": "baseline.student_conflict",
+                },
+            )],
+        },
+    )
+    handoff = service.intake.open_handoff(str(outcome["handoff_ids"][0]))
+
+    assert len(handoff["subject_refs"]) == 2
+    assert handoff["missing_fields"] == []
+
+
+def test_conflict_record_with_profile_questions_becomes_actionable_sop(
+    tmp_path: Path,
+) -> None:
+    service, port = _service(tmp_path)
+    with closing(sqlite3.connect(tmp_path / "grading.db")) as connection:
+        connection.execute(
+            "UPDATE students SET class_name='一班' WHERE id=2"
+        )
+        connection.commit()
+    preference = service.intake.preferences.get()
+    service.intake.preferences.set(
+        homeroom_class="一班",
+        expected_revision=0,
+        expected_source_revision=str(preference["source_revision"]),
+        operation_id="homeroom-for-conflict-sop-promotion",
+    )
+    conversation, turn = _conversation_with_turn(
+        service,
+        "conversation-conflict-sop-promotion",
+        message="合成学生甲和合成学生乙在信息课发生了矛盾。",
+    )
+    task_request = port.prepare_calls[-1]
+    candidates = service.class_roster.ai_candidates(
+        token="",
+        class_label="一班",
+    )
+
+    outcome = service.intake.ai_task_adapter.persist_model_result(
+        task_id=str(turn["task_id"]),
+        source_ref=task_request["source_ref"],
+        context_refs=task_request["context_refs"],
+        result={
+            "contract_version": "class_teacher_triage.v1",
+            "assistant_message": "两名学生发生矛盾，需要继续核对处理。",
+            "clarification_questions": [],
+            "work_items": [_work_item(
+                "conflict-record-needs-sop-item",
+                domain="conflict_safety",
+                mode="record",
+                intent="follow_up",
+                refs=[
+                    {
+                        "kind": "student",
+                        "id": str(candidate["id"]),
+                        "revision": str(candidate["revision"]),
+                    }
+                    for candidate in candidates
+                ],
+                draft={
+                    "summary": "两名学生在信息课发生矛盾，待教师核实。",
+                    "profile_update": {
+                        "summary": "本轮只掌握到一项待核对的同伴冲突线索。",
+                        "dimensions": [],
+                        "open_questions": [
+                            "矛盾发生的具体原因和经过是什么？",
+                            "双方目前的状态如何？",
+                        ],
+                        "support_focus": [{
+                            "key": "conflict_resolution",
+                            "title": "冲突解决支持",
+                            "need": "核实事实并避免矛盾升级",
+                            "effective_methods": [],
+                            "next_actions": [
+                                "分别与双方学生核对事实",
+                                "根据核实结果安排后续观察",
+                            ],
+                        }],
+                    },
+                },
+            )],
+        },
+    )
+    saved = service.intake.conversations.get(str(conversation["conversation_id"]))
+    handoff = service.intake.open_handoff(str(outcome["handoff_ids"][0]))
+
+    assert handoff["handling_mode"] == "sop"
+    assert handoff["destination_key"] == "class_teacher.affair.sop"
+    assert len(handoff["subject_refs"]) == 2
+    assert handoff["content"]["template_key"] == "baseline.student_conflict"
+    assert len(handoff["content"]["steps"]) >= 5
+    assert saved["turns"][-1]["clarification_questions"] == [
+        "双方目前是否已经分开，是否仍有即时冲突风险？",
+        "是否有人受伤或需要立即联系校医、学校负责人？",
+        "矛盾发生的具体原因和经过是什么？",
+    ]
+
+
+def test_conflict_sop_includes_each_mentioned_students_current_profile(
+    tmp_path: Path,
+) -> None:
+    service, port = _service(tmp_path)
+    with closing(sqlite3.connect(tmp_path / "grading.db")) as connection:
+        connection.execute(
+            "UPDATE students SET class_name='一班' WHERE id=2"
+        )
+        connection.commit()
+    for index, (name, summary) in enumerate((
+        ("合成学生甲", "表达分歧时需要先获得安静陈述的时间。"),
+        ("合成学生乙", "面对误解时愿意在教师引导下重新说明经过。"),
+    ), start=1):
+        subject = service.support.create_subject(
+            token="",
+            operation_id=f"conflict-profile-subject-{index}",
+            source_student_id=f"SYN-CONFLICT-{index:03d}",
+            display_name=name,
+            class_label="一班",
+        )
+        with closing(service.database.connect()) as connection:
+            with connection:
+                service.student_cards.upsert_current_profile_in_connection(
+                    connection,
+                    vmk=service.student_cards._key_provider(""),
+                    subject_id=str(subject["subject_id"]),
+                    profile_update={
+                        "summary": summary,
+                        "dimensions": [],
+                        "open_questions": [],
+                        "support_focus": [],
+                    },
+                    expected_revision=0,
+                    operation_id=f"conflict_profile_create_{index}",
+                    model_operation_id=f"synthetic-profile-context-{index}",
+                    teacher_quote="合成档案原话",
+                    model_draft="合成档案草稿",
+                )
+    preference = service.intake.preferences.get()
+    service.intake.preferences.set(
+        homeroom_class="一班",
+        expected_revision=0,
+        expected_source_revision=str(preference["source_revision"]),
+        operation_id="homeroom-for-conflict-profile-context",
+    )
+    _conversation, turn = _conversation_with_turn(
+        service,
+        "conversation-conflict-profile-context",
+        message="合成学生甲和合成学生乙在信息课发生了矛盾。",
+    )
+    task_request = port.prepare_calls[-1]
+    candidates = service.class_roster.ai_candidates(token="", class_label="一班")
+    outcome = service.intake.ai_task_adapter.persist_model_result(
+        task_id=str(turn["task_id"]),
+        source_ref=task_request["source_ref"],
+        context_refs=task_request["context_refs"],
+        result={
+            "contract_version": "class_teacher_triage.v1",
+            "assistant_message": "已结合两名学生的当前档案整理冲突 SOP。",
+            "clarification_questions": ["双方目前是否已经分开？"],
+            "work_items": [_work_item(
+                "conflict-profile-context-item",
+                domain="conflict_safety",
+                mode="sop",
+                intent="follow_up",
+                refs=[
+                    {
+                        "kind": "student",
+                        "id": str(candidate["id"]),
+                        "revision": str(candidate["revision"]),
+                    }
+                    for candidate in candidates
+                ],
+                draft={
+                    "summary": "两名学生发生矛盾，待教师继续核对。",
+                    "template_key": "baseline.student_conflict",
+                },
+            )],
+        },
+    )
+    handoff = service.intake.open_handoff(str(outcome["handoff_ids"][0]))
+
+    profiles = handoff["content"]["student_profiles"]
+    assert {profile["display_name"] for profile in profiles} == {
+        "合成学生甲",
+        "合成学生乙",
+    }
+    assert {profile["profile"]["summary"] for profile in profiles} == {
+        "表达分歧时需要先获得安静陈述的时间。",
+        "面对误解时愿意在教师引导下重新说明经过。",
+    }
 
 
 def test_draft_revision_is_a_new_safe_task_and_never_adopts_formal_data(tmp_path: Path) -> None:
