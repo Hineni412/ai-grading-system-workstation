@@ -920,6 +920,56 @@ def _controlled_section_schema(
     }
 
 
+_CONTROLLED_ID_FIELD_DIMENSIONS = {
+    "knowledge_points": "knowledge",
+    "prerequisite_points": "knowledge",
+    "method_tags": "method",
+    "thought_tags": "thought",
+    "ability_tags": "ability",
+    "math_model_tags": "model",
+    "special_type_tags": "special_type",
+    "textbook_chapters": "curriculum",
+}
+
+
+def _resolve_controlled_ids(
+    analysis: TagAnalysis,
+    contract: Mapping[str, Any],
+) -> TagAnalysis:
+    """Translate exact candidate IDs in controlled fields to approved names.
+
+    The combined-v3 tagging contract asks the model to answer with stable
+    candidate IDs. Violation reporting, constraint, and persistence all work
+    with approved names, so map each exact candidate ID to its name first.
+    Values that are already approved names, or unknown, pass through
+    unchanged and keep the established violation and proposal behavior.
+    """
+    if not isinstance(contract.get("candidates"), Mapping):
+        return analysis
+    payload = analysis.to_dict()
+    changed = False
+    for field_name, dimension in _CONTROLLED_ID_FIELD_DIMENSIONS.items():
+        id_to_name = {
+            item["id"]: item["name"]
+            for item in _contract_candidates(contract, dimension)
+            if item["id"]
+        }
+        if not id_to_name:
+            continue
+        values = payload.get(field_name)
+        if not isinstance(values, list) or not values:
+            continue
+        resolved = [
+            id_to_name.get(str(value or "").strip(), value) for value in values
+        ]
+        if resolved != values:
+            payload[field_name] = resolved
+            changed = True
+    if not changed:
+        return analysis
+    return TagAnalysis.from_dict(payload)
+
+
 def _controlled_field_violation_notes(
     analysis: TagAnalysis,
     contract: Mapping[str, Any],
@@ -1963,12 +2013,13 @@ def _with_quality(
             taxonomy_revision=revision or int(result.taxonomy_revision or 0),
         )
     taxonomy = governance or get_taxonomy_governance()
+    resolved_analysis = _resolve_controlled_ids(result.analysis, contract)
     violation_notes = _controlled_field_violation_notes(
-        result.analysis,
+        resolved_analysis,
         contract,
     )
     scoped_analysis, curriculum_notes = _normalize_scoped_curriculum(
-        result.analysis,
+        resolved_analysis,
         contract,
     )
     raw_payload = scoped_analysis.to_dict()

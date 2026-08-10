@@ -1146,3 +1146,54 @@ def test_adaptive_batches_keep_simple_questions_together_and_complex_questions_s
     assert [qid for qid, _ in batches[1]] == [3]
     assert [qid for qid, _ in batches[2]] == [4]
     assert [qid for qid, _ in batches[3]] == [5]
+
+
+def test_resolve_controlled_ids_translates_candidate_ids_to_names() -> None:
+    contract = {
+        "candidates": {
+            "knowledge": [{"id": "kp-1", "name": "知识点甲"}],
+            "method": [{"id": "m-1", "name": "方法甲"}],
+        }
+    }
+    analysis = _analysis(
+        knowledge_points=["kp-1", "不在词表的词"],
+        method_tags=["m-1"],
+    )
+
+    resolved = ai_tagging_module._resolve_controlled_ids(analysis, contract)
+
+    assert resolved.knowledge_points == ["知识点甲", "不在词表的词"]
+    assert resolved.method_tags == ["方法甲"]
+
+
+def test_resolve_controlled_ids_ignores_contract_without_candidates() -> None:
+    analysis = _analysis(knowledge_points=["kp-1"])
+
+    assert ai_tagging_module._resolve_controlled_ids(analysis, {}) is analysis
+
+
+def test_governed_knowledge_catalog_accepts_candidate_id(
+    tmp_path: Path,
+) -> None:
+    governance = TaxonomyGovernance(
+        catalog_path=CATALOG_PATH,
+        state_path=tmp_path / "taxonomy-state.json",
+    )
+    context = TaggingContext(
+        question_text="根据轴对称性质完成证明。",
+        answer_text="证明略。",
+        question_number="1",
+        question_type="解答题",
+    )
+    contract = governance.prompt_contract()
+
+    result = converge_tag_analysis(
+        _analysis(knowledge_points=["xkw-knowledge-b65b770612ee3878"]),
+        context,
+        governance=governance,
+        taxonomy_contract=contract,
+    )
+
+    assert "controlled_field_violation:knowledge_points" not in result.quality_notes
+    assert result.analysis is not None
+    assert result.analysis.knowledge_points == ["轴对称的性质"]
