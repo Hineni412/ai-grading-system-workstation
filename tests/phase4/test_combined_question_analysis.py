@@ -959,6 +959,45 @@ def test_existing_tag_writer_reuses_quality_gate_and_question_save_seam(
     }
 
 
+def test_existing_tag_writer_accepts_candidate_ids_and_saves_names(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "question-bank.db"
+    _seed_questions(database)
+    install_current_knowledge(database)
+    payload = _tag_payload()
+    payload["knowledge_points"] = ["kp_alg_linear_equation"]
+    payload["textbook_chapters"] = ["七年级上册 一元一次方程"]
+    writer = ExistingTagProjectionWriter(
+        write_service=QuestionBankWriteService(
+            database,
+            data_root=database.parent,
+        ),
+        tagging_service=ExistingWriterTaggingStub(),  # type: ignore[arg-type]
+    )
+
+    stored = writer.write(
+        _question(1),
+        payload,
+        model_name="synthetic-model",
+        operation_id="p4-09-existing-writer-ids",
+    )
+
+    assert stored["quality_status"] == "complete"
+    with connect(database) as connection:
+        rows = connection.execute(
+            """
+            SELECT tag_type, tag_value, model_name
+            FROM question_tags
+            WHERE question_id = 1
+            """
+        ).fetchall()
+    assert ("knowledge_point", "一元一次方程", "synthetic-model") in {
+        (row["tag_type"], row["tag_value"], row["model_name"])
+        for row in rows
+    }
+
+
 def test_existing_tag_writer_reuses_one_prepared_batch_and_defers_refresh(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1338,6 +1377,9 @@ def test_gateway_keeps_each_questions_candidate_contract_isolated() -> None:
     rules = prompt["rules"]
     assert "candidate_contract.candidates.knowledge only" in rules
     assert "Copy the id and name together, verbatim" in rules
+    assert "only exact candidate id values copied verbatim" in rules
+    assert "curriculum_sections" in rules
+    assert "只能逐字照抄该题候选契约中候选条的 id" in rules
     assert "part-1-step-1" in rules
     assert "one independently scorable mathematical milestone" in rules
     assert "one evidence point" in rules
