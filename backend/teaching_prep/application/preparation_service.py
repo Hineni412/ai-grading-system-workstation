@@ -43,6 +43,7 @@ from backend.teaching_prep.application.lesson_drafts import (
     build_local_template,
     calculate_capacity,
     draft_preflight,
+    normalize_model_draft_payload,
     validate_draft_payload,
 )
 from backend.teaching_prep.application.preferences import (
@@ -110,7 +111,10 @@ from backend.teaching_prep.domain.states import (
     require_transition,
 )
 from backend.teaching_prep.infrastructure.database import TeachingPrepDatabase
-from backend.teaching_prep.infrastructure.materials import MaterialParser
+from backend.teaching_prep.infrastructure.materials import (
+    PPT_OBJECT_SCHEMA_VERSION,
+    MaterialParser,
+)
 from backend.teaching_prep.infrastructure.repositories import (
     ExerciseCandidateRepository,
     ExerciseRegionDraft,
@@ -646,6 +650,56 @@ class TeachingPrepService:
             ),
         }
 
+    def _exercise_reference_images(
+        self,
+        model_input: Mapping[str, object],
+    ) -> list[dict[str, object]]:
+        result: list[dict[str, object]] = []
+        total_bytes = 0
+        materials = model_input.get("materials")
+        if not isinstance(materials, list):
+            return result
+        for material in materials:
+            if not isinstance(material, Mapping):
+                continue
+            if str(material.get("purpose") or "") != "exercise":
+                continue
+            units = material.get("units")
+            if not isinstance(units, list):
+                continue
+            for unit in units:
+                if not isinstance(unit, Mapping):
+                    continue
+                unit_id = str(unit.get("unit_id") or "")
+                if not unit_id:
+                    continue
+                preview = self.material_preview_path(unit_id)
+                content = preview.read_bytes()
+                total_bytes += len(content)
+                if total_bytes > 15_000_000:
+                    return result
+                result.append(
+                    {
+                        "material_version_id": str(
+                            material.get("material_version_id") or ""
+                        ),
+                        "material_name": str(material.get("material_name") or ""),
+                        "material_unit_id": unit_id,
+                        "unit_index": int(unit.get("unit_index") or 0),
+                        "mime_type": (
+                            "image/jpeg"
+                            if preview.suffix.lower() in {".jpg", ".jpeg"}
+                            else "image/webp"
+                            if preview.suffix.lower() == ".webp"
+                            else "image/png"
+                        ),
+                        "content": content,
+                    }
+                )
+                if len(result) >= 12:
+                    return result
+        return result
+
     def start_exercise_suggestion_run(
         self,
         snapshot_id: str,
@@ -701,9 +755,13 @@ class TeachingPrepService:
             return
         try:
             self.workbench.mark_suggestion_call_started(clean_run_id)
+            model_input = dict(snapshot.payload["model_input"])
+            model_input["reference_images"] = self._exercise_reference_images(
+                model_input
+            )
             model_kwargs = {
                 "operation_id": run.operation_id,
-                "reference_snapshot": dict(snapshot.payload["model_input"]),
+                "reference_snapshot": model_input,
             }
             if task_model_gateway is not None:
                 model_kwargs["task_model_gateway"] = task_model_gateway
@@ -2352,10 +2410,19 @@ class TeachingPrepService:
                 except Exception:
                     continue
                 target = (self.root / record.preview_relpath).resolve(strict=False)
+                ppt_metadata_is_current = (
+                    version.material_type != "pptx"
+                    or (
+                        "objects" in item.object_summary
+                        and item.object_summary.get("object_schema_version")
+                        == PPT_OBJECT_SCHEMA_VERSION
+                    )
+                )
                 if (
                     record.source_version_sha256 == version.content_sha256
                     and target.is_file()
                     and 1 <= item.unit_index <= total_units
+                    and ppt_metadata_is_current
                 ):
                     reusable_indexes.add(item.unit_index)
             completed_previews = len(reusable_indexes)
@@ -3375,7 +3442,10 @@ class TeachingPrepService:
                 }
                 if task_model_gateway is not None:
                     model_kwargs["task_model_gateway"] = task_model_gateway
-                raw = adapter.generate(**model_kwargs)
+                raw = normalize_model_draft_payload(
+                    adapter.generate(**model_kwargs),
+                    pack,
+                )
             draft = validate_draft_payload(raw, pack)
             if clean_mode == "model" and not draft.get("slide_adaptations"):
                 raise TeachingPrepValidationError(
@@ -3469,11 +3539,16 @@ class TeachingPrepService:
         draft_id: str,
         *,
         request_token: str,
+        model_proposal: bool = False,
+        task_model_gateway: object | None = None,
     ) -> tuple[SlidePlanVersion, bool]:
         clean_draft_id = _clean_entity_id(draft_id)
         clean_token = _clean_token(request_token)
         request_hash = _stable_hash(
-            {"lesson_draft_id": clean_draft_id}
+            {
+                "lesson_draft_id": clean_draft_id,
+                "model_proposal": bool(model_proposal),
+            }
         )
         existing = self.slide_plans.find_idempotent(
             request_token=clean_token,
@@ -3494,7 +3569,41 @@ class TeachingPrepService:
                 "resource pack sources changed; freeze and confirm a new draft"
             )
         pack = self.resource_packs.get(draft.resource_pack_id)
-        payload, source_ppt_state = build_slide_plan_payload(pack, draft)
+        proposal_payload: dict[str, object] | None = None
+        if model_proposal and _model_adapter_available(
+            self.lesson_model_adapter
+        ):
+            adapter = self.lesson_model_adapter
+            if adapter is None:
+                raise TeachingPrepValidationError(
+                    "lesson model is unavailable or not authorized"
+                )
+            model_payload = deepcopy(pack.payload)
+            model_payload["preparation_preferences"] = (
+                resolve_teaching_preferences(
+                    pack.payload.get("preparation_preferences")
+                )
+            )
+            model_kwargs = {
+                "operation_id": clean_token,
+                "resource_pack": model_payload,
+            }
+            if task_model_gateway is not None:
+                model_kwargs["task_model_gateway"] = task_model_gateway
+            raw = normalize_model_draft_payload(
+                adapter.generate(**model_kwargs),
+                pack,
+            )
+            proposal_payload = validate_draft_payload(raw, pack)
+            if not proposal_payload.get("slide_adaptations"):
+                raise TeachingPrepValidationError(
+                    "lesson model must classify every frozen reference slide"
+                )
+        payload, source_ppt_state = build_slide_plan_payload(
+            pack,
+            draft,
+            proposal_payload=proposal_payload,
+        )
         clean_payload = validate_plan_payload(payload)
         item, created = self.slide_plans.create(
             request_token=clean_token,
@@ -3559,6 +3668,31 @@ class TeachingPrepService:
                     "teacher_note",
                     maximum=1_000,
                 ),
+                "overrides": {
+                    "target_slide_number": (
+                        _clean_positive_bounded_int(
+                            raw.get("target_slide_number"),
+                            "target_slide_number",
+                            maximum=2_000,
+                        )
+                        if raw.get("target_slide_number") is not None
+                        else None
+                    ),
+                    "position": (
+                        _clean_slide_position(raw.get("position"))
+                        if raw.get("position") is not None
+                        else None
+                    ),
+                    "text": (
+                        _clean_text(
+                            str(raw.get("text") or ""),
+                            "slide_operation_text",
+                            maximum=64,
+                        )
+                        if raw.get("text") is not None
+                        else None
+                    ),
+                },
             }
         clean_review_note = _clean_optional_text(
             review_note,
@@ -3632,19 +3766,44 @@ class TeachingPrepService:
             before_reason = raw_operation.get("reason")
             before_minutes = raw_operation.get("planned_minutes")
             before_teacher_note = raw_operation.get("teacher_note")
+            before_target = deepcopy(raw_operation.get("target"))
+            before_details = deepcopy(raw_operation.get("details"))
             after = str(review["decision"])
             candidate = {
                 **raw_operation,
-                **review,
+                **{
+                    key: review[key]
+                    for key in (
+                        "decision",
+                        "reason",
+                        "planned_minutes",
+                        "teacher_note",
+                    )
+                },
             }
+            _apply_slide_operation_overrides(
+                candidate,
+                (
+                    dict(review["overrides"])
+                    if isinstance(review.get("overrides"), Mapping)
+                    else {}
+                ),
+                slides=[
+                    dict(item)
+                    for item in payload.get("slides", [])
+                    if isinstance(item, Mapping)
+                ],
+            )
             if after == "approved":
                 require_approval_allowed(candidate)
-            raw_operation.update(review)
+            raw_operation.update(candidate)
             if (
                 before != after
                 or before_reason != review["reason"]
                 or before_minutes != review["planned_minutes"]
                 or before_teacher_note != review["teacher_note"]
+                or before_target != candidate.get("target")
+                or before_details != candidate.get("details")
             ):
                 history.append(
                     {
@@ -5239,6 +5398,110 @@ def _clean_nonnegative_int(
     if clean < 0 or clean > maximum:
         raise TeachingPrepValidationError(f"{field} is invalid")
     return clean
+
+
+def _clean_positive_bounded_int(
+    value: object,
+    field: str,
+    *,
+    maximum: int,
+) -> int:
+    if isinstance(value, bool):
+        raise TeachingPrepValidationError(f"{field} is invalid")
+    try:
+        clean = int(value)
+    except (TypeError, ValueError) as exc:
+        raise TeachingPrepValidationError(f"{field} is invalid") from exc
+    if clean < 1 or clean > maximum:
+        raise TeachingPrepValidationError(f"{field} is invalid")
+    return clean
+
+
+def _clean_slide_position(value: object) -> dict[str, float]:
+    if not isinstance(value, Mapping) or set(value) != {
+        "x",
+        "y",
+        "width",
+        "height",
+    }:
+        raise TeachingPrepValidationError("slide operation position is invalid")
+    try:
+        result = {
+            key: float(value[key])
+            for key in ("x", "y", "width", "height")
+        }
+    except (TypeError, ValueError) as exc:
+        raise TeachingPrepValidationError(
+            "slide operation position is invalid"
+        ) from exc
+    if (
+        result["x"] < 0
+        or result["y"] < 0
+        or result["width"] < 0.03
+        or result["height"] < 0.03
+        or result["x"] + result["width"] > 1
+        or result["y"] + result["height"] > 1
+    ):
+        raise TeachingPrepValidationError("slide operation position is invalid")
+    return result
+
+
+def _apply_slide_operation_overrides(
+    operation: dict[str, object],
+    overrides: Mapping[str, object],
+    *,
+    slides: Sequence[Mapping[str, object]],
+) -> None:
+    kind = str(operation.get("kind") or "")
+    target = (
+        dict(operation["target"])
+        if isinstance(operation.get("target"), Mapping)
+        else {}
+    )
+    details = (
+        dict(operation["details"])
+        if isinstance(operation.get("details"), Mapping)
+        else {}
+    )
+    target_slide_number = overrides.get("target_slide_number")
+    if target_slide_number is not None:
+        if kind != "insert_static_image" or target.get("target_kind") != "existing_slide":
+            raise TeachingPrepValidationError(
+                "only an existing-slide insertion can change target slide"
+            )
+        matching = [
+            item
+            for item in slides
+            if item.get("original_index") == target_slide_number
+        ]
+        if len(matching) != 1:
+            raise TeachingPrepValidationError(
+                "slide operation target page is unavailable"
+            )
+        target["slide_signature"] = matching[0].get("stable_signature")
+        target["generated_page_number"] = matching[0].get("original_index")
+    position = overrides.get("position")
+    if position is not None:
+        if kind not in {"add_text_box", "insert_static_image"}:
+            raise TeachingPrepValidationError(
+                "this slide operation cannot change position"
+            )
+        target["position"] = _clean_slide_position(position)
+    text = overrides.get("text")
+    if text is not None:
+        clean_text = str(text).strip()
+        if (
+            kind != "add_text_box"
+            or details.get("semantic_role") != "textbook_page_label"
+            or re.fullmatch(r"教材 P\d{1,4}(?:、\d{1,4})*", clean_text) is None
+        ):
+            raise TeachingPrepValidationError(
+                "textbook page label is invalid"
+            )
+        details["text"] = clean_text
+        target["content_summary"] = clean_text
+    operation["target"] = target
+    operation["details"] = details
 
 
 def _clean_exercise_minutes(value: int | None) -> int | None:

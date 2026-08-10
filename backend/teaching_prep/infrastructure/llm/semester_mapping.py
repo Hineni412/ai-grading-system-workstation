@@ -54,11 +54,14 @@ _MAP_EXISTING_SYSTEM_INSTRUCTION = """\
 不能创建、改名或重建课时。本地程序独占所有书上页码、PDF页码、页面范围和
 证据位置的决定权；你绝对不能返回任何页码、unit、range、坐标或文件路径。
 返回单个紧凑 JSON 对象，顶层只能包含 annotations、matches、uncertainties。
-annotations 的格式和完整性规则与首次建立相同，必须逐一覆盖每个本地 toc evidence。
+annotations 的格式和完整性规则与首次建立相同。有 toc_entries 时逐一覆盖每个
+本地 toc evidence；toc_entries 为空时，逐一覆盖 anchors 中的本地正文标题证据。
 只有标题明确写有“第N课时”的行才能标为 lesson；数字开头的教材小节标为 section。
 matches 每项字段必须恰为 lesson_ref、evidence_ids、basis：lesson_ref 只能原样复制
-available_lessons 中的课时 id；evidence_ids 只能引用本地 toc evidence_id；basis 是
-不超过 12 个汉字的语义理由。同一 evidence_id 最多匹配一次。格式：
+available_lessons 中的课时 id；evidence_ids 只能引用上述本地证据的 evidence_id；basis 是
+不超过 12 个汉字的语义理由。同一教材小节对应多个已有拆分课时时，同一个
+evidence_id 可以在每个相关课时中各使用一次；同一课时内不得重复。优先为每个
+语义相关的已有课时给出大致对应，具体页码分界由教师在本机复核调整。格式：
 {"annotations":[{"evidence_id":"toc-001","title":"课时标题",
 "chapter_title":"第一章 章名","section_title":"第一节 节名","kind":"lesson"}],
 "matches":[{"lesson_ref":"已有课时ID","evidence_ids":["toc-001"],

@@ -81,8 +81,6 @@ export interface ReferenceMaterialLink {
 export interface ReferenceSelectionPayload {
   material_selections: Array<{
     link_id: string
-    material_version_id?: string
-    purpose?: string
     start_unit: number
     end_unit: number
     ppt_intent?: 'keep' | 'candidate_delete'
@@ -139,6 +137,9 @@ export type TeachingPrepAdoptionCommand =
         reason: string
         planned_minutes: number
         teacher_note: string | null
+        target_slide_number?: number
+        position?: { x: number; y: number; width: number; height: number }
+        text?: string
       }>
       approve_low_risk_deletions: boolean
       review_note: string | null
@@ -368,7 +369,7 @@ export const teachingPrepWorkbenchApi = {
   pptxVersions(lessonId: string, signal?: AbortSignal): Promise<TrustedPptxVersion[]> {
     return apiClient.request(
       `/api/teaching-prep/lessons/${encodeURIComponent(lessonId)}/pptx-versions`,
-      { signal, decode: payload => itemList(payload, trustedPptxVersion) },
+      { signal, decode: trustedPptxVersionList },
     )
   },
 
@@ -429,7 +430,21 @@ function exerciseSuggestionRun(payload: unknown): ExerciseSuggestionRun {
 }
 
 function trustedPptxVersion(payload: unknown): TrustedPptxVersion {
-  return recordPayload(payload) as unknown as TrustedPptxVersion
+  if (!isRecord(payload) || typeof payload.file_verified !== 'boolean') {
+    throw new Error('Invalid trusted PPTX version')
+  }
+  const { file_verified: _safeVerificationFlag, ...safePayload } = payload
+  assertNoPathLikeKeys(safePayload)
+  return payload as unknown as TrustedPptxVersion
+}
+
+function trustedPptxVersionList(payload: unknown): TrustedPptxVersion[] {
+  if (!isRecord(payload) || !Array.isArray(payload.items)) {
+    throw new Error('Invalid trusted PPTX version list')
+  }
+  const { items, ...safeEnvelope } = payload
+  assertNoPathLikeKeys(safeEnvelope)
+  return items.map(trustedPptxVersion)
 }
 
 function activateResult(

@@ -18,7 +18,10 @@ from backend.workspaces.ai_tasks.models import (
     RevisionConflictError,
     StoredTask,
 )
-from backend.teaching_prep.domain.errors import TeachingPrepRetryAvailableError
+from backend.teaching_prep.domain.errors import (
+    TeachingPrepRetryAvailableError,
+    TeachingPrepValidationError,
+)
 
 from .preparation_service import TeachingPrepService
 
@@ -38,6 +41,10 @@ _ADOPTION_COMMAND: ContextVar[Mapping[str, object] | None] = ContextVar(
 
 class SemesterMappingRetryAvailableFailure(KnownAdapterFailure):
     code = "semester_mapping_retry_available"
+
+
+class SlideProposalRetryAvailableFailure(KnownAdapterFailure):
+    code = "slide_proposal_retry_available"
 
 
 @contextmanager
@@ -106,10 +113,17 @@ class TeachingPrepAITaskAdapter:
             result = self._result(task, completed.id, "1")
         elif task.task_kind == "teaching_prep.slide_change_proposal":
             draft_ref = _require_context(task, "lesson_draft")
-            proposal, _created = self.service.create_slide_plan(
-                draft_ref.id,
-                request_token=task.operation_id,
-            )
+            try:
+                proposal, _created = self.service.create_slide_plan(
+                    draft_ref.id,
+                    request_token=task.operation_id,
+                    model_proposal=True,
+                    task_model_gateway=model_gateway,
+                )
+            except TeachingPrepValidationError as exc:
+                raise SlideProposalRetryAvailableFailure(
+                    "the slide proposal failed local validation"
+                ) from exc
             result = self._result(task, proposal.id, str(proposal.version_number))
         else:
             raise ValueError("unsupported teaching-prep AI task kind")

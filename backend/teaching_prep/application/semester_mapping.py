@@ -51,17 +51,19 @@ def materialize_semantic_mapping_payload(
         )
     evidence = snapshot.get("directory_evidence")
     toc_items, ranges_by_toc = _local_toc_contract(evidence)
+    snapshot_lessons = _mapping_list(snapshot.get("lessons"), "lessons")
+    existing_lessons = {
+        str(item["id"])
+        for item in snapshot_lessons
+        if item.get("node_type") == "lesson"
+    }
     annotations = _semantic_annotations(
         raw.get("annotations"),
         toc_items=toc_items,
+        existing_tree=bool(existing_lessons),
     )
     matches = _list(raw.get("matches"), "matches")
     uncertainties = _list(raw.get("uncertainties"), "uncertainties")
-    existing_lessons = {
-        str(item["id"])
-        for item in _mapping_list(snapshot.get("lessons"), "lessons")
-        if item.get("node_type") == "lesson"
-    }
     materials = _mapping_list(snapshot.get("materials"), "materials")
     if len(materials) != 1:
         raise TeachingPrepValidationError(
@@ -71,9 +73,20 @@ def materialize_semantic_mapping_payload(
     local_uncertainties = [str(item) for item in uncertainties]
     if existing_lessons:
         tree: list[dict[str, object]] = []
+        unique_lesson_refs_by_title = _unique_lesson_refs_by_title(
+            snapshot_lessons
+        )
+        fallback_lesson_refs_by_evidence = {
+            item["evidence_id"]: unique_lesson_refs_by_title[item["title"]]
+            for item in annotations
+            if item["title"] in unique_lesson_refs_by_title
+        }
         mappings = _materialize_existing_matches(
             matches,
             existing_lessons=existing_lessons,
+            fallback_lesson_refs_by_evidence=(
+                fallback_lesson_refs_by_evidence
+            ),
             record_id=record_id,
             ranges_by_toc=ranges_by_toc,
             uncertainties=local_uncertainties,
@@ -374,6 +387,26 @@ def _local_toc_contract(
             toc_id = str(item.get("toc_evidence_id") or "").strip()
             if toc_id in toc_items:
                 ranges_by_toc[toc_id] = item
+    if not toc_items:
+        raw_anchors = value.get("anchors")
+        if isinstance(raw_anchors, list):
+            for item in raw_anchors:
+                if not isinstance(item, Mapping):
+                    continue
+                evidence_id = str(item.get("evidence_id") or "").strip()
+                unit_index = item.get("unit_index")
+                if (
+                    not evidence_id
+                    or isinstance(unit_index, bool)
+                    or not isinstance(unit_index, int)
+                    or unit_index < 1
+                ):
+                    continue
+                toc_items[evidence_id] = item
+                ranges_by_toc[evidence_id] = {
+                    "start_unit": unit_index,
+                    "end_unit": unit_index,
+                }
     return toc_items, ranges_by_toc
 
 
@@ -381,6 +414,7 @@ def _semantic_annotations(
     value: object,
     *,
     toc_items: Mapping[str, Mapping[str, object]],
+    existing_tree: bool,
 ) -> list[dict[str, str]]:
     raw_items = _list(value, "annotations")
     if len(raw_items) > 160:
@@ -412,22 +446,37 @@ def _semantic_annotations(
         section_title = _semantic_title(item.get("section_title"))
         kind = str(item.get("kind") or "").strip()
         if kind not in _SEMANTIC_KINDS:
-            raise TeachingPrepModelResponseError(
-                "semantic annotation kind is unavailable",
-                error_code="semester_mapping_model_semantic_contract_violation",
-            )
+            if existing_tree and not kind:
+                kind = "other"
+            else:
+                raise TeachingPrepModelResponseError(
+                    "semantic annotation kind is unavailable",
+                    error_code=(
+                        "semester_mapping_model_semantic_contract_violation"
+                    ),
+                )
         if kind == "lesson" and not _EXPLICIT_LESSON_TITLE.search(title):
-            raise TeachingPrepModelResponseError(
-                "lesson annotation is not an explicit numbered lesson",
-                error_code="semester_mapping_model_semantic_contract_violation",
-            )
+            if existing_tree:
+                kind = "section"
+            else:
+                raise TeachingPrepModelResponseError(
+                    "lesson annotation is not an explicit numbered lesson",
+                    error_code=(
+                        "semester_mapping_model_semantic_contract_violation"
+                    ),
+                )
         if kind in _HIERARCHICAL_KINDS and (
             not chapter_title or not section_title
         ):
-            raise TeachingPrepModelResponseError(
-                "lesson annotation omitted its hierarchy",
-                error_code="semester_mapping_model_semantic_contract_violation",
-            )
+            if existing_tree:
+                kind = "other"
+            else:
+                raise TeachingPrepModelResponseError(
+                    "lesson annotation omitted its hierarchy",
+                    error_code=(
+                        "semester_mapping_model_semantic_contract_violation"
+                    ),
+                )
         result.append(
             {
                 "evidence_id": evidence_id,
@@ -437,7 +486,7 @@ def _semantic_annotations(
                 "kind": kind,
             }
         )
-    if seen != set(toc_items):
+    if not existing_tree and seen != set(toc_items):
         raise TeachingPrepModelResponseError(
             "semantic annotations did not cover every local directory row",
             error_code="semester_mapping_model_semantic_evidence_incomplete",
@@ -522,6 +571,7 @@ def _materialize_existing_matches(
     raw_matches: list[object],
     *,
     existing_lessons: set[str],
+    fallback_lesson_refs_by_evidence: Mapping[str, str],
     record_id: str,
     ranges_by_toc: Mapping[str, Mapping[str, object]],
     uncertainties: list[str],
@@ -529,7 +579,8 @@ def _materialize_existing_matches(
     if len(raw_matches) > 160:
         raise TeachingPrepValidationError("too many semantic matches")
     mappings: list[dict[str, object]] = []
-    assigned: set[str] = set()
+    assigned_pairs: set[tuple[str, str]] = set()
+    covered_toc: set[str] = set()
     for raw in raw_matches:
         item = _mapping(raw, "match")
         if set(item) != {"lesson_ref", "evidence_ids", "basis"}:
@@ -537,28 +588,46 @@ def _materialize_existing_matches(
                 "semantic match contains forbidden fields",
                 error_code="semester_mapping_model_semantic_contract_violation",
             )
-        lesson_ref = str(item.get("lesson_ref") or "").strip()
-        if lesson_ref not in existing_lessons:
-            raise TeachingPrepModelResponseError(
-                "semantic match refers to an unavailable lesson",
-                error_code="semester_mapping_unavailable_lesson",
-            )
         evidence_ids = _list(item.get("evidence_ids"), "evidence_ids")
         if not evidence_ids or len(evidence_ids) > 20:
             raise TeachingPrepValidationError(
                 "semantic match evidence IDs are invalid"
             )
+        normalized_evidence_ids = [
+            str(raw_id or "").strip() for raw_id in evidence_ids
+        ]
+        lesson_ref = str(item.get("lesson_ref") or "").strip()
+        if lesson_ref not in existing_lessons:
+            fallback_refs = {
+                fallback_lesson_refs_by_evidence[evidence_id]
+                for evidence_id in normalized_evidence_ids
+                if evidence_id in fallback_lesson_refs_by_evidence
+            }
+            if (
+                len(fallback_refs) != 1
+                or len(normalized_evidence_ids)
+                != sum(
+                    evidence_id in fallback_lesson_refs_by_evidence
+                    for evidence_id in normalized_evidence_ids
+                )
+            ):
+                raise TeachingPrepModelResponseError(
+                    "semantic match refers to an unavailable lesson",
+                    error_code="semester_mapping_unavailable_lesson",
+                )
+            lesson_ref = next(iter(fallback_refs))
         basis = str(item.get("basis") or "").strip()
         if not basis or len(basis) > 120:
             raise TeachingPrepValidationError("semantic match basis is invalid")
-        for raw_id in evidence_ids:
-            toc_id = str(raw_id or "").strip()
-            if toc_id in assigned or toc_id not in ranges_by_toc:
+        for toc_id in normalized_evidence_ids:
+            identity = (lesson_ref, toc_id)
+            if identity in assigned_pairs or toc_id not in ranges_by_toc:
                 raise TeachingPrepModelResponseError(
                     "semantic match evidence is duplicated or unavailable",
                     error_code="semester_mapping_model_semantic_evidence_mismatch",
                 )
-            assigned.add(toc_id)
+            assigned_pairs.add(identity)
+            covered_toc.add(toc_id)
             mappings.append(
                 _local_mapping(
                     record_id=record_id,
@@ -568,9 +637,27 @@ def _materialize_existing_matches(
                     basis=basis,
                 )
             )
-    if ranges_by_toc and assigned != set(ranges_by_toc):
+    if ranges_by_toc and covered_toc != set(ranges_by_toc):
         uncertainties.append("部分目录行未能对应到已有课时，需教师复核。")
     return mappings
+
+
+def _unique_lesson_refs_by_title(
+    snapshot_lessons: list[Mapping[str, object]],
+) -> dict[str, str]:
+    refs_by_title: dict[str, set[str]] = {}
+    for item in snapshot_lessons:
+        if item.get("node_type") != "lesson":
+            continue
+        title = str(item.get("title") or "").strip()
+        lesson_ref = str(item.get("id") or "").strip()
+        if title and lesson_ref:
+            refs_by_title.setdefault(title, set()).add(lesson_ref)
+    return {
+        title: next(iter(lesson_refs))
+        for title, lesson_refs in refs_by_title.items()
+        if len(lesson_refs) == 1
+    }
 
 
 def _local_mapping(

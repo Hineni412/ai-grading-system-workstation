@@ -121,7 +121,13 @@ def test_plan_is_idempotent_stable_and_does_not_touch_source_ppt(
         for operation in first.payload["operations"]
     )
     assert preview["before_slide_count"] == 2
-    assert preview["after_slide_count"] > 2
+    assert preview["after_slide_count"] == 2
+    assert any(
+        operation["kind"] == "insert_static_image"
+        and operation["target"]["target_kind"] == "existing_slide"
+        and operation["target"].get("new_slide_operation_id") is None
+        for operation in first.payload["operations"]
+    )
     assert before == _sha256(source)
 
 

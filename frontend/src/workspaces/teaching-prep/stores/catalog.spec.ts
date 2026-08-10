@@ -326,6 +326,9 @@ describe('semester workflow idempotency', () => {
     )
     vi.spyOn(teachingPrepCatalogApi, 'listSemesters')
       .mockResolvedValue([semesterItem])
+    const lessons = [lesson('l'.repeat(32), '认识勾股定理')]
+    const listLessons = vi.spyOn(teachingPrepCatalogApi, 'listLessons')
+      .mockResolvedValue(lessons)
     vi.spyOn(teachingPrepCatalogApi, 'listSemesterLessonProgress')
       .mockResolvedValue([])
     vi.spyOn(teachingPrepCatalogApi, 'listSemesterMaterials')
@@ -361,6 +364,8 @@ describe('semester workflow idempotency', () => {
     })
     expect(createCurriculum).not.toHaveBeenCalled()
     expect(createSemester).not.toHaveBeenCalled()
+    expect(listLessons).toHaveBeenCalledWith(curriculumItem.id)
+    expect(store.lessonNodes).toEqual(lessons)
   })
 
   it('submits the checked source fingerprint and tracks the returned Job', async () => {

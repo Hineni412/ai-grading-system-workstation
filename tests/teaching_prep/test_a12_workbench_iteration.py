@@ -10,10 +10,16 @@ import pytest
 from backend.teaching_prep.application.preferences import (
     DEFAULT_TEACHING_PREFERENCES,
 )
+from backend.teaching_prep.application.workbench_iteration import (
+    normalize_exercise_suggestion_payload,
+)
 from backend.teaching_prep.domain.errors import TeachingPrepConflictError
 from backend.teaching_prep.infrastructure.fakes import (
     FakeExerciseSuggestionModelAdapter,
     FakeWpsAdapter,
+)
+from backend.teaching_prep.infrastructure.llm.exercise_suggestions import (
+    WorkspaceExerciseSuggestionModelAdapter,
 )
 
 from .test_a01_foundation import _migrated_service
@@ -25,7 +31,7 @@ from .test_a05_resource_packs import (
 )
 from .test_a03_material_units import _pptx
 from .test_a08_pptx_execution import _approved_plan, _sha256
-from .test_a11_semester_workspace import _semester
+from .test_a11_semester_workspace import _pdf, _semester
 
 
 def _selection(preflight, link):
@@ -95,6 +101,183 @@ def test_lesson_statuses_are_projected_in_one_semester_query(
     assert all(item["manual_progress"] == "not_started" for item in statuses)
     assert all(item["preparation_stage"] == "select" for item in statuses)
     assert all("latest" in item and "blockers" in item for item in statuses)
+
+
+def test_lesson_material_readiness_requires_each_parsed_reference_range(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _paths, service = _migrated_service(tmp_path, monkeypatch)
+    semester, lesson_ids = _semester(service)
+    lesson_id = lesson_ids[0]
+
+    reference, _created = service.register_material_file(
+        request_token="a12-readiness-reference",
+        path=_pptx(tmp_path / "a12-readiness-reference.pptx"),
+        display_name="合成主课件",
+    )
+    service.parse_material_version(reference.id)
+    service.create_material_link(
+        request_token="a12-readiness-reference-link",
+        lesson_node_id=lesson_id,
+        material_version_id=reference.id,
+        start_unit=1,
+        end_unit=2,
+        crop=None,
+        purpose="reference_ppt",
+        teacher_note=None,
+        confirmation_status="confirmed",
+    )
+
+    support_versions = []
+    for suffix, role in (
+        ("textbook", "textbook"),
+        ("workbook-a", "exercise_workbook"),
+        ("workbook-b", "exercise_workbook"),
+    ):
+        version, _created = service.register_material_file(
+            request_token=f"a12-readiness-{suffix}",
+            path=_pdf(tmp_path / f"a12-readiness-{suffix}.pdf", [f"{suffix}-1"]),
+            display_name=f"合成{suffix}",
+        )
+        service.attach_semester_material(
+            semester.id,
+            request_token=f"a12-readiness-attach-{suffix}",
+            material_version_id=version.id,
+            material_role=role,
+        )
+        service.parse_material_version(version.id)
+        support_versions.append(version)
+
+    missing = next(
+        item for item in service.list_lesson_preparation_statuses(semester.id)
+        if item["lesson_node_id"] == lesson_id
+    )
+    assert missing["cells"]["materials"] == {
+        "status": "needs_teacher",
+        "summary": (
+            "待补教材（合成textbook）、"
+            "参考教辅（合成workbook-a）、"
+            "参考教辅（合成workbook-b）页段"
+        ),
+        "target_panel": "sources",
+    }
+    for index, (version, purpose) in enumerate(
+        zip(support_versions, ("textbook", "exercise", "exercise"), strict=True),
+        start=1,
+    ):
+        service.create_material_link(
+            request_token=f"a12-readiness-support-link-{index}",
+            lesson_node_id=lesson_id,
+            material_version_id=version.id,
+            start_unit=1,
+            end_unit=1,
+            crop=None,
+            purpose=purpose,
+            teacher_note=None,
+            confirmation_status="confirmed",
+        )
+
+    ready = next(
+        item for item in service.list_lesson_preparation_statuses(semester.id)
+        if item["lesson_node_id"] == lesson_id
+    )
+    assert ready["cells"]["materials"]["status"] == "ready"
+    assert ready["cells"]["materials"]["summary"] == "4 份已确认"
+
+
+def test_exercise_suggestion_normalizes_known_chinese_enum_aliases() -> None:
+    material = {
+        "purpose": "exercise",
+        "material_version_id": "a" * 32,
+        "units": [{"unit_id": "b" * 32, "unit_index": 6}],
+    }
+    raw = _suggestion(material)
+    raw["difficulty"] = "中等"
+    raw["classroom_use"] = "课堂检测"
+    raw["uncertainties"] = ""
+    raw["question_regions"][0]["crop"] = [0.1, 0.1, 0.9, 0.55]
+    raw["answer_regions"][0]["crop"] = {
+        "x0": 0.0,
+        "y0": 0.0,
+        "x1": 0.0,
+        "y1": 0.0,
+    }
+
+    normalized = normalize_exercise_suggestion_payload(
+        {"suggestions": [raw]}, snapshot={"materials": [material]}
+    )
+
+    assert normalized[0]["difficulty"] == "medium"
+    assert normalized[0]["classroom_use"] == "diagnostic"
+    assert normalized[0]["uncertainties"] == []
+    assert normalized[0]["answer_regions"] == []
+    assert normalized[0]["question_regions"][0]["crop"] == {
+        "x0": 0.1,
+        "y0": 0.1,
+        "x1": 0.9,
+        "y1": 0.55,
+    }
+
+
+def test_exercise_model_receives_selected_workbook_page_images() -> None:
+    class Gateway:
+        def __init__(self) -> None:
+            self.kwargs: dict[str, object] = {}
+
+        def chat_completions(self, **kwargs: object) -> dict[str, object]:
+            self.kwargs = kwargs
+            return {"choices": [{"message": {"content": '{"suggestions":[]}'}}]}
+
+    gateway = Gateway()
+    adapter = WorkspaceExerciseSuggestionModelAdapter(
+        gateway=gateway,  # type: ignore[arg-type]
+        client=object(),
+        model="test-model",
+    )
+
+    assert adapter.generate(
+        operation_id="a12-image-request",
+        reference_snapshot={
+            "materials": [{"purpose": "exercise", "material_version_id": "v1"}],
+            "reference_images": [
+                {
+                    "material_version_id": "v1",
+                    "material_unit_id": "u1",
+                    "unit_index": 4,
+                    "mime_type": "image/png",
+                    "content": b"\x89PNG",
+                }
+            ],
+        },
+    ) == {"suggestions": []}
+    user_content = gateway.kwargs["kwargs"]["messages"][1]["content"]  # type: ignore[index]
+    assert isinstance(user_content, list)
+    assert "reference_images" not in user_content[0]["text"]
+    assert user_content[1]["text"].endswith("material_unit_id=u1;unit_index=4")
+    assert user_content[2]["image_url"]["url"].startswith(
+        "data:image/png;base64,"
+    )
+
+
+def _add_exercise_link(service, lesson_id: str, *, token: str):
+    preflight = service.reference_selection_preflight(lesson_id)
+    source = next(
+        item
+        for item in preflight["catalog"]["material_links"]
+        if item["purpose"] == "textbook"
+    )
+    service.create_material_link(
+        request_token=token,
+        lesson_node_id=lesson_id,
+        material_version_id=source["material_version_id"],
+        start_unit=source["start_unit"],
+        end_unit=source["end_unit"],
+        crop=None,
+        purpose="exercise",
+        teacher_note="合成普通教辅范围",
+        confirmation_status="confirmed",
+    )
 
 
 def test_latest_material_source_version_marks_dependent_home_cells_stale(
@@ -206,9 +389,16 @@ def test_reference_snapshot_limits_model_input_and_review_never_verifies_answer(
 ) -> None:
     _paths, service = _migrated_service(tmp_path, monkeypatch)
     lesson_id, _reference_link, _candidate = _freeze_ready_setup(service, tmp_path)
+    _add_exercise_link(service, lesson_id, token="a12-exercise-link")
     preflight = service.reference_selection_preflight(lesson_id)
-    selected = preflight["catalog"]["material_links"][0]
-    outside = preflight["catalog"]["material_links"][1]
+    selected = next(
+        item for item in preflight["catalog"]["material_links"]
+        if item["purpose"] == "exercise"
+    )
+    outside = next(
+        item for item in preflight["catalog"]["material_links"]
+        if item["material_version_id"] != selected["material_version_id"]
+    )
     draft = service.save_reference_selection_draft(
         lesson_id,
         expected_revision=None,
@@ -249,6 +439,11 @@ def test_reference_snapshot_limits_model_input_and_review_never_verifies_answer(
     assert finished.status == "succeeded"
     assert finished.model_call_count == 1
     assert len(adapter.calls) == 1
+    reference_images = adapter.calls[0]["reference_snapshot"]["reference_images"]
+    assert [item["material_unit_id"] for item in reference_images] == [
+        unit["unit_id"] for unit in selected["units"]
+    ]
+    assert all(item["content"].startswith(b"\x89PNG") for item in reference_images)
     accepted = service.review_exercise_suggestion(
         suggestions[0].id,
         expected_revision=suggestions[0].revision,
@@ -364,7 +559,11 @@ def test_async_pptx_start_publishes_trusted_current_version_without_touching_sou
     versions = service.list_lesson_pptx_versions(
         service.get_resource_pack(plan.resource_pack_id).lesson_node_id
     )
-    assert finished.status == "published"
+    assert finished.status == "published", (
+        finished.error_code,
+        finished.execution_report,
+        finished.verification_report,
+    )
     assert finished.phase == "done"
     assert len(versions) == 1
     assert versions[0]["is_current"] is True
@@ -392,8 +591,12 @@ def test_workbench_http_contract_runs_suggestions_as_an_observable_operation(
 ) -> None:
     _paths, service = _migrated_service(tmp_path, monkeypatch)
     lesson_id, _reference_link, _candidate = _freeze_ready_setup(service, tmp_path)
+    _add_exercise_link(service, lesson_id, token="a12-http-exercise-link")
     preflight = service.reference_selection_preflight(lesson_id)
-    selected = preflight["catalog"]["material_links"][0]
+    selected = next(
+        item for item in preflight["catalog"]["material_links"]
+        if item["purpose"] == "exercise"
+    )
     service.exercise_suggestion_model_adapter = FakeExerciseSuggestionModelAdapter(
         {"suggestions": [_suggestion(selected)]}
     )

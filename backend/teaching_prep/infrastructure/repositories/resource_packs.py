@@ -651,10 +651,11 @@ def _capture_local_payload(
                         "formula_review_required": bool(
                             unit["formula_review_required"]
                         ),
-                        "object_summary": _json_object(
-                            str(unit["object_summary_json"] or "{}")
+                        "object_summary": _source_object_summary(
+                            _json_object(
+                                str(unit["object_summary_json"] or "{}")
+                            )
                         ),
-                        "preview_sha256": str(unit["preview_sha256"]),
                         "source_sha256": str(
                             unit["source_version_sha256"]
                         ),
@@ -873,6 +874,18 @@ def _capture_local_payload(
         },
         source_state,
     )
+
+
+def _source_object_summary(
+    summary: Mapping[str, object],
+) -> dict[str, object]:
+    """Exclude derived preview state from frozen source-change detection."""
+    derived_keys = {"height", "rendered_source_sha256", "width"}
+    return {
+        str(key): value
+        for key, value in summary.items()
+        if not str(key).startswith("preview_") and str(key) not in derived_keys
+    }
 
 
 def _evidence_missing(

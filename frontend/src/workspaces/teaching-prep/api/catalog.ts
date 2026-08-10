@@ -610,7 +610,7 @@ export interface LessonDraftPreflight {
   will_call_model: boolean
   model_available: boolean
   model_label: string | null
-  model_destination_fingerprint: string
+  model_destination_fingerprint?: string
   data_scope: Record<string, unknown>
   references: Array<{ id: string; label: string }>
   missing_and_uncertain_count: number
@@ -671,6 +671,9 @@ export interface SlideOperationReviewInput {
   reason: string
   planned_minutes: number
   teacher_note: string | null
+  target_slide_number?: number
+  position?: { x: number; y: number; width: number; height: number }
+  text?: string
 }
 
 export type PptxExecutionStatus =
@@ -1870,6 +1873,10 @@ function lessonDraft(value: unknown): LessonDraft {
 }
 
 function lessonDraftPreflight(value: unknown): LessonDraftPreflight {
+  const legacyLocalTemplate = isRecord(value)
+    && value.mode === 'local_template'
+    && value.will_call_model === false
+    && value.model_destination_fingerprint === undefined
   if (
     !isRecord(value)
     || !text(value.resource_pack_id)
@@ -1879,7 +1886,7 @@ function lessonDraftPreflight(value: unknown): LessonDraftPreflight {
     || typeof value.will_call_model !== 'boolean'
     || typeof value.model_available !== 'boolean'
     || !nullableText(value.model_label)
-    || !text(value.model_destination_fingerprint)
+    || (!text(value.model_destination_fingerprint) && !legacyLocalTemplate)
     || !isRecord(value.data_scope)
     || !Array.isArray(value.references)
     || !integer(value.missing_and_uncertain_count, 0)

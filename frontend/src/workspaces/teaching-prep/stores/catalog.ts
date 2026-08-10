@@ -1794,10 +1794,12 @@ export const useTeachingPrepCatalogStore = defineStore(
         semesterMappingJobIds.value = []
         semesters.value = await teachingPrepCatalogApi.listSemesters()
         ;[
+          lessonNodes.value,
           semesterLessonProgress.value,
           semesterMaterials.value,
           semesterMappingProposals.value,
         ] = await Promise.all([
+          teachingPrepCatalogApi.listLessons(created.id),
           teachingPrepCatalogApi.listSemesterLessonProgress(workspace.semester.id),
           teachingPrepCatalogApi.listSemesterMaterials(workspace.semester.id),
           teachingPrepCatalogApi.listSemesterMappingProposals(workspace.semester.id),

@@ -241,4 +241,44 @@ describe('teaching preparation workbench API', () => {
       expected_revision: 3,
     })
   })
+
+  it('loads verified PPTX versions without weakening local path rejection', async () => {
+    const lessonId = 'l'.repeat(32)
+    const versionId = 'v'.repeat(32)
+    const payload = {
+      lesson_node_id: lessonId,
+      items: [{
+        id: versionId,
+        slide_plan_id: 'p'.repeat(32),
+        lesson_node_id: lessonId,
+        execution_run_id: 'r'.repeat(32),
+        version_number: 1,
+        status: 'published',
+        output_filename: 'lesson-v1.pptx',
+        output_sha256: 'a'.repeat(64),
+        slide_count: 23,
+        verification_report: { verified: true },
+        download_url: `/api/teaching-prep/pptx-versions/${versionId}/download`,
+        created_at: '2026-08-01T00:00:00Z',
+        published_at: '2026-08-01T00:00:00Z',
+        is_current: true,
+        current_revision: 1,
+        preview_url: `/api/teaching-prep/pptx-versions/${versionId}/preview`,
+        file_verified: true,
+      }],
+    }
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(response(payload))
+
+    await expect(teachingPrepWorkbenchApi.pptxVersions(lessonId))
+      .resolves.toMatchObject([{ id: versionId, file_verified: true }])
+
+    ;(payload.items[0] as Record<string, unknown>).local_file_path = (
+      'C:\\private\\lesson-v1.pptx'
+    )
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(response(payload))
+    await expect(teachingPrepWorkbenchApi.pptxVersions(lessonId)).rejects.toMatchObject({
+      kind: 'contract',
+      code: 'invalid_success_contract',
+    })
+  })
 })

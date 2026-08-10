@@ -39,7 +39,13 @@ _MANUAL_ONLY_KINDS = {
 _ALL_KINDS = _AUTOMATIC_KINDS | _NOOP_KINDS | _MANUAL_ONLY_KINDS
 _DECISIONS = {"proposed", "approved", "rejected"}
 _RISKS = {"low", "medium", "high", "blocked"}
-_SAFE_EXISTING_OBJECT_TYPES = {"shape", "text_box", "line"}
+_SAFE_EXISTING_OBJECT_TYPES = {
+    "graphicFrame",
+    "grpSp",
+    "line",
+    "shape",
+    "text_box",
+}
 _PROTECTED_OBJECT_TYPES = {
     "graphicFrame": "公式、图表或嵌入对象",
     "grpSp": "组合图形",
@@ -53,6 +59,8 @@ _PROTECTED_OBJECT_TYPES = {
 def build_slide_plan_payload(
     pack: ResourcePackVersion,
     draft: LessonDraftVersion,
+    *,
+    proposal_payload: Mapping[str, object] | None = None,
 ) -> tuple[dict[str, object], str]:
     presentations = _reference_presentations(pack.payload)
     if not presentations:
@@ -77,12 +85,17 @@ def build_slide_plan_payload(
     preferences = resolve_teaching_preferences(
         pack.payload.get("preparation_preferences")
     )
+    proposal = proposal_payload or draft.payload
     adaptations = {
         str(item.get("slide_ref") or ""): item
         for item in _object_list(
-            draft.payload.get("slide_adaptations"),
+            proposal.get("slide_adaptations"),
             maximum=2_000,
         )
+    }
+    slides_by_ref = {
+        f"material:{slide['source_link_id']}:unit:{slide['original_index']}": slide
+        for slide in slides
     }
     for slide in slides:
         presentation = next(
@@ -140,6 +153,51 @@ def build_slide_plan_payload(
                 support_note=None,
             )
         )
+        deleted_object_refs = _strings(
+            adaptation.get("delete_object_refs") or [],
+            maximum=100,
+        )
+        objects = _slide_object_map(slide_ref, slide)
+        for delete_ref in deleted_object_refs:
+            target_object = objects.get(delete_ref)
+            if target_object is None:
+                continue
+            operations.append(
+                _operation(
+                    draft.id,
+                    kind="delete_shape",
+                    target_key=f"{slide['stable_signature']}:{delete_ref}",
+                    target={
+                        "target_kind": "existing_object",
+                        "slide_signature": slide["stable_signature"],
+                        "generated_page_number": slide["original_index"],
+                        "material_unit_id": slide["material_unit_id"],
+                        "wps_object_id": target_object.get("wps_object_id"),
+                        "object_type": target_object.get("object_type"),
+                        "position": target_object.get("position"),
+                        "content_summary": target_object.get("text"),
+                        "match_strategy": "exact_wps_name_and_source_fingerprint",
+                        "object_locator": {
+                            "match_confidence": "exact",
+                            "wps_object_id": target_object.get("wps_object_id"),
+                            "stable_signature": target_object.get("object_ref"),
+                        },
+                    },
+                    reason=str(
+                        adaptation.get("reason")
+                        or "删除教师确认的页内冗余练习对象。"
+                    ),
+                    citations=_strings(
+                        adaptation.get("citations"),
+                        maximum=20,
+                    ),
+                    planned_minutes=0,
+                    risk="high",
+                    execution_mode="automatic",
+                    support_note="只删除具有精确 WPS 名称且无未知动画的顶层对象。",
+                    details={"has_object_animation": False},
+                )
+            )
         textbook_refs = _strings(
             adaptation.get("textbook_refs"),
             maximum=6,
@@ -153,7 +211,10 @@ def build_slide_plan_payload(
             if label_text is None:
                 continue
             label_position, exact_placement = _page_label_position(
-                _mapping(slide.get("object_summary"))
+                _object_summary_after_deletions(
+                    _mapping(slide.get("object_summary")),
+                    deleted_object_refs,
+                )
             )
             operations.append(
                 _operation(
@@ -191,7 +252,7 @@ def build_slide_plan_payload(
                 )
             )
     draft_recommendations = _list(
-        draft.payload.get("exercise_recommendations")
+        proposal.get("exercise_recommendations")
     )
     exercise_map = {
         f"exercise:{item.get('candidate_id')}": item
@@ -207,6 +268,25 @@ def build_slide_plan_payload(
         )
         if item.get("question_id") is not None
     }
+    existing_region_totals: dict[str, int] = {}
+    for raw in draft_recommendations:
+        recommendation = _mapping(raw)
+        if recommendation.get("action") != "include":
+            continue
+        source_ref = str(recommendation.get("source_ref") or "")
+        exercise = _mapping(exercise_map.get(source_ref))
+        target_slide_ref = str(
+            recommendation.get("target_slide_ref") or ""
+        )
+        if target_slide_ref not in slides_by_ref:
+            continue
+        raw_regions = exercise.get("question_regions")
+        region_count = len(raw_regions) if isinstance(raw_regions, list) else 0
+        if region_count:
+            existing_region_totals[target_slide_ref] = (
+                existing_region_totals.get(target_slide_ref, 0) + region_count
+            )
+    existing_region_offsets: dict[str, int] = {}
     last_signature = str(slides[-1]["stable_signature"])
     insert_position = len(slides) + 1
     for raw in draft_recommendations:
@@ -220,6 +300,118 @@ def build_slide_plan_payload(
             if not regions:
                 continue
             region = regions[0]
+            target_slide_ref = str(
+                recommendation.get("target_slide_ref") or ""
+            )
+            target_slide = slides_by_ref.get(target_slide_ref)
+            if target_slide is not None:
+                deleted_refs = _strings(
+                    _mapping(adaptations.get(target_slide_ref)).get(
+                        "delete_object_refs"
+                    ) or [],
+                    maximum=100,
+                )
+                total_regions = existing_region_totals.get(
+                    target_slide_ref,
+                    len(regions),
+                )
+                placement = _question_insert_position(
+                    _object_summary_after_deletions(
+                        _mapping(target_slide.get("object_summary")),
+                        deleted_refs,
+                    ),
+                    item_count=total_regions,
+                )
+                if placement is None:
+                    operations.append(
+                        _operation(
+                            draft.id,
+                            kind="manual_note",
+                            target_key=f"{source_ref}:{target_slide_ref}:no-space",
+                            target={
+                                "target_kind": "manual",
+                                "slide_signature": target_slide["stable_signature"],
+                                "generated_page_number": target_slide["original_index"],
+                                "material_unit_id": region.get("material_unit_id"),
+                                "wps_object_id": None,
+                                "object_type": None,
+                                "position": None,
+                                "content_summary": recommendation.get("title"),
+                                "match_strategy": "manual_only",
+                            },
+                            reason="目标页没有足够且不遮挡原内容的空白区域。",
+                            citations=[source_ref],
+                            planned_minutes=_minutes(
+                                recommendation.get("estimated_minutes"),
+                                default=4,
+                            ),
+                            risk="blocked",
+                            execution_mode="manual_only",
+                            support_note="请调整删除范围、插入位置或改为新增练习页。",
+                        )
+                    )
+                    continue
+                for region_index, item_region in enumerate(regions):
+                    operations.append(
+                        _operation(
+                            draft.id,
+                            kind="insert_static_image",
+                            target_key=(
+                                f"{source_ref}:existing:{target_slide_ref}:"
+                                f"{region_index + 1}"
+                            ),
+                            target={
+                                "target_kind": "existing_slide",
+                                "slide_signature": target_slide["stable_signature"],
+                                "generated_page_number": target_slide["original_index"],
+                                "material_unit_id": item_region.get("material_unit_id"),
+                                "wps_object_id": None,
+                                "object_type": "static_image",
+                                "position": _position_within(
+                                    placement,
+                                    existing_region_offsets.get(
+                                        target_slide_ref,
+                                        0,
+                                    )
+                                    + region_index,
+                                    total_regions,
+                                ),
+                                "content_summary": recommendation.get("title"),
+                                "match_strategy": (
+                                    "source_fingerprint_and_slide_signature"
+                                ),
+                            },
+                            reason="把教师确认的教辅题插入本页安全空白区。",
+                            citations=_strings(
+                                recommendation.get("citations"),
+                                maximum=20,
+                            ),
+                            planned_minutes=(
+                                _minutes(
+                                    recommendation.get("estimated_minutes"),
+                                    default=4,
+                                )
+                                if region_index == 0
+                                else 0
+                            ),
+                            risk="medium",
+                            execution_mode="automatic",
+                            support_note="位置由冻结对象占位计算，仍需教师查看覆盖层。",
+                            details={
+                                "asset_ref": item_region.get("preview_url"),
+                                "asset_source_sha256": item_region.get(
+                                    "source_version_sha256"
+                                ),
+                                "has_object_animation": False,
+                                "semantic_role": "workbook_question",
+                            },
+                        )
+                    )
+                existing_region_offsets[target_slide_ref] = (
+                    existing_region_offsets.get(target_slide_ref, 0)
+                    + len(regions)
+                )
+                continue
             add_id = _operation_id(
                 draft.id,
                 "add_slide",
@@ -787,7 +979,7 @@ def _textbook_page_label(
     payload: Mapping[str, object],
     refs: Sequence[str],
 ) -> str | None:
-    printed_pages: dict[str, int] = {}
+    textbook_pages: dict[str, int] = {}
     for raw_material in _object_list(payload.get("materials")):
         material = _mapping(raw_material)
         if material.get("purpose") != "textbook":
@@ -808,13 +1000,13 @@ def _textbook_page_label(
                 and source
                 in {"visible_footer_or_header", "teacher_confirmed"}
             ):
-                printed_pages[
+                textbook_pages[
                     f"material:{link_id}:unit:{unit_index}"
                 ] = page_number
     pages = [
-        printed_pages[ref]
+        textbook_pages[ref]
         for ref in refs
-        if ref in printed_pages
+        if ref in textbook_pages
     ]
     if not pages:
         return None
@@ -842,6 +1034,107 @@ def _supplement_image_position(
         "y": 0.14 + row * (height + gap_y),
         "width": width,
         "height": height,
+    }
+
+
+def _slide_object_map(
+    slide_ref: str,
+    slide: Mapping[str, object],
+) -> dict[str, dict[str, object]]:
+    summary = _mapping(slide.get("object_summary"))
+    result: dict[str, dict[str, object]] = {}
+    for raw_object in _list(summary.get("objects")):
+        item = _mapping(raw_object)
+        object_ref = str(item.get("object_ref") or "")
+        if (
+            object_ref
+            and item.get("safe_to_delete") is True
+            and item.get("wps_object_id")
+        ):
+            result[f"{slide_ref}:object:{object_ref}"] = item
+    return result
+
+
+def _object_summary_after_deletions(
+    object_summary: Mapping[str, object],
+    deleted_refs: Sequence[str],
+) -> dict[str, object]:
+    result = dict(object_summary)
+    objects = [_mapping(item) for item in _list(result.get("objects"))]
+    if not objects:
+        return result
+    deleted_suffixes = {
+        ref.rsplit(":object:", 1)[1]
+        for ref in deleted_refs
+        if ":object:" in ref
+    }
+    remaining = [
+        item
+        for item in objects
+        if str(item.get("object_ref") or "") not in deleted_suffixes
+    ]
+    result["objects"] = remaining
+    result["occupied_boxes"] = [
+        _mapping(item.get("position"))
+        for item in remaining
+        if _mapping(item.get("position"))
+    ]
+    return result
+
+
+def _question_insert_position(
+    object_summary: Mapping[str, object],
+    *,
+    item_count: int = 1,
+) -> dict[str, float] | None:
+    wide = {"x": 0.08, "y": 0.12, "width": 0.84, "height": 0.78}
+    candidates = (
+        [
+            wide,
+            {"x": 0.04, "y": 0.12, "width": 0.52, "height": 0.68},
+            {"x": 0.44, "y": 0.12, "width": 0.52, "height": 0.68},
+            {"x": 0.08, "y": 0.48, "width": 0.84, "height": 0.42},
+            {"x": 0.08, "y": 0.12, "width": 0.84, "height": 0.34},
+        ]
+        if item_count > 1
+        else [
+            {"x": 0.04, "y": 0.12, "width": 0.52, "height": 0.68},
+            {"x": 0.44, "y": 0.12, "width": 0.52, "height": 0.68},
+            {"x": 0.08, "y": 0.48, "width": 0.84, "height": 0.42},
+            {"x": 0.08, "y": 0.12, "width": 0.84, "height": 0.34},
+        ]
+    )
+    occupied = [
+        _mapping(item)
+        for item in _list(object_summary.get("occupied_boxes"))
+        if _mapping(item)
+    ]
+    if not occupied:
+        return candidates[0]
+    for candidate in candidates:
+        if sum(_overlap_area(candidate, box) for box in occupied) <= 0.002:
+            return candidate
+    return None
+
+
+def _position_within(
+    base: Mapping[str, object],
+    index: int,
+    count: int,
+) -> dict[str, float]:
+    x = float(base["x"])
+    y = float(base["y"])
+    width = float(base["width"])
+    height = float(base["height"])
+    if count <= 1:
+        return {"x": x, "y": y, "width": width, "height": height}
+    gap = 0.02
+    item_height = (height - gap * (count - 1)) / count
+    return {
+        "x": x,
+        "y": y + index * (item_height + gap),
+        "width": width,
+        "height": item_height,
     }
 
 

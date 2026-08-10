@@ -1018,6 +1018,7 @@ class LessonDraftPreflightResponse(BaseModel):
     will_call_model: bool
     model_available: bool
     model_label: str | None
+    model_destination_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
     data_scope: dict[str, Any]
     references: list[dict[str, str]]
     missing_and_uncertain_count: int
@@ -1078,6 +1079,15 @@ class CreateSlidePlanRequest(BaseModel):
     request_token: str = Field(min_length=8, max_length=96)
 
 
+class SlidePositionOverride(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    x: float = Field(ge=0, le=1)
+    y: float = Field(ge=0, le=1)
+    width: float = Field(gt=0, le=1)
+    height: float = Field(gt=0, le=1)
+
+
 class SlideOperationReviewRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -1086,6 +1096,9 @@ class SlideOperationReviewRequest(BaseModel):
     reason: str = Field(min_length=1, max_length=1_000)
     planned_minutes: int = Field(ge=0, le=120)
     teacher_note: str | None = Field(default=None, max_length=1_000)
+    target_slide_number: int | None = Field(default=None, ge=1, le=2_000)
+    position: SlidePositionOverride | None = None
+    text: str | None = Field(default=None, min_length=1, max_length=64)
 
 
 class ReviseSlidePlanRequest(BaseModel):
