@@ -2491,6 +2491,19 @@ export const teachingPrepCatalogApi = {
     )
   },
 
+  rejectSemesterMappingProposal(
+    proposal: SemesterMappingProposal,
+  ): Promise<SemesterMappingProposal> {
+    return apiClient.request(
+      `/api/teaching-prep/semester-mapping-proposals/${encodeURIComponent(proposal.id)}/reject`,
+      {
+        method: 'POST',
+        body: { expected_revision: proposal.revision },
+        decode: decodeSemesterMappingProposal,
+      },
+    )
+  },
+
   listLessons(
     curriculumId: string,
     signal?: AbortSignal,

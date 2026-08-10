@@ -719,6 +719,67 @@ def test_mapping_model_proposes_existing_lesson_ranges_once_then_teacher_applies
     assert updated_record.mapping_status == "confirmed"
 
 
+def test_rejected_mapping_allows_a_deliberate_new_model_call(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths, base_service = _migrated_service(tmp_path, monkeypatch)
+    semester, lesson_ids = _semester(base_service)
+    version, _created = base_service.register_material_file(
+        request_token="mapping-regenerate-file",
+        path=_pdf(tmp_path / "regenerate-workbook.pdf", ["L1", "L2"]),
+        display_name="合成重算教辅",
+    )
+    record, _created = base_service.attach_semester_material(
+        semester.id,
+        request_token="mapping-regenerate-attach",
+        material_version_id=version.id,
+        material_role="exercise_workbook",
+    )
+    base_service.parse_material_version(version.id)
+    fake = _FakeSemesterMappingModel(
+        {
+            "tree": [],
+            "mappings": [
+                {
+                    "material_record_id": record.id,
+                    "lesson_ref": lesson_ids[0],
+                    "start_unit": 1,
+                    "end_unit": 2,
+                }
+            ],
+            "uncertainties": [],
+        }
+    )
+    service = TeachingPrepService(
+        paths.workspace_dir("teaching-prep"),
+        semester_mapping_model_adapter=fake,
+        semester_mapping_model_label="fake-semester-model",
+    )
+
+    first, first_created = service.generate_semester_mapping_proposal(
+        semester.id,
+        operation_id="semester-mapping-regenerate-0001",
+        material_record_ids=[record.id],
+    )
+    rejected = service.reject_semester_mapping_proposal(
+        first.id,
+        expected_revision=first.revision,
+    )
+    second, second_created = service.generate_semester_mapping_proposal(
+        semester.id,
+        operation_id="semester-mapping-regenerate-0002",
+        material_record_ids=[record.id],
+    )
+
+    assert first_created is True
+    assert rejected.status == "rejected"
+    assert second_created is True
+    assert second.id != first.id
+    assert second.status == "proposed"
+    assert len(fake.calls) == 2
+
+
 def test_existing_tree_replacement_response_reports_the_real_failure(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

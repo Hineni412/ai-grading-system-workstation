@@ -772,10 +772,16 @@ describe('teaching preparation delivery API', () => {
       revision: 3,
       applied_at: '2026-08-03T00:02:00Z',
     }
+    const rejectedProposal = {
+      ...structuredClone(proposal),
+      status: 'rejected' as const,
+      revision: 2,
+    }
     const fetchMock = vi.spyOn(globalThis, 'fetch')
       .mockResolvedValueOnce(response({ items: [proposal] }))
       .mockResolvedValueOnce(response(acceptedProposal))
       .mockResolvedValueOnce(response(appliedProposal))
+      .mockResolvedValueOnce(response(rejectedProposal))
 
     const listed = await teachingPrepCatalogApi.listSemesterMappingProposals(semesterId)
     expect(listed).toEqual([proposal])
@@ -783,6 +789,8 @@ describe('teaching preparation delivery API', () => {
     expect(accepted).toEqual(acceptedProposal)
     await expect(teachingPrepCatalogApi.applySemesterMappingProposal(accepted))
       .resolves.toEqual(appliedProposal)
+    await expect(teachingPrepCatalogApi.rejectSemesterMappingProposal(listed[0]!))
+      .resolves.toEqual(rejectedProposal)
 
     expect(fetchMock.mock.calls.map(call => [call[0], call[1]?.method])).toEqual([
       [`/api/teaching-prep/semesters/${semesterId}/mapping-proposals`, 'GET'],
@@ -791,6 +799,7 @@ describe('teaching preparation delivery API', () => {
         'POST',
       ],
       [`/api/teaching-prep/semester-mapping-proposals/${proposal.id}/apply`, 'POST'],
+      [`/api/teaching-prep/semester-mapping-proposals/${proposal.id}/reject`, 'POST'],
     ])
   })
 

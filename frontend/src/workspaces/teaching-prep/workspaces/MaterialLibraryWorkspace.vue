@@ -1222,10 +1222,39 @@ const mappingJobHasDurableProposal = computed(() => {
     )
   )
 })
+const mappingJobProposalRejected = computed(() => {
+  const job = currentMappingJob.value
+  const taskProposalId = currentMappingTask.value?.proposal_ref_id ?? null
+  const proposalId = job && typeof job.result.proposal_id === 'string'
+    ? job.result.proposal_id
+    : null
+  const operationId = job
+    ? job.result.operation_id ?? job.payload.operation_id
+    : null
+  const sourceState = job
+    ? job.result.source_state_sha256 ?? job.payload.source_state_sha256
+    : null
+  return workbench.catalog.semesterMappingProposals.some(proposal => (
+    proposal.status === 'rejected'
+    && (
+      (taskProposalId !== null && proposal.id === taskProposalId)
+      ||
+      (proposalId !== null && proposal.id === proposalId)
+      || (
+        operationId !== null
+        && sourceState !== null
+        &&
+        proposal.operation_id === operationId
+        && proposal.source_state_sha256 === sourceState
+      )
+    )
+  ))
+})
 const mappingAwaitingProposal = computed(() => (
   (currentMappingJob.value?.status === 'succeeded'
     || ['proposal_ready', 'needs_input'].includes(currentMappingTask.value?.status ?? ''))
   && !mappingJobHasDurableProposal.value
+  && !mappingJobProposalRejected.value
 ))
 const mappingResultUnknown = computed(() => {
   const job = currentMappingJob.value
@@ -1270,6 +1299,7 @@ const mappingElapsedLabel = computed(() => {
   return minutes > 0 ? `${minutes} 分 ${seconds % 60} 秒` : `${seconds} 秒`
 })
 const mappingStageLabel = computed(() => {
+  if (mappingJobProposalRejected.value) return '旧建议已放弃，可重新判断'
   const task = currentMappingTask.value
   if (task) return task.teacher_message || (({
     prepared: '已冻结发送范围', queued: '等待统一任务执行', running: '模型任务处理中',
@@ -1321,7 +1351,10 @@ const canGenerateMapping = computed(() => (
   && !mappingTaskBusy.value
   && !mappingResultUnknown.value
   && !mappingJobHasDurableProposal.value
-  && currentMappingJob.value?.status !== 'succeeded'
+  && (
+    currentMappingJob.value?.status !== 'succeeded'
+    || mappingJobProposalRejected.value
+  )
   && workbench.catalog.saveState !== 'saving'
 ))
 
@@ -1393,6 +1426,27 @@ async function discardUnknownMappingResult(): Promise<void> {
     mappingMessage.value = '旧结果已放弃。请重新检查发送范围；只有再次点击“交给 AI”才会产生新调用。'
   } catch {
     mappingMessage.value = '旧结果尚未放弃，请保留当前页面后重试。'
+  }
+}
+
+async function rejectMappingProposalForRegeneration(): Promise<void> {
+  const proposal = activeProposal.value
+  if (!proposal) return
+  if (!window.confirm(
+    '确定放弃这份目录建议吗？旧建议和审核记录会保留为“已放弃”，本操作不调用模型。之后只有再次点击“交给 AI 整理课时树”才会产生一次新调用和相应费用。',
+  )) return
+  try {
+    const updated = await teachingPrepCatalogApi.rejectSemesterMappingProposal(
+      proposal,
+    )
+    const index = workbench.catalog.semesterMappingProposals.findIndex(
+      item => item.id === updated.id,
+    )
+    if (index >= 0) workbench.catalog.semesterMappingProposals[index] = updated
+    mappingMessage.value = '旧建议已放弃。本操作没有调用模型；请重新检查发送范围，再决定是否生成新建议。'
+    await prepareSemesterMapping(true)
+  } catch {
+    mappingMessage.value = '旧建议没有成功放弃，请刷新后核对状态。'
   }
 }
 
@@ -1869,6 +1923,9 @@ async function saveManualMapping(): Promise<void> {
                 : '交给 AI 整理课时树' }}
         </button>
       </div>
+      <p v-if="currentMappingPreflight?.model_available" class="tp-muted">
+        本机无法预估金额；由当前模型服务商按实际用量计费。点击“交给 AI 整理课时树”即确认本次单次调用。
+      </p>
       <div
         v-if="activeSemesterRecord"
         class="tp-mapping-job-status"
@@ -2243,6 +2300,11 @@ async function saveManualMapping(): Promise<void> {
           暂无待审核建议。可在上方生成目录建议，或在下方人工关联当前资料页段。
         </p>
         <template v-else>
+          <div class="tp-inline-actions">
+            <button type="button" @click="rejectMappingProposalForRegeneration">
+              放弃本份建议，重新判断
+            </button>
+          </div>
           <label class="tp-field">
             当前建议课时
             <select v-model="reviewLessonRef">

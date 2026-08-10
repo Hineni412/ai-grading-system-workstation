@@ -57,16 +57,20 @@ _MAP_EXISTING_SYSTEM_INSTRUCTION = """\
 annotations 的格式和完整性规则与首次建立相同。有 toc_entries 时逐一覆盖每个
 本地 toc evidence；toc_entries 为空时，逐一覆盖 anchors 中的本地正文标题证据。
 只有标题明确写有“第N课时”的行才能标为 lesson；数字开头的教材小节标为 section。
-matches 每项字段必须恰为 lesson_ref、evidence_ids、basis：lesson_ref 只能原样复制
-available_lessons 中的课时 id；evidence_ids 只能引用上述本地证据的 evidence_id；basis 是
-不超过 12 个汉字的语义理由。同一教材小节对应多个已有拆分课时时，同一个
-evidence_id 可以在每个相关课时中各使用一次；同一课时内不得重复。优先为每个
-语义相关的已有课时给出大致对应，具体页码分界由教师在本机复核调整。格式：
+available_lessons 会同时给出课时标题及其所属章、节。matches 必须让每个
+available_lessons 课时恰好出现一次，不得遗漏或重复。每项字段必须恰为
+lesson_ref、evidence_ids、basis：lesson_ref 只能原样复制 available_lessons 中的课时 id；
+evidence_ids 只能引用上述本地证据的 evidence_id；basis 是不超过 12 个汉字的语义理由。
+同一教材小节对应多个已有拆分课时时，同一个 evidence_id 可以在每个相关课时中
+各使用一次；同一课时内不得重复。确实找不到对应证据时仍须返回该 lesson_ref，
+但 evidence_ids 使用空数组并在 basis 说明原因。应结合章、节归属为每个已有课时
+给出大致对应，具体页码分界由教师在本机复核调整。格式：
 {"annotations":[{"evidence_id":"toc-001","title":"课时标题",
 "chapter_title":"第一章 章名","section_title":"第一节 节名","kind":"lesson"}],
 "matches":[{"lesson_ref":"已有课时ID","evidence_ids":["toc-001"],
 "basis":"标题语义一致"}],"uncertainties":[]}
-不要返回题目正文、答案、页码映射或 WPS 指令；不能确定的条目不匹配并说明。
+不要返回题目正文、答案、页码映射或 WPS 指令；不能确定时仍保留该课时，
+evidence_ids 返回空数组并在 basis 中说明原因。
 """
 
 
@@ -246,7 +250,8 @@ def _compact_model_snapshot(
         "semester": semester,
         "materials": materials,
         "directory_evidence": _compact_directory_evidence(
-            directory_evidence
+            directory_evidence,
+            existing_tree=has_existing_tree,
         ),
     }
     if has_existing_tree:
@@ -257,20 +262,45 @@ def _compact_model_snapshot(
 def _available_lessons(
     lesson_nodes: list[Mapping[str, object]],
 ) -> list[dict[str, object]]:
-    return [
-        _selected_fields(
+    by_id = {
+        str(item.get("id") or ""): item
+        for item in lesson_nodes
+        if str(item.get("id") or "")
+    }
+    result: list[dict[str, object]] = []
+    for item in lesson_nodes:
+        if item.get("node_type") != "lesson":
+            continue
+        lesson = _selected_fields(
             item,
             ("id", "title", "duration_minutes"),
         )
-        for item in lesson_nodes
-        if item.get("node_type") == "lesson"
-    ]
+        parent_id = str(item.get("parent_id") or "")
+        visited: set[str] = set()
+        while parent_id and parent_id not in visited:
+            visited.add(parent_id)
+            parent = by_id.get(parent_id)
+            if parent is None:
+                break
+            node_type = str(parent.get("node_type") or "")
+            title = str(parent.get("title") or "").strip()
+            if node_type == "section" and title:
+                lesson["section_title"] = title
+            elif node_type == "chapter" and title:
+                lesson["chapter_title"] = title
+            parent_id = str(parent.get("parent_id") or "")
+        result.append(lesson)
+    return result
 
 
-def _compact_directory_evidence(value: object) -> dict[str, object]:
+def _compact_directory_evidence(
+    value: object,
+    *,
+    existing_tree: bool,
+) -> dict[str, object]:
     if not isinstance(value, Mapping):
         return {}
-    return {
+    compact = {
         field: value[field]
         for field in (
             "strategy",
@@ -287,6 +317,25 @@ def _compact_directory_evidence(value: object) -> dict[str, object]:
         )
         if field in value
     }
+    if not existing_tree:
+        return compact
+    resolved = compact.get("resolved_ranges")
+    usable_toc_ids = {
+        str(item.get("toc_evidence_id") or "").strip()
+        for item in resolved
+        if isinstance(item, Mapping)
+    } if isinstance(resolved, list) else set()
+    raw_toc = compact.get("toc_entries")
+    compact["toc_entries"] = [
+        item
+        for item in raw_toc
+        if (
+            isinstance(item, Mapping)
+            and str(item.get("evidence_id") or "").strip()
+            in usable_toc_ids
+        )
+    ] if isinstance(raw_toc, list) else []
+    return compact
 
 
 def _mapping_list(value: object) -> list[Mapping[str, object]]:

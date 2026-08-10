@@ -49,14 +49,17 @@ def materialize_semantic_mapping_payload(
             "semester mapping model violated the semantic-only contract",
             error_code="semester_mapping_model_semantic_contract_violation",
         )
-    evidence = snapshot.get("directory_evidence")
-    toc_items, ranges_by_toc = _local_toc_contract(evidence)
     snapshot_lessons = _mapping_list(snapshot.get("lessons"), "lessons")
     existing_lessons = {
         str(item["id"])
         for item in snapshot_lessons
         if item.get("node_type") == "lesson"
     }
+    evidence = snapshot.get("directory_evidence")
+    toc_items, ranges_by_toc = _local_toc_contract(
+        evidence,
+        existing_tree=bool(existing_lessons),
+    )
     annotations = _semantic_annotations(
         raw.get("annotations"),
         toc_items=toc_items,
@@ -81,9 +84,27 @@ def materialize_semantic_mapping_payload(
             for item in annotations
             if item["title"] in unique_lesson_refs_by_title
         }
+        matches = _complete_existing_matches_locally(
+            matches,
+            lesson_titles={
+                str(item.get("id") or ""): str(item.get("title") or "")
+                for item in snapshot_lessons
+                if item.get("node_type") == "lesson"
+            },
+            toc_items=toc_items,
+            ranges_by_toc=ranges_by_toc,
+            fallback_lesson_refs_by_evidence=(
+                fallback_lesson_refs_by_evidence
+            ),
+        )
         mappings = _materialize_existing_matches(
             matches,
             existing_lessons=existing_lessons,
+            lesson_titles={
+                str(item.get("id") or ""): str(item.get("title") or "")
+                for item in snapshot_lessons
+                if item.get("node_type") == "lesson"
+            },
             fallback_lesson_refs_by_evidence=(
                 fallback_lesson_refs_by_evidence
             ),
@@ -366,6 +387,8 @@ def _has_unmapped_material_units(
 
 def _local_toc_contract(
     value: object,
+    *,
+    existing_tree: bool,
 ) -> tuple[dict[str, Mapping[str, object]], dict[str, Mapping[str, object]]]:
     if not isinstance(value, Mapping):
         return {}, {}
@@ -387,6 +410,23 @@ def _local_toc_contract(
             toc_id = str(item.get("toc_evidence_id") or "").strip()
             if toc_id in toc_items:
                 ranges_by_toc[toc_id] = item
+    if existing_tree:
+        # A workbook page containing answer choices can look like a tiny TOC
+        # to OCR (for example, rows titled only "A," or "D,").  Such rows
+        # have no locally resolved page range and therefore cannot safely be
+        # used to create a lesson link.  Keep only TOC evidence that the local
+        # parser can actually turn into pages; otherwise fall back to the
+        # already parsed page-heading anchors below.
+        toc_items = {
+            evidence_id: item
+            for evidence_id, item in toc_items.items()
+            if evidence_id in ranges_by_toc
+        }
+        ranges_by_toc = {
+            evidence_id: item
+            for evidence_id, item in ranges_by_toc.items()
+            if evidence_id in toc_items
+        }
     if not toc_items:
         raw_anchors = value.get("anchors")
         if isinstance(raw_anchors, list):
@@ -567,10 +607,137 @@ def _materialize_initial_tree(
     return chapters, mappings
 
 
+def _complete_existing_matches_locally(
+    raw_matches: list[object],
+    *,
+    lesson_titles: Mapping[str, str],
+    toc_items: Mapping[str, Mapping[str, object]],
+    ranges_by_toc: Mapping[str, Mapping[str, object]],
+    fallback_lesson_refs_by_evidence: Mapping[str, str],
+) -> list[object]:
+    """Keep a weak model's partial answer usable without inventing pages.
+
+    Some text-only compatible models return only the first few lessons even
+    when the contract asks for every existing lesson.  The local parser can
+    safely complete those omissions: an explicit matching lesson heading is
+    proposed as a one-page anchor; otherwise the lesson is retained as an
+    unmatched uncertainty for teacher review.
+    """
+    completed = list(raw_matches)
+    decided: set[str] = set()
+    for raw in raw_matches:
+        if not isinstance(raw, Mapping):
+            continue
+        lesson_ref = str(raw.get("lesson_ref") or "").strip()
+        if lesson_ref in lesson_titles:
+            decided.add(lesson_ref)
+            continue
+        evidence_ids = raw.get("evidence_ids")
+        if not isinstance(evidence_ids, list) or not evidence_ids:
+            continue
+        fallback_refs = {
+            fallback_lesson_refs_by_evidence[evidence_id]
+            for evidence_id in (
+                str(item or "").strip() for item in evidence_ids
+            )
+            if evidence_id in fallback_lesson_refs_by_evidence
+        }
+        if len(fallback_refs) == 1:
+            decided.update(fallback_refs)
+    for lesson_ref, title in lesson_titles.items():
+        if lesson_ref in decided:
+            continue
+        evidence_id = _best_local_lesson_evidence(
+            title,
+            toc_items=toc_items,
+            ranges_by_toc=ranges_by_toc,
+        )
+        completed.append(
+            {
+                "lesson_ref": lesson_ref,
+                "evidence_ids": [evidence_id] if evidence_id else [],
+                "basis": (
+                    "本机课时标题匹配"
+                    if evidence_id
+                    else "模型漏项且本机无可靠匹配"
+                ),
+            }
+        )
+    return completed
+
+
+def _best_local_lesson_evidence(
+    lesson_title: str,
+    *,
+    toc_items: Mapping[str, Mapping[str, object]],
+    ranges_by_toc: Mapping[str, Mapping[str, object]],
+) -> str:
+    lesson_number = _lesson_number(lesson_title)
+    lesson_core = _lesson_match_text(lesson_title)
+    if len(set(lesson_core)) < 4:
+        return ""
+    candidates: list[tuple[float, str]] = []
+    lesson_chars = set(lesson_core)
+    for evidence_id, item in toc_items.items():
+        if evidence_id not in ranges_by_toc:
+            continue
+        evidence_text = " ".join(
+            (
+                str(item.get("title") or ""),
+                str(item.get("text_excerpt") or ""),
+            )
+        )
+        evidence_number = _lesson_number(evidence_text)
+        if (
+            lesson_number is not None
+            and evidence_number is not None
+            and lesson_number != evidence_number
+        ):
+            continue
+        normalized_evidence = _lesson_match_text(evidence_text)
+        if not normalized_evidence:
+            continue
+        coverage = sum(
+            character in normalized_evidence
+            for character in lesson_chars
+        ) / len(lesson_chars)
+        exact = lesson_core in normalized_evidence
+        same_number = (
+            lesson_number is not None
+            and lesson_number == evidence_number
+        )
+        if not exact and not (same_number and coverage >= 0.8):
+            continue
+        candidates.append(
+            (coverage + (1.0 if exact else 0.0) + (0.5 if same_number else 0.0), evidence_id)
+        )
+    if not candidates:
+        return ""
+    candidates.sort(reverse=True)
+    if len(candidates) > 1 and candidates[0][0] == candidates[1][0]:
+        return ""
+    return candidates[0][1]
+
+
+def _lesson_number(value: str) -> int | None:
+    match = re.search(r"第\s*(\d+)\s*课时", str(value or ""))
+    return int(match.group(1)) if match is not None else None
+
+
+def _lesson_match_text(value: str) -> str:
+    without_number = re.sub(
+        r"第\s*\d+\s*课时",
+        "",
+        str(value or "").lower(),
+    )
+    return re.sub(r"[^0-9a-z\u4e00-\u9fff]+", "", without_number)
+
+
 def _materialize_existing_matches(
     raw_matches: list[object],
     *,
     existing_lessons: set[str],
+    lesson_titles: Mapping[str, str],
     fallback_lesson_refs_by_evidence: Mapping[str, str],
     record_id: str,
     ranges_by_toc: Mapping[str, Mapping[str, object]],
@@ -580,6 +747,7 @@ def _materialize_existing_matches(
         raise TeachingPrepValidationError("too many semantic matches")
     mappings: list[dict[str, object]] = []
     assigned_pairs: set[tuple[str, str]] = set()
+    decided_lesson_refs: set[str] = set()
     covered_toc: set[str] = set()
     for raw in raw_matches:
         item = _mapping(raw, "match")
@@ -589,7 +757,7 @@ def _materialize_existing_matches(
                 error_code="semester_mapping_model_semantic_contract_violation",
             )
         evidence_ids = _list(item.get("evidence_ids"), "evidence_ids")
-        if not evidence_ids or len(evidence_ids) > 20:
+        if len(evidence_ids) > 20:
             raise TeachingPrepValidationError(
                 "semantic match evidence IDs are invalid"
             )
@@ -616,9 +784,19 @@ def _materialize_existing_matches(
                     error_code="semester_mapping_unavailable_lesson",
                 )
             lesson_ref = next(iter(fallback_refs))
+        if lesson_ref in decided_lesson_refs:
+            raise TeachingPrepModelResponseError(
+                "semantic mapping decided an existing lesson more than once",
+                error_code="semester_mapping_duplicate_lesson_decision",
+            )
+        decided_lesson_refs.add(lesson_ref)
         basis = str(item.get("basis") or "").strip()
         if not basis or len(basis) > 120:
             raise TeachingPrepValidationError("semantic match basis is invalid")
+        if not normalized_evidence_ids:
+            title = lesson_titles.get(lesson_ref) or "已有课时"
+            uncertainties.append(f"{title}暂未对应：{basis}")
+            continue
         for toc_id in normalized_evidence_ids:
             identity = (lesson_ref, toc_id)
             if identity in assigned_pairs or toc_id not in ranges_by_toc:
@@ -637,6 +815,10 @@ def _materialize_existing_matches(
                     basis=basis,
                 )
             )
+    if decided_lesson_refs != existing_lessons:
+        raise TeachingPrepValidationError(
+            "semantic mapping did not decide every existing lesson"
+        )
     if ranges_by_toc and covered_toc != set(ranges_by_toc):
         uncertainties.append("部分目录行未能对应到已有课时，需教师复核。")
     return mappings
