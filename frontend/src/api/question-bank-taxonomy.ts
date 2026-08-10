@@ -675,6 +675,16 @@ export const questionBankTaxonomyApi = {
     })
   },
 
+  getProposalSummary(signal?: AbortSignal): Promise<TaxonomyProposalListResponse> {
+    return apiClient.request(
+      '/api/question-bank/taxonomy/proposals?status=pending&summary=true',
+      {
+        decode: decodeTaxonomyProposals,
+        signal,
+      },
+    )
+  },
+
   reviewProposal(
     proposalId: string,
     input: TaxonomyReviewInput,

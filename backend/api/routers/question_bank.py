@@ -273,14 +273,18 @@ def get_taxonomy_catalog() -> TaxonomyCatalogResponse:
 )
 def list_taxonomy_proposals(
     status: Annotated[Literal["pending"], Query()] = "pending",
+    summary: Annotated[bool, Query()] = False,
     service: TaxonomySuggestionService = Depends(
         get_taxonomy_suggestion_service
     ),
 ) -> TaxonomyProposalListResponse:
     governance = get_taxonomy_governance()
     try:
-        payload = governance.list_proposals(status=status)
-        payload = service.contextualize_proposal_page(payload)
+        if summary:
+            payload = service.proposal_summary()
+        else:
+            payload = governance.list_proposals(status=status)
+            payload = service.contextualize_proposal_page(payload)
     except (TaxonomyStorageError, OSError, TimeoutError) as exc:
         _raise_taxonomy_storage_api_error(exc)
     return TaxonomyProposalListResponse(**payload)

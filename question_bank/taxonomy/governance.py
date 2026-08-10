@@ -881,6 +881,20 @@ def _read_json(path: Path) -> Any:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def _file_signature(path: Path) -> tuple[bool, int, int, int, int]:
+    try:
+        stat = path.stat()
+    except FileNotFoundError:
+        return (False, 0, 0, 0, 0)
+    return (
+        True,
+        stat.st_size,
+        stat.st_mtime_ns,
+        stat.st_ctime_ns,
+        stat.st_ino,
+    )
+
+
 def _write_state_atomic(
     path: Path,
     state: Mapping[str, Any],
@@ -1136,6 +1150,8 @@ class TaxonomyGovernance:
         self._catalogs_by_revision: dict[int, dict[str, Any]] = {
             int(self._catalog["revision"]): self._catalog
         }
+        self._state_cache_key: tuple[Any, ...] | None = None
+        self._state_cache: dict[str, Any] | None = None
 
     def _catalog_for_revision(self, revision: int) -> dict[str, Any]:
         cached = self._catalogs_by_revision.get(revision)
@@ -1200,7 +1216,24 @@ class TaxonomyGovernance:
         catalog: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         with _PROCESS_LOCK:
-            return self._read_state_unlocked(catalog=catalog)
+            selected_catalog = catalog or self._catalog
+            cache_key = (
+                _file_signature(self.state_path),
+                _file_signature(_backup_path(self.state_path)),
+                selected_catalog.get("catalog_id"),
+                selected_catalog.get("revision"),
+            )
+            if self._state_cache is not None and cache_key == self._state_cache_key:
+                return copy.deepcopy(self._state_cache)
+            state = self._read_state_unlocked(catalog=selected_catalog)
+            self._state_cache = copy.deepcopy(state)
+            self._state_cache_key = (
+                _file_signature(self.state_path),
+                _file_signature(_backup_path(self.state_path)),
+                selected_catalog.get("catalog_id"),
+                selected_catalog.get("revision"),
+            )
+            return state
 
     def _combined_terms(
         self,
@@ -2578,6 +2611,39 @@ class TaxonomyGovernance:
             },
         }
 
+    def pending_proposal_reference_summary(self) -> dict[str, Any]:
+        """Return only the current question references needed for a count."""
+
+        state = self._read_state()
+        pending_ids = {
+            str(proposal["id"])
+            for proposal in state["proposals"]
+            if proposal["status"] == "pending"
+        }
+        refs_by_proposal = {proposal_id: [] for proposal_id in pending_ids}
+        for observation in state["observation_lifecycle"]["observations"]:
+            if not observation["is_current"]:
+                continue
+            try:
+                question_id = int(observation["question_id"])
+            except (TypeError, ValueError):
+                continue
+            if question_id <= 0:
+                continue
+            for proposal_id in observation["proposal_ids"]:
+                if proposal_id in pending_ids:
+                    refs_by_proposal[proposal_id].append(question_id)
+        return {
+            "revision": int(state["revision"]),
+            "evidence_revision": int(
+                state["observation_lifecycle"]["evidence_revision"]
+            ),
+            "question_refs_by_proposal": {
+                proposal_id: sorted(set(question_ids))
+                for proposal_id, question_ids in refs_by_proposal.items()
+            },
+        }
+
     def read_audit_history(
         self,
         *,
@@ -2653,6 +2719,20 @@ class TaxonomyGovernance:
             ),
             reverse=True,
         )
+        if not items:
+            return {
+                "revision": state["revision"],
+                "evidence_revision": state["observation_lifecycle"][
+                    "evidence_revision"
+                ],
+                "items": [],
+                "counts": {
+                    "pending": sum(
+                        item["status"] == "pending"
+                        for item in state["proposals"]
+                    )
+                },
+            }
         observation = self.observation_snapshot()
         public_items = []
         for item in items:

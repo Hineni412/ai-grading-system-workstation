@@ -59,6 +59,67 @@ def governance(tmp_path: Path) -> TaxonomyGovernance:
     )
 
 
+def test_repeated_proposal_reads_reuse_one_validated_state_snapshot(
+    governance: TaxonomyGovernance,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = governance._read_state()
+    governance.state_path.write_text(
+        json.dumps(state, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    original_read_json = governance_module._read_json
+    state_read_count = 0
+
+    def counted_read_json(path: Path):
+        nonlocal state_read_count
+        if Path(path) == governance.state_path:
+            state_read_count += 1
+        return original_read_json(path)
+
+    monkeypatch.setattr(governance_module, "_read_json", counted_read_json)
+
+    governance.list_proposals(status="pending")
+    governance.list_proposals(status="pending")
+
+    assert state_read_count == 1
+
+
+def test_cached_state_is_invalidated_after_an_external_writer_changes_the_file(
+    governance: TaxonomyGovernance,
+) -> None:
+    assert governance.list_proposals(status="pending")["counts"] == {
+        "pending": 0
+    }
+    writer = TaxonomyGovernance(
+        catalog_path=CATALOG_PATH,
+        state_path=governance.state_path,
+        knowledge_graph_db_path=governance.knowledge_graph_db_path,
+    )
+
+    _persist_unknown(writer, name="缓存失效验证词", token="cache-invalidation")
+
+    assert governance.list_proposals(status="pending")["counts"] == {
+        "pending": 1
+    }
+
+
+def test_empty_dimension_filter_keeps_the_global_pending_count(
+    governance: TaxonomyGovernance,
+) -> None:
+    _persist_unknown(
+        governance,
+        name="全局待审核计数验证词",
+        dimension="model",
+        token="global-pending-count",
+    )
+
+    page = governance.list_proposals(status="pending", dimension="method")
+
+    assert page["items"] == []
+    assert page["counts"] == {"pending": 1}
+
+
 def test_default_governance_state_uses_a_clean_v2_file(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
