@@ -4,9 +4,11 @@ import json
 import sqlite3
 import wave
 from contextlib import closing
+from datetime import datetime
 from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
+from zoneinfo import ZoneInfo
 
 import pytest
 from fastapi import FastAPI
@@ -20,6 +22,7 @@ from backend.class_teacher.intake.ai_task_adapter import (
     _normalize_triage_payload_compatibility,
     _parse_model_payload,
 )
+from backend.class_teacher.intake.conversations import _merge_draft_revision_content
 from backend.class_teacher.intake.preferences import HomeroomPreference
 from backend.class_teacher.intake.ports import FakeWorkspaceAITaskPort
 from backend.class_teacher.intake.triage_contract import parse_triage
@@ -84,6 +87,94 @@ def test_class_teacher_still_rejects_unknown_semantic_top_level_fields() -> None
 
     with pytest.raises(VaultError, match="未知的分诊字段"):
         parse_triage(_normalize_triage_payload_compatibility(payload))
+
+
+def test_ai_sop_revision_preserves_safety_and_each_students_profile_draft() -> None:
+    current = {
+        "summary": "原流程",
+        "steps": [
+            {
+                "key": "confirm_safety",
+                "title": "确认即时安全",
+                "details": "先分开并检查伤情",
+                "safety_required": True,
+            },
+            {
+                "key": "separate_interviews",
+                "title": "分别了解",
+                "details": "分别听取陈述",
+                "safety_required": False,
+            },
+        ],
+        "student_profile_updates": [
+            {
+                "subject_ref": {"kind": "student", "id": "subject-a", "revision": "3"},
+                "record_summary": "甲的原记录",
+                "profile_update": {"summary": "甲的原档案", "open_questions": ["甲待核对"]},
+            },
+            {
+                "subject_ref": {"kind": "student", "id": "subject-b", "revision": "3"},
+                "record_summary": "乙的原记录",
+                "profile_update": {"summary": "乙的原档案", "open_questions": ["乙待核对"]},
+            },
+        ],
+    }
+
+    revised = _merge_draft_revision_content(
+        handling_mode="sop",
+        current=current,
+        proposed={
+            "summary": "补充细节后的流程",
+            "steps": [{
+                "key": "confirm_safety",
+                "title": "再次确认即时安全",
+                "details": "补充检查是否有身体不适",
+                "safety_required": False,
+            }],
+            "student_profile_updates": [{
+                "subject_ref": {"kind": "student", "id": "subject-a", "revision": "3"},
+                "record_summary": "甲的补充记录",
+                "profile_update": {"summary": "甲的丰富后档案"},
+            }],
+        },
+    )
+
+    assert revised["summary"] == "补充细节后的流程"
+    assert revised["steps"][0]["safety_required"] is True
+    assert {item["key"] for item in revised["steps"]} == {
+        "confirm_safety",
+        "separate_interviews",
+    }
+    assert revised["student_profile_updates"][0]["profile_update"] == {
+        "summary": "甲的丰富后档案",
+        "open_questions": ["甲待核对"],
+    }
+    assert revised["student_profile_updates"][1]["record_summary"] == "乙的原记录"
+
+
+def test_ai_sop_revision_cannot_replace_the_teacher_route_decision_with_a_verdict() -> None:
+    revised = _merge_draft_revision_content(
+        handling_mode="sop",
+        current={
+            "template_key": "baseline.student_conflict",
+            "steps": [{
+                "key": "route",
+                "title": "由教师重新检查安全与疑似欺凌信号",
+                "details": "系统不作欺凌认定；教师只选择当前工作分流。",
+            }],
+        },
+        proposed={
+            "steps": [{
+                "key": "route",
+                "title": "冲突分流判断",
+                "details": "当前事件判定为普通学生矛盾，无疑似欺凌线索。",
+            }],
+        },
+    )
+
+    route = revised["steps"][0]
+    assert route["title"] == "由教师重新检查安全与疑似欺凌信号"
+    assert route["details"] == "系统不作欺凌认定；教师只选择当前工作分流。"
 
 
 @pytest.mark.parametrize(
@@ -627,6 +718,8 @@ def test_record_adoption_preserves_supplied_professional_attribution_until_teach
                     "summary": "医院已经提供书面诊断，等待教师核对来源。",
                     "record_kind": "professional_conclusion",
                     "source": "合成医院书面材料",
+                    "basis": "合成书面材料编号与出具机构",
+                    "observed_at": "2026-08-05T08:00:00+08:00",
                     "teacher_confirmed": False,
                 },
             )],
@@ -658,6 +751,7 @@ def test_record_adoption_preserves_supplied_professional_attribution_until_teach
         )
     assert payload["record_kind"] == "professional_conclusion"
     assert payload["source"] == "合成医院书面材料"
+    assert payload["basis"] == "合成书面材料编号与出具机构"
     assert payload["teacher_confirmed"] is True
 
 
@@ -964,7 +1058,7 @@ def test_conflict_follow_up_revises_the_previous_sop_without_reasking_known_safe
     continued = service.intake.append_turn(
         conversation_id=str(conversation["conversation_id"]),
         expected_revision=int(ready["revision"]),
-        message="双方已经分开，目前无人受伤，起因是小组分工意见不一致。",
+        message="双方已经分开，目前无人受伤，起因是座位和小组分工意见不一致；请分别陈述并共同修复。",
         operation_id="conflict-revision-second-turn",
     )
     second_task = port.prepare_calls[-1]
@@ -995,6 +1089,11 @@ def test_conflict_follow_up_revises_the_previous_sop_without_reasking_known_safe
                 draft={
                     "summary": "双方已分开且无人受伤，继续核对分工争议。",
                     "template_key": "baseline.student_conflict",
+                    "steps": [{
+                        "key": "route",
+                        "title": "冲突分流判断",
+                        "details": "当前事件判定为普通学生矛盾，无疑似欺凌线索。",
+                    }],
                 },
             )],
         },
@@ -1006,6 +1105,15 @@ def test_conflict_follow_up_revises_the_previous_sop_without_reasking_known_safe
 
     assert second_handoff["content"]["revision_of_draft_id"] == first_handoff["draft_id"]
     assert second_handoff["content"]["teacher_note"] == "已确认需要分别听取双方陈述。"
+    step_by_key = {
+        item["key"]: item
+        for item in second_handoff["content"]["steps"]
+    }
+    assert "座位使用规则" in step_by_key["fact_check"]["details"]
+    assert "共同修复方式" in step_by_key["ordinary_support"]["details"]
+    assert "分别确认修复是否有效" in step_by_key["follow_up"]["details"]
+    assert step_by_key["route"]["title"] == "由教师重新检查安全与疑似欺凌信号"
+    assert step_by_key["route"]["details"] == "系统不作欺凌认定；教师只选择当前工作分流。"
     assert saved["turns"][-1]["clarification_questions"] == [
         "双方对小组分工分别如何描述？",
     ]
@@ -1371,6 +1479,15 @@ def test_distinct_students_in_one_conflict_keep_both_subjects(
 
     assert len(handoff["subject_refs"]) == 2
     assert handoff["missing_fields"] == []
+    assert len(handoff["content"]["student_profile_updates"]) == 2
+    assert {
+        update["subject_ref"]["id"]
+        for update in handoff["content"]["student_profile_updates"]
+    } == {ref["id"] for ref in handoff["subject_refs"]}
+    assert all(
+        update["include"] is False
+        for update in handoff["content"]["student_profile_updates"]
+    )
 
 
 def test_conflict_record_with_profile_questions_becomes_actionable_sop(
@@ -1551,6 +1668,12 @@ def test_conflict_sop_includes_each_mentioned_students_current_profile(
         "表达分歧时需要先获得安静陈述的时间。",
         "面对误解时愿意在教师引导下重新说明经过。",
     }
+    updates = handoff["content"]["student_profile_updates"]
+    assert {update["profile_base_revision"] for update in updates} == {1}
+    assert {update["profile_update"]["summary"] for update in updates} == {
+        "表达分歧时需要先获得安静陈述的时间。",
+        "面对误解时愿意在教师引导下重新说明经过。",
+    }
 
 
 def test_draft_revision_is_a_new_safe_task_and_never_adopts_formal_data(tmp_path: Path) -> None:
@@ -1583,6 +1706,8 @@ def test_draft_revision_is_a_new_safe_task_and_never_adopts_formal_data(tmp_path
         context_refs=task_request["context_refs"],
     )
     assert model_request.prompt_contract_version == "class_teacher_draft_revision.v1"
+    assert "content 只返回需要新增或改动的顶层字段" in model_request.messages[0]["content"]
+    assert "不要重复未改字段" in model_request.messages[0]["content"]
     assert "把合成行动拆细" in model_request.messages[-1]["content"]
     outcome = service.intake.ai_task_adapter.persist_model_result(
         task_id=str(snapshot["task_id"]),
@@ -2094,6 +2219,15 @@ def test_sop_adoption_creates_unfinished_affair_without_decision_or_closure(tmp_
                 "summary": "两名合成参与人发生争执，目前已分开且无人受伤",
                 "template_key": "baseline.student_conflict",
                 "participant_refs": ["synthetic-participant-a", "synthetic-participant-b"],
+                "steps": [{
+                    "key": "ordinary_support",
+                    "title": "共同约定先询问再使用座位",
+                    "details": "教师引导双方形成约定，不自动决定惩戒。",
+                }, {
+                    "key": "follow_up",
+                    "title": "一周后分别回访两名学生",
+                    "details": "分别确认约定执行情况和仍需支持的事项。",
+                }],
             },
         )],
     }
@@ -2108,6 +2242,17 @@ def test_sop_adoption_creates_unfinished_affair_without_decision_or_closure(tmp_
     affair = service.sop.get_affair(token="", affair_id=str(receipt["formal_object_id"]))
     assert affair["state"] != "closed"
     assert affair.get("teacher_decision") in (None, {})
+    steps = [
+        *affair["current_steps"],
+        *affair["completed_steps"],
+        *affair["preview_steps"],
+    ]
+    ordinary = next(item for item in steps if item["key"] == "ordinary_support")
+    follow_up = next(item for item in steps if item["key"] == "follow_up")
+    route = next(item for item in steps if item["key"] == "route")
+    assert ordinary["title"] == "共同约定先询问再使用座位"
+    assert follow_up["title"] == "一周后分别回访两名学生"
+    assert route["title"] == "由教师重新检查安全与疑似欺凌信号"
 
 
 def test_teacher_selected_sop_template_no_longer_appears_as_missing_after_save_and_adoption(
@@ -2363,3 +2508,360 @@ def test_draft_update_rejects_untrusted_subject_refs_and_oversized_content(tmp_p
             expected_revision=1,
             content={"summary": "合" * (70 * 1024)},
         )
+
+
+def test_triage_request_contract_carries_local_date_and_complete_plan_action_schema(
+    tmp_path: Path,
+) -> None:
+    service, port = _service(tmp_path)
+    _conversation, _turn = _conversation_with_turn(
+        service,
+        "requested-opening-plan-contract",
+        message=(
+            "9月1日开学，前一天学生返校，需要准备班级值周、"
+            "积分结算、积分兑奖和学生值日。"
+        ),
+    )
+    task = port.prepare_calls[-1]
+
+    request = service.intake.ai_task_adapter.build_model_request(
+        task_kind=str(task["task_kind"]),
+        source_ref=task["source_ref"],
+        context_refs=task["context_refs"],
+    )
+    joined = "\n".join(str(item["content"]) for item in request.messages)
+    local_date = datetime.now(ZoneInfo("Asia/Shanghai")).date().isoformat()
+
+    assert f"本机参考日期：{local_date}" in joined
+    assert "Asia/Shanghai" in joined
+    for field in (
+        "plan_title",
+        "final_deadline",
+        "actions",
+        "draft_action_id",
+        "due_at",
+        "depends_on_draft_action_ids",
+    ):
+        assert field in joined
+    assert "缺少具体日期" in joined
+    assert "不得编造" in joined
+
+
+def test_triage_request_contract_requires_professional_source_and_support_follow_up(
+    tmp_path: Path,
+) -> None:
+    service, port = _service(tmp_path)
+    _conversation, _turn = _conversation_with_turn(
+        service,
+        "requested-professional-conclusion-contract",
+        message="合成学生甲已有专业机构结论，需要更新学生档案。",
+    )
+    task = port.prepare_calls[-1]
+
+    request = service.intake.ai_task_adapter.build_model_request(
+        task_kind=str(task["task_kind"]),
+        source_ref=task["source_ref"],
+        context_refs=task["context_refs"],
+    )
+    system_instruction = str(request.messages[0]["content"])
+
+    for requirement in (
+        "professional_conclusion",
+        "observed_at",
+        "source",
+        "basis",
+        "专业结论来源",
+        "在校支持",
+    ):
+        assert requirement in system_instruction
+
+
+def test_professional_report_is_saved_as_bounded_review_draft_until_evidence_is_supplied(
+    tmp_path: Path,
+) -> None:
+    service, port = _service(tmp_path)
+    preference = service.intake.preferences.get()
+    service.intake.preferences.set(
+        homeroom_class="一班",
+        expected_revision=0,
+        expected_source_revision=str(preference["source_revision"]),
+        operation_id="professional-review-homeroom",
+    )
+    _conversation, turn = _conversation_with_turn(
+        service,
+        "professional-review-bounded",
+        message="合成学生甲确诊有多动症和情绪障碍。",
+    )
+    task = port.prepare_calls[-1]
+    candidate = next(
+        item
+        for item in service.class_roster.ai_candidates(token="", class_label="一班")
+        if item["display_name"] == "合成学生甲"
+    )
+    ref = {
+        "kind": "student",
+        "id": str(candidate["id"]),
+        "revision": str(candidate["revision"]),
+    }
+
+    outcome = service.intake.ai_task_adapter.persist_model_result(
+        task_id=str(turn["task_id"]),
+        source_ref=task["source_ref"],
+        context_refs=task["context_refs"],
+        result={
+            "contract_version": "class_teacher_triage.v1",
+            "assistant_message": "已整理专业信息草稿。",
+            "clarification_questions": [
+                "来源？", "日期？", "依据？", "在校支持？", "是否复查？",
+            ],
+            "work_items": [_work_item(
+                "professional-review-item",
+                domain="student_support",
+                mode="record",
+                intent="create",
+                refs=[ref],
+                draft={
+                    "summary": "教师报告合成学生甲已有相关专业结论。",
+                    "record_kind": "professional_conclusion",
+                    "source": "模型猜测的医院",
+                    "basis": "模型猜测的报告",
+                    "observed_at": "2026-08-10T00:00:00+08:00",
+                    "current_school_support": "模型猜测的支持措施",
+                    "professional_recommendations": "模型猜测的专业建议",
+                    "avoidances": "模型猜测的禁忌",
+                    "profile_update": "invalid-provider-shape",
+                },
+            )],
+        },
+    )
+
+    saved = service.intake.get_conversation(str(turn["conversation_id"]))
+    handoff = service.intake.open_handoff(str(outcome["handoff_ids"][0]))
+    content = handoff["content"]
+
+    assert len(saved["turns"][-1]["clarification_questions"]) == 3
+    assert saved["turns"][-1]["clarification_questions"] == [
+        "专业结论由哪家机构或哪位专业人员出具，是否有可核对的书面材料？",
+        "这份专业结论的出具日期是什么时候？",
+        "学生当前在校已采用哪些支持方式，哪些有效，哪些做法需要避免？",
+    ]
+    assert content["record_kind"] == "reported_statement"
+    assert content["source"] == "教师当前输入，采用前核对"
+    assert content["basis"] == ""
+    assert content["observed_at"] == ""
+    assert content["current_school_support"] == ""
+    assert content["professional_recommendations"] == ""
+    assert content["avoidances"] == ""
+    assert content["profile_base_revision"] == 0
+    assert content["profile_update"]["summary"].startswith("教师转述")
+    assert content["profile_update"]["dimensions"][0]["key"] == "professional_support_context"
+
+
+def test_complete_professional_material_uses_explicit_date_and_does_not_repeat_answered_questions(
+    tmp_path: Path,
+) -> None:
+    service, port = _service(tmp_path)
+    preference = service.intake.preferences.get()
+    service.intake.preferences.set(
+        homeroom_class="一班",
+        expected_revision=0,
+        expected_source_revision=str(preference["source_revision"]),
+        operation_id="professional-complete-homeroom",
+    )
+    message = (
+        "合成学生甲的结论由合成市儿童医院李医生出具，有2026年7月15日书面诊断报告。"
+        "当前在校采用前排座位、任务分段和简短提醒，其中任务分段有效；"
+        "报告建议固定规则并预告转换，避免公开责备。"
+    )
+    conversation, turn = _conversation_with_turn(
+        service,
+        "professional-complete-material",
+        message=message,
+    )
+    task = port.prepare_calls[-1]
+    candidate = next(
+        item
+        for item in service.class_roster.ai_candidates(token="", class_label="一班")
+        if item["display_name"] == "合成学生甲"
+    )
+    ref = {"kind": "student", "id": str(candidate["id"]), "revision": str(candidate["revision"])}
+
+    outcome = service.intake.ai_task_adapter.persist_model_result(
+        task_id=str(turn["task_id"]),
+        source_ref=task["source_ref"],
+        context_refs=task["context_refs"],
+        result={
+            "contract_version": "class_teacher_triage.v1",
+            "assistant_message": "已补充专业材料草稿。",
+            "clarification_questions": ["材料来源？", "结论日期？", "在校支持是否有效？"],
+            "work_items": [_work_item(
+                "professional-complete-item",
+                domain="student_support",
+                mode="record",
+                intent="append",
+                refs=[ref],
+                draft={
+                    "summary": "教师补充了专业材料和在校支持。",
+                    "record_kind": "reported_statement",
+                    "source": "教师当前输入",
+                    "basis": "合成市儿童医院书面诊断报告",
+                    "observed_at": "2026-08-10T00:00:00+08:00",
+                    "current_school_support": "",
+                    "professional_recommendations": "固定规则并预告转换",
+                    "avoidances": "避免公开责备",
+                    "profile_update": {
+                        "summary": "已核对完整的诊断。",
+                        "dimensions": [],
+                        "open_questions": [],
+                        "support_focus": [],
+                    },
+                },
+            )],
+        },
+    )
+    handoff = service.intake.open_handoff(str(outcome["handoff_ids"][0]))
+    saved = service.intake.get_conversation(str(conversation["conversation_id"]))
+    content = handoff["content"]
+
+    assert saved["turns"][-1]["clarification_questions"] == []
+    assert content["record_kind"] == "professional_conclusion"
+    assert content["source"] == "教师补充的专业书面材料，采用前核对"
+    assert content["observed_at"] == "2026-07-15"
+    assert content["current_school_support"].startswith("当前在校采用前排座位")
+    assert "正式采用前仍由教师核对原始材料" in content["profile_update"]["summary"]
+    assert "已核对完整" not in content["profile_update"]["summary"]
+
+    receipt = service.intake.adopt_handoff(
+        token="",
+        handoff_id=str(handoff["handoff_id"]),
+        draft_revision=int(handoff["draft_revision"]),
+        target_revision=str(handoff["subject_refs"][0]["revision"]),
+        operation_id="adopt-professional-complete-material",
+    )
+    assert receipt["formal_object_type"] == "student_record"
+    with closing(service.database.connect()) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM support_records").fetchone()[0] == 1
+        assert connection.execute("SELECT COUNT(*) FROM student_card_entries").fetchone()[0] == 1
+        subject_id = str(
+            connection.execute(
+                "SELECT subject_id FROM student_subject_links LIMIT 1"
+            ).fetchone()[0]
+        )
+        observed_at = str(
+            connection.execute(
+                "SELECT observed_at FROM support_records LIMIT 1"
+            ).fetchone()[0]
+        )
+    card = service.student_cards.get_card(token="", subject_id=subject_id)
+    saved_record = card["existing_records"][0]
+    assert saved_record["record_kind"] == "professional_conclusion"
+    assert datetime.fromisoformat(observed_at).astimezone(
+        ZoneInfo("Asia/Shanghai")
+    ).date().isoformat() == "2026-07-15"
+    assert card["current_profile"]["revision"] == 1
+
+
+def test_sop_adoption_updates_each_selected_students_record_and_current_profile(
+    tmp_path: Path,
+) -> None:
+    service, port = _service(tmp_path)
+    with closing(sqlite3.connect(tmp_path / "grading.db")) as connection:
+        connection.execute("UPDATE students SET class_name='一班' WHERE id=2")
+        connection.commit()
+    subjects = [
+        service.support.create_subject(
+            token="",
+            operation_id=f"requested-conflict-subject-{index}",
+            source_student_id=str(index),
+            display_name=name,
+            class_label="一班",
+        )
+        for index, name in enumerate(("合成学生甲", "合成学生乙"), start=1)
+    ]
+    preference = service.intake.preferences.get()
+    service.intake.preferences.set(
+        homeroom_class="一班",
+        expected_revision=0,
+        expected_source_revision=str(preference["source_revision"]),
+        operation_id="requested-conflict-homeroom",
+    )
+    _conversation, turn = _conversation_with_turn(
+        service,
+        "requested-conflict-profile-adoption",
+        message="合成学生甲和合成学生乙今天在信息课发生矛盾。",
+    )
+    task = port.prepare_calls[-1]
+    candidates = service.class_roster.ai_candidates(token="", class_label="一班")
+    refs = [
+        {
+            "kind": "student",
+            "id": str(candidate["id"]),
+            "revision": str(candidate["revision"]),
+        }
+        for candidate in candidates
+    ]
+    profile_updates = [
+        {
+            "subject_ref": ref,
+            "include": True,
+            "record_kind": "reported_statement",
+            "source": "合成教师补充",
+            "observed_at": "2026-08-10T10:00:00+08:00",
+            "record_summary": f"{subject['display_name']}参与了一次待继续核对的同伴矛盾。",
+            "profile_base_revision": 0,
+            "profile_update": {
+                "summary": f"正在持续了解{subject['display_name']}处理同伴分歧时需要的支持。",
+                "dimensions": [],
+                "open_questions": ["后续是否能在教师支持下清楚表达经过？"],
+                "support_focus": [{
+                    "key": "peer_conflict_follow_up",
+                    "title": "同伴矛盾后的支持",
+                    "need": "继续核对事实并观察后续互动",
+                    "effective_methods": [],
+                    "next_actions": ["分别听取陈述", "安排后续观察"],
+                }],
+            },
+        }
+        for subject, ref in zip(subjects, refs, strict=True)
+    ]
+    outcome = service.intake.ai_task_adapter.persist_model_result(
+        task_id=str(turn["task_id"]),
+        source_ref=task["source_ref"],
+        context_refs=task["context_refs"],
+        result={
+            "contract_version": "class_teacher_triage.v1",
+            "assistant_message": "已形成待核对的冲突处理草稿。",
+            "clarification_questions": ["双方目前是否已经分开且无人受伤？"],
+            "work_items": [_work_item(
+                "requested-conflict-profile-item",
+                domain="conflict_safety",
+                mode="sop",
+                intent="follow_up",
+                refs=refs,
+                draft={
+                    "summary": "两名合成学生发生矛盾，事实仍待教师核对。",
+                    "template_key": "baseline.student_conflict",
+                    "student_profile_updates": profile_updates,
+                },
+            )],
+        },
+    )
+    handoff = service.intake.open_handoff(str(outcome["handoff_ids"][0]))
+
+    service.intake.adopt_handoff(
+        token="",
+        handoff_id=str(handoff["handoff_id"]),
+        draft_revision=int(handoff["draft_revision"]),
+        target_revision="new",
+        operation_id="adopt-requested-conflict-profile-item",
+    )
+
+    cards = [
+        service.student_cards.get_card(token="", subject_id=str(subject["subject_id"]))
+        for subject in subjects
+    ]
+    assert [card["current_profile"]["revision"] for card in cards] == [1, 1]
+    assert all("同伴分歧" in card["current_profile"]["summary"] for card in cards)
+    with closing(service.database.connect()) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM support_records").fetchone()[0] == 2
+        assert connection.execute("SELECT COUNT(*) FROM student_card_entries").fetchone()[0] == 2

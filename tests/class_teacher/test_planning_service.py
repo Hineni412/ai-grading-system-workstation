@@ -120,6 +120,22 @@ def test_sensitive_draft_is_local_only_and_requires_manual_sop(
     assert error.value.code == "planning_requires_manual_sop"
 
 
+def test_routine_student_duty_language_is_not_mistaken_for_a_student_name(
+    tmp_path: Path,
+) -> None:
+    service, token = _service(tmp_path)
+    draft = service.planning.create_draft(
+        token=token,
+        operation_id="planning-routine-student-duty",
+        raw_input="开学前安排学生值日和班级值周，完成班级积分结算与兑奖",
+        reference_at="2026-08-30T09:00:00+08:00",
+        final_deadline="2026-09-01T18:00:00+08:00",
+    )
+
+    assert draft["sensitive_findings"] == []
+    assert service.planning._sensitive_findings("提醒合成甲同学单独提交材料") == ["可能包含姓名"]
+
+
 def test_confirm_is_atomic_plaintext_and_idempotent(tmp_path: Path) -> None:
     service, token = _service(tmp_path)
     _configure_calendar(service, token)
