@@ -352,6 +352,40 @@ describe('B-UI-R7 conversation desk', () => {
     expect(draftCard?.textContent).toContain('打开核对，不会自动保存')
   })
 
+  it('shows only the current conflict draft after a follow-up revision', async () => {
+    const base = {
+      domain: 'conflict_safety' as const,
+      handling_mode: 'sop' as const,
+      intent: 'follow_up' as const,
+      destination_key: 'class_teacher.affair.sop',
+      draft_revision: 1,
+      missing_fields: [] as string[],
+      subject_ref_count: 2,
+      auto_open_allowed: false,
+    }
+    const host = await mountDesk({
+      ...conversation('handoff_ready'),
+      handoffs: [
+        {
+          ...base,
+          handoff_id: 'handoff-old-conflict', draft_id: 'draft-old-conflict',
+          work_item_id: 'old-conflict-work', turn_id: 'turn-old-conflict',
+          adoption_state: 'stale',
+        },
+        {
+          ...base,
+          handoff_id: 'handoff-current-conflict', draft_id: 'draft-current-conflict',
+          work_item_id: 'current-conflict-work', turn_id: 'turn-current-conflict',
+          adoption_state: 'pending',
+        },
+      ],
+    })
+
+    expect(host.querySelector('[data-work-item="old-conflict-work"]')).toBeNull()
+    expect(host.querySelector('[data-work-item="current-conflict-work"]')).not.toBeNull()
+    expect(host.querySelectorAll('.handoffs button')).toHaveLength(1)
+  })
+
   it('waits for a running turn before accepting another message', async () => {
     const host = await mountDesk({
       ...conversation('ai_running'), revision: 2,
