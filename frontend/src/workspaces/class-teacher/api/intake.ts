@@ -322,10 +322,9 @@ function operationId(): string {
   return crypto.randomUUID()
 }
 
-function headers(token = ''): Record<string, string> {
+function headers(): Record<string, string> {
   return {
     'x-class-teacher-client': 'class-teacher-browser-v1',
-    ...(token ? { 'x-class-teacher-session': token } : {}),
   }
 }
 
@@ -365,9 +364,9 @@ export const intakeApi = {
       method: 'POST', headers: headers(), decode: decodeIntakeConversation,
     })
   },
-  startStudentConversation(token: string, subjectId: string) {
+  startStudentConversation(subjectId: string) {
     return apiClient.request('/api/class-teacher/intake/conversations', {
-      method: 'POST', headers: headers(token), body: { subject_id: subjectId }, decode: decodeIntakeConversation,
+      method: 'POST', headers: headers(), body: { subject_id: subjectId }, decode: decodeIntakeConversation,
     })
   },
   listConversations() {
@@ -441,9 +440,9 @@ export const intakeApi = {
       method: 'POST', headers: headers(), decode: record,
     })
   },
-  adopt(token: string, draft: HandoffDraft, targetRevision: string) {
+  adopt(draft: HandoffDraft, targetRevision: string) {
     return apiClient.request(`/api/class-teacher/intake/handoffs/${encodeURIComponent(draft.handoff_id)}/adopt`, {
-      method: 'POST', headers: headers(token),
+      method: 'POST', headers: headers(),
       body: { draft_revision: draft.draft_revision, target_revision: targetRevision, operation_id: operationId() },
       decode: record,
     })

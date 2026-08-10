@@ -16,16 +16,12 @@ from backend.api.app import ApiError
 from backend.class_teacher.api.router import create_router
 from backend.class_teacher.errors import VaultError
 from backend.class_teacher.home_intake import interpret_local_date
-from backend.class_teacher.protection import FakeCurrentUserProtection
 from backend.class_teacher.vault_service import VaultService
 from backend.class_teacher.work_planning import FakeWorkPlanningGateway
 from backend.workspaces.contracts import WorkspaceContext
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-PASSWORD = "合成首页入口保险箱密码-足够长-001"
-
-
 def _plan(due_date: str | None = "2026-08-07") -> dict[str, object]:
     return {
         "kind": "plan",
@@ -70,11 +66,10 @@ def _service(
     )
     service = VaultService(
         context,
-        protection_provider=FakeCurrentUserProtection(b"H" * 32),
         model_gateway=gateway,
     )
-    initialized = service.initialize(password=PASSWORD, operation_id="home-init-0001")
-    return service, str(initialized["session_token"]), gateway
+    service.ensure_plaintext_ready()
+    return service, "", gateway
 
 
 @pytest.mark.parametrize(
@@ -570,7 +565,7 @@ def test_markdown_fenced_plan_needs_no_repair_request(tmp_path: Path) -> None:
     assert service.work.query(as_of="2026-08-07")["nodes"] == []
 
 
-def test_ordinary_intake_does_not_require_sensitive_vault_session(tmp_path: Path) -> None:
+def test_ordinary_intake_does_not_require_unlock_session(tmp_path: Path) -> None:
     service, _token, gateway = _service(tmp_path)
     preview = service.home_intake.prepare(
         token="",
@@ -1358,11 +1353,10 @@ def test_ordinary_draft_can_close_after_work_graph_confirmation(tmp_path: Path) 
     assert service.home_intake_drafts.list_open(token=token)["items"] == []
 
 
-def test_ordinary_draft_remains_available_while_sensitive_vault_is_locked(
+def test_ordinary_draft_remains_available_without_unlock_session(
     tmp_path: Path,
 ) -> None:
-    service, token, _gateway = _service(tmp_path)
-    service.lock(token)
+    service, _token, _gateway = _service(tmp_path)
     preview = service.home_intake.prepare(
         token="",
         text="九月一日开学，提前完成开学准备",
@@ -1450,43 +1444,6 @@ def test_expired_sensitive_preview_has_durable_zero_request_state(
     assert caught.value.code == "class_teacher_model_preview_expired"
     assert recovered["state"] == "failed_before_send"
     assert recovered["error_category"] == "class_teacher_model_preview_expired"
-    assert recovered["physical_request_count"] == 0
-    assert gateway.calls == []
-
-
-def test_locked_session_failure_stays_authorized_and_zero_request(
-    tmp_path: Path,
-) -> None:
-    service, token, gateway = _service(tmp_path)
-    preview = service.home_intake.prepare(
-        token=token,
-        text="王小明最近情绪低落",
-        reference_date="2026-08-03",
-    )
-    service.lock(token)
-
-    with pytest.raises(VaultError) as dispatch_error:
-        service.home_intake.dispatch(
-            token=token,
-            preview_id=str(preview["preview_id"]),
-            fingerprint=str(preview["fingerprint"]),
-            operation_id="home-locked-session-001",
-        )
-    with pytest.raises(VaultError) as status_error:
-        service.home_intake.status(
-            token=token,
-            operation_id="home-locked-session-001",
-        )
-
-    new_token = str(service.unlock(password=PASSWORD)["session_token"])
-    recovered = service.home_intake.status(
-        token=new_token,
-        operation_id="home-locked-session-001",
-    )
-    assert dispatch_error.value.code == "vault_locked"
-    assert status_error.value.code == "vault_locked"
-    assert recovered["state"] == "failed_before_send"
-    assert recovered["error_category"] == "vault_locked"
     assert recovered["physical_request_count"] == 0
     assert gateway.calls == []
 

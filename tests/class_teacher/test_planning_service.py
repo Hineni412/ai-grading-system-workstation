@@ -12,10 +12,7 @@ from backend.workspaces.contracts import WorkspaceContext
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-PASSWORD = "合成本地规划密码-足够长-001"
-
-
-def _unlocked(tmp_path: Path) -> tuple[VaultService, str]:
+def _service(tmp_path: Path) -> tuple[VaultService, str]:
     paths = SimpleNamespace(
         project_root=PROJECT_ROOT,
         migration_project_root=PROJECT_ROOT,
@@ -27,11 +24,8 @@ def _unlocked(tmp_path: Path) -> tuple[VaultService, str]:
             paths=paths,
         )
     )
-    initialized = service.initialize(
-        password=PASSWORD,
-        operation_id="initialize-planning",
-    )
-    return service, str(initialized["session_token"])
+    service.ensure_plaintext_ready()
+    return service, ""
 
 
 def _configure_calendar(service: VaultService, token: str) -> None:
@@ -48,7 +42,7 @@ def _configure_calendar(service: VaultService, token: str) -> None:
 def test_local_receipt_draft_uses_calendar_without_model_request(
     tmp_path: Path,
 ) -> None:
-    service, token = _unlocked(tmp_path)
+    service, token = _service(tmp_path)
     _configure_calendar(service, token)
 
     draft = service.planning.create_draft(
@@ -70,7 +64,7 @@ def test_local_receipt_draft_uses_calendar_without_model_request(
 
 
 def test_unknown_calendar_never_invents_action_times(tmp_path: Path) -> None:
-    service, token = _unlocked(tmp_path)
+    service, token = _service(tmp_path)
 
     draft = service.planning.create_draft(
         token=token,
@@ -100,7 +94,7 @@ def test_unknown_calendar_never_invents_action_times(tmp_path: Path) -> None:
 def test_sensitive_draft_is_local_only_and_requires_manual_sop(
     tmp_path: Path,
 ) -> None:
-    service, token = _unlocked(tmp_path)
+    service, token = _service(tmp_path)
     _configure_calendar(service, token)
 
     draft = service.planning.create_draft(
@@ -126,8 +120,8 @@ def test_sensitive_draft_is_local_only_and_requires_manual_sop(
     assert error.value.code == "planning_requires_manual_sop"
 
 
-def test_confirm_is_atomic_encrypted_and_idempotent(tmp_path: Path) -> None:
-    service, token = _unlocked(tmp_path)
+def test_confirm_is_atomic_plaintext_and_idempotent(tmp_path: Path) -> None:
+    service, token = _service(tmp_path)
     _configure_calendar(service, token)
     draft = service.planning.create_draft(
         token=token,
@@ -167,14 +161,14 @@ def test_confirm_is_atomic_encrypted_and_idempotent(tmp_path: Path) -> None:
             == 1
         )
     raw = service.database.database_path.read_bytes()
-    assert "下周五收齐合成回执并报年级".encode("utf-8") not in raw
-    assert "发出回执通知".encode("utf-8") not in raw
+    assert "下周五收齐合成回执并报年级".encode("utf-8") in raw
+    assert "发出回执通知".encode("utf-8") in raw
 
 
 def test_communication_retention_uses_planned_action_date_not_draft_creation(
     tmp_path: Path,
 ) -> None:
-    service, token = _unlocked(tmp_path)
+    service, token = _service(tmp_path)
     _configure_calendar(service, token)
     draft = service.planning.create_draft(
         token=token,
@@ -191,7 +185,7 @@ def test_communication_retention_uses_planned_action_date_not_draft_creation(
         plan_title=str(draft["plan_title"]),
         actions=list(draft["actions"]),
     )
-    vmk = bytes(service._require_session(token).vmk)
+    vmk = service.ensure_plaintext_ready()
     with closing(service.database.connect()) as connection:
         with connection:
             connection.execute(
@@ -204,7 +198,8 @@ def test_communication_retention_uses_planned_action_date_not_draft_creation(
             "SELECT COUNT(*) FROM communication_drafts"
         ).fetchone()[0] == 1
 
-    service.touch(token=token)
+    service._last_cleanup = float("-inf")
+    service.ensure_plaintext_ready()
     with closing(service.database.connect()) as connection:
         row = connection.execute(
             """
@@ -230,7 +225,8 @@ def test_communication_retention_uses_planned_action_date_not_draft_creation(
                 expected_revision=revision,
             )
 
-    service.touch(token=token)
+    service._last_cleanup = float("-inf")
+    service.ensure_plaintext_ready()
     with closing(service.database.connect()) as connection:
         assert connection.execute(
             "SELECT COUNT(*) FROM communication_drafts"
@@ -238,7 +234,7 @@ def test_communication_retention_uses_planned_action_date_not_draft_creation(
 
 
 def test_cancelled_draft_never_creates_formal_actions(tmp_path: Path) -> None:
-    service, token = _unlocked(tmp_path)
+    service, token = _service(tmp_path)
     draft = service.planning.create_draft(
         token=token,
         operation_id="planning-draft-cancel",

@@ -12,9 +12,6 @@ from backend.workspaces.contracts import WorkspaceContext
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-PASSWORD = "合成投影保险箱密码-足够长-001"
-
-
 def _service(tmp_path: Path) -> tuple[VaultService, str]:
     service = VaultService(
         WorkspaceContext(
@@ -26,11 +23,8 @@ def _service(tmp_path: Path) -> tuple[VaultService, str]:
             ),
         )
     )
-    initialized = service.initialize(
-        password=PASSWORD,
-        operation_id="projection-vault-init-001",
-    )
-    return service, str(initialized["session_token"])
+    service.ensure_plaintext_ready()
+    return service, ""
 
 
 def test_same_sensitive_aggregate_has_one_fixed_title_projection(tmp_path: Path) -> None:

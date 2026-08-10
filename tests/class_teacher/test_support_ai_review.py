@@ -13,9 +13,6 @@ from backend.workspaces.contracts import WorkspaceContext
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-PASSWORD = "合成支持复核密码-足够长-001"
-
-
 def _fixture(tmp_path: Path) -> tuple[VaultService, FakeApprovedModelGateway, str, dict[str, object]]:
     gateway = FakeApprovedModelGateway(result='{"kind":"proposal","proposal":{"summary":"合成建议"}}')
     service = VaultService(
@@ -26,8 +23,8 @@ def _fixture(tmp_path: Path) -> tuple[VaultService, FakeApprovedModelGateway, st
         ),
         model_gateway=gateway,
     )
-    initialized = service.initialize(password=PASSWORD, operation_id="review-init-0001")
-    token = str(initialized["session_token"])
+    service.ensure_plaintext_ready()
+    token = ""
     subject = service.support.create_subject(
         token=token,
         operation_id="review-subject-0001",

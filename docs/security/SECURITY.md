@@ -49,13 +49,14 @@
 
 ## 班主任工作台的当前事实
 
-班主任工作台目前处于明文调试模式：
+班主任工作台当前固定使用明文数据格式：
 
-- 功能入口创建服务时明确使用 `protection_enabled=False`。
 - 普通工作数据库 `user_data/workspaces/class-teacher/class_teacher_work.db` 是明文 SQLite 文件。
-- 敏感学生事务数据库 `user_data/workspaces/class-teacher/student_affairs.db` 在当前保护关闭入口下也使用明文 repository，是当前正式数据的一部分，不是单纯的旧兼容文件。
-- 当前没有可依赖的 PIN 解锁、自动锁定或空闲锁定；代码中存在相关组件不等于当前入口已经启用保护。
-- 如果已有 `student_affairs.db` 使用旧加密格式，当前明文入口会停止读写并要求单独迁移授权；文件名本身不能说明它是明文还是旧加密格式。
+- 敏感学生事务数据库 `user_data/workspaces/class-teacher/student_affairs.db` 也使用当前明文 repository，是当前正式数据的一部分。
+- 当前没有 PIN 解锁、密码解锁、自动锁定、改密、新加密写入或专用加密备份入口。
+- 旧密码、旧 PIN、恢复密钥、旧密文读取、Windows 旧凭据解包和旧库转换能力已经退出。
+- 如果 `student_affairs.db` 是旧格式、明密混合格式、损坏或未知格式，运行时只在私有副本上判断格式；全部班主任读写、普通工作库初始化和班主任 AI 任务登记停止，其他模块继续运行。
+- 当前版本不会解密、迁移、转换或修改该文件；普通备份和普通恢复也不承担格式转换。
 - 普通备份当前可以包含 `class_teacher_work.db` 和已有的 `student_affairs.db`。生成、复制或恢复此类备份时必须按敏感学生数据处理。
 - 当前共同 AI Task 发送链路没有单独的匿名化逐字预览关口；教师点击发起任务不等于正文已经匿名。真实启用前必须再次确认供应商、允许字段、费用和失败后的处理方式。
 

@@ -8,7 +8,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { studentR1Api, type AcademicAnalysis, type AttentionCard, type DirectorySubject } from '../api/r1'
 
 use([LineChart, ScatterChart, AriaComponent, GridComponent, LegendComponent, TooltipComponent, CanvasRenderer])
-const props = defineProps<{ token: string; subject: DirectorySubject }>()
+const props = defineProps<{ subject: DirectorySubject }>()
 const analysis = ref<AcademicAnalysis | null>(null)
 interface EvidenceSnapshot { language: string; evidence: { title: string; occurred_on: string; result_state: string; score: number | null } }
 const selectedEvidence = ref<EvidenceSnapshot | null>(null)
@@ -34,7 +34,7 @@ const filteredSessions = computed(() => analysis.value?.sessions ?? [])
 
 async function load() {
   const sequence = ++loadSequence
-  const next = await studentR1Api.academic(props.token, props.subject.subject_id, {
+  const next = await studentR1Api.academic(props.subject.subject_id, {
     timeRange: timeFilter.value,
     comparisonSeries: seriesFilter.value || undefined,
     subjectName: subjectFilter.value || undefined,
@@ -82,8 +82,8 @@ function render() {
   chart(pairChart.value, { ...common, tooltip: { trigger: 'item' }, xAxis: { type: 'value', min: 0, max: 1, name: '相对位次' }, yAxis: { type: 'category', data: pairs.map((item) => item.subject_name) }, series: [{ name: '前次', type: 'scatter', symbol: 'circle', data: pairs.map((item, index) => { const points=visibleSeries.find((series)=>series.subject_name===item.subject_name)?.points ?? []; return { value:[item.from,index], evidenceId:points[points.length-2]?.evidence_version_id } }) }, { name: '本次', type: 'scatter', symbol: 'diamond', data: pairs.map((item, index) => { const points=visibleSeries.find((series)=>series.subject_name===item.subject_name)?.points ?? []; return { value:[item.to,index], evidenceId:points[points.length-1]?.evidence_version_id } }) }] })
   chart(timelineChart.value, { ...common, tooltip: { trigger:'item', formatter:(params:{data?:{label?:string}})=>params.data?.label ?? '' }, xAxis: { type: 'time' }, yAxis: { type: 'category', data: ['证据'] }, series: [{ type: 'scatter', symbolSize: 15, label:{show:true,position:'top',formatter:(params:{data?:{stateText?:string}})=>params.data?.stateText ?? ''}, data: filteredSessions.value.flatMap((session) => session.evidence.map((point) => ({ value:[point.occurred_on,0], evidenceId:point.evidence_version_id, stateText:stateLabels[point.result_state] ?? point.result_state, label:`${session.title} · ${point.subject_name} · ${stateLabels[point.result_state] ?? point.result_state}`, name:session.title, symbol:stateSymbols[point.result_state] ?? 'diamond', itemStyle:{color:session.metadata_complete ? '#356859' : '#9b6a2b'} }))) }] })
 }
-async function inspect(evidenceId: string) { selectedEvidence.value = await studentR1Api.evidenceSnapshot(props.token, evidenceId) as unknown as EvidenceSnapshot }
-async function decide(card: AttentionCard) { if (!analysis.value || !reason.value.trim()) return; await studentR1Api.decideAttention(props.token, card, analysis.value, { decision: decision.value, reason: reason.value, reviewAt: decision.value === 'no_action' ? null : reviewAt.value || null, planId: null }); message.value = '教师决定已保存；需要跟进时只生成一条匿名待办。'; await load() }
+async function inspect(evidenceId: string) { selectedEvidence.value = await studentR1Api.evidenceSnapshot(evidenceId) as unknown as EvidenceSnapshot }
+async function decide(card: AttentionCard) { if (!analysis.value || !reason.value.trim()) return; await studentR1Api.decideAttention(card, analysis.value, { decision: decision.value, reason: reason.value, reviewAt: decision.value === 'no_action' ? null : reviewAt.value || null, planId: null }); message.value = '教师决定已保存；需要跟进时只生成一条匿名待办。'; await load() }
 function resize() { charts.forEach((item) => item.resize()) }
 onMounted(() => { void load(); window.addEventListener('resize', resize) })
 onBeforeUnmount(() => { window.removeEventListener('resize', resize); charts.forEach((item) => item.dispose()) })

@@ -11,13 +11,20 @@ from .intake.ports import SharedWorkspaceAITaskPort
 from .vault_service import VaultService
 
 
+def _has_unsupported_storage_format(service: VaultService) -> bool:
+    return (
+        service.database.exists
+        and not service.prepare_existing_plaintext_runtime()
+    )
+
+
 def _create_service(context: WorkspaceContext) -> VaultService:
     service = VaultService(
         context,
         model_gateway=create_active_profile_model_gateway(context),
-        protection_enabled=False,
     )
-    if service.ordinary_database.exists:
+    unsupported = _has_unsupported_storage_format(service)
+    if not unsupported and service.ordinary_database.exists:
         service.ordinary_database.initialize_schema()
     return service
 
@@ -27,7 +34,10 @@ def _migration_plan(
 ) -> WorkspaceMigrationPlan | None:
     database = EncryptedDatabase(context)
     database_path = database.database_path
-    if not database_path.is_file():
+    if (
+        not database_path.is_file()
+        or database.has_unsupported_storage_format()
+    ):
         return None
     return WorkspaceMigrationPlan(
         target="student_affairs",
@@ -41,6 +51,8 @@ def _migration_plan(
 def _register_ai_tasks(registrar, service: object | None) -> None:
     if not isinstance(service, VaultService):
         raise TypeError("class-teacher service is unavailable")
+    if _has_unsupported_storage_format(service):
+        return
     port = SharedWorkspaceAITaskPort(
         registrar,
         model_identity=service.workspace_model_gateway,

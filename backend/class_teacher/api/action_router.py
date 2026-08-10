@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Header, Query, Request, Response
+from fastapi import APIRouter, Query, Request, Response
 
 from .action_schemas import (
     ActionCreateRequest,
@@ -20,7 +20,6 @@ from .router import (
     _no_store,
     _require_trusted_mutation,
     _service,
-    _token,
 )
 
 
@@ -32,16 +31,12 @@ def create_action_router() -> APIRouter:
         request: Request,
         body: WorkPlanCreateRequest,
         response: Response,
-        session_token: str | None = Header(
-            default=None,
-            alias="x-class-teacher-session",
-        ),
     ):
         _require_trusted_mutation(request)
         _no_store(response)
         return _call(
             lambda: _service(request).actions.create_plan(
-                token=_token(session_token),
+                token="",
                 operation_id=body.operation_id,
                 title=body.title,
                 description=body.description,
@@ -53,15 +48,11 @@ def create_action_router() -> APIRouter:
     def list_plans(
         request: Request,
         response: Response,
-        session_token: str | None = Header(
-            default=None,
-            alias="x-class-teacher-session",
-        ),
     ):
         _no_store(response)
         return _call(
             lambda: _service(request).actions.list_plans(
-                token=_token(session_token),
+                token="",
             )
         )
 
@@ -71,16 +62,12 @@ def create_action_router() -> APIRouter:
         request: Request,
         body: WorkPlanUpdateRequest,
         response: Response,
-        session_token: str | None = Header(
-            default=None,
-            alias="x-class-teacher-session",
-        ),
     ):
         _require_trusted_mutation(request)
         _no_store(response)
         return _call(
             lambda: _service(request).actions.update_plan(
-                token=_token(session_token),
+                token="",
                 plan_id=plan_id,
                 operation_id=body.operation_id,
                 revision=body.revision,
@@ -95,16 +82,12 @@ def create_action_router() -> APIRouter:
         request: Request,
         body: ActionCreateRequest,
         response: Response,
-        session_token: str | None = Header(
-            default=None,
-            alias="x-class-teacher-session",
-        ),
     ):
         _require_trusted_mutation(request)
         _no_store(response)
         return _call(
             lambda: _service(request).actions.create_action(
-                token=_token(session_token),
+                token="",
                 operation_id=body.operation_id,
                 plan_id=body.plan_id,
                 title=body.title,
@@ -120,15 +103,11 @@ def create_action_router() -> APIRouter:
         response: Response,
         date_from: str | None = Query(default=None),
         date_to: str | None = Query(default=None),
-        session_token: str | None = Header(
-            default=None,
-            alias="x-class-teacher-session",
-        ),
     ):
         _no_store(response)
         return _call(
             lambda: _service(request).actions.list_actions(
-                token=_token(session_token),
+                token="",
                 date_from=date_from,
                 date_to=date_to,
             )
@@ -140,16 +119,12 @@ def create_action_router() -> APIRouter:
         request: Request,
         body: ActionUpdateRequest,
         response: Response,
-        session_token: str | None = Header(
-            default=None,
-            alias="x-class-teacher-session",
-        ),
     ):
         _require_trusted_mutation(request)
         _no_store(response)
         return _call(
             lambda: _service(request).actions.update_action(
-                token=_token(session_token),
+                token="",
                 action_id=action_id,
                 operation_id=body.operation_id,
                 revision=body.revision,
@@ -167,15 +142,11 @@ def create_action_router() -> APIRouter:
         request: Request,
         response: Response,
         as_of: str | None = Query(default=None),
-        session_token: str | None = Header(
-            default=None,
-            alias="x-class-teacher-session",
-        ),
     ):
         _no_store(response)
         return _call(
             lambda: _service(request).actions.dashboard(
-                token=_token(session_token),
+                token="",
                 as_of=as_of,
             )
         )
@@ -184,15 +155,11 @@ def create_action_router() -> APIRouter:
     def get_calendar(
         request: Request,
         response: Response,
-        session_token: str | None = Header(
-            default=None,
-            alias="x-class-teacher-session",
-        ),
     ):
         _no_store(response)
         return _call(
             lambda: _service(request).actions.get_calendar(
-                token=_token(session_token),
+                token="",
             )
         )
 
@@ -201,16 +168,12 @@ def create_action_router() -> APIRouter:
         request: Request,
         body: SchoolCalendarSaveRequest,
         response: Response,
-        session_token: str | None = Header(
-            default=None,
-            alias="x-class-teacher-session",
-        ),
     ):
         _require_trusted_mutation(request)
         _no_store(response)
         return _call(
             lambda: _service(request).actions.save_calendar(
-                token=_token(session_token),
+                token="",
                 operation_id=body.operation_id,
                 revision=body.revision,
                 school_day_end=body.school_day_end,

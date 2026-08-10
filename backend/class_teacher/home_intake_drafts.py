@@ -166,8 +166,6 @@ class HomeIntakeDrafts:
         ordinary = self._find_ordinary(root_operation_id=root_operation_id)
         if ordinary is not None:
             return ordinary
-        if not token:
-            return None
         vmk = self._key_provider(token)
         with closing(self.database.connect()) as connection:
             row = connection.execute(

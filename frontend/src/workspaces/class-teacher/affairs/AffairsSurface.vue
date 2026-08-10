@@ -3,7 +3,7 @@ import { computed, onMounted, ref } from 'vue'
 
 import { affairR1Api, type AffairDetail, type AffairStep, type AffairSummary } from '../api/r1'
 
-const props = defineProps<{ token: string; targetId?: string | null }>()
+const props = defineProps<{ targetId?: string | null }>()
 const items = ref<AffairSummary[]>([])
 const selected = ref<AffairDetail | null>(null)
 const draftText = ref('')
@@ -22,7 +22,7 @@ async function load() {
   busy.value = true; error.value = ''
   try {
     const selectedId = selected.value?.affair_id || props.targetId
-    items.value = await affairR1Api.list(props.token)
+    items.value = await affairR1Api.list()
     const target = items.value.find((item) => item.affair_id === selectedId)
     if (target) await open(target)
   } catch { error.value = '事务列表暂时无法读取。' } finally { busy.value = false }
@@ -31,17 +31,17 @@ function refresh(): void {
   void load()
 }
 async function open(item: AffairSummary) {
-  selected.value = await affairR1Api.read(props.token, item.affair_id)
+  selected.value = await affairR1Api.read(item.affair_id)
 }
 async function saveDraft(step: AffairStep) {
   if (!selected.value || !draftText.value.trim()) return
   const prior = selected.value.drafts?.find((item) => item.step_instance_id === step.step_instance_id && item.draft_kind === draftKind.value)
-  await affairR1Api.saveDraft(props.token, selected.value.affair_id, step.step_instance_id, draftKind.value, draftText.value, prior?.revision ?? null)
-  draftText.value = ''; selected.value = await affairR1Api.read(props.token, selected.value.affair_id)
+  await affairR1Api.saveDraft(selected.value.affair_id, step.step_instance_id, draftKind.value, draftText.value, prior?.revision ?? null)
+  draftText.value = ''; selected.value = await affairR1Api.read(selected.value.affair_id)
 }
 async function complete(step: AffairStep) {
   if (!selected.value) return
-  selected.value = await affairR1Api.command(props.token, selected.value, 'complete_step', {
+  selected.value = await affairR1Api.command(selected.value, 'complete_step', {
     step_instance_id: step.step_instance_id, outcome: 'completed', result: '教师确认该步骤已完成',
   })
   await load()
@@ -57,7 +57,7 @@ async function command(name: 'teacher_decision' | 'close' | 'reopen') {
         selected_option:selectedDecisionOption.value || null,
       }
     : name === 'close' ? { summary:closureSummary.value } : { reason:reopenReason.value }
-  selected.value = await affairR1Api.command(props.token, selected.value, name, input)
+  selected.value = await affairR1Api.command(selected.value, name, input)
   decisionSummary.value=''; selectedDecisionOption.value=''; closureSummary.value=''; reopenReason.value=''; await load()
 }
 
@@ -87,7 +87,7 @@ onMounted(() => { void load() })
         </div>
         <section v-if="currentSteps.length" class="draft-box">
           <h4>当前步骤草稿</h4><select v-model="draftKind"><option value="fact">事实草稿</option><option value="communication">沟通草稿</option></select>
-          <textarea v-model="draftText" rows="4" maxlength="8000" placeholder="草稿只保存在加密保险箱，7 天后自动过期。"></textarea>
+          <textarea v-model="draftText" rows="4" maxlength="8000" placeholder="草稿只保存在班主任工作台，7 天后自动过期。"></textarea>
           <button type="button" :disabled="!draftText.trim() || !currentSteps[0]" @click="currentSteps[0] && saveDraft(currentSteps[0])">保存到当前步骤</button>
         </section>
         <section v-if="decisionStep" class="decision-box"><h4>教师决定 · {{ decisionStep.title }}</h4><p>{{ decisionStep.decision_prompt || '请记录教师已经作出的决定。' }}</p><select v-if="decisionStep.decision_options?.length" v-model="selectedDecisionOption"><option value="">请选择</option><option v-for="option in decisionStep.decision_options" :key="option.value" :value="option.value">{{ option.label }}</option></select><textarea v-model="decisionSummary" rows="3" maxlength="8000" placeholder="记录教师或学校已经作出的决定；AI 建议不能驱动高影响分支。"></textarea><button type="button" :disabled="!decisionSummary.trim() || (!!decisionStep.decision_options?.length && !selectedDecisionOption)" @click="command('teacher_decision')">保存教师决定</button></section>
