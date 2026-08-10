@@ -550,14 +550,43 @@ def test_semantic_mapping_allows_one_section_for_split_existing_lessons() -> Non
     snapshot = _snapshot()
     snapshot["lessons"] = [
         {
+            "id": "chapter-pythagoras",
+            "parent_id": None,
+            "node_type": "chapter",
+            "title": "第一章 勾股定理",
+        },
+        {
+            "id": "section-explore",
+            "parent_id": "chapter-pythagoras",
+            "node_type": "section",
+            "title": "1 探索勾股定理",
+        },
+        {
             "id": "lesson-understand",
+            "parent_id": "section-explore",
             "node_type": "lesson",
-            "title": "认识勾股定理",
+            "title": "第1课时 认识勾股定理",
         },
         {
             "id": "lesson-verify",
+            "parent_id": "section-explore",
             "node_type": "lesson",
-            "title": "验证勾股定理",
+            "title": "第2课时 验证勾股定理",
+        },
+    ]
+    compact = _compact_model_snapshot(snapshot)
+    assert compact["available_lessons"] == [
+        {
+            "id": "lesson-understand",
+            "title": "第1课时 认识勾股定理",
+            "chapter_title": "第一章 勾股定理",
+            "section_title": "1 探索勾股定理",
+        },
+        {
+            "id": "lesson-verify",
+            "title": "第2课时 验证勾股定理",
+            "chapter_title": "第一章 勾股定理",
+            "section_title": "1 探索勾股定理",
         },
     ]
     evidence = build_directory_evidence(snapshot)
@@ -601,6 +630,57 @@ def test_semantic_mapping_allows_one_section_for_split_existing_lessons() -> Non
         (item["start_unit"], item["end_unit"])
         for item in materialized["mappings"]
     } == {(9, 14)}
+
+
+def test_semantic_mapping_completes_partial_existing_lesson_decisions() -> None:
+    snapshot = _snapshot()
+    snapshot["lessons"] = [
+        {
+            "id": "lesson-understand",
+            "node_type": "lesson",
+            "title": "第1课时 认识勾股定理",
+        },
+        {
+            "id": "lesson-verify",
+            "node_type": "lesson",
+            "title": "第2课时 验证勾股定理",
+        },
+    ]
+    evidence = build_directory_evidence(snapshot)
+    snapshot["directory_evidence"] = evidence
+    annotations = [
+        {
+            "evidence_id": item["evidence_id"],
+            "title": str(item["title"]),
+            "chapter_title": "第一章 勾股定理",
+            "section_title": "1 探索勾股定理",
+            "kind": "section",
+        }
+        for item in evidence["toc_entries"]
+    ]
+
+    materialized = materialize_semantic_mapping_payload(
+        {
+            "annotations": annotations,
+            "matches": [
+                {
+                    "lesson_ref": "lesson-understand",
+                    "evidence_ids": ["toc-002"],
+                    "basis": "同属探索勾股定理",
+                }
+            ],
+            "uncertainties": [],
+        },
+        snapshot=snapshot,
+    )
+
+    assert [item["lesson_ref"] for item in materialized["mappings"]] == [
+        "lesson-understand"
+    ]
+    assert any(
+        "第2课时 验证勾股定理暂未对应" in item
+        for item in materialized["uncertainties"]
+    )
 
 
 def test_sparse_workbook_anchors_materialize_existing_lesson_page() -> None:
@@ -677,6 +757,73 @@ def test_sparse_workbook_anchors_materialize_existing_lesson_page() -> None:
     assert materialized["mappings"][0]["end_unit"] == 6
     assert materialized["mappings"][0]["evidence_refs"] == [
         "anchor-0006"
+    ]
+
+
+def test_existing_tree_ignores_unresolved_toc_and_uses_page_anchors() -> None:
+    snapshot = _snapshot()
+    snapshot["lessons"] = [
+        {
+            "id": "lesson-verify",
+            "node_type": "lesson",
+            "title": "第2课时 验证勾股定理",
+        }
+    ]
+    snapshot["directory_evidence"] = {
+        "strategy": "toc_calibrated",
+        "total_unit_count": 67,
+        "toc_entries": [
+            {
+                "evidence_id": "toc-001",
+                "title": "D,",
+                "source_unit": 18,
+                "printed_page": 18,
+            }
+        ],
+        "resolved_ranges": [],
+        "anchors": [
+            {
+                "evidence_id": "anchor-0005",
+                "unit_index": 5,
+                "title": "素养发展创新练",
+                "text_excerpt": "第2课时 勾股定理的验证及其简单应用",
+            }
+        ],
+    }
+
+    compact = _compact_model_snapshot(snapshot)
+
+    assert compact["directory_evidence"]["toc_entries"] == []
+    assert compact["directory_evidence"]["anchors"] == [
+        snapshot["directory_evidence"]["anchors"][0]
+    ]
+
+    materialized = materialize_semantic_mapping_payload(
+        {
+            "annotations": [
+                {
+                    "evidence_id": "anchor-0005",
+                    "title": "第2课时 勾股定理的验证及其简单应用",
+                    "chapter_title": "第一章 勾股定理",
+                    "section_title": "1 探索勾股定理",
+                    "kind": "lesson",
+                }
+            ],
+            "matches": [],
+            "uncertainties": [],
+        },
+        snapshot=snapshot,
+    )
+
+    assert materialized["mappings"] == [
+        {
+            "material_record_id": "record-1",
+            "lesson_ref": "lesson-verify",
+            "start_unit": 5,
+            "end_unit": 5,
+            "basis": "本机课时标题匹配",
+            "evidence_refs": ["anchor-0005"],
+        }
     ]
 
 

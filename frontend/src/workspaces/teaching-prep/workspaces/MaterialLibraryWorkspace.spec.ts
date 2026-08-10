@@ -688,6 +688,10 @@ describe('MaterialLibraryWorkspace current-material safety', () => {
     catalog.semesterMappingProposals = [item]
     await flush()
 
+    expect(host.textContent).toContain(
+      '本机无法预估金额；由当前模型服务商按实际用量计费',
+    )
+
     const button = [...host.querySelectorAll<HTMLButtonElement>('button')]
       .find(value => value.textContent?.includes('确认高置信建议（1 条）'))
     expect(button).toBeDefined()
@@ -695,6 +699,44 @@ describe('MaterialLibraryWorkspace current-material safety', () => {
     await vi.waitFor(() => expect(accept).toHaveBeenCalledWith(item))
     expect(catalog.semesterMappingProposals[0]?.payload.mappings[0]?.decision)
       .toBe('accepted')
+    app.unmount()
+  })
+
+  it('lets the teacher discard an incomplete mapping before a deliberate regeneration', async () => {
+    const curriculumItem = curriculum()
+    const semesterItem = semester(curriculumItem.id)
+    const materialItem = material('a'.repeat(32), '目录教材')
+    const materialRecord = record('r'.repeat(32), materialItem)
+    const item = proposal('2'.repeat(32), materialRecord.id)
+    const rejected = structuredClone(item)
+    rejected.status = 'rejected'
+    rejected.revision = 2
+    vi.spyOn(teachingPrepCatalogApi, 'semesterMappingPreflight')
+      .mockResolvedValue(mappingPreflight())
+    const reject = vi.spyOn(
+      teachingPrepCatalogApi,
+      'rejectSemesterMappingProposal',
+    ).mockResolvedValue(rejected)
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    const { app, host, catalog } = mountWorkspace()
+    catalog.curricula = [curriculumItem]
+    catalog.semesters = [semesterItem]
+    catalog.selectedCurriculumId = curriculumItem.id
+    catalog.materials = [materialItem]
+    catalog.semesterMaterials = [materialRecord]
+    catalog.selectedMaterialId = materialItem.id
+    await catalog.prepareSemesterMapping([materialRecord.id])
+    catalog.semesterMappingProposals = [item]
+    await flush()
+
+    const button = [...host.querySelectorAll<HTMLButtonElement>('button')]
+      .find(value => value.textContent?.includes('放弃本份建议，重新判断'))
+    expect(button).toBeDefined()
+    button?.click()
+
+    await vi.waitFor(() => expect(reject).toHaveBeenCalledWith(item))
+    await vi.waitFor(() => expect(catalog.currentSemesterMappingProposal).toBeNull())
+    expect(host.textContent).toContain('本操作没有调用模型')
     app.unmount()
   })
 

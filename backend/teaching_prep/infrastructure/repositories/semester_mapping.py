@@ -1258,19 +1258,27 @@ class SemesterMappingRepository:
         """
         return connection.execute(
             """
-            SELECT *
-            FROM teaching_prep_operations
-            WHERE operation_type = 'semester_mapping_model'
-              AND request_hash = ?
-              AND status IN ('running', 'succeeded', 'interrupted')
+            SELECT operation.*
+            FROM teaching_prep_operations AS operation
+            LEFT JOIN semester_mapping_proposals AS proposal
+              ON proposal.operation_id = operation.operation_id
+            WHERE operation.operation_type = 'semester_mapping_model'
+              AND operation.request_hash = ?
+              AND (
+                operation.status IN ('running', 'interrupted')
+                OR (
+                  operation.status = 'succeeded'
+                  AND proposal.status != 'rejected'
+                )
+              )
             ORDER BY
-                CASE status
+                CASE operation.status
                     WHEN 'succeeded' THEN 0
                     WHEN 'interrupted' THEN 1
                     ELSE 2
                 END,
-                created_at DESC,
-                operation_id DESC
+                operation.created_at DESC,
+                operation.operation_id DESC
             LIMIT 1
             """,
             (request_hash,),

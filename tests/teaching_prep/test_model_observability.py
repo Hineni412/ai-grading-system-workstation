@@ -185,8 +185,10 @@ def test_existing_tree_mapping_call_only_offers_formal_lesson_ids() -> None:
                 {
                     "message": {
                         "content": (
-                            '{"annotations":[],"matches":[],"uncertainties":'
-                            '["资料内容无法对应已有课时"]}'
+                            '{"annotations":[],"matches":[{"lesson_ref":"'
+                            + "l" * 32
+                            + '","evidence_ids":[],"basis":"资料内容无法对应"}],'
+                            '"uncertainties":[]}'
                         )
                     }
                 }
@@ -246,7 +248,9 @@ def test_existing_tree_mapping_call_only_offers_formal_lesson_ids() -> None:
     assert result == {
         "tree": [],
         "mappings": [],
-        "uncertainties": ["资料内容无法对应已有课时"],
+        "uncertainties": [
+            "第1课时 算术平方根暂未对应：资料内容无法对应"
+        ],
     }
     request_kwargs = captured["kwargs"]
     assert isinstance(request_kwargs, dict)
@@ -260,6 +264,7 @@ def test_existing_tree_mapping_call_only_offers_formal_lesson_ids() -> None:
     assert model_snapshot["mapping_mode"] == "map_existing_lessons"
     assert model_snapshot["available_lessons"] == [
         {
+            "chapter_title": "第一章",
             "duration_minutes": 45,
             "id": lesson_id,
             "title": "第1课时 算术平方根",
