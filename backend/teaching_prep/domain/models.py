@@ -174,6 +174,7 @@ class ReferencePptCollection:
     display_name: str
     mapping_proposal_id: str
     ignored_file_count: int
+    is_active: bool
     revision: int
     created_at: str
     updated_at: str

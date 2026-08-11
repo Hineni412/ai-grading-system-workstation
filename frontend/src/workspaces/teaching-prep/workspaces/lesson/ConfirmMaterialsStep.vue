@@ -1,35 +1,33 @@
 <script setup lang="ts">
 import { computed, nextTick, reactive, ref, watch } from 'vue'
 
+import AppButton from '../../../../components/design-system/AppButton.vue'
+import StatusBadge from '../../../../components/design-system/StatusBadge.vue'
 import type {
-  ExerciseSuggestion,
   ExerciseSuggestionPayload,
   ExerciseSuggestionRun,
   ReferenceSelectionDraft,
   ReferenceSelectionPayload,
-} from '../api/workbench'
-import { teachingPrepWorkbenchApi } from '../api/workbench'
+} from '../../api/workbench'
+import { teachingPrepWorkbenchApi } from '../../api/workbench'
 import {
   teachingPrepCatalogApi,
   type LessonDraft,
   type MaterialLinkPurpose,
   type ResourcePack,
-} from '../api/catalog'
-import TeachingPrepDocumentWorkspace from '../components/TeachingPrepDocumentWorkspace.vue'
-import TeachingPrepStickyActions from '../components/TeachingPrepStickyActions.vue'
-import { useTeachingPrepWorkbenchContext } from '../workbench/context'
-import { useWorkspaceAITaskStore } from '../../shared/ai-tasks/store'
+} from '../../api/catalog'
+import { useWorkspaceAITaskStore } from '../../../shared/ai-tasks/store'
+import { useTeachingPrepLessonWorkbenchContext } from '../../workbench/routeContext'
 
 const LOCAL_SLIDE_CONTRACT_FINGERPRINT = '34b984e97a114fea15394bfdb1c73e8f667b340918e72c21bc15a21934a20a1b'
 const ACTIVE_TASK_STATUSES = new Set(['prepared', 'queued', 'running', 'needs_input', 'proposal_ready'])
 
-const workbench = useTeachingPrepWorkbenchContext()
+const workbench = useTeachingPrepLessonWorkbenchContext()
+const routeState = workbench.routeState
+const catalog = workbench.catalog
 const aiTasks = useWorkspaceAITaskStore()
 const primaryPptLinkId = ref<string | null>(null)
 const supportLinkIds = ref<string[]>([])
-const activePreviewUnitId = ref<string | null>(null)
-const previewZoom = ref(100)
-const previewFitWidth = ref(false)
 const submitting = ref(false)
 const allowPptOnly = ref(false)
 const message = ref('先确认主课件和参考资料。只有勾选的内容会进入本次 AI 改编。')
@@ -40,22 +38,22 @@ const quickPurpose = ref<MaterialLinkPurpose | ''>('')
 const quickAdding = ref(false)
 const quickMessage = ref('')
 const quickRequestToken = ref<string | null>(null)
-const refreshedPreviewUrls = new Set<string>()
 const exerciseRun = ref<ExerciseSuggestionRun | null>(null)
 const exerciseEdits = reactive<Record<string, ExerciseSuggestionPayload>>({})
 const exerciseAccepted = reactive<Record<string, boolean>>({})
 const selectedExerciseCandidateIds = ref<string[]>([])
 const exerciseSuggestionsConfirmed = ref(false)
+const cancellingTask = ref(false)
 
 const preflight = computed(() => workbench.referencePreflight.value)
 const references = computed(() => preflight.value?.catalog.material_links ?? [])
 const referencePpts = computed(() => references.value.filter(item => item.purpose === 'reference_ppt'))
 const supportMaterials = computed(() => references.value.filter(item => item.purpose !== 'reference_ppt'))
 const quickMaterialCandidates = computed(() => {
-  const semesterId = workbench.catalog.selectedSemester?.id
+  const semesterId = catalog.selectedSemester?.id
   const linkedVersionIds = new Set(references.value.map(item => item.material_version_id))
   if (!semesterId) return []
-  return workbench.catalog.semesterMaterials.flatMap((record) => {
+  return catalog.semesterMaterials.flatMap((record) => {
     if (
       record.semester_id !== semesterId
       || !record.is_active
@@ -65,7 +63,7 @@ const quickMaterialCandidates = computed(() => {
       || (record.current_unit_count ?? 0) < 1
       || linkedVersionIds.has(record.current_material_version_id)
     ) return []
-    const material = workbench.catalog.materials.find(item => (
+    const material = catalog.materials.find(item => (
       item.id === record.current_material_version_id
       && item.availability === 'available'
       && !item.source_archived_at
@@ -86,8 +84,8 @@ const selectedLinkIds = computed(() => [
   ...supportLinkIds.value,
 ])
 const parsedSemesterMaterials = computed(() => {
-  const semesterId = workbench.catalog.selectedSemester?.id
-  return workbench.catalog.semesterMaterials.filter(item => (
+  const semesterId = catalog.selectedSemester?.id
+  return catalog.semesterMaterials.filter(item => (
     item.semester_id === semesterId
     && item.is_active
     && item.parse_status === 'parsed'
@@ -108,7 +106,7 @@ const selectedExerciseMaterialVersionIds = computed(() => new Set(
     .filter(item => item.purpose === 'exercise')
     .map(item => item.material_version_id),
 ))
-const reusableExerciseCandidates = computed(() => (workbench.catalog.exerciseCandidates ?? []).filter(item => (
+const reusableExerciseCandidates = computed(() => (catalog.exerciseCandidates ?? []).filter(item => (
   item.is_active
   && item.selection_status !== 'excluded'
   && item.question_regions.some(region => selectedExerciseMaterialVersionIds.value.has(region.material_version_id))
@@ -133,30 +131,11 @@ const missingSupportLabels = computed(() => {
   })
 })
 const supportReady = computed(() => missingSupportLabels.value.length === 0)
-const previewUnits = computed(() => references.value.flatMap(link => (
-  link.units.map(unit => ({ ...unit, material_name: link.material_name, purpose: link.purpose }))
-)))
-const activePreviewUnitIndex = computed(() => Math.max(
-  0,
-  previewUnits.value.findIndex(item => item.unit_id === activePreviewUnitId.value),
-))
-const activePreviewUnit = computed(() => previewUnits.value[activePreviewUnitIndex.value] ?? null)
-const activePreviewUrl = computed(() => activePreviewUnit.value?.preview_url ?? null)
-const activePreviewKind = computed(() => {
-  if (activePreviewUnit.value?.unit_kind !== 'ppt_slide') return null
-  const kind = activePreviewUnit.value.object_summary?.preview_kind
-  return kind === 'rendered' || kind === 'structural' ? kind : null
-})
-const activePreviewLabel = computed(() => {
-  if (activePreviewKind.value === 'rendered') return '真实原页'
-  if (activePreviewKind.value === 'structural') return '结构预览，不是原页'
-  return null
-})
-const selectedDraft = computed(() => workbench.catalog.lessonDrafts.find(
-  item => item.id === workbench.catalog.selectedLessonDraftId,
-) ?? workbench.catalog.lessonDrafts.find(item => item.status === 'confirmed') ?? null)
+const selectedDraft = computed(() => catalog.lessonDrafts.find(
+  item => item.id === catalog.selectedLessonDraftId,
+) ?? catalog.lessonDrafts.find(item => item.status === 'confirmed') ?? null)
 const currentSlideTask = computed(() => {
-  const lesson = workbench.catalog.selectedLesson
+  const lesson = catalog.selectedLesson
   const draft = selectedDraft.value
   if (!lesson || !draft || workbench.dirtyReason.value) return null
   return aiTasks.orderedTasks.find(task => (
@@ -170,7 +149,7 @@ const currentSlideTask = computed(() => {
 })
 const canSubmit = computed(() => (
   Boolean(primaryPptLinkId.value)
-  && Boolean(workbench.catalog.teachingPreferences?.payload)
+  && Boolean(catalog.teachingPreferences?.payload)
   && (supportReady.value || allowPptOnly.value)
   && !submitting.value
 ))
@@ -196,9 +175,6 @@ watch(preflight, (next) => {
   selectedExerciseCandidateIds.value = savedExerciseIds.length
     ? [...savedExerciseIds]
     : reusableExerciseCandidates.value.map(item => item.id)
-  if (!previewUnits.value.some(item => item.unit_id === activePreviewUnitId.value)) {
-    activePreviewUnitId.value = previewUnits.value[0]?.unit_id ?? null
-  }
 }, { immediate: true })
 
 watch(quickMaterialCandidates, (candidates) => {
@@ -228,7 +204,7 @@ watch(
 )
 
 async function addQuickMaterialLink(): Promise<void> {
-  const lessonId = workbench.catalog.selectedLessonId
+  const lessonId = routeState.currentLessonId.value
   const candidate = quickMaterialCandidate.value
   const maximum = quickMaterialMaximum.value
   const startUnit = Math.trunc(Number(quickStartUnit.value))
@@ -261,7 +237,7 @@ async function addQuickMaterialLink(): Promise<void> {
       teacher_note: null,
       confirmation_status: 'confirmed',
     })
-    await workbench.refreshCurrentWorkspace()
+    await workbench.refresh()
     quickRequestToken.value = null
     quickMessage.value = `已加入第 ${startUnit}—${endUnit} 页；只有教师明确勾选后才会进入 AI 发送范围。`
   } catch (error) {
@@ -273,62 +249,32 @@ async function addQuickMaterialLink(): Promise<void> {
   }
 }
 
+async function removeMaterialLink(linkId: string): Promise<void> {
+  const link = catalog.materialLinks.find(item => item.id === linkId)
+  if (!link) return
+  if (!window.confirm('移除后本课不再关联该资料（资料本身保留在资料库）。确定移除吗？')) return
+  try {
+    await catalog.deactivateMaterialLink(link)
+    await workbench.refresh()
+    message.value = `已移除「${link.material_name}」与本课的关联。`
+  } catch {
+    message.value = catalog.errorMessage || '关联没有移除，请刷新后重试。'
+  }
+}
+
 function selectPrimaryPpt(linkId: string): void {
   primaryPptLinkId.value = linkId
-  selectLinkPreview(linkId)
   workbench.setDirty('资料对应关系')
   message.value = '已更换主课件；发送后 AI 将以这份 PPT 为删改底稿。'
 }
 
-function toggleSupport(linkId: string): void {
-  selectLinkPreview(linkId)
+function toggleSupport(): void {
   workbench.setDirty('资料对应关系')
   message.value = '参考资料选择已调整；未勾选的资料不会发送给 AI。'
 }
 
-function selectLinkPreview(linkId: string): void {
-  const link = references.value.find(item => item.link_id === linkId)
-  activePreviewUnitId.value = link?.units[0]?.unit_id ?? activePreviewUnitId.value
-}
-
-function movePreview(offset: number): void {
-  const nextIndex = Math.min(
-    previewUnits.value.length - 1,
-    Math.max(0, activePreviewUnitIndex.value + offset),
-  )
-  activePreviewUnitId.value = previewUnits.value[nextIndex]?.unit_id ?? null
-}
-
-function jumpPreview(event: Event): void {
-  const index = Math.trunc(Number((event.target as HTMLInputElement).value)) - 1
-  if (!Number.isFinite(index) || index < 0 || index >= previewUnits.value.length) return
-  activePreviewUnitId.value = previewUnits.value[index]?.unit_id ?? null
-}
-
-async function refreshRenderedReferencePreview(url: string): Promise<void> {
-  const lessonId = workbench.catalog.selectedLessonId
-  const unit = activePreviewUnit.value
-  if (
-    !lessonId
-    || unit?.preview_url !== url
-    || unit.unit_kind !== 'ppt_slide'
-    || unit.object_summary?.preview_kind === 'rendered'
-  ) return
-  const key = `${lessonId}:${url}`
-  if (refreshedPreviewUrls.has(key)) return
-  refreshedPreviewUrls.add(key)
-  try {
-    const next = await teachingPrepWorkbenchApi.referencePreflight(lessonId)
-    if (workbench.catalog.selectedLessonId === lessonId) {
-      workbench.referencePreflight.value = next
-    }
-  } catch {
-    // The structural preview stays visible and explicitly labelled as fallback.
-  }
-}
-
 function selectionPayload(): ReferenceSelectionPayload {
-  const preferences = workbench.catalog.teachingPreferences?.payload
+  const preferences = catalog.teachingPreferences?.payload
   if (!preflight.value || !preferences) throw new Error('资料或个人备课偏好尚未载入')
   return {
     material_selections: references.value
@@ -368,17 +314,17 @@ function exerciseIdsInPack(pack: ResourcePack): string[] {
 }
 
 function matchingCurrentPack(): ResourcePack | null {
-  if (workbench.catalog.resourcePackStatus?.local_sources_changed) return null
+  if (catalog.resourcePackStatus?.local_sources_changed) return null
   const expected = [...selectedLinkIds.value].sort().join('|')
   const expectedExercises = [...selectedExerciseCandidateIds.value].sort().join('|')
-  return workbench.catalog.resourcePacks.find(pack => (
+  return catalog.resourcePacks.find(pack => (
     selectedIdsInPack(pack).join('|') === expected
     && exerciseIdsInPack(pack).join('|') === expectedExercises
   )) ?? null
 }
 
 async function saveConfirmedSelection(): Promise<ReferenceSelectionDraft> {
-  const lessonId = workbench.catalog.selectedLessonId
+  const lessonId = routeState.currentLessonId.value
   if (!lessonId || !preflight.value) throw new Error('请先选择课时')
   const savedExerciseCandidateIds = [...selectedExerciseCandidateIds.value]
   const saved = await teachingPrepWorkbenchApi.saveReferenceDraft(lessonId, {
@@ -387,19 +333,19 @@ async function saveConfirmedSelection(): Promise<ReferenceSelectionDraft> {
     selection: selectionPayload(),
   })
   workbench.setDirty(null)
-  await workbench.refreshCurrentWorkspace()
+  await workbench.refresh()
   await nextTick()
   selectedExerciseCandidateIds.value = savedExerciseCandidateIds
   return saved
 }
 
 async function ensureResourcePack(): Promise<ResourcePack> {
-  const lessonId = workbench.catalog.selectedLessonId
-  const preferences = workbench.catalog.teachingPreferences?.payload
+  const lessonId = routeState.currentLessonId.value
+  const preferences = catalog.teachingPreferences?.payload
   if (!lessonId || !preferences) throw new Error('课时或个人备课偏好尚未载入')
   const current = matchingCurrentPack()
   if (current) {
-    await workbench.catalog.selectResourcePack(current)
+    await catalog.selectResourcePack(current)
     return current
   }
   const referencePptIntents = primaryPptLinkId.value
@@ -410,7 +356,7 @@ async function ensureResourcePack(): Promise<ResourcePack> {
     selected_material_link_ids: selectedLinkIds.value,
     selected_exercise_candidate_ids: [...selectedExerciseCandidateIds.value],
   })
-  await workbench.catalog.freezeResourcePack({
+  await catalog.freezeResourcePack({
     class_name: null,
     lesson_type: 'new_lesson',
     teacher_context: null,
@@ -422,39 +368,39 @@ async function ensureResourcePack(): Promise<ResourcePack> {
     selected_material_link_ids: selectedLinkIds.value,
     selected_exercise_candidate_ids: [...selectedExerciseCandidateIds.value],
   })
-  const created = workbench.catalog.resourcePacks[0]
+  const created = catalog.resourcePacks[0]
   if (!created) throw new Error('资料快照没有成功建立')
   return created
 }
 
 async function ensureConfirmedDraft(pack: ResourcePack): Promise<LessonDraft> {
-  let draft = workbench.catalog.lessonDrafts.find(item => (
+  let draft = catalog.lessonDrafts.find(item => (
     item.resource_pack_id === pack.id && item.status === 'confirmed'
   )) ?? null
   if (!draft) {
-    let generated = workbench.catalog.lessonDrafts.find(item => (
+    let generated = catalog.lessonDrafts.find(item => (
       item.resource_pack_id === pack.id && item.status === 'draft'
     )) ?? null
     if (!generated) {
-      await workbench.catalog.prepareLessonDraft('local_template')
-      await workbench.catalog.generateLessonDraft('local_template')
-      generated = workbench.catalog.lessonDrafts.find(item => (
+      await catalog.prepareLessonDraft('local_template')
+      await catalog.generateLessonDraft('local_template')
+      generated = catalog.lessonDrafts.find(item => (
         item.resource_pack_id === pack.id && item.status === 'draft'
       )) ?? null
     }
     if (generated) {
-      await workbench.catalog.reviseLessonDraft(
+      await catalog.reviseLessonDraft(
         generated,
         generated.payload,
         true,
       )
     }
-    draft = workbench.catalog.lessonDrafts.find(item => (
+    draft = catalog.lessonDrafts.find(item => (
       item.resource_pack_id === pack.id && item.status === 'confirmed'
     )) ?? null
   }
   if (!draft) throw new Error('内部课件结构没有准备完成')
-  await workbench.catalog.selectLessonDraft(draft)
+  await catalog.selectLessonDraft(draft)
   return draft
 }
 
@@ -476,7 +422,7 @@ function wait(milliseconds: number): Promise<void> {
 }
 
 async function identifyWorkbookQuestions(draft: ReferenceSelectionDraft): Promise<void> {
-  const lessonId = workbench.catalog.selectedLessonId
+  const lessonId = routeState.currentLessonId.value
   if (!lessonId) throw new Error('当前课时已失效')
   message.value = 'AI 正在从两本参考教辅中识别题目和裁切范围（第 1/2 次调用）……'
   const snapshot = await teachingPrepWorkbenchApi.freezeReferenceSnapshot(
@@ -489,10 +435,12 @@ async function identifyWorkbookQuestions(draft: ReferenceSelectionDraft): Promis
     `exercise-suggestions-${crypto.randomUUID().replaceAll('-', '')}`,
   )
   for (let attempt = 0; attempt < 120 && run.status === 'running'; attempt += 1) {
+    exerciseRun.value = run.status === 'running' ? run : exerciseRun.value
     await wait(1_000)
     run = await teachingPrepWorkbenchApi.exerciseSuggestionRun(run.id)
   }
   if (run.status !== 'succeeded') {
+    exerciseRun.value = null
     throw new Error(run.status === 'running'
       ? '教辅识题等待超时，没有自动重试'
       : `教辅识题未完成：${run.error_code ?? run.status}`)
@@ -500,6 +448,35 @@ async function identifyWorkbookQuestions(draft: ReferenceSelectionDraft): Promis
   if (!run.suggestions.length) throw new Error('AI 没有找到可核对的教辅题，请先人工调整教辅页段')
   initializeExerciseReview(run)
   message.value = `AI 找到 ${run.suggestions.length} 道候选题。请核对题目范围，再继续生成课件改编。`
+}
+
+async function cancelExerciseRun(): Promise<void> {
+  const run = exerciseRun.value
+  if (!run || run.status !== 'running') return
+  cancellingTask.value = true
+  try {
+    await teachingPrepWorkbenchApi.cancelExerciseSuggestions(run.id)
+    exerciseRun.value = null
+    message.value = '题目识别已取消；已保存的资料对应关系不受影响。'
+  } catch {
+    message.value = '识题任务暂时没有取消成功，请稍后重试。'
+  } finally {
+    cancellingTask.value = false
+  }
+}
+
+async function cancelSlideTask(): Promise<void> {
+  const task = currentSlideTask.value
+  if (!task) return
+  cancellingTask.value = true
+  try {
+    await aiTasks.cancel(task.task_id)
+    message.value = '改编任务已请求取消；已保存的资料对应关系不受影响。'
+  } catch {
+    message.value = '改编任务暂时没有取消成功，请稍后重试。'
+  } finally {
+    cancellingTask.value = false
+  }
 }
 
 async function confirmWorkbookQuestions(): Promise<void> {
@@ -528,41 +505,17 @@ async function confirmWorkbookQuestions(): Promise<void> {
   }
   if (!candidateIds.length) throw new Error('至少保留一道教辅候选题，才能执行插题改编')
   exerciseSuggestionsConfirmed.value = true
-  await workbench.refreshCurrentWorkspace()
+  await workbench.refresh()
   await nextTick()
-  // refreshCurrentWorkspace may replace the preflight object and trigger its
-  // watcher. Restore the just-created candidates before saving the selection.
+  // refresh may replace the preflight object and trigger its watcher.
+  // Restore the just-created candidates before saving the selection.
   selectedExerciseCandidateIds.value = candidateIds
-}
-
-function suggestionUnit(suggestion: ExerciseSuggestion) {
-  const region = exerciseEdits[suggestion.id]?.question_regions[0]
-  return region
-    ? previewUnits.value.find(unit => unit.unit_id === region.material_unit_id) ?? null
-    : null
-}
-
-function cropImageStyle(suggestion: ExerciseSuggestion): Record<string, string> {
-  const crop = exerciseEdits[suggestion.id]?.question_regions[0]?.crop
-  if (!crop) return {}
-  const width = Math.max(0.01, crop.x1 - crop.x0)
-  const height = Math.max(0.01, crop.y1 - crop.y0)
-  return {
-    position: 'absolute',
-    width: `${100 / width}%`,
-    height: `${100 / height}%`,
-    left: `${-100 * crop.x0 / width}%`,
-    top: `${-100 * crop.y0 / height}%`,
-    maxWidth: 'none',
-    maxHeight: 'none',
-    objectFit: 'fill',
-  }
 }
 
 function withSemesterContext(
   refs: Array<{ kind: string; id: string; revision: string }>,
 ): Array<{ kind: string; id: string; revision: string }> {
-  const semester = workbench.catalog.selectedSemester
+  const semester = catalog.selectedSemester
   return semester
     ? [...refs, { kind: 'semester', id: semester.id, revision: String(semester.revision) }]
     : refs
@@ -594,7 +547,7 @@ async function confirmAndSend(forceNew = false): Promise<void> {
       task.module === 'teaching_prep'
       && task.task_kind === 'teaching_prep.slide_change_proposal'
       && task.source_ref.kind === 'lesson'
-      && task.source_ref.id === workbench.catalog.selectedLessonId
+      && task.source_ref.id === routeState.currentLessonId.value
       && task.context_refs.some(ref => ref.kind === 'lesson_draft' && ref.id === draft.id)
       && ACTIVE_TASK_STATUSES.has(task.status)
     )) : undefined
@@ -604,7 +557,7 @@ async function confirmAndSend(forceNew = false): Promise<void> {
       }
       message.value = '已找到本课时正在处理的改编任务，没有重复发送。'
     } else {
-      const lesson = workbench.catalog.selectedLesson
+      const lesson = catalog.selectedLesson
       if (!lesson) throw new Error('当前课时已失效')
       const prepared = await aiTasks.prepare({
         operation_id: `slide-proposal-${crypto.randomUUID().replaceAll('-', '')}`,
@@ -623,7 +576,7 @@ async function confirmAndSend(forceNew = false): Promise<void> {
       await aiTasks.dispatch(prepared)
       message.value = '资料已确认，AI 改编任务已经开始。'
     }
-    await workbench.openStage('slides', { panel: 'slides' })
+    await routeState.setStep(2)
   } catch (error) {
     message.value = error instanceof Error && error.message
       ? `尚未发送：${error.message}`
@@ -636,7 +589,7 @@ async function confirmAndSend(forceNew = false): Promise<void> {
 async function runPrimaryAction(): Promise<void> {
   const current = currentSlideTask.value
   if (current && current.status !== 'proposal_ready') {
-    await openCurrentTask()
+    await routeState.setStep(2)
     return
   }
   await confirmAndSend(current?.status === 'proposal_ready')
@@ -664,80 +617,93 @@ const primaryActionLabel = computed(() => {
   return '确认资料并生成 AI 改编（调用 1 次）'
 })
 
-async function openCurrentTask(): Promise<void> {
-  await workbench.openStage('slides', { panel: 'slides' })
+const purposeLabels: Record<string, string> = {
+  textbook: '教材依据',
+  reference_ppt: '参考课件',
+  exercise: '课堂练习',
+  answer: '答案 / 解析',
+  supplement: '补充资料',
 }
+
+defineExpose({
+  primaryLabel: primaryActionLabel,
+  primaryDisabled: computed(() => !canSubmit.value),
+  runPrimary: runPrimaryAction,
+})
 </script>
 
 <template>
-  <section class="tp-workspace tp-material-confirmation">
-    <header class="tp-workspace__header">
-      <div>
-        <p class="tp-eyebrow">第 1 步 · 对准本节资料</p>
-        <h1 data-workbench-title tabindex="-1">确认主课件和参考依据</h1>
-        <p>主课件是 AI 实际删改的底稿；教材、教辅只提供本节内容依据。系统不会读取未勾选资料。</p>
+  <div class="tp-step-canvas">
+    <section class="tp-panel" aria-label="本课关联资料">
+      <div class="tp-panel__head">
+        <h2>本课关联资料</h2>
+        <span class="tp-panel__hint">主课件一份，参考资料不限；不合适的可直接移除</span>
       </div>
-      <span class="tp-trust-badge">原 PPT 始终只读</span>
-    </header>
-
-    <div v-if="!referencePpts.length" class="tp-inline-error" role="alert">
-      本课时还没有对应的参考 PPT。请先到资料库完成课时对应，之后再发送给 AI。
-      <button class="tp-button tp-button--secondary" type="button" @click="workbench.openWorkspace('materials')">打开资料库</button>
-    </div>
-
-    <div v-if="missingSupportLabels.length" class="tp-inline-error" role="alert">
-      <div>
-        <strong>还缺少{{ missingSupportLabels.join('、') }}的已确认页段</strong>
-        <p>先在资料库让 AI 根据目录、正文锚点和页码提出课时对应；高置信结果可批量确认，页码有误时可以人工修正。</p>
-      </div>
-      <div class="tp-inline-actions">
-        <button
-          class="tp-button tp-button--secondary"
-          data-testid="open-material-mapping"
-          type="button"
-          @click="workbench.openWorkspace('materials')"
-        >
-          去资料库自动判断页段
-        </button>
-      </div>
-      <label class="tp-field--check">
-        <input v-model="allowPptOnly" data-testid="allow-ppt-only" type="checkbox">
-        我确认本次暂时只依据 PPT 生成降级建议
-      </label>
-      <p v-if="allowPptOnly" class="tp-error-text">本次只依据 PPT，可能偏离教材与教辅；生成后需要重点复核。</p>
-    </div>
-
-    <section class="tp-quick-material-link" aria-labelledby="quick-material-link-title">
-      <div>
-        <p class="tp-eyebrow">补充本节依据</p>
-        <h2 id="quick-material-link-title">从本学期资料添加</h2>
-        <p>只建立你明确指定的连续页段，不会自动关联整本资料，也不会在这里调用 AI。</p>
-      </div>
-      <label class="tp-field">
-        已解析资料
-        <select v-model="quickMaterialRecordId" data-testid="lesson-material-candidate">
-          <option value="">请选择资料</option>
-          <option
-            v-for="item in quickMaterialCandidates"
-            :key="item.record.id"
-            :value="item.record.id"
+      <div class="tp-panel__body">
+        <div v-if="!referencePpts.length" class="tp-banner tp-banner--warn" role="alert">
+          本课时还没有对应的参考 PPT。请先到资料库完成课时对应，之后再发送给 AI。
+          <AppButton variant="secondary" @click="routeState.openLibrary()">打开资料库</AppButton>
+        </div>
+        <div v-if="missingSupportLabels.length" class="tp-banner tp-banner--warn" role="alert">
+          <div>
+            <strong>还缺少{{ missingSupportLabels.join('、') }}的已确认页段</strong>
+            <p>先在资料库让 AI 根据目录、正文锚点和页码提出课时对应；页码有误时可以人工修正。</p>
+          </div>
+          <AppButton
+            variant="secondary"
+            data-testid="open-material-mapping"
+            @click="routeState.openLibrary()"
           >
-            {{ item.record.display_name }} · 共 {{ item.record.current_unit_count }} 页
-          </option>
-        </select>
-      </label>
-      <label class="tp-field">
-        本课时用途
-        <select v-model="quickPurpose" data-testid="lesson-material-purpose">
-          <option value="">请选择用途</option>
-          <option value="textbook">教材依据</option>
-          <option value="reference_ppt">参考课件</option>
-          <option value="exercise">课堂练习</option>
-          <option value="answer">答案 / 解析</option>
-          <option value="supplement">补充资料</option>
-        </select>
-      </label>
-      <div class="tp-field-pair">
+            去资料库自动判断页段
+          </AppButton>
+          <label class="tp-field--check">
+            <input v-model="allowPptOnly" data-testid="allow-ppt-only" type="checkbox">
+            我确认本次暂时只依据 PPT 生成降级建议
+          </label>
+          <p v-if="allowPptOnly" class="tp-error-text">本次只依据 PPT，可能偏离教材与教辅；生成后需要重点复核。</p>
+        </div>
+        <div v-for="item in references" :key="item.link_id" class="tp-link-row">
+          <div class="tp-link-row__meta">
+            <strong>{{ item.material_name }}</strong>
+            <small>第 {{ item.start_unit }}—{{ item.end_unit }} 页 · {{ item.material_type.toUpperCase() }}</small>
+          </div>
+          <StatusBadge
+            :tone="item.purpose === 'reference_ppt' ? 'success' : 'info'"
+            :label="purposeLabels[item.purpose] ?? item.purpose"
+          />
+          <AppButton variant="ghost" class="tp-danger-text" @click="removeMaterialLink(item.link_id)">移除</AppButton>
+        </div>
+        <p v-if="!references.length" class="tp-muted">本课还没有关联资料，请在下方添加。</p>
+      </div>
+    </section>
+
+    <section class="tp-panel" aria-label="添加资料">
+      <div class="tp-panel__head">
+        <h2>添加资料</h2>
+        <span class="tp-panel__hint">只建立你明确指定的连续页段，不会自动关联整本资料，也不会在这里调用 AI</span>
+      </div>
+      <div class="tp-panel__body tp-form-line">
+        <label class="tp-field">
+          已解析资料
+          <select v-model="quickMaterialRecordId" data-testid="lesson-material-candidate">
+            <option value="">请选择资料</option>
+            <option v-for="item in quickMaterialCandidates" :key="item.record.id" :value="item.record.id">
+              {{ item.record.display_name }} · 共 {{ item.record.current_unit_count }} 页
+            </option>
+          </select>
+        </label>
+        <label class="tp-field">
+          本课时用途
+          <select v-model="quickPurpose" data-testid="lesson-material-purpose">
+            <option value="">请选择用途</option>
+            <option v-for="purpose in [
+              ['textbook', '教材依据'], ['reference_ppt', '参考课件'], ['exercise', '课堂练习'],
+              ['answer', '答案 / 解析'], ['supplement', '补充资料'],
+            ]" :key="purpose[0]" :value="purpose[0]">
+              {{ purpose[1] }}
+            </option>
+          </select>
+        </label>
         <label class="tp-field">
           起始页
           <input v-model.number="quickStartUnit" data-testid="lesson-material-range" type="number" min="1" :max="quickMaterialMaximum || 1">
@@ -746,153 +712,119 @@ async function openCurrentTask(): Promise<void> {
           结束页
           <input v-model.number="quickEndUnit" data-testid="lesson-material-range" type="number" min="1" :max="quickMaterialMaximum || 1">
         </label>
+        <AppButton
+          variant="secondary"
+          data-testid="add-lesson-material"
+          :disabled="quickAdding"
+          @click="addQuickMaterialLink"
+        >
+          {{ quickAdding ? '正在加入…' : '确认页段并加入本课时' }}
+        </AppButton>
+        <p v-if="quickMessage" class="tp-inline-message" role="status">{{ quickMessage }}</p>
+        <p v-else-if="quickMaterialCandidates.length === 0" class="tp-muted">当前没有尚未关联且已完成解析的本学期资料。</p>
       </div>
-      <button
-        class="tp-button tp-button--secondary"
-        data-testid="add-lesson-material"
-        type="button"
-        :disabled="quickAdding"
-        @click="addQuickMaterialLink"
-      >
-        {{ quickAdding ? '正在加入…' : '确认页段并加入本课时' }}
-      </button>
-      <p v-if="quickMessage" class="tp-inline-guidance" role="status">{{ quickMessage }}</p>
-      <p v-else-if="quickMaterialCandidates.length === 0" class="tp-muted">当前没有尚未关联且已完成解析的本学期资料。</p>
     </section>
 
-    <section v-if="pendingExerciseSuggestions.length" class="tp-exercise-proof" aria-labelledby="exercise-proof-title">
-      <header>
-        <div>
-          <p class="tp-eyebrow">第 2 步 · 核对教辅题</p>
-          <h2 id="exercise-proof-title">AI 找到的题目裁切</h2>
-          <p>绿色窗口就是将插入 PPT 的实际范围。数值可直接修正；取消勾选的题不会进入课件。</p>
+    <section class="tp-panel" aria-label="发送范围确认">
+      <div class="tp-panel__head">
+        <h2>发送范围确认</h2>
+        <span class="tp-panel__hint">系统不会读取未勾选资料；原 PPT 始终只读</span>
+      </div>
+      <div class="tp-panel__body">
+        <div class="tp-source-groups">
+          <div class="tp-source-group">
+            <p class="tp-source-group__label">主课件<small>只能选一份，AI 将在它的副本上改编</small></p>
+            <label v-for="item in referencePpts" :key="item.link_id" class="tp-check-row tp-check-row--primary">
+              <input
+                type="radio"
+                name="primary-reference-ppt"
+                :checked="primaryPptLinkId === item.link_id"
+                @change="selectPrimaryPpt(item.link_id)"
+              >
+              <span><strong>{{ item.material_name }}</strong><small>第 {{ item.start_unit }}—{{ item.end_unit }} 页 · PPT</small></span>
+            </label>
+          </div>
+          <div class="tp-source-group">
+            <p class="tp-source-group__label">参考依据<small>已确认的教材、教辅页段默认全部发送，也可以逐项取消</small></p>
+            <label v-for="item in supportMaterials" :key="item.link_id" class="tp-check-row">
+              <input v-model="supportLinkIds" type="checkbox" :value="item.link_id" @change="toggleSupport">
+              <span><strong>{{ item.material_name }}</strong><small>第 {{ item.start_unit }}—{{ item.end_unit }} 页 · {{ item.material_type.toUpperCase() }}</small></span>
+            </label>
+            <p v-if="!supportMaterials.length" class="tp-error-text">本节还没有教材或教辅页段，请先自动判断并确认；也可以在上方人工补充连续页段。</p>
+          </div>
         </div>
-        <strong>{{ pendingExerciseSuggestions.filter(item => exerciseAccepted[item.id] !== false).length }} / {{ pendingExerciseSuggestions.length }} 道待采用</strong>
-      </header>
-      <article v-for="item in pendingExerciseSuggestions" :key="item.id" class="tp-exercise-proof__item">
-        <label class="tp-exercise-proof__choice">
-          <input v-model="exerciseAccepted[item.id]" type="checkbox">
-          <span>采用这道题</span>
-        </label>
-        <div class="tp-exercise-proof__crop">
-          <img
-            v-if="suggestionUnit(item)?.preview_url"
-            data-testid="exercise-crop-preview"
-            :src="suggestionUnit(item)?.preview_url"
-            :alt="exerciseEdits[item.id]?.content_label ?? '教辅题裁切预览'"
-            :style="cropImageStyle(item)"
-          >
-          <span v-else>原页预览暂不可用</span>
-        </div>
-        <div class="tp-exercise-proof__fields">
-          <label class="tp-field">题号<input v-model="exerciseEdits[item.id]!.question_number" maxlength="80"></label>
-          <label class="tp-field">课堂显示名称<input v-model="exerciseEdits[item.id]!.content_label" maxlength="300"></label>
-          <p>{{ exerciseEdits[item.id]!.reason }}</p>
-          <fieldset v-for="region in exerciseEdits[item.id]!.question_regions" :key="`${region.material_unit_id}-${region.sequence}`">
-            <legend>题目裁切范围（0—1）</legend>
-            <label>x 起点<input v-model.number="region.crop.x0" type="number" min="0" max="1" step="0.01"></label>
-            <label>y 起点<input v-model.number="region.crop.y0" type="number" min="0" max="1" step="0.01"></label>
-            <label>x 终点<input v-model.number="region.crop.x1" type="number" min="0" max="1" step="0.01"></label>
-            <label>y 终点<input v-model.number="region.crop.y1" type="number" min="0" max="1" step="0.01"></label>
-          </fieldset>
-        </div>
-      </article>
-    </section>
-
-    <TeachingPrepDocumentWorkspace
-      title="资料原页核对"
-      subtitle="点击任一资料可查看它在本课时的已定位页段。"
-      :preview-url="activePreviewUrl"
-      :active-pane="workbench.pane.value"
-      :preview-zoom="previewZoom"
-      :fit-width="previewFitWidth"
-      @update:active-pane="workbench.setPane"
-      @preview-loaded="refreshRenderedReferencePreview"
-    >
-      <template #rail>
-        <section class="tp-source-group">
-          <div><p class="tp-eyebrow">主课件</p><small>只能选一份，AI 将在它的副本上改编</small></div>
-          <label v-for="item in referencePpts" :key="item.link_id" class="tp-check-row tp-check-row--primary">
-            <input
-              type="radio"
-              name="primary-reference-ppt"
-              :checked="primaryPptLinkId === item.link_id"
-              @change="selectPrimaryPpt(item.link_id)"
-            >
-            <span><strong>{{ item.material_name }}</strong><small>第 {{ item.start_unit }}—{{ item.end_unit }} 页 · PPT</small></span>
-          </label>
-        </section>
-        <section class="tp-source-group">
-          <div><p class="tp-eyebrow">参考依据</p><small>已确认的教材、教辅页段默认全部发送，也可以逐项取消</small></div>
-          <label v-for="item in supportMaterials" :key="item.link_id" class="tp-check-row">
-            <input v-model="supportLinkIds" type="checkbox" :value="item.link_id" @change="toggleSupport(item.link_id)">
-            <span><strong>{{ item.material_name }}</strong><small>第 {{ item.start_unit }}—{{ item.end_unit }} 页 · {{ item.material_type.toUpperCase() }}</small></span>
-          </label>
-          <p v-if="!supportMaterials.length" class="tp-error-text">本节还没有教材或教辅页段，请先自动判断并确认；也可以在上方人工补充连续页段。</p>
-        </section>
-      </template>
-
-      <template #toolbar>
-        <div class="tp-document-toolbar">
-          <button type="button" aria-label="上一页" :disabled="activePreviewUnitIndex <= 0" @click="movePreview(-1)">←</button>
-          <label class="tp-document-toolbar__jump">
-            <span class="tp-visually-hidden">跳转页码</span>
-            <input aria-label="跳转页码" type="number" min="1" :max="previewUnits.length" :value="activePreviewUnitIndex + 1" @change="jumpPreview">
-            <span>/ {{ previewUnits.length }}</span>
-          </label>
-          <button type="button" aria-label="下一页" :disabled="activePreviewUnitIndex >= previewUnits.length - 1" @click="movePreview(1)">→</button>
-          <button type="button" @click="previewFitWidth = !previewFitWidth">{{ previewFitWidth ? '实际比例' : '适应宽度' }}</button>
-          <button type="button" aria-label="缩小预览" @click="previewFitWidth = false; previewZoom = Math.max(50, previewZoom - 10)">−</button>
-          <span class="tp-document-toolbar__zoom">{{ previewZoom }}%</span>
-          <button type="button" aria-label="放大预览" @click="previewFitWidth = false; previewZoom = Math.min(200, previewZoom + 10)">＋</button>
-          <span
-            v-if="activePreviewLabel"
-            class="tp-preview-kind"
-            :class="{ 'is-structural': activePreviewKind === 'structural' }"
-          >
-            {{ activePreviewLabel }}
-          </span>
-        </div>
-      </template>
-
-      <template #inspector>
         <div class="tp-confirmation-summary">
-          <p class="tp-eyebrow">本次发送范围</p>
-          <h2>{{ selectedLinkIds.length }} 份资料</h2>
           <dl>
+            <div><dt>本次发送</dt><dd>{{ selectedLinkIds.length }} 份资料</dd></div>
             <div><dt>主课件</dt><dd>{{ referencePpts.find(item => item.link_id === primaryPptLinkId)?.material_name ?? '未选择' }}</dd></div>
             <div><dt>参考依据</dt><dd>{{ supportLinkIds.length ? `${supportLinkIds.length} 份` : allowPptOnly ? '降级：不使用' : '待补齐' }}</dd></div>
-            <div><dt>教学文字</dt><dd>无需填写</dd></div>
             <div><dt>模型调用</dt><dd>{{ hasSelectedExercisePages && selectedExerciseCandidateIds.length === 0 ? '共 2 次：教辅识题 + 课件改编' : '1 次：课件改编' }} · 失败不自动重试</dd></div>
             <div><dt>调用费用</dt><dd>本机无法预估金额；由当前模型服务商按实际用量计费，点击生成即确认本次调用</dd></div>
             <div><dt>原始文件</dt><dd>不会覆盖</dd></div>
           </dl>
-          <div v-if="taskStatusLabel" class="tp-ai-task-note" role="status">
-            <span aria-hidden="true" />
-            <div><strong>{{ taskStatusLabel }}</strong><small>这是当前资料版本对应的任务</small></div>
+          <div v-if="taskStatusLabel || exerciseRun?.status === 'running'" class="tp-inline-actions">
+            <StatusBadge v-if="taskStatusLabel" tone="ai" :label="taskStatusLabel" />
+            <StatusBadge v-if="exerciseRun?.status === 'running'" tone="ai" label="AI 正在识别教辅题" />
+            <AppButton
+              v-if="exerciseRun?.status === 'running'"
+              variant="secondary"
+              :disabled="cancellingTask"
+              data-testid="cancel-exercise-run"
+              @click="cancelExerciseRun"
+            >
+              取消题目识别
+            </AppButton>
+            <AppButton
+              v-if="currentSlideTask && ['prepared', 'queued', 'running'].includes(currentSlideTask.status)"
+              variant="secondary"
+              :disabled="cancellingTask"
+              data-testid="cancel-slide-task"
+              @click="cancelSlideTask"
+            >
+              取消改编任务
+            </AppButton>
+            <AppButton v-if="currentSlideTask" variant="ghost" @click="routeState.setStep(2)">查看当前改编</AppButton>
+            <AppButton
+              v-if="hasSelectedExercisePages && selectedExerciseCandidateIds.length"
+              variant="ghost"
+              data-testid="restart-exercise-recognition"
+              @click="restartExerciseRecognition"
+            >
+              重新识别教辅题
+            </AppButton>
           </div>
-          <button v-if="currentSlideTask" class="tp-button tp-button--secondary" type="button" @click="openCurrentTask">查看当前改编</button>
-          <button
-            v-if="hasSelectedExercisePages && selectedExerciseCandidateIds.length"
-            class="tp-button tp-button--secondary"
-            data-testid="restart-exercise-recognition"
-            type="button"
-            @click="restartExerciseRecognition"
-          >
-            重新识别教辅题
-          </button>
         </div>
-      </template>
-    </TeachingPrepDocumentWorkspace>
+      </div>
+    </section>
 
-    <TeachingPrepStickyActions
-      :state="submitting ? 'saving' : workbench.dirtyReason.value ? 'dirty' : message.startsWith('尚未') ? 'error' : 'saved'"
-      :message="message"
-    >
-      <button class="tp-button tp-button--secondary" type="button" @click="workbench.openStage('select')">返回备课首页</button>
-      <button class="tp-button tp-button--primary" data-testid="send-slide-adaptation" type="button" :disabled="!canSubmit" @click="runPrimaryAction">
-        {{ primaryActionLabel }}
-      </button>
-    </TeachingPrepStickyActions>
-  </section>
+    <section v-if="pendingExerciseSuggestions.length" class="tp-panel" aria-label="AI 找到的题目裁切">
+      <div class="tp-panel__head">
+        <h2>AI 找到的题目裁切</h2>
+        <StatusBadge tone="ai" :label="`AI 建议 · ${pendingExerciseSuggestions.filter(item => exerciseAccepted[item.id] !== false).length} / ${pendingExerciseSuggestions.length} 道待采用`" />
+      </div>
+      <div class="tp-panel__body">
+        <p class="tp-muted">数值可直接修正；取消勾选的题不会进入课件。</p>
+        <article v-for="item in pendingExerciseSuggestions" :key="item.id" class="tp-exercise-proof__item">
+          <label class="tp-field--check">
+            <input v-model="exerciseAccepted[item.id]" type="checkbox">
+            采用这道题
+          </label>
+          <div class="tp-exercise-proof__fields">
+            <label class="tp-field">题号<input v-model="exerciseEdits[item.id]!.question_number" maxlength="80"></label>
+            <label class="tp-field">课堂显示名称<input v-model="exerciseEdits[item.id]!.content_label" maxlength="300"></label>
+            <p class="tp-muted">{{ exerciseEdits[item.id]!.reason }}</p>
+            <fieldset v-for="region in exerciseEdits[item.id]!.question_regions" :key="`${region.material_unit_id}-${region.sequence}`" class="tp-crop-fieldset">
+              <legend>题目裁切范围（0—1）</legend>
+              <label>x 起点<input v-model.number="region.crop.x0" type="number" min="0" max="1" step="0.01"></label>
+              <label>y 起点<input v-model.number="region.crop.y0" type="number" min="0" max="1" step="0.01"></label>
+              <label>x 终点<input v-model.number="region.crop.x1" type="number" min="0" max="1" step="0.01"></label>
+              <label>y 终点<input v-model.number="region.crop.y1" type="number" min="0" max="1" step="0.01"></label>
+            </fieldset>
+          </div>
+        </article>
+      </div>
+    </section>
+
+    <p class="tp-inline-message" role="status">{{ message }}</p>
+  </div>
 </template>

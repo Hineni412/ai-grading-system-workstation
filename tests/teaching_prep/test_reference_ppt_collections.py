@@ -248,3 +248,133 @@ def test_collection_persists_virtual_path_and_reuses_mapping_review(
     assert response.json()["items"][0]["members"][0]["relative_path"] == (
         "全部课件/1.2 勾股定理应用（第一课时）.pptx"
     )
+
+
+def _create_collection(tmp_path, monkeypatch):
+    _paths, service = _migrated_service(tmp_path, monkeypatch)
+    _curriculum, semester, _created = service.create_semester_workspace(
+        request_token="ppt-folder-semester-workspace-0002",
+        title="八年级上册数学",
+        grade_level=8,
+        volume="first",
+        publisher="北师版",
+        edition_label=None,
+        school_year="2026-2027",
+        term="first",
+        planned_new_lesson_count=48,
+    )
+    source = _pptx(tmp_path / "1.2 勾股定理应用（第一课时）.pptx")
+    version, _created = service.register_material_file(
+        request_token="ppt-folder-material-version-0002",
+        path=source,
+        display_name="勾股定理应用",
+    )
+    record, _created = service.attach_semester_material(
+        semester.id,
+        request_token="ppt-folder-material-record-0002",
+        material_version_id=version.id,
+        material_role="reference_ppt",
+    )
+    service.parse_material_version(version.id)
+    collection, created = service.create_reference_ppt_collection(
+        semester.id,
+        request_token="ppt-folder-collection-create-0002",
+        display_name="凌乱但可识别的课件",
+        ignored_file_count=0,
+        members=[
+            {
+                "material_record_id": record.id,
+                "relative_path": "全部课件/1.2 勾股定理应用（第一课时）.pptx",
+            }
+        ],
+    )
+    assert created is True
+    return service, semester, collection
+
+
+def test_deactivated_collection_leaves_list_until_restored(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    service, semester, collection = _create_collection(tmp_path, monkeypatch)
+    client = _api_client(service)
+
+    assert collection.is_active is True
+    response = client.get(
+        f"/api/teaching-prep/semesters/{semester.id}/reference-ppt-collections"
+    )
+    assert response.status_code == 200
+    assert response.json()["items"][0]["is_active"] is True
+
+    deactivated = client.patch(
+        f"/api/teaching-prep/reference-ppt-collections/{collection.id}",
+        json={"is_active": False},
+    )
+    assert deactivated.status_code == 200
+    assert deactivated.json()["is_active"] is False
+    assert deactivated.json()["revision"] == collection.revision + 1
+    assert service.list_reference_ppt_collections(semester.id) == ()
+    response = client.get(
+        f"/api/teaching-prep/semesters/{semester.id}/reference-ppt-collections"
+    )
+    assert response.status_code == 200
+    assert response.json()["items"] == []
+
+    restored = client.patch(
+        f"/api/teaching-prep/reference-ppt-collections/{collection.id}",
+        json={"is_active": True},
+    )
+    assert restored.status_code == 200
+    assert restored.json()["is_active"] is True
+    assert restored.json()["revision"] == collection.revision + 2
+    assert service.list_reference_ppt_collections(semester.id)[0].id == (
+        collection.id
+    )
+
+
+def test_include_inactive_lists_deactivated_collections(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    service, semester, collection = _create_collection(tmp_path, monkeypatch)
+    client = _api_client(service)
+
+    deactivated = client.patch(
+        f"/api/teaching-prep/reference-ppt-collections/{collection.id}",
+        json={"is_active": False},
+    )
+    assert deactivated.status_code == 200
+
+    response = client.get(
+        f"/api/teaching-prep/semesters/{semester.id}/reference-ppt-collections"
+    )
+    assert response.status_code == 200
+    assert response.json()["items"] == []
+
+    response = client.get(
+        f"/api/teaching-prep/semesters/{semester.id}/reference-ppt-collections"
+        "?include_inactive=true"
+    )
+    assert response.status_code == 200
+    items = response.json()["items"]
+    assert [item["id"] for item in items] == [collection.id]
+    assert items[0]["is_active"] is False
+    assert service.list_reference_ppt_collections(semester.id) == ()
+    assert service.list_reference_ppt_collections(
+        semester.id,
+        include_inactive=True,
+    )[0].id == collection.id
+
+
+def test_update_unknown_collection_returns_404(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    service, _semester, _collection = _create_collection(tmp_path, monkeypatch)
+    client = _api_client(service)
+
+    response = client.patch(
+        f"/api/teaching-prep/reference-ppt-collections/{'f' * 32}",
+        json={"is_active": False},
+    )
+    assert response.status_code == 404

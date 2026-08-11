@@ -1721,9 +1721,26 @@ class TeachingPrepService:
             payload=proposal_payload,
         )
 
-    def list_reference_ppt_collections(self, semester_id: str):
+    def list_reference_ppt_collections(
+        self,
+        semester_id: str,
+        *,
+        include_inactive: bool = False,
+    ):
         return self.semester_mapping.list_reference_ppt_collections(
-            _clean_entity_id(semester_id)
+            _clean_entity_id(semester_id),
+            include_inactive=bool(include_inactive),
+        )
+
+    def update_reference_ppt_collection(
+        self,
+        collection_id: str,
+        *,
+        is_active: bool,
+    ):
+        return self.semester_mapping.update_reference_ppt_collection(
+            _clean_entity_id(collection_id),
+            is_active=bool(is_active),
         )
 
     def accept_local_reference_ppt_mappings(

@@ -134,6 +134,7 @@ export interface ReferencePptCollection {
   display_name: string
   mapping_proposal_id: string
   ignored_file_count: number
+  is_active?: boolean
   revision: number
   created_at: string
   updated_at: string
@@ -2313,10 +2314,12 @@ export const teachingPrepCatalogApi = {
 
   listReferencePptCollections(
     semesterId: string,
+    options?: { includeInactive?: boolean },
     signal?: AbortSignal,
   ): Promise<ReferencePptCollection[]> {
+    const suffix = options?.includeInactive ? '?include_inactive=true' : ''
     return apiClient.request(
-      `/api/teaching-prep/semesters/${encodeURIComponent(semesterId)}/reference-ppt-collections`,
+      `/api/teaching-prep/semesters/${encodeURIComponent(semesterId)}/reference-ppt-collections${suffix}`,
       {
         signal,
         decode: (payload) => {
@@ -2345,6 +2348,20 @@ export const teachingPrepCatalogApi = {
       `/api/teaching-prep/semesters/${encodeURIComponent(semesterId)}/reference-ppt-collections`,
       {
         method: 'POST',
+        body: input,
+        decode: referencePptCollection,
+      },
+    )
+  },
+
+  updateReferencePptCollection(
+    collectionId: string,
+    input: { is_active: boolean },
+  ): Promise<ReferencePptCollection> {
+    return apiClient.request(
+      `/api/teaching-prep/reference-ppt-collections/${encodeURIComponent(collectionId)}`,
+      {
+        method: 'PATCH',
         body: input,
         decode: referencePptCollection,
       },
