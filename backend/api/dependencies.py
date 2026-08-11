@@ -535,6 +535,13 @@ def get_scan_grading_workspace(
                 grading_mode=grading_mode,
             )
         ),
+        incomplete_result_counter=lambda session_id: len(
+            db.list_incomplete_results(session_id)
+        ),
+        incomplete_item_counter=lambda session_id: sum(
+            len(item.get("missing_question_ids") or [])
+            for item in db.list_incomplete_results(session_id)
+        ),
     )
 
 

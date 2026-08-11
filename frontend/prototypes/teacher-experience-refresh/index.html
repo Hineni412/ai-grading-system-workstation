@@ -1,0 +1,418 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="icon" href="data:," />
+  <title>教师体验优化 · A 方案确认原型</title>
+  <!-- 用户已选定 A 方向；本文件只展示确认后的页面，不连接真实接口。 -->
+  <style>
+    :root {
+      --paper: #f2f5f3;
+      --surface: #ffffff;
+      --surface-2: #f7faf8;
+      --ink: #173139;
+      --muted: #64777b;
+      --line: #d8e2de;
+      --teal: #0c646a;
+      --teal-2: #dcefed;
+      --yellow: #e9b949;
+      --yellow-2: #fff3cf;
+      --blue: #496d89;
+      --blue-2: #e7eff5;
+      --red: #b94f4a;
+      --red-2: #fae9e6;
+      --shadow: 0 14px 36px rgba(25, 56, 61, .08);
+      --radius: 14px;
+      color: var(--ink);
+      background: var(--paper);
+      font-family: "Microsoft YaHei UI", "Microsoft YaHei", sans-serif;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-width: 960px; background: var(--paper); }
+    button, input { font: inherit; }
+    button { cursor: pointer; }
+    button:focus-visible, input:focus-visible, summary:focus-visible {
+      outline: 3px solid rgba(12, 100, 106, .24); outline-offset: 2px;
+    }
+    .utility, .eyebrow, .tag, .count { font-family: Bahnschrift, "Microsoft YaHei UI", sans-serif; }
+    .prototype-ribbon {
+      height: 30px; display: flex; align-items: center; justify-content: center;
+      background: var(--ink); color: #e8f3f1; font-size: 12px; letter-spacing: .05em;
+    }
+    .appbar {
+      height: 72px; padding: 0 26px; background: rgba(255,255,255,.96); border-bottom: 1px solid var(--line);
+      display: flex; align-items: center; justify-content: space-between; position: sticky; top: 0; z-index: 20;
+    }
+    .brand { display: flex; align-items: center; gap: 12px; }
+    .brand-mark {
+      width: 42px; height: 42px; border-radius: 13px; display: grid; place-items: center;
+      background: var(--teal); color: white; font: 800 17px Bahnschrift, sans-serif;
+      box-shadow: inset 0 -3px 0 rgba(0,0,0,.12);
+    }
+    .brand strong { display: block; font-size: 17px; }
+    .brand small { color: var(--muted); }
+    .screen-nav { display: flex; align-items: center; gap: 5px; padding: 5px; background: #edf2ef; border-radius: 12px; }
+    .screen-nav button {
+      border: 0; background: transparent; color: var(--muted); border-radius: 9px; padding: 10px 15px; font-weight: 800;
+    }
+    .screen-nav button.active { background: #fff; color: var(--teal); box-shadow: 0 3px 10px rgba(35,70,72,.09); }
+    .app-status { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); }
+    .status-dot { width: 9px; height: 9px; border-radius: 50%; background: #47a26e; }
+    main { max-width: 1880px; margin: 0 auto; padding: 22px 24px 116px; }
+    .variant { display: none; }
+    .variant.active { display: block; }
+    .screen { display: none; }
+    .screen.active { display: block; animation: reveal .2s ease-out; }
+    @keyframes reveal { from { opacity: .45; transform: translateY(4px); } }
+    .page-head { display: flex; justify-content: space-between; align-items: end; gap: 20px; margin: 2px 0 18px; }
+    .eyebrow { color: var(--teal); font-size: 12px; letter-spacing: .12em; font-weight: 800; }
+    h1, h2, h3, p { margin-top: 0; }
+    h1 { margin-bottom: 7px; font-size: 31px; letter-spacing: -.03em; }
+    h2 { margin-bottom: 8px; }
+    h3 { margin-bottom: 6px; }
+    .page-head p, .muted { color: var(--muted); }
+    .button { border: 1px solid var(--line); background: #fff; color: var(--ink); border-radius: 10px; padding: 10px 14px; font-weight: 800; }
+    .button:hover { border-color: #a8bdb8; }
+    .button.primary { border-color: var(--teal); background: var(--teal); color: #fff; }
+    .button.soft { border-color: transparent; background: var(--teal-2); color: var(--teal); }
+    .button.danger { border-color: #efc8c3; background: var(--red-2); color: var(--red); }
+    .button.small { padding: 7px 10px; font-size: 12px; }
+    .pill { display: inline-flex; align-items: center; gap: 6px; padding: 5px 8px; border-radius: 999px; background: var(--teal-2); color: var(--teal); font-size: 12px; font-weight: 800; }
+    .tag { display: inline-flex; padding: 5px 8px; border-radius: 7px; background: var(--blue-2); color: #355772; font-size: 12px; }
+    .note { padding: 12px 14px; border-left: 4px solid var(--yellow); background: var(--yellow-2); color: #624b16; line-height: 1.55; }
+    .card { background: #fff; border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow); }
+    .empty { border: 1px dashed #b9cbc6; border-radius: 12px; padding: 30px; text-align: center; color: var(--muted); }
+
+    /* Variant A — folder desk */
+    .a-shell { display: grid; grid-template-columns: 270px minmax(620px, 1fr); gap: 15px; align-items: start; }
+    .folder-rail { padding: 15px; position: sticky; top: 94px; }
+    .folder-rail__head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+    .folder-rail__head h2 { margin: 0; font-size: 18px; }
+    .folder { width: 100%; border: 0; background: transparent; padding: 10px; border-radius: 9px; display: flex; justify-content: space-between; color: var(--ink); text-align: left; }
+    .folder:hover, .folder.active { background: var(--teal-2); color: var(--teal); }
+    .folder.sub { padding-left: 31px; font-size: 13px; }
+    .paper-panel { padding: 18px; min-height: 610px; }
+    .panel-tools { display: flex; justify-content: space-between; gap: 12px; align-items: center; margin-bottom: 14px; }
+    .search { min-width: 300px; flex: 1; padding: 11px 13px; border: 1px solid var(--line); border-radius: 10px; background: #fbfcfb; }
+    .paper-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 11px; }
+    .paper { padding: 15px; border: 1px solid var(--line); border-radius: 12px; background: #fff; position: relative; overflow: hidden; }
+    .paper::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 4px; background: var(--teal); }
+    .paper h3 { font-size: 15px; line-height: 1.5; }
+    .paper-meta { display: flex; flex-wrap: wrap; gap: 7px; color: var(--muted); font-size: 12px; margin: 9px 0 13px; }
+    .paper-actions { display: flex; justify-content: space-between; align-items: center; }
+    .assembly-a { display: grid; grid-template-columns: 250px minmax(620px,1fr) 250px; gap: 13px; }
+    .filter-book, .basket { padding: 15px; position: sticky; top: 94px; }
+    .question-sheet { padding: 16px; }
+    .tree-line { padding: 8px 9px; border-radius: 8px; font-size: 13px; }
+    .tree-line.active { background: var(--teal-2); color: var(--teal); font-weight: 800; }
+    .tree-line.indent { padding-left: 25px; }
+    .question-row { padding: 15px 0; border-bottom: 1px solid var(--line); }
+    .question-row:last-child { border-bottom: 0; }
+    .question-row__top { display: flex; justify-content: space-between; gap: 12px; }
+    .question-row p { line-height: 1.65; margin: 5px 0 10px; }
+    .tag-list { display: flex; flex-wrap: wrap; gap: 6px; }
+    .loading-story { display: flex; gap: 8px; margin-bottom: 12px; }
+    .loading-story span { padding: 6px 8px; border-radius: 7px; background: #eef2f0; color: var(--muted); font-size: 11px; }
+    .loading-story span.done { background: #e2f2e8; color: #26714a; }
+    .basket-number { font: 800 42px Bahnschrift, sans-serif; color: var(--teal); }
+    .domain-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+    .domain-card { min-height: 165px; padding: 17px; border: 1px solid var(--line); border-radius: 13px; background: #fff; text-align: left; color: var(--ink); transition: .16s ease; }
+    .domain-card:hover { transform: translateY(-3px); border-color: #9fc0ba; box-shadow: var(--shadow); }
+    .domain-card .icon { width: 38px; height: 38px; border-radius: 11px; display: grid; place-items: center; background: var(--teal-2); color: var(--teal); margin-bottom: 16px; font-weight: 900; }
+    .domain-card p { color: var(--muted); font-size: 13px; line-height: 1.55; }
+    .domain-card small { color: var(--teal); font-weight: 800; }
+    .conversation-preview { overflow: hidden; margin-bottom: 18px; }
+    .conversation-preview__masthead { display: flex; justify-content: space-between; align-items: end; gap: 18px; padding: 20px 22px; border-bottom: 3px solid var(--teal); background: linear-gradient(105deg,#e8f3ef,#f8faf8 64%); }
+    .conversation-preview__masthead h2 { margin: 4px 0 0; font-size: 29px; }
+    .conversation-preview__body { display: grid; grid-template-columns: minmax(0,1.7fr) 300px; min-height: 330px; }
+    .conversation-preview__main { display: grid; align-content: end; padding: 24px; border-right: 1px solid var(--line); background: repeating-linear-gradient(to bottom,#fff 0,#fff 37px,#eef5f2 38px); }
+    .conversation-opening { align-self: center; text-align: center; font-size: 16px; font-weight: 800; }
+    .conversation-compose { margin-top: 70px; }
+    .conversation-compose label { display: block; margin-bottom: 7px; font-weight: 800; }
+    .conversation-compose textarea { width: 100%; min-height: 88px; resize: vertical; padding: 12px; border: 1px solid #a9bdb8; border-radius: 11px; background: #fff; font: inherit; }
+    .conversation-compose__actions { display: flex; justify-content: space-between; align-items: center; gap: 15px; margin-top: 8px; }
+    .conversation-preview__side { display: grid; align-content: start; gap: 10px; padding: 14px; background: #f5f8f6; }
+    .side-note { padding: 14px; border: 1px solid var(--line); border-radius: 11px; background: #fff; }
+    .side-note strong { display: block; margin-bottom: 7px; }
+    .domain-section { padding: 18px; }
+    .domain-section__head { display: flex; justify-content: space-between; gap: 16px; align-items: end; margin-bottom: 12px; }
+    .domain-section__head h2 { margin: 0; }
+    .settings-a { display: grid; grid-template-columns: 240px minmax(700px, 1fr); gap: 14px; }
+    .settings-menu { padding: 13px; position: sticky; top: 94px; }
+    .settings-menu button { width: 100%; border: 0; background: transparent; border-radius: 9px; text-align: left; padding: 12px; font-weight: 800; color: var(--muted); }
+    .settings-menu button.active { color: var(--teal); background: var(--teal-2); }
+    .settings-pane { padding: 20px; }
+    .settings-tab { display: none; }
+    .settings-tab.active { display: block; }
+    .purpose-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 11px; }
+    .purpose { padding: 15px; border: 1px solid var(--line); border-radius: 12px; }
+    .purpose__map { margin-top: 12px; padding-top: 10px; border-top: 1px dashed var(--line); display: flex; justify-content: space-between; font-size: 12px; }
+    .profile-card { padding: 16px; border: 1px solid var(--line); border-radius: 12px; background: #fff; }
+    .profile-card header { display: grid; grid-template-columns: 34px 1fr auto; gap: 10px; align-items: start; }
+    .profile-no { width: 34px; height: 34px; display: grid; place-items: center; border-radius: 9px; background: var(--teal-2); color: var(--teal); font: 800 14px Bahnschrift,sans-serif; }
+    .profile-card h3 { margin: 0 0 4px; font-size: 16px; }
+    .profile-card p { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.55; }
+    .connection-line { display: grid; grid-template-columns: minmax(0,1fr) minmax(0,1.2fr); gap: 9px; margin-top: 13px; }
+    .connection-value { padding: 9px 10px; border-radius: 8px; background: #f5f8f6; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .connection-value small { display: block; margin-bottom: 2px; color: var(--muted); }
+    .profile-editor { display: none; grid-column: 1 / -1; margin-top: 10px; padding: 12px; border: 1px dashed #a8beb9; border-radius: 9px; background: #fbfcfb; }
+    .profile-card.editing .profile-editor { display: block; }
+    .profile-editor label { display: grid; gap: 4px; color: var(--muted); font-size: 12px; }
+    .profile-editor input { width: 100%; padding: 9px; border: 1px solid var(--line); border-radius: 8px; background: #fff; color: var(--ink); }
+    .selected-direction { display: inline-flex; margin-left: 8px; padding: 4px 7px; border-radius: 999px; background: #e3f3e8; color: #27754b; font-size: 11px; font-weight: 800; vertical-align: middle; }
+    .backup-scope { display: grid; grid-template-columns: 1fr 1fr; gap: 11px; }
+    .scope { padding: 16px; border-radius: 12px; border: 1px solid var(--line); }
+    .scope.yes { background: #eef8f2; border-color: #c7e4d2; }
+    .scope.no { background: #faf5f4; border-color: #ead5d1; }
+    .scope ul { padding-left: 19px; line-height: 1.8; margin-bottom: 0; }
+
+    /* Variant B — teacher checklist */
+    .b-board { background: #fff; border: 1px solid var(--line); border-radius: 14px; overflow: hidden; box-shadow: var(--shadow); }
+    .b-intro { padding: 20px 23px; display: flex; justify-content: space-between; gap: 20px; align-items: center; background: #f8fbf9; border-bottom: 1px solid var(--line); }
+    .b-list { display: grid; }
+    .b-row { display: grid; grid-template-columns: 170px 1fr auto; gap: 18px; align-items: start; padding: 18px 22px; border-bottom: 1px solid var(--line); }
+    .b-row:last-child { border-bottom: 0; }
+    .b-label { color: var(--teal); font-weight: 800; }
+    .b-main p { color: var(--muted); margin-bottom: 9px; line-height: 1.6; }
+    .b-main details { margin-top: 9px; }
+    .b-main summary { color: var(--teal); font-weight: 800; cursor: pointer; }
+    .b-folder { margin-top: 10px; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+    .b-folder summary { padding: 12px 14px; background: #f7faf8; }
+    .b-folder__body { padding: 12px 14px; display: grid; gap: 8px; }
+    .paper-line { display: flex; justify-content: space-between; gap: 12px; align-items: center; padding: 9px; border: 1px solid var(--line); border-radius: 8px; }
+    .model-table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+    .model-table th, .model-table td { padding: 11px 10px; border-bottom: 1px solid var(--line); text-align: left; }
+    .model-table th { color: var(--muted); font-size: 12px; }
+    .model-table tr:last-child td { border-bottom: 0; }
+    .route-chips { display: flex; flex-wrap: wrap; gap: 8px; }
+    .route-chip { border: 1px solid var(--line); background: #fff; border-radius: 999px; padding: 8px 11px; color: var(--teal); font-weight: 800; }
+
+    /* Variant C — control console */
+    .c-console { display: grid; grid-template-columns: 220px 1fr 330px; min-height: 680px; border: 1px solid #cfdad6; border-radius: 14px; overflow: hidden; box-shadow: var(--shadow); background: #fff; }
+    .c-rail { background: #18363d; color: #eef7f5; padding: 18px 13px; }
+    .c-rail h2 { font-size: 17px; padding: 0 8px; }
+    .c-rail button { width: 100%; border: 0; background: transparent; color: #bed0cd; padding: 11px 10px; border-radius: 8px; text-align: left; font-weight: 800; }
+    .c-rail button.active, .c-rail button:hover { background: rgba(255,255,255,.12); color: #fff; }
+    .c-main { padding: 19px; min-width: 0; }
+    .c-side { border-left: 1px solid var(--line); background: #f8faf9; padding: 17px; }
+    .c-stat { border-bottom: 1px solid var(--line); padding: 12px 0; }
+    .c-stat strong { display: block; font-size: 24px; color: var(--teal); }
+    .c-stat small { color: var(--muted); }
+    .compact-table { width: 100%; border-collapse: collapse; }
+    .compact-table th, .compact-table td { text-align: left; padding: 11px 8px; border-bottom: 1px solid var(--line); font-size: 13px; }
+    .compact-table th { color: var(--muted); font-size: 11px; }
+    .console-group { margin-bottom: 17px; }
+    .console-group h3 { font-size: 14px; }
+    .mini-path { color: var(--muted); font-size: 11px; margin-top: 4px; }
+    .protect-meter { height: 9px; border-radius: 999px; background: #e4eae7; overflow: hidden; margin: 8px 0; }
+    .protect-meter span { display: block; width: 78%; height: 100%; background: var(--teal); }
+
+    details.advanced { margin-top: 14px; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+    details.advanced summary { cursor: pointer; padding: 12px 14px; background: #f7f9f8; font-weight: 800; }
+    .advanced-body { padding: 14px; color: var(--muted); line-height: 1.7; }
+    .tech-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    .tech-field { padding: 10px; border: 1px solid var(--line); border-radius: 8px; }
+    .tech-field small { display: block; color: var(--muted); }
+
+    .toast {
+      position: fixed; right: 24px; bottom: 84px; z-index: 60; max-width: 390px; padding: 13px 15px;
+      border-radius: 11px; background: var(--ink); color: #fff; box-shadow: var(--shadow); opacity: 0; transform: translateY(8px); pointer-events: none;
+      transition: .18s ease;
+    }
+    .toast.show { opacity: 1; transform: translateY(0); }
+    .dialog-backdrop { display: none; position: fixed; inset: 0; z-index: 70; background: rgba(13,35,39,.42); place-items: center; }
+    .dialog-backdrop.show { display: grid; }
+    .dialog { width: 430px; padding: 20px; background: #fff; border-radius: 14px; box-shadow: 0 22px 60px rgba(0,0,0,.24); }
+    .dialog input { width: 100%; padding: 11px; border: 1px solid var(--line); border-radius: 9px; margin: 8px 0 16px; }
+    .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; }
+    @media (max-width: 1240px) {
+      .assembly-a { grid-template-columns: 220px 1fr; }
+      .basket { grid-column: 1 / -1; position: static; display: flex; align-items: center; gap: 20px; }
+      .c-console { grid-template-columns: 190px 1fr 280px; }
+      .conversation-preview__body { grid-template-columns: minmax(0,1fr) 270px; }
+    }
+    @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
+  </style>
+</head>
+<body>
+  <div class="prototype-ribbon">交互原型 · 模拟数据 · 不读取真实题库、不保存、不调用模型</div>
+  <header class="appbar">
+    <div class="brand"><span class="brand-mark">AI</span><span><strong>AI 阅卷系统</strong><small>教师体验优化预览</small></span></div>
+    <nav class="screen-nav" aria-label="页面预览">
+      <button data-screen-target="bank">题库</button>
+      <button data-screen-target="class">班主任</button>
+      <button data-screen-target="settings">设置中心</button>
+    </nav>
+    <div class="app-status"><i class="status-dot"></i>本机运行正常</div>
+  </header>
+
+  <main>
+    <!-- A：文件夹工作台 -->
+    <section class="variant" data-variant="A">
+      <section class="screen" data-screen="bank">
+        <div class="page-head"><div><span class="eyebrow">方案 A · 文件夹工作台</span><h1>试卷按学期收好，常用的自己再分</h1><p>系统自动按“年份 · 学期”整理；自定义文件夹跨重开保留。</p></div><button class="button primary" data-new-folder>新建文件夹</button></div>
+        <div class="a-shell">
+          <aside class="folder-rail card">
+            <div class="folder-rail__head"><h2>试卷文件夹</h2><span class="pill">24 份</span></div>
+            <button class="folder active"><span>全部试卷</span><b>24</b></button>
+            <button class="folder" data-folder-toggle="a-2026"><span>▾ 2026 · 下学期</span><b>8</b></button>
+            <div id="a-2026"><button class="folder sub"><span>期末与模拟</span><b>5</b></button><button class="folder sub"><span>单元练习</span><b>3</b></button></div>
+            <button class="folder" data-folder-toggle="a-2025"><span>▸ 2025 · 上学期</span><b>11</b></button>
+            <div id="a-2025" hidden><button class="folder sub"><span>期中</span><b>4</b></button><button class="folder sub"><span>期末</span><b>7</b></button></div>
+            <p class="eyebrow" style="margin:18px 10px 7px">我的文件夹</p>
+            <button class="folder"><span>★ 下周要讲</span><b>3</b></button><button class="folder"><span>★ 易错题来源</span><b>2</b></button>
+            <button class="folder"><span>待归类</span><b>1</b></button>
+          </aside>
+          <section class="paper-panel card">
+            <div class="panel-tools"><input class="search" aria-label="搜索试卷" placeholder="搜索试卷名称" /><button class="button">排序：最近更新</button></div>
+            <div class="note">分组只改变你看到的整理方式，不会改试卷内容、题目标签或考试成绩。</div>
+            <h2 style="margin-top:18px">2026 · 下学期 <span class="pill">8 份</span></h2>
+            <div class="paper-grid">
+              <article class="paper"><h3>2026 深圳市九年级数学下学期期末模拟</h3><div class="paper-meta"><span>九年级</span><span>下学期</span><span>24 题</span></div><div class="paper-actions"><button class="button small primary" data-demo="打开试卷">查看试题</button><button class="button small" data-move>移到文件夹</button></div></article>
+              <article class="paper"><h3>2026 中考数学第一次适应性练习</h3><div class="paper-meta"><span>九年级</span><span>下学期</span><span>22 题</span></div><div class="paper-actions"><button class="button small primary" data-demo="打开试卷">查看试题</button><button class="button small" data-move>移到文件夹</button></div></article>
+              <article class="paper"><h3>一次函数与反比例函数单元卷</h3><div class="paper-meta"><span>八年级</span><span>下学期</span><span>18 题</span></div><div class="paper-actions"><button class="button small primary" data-demo="打开试卷">查看试题</button><button class="button small" data-move>移到文件夹</button></div></article>
+              <article class="paper"><h3>几何综合易错题练习</h3><div class="paper-meta"><span>九年级</span><span>下学期</span><span>12 题</span></div><div class="paper-actions"><button class="button small primary" data-demo="打开试卷">查看试题</button><button class="button small" data-move>移到文件夹</button></div></article>
+            </div>
+          </section>
+        </div>
+      </section>
+
+      <section class="screen" data-screen="assembly">
+        <div class="page-head"><div><span class="eyebrow">方案 A · 首屏先出题</span><h1>先选题，目录统计随后补齐</h1><p>教材目录和筛选数量变慢时，不再挡住题目列表。</p></div><button class="button" data-replay-load>重放加载顺序</button></div>
+        <div class="loading-story"><span data-load-step="questions" class="done">① 题目已显示</span><span data-load-step="catalog">② 教材目录读取中</span><span data-load-step="facets">③ 标签数量读取中</span></div>
+        <div class="assembly-a">
+          <aside class="filter-book card"><span class="eyebrow">教材目录</span><h2>七年级上册</h2><div class="tree-line active">第一章 有理数</div><div class="tree-line indent">1.1 生活中的立体图形</div><div class="tree-line indent">1.2 展开与折叠</div><div class="tree-line">第二章 有理数及其运算</div></aside>
+          <section class="question-sheet card"><div class="panel-tools"><input class="search" placeholder="输入试题关键词" /><button class="button primary">搜索</button></div>
+            <article class="question-row"><div class="question-row__top"><b>第 6 题 · 选择题</b><span class="pill">难度 4</span></div><p>下列各数中，绝对值最小的是（　）。</p><div class="tag-list"><span class="tag leaf" title="七年级上册｜第二章 有理数及其运算｜2.3 绝对值｜绝对值的几何意义">绝对值的几何意义</span><span class="tag leaf" title="七年级上册｜第二章 有理数及其运算｜2.3 绝对值｜有理数大小比较">有理数大小比较</span></div></article>
+            <article class="question-row"><div class="question-row__top"><b>第 14 题 · 填空题</b><span class="pill">难度 6</span></div><p>数轴上点 A 表示 −3，点 B 与点 A 的距离为 5，则点 B 表示的数为______。</p><div class="tag-list"><span class="tag leaf" title="七年级上册｜第二章 有理数及其运算｜2.2 数轴｜数轴上的距离">数轴上的距离</span><span class="tag leaf" title="七年级上册｜第二章 有理数及其运算｜2.3 绝对值｜绝对值方程">绝对值方程</span></div></article>
+          </section>
+          <aside class="basket card"><span class="eyebrow">试卷篮</span><div class="basket-number">2</div><p class="muted">已选题目</p><button class="button primary" style="width:100%" data-demo="进入编辑与导出">进入编辑与导出</button></aside>
+        </div>
+      </section>
+
+      <section class="screen" data-screen="class">
+        <div class="page-head"><div><span class="eyebrow">方案 A · 保留现有对话页</span><h1>对话照旧，下面六张卡变成真正的入口</h1><p>不重排现有班主任工作台；只增强卡片的视觉、点击和键盘操作。</p></div><span class="selected-direction">已选方向</span></div>
+        <section class="conversation-preview card">
+          <header class="conversation-preview__masthead"><div><span class="eyebrow">班主任案头</span><h2>先把事情说清楚，再决定怎么处理</h2></div><div><button class="button">我的班级：9 班</button> <button class="button">新对话</button></div></header>
+          <div class="conversation-preview__body"><article class="conversation-preview__main"><p class="conversation-opening">直接输入今天需要处理的班务即可，不必先选分类。</p><div class="conversation-compose"><label>继续说明或补充</label><textarea placeholder="例如：月底提醒我复查；已确认双方目前都安全"></textarea><div class="conversation-compose__actions"><small class="muted">正式记录与处置仍由你确认。</small><button class="button primary" data-demo="发送并整理">发送并整理</button></div></div></article><aside class="conversation-preview__side"><section class="side-note"><strong>今日与接下来</strong><span class="muted">当前没有需要提醒的日历节点。</span></section><section class="side-note"><strong>待核对 · 0</strong><span class="muted">当前没有等待确认的交接草稿。</span></section><section class="side-note"><strong>最近会话</strong><span class="muted">最近内容继续保留在这里。</span></section></aside></div>
+        </section>
+        <section class="domain-section card"><div class="domain-section__head"><div><span class="eyebrow">常用入口</span><h2>选择要去的工作面</h2></div><span class="muted">学生类入口先进入学生目录，不把学生身份写进网址</span></div><div class="domain-grid">
+          <button class="domain-card" data-route="日历与工作图 · 班级日常"><span class="icon">日</span><h2>班级日常</h2><p>值日、考勤、通知与每天要做的事。</p><small>进入日历与工作图 →</small></button>
+          <button class="domain-card" data-route="学生目录 · 成长记录"><span class="icon">长</span><h2>成长记录</h2><p>按学生查看事实记录和阶段变化。</p><small>进入学生 →</small></button>
+          <button class="domain-card" data-route="学生目录 · 学生支持"><span class="icon">助</span><h2>学生支持</h2><p>选择学生后查看关注、支持与复核。</p><small>进入学生 →</small></button>
+          <button class="domain-card" data-route="事务 · 冲突安全"><span class="icon">安</span><h2>冲突与安全</h2><p>记录事实、安排步骤，由老师做决定。</p><small>进入事务 →</small></button>
+          <button class="domain-card" data-route="日历与工作图 · 活动文化"><span class="icon">活</span><h2>活动与文化</h2><p>活动筹备、班会与文化建设。</p><small>进入日历与工作图 →</small></button>
+          <button class="domain-card" data-route="日历与工作图 · 学校协同"><span class="icon">协</span><h2>学校协同</h2><p>会议、收集、年级与学校任务。</p><small>进入日历与工作图 →</small></button>
+        </div></section>
+      </section>
+
+      <section class="screen" data-screen="settings">
+        <div class="page-head"><div><span class="eyebrow">方案 A · 合并设置中心</span><h1>先说清楚用途，再决定要不要改技术参数</h1><p>一个入口管理 AI 与数据保护；危险操作仍逐次确认。</p></div><span class="pill">上次完整备份：今天 04:20</span></div>
+        <div class="settings-a">
+          <aside class="settings-menu card"><button class="active" data-settings-tab="ai">AI 怎么用</button><button data-settings-tab="data">数据怎么保护</button><button data-settings-tab="advanced">高级技术设置</button></aside>
+          <section class="settings-pane card">
+            <div class="settings-tab active" data-settings-pane="ai"><h2>四类工作，四套独立连接</h2><p class="muted">每一类都可以使用不同中转站、API Key 和模型。改动其中一类，不会影响另外三类。</p><div class="note" style="margin:14px 0"><b>这里不再单列 OCR：</b>姓名识别兜底、客观题识别和批改都归入“试卷预检与答卷批改”。这套模型必须支持图片输入。</div><div class="purpose-grid">
+              <article class="profile-card"><header><span class="profile-no">01</span><div><h3>生成评分标准与题库</h3><p>生成评分依据、分析试卷、整理题库标签。</p></div><button class="button small" data-edit-profile>修改</button></header><div class="connection-line"><div class="connection-value"><small>当前模型</small><b>qwen3-max</b></div><div class="connection-value"><small>中转站与密钥</small><b>中转站 A · Key 已保存</b></div></div><div class="profile-editor"><label>模型名称<input value="qwen3-max"></label><label>Base URL（中转地址）<input value="https://relay-a.example.com/v1"></label><label>API Key<input type="password" value="sk-demo-a"></label><div style="margin-top:10px"><button class="button primary small" data-save-profile>保存这一类</button></div></div></article>
+              <article class="profile-card"><header><span class="profile-no">02</span><div><h3>试卷预检与答卷批改</h3><p>检查扫描件、识别答卷内容、批改并生成反馈。</p></div><button class="button small" data-edit-profile>修改</button></header><div class="connection-line"><div class="connection-value"><small>当前模型</small><b>qwen-vl-max</b></div><div class="connection-value"><small>中转站与密钥</small><b>中转站 B · Key 已保存</b></div></div><div class="profile-editor"><label>模型名称（须支持图片）<input value="qwen-vl-max"></label><label>Base URL（中转地址）<input value="https://relay-b.example.com/v1"></label><label>API Key<input type="password" value="sk-demo-b"></label><div style="margin-top:10px"><button class="button primary small" data-save-profile>保存这一类</button></div></div></article>
+              <article class="profile-card"><header><span class="profile-no">03</span><div><h3>班主任工作</h3><p>对话整理、班务建议与记录辅助。</p></div><button class="button small" data-edit-profile>修改</button></header><div class="connection-line"><div class="connection-value"><small>当前模型</small><b>deepseek-chat</b></div><div class="connection-value"><small>中转站与密钥</small><b>中转站 C · Key 已保存</b></div></div><div class="profile-editor"><label>模型名称<input value="deepseek-chat"></label><label>Base URL（中转地址）<input value="https://relay-c.example.com/v1"></label><label>API Key<input type="password" value="sk-demo-c"></label><div style="margin-top:10px"><button class="button primary small" data-save-profile>保存这一类</button></div></div></article>
+              <article class="profile-card"><header><span class="profile-no">04</span><div><h3>备课工作</h3><p>生成备课建议、整理证据与课件改编方案。</p></div><button class="button small" data-edit-profile>修改</button></header><div class="connection-line"><div class="connection-value"><small>当前模型</small><b>claude-sonnet</b></div><div class="connection-value"><small>中转站与密钥</small><b>中转站 D · Key 已保存</b></div></div><div class="profile-editor"><label>模型名称<input value="claude-sonnet"></label><label>Base URL（中转地址）<input value="https://relay-d.example.com/v1"></label><label>API Key<input type="password" value="sk-demo-d"></label><div style="margin-top:10px"><button class="button primary small" data-save-profile>保存这一类</button></div></div></article>
+            </div></div>
+            <div class="settings-tab" data-settings-pane="data"><h2>完整备份会保护什么</h2><div class="backup-scope"><article class="scope yes"><h3>会备份</h3><ul><li>考试、成绩、评分依据与批注</li><li>题库试卷、题目和标签</li><li>班主任工作与学生档案数据库</li><li>配置、模板、报告与快照</li></ul></article><article class="scope no"><h3>不会备份</h3><ul><li>API 密钥和服务地址</li><li>运行日志和开发缓存</li><li>备课工作台资料目录</li><li>备份文件本身</li></ul></article></div><div class="note" style="margin-top:12px"><b>完整备份 ≠ 完整数据包：</b>数据包用于搬运部分数据，不包含班主任工作区，也不包含 API 设置。</div><div style="margin-top:14px"><button class="button primary" data-demo="查看备份预检">先查看本次备份清单</button> <button class="button" data-demo="打开恢复说明">恢复说明</button></div></div>
+            <div class="settings-tab" data-settings-pane="advanced"><h2>高级技术设置</h2><p class="muted">四套中转地址和密钥都在“AI 怎么用”中按用途修改；这里只放影响整个系统的排查选项。</p><details class="advanced"><summary>整体请求速度与失败重试</summary><div class="advanced-body"><div class="tech-grid"><div class="tech-field"><small>同时请求</small><b>2 个</b></div><div class="tech-field"><small>每分钟上限</small><b>30 次</b></div><div class="tech-field"><small>失败重试</small><b>最多 2 次</b></div><div class="tech-field"><small>连接超时</small><b>120 秒</b></div></div></div></details><details class="advanced"><summary>AI 调用记录与本机诊断</summary><div class="advanced-body">只在排查问题时查看。实际请求文本可能含业务内容，诊断记录只保存在本机。</div></details></div>
+          </section>
+        </div>
+      </section>
+    </section>
+
+    <!-- B：任务清单 -->
+    <section class="variant" data-variant="B">
+      <section class="screen" data-screen="bank"><div class="page-head"><div><span class="eyebrow">方案 B · 任务清单</span><h1>按学期展开，一行处理一份试卷</h1><p>没有常驻侧栏，适合屏幕较窄、习惯从上往下找的老师。</p></div><button class="button primary" data-new-folder>新建自定义文件夹</button></div><div class="b-board"><div class="b-intro"><div><h2>试卷库 · 24 份</h2><span class="muted">默认收起旧学期，只展开当前学期</span></div><input class="search" placeholder="搜索试卷" /></div><div class="b-list"><div class="b-row"><div class="b-label">当前学期</div><div class="b-main"><details class="b-folder" open><summary>2026 · 下学期（8 份）</summary><div class="b-folder__body"><div class="paper-line"><span><b>九年级数学期末模拟</b><small class="muted"> · 24 题</small></span><span><button class="button small" data-move>归类</button> <button class="button small primary">打开</button></span></div><div class="paper-line"><span><b>中考第一次适应性练习</b><small class="muted"> · 22 题</small></span><span><button class="button small" data-move>归类</button> <button class="button small primary">打开</button></span></div></div></details></div><span class="pill">自动</span></div><div class="b-row"><div class="b-label">旧学期</div><div class="b-main"><details class="b-folder"><summary>2025 · 上学期（11 份）</summary><div class="b-folder__body"><div class="paper-line"><b>八年级期中质量监测</b><button class="button small primary">打开</button></div></div></details></div><span class="pill">已收起</span></div><div class="b-row"><div class="b-label">我的归类</div><div class="b-main"><div class="route-chips"><button class="route-chip">下周要讲 · 3</button><button class="route-chip">易错题来源 · 2</button><button class="route-chip">待整理 · 1</button></div></div><button class="button small" data-new-folder>管理</button></div></div></div></section>
+      <section class="screen" data-screen="assembly"><div class="page-head"><div><span class="eyebrow">方案 B · 一条选题清单</span><h1>目录慢，不耽误先看到题</h1><p>筛选项在题目上方逐步补齐，知识点只显示末级名称。</p></div><button class="button" data-replay-load>重放加载顺序</button></div><div class="b-board"><div class="b-intro"><div><span class="pill">题目已可选</span> <span class="pill">目录随后补齐</span></div><div><button class="button small">教材：七上</button> <button class="button small">章节：有理数</button> <button class="button small primary">搜索</button></div></div><div class="b-list"><div class="b-row"><div class="b-label">第 6 题</div><div class="b-main"><b>下列各数中，绝对值最小的是（　）。</b><p><span class="tag leaf" title="七年级上册｜第二章｜2.3 绝对值｜绝对值的几何意义">绝对值的几何意义</span> <span class="tag leaf" title="七年级上册｜第二章｜2.3 绝对值｜有理数大小比较">有理数大小比较</span></p></div><button class="button small primary" data-demo="加入试卷篮">加入试卷篮</button></div><div class="b-row"><div class="b-label">第 14 题</div><div class="b-main"><b>数轴上点 A 表示 −3，点 B 与 A 的距离为 5……</b><p><span class="tag leaf" title="七年级上册｜第二章｜2.2 数轴｜数轴上的距离">数轴上的距离</span></p></div><button class="button small primary" data-demo="加入试卷篮">加入试卷篮</button></div></div></div></section>
+      <section class="screen" data-screen="class"><div class="page-head"><div><span class="eyebrow">方案 B · 先选要完成的事</span><h1>六个场景，三个明确去处</h1><p>卡片不再像“尚未开放”；每项都写清点进去会到哪里。</p></div></div><div class="b-board"><div class="b-list"><div class="b-row"><div class="b-label">安排班级工作</div><div class="b-main"><h3>班级日常 · 活动文化 · 学校协同</h3><p>进入同一份日历与工作图，按所选场景带入提示。</p><div class="route-chips"><button class="route-chip" data-route="日历与工作图 · 班级日常">班级日常</button><button class="route-chip" data-route="日历与工作图 · 活动文化">活动文化</button><button class="route-chip" data-route="日历与工作图 · 学校协同">学校协同</button></div></div><button class="button small">日历</button></div><div class="b-row"><div class="b-label">了解与支持学生</div><div class="b-main"><h3>成长记录 · 学生支持</h3><p>进入学生页，并直接打开对应面板。</p><div class="route-chips"><button class="route-chip" data-route="学生 · 成长记录">成长记录</button><button class="route-chip" data-route="学生 · 支持记录">学生支持</button></div></div><button class="button small">学生</button></div><div class="b-row"><div class="b-label">处理具体事务</div><div class="b-main"><h3>冲突与安全</h3><p>进入事务页，AI 只整理步骤，认定和处置仍由老师决定。</p><button class="route-chip" data-route="事务 · 冲突安全">冲突与安全</button></div><button class="button small">事务</button></div></div></div></section>
+      <section class="screen" data-screen="settings"><div class="page-head"><div><span class="eyebrow">方案 B · 老师问题清单</span><h1>设置中心只回答四个问题</h1><p>想改哪里就展开哪里；技术参数藏在对应问题内部。</p></div><span class="pill">数据保护正常</span></div><div class="b-board"><div class="b-list"><div class="b-row"><div class="b-label">AI 用谁来做？</div><div class="b-main"><h3>按用途查看当前模型</h3><table class="model-table"><tr><th>老师看到的任务</th><th>当前模型</th><th>未单独设置时</th></tr><tr><td>识别图片</td><td><b>glm-4.5v</b></td><td>必须指定</td></tr><tr><td>批改与反馈</td><td><b>qwen3-235b</b></td><td>系统基础模型</td></tr><tr><td>生成评分依据、题库标注</td><td><b>qwen3-max</b></td><td>改用批改模型</td></tr><tr><td>备课、班主任</td><td><b>沿用 qwen3-max</b></td><td>高级模型 → 批改模型</td></tr></table><details class="advanced"><summary>修改服务地址、密钥和速度</summary><div class="advanced-body">面向服务商变更和故障排查；日常不必打开。</div></details></div><button class="button small primary">修改</button></div><div class="b-row"><div class="b-label">备份保护什么？</div><div class="b-main"><h3>考试、题库、班主任数据会进入完整备份</h3><p>API 密钥、日志、备课资料目录不会进入。创建前先显示本次清单。</p><details><summary>查看完整包含/排除范围</summary><p class="note">完整数据包不等于完整备份：它不包含班主任工作区。</p></details></div><button class="button small primary" data-demo="查看备份预检">查看清单</button></div><div class="b-row"><div class="b-label">怎样恢复？</div><div class="b-main"><h3>先选备份，再看影响，最后确认</h3><p>恢复、迁移、导入仍需要重启并逐次确认；页面不会把它们伪装成普通按钮。</p></div><button class="button small danger" data-demo="打开恢复说明">恢复说明</button></div><div class="b-row"><div class="b-label">哪里出问题？</div><div class="b-main"><h3>系统检查与 AI 调用记录</h3><p>平时只显示“正常/需处理”；技术日志放在展开项。</p></div><button class="button small">查看状态</button></div></div></div></section>
+    </section>
+
+    <!-- C：紧凑控制台 -->
+    <section class="variant" data-variant="C">
+      <section class="screen" data-screen="bank"><div class="page-head"><div><span class="eyebrow">方案 C · 全局控制台</span><h1>文件夹、试卷和详情同时在场</h1><p>信息更密，适合熟悉系统后快速整理。</p></div><button class="button primary" data-new-folder>新建文件夹</button></div><div class="c-console"><aside class="c-rail"><h2>文件夹</h2><button class="active">全部试卷 · 24</button><button>2026 下学期 · 8</button><button>2025 上学期 · 11</button><button>下周要讲 · 3</button><button>易错题来源 · 2</button><button>待归类 · 1</button></aside><section class="c-main"><h2>2026 · 下学期</h2><table class="compact-table"><tr><th>试卷</th><th>年级</th><th>题量</th><th>更新</th></tr><tr><td><b>九年级数学期末模拟</b></td><td>九年级</td><td>24</td><td>今天</td></tr><tr><td><b>中考第一次适应性练习</b></td><td>九年级</td><td>22</td><td>昨天</td></tr><tr><td><b>一次函数单元卷</b></td><td>八年级</td><td>18</td><td>08/02</td></tr></table></section><aside class="c-side"><span class="eyebrow">当前试卷</span><h2>九年级数学期末模拟</h2><p class="muted">2026 · 九年级 · 下学期 · 24 题</p><div class="c-stat"><strong>92%</strong><small>核心标签完整</small></div><button class="button primary" style="width:100%;margin-top:16px">查看试题</button><button class="button" style="width:100%;margin-top:8px" data-move>移到文件夹</button></aside></div></section>
+      <section class="screen" data-screen="assembly"><div class="page-head"><div><span class="eyebrow">方案 C · 选题控制台</span><h1>题目先到，统计状态单独显示</h1><p>完整路径留在右侧核对，列表只放末级名称。</p></div><button class="button" data-replay-load>重放加载顺序</button></div><div class="c-console"><aside class="c-rail"><h2>教材目录</h2><button class="active">七年级上册</button><button>第一章 有理数</button><button>第二章 有理数及其运算</button></aside><section class="c-main"><table class="compact-table"><tr><th>题号</th><th>题目</th><th>末级知识点</th><th></th></tr><tr><td>6</td><td>绝对值最小的是…</td><td><span class="tag leaf" title="七上｜第二章｜2.3｜绝对值的几何意义">绝对值的几何意义</span></td><td><button class="button small primary">加入</button></td></tr><tr><td>14</td><td>数轴上 A、B 两点…</td><td><span class="tag leaf" title="七上｜第二章｜2.2｜数轴上的距离">数轴上的距离</span></td><td><button class="button small primary">加入</button></td></tr></table></section><aside class="c-side"><div class="console-group"><span class="eyebrow">读取状态</span><div class="c-stat"><strong>已显示</strong><small>题目列表</small></div><div class="c-stat"><strong>随后</strong><small>目录与标签数量</small></div></div><div class="console-group"><h3>完整知识路径</h3><p class="mini-path">七年级上册 › 第二章 › 2.3 绝对值 › 绝对值的几何意义</p></div></aside></div></section>
+      <section class="screen" data-screen="class"><div class="page-head"><div><span class="eyebrow">方案 C · 路由控制台</span><h1>场景在左，实际工作面在中间</h1><p>右侧持续说明 AI 与教师的责任边界。</p></div></div><div class="c-console"><aside class="c-rail"><h2>班务场景</h2><button class="active" data-route="日历与工作图 · 班级日常">班级日常</button><button data-route="学生 · 成长记录">成长记录</button><button data-route="学生 · 支持记录">学生支持</button><button data-route="事务 · 冲突安全">冲突与安全</button><button data-route="日历与工作图 · 活动文化">活动与文化</button><button data-route="日历与工作图 · 学校协同">学校协同</button></aside><section class="c-main"><h2>实际工作面</h2><table class="compact-table"><tr><th>场景</th><th>进入</th><th>保留的提示</th></tr><tr><td>班级日常 / 活动 / 协同</td><td><b>日历与工作图</b></td><td>所选领域</td></tr><tr><td>成长记录 / 学生支持</td><td><b>学生</b></td><td>对应学生面板</td></tr><tr><td>冲突与安全</td><td><b>事务</b></td><td>安全边界说明</td></tr></table></section><aside class="c-side"><span class="eyebrow">不变的边界</span><h2>教师做最终决定</h2><p class="muted">AI 不作诊断、欺凌认定、惩戒决定、紧急裁决、自动外发或自动结案。</p><div class="note">紧急风险先人工处理，不等待 AI。</div></aside></div></section>
+      <section class="screen" data-screen="settings"><div class="page-head"><div><span class="eyebrow">方案 C · 一屏总览</span><h1>模型安排和数据保护并排核对</h1><p>最少跳转，但密度最高。</p></div><button class="button">高级技术设置</button></div><div class="c-console"><aside class="c-rail"><h2>设置中心</h2><button class="active">总览</button><button>AI 用途</button><button>备份与恢复</button><button>系统检查</button><button>高级技术设置</button></aside><section class="c-main"><div class="console-group"><h2>AI 用途</h2><table class="compact-table"><tr><th>任务</th><th>当前</th><th>备用</th></tr><tr><td>识别图片</td><td><b>glm-4.5v</b></td><td>—</td></tr><tr><td>批改与反馈</td><td><b>qwen3-235b</b></td><td>基础</td></tr><tr><td>生成与标注</td><td><b>qwen3-max</b></td><td>批改模型</td></tr><tr><td>备课 / 班主任</td><td><b>qwen3-max</b></td><td>高级 → 批改</td></tr></table></div><div class="console-group"><h2>备份范围</h2><div class="backup-scope"><div class="scope yes"><b>会备份</b><p>考试、题库、班主任、配置、模板、报告</p></div><div class="scope no"><b>不会备份</b><p>API 设置、日志、备课资料目录</p></div></div></div></section><aside class="c-side"><span class="eyebrow">保护状态</span><div class="c-stat"><strong>正常</strong><small>系统自检</small></div><div class="protect-meter"><span></span></div><p class="muted">最近完整备份：今天 04:20</p><button class="button primary" style="width:100%" data-demo="查看备份预检">查看本次备份清单</button><button class="button danger" style="width:100%;margin-top:8px" data-demo="打开恢复说明">恢复说明</button><details class="advanced"><summary>完整备份与数据包区别</summary><div class="advanced-body">数据包不包含班主任工作区；两者都不包含 API 密钥。</div></details></aside></div></section>
+    </section>
+  </main>
+
+  <div class="toast" role="status" aria-live="polite"></div>
+  <div class="dialog-backdrop" role="dialog" aria-modal="true" aria-labelledby="dialog-title">
+    <div class="dialog"><span class="eyebrow">模拟操作</span><h2 id="dialog-title">新建自定义文件夹</h2><p class="muted">自定义文件夹只改变整理方式，不复制或修改试卷。</p><label>文件夹名称<input id="folder-name" value="下周要讲" /></label><div class="dialog-actions"><button class="button" data-dialog-close>取消</button><button class="button primary" data-dialog-save>创建文件夹</button></div></div>
+  </div>
+
+  <script>
+    const variants = ['A'];
+    const allowedScreens = ['bank', 'class', 'settings'];
+    const params = new URLSearchParams(location.search);
+    let currentVariant = variants.includes(params.get('variant')) ? params.get('variant') : 'A';
+    let currentScreen = allowedScreens.includes(params.get('screen')) ? params.get('screen') : 'bank';
+    const toast = document.querySelector('.toast');
+    let toastTimer;
+
+    function notify(message) {
+      toast.textContent = message; toast.classList.add('show'); clearTimeout(toastTimer);
+      toastTimer = setTimeout(() => toast.classList.remove('show'), 2800);
+    }
+    function syncUrl() {
+      const url = new URL(location.href); url.searchParams.set('variant', currentVariant); url.searchParams.set('screen', currentScreen); history.replaceState({}, '', url);
+    }
+    function render() {
+      document.querySelectorAll('.variant').forEach(el => el.classList.toggle('active', el.dataset.variant === currentVariant));
+      document.querySelectorAll('.screen').forEach(el => el.classList.toggle('active', el.closest('.variant').dataset.variant === currentVariant && el.dataset.screen === currentScreen));
+      document.querySelectorAll('[data-screen-target]').forEach(el => el.classList.toggle('active', el.dataset.screenTarget === currentScreen));
+      syncUrl();
+    }
+    document.querySelectorAll('[data-screen-target]').forEach(button => button.addEventListener('click', () => { currentScreen = button.dataset.screenTarget; render(); }));
+    document.addEventListener('keydown', event => {
+      const tag = event.target.tagName;
+      if (['INPUT', 'TEXTAREA'].includes(tag) || event.target.isContentEditable) return;
+      if (event.key === 'Escape') document.querySelector('.dialog-backdrop').classList.remove('show');
+    });
+
+    document.querySelectorAll('[data-folder-toggle]').forEach(button => button.addEventListener('click', () => {
+      const target = document.getElementById(button.dataset.folderToggle); target.hidden = !target.hidden;
+      button.querySelector('span').textContent = button.querySelector('span').textContent.replace(target.hidden ? '▾' : '▸', target.hidden ? '▸' : '▾');
+    }));
+    const dialog = document.querySelector('.dialog-backdrop');
+    document.querySelectorAll('[data-new-folder]').forEach(button => button.addEventListener('click', () => { dialog.classList.add('show'); document.querySelector('#folder-name').focus(); }));
+    document.querySelectorAll('[data-dialog-close]').forEach(button => button.addEventListener('click', () => dialog.classList.remove('show')));
+    document.querySelector('[data-dialog-save]').addEventListener('click', () => { const name = document.querySelector('#folder-name').value.trim() || '未命名文件夹'; dialog.classList.remove('show'); notify(`已模拟创建“${name}”；正式版会跨重开保留`); });
+    dialog.addEventListener('click', event => { if (event.target === dialog) dialog.classList.remove('show'); });
+    document.querySelectorAll('[data-move]').forEach(button => button.addEventListener('click', () => notify('模拟：选择“下周要讲”后，试卷仍保留在原学期分组中')));
+    document.querySelectorAll('[data-route]').forEach(button => button.addEventListener('click', () => notify(`将进入：${button.dataset.route}；不新建重复页面`)));
+    document.querySelectorAll('[data-demo]').forEach(button => button.addEventListener('click', () => notify(`模拟操作：${button.dataset.demo}`)));
+    document.querySelectorAll('[data-settings-tab]').forEach(button => button.addEventListener('click', () => {
+      const root = button.closest('.settings-a'); const tab = button.dataset.settingsTab;
+      root.querySelectorAll('[data-settings-tab]').forEach(el => el.classList.toggle('active', el === button));
+      root.querySelectorAll('[data-settings-pane]').forEach(el => el.classList.toggle('active', el.dataset.settingsPane === tab));
+    }));
+    document.querySelectorAll('[data-edit-profile]').forEach(button => button.addEventListener('click', () => {
+      const card = button.closest('.profile-card');
+      card.classList.toggle('editing');
+      button.textContent = card.classList.contains('editing') ? '收起' : '修改';
+    }));
+    document.querySelectorAll('[data-save-profile]').forEach(button => button.addEventListener('click', () => {
+      const card = button.closest('.profile-card');
+      card.classList.remove('editing');
+      card.querySelector('[data-edit-profile]').textContent = '修改';
+      notify(`已模拟保存“${card.querySelector('h3').textContent}”的独立连接`);
+    }));
+    document.querySelectorAll('[data-replay-load]').forEach(button => button.addEventListener('click', () => {
+      const active = document.querySelector('.variant.active .screen.active'); const steps = active.querySelectorAll('[data-load-step]');
+      steps.forEach(step => step.classList.remove('done'));
+      notify('题目先显示；目录与标签统计在后台补齐');
+      if (steps[0]) setTimeout(() => steps[0].classList.add('done'), 180);
+      if (steps[1]) setTimeout(() => steps[1].classList.add('done'), 900);
+      if (steps[2]) setTimeout(() => steps[2].classList.add('done'), 1450);
+    }));
+    render();
+  </script>
+</body>
+</html>

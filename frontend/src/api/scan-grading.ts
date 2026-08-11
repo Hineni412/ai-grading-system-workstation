@@ -56,6 +56,8 @@ export interface GradingRunSummary {
   state: string
   counts: Record<'graded' | 'grading' | 'pending' | 'skipped' | 'failed' | 'conflict' | 'total', number>
   allowed_actions: string[]
+  incomplete_result_count?: number
+  incomplete_item_count?: number
 }
 
 export interface ScanAnalysisJobSummary {
@@ -164,12 +166,15 @@ function decodeRun(value: unknown): GradingRunSummary {
   if (!isRecord(value) || !hasOnlyKeys(value, [
     'run_id', 'job_id', 'job_status', 'progress', 'started_at', 'updated_at',
     'mode', 'state', 'counts', 'allowed_actions',
+    'incomplete_result_count', 'incomplete_item_count',
   ]) || !finiteInteger(value.run_id, 1)
     || (value.mode !== 'full_paper' && value.mode !== 'hybrid_batch')
     || typeof value.state !== 'string' || !isRecord(value.counts)
     || !Array.isArray(value.allowed_actions) || !value.allowed_actions.every((item) => typeof item === 'string')) {
     throw new Error('Invalid grading run')
   }
+  if (value.incomplete_result_count !== undefined && !finiteInteger(value.incomplete_result_count, 0)) throw new Error('Invalid incomplete result count')
+  if (value.incomplete_item_count !== undefined && !finiteInteger(value.incomplete_item_count, 0)) throw new Error('Invalid incomplete item count')
   if (value.job_id !== undefined && value.job_id !== null && !finiteInteger(value.job_id, 1)) throw new Error('Invalid grading job id')
   if (value.job_status !== undefined && value.job_status !== null
     && !JOB_STATUSES.some((status) => status === value.job_status)) throw new Error('Invalid grading job status')

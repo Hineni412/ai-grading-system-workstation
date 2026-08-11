@@ -80,3 +80,20 @@ def detect_question_type(question_text: str, current_type: str | None = None) ->
 
     # Default fallback
     return "解答题"
+
+
+# Grading-rubric (LLM) question types mapped onto the question-bank enum.
+# The rubric enum has no drawing/multi-choice granularity, so comprehensive
+# falls back to the generic 解答题.
+_RUBRIC_QUESTION_TYPE_MAP = {
+    "choice": "选择题",
+    "fill_blank": "填空题",
+    "calculation": "解答题（计算）",
+    "proof": "解答题（证明）",
+    "comprehensive": "解答题",
+}
+
+
+def question_type_from_rubric(value: object) -> str | None:
+    """Map a grading-rubric question type to the question-bank type enum."""
+    return _RUBRIC_QUESTION_TYPE_MAP.get(str(value or "").strip().casefold())

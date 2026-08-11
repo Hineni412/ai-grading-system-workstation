@@ -4,6 +4,7 @@ import base64
 import binascii
 import hashlib
 import json
+import logging
 import re
 import uuid
 from contextlib import nullcontext
@@ -30,6 +31,7 @@ from backend.config_workspace.publish import (
 )
 from backend.config_workspace.sources import (
     AmbiguousAssetDecision,
+    ConfigSourceError,
     ConfigSourceRecord,
     ConfigSourceService,
     QuestionDecision,
@@ -100,6 +102,7 @@ if TYPE_CHECKING:
 
 _INPUT_ID = re.compile(r"^[0-9a-f]{32}$")
 MAX_CONFIG_GENERATION_INPUT_BYTES = 96 * 1024 * 1024
+LOGGER = logging.getLogger(__name__)
 
 
 def _input_path(upload_config_dir: Path, input_id: str) -> Path:
@@ -1214,31 +1217,61 @@ def _run_config_generation_job_impl(
                         "session config changed while generation was running"
                     )
                 if sync_to_question_bank:
-                    _submit_automatic_question_bank_sync(
-                        context=context,
-                        db=db,
-                        session_id=session_id,
-                        source_paper_sha256=(
-                            archived.sha256 if archived is not None else ""
-                        ),
-                        source_safe_filename=(
-                            final_source.safe_filename
-                            if final_source is not None
-                            else ""
-                        ),
-                        curriculum_volume_id=curriculum_volume_id,
-                        analysis_artifact_id=(
-                            str(inputs.get("analysis_artifact_id") or "")
-                            if evidence_flow
-                            else ""
-                        ),
-                        analysis_artifact_hash=evidence_artifact_hash,
-                        analysis_source_id=source_id if evidence_flow else "",
-                        analysis_source_revision=(
-                            source_revision if evidence_flow else ""
-                        ),
-                        summary=summary,
-                    )
+                    sync_asset_overrides: list[dict[str, Any]] | None = None
+                    asset_overrides_blocked = False
+                    if (
+                        source_service is not None
+                        and final_source is not None
+                        and asset_decisions
+                    ):
+                        try:
+                            sync_asset_overrides = list(
+                                source_service.resolve_asset_decision_overrides(
+                                    final_source,
+                                    asset_decisions,
+                                )
+                            )
+                        except (ConfigSourceError, ValueError):
+                            LOGGER.exception(
+                                "Failed to resolve asset decision overrides "
+                                "for session_id=%s",
+                                session_id,
+                            )
+                            asset_overrides_blocked = True
+                    if asset_overrides_blocked:
+                        summary["question_bank_sync_state"] = "blocked"
+                        summary["question_bank_sync_error"] = (
+                            "评分依据已发布，但图片归属决定已失效；"
+                            "题库任务没有启动，请回到复核页重新确认图片归属后"
+                            "在评分编辑页重新提交题库任务。"
+                        )
+                    else:
+                        _submit_automatic_question_bank_sync(
+                            context=context,
+                            db=db,
+                            session_id=session_id,
+                            source_paper_sha256=(
+                                archived.sha256 if archived is not None else ""
+                            ),
+                            source_safe_filename=(
+                                final_source.safe_filename
+                                if final_source is not None
+                                else ""
+                            ),
+                            curriculum_volume_id=curriculum_volume_id,
+                            analysis_artifact_id=(
+                                str(inputs.get("analysis_artifact_id") or "")
+                                if evidence_flow
+                                else ""
+                            ),
+                            analysis_artifact_hash=evidence_artifact_hash,
+                            analysis_source_id=source_id if evidence_flow else "",
+                            analysis_source_revision=(
+                                source_revision if evidence_flow else ""
+                            ),
+                            asset_overrides=sync_asset_overrides,
+                            summary=summary,
+                        )
                 _refresh_mapping_and_finalize_job(
                     context=context,
                     db=db,
@@ -1395,6 +1428,7 @@ def _submit_automatic_question_bank_sync(
     analysis_artifact_hash: str = "",
     analysis_source_id: str = "",
     analysis_source_revision: str = "",
+    asset_overrides: list[dict[str, Any]] | None = None,
 ) -> None:
     source_sha = str(source_paper_sha256 or "").strip().lower()
     if not re.fullmatch(r"[0-9a-f]{64}", source_sha):
@@ -1459,6 +1493,8 @@ def _submit_automatic_question_bank_sync(
         clean_filename = Path(str(source_safe_filename or "")).name
         if clean_filename:
             identity["source_safe_filename"] = clean_filename
+        if asset_overrides:
+            identity["asset_overrides"] = [dict(item) for item in asset_overrides]
         fingerprint = hashlib.sha256(
             json.dumps(
                 identity,

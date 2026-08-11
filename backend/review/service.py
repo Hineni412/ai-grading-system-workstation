@@ -25,6 +25,8 @@ REVIEW_CONFIRMED_SUMMARY = "manual_review_confirmed"
 AI_RESULT_CONFLICT_REASON = "同一题存在多份 AI 评分结果，请人工确认。"
 AI_RESULT_CONFLICT_CATEGORY = "AI 评分结果冲突"
 AI_RESULT_CONFLICT_SUMMARY = "duplicate_ai_results_for_scoring_item"
+AI_RESULT_INCOMPLETE_CATEGORY = "AI 结果未通过校验"
+AI_RESULT_INCOMPLETE_SUMMARY = "ai_result_incomplete"
 class ReviewDetailNotFoundError(LookupError):
     def __init__(
         self,
@@ -318,6 +320,26 @@ class ReviewApplicationService:
             dict(item)
             for item in self.db.list_answer_regions(session_id)
         ]
+        incomplete_keys: set[tuple[int, str]] = set()
+        try:
+            incomplete_results = self.db.list_incomplete_results(session_id)
+        except Exception:  # noqa: BLE001
+            incomplete_results = []
+        for incomplete in incomplete_results:
+            incomplete_student_id = int(incomplete.get("student_id") or 0)
+            if incomplete_student_id <= 0:
+                continue
+            for missing_id in incomplete.get("missing_question_ids") or []:
+                current_missing_id = _current_scoring_item_id(
+                    missing_id,
+                    score_map,
+                    question_catalog,
+                    current_id_by_resolved,
+                )
+                if current_missing_id is not None:
+                    incomplete_keys.add(
+                        (incomplete_student_id, current_missing_id)
+                    )
 
         items: list[ReviewItem] = []
         for paper in papers:
@@ -404,7 +426,11 @@ class ReviewApplicationService:
                     score_awarded = ai_item.score_awarded
                     needs_review = ai_item.needs_review
                 else:
-                    score_status = "ungraded"
+                    score_status = (
+                        "failed"
+                        if (student_id, question_id) in incomplete_keys
+                        else "ungraded"
+                    )
                     score_source = "none"
                     score_awarded = None
                     needs_review = True
@@ -460,7 +486,12 @@ class ReviewApplicationService:
                                 else (
                                     ai_item.error_category
                                     if ai_item
-                                    else None
+                                    else (
+                                        AI_RESULT_INCOMPLETE_CATEGORY
+                                        if (student_id, question_id)
+                                        in incomplete_keys
+                                        else None
+                                    )
                                 )
                             )
                         ),
@@ -477,7 +508,12 @@ class ReviewApplicationService:
                                 else (
                                     ai_item.error_summary
                                     if ai_item
-                                    else None
+                                    else (
+                                        AI_RESULT_INCOMPLETE_SUMMARY
+                                        if (student_id, question_id)
+                                        in incomplete_keys
+                                        else None
+                                    )
                                 )
                             )
                         ),

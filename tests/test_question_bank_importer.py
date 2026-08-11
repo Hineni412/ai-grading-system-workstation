@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 
 from docx import Document
@@ -127,6 +128,24 @@ def test_parse_paper_text_only_skips_blocks_shorter_than_six_visible_chars() -> 
     )
 
     assert [question.question_number for question in parsed.questions] == ["2", "3"]
+
+
+def test_parse_paper_text_type_overrides_win_over_heuristic() -> None:
+    text = (
+        "1．如图，在△ABC中，填写表格：y＝______，并说明理由。\n"
+        "2．若AD∥BC，则∠ABD＝______°。\n"
+    )
+    parsed = parse_paper_text(
+        text,
+        source_file="regular_paper.docx",
+        page_range="document",
+        type_overrides={"1": "解答题（证明）"},
+    )
+
+    by_number = {question.question_number: question for question in parsed.questions}
+    assert by_number["1"].question_type == "解答题（证明）"
+    # No override: the local heuristic still applies.
+    assert by_number["2"].question_type == "填空题"
 
 
 def test_cross_paper_duplicate_question_is_kept_for_complete_paper_import(tmp_path: Path) -> None:
@@ -422,3 +441,145 @@ def test_infer_semester_from_parenthesized_filename_marker() -> None:
     metadata = infer_metadata_from_filename("2024-2025学年深圳市七年级（下）期末数学试卷.docx")
 
     assert metadata.semester == "下学期"
+
+
+def _extracted_with_floating_image(tmp_path: Path) -> ExtractedDocument:
+    floating = tmp_path / "floating.png"
+    floating.write_bytes(b"floating-image-bytes")
+    inline = tmp_path / "inline.png"
+    inline.write_bytes(b"inline-image-bytes")
+    paragraphs = [
+        {"text": "1. 第一题题干内容", "xml": "", "image_relationships": {}},
+        {
+            "text": f"[[IMAGE:{floating}]]",
+            "xml": "<wp:anchor/>",
+            "image_relationships": {},
+        },
+        {"text": "2. 第二题题干内容", "xml": "", "image_relationships": {}},
+        {
+            "text": f"第二题已有插图\n[[IMAGE:{inline}]]",
+            "xml": "",
+            "image_relationships": {},
+        },
+        {"text": "3. 第三题题干内容", "xml": "", "image_relationships": {}},
+    ]
+    return ExtractedDocument(
+        source_file="tmp_asset_override_paper.docx",
+        page_range="document",
+        text="\n".join(str(item["text"]) for item in paragraphs),
+        has_images=True,
+        needs_image_review=True,
+        image_paths=[str(floating), str(inline)],
+        rich_paragraphs=paragraphs,
+    )
+
+
+def test_apply_asset_overrides_ignore_removes_floating_image(tmp_path: Path) -> None:
+    extracted = _extracted_with_floating_image(tmp_path)
+    floating = extracted.image_paths[0]
+    digest = hashlib.sha256(Path(floating).read_bytes()).hexdigest()
+
+    result = batch_importer.apply_asset_overrides(
+        extracted,
+        [
+            {
+                "sha256": digest,
+                "action": "ignore",
+                "question_number": None,
+                "asset_kind": None,
+            }
+        ],
+    )
+
+    assert floating not in result.text
+    assert "1. 第一题题干内容\n2. 第二题题干内容" in result.text
+    assert result.image_paths == extracted.image_paths
+    parsed = parse_paper_text(
+        result.text,
+        source_file="tmp_asset_override_paper.docx",
+        page_range="document",
+    )
+    by_number = {item.question_number: item for item in parsed.questions}
+    assert floating not in by_number["1"].image_paths
+    assert floating not in by_number["2"].image_paths
+    assert extracted.image_paths[1] in by_number["2"].image_paths
+
+
+def test_apply_asset_overrides_bind_moves_image_to_next_question(tmp_path: Path) -> None:
+    extracted = _extracted_with_floating_image(tmp_path)
+    floating, inline = extracted.image_paths
+    digest = hashlib.sha256(Path(floating).read_bytes()).hexdigest()
+
+    result = batch_importer.apply_asset_overrides(
+        extracted,
+        [
+            {
+                "sha256": digest,
+                "action": "bind",
+                "question_number": "2",
+                "asset_kind": "question",
+            }
+        ],
+    )
+
+    assert [str(item["text"]) for item in result.rich_paragraphs] == [
+        "1. 第一题题干内容",
+        "2. 第二题题干内容",
+        f"第二题已有插图\n[[IMAGE:{inline}]]",
+        f"[[IMAGE:{floating}]]",
+        "3. 第三题题干内容",
+    ]
+    parsed = parse_paper_text(
+        result.text,
+        source_file="tmp_asset_override_paper.docx",
+        page_range="document",
+    )
+    by_number = {item.question_number: item for item in parsed.questions}
+    assert floating not in by_number["1"].image_paths
+    assert by_number["2"].image_paths == [inline, floating]
+    assert floating not in by_number["3"].image_paths
+
+
+def test_apply_asset_overrides_keeps_document_when_bind_target_missing(
+    tmp_path: Path,
+) -> None:
+    extracted = _extracted_with_floating_image(tmp_path)
+    floating = extracted.image_paths[0]
+    digest = hashlib.sha256(Path(floating).read_bytes()).hexdigest()
+
+    result = batch_importer.apply_asset_overrides(
+        extracted,
+        [
+            {
+                "sha256": digest,
+                "action": "bind",
+                "question_number": "9",
+                "asset_kind": "question",
+            }
+        ],
+    )
+
+    assert result.text == extracted.text
+    assert [item["text"] for item in result.rich_paragraphs] == [
+        item["text"] for item in extracted.rich_paragraphs
+    ]
+
+
+def test_apply_asset_overrides_skips_unknown_sha256(tmp_path: Path) -> None:
+    extracted = _extracted_with_floating_image(tmp_path)
+    digest = hashlib.sha256(b"not-in-document").hexdigest()
+
+    result = batch_importer.apply_asset_overrides(
+        extracted,
+        [
+            {
+                "sha256": digest,
+                "action": "ignore",
+                "question_number": None,
+                "asset_kind": None,
+            }
+        ],
+    )
+
+    assert result.text == extracted.text
+    assert result.image_paths == extracted.image_paths

@@ -12,6 +12,15 @@ const props = withDefaults(defineProps<{
   compact?: boolean
   dense?: boolean
   paperMediaFlow?: boolean
+  /**
+   * Mirrors the Word exporter's compact_standalone_images_with_text split:
+   * true  — pair a standalone media group with the preceding text block
+   *         (text left, images right, like choice/fill questions in docx);
+   * false — keep media groups on their own row but right-aligned
+   *         (like answer-space questions in docx);
+   * undefined — legacy behavior (left-aligned strips, no pairing).
+   */
+  compactMediaWithText?: boolean
   supplementalImageUrls?: string[]
   mediaMode?: 'list' | 'detail' | 'paper' | 'review'
 }>(), {
@@ -22,6 +31,7 @@ const props = withDefaults(defineProps<{
   compact: false,
   dense: false,
   paperMediaFlow: false,
+  compactMediaWithText: undefined,
   supplementalImageUrls: () => [],
   mediaMode: 'list',
 })
@@ -31,7 +41,7 @@ const activeImageUrl = ref<string | null>(null)
 const activeImageAlt = ref('')
 const imageZoom = ref(1)
 const imageViewer = ref<HTMLElement | null>(null)
-type RenderGroupKind = 'plain' | 'full' | 'media'
+type RenderGroupKind = 'plain' | 'full' | 'media' | 'media-right' | 'pair'
 interface RenderGroup {
   key: string
   kind: RenderGroupKind
@@ -70,8 +80,62 @@ const renderGroups = computed<RenderGroup[]>(() => {
     })
   })
   flushMedia()
-  return groups
+  return applyCompactMedia(groups)
 })
+
+// Mirrors word_renderer._compact_image_pairs / add_answer_space behavior for
+// the HTML paper preview. Only runs when compactMediaWithText is explicitly set.
+function applyCompactMedia(groups: RenderGroup[]): RenderGroup[] {
+  if (props.compactMediaWithText === undefined) return groups
+  if (!props.compactMediaWithText) {
+    return groups.map((group) => (
+      group.kind === 'media' ? { ...group, kind: 'media-right' as const } : group
+    ))
+  }
+  const paired: RenderGroup[] = []
+  for (const group of groups) {
+    const previous = paired[paired.length - 1]
+    const previousBlock = previous && previous.blocks.length === 1
+      ? previous.blocks[0]
+      : undefined
+    if (
+      group.kind === 'media'
+      && previous
+      && previous.kind === 'full'
+      && previousBlock !== undefined
+      && isTextOnlyBlock(previousBlock)
+    ) {
+      paired[paired.length - 1] = {
+        key: `pair:${previous.key}`,
+        kind: 'pair',
+        blocks: [...previous.blocks, ...group.blocks],
+      }
+      continue
+    }
+    paired.push(group)
+  }
+  return paired
+}
+
+function isTextOnlyBlock(block: QuestionBankRichBlock): boolean {
+  return (
+    block.kind !== 'table'
+    && block.asset_urls.length === 0
+    && block.text.trim().length > 0
+  )
+}
+
+// A long text block that also carries images (images were inline in the source
+// document). In paper mode these mirror docx behavior too: paired text-left /
+// images-right when compacting, right-aligned images otherwise.
+function isInlineMediaBlock(block: QuestionBankRichBlock): boolean {
+  return (
+    props.paperMediaFlow
+    && block.kind !== 'table'
+    && block.asset_urls.length > 0
+    && block.text.replace(/\s+/g, '').length > 32
+  )
+}
 
 function isPaperMediaBlock(block: QuestionBankRichBlock): boolean {
   if (block.kind === 'table' || block.asset_urls.length === 0) return false
@@ -137,7 +201,9 @@ function handleViewerKey(event: KeyboardEvent): void {
         :key="group.key"
         class="question-content__render-group"
         :class="{
-          'question-content__media-strip': group.kind === 'media',
+          'question-content__media-strip': group.kind === 'media' || group.kind === 'media-right',
+          'question-content__media-strip--right': group.kind === 'media-right',
+          'question-content__pair': group.kind === 'pair',
           'question-content__full-block': group.kind === 'full',
           'question-content__plain-blocks': group.kind === 'plain',
         }"
@@ -147,6 +213,14 @@ function handleViewerKey(event: KeyboardEvent): void {
           v-for="(block, blockIndex) in group.blocks"
           :key="`${blockIndex}:${block.kind ?? 'paragraph'}:${block.text.slice(0, 12)}`"
           class="question-content__block"
+          :class="{
+            'question-content__pair-text': group.kind === 'pair' && blockIndex === 0,
+            'question-content__pair-media': group.kind === 'pair' && blockIndex > 0,
+            'question-content__block--inline-media-paired':
+              isInlineMediaBlock(block) && compactMediaWithText === true,
+            'question-content__block--inline-media-right':
+              isInlineMediaBlock(block) && compactMediaWithText === false,
+          }"
         >
           <div v-if="block.kind === 'table' && block.rows?.length" class="question-content__table-wrap">
             <table>
@@ -291,6 +365,58 @@ function handleViewerKey(event: KeyboardEvent): void {
   display: flex;
   flex-wrap: wrap;
   gap: 10px;
+}
+
+.question-content__media-strip--right {
+  justify-content: flex-end;
+}
+
+.question-content__pair {
+  align-items: flex-start;
+  display: flex;
+  gap: 12px;
+}
+
+.question-content__pair .question-content__block {
+  margin: 0;
+}
+
+.question-content__pair-text {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.question-content__pair-media {
+  flex: 0 0 32%;
+  max-width: 32%;
+  min-width: 0;
+}
+
+.question-content__pair-media .question-content__media {
+  justify-content: flex-end;
+  margin-top: 0;
+}
+
+.question-content__block--inline-media-paired {
+  align-items: flex-start;
+  display: flex;
+  gap: 12px;
+}
+
+.question-content__block--inline-media-paired .question-content__text {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.question-content__block--inline-media-paired .question-content__media {
+  flex: 0 0 32%;
+  justify-content: flex-end;
+  margin-top: 0;
+  max-width: 32%;
+}
+
+.question-content__block--inline-media-right .question-content__media {
+  justify-content: flex-end;
 }
 
 .question-content__media-strip .question-content__block {

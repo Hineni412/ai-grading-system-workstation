@@ -1,0 +1,102 @@
+<!doctype html><html lang="zh-CN"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>考试配置 · 知衡布局原型</title><link rel="icon" href="data:,">
+<link rel="stylesheet" href="proto.css">
+<style>
+.steps { margin-bottom: 16px; }
+.cell-key { max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ink-2); }
+.issue-row { display: flex; align-items: center; gap: 10px; padding: 7px 0; font-size: 13px; border-bottom: 1px solid var(--line-soft); }
+.issue-row:last-child { border-bottom: none; }
+.issue-row .go { margin-left: auto; font-size: 12px; flex: none; }
+.issue-row .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--bad); flex: none; }
+.btn-block { width: 100%; justify-content: center; margin-top: 10px; }
+</style></head><body>
+<div class="ribbon"><b>布局重设计原型</b><span>静态演示 · 模拟数据 · 不连接真实接口</span></div>
+<div class="shell">
+  <aside class="sidebar">
+    <div class="side-brand"><div class="brand-mark">知</div><div><div class="brand-name">知衡</div><div class="brand-sub">教师教学工作台</div></div></div>
+    <nav class="side-nav">
+      <a class="side-link" href="workbench.html"><i class="ic">◧</i>工作台</a>
+      <div class="side-group">考试与阅卷</div>
+      <a class="side-link on" href="session-config.html"><i class="ic">▤</i>考试配置</a>
+      <a class="side-link" href="grading-run.html"><i class="ic">◐</i>考试批改</a>
+      <a class="side-link" href="results.html"><i class="ic">▥</i>成绩中心</a>
+      <div class="side-group">题库与组卷</div>
+      <a class="side-link" href="question-bank.html"><i class="ic">▦</i>题库管理</a>
+      <a class="side-link" href="assembly.html"><i class="ic">▨</i>组卷工作台</a>
+      <div class="side-group">教学分析</div>
+      <a class="side-link" href="knowledge.html"><i class="ic">◆</i>知识与训练</a>
+    </nav>
+  </aside>
+  <div class="content">
+    <header class="appbar">
+      <span class="crumb">知衡 / 考试配置</span>
+      <div class="appbar-right"><span class="tag">2025—2026 学年下学期</span></div>
+    </header>
+<main class="page">
+  <div class="page-head">
+    <h1>考试配置</h1>
+    <span class="sub">第二章单元测验《相交线与平行线》 · 七年级（3）班</span>
+    <div class="head-actions"><span class="tag info">草稿改动已自动保存 14:32</span></div>
+  </div>
+
+  <div class="steps">
+    <a class="step done" href="#" data-demo="回到草稿步骤"><span class="n">✓</span>草稿</a>
+    <a class="step done" href="#" data-demo="回到试卷来源"><span class="n">✓</span>试卷来源</a>
+    <a class="step done" href="#" data-demo="查看生成的评分依据"><span class="n">✓</span>生成评分依据</a>
+    <a class="step on" href="#" data-demo="编辑评分依据"><span class="n">4</span>编辑评分依据</a>
+    <a class="step" href="#" data-demo="样卷题框"><span class="n">5</span>样卷题框</a>
+  </div>
+
+  <div class="grid grid-main-side">
+    <div>
+      <section class="panel">
+        <div class="panel-head">
+          <h2>评分依据</h2>
+          <div class="more row">
+            <button class="btn btn-sm" data-demo="添加小题">+ 添加小题</button>
+            <button class="btn btn-primary btn-sm" data-demo="保存评分依据">保存</button>
+          </div>
+        </div>
+        <table class="table">
+          <thead><tr><th style="width:56px">题号</th><th style="width:72px">题型</th><th style="width:56px">分值</th><th>评分要点</th><th style="width:96px">状态</th></tr></thead>
+          <tbody>
+            <tr><td class="num">题1</td><td>选择</td><td class="num">3 分</td><td class="cell-key">识别同位角、内错角并判断相等关系</td><td><span class="tag ok">已就绪</span></td></tr>
+            <tr><td class="num">题2</td><td>填空</td><td class="num">4 分</td><td class="cell-key">由平行线性质求角度，结果唯一</td><td><span class="tag ok">已就绪</span></td></tr>
+            <tr><td class="num">题3</td><td>解答</td><td class="num">5 分</td><td class="cell-key">两小题分值合计与总分不一致，需核对</td><td><span class="tag warn">分值待核</span></td></tr>
+            <tr><td class="num">题4</td><td>解答</td><td class="num">5 分</td><td class="cell-key">证明对顶角相等，写出完整推理过程</td><td><span class="tag ok">已就绪</span></td></tr>
+            <tr><td class="num">题5</td><td>解答</td><td class="num">6 分</td><td class="cell-key muted">尚未填写评分点</td><td><span class="tag bad">缺评分点</span></td></tr>
+            <tr><td class="num">题6</td><td>解答</td><td class="num">8 分</td><td class="cell-key">综合应用平行线判定与性质，分步给分</td><td><span class="tag ok">已就绪</span></td></tr>
+          </tbody>
+        </table>
+      </section>
+    </div>
+
+    <div>
+      <section class="panel">
+        <div class="panel-head"><h2>待解决 <span class="tag bad">2</span></h2></div>
+        <div class="issue-row"><i class="dot"></i><span>题3 · 各小题分值合计 ≠ 总分</span><a class="go" href="#" data-demo="定位到题3">定位 ›</a></div>
+        <div class="issue-row"><i class="dot"></i><span>题5 · 缺少评分点</span><a class="go" href="#" data-demo="定位到题5">定位 ›</a></div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head"><h2>样卷题框</h2></div>
+        <div class="row"><span class="tag warn">题框待标定</span><span class="muted small">样卷已上传</span></div>
+        <button class="btn btn-primary btn-block" data-demo="进入样卷题框">进入样卷题框</button>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head"><h2>试卷入库</h2><button class="btn btn-sm more" data-demo="查看入库情况">查看</button></div>
+        <div class="muted small">6 题已入题库 · 标签待核 2</div>
+      </section>
+    </div>
+  </div>
+</main>
+  </div>
+</div>
+<div class="toast" id="toast"></div>
+<script>
+const toast=(m)=>{const t=document.getElementById('toast');t.textContent=m;t.classList.add('show');clearTimeout(t._h);t._h=setTimeout(()=>t.classList.remove('show'),2200);};
+document.addEventListener('click',e=>{const b=e.target.closest('[data-demo]');if(b){e.preventDefault();toast('原型演示：'+(b.getAttribute('data-demo')||'正式版此处才执行'));}});
+</script>
+</body></html>

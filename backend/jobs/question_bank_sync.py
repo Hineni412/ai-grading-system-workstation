@@ -18,7 +18,10 @@ from question_bank.current_knowledge import CurrentFineTermResolver
 from question_bank.services.question_write_service import QuestionBankWriteService
 from question_bank.services.source_question_link_service import (
     SourceQuestionLinkService,
+    _normalize_question_number,
+    _source_question_id,
 )
+from question_bank.parsers.type_detector import question_type_from_rubric
 
 from .manager import JobCancellationRequested, JobContext
 from .question_import import run_question_import_job
@@ -113,6 +116,7 @@ def run_session_question_bank_sync_job(
     mode = str(payload.get("mode") or "").strip()
     if mode not in {"sync", "sync_retry", "tag_retry"}:
         raise ValueError("unsupported question-bank sync mode")
+    asset_overrides = _asset_overrides(payload.get("asset_overrides"))
     volume = curriculum_volume(volume_id=payload.get("curriculum_volume_id"))
     if volume is None:
         raise ValueError("question-bank sync requires a valid curriculum volume")
@@ -130,6 +134,9 @@ def run_session_question_bank_sync_job(
         config_revision=config_revision,
         data_root=Path(data_root),
     )
+    # Grading-rubric (LLM) question types govern the imported rows; the local
+    # heuristic detector only fills questions the rubric does not cover.
+    type_overrides = _rubric_type_overrides(loaded)
     if not context.store.claim_question_bank_sync_state_if_current(
         session_id=session_id,
         job_id=context.job_id,
@@ -192,6 +199,8 @@ def run_session_question_bank_sync_job(
                         "semester": str(volume["semester"]),
                         "textbook_version": str(volume["textbook_version"]),
                     },
+                    "asset_overrides": asset_overrides,
+                    "type_overrides": type_overrides,
                 },
                 progress_start=0.05,
                 progress_end=0.46,
@@ -1306,6 +1315,68 @@ def _sha256(value: object, field: str) -> str:
     if len(clean) != 64 or any(char not in "0123456789abcdef" for char in clean):
         raise ValueError(f"{field} must be sha256")
     return clean
+
+
+def _rubric_type_overrides(loaded: LoadedEditorConfig) -> dict[str, str]:
+    """Map rubric (LLM) question types onto normalized bank question numbers."""
+    payload = loaded.payload if isinstance(loaded.payload, dict) else {}
+    rubric = payload.get("rubric")
+    questions = rubric.get("questions") if isinstance(rubric, dict) else None
+    overrides: dict[str, str] = {}
+    if not isinstance(questions, list):
+        return overrides
+    for item in questions:
+        if not isinstance(item, dict):
+            continue
+        number = _normalize_question_number(_source_question_id(item))
+        question_type = question_type_from_rubric(item.get("question_type"))
+        if number and question_type:
+            overrides[number] = question_type
+    return overrides
+
+
+def _asset_overrides(value: object) -> list[dict[str, Any]]:
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise ValueError("asset overrides must be a list")
+    overrides: list[dict[str, Any]] = []
+    for item in value:
+        if not isinstance(item, dict):
+            raise ValueError("asset override must be an object")
+        digest = _sha256(item.get("sha256"), "asset override sha256")
+        action = str(item.get("action") or "").strip()
+        question_number = item.get("question_number")
+        asset_kind = item.get("asset_kind")
+        if action == "bind":
+            if (
+                not isinstance(question_number, str)
+                or not question_number.strip().isdigit()
+                or asset_kind not in {"question", "answer"}
+            ):
+                raise ValueError("asset override binding target is invalid")
+            overrides.append(
+                {
+                    "sha256": digest,
+                    "action": "bind",
+                    "question_number": question_number.strip(),
+                    "asset_kind": str(asset_kind),
+                }
+            )
+        elif action == "ignore":
+            if question_number is not None or asset_kind is not None:
+                raise ValueError("ignored asset override cannot have a target")
+            overrides.append(
+                {
+                    "sha256": digest,
+                    "action": "ignore",
+                    "question_number": None,
+                    "asset_kind": None,
+                }
+            )
+        else:
+            raise ValueError("asset override action is invalid")
+    return overrides
 
 
 def _source_filename(

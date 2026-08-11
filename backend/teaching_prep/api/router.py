@@ -892,6 +892,7 @@ def create_router() -> APIRouter:
             item = service.apply_semester_mapping_proposal(
                 proposal_id,
                 expected_revision=payload.expected_revision,
+                chapter_key=payload.chapter_key,
             )
         except Exception as exc:
             raise _api_error(exc) from exc

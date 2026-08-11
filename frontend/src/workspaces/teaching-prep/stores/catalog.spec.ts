@@ -614,6 +614,50 @@ describe('semester workflow idempotency', () => {
     expect(store.currentSemesterMappingProposal).toBeNull()
   })
 
+  it('falls back to the local PPT proposal when the current Job has no exact match', async () => {
+    const curriculumItem = curriculum()
+    const semesterItem = semester(curriculumItem.id)
+    const materialItem = material('v'.repeat(32))
+    const record = semesterMaterial(semesterItem.id, materialItem)
+    const queued = mappingJob(semesterItem.id, record.id)
+    const localProposal = mappingProposal(semesterItem.id)
+    localProposal.payload.source_material_record_ids = [record.id]
+    localProposal.payload.generation_source = 'local_reference_ppt_names'
+    localProposal.operation_id = 'local-ppt-operation'
+    vi.spyOn(teachingPrepCatalogApi, 'semesterMappingPreflight')
+      .mockResolvedValue(mappingPreflight(semesterItem.id))
+    vi.spyOn(teachingPrepCatalogApi, 'startSemesterMappingProposalJob')
+      .mockResolvedValue(queued)
+    const listProposals = vi.spyOn(teachingPrepCatalogApi, 'listSemesterMappingProposals')
+      .mockResolvedValue([localProposal])
+    const store = useTeachingPrepCatalogStore()
+    configureMappingSelection(store, curriculumItem, semesterItem, materialItem, record)
+    // 页面加载时已读到本地 PPT 建议；job 恢复只写回精确匹配的建议，不会覆盖它
+    store.semesterMappingProposals = [localProposal]
+
+    await store.prepareSemesterMapping([record.id])
+    await store.generateSemesterMapping([record.id])
+    useJobStore().track({
+      ...queued,
+      status: 'succeeded',
+      progress: 1,
+      stage: 'completed',
+      result: {
+        semester_id: semesterItem.id,
+        operation_id: String(queued.payload.operation_id),
+        source_state_sha256: String(queued.payload.source_state_sha256),
+        proposal_id: 'z'.repeat(32),
+        recovered_existing: false,
+      },
+      updated_at: '2026-08-03T00:00:10Z',
+      finished_at: '2026-08-03T00:00:10Z',
+    })
+    await vi.waitFor(() => expect(listProposals).toHaveBeenCalledTimes(2))
+
+    // 本地 PPT 课时树建议不依赖 job 匹配，始终可达
+    expect(store.currentSemesterMappingProposal?.id).toBe(localProposal.id)
+  })
+
   it('deduplicates concurrent recovery for the same terminal Job', async () => {
     const curriculumItem = curriculum()
     const semesterItem = semester(curriculumItem.id)

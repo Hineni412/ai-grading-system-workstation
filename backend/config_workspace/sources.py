@@ -864,6 +864,15 @@ class ConfigSourceService:
             raise ConfigSourceChangedError()
         return metadata.public_snapshot()
 
+    def load_active_record(self, *, session_id: int) -> ConfigSourceRecord:
+        clean_session_id = _positive_session_id(session_id)
+        source_id, _source_revision = self._read_active(clean_session_id)
+        return self.load(
+            session_id=clean_session_id,
+            source_id=source_id,
+            require_active=True,
+        )
+
     def _load_metadata(
         self,
         *,
@@ -1171,6 +1180,74 @@ class ConfigSourceService:
             },
             whole_page_images=record.private_whole_page_images,
         )
+
+    def resolve_asset_decision_overrides(
+        self,
+        record: ConfigSourceRecord,
+        asset_decisions: Sequence[AmbiguousAssetDecision],
+    ) -> tuple[dict[str, Any], ...]:
+        """Translate teacher asset decisions into import-time image overrides.
+
+        The question-bank sync re-parses the original document, so decisions
+        are keyed by image content (sha256) instead of by parse-specific ids.
+        Validation mirrors apply_teacher_decisions.
+        """
+        known = {question.question_id for question in record.questions}
+        ambiguous_candidates = {
+            item["candidate_id"]: item
+            for item in _ambiguous_assets_from_blocks(record.private_blocks)
+        }
+        automatic_assets = _automatic_asset_bindings(record)
+        candidates = {**automatic_assets, **ambiguous_candidates}
+        seen: set[str] = set()
+        overrides: list[dict[str, Any]] = []
+        for decision in asset_decisions:
+            candidate_id = str(decision.candidate_id or "").strip()
+            candidate = candidates.get(candidate_id)
+            if candidate is None or candidate_id in seen:
+                raise ValueError("invalid ambiguous asset decision")
+            seen.add(candidate_id)
+            action = str(decision.action or "").strip()
+            if action == "ignore":
+                if decision.question_id is not None or decision.asset_kind is not None:
+                    raise ValueError("ignored asset cannot have a binding target")
+            elif action == "bind":
+                if (
+                    decision.question_id not in known
+                    or decision.asset_kind not in {"question", "answer"}
+                ):
+                    raise ValueError("asset target is invalid")
+            else:
+                raise ValueError("ambiguous asset action is invalid")
+            if candidate_id in automatic_assets:
+                content = base64.b64decode(str(candidate["encoded"]), validate=True)
+            else:
+                content = self._files.read_bytes(
+                    self._owned_path(
+                        record.manifest_path.parent,
+                        str(candidate["filename"]),
+                    )
+                )
+            digest = hashlib.sha256(content).hexdigest()
+            if action == "ignore":
+                overrides.append(
+                    {
+                        "sha256": digest,
+                        "action": "ignore",
+                        "question_number": None,
+                        "asset_kind": None,
+                    }
+                )
+            else:
+                overrides.append(
+                    {
+                        "sha256": digest,
+                        "action": "bind",
+                        "question_number": str(decision.question_id).removeprefix("Q"),
+                        "asset_kind": str(decision.asset_kind),
+                    }
+                )
+        return tuple(overrides)
 
     def prepare_generation_input(
         self,
@@ -2810,6 +2887,11 @@ def _question_type_review_reason(question_type: str, question_value: Any) -> str
         and not _VISIBLE_SUBPART.search(plain)
     ):
         return "题面只有一个明确填空位置，但当前题型不是填空题。"
+    if (
+        str(question_type or "").strip() in {"choice", "fill_blank"}
+        and _VISIBLE_SUBPART.search(plain)
+    ):
+        return "题面包含多个小问，但当前题型是选择题或填空题，请确认题型。"
     return ""
 
 

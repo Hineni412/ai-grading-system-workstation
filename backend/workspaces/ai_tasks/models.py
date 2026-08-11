@@ -131,6 +131,7 @@ class TaskSnapshot:
     safe_source: str
     teacher_message: str
     next_action: str
+    error_detail: str | None = None
     handoffs: tuple[HandoffSnapshot, ...] = field(default_factory=tuple)
     handoff_total: int = 0
     adopted_count: int = 0

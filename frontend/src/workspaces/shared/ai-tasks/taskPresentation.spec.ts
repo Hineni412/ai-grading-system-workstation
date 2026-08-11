@@ -11,6 +11,7 @@ function task(destination: string): WorkspaceAITask {
     status: 'proposal_ready', phase: 'handoff_ready', progress: 1, send_attempt_count: 1,
     dispatch_evidence: 'response_persisted', cancel_requested: false, job_id: 1,
     proposal_ref_id: 'proposal-1', proposal_revision: '1', error_code: null, revision: 4,
+    error_detail: null,
     safe_title: '候选练习', safe_source: '备课', teacher_message: '待审', next_action: '返回',
     handoffs: [], handoff_total: 0, adopted_count: 0, discarded_count: 0, stale_count: 0, pending_count: 0,
     created_at: '', updated_at: '', finished_at: '',

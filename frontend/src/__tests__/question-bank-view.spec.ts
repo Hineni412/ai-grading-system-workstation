@@ -382,14 +382,14 @@ describe('question bank workspace', () => {
     const { host, pinia } = await mountView()
     await vi.waitFor(() => {
       expect(host.querySelector<HTMLButtonElement>('.question-sort button.is-active')?.textContent)
-        .toContain('难度')
+        .toContain('题号')
       expect(host.querySelector('.difficulty-range.qb-difficulty-filter')).toBeTruthy()
     })
     const baselineCalls = fetchSpy.mock.calls.length
     const initialQuestionRequest = fetchSpy.mock.calls
       .map(([request]) => String(request))
       .find((url) => url.startsWith('/api/question-bank/questions?'))
-    expect(initialQuestionRequest).toContain('sort=difficulty_desc')
+    expect(initialQuestionRequest).toContain('sort=paper_order')
     const lowerDifficulty = host.querySelector<HTMLInputElement>('input[aria-label="最低难度"]')!
     lowerDifficulty.value = '4'
     lowerDifficulty.dispatchEvent(new Event('input', { bubbles: true }))

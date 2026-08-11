@@ -1,0 +1,148 @@
+<!doctype html><html lang="zh-CN"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>知识与训练 · 知衡布局原型</title><link rel="icon" href="data:,">
+<link rel="stylesheet" href="proto.css">
+<style>
+.page{max-width:1320px}
+.kw-grid{display:grid;grid-template-columns:280px minmax(0,1fr) 300px;gap:16px;align-items:start;margin-top:16px}
+.tabs{display:flex;gap:4px;margin:16px 0 12px;border-bottom:1px solid var(--line)}
+.tabs a{padding:7px 14px;font-size:13px;color:var(--ink-2);margin-bottom:-1px}
+.tabs a.on{font-weight:600}
+.scope-select{font-size:12px}
+.stu-table{border-collapse:separate;border-spacing:2px}
+.stu-table td,.stu-table th{padding:5px 8px;text-align:center;font-size:12px}
+.stu-table td:first-child,.stu-table th:first-child{text-align:left}
+.stu-table td.num{font-weight:500}
+.stu-table .g0{background:var(--bad-bg);color:var(--bad)}
+.stu-table .g1{background:var(--warn-bg);color:var(--warn)}
+.stu-table .g2{background:var(--ok-bg);color:var(--ok)}
+.stu-table .g3{background:var(--ok);color:#fff}
+.node-side{position:sticky;top:76px}
+.node-pct{font-size:34px;font-weight:750;line-height:1.1;margin:4px 0 8px;background-image:linear-gradient(135deg,#0ea5b7,#135e6b);-webkit-background-clip:text;background-clip:text;color:transparent}
+.node-dl{display:flex;flex-direction:column;font-size:13px;margin:12px 0}
+.node-dl>div{display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--line-soft)}
+.node-dl>div:last-child{border-bottom:none}
+.node-dl dt{color:var(--ink-3)}
+.node-dl dd{font-variant-numeric:tabular-nums}
+.node-chips{display:flex;gap:6px;flex-wrap:wrap;margin:10px 0 14px}
+.node-side .btn{justify-content:center;width:100%}
+.toggle-btn{font-size:12px;color:var(--accent);cursor:pointer}
+</style></head><body>
+<div class="ribbon"><b>布局重设计原型</b><span>静态演示 · 模拟数据 · 不连接真实接口</span></div>
+<div class="shell">
+  <aside class="sidebar">
+    <div class="side-brand"><div class="brand-mark">知</div><div><div class="brand-name">知衡</div><div class="brand-sub">教师教学工作台</div></div></div>
+    <nav class="side-nav">
+      <a class="side-link" href="workbench.html"><i class="ic">◧</i>工作台</a>
+      <div class="side-group">考试与阅卷</div>
+      <a class="side-link" href="session-config.html"><i class="ic">▤</i>考试配置</a>
+      <a class="side-link" href="grading-run.html"><i class="ic">◐</i>考试批改</a>
+      <a class="side-link" href="results.html"><i class="ic">▥</i>成绩中心</a>
+      <div class="side-group">题库与组卷</div>
+      <a class="side-link" href="question-bank.html"><i class="ic">▦</i>题库管理</a>
+      <a class="side-link" href="assembly.html"><i class="ic">▨</i>组卷工作台</a>
+      <div class="side-group">教学分析</div>
+      <a class="side-link on" href="knowledge.html"><i class="ic">◆</i>知识与训练</a>
+    </nav>
+  </aside>
+  <div class="content">
+    <header class="appbar">
+      <span class="crumb">知衡 / 知识与训练</span>
+      <div class="appbar-right"><span class="tag">2025—2026 学年下学期</span></div>
+    </header>
+<main class="page">
+  <div class="page-head">
+    <h1>知识与训练</h1>
+    <span class="sub">2025—2026 学年下学期</span>
+    <div class="head-actions">
+      <select class="scope-select"><option>考试：第二章单元测验</option><option>考试：期中综合卷</option></select>
+      <select class="scope-select"><option>学生：七年级（3）班 4 人</option><option>学生：七年级（1）班</option></select>
+      <button class="btn btn-sm" data-demo="调整范围">调整</button>
+    </div>
+  </div>
+
+  <div class="tabs">
+    <a class="on">知识结构</a>
+    <a data-demo="按章节训练">按章节训练</a>
+    <a data-demo="按学生训练">按学生训练</a>
+    <a data-demo="生成试卷">生成试卷</a>
+  </div>
+
+  <div class="statbar">
+    <div class="stat"><div class="v">42</div><div class="k">知识点</div></div>
+    <div class="stat tone-bad"><div class="v">6</div><div class="k">重点薄弱</div></div>
+    <div class="stat"><div class="v">3</div><div class="k">无证据</div></div>
+    <div class="stat tone-warn"><div class="v">4</div><div class="k">需讲评</div></div>
+  </div>
+
+  <div class="kw-grid">
+    <div class="panel">
+      <div class="panel-head"><h2>教材结构</h2></div>
+      <div class="tree">
+        <details open>
+          <summary>七年级下册</summary>
+          <details open>
+            <summary class="on">第二章 相交线与平行线<span class="pct">51%</span></summary>
+            <div class="leaf">1 两条直线的位置关系<span class="pct">46%</span></div>
+            <div class="leaf">对顶角相等<span class="pct">46%</span></div>
+            <div class="leaf">3 平行线的性质<span class="pct">68%</span></div>
+            <div class="leaf">两直线平行同旁内角互补<span class="pct">68%</span></div>
+          </details>
+          <details open>
+            <summary>第四章 三角形<span class="pct">55%</span></summary>
+            <div class="leaf">1 认识三角形<span class="pct">55%</span></div>
+            <div class="leaf">等腰三角形的定义<span class="pct">61%</span></div>
+            <div class="leaf">三角形内角和<span class="pct">68%</span></div>
+          </details>
+        </details>
+      </div>
+    </div>
+
+    <div>
+      <div class="panel">
+        <div class="panel-head"><h2>群体掌握度 · 按薄弱排序</h2><span class="more"><span class="toggle-btn" data-demo="切换按章节排序">按章节 ⇅</span></span></div>
+        <div class="mrow"><span class="nm">对顶角相等</span><div class="bar"><i class="bad" style="width:46%"></i></div><span class="pc">46%</span></div>
+        <div class="mrow"><span class="nm">两条直线的位置关系</span><div class="bar"><i class="bad" style="width:46%"></i></div><span class="pc">46%</span></div>
+        <div class="mrow"><span class="nm">认识三角形</span><div class="bar"><i class="warn" style="width:55%"></i></div><span class="pc">55%</span></div>
+        <div class="mrow"><span class="nm">等腰三角形的定义</span><div class="bar"><i class="warn" style="width:61%"></i></div><span class="pc">61%</span></div>
+        <div class="mrow"><span class="nm">平行线的性质</span><div class="bar"><i style="width:68%"></i></div><span class="pc">68%</span></div>
+        <div class="mrow"><span class="nm">三角形内角和</span><div class="bar"><i style="width:68%"></i></div><span class="pc">68%</span></div>
+        <div class="mrow"><span class="nm">同旁内角互补</span><div class="bar"><i style="width:68%"></i></div><span class="pc">68%</span></div>
+      </div>
+      <div class="panel">
+        <div class="panel-head"><h2>学生明细</h2></div>
+        <table class="table stu-table">
+          <thead><tr><th>学生</th><th>对顶角</th><th>位置关系</th><th>认识三角形</th><th>等腰定义</th><th>平行线性质</th><th>内角和</th></tr></thead>
+          <tbody>
+            <tr><td>陈雨桐</td><td class="num g0">38</td><td class="num g1">40</td><td class="num g1">48</td><td class="num g1">55</td><td class="num g2">60</td><td class="num g2">62</td></tr>
+            <tr><td>李浩然</td><td class="num g1">52</td><td class="num g1">55</td><td class="num g2">62</td><td class="num g2">70</td><td class="num g2">78</td><td class="num g2">75</td></tr>
+            <tr><td>王梓萱</td><td class="num g1">45</td><td class="num g1">42</td><td class="num g1">55</td><td class="num g1">58</td><td class="num g2">65</td><td class="num g2">66</td></tr>
+            <tr><td>张一凡</td><td class="num g1">49</td><td class="num g1">47</td><td class="num g1">55</td><td class="num g2">61</td><td class="num g2">69</td><td class="num g2">69</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="panel node-side">
+      <h2 style="font-size:15px;font-weight:600">第二章 相交线与平行线</h2>
+      <div class="node-pct">51%</div>
+      <div class="bar"><i style="width:51%"></i></div>
+      <dl class="node-dl">
+        <div><dt>证据</dt><dd>16 条</dd></div>
+        <div><dt>学生</dt><dd>4 人</dd></div>
+        <div><dt>扣分</dt><dd>0 次</dd></div>
+      </dl>
+      <div class="small muted">关联</div>
+      <div class="node-chips"><span class="tag">两条直线的位置关系</span><span class="tag">平行线的性质</span></div>
+      <button class="btn btn-primary" data-demo="用本章安排训练">用本章安排训练</button>
+    </div>
+  </div>
+</main>
+  </div>
+</div>
+<div class="toast" id="toast"></div>
+<script>
+const toast=(m)=>{const t=document.getElementById('toast');t.textContent=m;t.classList.add('show');clearTimeout(t._h);t._h=setTimeout(()=>t.classList.remove('show'),2200);};
+document.addEventListener('click',e=>{const b=e.target.closest('[data-demo]');if(b){e.preventDefault();toast('原型演示：'+(b.getAttribute('data-demo')||'正式版此处才执行'));}});
+</script>
+</body></html>

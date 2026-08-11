@@ -264,6 +264,48 @@ export const useAssemblyStore = defineStore('assembly', () => {
     return save({ ...draft.value, order_ids: order })
   }
 
+  /**
+   * Tile-grid drop: move a question to an anchor slot, optionally switching
+   * its manual section at the same time. A null anchor appends to the end of
+   * the target group (and to the global order).
+   */
+  async function moveQuestionToSlot(
+    questionId: number,
+    sectionId: string,
+    anchorQuestionId: number | null,
+    position: 'before' | 'after',
+  ): Promise<boolean> {
+    if (!draft.value.order_ids.includes(questionId)) return false
+    const order = draft.value.order_ids.filter((id) => id !== questionId)
+    let orderIndex = order.length
+    if (anchorQuestionId !== null) {
+      const anchorIndex = order.indexOf(anchorQuestionId)
+      if (anchorIndex < 0) return false
+      orderIndex = position === 'before' ? anchorIndex : anchorIndex + 1
+    }
+    order.splice(orderIndex, 0, questionId)
+    const sections = draft.value.sections.map((section) => ({
+      ...section,
+      question_ids: section.question_ids.filter((id) => id !== questionId),
+    }))
+    if (sectionId) {
+      const target = sections.find((section) => section.id === sectionId)
+      if (!target) return false
+      let sectionIndex = target.question_ids.length
+      if (anchorQuestionId !== null) {
+        const anchorIndex = target.question_ids.indexOf(anchorQuestionId)
+        // An anchor from another section falls back to the end of this one.
+        sectionIndex = anchorIndex < 0
+          ? target.question_ids.length
+          : position === 'before'
+            ? anchorIndex
+            : anchorIndex + 1
+      }
+      target.question_ids.splice(sectionIndex, 0, questionId)
+    }
+    return save({ ...draft.value, order_ids: order, sections })
+  }
+
   async function updateSettings(patch: {
     title?: string
     header_text?: string
@@ -366,6 +408,7 @@ export const useAssemblyStore = defineStore('assembly', () => {
     removeQuestion,
     moveQuestion,
     moveQuestionBefore,
+    moveQuestionToSlot,
     updateSettings,
     replaceSections,
     submitExport,

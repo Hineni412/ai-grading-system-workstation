@@ -149,7 +149,7 @@ def validate_semester_mapping_payload(
         for item in snapshot_lessons
         if item.get("node_type") == "lesson"
     }
-    if tree and snapshot_lessons:
+    if tree and existing_lessons:
         raise TeachingPrepModelResponseError(
             "semester mapping model attempted to replace the existing "
             "lesson tree",
@@ -346,7 +346,7 @@ def validate_semester_mapping_payload(
     if len(normalized_uncertainties) > 100:
         raise TeachingPrepValidationError("too many proposal uncertainties")
     if (
-        snapshot_lessons
+        existing_lessons
         and not normalized_uncertainties
         and _has_unmapped_material_units(materials, normalized_mappings)
     ):

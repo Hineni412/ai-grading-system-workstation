@@ -1,0 +1,132 @@
+<!doctype html><html lang="zh-CN"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>题库管理 · 知衡布局原型</title><link rel="icon" href="data:,">
+<link rel="stylesheet" href="proto.css">
+<style>
+.filter-row{display:flex;gap:10px;align-items:center;margin-bottom:16px;flex-wrap:wrap}
+.filter-row input[type="search"]{width:240px}
+.paper-card{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);padding:14px 16px;display:flex;flex-direction:column;gap:8px}
+.paper-card h3{font-size:14px;font-weight:600;line-height:1.35}
+.paper-card .meta{font-size:12px;color:var(--ink-3)}
+.paper-card .comp{display:flex;align-items:center;gap:10px;font-size:12px;color:var(--ink-2)}
+.paper-card .comp .bar{flex:1}
+.paper-card .comp .num{min-width:38px;text-align:right}
+.paper-card .actions{display:flex;gap:6px;margin-top:2px}
+.paper-card .actions .spacer{flex:1}
+</style></head><body>
+<div class="ribbon"><b>布局重设计原型</b><span>静态演示 · 模拟数据 · 不连接真实接口</span></div>
+<div class="shell">
+  <aside class="sidebar">
+    <div class="side-brand"><div class="brand-mark">知</div><div><div class="brand-name">知衡</div><div class="brand-sub">教师教学工作台</div></div></div>
+    <nav class="side-nav">
+      <a class="side-link" href="workbench.html"><i class="ic">◧</i>工作台</a>
+      <div class="side-group">考试与阅卷</div>
+      <a class="side-link" href="session-config.html"><i class="ic">▤</i>考试配置</a>
+      <a class="side-link" href="grading-run.html"><i class="ic">◐</i>考试批改</a>
+      <a class="side-link" href="results.html"><i class="ic">▥</i>成绩中心</a>
+      <div class="side-group">题库与组卷</div>
+      <a class="side-link on" href="question-bank.html"><i class="ic">▦</i>题库管理</a>
+      <a class="side-link" href="assembly.html"><i class="ic">▨</i>组卷工作台</a>
+      <div class="side-group">教学分析</div>
+      <a class="side-link" href="knowledge.html"><i class="ic">◆</i>知识与训练</a>
+    </nav>
+  </aside>
+  <div class="content">
+    <header class="appbar">
+      <span class="crumb">知衡 / 题库管理</span>
+      <div class="appbar-right"><span class="tag">2025—2026 学年下学期</span></div>
+    </header>
+<main class="page">
+  <div class="page-head">
+    <h1>题库管理</h1>
+    <span class="sub">12 份试卷 · 486 道题</span>
+    <div class="head-actions">
+      <button class="btn" data-demo="打开待审核新词">待审核新词 3</button>
+      <button class="btn btn-primary" data-demo="上传试卷">上传试卷</button>
+    </div>
+  </div>
+
+  <div class="filter-row">
+    <input type="search" placeholder="搜索试卷">
+    <select><option>全部年份</option><option>2024</option><option>2023</option></select>
+    <select><option>全部类型</option><option>期末卷</option><option>期中卷</option><option>章节练习</option></select>
+    <select><option>标注进度</option><option>已完成</option><option>进行中</option><option>未开始</option></select>
+  </div>
+
+  <div class="grid grid-3">
+    <div class="paper-card">
+      <h3>2024 南山区七下期末卷</h3>
+      <div class="meta">38 题 · 北师大版</div>
+      <div class="comp"><span>标注完整度</span><div class="bar"><i style="width:92%"></i></div><span class="num">92%</span></div>
+      <div class="actions">
+        <button class="btn btn-sm" data-demo="查看试题">查看试题</button>
+        <button class="btn btn-sm" data-demo="继续标注">继续标注</button>
+        <span class="spacer"></span>
+        <button class="btn btn-sm btn-ghost" data-demo="更多操作">⋯</button>
+      </div>
+    </div>
+    <div class="paper-card">
+      <h3>2024 福田区七下期中卷</h3>
+      <div class="meta">35 题 · 北师大版</div>
+      <div class="comp"><span>标注完整度</span><div class="bar"><i style="width:78%"></i></div><span class="num">78%</span></div>
+      <div class="actions">
+        <button class="btn btn-sm" data-demo="查看试题">查看试题</button>
+        <button class="btn btn-sm" data-demo="继续标注">继续标注</button>
+        <span class="spacer"></span>
+        <button class="btn btn-sm btn-ghost" data-demo="更多操作">⋯</button>
+      </div>
+    </div>
+    <div class="paper-card">
+      <h3>2023 南山区七下期末卷</h3>
+      <div class="meta">40 题 · 北师大版</div>
+      <div class="comp"><span>标注完整度</span><div class="bar"><i class="ok" style="width:100%"></i></div><span class="num">100%</span></div>
+      <div class="actions">
+        <button class="btn btn-sm" data-demo="查看试题">查看试题</button>
+        <button class="btn btn-sm" data-demo="继续标注">继续标注</button>
+        <span class="spacer"></span>
+        <button class="btn btn-sm btn-ghost" data-demo="更多操作">⋯</button>
+      </div>
+    </div>
+    <div class="paper-card">
+      <h3>章节练习 · 相交线与平行线</h3>
+      <div class="meta">56 题 · 北师大版</div>
+      <div class="comp"><span>标注完整度</span><div class="bar"><i class="warn" style="width:45%"></i></div><span class="num">45%</span></div>
+      <div class="actions">
+        <button class="btn btn-sm" data-demo="查看试题">查看试题</button>
+        <button class="btn btn-sm" data-demo="继续标注">继续标注</button>
+        <span class="spacer"></span>
+        <button class="btn btn-sm btn-ghost" data-demo="更多操作">⋯</button>
+      </div>
+    </div>
+    <div class="paper-card">
+      <h3>2024 宝安区七下期中卷</h3>
+      <div class="meta">36 题 · 北师大版</div>
+      <div class="comp"><span>标注完整度</span><div class="bar"><i style="width:66%"></i></div><span class="num">66%</span></div>
+      <div class="actions">
+        <button class="btn btn-sm" data-demo="查看试题">查看试题</button>
+        <button class="btn btn-sm" data-demo="继续标注">继续标注</button>
+        <span class="spacer"></span>
+        <button class="btn btn-sm btn-ghost" data-demo="更多操作">⋯</button>
+      </div>
+    </div>
+    <div class="paper-card">
+      <h3>2023 福田区七下期末卷</h3>
+      <div class="meta">41 题 · 北师大版</div>
+      <div class="comp"><span>标注完整度</span><div class="bar"><i style="width:88%"></i></div><span class="num">88%</span></div>
+      <div class="actions">
+        <button class="btn btn-sm" data-demo="查看试题">查看试题</button>
+        <button class="btn btn-sm" data-demo="继续标注">继续标注</button>
+        <span class="spacer"></span>
+        <button class="btn btn-sm btn-ghost" data-demo="更多操作">⋯</button>
+      </div>
+    </div>
+  </div>
+</main>
+  </div>
+</div>
+<div class="toast" id="toast"></div>
+<script>
+const toast=(m)=>{const t=document.getElementById('toast');t.textContent=m;t.classList.add('show');clearTimeout(t._h);t._h=setTimeout(()=>t.classList.remove('show'),2200);};
+document.addEventListener('click',e=>{const b=e.target.closest('[data-demo]');if(b){e.preventDefault();toast('原型演示：'+(b.getAttribute('data-demo')||'正式版此处才执行'));}});
+</script>
+</body></html>

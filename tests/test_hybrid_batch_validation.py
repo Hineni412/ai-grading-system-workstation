@@ -1,0 +1,285 @@
+from __future__ import annotations
+
+"""Hybrid batch validation tolerance and retry regressions."""
+
+from hybrid_batch_grading_service import (
+    MajorQuestionSpec,
+    grade_major_question_batch,
+    validate_hybrid_major_response,
+)
+
+
+SPEC = MajorQuestionSpec(
+    question_id="Q12",
+    detail_question_ids=["Q12(P1)", "Q12(P2)", "Q12(P3)"],
+    rubric={"question_id": "Q12", "max_score": 18},
+    answer_key={},
+    max_score=18,
+)
+
+MANIFEST = {
+    "items": [
+        {
+            "paper_key": "paper_a",
+            "student_id": 1,
+            "target_detail_question_ids": ["Q12(P1)", "Q12(P2)", "Q12(P3)"],
+        },
+        {
+            "paper_key": "paper_b",
+            "student_id": 2,
+            "target_detail_question_ids": ["Q12(P1)", "Q12(P2)", "Q12(P3)"],
+        },
+    ]
+}
+
+
+def _detail(qid: str, score: float, **extra) -> dict:
+    detail = {
+        "question_id": qid,
+        "score_awarded": score,
+        "confidence_score": 95,
+        "answer_discarded_by_smudge": False,
+        "answer_is_blank_or_no_valid_work": False,
+        "needs_human_review": False,
+        "deduction_reason": "",
+    }
+    detail.update(extra)
+    return detail
+
+
+def _item(paper_key: str, student_id: int, details: list[dict]) -> dict:
+    return {
+        "paper_key": paper_key,
+        "student_id": student_id,
+        "grading_details": details,
+    }
+
+
+def test_missing_top_level_question_id_is_salvaged_when_items_match() -> None:
+    response = {
+        "items": [
+            _item("paper_a", 1, [_detail("Q12(P1)", 5), _detail("Q12(P2)", 7), _detail("Q12(P3)", 6)]),
+            _item("paper_b", 2, [_detail("Q12(P1)", 5), _detail("Q12(P2)", 0), _detail("Q12(P3)", 0)]),
+        ]
+    }
+
+    accepted, failed = validate_hybrid_major_response(response, MANIFEST, SPEC)
+
+    assert [item["paper_key"] for item in accepted] == ["paper_a", "paper_b"]
+    assert failed == []
+
+
+def test_unusable_top_level_question_id_still_rejects_whole_batch() -> None:
+    response = {
+        "question_id": "Q11",
+        "items": [
+            _item("paper_a", 1, [_detail("Q11(P1)", 3)]),
+        ],
+    }
+
+    accepted, failed = validate_hybrid_major_response(response, MANIFEST, SPEC)
+
+    assert accepted == []
+    assert len(failed) == 2
+    assert {item["reason"] for item in failed} == {"question_id_mismatch"}
+
+
+def test_duplicate_detail_keeps_first_result() -> None:
+    response = {
+        "question_id": "Q12",
+        "items": [
+            _item(
+                "paper_a",
+                1,
+                [
+                    _detail("Q12(P1)", 5),
+                    _detail("Q12(P2)", 0),
+                    _detail("Q12(P3)", 0),
+                    _detail("Q12(P1)", 1),
+                ],
+            ),
+        ],
+    }
+
+    accepted, failed = validate_hybrid_major_response(response, MANIFEST, SPEC)
+
+    assert len(accepted) == 1
+    scores = {d.question_id: d.score_awarded for d in accepted[0]["details"]}
+    assert scores == {"Q12(P1)": 5.0, "Q12(P2)": 0.0, "Q12(P3)": 0.0}
+    assert [item["paper_key"] for item in failed] == ["paper_b"]
+    assert failed[0]["reason"] == "missing_paper_result"
+
+
+def test_smudge_conflict_is_clamped_to_zero_and_flagged_for_review() -> None:
+    response = {
+        "question_id": "Q12",
+        "items": [
+            _item(
+                "paper_a",
+                1,
+                [
+                    _detail("Q12(P1)", 5),
+                    _detail("Q12(P2)", 7),
+                    _detail("Q12(P3)", 6, answer_discarded_by_smudge=True),
+                ],
+            ),
+        ],
+    }
+
+    accepted, failed = validate_hybrid_major_response(response, MANIFEST, SPEC)
+
+    assert len(accepted) == 1
+    details = {d.question_id: d for d in accepted[0]["details"]}
+    assert details["Q12(P3)"].score_awarded == 0.0
+    assert details["Q12(P3)"].error_summary == "discarded_answer_scored"
+    assert details["Q12(P1)"].score_awarded == 5.0
+    assert details["Q12(P2)"].score_awarded == 7.0
+    assert all(item["reason"] != "discarded_answer_scored" for item in failed)
+
+
+def test_single_invalid_detail_no_longer_voids_siblings() -> None:
+    response = {
+        "question_id": "Q12",
+        "items": [
+            _item(
+                "paper_a",
+                1,
+                [
+                    _detail("Q12(P1)", 5),
+                    {"question_id": "Q12(P2)", "score_awarded": None},
+                    _detail("Q12(P3)", 6),
+                ],
+            ),
+        ],
+    }
+
+    accepted, failed = validate_hybrid_major_response(response, MANIFEST, SPEC)
+
+    assert len(accepted) == 1
+    assert {d.question_id for d in accepted[0]["details"]} == {"Q12(P1)", "Q12(P3)"}
+    partial = [item for item in failed if item["paper_key"] == "paper_a"]
+    assert len(partial) == 1
+    assert partial[0]["target_detail_question_ids"] == ["Q12(P2)"]
+
+
+def test_item_with_no_valid_details_fails_as_a_whole() -> None:
+    response = {
+        "question_id": "Q12",
+        "items": [
+            _item(
+                "paper_a",
+                1,
+                [
+                    {"question_id": "Q12(P1)", "score_awarded": None},
+                    {"question_id": "Q12(P2)", "score_awarded": None},
+                    {"question_id": "Q12(P3)", "score_awarded": None},
+                ],
+            ),
+        ],
+    }
+
+    accepted, failed = validate_hybrid_major_response(response, MANIFEST, SPEC)
+
+    assert accepted == []
+    whole = [item for item in failed if item["paper_key"] == "paper_a"]
+    assert len(whole) == 1
+    assert whole[0]["target_detail_question_ids"] == ["Q12(P1)", "Q12(P2)", "Q12(P3)"]
+
+
+class _FakeBuilder:
+    def __init__(self, atlas_path, manifest):
+        self._atlas_path = atlas_path
+        self._manifest = manifest
+
+    def build(self, **_kwargs):
+        return {"atlas_path": str(self._atlas_path), "manifest": self._manifest}
+
+
+class _QueueClient:
+    def __init__(self, responses):
+        self._responses = list(responses)
+        self.prompts: list[str] = []
+
+    def json_from_images_once(self, _static, _images, **kwargs):
+        self.prompts.append(str(kwargs.get("dynamic_prompt") or ""))
+        callback = kwargs.get("usage_callback")
+        if callback:
+            callback(None, {"model": "fake"})
+        return self._responses.pop(0)
+
+
+def _run_batch(tmp_path, responses):
+    atlas = tmp_path / "atlas.png"
+    atlas.write_bytes(b"\x89PNG\r\n\x1a\n")
+    client = _QueueClient(responses)
+    result = grade_major_question_batch(
+        session_id="s1",
+        spec=SPEC,
+        paper_entries=[],
+        answer_regions=[],
+        llm_client=client,
+        grading_model="fake",
+        output_root=tmp_path,
+        batch_index=0,
+        builder=_FakeBuilder(atlas, MANIFEST),
+    )
+    return result, client
+
+
+def test_validation_failure_retries_once_with_hint(tmp_path) -> None:
+    bad = {"items": []}  # missing question_id and unusable payload
+    good = {
+        "question_id": "Q12",
+        "items": [
+            _item("paper_a", 1, [_detail("Q12(P1)", 5), _detail("Q12(P2)", 7), _detail("Q12(P3)", 6)]),
+            _item("paper_b", 2, [_detail("Q12(P1)", 5), _detail("Q12(P2)", 0), _detail("Q12(P3)", 0)]),
+        ],
+    }
+
+    result, client = _run_batch(tmp_path, [bad, good])
+
+    assert len(client.prompts) == 2
+    assert "上次响应未通过校验" in client.prompts[1]
+    assert len(result["accepted"]) == 2
+    assert result["failed"] == []
+    assert result["usage"]["validation_attempts"] == 2
+
+
+def test_clean_response_does_not_retry(tmp_path) -> None:
+    good = {
+        "question_id": "Q12",
+        "items": [
+            _item("paper_a", 1, [_detail("Q12(P1)", 5), _detail("Q12(P2)", 7), _detail("Q12(P3)", 6)]),
+            _item("paper_b", 2, [_detail("Q12(P1)", 5), _detail("Q12(P2)", 0), _detail("Q12(P3)", 0)]),
+        ],
+    }
+
+    result, client = _run_batch(tmp_path, [good])
+
+    assert len(client.prompts) == 1
+    assert result["failed"] == []
+    assert result["usage"]["validation_attempts"] == 1
+
+
+def test_retry_merge_keeps_papers_missing_from_second_attempt(tmp_path) -> None:
+    first = {
+        "question_id": "Q12",
+        "items": [
+            _item("paper_a", 1, [_detail("Q12(P1)", 5), _detail("Q12(P2)", 7), _detail("Q12(P3)", 6)]),
+        ],
+    }
+    second = {
+        "question_id": "Q12",
+        "items": [
+            _item("paper_b", 2, [_detail("Q12(P1)", 5), _detail("Q12(P2)", 0), _detail("Q12(P3)", 0)]),
+        ],
+    }
+
+    result, client = _run_batch(tmp_path, [first, second])
+
+    assert len(client.prompts) == 2
+    by_paper = {item["paper_key"]: item for item in result["accepted"]}
+    assert set(by_paper) == {"paper_a", "paper_b"}
+    scores_a = {d.question_id: d.score_awarded for d in by_paper["paper_a"]["details"]}
+    assert scores_a["Q12(P2)"] == 7.0
+    assert result["failed"] == []

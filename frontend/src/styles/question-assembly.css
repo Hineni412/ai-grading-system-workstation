@@ -780,8 +780,7 @@
 .assembly-filter-row.is-search select,
 .assembly-settings input,
 .assembly-settings select,
-.assembly-section-list input,
-.assembly-order-list select {
+.assembly-section-list input {
   background: #fff;
   border: 1px solid var(--color-border-strong, #d8dbdf);
   border-radius: 8px;
@@ -797,8 +796,7 @@
 .assembly-filter-row.is-search select:focus,
 .assembly-settings input:focus,
 .assembly-settings select:focus,
-.assembly-section-list input:focus,
-.assembly-order-list select:focus {
+.assembly-section-list input:focus {
   border-color: var(--color-accent, #135e6b);
   box-shadow: 0 0 0 3px rgb(19 94 107 / 9%);
   outline: none;
@@ -1045,8 +1043,7 @@
 }
 
 .assembly-basket__list button,
-.assembly-section-list button,
-.assembly-order-list__actions button {
+.assembly-section-list button {
   align-items: center;
   background: transparent;
   border: 0;
@@ -1064,8 +1061,7 @@
 }
 
 .assembly-basket__list button:hover,
-.assembly-section-list button:hover,
-.assembly-order-list__actions button:hover {
+.assembly-section-list button:hover {
   background: #f0f2f2;
   color: var(--color-text-primary, #1c2733);
 }
@@ -1309,79 +1305,101 @@
   font-size: 9px;
 }
 
-.assembly-order-list {
+.assembly-tiles {
   border-top: 1px solid #edf0f1;
   display: grid;
-  gap: 4px;
-  list-style: none;
+  gap: 10px;
   margin: 14px 0 0;
   padding: 13px 0 0;
 }
 
-.assembly-order-list > li {
-  align-items: center;
+.assembly-tile-group {
+  border-radius: 8px;
+  display: grid;
+  gap: 6px;
+  padding: 4px;
+}
+
+.assembly-tile-group.is-drop-end {
+  background: rgb(19 94 107 / 6%);
+  box-shadow: inset 0 0 0 1px var(--color-accent, #135e6b);
+}
+
+.assembly-tile-group__title {
+  color: var(--color-text-secondary, #5c6672);
+  font-size: 10px;
+  font-weight: 600;
+  margin: 0;
+}
+
+.assembly-tile-group__empty {
+  border: 1px dashed var(--color-border-strong, #d8dbdf);
+  border-radius: 8px;
+  color: var(--color-text-tertiary, #6b7684);
+  font-size: 9px;
+  margin: 0;
+  padding: 10px;
+  text-align: center;
+}
+
+.assembly-tile-grid {
+  display: grid;
+  gap: 6px;
+  grid-template-columns: repeat(auto-fill, 44px);
+}
+
+.assembly-tile {
+  aspect-ratio: 1;
   background: #f8f9f9;
   border: 1px solid #edf0f1;
   border-radius: 8px;
-  display: grid;
-  gap: 5px;
-  grid-template-columns: auto 22px minmax(0, 1fr);
-  padding: 7px;
+  position: relative;
 }
 
-.assembly-order-list__handle {
-  color: #b1b7bb;
-  cursor: grab;
-  font-size: 11px;
+.assembly-tile.is-drag-source {
+  opacity: 0.4;
 }
 
-.assembly-order-list__number {
+.assembly-tile.is-drop-before {
+  box-shadow: -3px 0 0 0 var(--color-accent, #135e6b);
+}
+
+.assembly-tile.is-drop-after {
+  box-shadow: 3px 0 0 0 var(--color-accent, #135e6b);
+}
+
+.assembly-tile__number {
   align-items: center;
-  background: #eef1f1;
-  border-radius: 50%;
+  cursor: grab;
   display: flex;
-  font-size: 9px;
-  height: 21px;
+  font-size: 11px;
+  height: 100%;
   justify-content: center;
-  width: 21px;
-}
-
-.assembly-order-list__copy {
-  display: grid;
-  gap: 2px;
-  min-width: 0;
-}
-
-.assembly-order-list__copy strong {
-  font-family: "Songti SC", "SimSun", serif;
-  font-size: 10px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.assembly-order-list__copy small {
-  color: var(--color-text-tertiary, #6b7684);
-  font-size: 8px;
-}
-
-.assembly-order-list select,
-.assembly-order-list__actions {
-  grid-column: 3;
-}
-
-.assembly-order-list select {
-  height: 28px;
+  user-select: none;
   width: 100%;
 }
 
-.assembly-order-list__actions {
-  display: flex;
-  gap: 2px;
-  justify-content: flex-end;
+.assembly-tile__remove {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  border-radius: 6px;
+  color: var(--color-text-tertiary, #6b7684);
+  cursor: pointer;
+  display: inline-flex;
+  font: inherit;
+  font-size: 10px;
+  height: 16px;
+  justify-content: center;
+  padding: 0;
+  position: absolute;
+  right: 1px;
+  top: 1px;
+  width: 16px;
 }
 
-.assembly-order-list__actions button.is-danger {
+.assembly-tile__remove:hover {
+  background: #f0f2f2;
   color: #9a4136;
 }
 
@@ -1480,6 +1498,21 @@
   border-left: 3px solid var(--color-accent, #135e6b);
   margin-top: 10px;
   padding: 10px 12px;
+}
+
+/* Reserved handwriting space, mirroring the docx answer_space (3 lines × 9mm). */
+.assembly-sheet__answer-space {
+  background-image: repeating-linear-gradient(
+    to bottom,
+    transparent 0,
+    transparent calc(9mm - 1px),
+    #dfe5ea calc(9mm - 1px),
+    #dfe5ea 9mm
+  );
+  background-size: 100% calc(3 * 9mm);
+  background-repeat: no-repeat;
+  margin-top: 6px;
+  min-height: 27mm;
 }
 
 .assembly-sheet__answer > strong {

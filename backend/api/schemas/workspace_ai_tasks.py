@@ -93,6 +93,7 @@ class WorkspaceAITaskResponse(BaseModel):
     proposal_ref_id: str | None
     proposal_revision: str | None
     error_code: str | None
+    error_detail: str | None
     revision: int
     safe_title: str
     safe_source: str

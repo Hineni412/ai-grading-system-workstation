@@ -1697,25 +1697,28 @@ def criteria_from_confirmed_rubric(
             confidence=1.0,
             source_kind="confirmed_rubric_adapter",
         )
-    candidates: list[Mapping[str, Any]] = []
+    candidates: list[tuple[int | None, Mapping[str, Any]]] = []
     parts = rubric_question.get("parts")
+    multi_part = isinstance(parts, list) and len(parts) > 1
     if isinstance(parts, list):
-        for part in parts:
+        for part_index, part in enumerate(parts, start=1):
             if not isinstance(part, Mapping):
                 continue
             steps = part.get("steps")
             if isinstance(steps, list):
                 candidates.extend(
-                    item for item in steps if isinstance(item, Mapping)
+                    (part_index, item)
+                    for item in steps
+                    if isinstance(item, Mapping)
                 )
     if not candidates:
         steps = rubric_question.get("steps")
         if isinstance(steps, list):
             candidates.extend(
-                item for item in steps if isinstance(item, Mapping)
+                (None, item) for item in steps if isinstance(item, Mapping)
             )
     points: list[TrainingCriterionPoint] = []
-    for index, step in enumerate(candidates, start=1):
+    for index, (part_index, step) in enumerate(candidates, start=1):
         target = _first_text(
             step,
             "core_goal",
@@ -1729,9 +1732,13 @@ def criteria_from_confirmed_rubric(
             target = required[0]
         if not target:
             continue
-        point_id = _safe_point_id(
-            str(step.get("step_id") or f"step-{index}")
-        )
+        step_id = str(step.get("step_id") or f"step-{index}")
+        if multi_part and part_index is not None:
+            # 多小问的 rubric 每个小问内 step_id 从 S1 重新编号，平铺后会撞号；
+            # 带上小问序号使判定点编号与评分标准的小问结构一一对应且天然唯一。
+            point_id = _safe_point_id(f"p{part_index}-{step_id}")
+        else:
+            point_id = _safe_point_id(step_id)
         points.append(
             TrainingCriterionPoint(
                 point_id=point_id,

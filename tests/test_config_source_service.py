@@ -68,6 +68,41 @@ def test_preview_removes_detected_next_section_heading_and_summarizes_answer() -
     assert len(preview.answer_preview) <= 220
 
 
+def test_preview_flags_subparted_question_classified_as_fill_blank() -> None:
+    import backend.config_workspace.sources as sources_module
+
+    block = {
+        "question_id": "Q11",
+        "question_type": "fill_blank",
+        "question_text": (
+            "如图，在△ABC中，∠ACB＝90°，设∠A＝x°，∠BCD＝y°。\n"
+            "（1）填写表格：x 取 20、40 时，y 分别为 ____。\n"
+            "（2）猜想y与x的数量关系，并说明理由。\n"
+            "（3）在图1的条件下，求∠DCE的度数。"
+        ),
+        "answer_text": "（1）70、50 （2）y＝90－x/2 （3）20°",
+    }
+    preview = sources_module._question_previews([block], {})[0]
+
+    assert preview.question_type_review_required is True
+    assert "小问" in preview.question_type_review_reason
+
+
+def test_preview_keeps_plain_single_blank_question_unflagged() -> None:
+    import backend.config_workspace.sources as sources_module
+
+    block = {
+        "question_id": "Q5",
+        "question_type": "fill_blank",
+        "question_text": "如图，若AD∥BC，DB＝DC，则∠ABD＝____°。",
+        "answer_text": "70",
+    }
+    preview = sources_module._question_previews([block], {})[0]
+
+    assert preview.question_type_review_required is False
+    assert preview.question_type_review_reason == ""
+
+
 def test_preview_removes_section_heading_split_across_docx_spans() -> None:
     import backend.config_workspace.sources as sources_module
 
@@ -1915,3 +1950,138 @@ def test_single_blank_fact_strips_following_section_heading_without_teacher_type
     assert "三、解答题" not in str(q9.get("question_text") or q9.get("text") or "")
     assert q9["question_type_confirmed"] is False
     assert q9["response_form_fact"] == "single_blank"
+
+
+def test_resolve_asset_decision_overrides_binds_automatic_asset(tmp_path: Path) -> None:
+    source_service = service(tmp_path)
+    record = asyncio.run(
+        source_service.stage_and_parse(
+            session_id=7,
+            filename="rich.docx",
+            chunks=chunks(_docx_bytes(with_image=True)),
+        )
+    )
+    automatic = next(
+        item
+        for item in record.public_snapshot()["assets"]
+        if item["assignment_state"] == "automatic"
+    )
+
+    overrides = source_service.resolve_asset_decision_overrides(
+        record,
+        [
+            AmbiguousAssetDecision(
+                candidate_id=automatic["asset_id"],
+                action="bind",
+                question_id=automatic["question_id"],
+                asset_kind="answer",
+            )
+        ],
+    )
+
+    assert overrides == (
+        {
+            "sha256": hashlib.sha256(_png_bytes()).hexdigest(),
+            "action": "bind",
+            "question_number": str(automatic["question_id"]).removeprefix("Q"),
+            "asset_kind": "answer",
+        },
+    )
+
+
+def test_resolve_asset_decision_overrides_ambiguous_candidate(tmp_path: Path) -> None:
+    source_service = service(tmp_path)
+    record = asyncio.run(
+        source_service.stage_and_parse(
+            session_id=7,
+            filename="ambiguous.docx",
+            chunks=chunks(_docx_with_ambiguous_floating_image()),
+        )
+    )
+    candidate = record.public_snapshot()["ambiguous_assets"][0]
+
+    ignored = source_service.resolve_asset_decision_overrides(
+        record,
+        [
+            AmbiguousAssetDecision(
+                candidate_id=candidate["candidate_id"],
+                action="ignore",
+            )
+        ],
+    )
+    assert ignored == (
+        {
+            "sha256": hashlib.sha256(_png_bytes()).hexdigest(),
+            "action": "ignore",
+            "question_number": None,
+            "asset_kind": None,
+        },
+    )
+
+    bound = source_service.resolve_asset_decision_overrides(
+        record,
+        [
+            AmbiguousAssetDecision(
+                candidate_id=candidate["candidate_id"],
+                action="bind",
+                question_id="Q2",
+                asset_kind="question",
+            )
+        ],
+    )
+    assert bound == (
+        {
+            "sha256": hashlib.sha256(_png_bytes()).hexdigest(),
+            "action": "bind",
+            "question_number": "2",
+            "asset_kind": "question",
+        },
+    )
+
+
+def test_resolve_asset_decision_overrides_rejects_invalid_decisions(
+    tmp_path: Path,
+) -> None:
+    source_service = service(tmp_path)
+    record = asyncio.run(
+        source_service.stage_and_parse(
+            session_id=7,
+            filename="rich.docx",
+            chunks=chunks(_docx_bytes(with_image=True)),
+        )
+    )
+
+    with pytest.raises(ValueError, match="invalid ambiguous asset decision"):
+        source_service.resolve_asset_decision_overrides(
+            record,
+            [AmbiguousAssetDecision(candidate_id="A9", action="ignore")],
+        )
+    automatic = next(
+        item
+        for item in record.public_snapshot()["assets"]
+        if item["assignment_state"] == "automatic"
+    )
+    with pytest.raises(ValueError, match="target is invalid"):
+        source_service.resolve_asset_decision_overrides(
+            record,
+            [
+                AmbiguousAssetDecision(
+                    candidate_id=automatic["asset_id"],
+                    action="bind",
+                    question_id="Q99",
+                    asset_kind="question",
+                )
+            ],
+        )
+    with pytest.raises(ValueError, match="binding target"):
+        source_service.resolve_asset_decision_overrides(
+            record,
+            [
+                AmbiguousAssetDecision(
+                    candidate_id=automatic["asset_id"],
+                    action="ignore",
+                    question_id="Q1",
+                    asset_kind="question",
+                )
+            ],
+        )

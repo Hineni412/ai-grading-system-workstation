@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from uuid import uuid4
 
 from backend.teaching_prep.domain.errors import (
@@ -262,7 +262,9 @@ class SemesterMappingRepository:
             snapshot, source_sha = self._snapshot(
                 connection, proposal.semester_id, material_ids
             )
-            if source_sha != proposal.source_state_sha256:
+            if not _source_state_matches(
+                connection, proposal, snapshot, source_sha
+            ):
                 raise TeachingPrepConflictError(
                     "semester lessons or materials changed; review a new proposal"
                 )
@@ -347,7 +349,9 @@ class SemesterMappingRepository:
                 proposal.semester_id,
                 material_ids,
             )
-            if digest != proposal.source_state_sha256:
+            if not _source_state_matches(
+                connection, proposal, _snapshot, digest
+            ):
                 raise TeachingPrepConflictError(
                     "semester lessons or materials changed; review a new proposal"
                 )
@@ -796,6 +800,7 @@ class SemesterMappingRepository:
         proposal_id: str,
         *,
         expected_revision: int,
+        chapter_key: str | None = None,
     ) -> SemesterMappingProposal:
         with self._database.connect(immediate=True) as connection:
             proposal = self._get(connection, proposal_id)
@@ -809,29 +814,64 @@ class SemesterMappingRepository:
                 raise TeachingPrepConflictError(
                     "mapping proposal changed; refresh before applying"
                 )
+            tree = [dict(item) for item in proposal.payload["tree"]]
+            target_chapter: dict[str, object] | None = None
+            target_refs: set[str] | None = None
+            if chapter_key is not None:
+                target_chapter = next(
+                    (
+                        dict(item)
+                        for item in tree
+                        if str(item["key"]) == chapter_key
+                    ),
+                    None,
+                )
+                if target_chapter is None:
+                    raise TeachingPrepNotFoundError(
+                        "proposal chapter was not found"
+                    )
+                target_refs = _chapter_lesson_refs(target_chapter)
             material_ids = tuple(
                 str(item)
                 for item in proposal.payload["source_material_record_ids"]
             )
-            _current, digest = self._snapshot(
+            snapshot, digest = self._snapshot(
                 connection,
                 proposal.semester_id,
                 material_ids,
             )
-            if digest != proposal.source_state_sha256:
+            if not _source_state_matches(
+                connection,
+                proposal,
+                snapshot,
+                digest,
+            ):
                 raise TeachingPrepConflictError(
                     "semester lessons or materials changed; generate a new proposal"
                 )
             reviewed_mappings = [
                 dict(item) for item in proposal.payload["mappings"]
             ]
-            if any(
-                str(item.get("decision") or "pending") == "pending"
-                for item in reviewed_mappings
-            ):
-                raise TeachingPrepConflictError(
+            if target_refs is None:
+                scoped_mappings = reviewed_mappings
+                pending_message = (
                     "decide every mapping row before applying the proposal"
                 )
+            else:
+                scoped_mappings = [
+                    item
+                    for item in reviewed_mappings
+                    if _mapping_lesson_ref(item) in target_refs
+                ]
+                pending_message = (
+                    "decide every mapping row in this chapter "
+                    "before applying it"
+                )
+            if any(
+                str(item.get("decision") or "pending") == "pending"
+                for item in scoped_mappings
+            ):
+                raise TeachingPrepConflictError(pending_message)
             semester = connection.execute(
                 """
                 SELECT curriculum_id
@@ -843,25 +883,71 @@ class SemesterMappingRepository:
             if semester is None:
                 raise TeachingPrepNotFoundError("semester was not found")
             curriculum_id = str(semester["curriculum_id"])
-            tree = list(proposal.payload["tree"])
+            node_tokens = _proposal_node_tokens(proposal.id, tree)
             existing_rows = connection.execute(
                 """
-                SELECT id, node_type
+                SELECT id, node_type, request_token
                 FROM lesson_nodes
                 WHERE curriculum_id = ? AND is_active = 1
                 """,
                 (curriculum_id,),
             ).fetchall()
-            if tree and existing_rows:
+            if target_chapter is not None:
+                chapter_row = connection.execute(
+                    """
+                    SELECT id
+                    FROM lesson_nodes
+                    WHERE request_token = ?
+                    """,
+                    (
+                        _token(
+                            "mapping-node",
+                            proposal.id,
+                            str(target_chapter["key"]),
+                        ),
+                    ),
+                ).fetchone()
+                if chapter_row is not None:
+                    # Repeating a confirmed chapter is a no-op: its nodes
+                    # and links were written by the first chapter apply.
+                    return self._get(connection, proposal.id)
+            if tree and any(
+                str(row["node_type"]) == "lesson"
+                and (
+                    target_chapter is None
+                    or str(row["request_token"]) not in node_tokens
+                )
+                for row in existing_rows
+            ):
                 raise TeachingPrepConflictError(
                     "lesson tree is no longer empty"
+                )
+            chapters_to_insert = (
+                [target_chapter] if target_chapter is not None else tree
+            )
+            root_order_base = 0
+            if chapters_to_insert:
+                # Leftover chapter/section skeletons without lessons may
+                # precede the initial tree; append new roots after them.
+                root_order_base = int(
+                    connection.execute(
+                        """
+                        SELECT COALESCE(MAX(sort_order), 0)
+                        FROM lesson_nodes
+                        WHERE curriculum_id = ? AND parent_id IS NULL
+                        """,
+                        (curriculum_id,),
+                    ).fetchone()[0]
                 )
             lesson_refs = {
                 str(row["id"]): str(row["id"])
                 for row in existing_rows
                 if str(row["node_type"]) == "lesson"
             }
-            for chapter_order, raw_chapter in enumerate(tree, start=1):
+            for chapter_order, raw_chapter in enumerate(
+                chapters_to_insert,
+                start=1,
+            ):
                 chapter = dict(raw_chapter)
                 chapter_id = self._insert_node(
                     connection,
@@ -871,7 +957,7 @@ class SemesterMappingRepository:
                     parent_id=None,
                     node_type="chapter",
                     title=str(chapter["title"]),
-                    sort_order=chapter_order,
+                    sort_order=root_order_base + chapter_order,
                     duration_minutes=None,
                 )
                 for section_order, raw_section in enumerate(
@@ -912,10 +998,9 @@ class SemesterMappingRepository:
                             f"proposal:{lesson['key']}"
                         ] = lesson_id
 
-            mapped_records: set[str] = set()
             accepted_mappings = [
                 item
-                for item in reviewed_mappings
+                for item in scoped_mappings
                 if str(item.get("decision")) in {"accepted", "modified"}
             ]
             for index, raw_mapping in enumerate(
@@ -975,6 +1060,15 @@ class SemesterMappingRepository:
                     "teacher_note": "学期建库建议已由教师确认",
                     "confirmation_status": "confirmed",
                 }
+                if target_chapter is None:
+                    link_token = _token("mapping-link", proposal.id, str(index))
+                else:
+                    link_token = _token(
+                        "mapping-link",
+                        proposal.id,
+                        str(target_chapter["key"]),
+                        str(index),
+                    )
                 connection.execute(
                     """
                     INSERT INTO lesson_material_links (
@@ -996,7 +1090,7 @@ class SemesterMappingRepository:
                     """,
                     (
                         uuid4().hex,
-                        _token("mapping-link", proposal.id, str(index)),
+                        link_token,
                         _digest(link_values),
                         lesson_id,
                         str(material["material_version_id"]),
@@ -1008,34 +1102,58 @@ class SemesterMappingRepository:
                         next_order,
                     ),
                 )
-                mapped_records.add(record_id)
-            for record_id in material_ids:
+            finalize = target_chapter is None or _all_chapters_applied(
+                connection,
+                proposal.id,
+                tree,
+            )
+            if finalize:
+                mapped_records = {
+                    str(item["material_record_id"])
+                    for item in reviewed_mappings
+                    if str(item.get("decision")) in {"accepted", "modified"}
+                }
+                for record_id in material_ids:
+                    connection.execute(
+                        """
+                        UPDATE semester_material_records
+                        SET mapping_status = ?,
+                            revision = revision + 1,
+                            updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                        WHERE id = ?
+                        """,
+                        (
+                            "confirmed"
+                            if record_id in mapped_records
+                            else "needs_review",
+                            record_id,
+                        ),
+                    )
                 connection.execute(
                     """
-                    UPDATE semester_material_records
-                    SET mapping_status = ?,
+                    UPDATE semester_mapping_proposals
+                    SET status = 'applied',
                         revision = revision + 1,
-                        updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-                    WHERE id = ?
+                        updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+                        applied_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                    WHERE id = ? AND revision = ? AND status = 'proposed'
                     """,
-                    (
-                        "confirmed"
-                        if record_id in mapped_records
-                        else "needs_review",
-                        record_id,
-                    ),
+                    (proposal.id, expected_revision),
                 )
-            connection.execute(
-                """
-                UPDATE semester_mapping_proposals
-                SET status = 'applied',
-                    revision = revision + 1,
-                    updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
-                    applied_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-                WHERE id = ? AND revision = ? AND status = 'proposed'
-                """,
-                (proposal.id, expected_revision),
-            )
+            else:
+                # Remaining chapters stay reviewable; only the optimistic
+                # revision moves so the client refreshes before confirming
+                # the next chapter.  Material mapping_status is updated
+                # once, when the final chapter is applied.
+                connection.execute(
+                    """
+                    UPDATE semester_mapping_proposals
+                    SET revision = revision + 1,
+                        updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                    WHERE id = ? AND revision = ? AND status = 'proposed'
+                    """,
+                    (proposal.id, expected_revision),
+                )
             return self._get(connection, proposal.id)
 
     @staticmethod
@@ -1413,6 +1531,105 @@ def _digest(value: object) -> str:
 def _token(prefix: str, *parts: str) -> str:
     suffix = hashlib.sha256(":".join(parts).encode("utf-8")).hexdigest()[:32]
     return f"{prefix}-{suffix}"
+
+
+def _chapter_lesson_refs(chapter: Mapping[str, object]) -> set[str]:
+    """Lesson refs ('proposal:{lesson.key}') owned by one proposal chapter."""
+    return {
+        f"proposal:{lesson['key']}"
+        for section in list(chapter.get("sections") or [])
+        for lesson in list(section.get("lessons") or [])
+    }
+
+
+def _mapping_lesson_ref(mapping: Mapping[str, object]) -> str:
+    """Effective lesson ref of a mapping after the teacher's revision."""
+    teacher_revision = mapping.get("teacher_revision")
+    if isinstance(teacher_revision, dict) and teacher_revision.get("lesson_ref"):
+        return str(teacher_revision["lesson_ref"])
+    return str(mapping.get("lesson_ref") or "")
+
+
+def _proposal_node_tokens(
+    proposal_id: str,
+    tree: Sequence[Mapping[str, object]],
+) -> set[str]:
+    """Request tokens of every node this proposal's tree would insert."""
+    tokens: set[str] = set()
+    for chapter in tree:
+        tokens.add(_token("mapping-node", proposal_id, str(chapter["key"])))
+        for section in list(chapter.get("sections") or []):
+            tokens.add(_token("mapping-node", proposal_id, str(section["key"])))
+            for lesson in list(section.get("lessons") or []):
+                tokens.add(
+                    _token("mapping-node", proposal_id, str(lesson["key"]))
+                )
+    return tokens
+
+
+def _all_chapters_applied(
+    connection: sqlite3.Connection,
+    proposal_id: str,
+    tree: Sequence[Mapping[str, object]],
+) -> bool:
+    chapter_tokens = [
+        _token("mapping-node", proposal_id, str(chapter["key"]))
+        for chapter in tree
+    ]
+    if not chapter_tokens:
+        return True
+    placeholders = ",".join("?" for _item in chapter_tokens)
+    found = connection.execute(
+        f"""
+        SELECT COUNT(*)
+        FROM lesson_nodes
+        WHERE request_token IN ({placeholders})
+        """,
+        tuple(chapter_tokens),
+    ).fetchone()[0]
+    return int(found) == len(chapter_tokens)
+
+
+def _source_state_matches(
+    connection: sqlite3.Connection,
+    proposal: SemesterMappingProposal,
+    snapshot: dict[str, object],
+    digest: str,
+) -> bool:
+    """Source-state guard that tolerates this proposal's own chapters.
+
+    Chapter-scoped applies insert lesson nodes while the remaining
+    chapters are still being reviewed.  Those proposal-created nodes must
+    not read as external tree changes; any other lesson or material
+    difference still blocks review and apply.
+    """
+    if digest == proposal.source_state_sha256:
+        return True
+    tokens = _proposal_node_tokens(
+        proposal.id,
+        list(proposal.payload["tree"]),
+    )
+    if not tokens:
+        return False
+    placeholders = ",".join("?" for _item in sorted(tokens))
+    rows = connection.execute(
+        f"""
+        SELECT id
+        FROM lesson_nodes
+        WHERE request_token IN ({placeholders})
+        """,
+        tuple(sorted(tokens)),
+    ).fetchall()
+    if not rows:
+        return False
+    applied_ids = {str(row["id"]) for row in rows}
+    filtered = dict(snapshot)
+    filtered["lessons"] = [
+        item
+        for item in list(snapshot.get("lessons") or [])
+        if str(item["id"]) not in applied_ids
+    ]
+    return _digest(filtered) == proposal.source_state_sha256
 
 
 __all__ = ["SemesterMappingRepository"]

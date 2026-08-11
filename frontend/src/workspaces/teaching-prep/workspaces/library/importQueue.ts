@@ -27,6 +27,13 @@ export interface PendingMaterialImport {
   relativePath: string
 }
 
+/** 队列中按“导入课件文件夹”聚合的一行视图（不引入新数据结构，仅按 folderBatchId 分组）。 */
+export interface PendingImportFolderGroup {
+  key: string
+  displayName: string
+  items: PendingMaterialImport[]
+}
+
 export interface PendingPptFolderBatch {
   id: string
   requestToken: string
@@ -40,8 +47,8 @@ export interface PendingPptFolderBatch {
 
 /**
  * 资料导入队列：受控复制 + 后台解析 + PPT 文件夹合集建立。
- * 由 LibraryPage 创建，ImportPanel 与 ReferenceCollections 共享（逻辑自旧
- * MaterialLibraryWorkspace 平移，后台行为不变）。
+ * 由 LibraryPage 创建，ImportPanel 使用；合集建立完成后由 LibraryPage
+ * 触发 store 刷新章文件夹分组（逻辑自旧 MaterialLibraryWorkspace 平移，后台行为不变）。
  */
 export function useMaterialImportQueue() {
   const catalog = useTeachingPrepCatalogStore()
@@ -54,6 +61,25 @@ export function useMaterialImportQueue() {
     () => pendingImports.value.filter(item => (
       item.state === 'pending' || item.state === 'failed' || item.state === 'cancelled'
     )).length,
+  )
+
+  /** 文件夹导入的队列项按 folderBatchId 聚合；散装文件（无文件夹归属）不进组。 */
+  const importFolderGroups = computed<PendingImportFolderGroup[]>(() => {
+    const grouped = new Map<string, PendingMaterialImport[]>()
+    for (const item of pendingImports.value) {
+      if (!item.folderBatchId) continue
+      grouped.set(item.folderBatchId, [...(grouped.get(item.folderBatchId) ?? []), item])
+    }
+    return [...grouped.entries()].map(([key, items]) => ({
+      key,
+      displayName: pendingPptFolders.value.find(batch => batch.id === key)?.displayName
+        ?? '课件文件夹',
+      items,
+    }))
+  })
+
+  const loosePendingImports = computed(
+    () => pendingImports.value.filter(item => !item.folderBatchId),
   )
 
   function parseJobFor(item: PendingMaterialImport): JobResponse | null {
@@ -84,6 +110,51 @@ export function useMaterialImportQueue() {
       failed: '未完成，可重试',
       cancelled: '已停止，可继续',
     }[item.state]
+  }
+
+  function folderGroupCompletedCount(group: PendingImportFolderGroup): number {
+    return group.items.filter(item => item.state === 'done').length
+  }
+
+  function folderGroupProgressPercent(group: PendingImportFolderGroup): number {
+    if (group.items.length === 0) return 0
+    const total = group.items.reduce((sum, item) => sum + progressPercent(item), 0)
+    return Math.round(total / group.items.length)
+  }
+
+  function folderGroupStateLabel(group: PendingImportFolderGroup): string {
+    const states = group.items.map(item => item.state)
+    if (states.every(state => state === 'done')) return '全部完成'
+    const failedCount = states.filter(state => state === 'failed').length
+    if (failedCount > 0) return `${failedCount} 份未完成`
+    if (states.some(state => state === 'uploading' || state === 'processing')) return '解析中'
+    if (states.some(state => state === 'cancelled')) return '部分已停止，可继续'
+    return '等待导入'
+  }
+
+  /** 有失败或进行中的文件夹行默认展开明细，其余默认收起。 */
+  function folderGroupNeedsAttention(group: PendingImportFolderGroup): boolean {
+    return group.items.some(item => (
+      item.state === 'failed'
+      || item.state === 'cancelled'
+      || item.state === 'uploading'
+      || item.state === 'processing'
+    ))
+  }
+
+  /** 组内角色一致时返回该角色，否则返回空串表示“多种角色”。 */
+  function folderGroupRole(group: PendingImportFolderGroup): SemesterMaterialRole | '' {
+    const first = group.items[0]?.role
+    if (!first) return ''
+    return group.items.every(item => item.role === first) ? first : ''
+  }
+
+  /** 文件夹行设置角色时应用到组内所有项（保持逐项 role 字段）。 */
+  function setFolderGroupRole(
+    group: PendingImportFolderGroup,
+    role: SemesterMaterialRole,
+  ): void {
+    for (const item of group.items) item.role = role
   }
 
   function failureMessage(error: unknown): string {
@@ -322,11 +393,19 @@ export function useMaterialImportQueue() {
     pendingPptFolders,
     importBatchRunning,
     pendingImportCount,
+    importFolderGroups,
+    loosePendingImports,
     message,
     fileSizeLabel,
     parseJobFor,
     progressPercent,
     importStateLabel,
+    folderGroupCompletedCount,
+    folderGroupProgressPercent,
+    folderGroupStateLabel,
+    folderGroupNeedsAttention,
+    folderGroupRole,
+    setFolderGroupRole,
     queueFiles,
     queuePptFolder,
     removePendingImport,

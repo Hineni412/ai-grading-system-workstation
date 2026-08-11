@@ -42,6 +42,8 @@ import {
   type PptxVersion,
   type PostLessonReview,
   type QuestionEvidenceChoice,
+  type ReferencePptCollection,
+  type ReferencePptCollectionMember,
   type ResourcePack,
   type ResourcePackStatus,
   type SemesterLessonProgress,
@@ -61,6 +63,53 @@ import {
 
 export type CatalogLoadState = 'idle' | 'loading' | 'ready' | 'error'
 export type CatalogLoadScope = 'overview' | 'materials'
+
+/* ===== 资料库（方案 C）货架与进度模型 ===== */
+
+export interface LibraryChapterFile {
+  recordId: string
+  materialVersionId: string
+  name: string
+  relativePath: string
+  unitCount: number
+  parsing: boolean
+  needsContinue: boolean
+}
+
+export interface LibraryChapterFolder {
+  key: string
+  name: string
+  collectionId: string
+  collectionName: string
+  collectionActive: boolean
+  files: LibraryChapterFile[]
+  totalPages: number
+}
+
+export type LessonTreeShelfState = 'active' | 'pending' | 'empty'
+
+export interface LessonTreeChapterState {
+  key: string
+  title: string
+  lessons: SemesterMappingProposal['payload']['tree'][number]['sections'][number]['lessons']
+  mappingCount: number
+  pendingCount: number
+  applied: boolean
+}
+
+export interface LibraryProgressStep {
+  key: 'import' | 'parse' | 'tree' | 'books' | 'ready'
+  label: string
+  hint: string
+  done: boolean
+}
+
+export interface ChapterValueHint {
+  chapterTitle: string
+  lessonCount: number
+  textbookRange: string | null
+  exerciseRange: string | null
+}
 
 const SEMESTER_MAPPING_JOB_TYPE = 'teaching_prep.semester_mapping'
 
@@ -132,6 +181,7 @@ export const useTeachingPrepCatalogStore = defineStore(
     const semesterMappingPreflight = ref<SemesterMappingPreflight | null>(null)
     const semesterMappingPreflightContext = ref<SemesterMappingPreflightContext | null>(null)
     const semesterMappingProposals = ref<SemesterMappingProposal[]>([])
+    const referencePptCollections = ref<ReferencePptCollection[]>([])
     const semesterMappingJobIds = ref<number[]>([])
     const recoveredSemesterMappingJobIds = ref<number[]>([])
     const refreshingSemesterMappingJobs = new Map<number, Promise<void>>()
@@ -271,7 +321,7 @@ export const useTeachingPrepCatalogStore = defineStore(
             && item.source_state_sha256 === sourceState
           )
         ))
-        return exact ?? null
+        return exact ?? latestLocalCollection
       }
       return candidates.sort((left, right) => (
         Date.parse(right.updated_at) - Date.parse(left.updated_at)
@@ -288,6 +338,281 @@ export const useTeachingPrepCatalogStore = defineStore(
         ? jobStore.syncErrors[currentSemesterMappingJob.value.id] ?? null
         : null
     ))
+
+    /* ===== 资料库（方案 C）：合集、章文件夹、课时树状态与进度 ===== */
+
+    // 本学期资料记录 id → 所属课件文件夹（合集）；散装资料与已停用合集不在映射中
+    const collectionByRecordId = computed(() => {
+      const map = new Map<string, ReferencePptCollection>()
+      for (const collection of referencePptCollections.value) {
+        if (collection.is_active === false) continue
+        for (const member of collection.members) {
+          if (!map.has(member.material_record_id)) {
+            map.set(member.material_record_id, collection)
+          }
+        }
+      }
+      return map
+    })
+
+    // 章文件夹组：合集成员按 relative_path 首段分组，份数/页数经记录与版本回填
+    const libraryChapterFolders = computed<LibraryChapterFolder[]>(() => {
+      const folders: LibraryChapterFolder[] = []
+      for (const collection of referencePptCollections.value) {
+        const grouped = new Map<string, ReferencePptCollectionMember[]>()
+        for (const member of collection.members) {
+          const parts = member.relative_path.split('/').filter(Boolean)
+          const name = parts.length > 1 ? parts[0]! : '未分章课件'
+          grouped.set(name, [...(grouped.get(name) ?? []), member])
+        }
+        for (const [name, members] of grouped) {
+          const files = members.map((member) => {
+            const record = semesterMaterials.value.find(
+              item => item.id === member.material_record_id,
+            )
+            const version = record
+              ? materials.value.find(
+                  item => item.id === record.current_material_version_id,
+                ) ?? null
+              : null
+            const job = version ? materialParseJobs.value[version.id] : null
+            return {
+              recordId: member.material_record_id,
+              materialVersionId: record?.current_material_version_id ?? '',
+              name: version?.display_name ?? record?.display_name ?? member.normalized_title,
+              relativePath: member.relative_path,
+              unitCount: version?.unit_count ?? record?.current_unit_count ?? 0,
+              parsing: Boolean(job && ['queued', 'running'].includes(job.status)),
+              needsContinue: Boolean(record) && (
+                record!.parse_status !== 'parsed' || record!.has_unparsed_update
+              ),
+            }
+          })
+          folders.push({
+            key: `${collection.id}:${name}`,
+            name,
+            collectionId: collection.id,
+            collectionName: collection.display_name,
+            collectionActive: collection.is_active !== false,
+            files,
+            totalPages: files.reduce((total, file) => total + file.unitCount, 0),
+          })
+        }
+      }
+      return folders
+    })
+
+    // 本地 PPT 课时树建议（不依赖当前选中资料，资料柜课时树条目的唯一来源）
+    const localLessonTreeProposal = computed(() => (
+      semesterMappingProposals.value
+        .filter(item => (
+          item.status === 'proposed'
+          && item.payload.generation_source === 'local_reference_ppt_names'
+        ))
+        .sort((left, right) => (
+          Date.parse(right.updated_at) - Date.parse(left.updated_at)
+        ))[0] ?? null
+    ))
+
+    const activeLessonCount = computed(() => lessonNodes.value.filter(
+      item => item.node_type === 'lesson' && item.is_active,
+    ).length)
+
+    const lessonTreeStatus = computed<{
+      state: LessonTreeShelfState
+      activeLessonCount: number
+      proposalChapterCount: number
+      proposalLessonCount: number
+    }>(() => {
+      const proposal = localLessonTreeProposal.value
+      const proposalLessons = proposal?.payload.tree.flatMap(
+        chapter => chapter.sections.flatMap(section => section.lessons),
+      ) ?? []
+      return {
+        state: activeLessonCount.value > 0
+          ? 'active'
+          : proposal
+            ? 'pending'
+            : 'empty',
+        activeLessonCount: activeLessonCount.value,
+        proposalChapterCount: proposal?.payload.tree.length ?? 0,
+        proposalLessonCount: proposalLessons.length,
+      }
+    })
+
+    // 逐章确认视图：章级映射统计；applied 为近似判断（正式树中已存在同名启用章节点）
+    const lessonTreeChapters = computed<LessonTreeChapterState[]>(() => {
+      const proposal = localLessonTreeProposal.value
+      if (!proposal) return []
+      const appliedChapterTitles = new Set(
+        lessonNodes.value
+          .filter(item => item.node_type === 'chapter' && item.is_active)
+          .map(item => item.title),
+      )
+      return proposal.payload.tree.map((chapter) => {
+        const lessons = chapter.sections.flatMap(section => section.lessons)
+        const lessonRefs = new Set(lessons.map(lesson => `proposal:${lesson.key}`))
+        const mappings = proposal.payload.mappings.filter(
+          item => lessonRefs.has(item.lesson_ref),
+        )
+        return {
+          key: chapter.key,
+          title: chapter.title,
+          lessons,
+          mappingCount: mappings.length,
+          pendingCount: mappings.filter(item => item.decision === 'pending').length,
+          applied: appliedChapterTitles.has(chapter.title),
+        }
+      })
+    })
+
+    // 五步进度条：可备课为近似组合判断（资料库视角：导入、解析、课时树、
+    // 教材教辅对应都完成后即认为可以开始备课，课时级内容以备课页为准）
+    const libraryProgressSteps = computed<LibraryProgressStep[]>(() => {
+      const activeRecords = semesterMaterials.value.filter(item => item.is_active)
+      const imported = activeRecords.length > 0
+      const parseRunning = Object.values(materialParseJobs.value).some(
+        job => ['queued', 'running'].includes(job.status),
+      )
+      const parsed = imported && !parseRunning && activeRecords.every(
+        item => item.parse_status === 'parsed' && !item.has_unparsed_update,
+      )
+      const treeDone = activeLessonCount.value > 0
+      const bookRecords = activeRecords.filter(item => (
+        ['textbook', 'exercise_workbook', 'homework_workbook'].includes(item.material_role)
+      ))
+      const confirmedBooks = bookRecords.filter(
+        item => item.mapping_status === 'confirmed',
+      ).length
+      // 近似：没有教材/教辅时视为无需对应
+      const booksDone = bookRecords.length === 0 || confirmedBooks === bookRecords.length
+      const ready = imported && parsed && treeDone && booksDone
+      return [
+        {
+          key: 'import',
+          label: '导入资料',
+          hint: imported ? `${activeRecords.length} 份资料已入库` : '还没有资料',
+          done: imported,
+        },
+        {
+          key: 'parse',
+          label: '本机处理',
+          hint: parsed
+            ? '全部处理完成'
+            : parseRunning
+              ? '正在逐页处理'
+              : imported
+                ? '有资料未处理完'
+                : '等待导入',
+          done: parsed,
+        },
+        {
+          key: 'tree',
+          label: '确认课时树',
+          hint: treeDone
+            ? `${activeLessonCount.value} 个课时已生效`
+            : lessonTreeStatus.value.state === 'pending'
+              ? '建议已生成，待确认'
+              : '等待课件建议',
+          done: treeDone,
+        },
+        {
+          key: 'books',
+          label: '对应教材/教辅',
+          hint: bookRecords.length === 0
+            ? '没有教材或教辅'
+            : `已对应 ${confirmedBooks}/${bookRecords.length} 本`,
+          done: booksDone,
+        },
+        {
+          key: 'ready',
+          label: '可备课',
+          hint: ready ? '资料已备好' : '完成前面的步骤后可备课',
+          done: ready,
+        },
+      ]
+    })
+
+    // 章级价值预告：教材/教辅建议映射按各自建议树的章聚合页码段。
+    // start_unit/end_unit 是 PDF 页序，有印刷页偏移（printed_to_pdf_offset）时换算为书上页码。
+    const chapterValueHints = computed<Map<string, ChapterValueHint>>(() => {
+      const hints = new Map<string, ChapterValueHint>()
+      const localTree = localLessonTreeProposal.value
+      const lessonCountByChapterTitle = new Map<string, number>()
+      for (const chapter of localTree?.payload.tree ?? []) {
+        lessonCountByChapterTitle.set(
+          chapter.title,
+          chapter.sections.reduce((total, section) => total + section.lessons.length, 0),
+        )
+      }
+      const mergeRange = (current: string | null, start: number, end: number): string => {
+        if (!current) return `P${start}–${end}`
+        const match = /^P(\d+)–(\d+)$/.exec(current)
+        if (!match) return current
+        return `P${Math.min(Number(match[1]), start)}–${Math.max(Number(match[2]), end)}`
+      }
+      for (const proposal of semesterMappingProposals.value) {
+        if (proposal.status === 'rejected') continue
+        const chapterByLessonKey = new Map<string, string>()
+        for (const chapter of proposal.payload.tree) {
+          for (const section of chapter.sections) {
+            for (const lesson of section.lessons) {
+              chapterByLessonKey.set(lesson.key, chapter.title)
+            }
+          }
+        }
+        const offset = proposal.payload.directory_evidence?.printed_to_pdf_offset ?? 0
+        for (const mapping of proposal.payload.mappings) {
+          if (mapping.decision === 'rejected') continue
+          if (mapping.purpose !== 'textbook' && mapping.purpose !== 'exercise') continue
+          if (!mapping.lesson_ref.startsWith('proposal:')) continue
+          const chapterTitle = chapterByLessonKey.get(
+            mapping.lesson_ref.slice('proposal:'.length),
+          )
+          if (!chapterTitle) continue
+          const hint = hints.get(chapterTitle) ?? {
+            chapterTitle,
+            lessonCount: lessonCountByChapterTitle.get(chapterTitle) ?? 0,
+            textbookRange: null,
+            exerciseRange: null,
+          }
+          const start = mapping.start_unit - offset
+          const end = mapping.end_unit - offset
+          if (mapping.purpose === 'textbook') {
+            hint.textbookRange = mergeRange(hint.textbookRange, start, end)
+          } else {
+            hint.exerciseRange = mergeRange(hint.exerciseRange, start, end)
+          }
+          hints.set(chapterTitle, hint)
+        }
+      }
+      return hints
+    })
+
+    let collectionsGeneration = 0
+    async function refreshReferencePptCollections(): Promise<void> {
+      const generation = ++collectionsGeneration
+      const semester = selectedSemester.value
+      if (!semester) {
+        referencePptCollections.value = []
+        return
+      }
+      try {
+        const items = await teachingPrepCatalogApi.listReferencePptCollections(
+          semester.id,
+          { includeInactive: true },
+        )
+        if (generation === collectionsGeneration) referencePptCollections.value = items
+      } catch {
+        // 合集刷新失败不阻塞其余资料操作，界面退化为无章文件夹分组
+      }
+    }
+
+    watch(
+      () => selectedSemester.value?.id ?? '',
+      () => { void refreshReferencePptCollections() },
+      { immediate: true },
+    )
 
     function invalidateSemesterMappingPreflight(): void {
       semesterMappingFlowGeneration += 1
@@ -2217,19 +2542,24 @@ export const useTeachingPrepCatalogStore = defineStore(
 
     async function applySemesterMapping(
       proposal: SemesterMappingProposal,
+      chapterKey?: string,
     ): Promise<void> {
       const semester = selectedSemester.value
       const curriculumId = selectedCurriculumId.value
       if (!semester || !curriculumId) {
         throw new Error('请先选择当前学期')
       }
-      if (currentSemesterMappingProposal.value?.id !== proposal.id) {
+      const allowedProposalIds = new Set([
+        currentSemesterMappingProposal.value?.id,
+        localLessonTreeProposal.value?.id,
+      ])
+      if (!allowedProposalIds.has(proposal.id)) {
         throw new Error('该建议不属于当前资料，不能审核或应用')
       }
       saveState.value = 'saving'
       errorMessage.value = ''
       try {
-        await teachingPrepCatalogApi.applySemesterMappingProposal(proposal)
+        await teachingPrepCatalogApi.applySemesterMappingProposal(proposal, chapterKey)
         ;[
           lessonNodes.value,
           semesterMaterials.value,
@@ -2350,6 +2680,16 @@ export const useTeachingPrepCatalogStore = defineStore(
       currentSemesterMappingJob,
       currentSemesterMappingJobRecovered,
       currentSemesterMappingJobSyncError,
+      referencePptCollections,
+      collectionByRecordId,
+      libraryChapterFolders,
+      localLessonTreeProposal,
+      activeLessonCount,
+      lessonTreeStatus,
+      lessonTreeChapters,
+      libraryProgressSteps,
+      chapterValueHints,
+      refreshReferencePptCollections,
       selectedLessonId,
       selectedLesson,
       selectedMaterialId,

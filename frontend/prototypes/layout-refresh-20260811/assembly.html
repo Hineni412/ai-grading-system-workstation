@@ -1,0 +1,121 @@
+<!doctype html><html lang="zh-CN"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>组卷工作台 · 知衡布局原型</title><link rel="icon" href="data:,">
+<link rel="stylesheet" href="proto.css">
+<style>
+.page{max-width:1320px}
+.asm-grid{display:grid;grid-template-columns:240px minmax(0,1fr) 300px;gap:16px;align-items:start}
+.qrow{display:grid;grid-template-columns:20px minmax(0,1fr) auto 40px auto;align-items:center;gap:10px;padding:6px 4px;border-bottom:1px solid var(--line-soft);font-size:13px}
+.qrow:last-child{border-bottom:none}
+.qrow .stem{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--ink-2)}
+.qrow .stem b{color:var(--ink);font-weight:600;margin-right:6px}
+.qrow .pts{text-align:right;font-variant-numeric:tabular-nums;color:var(--ink-2);font-size:12px}
+.basket{position:sticky;top:76px}
+.brow{display:flex;align-items:center;gap:8px;height:30px;font-size:12px;border-bottom:1px solid var(--line-soft)}
+.brow .grip{color:var(--ink-3);cursor:grab;flex:none}
+.brow .bs{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0}
+.brow .bs b{margin-right:6px}
+.brow .bp{font-variant-numeric:tabular-nums;color:var(--ink-3);flex:none}
+.bsec{display:flex;align-items:center;gap:8px;height:30px;font-size:12px;font-weight:600;color:var(--accent);border-bottom:1px solid var(--line-soft)}
+.basket-foot{margin-top:12px;display:flex;flex-direction:column;gap:8px}
+.basket-foot .sum{font-size:13px;color:var(--ink-2)}
+.basket-foot .btn{justify-content:center;width:100%}
+.tags-row{display:flex;gap:6px;flex-wrap:wrap;margin-top:10px}
+.lbl{font-size:12px;color:var(--ink-3);margin:14px 0 6px}
+</style></head><body>
+<div class="ribbon"><b>布局重设计原型</b><span>静态演示 · 模拟数据 · 不连接真实接口</span></div>
+<div class="shell">
+  <aside class="sidebar">
+    <div class="side-brand"><div class="brand-mark">知</div><div><div class="brand-name">知衡</div><div class="brand-sub">教师教学工作台</div></div></div>
+    <nav class="side-nav">
+      <a class="side-link" href="workbench.html"><i class="ic">◧</i>工作台</a>
+      <div class="side-group">考试与阅卷</div>
+      <a class="side-link" href="session-config.html"><i class="ic">▤</i>考试配置</a>
+      <a class="side-link" href="grading-run.html"><i class="ic">◐</i>考试批改</a>
+      <a class="side-link" href="results.html"><i class="ic">▥</i>成绩中心</a>
+      <div class="side-group">题库与组卷</div>
+      <a class="side-link" href="question-bank.html"><i class="ic">▦</i>题库管理</a>
+      <a class="side-link on" href="assembly.html"><i class="ic">▨</i>组卷工作台</a>
+      <div class="side-group">教学分析</div>
+      <a class="side-link" href="knowledge.html"><i class="ic">◆</i>知识与训练</a>
+    </nav>
+  </aside>
+  <div class="content">
+    <header class="appbar">
+      <span class="crumb">知衡 / 组卷工作台</span>
+      <div class="appbar-right"><span class="tag">2025—2026 学年下学期</span></div>
+    </header>
+<main class="page">
+  <div class="page-head">
+    <h1>组卷工作台</h1>
+    <span class="sub muted">已选 9 题 · 46 分</span>
+    <div class="head-actions">
+      <button class="btn btn-primary" data-demo="导出试卷">导出试卷</button>
+    </div>
+  </div>
+
+  <div class="asm-grid">
+    <div class="panel">
+      <div class="panel-head"><h2>筛选</h2></div>
+      <div class="tree">
+        <details open>
+          <summary>七年级下册</summary>
+          <details open>
+            <summary>第二章 相交线与平行线</summary>
+            <div class="leaf">1 两条直线的位置关系</div>
+            <div class="leaf">2 探索直线平行的条件</div>
+            <div class="leaf">3 平行线的性质</div>
+          </details>
+          <details>
+            <summary>第四章 三角形</summary>
+            <div class="leaf">1 认识三角形</div>
+            <div class="leaf">2 图形的全等</div>
+          </details>
+        </details>
+      </div>
+      <div class="lbl">标签</div>
+      <div class="tags-row">
+        <span class="tag accent">平行线</span><span class="tag">对顶角</span><span class="tag">三角形</span><span class="tag">解答题</span>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head"><h2>题库试题</h2><span class="more muted">本章 56 题</span></div>
+      <div class="qrow"><input type="checkbox"><div class="stem"><b>题2</b>如图，直线 AB 与 CD 相交于点 O，∠AOC=40°，求∠BOD 的度数</div><span class="tag">解答</span><span class="pts">5 分</span><button class="btn btn-sm" data-demo="加入试卷">+ 加入</button></div>
+      <div class="qrow"><input type="checkbox"><div class="stem"><b>题7</b>已知 a∥b，∠1=65°，则∠2 的度数为</div><span class="tag">填空</span><span class="pts">4 分</span><button class="btn btn-sm" data-demo="加入试卷">+ 加入</button></div>
+      <div class="qrow"><input type="checkbox"><div class="stem"><b>题11</b>下列图形中，∠1 与∠2 是对顶角的是</div><span class="tag">选择</span><span class="pts">3 分</span><button class="btn btn-sm" data-demo="加入试卷">+ 加入</button></div>
+      <div class="qrow"><input type="checkbox"><div class="stem"><b>题15</b>如图，AB∥CD，EF 交 AB、CD 于点 E、F，若∠1=110°，求∠2</div><span class="tag">解答</span><span class="pts">6 分</span><button class="btn btn-sm" data-demo="加入试卷">+ 加入</button></div>
+      <div class="qrow"><input type="checkbox"><div class="stem"><b>题18</b>三角形的三个内角之比为 1:2:3，这个三角形是</div><span class="tag">选择</span><span class="pts">3 分</span><button class="btn btn-sm" data-demo="加入试卷">+ 加入</button></div>
+      <div class="qrow"><input type="checkbox"><div class="stem"><b>题23</b>已知等腰三角形的一个内角为 70°，求另外两个内角的度数</div><span class="tag">解答</span><span class="pts">6 分</span><button class="btn btn-sm" data-demo="加入试卷">+ 加入</button></div>
+      <div class="qrow"><input type="checkbox"><div class="stem"><b>题26</b>同一平面内，两条直线的位置关系有</div><span class="tag">选择</span><span class="pts">3 分</span><button class="btn btn-sm" data-demo="加入试卷">+ 加入</button></div>
+      <div class="qrow"><input type="checkbox"><div class="stem"><b>题31</b>如图，直线 l1∥l2，点 A 在 l1 上，点 B、C 在 l2 上，比较△ABC 与…</div><span class="tag">填空</span><span class="pts">4 分</span><button class="btn btn-sm" data-demo="加入试卷">+ 加入</button></div>
+    </div>
+
+    <div class="panel basket">
+      <div class="panel-head"><h2>试卷篮</h2></div>
+      <div class="brow"><span class="grip">≡</span><span class="bs"><b>1</b>下列图形中，∠1 与∠2 是对顶角…</span><span class="bp">3 分</span></div>
+      <div class="brow"><span class="grip">≡</span><span class="bs"><b>2</b>同一平面内，两条直线的位置…</span><span class="bp">3 分</span></div>
+      <div class="brow"><span class="grip">≡</span><span class="bs"><b>3</b>三角形的三个内角之比为 1:2…</span><span class="bp">3 分</span></div>
+      <div class="brow"><span class="grip">≡</span><span class="bs"><b>4</b>已知 a∥b，∠1=65°，则∠2…</span><span class="bp">4 分</span></div>
+      <div class="brow"><span class="grip">≡</span><span class="bs"><b>5</b>如图，直线 l1∥l2，点 A 在…</span><span class="bp">4 分</span></div>
+      <div class="bsec">二、解答题</div>
+      <div class="brow"><span class="grip">≡</span><span class="bs"><b>6</b>如图，直线 AB 与 CD 相交于…</span><span class="bp">5 分</span></div>
+      <div class="brow"><span class="grip">≡</span><span class="bs"><b>7</b>如图，AB∥CD，EF 交 AB、…</span><span class="bp">6 分</span></div>
+      <div class="brow"><span class="grip">≡</span><span class="bs"><b>8</b>已知等腰三角形的一个内角…</span><span class="bp">6 分</span></div>
+      <div class="brow"><span class="grip">≡</span><span class="bs"><b>9</b>作图：过直线外一点作已知…</span><span class="bp">6 分</span></div>
+      <div class="basket-foot">
+        <div class="sum">共 9 题 · 46 分</div>
+        <button class="btn btn-primary" data-demo="导出试卷">导出试卷</button>
+        <button class="btn" data-demo="调整顺序与分节">调整顺序与分节</button>
+      </div>
+    </div>
+  </div>
+</main>
+  </div>
+</div>
+<div class="toast" id="toast"></div>
+<script>
+const toast=(m)=>{const t=document.getElementById('toast');t.textContent=m;t.classList.add('show');clearTimeout(t._h);t._h=setTimeout(()=>t.classList.remove('show'),2200);};
+document.addEventListener('click',e=>{const b=e.target.closest('[data-demo]');if(b){e.preventDefault();toast('原型演示：'+(b.getAttribute('data-demo')||'正式版此处才执行'));}});
+</script>
+</body></html>

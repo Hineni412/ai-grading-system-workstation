@@ -30,6 +30,7 @@ function task(overrides: Partial<WorkspaceAITask> = {}): WorkspaceAITask {
     proposal_ref_id: null,
     proposal_revision: null,
     error_code: null,
+    error_detail: null,
     revision: 2,
     safe_title: '备课 · 形成课堂方案',
     safe_source: '备课',

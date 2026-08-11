@@ -42,6 +42,11 @@ _ADOPTION_COMMAND: ContextVar[Mapping[str, object] | None] = ContextVar(
 class SemesterMappingRetryAvailableFailure(KnownAdapterFailure):
     code = "semester_mapping_retry_available"
 
+    def __init__(self, message: str, *, code: str | None = None) -> None:
+        super().__init__(message)
+        if code:
+            self.code = code
+
 
 class SlideProposalRetryAvailableFailure(KnownAdapterFailure):
     code = "slide_proposal_retry_available"
@@ -84,7 +89,10 @@ class TeachingPrepAITaskAdapter:
                     task_model_gateway=model_gateway,
                 )
             except TeachingPrepRetryAvailableError as exc:
-                raise SemesterMappingRetryAvailableFailure(str(exc)) from exc
+                raise SemesterMappingRetryAvailableFailure(
+                    str(exc),
+                    code=exc.error_code,
+                ) from exc
             result = self._result(task, proposal.id, str(proposal.revision))
         elif task.task_kind == "teaching_prep.lesson_plan":
             pack_ref = _require_context(task, "resource_pack")

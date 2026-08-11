@@ -1175,3 +1175,49 @@ def test_semester_mapping_retryable_failure_stays_safe_to_retry(tmp_path: Path) 
         adapter.execute(task, model_gateway=WorkspaceAITaskModelGateway())
 
     assert exc_info.value.code == "semester_mapping_retry_available"
+
+
+def test_semester_mapping_failure_keeps_specific_code_and_teacher_detail(
+    tmp_path: Path,
+) -> None:
+    class RetryableService:
+        database_path = tmp_path / "teaching_prep.db"
+
+        def generate_semester_mapping_proposal(self, *_args, **_kwargs):
+            raise TeachingPrepRetryAvailableError(
+                "semester mapping model omitted uncertainty for unmapped pages",
+                error_code="semester_mapping_unexplained_coverage_gap",
+            )
+
+    adapter = TeachingPrepAITaskAdapter(RetryableService())  # type: ignore[arg-type]
+    job_store = JobStore(tmp_path / "workspace_ai.db")
+    manager = JobManager(job_store, max_workers=1, cleanup_interrupted=False)
+    coordinator = WorkspaceAITaskService(
+        store=WorkspaceAITaskStore(job_store.db_path),
+        manager=manager,
+        adapters=(("teaching_prep.semester_mapping", adapter),),
+    )
+    try:
+        prepared = coordinator.prepare(
+            "operation-r7-mapping-failure",
+            PrepareRequest(
+                module="teaching_prep",
+                task_kind="teaching_prep.semester_mapping",
+                source_ref=OpaqueRef("semester", "s" * 32, "a" * 64),
+                context_refs=(OpaqueRef("material", "m" * 32, "1"),),
+                prompt_contract_version="teaching-prep-semester-mapping-v1",
+                model_destination_fingerprint="b" * 64,
+                return_target="teaching_prep.library",
+            ),
+        )
+        outcome = coordinator.run_task(prepared.task_id)
+        snapshot = coordinator.get(task_id=prepared.task_id)
+    finally:
+        manager.shutdown()
+
+    assert outcome["status"] == "failed"
+    assert snapshot.error_code == "semester_mapping_unexplained_coverage_gap"
+    assert snapshot.error_detail == (
+        "资料中有页面既没有对应到课时，模型也没有说明原因，"
+        "本次整理没有产出结果。"
+    )

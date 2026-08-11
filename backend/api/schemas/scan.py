@@ -89,6 +89,8 @@ class GradingRunSummaryResponse(BaseModel):
     state: str
     counts: GradingRunCountsResponse
     allowed_actions: list[str]
+    incomplete_result_count: int = Field(default=0, ge=0)
+    incomplete_item_count: int = Field(default=0, ge=0)
 
 
 class ScanDecisionItem(BaseModel):

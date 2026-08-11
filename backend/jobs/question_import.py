@@ -77,6 +77,18 @@ def _run_question_import_job_locked(
         infer_metadata_from_filename(resource.filename),
         context.payload.get("paper_defaults"),
     )
+    raw_overrides = context.payload.get("asset_overrides")
+    asset_overrides = raw_overrides if isinstance(raw_overrides, list) else None
+    raw_type_overrides = context.payload.get("type_overrides")
+    type_overrides = (
+        {
+            str(number): str(question_type)
+            for number, question_type in raw_type_overrides.items()
+            if str(number).strip() and str(question_type).strip()
+        }
+        if isinstance(raw_type_overrides, dict)
+        else None
+    )
     try:
         result = importer(
             [
@@ -89,6 +101,8 @@ def _run_question_import_job_locked(
             ],
             Path(question_bank_db_path),
             data_root=Path(data_root),
+            asset_overrides=asset_overrides,
+            type_overrides=type_overrides,
         )
     except Exception:
         raise RuntimeError("question import failed") from None

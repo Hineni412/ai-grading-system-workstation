@@ -2484,12 +2484,16 @@ export const teachingPrepCatalogApi = {
 
   applySemesterMappingProposal(
     proposal: SemesterMappingProposal,
+    chapterKey?: string,
   ): Promise<SemesterMappingProposal> {
     return apiClient.request(
       `/api/teaching-prep/semester-mapping-proposals/${encodeURIComponent(proposal.id)}/apply`,
       {
         method: 'POST',
-        body: { expected_revision: proposal.revision },
+        body: {
+          expected_revision: proposal.revision,
+          ...(chapterKey ? { chapter_key: chapterKey } : {}),
+        },
         decode: decodeSemesterMappingProposal,
       },
     )

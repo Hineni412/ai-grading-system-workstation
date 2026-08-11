@@ -424,6 +424,58 @@ def test_review_questions_use_one_batch_read_and_preserve_order_and_max_score(
     assert questions[0].needs_review_count == 2
 
 
+def test_incomplete_ai_items_surface_as_failed_in_review_questions(
+    tmp_path: Path,
+) -> None:
+    db, session_id, session, _ids = _seed_review_confirmation(tmp_path)
+    service = ReviewApplicationService(db)
+    with sqlite3.connect(db.db_path) as conn:
+        student_ids = [
+            int(row[0])
+            for row in conn.execute(
+                "SELECT id FROM students WHERE student_code IN ('S-first', 'S-second') ORDER BY id"
+            )
+        ]
+    manual_context = {
+        "scan_batch_id": "batch-1",
+        "papers": [
+            {
+                "student_id": student_id,
+                "target_type": "",
+                "target_id": "",
+                "front_media_url": "",
+                "back_media_url": None,
+            }
+            for student_id in student_ids
+        ],
+    }
+
+    questions = service.list_questions(
+        session_id,
+        session,
+        scope="all",
+        manual_context=manual_context,
+    )
+    by_question = {question.question_id: question for question in questions}
+    # 种子数据里每份答卷只有 Q1 的 AI 明细，Q2 缺失（incomplete），
+    # 必须在复核聚合中体现为 failed 而不是 ungraded。
+    assert by_question["Q2"].failed_count == len(student_ids)
+    assert by_question["Q2"].ungraded_count == 0
+    assert by_question["Q1"].failed_count == 0
+
+    items = service.list_items(
+        session_id,
+        session,
+        requested_question_id="Q2",
+        scope="all",
+        manual_context=manual_context,
+    )
+    assert len(items) == len(student_ids)
+    assert all(item.score_status == "failed" for item in items)
+    assert all(item.error_category == "AI 结果未通过校验" for item in items)
+    assert all(item.needs_review for item in items)
+
+
 @pytest.mark.parametrize(
     ("case", "path_question_id"),
     [

@@ -487,7 +487,12 @@ def _infer_local_question_type(
         return "choice"
     if _choice_answer_from_text(answer_text):
         return "choice"
-    if re.search(r"_{2,}|　{1,}|（\s*）|\(\s*\)|\b填空\b", value):
+    # A blank inside a multi-subpart question is just one subquestion's answer
+    # slot; the subparts make it a worked-solution question, not a fill-in.
+    has_visible_subparts = re.search(r"[（(]\s*[1-9]\s*[）)]", value) is not None
+    if not has_visible_subparts and re.search(
+        r"_{2,}|　{1,}|（\s*）|\(\s*\)|\b填空\b", value
+    ):
         return "fill_blank"
     if any(token in value for token in ["作图", "作出", "画出", "保留作图痕迹"]):
         return "comprehensive"

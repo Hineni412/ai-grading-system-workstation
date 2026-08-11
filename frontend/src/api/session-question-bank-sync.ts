@@ -1,10 +1,12 @@
 import { apiClient } from './client'
+import type { ConfigAmbiguousAssetDecision } from './config-workspace'
 import { decodeJobResponse, type JobResponse } from './jobs'
 
 export interface SessionQuestionBankSyncRequest {
   config_revision: string
   client_request_token: string
   curriculum_volume_id?: string
+  asset_decisions?: ConfigAmbiguousAssetDecision[]
 }
 
 export interface SessionQuestionBankAnalysisStatus {

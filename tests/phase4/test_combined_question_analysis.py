@@ -817,11 +817,42 @@ def test_mixed_fill_and_reasoning_question_keeps_each_part_semantics() -> None:
     )
 
     assert [point.point_id for point in draft.points] == [
-        "answer-part",
-        "reason-part",
+        "p1-answer-part",
+        "p2-reason-part",
     ]
     assert draft.points[1].target == "说明结论成立的理由"
     assert draft.points[1].observable_evidence == "给出有效推理"
+
+
+def test_confirmed_rubric_adapter_prefixes_multi_part_step_ids() -> None:
+    # 多小问评分依据中每个小问的 step_id 都从 S1 重新编号，
+    # 判定点编号必须带小问序号前缀，保持唯一且与评分标准结构对应。
+    draft = criteria_from_confirmed_rubric(
+        question=_question(1, question_type="解答题"),
+        rubric_question={
+            "parts": [
+                {
+                    "steps": [
+                        {"step_id": "S1", "core_goal": "求出∠ADB＝90°"},
+                        {"step_id": "S2", "core_goal": "得出∠ABD＝45°"},
+                        {"step_id": "S3", "core_goal": "求出∠1＝∠2＝22.5°"},
+                    ]
+                },
+                {
+                    "steps": [
+                        {"step_id": "S1", "core_goal": "求出∠3的度数"},
+                    ]
+                },
+            ]
+        },
+    )
+
+    assert [point.point_id for point in draft.points] == [
+        "p1-s1",
+        "p1-s2",
+        "p1-s3",
+        "p2-s1",
+    ]
 
 
 def test_combined_schema_is_strict_and_tag_only_v1_adapter_stays_separate() -> None:

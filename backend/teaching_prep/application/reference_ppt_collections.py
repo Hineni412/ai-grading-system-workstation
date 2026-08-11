@@ -71,7 +71,13 @@ def infer_reference_ppt_collection(
         raise TeachingPrepValidationError(
             "reference PPT collection contains duplicate materials"
         )
-    tree = _candidate_tree(identities) if not existing_lessons else []
+    # Only usable lesson nodes decide between matching the existing tree and
+    # proposing a candidate tree; stray chapter/section skeletons without
+    # lessons cannot receive mappings.
+    has_existing_lessons = any(
+        str(node.get("node_type") or "") == "lesson" for node in existing_lessons
+    )
+    tree = _candidate_tree(identities) if not has_existing_lessons else []
     lesson_refs = _proposal_lesson_refs(tree)
     mappings: list[dict[str, object]] = []
     uncertainties: list[str] = []
@@ -82,7 +88,7 @@ def infer_reference_ppt_collection(
                 "默认不增加新授课时"
             )
             continue
-        if existing_lessons:
+        if has_existing_lessons:
             lesson_ref, match_confidence = _match_existing_lesson(
                 identity,
                 existing_lessons,

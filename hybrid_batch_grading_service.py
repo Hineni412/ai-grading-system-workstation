@@ -624,6 +624,7 @@ def grade_major_question_batch(
         str,
         Sequence[str],
     ] | None = None,
+    validation_retry_limit: int = 1,
 ) -> dict[str, Any]:
     atlas_builder = builder or MajorQuestionAtlasBuilder(output_root)
     atlas = atlas_builder.build(
@@ -679,22 +680,23 @@ def grade_major_question_batch(
         has_stem_image=bool(question_stem_image_bytes),
         question_tag_context=question_tag_context,
     )
-    usage: dict[str, Any] = {}
+    usage_attempts: list[dict[str, Any]] = []
 
     def _usage_callback(completion: Any, kwargs: dict[str, Any] | None = None) -> None:
-        usage.update(extract_usage_fields(completion))
-        usage["model"] = (kwargs or {}).get("model") or grading_model
+        current = extract_usage_fields(completion)
+        current["model"] = (kwargs or {}).get("model") or grading_model
         img_count = 1
         if rubric_image_bytes:
             img_count += 1
         if question_stem_image_bytes:
             img_count += 1
-        usage["image_count"] = img_count
-        usage["effective_uncached_tokens"] = (usage.get("total_tokens") or 0) - (usage.get("cached_tokens") or 0)
+        current["image_count"] = img_count
+        current["effective_uncached_tokens"] = (current.get("total_tokens") or 0) - (current.get("cached_tokens") or 0)
+        usage_attempts.append(current)
 
     with Path(atlas["atlas_path"]).open("rb") as image_file:
         image_bytes = image_file.read()
-        
+
     static_images = []
     if question_stem_image_bytes:
         static_images.append(question_stem_image_bytes)
@@ -702,7 +704,7 @@ def grade_major_question_batch(
         static_images.append(rubric_image_bytes)
 
     dynamic_images = [image_bytes]
-    
+
     if rate_limiter is not None:
         rate_limiter.acquire()
     json_from_images_once = getattr(
@@ -715,42 +717,45 @@ def grade_major_question_batch(
         "json_from_images_with_options",
         None,
     )
-    if callable(json_from_images_once):
-        response = json_from_images_once(
-            static_prompt,
-            dynamic_images,
-            model=grading_model,
-            system_prompt=system_prompt,
-            usage_callback=_usage_callback,
-            extra_kwargs={"timeout": None},
-            static_image_blobs=static_images,
-            dynamic_prompt=dynamic_prompt,
-        )
-    elif callable(json_from_images_with_options):
-        # Compatibility seam for test/custom clients.  This module invokes it
-        # exactly once and explicitly disables gateway retry.
-        response = json_from_images_with_options(
-            static_prompt,
-            dynamic_images,
-            model=grading_model,
-            system_prompt=system_prompt,
-            usage_callback=_usage_callback,
-            extra_kwargs={"omit_token_limit": True, "timeout": None},
-            static_image_blobs=static_images,
-            dynamic_prompt=dynamic_prompt,
-            allow_gateway_retry=False,
-            image_compression_memo={},
-        )
-    else:
-        combined_prompt = f"{static_prompt}\n\n{dynamic_prompt}"
+
+    def _call_model(prompt_text: str) -> dict[str, Any]:
+        if callable(json_from_images_once):
+            return json_from_images_once(
+                static_prompt,
+                dynamic_images,
+                model=grading_model,
+                system_prompt=system_prompt,
+                usage_callback=_usage_callback,
+                extra_kwargs={"timeout": None},
+                static_image_blobs=static_images,
+                dynamic_prompt=prompt_text,
+            )
+        if callable(json_from_images_with_options):
+            # Compatibility seam for test/custom clients.  This module invokes it
+            # exactly once per attempt and explicitly disables gateway retry.
+            return json_from_images_with_options(
+                static_prompt,
+                dynamic_images,
+                model=grading_model,
+                system_prompt=system_prompt,
+                usage_callback=_usage_callback,
+                extra_kwargs={"omit_token_limit": True, "timeout": None},
+                static_image_blobs=static_images,
+                dynamic_prompt=prompt_text,
+                allow_gateway_retry=False,
+                image_compression_memo={},
+            )
+        combined_prompt = f"{static_prompt}\n\n{prompt_text}"
         all_images = static_images + dynamic_images
-        response = llm_client.json_from_images(
+        return llm_client.json_from_images(
             combined_prompt,
             all_images,
             model=grading_model,
             system_prompt=system_prompt,
             usage_callback=_usage_callback,
         )
+
+    response = _call_model(dynamic_prompt)
     accepted, failed = validate_hybrid_major_response(
         response,
         atlas["manifest"],
@@ -758,9 +763,89 @@ def grade_major_question_batch(
         min_confidence=min_confidence,
         question_tag_context=question_tag_context,
     )
+    if failed and validation_retry_limit > 0:
+        retry_response = _call_model(
+            dynamic_prompt + _validation_retry_hint(failed, spec)
+        )
+        retry_accepted, retry_failed = validate_hybrid_major_response(
+            retry_response,
+            atlas["manifest"],
+            spec,
+            min_confidence=min_confidence,
+            question_tag_context=question_tag_context,
+        )
+        accepted, failed = _merge_validation_attempts(
+            (accepted, failed),
+            (retry_accepted, retry_failed),
+        )
+    usage = _merge_usage_attempts(usage_attempts)
     usage["question_id"] = spec.question_id
     usage["batch_index"] = int(batch_index)
+    usage["validation_attempts"] = len(usage_attempts)
     return {"accepted": accepted, "failed": failed, "usage": usage}
+
+
+def _validation_retry_hint(
+    failed: list[dict[str, Any]],
+    spec: MajorQuestionSpec,
+) -> str:
+    reasons = sorted(
+        {
+            str(item.get("reason") or "").strip()
+            for item in failed
+            if str(item.get("reason") or "").strip()
+        }
+    )
+    reason_text = "、".join(reasons) or "unknown"
+    return (
+        "\n【上次响应未通过校验】"
+        f"\n失败原因：{reason_text}。"
+        f"\n请修正后重新返回完整 JSON：顶层必须包含 \"question_id\": \"{spec.question_id}\"；"
+        "每个 paper_key 只出现一次；同一小题的 grading_details 只返回一次；"
+        "只返回各学生 target_detail_question_ids 中要求的小题。"
+    )
+
+
+def _merge_validation_attempts(
+    first: tuple[list[dict[str, Any]], list[dict[str, Any]]],
+    second: tuple[list[dict[str, Any]], list[dict[str, Any]]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Per-paper merge: the retry wins for every paper it actually graded;
+    papers the retry missed keep their first-attempt outcome."""
+    first_accepted, first_failed = first
+    second_accepted, second_failed = second
+    second_real_failed = [
+        item
+        for item in second_failed
+        if str(item.get("reason") or "") != "missing_paper_result"
+    ]
+    second_seen = {
+        str(item.get("paper_key") or "")
+        for item in (*second_accepted, *second_real_failed)
+        if str(item.get("paper_key") or "")
+    }
+    accepted = list(second_accepted) + [
+        item
+        for item in first_accepted
+        if str(item.get("paper_key") or "") not in second_seen
+    ]
+    failed = list(second_real_failed) + [
+        item
+        for item in first_failed
+        if str(item.get("paper_key") or "") not in second_seen
+    ]
+    return accepted, failed
+
+
+def _merge_usage_attempts(usage_attempts: list[dict[str, Any]]) -> dict[str, Any]:
+    merged: dict[str, Any] = {}
+    for current in usage_attempts:
+        for key, value in current.items():
+            if isinstance(value, (int, float)) and key != "image_count":
+                merged[key] = merged.get(key, 0) + value
+            else:
+                merged[key] = value
+    return merged
 
 
 def build_hybrid_major_prompt(
@@ -957,8 +1042,6 @@ def validate_hybrid_major_response(
     min_confidence: float = 80.0,
     question_tag_context: Mapping[str, Mapping[str, Sequence[str]]] | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    if str(response.get("question_id") or "").strip() != spec.question_id:
-        return [], [_failed_manifest_item(item, "question_id_mismatch", spec.question_id) for item in manifest.get("items", [])]
     expected = {str(item.get("paper_key")): item for item in manifest.get("items", [])}
     all_detail_qids = list(spec.detail_question_ids or [spec.question_id])
     all_allowed_qids = set(all_detail_qids)
@@ -966,6 +1049,25 @@ def validate_hybrid_major_response(
         normalize_sub_question_id(qid)
         for qid in all_detail_qids
     }
+    if str(response.get("question_id") or "").strip() != spec.question_id:
+        # Tolerate a missing/wrong top-level question_id when every returned
+        # detail still belongs to this batch's allowed sub-questions; only
+        # reject the whole batch when the payload is unusable.
+        salvageable = False
+        response_items = response.get("items")
+        if isinstance(response_items, list) and response_items:
+            returned_qids = {
+                normalize_sub_question_id(
+                    str(detail.get("question_id") if isinstance(detail, dict) else "")
+                )
+                for item in response_items
+                if isinstance(item, dict)
+                for detail in (item.get("grading_details") or [])
+            }
+            returned_qids.discard(normalize_sub_question_id(""))
+            salvageable = bool(returned_qids) and returned_qids <= all_allowed_normalized_qids
+        if not salvageable:
+            return [], [_failed_manifest_item(item, "question_id_mismatch", spec.question_id) for item in manifest.get("items", [])]
     accepted: list[dict[str, Any]] = []
     failed: list[dict[str, Any]] = []
     seen: set[str] = set()
@@ -1005,45 +1107,44 @@ def validate_hybrid_major_response(
         details = []
         metadata = []
         item_failed_reason = ""
+        failed_detail_qids: list[str] = []
         seen_detail_qids: set[str] = set()
         for detail in item.get("grading_details", []):
             response_qid = str(
                 detail.get("question_id") if isinstance(detail, dict) else ""
             ).strip()
             normalized_response_qid = normalize_sub_question_id(response_qid)
-            if (
-                normalized_response_qid in all_allowed_normalized_qids
-                and normalized_response_qid not in required_normalized_qids
-            ):
-                # An already manually graded part may remain visible in a
-                # shared crop, but its model output is never accepted.
+            if normalized_response_qid not in required_normalized_qids:
+                # Extra parts (already manually graded, or outside this
+                # batch's scope) are never accepted and never fatal.
+                continue
+            if normalized_response_qid in seen_detail_qids:
+                # A repeated part keeps its first result; the duplicate is
+                # ignored instead of voiding the whole major question.
                 continue
             converted, reason, detail_metadata = _detail_from_ai_item(
                 detail,
-                (
-                    allowed_qids
-                    if normalized_response_qid
-                    in required_normalized_qids
-                    else all_allowed_qids
-                ),
+                allowed_qids,
                 min_confidence,
                 spec=spec,
                 question_tag_context=question_tag_context,
             )
             if reason:
-                item_failed_reason = reason
-                break
-            normalized_qid = normalize_sub_question_id(converted.question_id)
-            if normalized_qid in seen_detail_qids:
-                item_failed_reason = "duplicate_detail_question_id"
-                break
-            seen_detail_qids.add(normalized_qid)
+                if not item_failed_reason:
+                    item_failed_reason = reason
+                failed_detail_qids.append(response_qid)
+                continue
+            seen_detail_qids.add(normalize_sub_question_id(converted.question_id))
             details.append(converted)
             if detail_metadata:
                 metadata.append(detail_metadata)
-        if not item_failed_reason and required_normalized_qids - seen_detail_qids:
-            item_failed_reason = "missing_detail_question_ids"
-        if item_failed_reason or not details:
+        missing_detail_qids = [
+            qid
+            for qid in required_qids
+            if normalize_sub_question_id(qid) not in seen_detail_qids
+            and qid not in failed_detail_qids
+        ]
+        if not details:
             failed.append(
                 {
                     "paper_key": paper_key,
@@ -1058,6 +1159,21 @@ def validate_hybrid_major_response(
             )
             continue
         accepted.append({"paper_key": paper_key, "student_id": expected[paper_key].get("student_id"), "details": details, "metadata": metadata})
+        if failed_detail_qids or missing_detail_qids:
+            failed.append(
+                {
+                    "paper_key": paper_key,
+                    "student_id": expected[paper_key].get("student_id"),
+                    "question_id": spec.question_id,
+                    "target_detail_question_ids": (
+                        failed_detail_qids + missing_detail_qids
+                    ),
+                    "reason": (
+                        item_failed_reason
+                        or "missing_detail_question_ids"
+                    ),
+                }
+            )
     for paper_key, item in expected.items():
         if paper_key not in seen:
             failed.append({"paper_key": paper_key, "student_id": item.get("student_id"), "question_id": spec.question_id, "reason": "missing_paper_result"})
@@ -1141,16 +1257,26 @@ def _detail_from_ai_item(
     if score is None or score < 0:
         return None, "invalid_score", None
     confidence = _float_value(detail.get("confidence_score"), 100.0)
-    if _truthy(detail.get("answer_discarded_by_smudge")) and score > 0:
-        return None, "discarded_answer_scored", None
+    smudge_conflict = _truthy(detail.get("answer_discarded_by_smudge")) and score > 0
+    if smudge_conflict:
+        # A smudge-discarded answer must not keep its points, but the
+        # contradiction needs a teacher decision instead of a silent drop.
+        score = 0.0
     blank_or_no_work = _truthy(detail.get("answer_is_blank_or_no_valid_work"))
     if blank_or_no_work:
         score = 0.0
         confidence = 100.0
-    needs_review = blank_or_no_work or confidence < min_confidence or _truthy(detail.get("needs_human_review"))
+    needs_review = blank_or_no_work or smudge_conflict or confidence < min_confidence or _truthy(detail.get("needs_human_review"))
     error_category = detail.get("error_category")
     error_summary = detail.get("error_summary")
     deduction_reason = detail.get("deduction_reason")
+    if smudge_conflict:
+        error_category = error_category or "需复核"
+        error_summary = error_summary or "discarded_answer_scored"
+        deduction_reason = (
+            deduction_reason
+            or "作答疑似被涂改作废但模型仍给了分，已先按 0 分登记，请人工确认。"
+        )
     if blank_or_no_work:
         error_category = error_category or "未作答"
         error_summary = error_summary or "blank_or_no_valid_work"

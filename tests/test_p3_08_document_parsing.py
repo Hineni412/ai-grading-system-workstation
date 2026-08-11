@@ -129,6 +129,27 @@ def test_plain_parser_trusts_an_explicitly_mapped_bare_single_blank_answer() -> 
     assert blocks[0]["needs_review"] is False
 
 
+def test_plain_parser_does_not_flatten_subparted_worked_question_into_fill_blank() -> None:
+    from backend.document_parsing import parse_plain_question_blocks
+
+    blocks = parse_plain_question_blocks(
+        "\n".join(
+            [
+                "三、解答题",
+                "11. 如图，在△ABC中，∠ACB＝90°，点D在斜边AB上，AD＝AC，"
+                "设∠A＝x°，∠BCD＝y°。",
+                "（1）填写表格：x 取 20、40、60、80 时，y 分别为 ____。",
+                "（2）猜想y与x的数量关系，并说明理由。",
+                "（3）在图1的条件下，点E在AB边上，且BE＝BC，求∠DCE的度数。",
+            ]
+        )
+    )
+
+    assert len(blocks) == 1
+    assert blocks[0]["question_type"] != "fill_blank"
+    assert blocks[0]["question_type"] in {"calculation", "proof", "comprehensive"}
+
+
 def test_broken_rich_docx_falls_back_without_model_or_files(tmp_path: Path) -> None:
     from backend.document_parsing import parse_docx_question_blocks
 

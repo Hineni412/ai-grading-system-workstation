@@ -1212,6 +1212,13 @@ class TeachingPrepService:
         directory_evidence = build_directory_evidence(snapshot)
         materials = list(snapshot["materials"])
         lessons = list(snapshot["lessons"])
+        # The initial-tree decision follows usable lesson nodes only; stray
+        # chapter/section nodes without lessons do not form a usable tree.
+        existing_lesson_count = sum(
+            item.get("node_type") == "lesson"
+            for item in lessons
+            if isinstance(item, Mapping)
+        )
         return {
             "semester_id": clean_semester_id,
             "source_state_sha256": digest,
@@ -1231,12 +1238,8 @@ class TeachingPrepService:
                 for item in materials
                 if isinstance(item, Mapping)
             ),
-            "existing_lesson_count": sum(
-                item.get("node_type") == "lesson"
-                for item in lessons
-                if isinstance(item, Mapping)
-            ),
-            "creates_initial_tree": not lessons,
+            "existing_lesson_count": existing_lesson_count,
+            "creates_initial_tree": existing_lesson_count == 0,
             "automatic_retry": False,
             "evidence_strategy": directory_evidence["strategy"],
             "evidence_confidence": directory_evidence["confidence"],
@@ -1393,7 +1396,10 @@ class TeachingPrepService:
                 clean_operation_id,
                 exc.error_code,
             )
-            raise TeachingPrepRetryAvailableError(str(exc)) from exc
+            raise TeachingPrepRetryAvailableError(
+                str(exc),
+                error_code=exc.error_code,
+            ) from exc
         except TeachingPrepValidationError as exc:
             self.semester_mapping.fail_generation(
                 clean_operation_id,
@@ -1517,7 +1523,8 @@ class TeachingPrepService:
                     "semester mapping response failed local validation"
                 )
             raise TeachingPrepRetryAvailableError(
-                public_failure
+                public_failure,
+                error_code=failure_code,
             ) from exc
         except Exception as exc:
             self.semester_mapping.fail_generation(
@@ -1759,10 +1766,14 @@ class TeachingPrepService:
         proposal_id: str,
         *,
         expected_revision: int,
+        chapter_key: str | None = None,
     ) -> SemesterMappingProposal:
         return self.semester_mapping.apply(
             _clean_entity_id(proposal_id),
             expected_revision=_clean_revision(expected_revision),
+            chapter_key=(str(chapter_key).strip() or None)
+            if chapter_key is not None
+            else None,
         )
 
     def create_lesson_node(
@@ -5258,7 +5269,10 @@ def _json_digest(value: object) -> str:
 
 def _require_initial_tree_source(snapshot: Mapping[str, object]) -> None:
     lessons = snapshot.get("lessons")
-    if isinstance(lessons, list) and lessons:
+    if isinstance(lessons, list) and any(
+        isinstance(item, Mapping) and item.get("node_type") == "lesson"
+        for item in lessons
+    ):
         return
     materials = snapshot.get("materials")
     if not isinstance(materials, list) or len(materials) != 1:

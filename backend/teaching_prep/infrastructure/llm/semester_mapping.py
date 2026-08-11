@@ -219,7 +219,11 @@ def _compact_model_snapshot(
     if not isinstance(directory_evidence, Mapping):
         directory_evidence = build_directory_evidence(snapshot)
     lesson_nodes = _mapping_list(snapshot.get("lessons"))
-    has_existing_tree = bool(lesson_nodes)
+    # Only usable lesson nodes form an existing tree; stray chapter/section
+    # nodes without lessons still take the initial-tree mode.
+    has_existing_tree = any(
+        item.get("node_type") == "lesson" for item in lesson_nodes
+    )
     semester_fields = [
         "school_year",
         "term",

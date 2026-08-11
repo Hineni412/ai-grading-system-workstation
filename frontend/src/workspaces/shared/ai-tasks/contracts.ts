@@ -63,6 +63,7 @@ export interface WorkspaceAITask {
   proposal_ref_id: string | null
   proposal_revision: string | null
   error_code: string | null
+  error_detail: string | null
   revision: number
   safe_title: string
   safe_source: string
@@ -107,6 +108,7 @@ export function decodeWorkspaceAITask(value: unknown): WorkspaceAITask {
     || typeof value.safe_title !== 'string'
     || typeof value.teacher_message !== 'string'
     || typeof value.next_action !== 'string'
+    || !isNullableString(value.error_detail)
     || !isNullableString(value.finished_at)
   ) {
     throw new Error('Invalid workspace AI task response')

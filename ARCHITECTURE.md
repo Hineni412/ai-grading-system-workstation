@@ -200,6 +200,7 @@ POST、PUT、PATCH 和 DELETE 不由通用客户端自动重放。
 ## 14. 后台 Job
 
 JobManager 在 FastAPI 进程内使用线程池执行任务。
+阅卷流程任务（`grading_run`、`scan_analysis`）使用独立线程池，不被其他长任务（如备课资料解析）阻塞。
 任务状态与必要摘要持久化到本机数据库。
 系统没有独立消息队列或外部 worker 集群。
 服务进程退出后，线程不会在后台继续运行。
