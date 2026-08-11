@@ -18,14 +18,28 @@ function task(destination: string): WorkspaceAITask {
 }
 
 describe('AI task return location', () => {
-  it('returns an A lesson task to its exact lesson stage panel and focus', () => {
+  it('returns a materials-step task to the lesson first step', () => {
     expect(returnLocation(task('teaching_prep.lesson.exercises'))).toEqual({
       path: '/teaching-prep',
-      query: { view: 'lesson', lesson: 'lesson-1', stage: 'materials', panel: 'exercises', focus_ref: 'proposal-1', source_task_id: 'task-1' },
+      query: { view: 'lesson', lesson: 'lesson-1', step: '1' },
     })
   })
 
-  it('keeps the semester in the return link before a handoff exists', () => {
+  it('returns a slides task to the review step', () => {
+    expect(returnLocation(task('teaching_prep.lesson.slides'))).toEqual({
+      path: '/teaching-prep',
+      query: { view: 'lesson', lesson: 'lesson-1', step: '2' },
+    })
+  })
+
+  it('returns a package task to the copies step', () => {
+    expect(returnLocation(task('teaching_prep.lesson.package'))).toEqual({
+      path: '/teaching-prep',
+      query: { view: 'lesson', lesson: 'lesson-1', step: '3' },
+    })
+  })
+
+  it('uses only view/lesson/step even before a handoff exists', () => {
     const queued = {
       ...task('teaching_prep.lesson.plan'),
       status: 'queued' as const,
@@ -36,10 +50,7 @@ describe('AI task return location', () => {
 
     expect(returnLocation(queued)).toEqual({
       path: '/teaching-prep',
-      query: {
-        view: 'lesson', semester: 'semester-2', lesson: 'lesson-1',
-        stage: 'plan', panel: 'plan', source_task_id: 'task-1',
-      },
+      query: { view: 'lesson', lesson: 'lesson-1', step: '1' },
     })
   })
 })

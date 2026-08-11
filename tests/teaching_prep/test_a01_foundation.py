@@ -209,7 +209,7 @@ def test_existing_pptx_run_migrates_to_path_free_source_snapshot(
     )
 
     assert report.error is None
-    assert report.results[-1].name == "019_pptx_execution_source_snapshots"
+    assert report.results[-1].name == "020_reference_ppt_collection_soft_deactivate"
     with sqlite3.connect(database_path) as connection:
         connection.execute("PRAGMA foreign_keys = ON")
         columns = {

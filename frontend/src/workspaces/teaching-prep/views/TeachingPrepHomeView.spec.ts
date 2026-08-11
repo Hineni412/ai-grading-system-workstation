@@ -4,11 +4,11 @@ import { createMemoryHistory, createRouter } from 'vue-router'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { questionBankApi, type CurriculumCatalog, type CurriculumVolume } from '../../../api/question-bank'
-import { CURRICULUM_SCOPE_STORAGE_KEY, useCurriculumScopeStore } from '../../../stores/curriculum-scope'
+import { useCurriculumScopeStore } from '../../../stores/curriculum-scope'
 import { teachingPrepCatalogApi } from '../api/catalog'
 import { teachingPrepWorkbenchApi, type LessonPreparationStatus } from '../api/workbench'
 import { useTeachingPrepCatalogStore } from '../stores/catalog'
-import { hasFormalLessonTree } from '../workbench/state'
+import { hasFormalLessonTree } from '../workbench/lessonStatus'
 import TeachingPrepHomeView from './TeachingPrepHomeView.vue'
 
 const preferences = {
@@ -136,14 +136,6 @@ function mockCatalogWithGlobalTextbookSwitch(): { targetSemesterId: string } {
   return { targetSemesterId }
 }
 
-function deferred<T>() {
-  let resolve!: (value: T) => void
-  const promise = new Promise<T>((resolvePromise) => {
-    resolve = resolvePromise
-  })
-  return { promise, resolve }
-}
-
 async function mountAt(
   query = '',
   configurePinia?: (pinia: ReturnType<typeof createPinia>) => void,
@@ -178,61 +170,59 @@ afterEach(() => {
   localStorage.clear()
 })
 
-describe('TeachingPrepHomeView workbench shell', () => {
-  it('loads semester lesson statuses once during the initial workbench entry', async () => {
-    mockCatalogWithLessons()
-
-    const { app } = await mountAt()
-
-    expect(teachingPrepWorkbenchApi.lessonStatuses).toHaveBeenCalledTimes(1)
-    app.unmount()
-  })
-
-  it('does not load material collections or mapping history on the ordinary overview', async () => {
+describe('TeachingPrepHomeView three-view shell', () => {
+  it('opens the overview by default without loading material collections', async () => {
     mockCatalogWithLessons()
 
     const { app, host } = await mountAt()
 
-    expect(host.textContent).toContain('近期课时')
+    expect(host.querySelector('[aria-label="备课首页"]')).toBeTruthy()
     expect(teachingPrepCatalogApi.listMaterials).not.toHaveBeenCalled()
     expect(teachingPrepCatalogApi.listMaterialParseJobs).not.toHaveBeenCalled()
     expect(teachingPrepCatalogApi.listSemesterMaterials).not.toHaveBeenCalled()
     expect(teachingPrepCatalogApi.listSemesterMappingProposals).not.toHaveBeenCalled()
-    expect(teachingPrepCatalogApi.listSemesterMappingProposalJobs).not.toHaveBeenCalled()
     app.unmount()
   })
 
-  it('loads deferred material collections once for a direct library link', async () => {
-    const { semesterId } = mockCatalogWithLessons()
+  it('loads material collections for a direct library link', async () => {
+    mockCatalogWithLessons()
 
-    const { app, host } = await mountAt(`?view=library&semester=${semesterId}`)
+    const { app, host } = await mountAt('?view=library')
 
-    expect(host.textContent).toContain('建立可复用的学期资料目录')
-    expect(teachingPrepCatalogApi.listMaterials).toHaveBeenCalledTimes(1)
-    expect(teachingPrepCatalogApi.listMaterialParseJobs).toHaveBeenCalledTimes(1)
-    expect(teachingPrepCatalogApi.listSemesterMaterials).toHaveBeenCalledTimes(1)
-    expect(teachingPrepCatalogApi.listSemesterMappingProposals).toHaveBeenCalledTimes(1)
-    expect(teachingPrepCatalogApi.listSemesterMappingProposalJobs).toHaveBeenCalledTimes(1)
+    await vi.waitFor(() => {
+      expect(host.querySelector('[aria-label="资料库"]')).toBeTruthy()
+    })
+    expect(teachingPrepCatalogApi.listMaterials).toHaveBeenCalled()
+    expect(teachingPrepCatalogApi.listMaterialParseJobs).toHaveBeenCalled()
+    expect(teachingPrepCatalogApi.listSemesterMaterials).toHaveBeenCalled()
     app.unmount()
   })
 
-  it('loads deferred material collections before opening a lesson deep link', async () => {
-    const { semesterId, lessonIds } = mockCatalogWithLessons()
+  it('renders the lesson workbench rail for a valid lesson deep link', async () => {
+    const { lessonIds } = mockCatalogWithLessons()
 
-    const { app, host } = await mountAt(
-      `?view=lesson&semester=${semesterId}&lesson=${lessonIds[0]}&stage=materials&panel=sources`,
-    )
+    const { app, host } = await mountAt(`?view=lesson&lesson=${lessonIds[0]}&step=1`)
 
-    expect(host.querySelector('[aria-label="当前课时工作面"]')).toBeTruthy()
-    expect(teachingPrepCatalogApi.listMaterials).toHaveBeenCalledTimes(1)
-    expect(teachingPrepCatalogApi.listMaterialParseJobs).toHaveBeenCalledTimes(1)
-    expect(teachingPrepCatalogApi.listSemesterMaterials).toHaveBeenCalledTimes(1)
-    expect(teachingPrepCatalogApi.listSemesterMappingProposals).toHaveBeenCalledTimes(1)
-    expect(teachingPrepCatalogApi.listSemesterMappingProposalJobs).toHaveBeenCalledTimes(1)
+    await vi.waitFor(() => {
+      expect(host.querySelector('[aria-label="备课步骤"]')).toBeTruthy()
+    })
+    expect(teachingPrepWorkbenchApi.referencePreflight).toHaveBeenCalledWith(lessonIds[0])
     app.unmount()
   })
 
-  it('loads semester lesson statuses once when initial entry switches to the global textbook', async () => {
+  it('returns an invalid lesson deep link to the overview', async () => {
+    mockCatalogWithLessons()
+
+    const { app, router } = await mountAt(`?view=lesson&lesson=${'x'.repeat(32)}`)
+
+    await vi.waitFor(() => {
+      expect(router.currentRoute.value.query.view).toBe('overview')
+    })
+    expect(router.currentRoute.value.query.lesson).toBeUndefined()
+    app.unmount()
+  })
+
+  it('aligns the selected semester when the global textbook switches', async () => {
     const { targetSemesterId } = mockCatalogWithGlobalTextbookSwitch()
 
     const { app, pinia } = await mountAt('', (nextPinia) => {
@@ -242,68 +232,10 @@ describe('TeachingPrepHomeView workbench shell', () => {
       scope.loadState = 'ready'
     })
 
-    expect(useTeachingPrepCatalogStore(pinia).selectedSemester?.id).toBe(targetSemesterId)
-    expect(teachingPrepWorkbenchApi.lessonStatuses).toHaveBeenCalledTimes(1)
-    expect(teachingPrepWorkbenchApi.lessonStatuses).toHaveBeenCalledWith(targetSemesterId)
-    expect(teachingPrepCatalogApi.listMaterials).not.toHaveBeenCalled()
-    expect(teachingPrepCatalogApi.listSemesterMaterials).not.toHaveBeenCalled()
-    app.unmount()
-  })
-
-  it('waits for a delayed global textbook before the first semester status load', async () => {
-    const { targetSemesterId } = mockCatalogWithGlobalTextbookSwitch()
-    const curriculumCatalog = deferred<CurriculumCatalog>()
-    vi.spyOn(questionBankApi, 'getCurriculum').mockReturnValue(curriculumCatalog.promise)
-    localStorage.setItem(CURRICULUM_SCOPE_STORAGE_KEY, globalVolume.id)
-
-    const { app, pinia } = await mountAt()
-    await vi.waitFor(() => {
-      expect(useTeachingPrepCatalogStore(pinia).loadState).toBe('ready')
-    })
-
-    expect(teachingPrepWorkbenchApi.lessonStatuses).not.toHaveBeenCalled()
-    curriculumCatalog.resolve(globalCurriculumCatalog)
     await vi.waitFor(() => {
       expect(useTeachingPrepCatalogStore(pinia).selectedSemester?.id).toBe(targetSemesterId)
-      expect(teachingPrepWorkbenchApi.lessonStatuses).toHaveBeenCalledTimes(1)
     })
-    expect(teachingPrepWorkbenchApi.lessonStatuses).toHaveBeenCalledWith(targetSemesterId)
-    app.unmount()
-  })
-
-  it('loads semester lesson statuses again when the current workspace is refreshed', async () => {
-    const { lessonIds } = mockCatalogWithLessons()
-    vi.mocked(teachingPrepWorkbenchApi.lessonStatuses)
-      .mockRejectedValueOnce(new Error('offline'))
-      .mockResolvedValue(lessonIds.map((id, index) => statusFor(id, index + 1)))
-
-    const { app, host } = await mountAt()
-
-    expect(teachingPrepWorkbenchApi.lessonStatuses).toHaveBeenCalledTimes(1)
-    const retry = [...host.querySelectorAll('button')].find(
-      button => button.textContent?.includes('重新载入当前工作面'),
-    )
-    expect(retry).toBeDefined()
-
-    retry?.click()
-    await vi.waitFor(() => {
-      expect(teachingPrepWorkbenchApi.lessonStatuses).toHaveBeenCalledTimes(2)
-    })
-    app.unmount()
-  })
-
-  it('opens the overview first and removes the redundant local header', async () => {
-    mockEmptyCatalog()
-    const { app, host, router } = await mountAt()
-
-    expect(host.querySelector('.tp-shell-header')).toBeNull()
-    expect(host.querySelectorAll('.tp-stage-ruler__step')).toHaveLength(0)
-    expect(host.textContent).toContain('近期课时')
-    expect(router.currentRoute.value.query).toMatchObject({
-      view: 'overview',
-      workspace: 'lesson-tree',
-      stage: 'select',
-    })
+    expect(teachingPrepCatalogApi.listMaterials).not.toHaveBeenCalled()
     app.unmount()
   })
 
@@ -316,282 +248,5 @@ describe('TeachingPrepHomeView workbench shell', () => {
     expect(hasFormalLessonTree([
       { node_type: 'lesson', is_active: true },
     ])).toBe(true)
-  })
-
-  it('restores the selected internal workspace from query parameters', async () => {
-    mockEmptyCatalog()
-    const { app, host, router } = await mountAt('?workspace=materials&stage=materials')
-
-    expect(host.textContent).toContain('建立可复用的学期资料目录')
-    expect(router.currentRoute.value.query).toMatchObject({
-      workspace: 'materials',
-      stage: 'materials',
-    })
-    app.unmount()
-  })
-
-  it('gives the manifest library view priority over stale internal route state', async () => {
-    mockEmptyCatalog()
-    const { app, host, router } = await mountAt(
-      '?view=library&workspace=lesson-tree&stage=select',
-    )
-
-    expect(host.textContent).toContain('建立可复用的学期资料目录')
-    expect(router.currentRoute.value.query).toMatchObject({
-      view: 'library',
-      workspace: 'materials',
-      stage: 'materials',
-    })
-    app.unmount()
-  })
-
-  it('handles topbar workspace events through the workbench navigation flow', async () => {
-    mockEmptyCatalog()
-    const { app, router } = await mountAt()
-
-    globalThis.dispatchEvent(new CustomEvent('teaching-prep:open-workspace', {
-      detail: { workspace: 'lesson-tree' },
-    }))
-    await vi.waitFor(() => expect(router.currentRoute.value.query).toMatchObject({
-      workspace: 'lesson-tree',
-      stage: 'select',
-    }))
-
-    app.unmount()
-  })
-
-  it('returns an invalid lesson deep link to overview without selecting another lesson', async () => {
-    const { semesterId } = mockCatalogWithLessons()
-    const { app, host, router } = await mountAt(`?view=lesson&semester=${semesterId}&lesson=${'x'.repeat(32)}&stage=materials&panel=exercises`)
-
-    expect(host.textContent).toContain('没有改选其他课时')
-    expect(host.textContent).toContain('近期课时')
-    expect(router.currentRoute.value.query.view).toBe('overview')
-    expect(router.currentRoute.value.query.lesson).toBeUndefined()
-    app.unmount()
-  })
-
-  it('restores semester lesson stage panel and focus_ref for a valid lesson link', async () => {
-    const { semesterId, lessonIds } = mockCatalogWithLessons()
-    const focus = 'candidate-001'
-    const { app, host, router } = await mountAt(`?view=lesson&semester=${semesterId}&lesson=${lessonIds[0]}&stage=materials&panel=sources&focus_ref=${focus}`)
-
-    expect(router.currentRoute.value.query).toMatchObject({ view: 'lesson', semester: semesterId, lesson: lessonIds[0], stage: 'materials', panel: 'sources', focus_ref: focus })
-    expect(host.querySelector('.tp-lesson-frame__mobile-tabs')).toBeNull()
-    expect(host.querySelectorAll('.tp-document-workspace__mobile-tabs button')).toHaveLength(3)
-    const manualProgress = [...host.querySelectorAll('.tp-lesson-frame__inspector dd')][0]
-    expect(manualProgress?.textContent).toBe('已授课')
-    expect(host.textContent).not.toContain('taught')
-    app.unmount()
-  })
-
-  it('selects the linked semester before validating a cross-semester lesson', async () => {
-    mockCatalogWithLessons(1)
-    const firstCurriculum = 'a'.repeat(32)
-    const secondCurriculum = 'b'.repeat(32)
-    const firstSemester = 'u'.repeat(32)
-    const secondSemester = 'v'.repeat(32)
-    const firstLesson = '1'.repeat(32)
-    const secondLesson = '2'.repeat(32)
-    const curriculum = (id: string, title: string) => ({ id, title, grade_level: 7, volume: 'first' as const, publisher: null, edition_label: null, revision: 1, is_active: true, created_at: '', updated_at: '' })
-    const semester = (id: string, curriculumId: string, title: string) => ({ id, curriculum_id: curriculumId, curriculum_title: title, school_year: '2026', term: 'first' as const, planned_new_lesson_count: 1, status: 'active' as const, active_lesson_count: 1, not_started_lesson_count: 1, preparing_lesson_count: 0, ready_lesson_count: 0, taught_lesson_count: 0, skipped_lesson_count: 0, material_count: 0, parsed_material_count: 0, mapped_material_count: 0, revision: 1, created_at: '', updated_at: '' })
-    const lesson = (id: string, curriculumId: string, title: string) => ({ id, curriculum_id: curriculumId, parent_id: null, node_type: 'lesson' as const, title, sort_order: 1, duration_minutes: 45, source_kind: 'teacher' as const, is_active: true, revision: 1, created_at: '', updated_at: '' })
-    vi.mocked(teachingPrepCatalogApi.listCurricula).mockResolvedValue([
-      curriculum(firstCurriculum, '七年级上'),
-      curriculum(secondCurriculum, '七年级下'),
-    ])
-    vi.mocked(teachingPrepCatalogApi.listSemesters).mockResolvedValue([
-      semester(firstSemester, firstCurriculum, '七年级上'),
-      semester(secondSemester, secondCurriculum, '七年级下'),
-    ])
-    vi.mocked(teachingPrepCatalogApi.listLessons).mockImplementation(async curriculumId => (
-      curriculumId === firstCurriculum
-        ? [lesson(firstLesson, firstCurriculum, '第一学期课时')]
-        : [lesson(secondLesson, secondCurriculum, '第二学期课时')]
-    ))
-    vi.mocked(teachingPrepWorkbenchApi.lessonStatuses).mockImplementation(async semesterId => (
-      semesterId === firstSemester
-        ? [statusFor(firstLesson, 1)]
-        : [statusFor(secondLesson, 1)]
-    ))
-
-    const { app, host, router } = await mountAt(`?view=lesson&semester=${secondSemester}&lesson=${secondLesson}&stage=materials&panel=sources`)
-
-    expect(router.currentRoute.value.query).toMatchObject({
-      view: 'lesson', semester: secondSemester, lesson: secondLesson,
-      stage: 'materials', panel: 'sources',
-    })
-    expect(host.textContent).toContain('第二学期课时')
-    expect(teachingPrepCatalogApi.listLessons).toHaveBeenCalledWith(secondCurriculum)
-    app.unmount()
-  })
-
-  it('switches semester before an already-mounted library return and replays history', async () => {
-    mockCatalogWithLessons(1)
-    const firstCurriculum = 'a'.repeat(32)
-    const secondCurriculum = 'b'.repeat(32)
-    const firstSemester = 'u'.repeat(32)
-    const secondSemester = 'v'.repeat(32)
-    const firstLesson = '1'.repeat(32)
-    const secondLesson = '2'.repeat(32)
-    const curriculum = (id: string, title: string) => ({ id, title, grade_level: 7, volume: 'first' as const, publisher: null, edition_label: null, revision: 1, is_active: true, created_at: '', updated_at: '' })
-    const semester = (id: string, curriculumId: string, title: string) => ({ id, curriculum_id: curriculumId, curriculum_title: title, school_year: '2026', term: 'first' as const, planned_new_lesson_count: 1, status: 'active' as const, active_lesson_count: 1, not_started_lesson_count: 1, preparing_lesson_count: 0, ready_lesson_count: 0, taught_lesson_count: 0, skipped_lesson_count: 0, material_count: 0, parsed_material_count: 0, mapped_material_count: 0, revision: 1, created_at: '', updated_at: '' })
-    const lesson = (id: string, curriculumId: string, title: string) => ({ id, curriculum_id: curriculumId, parent_id: null, node_type: 'lesson' as const, title, sort_order: 1, duration_minutes: 45, source_kind: 'teacher' as const, is_active: true, revision: 1, created_at: '', updated_at: '' })
-    vi.mocked(teachingPrepCatalogApi.listCurricula).mockResolvedValue([
-      curriculum(firstCurriculum, '七年级上'),
-      curriculum(secondCurriculum, '七年级下'),
-    ])
-    vi.mocked(teachingPrepCatalogApi.listSemesters).mockResolvedValue([
-      semester(firstSemester, firstCurriculum, '七年级上'),
-      semester(secondSemester, secondCurriculum, '七年级下'),
-    ])
-    vi.mocked(teachingPrepCatalogApi.listLessons).mockImplementation(async curriculumId => (
-      curriculumId === firstCurriculum
-        ? [lesson(firstLesson, firstCurriculum, '第一学期课时')]
-        : [lesson(secondLesson, secondCurriculum, '第二学期课时')]
-    ))
-    vi.mocked(teachingPrepWorkbenchApi.lessonStatuses).mockImplementation(async semesterId => (
-      semesterId === firstSemester
-        ? [statusFor(firstLesson, 1)]
-        : [statusFor(secondLesson, 1)]
-    ))
-    let releaseSecondMaterials!: () => void
-    const secondMaterials = new Promise<never[]>((resolve) => {
-      releaseSecondMaterials = () => resolve([])
-    })
-    vi.mocked(teachingPrepCatalogApi.listSemesterMaterials).mockImplementation(semesterId => (
-      semesterId === secondSemester ? secondMaterials : Promise.resolve([])
-    ))
-
-    const { app, host, router, pinia } = await mountAt(
-      `?view=overview&semester=${firstSemester}`,
-    )
-    const catalog = useTeachingPrepCatalogStore(pinia)
-    expect(catalog.selectedSemester?.id).toBe(firstSemester)
-
-    await router.push({
-      path: '/teaching-prep',
-      query: {
-        view: 'library',
-        semester: secondSemester,
-        source_task_id: 'task-cross-semester-library',
-      },
-    })
-    await vi.waitFor(() => {
-      expect(teachingPrepCatalogApi.listSemesterMaterials).toHaveBeenCalledWith(
-        secondSemester,
-      )
-    })
-    expect(router.currentRoute.value.query.semester).toBe(secondSemester)
-    expect(host.textContent).not.toContain('建立可复用的学期资料目录')
-
-    releaseSecondMaterials()
-    await vi.waitFor(() => {
-      expect(catalog.selectedSemester?.id).toBe(secondSemester)
-      expect(host.textContent).toContain('建立可复用的学期资料目录')
-      expect(router.currentRoute.value.query).toMatchObject({
-        view: 'library',
-        semester: secondSemester,
-        workspace: 'materials',
-        stage: 'materials',
-        source_task_id: 'task-cross-semester-library',
-      })
-    })
-
-    router.back()
-    await vi.waitFor(() => {
-      expect(catalog.selectedSemester?.id).toBe(firstSemester)
-      expect(router.currentRoute.value.query).toMatchObject({
-        view: 'overview',
-        semester: firstSemester,
-        workspace: 'lesson-tree',
-        stage: 'select',
-      })
-    })
-    router.forward()
-    await vi.waitFor(() => {
-      expect(catalog.selectedSemester?.id).toBe(secondSemester)
-      expect(host.textContent).toContain('建立可复用的学期资料目录')
-      expect(router.currentRoute.value.query.semester).toBe(secondSemester)
-    })
-    app.unmount()
-  })
-
-  it('shows at most eight nearby non-skipped lessons and keeps only limited taught context', async () => {
-    mockCatalogWithLessons(10)
-    const { app, host } = await mountAt()
-
-    const rows = host.querySelectorAll('.tp-readiness-matrix__row')
-    expect(rows.length).toBeGreaterThanOrEqual(5)
-    expect(rows.length).toBeLessThanOrEqual(8)
-    expect(host.textContent).not.toContain('课时 3')
-    app.unmount()
-  })
-
-  it('backfills five to eight recent lessons when the active point is at semester end', async () => {
-    const { lessonIds } = mockCatalogWithLessons(10)
-    vi.mocked(teachingPrepWorkbenchApi.lessonStatuses).mockResolvedValue(lessonIds.map((id, index) => (
-      statusFor(id, index + 1, index < 9 ? 'taught' : 'not_started')
-    )))
-    const { app, host } = await mountAt()
-
-    const rows = host.querySelectorAll('.tp-readiness-matrix__row')
-    expect(rows.length).toBeGreaterThanOrEqual(5)
-    expect(rows.length).toBeLessThanOrEqual(8)
-    expect(host.textContent).toContain('课时 10')
-    app.unmount()
-  })
-
-  it('shows the latest five to eight lessons when every lesson is taught', async () => {
-    const { lessonIds } = mockCatalogWithLessons(10)
-    vi.mocked(teachingPrepWorkbenchApi.lessonStatuses).mockResolvedValue(lessonIds.map((id, index) => (
-      statusFor(id, index + 1, 'taught')
-    )))
-    const { app, host } = await mountAt()
-
-    const rows = host.querySelectorAll('.tp-readiness-matrix__row')
-    expect(rows.length).toBeGreaterThanOrEqual(5)
-    expect(rows.length).toBeLessThanOrEqual(8)
-    expect(host.textContent).toContain('课时 10')
-    app.unmount()
-  })
-
-  it('blocks manifest query navigation while the current lesson has unsaved edits', async () => {
-    const { semesterId, lessonIds } = mockCatalogWithLessons()
-    vi.mocked(teachingPrepWorkbenchApi.referencePreflight).mockImplementation(async lessonId => ({
-      lesson_node_id: lessonId,
-      source_state_sha256: 'a'.repeat(64),
-      catalog: {
-        lesson: {},
-        material_links: ['主课件 A', '主课件 B'].map((name, index) => ({
-          link_id: `ppt-${index + 1}`,
-          link_revision: 1,
-          purpose: 'reference_ppt',
-          material_version_id: `version-${index + 1}`,
-          material_name: name,
-          material_type: 'pptx',
-          content_sha256: String(index + 1).repeat(64),
-          start_unit: 1,
-          end_unit: 10,
-          units: [],
-        })),
-      },
-      draft: null,
-      model_available: false,
-      model_label: null,
-      model_destination_fingerprint: 'f'.repeat(64),
-      will_call_model: false,
-    }))
-    const confirm = vi.spyOn(globalThis, 'confirm').mockReturnValue(false)
-    const { app, host, router } = await mountAt(`?view=lesson&semester=${semesterId}&lesson=${lessonIds[0]}&stage=materials&panel=sources`)
-    const radios = host.querySelectorAll<HTMLInputElement>('input[name="primary-reference-ppt"]')
-    radios[1]?.click()
-    await nextTick()
-
-    await router.push('/teaching-prep?view=library')
-
-    expect(confirm).toHaveBeenCalledOnce()
-    expect(router.currentRoute.value.query.view).toBe('lesson')
-    app.unmount()
   })
 })

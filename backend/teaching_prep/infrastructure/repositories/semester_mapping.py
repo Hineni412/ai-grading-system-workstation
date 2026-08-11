@@ -672,6 +672,8 @@ class SemesterMappingRepository:
     def list_reference_ppt_collections(
         self,
         semester_id: str,
+        *,
+        include_inactive: bool = False,
     ) -> tuple[ReferencePptCollection, ...]:
         with self._database.connect() as connection:
             if connection.execute(
@@ -684,13 +686,40 @@ class SemesterMappingRepository:
                 SELECT id
                 FROM reference_ppt_collections
                 WHERE semester_id = ?
+                  AND (? OR is_active = 1)
                 ORDER BY created_at DESC, id DESC
                 """,
-                (semester_id,),
+                (semester_id, int(include_inactive)),
             ).fetchall()
             return tuple(
                 self._get_reference_ppt_collection(connection, str(row["id"]))
                 for row in rows
+            )
+
+    def update_reference_ppt_collection(
+        self,
+        collection_id: str,
+        *,
+        is_active: bool,
+    ) -> ReferencePptCollection:
+        with self._database.connect(immediate=True) as connection:
+            cursor = connection.execute(
+                """
+                UPDATE reference_ppt_collections
+                SET is_active = ?,
+                    revision = revision + 1,
+                    updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                WHERE id = ?
+                """,
+                (int(is_active), collection_id),
+            )
+            if cursor.rowcount != 1:
+                raise TeachingPrepNotFoundError(
+                    "reference PPT collection was not found"
+                )
+            return self._get_reference_ppt_collection(
+                connection,
+                collection_id,
             )
 
     @staticmethod
@@ -721,6 +750,7 @@ class SemesterMappingRepository:
             display_name=str(row["display_name"]),
             mapping_proposal_id=str(row["mapping_proposal_id"]),
             ignored_file_count=int(row["ignored_file_count"]),
+            is_active=bool(row["is_active"]),
             revision=int(row["revision"]),
             created_at=str(row["created_at"]),
             updated_at=str(row["updated_at"]),

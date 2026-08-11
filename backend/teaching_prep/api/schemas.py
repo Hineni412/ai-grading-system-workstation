@@ -396,6 +396,12 @@ class CreateReferencePptCollectionRequest(BaseModel):
     )
 
 
+class UpdateReferencePptCollectionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    is_active: bool
+
+
 class ReferencePptCollectionMemberResponse(BaseModel):
     id: str
     collection_id: str
@@ -419,6 +425,7 @@ class ReferencePptCollectionResponse(BaseModel):
     display_name: str
     mapping_proposal_id: str
     ignored_file_count: int
+    is_active: bool
     revision: int
     created_at: str
     updated_at: str

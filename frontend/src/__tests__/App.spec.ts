@@ -43,19 +43,17 @@ beforeEach(() => {
 })
 
 describe('App', () => {
-  it('keeps the lesson tree ready and defers the three non-current teaching-prep workspaces', () => {
+  it('keeps the teaching-prep overview eager and defers the library and lesson pages', () => {
     const source = readFileSync(
       resolve(process.cwd(), 'src/workspaces/teaching-prep/views/TeachingPrepHomeView.vue'),
       'utf-8',
     )
 
-    expect(source).toContain("import LessonTreeWorkspace from '../workspaces/LessonTreeWorkspace.vue'")
-    expect(source).not.toContain("import MaterialLibraryWorkspace from '../workspaces/MaterialLibraryWorkspace.vue'")
-    expect(source).not.toContain("import LessonMaterialConfirmationWorkspace from '../workspaces/LessonMaterialConfirmationWorkspace.vue'")
-    expect(source).not.toContain("import PresentationVersionsWorkspace from '../workspaces/PresentationVersionsWorkspace.vue'")
-    expect(source).toContain("() => import('../workspaces/MaterialLibraryWorkspace.vue')")
-    expect(source).toContain("() => import('../workspaces/LessonMaterialConfirmationWorkspace.vue')")
-    expect(source).toContain("() => import('../workspaces/PresentationVersionsWorkspace.vue')")
+    expect(source).toContain("import OverviewPage from '../workspaces/OverviewPage.vue'")
+    expect(source).not.toContain("import LibraryPage from '../workspaces/LibraryPage.vue'")
+    expect(source).not.toContain("import LessonPage from '../workspaces/LessonPage.vue'")
+    expect(source).toContain("() => import('../workspaces/LibraryPage.vue')")
+    expect(source).toContain("() => import('../workspaces/LessonPage.vue')")
   })
 
   it('keeps route-only review styles out of startup and preserves their page order', () => {

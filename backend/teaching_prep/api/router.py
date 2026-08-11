@@ -148,6 +148,7 @@ from .schemas import (
     UpdateTeachingPreferencesRequest,
     UpdateLessonNodeRequest,
     UpdateSemesterMaterialRequest,
+    UpdateReferencePptCollectionRequest,
     UpdateSemesterRequest,
     UpdateMaterialLinkRequest,
     UpdateExerciseCandidateRequest,
@@ -717,10 +718,14 @@ def create_router() -> APIRouter:
     )
     def list_reference_ppt_collections(
         semester_id: str,
+        include_inactive: bool = Query(default=False),
         service: TeachingPrepService = Depends(get_teaching_prep_service),
     ) -> ReferencePptCollectionListResponse:
         try:
-            items = service.list_reference_ppt_collections(semester_id)
+            items = service.list_reference_ppt_collections(
+                semester_id,
+                include_inactive=include_inactive,
+            )
         except Exception as exc:
             raise _api_error(exc) from exc
         return ReferencePptCollectionListResponse(
@@ -753,6 +758,24 @@ def create_router() -> APIRouter:
             raise _api_error(exc) from exc
         if not created:
             response.status_code = status.HTTP_200_OK
+        return ReferencePptCollectionResponse.from_domain(item)
+
+    @router.patch(
+        "/reference-ppt-collections/{collection_id}",
+        response_model=ReferencePptCollectionResponse,
+    )
+    def update_reference_ppt_collection(
+        collection_id: str,
+        payload: UpdateReferencePptCollectionRequest,
+        service: TeachingPrepService = Depends(get_teaching_prep_service),
+    ) -> ReferencePptCollectionResponse:
+        try:
+            item = service.update_reference_ppt_collection(
+                collection_id,
+                is_active=payload.is_active,
+            )
+        except Exception as exc:
+            raise _api_error(exc) from exc
         return ReferencePptCollectionResponse.from_domain(item)
 
     @router.post(
