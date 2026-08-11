@@ -22,6 +22,7 @@ function task(
     send_attempt_count: 1, dispatch_evidence: 'response_persisted',
     cancel_requested: false, job_id: 1,
     proposal_ref_id: proposalId, proposal_revision: '3', error_code: null,
+    error_detail: null,
     revision: 4, safe_title: '合成任务', safe_source: '备课',
     teacher_message: '请审核', next_action: '审核',
     handoffs: [{

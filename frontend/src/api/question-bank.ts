@@ -29,6 +29,13 @@ export interface QuestionBankTag {
   confidence: number | null
 }
 
+// 知识点标签值是"册｜章｜小节｜细分点"全路径；界面只显示最末端节点名，
+// 完整路径保留在标签值本身（筛选、跨模块契约都依赖全名）。
+export function knowledgeLeafLabel(value: string): string {
+  const parts = value.split(/[|｜]/).map((part) => part.trim()).filter(Boolean)
+  return parts[parts.length - 1] ?? value
+}
+
 export interface QuestionBankListItem {
   id: number
   revision: string

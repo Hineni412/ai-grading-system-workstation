@@ -400,6 +400,57 @@ describe('scan grading workspace', () => {
     app.unmount()
   })
 
+  it('warns when a finished run left questions without AI results', async () => {
+    const value = workspace()
+    value.grading_run = {
+      run_id: 21, mode: 'hybrid_batch', state: 'completed',
+      counts: { graded: 4, grading: 0, pending: 0, skipped: 0, failed: 0, conflict: 0, total: 4 },
+      allowed_actions: ['retry_failed', 'supplement_new_matches'],
+      incomplete_result_count: 4,
+      incomplete_item_count: 10,
+    }
+    vi.mocked(api.fetchGradingWorkspace).mockResolvedValue(value)
+    const { app, host } = await mountView()
+
+    const warning = host.querySelector('[data-incomplete-warning]')
+    expect(warning).not.toBeNull()
+    expect(warning!.textContent).toContain('10 个小题没有 AI 评分结果')
+    expect(host.querySelector('[data-action="retry-failed"]')).not.toBeNull()
+    app.unmount()
+  })
+
+  it('refreshes only the workspace snapshot after failed-item retry', async () => {
+    const value = workspace()
+    value.grading_run = {
+      run_id: 21, mode: 'hybrid_batch', state: 'completed',
+      counts: { graded: 4, grading: 0, pending: 0, skipped: 0, failed: 0, conflict: 0, total: 4 },
+      allowed_actions: ['retry_failed'],
+      incomplete_result_count: 4,
+      incomplete_item_count: 10,
+    }
+    vi.mocked(api.fetchGradingWorkspace).mockResolvedValue(value)
+    vi.mocked(api.controlGrading).mockResolvedValue({
+      id: 92, job_type: 'grading_run', payload: { session_id: 7 }, result: {}, status: 'queued',
+      progress: 0, stage: 'queued', detail: '', error: null, cancel_requested: false,
+      created_at: '2026-07-17T00:00:00Z', started_at: null,
+      updated_at: '2026-07-17T00:00:00Z', finished_at: null,
+    })
+    const { app, host } = await mountView()
+
+    host.querySelector<HTMLButtonElement>('[data-action="retry-failed"]')!.click()
+    for (let index = 0; index < 6; index += 1) {
+      await Promise.resolve(); await nextTick()
+    }
+
+    expect(api.controlGrading).toHaveBeenCalledWith(7, 21, 'retry-failed')
+    // 局部刷新：不触发整页 load（学生选项只在进入页面时拉取一次）
+    expect(api.fetchScanStudentOptions).toHaveBeenCalledTimes(1)
+    // 局部刷新：不进入整页加载态，运行面板保持挂载
+    expect(host.textContent).not.toContain('正在恢复本次批改工作区')
+    expect(host.querySelector('[data-incomplete-warning]')).not.toBeNull()
+    app.unmount()
+  })
+
   it('offers a server-backed preflight retry after restart failure', async () => {
     const value = workspace()
     value.scan_analysis_job = {

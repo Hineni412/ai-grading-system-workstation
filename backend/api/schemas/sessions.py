@@ -4,6 +4,8 @@ import re
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from backend.api.schemas.config import ConfigAmbiguousAssetDecisionRequest
+
 
 class CreateSessionRequest(BaseModel):
     name: str
@@ -111,6 +113,7 @@ class QuestionBankSyncRequest(BaseModel):
     config_revision: str
     client_request_token: str
     curriculum_volume_id: str | None = Field(default=None, max_length=80)
+    asset_decisions: list[ConfigAmbiguousAssetDecisionRequest] | None = None
 
     @field_validator("config_revision")
     @classmethod

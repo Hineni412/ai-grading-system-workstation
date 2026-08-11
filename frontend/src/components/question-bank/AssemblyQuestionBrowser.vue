@@ -2,6 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, reactive, ref, shallowRef, watch } from 'vue'
 
 import {
+  knowledgeLeafLabel,
   questionBankApi,
   type CurriculumCatalog,
   type CurriculumChapter,
@@ -705,11 +706,6 @@ function tagsFor(question: QuestionBankListItem, tagType: string): string[] {
         ? knowledgeLeafLabel(tag.tag_value)
         : tag.tag_value
     ))
-}
-
-function knowledgeLeafLabel(value: string): string {
-  const parts = value.split(/[|｜]/).map((part) => part.trim()).filter(Boolean)
-  return parts[parts.length - 1] ?? value
 }
 </script>
 

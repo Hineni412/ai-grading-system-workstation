@@ -1,0 +1,623 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="icon" href="data:," />
+  <title>备课工作台 · 资料库改版原型</title>
+  <!-- 原型：三个布局变体，?variant= 切换，不连接真实接口。 -->
+  <style>
+    :root {
+      --paper: #f2f5f3;
+      --surface: #ffffff;
+      --surface-2: #f7faf8;
+      --ink: #173139;
+      --muted: #64777b;
+      --line: #d8e2de;
+      --teal: #0c646a;
+      --teal-2: #dcefed;
+      --yellow: #e9b949;
+      --yellow-2: #fff3cf;
+      --blue: #496d89;
+      --blue-2: #e7eff5;
+      --red: #b94f4a;
+      --red-2: #fae9e6;
+      --shadow: 0 14px 36px rgba(25, 56, 61, .08);
+      --radius: 14px;
+      color: var(--ink);
+      background: var(--paper);
+      font-family: "Microsoft YaHei UI", "Microsoft YaHei", sans-serif;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-width: 960px; background: var(--paper); }
+    button, input { font: inherit; }
+    button { cursor: pointer; }
+    button:focus-visible, input:focus-visible, summary:focus-visible {
+      outline: 3px solid rgba(12, 100, 106, .24); outline-offset: 2px;
+    }
+    .utility, .eyebrow, .tag, .count, .num { font-family: Bahnschrift, "Microsoft YaHei UI", sans-serif; }
+    .prototype-ribbon {
+      height: 30px; display: flex; align-items: center; justify-content: center;
+      background: var(--ink); color: #e8f3f1; font-size: 12px; letter-spacing: .05em;
+    }
+    .appbar {
+      height: 68px; padding: 0 26px; background: rgba(255,255,255,.96); border-bottom: 1px solid var(--line);
+      display: flex; align-items: center; justify-content: space-between;
+    }
+    .brand { display: flex; align-items: center; gap: 12px; }
+    .brand-mark {
+      width: 40px; height: 40px; border-radius: 12px; display: grid; place-items: center;
+      background: var(--teal); color: white; font: 800 16px Bahnschrift, sans-serif;
+      box-shadow: inset 0 -3px 0 rgba(0,0,0,.12);
+    }
+    .brand strong { display: block; font-size: 16px; }
+    .brand small { color: var(--muted); }
+    main { max-width: 1240px; margin: 0 auto; padding: 24px 24px 130px; }
+    h1, h2, h3, p { margin-top: 0; }
+    h1 { margin-bottom: 6px; font-size: 26px; letter-spacing: -.02em; }
+    h2 { margin-bottom: 8px; font-size: 19px; }
+    h3 { margin-bottom: 6px; font-size: 15px; }
+    .eyebrow { color: var(--teal); font-size: 12px; letter-spacing: .12em; font-weight: 800; }
+    .muted { color: var(--muted); }
+    .button { border: 1px solid var(--line); background: #fff; color: var(--ink); border-radius: 10px; padding: 10px 14px; font-weight: 800; }
+    .button:hover { border-color: #a8bdb8; }
+    .button.primary { border-color: var(--teal); background: var(--teal); color: #fff; }
+    .button.soft { border-color: transparent; background: var(--teal-2); color: var(--teal); }
+    .button.danger { border-color: #efc8c3; background: var(--red-2); color: var(--red); }
+    .button.small { padding: 7px 10px; font-size: 12px; }
+    .button:disabled { opacity: .45; cursor: default; }
+    .pill { display: inline-flex; align-items: center; gap: 6px; padding: 5px 9px; border-radius: 999px; background: var(--teal-2); color: var(--teal); font-size: 12px; font-weight: 800; }
+    .pill.grey { background: #edf1ef; color: var(--muted); }
+    .pill.warn { background: var(--yellow-2); color: #624b16; }
+    .pill.bad { background: var(--red-2); color: var(--red); }
+    .badge { display: inline-grid; place-items: center; min-width: 22px; padding: 2px 7px; border-radius: 999px; background: #edf1ef; color: var(--muted); font: 800 11px Bahnschrift, sans-serif; white-space: nowrap; flex: none; }
+    .note { padding: 12px 14px; border-left: 4px solid var(--yellow); background: var(--yellow-2); color: #624b16; line-height: 1.6; border-radius: 0 10px 10px 0; }
+    .card { background: #fff; border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow); }
+    .page-head { margin: 4px 0 18px; }
+    .page-head p { color: var(--muted); margin-bottom: 0; }
+
+    /* 紧凑文件网格：所有变体共用，一行多份小项 */
+    .file-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 8px; }
+    .file-cell { border: 1px solid var(--line); border-radius: 10px; background: var(--surface-2); padding: 9px 11px; font-size: 13px; line-height: 1.45; }
+    .file-cell b { display: block; font-weight: 700; }
+    .file-cell small { color: var(--muted); font-family: Bahnschrift, "Microsoft YaHei UI", sans-serif; }
+
+    /* 失败记录：统一“说人话”样式 */
+    .fail-box { border: 1px solid #efc8c3; background: #fdf6f4; border-radius: 12px; padding: 13px 15px; }
+    .fail-box h3 { color: var(--red); display: flex; align-items: center; gap: 8px; }
+    .fail-box p { line-height: 1.65; margin-bottom: 8px; }
+
+    /* Variant A — 顺次向导 */
+    .a-steps { display: grid; gap: 14px; }
+    .a-step { padding: 0; overflow: hidden; }
+    .a-step__bar { display: flex; align-items: center; gap: 14px; padding: 16px 20px; }
+    .a-step__no { width: 34px; height: 34px; border-radius: 50%; display: grid; place-items: center; font: 800 15px Bahnschrift, sans-serif; background: #edf1ef; color: var(--muted); flex: none; }
+    .a-step.done .a-step__no { background: var(--teal-2); color: var(--teal); }
+    .a-step.current .a-step__no { background: var(--teal); color: #fff; }
+    .a-step.current { border-color: var(--teal); box-shadow: 0 0 0 3px rgba(12,100,106,.12), var(--shadow); }
+    .a-step.future { opacity: .62; }
+    .a-step__title { flex: 1; }
+    .a-step__title h2 { margin: 0 0 2px; }
+    .a-step__title p { margin: 0; color: var(--muted); font-size: 13px; }
+    .a-step__body { border-top: 1px solid var(--line); padding: 18px 20px 20px; background: var(--surface-2); }
+    .a-drawer { border: 1px solid var(--line); border-radius: 12px; background: #fff; }
+    .a-drawer > summary { list-style: none; padding: 12px 15px; font-weight: 800; color: var(--teal); cursor: pointer; display: flex; justify-content: space-between; align-items: center; }
+    .a-drawer > summary::-webkit-details-marker { display: none; }
+    .a-drawer__inner { border-top: 1px solid var(--line); padding: 12px 15px 15px; display: grid; gap: 8px; }
+    .a-folder { border: 1px solid var(--line); border-radius: 10px; background: #fff; }
+    .a-folder > summary { list-style: none; padding: 9px 12px; cursor: pointer; display: flex; justify-content: space-between; align-items: center; font-size: 13px; font-weight: 700; }
+    .a-folder > summary::-webkit-details-marker { display: none; }
+    .a-folder .file-grid { padding: 0 12px 12px; }
+    .a-suggest-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 9px 12px; border: 1px solid var(--line); border-radius: 10px; background: #fff; font-size: 13px; }
+    .a-two-paths { display: grid; grid-template-columns: 1.2fr 1fr; gap: 12px; margin-top: 14px; }
+    .a-path { border: 1px solid var(--line); border-radius: 12px; padding: 14px 15px; background: #fff; }
+    .a-path.main { border-color: var(--teal); }
+
+    /* Variant B — 总览 + 唯一推荐动作 */
+    .b-stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 16px; }
+    .b-stat { padding: 16px 18px; }
+    .b-stat .num { font: 800 34px Bahnschrift, sans-serif; color: var(--teal); }
+    .b-stat .num small { font-size: 15px; color: var(--muted); font-weight: 700; }
+    .b-stat p { margin: 2px 0 0; color: var(--muted); font-size: 12px; }
+    .b-layout { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 14px; align-items: start; }
+    .b-next { padding: 22px 24px; border: 2px solid var(--teal); }
+    .b-next h2 { font-size: 21px; }
+    .b-next .actions { display: flex; align-items: center; gap: 14px; margin-top: 16px; flex-wrap: wrap; }
+    .b-ai-detail { margin-top: 14px; border-top: 1px dashed var(--line); padding-top: 14px; }
+    .b-cabinet { padding: 14px; }
+    .b-cabinet h2 { font-size: 16px; }
+    .b-group { width: 100%; display: flex; justify-content: space-between; align-items: center; gap: 8px; border: 1px solid var(--line); background: #fff; border-radius: 10px; padding: 10px 12px; margin-bottom: 8px; text-align: left; font-size: 13px; font-weight: 700; }
+    .b-group.active { border-color: var(--teal); background: var(--teal-2); color: var(--teal); }
+    .b-cabinet__detail { border-top: 1px dashed var(--line); margin-top: 6px; padding-top: 12px; }
+    .b-cabinet__detail .a-folder { margin-bottom: 6px; }
+    .b-todo { margin-top: 16px; padding: 16px 18px; }
+    .b-todo-row { display: flex; align-items: center; gap: 14px; padding: 11px 0; border-top: 1px solid var(--line); font-size: 13px; }
+    .b-todo-row:first-of-type { border-top: 0; }
+    .b-todo-row p { flex: 1; margin: 0; line-height: 1.55; }
+
+    /* Variant C — 双栏主从工作台 */
+    .c-progress { display: flex; align-items: center; gap: 0; margin-bottom: 16px; background: #fff; border: 1px solid var(--line); border-radius: 999px; padding: 7px 14px; width: fit-content; }
+    .c-progress .node { display: flex; align-items: center; gap: 7px; font-size: 13px; font-weight: 700; color: var(--muted); }
+    .c-progress .node .dot { width: 20px; height: 20px; border-radius: 50%; display: grid; place-items: center; font: 800 11px Bahnschrift, sans-serif; background: #edf1ef; color: var(--muted); }
+    .c-progress .node.done { color: var(--teal); }
+    .c-progress .node.done .dot { background: var(--teal-2); color: var(--teal); }
+    .c-progress .node.now { color: var(--ink); }
+    .c-progress .node.now .dot { background: var(--teal); color: #fff; }
+    .c-progress .sep { width: 34px; height: 2px; background: var(--line); margin: 0 10px; }
+    .c-progress .sep.done { background: var(--teal); }
+    .c-layout { display: grid; grid-template-columns: 300px minmax(0, 1fr); gap: 14px; align-items: start; }
+    .c-rail { padding: 14px; position: sticky; top: 16px; }
+    .c-rail h2 { font-size: 15px; margin-bottom: 10px; }
+    .c-rail__label { font: 800 11px Bahnschrift, sans-serif; letter-spacing: .1em; color: var(--muted); margin: 12px 0 6px; }
+    .c-item { width: 100%; display: flex; justify-content: space-between; align-items: center; gap: 8px; border: 0; background: transparent; border-radius: 9px; padding: 8px 10px; text-align: left; font-size: 13px; color: var(--ink); }
+    .c-item:hover { background: #eef3f1; }
+    .c-item.active { background: var(--teal-2); color: var(--teal); font-weight: 800; }
+    .c-item.sub { padding-left: 26px; }
+    .c-item .flag { font-size: 11px; color: var(--red); font-weight: 700; }
+    .c-main { padding: 20px 22px; min-height: 560px; }
+    .c-main__head { display: flex; justify-content: space-between; align-items: start; gap: 14px; margin-bottom: 14px; }
+    .c-main__head h2 { margin-bottom: 3px; }
+    .c-tabs { display: flex; gap: 6px; padding: 5px; background: #edf2ef; border-radius: 11px; width: fit-content; margin: 14px 0; }
+    .c-tabs button { border: 0; background: transparent; color: var(--muted); border-radius: 8px; padding: 9px 14px; font-weight: 800; font-size: 13px; }
+    .c-tabs button.active { background: #fff; color: var(--teal); box-shadow: 0 3px 10px rgba(35,70,72,.09); }
+    .c-skel { border: 1px dashed #c8a13a; background: #fffdf4; border-radius: 12px; padding: 14px 16px; }
+    .c-skel-line { display: flex; align-items: center; gap: 8px; font-size: 13px; padding: 5px 0; }
+    .c-skel-line.indent { padding-left: 22px; color: var(--muted); }
+    .c-rail__sub { font-size: 11px; color: var(--muted); padding: 1px 10px 4px; line-height: 1.5; }
+    .value-hint { font-size: 12px; color: var(--teal); background: var(--teal-2); border-radius: 9px; padding: 8px 12px; margin-bottom: 12px; line-height: 1.6; }
+    .lesson-chips { display: flex; flex-wrap: wrap; gap: 6px; padding: 2px 12px 10px; }
+    .lesson-chips span { padding: 5px 9px; border-radius: 7px; background: var(--surface-2); border: 1px solid var(--line); font-size: 12px; }
+    .map-list { display: grid; gap: 7px; margin: 12px 0; }
+    .map-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 12px; border: 1px solid var(--line); border-radius: 10px; background: #fff; font-size: 13px; }
+    .map-row .pages { font-family: Bahnschrift, "Microsoft YaHei UI", sans-serif; font-weight: 800; color: var(--ink); white-space: nowrap; }
+    .topic-box { border: 1px dashed #b9cbc6; border-radius: 12px; padding: 13px 15px; background: #fff; margin-top: 14px; }
+    .ai-reinfer { border: 1px solid var(--line); border-radius: 10px; background: #fff; margin-top: 12px; }
+    .ai-reinfer > summary { list-style: none; padding: 10px 13px; cursor: pointer; font-size: 13px; font-weight: 800; color: var(--teal); display: flex; justify-content: space-between; align-items: center; }
+    .ai-reinfer > summary::-webkit-details-marker { display: none; }
+    .ai-reinfer > summary::after { content: '›'; font-family: Bahnschrift, sans-serif; color: var(--muted); }
+    .ai-reinfer[open] > summary::after { content: '‹'; }
+    .ai-reinfer .body { border-top: 1px solid var(--line); padding: 12px 13px 13px; font-size: 13px; }
+
+    /* 变体切换条：高对比悬浮 pill，明显不属于页面 */
+    .variant-switcher {
+      position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); z-index: 80;
+      display: flex; align-items: center; gap: 4px;
+      background: #101d22; color: #eaf4f2; border: 2px solid var(--yellow);
+      border-radius: 999px; padding: 8px 12px;
+      box-shadow: 0 16px 40px rgba(10, 24, 28, .45);
+    }
+    .variant-switcher .arrow {
+      width: 34px; height: 34px; border-radius: 50%; border: 1px solid rgba(255,255,255,.25);
+      background: transparent; color: #eaf4f2; font-size: 16px; display: grid; place-items: center;
+    }
+    .variant-switcher .arrow:hover { background: rgba(255,255,255,.12); }
+    .variant-switcher .name { min-width: 190px; text-align: center; font-size: 13px; font-weight: 800; }
+    .variant-switcher .name small { display: block; color: #9fb6ba; font-weight: 600; font-size: 11px; letter-spacing: .06em; }
+    .toast {
+      position: fixed; bottom: 92px; left: 50%; transform: translateX(-50%) translateY(8px);
+      background: var(--ink); color: #eaf4f2; border-radius: 10px; padding: 10px 16px; font-size: 13px;
+      opacity: 0; pointer-events: none; transition: .18s ease; z-index: 90;
+    }
+    .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+  </style>
+</head>
+<body>
+  <div class="prototype-ribbon">原型 · 资料库页三个布局变体（A / B / C），不连接真实接口 · 底部悬浮条或 ← → 键切换</div>
+  <header class="appbar">
+    <div class="brand">
+      <span class="brand-mark">备</span>
+      <div><strong>备课工作台 · 资料库</strong><small id="semester-label"></small></div>
+    </div>
+    <span class="pill grey">本机资料 · 仅存于这台电脑</span>
+  </header>
+  <main id="app"></main>
+
+  <nav class="variant-switcher" aria-label="切换布局变体">
+    <button class="arrow" id="prev-variant" aria-label="上一个变体">‹</button>
+    <div class="name"><small>布局变体（原型）</small><span id="variant-name"></span></div>
+    <button class="arrow" id="next-variant" aria-label="下一个变体">›</button>
+  </nav>
+  <div class="toast" role="status" aria-live="polite"></div>
+
+  <script>
+    /* ============ 本地真实数据（内嵌，供三个变体共同渲染） ============ */
+    const SEMESTER = '2025-2026 学年下学期 · 数学八年级（北师大版）';
+    const CHAPTERS = [
+      { name: '第一章 勾股定理', files: [
+        ['1.1 第1课时 认识勾股定理', 26], ['1.1 第2课时 验证勾股定理', 25],
+        ['1.2 一定是直角三角形吗', 27], ['1.3 勾股定理的应用', 28],
+        ['专题：勾股定理与折叠问题', 22], ['问题解决策略：反思', 35],
+        ['第一章 小结与复习', 24], ['第一章 章末检测讲评', 20]]},
+      { name: '第二章 实数', files: [
+        ['2.1 认识无理数', 24], ['2.2 平方根 第1课时', 26], ['2.2 平方根 第2课时', 25],
+        ['2.3 立方根', 24], ['2.4 估算', 22], ['2.5 用计算器开方', 20],
+        ['2.6 实数', 28], ['2.7 二次根式 第1课时', 26], ['2.7 二次根式 第2课时', 25]]},
+      { name: '第三章 位置与坐标', files: [
+        ['3.1 确定位置', 24], ['3.2 平面直角坐标系 第1课时', 26], ['3.2 平面直角坐标系 第2课时', 25],
+        ['3.3 轴对称与坐标变化', 24], ['第三章 小结与复习', 22], ['第三章 章末检测讲评', 20]]},
+      { name: '第四章 一次函数', files: [
+        ['4.1 函数', 26], ['4.2 一次函数与正比例函数', 26],
+        ['4.3 一次函数的图象 第1课时', 25], ['4.3 一次函数的图象 第2课时', 24],
+        ['4.4 一次函数的应用 第1课时', 27], ['4.4 一次函数的应用 第2课时', 26],
+        ['4.4 一次函数的应用 第3课时', 24], ['第四章 小结与复习', 24], ['第四章 章末检测讲评', 20]]},
+      { name: '第五章 二元一次方程组', files: [
+        ['5.1 认识二元一次方程组', 24], ['5.2 求解二元一次方程组 第1课时', 26], ['5.2 求解二元一次方程组 第2课时', 25],
+        ['5.3 应用二元一次方程组——鸡兔同笼', 24], ['5.4 应用二元一次方程组——增收节支', 24],
+        ['5.5 应用二元一次方程组——里程碑上的数', 23], ['5.6 二元一次方程与一次函数', 26],
+        ['5.7 用二元一次方程组确定一次函数表达式', 24], ['第五章 小结与复习', 22]]},
+      { name: '第六章 数据的分析', files: [
+        ['6.1 平均数 第1课时', 24], ['6.1 平均数 第2课时', 22],
+        ['6.2 中位数与众数', 24], ['6.3 从统计图分析数据的集中趋势', 24],
+        ['6.4 数据的离散程度 第1课时', 24], ['6.4 数据的离散程度 第2课时', 22],
+        ['第六章 小结与复习', 22]]},
+      { name: '第七章 平行线的证明', files: [
+        ['7.1 为什么要证明', 22], ['7.2 第1课时 定义与命题', 24], ['7.2 第2课时 定理与证明', 24],
+        ['7.3 第1课时 平行的判定', 25], ['7.3 第2课时 平行线的性质', 25],
+        ['7.5 三角形内角和定理', 26], ['专题：平行线中的拐点问题', 22], ['第七章 小结与复习', 24]]},
+    ];
+    const TEXTBOOK = { name: '（根据2022年版课程标准修订）义务教育教科书·数学八年级上册', pages: 212 };
+    const WORKBOOK = { name: '五年中考三年模拟·八年级上册数学' };
+    /* 待确认的课时树建议：由 56 份 PPT 文件名推断生成（无需模型） */
+    const SUGGESTION = [
+      ['第一章 勾股定理', 6], ['第二章 实数', 7], ['第三章 位置与坐标', 4],
+      ['第四章 一次函数', 7], ['第五章 二元一次方程组', 7], ['第六章 数据的分析', 5], ['第七章 平行线的证明', 4],
+    ];
+    const SUGGEST_TOTAL = SUGGESTION.reduce((s, r) => s + r[1], 0);
+    const FAIL_REASON = '学期里还没有可映射的课时，AI 无法把教材页码挂到课时上。建议：先确认下方的课时树建议，或让 AI 从头建一棵。';
+    const AI_SEND_NOTE = '会发送：教材的目录与页码结构（212 页）+ 当前学期信息；会得到：一棵按教材编排的课时树草稿，由您逐章确认后才生效。本次为单次调用、按次计费，发送前需要您确认。';
+
+    /* ===== Variant C 新模型数据：课件“确定”课时树，教材教辅“对应”页码 ===== */
+    /* 课时树唯一主干：由 7 个章文件夹与课件命名直接确定（无需 AI），逐章确认即生效 */
+    const TREE = [
+      ['第一章 勾股定理', ['1.1 第1课时 认识勾股定理', '1.1 第2课时 验证勾股定理', '1.2 一定是直角三角形吗', '1.3 勾股定理的应用', '专题：勾股定理与折叠问题', '问题解决策略：反思']],
+      ['第二章 实数', ['2.1 认识无理数', '2.2 平方根 第1课时', '2.2 平方根 第2课时', '2.3 立方根', '2.4 估算与用计算器开方', '2.6 实数', '2.7 二次根式']],
+      ['第三章 位置与坐标', ['3.1 确定位置', '3.2 平面直角坐标系 第1课时', '3.2 平面直角坐标系 第2课时', '3.3 轴对称与坐标变化']],
+      ['第四章 一次函数', ['4.1 函数', '4.2 一次函数与正比例函数', '4.3 一次函数的图象 第1课时', '4.3 一次函数的图象 第2课时', '4.4 一次函数的应用 第1课时', '4.4 一次函数的应用 第2课时', '4.4 一次函数的应用 第3课时']],
+      ['第五章 二元一次方程组', ['5.1 认识二元一次方程组', '5.2 求解二元一次方程组 第1课时', '5.2 求解二元一次方程组 第2课时', '5.3 应用——鸡兔同笼', '5.4 应用——增收节支', '5.6 二元一次方程与一次函数', '5.7 确定一次函数表达式']],
+      ['第六章 数据的分析', ['6.1 平均数 第1课时', '6.1 平均数 第2课时', '6.2 中位数与众数', '6.3 从统计图分析数据的集中趋势', '6.4 数据的离散程度']],
+      ['第七章 平行线的证明', ['7.1 为什么要证明', '7.2 定义与命题', '7.3 平行的判定', '7.3 平行线的性质']],
+    ];
+    const TREE_TOTAL = TREE.reduce((s, r) => s + r[1].length, 0);
+    /* 教材：目录只到小节，按“小节 ↔ 页码段”粗对应（该小节下所有课时共用，属正常状态） */
+    const TEXTBOOK_MAP = [
+      { ch: 0, rows: [['1.1 探索勾股定理', 'P2-9', 1], ['1.2 一定是直角三角形吗', 'P10-13', 1], ['1.3 勾股定理的应用', 'P14-17', 1]] },
+      { ch: 1, rows: [['2.1-2.5 无理数、平方根与立方根', 'P20-35', 1], ['2.6-2.7 实数与二次根式', 'P36-49', 0]] },
+      { ch: 2, rows: [['3.1-3.3 确定位置与平面直角坐标系', 'P52-71', 1]] },
+      { ch: 3, rows: [['4.1-4.2 函数与一次函数', 'P74-85', 1], ['4.3-4.4 一次函数的图象与应用', 'P86-103', 1]] },
+      { ch: 4, rows: [['5.1-5.5 方程组的解法与应用', 'P106-131', 1], ['5.6-5.7 与一次函数的关系', 'P132-139', 1]] },
+      { ch: 5, rows: [['6.1-6.4 集中趋势与离散程度', 'P142-159', 1]] },
+      { ch: 6, rows: [['7.1-7.5 证明与平行线', 'P162-181', 0]] },
+    ];
+    /* 教辅：按课时对应练习页码 + 对不上课时的“专题补充” */
+    const WORKBOOK_MAP = [
+      ['第一章 勾股定理 · 6 个课时的练习', 'P5-18'],
+      ['第二章 实数 · 7 个课时的练习', 'P19-38'],
+      ['第三章 位置与坐标 · 4 个课时的练习', 'P39-52'],
+      ['第四章 一次函数 · 7 个课时的练习', 'P53-78'],
+      ['第五章 二元一次方程组 · 7 个课时的练习', 'P79-102'],
+      ['第六章 数据的分析 · 5 个课时的练习', 'P103-118'],
+      ['第七章 平行线的证明 · 4 个课时的练习', 'P119-134'],
+    ];
+    const WORKBOOK_TOPICS = [
+      ['专题：勾股定理中的动点问题', 'P135-140'],
+      ['专题：一次函数与方案选择', 'P141-148'],
+      ['中考链接：数形结合', 'P149-156'],
+    ];
+
+    const totalFiles = CHAPTERS.reduce((s, c) => s + c.files.length, 0);
+
+    /* ============ 共用片段 ============ */
+    const esc = s => s.replace(/&/g, '&amp;').replace(/</g, '&lt;');
+    function fileGrid(files) {
+      return `<div class="file-grid">${files.map(([n, p]) =>
+        `<div class="file-cell"><b>${esc(n)}</b><small>PPTX · ${p} 页 · 已处理好</small></div>`).join('')}</div>`;
+    }
+    function chapterFolders(openFirst = false) {
+      return CHAPTERS.map((c, i) => `
+        <details class="a-folder"${openFirst && i === 0 ? ' open' : ''}>
+          <summary><span>${esc(c.name)}</span><span class="badge">${c.files.length} 份</span></summary>
+          ${fileGrid(c.files)}
+        </details>`).join('');
+    }
+    function suggestionRows(actionLabel) {
+      return SUGGESTION.map(([ch, n]) => `
+        <div class="a-suggest-row"><span><b>${esc(ch)}</b> <span class="muted">· 建议 ${n} 课时</span></span>
+        <button class="button small soft" data-demo="确认 ${ch}">${actionLabel}</button></div>`).join('');
+    }
+    function failBox() {
+      return `<div class="fail-box">
+        <h3><span class="pill bad">上次没有成功</span> 用 AI 整理教材 · 未完成</h3>
+        <p>${FAIL_REASON}</p>
+        <button class="button small" data-demo="查看那次调用的说明">这次调用具体发生了什么</button>
+      </div>`;
+    }
+    function aiPathCard(compact) {
+      return `<div class="a-path${compact ? '' : ''}">
+        <h3>交给 AI，按教材从头整理</h3>
+        <p class="muted" style="font-size:13px;line-height:1.65">${AI_SEND_NOTE}</p>
+        <button class="button small" data-demo="确认并发送给 AI（原型不真正调用）">确认发送（单次计费）</button>
+      </div>`;
+    }
+    function skeletonNote() {
+      return `<div class="note" style="margin-top:14px"><b>还有一节之前留下的旧章节：</b>“第十九章 一次函数 › 19.1 函数”是上个学期试用时留下的骨架，与现在用的北师大版教材不符，下面挂着 2 个已停用的课时。确认新课时树后可以把它移除或留作参考。</div>`;
+    }
+
+    /* ============ Variant A — 顺次向导 ============ */
+    function renderA() {
+      return `
+      <div class="page-head"><span class="eyebrow">变体 A · 顺次向导</span>
+        <h1>照着四步做，资料就能拿去备课</h1>
+        <p>每一步写清会得到什么；已完成步骤收成一行，当前步骤展开操作。</p></div>
+      <div class="a-steps">
+        <section class="a-step card done">
+          <div class="a-step__bar"><span class="a-step__no">✓</span>
+            <div class="a-step__title"><h2>1 · 导入资料</h2><p>✓ 56 份课件 + 2 本书已入库</p></div>
+            <span class="pill">已完成</span></div>
+          <div class="a-step__body">
+            <details class="a-drawer">
+              <summary><span>查看已入库资料（56 份课件 · 7 个章文件夹，2 本书）</span><span class="badge">明细收在这里</span></summary>
+              <div class="a-drawer__inner">
+                ${chapterFolders()}
+                <div class="a-suggest-row"><span><b>教材</b> · ${esc(TEXTBOOK.name)} <span class="muted">PDF · ${TEXTBOOK.pages} 页</span></span><span class="pill">已解析</span></div>
+                <div class="a-suggest-row"><span><b>教辅</b> · ${esc(WORKBOOK.name)} <span class="muted">PDF</span></span><span class="pill">已解析</span></div>
+              </div>
+            </details>
+          </div>
+        </section>
+        <section class="a-step card done">
+          <div class="a-step__bar"><span class="a-step__no">✓</span>
+            <div class="a-step__title"><h2>2 · 本机逐页处理</h2><p>✓ 58 个文件已全部处理好，可以使用（全部在本机完成，未发送给任何服务）</p></div>
+            <span class="pill">已完成</span></div>
+        </section>
+        <section class="a-step card current">
+          <div class="a-step__bar"><span class="a-step__no">3</span>
+            <div class="a-step__title"><h2>3 · 整理出课时树</h2><p>得到什么：一棵“章节 › 课时”的树，每个课时挂上对应的课件和教材页码，备课时直接取用。</p></div>
+            <span class="pill warn">当前这一步</span></div>
+          <div class="a-step__body">
+            <div class="a-path main">
+              <h3>有一份现成的建议，不用调用 AI</h3>
+              <p class="muted" style="font-size:13px;line-height:1.65">系统根据 56 份课件的文件名推断出 <b>7 章约 ${SUGGEST_TOTAL} 课时</b> 的映射建议。逐章确认后即成为本学期正式课时树。</p>
+              <div style="display:grid;gap:8px;margin:12px 0">${suggestionRows('确认这一章')}</div>
+              <button class="button primary" data-demo="全部按建议确认">全部看着没问题，一次确认</button>
+            </div>
+            <div class="a-two-paths">
+              ${aiPathCard()}
+              <div>${failBox()}</div>
+            </div>
+            ${skeletonNote()}
+          </div>
+        </section>
+        <section class="a-step card future">
+          <div class="a-step__bar"><span class="a-step__no">4</span>
+            <div class="a-step__title"><h2>4 · 去备课</h2><p>课时树确认后，这里会亮起：每个课时都能看到挂好的课件与教材页码，直接开始改编课件。</p></div>
+            <span class="pill grey">还没到</span></div>
+        </section>
+      </div>`;
+    }
+
+    /* ============ Variant B — 总览 + 唯一推荐动作 ============ */
+    let bGroup = '课件';
+    function renderB() {
+      const groupDetail = {
+        '课件': `<div style="display:grid;gap:6px">${chapterFolders()}</div>`,
+        '教材': `<div class="file-grid"><div class="file-cell"><b>${esc(TEXTBOOK.name)}</b><small>PDF · ${TEXTBOOK.pages} 页 · 已解析，可以使用</small></div></div>`,
+        '教辅': `<div class="file-grid"><div class="file-cell"><b>${esc(WORKBOOK.name)}</b><small>PDF · 已解析，可以使用</small></div></div>`,
+      };
+      return `
+      <div class="page-head"><span class="eyebrow">变体 B · 总览 + 唯一推荐动作</span>
+        <h1>先看四个数字，然后只做一件事</h1>
+        <p>系统按当前状态只推荐一个下一步；资料明细收在右侧资料柜里。</p></div>
+      <div class="b-stats">
+        <div class="b-stat card"><span class="num">${totalFiles} <small>份</small></span><p>参考课件 · 分 7 个章文件夹</p></div>
+        <div class="b-stat card"><span class="num">2 <small>本</small></span><p>教材 1 本 + 教辅 1 本，均已解析</p></div>
+        <div class="b-stat card"><span class="num">0<small>/${SUGGEST_TOTAL}</small></span><p>课时树进度 · 建议已生成待确认</p></div>
+        <div class="b-stat card"><span class="num" style="color:var(--red)">1 <small>项</small></span><p>待处理 · 一次未成功的 AI 整理</p></div>
+      </div>
+      <div class="b-layout">
+        <div>
+          <section class="b-next card">
+            <span class="pill warn">下一步 · 只有这一个</span>
+            <h2 style="margin-top:10px">确认课时树建议</h2>
+            <p style="line-height:1.7">7 章约 ${SUGGEST_TOTAL} 课时已由 56 份课件的文件名推断生成，<b>不需要调用 AI、不产生费用</b>。逐章确认后，本学期即可开始备课——每个课时会自动挂上对应的课件与教材页码。</p>
+            <div class="actions">
+              <button class="button primary" data-demo="开始逐章确认建议">开始逐章确认（约 5 分钟）</button>
+              <button class="button" data-toggle-ai>改让 AI 用教材整理 ›</button>
+            </div>
+            <div class="b-ai-detail" id="b-ai-detail" hidden>
+              <p class="muted" style="font-size:13px;line-height:1.7">${AI_SEND_NOTE}</p>
+              <button class="button small" data-demo="确认并发送给 AI（原型不真正调用）">确认发送（单次计费）</button>
+              <p class="muted" style="font-size:12px;margin-top:10px">一般情况建议先用上方的现成建议：不花钱，且与您的课件顺序一致。</p>
+            </div>
+          </section>
+          <section class="b-todo card">
+            <h2>待处理 · 2 项</h2>
+            <div class="b-todo-row">
+              <span class="pill bad">没成功</span>
+              <p><b>用 AI 整理教材那次没完成。</b>${FAIL_REASON}</p>
+              <button class="button small" data-demo="按建议处理">去处理</button>
+            </div>
+            <div class="b-todo-row">
+              <span class="pill warn">旧章节</span>
+              <p><b>“第十九章 一次函数 › 19.1 函数”是之前留下的骨架</b>，与现用教材不符（下挂 2 个已停用课时）。确认新课时树后建议移除。</p>
+              <button class="button small danger" data-demo="移除旧章节骨架">移除</button>
+            </div>
+          </section>
+        </div>
+        <aside class="b-cabinet card">
+          <h2>资料柜</h2>
+          <p class="muted" style="font-size:12px;margin-bottom:12px">选中一组，才在下方显示该组内容。</p>
+          ${['课件', '教材', '教辅'].map(g => `
+            <button class="b-group${bGroup === g ? ' active' : ''}" data-b-group="${g}">
+              <span>${g === '课件' ? '参考课件 · 7 个章文件夹' : g === '教材' ? esc(TEXTBOOK.name) : esc(WORKBOOK.name)}</span>
+              <span class="badge">${g === '课件' ? totalFiles + ' 份' : '1 本'}</span>
+            </button>`).join('')}
+          <div class="b-cabinet__detail">${groupDetail[bGroup]}</div>
+        </aside>
+      </div>`;
+    }
+
+    /* ============ Variant C — 双栏主从工作台 ============ */
+    /* 新模型：课件“确定”课时树（唯一主干，无需 AI）；教材教辅只“对应”页码段 */
+    let cSel = { kind: 'chapter', index: 0 };
+    function textbookRange(chIndex) {
+      const group = TEXTBOOK_MAP.find(g => g.ch === chIndex);
+      if (!group) return '';
+      return group.rows[0][1].split('-')[0] + '-' + group.rows[group.rows.length - 1][1].split('-')[1];
+    }
+    function renderC() {
+      const rail = `
+        <div class="c-rail__label">课件 · ${totalFiles} 份</div>
+        ${CHAPTERS.map((c, i) => `
+          <button class="c-item${cSel.kind === 'chapter' && cSel.index === i ? ' active' : ''}" data-c-kind="chapter" data-c-index="${i}">
+            <span>${esc(c.name)}</span><span class="badge">${c.files.length}</span></button>`).join('')}
+        <div class="c-rail__label">书 · 2 本</div>
+        <button class="c-item${cSel.kind === 'textbook' ? ' active' : ''}" data-c-kind="textbook"><span>教材 · 八年级上册</span><span class="badge">${TEXTBOOK.pages} 页</span></button>
+        <button class="c-item${cSel.kind === 'workbook' ? ' active' : ''}" data-c-kind="workbook"><span>教辅 · 五三 八上</span><span class="badge">1 本</span></button>
+        <div class="c-rail__label">课时树</div>
+        <button class="c-item${cSel.kind === 'tree' ? ' active' : ''}" data-c-kind="tree">
+          <span>本学期课时树</span><span class="pill warn" style="font-size:11px">待确认</span></button>
+        <div class="c-rail__sub">7 章 ${TREE_TOTAL} 课时 · 来自课件文件夹与命名</div>`;
+
+      let main = '';
+      if (cSel.kind === 'chapter') {
+        const c = CHAPTERS[cSel.index];
+        const lessons = TREE[cSel.index][1].length;
+        main = `<div class="c-main__head"><div><span class="eyebrow">课件 · 章文件夹</span>
+          <h2>${esc(c.name)}</h2><p class="muted" style="margin:0">${c.files.length} 份课件已全部处理好，可以使用。</p></div>
+          <span class="pill">已处理好</span></div>
+          <div class="value-hint">本章 ${c.files.length} 份课件已对应 ${lessons} 个课时，教材 ${textbookRange(cSel.index)}、教辅练习 ${WORKBOOK_MAP[cSel.index][1]} 已关联——备课时打开任一课时，这些资料都在那儿等着。</div>
+          ${fileGrid(c.files)}`;
+      } else if (cSel.kind === 'tree') {
+        main = `<div class="c-main__head"><div><span class="eyebrow">课时树 · 唯一主干</span>
+          <h2>由你的 ${totalFiles} 份课件确定的课时树</h2>
+          <p class="muted" style="margin:0">按 7 个章文件夹和课件命名生成，逐章确认即生效；<b>不需要 AI、不产生费用</b>。</p></div>
+          <button class="button primary" data-demo="全部确认课时树">全部确认</button></div>
+          <div class="note" style="margin-bottom:14px">确认后，教材和教辅会对应到这棵树上：每个课时都能直接看到挂好的课件与书页。</div>
+          <div style="display:grid;gap:8px">
+          ${TREE.map(([ch, lessons], i) => `
+            <details class="a-folder"${i === 0 ? ' open' : ''}>
+              <summary><span>${esc(ch)}</span><span class="badge">${lessons.length} 课时</span></summary>
+              <div class="lesson-chips" style="padding-top:10px">${lessons.map(l => `<span>${esc(l)}</span>`).join('')}</div>
+              <div style="padding:0 12px 12px"><button class="button small soft" data-demo="确认 ${ch}">确认这一章</button></div>
+            </details>`).join('')}
+          </div>`;
+      } else if (cSel.kind === 'textbook') {
+        main = `<div class="c-main__head"><div><span class="eyebrow">教材 · 对应到课时树</span>
+          <h2>数学八年级上册（北师大版）</h2><p class="muted" style="margin:0">${esc(TEXTBOOK.name)}</p></div>
+          <span class="pill">${TEXTBOOK.pages} 页 · 已解析，可以使用</span></div>
+          <p class="muted" style="font-size:13px;line-height:1.7">教材目录只到小节，所以按<b>“小节 ↔ 页码段”</b>对应：该小节下的所有课时共用这一段页码，备课时用于快速定位，不强行精确到每一课时。</p>
+          <div class="map-list">
+          ${TEXTBOOK_MAP.map(g => g.rows.map(([sec, pages, ok]) => `
+            <div class="map-row"><span><b>${esc(TREE[g.ch][0])}</b> · ${esc(sec)}</span>
+            <span style="display:flex;align-items:center;gap:10px"><span class="pages">${pages}</span>
+            ${ok ? '<span class="pill" style="font-size:11px">已对应</span>' : '<span class="pill warn" style="font-size:11px">待你确认</span>'}</span></div>`).join('')).join('')}
+          </div>
+          <p class="muted" style="font-size:12px">以上对应是按目录推断的，课时树确认后正式生效；个别拿不准的小节请你过目。</p>
+          <details class="ai-reinfer">
+            <summary>让 AI 重新推断对应关系</summary>
+            <div class="body">
+              <p class="muted" style="line-height:1.7;margin-bottom:10px">会发送：教材的<b>目录页</b>和少量<b>抽样锚点页</b>（用于核对页码），<b>不发送全书</b>；会得到：一份新的“小节 ↔ 页码段”对应草稿，由你过目后替换现有对应。本次为单次调用、按次计费，发送前需要您确认。</p>
+              <button class="button small" data-demo="确认并发送给 AI（原型不真正调用）">确认发送（单次计费）</button>
+            </div>
+          </details>`;
+      } else {
+        main = `<div class="c-main__head"><div><span class="eyebrow">教辅 · 对应到课时树</span>
+          <h2>${esc(WORKBOOK.name)}</h2><p class="muted" style="margin:0">PDF · 已解析，可以使用；练习按课时对应，备课时按课时直接取用。</p></div>
+          <span class="pill">已处理好</span></div>
+          <h3 style="margin-bottom:4px">按课时对应的练习</h3>
+          <div class="map-list">
+          ${WORKBOOK_MAP.map(([label, pages]) => `
+            <div class="map-row"><span>${esc(label)}</span>
+            <span style="display:flex;align-items:center;gap:10px"><span class="pages">${pages}</span>
+            <span class="pill" style="font-size:11px">已对应</span></span></div>`).join('')}
+          </div>
+          <div class="topic-box">
+            <h3 style="margin-bottom:4px">专题补充</h3>
+            <p class="muted" style="font-size:12px;line-height:1.6;margin-bottom:10px">对不上具体课时的专题不塞进课时树，备课时作为补充材料检索。</p>
+            <div class="map-list" style="margin:0">
+            ${WORKBOOK_TOPICS.map(([label, pages]) => `
+              <div class="map-row"><span>${esc(label)}</span>
+              <span style="display:flex;align-items:center;gap:10px"><span class="pages">${pages}</span>
+              <span class="pill grey" style="font-size:11px">专题补充</span></span></div>`).join('')}
+            </div>
+          </div>`;
+      }
+
+      return `
+      <div class="page-head"><span class="eyebrow">变体 C · 双栏主从工作台</span>
+        <h1>左边选资料，右边看内容和下一步</h1>
+        <p>课件确定课时树，教材教辅对应页码；资料明细只显示当前选中的那一组。</p></div>
+      <div class="c-progress">
+        <span class="node done"><span class="dot">✓</span>导入资料</span><span class="sep done"></span>
+        <span class="node done"><span class="dot">✓</span>本机处理</span><span class="sep done"></span>
+        <span class="node now"><span class="dot">3</span>确认课时树 · 由课件推断，待确认</span><span class="sep"></span>
+        <span class="node"><span class="dot">4</span>对应教材/教辅</span><span class="sep"></span>
+        <span class="node"><span class="dot">5</span>可备课</span>
+      </div>
+      <div class="c-layout">
+        <aside class="c-rail card"><h2>资料柜</h2>${rail}</aside>
+        <section class="c-main card">${main}</section>
+      </div>`;
+    }
+
+    /* ============ 变体切换 ============ */
+    const VARIANTS = [
+      ['A', 'A · 顺次向导'],
+      ['B', 'B · 总览 + 推荐动作'],
+      ['C', 'C · 双栏工作台'],
+    ];
+    const params = new URLSearchParams(location.search);
+    let current = VARIANTS.findIndex(v => v[0] === (params.get('variant') || '').toUpperCase());
+    if (current < 0) current = 0;
+
+    const app = document.getElementById('app');
+    document.getElementById('semester-label').textContent = SEMESTER;
+
+    function render() {
+      const key = VARIANTS[current][0];
+      app.innerHTML = key === 'A' ? renderA() : key === 'B' ? renderB() : renderC();
+      document.getElementById('variant-name').textContent = VARIANTS[current][1];
+      const url = new URL(location.href);
+      url.searchParams.set('variant', key);
+      history.replaceState({}, '', url);
+    }
+    function switchVariant(delta) {
+      current = (current + delta + VARIANTS.length) % VARIANTS.length;
+      render();
+    }
+    document.getElementById('prev-variant').addEventListener('click', () => switchVariant(-1));
+    document.getElementById('next-variant').addEventListener('click', () => switchVariant(1));
+    document.addEventListener('keydown', event => {
+      const t = event.target;
+      if (['INPUT', 'TEXTAREA', 'SELECT'].includes(t.tagName) || t.isContentEditable) return;
+      if (event.key === 'ArrowLeft') { switchVariant(-1); }
+      if (event.key === 'ArrowRight') { switchVariant(1); }
+    });
+
+    /* ============ 交互（全部为原型演示，不调用真实接口） ============ */
+    const toast = document.querySelector('.toast');
+    let toastTimer;
+    function notify(msg) {
+      toast.textContent = msg; toast.classList.add('show');
+      clearTimeout(toastTimer); toastTimer = setTimeout(() => toast.classList.remove('show'), 3000);
+    }
+    app.addEventListener('click', event => {
+      const demo = event.target.closest('[data-demo]');
+      if (demo) { notify(`原型演示：${demo.dataset.demo}（正式版此处才执行）`); return; }
+      const toggle = event.target.closest('[data-toggle-ai]');
+      if (toggle) {
+        const panel = document.getElementById('b-ai-detail');
+        panel.hidden = !panel.hidden;
+        toggle.textContent = panel.hidden ? '改让 AI 用教材整理 ›' : '收起 AI 说明 ‹';
+        return;
+      }
+      const bg = event.target.closest('[data-b-group]');
+      if (bg) { bGroup = bg.dataset.bGroup; render(); return; }
+      const ci = event.target.closest('[data-c-kind]');
+      if (ci) { cSel = { kind: ci.dataset.cKind, index: Number(ci.dataset.cIndex || 0) }; render(); return; }
+    });
+
+    render();
+  </script>
+</body>
+</html>

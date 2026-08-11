@@ -5,13 +5,16 @@ import json
 import logging
 import re
 import textwrap
+from collections.abc import Mapping
 from dataclasses import dataclass
 from dataclasses import field
 from pathlib import Path
+from typing import Any
 
 from question_bank.database.schema import connect, initialize_database
 from question_bank.importers.docx_importer import import_docx
 from question_bank.importers.pdf_importer import import_pdf
+from question_bank.importers.types import ExtractedDocument
 from question_bank.services.source_paper_archive_service import archive_source_paper
 from question_bank.services.rich_content_service import save_question_rich_content
 from question_bank.parsers.type_detector import detect_question_type
@@ -114,6 +117,7 @@ def parse_paper_text(
     has_images: bool = False,
     needs_image_review: bool = False,
     image_paths: list[str] | None = None,
+    type_overrides: Mapping[str, str] | None = None,
 ) -> ParsedPaperText:
     question_text, answer_text = _split_answer_text(text)
     answers = _answer_map(answer_text, source_file=source_file)
@@ -141,7 +145,9 @@ def parse_paper_text(
         if answer:
             answer_match_count += 1
         question_image_paths = block.image_paths
-        q_type = detect_question_type(block.text)
+        # Teacher/LLM-governed types from the grading rubric win over the
+        # local heuristic when the session sync supplied them.
+        q_type = (type_overrides or {}).get(block.number) or detect_question_type(block.text)
         questions.append(
             ParsedQuestion(
                 question_number=block.number,
@@ -203,6 +209,8 @@ def import_scanned_papers(
     data_root: str | Path | None = None,
     raw_papers_dir: str | Path | None = None,
     archive_sources: bool = True,
+    asset_overrides: list[dict[str, Any]] | None = None,
+    type_overrides: Mapping[str, str] | None = None,
 ) -> BatchImportResult:
     database_path = Path(db_path)
     # Existing teacher-governed identities must not block an ordinary paper
@@ -247,6 +255,8 @@ def import_scanned_papers(
                     question_range=question_range,
                     rich_content_root=rich_content_directory,
                     asset_root=asset_directory,
+                    asset_overrides=asset_overrides,
+                    type_overrides=type_overrides,
                 )
             )
         except Exception as exc:  # noqa: BLE001
@@ -301,6 +311,8 @@ def _import_scanned_paper(
     question_range: str | None,
     rich_content_root: Path | None = None,
     asset_root: Path | None = None,
+    asset_overrides: list[dict[str, Any]] | None = None,
+    type_overrides: Mapping[str, str] | None = None,
 ) -> PaperImportFileResult:
     initialize_database(db_path)
     source_value = stored_source_file or str(path)
@@ -326,6 +338,8 @@ def _import_scanned_paper(
         if asset_root is not None
         else _extract_paper(path)
     )
+    if asset_overrides:
+        extracted = apply_asset_overrides(extracted, asset_overrides)
     parsed = parse_paper_text(
         extracted.text,
         source_file=source_value,
@@ -334,6 +348,7 @@ def _import_scanned_paper(
         has_images=extracted.has_images,
         needs_image_review=extracted.needs_image_review,
         image_paths=extracted.image_paths,
+        type_overrides=type_overrides,
     )
     parsed = _without_existing_duplicate_questions(db_path, parsed)
     if not parsed.questions:
@@ -642,6 +657,138 @@ def map_rich_content_by_number(
             content[section].setdefault(current_number, []).append(paragraph)
 
     return content
+
+
+def apply_asset_overrides(
+    extracted: ExtractedDocument,
+    overrides: list[dict[str, Any]],
+) -> ExtractedDocument:
+    """Re-apply teacher image ownership decisions before parsing.
+
+    Overrides match extracted image files by content hash.  An ``ignore``
+    override drops the image marker from every paragraph; a ``bind``
+    override moves it to the end of the requested question span in the
+    requested section.  An override whose hash or target question cannot
+    be found leaves the document untouched.
+    """
+    paragraphs = [dict(item) for item in getattr(extracted, "rich_paragraphs", [])]
+    if not paragraphs:
+        LOGGER.warning("Asset overrides skipped: document has no paragraph stream")
+        return extracted
+    paths_by_sha256: dict[str, list[str]] = {}
+    for raw_path in extracted.image_paths:
+        candidate = Path(str(raw_path))
+        try:
+            digest = hashlib.sha256(candidate.read_bytes()).hexdigest()
+        except OSError:
+            LOGGER.warning("Asset override image is unreadable: %s", candidate.name)
+            continue
+        paths_by_sha256.setdefault(digest, []).append(str(raw_path))
+
+    for override in overrides:
+        matched_paths = paths_by_sha256.get(
+            str(override.get("sha256") or "").strip().casefold()
+        ) or []
+        if not matched_paths:
+            LOGGER.warning("Asset override matched no extracted image; skipped")
+            continue
+        action = str(override.get("action") or "").strip()
+        target_section = (
+            "answer"
+            if str(override.get("asset_kind") or "").strip() == "answer"
+            else "question"
+        )
+        target_number = str(override.get("question_number") or "").strip()
+        if action == "bind" and _question_span_end(
+            paragraphs,
+            section=target_section,
+            number=target_number,
+        ) is None:
+            LOGGER.warning(
+                "Asset override target question %s was not found; skipped",
+                target_number,
+            )
+            continue
+        paragraphs = _remove_image_marker_paths(paragraphs, matched_paths)
+        if action == "bind":
+            insert_at = _question_span_end(
+                paragraphs,
+                section=target_section,
+                number=target_number,
+            )
+            assert insert_at is not None
+            for path in matched_paths:
+                paragraphs.insert(
+                    insert_at,
+                    {
+                        "text": f"[[IMAGE:{path}]]",
+                        "xml": "",
+                        "image_relationships": {},
+                    },
+                )
+                insert_at += 1
+    return ExtractedDocument(
+        source_file=extracted.source_file,
+        page_range=extracted.page_range,
+        text="\n".join(
+            str(item.get("text") or "")
+            for item in paragraphs
+            if str(item.get("text") or "").strip()
+        ),
+        needs_ocr=extracted.needs_ocr,
+        has_images=extracted.has_images,
+        needs_image_review=extracted.needs_image_review,
+        image_paths=list(extracted.image_paths),
+        rich_paragraphs=paragraphs,
+        document_snapshot=extracted.document_snapshot,
+    )
+
+
+def _question_span_end(
+    paragraphs: list[dict[str, Any]],
+    *,
+    section: str,
+    number: str,
+) -> int | None:
+    """Index just past the span of question ``number`` inside ``section``."""
+    current_section = "question"
+    inside_span = False
+    for index, paragraph in enumerate(paragraphs):
+        text = str(paragraph.get("text") or "").strip()
+        if _ANSWER_HEADING.search(text):
+            if inside_span:
+                return index
+            current_section = "answer"
+            continue
+        marker = _MAIN_QUESTION_MARKER.match(text) or _PAREN_QUESTION_MARKER.match(text)
+        if marker is None:
+            continue
+        if inside_span:
+            return index
+        if current_section == section and _normalized_number(marker) == number:
+            inside_span = True
+    return len(paragraphs) if inside_span else None
+
+
+def _remove_image_marker_paths(
+    paragraphs: list[dict[str, Any]],
+    paths: list[str],
+) -> list[dict[str, Any]]:
+    cleaned: list[dict[str, Any]] = []
+    for paragraph in paragraphs:
+        text = str(paragraph.get("text") or "")
+        updated = text
+        for path in paths:
+            updated = updated.replace(f"[[IMAGE:{path}]]", "")
+        if updated != text:
+            updated = "\n".join(
+                line for line in updated.splitlines() if line.strip()
+            )
+            paragraph = {**paragraph, "text": updated}
+        if not str(paragraph.get("text") or "").strip():
+            continue
+        cleaned.append(paragraph)
+    return cleaned
 
 
 def partition_ambiguous_floating_images(

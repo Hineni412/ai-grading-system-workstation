@@ -781,6 +781,7 @@ describe('teaching preparation delivery API', () => {
       .mockResolvedValueOnce(response({ items: [proposal] }))
       .mockResolvedValueOnce(response(acceptedProposal))
       .mockResolvedValueOnce(response(appliedProposal))
+      .mockResolvedValueOnce(response(appliedProposal))
       .mockResolvedValueOnce(response(rejectedProposal))
 
     const listed = await teachingPrepCatalogApi.listSemesterMappingProposals(semesterId)
@@ -789,6 +790,9 @@ describe('teaching preparation delivery API', () => {
     expect(accepted).toEqual(acceptedProposal)
     await expect(teachingPrepCatalogApi.applySemesterMappingProposal(accepted))
       .resolves.toEqual(appliedProposal)
+    await expect(
+      teachingPrepCatalogApi.applySemesterMappingProposal(accepted, 'ppt-chapter-1'),
+    ).resolves.toEqual(appliedProposal)
     await expect(teachingPrepCatalogApi.rejectSemesterMappingProposal(listed[0]!))
       .resolves.toEqual(rejectedProposal)
 
@@ -799,8 +803,17 @@ describe('teaching preparation delivery API', () => {
         'POST',
       ],
       [`/api/teaching-prep/semester-mapping-proposals/${proposal.id}/apply`, 'POST'],
+      [`/api/teaching-prep/semester-mapping-proposals/${proposal.id}/apply`, 'POST'],
       [`/api/teaching-prep/semester-mapping-proposals/${proposal.id}/reject`, 'POST'],
     ])
+    // 不传 chapter_key 时请求体保持原样；按章 apply 时才附带 chapter_key
+    const wholeApplyBody = JSON.parse(String(fetchMock.mock.calls[2]?.[1]?.body))
+    expect(wholeApplyBody).toEqual({ expected_revision: accepted.revision })
+    const chapterApplyBody = JSON.parse(String(fetchMock.mock.calls[3]?.[1]?.body))
+    expect(chapterApplyBody).toEqual({
+      expected_revision: accepted.revision,
+      chapter_key: 'ppt-chapter-1',
+    })
   })
 
   it.each([

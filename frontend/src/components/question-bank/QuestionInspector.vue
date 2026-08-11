@@ -2,6 +2,7 @@
 import { computed, onMounted, ref } from 'vue'
 
 import {
+  knowledgeLeafLabel,
   QUESTION_BANK_TAG_TYPES,
   questionBankApi,
   type CurriculumCatalog,
@@ -14,10 +15,16 @@ import SolutionEvidenceReview from './SolutionEvidenceReview.vue'
 
 const store = useQuestionBankStore()
 const curriculum = ref<CurriculumCatalog | null>(null)
+// 教材小节不单独成行显示：位置信息统一由下方"精确标定教材小节"选择器呈现，
+// 选择器会同时校准教材章节（exam_scope），标签区不再重复出现两个位置标签。
 const editableTagTypes = QUESTION_BANK_TAG_TYPES.filter(
-  (type) => !['student_level', 'canonical_knowledge_id'].includes(type),
+  (type) => !['student_level', 'canonical_knowledge_id', 'curriculum_section'].includes(type),
 )
 const newTagType = ref<QuestionBankTag['tag_type']>('knowledge_point')
+
+// 手动"添加"产生的空标签在保存前保持可编辑输入框；
+// 已有知识点标签只显示最末端节点名，不参与文本编辑。
+const freshlyAddedTags = new WeakSet<QuestionBankTag>()
 
 const tagLabels: Record<string, string> = {
   ability: '能力',
@@ -41,6 +48,13 @@ const selectedSectionId = computed(() => (
   store.tagDraft.find((tag) => tag.tag_type === 'curriculum_section')?.tag_value ?? ''
 ))
 
+const hasLegacySection = computed(() => (
+  Boolean(selectedSectionId.value)
+  && !curriculumGroups.value.some((group) => (
+    group.chapter.sections.some((section) => section.id === selectedSectionId.value)
+  ))
+))
+
 const curriculumGroups = computed(() => (
   (curriculum.value?.volumes ?? []).flatMap((volume) => (
     volume.chapters.map((chapter) => ({
@@ -50,14 +64,6 @@ const curriculumGroups = computed(() => (
     }))
   ))
 ))
-
-function curriculumSectionLabel(sectionId: string): string {
-  for (const group of curriculumGroups.value) {
-    const section = group.chapter.sections.find(item => item.id === sectionId)
-    if (section) return `${group.label} · ${section.label}`
-  }
-  return '旧版教材小节（目录中已找不到，请重新选择）'
-}
 
 onMounted(async () => {
   try {
@@ -132,10 +138,9 @@ function tagTone(type: QuestionBankTag['tag_type']): string {
 }
 
 function addTag(tagType: QuestionBankTag['tag_type'] = 'knowledge_point'): void {
-  store.replaceTagDraft([
-    ...store.tagDraft,
-    { tag_type: tagType, tag_value: '', confidence: null },
-  ])
+  const tag: QuestionBankTag = { tag_type: tagType, tag_value: '', confidence: null }
+  freshlyAddedTags.add(tag)
+  store.replaceTagDraft([...store.tagDraft, tag])
 }
 
 function addSelectedTag(): void {
@@ -312,6 +317,9 @@ async function removeCurrent(): Promise<void> {
                 </optgroup>
               </select>
               <small>选择后会同时校准所属章节；旧题未选择时继续显示“待标定”。</small>
+              <small v-if="hasLegacySection" class="qb-help">
+                当前教材小节来自旧版目录，目录中已找不到，请重新选择。
+              </small>
             </label>
 
             <div v-if="tagGroups.length" class="qb-tag-editor">
@@ -332,9 +340,9 @@ async function removeCurrent(): Promise<void> {
                     class="qb-tag-chip"
                   >
                     <span
-                      v-if="group.type === 'curriculum_section'"
-                      class="qb-tag-chip__localized-value"
-                    >{{ curriculumSectionLabel(tag.tag_value) }}</span>
+                      v-if="group.type === 'knowledge_point' && !freshlyAddedTags.has(tag)"
+                      :title="tag.tag_value"
+                    >{{ knowledgeLeafLabel(tag.tag_value) }}</span>
                     <input
                       v-else
                       v-model="tag.tag_value"

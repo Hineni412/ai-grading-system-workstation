@@ -463,7 +463,7 @@ export const useScanGradingStore = defineStore('scan-grading', () => {
       const result = await controlGrading(id, run.run_id, action)
       if (!isCurrent(id, current)) return
       if ('id' in result) { jobStore.track(result); activeJobId.value = result.id }
-      await load(id)
+      await refreshWorkspaceSnapshot()
     })
   }
 

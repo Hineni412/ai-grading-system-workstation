@@ -57,6 +57,35 @@ function mountRenderer(paperMediaFlow: boolean): HTMLElement {
   return host
 }
 
+function textBlock(text: string): QuestionBankRichBlock {
+  return {
+    kind: 'paragraph',
+    text,
+    segments: [],
+    rows: [],
+    asset_indexes: [],
+    asset_urls: [],
+  }
+}
+
+function mountCompactRenderer(
+  compactMediaWithText: boolean | undefined,
+  blocks: QuestionBankRichBlock[],
+): HTMLElement {
+  const host = document.createElement('div')
+  document.body.append(host)
+  const app = createApp({
+    render: () => h(QuestionContentRenderer, {
+      blocks,
+      paperMediaFlow: true,
+      compactMediaWithText,
+    }),
+  })
+  app.mount(host)
+  mounted.push(app)
+  return host
+}
+
 afterEach(() => {
   for (const app of mounted.splice(0)) app.unmount()
   document.body.innerHTML = ''
@@ -81,5 +110,90 @@ describe('question content renderer paper media flow', () => {
 
     expect(host.querySelector('.question-content__media-strip')).toBeNull()
     expect(host.querySelectorAll('.question-content__block')).toHaveLength(4)
+  })
+})
+
+describe('question content renderer compact media with text', () => {
+  it('pairs a standalone media group with the preceding text block', () => {
+    const host = mountCompactRenderer(true, [
+      textBlock('如图，在△ABC中，∠ACB＝90°，点D在斜边AB上。'),
+      imageBlock('图1', 0),
+      textBlock('（1）求∠A的度数。'),
+    ])
+
+    const pairs = host.querySelectorAll<HTMLElement>('.question-content__pair')
+    expect(pairs).toHaveLength(1)
+    expect(pairs[0]!.querySelector('.question-content__pair-text')?.textContent).toContain('如图')
+    expect(pairs[0]!.querySelector('.question-content__pair-media')?.textContent).toContain('图1')
+    expect(host.querySelector('.question-content__media-strip')).toBeNull()
+  })
+
+  it('does not pair media with a block that already carries images', () => {
+    const host = mountCompactRenderer(true, [
+      imageBlock('题干带图', 0),
+      imageBlock('图1', 1),
+    ])
+
+    expect(host.querySelector('.question-content__pair')).toBeNull()
+    expect(host.querySelectorAll('.question-content__media-strip')).toHaveLength(1)
+  })
+
+  it('right-aligns standalone media when the question reserves answer space', () => {
+    const host = mountCompactRenderer(false, [
+      textBlock('（1）猜想y与x的数量关系，并说明理由。'),
+      imageBlock('图1', 0),
+    ])
+
+    const strip = host.querySelector<HTMLElement>('.question-content__media-strip--right')
+    expect(strip).not.toBeNull()
+    expect(strip!.textContent).toContain('图1')
+    expect(host.querySelector('.question-content__pair')).toBeNull()
+  })
+
+  it('keeps legacy strips when compactMediaWithText is not set', () => {
+    const host = mountCompactRenderer(undefined, [
+      textBlock('题干'),
+      imageBlock('图1', 0),
+    ])
+
+    expect(host.querySelector('.question-content__pair')).toBeNull()
+    expect(host.querySelector('.question-content__media-strip--right')).toBeNull()
+    expect(host.querySelectorAll('.question-content__media-strip')).toHaveLength(1)
+  })
+
+  it('pairs images that are inline inside a long text block when compacting', () => {
+    const host = mountCompactRenderer(true, [
+      {
+        kind: 'paragraph',
+        text: '（2）猜想y与x的数量关系，并说明理由，这一段文字足够长，超过三十二个字符的限制。',
+        segments: [],
+        rows: [],
+        asset_indexes: [0, 1],
+        asset_urls: [
+          '/api/question-bank/questions/23/assets/0',
+          '/api/question-bank/questions/23/assets/1',
+        ],
+      },
+    ])
+
+    const block = host.querySelector<HTMLElement>('.question-content__block--inline-media-paired')
+    expect(block).not.toBeNull()
+    expect(block!.querySelectorAll('img')).toHaveLength(2)
+  })
+
+  it('right-aligns inline images when the question reserves answer space', () => {
+    const host = mountCompactRenderer(false, [
+      {
+        kind: 'paragraph',
+        text: '（2）猜想y与x的数量关系，并说明理由，这一段文字足够长，超过三十二个字符的限制。',
+        segments: [],
+        rows: [],
+        asset_indexes: [0],
+        asset_urls: ['/api/question-bank/questions/23/assets/0'],
+      },
+    ])
+
+    expect(host.querySelector('.question-content__block--inline-media-right')).not.toBeNull()
+    expect(host.querySelector('.question-content__block--inline-media-paired')).toBeNull()
   })
 })

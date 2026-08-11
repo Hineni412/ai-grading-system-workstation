@@ -857,6 +857,15 @@ watch(
             <span>冲突 {{ store.gradingRun.counts.conflict }}</span>
           </div>
           <div
+            v-if="(store.gradingRun.incomplete_item_count ?? 0) > 0"
+            class="scan-warning"
+            role="alert"
+            data-incomplete-warning
+          >
+            <strong>有 {{ store.gradingRun.incomplete_item_count }} 个小题没有 AI 评分结果。</strong>
+            AI 返回的内容未通过校验或缺失，这些题已按「未评分」保留，不会自动给分。可以点「仅重试失败项」让 AI 只重跑受影响的题目，也可以到下方「人工干预」直接评分。
+          </div>
+          <div
             v-if="store.gradingRun.allowed_actions.includes('pause') || store.gradingRun.allowed_actions.includes('cancel')"
             class="run-control-help"
           >

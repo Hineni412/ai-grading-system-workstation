@@ -592,6 +592,86 @@ def test_sync_carries_original_filename_and_grading_paper_defaults_to_import(
     }
 
 
+def test_sync_passes_rubric_question_types_to_import(tmp_path: Path) -> None:
+    db, session_id, _source, source_sha256, revision = _configured_session(
+        tmp_path
+    )
+    question_bank_db = tmp_path / "data" / "databases" / "question_bank.db"
+    initialize_database(question_bank_db)
+    store = JobStore(db.db_path)
+    job = store.create_job(
+        "question_bank_sync",
+        {
+            "session_id": session_id,
+            "mode": "sync",
+            "config_revision": revision,
+            "source_paper_sha256": source_sha256,
+            "source_safe_filename": "0526test2.docx",
+            "curriculum_volume_id": "bnu24-math-g7-upper",
+        },
+    )
+    assert store.mark_running(job.id)
+    context = JobContext(
+        job_id=job.id,
+        job_type=job.job_type,
+        payload=job.payload,
+        store=store,
+    )
+    captured: dict[str, object] = {}
+
+    def import_runner(**kwargs: Any) -> dict[str, object]:
+        child = kwargs["context"]
+        captured["type_overrides"] = dict(child.payload["type_overrides"])
+        with connect(question_bank_db) as conn:
+            question_id = int(
+                conn.execute(
+                    """
+                    INSERT INTO questions (
+                        question_number, question_type, question_text, answer_text
+                    ) VALUES ('1', 'choice', '1 + 1 = ?', 'B')
+                    """
+                ).lastrowid
+            )
+        return {
+            "outcome": "complete",
+            "successful_question_ids": [question_id],
+            "failed_question_ids": [],
+            "failed_count": 0,
+            "retryable": False,
+        }
+
+    def tagging_runner(**kwargs: Any) -> dict[str, object]:
+        question_ids = list(kwargs["context"].payload["question_ids"])
+        return {
+            "outcome": "complete",
+            "requested_count": len(question_ids),
+            "tagged_count": len(question_ids),
+            "successful_question_ids": question_ids,
+            "failed_question_ids": [],
+            "failed_count": 0,
+            "review_count": 0,
+            "proposal_ids": [],
+            "retryable": False,
+        }
+
+    run_session_question_bank_sync_job(
+        context=context,
+        grading_db=db,
+        question_bank_db_path=question_bank_db,
+        data_root=tmp_path / "data",
+        write_service=QuestionBankWriteService(
+            question_bank_db,
+            data_root=tmp_path / "data",
+        ),
+        question_import_runner=import_runner,
+        tagging_sync_runner=tagging_runner,
+        ai_service_factory=lambda: object(),
+        taxonomy_governance=object(),
+    )
+
+    assert captured["type_overrides"] == {"1": "选择题"}
+
+
 def test_sync_that_loses_final_ownership_removes_its_automatic_links(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

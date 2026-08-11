@@ -28,6 +28,7 @@ export function adoptedTeachingPrepTask(options: {
     proposal_ref_id: options.proposalId,
     proposal_revision: draftRevision,
     error_code: null,
+    error_detail: null,
     revision: 5,
     safe_title: '已采用建议',
     safe_source: '备课',

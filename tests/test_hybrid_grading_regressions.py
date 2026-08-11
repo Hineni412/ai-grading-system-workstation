@@ -138,14 +138,22 @@ def test_question_image_base64_is_omitted_from_hybrid_and_full_paper_prompts(tmp
 
 
 @pytest.mark.parametrize(
-    ("details", "expected_reason"),
+    ("details", "accepted_qids", "failed_reason", "failed_targets"),
     [
-        ([_detail("Q10")], "unexpected_detail_question_id"),
-        ([_detail("10-1")], "missing_detail_question_ids"),
-        ([_detail("10-1"), _detail("10-1"), _detail("10-2")], "duplicate_detail_question_id"),
+        # An out-of-scope part is ignored; with nothing valid left the item fails whole.
+        ([_detail("Q10")], [], "missing_grading_details", ["10-1", "10-2"]),
+        # A single missing part only fails that part; valid parts are kept.
+        ([_detail("10-1")], ["10-1"], "missing_detail_question_ids", ["10-2"]),
+        # A duplicated part keeps its first result instead of voiding the item.
+        ([_detail("10-1"), _detail("10-1"), _detail("10-2")], ["10-1", "10-2"], None, []),
     ],
 )
-def test_multipart_response_requires_each_part_exactly_once(details: list[dict], expected_reason: str) -> None:
+def test_multipart_response_tolerates_partial_format_slips(
+    details: list[dict],
+    accepted_qids: list[str],
+    failed_reason: str | None,
+    failed_targets: list[str],
+) -> None:
     response = {
         "question_id": "Q10",
         "items": [
@@ -159,8 +167,16 @@ def test_multipart_response_requires_each_part_exactly_once(details: list[dict],
 
     accepted, failed = validate_hybrid_major_response(response, _manifest(), _multipart_spec())
 
-    assert accepted == []
-    assert [item["reason"] for item in failed] == [expected_reason]
+    assert [
+        detail.question_id
+        for item in accepted
+        for detail in item["details"]
+    ] == accepted_qids
+    if failed_reason is None:
+        assert failed == []
+    else:
+        assert [item["reason"] for item in failed] == [failed_reason]
+        assert failed[0]["target_detail_question_ids"] == failed_targets
 
 
 def test_atlas_merges_nested_same_page_regions_into_shared_tile(tmp_path: Path) -> None:

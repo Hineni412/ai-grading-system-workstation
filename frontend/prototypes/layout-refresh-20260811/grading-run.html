@@ -1,0 +1,109 @@
+<!doctype html><html lang="zh-CN"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>考试批改 · 知衡布局原型</title><link rel="icon" href="data:,">
+<link rel="stylesheet" href="proto.css">
+<style>
+.statbar { margin-bottom: 16px; }
+.steps { margin-bottom: 16px; }
+/* 批改模式单选行 */
+.mode-row { display: flex; align-items: flex-start; gap: 10px; padding: 8px 6px; border-radius: 6px; font-size: 13px; }
+.mode-row:hover { background: var(--subtle); }
+.mode-row .radio { width: 16px; height: 16px; border-radius: 50%; border: 1px solid var(--line-strong); flex: none; margin-top: 2px; position: relative; }
+.mode-row.sel .radio { border-color: var(--accent); }
+.mode-row.sel .radio::after { content: ""; position: absolute; inset: 3px; border-radius: 50%; background: var(--accent); }
+.mode-row .desc { font-size: 12px; color: var(--ink-3); }
+.mode-row .tag { margin-left: 6px; }
+/* 异常答卷行 */
+.ab-row { display: flex; align-items: center; gap: 10px; padding: 7px 0; font-size: 13px; border-bottom: 1px solid var(--line-soft); }
+.ab-row:last-child { border-bottom: none; }
+.ab-row .go { margin-left: auto; font-size: 12px; }
+.ab-row .tag { flex: none; }
+</style></head><body>
+<div class="ribbon"><b>布局重设计原型</b><span>静态演示 · 模拟数据 · 不连接真实接口</span></div>
+<div class="shell">
+  <aside class="sidebar">
+    <div class="side-brand"><div class="brand-mark">知</div><div><div class="brand-name">知衡</div><div class="brand-sub">教师教学工作台</div></div></div>
+    <nav class="side-nav">
+      <a class="side-link" href="workbench.html"><i class="ic">◧</i>工作台</a>
+      <div class="side-group">考试与阅卷</div>
+      <a class="side-link" href="session-config.html"><i class="ic">▤</i>考试配置</a>
+      <a class="side-link on" href="grading-run.html"><i class="ic">◐</i>考试批改</a>
+      <a class="side-link" href="results.html"><i class="ic">▥</i>成绩中心</a>
+      <div class="side-group">题库与组卷</div>
+      <a class="side-link" href="question-bank.html"><i class="ic">▦</i>题库管理</a>
+      <a class="side-link" href="assembly.html"><i class="ic">▨</i>组卷工作台</a>
+      <div class="side-group">教学分析</div>
+      <a class="side-link" href="knowledge.html"><i class="ic">◆</i>知识与训练</a>
+    </nav>
+  </aside>
+  <div class="content">
+    <header class="appbar">
+      <span class="crumb">知衡 / 考试批改</span>
+      <div class="appbar-right"><span class="tag">2025—2026 学年下学期</span></div>
+    </header>
+<main class="page">
+  <div class="page-head">
+    <h1>批改执行</h1>
+    <span class="sub">第二章单元测验《相交线与平行线》 · 七年级（3）班</span>
+    <div class="head-actions"><span class="tag ok">本次运行已完成</span></div>
+  </div>
+
+  <div class="statbar">
+    <div class="stat"><span class="v">32<small> 份</small></span><span class="k">答卷</span></div>
+    <div class="stat"><span class="v">67<small> 题项</small></span><span class="k">AI 已评</span></div>
+    <a class="stat tone-warn" href="#" data-demo="查看待复核"><span class="v">5</span><span class="k">待复核</span></a>
+    <a class="stat tone-bad" href="#" data-demo="查看处理失败"><span class="v">1</span><span class="k">处理失败</span></a>
+    <div class="stat"><span class="v">1</span><span class="k">教师已确认</span></div>
+  </div>
+
+  <div class="steps">
+    <a class="step done" href="#" data-demo="查看上传答卷"><span class="n">✓</span>上传答卷</a>
+    <a class="step done" href="#" data-demo="查看扫描预检"><span class="n">✓</span>扫描预检</a>
+    <a class="step done" href="#" data-demo="查看开始批改"><span class="n">✓</span>开始批改</a>
+    <a class="step on" href="#" data-demo="运行与补批"><span class="n">4</span>运行与补批</a>
+    <a class="step" href="#" data-demo="人工干预"><span class="n">5</span>人工干预</a>
+  </div>
+
+  <div class="grid grid-2">
+    <section class="panel">
+      <div class="panel-head"><h2>运行状态</h2></div>
+      <div class="bar"><i style="width:88%"></i></div>
+      <div class="row" style="margin-top:8px"><span class="small muted">已保存 28/32 份结果</span></div>
+      <div class="row" style="margin-top:12px">
+        <button class="btn btn-sm" data-demo="暂停">暂停</button>
+        <button class="btn btn-sm" data-demo="仅重试失败项">仅重试失败项</button>
+        <button class="btn btn-sm" data-demo="补批新匹配答卷">补批新匹配答卷</button>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head"><h2>批改模式</h2></div>
+      <a class="mode-row" href="#" data-demo="切换为整卷批改"><i class="radio"></i><span><b>整卷批改</b><div class="desc">整份答卷一次评完</div></span></a>
+      <div class="mode-row sel"><i class="radio"></i><span><b>混合批改</b><span class="tag accent">当前</span><div class="desc">客观题自动识别，解答题分批评分</div></span></div>
+      <a class="mode-row" href="#" data-demo="切换为人工批改"><i class="radio"></i><span><b>人工批改</b><div class="desc">全部题目由教师逐题评分</div></span></a>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head"><h2>异常答卷 <span class="tag bad">2</span></h2></div>
+      <div class="ab-row"><span class="tag">#07</span><span>未匹配学生</span><a class="go" href="#" data-demo="处理 #07">处理 ›</a></div>
+      <div class="ab-row"><span class="tag">#12</span><span>缺反面</span><a class="go" href="#" data-demo="处理 #12">处理 ›</a></div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head"><h2>人工干预</h2></div>
+      <div class="muted small" style="margin-bottom:12px">待复核与失败答卷已排在复核队列前面</div>
+      <div class="row">
+        <button class="btn btn-primary" data-demo="进入人工干预工作台">进入人工干预工作台</button>
+        <button class="btn" data-demo="打开成绩中心">成绩中心</button>
+      </div>
+    </section>
+  </div>
+</main>
+  </div>
+</div>
+<div class="toast" id="toast"></div>
+<script>
+const toast=(m)=>{const t=document.getElementById('toast');t.textContent=m;t.classList.add('show');clearTimeout(t._h);t._h=setTimeout(()=>t.classList.remove('show'),2200);};
+document.addEventListener('click',e=>{const b=e.target.closest('[data-demo]');if(b){e.preventDefault();toast('原型演示：'+(b.getAttribute('data-demo')||'正式版此处才执行'));}});
+</script>
+</body></html>

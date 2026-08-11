@@ -79,6 +79,8 @@ class ScanGradingWorkspace:
         replacement_storage_paths: Callable[[int], list[str]] | None = None,
         replacement_reset: Callable[[int], list[str]] | None = None,
         config_fingerprint_resolver: Callable[[int, str], str] | None = None,
+        incomplete_result_counter: Callable[[int], int] | None = None,
+        incomplete_item_counter: Callable[[int], int] | None = None,
         max_file_bytes: int = 100 * 1024 * 1024,
     ) -> None:
         self.exams_root = Path(exams_root)
@@ -89,6 +91,8 @@ class ScanGradingWorkspace:
         self.replacement_storage_paths = replacement_storage_paths
         self.replacement_reset = replacement_reset
         self.config_fingerprint_resolver = config_fingerprint_resolver
+        self.incomplete_result_counter = incomplete_result_counter
+        self.incomplete_item_counter = incomplete_item_counter
         self.max_file_bytes = int(max_file_bytes)
 
     def get_workspace(self, session_id: int) -> dict[str, Any]:
@@ -151,7 +155,9 @@ class ScanGradingWorkspace:
             "pause_requested": ["cancel"],
             "paused": ["resume", "cancel"],
         }.get(run.state, [])
-        if run.state in {"completed", "failed"} and counts["failed"] > 0:
+        if run.state in {"completed", "failed"} and (
+            counts["failed"] > 0 or self._has_retryable_incomplete_results(session_id)
+        ):
             actions.append("retry_failed")
         if run.state in {"completed", "failed"}:
             actions.append("supplement_new_matches")
@@ -193,7 +199,11 @@ class ScanGradingWorkspace:
             "state": projected_state,
             "counts": counts,
             "allowed_actions": actions,
+            "incomplete_result_count": 0,
+            "incomplete_item_count": 0,
         }
+        if run.state in {"completed", "failed"}:
+            result.update(self._incomplete_result_summary(session_id))
         if active_job is not None:
             job = active_job
             result.update(
@@ -438,11 +448,35 @@ class ScanGradingWorkspace:
         if str(current) != str(run.config_fingerprint):
             raise GradingConfigChangedError("grading configuration changed")
 
+    def _has_retryable_incomplete_results(self, session_id: int) -> bool:
+        return self._incomplete_result_summary(session_id)["incomplete_result_count"] > 0
+
+    def _incomplete_result_summary(self, session_id: int) -> dict[str, int]:
+        summary = {"incomplete_result_count": 0, "incomplete_item_count": 0}
+        if self.incomplete_result_counter is not None:
+            try:
+                summary["incomplete_result_count"] = int(
+                    self.incomplete_result_counter(int(session_id))
+                )
+            except Exception:  # noqa: BLE001
+                summary["incomplete_result_count"] = 0
+        if self.incomplete_item_counter is not None:
+            try:
+                summary["incomplete_item_count"] = int(
+                    self.incomplete_item_counter(int(session_id))
+                )
+            except Exception:  # noqa: BLE001
+                summary["incomplete_item_count"] = 0
+        return summary
+
     def prepare_failed_retry(self, session_id: int, run_id: int) -> dict[str, Any]:
         run, counts = self._require_run(session_id, run_id)
         if self._run_was_cancelled(session_id, run.id):
             raise ScanGradingWorkspaceError("cancelled grading run cannot retry")
-        if counts.get("failed", 0) <= 0 or run.state not in {"completed", "failed"}:
+        if run.state not in {"completed", "failed"} or (
+            counts.get("failed", 0) <= 0
+            and not self._has_retryable_incomplete_results(session_id)
+        ):
             raise ScanGradingWorkspaceError("grading run has no retryable failures")
         payload = {
             "session_id": int(session_id),

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
-import { createClientRequestToken } from '../../api/config-workspace'
+import { createClientRequestToken, type ConfigAmbiguousAssetDecision } from '../../api/config-workspace'
 import { findLatestJob, type JobResponse } from '../../api/jobs'
 import {
   retrySessionQuestionBankSync,
@@ -25,6 +25,11 @@ const props = withDefaults(defineProps<{
   sessionName: string
   configRevision: string
   autoStart?: boolean
+  /**
+   * Teacher-reviewed image bindings from the source review step. Forwarded to
+   * the sync endpoints so the import follows them instead of re-guessing.
+   */
+  assetDecisions?: ConfigAmbiguousAssetDecision[]
   submitter?: (
     sessionId: number,
     request: SessionQuestionBankSyncRequest,
@@ -44,6 +49,7 @@ const props = withDefaults(defineProps<{
   statusLoader?: (sessionId: number) => Promise<SessionQuestionBankAnalysisStatus>
 }>(), {
   autoStart: false,
+  assetDecisions: () => [],
   submitter: submitSessionQuestionBankSync,
   retryer: retrySessionQuestionBankSync,
   continuationSubmitter: (
@@ -241,6 +247,12 @@ function failureCopy(current: JobResponse): string {
   return '题库流程未完成；评分标准仍然保留。'
 }
 
+function assetDecisionPayload(): ConfigAmbiguousAssetDecision[] | undefined {
+  return props.assetDecisions.length
+    ? props.assetDecisions.map((item) => ({ ...item }))
+    : undefined
+}
+
 async function start(): Promise<boolean> {
   if (submitting.value || job.value !== null) return false
   if (curriculumLoading.value) return false
@@ -259,6 +271,7 @@ async function start(): Promise<boolean> {
       config_revision: props.configRevision,
       client_request_token: token,
       curriculum_volume_id: selectedVolume.value.id,
+      asset_decisions: assetDecisionPayload(),
     })
     jobStore.track(next)
     activeJobId.value = next.id
@@ -287,6 +300,7 @@ async function retry(): Promise<void> {
           config_revision: props.configRevision,
           client_request_token: createClientRequestToken(),
           curriculum_volume_id: selectedVolume.value?.id,
+          asset_decisions: assetDecisionPayload(),
         })
     jobStore.track(next)
     activeJobId.value = next.id

@@ -143,6 +143,36 @@ describe('question batch review workspace', () => {
     app.unmount()
   })
 
+  it('prioritizes failed question cards ahead of needs-review cards', async () => {
+    const failedFirst: ReviewQuestionSummary[] = [
+      { ...questions[0]!, question_id: 'Q1', needs_review_count: 2, failed_count: 0 },
+      { ...questions[1]!, question_id: 'Q2', needs_review_count: 0, failed_count: 1 },
+      {
+        question_id: 'Q3',
+        question_type: 'proof',
+        total_count: 1,
+        needs_review_count: 0,
+        ungraded_count: 0,
+        failed_count: 0,
+        teacher_confirmed_count: 1,
+        max_score: 6,
+      },
+    ]
+    const { app, host } = await mountWorkspace([item(1)], { questions: failedFirst })
+
+    const strip = host.querySelector('[data-testid="question-strip"]')!
+    const orderedIds = [...strip.querySelectorAll('[data-question-id]')]
+      .map((entry) => entry.getAttribute('data-question-id'))
+    expect(orderedIds).toEqual(['Q2', 'Q1', 'Q3'])
+    const failedCard = strip.querySelector('[data-question-id="Q2"]')
+    expect(failedCard?.getAttribute('data-has-failed')).toBe('true')
+    expect(failedCard?.textContent).toContain('失败 1')
+    expect(failedCard?.getAttribute('aria-label')).toContain('AI 评分失败')
+    expect(strip.querySelector('[data-question-id="Q1"]')?.getAttribute('data-has-failed')).toBeNull()
+
+    app.unmount()
+  })
+
   it('emits one batch containing valid unchanged pending scores', async () => {
     const { app, host, confirmBatch } = await mountWorkspace()
 

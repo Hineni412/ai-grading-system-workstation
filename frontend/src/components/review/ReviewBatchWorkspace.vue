@@ -56,6 +56,9 @@ const selectedQuestionLayout = computed<'compact' | 'expanded'>(() => {
     : 'expanded'
 })
 const prioritizedQuestions = computed(() => [...props.questions].sort((left, right) => {
+  const failedDifference = Number((right.failed_count ?? 0) > 0)
+    - Number((left.failed_count ?? 0) > 0)
+  if (failedDifference !== 0) return failedDifference
   const reviewDifference = Number(right.needs_review_count > 0)
     - Number(left.needs_review_count > 0)
   if (reviewDifference !== 0) return reviewDifference
@@ -196,15 +199,24 @@ watch(
         :key="question.question_id"
         type="button"
         :data-question-id="question.question_id"
+        :data-has-failed="(question.failed_count ?? 0) > 0 ? 'true' : undefined"
         :data-needs-review="question.needs_review_count > 0 ? 'true' : undefined"
-        :aria-label="question.needs_review_count > 0
-          ? `${question.question_id}，有 ${question.needs_review_count} 份答卷需要人工复核`
-          : question.question_id"
+        :aria-label="(question.failed_count ?? 0) > 0
+          ? `${question.question_id}，有 ${question.failed_count} 份答卷 AI 评分失败`
+          : question.needs_review_count > 0
+            ? `${question.question_id}，有 ${question.needs_review_count} 份答卷需要人工复核`
+            : question.question_id"
         :aria-current="question.question_id === selectedQuestionId ? 'true' : undefined"
         @click="emit('selectQuestion', question.question_id)"
       >
         <strong>{{ question.question_id }}</strong>
-        <span>
+        <span v-if="(question.failed_count ?? 0) > 0">
+          失败 {{ question.failed_count }} ·
+          待人工 {{ question.ungraded_count ?? 0 }} ·
+          待复核 {{ question.needs_review_count }} ·
+          AI 已评 {{ question.ai_ready_count ?? 0 }}
+        </span>
+        <span v-else>
           待人工 {{ (question.ungraded_count ?? 0) + (question.failed_count ?? 0) }} ·
           待复核 {{ question.needs_review_count }} ·
           AI 已评 {{ question.ai_ready_count ?? 0 }}

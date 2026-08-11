@@ -5,6 +5,7 @@ import type { QuestionBankSort } from '../../api/question-bank'
 
 const props = defineProps<{
   modelValue: QuestionBankSort
+  showPaperOrder?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -12,19 +13,27 @@ const emit = defineEmits<{
   change: [value: QuestionBankSort]
 }>()
 
-const activeField = computed(() => props.modelValue.startsWith('difficulty_')
-  ? 'difficulty'
-  : 'frequency')
+type SortField = 'difficulty' | 'frequency'
+
+const activeField = computed<SortField | 'paper'>(() => {
+  if (props.modelValue === 'paper_order') return 'paper'
+  return props.modelValue.startsWith('difficulty_') ? 'difficulty' : 'frequency'
+})
 const direction = computed(() => props.modelValue.endsWith('_asc') ? 'asc' : 'desc')
 
-function choose(field: 'difficulty' | 'frequency'): void {
+function choose(field: SortField): void {
   const nextDirection = activeField.value === field && direction.value === 'desc' ? 'asc' : 'desc'
   const next = `${field}_${nextDirection}` as QuestionBankSort
   emit('update:modelValue', next)
   emit('change', next)
 }
 
-function label(field: 'difficulty' | 'frequency'): string {
+function choosePaperOrder(): void {
+  emit('update:modelValue', 'paper_order')
+  emit('change', 'paper_order')
+}
+
+function label(field: SortField): string {
   if (activeField.value !== field) return `${field === 'difficulty' ? '难度' : '考频'}，点击后从高到低`
   return `${field === 'difficulty' ? '难度' : '考频'}，当前${direction.value === 'desc' ? '从高到低' : '从低到高'}，点击切换`
 }
@@ -32,6 +41,19 @@ function label(field: 'difficulty' | 'frequency'): string {
 
 <template>
   <div class="question-sort" role="group" aria-label="试题排序">
+    <button
+      v-if="showPaperOrder"
+      type="button"
+      :class="{ 'is-active': activeField === 'paper' }"
+      :aria-pressed="activeField === 'paper'"
+      aria-label="题号，当前按题号从小到大，点击切换"
+      @click="choosePaperOrder"
+    >
+      题号
+      <span aria-hidden="true">
+        {{ activeField === 'paper' ? '↓' : '↕' }}
+      </span>
+    </button>
     <button
       v-for="field in (['difficulty', 'frequency'] as const)"
       :key="field"

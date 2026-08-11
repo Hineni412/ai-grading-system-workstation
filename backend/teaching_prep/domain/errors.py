@@ -17,6 +17,10 @@ class TeachingPrepStateError(TeachingPrepError):
 class TeachingPrepRetryAvailableError(TeachingPrepError):
     """The previous operation ended cleanly enough for a teacher retry."""
 
+    def __init__(self, message: str, *, error_code: str | None = None) -> None:
+        super().__init__(message)
+        self.error_code = str(error_code) if error_code else None
+
 
 class TeachingPrepValidationError(TeachingPrepError):
     pass

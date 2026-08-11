@@ -154,6 +154,15 @@
   background: var(--color-warning-subtle);
 }
 
+.review-question-strip button[data-has-failed="true"] {
+  border-inline-start: 4px solid var(--color-danger);
+  background: var(--color-danger-subtle);
+}
+
+.review-question-strip button[data-has-failed="true"]:hover {
+  background: var(--color-danger-subtle);
+}
+
 .review-question-strip button[aria-current="true"] {
   border-block-end-color: var(--color-accent);
   background: var(--color-bg-selected);
@@ -161,6 +170,10 @@
 
 .review-question-strip button[data-needs-review="true"][aria-current="true"] {
   background: linear-gradient(135deg, var(--color-warning-subtle) 0%, var(--color-bg-selected) 100%);
+}
+
+.review-question-strip button[data-has-failed="true"][aria-current="true"] {
+  background: linear-gradient(135deg, var(--color-danger-subtle) 0%, var(--color-bg-selected) 100%);
 }
 
 .review-question-strip strong {

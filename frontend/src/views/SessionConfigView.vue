@@ -669,6 +669,7 @@ watch(
             :session-id="sessionStore.currentSession.id"
             :session-name="sessionStore.currentSession.name"
             :config-revision="configStore.editor.revision"
+            :asset-decisions="configStore.assetDecisions"
           />
           <p
             v-if="regenerationMessage && !saveBlocked"

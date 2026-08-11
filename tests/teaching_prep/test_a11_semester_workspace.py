@@ -19,6 +19,7 @@ from backend.jobs.manager import JobCancellationRequested
 from backend.teaching_prep.api.router import create_router
 from backend.teaching_prep.domain.errors import (
     TeachingPrepConflictError,
+    TeachingPrepNotFoundError,
     TeachingPrepRetryAvailableError,
     TeachingPrepStateError,
     TeachingPrepValidationError,
@@ -1901,3 +1902,516 @@ def test_failed_new_version_parse_is_visible_and_keeps_confirmed_mapping(
     assert failed.last_parsed_version_id == first.id
     assert failed.mapping_status == confirmed.mapping_status == "confirmed"
     assert failed.has_unparsed_update is True
+
+
+def _lessonless_skeleton_semester(service):
+    curriculum, _created = service.create_curriculum(
+        request_token="skeleton-curriculum-0001",
+        title="合成八年级上册",
+        grade_level=8,
+        volume="first",
+    )
+    chapter, _created = service.create_lesson_node(
+        request_token="skeleton-chapter-0001",
+        curriculum_id=curriculum.id,
+        parent_id=None,
+        node_type="chapter",
+        title="第一章 勾股定理",
+    )
+    service.create_lesson_node(
+        request_token="skeleton-section-0001",
+        curriculum_id=curriculum.id,
+        parent_id=chapter.id,
+        node_type="section",
+        title="1 探索勾股定理",
+    )
+    semester, created = service.create_semester(
+        request_token="skeleton-semester-0001",
+        curriculum_id=curriculum.id,
+        school_year="2026-2027",
+        term="first",
+        planned_new_lesson_count=40,
+    )
+    assert created is True
+    return semester, curriculum.id
+
+
+def _attach_parsed_textbook(service, tmp_path: Path, semester_id: str):
+    version, _created = service.register_material_file(
+        request_token="skeleton-mapping-file",
+        path=_pdf(tmp_path / "skeleton-textbook.pdf", ["L1", "L2", "L3"]),
+        display_name="合成教材",
+    )
+    record, _created = service.attach_semester_material(
+        semester_id,
+        request_token="skeleton-mapping-attach",
+        material_version_id=version.id,
+        material_role="textbook",
+    )
+    service.parse_material_version(version.id)
+    return record
+
+
+def _initial_tree_payload(record_id: str) -> dict[str, object]:
+    return {
+        "tree": [
+            {
+                "key": "chapter-a",
+                "title": "第一章 勾股定理",
+                "sections": [
+                    {
+                        "key": "section-a",
+                        "title": "1 探索勾股定理",
+                        "lessons": [
+                            {
+                                "key": "lesson-a",
+                                "title": "第1课时 探索勾股定理",
+                                "duration_minutes": 45,
+                            }
+                        ],
+                    }
+                ],
+            }
+        ],
+        "mappings": [
+            {
+                "material_record_id": record_id,
+                "lesson_ref": "proposal:lesson-a",
+                "start_unit": 1,
+                "end_unit": 2,
+            }
+        ],
+        "uncertainties": ["第3页没有目录线索，需教师复核。"],
+    }
+
+
+def test_lessonless_skeleton_semester_takes_initial_tree_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths, base_service = _migrated_service(tmp_path, monkeypatch)
+    semester, curriculum_id = _lessonless_skeleton_semester(base_service)
+    record = _attach_parsed_textbook(base_service, tmp_path, semester.id)
+    fake = _FakeSemesterMappingModel(_initial_tree_payload(record.id))
+    service = TeachingPrepService(
+        paths.workspace_dir("teaching-prep"),
+        semester_mapping_model_adapter=fake,
+        semester_mapping_model_label="fake-semester-model",
+    )
+
+    preflight = service.semester_mapping_preflight(
+        semester.id,
+        material_record_ids=[record.id],
+    )
+    assert preflight["existing_lesson_count"] == 0
+    assert preflight["creates_initial_tree"] is True
+
+    proposal, created = service.generate_semester_mapping_proposal(
+        semester.id,
+        operation_id="skeleton-mapping-0001",
+        material_record_ids=[record.id],
+    )
+
+    assert created is True
+    assert proposal.payload["tree"]
+    reviewed = _accept_all_mappings(service, proposal)
+    applied = service.apply_semester_mapping_proposal(
+        reviewed.id,
+        expected_revision=reviewed.revision,
+    )
+    assert applied.status == "applied"
+    lessons = [
+        node.title
+        for node in service.list_lesson_nodes(curriculum_id)
+        if node.node_type == "lesson"
+    ]
+    assert lessons == ["第1课时 探索勾股定理"]
+
+
+def test_deactivated_lessons_take_initial_tree_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths, base_service = _migrated_service(tmp_path, monkeypatch)
+    curriculum_id, _chapter_id, _section_id, lesson_ids = _lesson_tree(
+        base_service
+    )
+    semester, created = base_service.create_semester(
+        request_token="deactivated-semester-0001",
+        curriculum_id=curriculum_id,
+        school_year="2026-2027",
+        term="first",
+        planned_new_lesson_count=48,
+    )
+    assert created is True
+    record = _attach_parsed_textbook(base_service, tmp_path, semester.id)
+    fake = _FakeSemesterMappingModel(_initial_tree_payload(record.id))
+    service = TeachingPrepService(
+        paths.workspace_dir("teaching-prep"),
+        semester_mapping_model_adapter=fake,
+        semester_mapping_model_label="fake-semester-model",
+    )
+
+    active_preflight = service.semester_mapping_preflight(
+        semester.id,
+        material_record_ids=[record.id],
+    )
+    assert active_preflight["existing_lesson_count"] == len(lesson_ids)
+    assert active_preflight["creates_initial_tree"] is False
+
+    nodes = {
+        node.id: node
+        for node in base_service.list_lesson_nodes(curriculum_id)
+    }
+    for lesson_id in lesson_ids:
+        node = nodes[lesson_id]
+        base_service.update_lesson_node(
+            lesson_id,
+            expected_revision=node.revision,
+            title=node.title,
+            duration_minutes=node.duration_minutes,
+            is_active=False,
+        )
+
+    preflight = service.semester_mapping_preflight(
+        semester.id,
+        material_record_ids=[record.id],
+    )
+    assert preflight["existing_lesson_count"] == 0
+    assert preflight["creates_initial_tree"] is True
+
+    proposal, created = service.generate_semester_mapping_proposal(
+        semester.id,
+        operation_id="deactivated-mapping-0001",
+        material_record_ids=[record.id],
+    )
+
+    assert created is True
+    assert proposal.payload["tree"]
+
+
+def _two_chapter_tree_payload(record_id: str) -> dict[str, object]:
+    return {
+        "tree": [
+            {
+                "key": "chapter-a",
+                "title": "第一章 勾股定理",
+                "sections": [
+                    {
+                        "key": "section-a",
+                        "title": "1 探索勾股定理",
+                        "lessons": [
+                            {
+                                "key": "lesson-a",
+                                "title": "第1课时 探索勾股定理",
+                                "duration_minutes": 45,
+                            }
+                        ],
+                    }
+                ],
+            },
+            {
+                "key": "chapter-b",
+                "title": "第二章 实数",
+                "sections": [
+                    {
+                        "key": "section-b",
+                        "title": "1 认识无理数",
+                        "lessons": [
+                            {
+                                "key": "lesson-b",
+                                "title": "第1课时 认识无理数",
+                                "duration_minutes": 45,
+                            }
+                        ],
+                    }
+                ],
+            },
+        ],
+        "mappings": [
+            {
+                "material_record_id": record_id,
+                "lesson_ref": "proposal:lesson-a",
+                "start_unit": 1,
+                "end_unit": 1,
+            },
+            {
+                "material_record_id": record_id,
+                "lesson_ref": "proposal:lesson-b",
+                "start_unit": 2,
+                "end_unit": 2,
+            },
+        ],
+        "uncertainties": ["第3页没有目录线索，需教师复核。"],
+    }
+
+
+def _two_chapter_mapping_service(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    paths, base_service = _migrated_service(tmp_path, monkeypatch)
+    semester, curriculum_id = _lessonless_skeleton_semester(base_service)
+    record = _attach_parsed_textbook(base_service, tmp_path, semester.id)
+    fake = _FakeSemesterMappingModel(_two_chapter_tree_payload(record.id))
+    service = TeachingPrepService(
+        paths.workspace_dir("teaching-prep"),
+        semester_mapping_model_adapter=fake,
+        semester_mapping_model_label="fake-semester-model",
+    )
+    return service, semester, curriculum_id, record
+
+
+def _accept_mapping_ref(service, proposal, lesson_ref: str):
+    item = next(
+        row
+        for row in proposal.payload["mappings"]
+        if str(row["lesson_ref"]) == lesson_ref
+    )
+    return service.review_semester_mapping_row(
+        proposal.id,
+        str(item["mapping_id"]),
+        expected_revision=proposal.revision,
+        decision={
+            "decision": "accepted",
+            "lesson_ref": item["lesson_ref"],
+            "start_unit": item["start_unit"],
+            "end_unit": item["end_unit"],
+            "reason": "合成测试逐章接受",
+        },
+    )
+
+
+def _lesson_titles(service, curriculum_id: str) -> list[str]:
+    return [
+        node.title
+        for node in service.list_lesson_nodes(curriculum_id)
+        if node.node_type == "lesson"
+    ]
+
+
+def test_chapter_scoped_apply_builds_tree_incrementally(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service, semester, curriculum_id, record = _two_chapter_mapping_service(
+        tmp_path, monkeypatch
+    )
+    proposal, created = service.generate_semester_mapping_proposal(
+        semester.id,
+        operation_id="chapter-apply-0001",
+        material_record_ids=[record.id],
+    )
+
+    assert created is True
+    chapter_keys = [str(item["key"]) for item in proposal.payload["tree"]]
+    assert chapter_keys == ["chapter_001", "chapter_002"]
+
+    current = _accept_mapping_ref(service, proposal, "proposal:lesson_001_001_001")
+
+    # Chapter two is still pending; confirming chapter one is allowed.
+    first = service.apply_semester_mapping_proposal(
+        current.id,
+        expected_revision=current.revision,
+        chapter_key="chapter_001",
+    )
+    assert first.status == "proposed"
+    assert first.applied_at is None
+    assert _lesson_titles(service, curriculum_id) == ["第1课时 探索勾股定理"]
+    nodes = service.list_lesson_nodes(curriculum_id)
+    root_orders = sorted(
+        node.sort_order for node in nodes if node.parent_id is None
+    )
+    assert root_orders == [1, 2]
+    first_lesson = next(
+        node for node in nodes if node.node_type == "lesson"
+    )
+    assert [
+        (link.start_unit, link.end_unit, link.purpose)
+        for link in service.list_material_links(first_lesson.id)
+    ] == [(1, 1, "textbook")]
+
+    # Repeating the same chapter confirmation is an idempotent no-op.
+    repeated = service.apply_semester_mapping_proposal(
+        first.id,
+        expected_revision=first.revision,
+        chapter_key="chapter_001",
+    )
+    assert repeated.revision == first.revision
+    assert _lesson_titles(service, curriculum_id) == ["第1课时 探索勾股定理"]
+    assert len(service.list_material_links(first_lesson.id)) == 1
+
+    # The remaining chapter can still be decided after a partial apply.
+    current = _accept_mapping_ref(service, repeated, "proposal:lesson_002_001_001")
+    applied = service.apply_semester_mapping_proposal(
+        current.id,
+        expected_revision=current.revision,
+        chapter_key="chapter_002",
+    )
+    assert applied.status == "applied"
+    assert applied.applied_at is not None
+
+    nodes = service.list_lesson_nodes(curriculum_id)
+    assert sorted(_lesson_titles(service, curriculum_id)) == [
+        "第1课时 探索勾股定理",
+        "第1课时 认识无理数",
+    ]
+    root_orders = sorted(
+        node.sort_order for node in nodes if node.parent_id is None
+    )
+    assert root_orders == [1, 2, 3]
+    second_lesson = next(
+        node
+        for node in nodes
+        if node.node_type == "lesson" and node.title == "第1课时 认识无理数"
+    )
+    assert [
+        (link.start_unit, link.end_unit)
+        for link in service.list_material_links(second_lesson.id)
+    ] == [(2, 2)]
+    assert len(service.list_material_links(first_lesson.id)) == 1
+    updated_record = service.list_semester_materials(semester.id)[0]
+    assert updated_record.mapping_status == "confirmed"
+
+
+def test_chapter_scoped_apply_rejects_pending_only_in_that_chapter(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service, semester, curriculum_id, record = _two_chapter_mapping_service(
+        tmp_path, monkeypatch
+    )
+    proposal, created = service.generate_semester_mapping_proposal(
+        semester.id,
+        operation_id="chapter-apply-pending-0001",
+        material_record_ids=[record.id],
+    )
+    assert created is True
+
+    with pytest.raises(
+        TeachingPrepNotFoundError,
+        match="proposal chapter was not found",
+    ):
+        service.apply_semester_mapping_proposal(
+            proposal.id,
+            expected_revision=proposal.revision,
+            chapter_key="chapter_999",
+        )
+    with pytest.raises(
+        TeachingPrepConflictError,
+        match="decide every mapping row in this chapter",
+    ):
+        service.apply_semester_mapping_proposal(
+            proposal.id,
+            expected_revision=proposal.revision,
+            chapter_key="chapter_001",
+        )
+
+    # Only chapter two is decided; chapter one stays blocked while
+    # chapter two can be applied.
+    current = _accept_mapping_ref(service, proposal, "proposal:lesson_002_001_001")
+    with pytest.raises(
+        TeachingPrepConflictError,
+        match="decide every mapping row in this chapter",
+    ):
+        service.apply_semester_mapping_proposal(
+            current.id,
+            expected_revision=current.revision,
+            chapter_key="chapter_001",
+        )
+    applied = service.apply_semester_mapping_proposal(
+        current.id,
+        expected_revision=current.revision,
+        chapter_key="chapter_002",
+    )
+    assert applied.status == "proposed"
+    assert _lesson_titles(service, curriculum_id) == ["第1课时 认识无理数"]
+
+
+def test_chapter_apply_still_blocks_external_tree_changes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service, semester, curriculum_id, record = _two_chapter_mapping_service(
+        tmp_path, monkeypatch
+    )
+    proposal, created = service.generate_semester_mapping_proposal(
+        semester.id,
+        operation_id="chapter-apply-guard-0001",
+        material_record_ids=[record.id],
+    )
+    assert created is True
+    current = _accept_all_mappings(service, proposal)
+    first = service.apply_semester_mapping_proposal(
+        current.id,
+        expected_revision=current.revision,
+        chapter_key="chapter_001",
+    )
+    assert first.status == "proposed"
+
+    section = next(
+        node
+        for node in service.list_lesson_nodes(curriculum_id)
+        if node.node_type == "section"
+    )
+    service.create_lesson_node(
+        request_token="external-lesson-0001",
+        curriculum_id=curriculum_id,
+        parent_id=section.id,
+        node_type="lesson",
+        title="教师手工新增课时",
+    )
+
+    with pytest.raises(
+        TeachingPrepConflictError,
+        match="semester lessons or materials changed",
+    ):
+        service.apply_semester_mapping_proposal(
+            first.id,
+            expected_revision=first.revision,
+            chapter_key="chapter_002",
+        )
+
+
+def test_full_apply_without_chapter_key_keeps_existing_behavior(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service, semester, curriculum_id, record = _two_chapter_mapping_service(
+        tmp_path, monkeypatch
+    )
+    proposal, created = service.generate_semester_mapping_proposal(
+        semester.id,
+        operation_id="chapter-apply-full-0001",
+        material_record_ids=[record.id],
+    )
+    assert created is True
+
+    with pytest.raises(
+        TeachingPrepConflictError,
+        match="decide every mapping row before applying the proposal",
+    ):
+        service.apply_semester_mapping_proposal(
+            proposal.id,
+            expected_revision=proposal.revision,
+        )
+
+    reviewed = _accept_all_mappings(service, proposal)
+    applied = service.apply_semester_mapping_proposal(
+        reviewed.id,
+        expected_revision=reviewed.revision,
+    )
+    assert applied.status == "applied"
+    assert applied.applied_at is not None
+    assert sorted(_lesson_titles(service, curriculum_id)) == [
+        "第1课时 探索勾股定理",
+        "第1课时 认识无理数",
+    ]
+    nodes = service.list_lesson_nodes(curriculum_id)
+    root_orders = sorted(
+        node.sort_order for node in nodes if node.parent_id is None
+    )
+    assert root_orders == [1, 2, 3]
+    for lesson in (
+        node for node in nodes if node.node_type == "lesson"
+    ):
+        assert len(service.list_material_links(lesson.id)) == 1
+    updated_record = service.list_semester_materials(semester.id)[0]
+    assert updated_record.mapping_status == "confirmed"

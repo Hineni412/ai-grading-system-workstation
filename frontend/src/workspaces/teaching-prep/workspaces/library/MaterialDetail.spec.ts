@@ -7,8 +7,9 @@ import type {
   MaterialVersion,
   SemesterMaterialRecord,
 } from '../../api/catalog'
+import { teachingPrepCatalogApi } from '../../api/catalog'
 import { useTeachingPrepCatalogStore } from '../../stores/catalog'
-import MaterialTable from './MaterialTable.vue'
+import MaterialDetail from './MaterialDetail.vue'
 
 const semesterId = 's'.repeat(32)
 
@@ -17,6 +18,7 @@ function material(id: string, name: string): MaterialVersion {
     id, source_id: id, display_name: name, material_type: 'pdf',
     content_sha256: id[0]!.repeat(64), safe_filename: `${id[0]}.pdf`, size_bytes: 20,
     modified_ns: null, unit_count: 1, inspection_status: 'ready',
+    preview_completed_count: 1,
     availability: 'available', created_at: '2026-08-03T00:00:00Z',
   }
 }
@@ -61,17 +63,24 @@ function deletionPreview(item: MaterialVersion): MaterialDeletionPreview {
 
 const textbook = material('a'.repeat(32), '八年级数学教材.pdf')
 
-async function mountTable(options: { recordActive?: boolean; withRecord?: boolean } = {}) {
+interface MountOptions {
+  recordActive?: boolean
+  withRecord?: boolean
+}
+
+async function mountDetail(options: MountOptions = {}) {
   const catalog = useTeachingPrepCatalogStore()
   catalog.materials = [textbook]
   catalog.semesterMaterials = options.withRecord === false
     ? []
     : [record('r'.repeat(32), textbook, options.recordActive ?? true)]
   catalog.materialParseJobs = {}
+  vi.spyOn(teachingPrepCatalogApi, 'listReferencePptCollections').mockResolvedValue([])
   const host = document.createElement('div')
   document.body.appendChild(host)
-  const app = createApp(MaterialTable)
+  const app = createApp(MaterialDetail, { materialId: textbook.id })
   app.mount(host)
+  await nextTick()
   await nextTick()
   return { app, host, catalog }
 }
@@ -86,19 +95,19 @@ afterEach(() => {
   document.body.innerHTML = ''
 })
 
-describe('MaterialTable', () => {
-  it('renders the current-term material row with its role', async () => {
-    const { app, host } = await mountTable()
+describe('MaterialDetail', () => {
+  it('renders the material with its role and status', async () => {
+    const { app, host } = await mountDetail()
 
     expect(host.textContent).toContain('八年级数学教材.pdf')
     const roleSelect = host.querySelector<HTMLSelectElement>('select[aria-label="资料角色"]')
     expect(roleSelect?.value).toBe('textbook')
-    expect(host.textContent).toContain('删除本学期全部资料（1）')
+    expect(host.textContent).toContain('已处理好')
     app.unmount()
   })
 
   it('moves a material out of the semester after confirmation', async () => {
-    const { app, host, catalog } = await mountTable()
+    const { app, host, catalog } = await mountDetail()
     const update = vi.spyOn(catalog, 'updateSemesterMaterial').mockResolvedValue(undefined)
     vi.stubGlobal('confirm', vi.fn(() => true))
 
@@ -110,7 +119,7 @@ describe('MaterialTable', () => {
   })
 
   it('restores an inactive semester record without confirmation', async () => {
-    const { app, host, catalog } = await mountTable({ recordActive: false })
+    const { app, host, catalog } = await mountDetail({ recordActive: false })
     const update = vi.spyOn(catalog, 'updateSemesterMaterial').mockResolvedValue(undefined)
     const confirmSpy = vi.fn(() => true)
     vi.stubGlobal('confirm', confirmSpy)
@@ -124,7 +133,7 @@ describe('MaterialTable', () => {
   })
 
   it('renames a material through the store', async () => {
-    const { app, host, catalog } = await mountTable()
+    const { app, host, catalog } = await mountDetail()
     const rename = vi.spyOn(catalog, 'updateMaterialSource').mockResolvedValue(undefined)
     vi.stubGlobal('prompt', vi.fn(() => '新教材名称'))
 
@@ -136,7 +145,7 @@ describe('MaterialTable', () => {
   })
 
   it('previews deletion impact before the final confirmation', async () => {
-    const { app, host, catalog } = await mountTable()
+    const { app, host, catalog } = await mountDetail()
     const getPreview = vi.spyOn(catalog, 'getMaterialDeletionPreview')
       .mockResolvedValue(deletionPreview(textbook))
     const deleteSource = vi.spyOn(catalog, 'deleteMaterialSource').mockImplementation(
@@ -171,27 +180,10 @@ describe('MaterialTable', () => {
     app.unmount()
   })
 
-  it('loads a batch deletion preview for every current-term material', async () => {
-    const { app, host, catalog } = await mountTable()
-    const getPreview = vi.spyOn(catalog, 'getMaterialDeletionPreview')
-      .mockResolvedValue(deletionPreview(textbook))
+  it('offers attaching for materials not yet in the semester', async () => {
+    const { app, host } = await mountDetail({ withRecord: false })
 
-    ;[...host.querySelectorAll('button')]
-      .find(button => button.textContent?.trim().startsWith('删除本学期全部资料'))?.click()
-    await vi.waitFor(() => {
-      expect(host.textContent).toContain('彻底删除：逐项核对 1 份资料')
-    })
-    expect(getPreview).toHaveBeenCalledTimes(1)
-    app.unmount()
-  })
-
-  it('shows unattached materials in the other-term section', async () => {
-    const { app, host } = await mountTable({ withRecord: false })
-
-    expect(host.textContent).toContain('本学期还没有资料')
-    ;[...host.querySelectorAll('button')]
-      .find(button => button.textContent?.trim().startsWith('展开其他学期'))?.click()
-    await nextTick()
+    expect(host.textContent).toContain('未加入本学期')
     expect(host.textContent).toContain('加入本学期并选中')
     app.unmount()
   })

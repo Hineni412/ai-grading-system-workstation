@@ -17,6 +17,10 @@ from .store import (
 
 JobHandler = Callable[["JobContext"], dict[str, Any] | None]
 
+# 阅卷全流程任务使用独立线程池，避免被备课 OCR 等长任务占满共享池后
+# 一直停在 queued（前端显示为「等待开始」）。
+_INTERACTIVE_JOB_TYPES = frozenset({"grading_run", "scan_analysis"})
+
 
 class UnsupportedJobTypeError(ValueError):
     pass
@@ -83,6 +87,7 @@ class JobManager:
         self.store = store
         self._handlers: dict[str, JobHandler] = {}
         self._executor = ThreadPoolExecutor(max_workers=max(1, int(max_workers)))
+        self._interactive_executor = ThreadPoolExecutor(max_workers=2)
         self._futures: dict[int, Future[None]] = {}
         self._lock = threading.Lock()
         self._shutdown = False
@@ -158,7 +163,9 @@ class JobManager:
                     job = self.store.create_claimed_config_job(clean_payload)
                 else:
                     job = self.store.create_job(clean_type, clean_payload)
-            future = self._executor.submit(self._run_job, job.id, handler)
+            future = self._executor_for(clean_type).submit(
+                self._run_job, job.id, handler
+            )
             self._futures[job.id] = future
         future.add_done_callback(
             lambda completed, job_id=job.id: self._discard_completed_future(
@@ -191,7 +198,9 @@ class JobManager:
                 )
             if clean_job_id in self._futures:
                 return job
-            future = self._executor.submit(self._run_job, clean_job_id, handler)
+            future = self._executor_for(job.job_type).submit(
+                self._run_job, clean_job_id, handler
+            )
             self._futures[clean_job_id] = future
         future.add_done_callback(
             lambda completed, existing_job_id=clean_job_id: (
@@ -229,7 +238,9 @@ class JobManager:
                     f"active {clean_type} job already exists for session {session_id}"
                 )
             job = self.store.create_job(clean_type, clean_payload)
-            future = self._executor.submit(self._run_job, job.id, handler)
+            future = self._executor_for(clean_type).submit(
+                self._run_job, job.id, handler
+            )
             self._futures[job.id] = future
         future.add_done_callback(
             lambda completed, job_id=job.id: self._discard_completed_future(
@@ -256,7 +267,9 @@ class JobManager:
             if not created:
                 return job, False
             try:
-                future = self._executor.submit(self._run_job, job.id, handler)
+                future = self._executor_for("grading_run").submit(
+                    self._run_job, job.id, handler
+                )
             except Exception as exc:
                 self.store.finish(job.id, "failed", "job scheduling failed")
                 raise RuntimeError("grading job could not be scheduled") from exc
@@ -516,6 +529,12 @@ class JobManager:
                 return
             self._shutdown = True
         self._executor.shutdown(wait=True)
+        self._interactive_executor.shutdown(wait=True)
+
+    def _executor_for(self, job_type: str) -> ThreadPoolExecutor:
+        if job_type in _INTERACTIVE_JOB_TYPES:
+            return self._interactive_executor
+        return self._executor
 
     def _run_job(self, job_id: int, handler: JobHandler) -> None:
         if not self.store.mark_running(job_id):

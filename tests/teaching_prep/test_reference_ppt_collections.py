@@ -172,6 +172,86 @@ def test_matches_existing_tree_without_replacing_it() -> None:
     assert result["mappings"][0]["confidence"] in {"high", "medium"}
 
 
+def test_skeleton_without_lessons_still_proposes_candidate_tree() -> None:
+    nodes = [
+        {
+            "id": "c" * 32,
+            "parent_id": None,
+            "node_type": "chapter",
+            "title": "第1章 勾股定理",
+        },
+        {
+            "id": "s" * 32,
+            "parent_id": "c" * 32,
+            "node_type": "section",
+            "title": "1.2 勾股定理的应用",
+        },
+    ]
+
+    result = infer_reference_ppt_collection(
+        [
+            _ppt(
+                1,
+                "全部课件/1.2 勾股定理应用（第一课时）.pptx",
+            ),
+            _ppt(2, "全部课件/1.2 勾股定理应用（第 2 课时）.pptx"),
+        ],
+        existing_lessons=nodes,
+    )
+
+    tree = result["tree"]
+    assert [item["title"] for item in tree] == ["第1章"]
+    assert [
+        lesson["title"] for lesson in tree[0]["sections"][0]["lessons"]
+    ] == ["第1课时 勾股定理应用", "第2课时 勾股定理应用"]
+    assert len(result["mappings"]) == 2
+    assert all(
+        str(mapping["lesson_ref"]).startswith("proposal:ppt-lesson-1-2-")
+        for mapping in result["mappings"]
+    )
+    assert not any(
+        "尚不能可靠对应课时" in item for item in result["uncertainties"]
+    )
+
+
+def test_existing_lesson_among_skeleton_still_matches_existing_tree() -> None:
+    nodes = [
+        {
+            "id": "c" * 32,
+            "parent_id": None,
+            "node_type": "chapter",
+            "title": "第1章 勾股定理",
+        },
+        {
+            "id": "a" * 32,
+            "parent_id": "c" * 32,
+            "node_type": "section",
+            "title": "1.1 探索勾股定理",
+        },
+        {
+            "id": "s" * 32,
+            "parent_id": "c" * 32,
+            "node_type": "section",
+            "title": "1.2 勾股定理的应用",
+        },
+        {
+            "id": "l" * 32,
+            "parent_id": "s" * 32,
+            "node_type": "lesson",
+            "title": "第1课时 勾股定理的应用",
+        },
+    ]
+
+    result = infer_reference_ppt_collection(
+        [_ppt(1, "全部课件/1.2 勾股定理应用（第一课时）.pptx")],
+        existing_lessons=nodes,
+    )
+
+    assert result["tree"] == []
+    assert result["mappings"][0]["lesson_ref"] == "l" * 32
+    assert result["mappings"][0]["confidence"] in {"high", "medium"}
+
+
 def test_collection_persists_virtual_path_and_reuses_mapping_review(
     tmp_path,
     monkeypatch,

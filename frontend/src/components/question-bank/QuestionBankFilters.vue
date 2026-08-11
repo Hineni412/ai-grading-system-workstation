@@ -30,7 +30,8 @@ const draft = reactive({
   difficultyMin: 1,
   difficultyMax: 10,
   tagStatus: 'all' as QuestionBankTagStatus,
-  sort: 'difficulty_desc' as QuestionBankSort,
+  // 试卷内查看时默认按题号排列，题库全局检索时默认按难度。
+  sort: (props.paperId ? 'paper_order' : 'difficulty_desc') as QuestionBankSort,
 })
 
 function buildFilters(): QuestionBankFilters {
@@ -75,7 +76,7 @@ function reset(): void {
     difficultyMin: 1,
     difficultyMax: 10,
     tagStatus: 'all',
-    sort: 'difficulty_desc',
+    sort: props.paperId ? 'paper_order' : 'difficulty_desc',
   })
   apply()
 }
@@ -110,7 +111,7 @@ function changeSort(sort: QuestionBankSort): void {
     </label>
     <div class="qb-field">
       <span>排序</span>
-      <QuestionSortControl v-model="draft.sort" @change="changeSort" />
+      <QuestionSortControl v-model="draft.sort" :show-paper-order="Boolean(props.paperId)" @change="changeSort" />
     </div>
 
     <DifficultyRangeFilter

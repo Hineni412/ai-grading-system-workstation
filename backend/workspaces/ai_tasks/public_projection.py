@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from .models import StoredTask, TaskSnapshot
-from .registry import message_for, presentation
+from .registry import error_detail_for, message_for, presentation
 from .store import WorkspaceAITaskStore
 
 
@@ -34,6 +34,7 @@ def project_task(store: WorkspaceAITaskStore, task: StoredTask) -> TaskSnapshot:
         safe_source=task_presentation.safe_source,
         teacher_message=teacher_message,
         next_action=next_action,
+        error_detail=error_detail_for(task.error_code),
         handoffs=handoffs,
         handoff_total=len(handoffs),
         adopted_count=states.count("adopted"),

@@ -52,6 +52,27 @@ export function fileSizeLabel(size: number): string {
   return `${Math.max(1, Math.round(size / 1024))} KB`
 }
 
+/* ===== 资料库（方案 C）选中态与角色分组 ===== */
+
+/** 资料库页左栏选中态：导入 / 章文件夹 / 课时树 / 单份资料（按版本 id）。 */
+export type LibrarySelection =
+  | { kind: 'import' }
+  | { kind: 'chapter'; folderKey: string }
+  | { kind: 'tree' }
+  | { kind: 'material'; materialId: string }
+
+export const BOOK_ROLES: SemesterMaterialRole[] = [
+  'textbook',
+  'exercise_workbook',
+  'homework_workbook',
+  'answer_book',
+]
+
+/** 教材/教辅类角色：在资料柜中归入「书」，选中后打开“对应到课时树”面板。 */
+export function isBookRole(role: SemesterMaterialRole): boolean {
+  return BOOK_ROLES.includes(role)
+}
+
 /** 资料版本对应的本学期记录（旧逻辑平移：按当前版本 id 匹配）。 */
 export function useSemesterRecordLookup() {
   const catalog = useTeachingPrepCatalogStore()

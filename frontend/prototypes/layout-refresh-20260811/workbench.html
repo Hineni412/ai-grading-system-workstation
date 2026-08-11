@@ -1,0 +1,120 @@
+<!doctype html><html lang="zh-CN"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>工作台 · 知衡布局原型</title><link rel="icon" href="data:,">
+<link rel="stylesheet" href="proto.css">
+<style>
+/* 当前考试：进度 + 行内统计 */
+.exam-progress { display: flex; align-items: center; gap: 14px; }
+.exam-progress .bar { flex: 0 0 220px; }
+.exam-progress .pct { font-size: 13px; color: var(--ink-2); font-variant-numeric: tabular-nums; }
+.exam-progress .sep { color: var(--line-strong); }
+.exam-progress a { font-size: 13px; }
+/* 待处理密集列表 */
+.todo-row { display: flex; align-items: center; gap: 10px; height: 36px; font-size: 13px; border-bottom: 1px solid var(--line-soft); }
+.todo-row:last-child { border-bottom: none; }
+.todo-row .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+.todo-row .dot.warn { background: var(--warn); }
+.todo-row .dot.bad { background: var(--bad); }
+.todo-row .go { margin-left: auto; font-size: 12px; }
+/* 最近考试 */
+.exam-row { display: flex; align-items: center; gap: 10px; padding: 7px 0; font-size: 13px; border-bottom: 1px solid var(--line-soft); }
+.exam-row:last-child { border-bottom: none; }
+.exam-row .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.exam-row .avg { font-size: 12px; color: var(--ink-2); font-variant-numeric: tabular-nums; }
+/* 快捷入口 */
+.quick-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.quick-grid .btn { justify-content: center; }
+</style></head><body>
+<div class="ribbon"><b>布局重设计原型</b><span>静态演示 · 模拟数据 · 不连接真实接口</span></div>
+<div class="shell">
+  <aside class="sidebar">
+    <div class="side-brand"><div class="brand-mark">知</div><div><div class="brand-name">知衡</div><div class="brand-sub">教师教学工作台</div></div></div>
+    <nav class="side-nav">
+      <a class="side-link on" href="workbench.html"><i class="ic">◧</i>工作台</a>
+      <div class="side-group">考试与阅卷</div>
+      <a class="side-link" href="session-config.html"><i class="ic">▤</i>考试配置</a>
+      <a class="side-link" href="grading-run.html"><i class="ic">◐</i>考试批改</a>
+      <a class="side-link" href="results.html"><i class="ic">▥</i>成绩中心</a>
+      <div class="side-group">题库与组卷</div>
+      <a class="side-link" href="question-bank.html"><i class="ic">▦</i>题库管理</a>
+      <a class="side-link" href="assembly.html"><i class="ic">▨</i>组卷工作台</a>
+      <div class="side-group">教学分析</div>
+      <a class="side-link" href="knowledge.html"><i class="ic">◆</i>知识与训练</a>
+    </nav>
+  </aside>
+  <div class="content">
+    <header class="appbar">
+      <span class="crumb">知衡 / 工作台</span>
+      <div class="appbar-right"><span class="tag">2025—2026 学年下学期</span></div>
+    </header>
+<main class="page">
+  <div class="page-head">
+    <h1>早上好，王老师</h1>
+    <span class="sub">8 月 11 日 · 今天有 1 场考试批改中</span>
+  </div>
+
+  <div class="grid grid-main-side">
+    <div>
+      <section class="panel">
+        <div class="panel-head">
+          <h2>第二章单元测验《相交线与平行线》</h2>
+          <span class="tag accent">批改中</span>
+          <div class="more row">
+            <button class="btn btn-primary" data-demo="进入批改执行">进入批改执行</button>
+            <button class="btn" data-demo="打开成绩中心">成绩中心</button>
+          </div>
+        </div>
+        <div class="exam-progress">
+          <div class="bar"><i style="width:88%"></i></div>
+          <span class="pct">88%</span>
+          <a href="#" data-demo="查看已批改答卷">已批改 28/32</a>
+          <span class="sep">·</span>
+          <a href="#" data-demo="查看待复核">待复核 5</a>
+          <span class="sep">·</span>
+          <a href="#" data-demo="查看异常答卷">异常 2</a>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head"><h2>待处理</h2></div>
+        <div class="todo-row"><i class="dot warn"></i><span>待复核 <b>5</b> 题</span><a class="go" href="#" data-demo="去处理待复核">去处理 ›</a></div>
+        <div class="todo-row"><i class="dot bad"></i><span>异常答卷 <b>2</b> 份（#07 未匹配学生、#12 缺反面）</span><a class="go" href="#" data-demo="去处理异常答卷">去处理 ›</a></div>
+        <div class="todo-row"><i class="dot bad"></i><span>处理失败 <b>1</b> 题</span><a class="go" href="#" data-demo="去处理失败项">去处理 ›</a></div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head"><h2>本班薄弱题</h2><a class="more" href="#" data-demo="查看完整学情">查看完整学情 ›</a></div>
+        <div class="mrow"><span class="nm">题2 · 平行线的性质</span><div class="bar"><i class="bad" style="width:42%"></i></div><span class="pc">2.1/5</span></div>
+        <div class="mrow"><span class="nm">题5 · 对顶角相等</span><div class="bar"><i class="warn" style="width:53%"></i></div><span class="pc">3.2/6</span></div>
+        <div class="mrow"><span class="nm">题3 · 同旁内角</span><div class="bar"><i class="warn" style="width:56%"></i></div><span class="pc">2.8/5</span></div>
+      </section>
+    </div>
+
+    <div>
+      <section class="panel">
+        <div class="panel-head"><h2>最近考试</h2></div>
+        <div class="exam-row"><span class="nm grow">第二章单元测验</span><span class="avg">—</span><span class="tag accent">批改中</span></div>
+        <div class="exam-row"><span class="nm grow">第一章单元测验</span><span class="avg">均分 81.2</span><span class="tag ok">已完成</span></div>
+        <div class="exam-row"><span class="nm grow">期中考试</span><span class="avg">均分 74.8</span><span class="tag ok">已完成</span></div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head"><h2>快捷入口</h2></div>
+        <div class="quick-grid">
+          <button class="btn" data-demo="新建考试">新建考试</button>
+          <button class="btn" data-demo="上传试卷">上传试卷</button>
+          <button class="btn" data-demo="组卷">组卷</button>
+          <button class="btn" data-demo="知识与训练">知识与训练</button>
+        </div>
+      </section>
+    </div>
+  </div>
+</main>
+  </div>
+</div>
+<div class="toast" id="toast"></div>
+<script>
+const toast=(m)=>{const t=document.getElementById('toast');t.textContent=m;t.classList.add('show');clearTimeout(t._h);t._h=setTimeout(()=>t.classList.remove('show'),2200);};
+document.addEventListener('click',e=>{const b=e.target.closest('[data-demo]');if(b){e.preventDefault();toast('原型演示：'+(b.getAttribute('data-demo')||'正式版此处才执行'));}});
+</script>
+</body></html>

@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends
 
 from backend.api.app import ApiError
 from backend.api.dependencies import (
+    get_config_source_service,
     get_data_root,
     get_grading_db,
     get_job_manager,
@@ -42,6 +43,11 @@ from backend.api.schemas.sessions import (
 )
 from backend.config_workspace.publish import load_editor_config
 from backend.config_workspace.drafts import create_session_draft
+from backend.config_workspace.sources import (
+    AmbiguousAssetDecision,
+    ConfigSourceError,
+    ConfigSourceService,
+)
 from backend.jobs.manager import (
     ActiveJobExistsError,
     JobManager,
@@ -204,6 +210,7 @@ def _question_bank_sync_payload(
     retry_of_job_id: int | None = None,
     question_ids: list[int] | None = None,
     deferred_analysis: dict[str, Any] | None = None,
+    asset_overrides: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     identity: dict[str, Any] = {
         "session_id": int(session_id),
@@ -218,6 +225,8 @@ def _question_bank_sync_payload(
         identity["question_ids"] = list(question_ids)
     if deferred_analysis:
         identity.update(deferred_analysis)
+    if asset_overrides:
+        identity["asset_overrides"] = [dict(item) for item in asset_overrides]
     fingerprint = hashlib.sha256(
         json.dumps(
             identity,
@@ -327,6 +336,38 @@ def _require_current_sync_inputs(
             {"session_id": int(session_id)},
         )
     return loaded.session, source_sha256
+
+
+def _resolve_sync_asset_overrides(
+    source_service: ConfigSourceService,
+    session_id: int,
+    request: QuestionBankSyncRequest,
+) -> list[dict[str, Any]] | None:
+    if not request.asset_decisions:
+        return None
+    try:
+        record = source_service.load_active_record(session_id=int(session_id))
+        return list(
+            source_service.resolve_asset_decision_overrides(
+                record,
+                [
+                    AmbiguousAssetDecision(
+                        candidate_id=item.candidate_id,
+                        action=item.action,
+                        question_id=item.question_id,
+                        asset_kind=item.asset_kind,
+                    )
+                    for item in request.asset_decisions
+                ],
+            )
+        )
+    except (ConfigSourceError, ValueError) as exc:
+        raise ApiError(
+            422,
+            "asset_decisions_stale",
+            "图片归属决定已失效，请回到复核页重新确认图片归属后再提交入库。",
+            {"session_id": int(session_id)},
+        ) from exc
 
 
 def _submit_question_bank_sync(
@@ -551,6 +592,7 @@ def submit_session_question_bank_sync(
     db: GradingRepositoryAccess = Depends(get_grading_db),
     sessions: SessionRepositoryGateway = Depends(get_session_repository),
     manager: JobManager = Depends(get_job_manager),
+    source_service: ConfigSourceService = Depends(get_config_source_service),
 ) -> JobResponse:
     session, source_sha256 = _require_current_sync_inputs(
         db,
@@ -573,6 +615,11 @@ def submit_session_question_bank_sync(
         source_paper_sha256=source_sha256,
         client_request_token=request.client_request_token,
         curriculum_volume_id=str(volume["id"]),
+        asset_overrides=_resolve_sync_asset_overrides(
+            source_service,
+            session_id,
+            request,
+        ),
     )
     return _submit_question_bank_sync(manager, payload)
 
@@ -589,6 +636,7 @@ def retry_session_question_bank_sync(
     db: GradingRepositoryAccess = Depends(get_grading_db),
     sessions: SessionRepositoryGateway = Depends(get_session_repository),
     manager: JobManager = Depends(get_job_manager),
+    source_service: ConfigSourceService = Depends(get_config_source_service),
 ) -> JobResponse:
     session, source_sha256 = _require_current_sync_inputs(
         db,
@@ -678,6 +726,11 @@ def retry_session_question_bank_sync(
             )
             if key in source_job.payload
         },
+        asset_overrides=_resolve_sync_asset_overrides(
+            source_service,
+            session_id,
+            request,
+        ),
     )
     return _submit_question_bank_sync(manager, payload)
 

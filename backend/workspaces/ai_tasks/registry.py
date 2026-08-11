@@ -80,6 +80,66 @@ _MESSAGES = {
 }
 
 
+_ERROR_DETAILS = {
+    "semester_mapping_retry_available": (
+        "本次整理没有产出结果；重新检查发送范围后可以再试一次。"
+    ),
+    "semester_mapping_response_failed_local_validation": (
+        "模型建议未通过本机校验，本次整理没有产出结果。"
+    ),
+    "semester_mapping_unexplained_coverage_gap": (
+        "资料中有页面既没有对应到课时，模型也没有说明原因，本次整理没有产出结果。"
+    ),
+    "semester_mapping_existing_tree_replaced": (
+        "模型试图改动已有的正式课时树，本次整理没有产出结果。"
+    ),
+    "semester_mapping_unavailable_lesson": (
+        "模型把页面关联到了不存在的课时，本次整理没有产出结果。"
+    ),
+    "semester_mapping_duplicate_lesson_decision": (
+        "模型对同一课时给出了重复结论，本次整理没有产出结果。"
+    ),
+    "semester_mapping_model_semantic_contract_violation": (
+        "模型返回的内容不符合整理要求，本次整理没有产出结果。"
+    ),
+    "semester_mapping_model_semantic_evidence_mismatch": (
+        "模型引用的目录线索与本机解析结果对不上，本次整理没有产出结果。"
+    ),
+    "semester_mapping_model_semantic_evidence_incomplete": (
+        "模型没有覆盖资料目录的全部条目，本次整理没有产出结果。"
+    ),
+    "semester_mapping_model_response_truncated": (
+        "模型返回的内容不完整，本次整理没有产出结果。"
+    ),
+    "semester_mapping_model_response_invalid_json": (
+        "模型返回的内容无法读取，本次整理没有产出结果。"
+    ),
+    "semester_mapping_model_response_invalid_type": (
+        "模型返回的内容无法读取，本次整理没有产出结果。"
+    ),
+    "semester_mapping_model_response_text_unavailable": (
+        "模型没有返回可用内容，本次整理没有产出结果。"
+    ),
+    "semester_mapping_model_response_invalid": (
+        "模型建议未通过本机校验，本次整理没有产出结果。"
+    ),
+    "semester_mapping_model_configuration_invalid": (
+        "模型配置不可用，本次没有调用模型。"
+    ),
+    "semester_mapping_model_parameter_incompatible": (
+        "当前模型不接受本次请求的参数，本次整理没有产出结果。"
+    ),
+}
+
+
+def error_detail_for(error_code: str | None) -> str | None:
+    """Return a teacher-readable reason for a known task failure code."""
+
+    if not error_code:
+        return None
+    return _ERROR_DETAILS.get(str(error_code))
+
+
 def presentation(module: str, task_kind: str) -> TaskPresentation:
     try:
         return _PRESENTATIONS[(module, task_kind)]
@@ -117,6 +177,7 @@ __all__ = [
     "DESTINATION_KEYS",
     "TaskPresentation",
     "assert_destination",
+    "error_detail_for",
     "is_recovery_only_task",
     "message_for",
     "presentation",

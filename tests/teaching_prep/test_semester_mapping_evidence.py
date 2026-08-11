@@ -966,3 +966,107 @@ def _layout_item(
         "x1": x1,
         "y1": y1,
     }
+
+
+def _chapter_section_skeleton() -> list[dict[str, object]]:
+    return [
+        {
+            "id": "chapter-skeleton",
+            "parent_id": None,
+            "node_type": "chapter",
+            "title": "第一章 勾股定理",
+        },
+        {
+            "id": "section-skeleton",
+            "parent_id": "chapter-skeleton",
+            "node_type": "section",
+            "title": "1 探索勾股定理",
+        },
+    ]
+
+
+def test_semantic_mapping_treats_lessonless_skeleton_as_initial_tree() -> None:
+    snapshot = _snapshot()
+    snapshot["lessons"] = _chapter_section_skeleton()
+    compact = _compact_model_snapshot(snapshot)
+    assert compact["mapping_mode"] == "create_initial_tree"
+    assert "available_lessons" not in compact
+
+    evidence = build_directory_evidence(snapshot)
+    snapshot["directory_evidence"] = evidence
+    annotations = [
+        {
+            "evidence_id": item["evidence_id"],
+            "title": (
+                "第1课时 探索勾股定理"
+                if index == 1
+                else str(item["title"])
+            ),
+            "chapter_title": "第一章 勾股定理",
+            "section_title": "第一节 探索勾股定理",
+            "kind": (
+                "chapter" if index == 0 else "lesson" if index == 1 else "special"
+            ),
+        }
+        for index, item in enumerate(evidence["toc_entries"])
+    ]
+
+    materialized = materialize_semantic_mapping_payload(
+        {
+            "annotations": annotations,
+            "matches": [],
+            "uncertainties": [],
+        },
+        snapshot=snapshot,
+    )
+    result = validate_semester_mapping_payload(
+        materialized,
+        snapshot=snapshot,
+    )
+
+    assert len(result["tree"]) == 1
+    assert result["tree"][0]["sections"][0]["lessons"]
+    assert result["mappings"]
+
+
+def test_semantic_mapping_still_rejects_tree_replacement_with_lessons() -> None:
+    snapshot = _snapshot()
+    snapshot["lessons"] = [
+        *_chapter_section_skeleton(),
+        {
+            "id": "lesson-existing",
+            "parent_id": "section-skeleton",
+            "node_type": "lesson",
+            "title": "第1课时 认识勾股定理",
+        },
+    ]
+    snapshot["directory_evidence"] = build_directory_evidence(snapshot)
+    raw = {
+        "tree": [
+            {
+                "key": "chapter-a",
+                "title": "第一章",
+                "sections": [
+                    {
+                        "key": "section-a",
+                        "title": "第一节",
+                        "lessons": [
+                            {
+                                "key": "lesson-a",
+                                "title": "第1课时 认识勾股定理",
+                                "duration_minutes": 45,
+                            }
+                        ],
+                    }
+                ],
+            }
+        ],
+        "mappings": [],
+        "uncertainties": [],
+    }
+
+    with pytest.raises(
+        TeachingPrepValidationError,
+        match="replace the existing",
+    ):
+        validate_semester_mapping_payload(raw, snapshot=snapshot)

@@ -140,6 +140,7 @@ describe('ModelProfilesView', () => {
       proposal_ref_id: 'proposal-1',
       proposal_revision: '1',
       error_code: null,
+      error_detail: null,
       revision: 1,
       safe_title: '合成任务',
       safe_source: '合成来源',

@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { questionBankApi, type CurriculumCatalog, type CurriculumVolume } from '../../../api/question-bank'
 import { useCurriculumScopeStore } from '../../../stores/curriculum-scope'
-import { teachingPrepCatalogApi } from '../api/catalog'
+import { teachingPrepCatalogApi, type MaterialVersion, type SemesterMaterialRecord } from '../api/catalog'
 import { teachingPrepWorkbenchApi, type LessonPreparationStatus } from '../api/workbench'
 import { useTeachingPrepCatalogStore } from '../stores/catalog'
 import { hasFormalLessonTree } from '../workbench/lessonStatus'
@@ -195,6 +195,44 @@ describe('TeachingPrepHomeView three-view shell', () => {
     expect(teachingPrepCatalogApi.listMaterials).toHaveBeenCalled()
     expect(teachingPrepCatalogApi.listMaterialParseJobs).toHaveBeenCalled()
     expect(teachingPrepCatalogApi.listSemesterMaterials).toHaveBeenCalled()
+    app.unmount()
+  })
+
+  it('loads material collections when switching from the overview to the library', async () => {
+    const { semesterId } = mockCatalogWithLessons()
+    const item: MaterialVersion = {
+      id: 'm'.repeat(32), source_id: 'm'.repeat(32), display_name: '七年级数学教材.pdf',
+      material_type: 'pdf', content_sha256: 'b'.repeat(64), safe_filename: 'math.pdf',
+      size_bytes: 20, modified_ns: null, unit_count: 1, inspection_status: 'ready',
+      availability: 'available', created_at: '2026-08-03T00:00:00Z',
+    }
+    const semesterRecord: SemesterMaterialRecord = {
+      id: 'r'.repeat(32), semester_id: semesterId, material_source_id: item.source_id,
+      display_name: item.display_name, material_role: 'textbook', parse_status: 'parsed',
+      mapping_status: 'unmapped', current_material_version_id: item.id,
+      safe_filename: item.safe_filename, current_inspection_status: 'ready',
+      current_unit_count: 1, last_parsed_version_id: item.id, has_unparsed_update: false,
+      parsed_at: '2026-08-03T00:00:00Z', is_active: true, revision: 1,
+      created_at: '2026-08-03T00:00:00Z', updated_at: '2026-08-03T00:00:00Z',
+    }
+    vi.mocked(teachingPrepCatalogApi.listMaterials).mockResolvedValue([item])
+    vi.mocked(teachingPrepCatalogApi.listSemesterMaterials).mockResolvedValue([semesterRecord])
+
+    const { app, host, router } = await mountAt()
+
+    expect(host.querySelector('[aria-label="备课首页"]')).toBeTruthy()
+    expect(teachingPrepCatalogApi.listSemesterMaterials).not.toHaveBeenCalled()
+
+    await router.push({ query: { view: 'library' } })
+    await vi.waitFor(() => {
+      expect(host.querySelector('[aria-label="资料库"]')).toBeTruthy()
+    })
+    await vi.waitFor(() => {
+      expect(teachingPrepCatalogApi.listSemesterMaterials).toHaveBeenCalled()
+    })
+    await vi.waitFor(() => {
+      expect(host.querySelector('[aria-label="资料柜"]')?.textContent).toContain('七年级数学教材.pdf')
+    })
     app.unmount()
   })
 

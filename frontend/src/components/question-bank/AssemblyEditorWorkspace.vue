@@ -84,35 +84,106 @@ function removeSection(sectionId: string): void {
   void assembly.replaceSections(editableSections.value.filter((section) => section.id !== sectionId))
 }
 
-function sectionForQuestion(questionId: number): string {
-  return editableSections.value.find((section) => section.question_ids.includes(questionId))?.id ?? ''
+interface TileGroup {
+  id: string
+  title: string
+  questions: AssemblyQuestion[]
 }
 
-function assignQuestion(questionId: number, sectionId: string): void {
-  const next = editableSections.value.map((section) => ({
-    ...section,
-    question_ids: section.question_ids.filter((id) => id !== questionId),
-  }))
-  if (sectionId) {
-    const target = next.find((section) => section.id === sectionId)
-    if (target) target.question_ids.push(questionId)
+const orderIndexById = computed(() => {
+  const map = new Map<number, number>()
+  assembly.orderedQuestions.forEach((question, index) => map.set(question.id, index + 1))
+  return map
+})
+
+// Tile grid mirrors the preview grouping: with manual sections the grid is
+// split per section, so a cross-group drop also re-assigns the section.
+const tileGroups = computed<TileGroup[]>(() => {
+  if (!editableSections.value.length) {
+    return [{ id: '', title: '', questions: assembly.orderedQuestions }]
   }
-  void assembly.replaceSections(next)
+  const groups: TileGroup[] = [{
+    id: '',
+    title: '未分节',
+    questions: assembly.orderedQuestions.filter(
+      (question) => !assignedQuestionIds.value.has(question.id),
+    ),
+  }]
+  for (const section of editableSections.value) {
+    groups.push({
+      id: section.id,
+      title: section.title,
+      questions: section.question_ids
+        .map((id) => assembly.questionMap.get(id))
+        .filter((item): item is AssemblyQuestion => item !== undefined),
+    })
+  }
+  return groups
+})
+
+const dropTarget = ref<{
+  sectionId: string
+  anchorId: number | null
+  position: 'before' | 'after'
+} | null>(null)
+
+function questionSummary(question: AssemblyQuestion): string {
+  const text = (question.question_text || '')
+    .replace(/<[^>]*>/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+  const summary = text.length > 80 ? `${text.slice(0, 80)}…` : text
+  return `${summary}\n${question.question_type || '未分类'} · ${scoreLabel(question)}`
 }
 
 function startDrag(questionId: number): void {
   draggedQuestionId.value = questionId
 }
 
-function dropBefore(questionId: number): void {
+function dragOverTile(event: DragEvent, sectionId: string, anchorId: number): void {
+  if (draggedQuestionId.value === null || draggedQuestionId.value === anchorId) {
+    dropTarget.value = null
+    return
+  }
+  const rect = (event.currentTarget as HTMLElement).getBoundingClientRect()
+  dropTarget.value = {
+    sectionId,
+    anchorId,
+    position: event.clientX < rect.left + rect.width / 2 ? 'before' : 'after',
+  }
+}
+
+function dragOverGroup(group: TileGroup): void {
+  if (draggedQuestionId.value === null) return
+  const last = group.questions[group.questions.length - 1]
+  dropTarget.value = last && last.id !== draggedQuestionId.value
+    ? { sectionId: group.id, anchorId: last.id, position: 'after' }
+    : { sectionId: group.id, anchorId: null, position: 'after' }
+}
+
+function dropOnSlot(): void {
   const dragged = draggedQuestionId.value
+  const target = dropTarget.value
   draggedQuestionId.value = null
-  if (dragged === null) return
-  void assembly.moveQuestionBefore(dragged, questionId)
+  dropTarget.value = null
+  if (dragged === null || target === null) return
+  void assembly.moveQuestionToSlot(dragged, target.sectionId, target.anchorId, target.position)
+}
+
+function endDrag(): void {
+  draggedQuestionId.value = null
+  dropTarget.value = null
 }
 
 function scoreLabel(question: AssemblyQuestion): string {
   return question.score_value === null ? '未标分' : `${question.score_value} 分`
+}
+
+// Mirrors word_renderer.answer_space_lines: choice/fill types get no reserved
+// answer area, everything else reserves three handwriting lines.
+function answerSpaceLines(questionType: string | null): number {
+  const value = String(questionType ?? '').toLowerCase()
+  return /选择|填空|choice|fill/.test(value) ? 0 : 3
 }
 
 async function deleteRecord(recordId: string): Promise<void> {
@@ -222,36 +293,47 @@ async function deleteRecord(recordId: string): Promise<void> {
           <p v-else>需要自定义大题时再添加；当前不会制造空分节。</p>
         </section>
 
-        <ol v-if="assembly.orderedQuestions.length" class="assembly-order-list">
-          <li
-            v-for="(question, index) in assembly.orderedQuestions"
-            :key="question.id"
-            draggable="true"
-            @dragstart="startDrag(question.id)"
-            @dragover.prevent
-            @drop="dropBefore(question.id)"
+        <div v-if="assembly.orderedQuestions.length" class="assembly-tiles">
+          <section
+            v-for="group in tileGroups"
+            :key="group.id || 'all'"
+            class="assembly-tile-group"
+            :class="{ 'is-drop-end': dropTarget?.sectionId === group.id && dropTarget?.anchorId === null }"
+            @dragover.prevent="dragOverGroup(group)"
+            @drop.prevent="dropOnSlot()"
           >
-            <span class="assembly-order-list__handle" aria-hidden="true">⋮⋮</span>
-            <span class="assembly-order-list__number">{{ index + 1 }}</span>
-            <span class="assembly-order-list__copy">
-              <strong>{{ question.question_text }}</strong>
-              <small>{{ question.question_type || '未分类' }} · {{ scoreLabel(question) }}</small>
-            </span>
-            <select
-              :value="sectionForQuestion(question.id)"
-              aria-label="选择分节"
-              @change="assignQuestion(question.id, ($event.target as HTMLSelectElement).value)"
-            >
-              <option value="">未分节</option>
-              <option v-for="section in editableSections" :key="section.id" :value="section.id">{{ section.title }}</option>
-            </select>
-            <span class="assembly-order-list__actions">
-              <button type="button" aria-label="上移" :disabled="index === 0" @click="assembly.moveQuestion(question.id, -1)">↑</button>
-              <button type="button" aria-label="下移" :disabled="index === assembly.orderedQuestions.length - 1" @click="assembly.moveQuestion(question.id, 1)">↓</button>
-              <button type="button" class="is-danger" aria-label="移出试卷" @click="assembly.removeQuestion(question.id)">×</button>
-            </span>
-          </li>
-        </ol>
+            <h3 v-if="group.title" class="assembly-tile-group__title">{{ group.title }}</h3>
+            <div class="assembly-tile-grid">
+              <div
+                v-for="question in group.questions"
+                :key="question.id"
+                class="assembly-tile"
+                :class="{
+                  'is-drag-source': draggedQuestionId === question.id,
+                  'is-drop-before': dropTarget?.anchorId === question.id && dropTarget?.position === 'before',
+                  'is-drop-after': dropTarget?.anchorId === question.id && dropTarget?.position === 'after',
+                }"
+                :title="questionSummary(question)"
+              >
+                <span
+                  class="assembly-tile__number"
+                  draggable="true"
+                  @dragstart="startDrag(question.id)"
+                  @dragend="endDrag"
+                  @dragover.prevent.stop="dragOverTile($event, group.id, question.id)"
+                  @drop.prevent.stop="dropOnSlot()"
+                >{{ orderIndexById.get(question.id) }}</span>
+                <button
+                  type="button"
+                  class="assembly-tile__remove"
+                  :aria-label="`移出第 ${orderIndexById.get(question.id)} 题`"
+                  @click.stop="assembly.removeQuestion(question.id)"
+                >×</button>
+              </div>
+              <p v-if="!group.questions.length" class="assembly-tile-group__empty">拖到这里</p>
+            </div>
+          </section>
+        </div>
         <p v-else class="assembly-editor-empty">试卷篮为空，请返回选题。</p>
       </aside>
 
@@ -283,9 +365,15 @@ async function deleteRecord(recordId: string): Promise<void> {
                     image-alt="试卷题目配图"
                     media-mode="paper"
                     paper-media-flow
+                    :compact-media-with-text="answerSpaceLines(question.question_type) === 0"
                     dense
                   />
                 </div>
+                <div
+                  v-if="answerSpaceLines(question.question_type) > 0"
+                  class="assembly-sheet__answer-space"
+                  aria-hidden="true"
+                ></div>
                 <div
                   v-if="assembly.draft.preview_mode === 'teacher'"
                   class="assembly-sheet__answer"

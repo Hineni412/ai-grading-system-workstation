@@ -525,6 +525,7 @@ class ApplySemesterMappingProposalRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     expected_revision: int = Field(gt=0)
+    chapter_key: str | None = Field(default=None, min_length=1, max_length=160)
 
 
 class CreateLessonNodeRequest(BaseModel):

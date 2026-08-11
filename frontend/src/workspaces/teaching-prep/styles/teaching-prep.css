@@ -141,6 +141,15 @@
   opacity: 1;
 }
 
+/* 课件文件夹聚合行：展开的明细行缩进表示归属 */
+.tp-grid__folder-member td:first-child {
+  padding-left: var(--space-6);
+}
+
+.tp-grid__folder-member .tp-cell-main {
+  font-weight: var(--font-weight-regular);
+}
+
 .tp-readiness {
   display: inline-flex;
   flex-wrap: wrap;
@@ -423,6 +432,17 @@
 .tp-import-row__actions {
   display: flex;
   gap: var(--space-1);
+}
+
+/* 文件夹聚合行加淡底色与明细行缩进，区分逐份行 */
+.tp-import-row--folder {
+  padding-inline: var(--space-3);
+  border-radius: var(--radius-control);
+  background: var(--color-bg-subtle);
+}
+
+.tp-import-row--nested {
+  padding-left: var(--space-6);
 }
 
 /* ===== 删除影响预览 ===== */
@@ -1325,6 +1345,333 @@
   .tp-slide-checker__inspector {
     max-height: none;
   }
+
+  .tp-library-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .tp-library-layout .tp-rail {
+    position: static;
+  }
+}
+
+/* ===== 资料库（方案 C）：双栏主从工作台 ===== */
+.tp-library-layout {
+  display: grid;
+  grid-template-columns: 300px minmax(0, 1fr);
+  gap: var(--space-4);
+  align-items: start;
+}
+
+.tp-rail__group-label {
+  margin: var(--space-3) 0 var(--space-1);
+  padding: 0 var(--space-2);
+  color: var(--color-text-muted);
+  font-size: var(--font-size-caption);
+  font-weight: var(--font-weight-semibold);
+  letter-spacing: 0.06em;
+}
+
+.tp-rail__item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  width: 100%;
+  padding: var(--space-2);
+  border: none;
+  border-radius: var(--radius-control);
+  background: none;
+  color: var(--color-text-primary);
+  font: inherit;
+  font-size: var(--font-size-dense);
+  text-align: left;
+  cursor: pointer;
+}
+
+.tp-rail__item:hover {
+  background: var(--color-bg-subtle);
+}
+
+.tp-rail__item.is-active {
+  background: var(--color-accent-subtle);
+  color: var(--color-accent);
+  font-weight: var(--font-weight-semibold);
+}
+
+.tp-rail__item.is-inactive {
+  color: var(--color-text-muted);
+}
+
+.tp-rail__item-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tp-rail__count {
+  flex: none;
+  min-width: 22px;
+  padding: 2px 7px;
+  border-radius: var(--radius-tag);
+  background: var(--color-bg-subtle);
+  color: var(--color-text-muted);
+  font-size: var(--font-size-caption);
+  font-weight: var(--font-weight-semibold);
+  text-align: center;
+}
+
+.tp-rail__item.is-active .tp-rail__count {
+  background: var(--color-bg-surface);
+  color: var(--color-accent);
+}
+
+.tp-rail__sub {
+  margin: 0;
+  padding: 2px var(--space-2) var(--space-1);
+  color: var(--color-text-muted);
+  font-size: var(--font-size-caption);
+  line-height: var(--line-height-body);
+}
+
+/* 顶部五步进度条 */
+.tp-progress-strip {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  width: fit-content;
+  padding: var(--space-2) var(--space-4);
+  background: var(--color-bg-surface);
+  border: var(--border-width) solid var(--color-border-default);
+  border-radius: var(--radius-panel);
+}
+
+.tp-progress-strip__node {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--color-text-muted);
+  font-size: var(--font-size-dense);
+  font-weight: var(--font-weight-medium);
+}
+
+.tp-progress-strip__dot {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: var(--radius-circle);
+  background: var(--color-bg-subtle);
+  color: var(--color-text-muted);
+  font-size: var(--font-size-caption);
+  font-weight: var(--font-weight-semibold);
+}
+
+.tp-progress-strip__node.is-done {
+  color: var(--color-success);
+}
+
+.tp-progress-strip__node.is-done .tp-progress-strip__dot {
+  background: var(--color-success-subtle);
+  color: var(--color-success);
+}
+
+.tp-progress-strip__node.is-current {
+  color: var(--color-text-primary);
+}
+
+.tp-progress-strip__node.is-current .tp-progress-strip__dot {
+  background: var(--color-accent);
+  color: var(--color-bg-surface);
+}
+
+.tp-progress-strip__hint {
+  color: var(--color-text-muted);
+  font-size: var(--font-size-caption);
+  font-weight: var(--font-weight-regular);
+}
+
+.tp-progress-strip__sep {
+  width: 34px;
+  height: 2px;
+  margin: 0 var(--space-3);
+  background: var(--color-border-default);
+}
+
+.tp-progress-strip__sep.is-done {
+  background: var(--color-success);
+}
+
+/* 章文件夹紧凑网格：一行多个小项 */
+.tp-file-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: var(--space-2);
+}
+
+.tp-file-cell {
+  display: grid;
+  gap: 2px;
+  padding: var(--space-2) var(--space-3);
+  border: var(--border-width) solid var(--color-border-subtle);
+  border-radius: var(--radius-control);
+  background: var(--color-bg-subtle);
+  color: var(--color-text-primary);
+  font: inherit;
+  font-size: var(--font-size-dense);
+  line-height: var(--line-height-body);
+  text-align: left;
+  cursor: pointer;
+}
+
+.tp-file-cell:hover {
+  border-color: var(--color-border-strong);
+}
+
+.tp-file-cell b {
+  font-weight: var(--font-weight-medium);
+}
+
+.tp-file-cell small {
+  color: var(--color-text-muted);
+}
+
+/* 章级价值预告行 */
+.tp-value-hint {
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-control);
+  background: var(--color-accent-subtle);
+  color: var(--color-accent);
+  font-size: var(--font-size-caption);
+  line-height: var(--line-height-relaxed);
+}
+
+/* 课时树预览：课时 chips */
+.tp-lesson-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3) var(--space-3);
+}
+
+.tp-lesson-chips span {
+  padding: 4px var(--space-2);
+  border: var(--border-width) solid var(--color-border-subtle);
+  border-radius: var(--radius-control);
+  background: var(--color-bg-subtle);
+  font-size: var(--font-size-caption);
+}
+
+/* 章折叠（课时树预览与章文件夹共用） */
+.tp-chapter-folder {
+  border: var(--border-width) solid var(--color-border-subtle);
+  border-radius: var(--radius-control);
+  background: var(--color-bg-surface);
+}
+
+.tp-chapter-folder > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--font-size-dense);
+  font-weight: var(--font-weight-semibold);
+  cursor: pointer;
+  list-style: none;
+}
+
+.tp-chapter-folder > summary::-webkit-details-marker {
+  display: none;
+}
+
+.tp-chapter-folder__actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding: 0 var(--space-3) var(--space-3);
+}
+
+/* 教辅未对应页段区块 */
+.tp-topic-box {
+  display: grid;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  border: var(--border-width) dashed var(--color-border-strong);
+  border-radius: var(--radius-control);
+  background: var(--color-bg-surface);
+}
+
+.tp-topic-box h3 {
+  margin: 0;
+  font-size: var(--font-size-h3);
+}
+
+/* 收起的 AI 入口 */
+.tp-ai-reinfer {
+  border: var(--border-width) solid var(--color-border-subtle);
+  border-radius: var(--radius-control);
+  background: var(--color-bg-surface);
+}
+
+.tp-ai-reinfer > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-2) var(--space-3);
+  color: var(--color-accent);
+  font-size: var(--font-size-dense);
+  font-weight: var(--font-weight-semibold);
+  cursor: pointer;
+  list-style: none;
+}
+
+.tp-ai-reinfer > summary::-webkit-details-marker {
+  display: none;
+}
+
+.tp-ai-reinfer > summary::after {
+  content: '›';
+  color: var(--color-text-muted);
+}
+
+.tp-ai-reinfer[open] > summary::after {
+  content: '‹';
+}
+
+.tp-ai-reinfer__body {
+  display: grid;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border-top: var(--border-width) solid var(--color-border-subtle);
+  font-size: var(--font-size-dense);
+}
+
+/* 主区头部（与原型 c-main__head 对应） */
+.tp-main-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-4);
+}
+
+.tp-main-head h2 {
+  margin: 0 0 var(--space-1);
+  font-size: var(--font-size-h2);
+}
+
+.tp-main-head p {
+  margin: 0;
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-dense);
+}
+
+.tp-eyebrow {
+  color: var(--color-accent);
+  font-size: var(--font-size-caption);
+  font-weight: var(--font-weight-semibold);
+  letter-spacing: 0.1em;
 }
 
 @media (prefers-reduced-motion: reduce) {

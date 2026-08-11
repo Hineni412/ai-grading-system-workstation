@@ -64,7 +64,7 @@ function openPaper(paper: QuestionBankPaper): void {
     pageSize: 20,
     paperIds: [paper.id],
     tagStatus: 'all',
-    sort: 'difficulty_desc',
+    sort: 'paper_order',
   })
 }
 

@@ -20,6 +20,12 @@ function fileChangeEvent(...files: File[]): Event {
   return { target: { files, value: '' } } as unknown as Event
 }
 
+function folderFile(path: string): File {
+  const file = new File(['x'], path.split('/').pop()!)
+  Object.defineProperty(file, 'webkitRelativePath', { value: path })
+  return file
+}
+
 beforeEach(() => {
   setActivePinia(createPinia())
 })
@@ -101,6 +107,64 @@ describe('material import queue', () => {
     expect(queue.pendingImports.value).toHaveLength(1)
     expect(queue.pendingImports.value[0]?.file.name).toBe('b.pdf')
   })
+
+  it('groups folder-imported PPTs by folder batch and keeps loose files ungrouped', () => {
+    const queue = useMaterialImportQueue()
+    queue.queuePptFolder(fileChangeEvent(
+      folderFile('八上课件/第一章/一次函数.pptx'),
+      folderFile('八上课件/第一章/二次函数.pptx'),
+    ))
+    queue.queueFiles(fileChangeEvent(new File(['z'], '散装讲义.pdf')))
+
+    expect(queue.pendingImports.value).toHaveLength(3)
+    expect(queue.importFolderGroups.value).toHaveLength(1)
+    const group = queue.importFolderGroups.value[0]!
+    expect(group.displayName).toBe('八上课件')
+    expect(group.items).toHaveLength(2)
+    expect(queue.loosePendingImports.value).toHaveLength(1)
+    expect(queue.loosePendingImports.value[0]?.file.name).toBe('散装讲义.pdf')
+  })
+
+  it('aggregates folder progress and overall state', () => {
+    const queue = useMaterialImportQueue()
+    queue.queuePptFolder(fileChangeEvent(
+      folderFile('八上课件/一次函数.pptx'),
+      folderFile('八上课件/二次函数.pptx'),
+      folderFile('八上课件/反比例函数.pptx'),
+    ))
+    const group = queue.importFolderGroups.value[0]!
+
+    expect(queue.folderGroupStateLabel(group)).toBe('等待导入')
+    expect(queue.folderGroupNeedsAttention(group)).toBe(false)
+
+    group.items[0]!.state = 'done'
+    group.items[1]!.state = 'done'
+    expect(queue.folderGroupCompletedCount(group)).toBe(2)
+    expect(queue.folderGroupProgressPercent(group)).toBe(67)
+    expect(queue.folderGroupNeedsAttention(group)).toBe(false)
+
+    group.items[2]!.state = 'failed'
+    expect(queue.folderGroupStateLabel(group)).toBe('1 份未完成')
+    expect(queue.folderGroupNeedsAttention(group)).toBe(true)
+
+    group.items[2]!.state = 'done'
+    expect(queue.folderGroupStateLabel(group)).toBe('全部完成')
+  })
+
+  it('applies a folder-level role to every member item', () => {
+    const queue = useMaterialImportQueue()
+    queue.queuePptFolder(fileChangeEvent(
+      folderFile('八上课件/一次函数.pptx'),
+      folderFile('八上课件/二次函数.pptx'),
+    ))
+    const group = queue.importFolderGroups.value[0]!
+    expect(queue.folderGroupRole(group)).toBe('reference_ppt')
+
+    queue.setFolderGroupRole(group, 'supplement')
+
+    expect(group.items.every(item => item.role === 'supplement')).toBe(true)
+    expect(queue.folderGroupRole(group)).toBe('supplement')
+  })
 })
 
 describe('ImportPanel', () => {
@@ -152,6 +216,75 @@ describe('ImportPanel', () => {
 
     expect(queue.pendingImports.value).toHaveLength(0)
     expect(host.textContent).not.toContain('讲义.pdf')
+    app.unmount()
+  })
+
+  it('renders folder imports as one aggregate row and expands member details', async () => {
+    const { app, host, queue } = await mountPanel()
+    queue.queuePptFolder(fileChangeEvent(
+      folderFile('八上课件/一次函数.pptx'),
+      folderFile('八上课件/二次函数.pptx'),
+    ))
+    queue.queueFiles(fileChangeEvent(new File(['z'], '散装讲义.pdf')))
+    await nextTick()
+
+    // 默认收起：只显示文件夹聚合行，散装文件保持逐份行
+    const folderRow = host.querySelector('.tp-import-row--folder')
+    expect(folderRow?.textContent).toContain('八上课件')
+    expect(folderRow?.textContent).toContain('2 份 PPTX')
+    expect(folderRow?.textContent).toContain('已完成 0/2')
+    expect(host.textContent).not.toContain('一次函数.pptx')
+    expect(host.textContent).toContain('散装讲义.pdf')
+
+    const toggle = [...host.querySelectorAll('button')]
+      .find(button => button.textContent?.trim() === '展开明细（2）')
+    expect(toggle?.getAttribute('aria-expanded')).toBe('false')
+    toggle?.click()
+    await nextTick()
+
+    expect(host.textContent).toContain('一次函数.pptx')
+    expect(host.textContent).toContain('二次函数.pptx')
+    expect(host.querySelectorAll('.tp-import-row--nested')).toHaveLength(2)
+
+    ;[...host.querySelectorAll('button')]
+      .find(button => button.textContent?.trim() === '收起明细')?.click()
+    await nextTick()
+    expect(host.textContent).not.toContain('一次函数.pptx')
+    app.unmount()
+  })
+
+  it('expands a folder row by default when a member failed', async () => {
+    const { app, host, queue } = await mountPanel()
+    queue.queuePptFolder(fileChangeEvent(
+      folderFile('八上课件/一次函数.pptx'),
+      folderFile('八上课件/二次函数.pptx'),
+    ))
+    queue.pendingImports.value[0]!.state = 'failed'
+    await nextTick()
+
+    expect(host.textContent).toContain('1 份未完成')
+    expect(host.textContent).toContain('一次函数.pptx')
+    const toggle = [...host.querySelectorAll('button')]
+      .find(button => button.textContent?.trim() === '收起明细')
+    expect(toggle?.getAttribute('aria-expanded')).toBe('true')
+    app.unmount()
+  })
+
+  it('applies the folder role select to every member item', async () => {
+    const { app, host, queue } = await mountPanel()
+    queue.queuePptFolder(fileChangeEvent(
+      folderFile('八上课件/一次函数.pptx'),
+      folderFile('八上课件/二次函数.pptx'),
+    ))
+    await nextTick()
+
+    const select = host.querySelector<HTMLSelectElement>('.tp-import-row--folder select')
+    expect(select?.value).toBe('reference_ppt')
+    select!.value = 'supplement'
+    select!.dispatchEvent(new Event('change'))
+    await nextTick()
+
+    expect(queue.pendingImports.value.every(item => item.role === 'supplement')).toBe(true)
     app.unmount()
   })
 })
