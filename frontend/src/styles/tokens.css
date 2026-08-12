@@ -91,4 +91,13 @@
   --duration-base: 160ms;
   --duration-drawer: 220ms;
   --duration-reduced: 0.01ms;
+
+  /* 科技感微特效专用（frontend/src/styles/ui-effects.css） */
+  --fx-shimmer-stripe: rgba(255, 255, 255, 0.14);
+  --fx-pulse-accent: rgba(19, 94, 107, 0.22);
+  --fx-pulse-accent-soft: rgba(19, 94, 107, 0.08);
+  --fx-shadow-primary-hover: 0 4px 14px rgba(19, 94, 107, 0.28);
+  --fx-shadow-card-hover:
+    0 2px 4px rgba(28, 39, 51, 0.06),
+    0 12px 28px -10px rgba(28, 39, 51, 0.14);
 }
