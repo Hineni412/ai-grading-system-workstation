@@ -1336,15 +1336,19 @@ class SemesterMappingRepository:
             """,
             (str(semester["curriculum_id"]),),
         ).fetchall()
+        # The source-state digest guards "semester lessons or materials
+        # changed", so the semester dict only carries identity fields.
+        # Semester metadata (revision, planned_new_lesson_count, status)
+        # changes on archive/unarchive/rename and must not invalidate an
+        # in-flight proposal.  Compatibility boundary: proposals stored
+        # before this fix kept revision/planned_new_lesson_count in the
+        # digest input, so their stored fingerprint mismatches the new
+        # one on first check; those proposals must be regenerated.
         snapshot = {
             "semester": {
                 "semester_id": semester_id,
                 "school_year": str(semester["school_year"]),
                 "term": str(semester["term"]),
-                "planned_new_lesson_count": int(
-                    semester["planned_new_lesson_count"]
-                ),
-                "revision": int(semester["revision"]),
                 "curriculum_id": str(semester["curriculum_id"]),
                 "curriculum_title": str(semester["curriculum_title"]),
             },

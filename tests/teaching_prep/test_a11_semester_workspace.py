@@ -1381,6 +1381,83 @@ def test_indeterminate_semester_mapping_model_failure_blocks_a_new_call(
     assert len(fake.calls) == 2
 
 
+def test_stale_send_scope_does_not_block_semester_mapping_discard(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths, base_service = _migrated_service(tmp_path, monkeypatch)
+    semester, lesson_ids = _semester(base_service)
+    version, _created = base_service.register_material_file(
+        request_token="mapping-stale-scope-file",
+        path=_pdf(tmp_path / "stale-scope-workbook.pdf", ["L1"]),
+        display_name="合成指纹失配教辅",
+    )
+    record, _created = base_service.attach_semester_material(
+        semester.id,
+        request_token="mapping-stale-scope-attach",
+        material_version_id=version.id,
+        material_role="exercise_workbook",
+    )
+    base_service.parse_material_version(version.id)
+    scope_digest = str(
+        base_service.semester_mapping_preflight(
+            semester.id,
+            material_record_ids=[record.id],
+        )["source_state_sha256"]
+    )
+    fake = _FakeSemesterMappingModel(
+        {
+            "tree": [],
+            "mappings": [{
+                "material_record_id": record.id,
+                "lesson_ref": lesson_ids[0],
+                "start_unit": 1,
+                "end_unit": 1,
+            }],
+            "uncertainties": [],
+        },
+        failure=TimeoutError("synthetic response loss"),
+    )
+    service = TeachingPrepService(
+        paths.workspace_dir("teaching-prep"),
+        semester_mapping_model_adapter=fake,
+    )
+    with pytest.raises(TeachingPrepStateError, match="result is unknown"):
+        service.generate_semester_mapping_proposal(
+            semester.id,
+            operation_id="semester-mapping-stale-scope-0001",
+            material_record_ids=[record.id],
+        )
+
+    target = next(
+        item
+        for item in base_service.list_semester_materials(semester.id)
+        if item.id == record.id
+    )
+    base_service.update_semester_material(
+        record.id,
+        expected_revision=target.revision,
+        material_role=target.material_role,
+        mapping_status=target.mapping_status,
+        is_active=target.is_active,
+    )
+
+    assert service.discard_semester_mapping_result_unknown(
+        semester.id,
+        material_record_ids=[record.id],
+        expected_source_state_sha256=scope_digest,
+    ) is True
+    fake.failure = None
+    proposal, created = service.generate_semester_mapping_proposal(
+        semester.id,
+        operation_id="semester-mapping-stale-scope-0002",
+        material_record_ids=[record.id],
+    )
+
+    assert created is True
+    assert proposal.status == "proposed"
+
+
 def test_semester_mapping_cancellation_after_model_return_discards_proposal(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

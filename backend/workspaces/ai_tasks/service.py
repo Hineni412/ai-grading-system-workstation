@@ -219,11 +219,14 @@ class WorkspaceAITaskService:
                 response_persisted=True,
             )
         except KnownAdapterFailure as exc:
+            failure_status = str(getattr(exc, "status", "failed"))
+            if failure_status not in {"failed", "failed_before_dispatch"}:
+                failure_status = "failed"
             completed = self.store.fail(
                 task_id,
-                status="failed",
+                status=failure_status,
                 error_code=exc.code,
-                response_persisted=True,
+                response_persisted=failure_status == "failed",
             )
         except Exception:
             LOGGER.exception("Workspace AI adapter failed for task %s", task_id)

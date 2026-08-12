@@ -264,7 +264,6 @@ async function applyProposal(): Promise<void> {
 
 /* ===== 让 AI 重新推断对应关系（自 MappingPanel 迁移，收进 <details>） ===== */
 
-const aiContextReady = ref(false)
 const preparingScope = ref(false)
 let refreshedMappingTaskRevision = ''
 
@@ -279,7 +278,13 @@ onBeforeUnmount(() => {
   if (mappingClockTimer !== null) globalThis.clearInterval(mappingClockTimer)
 })
 
-const currentMappingPreflight = computed(() => catalog.currentSemesterMappingPreflight)
+const currentMappingPreflight = computed(() => {
+  const current = record.value
+  // catalog 里缓存的发送范围属于全局选中书；组件按书实例化，只有选中书恰好是本书时才能用，
+  // 否则视为没有准备好，避免把另一本书的发送范围配到本书上发送。
+  if (!current || catalog.selectedSemesterMaterial?.id !== current.id) return null
+  return catalog.currentSemesterMappingPreflight
+})
 const currentMappingJob = computed(() => catalog.currentSemesterMappingJob)
 const currentMappingJobSyncError = computed(() => catalog.currentSemesterMappingJobSyncError)
 
@@ -436,10 +441,9 @@ async function ensureAiContext(): Promise<void> {
     if (catalog.selectedMaterialId !== item.id) {
       await catalog.openMaterial(item)
     }
-    if (!aiContextReady.value) {
+    if (!currentMappingPreflight.value) {
       notice('正在检查本次发送范围，不会自动调用模型…')
       await catalog.prepareSemesterMapping([current.id])
-      aiContextReady.value = true
       notice('发送范围已准备好；确认后才会产生一次模型调用。')
     }
   } catch {
@@ -475,9 +479,8 @@ async function generateSemesterMapping(): Promise<void> {
 
 async function retrySemesterMapping(): Promise<void> {
   if (!mappingRetryAvailable.value) return
-  aiContextReady.value = false
   await ensureAiContext()
-  if (catalog.currentSemesterMappingPreflight) {
+  if (currentMappingPreflight.value) {
     await generateSemesterMapping()
   }
 }

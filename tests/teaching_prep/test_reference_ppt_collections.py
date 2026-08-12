@@ -372,6 +372,51 @@ def _create_collection(tmp_path, monkeypatch):
     return service, semester, collection
 
 
+def test_semester_metadata_change_keeps_pending_proposal_reviewable(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    # Regression: semester metadata bumps teaching_semesters.revision but
+    # must not invalidate the source-state fingerprint of a pending
+    # local_reference_ppt_names proposal (previously every metadata update
+    # made review/apply fail with 409 "semester lessons or materials
+    # changed").
+    service, semester, collection = _create_collection(tmp_path, monkeypatch)
+    proposal = next(
+        item
+        for item in service.list_semester_mapping_proposals(semester.id)
+        if item.id == collection.mapping_proposal_id
+    )
+    assert proposal.payload["generation_source"] == (
+        "local_reference_ppt_names"
+    )
+
+    archived = service.update_semester(
+        semester.id,
+        expected_revision=semester.revision,
+        planned_new_lesson_count=47,
+        status="archived",
+    )
+    restored = service.update_semester(
+        semester.id,
+        expected_revision=archived.revision,
+        planned_new_lesson_count=48,
+        status="active",
+    )
+    assert restored.revision == semester.revision + 2
+
+    reviewed = service.accept_local_reference_ppt_mappings(
+        proposal.id,
+        expected_revision=proposal.revision,
+    )
+    assert reviewed.payload["mappings"][0]["decision"] == "accepted"
+    applied = service.apply_semester_mapping_proposal(
+        reviewed.id,
+        expected_revision=reviewed.revision,
+    )
+    assert applied.status == "applied"
+
+
 def test_deactivated_collection_leaves_list_until_restored(
     tmp_path,
     monkeypatch,

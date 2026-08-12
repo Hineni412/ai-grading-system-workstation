@@ -15,10 +15,10 @@ from backend.workspaces.ai_tasks.models import (
     HandoffSnapshot,
     KnownAdapterFailure,
     OpaqueRef,
-    RevisionConflictError,
     StoredTask,
 )
 from backend.teaching_prep.domain.errors import (
+    TeachingPrepConflictError,
     TeachingPrepRetryAvailableError,
     TeachingPrepValidationError,
 )
@@ -46,6 +46,18 @@ class SemesterMappingRetryAvailableFailure(KnownAdapterFailure):
         super().__init__(message)
         if code:
             self.code = code
+
+
+class SemesterMappingScopeStaleFailure(KnownAdapterFailure):
+    """The stored send-scope fingerprint no longer matches local state.
+
+    Raised only from the pre-dispatch scope check, so the task provably
+    sent nothing; record it as failed before dispatch instead of an
+    indeterminate result.
+    """
+
+    code = "semester_mapping_scope_stale"
+    status = "failed_before_dispatch"
 
 
 class SlideProposalRetryAvailableFailure(KnownAdapterFailure):
@@ -93,6 +105,8 @@ class TeachingPrepAITaskAdapter:
                     str(exc),
                     code=exc.error_code,
                 ) from exc
+            except TeachingPrepConflictError as exc:
+                raise SemesterMappingScopeStaleFailure(str(exc)) from exc
             result = self._result(task, proposal.id, str(proposal.revision))
         elif task.task_kind == "teaching_prep.lesson_plan":
             pack_ref = _require_context(task, "resource_pack")

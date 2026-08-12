@@ -193,6 +193,10 @@ class InvalidAdapterResultError(WorkspaceAITaskError):
 
 class KnownAdapterFailure(WorkspaceAITaskError):
     code = "adapter_failed"
+    # Terminal task status recorded for this failure.  Adapters may use
+    # "failed_before_dispatch" when the failure provably happened before
+    # any model request was sent; the default stays "failed".
+    status = "failed"
 
 
 class RevisionConflictError(WorkspaceAITaskError):

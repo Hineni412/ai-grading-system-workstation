@@ -1615,16 +1615,16 @@ class TeachingPrepService:
             raise TeachingPrepValidationError(
                 "semester mapping handles one material at a time"
             )
-        _snapshot, source_digest = self.semester_mapping.snapshot(
-            clean_semester_id,
-            clean_material_ids,
-        )
-        if (
-            expected_source_state_sha256 is not None
-            and source_digest != str(expected_source_state_sha256).strip()
-        ):
-            raise TeachingPrepConflictError(
-                "semester lessons or materials changed; check the send scope again"
+        if expected_source_state_sha256 is not None:
+            # The no-resend guard row was written under the task's own
+            # stored digest, so discard must address that exact hash even
+            # when the semester has changed since; a stale scope must not
+            # block an explicit discard.
+            source_digest = str(expected_source_state_sha256).strip()
+        else:
+            _snapshot, source_digest = self.semester_mapping.snapshot(
+                clean_semester_id,
+                clean_material_ids,
             )
         request_hash = _stable_hash(
             {

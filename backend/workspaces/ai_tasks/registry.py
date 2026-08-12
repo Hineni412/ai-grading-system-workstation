@@ -84,6 +84,10 @@ _ERROR_DETAILS = {
     "semester_mapping_retry_available": (
         "本次整理没有产出结果；重新检查发送范围后可以再试一次。"
     ),
+    "semester_mapping_scope_stale": (
+        "课时树或资料在准备后已变化，本次没有发送模型请求；"
+        "重新检查发送范围后可以再次发送。"
+    ),
     "semester_mapping_response_failed_local_validation": (
         "模型建议未通过本机校验，本次整理没有产出结果。"
     ),
