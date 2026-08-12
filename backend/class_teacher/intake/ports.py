@@ -115,6 +115,7 @@ class SharedWorkspaceAITaskPort:
         if task_kind not in {
             "class_teacher.intake_triage",
             "class_teacher.draft_revision",
+            "class_teacher.affair_flow_revision",
         }:
             raise ValueError("class-teacher workspace AI task kind is invalid")
         snapshot = self.service.prepare(

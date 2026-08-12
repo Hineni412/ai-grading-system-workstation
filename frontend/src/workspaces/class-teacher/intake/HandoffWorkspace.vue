@@ -70,7 +70,17 @@ type SopProfileUpdateDraft = {
   [key: string]: unknown
 }
 
+type PlanCandidate = {
+  label: string
+  reason: string
+  suggested: boolean
+  checked: boolean
+  custom?: boolean
+}
+
 const planActions = ref<PlanActionDraft[]>([])
+const planCandidates = ref<PlanCandidate[]>([])
+const customCandidate = ref('')
 const sopProfileUpdates = ref<SopProfileUpdateDraft[]>([])
 let planActionSequence = 0
 const sopTemplates = [
@@ -186,6 +196,26 @@ function hydratePlanActions(): void {
         : [],
     }
   })
+}
+
+function hydratePlanCandidates(): void {
+  const raw = Array.isArray(content.value.candidates) ? content.value.candidates : []
+  planCandidates.value = raw
+    .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object' && !Array.isArray(item))
+    .map((item) => ({
+      label: String(item.label ?? '').trim(),
+      reason: String(item.reason ?? '').trim(),
+      suggested: Boolean(item.suggested),
+      checked: Boolean(item.suggested),
+    }))
+    .filter((item) => item.label)
+}
+
+function addCustomCandidate(): void {
+  const label = customCandidate.value.trim()
+  if (!label) return
+  planCandidates.value.push({ label, reason: '教师补充', suggested: true, checked: true, custom: true })
+  customCandidate.value = ''
 }
 
 function serializedPlanActions(): Array<Record<string, unknown>> {
@@ -345,6 +375,7 @@ async function load(): Promise<void> {
     selectedSubjectId.value = loaded.subject_refs[0]?.id ?? ''
     selectedSubjectRevision.value = loaded.subject_refs[0]?.revision ?? ''
     hydratePlanActions()
+    hydratePlanCandidates()
     hydrateSopProfileUpdates()
     if (isStudentRecord.value) {
       const preference = await intakeApi.homeroom()
@@ -466,6 +497,17 @@ async function requestRevision(): Promise<void> {
   finally { busy.value = false }
 }
 
+async function requestCandidateBreakdown(): Promise<void> {
+  const kept = planCandidates.value.filter((item) => item.checked).map((item) => item.label)
+  const removed = planCandidates.value.filter((item) => !item.checked && !item.custom).map((item) => item.label)
+  if (!kept.length) { error.value = '请至少保留一项候选事项。'; return }
+  const parts = [`请按教师勾选重新拆解这个计划的行动：保留并落实以下事项：${kept.join('、')}。`]
+  if (removed.length) parts.push(`移除不需要的事项：${removed.join('、')}。`)
+  parts.push('保持计划目标和总截止日不变；行动保留必要的前置依赖，行动日期不晚于总截止日。')
+  revisionInstruction.value = parts.join('')
+  await requestRevision()
+}
+
 async function discard(): Promise<void> {
   if (!draft.value || busy.value) return
   busy.value = true
@@ -495,7 +537,7 @@ onMounted(() => { void load() })
 
     <div v-else-if="draft.handling_mode === 'plan_calendar'" class="plan-layout">
       <aside><h2>事务简报</h2><label><span>目标</span><input v-model="planTitle" maxlength="240"></label><label><span>最终截止</span><input v-model="deadline" type="datetime-local"></label><p>{{ summary }}</p></aside>
-      <main><div class="plan-actions__heading"><div><h2>行动与日期</h2><p>逐项核对说明、日期和前置依赖；空日期不会自动套用总截止。</p></div><button type="button" @click="addPlanAction">增加行动</button></div><div class="plan-actions"><article v-for="(action, index) in planActions" :key="action.draft_action_id" class="plan-action"><header><strong>行动 {{ index + 1 }}</strong><button type="button" @click="removePlanAction(action.draft_action_id)">移除</button></header><label><span>行动名称</span><input v-model="action.title" maxlength="240"></label><label><span>截止时间</span><input v-model="action.due_at" type="datetime-local"></label><label><span>行动说明</span><textarea v-model="action.details" rows="3" maxlength="2000"></textarea></label><fieldset><legend>需要先完成</legend><label v-for="candidate in planActions.filter((item) => item.draft_action_id !== action.draft_action_id)" :key="candidate.draft_action_id" class="dependency"><input v-model="action.depends_on_draft_action_ids" type="checkbox" :value="candidate.draft_action_id"><span>{{ candidate.title || '未命名行动' }}</span></label><small v-if="planActions.length < 2">当前没有其他行动可作为前置依赖。</small></fieldset></article><p v-if="!planActions.length" class="empty-plan">还没有行动。请先增加至少一项，再加入正式计划。</p></div></main>
+      <main><section v-if="planCandidates.length" class="plan-candidates"><div class="plan-candidates__heading"><div><h2>候选事项</h2><p>AI 按这类事务的常见准备列出；勾选后让 AI 按你的选择重新拆解行动，也可以只作备忘参考。</p></div><button type="button" :disabled="busy" @click="requestCandidateBreakdown">按勾选重新拆解</button></div><label v-for="candidate in planCandidates" :key="candidate.label" class="plan-candidate"><input v-model="candidate.checked" type="checkbox"><span><strong>{{ candidate.label }}</strong><small>{{ candidate.reason }}</small></span></label><div class="plan-candidate-add"><input v-model="customCandidate" maxlength="120" placeholder="补充一个 AI 没想到的事项" @keyup.enter="addCustomCandidate"><button type="button" @click="addCustomCandidate">加入清单</button></div></section><div class="plan-actions__heading"><div><h2>行动与日期</h2><p>逐项核对说明、日期和前置依赖；空日期不会自动套用总截止。</p></div><button type="button" @click="addPlanAction">增加行动</button></div><div class="plan-actions"><article v-for="(action, index) in planActions" :key="action.draft_action_id" class="plan-action"><header><strong>行动 {{ index + 1 }}</strong><button type="button" @click="removePlanAction(action.draft_action_id)">移除</button></header><label><span>行动名称</span><input v-model="action.title" maxlength="240"></label><label><span>截止时间</span><input v-model="action.due_at" type="datetime-local"></label><label><span>行动说明</span><textarea v-model="action.details" rows="3" maxlength="2000"></textarea></label><fieldset><legend>需要先完成</legend><label v-for="candidate in planActions.filter((item) => item.draft_action_id !== action.draft_action_id)" :key="candidate.draft_action_id" class="dependency"><input v-model="action.depends_on_draft_action_ids" type="checkbox" :value="candidate.draft_action_id"><span>{{ candidate.title || '未命名行动' }}</span></label><small v-if="planActions.length < 2">当前没有其他行动可作为前置依赖。</small></fieldset></article><p v-if="!planActions.length" class="empty-plan">还没有行动。请先增加至少一项，再加入正式计划。</p></div></main>
       <aside class="review"><h2>当前决定</h2><p>日期可修改，依赖也由你逐项确认；系统不会把并行行动静默改成串行，也不会用总截止填补空日期。所有行动正式加入同一计划，不在首页复制另一份。</p></aside>
     </div>
 
@@ -543,6 +585,7 @@ onMounted(() => { void load() })
 </template>
 
 <style scoped>
+.plan-candidates{margin-bottom:20px;padding:16px;border:1px solid var(--color-border-strong);border-radius:12px;background:var(--color-bg-surface)}.plan-candidates__heading{display:flex;justify-content:space-between;align-items:flex-start;gap:16px;margin-bottom:12px}.plan-candidates__heading h2,.plan-candidates__heading p{margin:0}.plan-candidates__heading p,.plan-candidate small{font-size:12px;color:var(--color-text-secondary)}.plan-candidates__heading button{min-height:34px;padding:0 11px;border:1px solid var(--color-border-strong);border-radius:8px;background:var(--color-bg-subtle);color:var(--color-info);font:inherit;white-space:nowrap}.plan-candidate{display:flex;grid-template-columns:none;align-items:flex-start;gap:9px;margin-bottom:9px;font-weight:500}.plan-candidate input{width:auto;margin-top:3px}.plan-candidate span{display:grid;gap:2px}.plan-candidate-add{display:flex;gap:8px;margin-top:10px}.plan-candidate-add input{flex:1}.plan-candidate-add button{min-height:34px;padding:0 11px;border:1px solid var(--color-border-strong);border-radius:8px;background:var(--color-bg-subtle);font:inherit;white-space:nowrap}
 .plan-actions__heading{display:flex;justify-content:space-between;align-items:flex-start;gap:16px}.plan-actions__heading h2,.plan-actions__heading p{margin:0}.plan-actions__heading button,.plan-action header button{min-height:34px;padding:0 11px;border:1px solid var(--color-border-strong);border-radius:8px;background:var(--color-bg-surface);color:var(--color-info);font:inherit}.plan-actions{display:grid;gap:14px;margin-top:18px}.plan-action{padding:16px;border:1px solid var(--color-border-strong);border-radius:12px;background:var(--color-info-subtle)}.plan-action>header{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px}.plan-action fieldset{display:grid;gap:8px;padding:11px;border:1px solid var(--color-border-strong);border-radius:9px}.plan-action legend{padding:0 5px;font-size:13px;font-weight:800}.plan-action .dependency{display:flex;align-items:center;gap:8px;margin:0;font-weight:500}.plan-action .dependency input{width:auto}.empty-plan{padding:18px;border:1px dashed var(--color-border-strong);border-radius:10px;text-align:center}
 .handoff-page{--mode:var(--color-accent);display:grid;gap:0;color:var(--color-text-primary)}.handoff-page[data-mode="plan_calendar"]{--mode:var(--color-info)}.handoff-page[data-mode="sop"]{--mode:var(--color-warning)}.handoff-page__header{display:flex;justify-content:space-between;align-items:center;gap:20px;padding:22px 26px;border:1px solid var(--color-border-default);border-top:5px solid var(--mode);border-radius:16px 16px 0 0;background:var(--color-bg-subtle)}.handoff-page__header p{margin:0;color:var(--mode);font-size:12px;font-weight:800;letter-spacing:.08em}.handoff-page__header h1{margin:3px 0;font-size:30px}.handoff-page__header span{color:var(--color-text-secondary)}.handoff-page__header button,footer button,.ai-revision button{min-height:40px;padding:0 14px;border:1px solid var(--color-border-default);border-radius:9px;background:var(--color-bg-surface);font:inherit}.record-layout,.plan-layout,.sop-layout{display:grid;grid-template-columns:minmax(260px,.9fr) minmax(380px,1.5fr) minmax(220px,.72fr);min-height:520px;border-inline:1px solid var(--color-border-default)}.record-layout>*,.plan-layout>*,.sop-layout>*{padding:22px;border-right:1px solid var(--color-border-default);background:var(--color-bg-subtle)}.record-layout>main,.plan-layout>main,.sop-layout>main{background:var(--color-bg-surface)}.sop-layout{grid-template-areas:"safety safety safety" "left middle right";grid-template-rows:auto 1fr}.sop-layout .safety{grid-area:safety;padding:14px 22px;border-bottom:1px solid var(--color-warning);background:var(--color-warning-subtle)}.safety p{display:inline;margin-left:14px}.sop-layout>aside:first-of-type{grid-area:left}.sop-layout>main{grid-area:middle}.sop-layout>.review{grid-area:right}.handoff-page h2{margin:0 0 18px;font-size:17px}.handoff-page label{display:grid;gap:6px;margin-bottom:14px;font-size:13px;font-weight:700}.handoff-page input,.handoff-page select,.handoff-page textarea{width:100%;padding:10px;border:1px solid var(--color-border-strong);border-radius:8px;background:var(--color-bg-surface);font:inherit;line-height:1.5}.handoff-page main p,.review p,.review li,.handoff-page aside p{color:var(--color-text-secondary);line-height:1.55}.sop-layout ol{display:grid;gap:13px;padding:0;list-style:none}.sop-layout li{display:grid;gap:5px;padding:15px;border-left:4px solid var(--mode);background:var(--color-warning-subtle)}.sop-layout li small{color:var(--color-warning);font-weight:800}.sop-layout li span{color:var(--color-text-secondary)}.student-profiles,.verify-list{margin-top:18px;padding-top:16px;border-top:1px solid var(--color-border-default)}.student-profiles h3,.verify-list h3{margin:0 0 6px;font-size:14px}.student-profiles .section-note{margin:0 0 10px;font-size:12px}.student-profiles article{display:grid;gap:7px;margin-top:10px;padding:12px;border:1px solid var(--color-border-default);border-radius:10px;background:var(--color-bg-surface)}.student-profiles article header{display:flex;justify-content:space-between;gap:8px}.student-profiles article header span{color:var(--color-text-secondary);font-size:12px}.student-profiles article p{margin:0}.student-profiles article div{display:grid;gap:3px;font-size:12px}.student-profiles article div span{color:var(--color-text-secondary)}.verify-list ul{display:grid;gap:7px;margin:8px 0 0;padding-left:18px}.verify-list li{padding:0;border:0;background:transparent}.ai-revision{display:grid;grid-template-columns:minmax(220px,.8fr) minmax(320px,1.5fr) auto;align-items:center;gap:16px;padding:18px 22px;border:1px solid var(--color-border-default);background:var(--color-warning-subtle)}.ai-revision h2,.ai-revision p{margin:0}.ai-revision p{margin-top:4px;color:var(--color-text-secondary);font-size:12px}.ai-revision textarea{resize:vertical}.ai-revision button{border-color:var(--mode);color:var(--mode);font-weight:750}footer{display:flex;align-items:center;justify-content:flex-end;gap:10px;padding:14px 20px;border:1px solid var(--color-border-default);border-radius:0 0 16px 16px;background:var(--color-bg-app);position:sticky;bottom:0}footer span{margin-right:auto;color:var(--color-text-secondary);font-size:12px}footer .primary{border-color:var(--mode);background:var(--mode);color:var(--color-bg-surface);font-weight:750}.status,.error{margin:0;padding:10px 18px;border-inline:1px solid var(--color-border-default)}.status{background:var(--color-success-subtle)}.error{background:var(--color-danger-subtle);color:var(--color-danger)}.loading{min-height:420px;display:grid;place-items:center}.handoff-page button:focus-visible,.handoff-page input:focus-visible,.handoff-page select:focus-visible,.handoff-page textarea:focus-visible{outline:3px solid var(--color-warning);outline-offset:2px}@media(max-width:980px){.record-layout,.plan-layout,.sop-layout{grid-template-columns:1fr}.sop-layout{display:grid;grid-template-areas:"safety" "left" "middle" "right";grid-template-rows:auto}.record-layout>*,.plan-layout>*,.sop-layout>*{border-right:0;border-bottom:1px solid var(--color-border-default)}.ai-revision{grid-template-columns:1fr}}@media(max-width:640px){.handoff-page__header{align-items:flex-start;flex-direction:column}footer{flex-wrap:wrap;position:static}footer span{width:100%;margin:0}.safety p{display:block;margin:6px 0 0}}
 .profile-updates,.record-profile-update{margin-top:18px;padding-top:16px;border-top:1px solid var(--color-border-default)}.profile-updates h3,.record-profile-update h3{margin:0 0 6px;font-size:14px}.profile-updates .section-note{margin:0 0 10px;font-size:12px}.profile-updates article{display:grid;gap:7px;margin-top:10px;padding:12px;border:1px solid var(--color-border-default);border-radius:10px;background:var(--color-bg-surface)}.profile-updates article.excluded{opacity:.68}.profile-updates .include-update{display:flex;grid-template-columns:auto 1fr;align-items:center;gap:8px}.profile-updates .include-update input{width:auto}.profile-update-list{font-size:12px}.profile-update-list ul{margin:5px 0 0;padding-left:18px}

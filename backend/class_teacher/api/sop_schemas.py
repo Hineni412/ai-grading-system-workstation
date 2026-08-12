@@ -109,6 +109,7 @@ class AffairStep(BaseModel):
     ]
     result: str | None
     completed_at: str | None
+    origin: str | None = None
 
 
 class AffairDecision(BaseModel):
@@ -120,6 +121,39 @@ class AffairDecision(BaseModel):
     decision_key: str | None = None
     selected_option: str | None = None
     can_drive_high_impact_branch: bool
+    created_at: str
+
+
+class AffairFlowRevisionItem(BaseModel):
+    item_id: str
+    kind: str
+    step_key: str | None = None
+    target_step_key: str | None = None
+    title: str = ""
+    details: str = ""
+    depends_on: list[str] = Field(default_factory=list)
+    reason: str = ""
+    text: str = ""
+    state: str
+
+
+class AffairFlowRevision(BaseModel):
+    revision_id: str
+    sync_id: str
+    source_text: str
+    assistant_message: str
+    items: list[AffairFlowRevisionItem] = Field(default_factory=list)
+    dropped_items: list[dict[str, str]] = Field(default_factory=list)
+    state: str
+    created_at: str
+    decided_at: str | None = None
+    accepted_item_ids: list[str] = Field(default_factory=list)
+
+
+class AffairSyncRequest(BaseModel):
+    sync_id: str
+    text: str
+    state: str
     created_at: str
 
 
@@ -150,6 +184,8 @@ class AffairResponse(BaseModel):
     completed_steps: list[AffairStep]
     preview_steps: list[AffairStep]
     decisions: list[AffairDecision]
+    flow_revisions: list[AffairFlowRevision] = Field(default_factory=list)
+    sync_requests: list[AffairSyncRequest] = Field(default_factory=list)
     created_at: str
     updated_at: str
     closed_at: str | None
@@ -242,15 +278,36 @@ class AffairCommandRequest(BaseModel):
     reason: str | None = None
 
 
+class AffairSyncUpdateRequest(BaseModel):
+    operation_id: str = Field(min_length=8, max_length=128)
+    expected_revision: int = Field(ge=1)
+    text: str = Field(min_length=1, max_length=2000)
+
+
+class AffairSyncUpdateResponse(BaseModel):
+    sync_id: str
+    task_id: str
+    task_state: str
+
+
+class AffairFlowRevisionDecideRequest(BaseModel):
+    operation_id: str = Field(min_length=8, max_length=128)
+    expected_revision: int = Field(ge=1)
+    accepted_item_ids: list[str] = Field(default_factory=list, max_length=20)
+
+
 __all__ = [
     "AffairCloseRequest",
     "AffairCommandRequest",
     "AffairCreateRequest",
     "AffairDraftRequest",
     "AffairDraftResponse",
+    "AffairFlowRevisionDecideRequest",
     "AffairListResponse",
     "AffairReopenRequest",
     "AffairResponse",
+    "AffairSyncUpdateRequest",
+    "AffairSyncUpdateResponse",
     "AffairWorkspaceListResponse",
     "AffairWorkspaceResponse",
     "DecisionRecordRequest",
