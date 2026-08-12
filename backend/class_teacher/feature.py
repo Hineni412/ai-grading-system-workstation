@@ -63,6 +63,7 @@ def _register_ai_tasks(registrar, service: object | None) -> None:
     for task_kind in (
         "class_teacher.intake_triage",
         "class_teacher.draft_revision",
+        "class_teacher.affair_flow_revision",
         "class_teacher.intake",
     ):
         registrar.register_adapter(task_kind, service.intake.ai_task_adapter)
