@@ -1,7 +1,9 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 
+import { knowledgeLeafLabel } from '../../api/question-bank'
 import type { TrainingDiagnosis, TrainingWeakPoint } from '../../api/training'
+import { useCurriculumScopeStore } from '../../stores/curriculum-scope'
 
 interface KnowledgeNode {
   key: string
@@ -24,6 +26,15 @@ const emit = defineEmits<{
 
 const activeRootKey = ref('')
 const expandedSectionKeys = ref<string[]>([])
+const showEmptyPoints = ref(false)
+
+const curriculumScope = useCurriculumScopeStore()
+onMounted(() => { void curriculumScope.initialize() })
+
+// 目录标签是"册｜章｜小节｜细分点"全路径；按顶部学期（册别）过滤章。
+function volumeOf(label: string): string {
+  return label.split(/[|｜]/).map((part) => part.trim()).filter(Boolean)[0] ?? ''
+}
 
 const tree = computed(() => {
   const weakByKey = new Map((props.diagnosis.group_weak_points ?? []).map((item) => [
@@ -59,10 +70,37 @@ const tree = computed(() => {
     if (!node.parentKey || !nodes.has(node.parentKey)) continue
     nodes.get(node.parentKey)!.children.push(node)
   }
-  return [...nodes.values()].filter((node) => !node.parentKey || !nodes.has(node.parentKey))
+  const roots = [...nodes.values()].filter((node) => !node.parentKey || !nodes.has(node.parentKey))
+  const volume = curriculumScope.selectedVolume?.label
+  if (!volume) return roots
+  // 无路径分隔符的旧数据无法判定册别，保留显示。
+  return roots.filter((node) => !/[|｜]/.test(node.label) || volumeOf(node.label) === volume)
 })
 
 const activeRoot = computed(() => tree.value.find((node) => node.key === activeRootKey.value) ?? tree.value[0] ?? null)
+
+// 默认只展示有证据的知识点，避免整页被无证据项占满；可用开关查看完整结构。
+const displaySections = computed(() => {
+  const root = activeRoot.value
+  if (!root) return []
+  return root.children
+    .map((section) => {
+      const candidates = selectableChildren(section)
+      return {
+        section,
+        points: showEmptyPoints.value ? candidates : candidates.filter((point) => point.weak !== null),
+      }
+    })
+    .filter((entry) => showEmptyPoints.value || entry.points.length > 0)
+})
+
+const hiddenPointCount = computed(() => {
+  const root = activeRoot.value
+  if (!root) return 0
+  return root.children.reduce((total, section) => (
+    total + selectableChildren(section).filter((point) => point.weak === null).length
+  ), 0)
+})
 
 watch(tree, (roots) => {
   if (!roots.some((node) => node.key === activeRootKey.value)) {
@@ -121,6 +159,7 @@ function selectableChildren(node: KnowledgeNode): KnowledgeNode[] {
           :key="root.key"
           type="button"
           :class="{ 'is-active': activeRoot?.key === root.key }"
+          :title="root.label"
           @click="activeRootKey = root.key"
         >
           <span>{{ root.label }}</span>
@@ -134,30 +173,37 @@ function selectableChildren(node: KnowledgeNode): KnowledgeNode[] {
           <span><i class="is-mid" />需巩固 60–74%</span>
           <span><i class="is-good" />较稳定 ≥ 75%</span>
           <span><i class="is-empty" />灰底未被覆盖，斜纹为无证据</span>
+          <label class="structure-toggle">
+            <input v-model="showEmptyPoints" type="checkbox">
+            显示无证据知识点<template v-if="hiddenPointCount">（{{ hiddenPointCount }}）</template>
+          </label>
         </div>
 
+        <p v-if="!displaySections.length" class="structure-empty">当前章的知识点都没有证据；勾选上方“显示无证据知识点”可查看完整结构。</p>
+
         <article
-          v-for="section in activeRoot.children"
-          :key="section.key"
+          v-for="entry in displaySections"
+          :key="entry.section.key"
           class="structure-section"
         >
-          <button type="button" class="structure-section-heading" @click="toggleSection(section.key)">
-            <span>{{ expandedSectionKeys.includes(section.key) ? '−' : '+' }}</span>
-            <strong>{{ section.label }}</strong>
-            <b>{{ masteryText(section) }}</b>
+          <button type="button" class="structure-section-heading" :title="entry.section.label" @click="toggleSection(entry.section.key)">
+            <span>{{ expandedSectionKeys.includes(entry.section.key) ? '−' : '+' }}</span>
+            <strong>{{ knowledgeLeafLabel(entry.section.label) }}</strong>
+            <b>{{ masteryText(entry.section) }}</b>
           </button>
-          <div v-if="expandedSectionKeys.includes(section.key)" class="structure-points">
+          <div v-if="expandedSectionKeys.includes(entry.section.key)" class="structure-points">
             <label
-              v-for="point in selectableChildren(section)"
+              v-for="point in entry.points"
               :key="point.key"
               :class="['structure-point', masteryClass(point)]"
+              :title="point.label"
             >
               <input
                 type="checkbox"
                 :checked="modelValue.includes(point.key)"
                 @change="toggleTarget(point.key)"
               >
-              <span class="structure-point-name">{{ point.label }}</span>
+              <span class="structure-point-name">{{ knowledgeLeafLabel(point.label) }}</span>
               <span class="structure-track" aria-hidden="true">
                 <i v-if="point.weak" :style="{ width: `${Math.round(point.weak.mastery * 100)}%` }" />
                 <b />
@@ -169,13 +215,13 @@ function selectableChildren(node: KnowledgeNode): KnowledgeNode[] {
           </div>
         </article>
 
-        <label v-if="!activeRoot.children.length" :class="['structure-point', masteryClass(activeRoot)]">
+        <label v-if="!activeRoot.children.length" :class="['structure-point', masteryClass(activeRoot)]" :title="activeRoot.label">
           <input
             type="checkbox"
             :checked="modelValue.includes(activeRoot.key)"
             @change="toggleTarget(activeRoot.key)"
           >
-          <span class="structure-point-name">{{ activeRoot.label }}</span>
+          <span class="structure-point-name">{{ knowledgeLeafLabel(activeRoot.label) }}</span>
           <span class="structure-track" aria-hidden="true">
             <i v-if="activeRoot.weak" :style="{ width: `${Math.round(activeRoot.weak.mastery * 100)}%` }" />
             <b />
@@ -208,6 +254,7 @@ function selectableChildren(node: KnowledgeNode): KnowledgeNode[] {
 .structure-legend i.is-mid { background: var(--color-warning, #c89428); }
 .structure-legend i.is-good { background: var(--color-success, #2d8478); }
 .structure-legend i.is-empty { border: 1px solid var(--color-border-default); background: repeating-linear-gradient(135deg, #eef1f2 0 4px, #fff 4px 8px); }
+.structure-toggle { display: inline-flex; align-items: center; gap: .3rem; margin-left: auto; color: var(--color-text-secondary); font-size: .78rem; cursor: pointer; }
 .structure-section { overflow: hidden; border: 1px solid var(--color-border-default); border-radius: 10px; }
 .structure-section-heading { width: 100%; display: grid; grid-template-columns: 1.2rem 1fr auto; gap: .55rem; padding: .7rem .8rem; border: 0; background: var(--color-bg-subtle); color: var(--color-text-primary); text-align: left; cursor: pointer; }
 .structure-points { display: grid; }

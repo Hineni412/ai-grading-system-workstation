@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 
 import type { GraphQueryInput } from '../api/graph'
+import { knowledgeLeafLabel } from '../api/question-bank'
 import { fetchStudents, type StudentSummary } from '../api/students'
 import type {
   TrainingDiagnosis,
@@ -127,7 +128,8 @@ const selectedTargetLabels = computed(() => {
   ]))
   return selectedTargetKeys.value.map((key) => ({
     key,
-    label: labels.get(key) ?? key,
+    label: knowledgeLeafLabel(labels.get(key) ?? key),
+    fullLabel: labels.get(key) ?? key,
     mastery: aggregates.get(key)?.mastery ?? null,
     evidenceCount: aggregates.get(key)?.evidence_count ?? 0,
   }))
@@ -487,7 +489,7 @@ onBeforeUnmount(() => studentsController?.abort())
               <div v-if="selectedTargetLabels.length" class="paper-targets__rows">
                 <article v-for="target in selectedTargetLabels" :key="target.key">
                   <span class="paper-targets__status" :class="target.mastery === null ? 'is-empty' : target.mastery < .6 ? 'is-low' : target.mastery < .75 ? 'is-mid' : 'is-good'"></span>
-                  <strong>{{ target.label }}</strong>
+                  <strong :title="target.fullLabel">{{ target.label }}</strong>
                   <span>{{ target.mastery === null ? '无证据' : `${Math.round(target.mastery * 100)}%` }}</span>
                   <small>{{ target.evidenceCount }} 条证据</small>
                   <button type="button" :disabled="workflowStage !== 'diagnosis'" :aria-label="`移除${target.label}`" @click="removeTarget(target.key)">移除</button>

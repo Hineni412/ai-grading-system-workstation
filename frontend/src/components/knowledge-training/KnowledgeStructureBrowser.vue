@@ -13,19 +13,69 @@ const emit = defineEmits<{
   select: [key: string]
 }>()
 
-const activeChapter = ref('')
-const openSections = ref<string[]>([])
+const CHAPTER_LEVEL_SECTION = '章级知识点'
 
-function chapterOf(node: GraphNode): string {
-  return node.evidence.tag_context['教材章节']?.[0]
-    ?? node.curriculum_anchors.find((item) => item.includes('章'))
-    ?? '未分章'
+interface NodePath {
+  volume: string
+  chapter: string
+  section: string
+  label: string
 }
 
-function sectionOf(node: GraphNode): string {
-  return node.evidence.tag_context['教材小节']?.[0]
-    ?? node.display_name.split(/[·：]/)[0]
-    ?? node.display_name
+interface EnrichedNode {
+  node: GraphNode
+  path: NodePath
+}
+
+interface SectionGroup {
+  name: string
+  items: EnrichedNode[]
+  mastery: number | null
+  evidenceCount: number
+}
+
+interface ChapterGroup {
+  key: string
+  volume: string
+  name: string
+  items: EnrichedNode[]
+  sections: SectionGroup[]
+  mastery: number | null
+}
+
+const activeChapterKey = ref('')
+const activeSectionName = ref('')
+const expandedChapterKeys = ref<string[]>([])
+
+function splitPath(value: string): string[] {
+  return value.split(/[｜|/]/).map((part) => part.trim()).filter(Boolean)
+}
+
+function pathOf(node: GraphNode): NodePath {
+  const displayPath = splitPath(node.display_name)
+  if (displayPath.length >= 2) {
+    return {
+      volume: displayPath[0] ?? '',
+      chapter: displayPath[1] ?? '未分章',
+      section: displayPath[2] ?? '',
+      label: displayPath[displayPath.length - 1] ?? node.display_name,
+    }
+  }
+  const tagPath = splitPath(node.evidence.tag_context['教材章节']?.[0] ?? '')
+  if (tagPath.length >= 2) {
+    return {
+      volume: tagPath[0] ?? '',
+      chapter: tagPath[1] ?? '未分章',
+      section: tagPath[2] ?? '',
+      label: node.display_name,
+    }
+  }
+  return {
+    volume: tagPath[0] ?? '',
+    chapter: node.curriculum_anchors.find((item) => item.includes('章')) ?? '未分章',
+    section: node.evidence.tag_context['教材小节']?.[0] ?? '',
+    label: node.display_name,
+  }
 }
 
 function weightedMastery(nodes: GraphNode[]): number | null {
@@ -37,22 +87,57 @@ function weightedMastery(nodes: GraphNode[]): number | null {
   ), 0) / weight
 }
 
-const chapters = computed(() => {
-  const result = new Map<string, GraphNode[]>()
-  for (const node of props.nodes) result.set(chapterOf(node), [...(result.get(chapterOf(node)) ?? []), node])
-  return [...result].map(([name, nodes]) => ({ name, nodes, mastery: weightedMastery(nodes) }))
+const chapters = computed<ChapterGroup[]>(() => {
+  const chapterMap = new Map<string, { volume: string; name: string; items: EnrichedNode[] }>()
+  for (const node of props.nodes) {
+    const item: EnrichedNode = { node, path: pathOf(node) }
+    const key = `${item.path.volume}｜${item.path.chapter}`
+    const chapter = chapterMap.get(key) ?? { volume: item.path.volume, name: item.path.chapter, items: [] }
+    chapter.items.push(item)
+    chapterMap.set(key, chapter)
+  }
+  return [...chapterMap].map(([key, chapter]) => {
+    const sectionMap = new Map<string, EnrichedNode[]>()
+    for (const item of chapter.items) {
+      const name = item.path.section || CHAPTER_LEVEL_SECTION
+      sectionMap.set(name, [...(sectionMap.get(name) ?? []), item])
+    }
+    const sections = [...sectionMap].map(([name, items]) => ({
+      name,
+      items,
+      mastery: weightedMastery(items.map((item) => item.node)),
+      evidenceCount: items.reduce((total, item) => total + item.node.mastery.evidence_count, 0),
+    }))
+    return {
+      key,
+      volume: chapter.volume,
+      name: chapter.name,
+      items: chapter.items,
+      sections,
+      mastery: weightedMastery(chapter.items.map((item) => item.node)),
+    }
+  })
 })
 
-const sections = computed(() => {
-  const result = new Map<string, GraphNode[]>()
-  for (const node of chapters.value.find((item) => item.name === activeChapter.value)?.nodes ?? []) {
-    result.set(sectionOf(node), [...(result.get(sectionOf(node)) ?? []), node])
-  }
-  return [...result].map(([name, nodes]) => ({ name, nodes, mastery: weightedMastery(nodes) }))
+const volumeLabel = computed(() => {
+  const volumes = [...new Set(chapters.value.map((chapter) => chapter.volume).filter(Boolean))]
+  return volumes.length ? volumes.join('、') : '教材结构'
+})
+
+const activeChapter = computed(() => chapters.value.find((chapter) => chapter.key === activeChapterKey.value)
+  ?? chapters.value[0]
+  ?? null)
+
+const activeSection = computed(() => activeChapter.value?.sections.find((section) => section.name === activeSectionName.value)
+  ?? null)
+
+const visibleItems = computed<EnrichedNode[]>(() => {
+  if (activeSection.value) return activeSection.value.items
+  return activeChapter.value?.items ?? []
 })
 
 const selectedNode = computed(() => props.nodes.find((node) => node.stable_key === props.selectedKey)
-  ?? sections.value[0]?.nodes[0]
+  ?? visibleItems.value[0]?.node
   ?? null)
 
 const selectedRelations = computed(() => {
@@ -69,14 +154,32 @@ const selectedRelations = computed(() => {
 })
 
 watch(chapters, (items) => {
-  if (!items.some((item) => item.name === activeChapter.value)) activeChapter.value = items[0]?.name ?? ''
+  if (!items.some((item) => item.key === activeChapterKey.value)) {
+    activeChapterKey.value = items[0]?.key ?? ''
+    activeSectionName.value = ''
+  }
+  if (activeChapterKey.value && !expandedChapterKeys.value.includes(activeChapterKey.value)) {
+    expandedChapterKeys.value = [...expandedChapterKeys.value, activeChapterKey.value]
+  }
 }, { immediate: true })
 
-watch(sections, (items) => {
-  openSections.value = items.map((item) => item.name)
-  const selectedInChapter = items.some((section) => section.nodes.some((node) => node.stable_key === props.selectedKey))
-  if (!selectedInChapter && items[0]?.nodes[0]) emit('select', items[0].nodes[0].stable_key)
-}, { immediate: true })
+watch(activeChapter, (chapter) => {
+  if (activeSectionName.value && !chapter?.sections.some((section) => section.name === activeSectionName.value)) {
+    activeSectionName.value = ''
+  }
+})
+
+watch(() => props.selectedKey, (key) => {
+  const target = chapters.value
+    .flatMap((chapter) => chapter.sections.map((section) => ({ chapter, section })))
+    .find(({ section }) => section.items.some((item) => item.node.stable_key === key))
+  if (!target) return
+  activeChapterKey.value = target.chapter.key
+  activeSectionName.value = target.section.name
+  if (!expandedChapterKeys.value.includes(target.chapter.key)) {
+    expandedChapterKeys.value = [...expandedChapterKeys.value, target.chapter.key]
+  }
+})
 
 function percentage(value: number | null): string {
   return value === null ? '无证据' : `${Math.round(value * 100)}%`
@@ -89,57 +192,117 @@ function masteryClass(value: number | null): string {
   return 'is-good'
 }
 
-function toggleSection(name: string): void {
-  openSections.value = openSections.value.includes(name)
-    ? openSections.value.filter((item) => item !== name)
-    : [...openSections.value, name]
+function toggleChapter(key: string): void {
+  expandedChapterKeys.value = expandedChapterKeys.value.includes(key)
+    ? expandedChapterKeys.value.filter((item) => item !== key)
+    : [...expandedChapterKeys.value, key]
+}
+
+function chooseChapter(chapter: ChapterGroup): void {
+  activeChapterKey.value = chapter.key
+  activeSectionName.value = ''
+  if (!expandedChapterKeys.value.includes(chapter.key)) {
+    expandedChapterKeys.value = [...expandedChapterKeys.value, chapter.key]
+  }
+}
+
+function chooseSection(chapter: ChapterGroup, sectionName: string): void {
+  activeChapterKey.value = chapter.key
+  activeSectionName.value = sectionName
 }
 </script>
 
 <template>
   <section class="structure-browser" aria-label="教材知识结构">
     <aside class="structure-browser__chapters">
-      <header><strong>七年级下册</strong><span>{{ nodes.length }} 个知识点</span></header>
-      <button
-        v-for="chapter in chapters"
-        :key="chapter.name"
-        type="button"
-        :class="{ 'is-active': chapter.name === activeChapter }"
-        @click="activeChapter = chapter.name"
-      >
-        <span>{{ chapter.name }}</span><b>{{ percentage(chapter.mastery) }}</b>
-      </button>
+      <header><strong>{{ volumeLabel }}</strong><span>{{ nodes.length }} 个知识点</span></header>
+      <nav class="structure-browser__chapter-tree" aria-label="章节导航">
+        <div v-for="chapter in chapters" :key="chapter.key" class="structure-browser__chapter-node">
+          <div class="structure-browser__chapter-row">
+            <button
+              type="button"
+              class="structure-browser__chapter-toggle"
+              :aria-label="`${expandedChapterKeys.includes(chapter.key) ? '收起' : '展开'}${chapter.name}`"
+              :aria-expanded="expandedChapterKeys.includes(chapter.key)"
+              @click="toggleChapter(chapter.key)"
+            >
+              <span aria-hidden="true">{{ expandedChapterKeys.includes(chapter.key) ? '▾' : '▸' }}</span>
+            </button>
+            <button
+              type="button"
+              class="structure-browser__chapter-button"
+              :class="{ 'is-active': chapter.key === activeChapter?.key && !activeSection }"
+              @click="chooseChapter(chapter)"
+            >
+              <span>{{ chapter.name }}</span><b>{{ percentage(chapter.mastery) }}</b>
+            </button>
+          </div>
+          <ul v-if="expandedChapterKeys.includes(chapter.key)" class="structure-browser__section-list">
+            <li v-for="section in chapter.sections" :key="section.name">
+              <button
+                type="button"
+                :class="{ 'is-active': chapter.key === activeChapter?.key && section.name === activeSectionName && activeSectionName }"
+                @click="chooseSection(chapter, section.name)"
+              >
+                <span>{{ section.name }}</span><b>{{ percentage(section.mastery) }}</b>
+              </button>
+            </li>
+          </ul>
+        </div>
+      </nav>
     </aside>
 
     <main class="structure-browser__tree">
-      <header>
-        <div><span>当前章节</span><h2>{{ activeChapter }}</h2></div>
-        <strong>{{ sections.length }} 小节 · {{ sections.reduce((total, item) => total + item.nodes.length, 0) }} 知识点</strong>
+      <header v-if="activeChapter">
+        <div>
+          <span>{{ activeSection ? '当前小节' : '当前章节' }}</span>
+          <h2>{{ activeSection ? `${activeChapter.name} / ${activeSection.name}` : activeChapter.name }}</h2>
+        </div>
+        <strong v-if="activeSection">{{ activeSection.items.length }} 知识点</strong>
+        <strong v-else>{{ activeChapter.sections.length }} 小节 · {{ activeChapter.items.length }} 知识点</strong>
       </header>
       <div class="structure-browser__legend">
         <span class="is-low">待补强</span><span class="is-mid">需巩固</span><span class="is-good">较稳定</span><span class="is-empty">无证据</span>
       </div>
-      <article v-for="section in sections" :key="section.name" class="structure-browser__section">
-        <button type="button" @click="toggleSection(section.name)">
-          <span>{{ openSections.includes(section.name) ? '−' : '+' }}</span>
-          <strong>{{ section.name }}</strong>
-          <b>{{ percentage(section.mastery) }}</b>
+      <button
+        v-if="activeSection && activeChapter"
+        type="button"
+        class="structure-browser__back"
+        @click="chooseChapter(activeChapter)"
+      >
+        ← 返回{{ activeChapter.name }}的小节列表
+      </button>
+
+      <template v-if="!activeSection && activeChapter">
+        <button
+          v-for="section in activeChapter.sections"
+          :key="section.name"
+          type="button"
+          :class="['structure-browser__section-card', masteryClass(section.mastery)]"
+          @click="chooseSection(activeChapter, section.name)"
+        >
+          <span>{{ section.name }}</span>
+          <i><b :style="{ width: section.mastery === null ? '0%' : `${Math.round(section.mastery * 100)}%` }" /></i>
+          <strong>{{ percentage(section.mastery) }}</strong>
+          <small>{{ section.items.length }} 知识点 · {{ section.evidenceCount }} 条证据</small>
         </button>
-        <div v-if="openSections.includes(section.name)" class="structure-browser__points">
-          <button
-            v-for="node in section.nodes"
-            :key="node.stable_key"
-            type="button"
-            :class="['structure-browser__point', masteryClass(node.mastery.value), { 'is-selected': selectedNode?.stable_key === node.stable_key }]"
-            @click="emit('select', node.stable_key)"
-          >
-            <span>{{ node.display_name }}</span>
-            <i><b :style="{ width: node.mastery.value === null ? '0%' : `${Math.round(node.mastery.value * 100)}%` }" /></i>
-            <strong>{{ percentage(node.mastery.value) }}</strong>
-            <small>{{ node.mastery.evidence_count }} 条证据</small>
-          </button>
-        </div>
-      </article>
+      </template>
+
+      <div v-else class="structure-browser__points">
+        <button
+          v-for="item in visibleItems"
+          :key="item.node.stable_key"
+          type="button"
+          :class="['structure-browser__point', masteryClass(item.node.mastery.value), { 'is-selected': selectedNode?.stable_key === item.node.stable_key }]"
+          :title="item.node.display_name"
+          @click="emit('select', item.node.stable_key)"
+        >
+          <span>{{ item.path.label }}</span>
+          <i><b :style="{ width: item.node.mastery.value === null ? '0%' : `${Math.round(item.node.mastery.value * 100)}%` }" /></i>
+          <strong>{{ percentage(item.node.mastery.value) }}</strong>
+          <small>{{ item.node.mastery.evidence_count }} 条证据</small>
+        </button>
+      </div>
     </main>
 
     <aside class="structure-browser__detail">
@@ -170,21 +333,34 @@ function toggleSection(name: string): void {
 </template>
 
 <style scoped>
-.structure-browser { display: grid; grid-template-columns: 220px minmax(460px, 1fr) 280px; min-height: 620px; overflow: hidden; border: 1px solid var(--color-border-default); border-radius: 14px; background: white; }
+.structure-browser { display: grid; grid-template-columns: 240px minmax(460px, 1fr) 280px; min-height: 620px; overflow: hidden; border: 1px solid var(--color-border-default); border-radius: 14px; background: white; }
 .structure-browser__chapters { padding: .85rem; border-right: 1px solid var(--color-border-default); background: #f4f7f7; }
 .structure-browser__chapters header { display: grid; gap: .15rem; padding: .35rem .45rem .8rem; }
 .structure-browser__chapters header span, .structure-browser__tree header span, .structure-browser__detail > span { color: var(--color-text-secondary); font-size: .78rem; }
-.structure-browser__chapters button { width: 100%; display: flex; justify-content: space-between; gap: .5rem; margin-bottom: .35rem; padding: .65rem .7rem; border: 1px solid transparent; border-radius: 9px; background: transparent; color: var(--color-text-primary); text-align: left; cursor: pointer; }
-.structure-browser__chapters button.is-active { border-color: var(--color-accent); background: white; box-shadow: inset 3px 0 0 var(--color-accent); }
+.structure-browser__chapter-node { margin-bottom: .25rem; }
+.structure-browser__chapter-row { display: grid; grid-template-columns: 1.4rem 1fr; align-items: stretch; }
+.structure-browser__chapter-toggle { border: 0; background: transparent; color: var(--color-text-secondary); cursor: pointer; }
+.structure-browser__chapter-button { display: flex; justify-content: space-between; gap: .5rem; padding: .6rem .6rem; border: 1px solid transparent; border-radius: 9px; background: transparent; color: var(--color-text-primary); text-align: left; cursor: pointer; }
+.structure-browser__chapter-button.is-active { border-color: var(--color-accent); background: white; box-shadow: inset 3px 0 0 var(--color-accent); }
+.structure-browser__section-list { display: grid; gap: .15rem; margin: .15rem 0 .4rem; padding: 0 0 0 1.4rem; list-style: none; }
+.structure-browser__section-list button { width: 100%; display: flex; justify-content: space-between; gap: .5rem; padding: .45rem .6rem; border: 1px solid transparent; border-radius: 8px; background: transparent; color: var(--color-text-primary); text-align: left; cursor: pointer; }
+.structure-browser__section-list button.is-active { border-color: var(--color-accent); background: white; box-shadow: inset 3px 0 0 var(--color-accent); }
+.structure-browser__section-list button span, .structure-browser__chapter-button span { overflow: hidden; text-overflow: ellipsis; }
 .structure-browser__tree { min-width: 0; padding: 1rem; }
 .structure-browser__tree > header { display: flex; align-items: end; justify-content: space-between; gap: 1rem; padding-bottom: .8rem; border-bottom: 1px solid var(--color-border-default); }
 .structure-browser h2 { margin: .15rem 0 0; font-size: 1.25rem; }
 .structure-browser__legend { display: flex; gap: .45rem; padding: .65rem 0; }
 .structure-browser__legend span { padding: .22rem .48rem; border-radius: 999px; background: #eef1f2; font-size: .74rem; }
 .structure-browser__legend .is-low { color: #a83f3b; background: #fae8e6; }.structure-browser__legend .is-mid { color: #8a5a08; background: #fff1d6; }.structure-browser__legend .is-good { color: #17695e; background: #e1f2ef; }
-.structure-browser__section { overflow: hidden; margin-bottom: .6rem; border: 1px solid var(--color-border-default); border-radius: 10px; }
-.structure-browser__section > button { width: 100%; display: grid; grid-template-columns: 1.2rem 1fr auto; gap: .5rem; padding: .65rem .75rem; border: 0; background: #f7f9f9; color: var(--color-text-primary); text-align: left; cursor: pointer; }
-.structure-browser__points { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1px; background: var(--color-border-default); }
+.structure-browser__back { margin-bottom: .6rem; padding: .4rem .7rem; border: 1px solid var(--color-border-default); border-radius: 8px; background: white; color: var(--color-text-secondary); cursor: pointer; }
+.structure-browser__section-card { width: 100%; display: grid; grid-template-columns: minmax(0, 1fr) 8rem auto; gap: .35rem .75rem; align-items: center; margin-bottom: .6rem; padding: .75rem .85rem; border: 1px solid var(--color-border-default); border-radius: 10px; background: white; color: var(--color-text-primary); text-align: left; cursor: pointer; }
+.structure-browser__section-card:hover { border-color: var(--color-accent); }
+.structure-browser__section-card > span { overflow: hidden; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
+.structure-browser__section-card small { grid-column: 1 / -1; color: var(--color-text-secondary); }
+.structure-browser__section-card > i { height: .42rem; overflow: hidden; border-radius: 999px; background: #e6ebec; }
+.structure-browser__section-card > i b { display: block; height: 100%; background: #2d8478; }
+.structure-browser__section-card.is-mid > i b { background: #b47a16; }.structure-browser__section-card.is-low > i b { background: #c5524d; }
+.structure-browser__points { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1px; overflow: hidden; border: 1px solid var(--color-border-default); border-radius: 10px; background: var(--color-border-default); }
 .structure-browser__point { display: grid; grid-template-columns: minmax(0, 1fr) 4rem auto; gap: .35rem .55rem; align-items: center; padding: .65rem; border: 0; background: white; color: var(--color-text-primary); text-align: left; cursor: pointer; }
 .structure-browser__point.is-selected { background: var(--color-accent-subtle); box-shadow: inset 3px 0 0 var(--color-accent); }
 .structure-browser__point > span { overflow: hidden; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }.structure-browser__point small { grid-column: 1 / -1; color: var(--color-text-secondary); }
@@ -192,5 +368,5 @@ function toggleSection(name: string): void {
 .structure-browser__detail { padding: 1rem; border-left: 1px solid var(--color-border-default); background: #fbfcfc; }.structure-browser__score { display: grid; gap: .15rem; margin: 1rem 0; padding: .85rem; border-left: 4px solid #2d8478; background: #edf6f4; }.structure-browser__score.is-mid { border-color: #b47a16; background: #fff7e8; }.structure-browser__score.is-low { border-color: #c5524d; background: #fbeceb; }.structure-browser__score strong { font-size: 1.65rem; }
 .structure-browser__detail dl { display: grid; gap: .35rem; margin: 0; }.structure-browser__detail dl div { display: flex; justify-content: space-between; padding: .45rem 0; border-bottom: 1px solid var(--color-border-default); }.structure-browser__detail p { color: var(--color-text-secondary); line-height: 1.65; }
 .structure-browser__detail section { display: grid; gap: .4rem; margin: 1rem 0; }.structure-browser__detail section button { display: grid; gap: .1rem; padding: .55rem; border: 1px solid var(--color-border-default); border-radius: 8px; background: white; color: var(--color-text-primary); text-align: left; cursor: pointer; }.structure-browser__detail section button span { color: var(--color-text-secondary); font-size: .72rem; }.structure-browser__detail > a { display: flex; justify-content: center; padding: .65rem; border-radius: 8px; background: var(--color-accent); color: white; text-decoration: none; }
-@media (max-width: 1100px) { .structure-browser { grid-template-columns: 190px 1fr; }.structure-browser__detail { grid-column: 1 / -1; border-top: 1px solid var(--color-border-default); border-left: 0; }.structure-browser__points { grid-template-columns: 1fr; } }
+@media (max-width: 1100px) { .structure-browser { grid-template-columns: 200px 1fr; }.structure-browser__detail { grid-column: 1 / -1; border-top: 1px solid var(--color-border-default); border-left: 0; }.structure-browser__points { grid-template-columns: 1fr; } }
 </style>
