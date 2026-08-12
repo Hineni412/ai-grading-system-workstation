@@ -57,6 +57,12 @@ _PRESENTATIONS = {
         "班主任 · 调整一份事务草稿",
         "班主任",
     ),
+    ("class_teacher", "class_teacher.affair_flow_revision"): TaskPresentation(
+        "class_teacher",
+        "class_teacher.affair_flow_revision",
+        "班主任 · 调整事务流程",
+        "班主任",
+    ),
 }
 
 _RECOVERY_ONLY_TASKS = frozenset(

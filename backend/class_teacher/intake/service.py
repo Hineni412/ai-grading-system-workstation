@@ -60,6 +60,7 @@ class ClassTeacherIntake:
             self.adoption,
             model_gateway,
             student_cards,
+            sop=sop,
         )
         self.model_gateway = model_gateway
         self._cloud_audio_lock = threading.Lock()
@@ -226,6 +227,39 @@ class ClassTeacherIntake:
 
     def get_conversation(self, conversation_id: str) -> dict[str, object]:
         return self.conversations.get(conversation_id)
+
+    def start_affair_flow_revision(
+        self,
+        *,
+        affair_id: str,
+        affair_revision: int,
+        sync_id: str,
+        operation_id: str,
+    ) -> dict[str, object]:
+        """为已建立事务的“同步新情况”发起一次流程修订 AI 任务（最多发送一次）。"""
+        request = {
+            "module": "class_teacher",
+            "task_kind": "class_teacher.affair_flow_revision",
+            "source_ref": {"kind": "affair", "id": affair_id, "revision": str(affair_revision)},
+            "context_refs": [{"kind": "affair_sync", "id": sync_id, "revision": "1"}],
+            "prompt_contract_version": "class_teacher_affair_flow_revision.v1",
+            "model_destination_fingerprint": "configured-workspace-model",
+            "return_target": "class_teacher.affair.sop",
+        }
+        prepared = self.conversations.ai_tasks.prepare(
+            operation_id=operation_id,
+            request=request,
+        )
+        snapshot = self.conversations.ai_tasks.dispatch(
+            operation_id=operation_id,
+            prepared_task_id=prepared.task_id,
+            request_fingerprint=prepared.request_fingerprint,
+        )
+        return {
+            "sync_id": sync_id,
+            "task_id": snapshot.task_id,
+            "task_state": snapshot.state,
+        }
 
     def list_conversations(self, *, limit: int = 12) -> dict[str, object]:
         return self.conversations.list_recent(limit=limit)

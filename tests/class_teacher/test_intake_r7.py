@@ -47,7 +47,7 @@ def test_class_teacher_uses_diagnostics_local_json_repair_for_terminal_closers()
     assert _parse_model_payload(malformed) == expected
 
 
-@pytest.mark.parametrize("extra_field", ["name", "description", "additionalProp1", "missing_fields"])
+@pytest.mark.parametrize("extra_field", ["name", "description", "additionalProp1", "missing_fields", "profile_update", "profile_base_revision"])
 def test_class_teacher_ignores_observed_schema_description_fields(
     extra_field: str,
 ) -> None:
@@ -2865,3 +2865,395 @@ def test_sop_adoption_updates_each_selected_students_record_and_current_profile(
     with closing(service.database.connect()) as connection:
         assert connection.execute("SELECT COUNT(*) FROM support_records").fetchone()[0] == 2
         assert connection.execute("SELECT COUNT(*) FROM student_card_entries").fetchone()[0] == 2
+
+
+def test_denied_professional_diagnosis_does_not_trigger_professional_review_flow(
+    tmp_path: Path,
+) -> None:
+    service, port = _service(tmp_path)
+    preference = service.intake.preferences.get()
+    service.intake.preferences.set(
+        homeroom_class="一班",
+        expected_revision=0,
+        expected_source_revision=str(preference["source_revision"]),
+        operation_id="professional-denied-homeroom",
+    )
+    _conversation, turn = _conversation_with_turn(
+        service,
+        "professional-denied-turn",
+        message="合成学生甲没有专业诊断。补充：他篮球打得特别好，是班级篮球队主力。",
+    )
+    task = port.prepare_calls[-1]
+    candidate = next(
+        item
+        for item in service.class_roster.ai_candidates(token="", class_label="一班")
+        if item["display_name"] == "合成学生甲"
+    )
+    ref = {"kind": "student", "id": str(candidate["id"]), "revision": str(candidate["revision"])}
+
+    outcome = service.intake.ai_task_adapter.persist_model_result(
+        task_id=str(turn["task_id"]),
+        source_ref=task["source_ref"],
+        context_refs=task["context_refs"],
+        result={
+            "contract_version": "class_teacher_triage.v1",
+            "assistant_message": "已补充合成学生甲的兴趣优势。",
+            "clarification_questions": ["他在哪些课堂上更能坐得住？"],
+            "work_items": [_work_item(
+                "professional-denied-item",
+                domain="student_support",
+                mode="record",
+                intent="append",
+                refs=[ref],
+                draft={
+                    "summary": "教师明确合成学生甲没有专业诊断，补充其篮球特长。",
+                    "profile_update": {
+                        "summary": "合成学生甲无专业诊断，篮球特长突出。",
+                        "dimensions": [{
+                            "key": "interests_strengths",
+                            "label": "兴趣与优势",
+                            "items": ["篮球打得特别好，是班级篮球队主力"],
+                        }],
+                        "open_questions": ["他在哪些课堂上更能坐得住？"],
+                        "support_focus": [{
+                            "key": "strength_channel",
+                            "title": "优势引导",
+                            "need": "通过篮球优势建立自信与班级认同感",
+                            "effective_methods": [],
+                            "next_actions": ["安排其承担篮球活动组织任务"],
+                        }],
+                    },
+                },
+            )],
+        },
+    )
+    saved = service.intake.get_conversation(str(turn["conversation_id"]))
+    handoff = service.intake.open_handoff(str(outcome["handoff_ids"][0]))
+    content = handoff["content"]
+
+    assert content["profile_update"]["summary"] == "合成学生甲无专业诊断，篮球特长突出。"
+    assert content["profile_update"]["dimensions"][0]["key"] == "interests_strengths"
+    assert not any(
+        "专业结论" in str(field) or "书面依据" in str(field)
+        for field in handoff.get("missing_fields") or []
+    )
+    assert not any(
+        "专业结论" in str(question) or "书面材料" in str(question)
+        for question in saved["turns"][-1]["clarification_questions"]
+    )
+
+
+def test_near_miss_domain_alias_does_not_fail_the_whole_turn(
+    tmp_path: Path,
+) -> None:
+    service, port = _service(tmp_path)
+    with closing(sqlite3.connect(tmp_path / "grading.db")) as connection:
+        connection.execute("UPDATE students SET class_name='一班' WHERE id=2")
+        connection.commit()
+    preference = service.intake.preferences.get()
+    service.intake.preferences.set(
+        homeroom_class="一班",
+        expected_revision=0,
+        expected_source_revision=str(preference["source_revision"]),
+        operation_id="domain-alias-homeroom",
+    )
+    _conversation, turn = _conversation_with_turn(
+        service,
+        "domain-alias-turn",
+        message="合成学生甲和合成学生乙课间发生了矛盾。",
+    )
+    task = port.prepare_calls[-1]
+    refs = [
+        {
+            "kind": "student",
+            "id": str(candidate["id"]),
+            "revision": str(candidate["revision"]),
+        }
+        for candidate in service.class_roster.ai_candidates(token="", class_label="一班")
+    ]
+
+    outcome = service.intake.ai_task_adapter.persist_model_result(
+        task_id=str(turn["task_id"]),
+        source_ref=task["source_ref"],
+        context_refs=task["context_refs"],
+        result={
+            "contract_version": "class_teacher_triage.v1",
+            "assistant_message": "已按冲突处理流程整理。",
+            "clarification_questions": [],
+            "work_items": [_work_item(
+                "domain-alias-item",
+                domain="conflict_support",
+                mode="sop",
+                intent="follow_up",
+                refs=refs,
+                draft={
+                    "summary": "两名合成学生课间矛盾，待教师核对。",
+                    "template_key": "baseline.student_conflict",
+                },
+            )],
+        },
+    )
+    saved = service.intake.get_conversation(str(turn["conversation_id"]))
+    handoff = service.intake.open_handoff(str(outcome["handoff_ids"][0]))
+
+    assert handoff["domain"] == "conflict_safety"
+    assert handoff["handling_mode"] == "sop"
+    assert handoff["content"]["template_key"] == "baseline.student_conflict"
+    assert saved["state"] != "failed"
+
+
+def test_conflict_questions_skip_separation_and_injury_already_reported(
+    tmp_path: Path,
+) -> None:
+    service, port = _service(tmp_path)
+    with closing(sqlite3.connect(tmp_path / "grading.db")) as connection:
+        connection.execute("UPDATE students SET class_name='一班' WHERE id=2")
+        connection.commit()
+    preference = service.intake.preferences.get()
+    service.intake.preferences.set(
+        homeroom_class="一班",
+        expected_revision=0,
+        expected_source_revision=str(preference["source_revision"]),
+        operation_id="conflict-answered-homeroom",
+    )
+    _conversation, turn = _conversation_with_turn(
+        service,
+        "conflict-answered-turn",
+        message=(
+            "合成学生甲和合成学生乙打架，我先让他们分开了，"
+            "合成学生乙膝盖擦破已经去校医室处理了。"
+        ),
+    )
+    task = port.prepare_calls[-1]
+    refs = [
+        {
+            "kind": "student",
+            "id": str(candidate["id"]),
+            "revision": str(candidate["revision"]),
+        }
+        for candidate in service.class_roster.ai_candidates(token="", class_label="一班")
+    ]
+
+    outcome = service.intake.ai_task_adapter.persist_model_result(
+        task_id=str(turn["task_id"]),
+        source_ref=task["source_ref"],
+        context_refs=task["context_refs"],
+        result={
+            "contract_version": "class_teacher_triage.v1",
+            "assistant_message": "已记录冲突并启动处理流程。",
+            "clarification_questions": ["矛盾的起因是什么？"],
+            "work_items": [_work_item(
+                "conflict-answered-item",
+                domain="conflict_safety",
+                mode="sop",
+                intent="create",
+                refs=refs,
+                draft={
+                    "summary": "两名合成学生冲突，已分开，伤者已就医。",
+                    "template_key": "baseline.student_conflict",
+                },
+            )],
+        },
+    )
+    saved = service.intake.get_conversation(str(turn["conversation_id"]))
+    questions = saved["turns"][-1]["clarification_questions"]
+
+    assert service.intake.open_handoff(str(outcome["handoff_ids"][0]))["handling_mode"] == "sop"
+    assert "矛盾的起因是什么？" in questions
+    assert not any("已经分开" in str(question) for question in questions)
+    assert not any("受伤" in str(question) or "校医" in str(question) for question in questions)
+
+
+def test_conflict_profile_update_with_bare_string_dimensions_does_not_fail_turn(
+    tmp_path: Path,
+) -> None:
+    service, port = _service(tmp_path)
+    with closing(sqlite3.connect(tmp_path / "grading.db")) as connection:
+        connection.execute("UPDATE students SET class_name='一班' WHERE id=2")
+        connection.commit()
+    preference = service.intake.preferences.get()
+    service.intake.preferences.set(
+        homeroom_class="一班",
+        expected_revision=0,
+        expected_source_revision=str(preference["source_revision"]),
+        operation_id="bare-dim-homeroom",
+    )
+    _conversation, turn = _conversation_with_turn(
+        service,
+        "bare-dim-turn",
+        message="合成学生甲和合成学生乙课间发生了矛盾。",
+    )
+    task = port.prepare_calls[-1]
+    refs = [
+        {
+            "kind": "student",
+            "id": str(candidate["id"]),
+            "revision": str(candidate["revision"]),
+        }
+        for candidate in service.class_roster.ai_candidates(token="", class_label="一班")
+    ]
+    profile_updates = [
+        {
+            "subject_ref": ref,
+            "include": True,
+            "record_kind": "reported_statement",
+            "source": "合成教师输入",
+            "observed_at": "2026-08-10T10:00:00+08:00",
+            "record_summary": "参与课间矛盾，待核对。",
+            "profile_base_revision": 0,
+            "profile_update": {
+                "summary": "冲突情况待教师核对。",
+                "dimensions": [
+                    "personality_behavior",
+                    {"key": "health", "label": "健康状态", "items": ["膝盖擦伤已处理"]},
+                    {"key": "peer_relationships", "label": "同伴关系", "items": []},
+                ],
+                "open_questions": ["冲突起因是什么？"],
+                "support_focus": [],
+            },
+        }
+        for ref in refs
+    ]
+
+    outcome = service.intake.ai_task_adapter.persist_model_result(
+        task_id=str(turn["task_id"]),
+        source_ref=task["source_ref"],
+        context_refs=task["context_refs"],
+        result={
+            "contract_version": "class_teacher_triage.v1",
+            "assistant_message": "已形成冲突处理草稿。",
+            "clarification_questions": [],
+            "work_items": [_work_item(
+                "bare-dim-item",
+                domain="conflict_safety",
+                mode="sop",
+                intent="create",
+                refs=refs,
+                draft={
+                    "summary": "两名合成学生课间矛盾。",
+                    "template_key": "baseline.student_conflict",
+                    "student_profile_updates": profile_updates,
+                },
+            )],
+        },
+    )
+    saved = service.intake.get_conversation(str(turn["conversation_id"]))
+    handoff = service.intake.open_handoff(str(outcome["handoff_ids"][0]))
+
+    assert saved["state"] != "failed"
+    updates = handoff["content"]["student_profile_updates"]
+    assert len(updates) == 2
+    for update in updates:
+        dims = update["profile_update"]["dimensions"]
+        assert dims == [{"key": "health", "label": "健康状态", "items": ["膝盖擦伤已处理"]}]
+
+
+def test_plan_draft_keeps_candidates_and_anchors_final_deadline_to_teacher_date(
+    tmp_path: Path,
+) -> None:
+    service, port = _service(tmp_path)
+    _conversation, turn = _conversation_with_turn(
+        service,
+        "plan-anchor-turn",
+        message="9月1日开学，要准备值周生安排和积分结算。",
+    )
+    task = port.prepare_calls[-1]
+
+    outcome = service.intake.ai_task_adapter.persist_model_result(
+        task_id=str(turn["task_id"]),
+        source_ref=task["source_ref"],
+        context_refs=task["context_refs"],
+        result={
+            "contract_version": "class_teacher_triage.v1",
+            "assistant_message": "已形成开学筹备计划草稿。",
+            "clarification_questions": [],
+            "work_items": [_work_item(
+                "plan-anchor-item",
+                domain="class_operations",
+                mode="plan_calendar",
+                intent="plan",
+                draft={
+                    "plan_title": "开学筹备计划",
+                    "summary": "围绕开学完成筹备任务。",
+                    "final_deadline": "2026-08-25T18:00:00+08:00",
+                    "candidates": [
+                        {"label": "值周生安排", "reason": "开学初需要明确值周", "suggested": True},
+                        {"label": "积分结算", "reason": "上学期积分需结算", "suggested": True},
+                        {"label": "学生奖品采购", "reason": "积分兑换需要奖品", "suggested": False},
+                        {"label": "x" * 300, "reason": "超长条目", "suggested": True},
+                        "纯字符串候选",
+                    ],
+                    "actions": [
+                        {
+                            "draft_action_id": "action-1",
+                            "title": "结算上学期积分",
+                            "details": "核对积分数据",
+                            "due_at": "2026-08-18T18:00:00+08:00",
+                            "depends_on_draft_action_ids": [],
+                        },
+                        {
+                            "draft_action_id": "action-2",
+                            "title": "公示积分结果",
+                            "details": "向学生公示",
+                            "due_at": "2026-09-05T18:00:00+08:00",
+                            "depends_on_draft_action_ids": ["action-1"],
+                        },
+                    ],
+                },
+            )],
+        },
+    )
+    handoff = service.intake.open_handoff(str(outcome["handoff_ids"][0]))
+    content = handoff["content"]
+
+    assert content["final_deadline"].startswith("2026-09-01")
+    assert any(
+        "2026-09-01" in str(fact.get("text")) and "校正" in str(fact.get("text"))
+        for fact in content["time_facts"]
+        if isinstance(fact, dict)
+    )
+    due_dates = [action["due_at"] for action in content["actions"]]
+    assert due_dates[0].startswith("2026-08-18")
+    assert due_dates[1].startswith("2026-09-01")
+    labels = [candidate["label"] for candidate in content["candidates"]]
+    assert labels == ["值周生安排", "积分结算", "学生奖品采购"]
+    assert content["candidates"][0]["suggested"] is True
+    assert content["candidates"][2]["suggested"] is False
+
+
+def test_plan_draft_with_multiple_teacher_dates_keeps_model_deadline(
+    tmp_path: Path,
+) -> None:
+    service, port = _service(tmp_path)
+    _conversation, turn = _conversation_with_turn(
+        service,
+        "plan-multi-date-turn",
+        message="9月1日开学，9月5日前要收齐回执。",
+    )
+    task = port.prepare_calls[-1]
+
+    outcome = service.intake.ai_task_adapter.persist_model_result(
+        task_id=str(turn["task_id"]),
+        source_ref=task["source_ref"],
+        context_refs=task["context_refs"],
+        result={
+            "contract_version": "class_teacher_triage.v1",
+            "assistant_message": "已形成计划草稿。",
+            "clarification_questions": [],
+            "work_items": [_work_item(
+                "plan-multi-date-item",
+                domain="class_operations",
+                mode="plan_calendar",
+                intent="plan",
+                draft={
+                    "plan_title": "开学与回执计划",
+                    "summary": "开学筹备与回执收集。",
+                    "final_deadline": "2026-09-05T18:00:00+08:00",
+                    "actions": [],
+                },
+            )],
+        },
+    )
+    handoff = service.intake.open_handoff(str(outcome["handoff_ids"][0]))
+
+    assert handoff["content"]["final_deadline"] == "2026-09-05T18:00:00+08:00"

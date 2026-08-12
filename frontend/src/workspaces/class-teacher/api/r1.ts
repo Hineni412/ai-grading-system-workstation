@@ -32,9 +32,41 @@ export interface AffairStep {
   decision_key?: string | null
   decision_prompt?: string | null
   decision_options?: Array<{ value: string; label: string }>
+  activation?: { decision_key: string; allowed_values: string[] } | null
+  origin?: string | null
 }
 
 export interface AffairDraft { step_instance_id: string; draft_kind: string; revision: number }
+export interface AffairFlowRevisionItem {
+  item_id: string
+  kind: 'add_step' | 'revise_step' | 'note'
+  step_key?: string | null
+  target_step_key?: string | null
+  title?: string
+  details?: string
+  depends_on?: string[]
+  reason?: string
+  text?: string
+  state: string
+}
+export interface AffairFlowRevision {
+  revision_id: string
+  sync_id: string
+  source_text: string
+  assistant_message: string
+  items: AffairFlowRevisionItem[]
+  dropped_items: Array<{ item_id: string; reason: string }>
+  state: 'pending_review' | 'applied' | 'discarded' | string
+  created_at: string
+  decided_at?: string | null
+  accepted_item_ids?: string[]
+}
+export interface AffairSyncRequest {
+  sync_id: string
+  text: string
+  state: 'queued' | 'answered' | 'failed' | 'invalid_result' | string
+  created_at: string
+}
 export interface AffairDetail extends AffairSummary {
   template_key: string
   occurrence_sequence: number
@@ -44,6 +76,8 @@ export interface AffairDetail extends AffairSummary {
   drafts: AffairDraft[]
   school_config_gaps?: string[]
   emergency_prompt?: string | null
+  flow_revisions?: AffairFlowRevision[]
+  sync_requests?: AffairSyncRequest[]
 }
 
 export interface DirectorySubject {
@@ -154,6 +188,20 @@ export const affairR1Api = {
       method: 'PUT', headers: writeHeaders(), body: {
         draft_kind: kind, text, expected_revision: revision, operation_id: operationId(),
       }, decode: record,
+    })
+  },
+  syncUpdate(affair: AffairDetail, text: string) {
+    return apiClient.request(`/api/class-teacher/sop/affairs/${affair.affair_id}/sync-updates`, {
+      method: 'POST', headers: writeHeaders(),
+      body: { text, expected_revision: affair.revision, operation_id: operationId() },
+      decode: (value) => record(value) as unknown as { sync_id: string; task_id: string; task_state: string },
+    })
+  },
+  decideFlowRevision(affair: AffairDetail, revisionId: string, acceptedItemIds: string[]) {
+    return apiClient.request(`/api/class-teacher/sop/affairs/${affair.affair_id}/flow-revisions/${revisionId}/decide`, {
+      method: 'POST', headers: writeHeaders(),
+      body: { accepted_item_ids: acceptedItemIds, expected_revision: affair.revision, operation_id: operationId() },
+      decode: (value) => record(value) as unknown as AffairDetail,
     })
   },
 }
