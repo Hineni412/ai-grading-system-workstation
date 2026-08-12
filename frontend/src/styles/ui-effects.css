@@ -1,0 +1,220 @@
+/*
+ * 科技感微特效：只在现有界面上叠加动画、过渡与投影。
+ * 不改变布局、配色、按钮形状、文案与 DOM；颜色全部来自 tokens.css 变量。
+ * 持续动画只有三种：呼吸（fx-breathe / fx-tag-pulse）、流光（fx-shimmer /
+ * fx-progress-shimmer）、脉冲（fx-step-pulse）。
+ */
+
+/* ===== 按钮：统一过渡 + 按下轻微缩放 + 主按钮 hover 投影 ===== */
+
+/* AppButton 组件样式是 scoped 的，这里用 !important 仅覆盖交互态，
+   其余视觉仍由组件自身决定。 */
+.app-button {
+  transition:
+    background-color 180ms ease,
+    border-color 180ms ease,
+    color 180ms ease,
+    box-shadow 180ms ease,
+    transform 180ms ease !important;
+}
+
+.app-button:active:not(:disabled) {
+  transform: scale(0.98) !important;
+}
+
+.app-button[data-variant='primary']:hover:not(:disabled),
+.workbench-primary-button:hover:not(:disabled) {
+  box-shadow: var(--fx-shadow-primary-hover);
+}
+
+.workbench-primary-button,
+.workbench-secondary-button,
+.workbench-link-button,
+.results-button,
+.results-link-button,
+.quick-archive-button {
+  transition:
+    background-color 180ms ease,
+    border-color 180ms ease,
+    color 180ms ease,
+    box-shadow 180ms ease,
+    transform 180ms ease;
+}
+
+.workbench-primary-button:active:not(:disabled),
+.workbench-secondary-button:active:not(:disabled),
+.workbench-link-button:active:not(:disabled),
+.results-button:active:not(:disabled),
+.results-link-button:active:not(:disabled),
+.quick-archive-button:active:not(:disabled) {
+  transform: scale(0.98);
+}
+
+/* ===== 进度条：填充条叠加白色斜纹流光（3s linear infinite） ===== */
+
+/* 题库页组装进度（DOM 填充条） */
+.question-bank__progress-track span {
+  position: relative;
+  overflow: hidden;
+}
+
+.question-bank__progress-track span::after {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -40%;
+  width: 40%;
+  background: linear-gradient(90deg, transparent, var(--fx-shimmer-stripe), transparent);
+  content: "";
+  pointer-events: none;
+  transform: skewX(-20deg);
+  animation: fx-shimmer 3s linear infinite;
+}
+
+@keyframes fx-shimmer {
+  from { left: -40%; }
+  to { left: 110%; }
+}
+
+/* 原生 <progress>（扫描阅卷、配置来源上传、 taxonomy 建议进度）。
+   各页面样式用 background 简写覆盖填充色，这里的流光图层需 !important
+   才能保留在原色之上；动画本身不与页面样式冲突。 */
+.scan-progress progress::-webkit-progress-value,
+.config-source__progress progress::-webkit-progress-value,
+.taxonomy-review__suggestion-progress progress::-webkit-progress-value,
+.scan-progress progress::-moz-progress-bar,
+.config-source__progress progress::-moz-progress-bar,
+.taxonomy-review__suggestion-progress progress::-moz-progress-bar {
+  background-image:
+    linear-gradient(
+      115deg,
+      transparent 35%,
+      var(--fx-shimmer-stripe) 50%,
+      transparent 65%
+    ) !important;
+  background-size: 220% 100% !important;
+  background-repeat: no-repeat;
+  animation: fx-progress-shimmer 3s linear infinite;
+}
+
+@keyframes fx-progress-shimmer {
+  from { background-position: 220% 0; }
+  to { background-position: -120% 0; }
+}
+
+/* ===== 状态标签：进行中 / 待处理 / 失败 呼吸脉动（1.6s） ===== */
+
+/* 跟随标签自身文字颜色投影，无需新增颜色变量 */
+@keyframes fx-tag-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, currentColor 0%, transparent); }
+  50% { box-shadow: 0 0 0 3px color-mix(in srgb, currentColor 22%, transparent); }
+}
+
+.results-status[data-status='needs_review'],
+.results-status[data-status='ai_review'],
+.results-status[data-status='incomplete'],
+.results-status[data-status='ungraded'],
+.results-status[data-status='failed'],
+.grading-plan[data-status='blocked'] .grading-plan__header > strong,
+.grading-plan[data-status='error'] .grading-plan__header > strong {
+  animation: fx-tag-pulse 1.6s ease-in-out infinite;
+}
+
+/* 题库评分要点状态条（已有色条元素，只做透明度呼吸） */
+@keyframes fx-breathe {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}
+
+.criterion-status[data-tone='review'] .criterion-status__mark,
+.criterion-status[data-tone='blocked'] .criterion-status__mark {
+  animation: fx-breathe 1.6s ease-in-out infinite;
+}
+
+/* ===== 步骤条 / 阶段轨：当前步圆点脉冲光晕（2s） ===== */
+
+@keyframes fx-step-pulse {
+  0%, 100% { box-shadow: 0 0 0 4px var(--fx-pulse-accent); }
+  50% { box-shadow: 0 0 0 8px var(--fx-pulse-accent-soft); }
+}
+
+.scan-run-rail li[data-state='current'] > span,
+.hybrid-run-board__phases li.is-current > span,
+.config-stage-rail__item--active .config-stage-rail__number {
+  animation: fx-step-pulse 2s ease-in-out infinite;
+}
+
+/* ===== Tab：激活下划线 scaleX 滑动 ===== */
+
+.results-tabs button::after {
+  opacity: 0;
+  transform: scaleX(0.35);
+  transform-origin: left center;
+  transition:
+    transform 200ms ease,
+    opacity 200ms ease,
+    background-color 200ms ease;
+}
+
+.results-tabs button.is-active::after {
+  opacity: 1;
+  transform: scaleX(1);
+}
+
+/* AI 诊断页签的激活线是 border，只能过渡颜色，不做 scaleX */
+.ai-diagnostic-tab {
+  transition:
+    color 160ms ease,
+    border-color 200ms ease;
+}
+
+/* ===== 可点击卡片：hover 阴影加深（不做 translateY） ===== */
+
+.qb-question-card,
+.grading-modes button {
+  transition:
+    background-color 180ms ease,
+    border-color 180ms ease,
+    box-shadow 180ms ease;
+}
+
+.qb-question-card:hover,
+.grading-modes button:hover:not(:disabled),
+.rubric-unit-card:not(.rubric-unit-card--editing):hover {
+  box-shadow: var(--fx-shadow-card-hover);
+}
+
+/* ===== 减少动态：关闭本文件全部动画与过渡 ===== */
+
+@media (prefers-reduced-motion: reduce) {
+  .app-button,
+  .workbench-primary-button,
+  .workbench-secondary-button,
+  .workbench-link-button,
+  .results-button,
+  .results-link-button,
+  .quick-archive-button,
+  .results-status,
+  .grading-plan__header > strong,
+  .criterion-status__mark,
+  .scan-run-rail li > span,
+  .hybrid-run-board__phases li > span,
+  .config-stage-rail__number,
+  .qb-question-card,
+  .grading-modes button,
+  .rubric-unit-card,
+  .ai-diagnostic-tab,
+  .results-tabs button,
+  .results-tabs button::after,
+  .question-bank__progress-track span,
+  .question-bank__progress-track span::after,
+  .scan-progress progress::-webkit-progress-value,
+  .config-source__progress progress::-webkit-progress-value,
+  .taxonomy-review__suggestion-progress progress::-webkit-progress-value,
+  .scan-progress progress::-moz-progress-bar,
+  .config-source__progress progress::-moz-progress-bar,
+  .taxonomy-review__suggestion-progress progress::-moz-progress-bar {
+    animation: none !important;
+    transition: none !important;
+  }
+}

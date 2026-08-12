@@ -13,6 +13,7 @@ import './styles/base.css'
 import './styles/app-shell.css'
 import './styles/file-center.css'
 import './styles/results-center.css'
+import './styles/ui-effects.css'
 
 const app = createApp(App)
 const pinia = createPinia()
