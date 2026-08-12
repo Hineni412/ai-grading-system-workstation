@@ -4,6 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 
 import type { GraphQueryInput } from '../api/graph'
 import { fetchStudents, type StudentSummary } from '../api/students'
+import AppButton from '../components/design-system/AppButton.vue'
 import GraphScopeFilters from '../components/knowledge-graph/GraphScopeFilters.vue'
 import KnowledgeStructureBrowser from '../components/knowledge-training/KnowledgeStructureBrowser.vue'
 import KnowledgeTrainingTabs from '../components/knowledge-training/KnowledgeTrainingTabs.vue'
@@ -199,7 +200,7 @@ onBeforeUnmount(() => {
 
     <div v-if="studentsState === 'error'" class="knowledge-graph-inline-error" role="alert">
       <p>班级和学生列表暂时无法读取</p>
-      <button type="button" @click="retryStudents">重新加载筛选项</button>
+      <AppButton type="button" @click="retryStudents">重新加载筛选项</AppButton>
     </div>
     <p v-if="routeNotice" class="knowledge-graph-scope-notice" role="status">
       {{ routeNotice }}
@@ -215,13 +216,13 @@ onBeforeUnmount(() => {
     </div>
     <div v-else-if="graphStore.graphState === 'error'" class="knowledge-graph-inline-error" role="alert">
       <p>{{ graphStore.graphError }}</p>
-      <button type="button" @click="retryGraph">重新加载知识图谱</button>
+      <AppButton type="button" @click="retryGraph">重新加载知识图谱</AppButton>
     </div>
 
     <template v-if="graphStore.graph">
       <div v-if="graphStore.graphState === 'stale-error'" class="knowledge-graph-stale" role="alert">
         <p>当前显示上次成功读取的知识图谱，最新内容暂时无法确认。</p>
-        <button type="button" @click="retryGraph">重新加载知识图谱</button>
+        <AppButton type="button" @click="retryGraph">重新加载知识图谱</AppButton>
       </div>
       <details
         v-if="visibleWarnings.length || graphStore.graph.missing.length"
@@ -255,9 +256,9 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
-.scope-disclosure { margin-bottom: 10px; }
-.scope-disclosure > summary { margin-left: auto; width: max-content; padding: 8px 13px; border: 1px solid var(--color-border-default); border-radius: 9px; background: white; color: var(--color-text-secondary); cursor: pointer; list-style: none; }
+.scope-disclosure { margin-bottom: var(--space-2); }
+.scope-disclosure > summary { margin-left: auto; width: max-content; padding: var(--space-2) var(--space-3); border: var(--border-width) solid var(--border); border-radius: var(--radius); background: var(--card); color: var(--color-text-secondary); cursor: pointer; list-style: none; }
 .scope-disclosure > summary::after { content: ' ▾'; }
 .scope-disclosure[open] > summary::after { content: ' ▴'; }
-.scope-disclosure > :deep(.evidence-scope) { margin-top: 10px; }
+.scope-disclosure > :deep(.evidence-scope) { margin-top: var(--space-2); }
 </style>

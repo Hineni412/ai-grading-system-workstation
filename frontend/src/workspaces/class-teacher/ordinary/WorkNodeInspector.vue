@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 
+import AppButton from '@/components/design-system/AppButton.vue'
+import StatusBadge from '@/components/design-system/StatusBadge.vue'
 import type { WorkNode } from '../api/work'
 import type { OrdinaryWorkModule } from './createOrdinaryWorkModule'
 
@@ -53,50 +55,51 @@ async function run(node: WorkNode, command: string, fields: Record<string, unkno
 <template>
   <aside class="inspector" aria-label="工作详情">
     <template v-if="detail">
-      <button class="inspector__close" type="button" @click="module.clearSelection()">关闭</button>
+      <AppButton class="inspector__close" variant="ghost" @click="module.clearSelection()">关闭</AppButton>
       <p class="eyebrow">工作轨迹</p>
       <h2>{{ detail.node.title }}</h2>
       <p class="muted">{{ detail.node.details || '这项工作没有补充说明。' }}</p>
       <dl class="facts">
-        <div><dt>状态</dt><dd>{{ detail.node.status }}</dd></div>
+        <div><dt>状态</dt><dd><StatusBadge tone="neutral" :label="detail.node.status" /></dd></div>
         <div><dt>到期</dt><dd>{{ detail.node.due_date || '未设置' }}</dd></div>
         <div><dt>上游 / 下游</dt><dd>{{ detail.upstream.length }} / {{ detail.downstream.length }}</dd></div>
       </dl>
 
-      <button
+      <AppButton
         v-if="detail.node.classification === 'restricted_projection'"
-        class="primary"
-        type="button"
+        variant="primary"
+        block
+        class="primary-action"
         :disabled="busy"
         @click="run(detail.node, 'open_restricted_projection')"
-      >打开相关学生事项</button>
+      >打开相关学生事项</AppButton>
 
       <template v-else>
         <div v-if="detail.node.status === 'cancelled'" class="restore-panel">
           <p>这项工作已移出默认日历，历史记录仍然保留。</p>
-          <button type="button" :disabled="busy" @click="run(detail.node, 'update_status', { status: 'pending' })">恢复到日历</button>
+          <AppButton variant="secondary" :disabled="busy" @click="run(detail.node, 'update_status', { status: 'pending' })">恢复到日历</AppButton>
         </div>
         <div v-else class="command-row">
-          <button type="button" :disabled="busy" @click="run(detail.node, 'update_status', { status: 'in_progress' })">开始处理</button>
-          <button type="button" :disabled="busy" @click="run(detail.node, 'update_status', { status: 'completed' })">标为完成</button>
-          <button v-if="!confirmingCancel" type="button" class="remove-calendar" :disabled="busy" @click="confirmingCancel = true">移出日历</button>
-          <template v-else><span class="confirm-copy">确定移出？记录会保留。</span><button type="button" class="remove-calendar" :disabled="busy" @click="run(detail.node, 'update_status', { status: 'cancelled' })">确认移出</button><button type="button" :disabled="busy" @click="confirmingCancel = false">不移出</button></template>
+          <AppButton variant="secondary" :disabled="busy" @click="run(detail.node, 'update_status', { status: 'in_progress' })">开始处理</AppButton>
+          <AppButton variant="secondary" :disabled="busy" @click="run(detail.node, 'update_status', { status: 'completed' })">标为完成</AppButton>
+          <AppButton v-if="!confirmingCancel" variant="secondary" :disabled="busy" @click="confirmingCancel = true">移出日历</AppButton>
+          <template v-else><span class="confirm-copy">确定移出？记录会保留。</span><AppButton variant="danger" :disabled="busy" @click="run(detail.node, 'update_status', { status: 'cancelled' })">确认移出</AppButton><AppButton variant="ghost" :disabled="busy" @click="confirmingCancel = false">不移出</AppButton></template>
         </div>
         <label>
           <span>调整到期日期</span>
-          <span class="inline"><input v-model="dueDate" type="date"><button type="button" :disabled="busy || !dueDate" @click="run(detail.node, 'reschedule', { due_date: dueDate })">保存</button></span>
+          <span class="inline"><input v-model="dueDate" type="date"><AppButton variant="secondary" :disabled="busy || !dueDate" @click="run(detail.node, 'reschedule', { due_date: dueDate })">保存</AppButton></span>
         </label>
         <label>
           <span>记录进展</span>
           <textarea v-model="progress" rows="3" maxlength="240" placeholder="只记录普通工作信息"></textarea>
-          <button type="button" :disabled="busy || !progress.trim()" @click="run(detail.node, 'record_progress', { progress: progress })">加入轨迹</button>
+          <AppButton variant="secondary" :disabled="busy || !progress.trim()" @click="run(detail.node, 'record_progress', { progress: progress })">加入轨迹</AppButton>
         </label>
         <section v-if="detail.node.kind === 'collection'" class="collection-summary">
           <h3>收集汇总</h3>
           <label><span>应收</span><input v-model.number="expectedCount" type="number" min="0"></label>
           <label><span>已收</span><input v-model.number="receivedCount" type="number" min="0"></label>
           <label><span>待复查</span><input v-model.number="needsReviewCount" type="number" min="0"></label>
-          <button type="button" :disabled="busy || receivedCount > expectedCount || needsReviewCount > receivedCount" @click="run(detail.node, 'update_collection_summary', { expected_count: expectedCount, received_count: receivedCount, needs_review_count: needsReviewCount })">保存汇总</button>
+          <AppButton variant="secondary" :disabled="busy || receivedCount > expectedCount || needsReviewCount > receivedCount" @click="run(detail.node, 'update_collection_summary', { expected_count: expectedCount, received_count: receivedCount, needs_review_count: needsReviewCount })">保存汇总</AppButton>
         </section>
       </template>
 
@@ -136,22 +139,25 @@ async function run(node: WorkNode, command: string, fields: Record<string, unkno
 </template>
 
 <style scoped>
-.inspector { min-height: 460px; padding: var(--space-5); border-left: 1px solid var(--color-border-default); background: var(--color-bg-subtle); }
-.inspector__close { float: right; border: 0; background: transparent; color: var(--color-accent); cursor: pointer; }
-.eyebrow { margin: 0 0 var(--space-1); color: var(--color-accent); font-size: var(--font-size-caption); font-weight: 700; letter-spacing: .08em; }
+.inspector { min-height: 460px; padding: var(--space-5); border-left: 1px solid var(--border); background: var(--muted); }
+.inspector__close { float: right; }
+.primary-action { margin-top: var(--space-4); }
+.eyebrow { margin: 0 0 var(--space-1); color: var(--primary); font-size: var(--font-size-caption); font-weight: 700; letter-spacing: .08em; }
 h2 { margin: 0 0 var(--space-2); font-size: var(--font-size-h2); }
 .muted { color: var(--color-text-secondary); }
-.facts { display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--space-2); padding: var(--space-3) 0; border-block: 1px solid var(--color-border-subtle); }
-.facts div { display: grid; gap: 2px; }.facts dt { color: var(--color-text-muted); font-size: var(--font-size-caption); }.facts dd { margin: 0; font-weight: 650; }
+.facts { display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--space-2); padding: var(--space-3) 0; border-block: 1px solid var(--border); }
+.facts div { display: grid; gap: 2px; justify-items: start; }.facts dt { color: var(--muted-foreground); font-size: var(--font-size-caption); }.facts dd { margin: 0; font-weight: 650; }
 label { display: grid; gap: var(--space-2); margin-top: var(--space-4); font-size: var(--font-size-dense); font-weight: 650; }
 .inline,.command-row { display: flex; gap: var(--space-2); }.inline input { flex: 1; }
-.command-row{flex-wrap:wrap;align-items:center}.remove-calendar{border-color:var(--color-warning);color:var(--color-warning)}.confirm-copy{color:var(--color-text-secondary);font-size:var(--font-size-caption)}.restore-panel{margin-top:var(--space-4);padding:var(--space-3);border-left:3px solid var(--color-warning);background:var(--color-warning-subtle)}.restore-panel p{margin-top:0;color:var(--color-text-secondary)}
-button,input,textarea { font: inherit; } button { min-height: 36px; padding: 0 var(--space-3); border: 1px solid var(--color-border-strong); border-radius: var(--radius-control); background: var(--color-bg-surface); cursor: pointer; }
-.primary { width: 100%; margin-top: var(--space-4); border-color: var(--color-accent); background: var(--color-accent); color: white; }
-textarea { resize: vertical; padding: var(--space-2); border: 1px solid var(--color-border-default); border-radius: var(--radius-control); }
-  .trajectory { margin-top: var(--space-5); }.trajectory ol { margin: 0; padding-left: 24px; border-left: 2px solid var(--color-accent-subtle); }.trajectory li { padding: 0 0 var(--space-3) var(--space-2); }.trajectory small { display: block; color: var(--color-text-muted); }
-  .collection-summary { display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--space-2); margin-top: var(--space-4); padding: var(--space-3); border: 1px solid var(--color-border-default); border-radius: var(--radius-control); }.collection-summary h3,.collection-summary button { grid-column: 1/-1; }.collection-summary label { margin-top: 0; }.collection-summary input { width: 100%; box-sizing: border-box; }.relations,.ai-branches { margin-top: var(--space-4); padding-top: var(--space-3); border-top: 1px solid var(--color-border-subtle); }.relations p,.ai-branches li { color: var(--color-text-secondary); font-size: var(--font-size-dense); }.ai-branches article { padding: var(--space-3); border-left: 3px dashed #75658b; background: #f5f2f8; }
-.inspector__empty { display: grid; place-items: center; align-content: center; min-height: 390px; text-align: center; color: var(--color-text-secondary); }.inspector__empty span { font-size: 36px; color: var(--color-accent); }.inspector__empty p { max-width: 230px; }
+.command-row{flex-wrap:wrap;align-items:center}.confirm-copy{color:var(--color-text-secondary);font-size:var(--font-size-caption)}.restore-panel{margin-top:var(--space-4);padding:var(--space-3);border-left:3px solid var(--color-warning);border-radius:0 var(--radius) var(--radius) 0;background:var(--color-warning-subtle)}.restore-panel p{margin-top:0;color:var(--color-text-secondary)}
+button,input,textarea { font: inherit; }
+input,textarea { padding: var(--space-2); border: 1px solid var(--border); border-radius: var(--radius); background: var(--card); }
+input { min-height: 36px; }
+input:focus-visible,textarea:focus-visible { border-color: var(--ring); box-shadow: var(--focus-ring); outline: 0; }
+textarea { resize: vertical; }
+  .trajectory { margin-top: var(--space-5); }.trajectory ol { margin: 0; padding-left: 24px; border-left: 2px solid var(--accent); }.trajectory li { padding: 0 0 var(--space-3) var(--space-2); }.trajectory small { display: block; color: var(--muted-foreground); }
+  .collection-summary { display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--space-2); margin-top: var(--space-4); padding: var(--space-3); border: 1px solid var(--border); border-radius: var(--radius); background: var(--card); }.collection-summary h3,.collection-summary .app-button { grid-column: 1/-1; }.collection-summary label { margin-top: 0; }.collection-summary input { width: 100%; box-sizing: border-box; }.relations,.ai-branches { margin-top: var(--space-4); padding-top: var(--space-3); border-top: 1px solid var(--border); }.relations p,.ai-branches li { color: var(--color-text-secondary); font-size: var(--font-size-dense); }.ai-branches article { padding: var(--space-3); border-left: 3px dashed var(--color-ai); border-radius: 0 var(--radius) var(--radius) 0; background: var(--color-ai-subtle); }
+.inspector__empty { display: grid; place-items: center; align-content: center; min-height: 390px; text-align: center; color: var(--color-text-secondary); }.inspector__empty span { font-size: 36px; color: var(--primary); }.inspector__empty p { max-width: 230px; }
 .success { color: var(--color-success); }
-@media (max-width: 980px) { .inspector { border-top: 1px solid var(--color-border-default); border-left: 0; }.facts { grid-template-columns: 1fr; } }
+@media (max-width: 980px) { .inspector { border-top: 1px solid var(--border); border-left: 0; }.facts { grid-template-columns: 1fr; } }
 </style>

@@ -18,6 +18,7 @@ import {
 import { useReviewQueueStore } from '../../stores/review-queue'
 import { translateGradingReason } from '../../utils/grading-reasons'
 import StatePanel from '../design-system/StatePanel.vue'
+import StatusBadge from '../design-system/StatusBadge.vue'
 import ReviewFeedbackToast from './ReviewFeedbackToast.vue'
 
 const reviewStore = useReviewQueueStore()
@@ -81,6 +82,17 @@ const statusLabel = computed(() => {
     teacher_final: '教师已确认',
     failed: '处理失败',
   }[status]
+})
+const statusTone = computed(() => {
+  const status = item.value?.score_status
+  if (!status) return 'neutral' as const
+  return ({
+    ungraded: 'neutral',
+    ai_ready: 'ai',
+    ai_review: 'warning',
+    teacher_final: 'teacher',
+    failed: 'danger',
+  } as const)[status]
 })
 const candidates = computed(() => (item.value?.candidate_scores ?? []).flatMap((candidate) => {
   const score = typeof candidate.score === 'number' && Number.isFinite(candidate.score)
@@ -263,16 +275,18 @@ onBeforeUnmount(() => {
         <header class="review-scoring-inspector__header">
           <p>{{ item.question_id }} · 满分 {{ formatScore(item.max_score) }}</p>
           <h2>评分与复核</h2>
-          <span v-if="currentDraft.dirty" class="review-scoring-inspector__draft-state">
-            教师草稿未确认
-          </span>
-          <span
+          <StatusBadge
+            v-if="currentDraft.dirty"
+            class="review-scoring-inspector__draft-state"
+            tone="warning"
+            label="教师草稿未确认"
+          />
+          <StatusBadge
             v-else
             class="review-scoring-inspector__status-state"
-            :class="`is-${item.score_status}`"
-          >
-            {{ statusLabel }}
-          </span>
+            :tone="statusTone"
+            :label="statusLabel"
+          />
         </header>
 
         <section class="review-scoring-section" aria-labelledby="review-rubric-title">

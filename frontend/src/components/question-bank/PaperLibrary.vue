@@ -12,6 +12,7 @@ import { useJobStore } from '../../stores/jobs'
 import { useCurriculumScopeStore } from '../../stores/curriculum-scope'
 import { TERMINAL_JOB_STATUSES, type JobResponse } from '../../api/jobs'
 import { ApiError, isAmbiguousWriteError } from '../../api/errors'
+import AppButton from '../design-system/AppButton.vue'
 
 const props = withDefaults(defineProps<{
   pendingTaxonomyCount?: number
@@ -672,12 +673,11 @@ async function confirmPermanentDelete(): Promise<void> {
         <span><strong>{{ store.papers.length }}</strong> 份试卷</span>
         <span><strong>{{ totalQuestions }}</strong> 道题</span>
         <span><strong>{{ completeQuestions }}</strong> 道联合分析完整</span>
-        <button
-          type="button"
-          class="paper-button is-quiet"
+        <AppButton
+          variant="secondary"
           :disabled="retagAllBusy || retagBusyPaperId !== null"
           @click="fillAllTags"
-        >{{ retagAllBusy && taggingMode === 'fill' ? '正在检查未完成题…' : '继续完成未完成题目' }}</button>
+        >{{ retagAllBusy && taggingMode === 'fill' ? '正在检查未完成题…' : '继续完成未完成题目' }}</AppButton>
         <button
           type="button"
           class="paper-button is-review"
@@ -686,15 +686,14 @@ async function confirmPermanentDelete(): Promise<void> {
           待审核新词
           <strong>{{ pendingTaxonomyLabel }}</strong>
         </button>
-        <button
-          type="button"
-          class="paper-button is-quiet"
+        <AppButton
+          variant="secondary"
           :disabled="retagAllBusy || retagBusyPaperId !== null"
           @click="retagAllPapers"
-        >{{ retagAllBusy && taggingMode === 'retag' ? '正在准备…' : '全库重新打标签' }}</button>
-        <button type="button" class="paper-button is-primary" @click="emit('import')">
+        >{{ retagAllBusy && taggingMode === 'retag' ? '正在准备…' : '全库重新打标签' }}</AppButton>
+        <AppButton variant="primary" @click="emit('import')">
           上传试卷
-        </button>
+        </AppButton>
       </div>
     </header>
 
@@ -762,7 +761,7 @@ async function confirmPermanentDelete(): Promise<void> {
           <option value="pending">待完善</option>
         </select>
       </label>
-      <button type="button" class="paper-button is-quiet" @click="resetFilters">清除</button>
+      <AppButton variant="ghost" @click="resetFilters">清除</AppButton>
     </div>
 
     <p v-if="store.papersState === 'loading'" class="paper-library__state" role="status">
@@ -770,7 +769,7 @@ async function confirmPermanentDelete(): Promise<void> {
     </p>
     <div v-else-if="store.papersState === 'error'" class="paper-library__state is-error" role="alert">
       <span>试卷库暂时无法读取。</span>
-      <button type="button" class="paper-button is-quiet" @click="store.loadPapers()">重新读取</button>
+      <AppButton variant="secondary" @click="store.loadPapers()">重新读取</AppButton>
     </div>
     <div v-else-if="filteredPapers.length === 0" class="paper-library__state">
       <strong>{{ store.papers.length ? '当前筛选下没有试卷' : '还没有导入试卷' }}</strong>
@@ -841,16 +840,15 @@ async function confirmPermanentDelete(): Promise<void> {
           <footer>
             <span>更新于 {{ formatDate(paper.updated_at) }}</span>
             <div class="paper-card__actions">
-              <button
-                type="button"
-                class="paper-button is-quiet"
+              <AppButton
+                variant="secondary"
                 :disabled="retagBusyPaperId !== null || retagAllBusy"
                 @click="fillPaperTags(paper)"
               >{{
                 retagBusyPaperId === paper.id && taggingMode === 'fill'
                   ? '准备中…'
                   : '继续完成未完成题目'
-              }}</button>
+              }}</AppButton>
               <button
                 type="button"
                 class="paper-button is-danger-quiet"
@@ -861,22 +859,21 @@ async function confirmPermanentDelete(): Promise<void> {
               >
                 删除
               </button>
-              <button
-                type="button"
-                class="paper-button is-quiet"
+              <AppButton
+                variant="secondary"
                 :disabled="retagBusyPaperId !== null || retagAllBusy"
                 @click="retagPaper(paper)"
               >{{
                 retagBusyPaperId === paper.id && taggingMode === 'retag'
                   ? '准备中…'
                   : '重新打标签'
-              }}</button>
-              <button type="button" class="paper-button is-quiet" @click="editPaper(paper)">
+              }}</AppButton>
+              <AppButton variant="secondary" @click="editPaper(paper)">
                 编辑资料
-              </button>
-              <button type="button" class="paper-button is-primary" @click="emit('open', paper)">
+              </AppButton>
+              <AppButton variant="primary" @click="emit('open', paper)">
                 查看试题
-              </button>
+              </AppButton>
             </div>
           </footer>
         </div>
@@ -1035,21 +1032,20 @@ async function confirmPermanentDelete(): Promise<void> {
             </p>
 
             <footer class="paper-editor__actions is-wide">
-              <button
-                type="button"
-                class="paper-button is-quiet"
+              <AppButton
+                variant="secondary"
                 :disabled="store.paperWriteState === 'saving'"
                 @click="closePaperEditor"
               >
                 取消
-              </button>
-              <button
+              </AppButton>
+              <AppButton
+                variant="primary"
                 type="submit"
-                class="paper-button is-primary"
                 :disabled="store.paperWriteState === 'saving'"
               >
                 {{ store.paperWriteState === 'saving' ? '正在保存…' : '保存资料' }}
-              </button>
+              </AppButton>
             </footer>
           </form>
         </aside>
@@ -1089,18 +1085,16 @@ async function confirmPermanentDelete(): Promise<void> {
             {{ permanentDeleteMessage }}
           </p>
           <footer>
-            <button
-              type="button"
-              class="paper-button is-quiet"
+            <AppButton
+              variant="secondary"
               :disabled="permanentDeleteState === 'working'"
               @click="cancelPermanentDelete"
-            >取消</button>
-            <button
-              type="button"
-              class="paper-button is-danger"
+            >取消</AppButton>
+            <AppButton
+              variant="danger"
               :disabled="!canConfirmPermanentDelete"
               @click="confirmPermanentDelete"
-            >{{ permanentDeleteState === 'working' ? '正在彻底删除…' : '确认彻底删除' }}</button>
+            >{{ permanentDeleteState === 'working' ? '正在彻底删除…' : '确认彻底删除' }}</AppButton>
           </footer>
         </section>
       </div>
@@ -1122,7 +1116,7 @@ async function confirmPermanentDelete(): Promise<void> {
 }
 
 .paper-library__eyebrow {
-  color: var(--color-accent, #135e6b) !important;
+  color: var(--color-accent) !important;
   font-size: 11px !important;
   font-weight: 750;
   letter-spacing: .13em;
@@ -1130,14 +1124,14 @@ async function confirmPermanentDelete(): Promise<void> {
 }
 
 .paper-library__header h1 {
-  color: var(--color-text-primary, #1c2733);
+  color: var(--color-text-primary);
   font-size: 30px;
   letter-spacing: -.04em;
   margin: 0;
 }
 
 .paper-library__header p {
-  color: var(--color-text-secondary, #5c6672);
+  color: var(--color-text-secondary);
   font-size: 14px;
   margin: 7px 0 0;
 }
@@ -1151,21 +1145,21 @@ async function confirmPermanentDelete(): Promise<void> {
 }
 
 .paper-library__stats span {
-  color: var(--color-text-secondary, #5c6672);
+  color: var(--color-text-secondary);
   font-size: 12px;
 }
 
 .paper-library__stats strong {
-  color: var(--color-text-primary, #1c2733);
+  color: var(--color-text-primary);
   font-size: 19px;
   margin-right: 2px;
 }
 
 .paper-library__filters {
   align-items: flex-end;
-  background: #fff;
-  border: 1px solid var(--color-border, #e2e4e7);
-  border-radius: 12px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-panel);
   display: grid;
   gap: 10px;
   grid-template-columns: minmax(240px, 1fr) repeat(4, minmax(118px, 150px)) auto;
@@ -1173,7 +1167,7 @@ async function confirmPermanentDelete(): Promise<void> {
 }
 
 .paper-library__filters label {
-  color: var(--color-text-secondary, #5c6672);
+  color: var(--color-text-secondary);
   display: grid;
   font-size: 11px;
   font-weight: 650;
@@ -1182,10 +1176,10 @@ async function confirmPermanentDelete(): Promise<void> {
 
 .paper-library__filters input,
 .paper-library__filters select {
-  background: #fff;
-  border: 1px solid var(--color-border-strong, #d8dbdf);
+  background: var(--card);
+  border: 1px solid var(--color-border-strong);
   border-radius: 8px;
-  color: var(--color-text-primary, #1c2733);
+  color: var(--color-text-primary);
   font: inherit;
   font-size: 13px;
   height: 36px;
@@ -1195,8 +1189,8 @@ async function confirmPermanentDelete(): Promise<void> {
 
 .paper-library__filters input:focus,
 .paper-library__filters select:focus {
-  border-color: var(--color-accent, #135e6b);
-  box-shadow: 0 0 0 3px rgb(19 94 107 / 10%);
+  border-color: var(--color-accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-accent) 10%, transparent);
   outline: none;
 }
 
@@ -1218,10 +1212,10 @@ async function confirmPermanentDelete(): Promise<void> {
 
 .paper-folder__header {
   align-items: center;
-  background: #f6f8f8;
-  border: 1px solid var(--color-border, #e2e4e7);
-  border-radius: 10px;
-  color: var(--color-text-primary, #1c2733);
+  background: var(--secondary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  color: var(--color-text-primary);
   cursor: pointer;
   display: flex;
   font: inherit;
@@ -1234,38 +1228,38 @@ async function confirmPermanentDelete(): Promise<void> {
 
 .paper-folder__header:hover,
 .paper-folder__header:focus-visible {
-  background: #edf4f3;
-  border-color: rgb(19 94 107 / 35%);
+  background: var(--color-accent-subtle);
+  border-color: color-mix(in srgb, var(--color-accent) 35%, transparent);
   outline: none;
 }
 
 .paper-folder__chevron {
-  color: var(--color-accent, #135e6b);
+  color: var(--color-accent);
   font-size: 22px;
   line-height: 1;
   width: 16px;
 }
 
 .paper-folder__kind {
-  background: #fff;
-  border: 1px solid var(--color-border, #e2e4e7);
+  background: var(--card);
+  border: 1px solid var(--border);
   border-radius: 999px;
-  color: var(--color-text-secondary, #64707d);
+  color: var(--color-text-secondary);
   font-size: 11px;
   padding: 3px 8px;
 }
 
 .paper-folder__count {
-  color: var(--color-text-secondary, #64707d);
+  color: var(--color-text-secondary);
   font-size: 12px;
   margin-left: auto;
 }
 
 .paper-card {
-  background: #fff;
-  border: 1px solid var(--color-border, #e2e4e7);
-  border-radius: 12px;
-  box-shadow: 0 1px 2px rgb(28 39 51 / 5%);
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-panel);
+  box-shadow: 0 1px 2px color-mix(in srgb, var(--color-text-primary) 5%, transparent);
   display: grid;
   grid-template-columns: 108px minmax(0, 1fr);
   min-height: 230px;
@@ -1274,16 +1268,16 @@ async function confirmPermanentDelete(): Promise<void> {
 }
 
 .paper-card:hover {
-  border-color: rgb(19 94 107 / 35%);
-  box-shadow: 0 8px 26px rgb(28 39 51 / 8%);
+  border-color: color-mix(in srgb, var(--color-accent) 35%, transparent);
+  box-shadow: 0 8px 26px color-mix(in srgb, var(--color-text-primary) 8%, transparent);
   transform: translateY(-1px);
 }
 
 .paper-card__cover {
   align-items: center;
-  background: #edf4f3;
-  border-right: 1px solid var(--color-border, #e2e4e7);
-  color: var(--color-accent, #135e6b);
+  background: var(--color-accent-subtle);
+  border-right: 1px solid var(--border);
+  color: var(--color-accent);
   display: flex;
   flex-direction: column;
   justify-content: center;
@@ -1304,13 +1298,13 @@ async function confirmPermanentDelete(): Promise<void> {
 }
 
 .paper-card__cover.is-pdf {
-  background: #f8f0ed;
-  color: #8a4b37;
+  background: var(--color-danger-subtle);
+  color: var(--color-danger);
 }
 
 .paper-card__cover.is-other {
-  background: #f1f2f4;
-  color: #5c6672;
+  background: var(--secondary);
+  color: var(--color-text-secondary);
 }
 
 .paper-card__cover span {
@@ -1347,21 +1341,21 @@ async function confirmPermanentDelete(): Promise<void> {
 }
 
 .paper-chip {
-  background: #f4f5f6;
+  background: var(--background);
   border-radius: 999px;
-  color: var(--color-text-secondary, #5c6672);
+  color: var(--color-text-secondary);
   font-size: 11px;
   padding: 3px 8px;
 }
 
 .paper-chip.is-format {
-  background: rgb(19 94 107 / 10%);
-  color: var(--color-accent, #135e6b);
+  background: color-mix(in srgb, var(--color-accent) 10%, transparent);
+  color: var(--color-accent);
   font-weight: 700;
 }
 
 .paper-card h2 {
-  color: var(--color-text-primary, #1c2733);
+  color: var(--color-text-primary);
   display: -webkit-box;
   font-size: 16px;
   line-height: 1.45;
@@ -1372,13 +1366,13 @@ async function confirmPermanentDelete(): Promise<void> {
 }
 
 .paper-card__meta {
-  color: var(--color-text-tertiary, #6b7684);
+  color: var(--color-text-muted);
   font-size: 12px;
   margin: 0;
 }
 
 .paper-card__progress-heading {
-  color: var(--color-text-secondary, #5c6672);
+  color: var(--color-text-secondary);
   display: flex;
   font-size: 11px;
   justify-content: space-between;
@@ -1387,11 +1381,11 @@ async function confirmPermanentDelete(): Promise<void> {
 }
 
 .paper-card__progress-heading strong {
-  color: var(--color-text-primary, #1c2733);
+  color: var(--color-text-primary);
 }
 
 .paper-card__progress {
-  background: #edf0f1;
+  background: var(--color-border-subtle);
   border-radius: 999px;
   height: 6px;
   margin-top: 7px;
@@ -1399,7 +1393,7 @@ async function confirmPermanentDelete(): Promise<void> {
 }
 
 .paper-card__progress span {
-  background: var(--color-accent, #135e6b);
+  background: var(--color-accent);
   border-radius: inherit;
   display: block;
   height: 100%;
@@ -1407,15 +1401,15 @@ async function confirmPermanentDelete(): Promise<void> {
 }
 
 .paper-card__progress-note {
-  color: var(--color-text-tertiary, #6b7684);
+  color: var(--color-text-muted);
   font-size: 11px;
   margin: 6px 0 0;
 }
 
 .paper-card footer {
   align-items: center;
-  border-top: 1px solid var(--color-border, #e2e4e7);
-  color: var(--color-text-tertiary, #6b7684);
+  border-top: 1px solid var(--border);
+  color: var(--color-text-muted);
   display: flex;
   font-size: 11px;
   justify-content: space-between;
@@ -1431,10 +1425,10 @@ async function confirmPermanentDelete(): Promise<void> {
 
 .paper-button {
   align-items: center;
-  background: #fff;
-  border: 1px solid var(--color-border-strong, #d8dbdf);
+  background: var(--card);
+  border: 1px solid var(--color-border-strong);
   border-radius: 8px;
-  color: var(--color-text-primary, #1c2733);
+  color: var(--color-text-primary);
   cursor: pointer;
   display: inline-flex;
   font: inherit;
@@ -1453,61 +1447,61 @@ async function confirmPermanentDelete(): Promise<void> {
 }
 
 .paper-button:hover {
-  background: #f6f7f7;
-  border-color: #b9c0c5;
+  background: var(--secondary);
+  border-color: var(--color-border-strong);
 }
 
 .paper-button.is-primary {
-  background: var(--color-accent, #135e6b);
-  border-color: var(--color-accent, #135e6b);
-  color: #fff;
+  background: var(--color-accent);
+  border-color: var(--color-accent);
+  color: var(--primary-foreground);
 }
 
 .paper-button.is-primary:hover {
-  background: var(--color-accent-hover, #0e4a54);
+  background: var(--color-accent-hover);
 }
 
 .paper-button.is-quiet {
-  color: var(--color-text-secondary, #5c6672);
+  color: var(--color-text-secondary);
 }
 
 .paper-button.is-danger-quiet {
-  border-color: #e2c2bd;
-  color: #9a4136;
+  border-color: color-mix(in srgb, var(--color-danger) 24%, var(--card));
+  color: var(--color-danger);
 }
 
 .paper-button.is-danger-quiet:hover {
-  background: #fff4f2;
-  border-color: #cd8b82;
+  background: var(--color-danger-subtle);
+  border-color: color-mix(in srgb, var(--color-danger) 35%, var(--card));
 }
 
 .paper-button.is-danger {
-  background: #9a4136;
-  border-color: #9a4136;
-  color: #fff;
+  background: var(--color-danger);
+  border-color: var(--color-danger);
+  color: var(--primary-foreground);
 }
 
 .paper-button.is-danger:hover {
-  background: #7f332b;
-  border-color: #7f332b;
+  background: var(--color-danger);
+  border-color: var(--color-danger);
 }
 
 .paper-button.is-review {
-  background: #fff8e9;
-  border-color: #efdcb0;
-  color: #805a16;
+  background: var(--color-warning-subtle);
+  border-color: color-mix(in srgb, var(--color-warning) 30%, var(--card));
+  color: var(--color-warning);
   gap: 6px;
 }
 
 .paper-button.is-review:hover {
-  background: #fff3d7;
-  border-color: #e2c67f;
+  background: var(--color-warning-subtle);
+  border-color: color-mix(in srgb, var(--color-warning) 38%, var(--card));
 }
 
 .paper-button.is-review strong {
-  background: #805a16;
+  background: var(--color-warning);
   border-radius: 999px;
-  color: #fff;
+  color: var(--primary-foreground);
   font-size: 10px;
   line-height: 18px;
   margin: 0;
@@ -1525,10 +1519,10 @@ async function confirmPermanentDelete(): Promise<void> {
 
 .paper-library__state {
   align-items: center;
-  background: #fff;
-  border: 1px dashed var(--color-border-strong, #d8dbdf);
-  border-radius: 12px;
-  color: var(--color-text-secondary, #5c6672);
+  background: var(--card);
+  border: 1px dashed var(--color-border-strong);
+  border-radius: var(--radius-panel);
+  color: var(--color-text-secondary);
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -1543,16 +1537,16 @@ async function confirmPermanentDelete(): Promise<void> {
 }
 
 .paper-library__state.is-error {
-  color: #9a4136;
+  color: var(--color-danger);
 }
 
 .paper-library__notice {
   margin: 0;
   padding: 9px 12px;
-  border-inline-start: 3px solid var(--color-accent, #135e6b);
+  border-inline-start: 3px solid var(--color-accent);
   border-radius: 6px;
-  background: #f4faf9;
-  color: var(--color-text-secondary, #5c6672);
+  background: var(--color-accent-subtle);
+  color: var(--color-text-secondary);
   font-size: 13px;
 }
 
@@ -1560,9 +1554,9 @@ async function confirmPermanentDelete(): Promise<void> {
   display: grid;
   gap: 7px;
   padding: 10px 12px;
-  border: 1px solid rgb(19 94 107 / 18%);
-  border-radius: 12px;
-  background: #f4faf9;
+  border: 1px solid color-mix(in srgb, var(--color-accent) 18%, transparent);
+  border-radius: var(--radius-panel);
+  background: var(--color-accent-subtle);
 }
 
 .paper-library__task-strip-heading,
@@ -1579,7 +1573,7 @@ async function confirmPermanentDelete(): Promise<void> {
 
 .paper-library__task-strip-heading span,
 .paper-library__task-main span {
-  color: var(--color-text-secondary, #5c6672);
+  color: var(--color-text-secondary);
   font-size: 12px;
 }
 
@@ -1600,12 +1594,12 @@ async function confirmPermanentDelete(): Promise<void> {
 .paper-library__task-progress progress {
   width: min(280px, 28vw);
   height: 8px;
-  accent-color: var(--color-accent, #135e6b);
+  accent-color: var(--color-accent);
 }
 
 .paper-library__task-progress span,
 .paper-library__task-metrics {
-  color: var(--color-text-secondary, #5c6672);
+  color: var(--color-text-secondary);
   font-size: 12px;
   white-space: nowrap;
 }
@@ -1613,9 +1607,9 @@ async function confirmPermanentDelete(): Promise<void> {
 .paper-library__task.is-failed {
   margin-inline: -6px;
   padding: 8px 6px;
-  border-inline-start: 4px solid #b7791f;
+  border-inline-start: 4px solid var(--color-warning);
   border-radius: 8px;
-  background: #fff8e6;
+  background: var(--color-warning-subtle);
 }
 
 @media (max-width: 620px) {
@@ -1637,7 +1631,7 @@ async function confirmPermanentDelete(): Promise<void> {
 
 .paper-editor-layer {
   align-items: stretch;
-  background: rgb(28 39 51 / 38%);
+  background: color-mix(in srgb, var(--color-text-primary) 38%, transparent);
   display: flex;
   inset: 0;
   justify-content: flex-end;
@@ -1646,9 +1640,9 @@ async function confirmPermanentDelete(): Promise<void> {
 }
 
 .paper-editor {
-  background: #fff;
-  border-left: 1px solid var(--color-border, #e2e4e7);
-  box-shadow: -12px 0 32px rgb(28 39 51 / 12%);
+  background: var(--card);
+  border-left: 1px solid var(--border);
+  box-shadow: -12px 0 32px color-mix(in srgb, var(--color-text-primary) 12%, transparent);
   display: flex;
   flex-direction: column;
   max-width: 100%;
@@ -1657,9 +1651,9 @@ async function confirmPermanentDelete(): Promise<void> {
 }
 
 .paper-trash-drawer {
-  background: #fff;
-  border-left: 1px solid var(--color-border, #e2e4e7);
-  box-shadow: -12px 0 32px rgb(28 39 51 / 12%);
+  background: var(--card);
+  border-left: 1px solid var(--border);
+  box-shadow: -12px 0 32px color-mix(in srgb, var(--color-text-primary) 12%, transparent);
   display: flex;
   flex-direction: column;
   max-width: 100%;
@@ -1681,7 +1675,7 @@ async function confirmPermanentDelete(): Promise<void> {
 }
 
 .paper-trash-filters label {
-  color: var(--color-text-secondary, #5c6672);
+  color: var(--color-text-secondary);
   display: grid;
   font-size: 10px;
   gap: 4px;
@@ -1690,10 +1684,10 @@ async function confirmPermanentDelete(): Promise<void> {
 .paper-trash-filters input,
 .paper-trash-filters select,
 .paper-permanent-confirmation input {
-  background: #fff;
-  border: 1px solid var(--color-border-strong, #d8dbdf);
+  background: var(--card);
+  border: 1px solid var(--color-border-strong);
   border-radius: 8px;
-  color: var(--color-text-primary, #1c2733);
+  color: var(--color-text-primary);
   font: inherit;
   height: 36px;
   min-width: 0;
@@ -1707,8 +1701,8 @@ async function confirmPermanentDelete(): Promise<void> {
 
 .paper-trash-selection-bar {
   align-items: center;
-  background: #f4f7f7;
-  border-radius: 9px;
+  background: var(--secondary);
+  border-radius: var(--radius-control);
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
@@ -1723,14 +1717,14 @@ async function confirmPermanentDelete(): Promise<void> {
 }
 
 .paper-trash-selection-bar span {
-  color: var(--color-text-secondary, #5c6672);
+  color: var(--color-text-secondary);
   font-size: 11px;
 }
 
 .paper-trash-list article {
   align-items: center;
-  border: 1px solid var(--color-border, #e2e4e7);
-  border-radius: 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
   display: flex;
   gap: 18px;
   justify-content: space-between;
@@ -1745,21 +1739,21 @@ async function confirmPermanentDelete(): Promise<void> {
 
 .paper-trash-item-check input,
 .paper-trash-selection-bar input {
-  accent-color: var(--color-accent, #135e6b);
+  accent-color: var(--color-accent);
   height: 16px;
   margin: 0;
   width: 16px;
 }
 
 .paper-trash-list h3 {
-  color: var(--color-text-primary, #1c2733);
+  color: var(--color-text-primary);
   font-size: 15px;
   line-height: 1.45;
   margin: 7px 0 4px;
 }
 
 .paper-trash-list p {
-  color: var(--color-text-tertiary, #6b7684);
+  color: var(--color-text-muted);
   font-size: 11px;
   margin: 0;
 }
@@ -1770,10 +1764,10 @@ async function confirmPermanentDelete(): Promise<void> {
 
 .paper-trash-drawer__message,
 .paper-trash-confirm__message {
-  background: #f2f7f6;
-  border: 1px solid rgb(19 94 107 / 18%);
+  background: var(--color-accent-subtle);
+  border: 1px solid color-mix(in srgb, var(--color-accent) 18%, transparent);
   border-radius: 8px;
-  color: var(--color-accent, #135e6b);
+  color: var(--color-accent);
   font-size: 12px;
   line-height: 1.55;
   margin: 0;
@@ -1782,14 +1776,14 @@ async function confirmPermanentDelete(): Promise<void> {
 
 .paper-trash-drawer__message.is-error,
 .paper-trash-confirm__message.is-error {
-  background: #fff4f2;
-  border-color: #edc8c3;
-  color: #9a4136;
+  background: var(--color-danger-subtle);
+  border-color: color-mix(in srgb, var(--color-danger) 26%, var(--card));
+  color: var(--color-danger);
 }
 
 .paper-trash-confirm-layer {
   align-items: center;
-  background: rgb(28 39 51 / 42%);
+  background: color-mix(in srgb, var(--color-text-primary) 42%, transparent);
   display: flex;
   inset: 0;
   justify-content: center;
@@ -1799,17 +1793,17 @@ async function confirmPermanentDelete(): Promise<void> {
 }
 
 .paper-trash-confirm {
-  background: #fff;
-  border: 1px solid var(--color-border, #e2e4e7);
-  border-radius: 14px;
-  box-shadow: 0 18px 52px rgb(28 39 51 / 18%);
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-overlay);
+  box-shadow: 0 18px 52px color-mix(in srgb, var(--color-text-primary) 18%, transparent);
   max-width: 100%;
   padding: 24px;
   width: 470px;
 }
 
 .paper-trash-confirm__eyebrow {
-  color: #9a4136 !important;
+  color: var(--color-danger) !important;
   font-size: 11px !important;
   font-weight: 750;
   letter-spacing: .12em;
@@ -1817,19 +1811,19 @@ async function confirmPermanentDelete(): Promise<void> {
 }
 
 .paper-trash-confirm h2 {
-  color: var(--color-text-primary, #1c2733);
+  color: var(--color-text-primary);
   font-size: 21px;
   margin: 0 0 14px;
 }
 
 .paper-trash-confirm > strong {
-  color: var(--color-text-primary, #1c2733);
+  color: var(--color-text-primary);
   display: block;
   font-size: 14px;
 }
 
 .paper-trash-confirm > p:not(.paper-trash-confirm__eyebrow, .paper-trash-confirm__message) {
-  color: var(--color-text-secondary, #5c6672);
+  color: var(--color-text-secondary);
   font-size: 13px;
   line-height: 1.7;
   margin: 8px 0 0;
@@ -1850,9 +1844,9 @@ async function confirmPermanentDelete(): Promise<void> {
 }
 
 .paper-permanent-impact span {
-  background: #f5f6f6;
-  border-radius: 7px;
-  color: var(--color-text-secondary, #5c6672);
+  background: var(--secondary);
+  border-radius: var(--radius-md);
+  color: var(--color-text-secondary);
   display: grid;
   font-size: 10px;
   gap: 2px;
@@ -1860,12 +1854,12 @@ async function confirmPermanentDelete(): Promise<void> {
 }
 
 .paper-permanent-impact b {
-  color: var(--color-text-primary, #1c2733);
+  color: var(--color-text-primary);
   font-size: 16px;
 }
 
 .paper-permanent-confirmation {
-  color: var(--color-text-secondary, #5c6672);
+  color: var(--color-text-secondary);
   display: grid;
   font-size: 12px;
   gap: 6px;
@@ -1874,7 +1868,7 @@ async function confirmPermanentDelete(): Promise<void> {
 
 .paper-editor__header {
   align-items: flex-start;
-  border-bottom: 1px solid var(--color-border, #e2e4e7);
+  border-bottom: 1px solid var(--border);
   display: flex;
   gap: 16px;
   justify-content: space-between;
@@ -1882,7 +1876,7 @@ async function confirmPermanentDelete(): Promise<void> {
 }
 
 .paper-editor__header p {
-  color: var(--color-accent, #135e6b);
+  color: var(--color-accent);
   font-size: 11px;
   font-weight: 750;
   letter-spacing: .13em;
@@ -1891,14 +1885,14 @@ async function confirmPermanentDelete(): Promise<void> {
 }
 
 .paper-editor__header h2 {
-  color: var(--color-text-primary, #1c2733);
+  color: var(--color-text-primary);
   font-size: 22px;
   letter-spacing: -.02em;
   margin: 0;
 }
 
 .paper-editor__header span {
-  color: var(--color-text-secondary, #5c6672);
+  color: var(--color-text-secondary);
   display: block;
   font-size: 13px;
   margin-top: 7px;
@@ -1906,10 +1900,10 @@ async function confirmPermanentDelete(): Promise<void> {
 
 .paper-editor__close {
   align-items: center;
-  background: #fff;
-  border: 1px solid var(--color-border-strong, #d8dbdf);
+  background: var(--card);
+  border: 1px solid var(--color-border-strong);
   border-radius: 8px;
-  color: var(--color-text-secondary, #5c6672);
+  color: var(--color-text-secondary);
   cursor: pointer;
   display: inline-flex;
   flex: 0 0 auto;
@@ -1930,7 +1924,7 @@ async function confirmPermanentDelete(): Promise<void> {
 
 .paper-editor__form > label,
 .paper-editor__region label {
-  color: var(--color-text-secondary, #5c6672);
+  color: var(--color-text-secondary);
   display: grid;
   font-size: 12px;
   font-weight: 650;
@@ -1938,14 +1932,14 @@ async function confirmPermanentDelete(): Promise<void> {
 }
 
 .paper-editor__form label strong {
-  color: #9a4136;
+  color: var(--color-danger);
 }
 
 .paper-editor__form input {
-  background: #fff;
-  border: 1px solid var(--color-border-strong, #d8dbdf);
+  background: var(--card);
+  border: 1px solid var(--color-border-strong);
   border-radius: 8px;
-  color: var(--color-text-primary, #1c2733);
+  color: var(--color-text-primary);
   font: inherit;
   font-size: 14px;
   height: 40px;
@@ -1954,17 +1948,17 @@ async function confirmPermanentDelete(): Promise<void> {
 }
 
 .paper-editor__form input:focus {
-  border-color: var(--color-accent, #135e6b);
-  box-shadow: 0 0 0 3px rgb(19 94 107 / 10%);
+  border-color: var(--color-accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-accent) 10%, transparent);
   outline: none;
 }
 
 .paper-editor__form input[aria-invalid="true"] {
-  border-color: #b84f43;
+  border-color: var(--color-danger);
 }
 
 .paper-editor__form small {
-  color: var(--color-text-tertiary, #6b7684);
+  color: var(--color-text-muted);
   font-size: 11px;
   font-weight: 400;
   line-height: 1.5;
@@ -1975,8 +1969,8 @@ async function confirmPermanentDelete(): Promise<void> {
 }
 
 .paper-editor__region {
-  border: 1px solid var(--color-border, #e2e4e7);
-  border-radius: 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
   display: grid;
   gap: 12px;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -1985,17 +1979,17 @@ async function confirmPermanentDelete(): Promise<void> {
 }
 
 .paper-editor__region legend {
-  color: var(--color-text-secondary, #5c6672);
+  color: var(--color-text-secondary);
   font-size: 12px;
   font-weight: 700;
   padding: 0 5px;
 }
 
 .paper-editor__message {
-  background: #f2f7f6;
-  border: 1px solid rgb(19 94 107 / 18%);
+  background: var(--color-accent-subtle);
+  border: 1px solid color-mix(in srgb, var(--color-accent) 18%, transparent);
   border-radius: 8px;
-  color: var(--color-accent, #135e6b);
+  color: var(--color-accent);
   font-size: 12px;
   grid-column: 1 / -1;
   line-height: 1.55;
@@ -2004,14 +1998,14 @@ async function confirmPermanentDelete(): Promise<void> {
 }
 
 .paper-editor__message.is-error {
-  background: #fff4f2;
-  border-color: #edc8c3;
-  color: #9a4136;
+  background: var(--color-danger-subtle);
+  border-color: color-mix(in srgb, var(--color-danger) 26%, var(--card));
+  color: var(--color-danger);
 }
 
 .paper-editor__actions {
   align-items: center;
-  border-top: 1px solid var(--color-border, #e2e4e7);
+  border-top: 1px solid var(--border);
   display: flex;
   gap: 9px;
   justify-content: flex-end;

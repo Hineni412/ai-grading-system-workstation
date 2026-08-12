@@ -10,6 +10,7 @@ import {
   type TrainingSubmission,
 } from '../../api/training'
 import { ApiError } from '../../api/errors'
+import StatusBadge from '../design-system/StatusBadge.vue'
 
 const props = defineProps<{
   submission: TrainingSubmission
@@ -115,6 +116,13 @@ function statusLabel(value: TrainingAssessmentOutcome): string {
   if (value.status === 'running') return '判定进行中'
   if (value.workflow_status === 'complete') return '复核完成'
   return '需要复核'
+}
+
+function statusTone(value: TrainingAssessmentOutcome): 'info' | 'success' | 'warning' | 'danger' {
+  if (value.status === 'failed' || value.status === 'cancelled') return 'danger'
+  if (value.status === 'running') return 'info'
+  if (value.workflow_status === 'complete') return 'success'
+  return 'warning'
 }
 
 function safeError(error: unknown): string {
@@ -299,9 +307,12 @@ onMounted(restore)
         <span class="ledger-kicker">判定 → 复核 → 证据</span>
         <h5>训练结果闭环</h5>
       </div>
-      <span v-if="assessment" :class="['ledger-status', `is-${assessment.status}`]">
-        {{ statusLabel(assessment) }}
-      </span>
+      <StatusBadge
+        v-if="assessment"
+        class="ledger-status"
+        :tone="statusTone(assessment)"
+        :label="statusLabel(assessment)"
+      />
     </header>
 
     <div v-if="!assessment" class="ledger-start">
@@ -520,9 +531,9 @@ onMounted(restore)
 .assessment-ledger {
   margin-top: 0.75rem;
   padding: 0.85rem;
-  border: 1px solid var(--color-border-strong);
+  border: 1px solid var(--color-border-default);
   border-left: 4px solid var(--color-success);
-  border-radius: 4px 12px 12px 4px;
+  border-radius: var(--radius-control);
   background: var(--color-bg-subtle);
 }
 
@@ -555,23 +566,6 @@ onMounted(restore)
 
 .ledger-status {
   flex: 0 0 auto;
-  padding: 0.25rem 0.55rem;
-  border-radius: 999px;
-  background: var(--color-warning-subtle);
-  color: var(--color-warning);
-  font-size: 0.78rem;
-  font-weight: 700;
-}
-
-.ledger-status.is-complete {
-  background: var(--color-success-subtle);
-  color: var(--color-success);
-}
-
-.ledger-status.is-failed,
-.ledger-status.is-cancelled {
-  background: var(--color-danger-subtle);
-  color: var(--color-danger);
 }
 
 .ledger-start,
@@ -626,7 +620,7 @@ onMounted(restore)
 .question-ledger > li {
   padding: 0.7rem;
   border: 1px solid var(--color-border-default);
-  border-radius: 9px;
+  border-radius: var(--radius-control);
   background: var(--color-bg-surface);
 }
 
@@ -680,7 +674,7 @@ onMounted(restore)
 .point-review-form {
   margin-top: 0.55rem;
   padding: 0.65rem;
-  border-radius: 7px;
+  border-radius: calc(var(--radius) - 2px);
   background: var(--color-bg-subtle);
 }
 
@@ -701,8 +695,8 @@ onMounted(restore)
 
 .ledger-publish {
   padding: 0.75rem;
-  border: 1px solid var(--color-border-strong);
-  border-radius: 9px;
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-control);
   background: var(--color-success-subtle);
 }
 
@@ -718,8 +712,8 @@ onMounted(restore)
 
 .feedback-sheet {
   padding: 0.8rem;
-  border: 1px solid var(--color-border-strong);
-  border-radius: 9px;
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-control);
   background: var(--color-warning-subtle);
 }
 

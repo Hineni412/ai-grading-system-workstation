@@ -1,7 +1,12 @@
 <script setup lang="ts">
+import { computed } from 'vue'
+
+import { Button, type ButtonVariants } from '@/components/ui/button'
+import { cn } from '@/lib/utils'
+
 defineOptions({ inheritAttrs: false })
 
-withDefaults(defineProps<{
+const props = withDefaults(defineProps<{
   variant?: 'primary' | 'secondary' | 'ghost' | 'danger'
   type?: 'button' | 'submit' | 'reset'
   disabled?: boolean
@@ -16,142 +21,44 @@ withDefaults(defineProps<{
   loadingLabel: '正在处理',
   block: false,
 })
+
+const variantMap: Record<NonNullable<typeof props.variant>, ButtonVariants['variant']> = {
+  primary: 'default',
+  secondary: 'outline',
+  ghost: 'ghost',
+  danger: 'destructive',
+}
+
+const buttonClass = computed(() =>
+  cn(
+    'app-button',
+    props.variant === 'secondary' && 'bg-card',
+    props.variant === 'ghost' && 'text-primary',
+    props.loading && 'is-loading',
+    props.block && 'is-block w-full',
+  ),
+)
 </script>
 
 <template>
-  <button
+  <Button
     v-bind="$attrs"
-    class="app-button"
-    :class="{ 'is-loading': loading, 'is-block': block }"
+    :variant="variantMap[variant]"
+    :class="buttonClass"
     :data-variant="variant"
     :type="type"
     :disabled="disabled || loading"
     :aria-busy="loading || undefined"
   >
-    <span v-if="$slots.leading" class="app-button__icon" aria-hidden="true">
+    <span v-if="$slots.leading" class="app-button__icon inline-flex items-center" aria-hidden="true">
       <slot name="leading" />
     </span>
-    <span v-if="loading" class="app-button__spinner" aria-hidden="true" />
-    <span class="app-button__label"><slot /></span>
-    <span v-if="loading" class="app-button__loading-label">{{ loadingLabel }}</span>
-  </button>
+    <span
+      v-if="loading"
+      class="app-button__spinner size-3.5 animate-spin rounded-full border-2 border-current border-e-transparent"
+      aria-hidden="true"
+    />
+    <span class="app-button__label inline-flex items-center"><slot /></span>
+    <span v-if="loading" class="app-button__loading-label sr-only">{{ loadingLabel }}</span>
+  </Button>
 </template>
-
-<style scoped>
-.app-button {
-  position: relative;
-  display: inline-flex;
-  min-height: var(--control-height-default);
-  align-items: center;
-  justify-content: center;
-  gap: var(--space-2);
-  padding: 0 14px;
-  border: var(--border-width) solid transparent;
-  border-radius: var(--radius-control);
-  background: transparent;
-  color: var(--color-text-primary);
-  font: inherit;
-  font-size: var(--font-size-dense);
-  font-weight: var(--font-weight-semibold);
-  line-height: 1;
-  white-space: nowrap;
-  cursor: pointer;
-  transition:
-    background-color var(--duration-fast),
-    border-color var(--duration-fast),
-    color var(--duration-fast),
-    transform var(--duration-fast);
-}
-
-.app-button[data-variant='primary'] {
-  border-color: var(--color-accent);
-  background: var(--color-accent);
-  color: var(--color-bg-surface);
-}
-
-.app-button[data-variant='primary']:hover:not(:disabled) {
-  border-color: var(--color-accent-hover);
-  background: var(--color-accent-hover);
-}
-
-.app-button[data-variant='secondary'] {
-  border-color: var(--color-border-default);
-  background: var(--color-bg-surface);
-  color: var(--color-text-primary);
-}
-
-.app-button[data-variant='secondary']:hover:not(:disabled) {
-  border-color: var(--color-border-strong);
-  background: var(--color-bg-subtle);
-}
-
-.app-button[data-variant='ghost'] {
-  color: var(--color-accent);
-}
-
-.app-button[data-variant='ghost']:hover:not(:disabled) {
-  background: var(--color-accent-subtle);
-  color: var(--color-accent-hover);
-}
-
-.app-button[data-variant='danger'] {
-  border-color: var(--color-danger);
-  background: var(--color-danger);
-  color: var(--color-bg-surface);
-}
-
-.app-button[data-variant='danger']:hover:not(:disabled) {
-  border-color: var(--color-danger);
-  background: var(--color-danger-subtle);
-  color: var(--color-danger);
-}
-
-.app-button:active:not(:disabled) {
-  transform: translateY(1px);
-}
-
-.app-button:focus-visible {
-  outline: none;
-  box-shadow: var(--focus-ring);
-}
-
-.app-button:disabled {
-  cursor: not-allowed;
-  opacity: var(--opacity-disabled);
-}
-
-.app-button.is-block {
-  width: 100%;
-}
-
-.app-button__icon,
-.app-button__label {
-  display: inline-flex;
-  align-items: center;
-}
-
-.app-button__spinner {
-  width: 14px;
-  height: 14px;
-  border: 2px solid currentColor;
-  border-inline-end-color: transparent;
-  border-radius: var(--radius-circle);
-  animation: app-button-spin 700ms linear infinite;
-}
-
-.app-button__loading-label {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  overflow: hidden;
-  clip: rect(0 0 0 0);
-  clip-path: inset(50%);
-  white-space: nowrap;
-}
-
-@keyframes app-button-spin {
-  to {
-    transform: rotate(360deg);
-  }
-}
-</style>

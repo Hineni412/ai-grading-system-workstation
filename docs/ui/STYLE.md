@@ -23,7 +23,7 @@
 
 ### 字体
 
-优先使用：
+界面文字统一使用无衬线字族 `--font-family-sans`：
 
 ```css
 font-family: Inter, "PingFang SC", "Microsoft YaHei",
@@ -31,10 +31,19 @@ font-family: Inter, "PingFang SC", "Microsoft YaHei",
   "Segoe UI", sans-serif;
 ```
 
-- 页面标题通常为 22–24px，区块标题为 18–20px，面板标题为 15–16px。
-- 默认正文为 14px；高密度数据可使用 13px。
-- 12px 文字只用于简短辅助信息，不承担大段正文。
-- 正文行高通常为 1.5，长内容可放宽到 1.7。
+字阶层级（`base.css` 已将 h1/h2/h3 与正文绑定到以下令牌）：
+
+- 页面一级标题 `--font-size-h1`（24px），区块标题 `--font-size-h2`（20px），卡片与面板标题 `--font-size-h3`（16px），字重均为 `--font-weight-semibold`，行高 `--line-height-tight`。
+- 默认正文为 `--font-size-body`（14px）；高密度数据可使用 `--font-size-dense`（13px）。
+- `--font-size-caption`（12px）只用于简短辅助信息，不承担大段正文。
+- 正文行高通常为 `--line-height-body`（1.5），长内容可放宽到 `--line-height-relaxed`（1.7）。
+- 页面与组件不各自覆写 `font-family`，字族从 `tokens.css` 全局继承。
+
+展示与内容字族是仅有的例外，同样只通过 `tokens.css` 令牌引用：
+
+- `--font-family-display`（Georgia 与中文衬线）：仅用于工作台问候大标题，以及教学脉搏数据展示卡的标题与大数字。
+- `--font-family-document`（宋体衬线）：仅用于试题正文与组卷卷面等内容渲染，模拟印刷卷面。
+- `--font-family-mono`（等宽）：仅用于诊断输出、评分历史编号等需要对齐的字符。
 
 ### 间距、边界和表面
 

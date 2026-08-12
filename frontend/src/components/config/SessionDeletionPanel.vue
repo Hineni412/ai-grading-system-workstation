@@ -160,19 +160,21 @@ async function retryPendingCleanup(pending: SessionPendingCleanup): Promise<void
 </template>
 
 <style scoped>
-.session-lifecycle { display: grid; gap: var(--space-4); margin-block-start: var(--space-7); padding-block-start: var(--space-5); border-block-start: var(--border-width) solid var(--color-border-default); }
+.session-lifecycle { display: grid; gap: var(--space-4); margin-block-start: var(--space-7); padding-block-start: var(--space-5); border-block-start: var(--border-width) solid var(--border); }
 .session-lifecycle p, .session-lifecycle h2 { margin: 0; }
 .session-lifecycle__intro h2 { margin-block: var(--space-1) var(--space-2); font-size: var(--font-size-h2); }
 .session-lifecycle__intro p, .session-lifecycle__card p { color: var(--color-text-secondary); }
 .session-lifecycle__eyebrow { color: var(--color-accent) !important; font-size: var(--font-size-caption); font-weight: var(--font-weight-semibold); }
-.session-lifecycle__card { display: grid; grid-template-columns: minmax(240px, 1fr) minmax(340px, 1.25fr); align-items: start; gap: var(--space-4) var(--space-6); padding: var(--space-4); border: var(--border-width) solid color-mix(in srgb, var(--color-danger) 42%, var(--color-border-default)); border-radius: var(--radius-card); background: var(--color-bg-surface); }
-.session-lifecycle__permanent { grid-column: 1 / -1; display: grid; gap: var(--space-3); padding-block-start: var(--space-3); border-block-start: var(--border-width) solid var(--color-border-default); }
+.session-lifecycle__card { display: grid; grid-template-columns: minmax(240px, 1fr) minmax(340px, 1.25fr); align-items: start; gap: var(--space-4) var(--space-6); padding: var(--space-4); border: var(--border-width) solid color-mix(in srgb, var(--color-danger) 42%, var(--border)); border-radius: var(--radius-panel); background: var(--card); }
+.session-lifecycle__permanent { grid-column: 1 / -1; display: grid; gap: var(--space-3); padding-block-start: var(--space-3); border-block-start: var(--border-width) solid var(--border); }
 .session-lifecycle__impact-grid { display: grid; grid-template-columns: repeat(4, minmax(120px, 1fr)); gap: var(--space-2); }
-.session-lifecycle__impact-grid span { padding: var(--space-3); border-radius: var(--radius-control); background: var(--color-bg-subtle); color: var(--color-text-secondary); font-size: var(--font-size-dense); }
+.session-lifecycle__impact-grid span { padding: var(--space-3); border-radius: var(--radius-control); background: var(--secondary); color: var(--color-text-secondary); font-size: var(--font-size-dense); }
 .session-lifecycle__impact-grid b { display: block; color: var(--color-text-primary); font-size: var(--font-size-body); }
 .session-lifecycle button { min-height: var(--control-height-default); width: fit-content; padding-inline: var(--space-4); border-radius: var(--radius-control); cursor: pointer; font-weight: var(--font-weight-semibold); }
-.session-lifecycle__danger-outline { border: var(--border-width) solid var(--color-danger); background: var(--color-bg-surface); color: var(--color-danger); }
-.session-lifecycle__danger { border: var(--border-width) solid var(--color-danger); background: var(--color-danger); color: var(--color-bg-surface); }
+.session-lifecycle__danger-outline { border: var(--border-width) solid var(--color-danger); background: var(--card); color: var(--color-danger); }
+.session-lifecycle__danger-outline:hover:not(:disabled) { background: var(--color-danger-subtle); }
+.session-lifecycle__danger { border: var(--border-width) solid var(--color-danger); background: var(--color-danger); color: var(--destructive-foreground); }
+.session-lifecycle__danger:hover:not(:disabled) { background: color-mix(in srgb, var(--color-danger) 88%, var(--color-text-primary)); }
 .session-lifecycle__message { grid-column: 1 / -1; color: var(--color-danger) !important; }
 .session-lifecycle__cleanup-list { display: grid; gap: var(--space-2); }
 .session-lifecycle__cleanup-list > div { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); }

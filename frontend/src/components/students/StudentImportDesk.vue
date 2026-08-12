@@ -3,6 +3,7 @@ import { computed, ref } from 'vue'
 
 import type { StudentImportOperation } from '../../api/students'
 import { useStudentRosterStore } from '../../stores/students'
+import StatusBadge from '../design-system/StatusBadge.vue'
 
 const roster = useStudentRosterStore()
 const selectedFile = ref<File | null>(null)
@@ -19,6 +20,14 @@ const operationLabels: Record<StudentImportOperation, string> = {
   unchanged: '无变化',
   invalid: '无效',
   duplicate: '重复',
+}
+
+const operationTones: Record<StudentImportOperation, 'success' | 'info' | 'neutral' | 'danger' | 'warning'> = {
+  insert: 'success',
+  update: 'info',
+  unchanged: 'neutral',
+  invalid: 'danger',
+  duplicate: 'warning',
 }
 
 function chooseFile(event: Event): void {
@@ -158,9 +167,11 @@ async function commit(): Promise<void> {
               <td>{{ row.name || '—' }}</td>
               <td>{{ row.class_name || '未分班' }}</td>
               <td>
-                <span class="student-operation" :class="`is-${row.operation}`">
-                  {{ operationLabels[row.operation] }}
-                </span>
+                <StatusBadge
+                  class="student-operation"
+                  :tone="operationTones[row.operation]"
+                  :label="operationLabels[row.operation]"
+                />
               </td>
               <td>{{ row.issues.join('；') || '可写入' }}</td>
             </tr>

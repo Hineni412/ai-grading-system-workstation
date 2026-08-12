@@ -829,8 +829,8 @@ async function editItem(
   margin-top: 1.25rem;
   padding: 1rem;
   border: 1px solid var(--line, var(--color-border-default));
-  border-radius: 14px;
-  background: var(--color-bg-subtle);
+  border-radius: var(--radius-control);
+  background: var(--color-bg-surface);
 }
 
 .personalized-draft.is-external-setup {
@@ -868,8 +868,8 @@ async function editItem(
 .personalized-settings {
   margin: 1rem 0;
   border: 1px solid var(--color-border-default);
-  border-radius: 10px;
-  background: white;
+  border-radius: var(--radius-control);
+  background: var(--color-bg-surface);
 }
 
 .personalized-settings > summary {
@@ -906,8 +906,8 @@ async function editItem(
   gap: 0.2rem;
   padding: 0.65rem 0.75rem;
   border: 1px solid var(--color-border-default);
-  border-radius: 9px;
-  background: white;
+  border-radius: var(--radius-control);
+  background: var(--color-bg-surface);
   color: var(--color-text-primary);
   text-align: left;
   cursor: pointer;
@@ -935,9 +935,9 @@ async function editItem(
 .personalized-edit-reason input {
   min-width: 0;
   padding: 0.55rem 0.65rem;
-  border: 1px solid var(--color-border-strong);
-  border-radius: 8px;
-  background: white;
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-control);
+  background: var(--color-bg-surface);
 }
 
 .personalized-targets {
@@ -947,7 +947,7 @@ async function editItem(
   margin: 0 0 1rem;
   padding: 0.75rem;
   border: 1px solid var(--color-border-default);
-  border-radius: 10px;
+  border-radius: var(--radius-control);
 }
 
 .personalized-targets legend {
@@ -978,8 +978,8 @@ async function editItem(
   margin-top: 0;
   padding: 0.85rem;
   border: 1px solid var(--color-border-default);
-  border-radius: 10px;
-  background: white;
+  border-radius: var(--radius-control);
+  background: var(--color-bg-surface);
 }
 
 .personalized-student header div,
@@ -1020,7 +1020,7 @@ async function editItem(
   margin-top: 1rem;
   padding: 0.85rem;
   border: 1px solid var(--color-border-default);
-  border-radius: 10px;
+  border-radius: var(--radius-control);
   background: var(--color-info-subtle);
 }
 
@@ -1033,7 +1033,7 @@ async function editItem(
   margin: 0;
   padding: 1rem;
   border: 1px solid var(--color-accent);
-  border-radius: 12px;
+  border-radius: var(--radius-control);
   background: var(--color-accent-subtle);
 }
 
@@ -1065,9 +1065,9 @@ async function editItem(
 .personalized-paper-freeze input {
   min-width: 0;
   padding: 0.48rem 0.6rem;
-  border: 1px solid var(--color-border-strong);
-  border-radius: 8px;
-  background: white;
+  border: 1px solid var(--color-border-default);
+  border-radius: calc(var(--radius) - 2px);
+  background: var(--color-bg-surface);
 }
 
 .personalized-paper-version {
@@ -1075,8 +1075,8 @@ async function editItem(
   gap: 0.45rem;
   padding: 0.75rem;
   border: 1px solid var(--color-border-default);
-  border-radius: 9px;
-  background: white;
+  border-radius: var(--radius-control);
+  background: var(--color-bg-surface);
 }
 
 .personalized-paper-actions,

@@ -5,6 +5,8 @@ import { useRouter } from 'vue-router'
 import { useWorkspaceAITaskStore } from './store'
 import { useJobStore } from '../../../stores/jobs'
 import { TERMINAL_JOB_STATUSES, type JobResponse } from '../../../api/jobs'
+import StatusBadge from '@/components/design-system/StatusBadge.vue'
+import AppButton from '@/components/design-system/AppButton.vue'
 import {
   canCancelTask,
   cancelTaskLabel,
@@ -118,6 +120,14 @@ function jobStatus(job: JobResponse): string {
   return '未完成'
 }
 
+function jobTone(job: JobResponse): 'neutral' | 'info' | 'success' | 'warning' | 'danger' {
+  if (job.status === 'running') return 'info'
+  if (job.status === 'succeeded') return 'success'
+  if (job.status === 'paused') return 'warning'
+  if (job.status === 'failed') return 'danger'
+  return 'neutral'
+}
+
 function jobLocation(job: JobResponse): string {
   if (['config_generation'].includes(job.job_type)) return '/sessions'
   if (['question_import', 'tagging_sync', 'taxonomy_suggestion'].includes(job.job_type)) return '/question-bank'
@@ -169,9 +179,9 @@ function toggleDrawer(): void {
       <p v-if="peekTask">{{ peekTask.teacher_message }}</p>
       <p v-else-if="peekJob">{{ Math.round(peekJob.progress * 100) }}% · {{ jobStatus(peekJob) }}</p>
       <footer>
-        <button v-if="peekTask" type="button" @click="returnToTask(peekTask)">返回相关页面</button>
-        <button v-else-if="peekJob" type="button" @click="returnToJob(peekJob)">返回相关页面</button>
-        <button type="button" @click="peekOpen = false">缩到任务中心</button>
+        <AppButton v-if="peekTask" variant="secondary" @click="returnToTask(peekTask)">返回相关页面</AppButton>
+        <AppButton v-else-if="peekJob" variant="secondary" @click="returnToJob(peekJob)">返回相关页面</AppButton>
+        <AppButton variant="ghost" @click="peekOpen = false">缩到任务中心</AppButton>
       </footer>
     </aside>
 
@@ -201,32 +211,32 @@ function toggleDrawer(): void {
         {{ store.syncErrors[task.task_id] }}
       </p>
       <footer>
-        <button type="button" @click="returnToTask(task)">返回原页</button>
-        <button
+        <AppButton variant="secondary" @click="returnToTask(task)">返回原页</AppButton>
+        <AppButton
           v-if="canCancelTask(task)"
-          type="button"
+          variant="ghost"
           @click="store.cancel(task.task_id)"
         >
           {{ cancelTaskLabel(task) }}
-        </button>
-        <button v-else type="button" @click="store.remove(task.task_id)">从列表移除</button>
+        </AppButton>
+        <AppButton v-else variant="ghost" @click="store.remove(task.task_id)">从列表移除</AppButton>
       </footer>
       </article>
       <article v-for="job in ordinaryJobs" :key="`job-${job.id}`">
       <div class="workspace-ai-task-drawer__heading">
-        <strong>{{ jobTitle(job) }}</strong><span>{{ jobStatus(job) }}</span>
+        <strong>{{ jobTitle(job) }}</strong><StatusBadge :tone="jobTone(job)" :label="jobStatus(job)" />
       </div>
       <progress :value="Math.max(0, Math.min(1, job.progress))" max="1" :aria-label="`${jobTitle(job)}进度`" />
       <p>{{ Math.round(Math.max(0, Math.min(1, job.progress)) * 100) }}% · {{ jobStatus(job) }}</p>
       <p v-if="jobs.syncErrors[job.id]" role="status">任务状态暂时无法更新，已保留上次状态。</p>
       <footer>
-        <button type="button" @click="returnToJob(job)">返回相关页面</button>
-        <button
+        <AppButton variant="secondary" @click="returnToJob(job)">返回相关页面</AppButton>
+        <AppButton
           v-if="!TERMINAL_JOB_STATUSES.has(job.status)"
-          type="button"
+          variant="ghost"
           @click="jobs.cancel(job.id)"
-        >停止任务</button>
-        <button v-else type="button" @click="jobs.remove(job.id)">从列表移除</button>
+        >停止任务</AppButton>
+        <AppButton v-else variant="ghost" @click="jobs.remove(job.id)">从列表移除</AppButton>
       </footer>
       </article>
     </aside>
@@ -234,16 +244,16 @@ function toggleDrawer(): void {
 </template>
 
 <style scoped>
-.workspace-ai-drawer-host{position:relative;display:flex;justify-content:flex-end}.workspace-ai-drawer-toggle{display:flex;align-items:center;gap:8px;min-height:38px;padding:0 13px;border:1px solid var(--color-accent);border-radius:999px;background:var(--color-accent);color:var(--color-bg-surface);font:inherit;font-weight:700;white-space:nowrap}
-.workspace-ai-drawer-toggle span{display:grid;place-items:center;min-width:22px;height:22px;padding:0 6px;border-radius:999px;background:var(--color-bg-surface);color:var(--color-accent)}
-.workspace-ai-task-peek{position:absolute;z-index:72;inset-block-start:calc(100% + 14px);inset-inline-end:0;display:grid;width:min(370px,calc(100vw - 24px));gap:10px;padding:16px;border:1px solid var(--color-border-default);border-inline-start:4px solid var(--color-accent);border-radius:var(--radius-panel);background:var(--color-bg-surface);box-shadow:var(--shadow-floating)}.workspace-ai-task-peek header,.workspace-ai-task-peek footer{display:flex;align-items:center;justify-content:space-between;gap:10px}.workspace-ai-task-peek header button{border:0;background:transparent;font-size:22px}.workspace-ai-task-peek progress{width:100%}.workspace-ai-task-peek p{margin:0;color:var(--color-text-secondary)}.workspace-ai-task-peek footer{justify-content:flex-start}.workspace-ai-task-peek footer button{min-height:34px;padding:0 10px;border:1px solid var(--color-border-default);border-radius:var(--radius-control);background:var(--color-bg-surface);font:inherit}
-.workspace-ai-task-drawer{position:fixed;inset:0 0 0 auto;z-index:70;width:min(430px,100vw);overflow:auto;padding:20px;background:var(--color-bg-app);border-left:1px solid var(--color-border-default);box-shadow:var(--shadow-floating)}
-.workspace-ai-task-drawer>header{display:flex;justify-content:space-between;gap:16px;align-items:flex-start;position:sticky;top:-20px;z-index:1;padding:20px 0 14px;background:var(--color-bg-app)}
-.workspace-ai-task-drawer>header div{display:grid;gap:4px}.workspace-ai-task-drawer>header span{color:var(--color-text-secondary);font-size:var(--font-size-dense)}
-.workspace-ai-task-drawer>header button{border:0;background:transparent;font-size:28px;line-height:1}
-.workspace-ai-task-drawer article{display:grid;gap:10px;margin:12px 0;padding:16px;border:1px solid var(--color-border-default);border-radius:var(--radius-panel);background:var(--color-bg-surface)}
-.workspace-ai-task-drawer__heading{display:flex;justify-content:space-between;gap:12px}.workspace-ai-task-drawer__heading span{color:var(--color-text-secondary)}
-.workspace-ai-task-drawer progress{width:100%}.workspace-ai-task-drawer p,.workspace-ai-task-drawer ul{margin:0}.workspace-ai-task-drawer ul{padding-left:20px;color:var(--color-text-secondary)}
-.workspace-ai-task-drawer footer{display:flex;flex-wrap:wrap;gap:8px}.workspace-ai-task-drawer footer button{min-height:38px;padding:0 12px;border:1px solid var(--color-border-default);border-radius:var(--radius-control);background:var(--color-bg-surface);font:inherit}.workspace-ai-task-drawer footer button:first-child{border-color:var(--color-accent);color:var(--color-accent)}
-.workspace-ai-task-drawer__empty{padding:32px 12px;color:var(--color-text-secondary);text-align:center}
+.workspace-ai-drawer-host{position:relative;display:flex;justify-content:flex-end}.workspace-ai-drawer-toggle{display:flex;align-items:center;gap:8px;min-height:38px;padding:0 13px;border:1px solid var(--primary);border-radius:999px;background:var(--primary);color:var(--primary-foreground);font:inherit;font-weight:700;white-space:nowrap;cursor:pointer}
+.workspace-ai-drawer-toggle span{display:grid;place-items:center;min-width:22px;height:22px;padding:0 6px;border-radius:999px;background:var(--card);color:var(--primary)}
+.workspace-ai-task-peek{position:absolute;z-index:72;inset-block-start:calc(100% + 14px);inset-inline-end:0;display:grid;width:min(370px,calc(100vw - 24px));gap:10px;padding:16px;border:1px solid var(--border);border-inline-start:3px solid var(--primary);border-radius:var(--radius);background:var(--card);box-shadow:var(--shadow-overlay)}.workspace-ai-task-peek header,.workspace-ai-task-peek footer{display:flex;align-items:center;justify-content:space-between;gap:10px}.workspace-ai-task-peek header button{border:0;background:transparent;font-size:22px;cursor:pointer}.workspace-ai-task-peek progress{width:100%;accent-color:var(--primary)}.workspace-ai-task-peek p{margin:0;color:var(--color-text-secondary)}.workspace-ai-task-peek footer{justify-content:flex-start}
+.workspace-ai-task-drawer{position:fixed;inset:0 0 0 auto;z-index:70;width:min(430px,100vw);overflow:auto;padding:20px;background:var(--background);border-left:1px solid var(--border);box-shadow:var(--shadow-overlay)}
+.workspace-ai-task-drawer>header{display:flex;justify-content:space-between;gap:16px;align-items:flex-start;position:sticky;top:-20px;z-index:1;padding:20px 0 14px;background:var(--background)}
+.workspace-ai-task-drawer>header div{display:grid;gap:4px}.workspace-ai-task-drawer>header span{color:var(--muted-foreground);font-size:var(--font-size-dense)}
+.workspace-ai-task-drawer>header button{border:0;background:transparent;font-size:28px;line-height:1;cursor:pointer}
+.workspace-ai-task-drawer article{display:grid;gap:10px;margin:12px 0;padding:16px;border:1px solid var(--border);border-radius:var(--radius);background:var(--card)}
+.workspace-ai-task-drawer__heading{display:flex;justify-content:space-between;align-items:center;gap:12px}.workspace-ai-task-drawer__heading span{color:var(--muted-foreground)}
+.workspace-ai-task-drawer progress{width:100%;accent-color:var(--primary)}.workspace-ai-task-drawer p,.workspace-ai-task-drawer ul{margin:0}.workspace-ai-task-drawer ul{padding-left:20px;color:var(--color-text-secondary)}
+.workspace-ai-task-drawer footer{display:flex;flex-wrap:wrap;gap:8px}
+.workspace-ai-task-drawer__empty{padding:32px 12px;color:var(--muted-foreground);text-align:center}
 </style>

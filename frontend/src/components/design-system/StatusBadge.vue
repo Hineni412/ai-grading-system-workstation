@@ -10,72 +10,36 @@ export type StatusTone =
 </script>
 
 <script setup lang="ts">
-defineProps<{
+import { Badge } from '@/components/ui/badge'
+import { cn } from '@/lib/utils'
+
+const props = defineProps<{
   tone: StatusTone
   label: string
 }>()
+
+/* 颜色走 tokens.css 令牌（经 Tailwind 任意值引用），保持原有语义色体系 */
+const toneClasses: Record<StatusTone, string> = {
+  neutral: 'border-border bg-(--color-bg-selected) text-(--color-text-secondary)',
+  info: 'border-(--color-info) bg-(--color-info-subtle) text-(--color-info)',
+  success: 'border-(--color-success) bg-(--color-success-subtle) text-(--color-success)',
+  warning: 'border-(--color-warning) bg-(--color-warning-subtle) text-foreground',
+  danger: 'border-destructive bg-(--color-danger-subtle) text-destructive',
+  ai: 'border-(--color-ai) bg-(--color-ai-subtle) text-(--color-ai)',
+  teacher: 'border-(--color-teacher) bg-(--color-teacher-subtle) text-(--color-teacher)',
+}
 </script>
 
 <template>
-  <span
-    class="status-badge"
+  <Badge
+    as="span"
+    variant="outline"
+    class="status-badge max-w-full whitespace-normal wrap-anywhere"
+    :class="cn(toneClasses[props.tone])"
     data-testid="status-badge"
     :data-tone="tone"
     :aria-label="`状态：${label}`"
   >
     {{ label }}
-  </span>
+  </Badge>
 </template>
-
-<style scoped>
-.status-badge {
-  display: inline-flex;
-  max-width: 100%;
-  align-items: center;
-  padding: var(--space-1) var(--space-2);
-  border: var(--border-width) solid var(--color-border-default);
-  border-radius: var(--radius-tag);
-  background: var(--color-bg-selected);
-  color: var(--color-text-secondary);
-  font-size: var(--font-size-caption);
-  font-weight: var(--font-weight-medium);
-  line-height: var(--line-height-tight);
-  overflow-wrap: anywhere;
-}
-
-.status-badge[data-tone='info'] {
-  border-color: var(--color-info);
-  background: var(--color-info-subtle);
-  color: var(--color-info);
-}
-
-.status-badge[data-tone='success'] {
-  border-color: var(--color-success);
-  background: var(--color-success-subtle);
-  color: var(--color-success);
-}
-
-.status-badge[data-tone='warning'] {
-  border-color: var(--color-warning);
-  background: var(--color-warning-subtle);
-  color: var(--color-text-primary);
-}
-
-.status-badge[data-tone='danger'] {
-  border-color: var(--color-danger);
-  background: var(--color-danger-subtle);
-  color: var(--color-danger);
-}
-
-.status-badge[data-tone='ai'] {
-  border-color: var(--color-ai);
-  background: var(--color-ai-subtle);
-  color: var(--color-ai);
-}
-
-.status-badge[data-tone='teacher'] {
-  border-color: var(--color-teacher);
-  background: var(--color-teacher-subtle);
-  color: var(--color-teacher);
-}
-</style>
