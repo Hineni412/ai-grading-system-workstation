@@ -14,6 +14,7 @@ import {
   type TaxonomyTerm,
 } from '../../api/question-bank-taxonomy'
 import { useTaxonomyReviewStore } from '../../stores/taxonomy-review'
+import AppButton from '../design-system/AppButton.vue'
 import QuestionContentRenderer from './QuestionContentRenderer.vue'
 
 interface CandidateDraft {
@@ -490,18 +491,16 @@ onBeforeUnmount(() => {
             <small>词表版本 {{ store.revision }}</small>
           </div>
           <div class="taxonomy-review__toolbar-actions">
-            <button
+            <AppButton
               v-if="store.historicalSuggestionRun"
-              type="button"
-              class="qb-button is-quiet"
+              variant="ghost"
               @click="showHistoricalRun = !showHistoricalRun"
             >
               {{ showHistoricalRun ? '返回当前候选' : '查看历史批次' }}
-            </button>
-            <button
+            </AppButton>
+            <AppButton
               v-if="!suggestionIsActive"
-              type="button"
-              class="qb-button is-primary"
+              variant="primary"
               :disabled="
                 pendingProposals.length === 0
                 || store.suggestionState === 'starting'
@@ -509,32 +508,29 @@ onBeforeUnmount(() => {
               @click="startSuggestions"
             >
               {{ store.suggestionState === 'starting' ? '正在启动…' : '请 AI 一键判断' }}
-            </button>
-            <button
+            </AppButton>
+            <AppButton
               v-else
-              type="button"
-              class="qb-button"
+              variant="secondary"
               @click="store.cancelSuggestions()"
             >
               停止未开始项
-            </button>
-            <button
+            </AppButton>
+            <AppButton
               v-if="store.suggestionRun?.retryable"
-              type="button"
-              class="qb-button"
+              variant="secondary"
               :disabled="store.suggestionRun.stale"
               @click="store.retrySuggestions()"
             >
               继续未完成项
-            </button>
-            <button
-              type="button"
-              class="qb-button is-quiet"
+            </AppButton>
+            <AppButton
+              variant="ghost"
               :disabled="store.loadState === 'loading' || store.writeState === 'saving'"
               @click="store.load()"
             >
               {{ store.loadState === 'loading' ? '正在读取…' : '刷新候选' }}
-            </button>
+            </AppButton>
           </div>
         </div>
 
@@ -654,23 +650,21 @@ onBeforeUnmount(() => {
 
           <footer>
             <p aria-live="polite">{{ store.batchMessage }}</p>
-            <button type="button" class="qb-button" @click="store.batchPreview = null">返回候选</button>
-            <button
+            <AppButton variant="secondary" @click="store.batchPreview = null">返回候选</AppButton>
+            <AppButton
               v-if="store.reviewOperation?.undo_status === 'available'"
-              type="button"
-              class="qb-button"
+              variant="secondary"
               @click="store.undoLastBatch()"
             >
               撤销上一批
-            </button>
-            <button
-              type="button"
-              class="qb-button is-primary"
+            </AppButton>
+            <AppButton
+              variant="primary"
               :disabled="store.batchState === 'saving'"
               @click="saveBatch"
             >
               {{ store.batchState === 'saving' ? '正在保存…' : '保存本批决定' }}
-            </button>
+            </AppButton>
           </footer>
         </section>
 
@@ -712,7 +706,7 @@ onBeforeUnmount(() => {
         <div v-else-if="!store.batchPreview && !showHistoricalRun && store.loadState === 'error' && !store.proposals.length" class="taxonomy-review__state is-error">
           <strong>候选清单暂时无法读取</strong>
           <p>可以保留当前窗口，稍后重新读取。</p>
-          <button type="button" class="qb-button" @click="store.load()">重新读取</button>
+          <AppButton variant="secondary" @click="store.load()">重新读取</AppButton>
         </div>
         <div v-else-if="!store.batchPreview && !showHistoricalRun && (store.loadState === 'empty' || pendingProposals.length === 0)" class="taxonomy-review__state">
           <strong>当前没有待审核新词</strong>
@@ -808,17 +802,16 @@ onBeforeUnmount(() => {
                   </strong>
                   <p>{{ localizedSuggestionReason(store.suggestionFor(proposal.id)!.suggestion!) }}</p>
                 </div>
-                <button
+                <AppButton
                   v-if="suggestionCanPrefill(
                     store.suggestionFor(proposal.id)!.suggestion!,
                   )"
-                  type="button"
-                  class="qb-button"
+                  variant="secondary"
                   :disabled="store.suggestionRun?.stale"
                   @click="adoptSuggestion(proposal)"
                 >
                   {{ suggestionActionLabel(proposal) }}
-                </button>
+                </AppButton>
                 <span v-else class="taxonomy-candidate__suggestion-hint">
                   {{ suggestionManualHint(store.suggestionFor(proposal.id)!.suggestion!) }}
                 </span>
@@ -917,17 +910,15 @@ onBeforeUnmount(() => {
                     >
                   </label>
                   <div class="taxonomy-candidate__primary-actions">
-                    <button
-                      type="button"
-                      class="qb-button"
+                    <AppButton
+                      variant="secondary"
                       :disabled="store.busyProposalId === proposal.id"
                       @click="approve(proposal)"
                     >
                       按原名批准
-                    </button>
-                    <button
-                      type="button"
-                      class="qb-button"
+                    </AppButton>
+                    <AppButton
+                      variant="secondary"
                       :disabled="
                         !draftFor(proposal).editedName.trim()
                         || store.busyProposalId === proposal.id
@@ -935,7 +926,7 @@ onBeforeUnmount(() => {
                       @click="approveEdited(proposal)"
                     >
                       按修改名批准
-                    </button>
+                    </AppButton>
                   </div>
                 </div>
               </details>
@@ -1003,9 +994,9 @@ onBeforeUnmount(() => {
           role="alert"
         >
           <span>题目暂时无法读取，候选词草稿不受影响。</span>
-          <button type="button" class="qb-button" @click="retryQuestionPreview">
+          <AppButton variant="secondary" @click="retryQuestionPreview">
             重新读取
-          </button>
+          </AppButton>
         </div>
         <template v-else-if="previewQuestion">
           <dl class="qb-facts">

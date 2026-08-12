@@ -1,5 +1,6 @@
 import { fileURLToPath, URL } from 'node:url'
 
+import tailwindcss from '@tailwindcss/vite'
 import vue from '@vitejs/plugin-vue'
 import { defineConfig, type ServerOptions } from 'vite'
 
@@ -22,7 +23,7 @@ export const serverConfig = {
 } satisfies ServerOptions
 
 export default defineConfig({
-  plugins: [vue()],
+  plugins: [vue(), tailwindcss()],
   build: {
     rolldownOptions: {
       output: {

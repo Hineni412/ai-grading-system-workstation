@@ -3,7 +3,11 @@ export type FeedbackTone = 'info' | 'success' | 'warning' | 'error'
 </script>
 
 <script setup lang="ts">
-defineProps<{
+import { computed } from 'vue'
+
+import { cn } from '@/lib/utils'
+
+const props = defineProps<{
   tone: FeedbackTone
   title: string
   description: string
@@ -15,111 +19,54 @@ defineEmits<{
   action: []
   dismiss: []
 }>()
+
+/* 颜色走 tokens.css 令牌（经 Tailwind 任意值引用） */
+const toneSurface: Record<FeedbackTone, string> = {
+  info: 'bg-(--color-info-subtle)',
+  success: 'bg-(--color-success-subtle)',
+  warning: 'bg-(--color-warning-subtle)',
+  error: 'bg-(--color-danger-subtle)',
+}
+
+const toneMarker: Record<FeedbackTone, string> = {
+  info: 'bg-(--color-info)',
+  success: 'bg-(--color-success)',
+  warning: 'bg-(--color-warning)',
+  error: 'bg-(--color-danger)',
+}
+
+const bannerClass = computed(() =>
+  cn(
+    'feedback-banner grid min-w-0 grid-cols-[var(--space-1)_minmax(0,1fr)_auto] items-start gap-3 rounded-xl border border-(--color-border-subtle) p-4 text-foreground max-sm:grid-cols-[var(--space-1)_minmax(0,1fr)]',
+    toneSurface[props.tone],
+  ),
+)
+
+const actionClass =
+  'cursor-pointer rounded-md border-0 bg-transparent px-2 py-1 font-medium text-primary hover:bg-(--color-accent-subtle)'
 </script>
 
 <template>
   <aside
-    class="feedback-banner"
+    :class="bannerClass"
     data-testid="feedback-banner"
     :data-tone="tone"
     :role="tone === 'warning' || tone === 'error' ? 'alert' : 'status'"
   >
-    <div class="feedback-banner__marker" aria-hidden="true" />
-    <div class="feedback-banner__copy">
-      <strong>{{ title }}</strong>
-      <p>{{ description }}</p>
+    <div
+      class="feedback-banner__marker self-stretch rounded-(--radius-tag)"
+      :class="toneMarker[tone]"
+      aria-hidden="true"
+    />
+    <div class="feedback-banner__copy grid min-w-0 gap-1">
+      <strong class="font-semibold">{{ title }}</strong>
+      <p class="m-0 text-(--color-text-secondary)">{{ description }}</p>
     </div>
-    <div v-if="actionLabel || dismissible" class="feedback-banner__actions">
-      <button v-if="actionLabel" type="button" @click="$emit('action')">
+    <div v-if="actionLabel || dismissible" class="feedback-banner__actions flex flex-wrap gap-2 max-sm:col-start-2">
+      <button v-if="actionLabel" type="button" :class="actionClass" @click="$emit('action')">
         {{ actionLabel }}
       </button>
-      <button v-if="dismissible" type="button" @click="$emit('dismiss')">关闭提示</button>
+      <button v-if="dismissible" type="button" :class="actionClass" @click="$emit('dismiss')">关闭提示</button>
     </div>
   </aside>
 </template>
-
-<style scoped>
-.feedback-banner {
-  display: grid;
-  min-width: 0;
-  grid-template-columns: var(--space-1) minmax(0, 1fr) auto;
-  align-items: start;
-  gap: var(--space-3);
-  padding: var(--space-4);
-  border: var(--border-width) solid var(--color-border-subtle);
-  border-radius: var(--radius-panel);
-  background: var(--color-info-subtle);
-  color: var(--color-text-primary);
-}
-
-.feedback-banner__marker {
-  align-self: stretch;
-  border-radius: var(--radius-tag);
-  background: var(--color-info);
-}
-
-.feedback-banner[data-tone='success'] {
-  background: var(--color-success-subtle);
-}
-
-.feedback-banner[data-tone='success'] .feedback-banner__marker {
-  background: var(--color-success);
-}
-
-.feedback-banner[data-tone='warning'] {
-  background: var(--color-warning-subtle);
-}
-
-.feedback-banner[data-tone='warning'] .feedback-banner__marker {
-  background: var(--color-warning);
-}
-
-.feedback-banner[data-tone='error'] {
-  background: var(--color-danger-subtle);
-}
-
-.feedback-banner[data-tone='error'] .feedback-banner__marker {
-  background: var(--color-danger);
-}
-
-.feedback-banner__copy {
-  display: grid;
-  min-width: 0;
-  gap: var(--space-1);
-}
-
-.feedback-banner strong {
-  font-weight: var(--font-weight-semibold);
-}
-
-.feedback-banner p {
-  margin: 0;
-  color: var(--color-text-secondary);
-}
-
-.feedback-banner__actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-2);
-}
-
-.feedback-banner button {
-  padding: var(--space-1) var(--space-2);
-  border: 0;
-  border-radius: var(--radius-control);
-  background: transparent;
-  color: var(--color-accent);
-  font-weight: var(--font-weight-medium);
-  cursor: pointer;
-}
-
-@media (max-width: 640px) {
-  .feedback-banner {
-    grid-template-columns: var(--space-1) minmax(0, 1fr);
-  }
-
-  .feedback-banner__actions {
-    grid-column: 2;
-  }
-}
-</style>

@@ -16,7 +16,7 @@
 .template-regions-view h1, .template-regions-view h2, .template-regions-view p { margin: 0; }
 .template-regions-view h1 { font-size: var(--font-size-h1); }
 .template-regions-view__header p, .template-upload p { margin-block-start: var(--space-1); color: var(--color-text-secondary); }
-.template-regions__eyebrow { color: var(--color-accent); font-size: var(--font-size-caption); font-weight: 600; letter-spacing: .06em; text-transform: uppercase; }
+.template-regions__eyebrow { color: var(--muted-foreground); font-size: var(--font-size-caption); font-weight: 600; letter-spacing: .06em; text-transform: uppercase; }
 .template-regions-view__workspace { min-width: 0; }
 .template-regions-view.is-focus-layout .template-regions-view__header {
   align-items: center;
@@ -92,7 +92,7 @@
   white-space: nowrap;
 }
 .template-regions-view__messages { min-height: 0; }
-.template-regions-view__state, .template-regions-view__notice, .template-regions-view__snapshot { padding: var(--space-4); border: var(--border-width) solid var(--color-border-default); background: var(--color-bg-subtle); }
+.template-regions-view__state, .template-regions-view__notice, .template-regions-view__snapshot { padding: var(--space-4); border: var(--border-width) solid var(--border); border-radius: var(--radius); background: var(--color-bg-subtle); }
 .template-regions-view__notice { margin-block: var(--space-3); border-color: var(--color-warning); background: var(--color-warning-subtle); }
 .template-regions-view.is-focus-layout .template-regions-view__notice {
   display: flex;
@@ -116,9 +116,9 @@
   display: block;
   width: 56px;
   height: 76px;
-  border: var(--border-width) solid var(--color-border-default);
+  border: var(--border-width) solid var(--border);
   object-fit: contain;
-  background: var(--color-bg-surface);
+  background: var(--card);
 }
 .template-upload__thumbs figcaption { font-size: var(--font-size-caption); }
 .template-upload--has-current {
@@ -165,9 +165,9 @@
   align-items: center;
   gap: var(--space-2);
   padding-inline: var(--space-2);
-  border: var(--border-width) solid var(--color-border-default);
+  border: var(--border-width) solid var(--border);
   border-radius: var(--radius-control);
-  background: var(--color-bg-surface);
+  background: var(--card);
   color: var(--color-text-primary);
   cursor: pointer;
   font-size: var(--font-size-dense);
@@ -190,7 +190,7 @@
   justify-items: end;
 }
 .template-upload__replacement > summary:focus-visible {
-  outline: 2px solid var(--color-accent);
+  outline: 2px solid var(--ring);
   outline-offset: 2px;
 }
 .template-upload__replacement-panel {
@@ -199,8 +199,8 @@
   gap: var(--space-3);
   margin-block-start: var(--space-2);
   padding: var(--space-4);
-  border: var(--border-width) solid var(--color-border-default);
-  border-radius: var(--radius-panel);
+  border: var(--border-width) solid var(--border);
+  border-radius: var(--radius);
   background: var(--color-bg-subtle);
 }
 .template-upload__source-summary {
@@ -236,15 +236,15 @@
   align-items: center;
   gap: var(--space-1);
   padding-inline: var(--space-2);
-  border: var(--border-width) solid var(--color-border-default);
+  border: var(--border-width) solid var(--input);
   border-radius: var(--radius-control);
-  background: var(--color-bg-surface);
+  background: var(--card);
   cursor: pointer;
 }
 .template-upload__role-options label.is-selected {
-  border-color: var(--color-accent);
+  border-color: var(--primary);
   background: var(--color-accent-subtle);
-  color: var(--color-accent);
+  color: var(--primary);
   font-weight: var(--font-weight-semibold);
 }
 .template-upload__assignment {
@@ -253,8 +253,8 @@
   font-weight: var(--font-weight-medium);
 }
 .template-upload__form fieldset > small { color: var(--color-text-muted); font-size: var(--font-size-caption); }
-.template-regions-view button, .template-upload button { min-height: var(--control-height-default); padding-inline: var(--space-3); border: var(--border-width) solid var(--color-accent); border-radius: var(--radius-control); background: var(--color-accent); color: var(--color-bg-surface); }
-.template-regions-view button.secondary, .template-upload button.secondary { border-color: var(--color-border-default); background: var(--color-bg-surface); color: var(--color-text-primary); }
+.template-regions-view button, .template-upload button { min-height: var(--control-height-default); padding-inline: var(--space-3); border: var(--border-width) solid var(--primary); border-radius: var(--radius-control); background: var(--primary); color: var(--card); }
+.template-regions-view button.secondary, .template-upload button.secondary { border-color: var(--input); background: var(--card); color: var(--color-text-primary); }
 .template-regions-view button:disabled, .template-upload button:disabled { opacity: .55; }
 .template-region-editor { margin-block-start: var(--space-4); }
 .template-region-editor .region-editor { height: min(72vh, 820px); }

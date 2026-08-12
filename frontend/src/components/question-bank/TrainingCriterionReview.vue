@@ -8,6 +8,7 @@ import {
   type TrainingCriterionVersion,
   type TrainingCriterionWorkspace,
 } from '../../api/question-bank-criteria'
+import AppButton from '../design-system/AppButton.vue'
 
 interface EditorPoint extends TrainingCriterionPoint {
   equivalent_text: string
@@ -386,14 +387,13 @@ onBeforeUnmount(() => loadController?.abort())
       </div>
 
       <div class="criterion-actions">
-        <button
-          type="button"
-          class="qb-button"
+        <AppButton
+          variant="secondary"
           :disabled="writeState !== 'idle' || !validDraft()"
           @click="saveDraft"
         >
           {{ writeState === 'saving' ? '正在保存…' : '保存为新版本' }}
-        </button>
+        </AppButton>
         <button
           type="button"
           class="qb-button is-ai"
@@ -410,22 +410,20 @@ onBeforeUnmount(() => loadController?.abort())
           <input v-model="reviewNote" maxlength="500" placeholder="例如：已与标准答案逐项核对">
         </label>
         <div>
-          <button
-            type="button"
-            class="qb-button is-danger"
+          <AppButton
+            variant="danger"
             :disabled="writeState !== 'idle'"
             @click="review('reject')"
           >
             退回修改
-          </button>
-          <button
-            type="button"
-            class="qb-button is-primary"
+          </AppButton>
+          <AppButton
+            variant="primary"
             :disabled="writeState !== 'idle' || !canApprove"
             @click="review('approve')"
           >
             批准用于以后训练
-          </button>
+          </AppButton>
         </div>
       </div>
 

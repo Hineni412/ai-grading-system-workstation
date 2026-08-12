@@ -3,6 +3,9 @@ import { computed, onMounted, ref, watch } from 'vue'
 
 import { opsApi, type OpsOperation, type OpsPreflightRequest } from '../api/ops'
 import { TERMINAL_JOB_STATUSES } from '../api/jobs'
+import AppButton from '../components/design-system/AppButton.vue'
+import StatusBadge, { type StatusTone } from '../components/design-system/StatusBadge.vue'
+import { Input } from '@/components/ui/input'
 import { useJobStore } from '../stores/jobs'
 import { useOpsStore } from '../stores/ops'
 import '../styles/settings-ops.css'
@@ -90,7 +93,7 @@ const canConfirm = computed(() =>
 
 const zipBackups = computed(() => ops.backups.filter((item) => item.kind === 'zip'))
 
-const operationOutcome = computed(() => {
+const operationOutcome = computed<{ tone: StatusTone; title: string; detail: string } | null>(() => {
   const status = ops.operationState?.status
   if (status === 'prepared' || status === 'restart_required') {
     return {
@@ -263,9 +266,9 @@ onMounted(async () => {
         <h1 tabindex="-1">备份与维护</h1>
         <p>日常主要使用备份与恢复；其他维护工具已收起，需要时再展开。</p>
       </div>
-      <button class="ops-button is-secondary" type="button" :disabled="ops.selfCheckLoading || ops.backupsLoading" @click="refreshLedger">
+      <AppButton variant="secondary" :disabled="ops.selfCheckLoading || ops.backupsLoading" @click="refreshLedger">
         {{ ops.selfCheckLoading || ops.backupsLoading ? '正在刷新…' : '刷新状态' }}
-      </button>
+      </AppButton>
     </header>
 
     <div class="settings-ops__layout">
@@ -276,15 +279,14 @@ onMounted(async () => {
               <p class="settings-ops__eyebrow">本机状态</p>
               <h2 id="system-ledger-title">系统是否可以正常使用</h2>
             </div>
-            <button
-              class="ops-button is-secondary"
-              type="button"
+            <AppButton
+              variant="secondary"
               data-testid="copy-diagnostic"
               :disabled="!ops.diagnosticText"
               @click="copyDiagnostic"
             >
               复制排查信息
-            </button>
+            </AppButton>
           </div>
 
           <p v-if="copied" class="ops-feedback is-success" role="status">已复制脱敏诊断</p>
@@ -373,7 +375,7 @@ onMounted(async () => {
                 <option value="before_import">导入前</option>
               </select>
             </label>
-            <button class="ops-button is-secondary" type="button" :disabled="ops.hasBlockingOperation || backupScopes.length === 0" @click="begin({ operation: 'backup', reason: backupReason, scopes: [...backupScopes] })">开始预检</button>
+            <AppButton class="max-[860px]:w-full" variant="secondary" :disabled="ops.hasBlockingOperation || backupScopes.length === 0" @click="begin({ operation: 'backup', reason: backupReason, scopes: [...backupScopes] })">开始预检</AppButton>
           </article>
 
           <article class="ops-action is-danger">
@@ -391,7 +393,7 @@ onMounted(async () => {
             <p v-else-if="zipBackups.length === 0" class="ops-feedback is-warning">
               当前没有可恢复的备份包。
             </p>
-            <button class="ops-button is-danger" type="button" data-testid="preflight-restore" :disabled="!selectedBackup || ops.hasBlockingOperation" @click="preflightRestore">检查恢复影响</button>
+            <AppButton class="max-[860px]:w-full" variant="danger" data-testid="preflight-restore" :disabled="!selectedBackup || ops.hasBlockingOperation" @click="preflightRestore">检查恢复影响</AppButton>
           </article>
 
         </section>
@@ -413,7 +415,7 @@ onMounted(async () => {
         </p>
 
         <div v-if="ops.preflight" class="ops-gate__preflight">
-          <span class="ops-state is-success">预检完成</span>
+          <StatusBadge tone="success" label="预检完成" />
           <h3>{{ OPERATION_LABELS[ops.preflight.operation] }}</h3>
           <p class="ops-gate__impact">{{ preflightImpact(ops.preflight.operation) }}</p>
           <dl>
@@ -433,70 +435,70 @@ onMounted(async () => {
             本次操作需要重启应用后才会生效
           </p>
           <p class="ops-confirm-copy">输入“<strong>{{ requiredPhrase }}</strong>”以确认本次操作：</p>
-          <input
+          <Input
             v-model="confirmationPhrase"
             data-testid="confirmation-phrase"
             autocomplete="off"
             :aria-label="`输入${requiredPhrase}`"
-          >
-          <button
-            class="ops-button is-danger is-full"
-            type="button"
+          />
+          <AppButton
+            variant="danger"
+            block
             data-testid="confirm-operation"
             :disabled="!canConfirm"
             @click="confirmOperation"
           >
             {{ ops.submitting ? '正在提交…' : requiredPhrase }}
-          </button>
+          </AppButton>
         </div>
 
         <div v-if="ops.activeJob && !ops.operationState" class="ops-gate__job" aria-live="polite">
-          <span class="ops-state is-info">运维任务 #{{ ops.activeJob.id }}</span>
+          <StatusBadge tone="info" :label="`运维任务 #${ops.activeJob.id}`" />
           <h3>{{ jobTitle(ops.activeJob.status, ops.activeJob.job_type) }}</h3>
           <progress :value="ops.activeJob.progress" max="1">
             {{ Math.round(ops.activeJob.progress * 100) }}%
           </progress>
           <p>{{ jobDetail(ops.activeJob.status, ops.activeJob.detail, ops.activeJob.job_type) }}</p>
-          <button
+          <AppButton
             v-if="!TERMINAL_JOB_STATUSES.has(ops.activeJob.status)"
-            class="ops-button is-secondary is-full"
-            type="button"
+            variant="secondary"
+            block
             @click="ops.cancelCurrent(opsApi)"
           >
             请求取消任务
-          </button>
-          <button
+          </AppButton>
+          <AppButton
             v-if="ops.activeJob.status === 'succeeded' && ['ops_backup', 'ops_transfer_export'].includes(ops.activeJob.job_type)"
-            class="ops-button is-primary is-full"
-            type="button"
+            variant="primary"
+            block
             @click="downloadResult"
           >
             下载结果
-          </button>
+          </AppButton>
         </div>
 
         <div v-if="operationOutcome" :class="['ops-gate__outcome', `is-${operationOutcome.tone}`]" aria-live="polite">
-          <span class="ops-state" :class="`is-${operationOutcome.tone}`">离线操作状态</span>
+          <StatusBadge :tone="operationOutcome.tone" label="离线操作状态" />
           <h3>{{ operationOutcome.title }}</h3>
           <p>{{ operationOutcome.detail }}</p>
-          <button
+          <AppButton
             v-if="ops.operationState && ['prepared', 'restart_required'].includes(ops.operationState.status)"
-            class="ops-button is-danger is-full"
-            type="button"
+            variant="danger"
+            block
             data-testid="cancel-prepared-operation"
             :disabled="ops.operationLoading"
             @click="ops.cancelCurrent(opsApi)"
           >
             撤销待重启操作
-          </button>
-          <button
+          </AppButton>
+          <AppButton
             v-if="ops.operationState && !['prepared', 'restart_required', 'applying'].includes(ops.operationState.status)"
-            class="ops-button is-secondary is-full"
-            type="button"
+            variant="secondary"
+            block
             @click="ops.resetFlow"
           >
             完成并关闭
-          </button>
+          </AppButton>
         </div>
 
         <div v-if="ops.actionError" class="ops-feedback is-danger" role="alert">

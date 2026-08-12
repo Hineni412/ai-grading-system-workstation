@@ -72,7 +72,7 @@ const activeIndex = computed(() => Math.max(
   overflow: hidden;
   margin: 0;
   padding: 0;
-  border-block: var(--border-width) solid var(--color-border-default);
+  border-block: var(--border-width) solid var(--border);
   grid-template-columns: repeat(5, minmax(0, 1fr));
   list-style: none;
 }
@@ -117,7 +117,7 @@ const activeIndex = computed(() => Math.max(
 .config-stage-rail__item--active button {
   background: var(--color-accent-subtle);
 }
-.config-stage-rail button:hover:not(:disabled) { background: var(--color-bg-subtle); }
+.config-stage-rail button:hover:not(:disabled) { background: var(--secondary); }
 .config-stage-rail button:focus-visible { outline: 2px solid var(--color-accent); outline-offset: -2px; }
 .config-stage-rail button:disabled { cursor: not-allowed; opacity: .48; }
 
@@ -128,7 +128,7 @@ const activeIndex = computed(() => Math.max(
   flex: none;
   place-items: center;
   border: var(--border-width) solid var(--color-border-strong);
-  border-radius: var(--radius-tag);
+  border-radius: var(--radius-circle);
   font-size: var(--font-size-caption);
 }
 

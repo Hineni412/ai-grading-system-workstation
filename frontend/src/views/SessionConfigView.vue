@@ -10,6 +10,7 @@ import QuestionBankSyncPanel from '../components/config/QuestionBankSyncPanel.vu
 import RubricEditorTable from '../components/config/RubricEditorTable.vue'
 import ScoringUnitEditor from '../components/config/ScoringUnitEditor.vue'
 import SessionDraftPanel from '../components/config/SessionDraftPanel.vue'
+import AppButton from '../components/design-system/AppButton.vue'
 import { ApiError, isAmbiguousWriteError, isAuthoritativeNotFoundError } from '../api/errors'
 import {
   abandonConfigGenerationRequest,
@@ -606,7 +607,7 @@ watch(
     </div>
     <div v-else-if="sessionStore.loadState === 'error'" class="session-config-view__state" role="alert">
       <p>考试列表暂时无法读取，尚未改变任何考试。</p>
-      <button type="button" @click="sessionStore.initialize()">重新加载考试列表</button>
+      <AppButton type="button" @click="sessionStore.initialize()">重新加载考试列表</AppButton>
     </div>
     <template v-else>
       <ConfigStageRail
@@ -726,13 +727,14 @@ watch(
               <span v-else-if="configStore.hasDirtyEditor">保存时会一次提交全部行修改与评分单元命令。</span>
               <span v-else>只有修改评分标准后才需要再次保存；当前可以直接进入下一步。</span>
             </div>
-            <button
+            <AppButton
               type="button"
+              variant="primary"
               name="保存评分依据"
               class="config-editor__save-primary"
               :disabled="!saveNeeded || saveBlocked || saving || saveUnknown || configJobActive || submissionPending"
               @click="saveEditor"
-            >{{ saving ? '正在保存…' : saveNeeded ? '保存评分依据' : '无需保存' }}</button>
+            >{{ saving ? '正在保存…' : saveNeeded ? '保存评分依据' : '无需保存' }}</AppButton>
           </div>
           <ConfigSaveResult
             :status="configStore.saveStatus === 'saving' ? 'idle' : configStore.saveStatus"
@@ -767,13 +769,13 @@ watch(
 .session-config-view__header p { margin-block-start: var(--space-1); color: var(--color-text-secondary); }
 .session-config-view__current { max-width: 45%; overflow: hidden; color: var(--color-text-secondary); font-size: var(--font-size-dense); text-overflow: ellipsis; white-space: nowrap; }
 .session-config-view__state,
-.session-config-view__empty { padding: var(--space-5); border-block: var(--border-width) solid var(--color-border-default); background: var(--color-bg-subtle); color: var(--color-text-secondary); }
-.session-config-view__state button { min-height: var(--control-height-default); margin-block-start: var(--space-3); padding-inline: var(--space-3); border: var(--border-width) solid var(--color-border-default); border-radius: var(--radius-control); background: var(--color-bg-surface); }
+.session-config-view__empty { padding: var(--space-5); border-block: var(--border-width) solid var(--border); background: var(--color-bg-subtle); color: var(--color-text-secondary); }
+.session-config-view__state button { min-height: var(--control-height-default); margin-block-start: var(--space-3); }
 .session-config-view__empty { border-block-start: 0; }
 .config-template-entry { display: flex; align-items: center; justify-content: space-between; gap: var(--space-4); margin-block-start: var(--space-5); padding: var(--space-4); border-block: var(--border-width) solid var(--color-border-default); background: var(--color-bg-subtle); }
 .config-template-entry strong, .config-template-entry span { display: block; }
 .config-template-entry span { margin-block-start: var(--space-1); color: var(--color-text-secondary); }
-.config-template-entry a { min-height: var(--control-height-default); padding: var(--space-2) var(--space-3); border-radius: var(--radius-control); background: var(--color-accent); color: white; text-decoration: none; }
+.config-template-entry a { min-height: var(--control-height-default); padding: var(--space-2) var(--space-3); border-radius: var(--radius-control); background: var(--primary); color: var(--primary-foreground); text-decoration: none; }
 .config-workspace__panel { min-width: 0; }
 .config-forward-enter-active,
 .config-forward-leave-active,

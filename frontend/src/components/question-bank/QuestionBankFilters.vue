@@ -7,6 +7,7 @@ import type {
   QuestionBankTagStatus,
 } from '../../api/question-bank'
 import { useQuestionBankStore } from '../../stores/question-bank'
+import AppButton from '../design-system/AppButton.vue'
 import DifficultyRangeFilter from './DifficultyRangeFilter.vue'
 import QuestionSortControl from './QuestionSortControl.vue'
 
@@ -134,8 +135,8 @@ function changeSort(sort: QuestionBankSort): void {
     </details>
 
     <div class="qb-filters__actions">
-      <button type="button" class="qb-button is-quiet" @click="reset">清除</button>
-      <button type="submit" class="qb-button is-primary">应用筛选</button>
+      <AppButton variant="ghost" @click="reset">清除</AppButton>
+      <AppButton variant="primary" type="submit">应用筛选</AppButton>
     </div>
   </form>
 </template>

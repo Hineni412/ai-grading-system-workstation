@@ -4,7 +4,7 @@
   margin-inline: 0;
   gap: var(--space-5);
   padding: var(--space-3);
-  color: var(--color-text-primary);
+  color: var(--foreground);
 }
 
 .knowledge-graph-page-heading {
@@ -13,7 +13,7 @@
   align-items: start;
   gap: var(--space-6);
   padding-block-end: var(--space-4);
-  border-block-end: var(--border-width) solid var(--color-border-default);
+  border-block-end: var(--border-width) solid var(--border);
 }
 
 .knowledge-graph-heading-scope {
@@ -97,9 +97,9 @@
 .knowledge-graph-directory,
 .knowledge-graph-inspector,
 .knowledge-graph-review-shortcut {
-  border: var(--border-width) solid var(--color-border-default);
-  border-radius: var(--radius-panel);
-  background: var(--color-bg-surface);
+  border: var(--border-width) solid var(--border);
+  border-radius: var(--radius);
+  background: var(--card);
 }
 
 .knowledge-graph-filters {
@@ -114,10 +114,10 @@
   justify-content: space-between;
   gap: var(--space-4);
   padding: var(--space-2) var(--space-3);
-  border: var(--border-width) solid var(--color-border-default);
-  border-inline-start: var(--border-selected-width) solid var(--color-accent);
-  border-radius: var(--radius-control);
-  background: var(--color-bg-surface);
+  border: var(--border-width) solid var(--border);
+  border-inline-start: var(--border-selected-width) solid var(--primary);
+  border-radius: var(--radius);
+  background: var(--card);
 }
 
 .knowledge-graph-scope-bar > div {
@@ -139,9 +139,9 @@
 }
 
 .knowledge-graph-secondary-panel {
-  border: var(--border-width) solid var(--color-border-default);
-  border-radius: var(--radius-control);
-  background: var(--color-bg-surface);
+  border: var(--border-width) solid var(--border);
+  border-radius: var(--radius);
+  background: var(--card);
 }
 
 .knowledge-graph-secondary-panel > summary {
@@ -428,10 +428,9 @@
 
 .knowledge-graph-mastery-rollout {
   padding: var(--space-5);
-  border: var(--border-width) solid var(--color-border-subtle);
+  border: var(--border-width) solid var(--border);
   border-radius: var(--radius-lg);
   background: var(--color-bg-surface);
-  box-shadow: var(--shadow-sm);
 }
 
 .knowledge-graph-mastery-rollout > header {
@@ -502,7 +501,7 @@
   width: 100%;
   min-width: 0;
   padding: var(--space-2) var(--space-3);
-  border: var(--border-width) solid var(--color-border-strong);
+  border: var(--border-width) solid var(--input);
   border-radius: var(--radius-md);
   background: var(--color-bg-surface);
   color: var(--color-text-primary);
@@ -542,7 +541,7 @@
 
 .knowledge-graph-mastery-difference-list > li {
   padding: var(--space-4);
-  border: var(--border-width) solid var(--color-border-subtle);
+  border: var(--border-width) solid var(--border);
   border-inline-start: var(--border-selected-width) solid var(--color-border-strong);
   border-radius: var(--radius-md);
   background: var(--color-bg-surface);

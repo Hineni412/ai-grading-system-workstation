@@ -37,6 +37,13 @@
   --font-family-sans: Inter, "PingFang SC", "Microsoft YaHei",
     "Noto Sans CJK SC", system-ui, -apple-system, BlinkMacSystemFont,
     "Segoe UI", sans-serif;
+  /* 数据展示卡衬线（仅教学脉搏卡标题与大数字） */
+  --font-family-display: Georgia, "Times New Roman", "STSong",
+    "Songti SC", serif;
+  /* 试题正文与组卷卷面等内容渲染，模拟印刷卷面 */
+  --font-family-document: "Songti SC", "SimSun", serif;
+  /* 诊断输出、编号等需要对齐的字符 */
+  --font-family-mono: ui-monospace, "Cascadia Code", Consolas, monospace;
   --font-size-caption: 12px;
   --font-size-dense: 13px;
   --font-size-body: 14px;

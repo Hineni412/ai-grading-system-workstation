@@ -54,9 +54,9 @@ const tabs = [
   align-items: center;
   gap: var(--space-1);
   min-width: 0;
-  padding: var(--space-2);
+  padding: var(--space-1);
   border: var(--border-width) solid var(--color-border-default);
-  border-radius: var(--radius-panel);
+  border-radius: var(--radius-control);
   background: var(--color-bg-surface);
 }
 
@@ -65,7 +65,7 @@ const tabs = [
   min-height: var(--control-height-default);
   align-items: center;
   padding-inline: var(--space-3);
-  border-radius: var(--radius-control);
+  border-radius: calc(var(--radius) - 2px);
   color: var(--color-text-secondary);
   font-size: var(--font-size-dense);
   text-decoration: none;
@@ -78,8 +78,9 @@ const tabs = [
 }
 
 .knowledge-training-tabs a:focus-visible {
-  outline: var(--focus-ring-width) solid var(--color-focus-ring);
-  outline-offset: var(--focus-ring-offset);
+  outline: var(--border-width) solid var(--color-accent);
+  outline-offset: var(--focus-offset);
+  box-shadow: var(--focus-ring);
 }
 
 .knowledge-training-tabs > span {

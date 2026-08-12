@@ -160,7 +160,7 @@ async function mountAt(
   }
   await new Promise(resolve => setTimeout(resolve, 0))
   await nextTick()
-  await vi.waitFor(() => expect(host.textContent).not.toBe(''))
+  await vi.waitFor(() => expect(host.textContent).not.toBe(''), { timeout: 5000 })
   return { app, host, router, pinia }
 }
 

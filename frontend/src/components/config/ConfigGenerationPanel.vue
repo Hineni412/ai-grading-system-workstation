@@ -840,50 +840,51 @@ watch(
 
 <style scoped>
 .config-generation { min-width: 0; margin-block-start: var(--space-6); border-block-start: var(--border-width) solid var(--color-border-default); }
-.config-generation__flow { display: grid; gap: var(--space-1); margin: 0 0 var(--space-3); padding: var(--space-3) var(--space-4); border: var(--border-width) solid var(--color-border-default); border-inline-start: var(--border-selected-width) solid var(--color-accent); background: var(--color-bg-subtle); }
+.config-generation__flow { display: grid; gap: var(--space-1); margin: 0 0 var(--space-3); padding: var(--space-3) var(--space-4); border: var(--border-width) solid var(--color-border-default); border-inline-start: var(--border-selected-width) solid var(--color-accent); border-radius: var(--radius-control); background: var(--card); }
 .config-generation__flow span { color: var(--color-text-secondary); line-height: var(--line-height-relaxed); }
-.config-generation__blocking-reason { margin: var(--space-2) 0 0; color: #8a5a0a; font-size: var(--font-size-caption); }
+.config-generation__blocking-reason { margin: var(--space-2) 0 0; color: var(--color-warning); font-size: var(--font-size-caption); }
 .config-generation__volume,
-.config-generation__metadata { margin: 0 0 var(--space-3); padding: var(--space-3) var(--space-4); border: var(--border-width) solid var(--color-border-default); background: var(--color-bg-surface); }
+.config-generation__metadata { margin: 0 0 var(--space-3); padding: var(--space-3) var(--space-4); border: var(--border-width) solid var(--border); border-radius: var(--radius-control); background: var(--card); }
 .config-generation__volume { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); color: var(--color-text-secondary); }
 .config-generation__metadata { display: grid; grid-template-columns: minmax(0, 1fr) minmax(16rem, 0.65fr) auto; align-items: end; gap: var(--space-3); }
 .config-generation__metadata--volume { margin-block: var(--space-4); }
 .config-generation__volume-ready { align-self: end; padding-block: var(--space-2); color: var(--color-success); font-weight: var(--font-weight-medium); }
 .config-generation__metadata p { margin: var(--space-1) 0 0; color: var(--color-text-secondary); }
 .config-generation__metadata label { display: grid; gap: var(--space-1); }
-.config-generation__metadata select { min-height: var(--control-height-default); padding-inline: var(--space-2); border: var(--border-width) solid var(--color-border-default); border-radius: var(--radius-control); background: var(--color-bg-surface); color: var(--color-text-primary); }
+.config-generation__metadata select { min-height: var(--control-height-default); padding-inline: var(--space-2); border: var(--border-width) solid var(--border); border-radius: var(--radius-control); background: var(--card); color: var(--color-text-primary); }
 .config-generation__link { min-height: auto; padding: 0; border: 0; background: transparent; color: var(--color-accent); }
-.config-generation__candidate-note { margin: 0 0 var(--space-3); padding: var(--space-3) var(--space-4); border-inline-start: var(--border-selected-width) solid var(--color-accent); background: var(--color-accent-subtle); color: var(--color-text-secondary); }
+.config-generation__candidate-note { margin: 0 0 var(--space-3); padding: var(--space-3) var(--space-4); border-inline-start: var(--border-selected-width) solid var(--color-accent); border-radius: var(--radius-control); background: var(--color-accent-subtle); color: var(--color-text-secondary); }
 .config-generation__candidate-note strong { color: var(--color-text-primary); }
 .config-generation__failure-actions { display: flex; flex-wrap: wrap; gap: var(--space-3); }
 .config-generation__primary,
 .config-generation__secondary,
 .config-generation__partial button,
-.config-generation__warning button { min-height: var(--control-height-default); padding-inline: var(--space-4); border: var(--border-width) solid var(--color-border-default); border-radius: var(--radius-control); background: var(--color-bg-surface); color: var(--color-text-primary); }
-.config-generation__primary { border-color: var(--color-accent); background: var(--color-accent); color: var(--color-bg-surface); font-weight: var(--font-weight-medium); }
+.config-generation__warning button { min-height: var(--control-height-default); padding-inline: var(--space-4); border: var(--border-width) solid var(--border); border-radius: var(--radius-control); background: var(--card); color: var(--color-text-primary); }
+.config-generation__primary { border-color: var(--color-accent); background: var(--color-accent); color: var(--color-primary-foreground); font-weight: var(--font-weight-medium); }
+.config-generation__primary:hover:not(:disabled) { background: var(--color-accent-hover); }
 button:disabled { cursor: not-allowed; opacity: var(--opacity-disabled); }
-.config-generation__job { padding: var(--space-4); border: var(--border-width) solid var(--color-border-default); border-inline-start: var(--border-selected-width) solid var(--color-accent); }
+.config-generation__job { padding: var(--space-4); border: var(--border-width) solid var(--border); border-inline-start: var(--border-selected-width) solid var(--color-accent); border-radius: var(--radius-control); background: var(--card); }
 .config-generation__status-line { display: flex; justify-content: space-between; gap: var(--space-3); }
-.config-generation__console { position: sticky; z-index: 7; top: 0; display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); margin-block: var(--space-3); padding: var(--space-2) var(--space-3); border: var(--border-width) solid var(--color-border-default); border-radius: var(--radius-control); background: color-mix(in srgb, var(--color-bg-surface) 94%, transparent); box-shadow: 0 4px 16px rgb(16 44 56 / 8%); backdrop-filter: blur(8px); }
+.config-generation__console { position: sticky; z-index: 7; top: 0; display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); margin-block: var(--space-3); padding: var(--space-2) var(--space-3); border: var(--border-width) solid var(--color-border-default); border-radius: var(--radius-control); background: color-mix(in srgb, var(--color-bg-surface) 94%, transparent); box-shadow: 0 4px 16px color-mix(in srgb, var(--color-accent-active) 8%, transparent); backdrop-filter: blur(8px); }
 .config-generation__console-volume { display: inline-flex; align-items: center; gap: var(--space-2); font-size: var(--font-size-caption); font-weight: var(--font-weight-medium); }
 .config-generation__console-volume select { min-height: 34px; max-width: 180px; }
 .config-generation__lights { display: flex; min-width: 160px; flex: 1 1 280px; gap: 2px; overflow-x: auto; }
 .config-generation__lights button { display: inline-flex; min-height: 32px; align-items: center; gap: 3px; padding-inline: 6px; border: 0; border-radius: var(--radius-sm); background: transparent; color: var(--color-text-secondary); font-size: var(--font-size-caption); white-space: nowrap; }
-.config-generation__lights button span { color: #9aa7ab; }
+.config-generation__lights button span { color: var(--color-text-muted); }
 .config-generation__lights button.is-passed span { color: var(--color-success); }
 .config-generation__lights button.is-blocked span, .config-generation__lights button.is-failed span { color: var(--color-danger); }
 .config-generation__lights button:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 1px; }
 .config-generation__console-count { color: var(--color-text-secondary); font-size: var(--font-size-caption); white-space: nowrap; }
 .config-generation__job p { margin: 0 0 var(--space-3); color: var(--color-text-secondary); }
-.config-generation__job .config-generation__retained { padding: var(--space-3); background: var(--color-success-subtle); color: var(--color-text-primary); }
+.config-generation__job .config-generation__retained { padding: var(--space-3); border-radius: var(--radius-control); background: var(--color-success-subtle); color: var(--color-text-primary); }
 .config-generation__partial { padding-block: var(--space-3); border-block-start: var(--border-width) solid var(--color-border-subtle); }
 .config-generation__refine-actions { display: flex; flex-wrap: wrap; gap: var(--space-2); }
-.config-generation__partial fieldset { display: flex; flex-wrap: wrap; gap: var(--space-3); margin: 0 0 var(--space-3); padding: var(--space-3); border: var(--border-width) solid var(--color-border-subtle); }
+.config-generation__partial fieldset { display: flex; flex-wrap: wrap; gap: var(--space-3); margin: 0 0 var(--space-3); padding: var(--space-3); border: var(--border-width) solid var(--color-border-subtle); border-radius: var(--radius-control); }
 .config-generation__partial label { display: inline-flex; align-items: center; gap: var(--space-2); }
 .config-generation__warning,
 .config-generation__error { margin: var(--space-3) 0 0; padding: var(--space-3) var(--space-4); }
-.config-generation__warning { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); background: var(--color-warning-subtle); }
-.config-generation__error { background: var(--color-danger-subtle); color: var(--color-danger); }
+.config-generation__warning { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); border-radius: var(--radius-control); background: var(--color-warning-subtle); }
+.config-generation__error { border-radius: var(--radius-control); background: var(--color-danger-subtle); color: var(--color-danger); }
 @media (max-width: 820px) {
   .config-generation__metadata { grid-template-columns: 1fr; align-items: stretch; }
 }

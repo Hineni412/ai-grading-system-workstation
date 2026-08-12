@@ -65,8 +65,8 @@
   gap: var(--space-3);
   padding: 14px 10px 12px;
   overflow: hidden;
-  border-inline-end: var(--border-width) solid var(--color-border-default);
-  background: var(--color-bg-sidebar);
+  border-inline-end: var(--border-width) solid var(--sidebar-border);
+  background: var(--sidebar);
 }
 
 .app-sidebar__brand {
@@ -82,7 +82,7 @@
 }
 
 .app-sidebar__brand:hover {
-  background: var(--color-bg-subtle);
+  background: var(--sidebar-accent);
 }
 
 .app-sidebar__brand:focus-visible,
@@ -157,7 +157,7 @@
 .app-sidebar__group > p {
   margin: 0;
   padding: 2px 10px 4px;
-  color: var(--color-text-muted);
+  color: var(--muted-foreground);
   font-size: 10px;
   font-weight: var(--font-weight-semibold);
   letter-spacing: 0.08em;
@@ -191,15 +191,15 @@
 }
 
 .app-sidebar__link:hover {
-  border-color: var(--color-border-subtle);
-  background: var(--color-bg-subtle);
-  color: var(--color-text-primary);
+  border-color: transparent;
+  background: var(--sidebar-accent);
+  color: var(--sidebar-accent-foreground);
 }
 
 .app-sidebar__link[aria-current='page'] {
   border-color: transparent;
-  background: var(--color-bg-selected);
-  color: var(--color-accent-active);
+  background: var(--accent);
+  color: var(--primary);
   font-weight: var(--font-weight-semibold);
 }
 
@@ -208,7 +208,7 @@
   flex: none;
   gap: var(--space-1);
   padding-top: var(--space-2);
-  border-top: var(--border-width) solid var(--color-border-subtle);
+  border-top: var(--border-width) solid var(--sidebar-border);
 }
 
 .app-sidebar__settings-links {
@@ -238,8 +238,8 @@
 
 .app-sidebar__settings-toggle:hover,
 .app-sidebar__settings-toggle.is-active {
-  background: var(--color-bg-selected);
-  color: var(--color-accent-active);
+  background: var(--accent);
+  color: var(--primary);
 }
 
 .app-sidebar__settings-chevron {
@@ -265,7 +265,7 @@
   align-items: center;
   gap: var(--space-1) var(--space-5);
   padding: 10px var(--space-5);
-  border-block-end: var(--border-width) solid var(--color-border-default);
+  border-block-end: var(--border-width) solid var(--border);
   background: var(--color-bg-surface);
 }
 
@@ -370,6 +370,13 @@
 
 .app-topbar__navigation-toggle {
   display: none !important;
+}
+
+/* 顶栏内图标按钮统一为 34px 控件高度，与同排选择器对齐；
+ * 需压过 shadcn Button size-9（36px）的未分层工具类，故用双类具体度。 */
+.app-topbar .app-icon-button {
+  width: var(--control-height-default);
+  height: var(--control-height-default);
 }
 
 .app-topbar__page-copy {

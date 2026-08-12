@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { ref } from 'vue'
-import { ElButton, ElInput } from 'element-plus'
 
+import { Input } from '@/components/ui/input'
+import AppButton from './AppButton.vue'
 import AppField from './AppField.vue'
 import FeedbackBanner from './FeedbackBanner.vue'
 import StatePanel from './StatePanel.vue'
@@ -51,14 +52,14 @@ const tones: Array<{ tone: StatusTone; label: string }> = [
       <h2 id="section-button">按钮</h2>
       <p class="showcase-section__intro">操作区只保留一个主要动作，按钮文案直接说明结果。</p>
       <div class="control-row">
-        <ElButton type="primary">保存并继续复核</ElButton>
-        <ElButton>暂存教师修改</ElButton>
-        <ElButton text>查看评分规则</ElButton>
-        <ElButton type="danger" plain>删除未提交草稿</ElButton>
+        <AppButton variant="primary">保存并继续复核</AppButton>
+        <AppButton variant="secondary">暂存教师修改</AppButton>
+        <AppButton variant="ghost">查看评分规则</AppButton>
+        <AppButton variant="danger">删除未提交草稿</AppButton>
       </div>
       <div class="control-row" aria-label="按钮过程状态">
-        <ElButton :loading="true">正在保存草稿</ElButton>
-        <ElButton disabled>等待评分依据</ElButton>
+        <AppButton variant="primary" :loading="true">正在保存草稿</AppButton>
+        <AppButton variant="secondary" disabled>等待评分依据</AppButton>
       </div>
     </section>
 
@@ -68,7 +69,7 @@ const tones: Array<{ tone: StatusTone; label: string }> = [
       <div class="field-grid">
         <AppField id="exam-name" label="考试名称" hint="名称会显示在阅卷任务和报告中。" required>
           <template #default="{ inputId, ariaDescribedby, ariaInvalid, ariaRequired }">
-            <ElInput
+            <Input
               :id="inputId"
               v-model="examName"
               :aria-describedby="ariaDescribedby"
@@ -85,7 +86,7 @@ const tones: Array<{ tone: StatusTone; label: string }> = [
           required
         >
           <template #default="{ inputId, ariaDescribedby, ariaInvalid, ariaRequired }">
-            <ElInput
+            <Input
               :id="inputId"
               v-model="teacherScore"
               inputmode="decimal"
@@ -102,7 +103,7 @@ const tones: Array<{ tone: StatusTone; label: string }> = [
           hint="学生身份来自已导入名单，当前步骤不能修改。"
         >
           <template #default="{ inputId, ariaDescribedby, ariaInvalid, ariaRequired }">
-            <ElInput
+            <Input
               :id="inputId"
               v-model="disabledStudent"
               disabled

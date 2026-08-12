@@ -106,7 +106,7 @@ async function renameDraft(): Promise<void> {
   grid-template-columns: minmax(260px, .8fr) minmax(360px, 1.2fr);
   gap: var(--space-7);
   padding-block: var(--space-6);
-  border-block-end: var(--border-width) solid var(--color-border-default);
+  border-block-end: var(--border-width) solid var(--border);
 }
 .session-draft-panel h2,
 .session-draft-panel p { margin: 0; }
@@ -118,10 +118,11 @@ async function renameDraft(): Promise<void> {
 .session-draft-panel__controls { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--space-2); }
 .session-draft-panel input,
 .session-draft-panel select,
-.session-draft-panel button { min-height: var(--control-height-large); border: var(--border-width) solid var(--color-border-default); border-radius: var(--radius-control); }
+.session-draft-panel button { min-height: var(--control-height-large); border: var(--border-width) solid var(--border); border-radius: var(--radius-control); }
 .session-draft-panel input,
-.session-draft-panel select { min-width: 0; padding-inline: var(--space-3); background: var(--color-bg-surface); }
-.session-draft-panel button { padding-inline: var(--space-4); background: var(--color-accent); color: var(--color-bg-surface); font-weight: var(--font-weight-medium); cursor: pointer; }
+.session-draft-panel select { min-width: 0; padding-inline: var(--space-3); background: var(--card); }
+.session-draft-panel button { padding-inline: var(--space-4); border-color: var(--color-accent); background: var(--color-accent); color: var(--primary-foreground); font-weight: var(--font-weight-medium); cursor: pointer; }
+.session-draft-panel button:hover:not(:disabled) { background: var(--color-accent-hover); }
 .session-draft-panel button:disabled { cursor: not-allowed; opacity: var(--opacity-disabled); }
 @media (max-width: 1100px) { .session-draft-panel { grid-template-columns: 1fr; gap: var(--space-4); } }
 </style>

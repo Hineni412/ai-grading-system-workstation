@@ -1,6 +1,6 @@
 .assembly {
   box-sizing: border-box;
-  color: var(--color-text-primary, #1c2733);
+  color: var(--color-text-primary);
   display: grid;
   gap: 18px;
   margin-inline: auto;
@@ -29,13 +29,13 @@
 }
 
 .assembly__hero p:last-child {
-  color: var(--color-text-secondary, #5c6672);
+  color: var(--color-text-secondary);
   font-size: 14px;
   margin: 7px 0 0;
 }
 
 .assembly-kicker {
-  color: var(--color-accent, #135e6b) !important;
+  color: var(--color-accent) !important;
   font-size: 10px !important;
   font-weight: 750;
   letter-spacing: .14em;
@@ -49,7 +49,7 @@
 }
 
 .assembly__summary span {
-  color: var(--color-text-secondary, #5c6672);
+  color: var(--color-text-secondary);
   display: grid;
   font-size: 11px;
   gap: 2px;
@@ -57,15 +57,15 @@
 }
 
 .assembly__summary strong {
-  color: var(--color-text-primary, #1c2733);
+  color: var(--color-text-primary);
   font-size: 21px;
 }
 
 .assembly-steps {
   align-items: center;
-  background: #fff;
-  border: 1px solid var(--color-border, #e2e4e7);
-  border-radius: 12px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-panel);
   display: flex;
   gap: 10px;
   padding: 8px;
@@ -76,7 +76,7 @@
   background: transparent;
   border: 0;
   border-radius: 8px;
-  color: var(--color-text-secondary, #5c6672);
+  color: var(--color-text-secondary);
   cursor: pointer;
   display: grid;
   flex: 0 1 260px;
@@ -89,7 +89,7 @@
 
 .assembly-steps button > span {
   align-items: center;
-  background: #eef0f1;
+  background: var(--color-border-subtle);
   border-radius: 50%;
   display: flex;
   font-size: 12px;
@@ -106,18 +106,18 @@
 }
 
 .assembly-steps small {
-  color: var(--color-text-tertiary, #6b7684);
+  color: var(--color-text-muted);
   font-size: 10px;
 }
 
 .assembly-steps button.is-active {
-  background: rgb(19 94 107 / 10%);
-  color: var(--color-accent, #135e6b);
+  background: color-mix(in srgb, var(--color-accent) 10%, transparent);
+  color: var(--color-accent);
 }
 
 .assembly-steps button.is-active > span {
-  background: var(--color-accent, #135e6b);
-  color: #fff;
+  background: var(--color-accent);
+  color: var(--primary-foreground);
 }
 
 .assembly-steps button:disabled {
@@ -126,17 +126,17 @@
 }
 
 .assembly-steps > i {
-  background: var(--color-border, #e2e4e7);
+  background: var(--border);
   height: 1px;
   width: 28px;
 }
 
 .assembly-button {
   align-items: center;
-  background: #fff;
-  border: 1px solid var(--color-border-strong, #d8dbdf);
+  background: var(--card);
+  border: 1px solid var(--color-border-strong);
   border-radius: 8px;
-  color: var(--color-text-primary, #1c2733);
+  color: var(--color-text-primary);
   cursor: pointer;
   display: inline-flex;
   font: inherit;
@@ -150,25 +150,25 @@
 }
 
 .assembly-button:hover:not(:disabled) {
-  background: #f6f7f7;
-  border-color: #b9c0c5;
+  background: var(--secondary);
+  border-color: var(--color-border-strong);
 }
 
 .assembly-button.is-primary {
-  background: var(--color-accent, #135e6b);
-  border-color: var(--color-accent, #135e6b);
-  color: #fff;
+  background: var(--color-accent);
+  border-color: var(--color-accent);
+  color: var(--primary-foreground);
 }
 
 .assembly-button.is-primary:hover:not(:disabled) {
-  background: var(--color-accent-hover, #0e4a54);
-  border-color: var(--color-accent-hover, #0e4a54);
+  background: var(--color-accent-hover);
+  border-color: var(--color-accent-hover);
 }
 
 .assembly-button.is-selected {
-  background: rgb(19 94 107 / 10%);
-  border-color: rgb(19 94 107 / 30%);
-  color: var(--color-accent, #135e6b);
+  background: color-mix(in srgb, var(--color-accent) 10%, transparent);
+  border-color: color-mix(in srgb, var(--color-accent) 30%, transparent);
+  color: var(--color-accent);
 }
 
 .assembly-button:disabled,
@@ -180,7 +180,7 @@
 .assembly-link {
   background: none;
   border: 0;
-  color: var(--color-accent, #135e6b);
+  color: var(--color-accent);
   cursor: pointer;
   font: inherit;
   font-size: 12px;
@@ -190,11 +190,11 @@
 }
 
 .assembly-link:hover {
-  color: var(--color-accent-hover, #0e4a54);
+  color: var(--color-accent-hover);
 }
 
 .assembly-link.is-danger {
-  color: #9a4136;
+  color: var(--color-danger);
 }
 
 .assembly-browser {
@@ -211,10 +211,10 @@
 .assembly-editor-panel,
 .assembly-paper,
 .assembly-editor__toolbar {
-  background: #fff;
-  border: 1px solid var(--color-border, #e2e4e7);
-  border-radius: 12px;
-  box-shadow: 0 1px 2px rgb(28 39 51 / 5%);
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-panel);
+  box-shadow: 0 1px 2px color-mix(in srgb, var(--color-text-primary) 5%, transparent);
 }
 
 .assembly-chapters,
@@ -251,8 +251,8 @@
 }
 
 .assembly-chapters__hint {
-  border-bottom: 1px solid #edf0f1;
-  color: var(--color-text-tertiary, #6b7684);
+  border-bottom: 1px solid var(--color-border-subtle);
+  color: var(--color-text-muted);
   font-size: 10px;
   line-height: 1.55;
   margin: 10px -1px 8px;
@@ -266,16 +266,16 @@
 }
 
 .assembly-volume-select > span {
-  color: var(--color-text-tertiary, #6b7684);
+  color: var(--color-text-muted);
   font-size: 10px;
   font-weight: 650;
 }
 
 .assembly-volume-select select {
-  background: #fff;
-  border: 1px solid var(--color-border-strong, #d8dbdf);
+  background: var(--card);
+  border: 1px solid var(--color-border-strong);
   border-radius: 8px;
-  color: var(--color-text-primary, #1c2733);
+  color: var(--color-text-primary);
   font: inherit;
   font-size: 12px;
   height: 34px;
@@ -284,8 +284,8 @@
 }
 
 .assembly-volume-select select:focus {
-  border-color: var(--color-accent, #135e6b);
-  box-shadow: 0 0 0 3px rgb(19 94 107 / 9%);
+  border-color: var(--color-accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-accent) 9%, transparent);
   outline: none;
 }
 
@@ -303,7 +303,7 @@
   background: transparent;
   border: 0;
   border-radius: 8px;
-  color: var(--color-text-secondary, #5c6672);
+  color: var(--color-text-secondary);
   cursor: pointer;
   display: flex;
   font-size: 12px;
@@ -315,24 +315,24 @@
 }
 
 .assembly-curriculum-tree__all small {
-  color: var(--color-text-tertiary, #6b7684);
+  color: var(--color-text-muted);
   font-size: 9px;
   font-weight: 500;
 }
 
 .assembly-curriculum-tree__all:hover {
-  background: #f4f6f6;
-  color: var(--color-text-primary, #1c2733);
+  background: var(--secondary);
+  color: var(--color-text-primary);
 }
 
 .assembly-curriculum-tree__all.is-active {
-  background: rgb(19 94 107 / 10%);
-  color: var(--color-accent, #135e6b);
+  background: color-mix(in srgb, var(--color-accent) 10%, transparent);
+  color: var(--color-accent);
   font-weight: 650;
 }
 
 .assembly-curriculum-node {
-  border-top: 1px solid #eef0f1;
+  border-top: 1px solid var(--color-border-subtle);
   padding-top: 4px;
 }
 
@@ -346,7 +346,7 @@
   align-items: center;
   background: transparent;
   border: 0;
-  color: var(--color-text-tertiary, #6b7684);
+  color: var(--color-text-muted);
   cursor: pointer;
   display: flex;
   justify-content: center;
@@ -369,8 +369,8 @@
   align-items: center;
   background: transparent;
   border: 0;
-  border-radius: 7px;
-  color: var(--color-text-secondary, #5c6672);
+  border-radius: var(--radius-md);
+  color: var(--color-text-secondary);
   cursor: pointer;
   display: grid;
   gap: 3px;
@@ -386,24 +386,24 @@
 }
 
 .assembly-curriculum-node__chapter > small {
-  color: var(--color-text-tertiary, #6b7684);
+  color: var(--color-text-muted);
   font-size: 9px;
   white-space: nowrap;
 }
 
 .assembly-curriculum-node__chapter:hover {
-  background: #f4f6f6;
-  color: var(--color-text-primary, #1c2733);
+  background: var(--secondary);
+  color: var(--color-text-primary);
 }
 
 .assembly-curriculum-node__chapter.is-active {
-  background: rgb(19 94 107 / 10%);
-  color: var(--color-accent, #135e6b);
+  background: color-mix(in srgb, var(--color-accent) 10%, transparent);
+  color: var(--color-accent);
   font-weight: 650;
 }
 
 .assembly-curriculum-sections {
-  border-left: 1px solid #dfe5e5;
+  border-left: 1px solid var(--border);
   display: grid;
   gap: 2px;
   list-style: none;
@@ -412,7 +412,7 @@
 }
 
 .assembly-curriculum-sections__status {
-  color: var(--color-text-tertiary, #6b7684);
+  color: var(--color-text-muted);
   font-size: 9px;
   line-height: 1.45;
   padding: 4px 6px;
@@ -423,7 +423,7 @@
   background: transparent;
   border: 0;
   border-radius: 6px;
-  color: var(--color-text-secondary, #5c6672);
+  color: var(--color-text-secondary);
   display: grid;
   font-size: 10px;
   gap: 4px;
@@ -435,12 +435,12 @@
 }
 
 .assembly-curriculum-sections button:hover {
-  background: #f4f6f6;
+  background: var(--secondary);
 }
 
 .assembly-curriculum-sections button.is-active {
-  background: rgb(19 94 107 / 10%);
-  color: var(--color-accent, #135e6b);
+  background: color-mix(in srgb, var(--color-accent) 10%, transparent);
+  color: var(--color-accent);
   font-weight: 650;
 }
 
@@ -449,19 +449,19 @@
 }
 
 .assembly-curriculum-sections button small {
-  color: var(--color-text-tertiary, #6b7684);
+  color: var(--color-text-muted);
   font-size: 8px;
   white-space: nowrap;
 }
 
 .assembly-historical-scopes {
-  border-top: 1px solid #e9eded;
+  border-top: 1px solid var(--color-border-subtle);
   margin-top: 4px;
   padding-top: 6px;
 }
 
 .assembly-historical-scopes summary {
-  color: var(--color-text-tertiary, #6b7684);
+  color: var(--color-text-muted);
   cursor: pointer;
   font-size: 10px;
   font-weight: 650;
@@ -478,8 +478,8 @@
   align-items: center;
   background: transparent;
   border: 0;
-  border-radius: 7px;
-  color: var(--color-text-secondary, #5c6672);
+  border-radius: var(--radius-md);
+  color: var(--color-text-secondary);
   cursor: pointer;
   display: flex;
   font-size: 10px;
@@ -491,13 +491,13 @@
 
 .assembly-historical-scopes button:hover,
 .assembly-historical-scopes button.is-active {
-  background: #f1f6f5;
-  color: var(--color-accent, #135e6b);
+  background: var(--color-accent-subtle);
+  color: var(--color-accent);
 }
 
 .assembly-compact-state {
   align-items: center;
-  color: var(--color-text-secondary, #5c6672);
+  color: var(--color-text-secondary);
   display: flex;
   flex-direction: column;
   font-size: 11px;
@@ -519,7 +519,7 @@
 
 .assembly-filter-panel__heading {
   align-items: flex-start;
-  border-bottom: 1px solid #edf0f1;
+  border-bottom: 1px solid var(--color-border-subtle);
   display: flex;
   gap: 18px;
   justify-content: space-between;
@@ -533,15 +533,15 @@
 }
 
 .assembly-filter-panel__heading p:last-child {
-  color: var(--color-text-secondary, #5c6672);
+  color: var(--color-text-secondary);
   font-size: 11px;
   margin: 4px 0 0;
 }
 
 .assembly-filter-panel__heading > strong {
-  background: rgb(19 94 107 / 10%);
+  background: color-mix(in srgb, var(--color-accent) 10%, transparent);
   border-radius: 999px;
-  color: var(--color-accent, #135e6b);
+  color: var(--color-accent);
   flex: 0 0 auto;
   font-size: 10px;
   padding: 5px 8px;
@@ -549,7 +549,7 @@
 
 .assembly-filter-state {
   align-items: center;
-  color: var(--color-text-secondary, #5c6672);
+  color: var(--color-text-secondary);
   display: flex;
   font-size: 11px;
   gap: 8px;
@@ -559,7 +559,7 @@
 
 .assembly-tag-dimensions {
   align-items: center;
-  border-bottom: 1px solid #edf0f1;
+  border-bottom: 1px solid var(--color-border-subtle);
   display: flex;
   flex-wrap: wrap;
   gap: 4px;
@@ -570,8 +570,8 @@
   align-items: center;
   background: transparent;
   border: 1px solid transparent;
-  border-radius: 7px;
-  color: var(--color-text-secondary, #5c6672);
+  border-radius: var(--radius-md);
+  color: var(--color-text-secondary);
   cursor: pointer;
   display: inline-flex;
   font: inherit;
@@ -583,21 +583,21 @@
 }
 
 .assembly-tag-dimensions button:hover {
-  background: #f4f6f6;
-  color: var(--color-text-primary, #1c2733);
+  background: var(--secondary);
+  color: var(--color-text-primary);
 }
 
 .assembly-tag-dimensions button.is-active {
-  background: rgb(19 94 107 / 10%);
-  border-color: rgb(19 94 107 / 18%);
-  color: var(--color-accent, #135e6b);
+  background: color-mix(in srgb, var(--color-accent) 10%, transparent);
+  border-color: color-mix(in srgb, var(--color-accent) 18%, transparent);
+  color: var(--color-accent);
 }
 
 .assembly-tag-dimensions small {
   align-items: center;
-  background: var(--color-accent, #135e6b);
+  background: var(--color-accent);
   border-radius: 999px;
-  color: #fff;
+  color: var(--primary-foreground);
   display: inline-flex;
   font-size: 8px;
   height: 16px;
@@ -608,7 +608,7 @@
 
 .assembly-filter-row {
   align-items: center;
-  border-bottom: 1px solid #edf0f1;
+  border-bottom: 1px solid var(--color-border-subtle);
   display: grid;
   gap: 12px;
   grid-template-columns: 68px minmax(0, 1fr);
@@ -634,7 +634,7 @@
 }
 
 .assembly-filter-label {
-  color: var(--color-text-tertiary, #6b7684);
+  color: var(--color-text-muted);
   font-size: 11px;
   font-weight: 650;
 }
@@ -647,10 +647,10 @@
 }
 
 .assembly-filter-chips button {
-  background: #f7f8f8;
-  border: 1px solid #e6e9ea;
-  border-radius: 7px;
-  color: var(--color-text-secondary, #5c6672);
+  background: var(--secondary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  color: var(--color-text-secondary);
   cursor: pointer;
   font: inherit;
   font-size: 11px;
@@ -659,25 +659,25 @@
 }
 
 .assembly-filter-chips button:hover {
-  background: #f1f4f4;
-  border-color: #c9d0d2;
+  background: var(--secondary);
+  border-color: var(--color-border-strong);
 }
 
 .assembly-filter-chips button.is-active {
-  background: rgb(19 94 107 / 10%);
-  border-color: rgb(19 94 107 / 20%);
-  color: var(--color-accent, #135e6b);
+  background: color-mix(in srgb, var(--color-accent) 10%, transparent);
+  border-color: color-mix(in srgb, var(--color-accent) 20%, transparent);
+  color: var(--color-accent);
   font-weight: 650;
 }
 
 .assembly-filter-chips small {
-  color: var(--color-text-tertiary, #6b7684);
+  color: var(--color-text-muted);
   font-size: 9px;
   margin-inline-start: 2px;
 }
 
 .assembly-filter-empty {
-  color: var(--color-text-tertiary, #6b7684);
+  color: var(--color-text-muted);
   font-size: 11px;
 }
 
@@ -686,7 +686,7 @@
 }
 
 .assembly-filter-more summary {
-  color: var(--color-accent, #135e6b);
+  color: var(--color-accent);
   cursor: pointer;
   font-size: 11px;
   font-weight: 650;
@@ -703,11 +703,11 @@
 }
 
 .assembly-filter-groups {
-  border-bottom: 1px solid #edf0f1;
+  border-bottom: 1px solid var(--color-border-subtle);
 }
 
 .assembly-filter-groups > summary {
-  color: var(--color-accent, #135e6b);
+  color: var(--color-accent);
   cursor: pointer;
   font-size: 11px;
   font-weight: 650;
@@ -716,7 +716,7 @@
 }
 
 .assembly-filter-groups__body {
-  border-top: 1px dashed #e3e7e8;
+  border-top: 1px dashed var(--border);
 }
 
 .assembly-filter-groups__body .assembly-filter-row:last-child {
@@ -725,8 +725,8 @@
 
 .assembly-active-filters {
   align-items: center;
-  background: #f5f8f8;
-  border-bottom: 1px solid #e3eaea;
+  background: var(--secondary);
+  border-bottom: 1px solid var(--border);
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
@@ -735,7 +735,7 @@
 }
 
 .assembly-active-filters > span {
-  color: var(--color-text-tertiary, #6b7684);
+  color: var(--color-text-muted);
   font-size: 10px;
   font-weight: 650;
   margin-inline-end: 2px;
@@ -743,10 +743,10 @@
 
 .assembly-active-filters button {
   align-items: center;
-  background: #fff;
-  border: 1px solid #ced9da;
-  border-radius: 7px;
-  color: var(--color-accent, #135e6b);
+  background: var(--card);
+  border: 1px solid color-mix(in srgb, var(--color-accent) 22%, var(--card));
+  border-radius: var(--radius-md);
+  color: var(--color-accent);
   display: inline-flex;
   font-size: 10px;
   gap: 4px;
@@ -755,12 +755,12 @@
 }
 
 .assembly-active-filters button:hover {
-  background: #edf4f3;
-  border-color: rgb(19 94 107 / 35%);
+  background: var(--color-accent-subtle);
+  border-color: color-mix(in srgb, var(--color-accent) 35%, transparent);
 }
 
 .assembly-active-filters button small {
-  color: var(--color-text-tertiary, #6b7684);
+  color: var(--color-text-muted);
   font-size: 9px;
 }
 
@@ -773,7 +773,7 @@
 .assembly-active-filters .assembly-active-filters__clear {
   background: transparent;
   border-color: transparent;
-  color: var(--color-text-secondary, #5c6672);
+  color: var(--color-text-secondary);
 }
 
 .assembly-filter-row input:not([type="range"]),
@@ -781,10 +781,10 @@
 .assembly-settings input,
 .assembly-settings select,
 .assembly-section-list input {
-  background: #fff;
-  border: 1px solid var(--color-border-strong, #d8dbdf);
+  background: var(--card);
+  border: 1px solid var(--color-border-strong);
   border-radius: 8px;
-  color: var(--color-text-primary, #1c2733);
+  color: var(--color-text-primary);
   font: inherit;
   font-size: 11px;
   height: 34px;
@@ -797,8 +797,8 @@
 .assembly-settings input:focus,
 .assembly-settings select:focus,
 .assembly-section-list input:focus {
-  border-color: var(--color-accent, #135e6b);
-  box-shadow: 0 0 0 3px rgb(19 94 107 / 9%);
+  border-color: var(--color-accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-accent) 9%, transparent);
   outline: none;
 }
 
@@ -811,25 +811,25 @@
 }
 
 .assembly-results-heading p {
-  color: var(--color-text-secondary, #5c6672);
+  color: var(--color-text-secondary);
   font-size: 11px;
   margin: 3px 0 0;
 }
 
 .assembly-results-heading > span {
-  background: rgb(19 94 107 / 10%);
+  background: color-mix(in srgb, var(--color-accent) 10%, transparent);
   border-radius: 999px;
-  color: var(--color-accent, #135e6b);
+  color: var(--color-accent);
   font-size: 11px;
   padding: 5px 9px;
 }
 
 .assembly-state {
   align-items: center;
-  background: #fff;
-  border: 1px dashed var(--color-border-strong, #d8dbdf);
-  border-radius: 12px;
-  color: var(--color-text-secondary, #5c6672);
+  background: var(--card);
+  border: 1px dashed var(--color-border-strong);
+  border-radius: var(--radius-panel);
+  color: var(--color-text-secondary);
   display: flex;
   flex-direction: column;
   font-size: 12px;
@@ -846,10 +846,10 @@
 }
 
 .assembly-result-card {
-  background: #fff;
-  border: 1px solid var(--color-border, #e2e4e7);
-  border-radius: 12px;
-  box-shadow: 0 1px 2px rgb(28 39 51 / 5%);
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-panel);
+  box-shadow: 0 1px 2px color-mix(in srgb, var(--color-text-primary) 5%, transparent);
   min-width: 0;
   overflow: hidden;
   position: relative;
@@ -868,17 +868,17 @@
 }
 
 .assembly-result-card.is-in-basket {
-  background: #f8fbfa;
-  border-color: rgb(19 94 107 / 28%);
+  background: var(--color-accent-subtle);
+  border-color: color-mix(in srgb, var(--color-accent) 28%, transparent);
 }
 
 .assembly-result-card.is-in-basket::before {
-  background: var(--color-accent, #135e6b);
+  background: var(--color-accent);
 }
 
 .assembly-result-card > header {
   align-items: flex-start;
-  border-bottom: 1px solid #edf0f1;
+  border-bottom: 1px solid var(--color-border-subtle);
   display: flex;
   gap: 14px;
   justify-content: space-between;
@@ -896,7 +896,7 @@
 }
 
 .assembly-result-card > header span {
-  color: var(--color-text-tertiary, #6b7684);
+  color: var(--color-text-muted);
   font-size: 10px;
 }
 
@@ -917,22 +917,22 @@
 }
 
 .assembly-result-card__meta span {
-  background: #f2f4f4;
+  background: var(--secondary);
   border-radius: 999px;
-  color: var(--color-text-secondary, #5c6672);
+  color: var(--color-text-secondary);
   font-size: 10px;
   padding: 2px 7px;
 }
 
 .assembly-result-card__answer {
-  background: #f3f8f6;
-  border-left: 3px solid var(--color-accent, #135e6b);
+  background: var(--color-success-subtle);
+  border-left: 3px solid var(--color-accent);
   margin: 0 13px 9px;
   padding: 9px 11px;
 }
 
 .assembly-result-card__answer > strong {
-  color: var(--color-accent, #135e6b);
+  color: var(--color-accent);
   display: block;
   font-size: 11px;
   margin-bottom: 7px;
@@ -940,8 +940,8 @@
 
 .assembly-result-card > footer {
   align-items: center;
-  background: #fafbfb;
-  border-top: 1px solid #edf0f1;
+  background: var(--secondary);
+  border-top: 1px solid var(--color-border-subtle);
   display: flex;
   gap: 12px;
   justify-content: space-between;
@@ -949,7 +949,7 @@
 }
 
 .assembly-result-card > footer > span:first-child {
-  color: var(--color-text-tertiary, #6b7684);
+  color: var(--color-text-muted);
   font-size: 10px;
 }
 
@@ -961,7 +961,7 @@
 
 .assembly-pagination {
   align-items: center;
-  color: var(--color-text-secondary, #5c6672);
+  color: var(--color-text-secondary);
   display: flex;
   font-size: 11px;
   gap: 10px;
@@ -974,9 +974,9 @@
 
 .assembly-basket > header > strong {
   align-items: center;
-  background: var(--color-accent, #135e6b);
+  background: var(--color-accent);
   border-radius: 999px;
-  color: #fff;
+  color: var(--primary-foreground);
   display: flex;
   font-size: 11px;
   height: 24px;
@@ -986,8 +986,8 @@
 }
 
 .assembly-basket__summary {
-  background: #f4f6f6;
-  border-radius: 9px;
+  background: var(--secondary);
+  border-radius: var(--radius-control);
   display: grid;
   gap: 6px;
   grid-template-columns: 1fr 1fr;
@@ -996,14 +996,14 @@
 }
 
 .assembly-basket__summary span {
-  color: var(--color-text-tertiary, #6b7684);
+  color: var(--color-text-muted);
   display: grid;
   font-size: 9px;
   gap: 2px;
 }
 
 .assembly-basket__summary strong {
-  color: var(--color-text-primary, #1c2733);
+  color: var(--color-text-primary);
   font-size: 14px;
 }
 
@@ -1017,7 +1017,7 @@
 
 .assembly-basket__list li {
   align-items: center;
-  border-bottom: 1px solid #edf0f1;
+  border-bottom: 1px solid var(--color-border-subtle);
   display: flex;
   gap: 7px;
   justify-content: space-between;
@@ -1035,7 +1035,7 @@
 }
 
 .assembly-basket__list small {
-  color: var(--color-text-tertiary, #6b7684);
+  color: var(--color-text-muted);
   font-size: 9px;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1048,7 +1048,7 @@
   background: transparent;
   border: 0;
   border-radius: 6px;
-  color: var(--color-text-tertiary, #6b7684);
+  color: var(--color-text-muted);
   cursor: pointer;
   display: inline-flex;
   flex: 0 0 auto;
@@ -1062,13 +1062,13 @@
 
 .assembly-basket__list button:hover,
 .assembly-section-list button:hover {
-  background: #f0f2f2;
-  color: var(--color-text-primary, #1c2733);
+  background: var(--secondary);
+  color: var(--color-text-primary);
 }
 
 .assembly-basket__empty,
 .assembly-basket__more {
-  color: var(--color-text-tertiary, #6b7684);
+  color: var(--color-text-muted);
   font-size: 10px;
   line-height: 1.5;
   margin: 12px 0;
@@ -1076,7 +1076,7 @@
 }
 
 .assembly-basket > footer {
-  border-top: 1px solid #edf0f1;
+  border-top: 1px solid var(--color-border-subtle);
   display: grid;
   gap: 7px;
   grid-template-columns: auto 1fr;
@@ -1085,7 +1085,7 @@
 }
 
 .assembly-drawer-layer {
-  background: rgb(28 39 51 / 32%);
+  background: color-mix(in srgb, var(--color-text-primary) 32%, transparent);
   display: flex;
   height: 100dvh;
   inset: 0;
@@ -1096,9 +1096,9 @@
 }
 
 .assembly-similar-drawer {
-  background: var(--color-bg-app, #f4f5f6);
-  border-left: 1px solid var(--color-border, #e2e4e7);
-  box-shadow: -18px 0 44px rgb(28 39 51 / 14%);
+  background: var(--color-bg-app);
+  border-left: 1px solid var(--border);
+  box-shadow: -18px 0 44px color-mix(in srgb, var(--color-text-primary) 14%, transparent);
   height: 100%;
   max-width: 100%;
   overflow-y: auto;
@@ -1108,9 +1108,9 @@
 
 .assembly-similar-drawer > header {
   align-items: flex-start;
-  background: #fff;
-  border: 1px solid var(--color-border, #e2e4e7);
-  border-radius: 12px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-panel);
   display: flex;
   gap: 16px;
   justify-content: space-between;
@@ -1124,17 +1124,17 @@
 }
 
 .assembly-similar-drawer > header p:last-child {
-  color: var(--color-text-secondary, #5c6672);
+  color: var(--color-text-secondary);
   font-size: 11px;
   margin: 5px 0 0;
 }
 
 .assembly-drawer-close {
   align-items: center;
-  background: #fff;
-  border: 1px solid var(--color-border, #e2e4e7);
+  background: var(--card);
+  border: 1px solid var(--border);
   border-radius: 8px;
-  color: var(--color-text-secondary, #5c6672);
+  color: var(--color-text-secondary);
   cursor: pointer;
   display: inline-flex;
   flex: 0 0 auto;
@@ -1151,9 +1151,9 @@
 }
 
 .assembly-similar-list article {
-  background: #fff;
-  border: 1px solid var(--color-border, #e2e4e7);
-  border-radius: 12px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-panel);
   display: grid;
   gap: 12px;
   padding: 14px;
@@ -1166,22 +1166,22 @@
 }
 
 .assembly-similar-score strong {
-  background: rgb(19 94 107 / 10%);
+  background: color-mix(in srgb, var(--color-accent) 10%, transparent);
   border-radius: 999px;
-  color: var(--color-accent, #135e6b);
+  color: var(--color-accent);
   font-size: 11px;
   padding: 4px 8px;
 }
 
 .assembly-similar-score span {
-  color: var(--color-text-tertiary, #6b7684);
+  color: var(--color-text-muted);
   font-size: 10px;
 }
 
 .assembly-similar-list footer {
   align-items: center;
-  border-top: 1px solid #edf0f1;
-  color: var(--color-text-tertiary, #6b7684);
+  border-top: 1px solid var(--color-border-subtle);
+  color: var(--color-text-muted);
   display: flex;
   font-size: 10px;
   justify-content: space-between;
@@ -1211,7 +1211,7 @@
 }
 
 .assembly-editor__toolbar span {
-  color: var(--color-text-tertiary, #6b7684);
+  color: var(--color-text-muted);
   font-size: 10px;
 }
 
@@ -1242,7 +1242,7 @@
 }
 
 .assembly-settings label:not(.assembly-check) {
-  color: var(--color-text-secondary, #5c6672);
+  color: var(--color-text-secondary);
   display: grid;
   font-size: 10px;
   font-weight: 650;
@@ -1251,18 +1251,18 @@
 
 .assembly-check {
   align-items: center;
-  color: var(--color-text-secondary, #5c6672);
+  color: var(--color-text-secondary);
   display: flex;
   font-size: 11px;
   gap: 7px;
 }
 
 .assembly-check input {
-  accent-color: var(--color-accent, #135e6b);
+  accent-color: var(--color-accent);
 }
 
 .assembly-section-editor {
-  border-top: 1px solid #edf0f1;
+  border-top: 1px solid var(--color-border-subtle);
   margin-top: 14px;
   padding-top: 13px;
 }
@@ -1273,12 +1273,12 @@
 }
 
 .assembly-section-editor > header small {
-  color: var(--color-text-tertiary, #6b7684);
+  color: var(--color-text-muted);
   font-size: 9px;
 }
 
 .assembly-section-editor > p {
-  color: var(--color-text-tertiary, #6b7684);
+  color: var(--color-text-muted);
   font-size: 9px;
   line-height: 1.5;
 }
@@ -1301,12 +1301,12 @@
 }
 
 .assembly-section-list span {
-  color: var(--color-text-tertiary, #6b7684);
+  color: var(--color-text-muted);
   font-size: 9px;
 }
 
 .assembly-tiles {
-  border-top: 1px solid #edf0f1;
+  border-top: 1px solid var(--color-border-subtle);
   display: grid;
   gap: 10px;
   margin: 14px 0 0;
@@ -1321,21 +1321,21 @@
 }
 
 .assembly-tile-group.is-drop-end {
-  background: rgb(19 94 107 / 6%);
-  box-shadow: inset 0 0 0 1px var(--color-accent, #135e6b);
+  background: color-mix(in srgb, var(--color-accent) 6%, transparent);
+  box-shadow: inset 0 0 0 1px var(--color-accent);
 }
 
 .assembly-tile-group__title {
-  color: var(--color-text-secondary, #5c6672);
+  color: var(--color-text-secondary);
   font-size: 10px;
   font-weight: 600;
   margin: 0;
 }
 
 .assembly-tile-group__empty {
-  border: 1px dashed var(--color-border-strong, #d8dbdf);
+  border: 1px dashed var(--color-border-strong);
   border-radius: 8px;
-  color: var(--color-text-tertiary, #6b7684);
+  color: var(--color-text-muted);
   font-size: 9px;
   margin: 0;
   padding: 10px;
@@ -1350,8 +1350,8 @@
 
 .assembly-tile {
   aspect-ratio: 1;
-  background: #f8f9f9;
-  border: 1px solid #edf0f1;
+  background: var(--secondary);
+  border: 1px solid var(--color-border-subtle);
   border-radius: 8px;
   position: relative;
 }
@@ -1361,11 +1361,11 @@
 }
 
 .assembly-tile.is-drop-before {
-  box-shadow: -3px 0 0 0 var(--color-accent, #135e6b);
+  box-shadow: -3px 0 0 0 var(--color-accent);
 }
 
 .assembly-tile.is-drop-after {
-  box-shadow: 3px 0 0 0 var(--color-accent, #135e6b);
+  box-shadow: 3px 0 0 0 var(--color-accent);
 }
 
 .assembly-tile__number {
@@ -1384,7 +1384,7 @@
   background: transparent;
   border: 0;
   border-radius: 6px;
-  color: var(--color-text-tertiary, #6b7684);
+  color: var(--color-text-muted);
   cursor: pointer;
   display: inline-flex;
   font: inherit;
@@ -1399,8 +1399,8 @@
 }
 
 .assembly-tile__remove:hover {
-  background: #f0f2f2;
-  color: #9a4136;
+  background: var(--secondary);
+  color: var(--color-danger);
 }
 
 .assembly-paper {
@@ -1422,37 +1422,37 @@
 }
 
 .assembly-paper__heading > span {
-  background: rgb(19 94 107 / 10%);
+  background: color-mix(in srgb, var(--color-accent) 10%, transparent);
   border-radius: 999px;
-  color: var(--color-accent, #135e6b);
+  color: var(--color-accent);
   font-size: 10px;
   padding: 4px 8px;
 }
 
 .assembly-sheet {
-  background: #fff;
-  border: 1px solid #dfe2e4;
-  box-shadow: 0 8px 28px rgb(28 39 51 / 7%);
+  background: var(--card);
+  border: 1px solid var(--border);
+  box-shadow: 0 8px 28px color-mix(in srgb, var(--color-text-primary) 7%, transparent);
   min-height: 800px;
   padding: clamp(24px, 3.4vw, 44px);
 }
 
 .assembly-sheet > header {
-  border-bottom: 1px solid #cfd4d6;
+  border-bottom: 1px solid var(--color-border-strong);
   margin-bottom: 28px;
   padding-bottom: 18px;
   text-align: center;
 }
 
 .assembly-sheet > header h2 {
-  font-family: "Songti SC", "SimSun", serif;
+  font-family: var(--font-family-document);
   font-size: 21px;
   margin: 0 0 12px;
 }
 
 .assembly-sheet > header p {
-  color: #4f5963;
-  font-family: "Songti SC", "SimSun", serif;
+  color: var(--color-text-secondary);
+  font-family: var(--font-family-document);
   font-size: 13px;
   margin: 0;
 }
@@ -1462,8 +1462,8 @@
 }
 
 .assembly-sheet > section > h3 {
-  border-bottom: 1px solid #dfe2e4;
-  font-family: "Songti SC", "SimSun", serif;
+  border-bottom: 1px solid var(--border);
+  font-family: var(--font-family-document);
   font-size: 15px;
   margin: 0 0 18px;
   padding-bottom: 8px;
@@ -1486,16 +1486,16 @@
 }
 
 .assembly-sheet__score {
-  color: #56616a;
+  color: var(--color-text-secondary);
   float: right;
-  font-family: "Songti SC", "SimSun", serif;
+  font-family: var(--font-family-document);
   font-size: 12px;
   margin-left: 8px;
 }
 
 .assembly-sheet__answer {
-  background: #f2f7f5;
-  border-left: 3px solid var(--color-accent, #135e6b);
+  background: var(--color-success-subtle);
+  border-left: 3px solid var(--color-accent);
   margin-top: 10px;
   padding: 10px 12px;
 }
@@ -1506,8 +1506,8 @@
     to bottom,
     transparent 0,
     transparent calc(9mm - 1px),
-    #dfe5ea calc(9mm - 1px),
-    #dfe5ea 9mm
+    var(--border) calc(9mm - 1px),
+    var(--border) 9mm
   );
   background-size: 100% calc(3 * 9mm);
   background-repeat: no-repeat;
@@ -1516,7 +1516,7 @@
 }
 
 .assembly-sheet__answer > strong {
-  color: var(--color-accent, #135e6b);
+  color: var(--color-accent);
   display: block;
   font-size: 10px;
   margin-bottom: 5px;
@@ -1524,7 +1524,7 @@
 
 .assembly-editor-panel--export > p,
 .assembly-record-section > p {
-  color: var(--color-text-tertiary, #6b7684);
+  color: var(--color-text-muted);
   font-size: 10px;
   line-height: 1.5;
 }
@@ -1536,8 +1536,8 @@
 }
 
 .assembly-job {
-  background: #f4f6f6;
-  border-radius: 9px;
+  background: var(--secondary);
+  border-radius: var(--radius-control);
   display: grid;
   gap: 7px;
   margin: 12px 0;
@@ -1554,12 +1554,12 @@
 }
 
 .assembly-job span {
-  color: var(--color-text-tertiary, #6b7684);
+  color: var(--color-text-muted);
   font-size: 9px;
 }
 
 .assembly-job progress {
-  accent-color: var(--color-accent, #135e6b);
+  accent-color: var(--color-accent);
   width: 100%;
 }
 
@@ -1570,7 +1570,7 @@
 }
 
 .assembly-record-section {
-  border-top: 1px solid #edf0f1;
+  border-top: 1px solid var(--color-border-subtle);
   margin-top: 14px;
   padding-top: 13px;
 }
@@ -1580,7 +1580,7 @@
 }
 
 .assembly-record-section > header span {
-  color: var(--color-text-tertiary, #6b7684);
+  color: var(--color-text-muted);
   font-size: 9px;
 }
 
@@ -1593,7 +1593,7 @@
 }
 
 .assembly-records li {
-  border: 1px solid #edf0f1;
+  border: 1px solid var(--color-border-subtle);
   border-radius: 8px;
   display: grid;
   gap: 6px;
@@ -1615,7 +1615,7 @@
 
 .assembly-records span,
 .assembly-records small {
-  color: var(--color-text-tertiary, #6b7684);
+  color: var(--color-text-muted);
   font-size: 8px;
   overflow-wrap: anywhere;
 }
@@ -1627,23 +1627,23 @@
 }
 
 .assembly-feedback {
-  background: #edf4f3;
-  border: 1px solid rgb(19 94 107 / 16%);
+  background: var(--color-accent-subtle);
+  border: 1px solid color-mix(in srgb, var(--color-accent) 16%, transparent);
   border-radius: 8px;
-  color: var(--color-accent, #135e6b);
+  color: var(--color-accent);
   font-size: 11px;
   margin: 0;
   padding: 9px 11px;
 }
 
 .assembly-feedback.is-error {
-  background: #fff1ef;
-  border-color: #e8c3bd;
-  color: #9a4136;
+  background: var(--color-danger-subtle);
+  border-color: color-mix(in srgb, var(--color-danger) 24%, var(--card));
+  color: var(--color-danger);
 }
 
 .assembly-editor-empty {
-  color: var(--color-text-tertiary, #6b7684);
+  color: var(--color-text-muted);
   font-size: 11px;
   line-height: 1.55;
   padding: 20px 8px;

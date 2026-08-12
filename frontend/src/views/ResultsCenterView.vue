@@ -9,6 +9,8 @@ import type {
   ResultsScoreStatus,
   ResultsStudentStatus,
 } from '../api/results-center'
+import AppButton from '../components/design-system/AppButton.vue'
+import { Input } from '../components/ui/input'
 import { useResultsCenterStore } from '../stores/results-center'
 import { useSessionStore } from '../stores/session'
 import { translateGradingReason } from '../utils/grading-reasons'
@@ -513,9 +515,9 @@ function handleDrawerKeydown(event: KeyboardEvent): void {
         <span v-if="resultsStore.updatedAt">
           已更新 {{ resultsStore.updatedAt.replace('T', ' ').slice(0, 19) }}
         </span>
-        <button type="button" class="results-button results-button--secondary" @click="refresh">
+        <AppButton class="results-button results-button--secondary" @click="refresh">
           刷新成绩
-        </button>
+        </AppButton>
       </div>
     </header>
 
@@ -556,9 +558,9 @@ function handleDrawerKeydown(event: KeyboardEvent): void {
       >
         <strong>成绩暂时无法读取</strong>
         <span>{{ resultsStore.errorMessage }}</span>
-        <button type="button" class="results-button results-button--secondary" @click="refresh">
+        <AppButton class="results-button results-button--secondary" @click="refresh">
           重新加载
-        </button>
+        </AppButton>
       </div>
 
       <template v-else-if="results">
@@ -694,11 +696,11 @@ function handleDrawerKeydown(event: KeyboardEvent): void {
               </div>
               <label class="results-search">
                 <span>搜索学生</span>
-                <input
+                <Input
                   v-model="searchQuery"
                   type="search"
                   placeholder="姓名、学号或班级"
-                >
+                />
               </label>
             </div>
             <div class="results-table-wrap">
@@ -766,11 +768,11 @@ function handleDrawerKeydown(event: KeyboardEvent): void {
             </div>
             <label class="results-search">
               <span>搜索学生</span>
-              <input
+              <Input
                 v-model="searchQuery"
                 type="search"
                 placeholder="姓名、学号或班级"
-              >
+              />
             </label>
           </div>
 

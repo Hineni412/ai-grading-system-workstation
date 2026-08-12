@@ -331,8 +331,8 @@ function handleViewerKey(event: KeyboardEvent): void {
 
 <style scoped>
 .question-content {
-  color: var(--color-text-primary, #1c2733);
-  font-family: "Songti SC", "SimSun", serif;
+  color: var(--color-text-primary);
+  font-family: var(--font-family-document);
   font-size: 16px;
   line-height: 1.86;
   min-width: 0;
@@ -479,7 +479,7 @@ function handleViewerKey(event: KeyboardEvent): void {
 }
 
 .question-content td {
-  border: 1px solid var(--color-border, #e2e4e7);
+  border: 1px solid var(--border);
   min-width: 72px;
   padding: 7px 10px;
   text-align: left;
@@ -532,13 +532,13 @@ function handleViewerKey(event: KeyboardEvent): void {
 
 .question-content__image-button:focus-visible {
   border-radius: 8px;
-  outline: 2px solid var(--color-accent, #135e6b);
+  outline: 2px solid var(--color-accent);
   outline-offset: 3px;
 }
 
 .question-content__media img {
-  background: #fff;
-  border: 1px solid var(--color-border, #e2e4e7);
+  background: var(--card);
+  border: 1px solid var(--border);
   border-radius: 8px;
   display: block;
   height: auto;
@@ -601,7 +601,7 @@ function handleViewerKey(event: KeyboardEvent): void {
 
 .question-content__media figcaption,
 .question-content__empty {
-  color: var(--color-text-tertiary, #6b7684);
+  color: var(--color-text-muted);
   font-family: inherit;
   font-size: 13px;
   margin: 0;
@@ -610,7 +610,7 @@ function handleViewerKey(event: KeyboardEvent): void {
 .question-content__media figcaption button {
   background: transparent;
   border: 0;
-  color: var(--color-accent, #135e6b);
+  color: var(--color-accent);
   cursor: pointer;
   font: inherit;
   font-weight: 650;
@@ -618,12 +618,12 @@ function handleViewerKey(event: KeyboardEvent): void {
 }
 
 .question-content__media figcaption button:focus-visible {
-  outline: 2px solid var(--color-accent, #135e6b);
+  outline: 2px solid var(--color-accent);
   outline-offset: 2px;
 }
 
 .question-image-viewer {
-  background: rgb(18 29 39 / 86%);
+  background: color-mix(in srgb, var(--color-text-primary) 86%, transparent);
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
   inset: 0;
@@ -634,8 +634,8 @@ function handleViewerKey(event: KeyboardEvent): void {
 
 .question-image-viewer__toolbar {
   align-items: center;
-  background: #fff;
-  border-radius: 10px 10px 0 0;
+  background: var(--card);
+  border-radius: var(--radius-control) 10px 0 0;
   display: flex;
   gap: 8px;
   min-width: 0;
@@ -651,17 +651,17 @@ function handleViewerKey(event: KeyboardEvent): void {
 }
 
 .question-image-viewer__toolbar span {
-  color: var(--color-text-secondary, #5c6672);
+  color: var(--color-text-secondary);
   font-variant-numeric: tabular-nums;
   min-width: 44px;
   text-align: right;
 }
 
 .question-image-viewer__toolbar button {
-  background: #fff;
-  border: 1px solid var(--color-border-strong, #d8dbdf);
-  border-radius: 7px;
-  color: var(--color-text-primary, #1c2733);
+  background: var(--card);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-md);
+  color: var(--color-text-primary);
   cursor: pointer;
   min-height: 34px;
   padding: 0 11px;
@@ -670,11 +670,11 @@ function handleViewerKey(event: KeyboardEvent): void {
 .question-image-viewer__canvas {
   align-items: flex-start;
   background:
-    linear-gradient(45deg, #eef1f2 25%, transparent 25%),
-    linear-gradient(-45deg, #eef1f2 25%, transparent 25%),
-    linear-gradient(45deg, transparent 75%, #eef1f2 75%),
-    linear-gradient(-45deg, transparent 75%, #eef1f2 75%),
-    #fff;
+    linear-gradient(45deg, var(--color-border-subtle) 25%, transparent 25%),
+    linear-gradient(-45deg, var(--color-border-subtle) 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, var(--color-border-subtle) 75%),
+    linear-gradient(-45deg, transparent 75%, var(--color-border-subtle) 75%),
+    var(--card);
   background-position: 0 0, 0 8px, 8px -8px, -8px 0;
   background-size: 16px 16px;
   border-radius: 0 0 10px 10px;
@@ -685,7 +685,7 @@ function handleViewerKey(event: KeyboardEvent): void {
 }
 
 .question-image-viewer__canvas img {
-  background: #fff;
+  background: var(--card);
   border: 0;
   border-radius: 0;
   display: block;

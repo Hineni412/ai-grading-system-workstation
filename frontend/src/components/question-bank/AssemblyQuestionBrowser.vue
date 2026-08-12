@@ -19,6 +19,7 @@ import {
   useCurriculumScopeStore,
 } from '../../stores/curriculum-scope'
 import DifficultyRangeFilter from './DifficultyRangeFilter.vue'
+import AppButton from '../design-system/AppButton.vue'
 import QuestionContentRenderer from './QuestionContentRenderer.vue'
 import QuestionSortControl from './QuestionSortControl.vue'
 
@@ -1059,7 +1060,7 @@ function tagsFor(question: QuestionBankListItem, tagType: string): string[] {
           <span class="assembly-filter-label">搜索</span>
           <input v-model="filters.keyword" type="search" placeholder="输入试题关键词" @keyup.enter="loadQuestions(true)">
           <QuestionSortControl v-model="filters.sort" @change="changeSort" />
-          <button type="button" class="assembly-button is-primary" @click="loadQuestions(true)">搜索</button>
+          <AppButton variant="primary" @click="loadQuestions(true)">搜索</AppButton>
         </div>
       </section>
 
@@ -1148,9 +1149,9 @@ function tagsFor(question: QuestionBankListItem, tagType: string): string[] {
       </div>
 
       <footer v-if="totalPages > 1" class="assembly-pagination">
-        <button type="button" class="assembly-button" :disabled="filters.page <= 1" @click="changePage(filters.page - 1)">上一页</button>
+        <AppButton variant="secondary" :disabled="filters.page <= 1" @click="changePage(filters.page - 1)">上一页</AppButton>
         <span>第 {{ filters.page }} / {{ totalPages }} 页</span>
-        <button type="button" class="assembly-button" :disabled="filters.page >= totalPages" @click="changePage(filters.page + 1)">下一页</button>
+        <AppButton variant="secondary" :disabled="filters.page >= totalPages" @click="changePage(filters.page + 1)">下一页</AppButton>
       </footer>
     </main>
 
@@ -1180,15 +1181,14 @@ function tagsFor(question: QuestionBankListItem, tagType: string): string[] {
         另有 {{ assembly.orderedQuestions.length - 12 }} 道题
       </p>
       <footer>
-        <button type="button" class="assembly-button" :disabled="!assembly.selectedQuestionCount" @click="clearBasket">清空</button>
-        <button
-          type="button"
-          class="assembly-button is-primary"
+        <AppButton variant="secondary" :disabled="!assembly.selectedQuestionCount" @click="clearBasket">清空</AppButton>
+        <AppButton
+          variant="primary"
           :disabled="!assembly.selectedQuestionCount"
           @click="emit('edit')"
         >
           进入编辑与导出
-        </button>
+        </AppButton>
       </footer>
     </aside>
   </div>

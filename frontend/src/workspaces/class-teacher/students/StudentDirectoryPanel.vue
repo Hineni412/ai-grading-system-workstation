@@ -4,6 +4,8 @@ import { computed, onMounted, ref } from 'vue'
 import { intakeApi } from '../api/intake'
 import { studentR1Api, type DirectorySubject, type ExistingRosterStudent } from '../api/r1'
 import { supportApi } from '../api/support'
+import AppButton from '@/components/design-system/AppButton.vue'
+import StatusBadge from '@/components/design-system/StatusBadge.vue'
 
 const emit = defineEmits<{ select: [subject: DirectorySubject] }>()
 const items = ref<DirectorySubject[]>([])
@@ -118,9 +120,9 @@ onMounted(() => { void load() })
 
     <div v-if="message" class="student-overview-list__message" role="alert">
       <span>{{ message }}</span>
-      <button type="button" :disabled="loading" @click="load">
+      <AppButton variant="secondary" :disabled="loading" @click="load">
         {{ loading ? '正在重新读取…' : '重新读取学生名单' }}
-      </button>
+      </AppButton>
     </div>
     <div v-if="loading" class="student-overview-list__empty" role="status">正在读取当前班学生…</div>
     <div v-else-if="!classLabel" class="student-overview-list__empty">
@@ -138,7 +140,7 @@ onMounted(() => { void load() })
       <button v-for="student in rosterItems" :key="student.source_key" type="button" :disabled="openingStudentCode === student.student_code" @click="openRosterStudent(student)">
         <span class="student-overview-list__rail" aria-hidden="true" />
         <strong>{{ student.display_name }}</strong>
-        <small>{{ subjectForRosterStudent(student) ? '当前档案已建立' : '当前档案待建立' }}</small>
+        <StatusBadge :tone="subjectForRosterStudent(student) ? 'teacher' : 'neutral'" :label="subjectForRosterStudent(student) ? '当前档案已建立' : '当前档案待建立'" />
         <span>{{ subjectForRosterStudent(student)?.attention_pending_count ? `${subjectForRosterStudent(student)!.attention_pending_count} 项待跟进` : student.student_code }}</span>
       </button>
     </div>
@@ -148,10 +150,10 @@ onMounted(() => { void load() })
         <strong>{{ item.display_name }}</strong><small>历史学生记录</small><span>{{ item.confirmed_entry_count }} 条已确认记录</span>
       </button>
     </div>
-    <footer v-if="classLabel"><button type="button" @click="toggleHistory">{{ showHistory ? '返回当前班学生' : '查看历史学生与旧记录' }}</button></footer>
+    <footer v-if="classLabel"><AppButton variant="ghost" @click="toggleHistory">{{ showHistory ? '返回当前班学生' : '查看历史学生与旧记录' }}</AppButton></footer>
   </section>
 </template>
 
 <style scoped>
-.student-overview-list{border:1px solid var(--color-border-default);border-radius:var(--radius-panel);background:var(--color-bg-surface)}header{display:flex;align-items:flex-start;justify-content:space-between;gap:var(--space-4);padding:var(--space-5);border-bottom:1px solid var(--color-border-subtle)}header div{display:grid;gap:3px}header p,header h2{margin:0}header p{color:var(--color-accent);font-size:var(--font-size-caption);font-weight:700;letter-spacing:.08em}header span{color:var(--color-text-secondary)}header a,.student-overview-list__empty a{color:var(--color-accent-active);font-weight:650}.student-overview-list__grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:var(--space-3);padding:var(--space-5)}.student-overview-list__grid>button{position:relative;display:grid;min-height:126px;gap:7px;padding:var(--space-4) var(--space-4) var(--space-4) calc(var(--space-4) + 5px);overflow:hidden;border:1px solid var(--color-border-default);border-radius:var(--radius-panel);background:var(--color-bg-surface);color:var(--color-text-primary);font:inherit;text-align:left}.student-overview-list__grid>button:hover,.student-overview-list__grid>button:focus-visible{border-color:var(--color-accent);box-shadow:var(--shadow-card)}.student-overview-list__grid small,.student-overview-list__grid button>span:last-child{color:var(--color-text-secondary)}.student-overview-list__rail{position:absolute;inset-block:0;inset-inline-start:0;width:4px;background:var(--color-accent)}.student-overview-list__empty{display:grid;min-height:260px;place-content:center;justify-items:center;gap:8px;padding:var(--space-5);text-align:center}.student-overview-list__empty p{margin:0;color:var(--color-text-secondary)}.student-overview-list__message{display:flex;align-items:center;justify-content:space-between;gap:var(--space-3);margin:0;padding:var(--space-3) var(--space-5);background:var(--color-danger-subtle);color:var(--color-danger)}.student-overview-list__message button{min-height:36px;padding:0 var(--space-3);border:1px solid currentColor;border-radius:var(--radius-control);background:var(--color-bg-surface);color:inherit;font:inherit;font-weight:700}footer{display:flex;justify-content:flex-end;padding:0 var(--space-5) var(--space-5)}footer button,.student-overview-list__available button{min-height:38px;border:0;background:transparent;color:var(--color-accent-active);font:inherit}.student-overview-list__available{display:grid;grid-template-columns:minmax(150px,.35fr) 1fr auto;align-items:center;gap:var(--space-4);margin:0 var(--space-5) var(--space-4);padding:var(--space-4);border-inline-start:4px solid var(--color-accent);background:var(--color-bg-subtle)}.student-overview-list__available div{display:grid}.student-overview-list__available span,.student-overview-list__available p{color:var(--color-text-secondary)}.student-overview-list__available p{margin:0}@media(max-width:760px){.student-overview-list__available{grid-template-columns:1fr}.student-overview-list__message{align-items:flex-start;flex-direction:column}}
+.student-overview-list{border:1px solid var(--border);border-radius:var(--radius);background:var(--card)}header{display:flex;align-items:flex-start;justify-content:space-between;gap:var(--space-4);padding:var(--space-5);border-bottom:1px solid var(--border)}header div{display:grid;gap:3px}header p,header h2{margin:0}header p{color:var(--primary);font-size:var(--font-size-caption);font-weight:700;letter-spacing:.08em}header span{color:var(--color-text-secondary)}header a,.student-overview-list__empty a{color:var(--primary);font-weight:650}.student-overview-list__grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:var(--space-3);padding:var(--space-5)}.student-overview-list__grid>button{position:relative;display:grid;min-height:126px;gap:7px;justify-items:start;padding:var(--space-4) var(--space-4) var(--space-4) calc(var(--space-4) + 5px);overflow:hidden;border:1px solid var(--border);border-radius:var(--radius);background:var(--card);color:var(--foreground);font:inherit;text-align:left;cursor:pointer}.student-overview-list__grid>button:hover,.student-overview-list__grid>button:focus-visible{border-color:var(--primary)}.student-overview-list__grid small,.student-overview-list__grid button>span:last-child{color:var(--color-text-secondary)}.student-overview-list__rail{position:absolute;inset-block:0;inset-inline-start:0;width:4px;background:var(--primary)}.student-overview-list__empty{display:grid;min-height:260px;place-content:center;justify-items:center;gap:8px;padding:var(--space-5);text-align:center}.student-overview-list__empty p{margin:0;color:var(--color-text-secondary)}.student-overview-list__message{display:flex;align-items:center;justify-content:space-between;gap:var(--space-3);margin:0;padding:var(--space-3) var(--space-5);background:var(--color-danger-subtle);color:var(--destructive)}footer{display:flex;justify-content:flex-end;padding:0 var(--space-5) var(--space-5)}@media(max-width:760px){.student-overview-list__message{align-items:flex-start;flex-direction:column}}
 </style>
